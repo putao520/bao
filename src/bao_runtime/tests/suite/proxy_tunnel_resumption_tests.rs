@@ -291,7 +291,6 @@ fn proxied_get(target_port: u16, proxy_port: u16) -> Result<u32, String> {
         response_buffer,
         b"",
         Some(proxy),
-        None,
         FetchRedirect::Follow,
     );
     async_http.client.flags.reject_unauthorized = false;

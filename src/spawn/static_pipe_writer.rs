@@ -5,7 +5,7 @@ use bun_io::Loop as AsyncLoop;
 #[cfg(windows)]
 use bun_io::pipe_writer::BaseWindowsPipeWriter as _;
 use bun_io::{BufferedWriter, WriteStatus};
-use bun_ptr::{IntrusiveRc, RawSlice, RefCount};
+use bun_ptr::{RawSlice, RefCount, RefPtr};
 use bun_sys;
 
 use crate::process::StdioKind;
@@ -133,7 +133,7 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
         subprocess: *mut P,
         result: StdioResult,
         source: Source,
-    ) -> IntrusiveRc<Self> {
+    ) -> RefPtr<Self> {
         let this = bun_core::heap::into_raw(Box::new(Self {
             ref_count: RefCount::init(),
             writer: IOWriter::<P>::default(),
@@ -168,8 +168,8 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
             }
         }
         this_ref.writer.set_parent(this);
-        // SAFETY: ownership of the initial ref is transferred to the returned IntrusiveRc.
-        unsafe { IntrusiveRc::from_raw(this) }
+        // SAFETY: ownership of the initial ref is transferred to the returned RefPtr.
+        unsafe { RefPtr::from_raw(this) }
     }
 
     pub fn start(&mut self) -> bun_sys::Result<()> {
@@ -191,7 +191,7 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
                 // start() failed: `started` stays false so no release site
                 // fires — release start()'s `+1` here.
                 // SAFETY: `self` is the live `Self` we ref'd at the top of
-                // `start()`; the caller's `IntrusiveRc` keeps it alive and
+                // `start()`; the caller's `RefPtr` keeps it alive and
                 // `started` is false so no other site re-derefs.
                 unsafe { RefCount::<Self>::deref(std::ptr::from_mut::<Self>(self)) };
             }
@@ -205,7 +205,7 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
                     // start() failed: `started` stays false so no release
                     // site fires — release start()'s `+1` here.
                     // SAFETY: `self` is the live `Self` we ref'd at the top
-                    // of `start()`; the caller's `IntrusiveRc` keeps it alive
+                    // of `start()`; the caller's `RefPtr` keeps it alive
                     // and `started` is false so no other site re-derefs.
                     unsafe { RefCount::<Self>::deref(std::ptr::from_mut::<Self>(self)) };
                     bun_sys::Result::Err(err)
@@ -322,7 +322,7 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
 }
 
 /// Zig: `fn _deinit(this: *This) void` — the `RefCount` destructor callback.
-/// `bun.destroy(this)` (the heap free) is handled by `IntrusiveRc` after `drop` returns.
+/// `bun.destroy(this)` (the heap free) is handled by `RefPtr` after `drop` returns.
 impl<P: StaticPipeWriterProcess> Drop for StaticPipeWriter<P> {
     fn drop(&mut self) {
         self.writer.end();

@@ -1778,6 +1778,7 @@ dependencies = [
  "bao-mozjs",
  "bao-servo-base",
  "bao-servo-config",
+ "bao-servo-constellation-traits",
  "bao-servo-deny-public-fields",
  "bao-servo-dom-struct",
  "bao-servo-jstraceable-derive",
@@ -3346,6 +3347,7 @@ dependencies = [
  "bun_alloc",
  "bun_core",
  "bun_core_macros",
+ "bun_sys",
  "phf 0.11.3",
  "scopeguard",
 ]

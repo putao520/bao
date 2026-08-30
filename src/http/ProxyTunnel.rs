@@ -4,6 +4,7 @@ use core::sync::atomic::Ordering;
 
 use bun_core::scoped_log;
 use bun_core::{Error, err};
+use bun_ptr::RefPtr;
 use bun_uws as uws;
 
 use crate::http_cert_error::HTTPCertError;
@@ -14,11 +15,6 @@ use crate::ssl_wrapper::{Handlers as SSLWrapperHandlers, InitError, SSLWrapper, 
 use crate::{AlpnOffer, HTTPClient};
 
 bun_core::declare_scope!(http_proxy_tunnel, visible);
-
-// Intrusive single-thread refcount (bun.ptr.RefCount). `ref_count` field at
-// matching offset; deref() hitting 0 calls ProxyTunnel::deinit (mapped to Drop
-// + dealloc via IntrusiveRc).
-pub type RefPtr = bun_ptr::IntrusiveRc<ProxyTunnel>;
 
 /// Upgrade a `*mut ProxyTunnel` (obtained from [`RefPtr::as_ptr`]) to
 /// `&'a mut ProxyTunnel`.
@@ -175,15 +171,6 @@ impl ProxyTunnel {
         unsafe { (*addr_of_mut!((*this).wrapper)).as_mut() }
     }
 
-    /// Read-only access to `ref_count` (a `Cell<u32>`; disjoint from `wrapper`).
-    /// Used to bump the intrusive refcount from within a callback whose caller
-    /// holds `&mut SSLWrapper` on `(*this).wrapper`.
-    #[inline]
-    fn ref_count_of<'a>(this: NonNull<Self>) -> &'a core::cell::Cell<u32> {
-        // SAFETY: see [`Self::socket_of`].
-        unsafe { &*addr_of!((*this.as_ptr()).ref_count) }
-    }
-
     /// Bump the intrusive refcount and return a guard that releases it on Drop.
     ///
     /// INVARIANT (module): `this` is the `HTTPClient.proxy_tunnel` handle's
@@ -192,14 +179,14 @@ impl ProxyTunnel {
     /// eventual release, which is the last one whenever the guarded call
     /// released the client's ref, goes through the holder's own pointer
     /// rather than through a `&mut self` that would still be live at that
-    /// point. `ScopedRef::new` bumps via raw `CellRefCounted::ref_count_raw`
+    /// point. `RefPtr::init_ref` bumps via raw `CellRefCounted::ref_count_raw`
     /// field projection — touching only `ref_count`, never the whole tunnel —
     /// so it does not alias the caller's `&SSLWrapper` (see ALIASING NOTE).
     /// HTTP-thread-only.
     #[inline]
-    fn ref_scope(this: NonNull<Self>) -> bun_ptr::ScopedRef<Self> {
+    fn ref_guard(this: NonNull<Self>) -> RefPtr<Self> {
         // SAFETY: see INVARIANT above.
-        unsafe { bun_ptr::ScopedRef::new(this.as_ptr()) }
+        unsafe { RefPtr::init_ref(this.as_ptr()) }
     }
 }
 
@@ -237,28 +224,27 @@ fn on_open(ctx: *mut HTTPClient) {
     bun_analytics::features::http_client_proxy.fetch_add(1, Ordering::Relaxed);
     this.state.response_stage = HTTPStage::ProxyHandshake;
     this.state.request_stage = HTTPStage::ProxyHandshake;
-    let Some(proxy_nn) = this.proxy_tunnel.as_ref().map(|p| p.data) else {
+    let Some(proxy_nn) = this.proxy_tunnel_ptr() else {
         return;
     };
     // Live intrusive-refcounted tunnel allocated in `start()`. Do NOT form
     // `&mut ProxyTunnel` — see ALIASING NOTE.
-    let _guard = ProxyTunnel::ref_scope(proxy_nn);
+    let _guard = ProxyTunnel::ref_guard(proxy_nn);
     if let Some(ssl_ptr) = ProxyTunnel::wrapper_ssl(proxy_nn) {
-        let _hostname = this.hostname.unwrap_or(this.url.hostname);
+        let _hostname = crate::get_tls_hostname(this, false);
 
         // TLS session resumption: offer the cached session for the TARGET
         // origin (the inner TLS endpoint through the CONNECT tunnel) before
         // the handshake starts — `start()`/`start_with_payload()` fire this
         // callback before the first `handle_traffic()` drive, so the
-        // ClientHello has not been serialized yet. The key strips the Host
-        // header's port suffix (`strip_port_from_host`) and pairs it with
-        // the target URL port, matching the direct-fetch origin key so a
-        // direct connection and a tunnelled connection to the same origin
-        // resume each other's sessions. Salt semantics identical to the
-        // fetch `on_open` wiring (lib.rs): custom `tls_props` segregate,
-        // default shares salt 0 across stacks.
-        let target_host = crate::strip_port_from_host(_hostname);
-        if let Some(host_str) = core::str::from_utf8(target_host).ok() {
+        // ClientHello has not been serialized yet. The key is the TLS
+        // hostname (`get_tls_hostname`) paired with the target URL port,
+        // matching the direct-fetch origin key so a direct connection and a
+        // tunnelled connection to the same origin resume each other's
+        // sessions. Salt semantics identical to the fetch `on_open` wiring
+        // (lib.rs): custom `tls_props` segregate, default shares salt 0
+        // across stacks.
+        if let Some(host_str) = core::str::from_utf8(_hostname).ok() {
             let profile_salt = this
                 .tls_props
                 .as_deref()
@@ -317,10 +303,10 @@ fn on_data(ctx: *mut HTTPClient, decoded_data: &[u8]) {
     // ends this borrow before any reentrant call below that re-derives
     // `&mut *ctx` (close → on_close, progress_update).
     let this = client_from_ctx(ctx);
-    let Some(proxy_nn) = this.proxy_tunnel.as_ref().map(|p| p.data) else {
+    let Some(proxy_nn) = this.proxy_tunnel_ptr() else {
         return;
     };
-    let _guard = ProxyTunnel::ref_scope(proxy_nn);
+    let _guard = ProxyTunnel::ref_guard(proxy_nn);
     // While parked waiting for the JS `checkServerIdentity` verdict no request
     // has been written through the tunnel, so any decrypted application data
     // arriving here is unexpected.
@@ -404,12 +390,12 @@ fn on_handshake(
 ) {
     // NLL ends `this` before any reentrant call below.
     let this = client_from_ctx(ctx);
-    let Some(proxy_nn) = this.proxy_tunnel.as_ref().map(|p| p.data) else {
+    let Some(proxy_nn) = this.proxy_tunnel_ptr() else {
         return;
     };
     scoped_log!(http_proxy_tunnel, "ProxyTunnel onHandshake");
     // Do NOT form `&mut ProxyTunnel` (see ALIASING NOTE).
-    let _guard = ProxyTunnel::ref_scope(proxy_nn);
+    let _guard = ProxyTunnel::ref_guard(proxy_nn);
     this.state.response_stage = HTTPStage::ProxyHeaders;
     this.state.request_stage = HTTPStage::ProxyHeaders;
     this.state.request_sent_len = 0;
@@ -515,7 +501,7 @@ pub fn write_encrypted(ctx: *mut HTTPClient, encoded_data: &[u8]) {
     // is the sole live borrow, dropped immediately after copying out the
     // tunnel's `data` `NonNull`. The pointee is alive: this client holds a
     // strong ref to the tunnel for the duration of tunneling.
-    let Some(proxy_nn) = client_from_ctx(ctx).proxy_tunnel.as_ref().map(|p| p.data) else {
+    let Some(proxy_nn) = client_from_ctx(ctx).proxy_tunnel_ptr() else {
         return;
     };
     // Live intrusive-refcounted tunnel. Access `write_buffer` and `socket` via
@@ -560,18 +546,13 @@ fn on_close(ctx: *mut HTTPClient) {
             "tunnel exists"
         }
     );
-    let Some(proxy_nn) = this.proxy_tunnel.as_ref().map(|p| p.data) else {
+    let Some(proxy_nn) = this.proxy_tunnel_ptr() else {
         return;
     };
-    let proxy_ptr = proxy_nn.as_ptr();
-    // close_raw still holds `&mut SSLWrapper` on `(*proxy_ptr).wrapper`, so
-    // bump refcount via the disjoint Cell projection.
-    // PORT NOTE: not a ScopedRef — the matching deref is deferred via
-    // `schedule_proxy_deref` to avoid freeing within the callback.
-    {
-        let rc = ProxyTunnel::ref_count_of(proxy_nn);
-        rc.set(rc.get() + 1);
-    }
+    // Keeps the tunnel alive across this callback; released on the next
+    // loop tick via `schedule_proxy_deref` to avoid freeing within the
+    // callback.
+    let keepalive = ProxyTunnel::ref_guard(proxy_nn);
 
     // If a response is in progress, mirror HTTPClient.onClose semantics:
     // treat connection close as end-of-body for identity transfer when no content-length.
@@ -588,7 +569,7 @@ fn on_close(ctx: *mut HTTPClient) {
                     // `this` dead (NLL); reborrow via `client_from_ctx` inside.
                     progress_update_for_proxy_socket(ctx, proxy_nn);
                     // Drop our temporary ref asynchronously to avoid freeing within callback
-                    crate::http_thread().schedule_proxy_deref(proxy_ptr);
+                    crate::http_thread().schedule_proxy_deref(keepalive);
                     return;
                 }
                 _ => {}
@@ -600,7 +581,7 @@ fn on_close(ctx: *mut HTTPClient) {
             // `this` dead (NLL); reborrow via `client_from_ctx` inside.
             progress_update_for_proxy_socket(ctx, proxy_nn);
             // Balance the ref we took asynchronously
-            crate::http_thread().schedule_proxy_deref(proxy_ptr);
+            crate::http_thread().schedule_proxy_deref(keepalive);
             return;
         }
     }
@@ -618,7 +599,7 @@ fn on_close(ctx: *mut HTTPClient) {
     }
     ProxyTunnel::set_socket(proxy_nn, Socket::None);
     // Deref after returning to the event loop to avoid lifetime hazards.
-    crate::http_thread().schedule_proxy_deref(proxy_ptr);
+    crate::http_thread().schedule_proxy_deref(keepalive);
 }
 
 /// `ctx` and `proxy` must be live. Caller must not hold `&mut HTTPClient` or
@@ -746,12 +727,12 @@ impl ProxyTunnel {
     }
 
     /// Outer socket became writable. `this` is the client's `proxy_tunnel`
-    /// handle (see [`Self::ref_scope`]): the flush below can complete or fail
+    /// handle (see [`Self::ref_guard`]): the flush below can complete or fail
     /// the request, which releases that handle, leaving the guard's ref as the
     /// last one. A `&mut self` receiver would then be freed while still live.
     pub fn on_writable<const IS_SSL: bool>(this: NonNull<Self>, socket: HTTPSocket<IS_SSL>) {
         scoped_log!(http_proxy_tunnel, "ProxyTunnel onWritable");
-        let _guard = Self::ref_scope(this);
+        let _guard = Self::ref_guard(this);
         // PORT NOTE: Zig `defer wrapper.flush()` runs AFTER the body but BEFORE
         // `defer deref()` (LIFO). We mirror that order explicitly at the single
         // exit. flush() → handle_traffic → write_encrypted reenters and touches
@@ -784,7 +765,7 @@ impl ProxyTunnel {
     /// [`Self::on_writable`]: delivering the decrypted data can release the
     /// client's handle, so the guard taken from it may hold the last ref.
     pub fn receive(this: NonNull<Self>, buf: &[u8]) {
-        let _guard = Self::ref_scope(this);
+        let _guard = Self::ref_guard(this);
         // receive_data() fires on_data/on_handshake/write_encrypted/on_close
         // synchronously; each accesses only tunnel fields disjoint from
         // `wrapper` via the accessors above (see ALIASING NOTE), so the
@@ -808,7 +789,7 @@ impl ProxyTunnel {
     }
 
     /// Forget the outer socket. Holders call this before releasing their
-    /// handle (`RefPtr::deref`), so a tunnel that outlives them (a deferred
+    /// handle, so a tunnel that outlives them (a deferred
     /// `on_close` deref is still pending) never retains a dangling socket.
     #[inline]
     pub fn detach_socket(&mut self) {
@@ -842,7 +823,7 @@ impl ProxyTunnel {
     /// `tunnel` is the pool's handle; it moves into `client.proxy_tunnel` as
     /// is, so the ref the client later releases is the one the pool held.
     pub fn adopt<const IS_SSL: bool>(
-        tunnel: RefPtr,
+        tunnel: RefPtr<ProxyTunnel>,
         client: &mut HTTPClient,
         socket: HTTPSocket<IS_SSL>,
     ) {

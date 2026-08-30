@@ -20,3 +20,25 @@
 [[profile.default.overrides]]
 filter = 'package(bun_http) and test(connection_deadline_both_directions_under_oversubscription)'
 threads-required = "num-test-threads"
+
+# Test resource isolation (task: bao-browser h2 wire e2e deadline margin,
+# diagnosed 2026-08-31 during the 2026-08-27..31 absorb-wave closure):
+#
+# The `h2_fetch_node_stack_e2e_tests::window_fetch_*` round trips drive a real
+# fetch (AsyncHTTP on HTTPThread) against the in-process H2 fixture server
+# under a hard 20s wall-clock delivery deadline. They finish in ~0.2s in
+# isolation, but the fleet grew ~40% (7444 → 10478 tests) with the absorb
+# wave, and at default 20-way concurrency exactly one of the four starves past
+# the deadline per run with zero deliveries — three fleet-ish runs, three
+# different tests, same signature as the hog case above. Discriminating
+# evidence: bao-browser suite alone at default -j reproduces (1 fail), the
+# same suite at -j 4 is 1747/1747 green, and isolated/module/pair co-runs are
+# green with ~90× deadline headroom — scheduling starvation, not a logic
+# regression.
+#
+# Reserve the full test-thread budget so these deadline-bound round trips
+# never co-run with the fleet (same documented mechanism as the hog above).
+# No test code or assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bao-browser) and test(h2_fetch_node_stack_e2e_tests)'
+threads-required = "num-test-threads"

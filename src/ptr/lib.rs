@@ -71,8 +71,8 @@ pub use tagged_pointer::{TaggedPtr as TaggedPointer, TaggedPtrUnion as TaggedPoi
 
 pub mod ref_count;
 pub use ref_count::{
-    AnyRefCounted, CellRefCounted, RefCount, RefCounted, RefPtr, ScopedRef, ThreadSafeRefCount,
-    ThreadSafeRefCounted, finalize_js_box, finalize_js_box_noop,
+    AnyRefCounted, CellRefCounted, RefCount, RefCounted, RefPtr, ThreadSafeRefCount,
+    ThreadSafeRefCounted,
 };
 // Derive macros — same names as the traits (separate namespace). The derives
 // expand to `::bun_ptr::…` paths, so this crate is the canonical re-export
@@ -81,9 +81,6 @@ pub use bun_core_macros::{Anchored, CellRefCounted, RefCounted, ThreadSafeRefCou
 
 pub mod parent_ref;
 pub use parent_ref::{Anchored, LiveMarker, ParentRef};
-// Compat aliases for callers that use the pointer-typedef names.
-pub type IntrusiveRc<T> = RefPtr<T>;
-pub type IntrusiveArc<T> = RefPtr<T>;
 
 pub use raw_ref_count::RawRefCount;
 pub use weak_ptr::WeakPtr;
@@ -540,13 +537,10 @@ impl core::fmt::Debug for Interned {
 // ThisPtr<T> — callback-dispatch self-pointer
 //
 // uSockets / C++ FFI dispatch hands every socket-event handler a raw
-// `*mut Self` recovered from the userdata slot. The original port open-coded
-// `unsafe { (*this).field }` / `unsafe { (&*this).ref_() }` /
-// `scopeguard::guard(this, |p| unsafe { Self::deref(p) })` at ~90 call sites
-// across the websocket-client family. `ThisPtr` centralises that pattern under
-// ONE constructor SAFETY contract: wrap the raw pointer once at fn entry, then
-// read fields via `Deref` and bracket the body with `ref_guard()` (RAII
-// `ScopedRef`) instead of hand-paired `ref_()`/`deref()` at every early-exit.
+// `*mut Self` recovered from the userdata slot. `ThisPtr` wraps it under ONE
+// constructor SAFETY contract: wrap the raw pointer once at fn entry, then
+// read fields via `Deref` and hold `RefPtr::from_this(this)` across any
+// re-entrant call that could drop the last ref.
 //
 // Unlike [`BackRef`] (owner-outlives-holder back-reference), a `ThisPtr` is for
 // the *callee-is-the-allocation* case: the pointee is an intrusively-refcounted
@@ -563,7 +557,7 @@ impl core::fmt::Debug for Interned {
 ///
 /// See the module comment above for the full rationale. Construct once per
 /// handler entry with [`ThisPtr::new`], then use `Deref` for field reads and
-/// [`ThisPtr::ref_guard`] for the keep-alive bracket.
+/// [`RefPtr::from_this`] for the keep-alive bracket.
 #[repr(transparent)]
 pub struct ThisPtr<T>(core::ptr::NonNull<T>);
 
@@ -575,7 +569,7 @@ impl<T> ThisPtr<T> {
     /// `heap::alloc`, intrusively refcounted) that remains live for every
     /// subsequent access through this `ThisPtr` and its copies — i.e. either
     /// the caller already holds a ref, or the first thing it does is take a
-    /// [`ref_guard`](Self::ref_guard). No `&mut T` to `*p` may be live across
+    /// [`RefPtr::from_this`]. No `&mut T` to `*p` may be live across
     /// any `Deref` borrow produced from this `ThisPtr`.
     #[inline]
     pub unsafe fn new(p: *mut T) -> Self {
@@ -621,26 +615,6 @@ impl<T> core::ops::Deref for ThisPtr<T> {
     }
 }
 
-impl<T: AnyRefCounted> ThisPtr<T>
-where
-    T::DestructorCtx: Default,
-{
-    /// Bump the intrusive refcount and return an RAII guard that derefs on
-    /// `Drop`. Replaces the hand-rolled
-    /// `this.ref_(); scopeguard::guard(this_ptr, |p| Self::deref(p))` /
-    /// `this.ref_(); … defer this.deref()` bracket: the guard runs the paired
-    /// `deref()` on every exit path, so manual `Self::deref(this)` at each
-    /// early return goes away.
-    ///
-    /// Safe: the [`new`](Self::new) invariant already established that the
-    /// pointee is live, which is exactly [`ScopedRef::new`]'s precondition.
-    #[inline]
-    pub fn ref_guard(self) -> ScopedRef<T> {
-        // SAFETY: `ThisPtr::new` invariant — `self.0` points to a live `T`.
-        unsafe { ScopedRef::new(self.0.as_ptr()) }
-    }
-}
-
 // SAFETY: `BackRef<T>` is morally `&T` (Deref/get) with an unsafe `get_mut`
 // escape hatch whose exclusivity is the caller's per-site obligation. Match
 // `&T` auto-trait bounds: `&T: Send ⇔ T: Sync`, `&T: Sync ⇔ T: Sync`. Holders
@@ -662,25 +636,23 @@ unsafe impl<T: ?Sized + Sync> Sync for BackRef<T> {}
 // The returned pointer carries **shared (read-only) provenance** — it is
 // derived from `&self`, so writing through it directly is UB. The `*mut`
 // spelling exists purely to match C-shaped signatures (`void *`, uSockets
-// ext slots, `ScopedRef` / `DerefOnDrop` ctx, vtable thunks, intrusive
+// ext slots, `RefPtr::init_ref`, vtable thunks, intrusive
 // `RefCount::deref`). Consumers must deref as `&*p` and route mutation
 // through `Cell` / `JsCell` / `UnsafeCell` interior-mutability fields.
 //
 // Blanket-implemented for all `T`: bring the trait into scope with
 // `use bun_ptr::AsCtxPtr;` and the inherent-looking `self.as_ctx_ptr()`
-// resolves on any type. Replaces 19 identical hand-rolled
-// `fn as_ctx_ptr(&self) -> *mut Self { (self as *const Self).cast_mut() }`
-// inherent methods scattered across runtime JS-class wrappers.
+// resolves on any type.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `&self` → `*mut Self` with shared provenance, for C-callback / scopeguard
 /// ctx slots. See module-level comment above for the safety contract.
 pub trait AsCtxPtr {
     /// `self`'s address as `*mut Self` for deferred-task / scopeguard /
-    /// `ref_guard` ctx slots. The closures/trampolines deref it as shared
+    /// `RefPtr::init_ref` ctx slots. The closures/trampolines deref it as shared
     /// (`&*p`) — every method they reach is `&self` post-R-2, so no write
     /// provenance is required; the `*mut` spelling is purely to match the
-    /// existing `DerefOnDrop` / `HasAutoFlush` / `RefCount` ABI.
+    /// existing `HasAutoFlush` / `RefCount` ABI.
     #[inline(always)]
     fn as_ctx_ptr(&self) -> *mut Self
     where

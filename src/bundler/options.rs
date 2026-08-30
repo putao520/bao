@@ -1374,6 +1374,10 @@ pub struct BundleOptions<'a> {
     pub conditions: ESMConditions,
     pub tree_shaking: bool,
     pub code_splitting: bool,
+    /// With `code_splitting`, target bun: `require()` of a bundled ESM file
+    /// becomes a chunk of its own, loaded synchronously at the call. On by
+    /// default; `--no-split-require` / `splitRequire: false` opts out.
+    pub split_require: bool,
     pub source_map: SourceMapOption,
     pub packages: PackagesOption,
 
@@ -1403,6 +1407,10 @@ pub struct BundleOptions<'a> {
     /// captures the last expression in { value: expr } for result extraction.
     pub repl_mode: bool,
     pub css_chunking: bool,
+    /// Code splitting: also fold side-effect-free chunks whose source is
+    /// smaller than this many bytes into a chunk more entry points load.
+    /// 0 disables that; chunks with identical load conditions always fold.
+    pub min_chunk_size: u64,
 
     pub ignore_dce_annotations: bool,
     pub emit_dce_annotations: bool,
@@ -1581,6 +1589,7 @@ impl<'a> BundleOptions<'a> {
             },
             tree_shaking: self.tree_shaking,
             code_splitting: self.code_splitting,
+            split_require: self.split_require,
             source_map: self.source_map,
             packages: self.packages,
             disable_transpilation: self.disable_transpilation,
@@ -1597,6 +1606,7 @@ impl<'a> BundleOptions<'a> {
             dead_code_elimination: self.dead_code_elimination,
             repl_mode: self.repl_mode,
             css_chunking: self.css_chunking,
+            min_chunk_size: self.min_chunk_size,
             ignore_dce_annotations: self.ignore_dce_annotations,
             emit_dce_annotations: self.emit_dce_annotations,
             bytecode: self.bytecode,
@@ -1805,6 +1815,7 @@ impl<'a> BundleOptions<'a> {
             env: Env::init(),
             transform_options: std::sync::Arc::clone(&transform),
             css_chunking: false,
+            min_chunk_size: 0,
             drop: transform.drop.clone().into_boxed_slice(),
             bundler_feature_flags,
 
@@ -1857,6 +1868,7 @@ impl<'a> BundleOptions<'a> {
             }, // filled below
             tree_shaking: false,
             code_splitting: false,
+            split_require: true,
             source_map: SourceMapOption::None,
             packages: PackagesOption::Bundle,
             disable_transpilation: false,

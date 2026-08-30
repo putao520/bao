@@ -15,6 +15,7 @@ use bun_event_loop::EventLoopHandle;
 use bun_io::ParentDeathWatchdog;
 #[cfg(unix)]
 use bun_io::{FilePoll, KeepAlive};
+use bun_ptr::RefPtr;
 #[cfg(windows)]
 use bun_sys::ReturnCodeExt as _;
 #[cfg(windows)]
@@ -306,7 +307,7 @@ impl Process {
 
     /// # Safety
     /// `this` carries the +1 ref taken when the waiter-thread task was queued.
-    /// `ScopedRef::adopt` releases it on return — which may free `this` — so
+    /// `RefPtr::from_raw` releases it on return — which may free `this` — so
     /// this takes `*mut Self`, not `&mut self` (a `&mut` argument's
     /// Stacked-Borrows protector outliving the allocation is UB; see :215).
     #[cfg(unix)]
@@ -316,8 +317,8 @@ impl Process {
         rusage: &Rusage,
     ) {
         // SAFETY: caller contract — adopts the queued +1 ref.
-        let _g = unsafe { bun_ptr::ScopedRef::<Process>::adopt(this) };
-        // SAFETY: `_g` keeps `this` live for this block.
+        let _guard = unsafe { RefPtr::from_raw(this) };
+        // SAFETY: `_guard` keeps `this` live for this block.
         let self_ = unsafe { &mut *this };
         if let Poller::WaiterThread(waiter) = &mut self_.poller {
             let ctx = event_loop_handle_to_ctx(self_.event_loop);
@@ -332,8 +333,8 @@ impl Process {
     #[cfg(unix)]
     pub unsafe fn on_wait_pid_from_event_loop_task(this: *mut Self) {
         // SAFETY: caller contract — adopts the queued +1 ref.
-        let _g = unsafe { bun_ptr::ScopedRef::<Process>::adopt(this) };
-        // SAFETY: `_g` keeps `this` live.
+        let _guard = unsafe { RefPtr::from_raw(this) };
+        // SAFETY: `_guard` keeps `this` live.
         unsafe { (*this).wait(false) };
     }
 
@@ -576,13 +577,13 @@ impl Process {
         // `Poller::Uv` payload inside `*this` (see `on_exit_uv`).
         let _pid = unsafe { (*uv_handle).pid };
         // SAFETY: `*mut Process` back-pointer stashed in `data` at spawn. Stay
-        // raw — `ScopedRef::Drop` may free the allocation, so never bind a
+        // raw — `RefPtr::drop` may free the allocation, so never bind a
         // `&mut Process` whose tag would have to outlive that.
         let this: *mut Process = unsafe { (*uv_handle).data.cast() };
         // SAFETY: adopts the +1 ref taken at `uv_spawn`.
-        let _g = unsafe { bun_ptr::ScopedRef::<Process>::adopt(this) };
+        let _guard = unsafe { RefPtr::from_raw(this) };
         bun_sys::windows::libuv::log!("Process.onClose({})", _pid);
-        // SAFETY: `_g` keeps `this` live for this block.
+        // SAFETY: `_guard` keeps `this` live for this block.
         unsafe {
             if matches!((*this).poller, Poller::Uv(_)) {
                 (*this).poller = Poller::Detached;

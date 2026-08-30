@@ -69,10 +69,6 @@ pub trait HasWeakPtrData {
 /// `WeakPtr`s are released. Even if the allocation is present, `WeakPtr<T>::get`
 /// will return `None` after the inner contents are freed.
 pub struct WeakPtr<T: HasWeakPtrData> {
-    // PORT NOTE: LIFETIMES.tsv classifies this field as SHARED → `Weak<T>`,
-    // but this file *is* the definition of the intrusive weak pointer; per
-    // PORTING.md §Pointers ("keep as `*mut T` + manual ref/deref over an
-    // embedded `WeakPtrData`"), the field stays a raw pointer.
     raw_ptr: Option<NonNull<T>>,
 }
 
@@ -88,14 +84,6 @@ impl<T: HasWeakPtrData> WeakPtr<T> {
         d.set_reference_count(d.reference_count() + 1);
         Self {
             raw_ptr: Some(NonNull::from(req)),
-        }
-    }
-
-    pub fn deref(&mut self) {
-        if let Some(value) = self.raw_ptr {
-            // SAFETY: `raw_ptr` was set by `init_ref` and not yet released;
-            // the allocation outlives all `WeakPtr`s by construction.
-            unsafe { self.deref_internal(value) };
         }
     }
 
@@ -128,6 +116,16 @@ impl<T: HasWeakPtrData> WeakPtr<T> {
             // SAFETY: this is the last reference and the owner has finalized,
             // so we hold the only pointer to a `Box`-allocated `T`.
             drop(unsafe { bun_core::heap::take(value.as_ptr()) });
+        }
+    }
+}
+
+impl<T: HasWeakPtrData> Drop for WeakPtr<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.raw_ptr {
+            // SAFETY: `raw_ptr` was set by `init_ref` and not yet released;
+            // the allocation outlives all `WeakPtr`s by construction.
+            unsafe { self.deref_internal(value) };
         }
     }
 }

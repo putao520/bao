@@ -2196,6 +2196,7 @@ dependencies = [
  "bao-mozjs",
  "bao-servo-base",
  "bao-servo-config",
+ "bao-servo-constellation-traits",
  "bao-servo-deny-public-fields",
  "bao-servo-dom-struct",
  "bao-servo-jstraceable-derive",
@@ -2274,6 +2275,7 @@ version = "0.5.4"
 dependencies = [
  "bao-mozjs",
  "bao-servo-base",
+ "bao-servo-constellation-traits",
  "bao-servo-deny-public-fields",
  "bao-servo-dom-struct",
  "bao-servo-jstraceable-derive",

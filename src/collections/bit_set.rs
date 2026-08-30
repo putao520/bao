@@ -1503,6 +1503,33 @@ impl AutoBitSet {
         auto_forward!(self, |b| b.unset(index))
     }
 
+    /// `self |= other`. Both sets must have the same arm (same bit length).
+    pub fn set_union(&mut self, other: &AutoBitSet) {
+        match (self, other) {
+            (AutoBitSet::Static(a), AutoBitSet::Static(b)) => a.set_union(b),
+            (AutoBitSet::Dynamic(a), AutoBitSet::Dynamic(b)) => a.set_union(b),
+            _ => unreachable!("AutoBitSet::set_union: mismatched bit lengths"),
+        }
+    }
+
+    /// `self &= other`. Both sets must have the same arm (same bit length).
+    pub fn set_intersection(&mut self, other: &AutoBitSet) {
+        match (self, other) {
+            (AutoBitSet::Static(a), AutoBitSet::Static(b)) => a.set_intersection(b),
+            (AutoBitSet::Dynamic(a), AutoBitSet::Dynamic(b)) => a.set_intersection(b),
+            _ => unreachable!("AutoBitSet::set_intersection: mismatched bit lengths"),
+        }
+    }
+
+    /// Is every bit of `self` also set in `other`?
+    pub fn subset_of(&self, other: &AutoBitSet) -> bool {
+        match (self, other) {
+            (AutoBitSet::Static(a), AutoBitSet::Static(b)) => a.subset_of(b),
+            (AutoBitSet::Dynamic(a), AutoBitSet::Dynamic(b)) => a.subset_of(b),
+            _ => unreachable!("AutoBitSet::subset_of: mismatched bit lengths"),
+        }
+    }
+
     pub fn raw_bytes(&self) -> &[u8] {
         match self {
             AutoBitSet::Static(s) => bun_core::cast_slice::<usize, u8>(&s.masks),

@@ -25,7 +25,7 @@ bun_core::declare_scope!(AsyncHTTP, visible);
 
 // Lifetime `'a` covers every borrowed input the caller hands in: `url`,
 // `http_proxy`, `request_header_buf`, the borrowed `HTTPRequestBody::Bytes`
-// payload, and `client.{header_buf,hostname,if_modified_since}`. Intrusive
+// payload, and `client.{header_buf,if_modified_since}`. Intrusive
 // fields (`real`, `next`) are raw pointers and thus lifetime-erased; the
 // HTTP-thread copy uses the same `'a` as the JS-thread original it mirrors.
 pub struct AsyncHTTP<'a> {
@@ -178,7 +178,6 @@ fn make_client<'a>(
     url: URL<'a>,
     header_entries: headers::EntryList,
     header_buf: &'a [u8],
-    hostname: Option<&'a [u8]>,
     signals: Signals,
     async_http_id: u32,
     http_proxy: Option<URL<'a>>,
@@ -218,7 +217,6 @@ fn make_client<'a>(
         pending_h2: None,
         signals,
         async_http_id,
-        hostname,
         unix_socket_path: ZigStringSlice::EMPTY,
         tls_info: None,
     }
@@ -269,8 +267,6 @@ pub fn load_env(logger: &mut Log, env: &DotEnvLoader) {
 pub struct Options<'a> {
     pub http_proxy: Option<URL<'a>>,
     pub proxy_headers: Option<Headers>,
-    // PORT NOTE: Zig had `?[]u8` (mutable slice); only ever read, so `&[u8]` here.
-    pub hostname: Option<&'a [u8]>,
     pub signals: Option<Signals>,
     pub unix_socket_path: Option<ZigStringSlice>,
     pub disable_timeout: Option<bool>,
@@ -499,7 +495,6 @@ impl<'a> AsyncHTTP<'a> {
             // backing storage). `MultiArrayList` in Rust owns its allocation, so clone here.
             headers.clone().expect("OOM"),
             headers_buf,
-            options.hostname,
             signals,
             async_http_id,
             http_proxy.clone(),
@@ -585,11 +580,11 @@ impl<'a> AsyncHTTP<'a> {
     /// Construct an `AsyncHTTP` for a synchronous request driven via
     /// [`send_sync`].
     ///
-    /// Borrowed inputs (`url`, `headers_buf`, `request_body`, `http_proxy`,
-    /// `hostname`) are tied to lifetime `'a` and must outlive the returned
-    /// value — in practice they live on the calling stack frame and the
-    /// request is driven to completion via `send_sync` before that frame
-    /// returns (mirrors Zig `AsyncHTTP.initSync`).
+    /// Borrowed inputs (`url`, `headers_buf`, `request_body`, `http_proxy`)
+    /// are tied to lifetime `'a` and must outlive the returned value — in
+    /// practice they live on the calling stack frame and the request is driven
+    /// to completion via `send_sync` before that frame returns (mirrors Zig
+    /// `AsyncHTTP.initSync`).
     pub fn init_sync(
         method: Method,
         url: URL<'a>,
@@ -598,7 +593,6 @@ impl<'a> AsyncHTTP<'a> {
         response_buffer: *mut MutableString,
         request_body: &'a [u8],
         http_proxy: Option<URL<'a>>,
-        hostname: Option<&'a [u8]>,
         redirect_type: FetchRedirect,
     ) -> AsyncHTTP<'a> {
         Self::init(
@@ -613,7 +607,6 @@ impl<'a> AsyncHTTP<'a> {
             redirect_type,
             Options {
                 http_proxy,
-                hostname,
                 ..Options::default()
             },
         )
@@ -805,19 +798,9 @@ impl<'a> AsyncHTTP<'a> {
                     // Clone-owned (allocated after `ptr::read`).
                     drop(core::mem::take(&mut client.redirect));
                     drop(core::mem::take(&mut client.prev_redirect));
-                    if let Some(tunnel) = client.proxy_tunnel.take() {
-                        // SAFETY: tunnel was created by ProxyTunnel::start
-                        // (heap::alloc) and is refcounted; detach the socket
-                        // (the first half of the old `detach_and_deref`)
-                        // before releasing the clone's strong ref below.
-                        (*tunnel.as_ptr()).detach_socket();
-                        tunnel.deref();
-                    }
+                    client.close_proxy_tunnel(false);
                     debug_assert!(client.h2.is_none());
-                    if let Some(ctx) = client.custom_ssl_ctx.take() {
-                        // Release the strong ref the clone took in set_custom_ssl_ctx.
-                        ctx.deref();
-                    }
+                    drop(core::mem::take(&mut client.custom_ssl_ctx));
                     // `state` was `Default` at `ptr::read` time and was
                     // populated by the clone (`on_start` → `client.start`); it
                     // owns the decompressor / compressed_body buffers.

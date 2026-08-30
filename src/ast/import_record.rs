@@ -45,7 +45,7 @@ pub struct ImportRecord {
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Eq, PartialEq, Default, Debug)]
-    pub struct Flags: u16 {
+    pub struct Flags: u32 {
         /// True for the following cases:
         ///
         ///   try { require('x') } catch { handle }
@@ -91,6 +91,18 @@ bitflags::bitflags! {
 
         /// If a macro used <import>, it will be tracked here.
         const WAS_INJECTED_BY_MACRO = 1 << 10;
+
+        /// A split `require()` (code splitting, target bun): the target is a chunk
+        /// of its own; `path` is pointed at that chunk and the call is printed as
+        /// `import.meta.require(path)`.
+        ///
+        /// PORT NOTE (1a50bfa2c4): upstream assigns `1 << 10`, but that slot is
+        /// `WAS_INJECTED_BY_MACRO` on our baseline (the two commits live on
+        /// divergent upstream lines) and the remaining `u16` slots are all
+        /// taken, so the container widens to `u32` and this flag takes
+        /// `1 << 16`. The value is process-internal — no consumer keys on the
+        /// numeric bit.
+        const CROSS_CHUNK_REQUIRE = 1 << 16;
 
         /// If true, this import can be removed if it's unused
         const IS_EXTERNAL_WITHOUT_SIDE_EFFECTS = 1 << 11;

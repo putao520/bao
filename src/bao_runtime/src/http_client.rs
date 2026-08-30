@@ -83,7 +83,6 @@ pub fn http_request(
         response_buffer,
         body_slice,
         None, // http_proxy
-        None, // hostname
         FetchRedirect::Follow,
     );
 

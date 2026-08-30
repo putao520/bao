@@ -25,3 +25,12 @@ bun_alloc.workspace = true
 bun_core.workspace = true
 bun_core_macros.workspace = true
 
+[dev-dependencies]
+# Link-guidance only (not a test API dep): the lib-test binary links product
+# code whose scoped_log! path dispatches through bun_core's OutputSink[Sys]
+# link-interface; the Sys-arm definitions (`__bun_dispatch__OutputSink__Sys__*`,
+# emitted by link_impl_OutputSink! in bun_sys) live in bun_sys's rlib, so the
+# test target must have it on its link line. ref_count.rs `mod tests` carries
+# the force-link `use`.
+bun_sys.workspace = true
+
