@@ -1,7 +1,7 @@
 [package]
 name = "bao-servo-script-bindings"
 build = "build.rs"
-version = "0.5.4"
+version = "0.5.5"
 authors.workspace = true
 edition.workspace = true
 publish = true

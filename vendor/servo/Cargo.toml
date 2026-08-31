@@ -86,7 +86,7 @@ ed448-goldilocks = "=0.14.0-pre.15"
 k12 = "0.5"
 keccak = "0.2"
 x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
-script_webgpu = { package = "bao-servo-script-webgpu", path = "components/script_webgpu", version = "=0.5.4" }
+script_webgpu = { package = "bao-servo-script-webgpu", path = "components/script_webgpu", version = "=0.5.5" }
 servo-webvtt = { path = "components/webvtt", package = "bao-servo-webvtt", version = "=0.5.2" }
 cssparser = { version = "0.37", features = ["serde"] }
 ctr = { version = "0.10", features = ["zeroize"] }
@@ -335,7 +335,7 @@ zeroize = "1.8"
 # update the version requirements when bumping the workspace version.
 # Begin workspace-version dependencies - Don't change this comment, we grep for it in scripts!
 deny_public_fields = { package = "bao-servo-deny-public-fields", version = "=0.5.2", path = "components/deny_public_fields" }
-devtools = { package = "bao-servo-devtools", version = "=0.5.4", path = "components/devtools" }
+devtools = { package = "bao-servo-devtools", version = "=0.5.5", path = "components/devtools" }
 devtools_traits = { package = "bao-servo-devtools-traits", version = "=0.5.4", path = "components/shared/devtools" }
 dom_struct = { package = "bao-servo-dom-struct", version = "=0.5.2", path = "components/dom_struct" }
 embedder_traits = { package = "bao-servo-embedder-traits", version = "=0.5.4", path = "components/shared/embedder" }
@@ -343,22 +343,22 @@ fonts = { package = "bao-servo-fonts", version = "=0.5.4", path = "components/fo
 fonts_traits = { package = "bao-servo-fonts-traits", version = "=0.5.4", path = "components/shared/fonts" }
 hyper_serde = { package = "bao-servo-hyper-serde", version = "=0.5.2", path = "components/hyper_serde" }
 jstraceable_derive = { package = "bao-servo-jstraceable-derive", version = "=0.5.2", path = "components/jstraceable_derive" }
-layout = { package = "bao-servo-layout", version = "=0.5.3", path = "components/layout" }
+layout = { package = "bao-servo-layout", version = "=0.5.4", path = "components/layout" }
 layout_api = { package = "bao-servo-layout-api", version = "=0.5.4", path = "components/shared/layout" }
 malloc_size_of = { package = "bao-servo-malloc-size-of", version = "=0.5.3", path = "components/malloc_size_of" }
 media = { package = "bao-servo-media-thread", version = "=0.5.4", path = "components/media/media-thread" }
 metrics = { package = "bao-servo-metrics", version = "=0.5.4", path = "components/metrics" }
-net = { package = "bao-servo-net", version = "=0.5.4", path = "components/net" }
+net = { package = "bao-servo-net", version = "=0.5.5", path = "components/net" }
 net_traits = { package = "bao-servo-net-traits", version = "=0.5.4", path = "components/shared/net" }
 paint = { package = "bao-servo-paint", version = "=0.5.4", path = "components/paint" }
 paint_api = { package = "bao-servo-paint-api", version = "=0.5.4", path = "components/shared/paint" }
 pixels = { package = "bao-servo-pixels", version = "=0.5.4", path = "components/pixels" }
 profile = { package = "bao-servo-profile", version = "=0.5.4", path = "components/profile" }
 profile_traits = { package = "bao-servo-profile-traits", version = "=0.5.4", path = "components/shared/profile" }
-script = { package = "bao-servo-script", version = "=0.5.4", path = "components/script" }
-script_bindings = { package = "bao-servo-script-bindings", version = "=0.5.4", path = "components/script_bindings" }
+script = { package = "bao-servo-script", version = "=0.5.5", path = "components/script" }
+script_bindings = { package = "bao-servo-script-bindings", version = "=0.5.5", path = "components/script_bindings" }
 script_traits = { package = "bao-servo-script-traits", version = "=0.5.4", path = "components/shared/script" }
-servo = { version = "=0.5.3", path = "components/servo", default-features = false, package = "bao-servo" }
+servo = { version = "=0.5.4", path = "components/servo", default-features = false, package = "bao-servo" }
 servo-allocator = { version = "=0.5.2", path = "components/allocator", package = "bao-servo-allocator" }
 servo-background-hang-monitor = { version = "=0.5.4", path = "components/background_hang_monitor", package = "bao-servo-background-hang-monitor" }
 background_hang_monitor_api = { version = "=0.5.4", path = "components/shared/background_hang_monitor", package = "bao-servo-background-hang-monitor-api" }
@@ -369,7 +369,7 @@ servo-canvas = { version = "=0.5.4", path = "components/canvas", package = "bao-
 servo-canvas-traits = { version = "=0.5.4", path = "components/shared/canvas", package = "bao-servo-canvas-traits" }
 servo-config = { version = "=0.5.2", path = "components/config", package = "bao-servo-config" }
 servo-config-macro = { version = "=0.5.2", path = "components/config/macro", package = "bao-servo-config-macro" }
-servo-constellation = { version = "=0.5.4", path = "components/constellation", package = "bao-servo-constellation" }
+servo-constellation = { version = "=0.5.5", path = "components/constellation", package = "bao-servo-constellation" }
 servo-constellation-traits = { version = "=0.5.4", path = "components/shared/constellation", package = "bao-servo-constellation-traits" }
 servo-default-resources = { version = "=0.5.4", path = "components/default-resources", package = "bao-servo-default-resources" }
 servo-geometry = { version = "=0.5.3", path = "components/geometry", package = "bao-servo-geometry" }
