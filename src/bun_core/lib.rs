@@ -854,7 +854,6 @@ bun_dispatch::link_interface! {
         fn create_file(cwd: Fd, path: &[u8]) -> core::result::Result<Fd, Error>;
         fn quiet_writer_from_fd(fd: Fd) -> output::QuietWriter;
         fn quiet_writer_adapt(qw: output::QuietWriter, buf: *mut u8, len: usize) -> output::QuietWriterAdapter;
-        fn quiet_writer_flush(qw: &mut output::QuietWriter);
         fn quiet_writer_write_all(qw: &mut output::QuietWriter, bytes: &[u8]) -> bool;
         fn quiet_writer_fd(qw: &output::QuietWriter) -> Fd;
         fn tty_winsize(fd: Fd) -> Option<Winsize>;
@@ -3974,7 +3973,6 @@ mod test_output_sink {
                 }
                 adapted
             },
-            quiet_writer_flush(_qw) => {},
             quiet_writer_write_all(qw, bytes) => fd_write_all_quiet(qw_fd(qw), bytes),
             quiet_writer_fd(qw) => qw_fd(qw),
             tty_winsize(fd) => fd_tty_winsize(fd),

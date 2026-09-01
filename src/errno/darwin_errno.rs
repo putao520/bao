@@ -5,7 +5,8 @@ pub use crate::posix::mode_t as Mode;
 
 #[repr(u16)]
 #[derive(
-    Copy, Clone, Eq, PartialEq, Hash, Debug, strum::IntoStaticStr, strum::EnumString, enum_map::Enum,
+    Copy, Clone, Eq, PartialEq, Hash, Debug, strum::IntoStaticStr, strum::EnumString, strum::FromRepr,
+    enum_map::Enum,
 )]
 pub enum SystemErrno {
     SUCCESS = 0,
@@ -115,10 +116,12 @@ pub enum SystemErrno {
     ENOTRECOVERABLE = 104,
     EOWNERDEAD = 105,
     EQFULL = 106,
+    /// Not a kernel errno: the `from_raw` result for an undeclared code.
+    EUNKNOWN = 107,
 }
 
 impl SystemErrno {
-    pub const MAX: u16 = 107;
+    pub const MAX: u16 = 108;
 }
 
 #[allow(non_upper_case_globals)]

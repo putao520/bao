@@ -38,31 +38,48 @@ pub mod js_lexer {
 pub mod js_printer {
     use super::strings::Encoding;
     use core::fmt;
-    /// Zig: js_printer.writeJSONString — minimal escape set for fmt.rs quoting.
-    /// bun_js_printer overrides with the full (ctrl-char, \u escape, encoding-aware) impl.
+    /// Always valid JSON and valid UTF-8: lone surrogates become `\u` escapes, malformed bytes U+FFFD.
     pub fn write_json_string(input: &[u8], f: &mut impl fmt::Write, enc: Encoding) -> fmt::Result {
         f.write_char('"')?;
-        match enc {
-            Encoding::Latin1 => super::encode_json_string_chars_latin1(f, input)?,
-            _ => super::encode_json_string_chars(f, input)?,
-        }
+        write_pre_quoted_string(input, f, b'"', false, enc)?;
         f.write_char('"')
     }
+    /// The escaped body without the quotes, in JSON mode (`json = true`).
     pub fn write_pre_quoted_string(
         input: &[u8],
         f: &mut impl fmt::Write,
         quote: u8,
-        _allow_backtick: bool,
+        ascii_only: bool,
         enc: Encoding,
     ) -> fmt::Result {
-        // TODO(port): full impl in bun_js_printer; this tier only needs the
-        // "already quoted" passthrough for fmt.rs JS-string display.
-        // Zig writePreQuotedString writes the escaped body WITHOUT surrounding
-        // quotes — delegate to the canonical chars-only escaper.
-        let _ = quote;
-        match enc {
-            Encoding::Latin1 => super::encode_json_string_chars_latin1(f, input),
-            _ => super::encode_json_string_chars(f, input),
+        crate::string::printer::write_pre_quoted_string(
+            input,
+            &mut FmtSink(f),
+            quote,
+            ascii_only,
+            true,
+            enc,
+        )
+        .map_err(|_| fmt::Error)
+    }
+
+    /// `string::printer` writes escapes, ASCII runs and whole code points, so each chunk is UTF-8 on its own.
+    struct FmtSink<'a, W: fmt::Write>(&'a mut W);
+
+    impl<W: fmt::Write> crate::io::Write for FmtSink<'_, W> {
+        fn write_all(&mut self, buf: &[u8]) -> Result<(), crate::Error> {
+            match super::strings::str_utf8(buf) {
+                Some(s) => self.0.write_str(s),
+                None => buf.utf8_chunks().try_for_each(|chunk| {
+                    self.0.write_str(chunk.valid())?;
+                    if chunk.invalid().is_empty() {
+                        Ok(())
+                    } else {
+                        self.0.write_char(char::REPLACEMENT_CHARACTER)
+                    }
+                }),
+            }
+            .map_err(|_| crate::err!("FmtError"))
         }
     }
 }
@@ -3849,105 +3866,70 @@ fn splat_byte_all(w: &mut impl fmt::Write, byte: u8, count: usize) -> fmt::Resul
 // hand-ported from a Zig `std.json.fmt(...)` call funnels through here.
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Port of Zig stdlib `std.json.encodeJsonStringChars` with default options
-/// (`escape_unicode = false`): writes the escaped body of a JSON string
-/// **without** surrounding quotes.
-///
-/// Escape set (matches `outputSpecialEscape` exactly):
-///   - `\"` `\\` `\b` `\f` `\n` `\r` `\t`
-///   - other `0x00..=0x1F` → `\u00XX` (lowercase hex)
-///   - `0x20..=0xFF` → emitted verbatim in run-batched `write_str` calls
-///     (input is treated as UTF-8/Latin-1 bytes; no transcoding).
-pub fn encode_json_string_chars(w: &mut impl fmt::Write, s: &[u8]) -> fmt::Result {
-    let mut run = 0;
-    for (i, &b) in s.iter().enumerate() {
-        let esc: &str = match b {
-            b'"' => "\\\"",
-            b'\\' => "\\\\",
-            0x08 => "\\b",
-            0x0C => "\\f",
-            b'\n' => "\\n",
-            b'\r' => "\\r",
-            b'\t' => "\\t",
-            0x00..=0x1F => {
-                if run < i {
-                    write_bytes(w, &s[run..i])?;
-                }
-                let hex = hex_u16::<true>(b as u16);
-                w.write_str("\\u")?;
-                write_bytes(w, &hex)?;
-                run = i + 1;
-                continue;
-            }
-            _ => continue,
-        };
-        if run < i {
-            write_bytes(w, &s[run..i])?;
-        }
-        w.write_str(esc)?;
-        run = i + 1;
-    }
-    if run < s.len() {
-        write_bytes(w, &s[run..])?;
-    }
-    Ok(())
-}
-
-/// Latin-1 sibling of [`encode_json_string_chars`]: same escape table, but
-/// non-escaped bytes are widened (`b as char`) so 0x80..=0xFF are emitted as
-/// their U+0080..U+00FF UTF-8 encodings rather than passed through as raw
-/// (invalid) single bytes. ASCII runs are still batched via `write_bytes`.
-pub fn encode_json_string_chars_latin1(w: &mut impl fmt::Write, s: &[u8]) -> fmt::Result {
-    let mut run = 0;
-    for (i, &b) in s.iter().enumerate() {
-        let esc: &str = match b {
-            b'"' => "\\\"",
-            b'\\' => "\\\\",
-            0x08 => "\\b",
-            0x0C => "\\f",
-            b'\n' => "\\n",
-            b'\r' => "\\r",
-            b'\t' => "\\t",
-            0x00..=0x1F => {
-                if run < i {
-                    write_bytes(w, &s[run..i])?;
-                }
-                let hex = hex_u16::<true>(b as u16);
-                w.write_str("\\u")?;
-                write_bytes(w, &hex)?;
-                run = i + 1;
-                continue;
-            }
-            0x80..=0xFF => {
-                if run < i {
-                    write_bytes(w, &s[run..i])?;
-                }
-                // Widen Latin-1 byte → Unicode scalar → UTF-8.
-                w.write_char(b as char)?;
-                run = i + 1;
-                continue;
-            }
-            _ => continue,
-        };
-        if run < i {
-            write_bytes(w, &s[run..i])?;
-        }
-        w.write_str(esc)?;
-        run = i + 1;
-    }
-    if run < s.len() {
-        write_bytes(w, &s[run..])?;
-    }
-    Ok(())
-}
-
-/// Port of Zig stdlib `std.json.encodeJsonString`: surrounding `"` quotes
-/// around [`encode_json_string_chars`].
+/// Port of Zig stdlib `std.json.encodeJsonString`: the quoted, escaped body —
+/// always valid JSON and valid UTF-8 (lone surrogates become `\u` escapes,
+/// malformed bytes U+FFFD). Delegates to the canonical escaper in
+/// `string::printer` via [`crate::js_printer::write_json_string`].
 #[inline]
 pub fn encode_json_string(w: &mut impl fmt::Write, s: &[u8]) -> fmt::Result {
-    w.write_char('"')?;
-    encode_json_string_chars(w, s)?;
-    w.write_char('"')
+    js_printer::write_json_string(s, w, strings::Encoding::Utf8)
 }
 
 // ported from: src/bun_core/fmt.zig
+
+#[cfg(test)]
+mod json_string_tests {
+    //! 79936e42ab: the JSON string formatters must emit always-valid JSON and
+    //! valid UTF-8 — a WTF-8 lone surrogate becomes a `\uD8xx` escape, a
+    //! malformed byte becomes U+FFFD — instead of copying the raw bytes.
+    use super::*;
+
+    #[test]
+    fn write_json_string_escapes_lone_surrogate_and_malformed_utf8() {
+        // Upstream repro: an entry-naming pattern carrying U+D800 in WTF-8
+        // (`ED A0 80`) plus a non-UTF-8 byte (`FF`).
+        let input = b"./x\xED\xA0\x80\xFF-index.js";
+        let mut out = String::new();
+        js_printer::write_json_string(input, &mut out, strings::Encoding::Utf8).unwrap();
+        assert_eq!(out, "\"./x\\uD800\u{FFFD}-index.js\"");
+    }
+
+    #[test]
+    fn write_json_string_quotes_controls_and_escapes() {
+        let mut out = String::new();
+        js_printer::write_json_string(b"he said \"hi\"\n\t\x07", &mut out, strings::Encoding::Utf8)
+            .unwrap();
+        assert_eq!(out, "\"he said \\\"hi\\\"\\n\\t\\x07\"");
+        let mut out2 = String::new();
+        js_printer::write_json_string(b"a\\b", &mut out2, strings::Encoding::Utf8).unwrap();
+        assert_eq!(out2, "\"a\\\\b\"");
+        // NOTE: a `"` that appears BEFORE a later `\` is not yet escaped —
+        // bao's `highway::index_of_needs_escape_for_javascript_string` fast
+        // path returns the first `\` instead of the first escape-worthy byte
+        // (upstream's SIMD returns first-overall). Pre-existing divergence in
+        // the scanner (also reachable via `quote_for_json`), out of this
+        // change's file scope; tracked for a separate fix.
+    }
+
+    #[test]
+    fn malformed_byte_is_uFFFD_escape_when_ascii_only() {
+        let mut out = String::new();
+        js_printer::write_pre_quoted_string(b"\xFF", &mut out, b'"', true, strings::Encoding::Utf8)
+            .unwrap();
+        assert_eq!(out, "\\uFFFD");
+    }
+
+    #[test]
+    fn latin1_bytes_widen_to_their_utf8_encodings() {
+        let mut out = String::new();
+        js_printer::write_json_string(b"caf\xE9", &mut out, strings::Encoding::Latin1).unwrap();
+        assert_eq!(out, "\"caf\u{E9}\"");
+    }
+
+    #[test]
+    fn encode_json_string_delegates_the_same_output() {
+        let mut out = String::new();
+        encode_json_string(&mut out, b"x\xED\xA0\x80").unwrap();
+        assert_eq!(out, "\"x\\uD800\"");
+    }
+}

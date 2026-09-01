@@ -739,14 +739,9 @@ impl<'a> JSON5Parser<'a> {
                 buf.push(0);
             }
             b'x' => {
-                // \xHH hex escape
-                let value = self
-                    .source
-                    .get(self.pos..self.pos + 2)
-                    .and_then(|s| bun_core::fmt::hex_pair_value(s[0], s[1]))
-                    .ok_or(ParseError::InvalidHexEscape)?;
-                self.pos += 2;
-                append_codepoint_to_utf8(buf, i32::from(value))?;
+                // \xHH hex escape (2 hex digits fit in 8 bits, cast is lossless)
+                let value = self.read_hex_digits(2, ParseError::InvalidHexEscape)?;
+                append_codepoint_to_utf8(buf, value as i32)?;
             }
             b'u' => {
                 // \uHHHH unicode escape
@@ -1050,10 +1045,21 @@ impl<'a> JSON5Parser<'a> {
     // ── Helper Functions ──
 
     fn read_hex4(&mut self) -> Result<i32, ParseError> {
-        let v = bun_core::fmt::parse_hex4(&self.source[self.pos..])
-            .ok_or(ParseError::InvalidUnicodeEscape)?;
-        self.pos += 4;
-        Ok(i32::from(v))
+        // 4 hex digits fit in 16 bits, cast is lossless
+        let v = self.read_hex_digits(4, ParseError::InvalidUnicodeEscape)?;
+        Ok(v as i32)
+    }
+
+    /// Reads exactly `count` hex digits at `pos`. On failure `pos` is left on
+    /// the first byte that is not a hex digit (or at EOF), so the reported
+    /// error location points at the offending character.
+    fn read_hex_digits(&mut self, count: usize, err: ParseError) -> Result<u32, ParseError> {
+        let (value, consumed) = bun_core::fmt::parse_hex_prefix(&self.source[self.pos..], count);
+        self.pos += consumed;
+        if consumed < count {
+            return Err(err);
+        }
+        Ok(value)
     }
 
     fn read_codepoint(&self) -> Option<Codepoint> {
@@ -1162,5 +1168,46 @@ mod stack_check_tests {
             Err(e) => e,
         };
         assert_eq!(err, ExternalError::StackOverflow);
+    }
+}
+
+#[cfg(test)]
+mod escape_error_location_tests {
+    //! d578a8c70d: a bad `\xHH` / `\uHHHH` escape must report the position of
+    //! the first byte that is NOT a hex digit (or EOF), not the first digit.
+    use super::*;
+    use bun_ast::StoreResetGuard;
+
+    fn error_position(source_text: &[u8]) -> (i32, i32) {
+        bun_ast::initialize_store();
+        let _store_scope = StoreResetGuard::new();
+        let mut log = Log::init();
+        let source = Source::init_path_string_owned("escape-loc.json5", source_text.to_vec());
+        let bump = Bump::new();
+        let _ = JSON5Parser::parse(&source, &mut log, &bump);
+        assert_eq!(log.errors, 1, "source: {:?}", bstr::BStr::new(source_text));
+        let location = log.msgs[0].data.location.as_ref().expect("location");
+        (location.line, location.column)
+    }
+
+    #[test]
+    fn hex_and_unicode_escape_errors_point_at_offending_character() {
+        // Columns are 1-based; the caret must land on the marked character.
+        let cases: &[(&[u8], i32)] = &[
+            (b"{ a: \"\\u12G4\" }", 11),         // G
+            (b"{ a: \"\\x1G\" }", 10),           // G
+            (b"{ a: \"\\u41\" }", 11),           // closing quote
+            (b"{ a: \"\\x\" }", 9),              // closing quote
+            (b"{ a: \"\\uD83D\\uDE0Z\" }", 18),  // Z (low half of surrogate pair)
+            (b"{ \\u00G1: 1 }", 7),              // G (identifier escape)
+        ];
+        for (source, column) in cases {
+            assert_eq!(
+                error_position(source),
+                (1, *column),
+                "source: {:?}",
+                bstr::BStr::new(source)
+            );
+        }
     }
 }

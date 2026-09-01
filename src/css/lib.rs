@@ -450,43 +450,31 @@ pub enum Token {
 
 impl core::fmt::Display for Token {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Minimal rendering for error messages. The full Zig `Token.format`
-        // (CSS serialization) lives in `css_parser.rs` via `serializer::*`.
-        use bstr::BStr;
-        match self {
-            Token::Ident(v)
-            | Token::Function(v)
-            | Token::AtKeyword(v)
-            | Token::UnrestrictedHash(v)
-            | Token::IdHash(v)
-            | Token::QuotedString(v)
-            | Token::BadString(v)
-            | Token::UnquotedUrl(v)
-            | Token::BadUrl(v)
-            | Token::Whitespace(v)
-            | Token::Comment(v) => {
-                write!(f, "{}", BStr::new(v))
-            }
-            Token::Delim(c) => write!(f, "{}", char::from_u32(*c).unwrap_or('\u{FFFD}')),
-            Token::Number(n) => write!(f, "{}", n.value),
-            Token::Percentage { unit_value, .. } => write!(f, "{}%", *unit_value * 100.0),
-            Token::Dimension(d) => write!(f, "{}{}", d.num.value, BStr::new(d.unit)),
-            Token::Cdo => f.write_str("<!--"),
-            Token::Cdc => f.write_str("-->"),
-            Token::IncludeMatch => f.write_str("~="),
-            Token::DashMatch => f.write_str("|="),
-            Token::PrefixMatch => f.write_str("^="),
-            Token::SuffixMatch => f.write_str("$="),
-            Token::SubstringMatch => f.write_str("*="),
-            Token::Colon => f.write_str(":"),
-            Token::Semicolon => f.write_str(";"),
-            Token::Comma => f.write_str(","),
-            Token::OpenSquare => f.write_str("["),
-            Token::CloseSquare => f.write_str("]"),
-            Token::OpenParen => f.write_str("("),
-            Token::CloseParen => f.write_str(")"),
-            Token::OpenCurly => f.write_str("{"),
-            Token::CloseCurly => f.write_str("}"),
-        }
+        self.to_css_generic(&mut bun_io::FmtAdapter::new(f))
+            .map_err(|_| core::fmt::Error)
+    }
+}
+
+#[cfg(test)]
+mod token_display_tests {
+    //! 1beee7ae72: parse errors print tokens as CSS. `Display` must render
+    //! the token the way it appears in source (`@x`, `#x`, `"x"`, `url(x)`,
+    //! `foo(`), not the bare payload.
+    use super::*;
+
+    #[test]
+    fn display_prints_tokens_as_css() {
+        assert_eq!(Token::AtKeyword(b"x").to_string(), "@x");
+        assert_eq!(Token::IdHash(b"x").to_string(), "#x");
+        assert_eq!(Token::UnrestrictedHash(b"x").to_string(), "#x");
+        assert_eq!(Token::QuotedString(b"x").to_string(), "\"x\"");
+        assert_eq!(Token::UnquotedUrl(b"x").to_string(), "url(x)");
+        assert_eq!(Token::Function(b"foo").to_string(), "foo(");
+        assert_eq!(Token::Ident(b"div").to_string(), "div");
+        assert_eq!(Token::Delim(b'@' as u32).to_string(), "@");
+        // A bad-string token ends at the newline, so it prints with no
+        // closing quote; a bad-url keeps its `url(` prefix.
+        assert_eq!(Token::BadString(b"x").to_string(), "\"x");
+        assert_eq!(Token::BadUrl(b"x").to_string(), "url(x)");
     }
 }
