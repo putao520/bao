@@ -328,6 +328,12 @@ cargo nextest run --cargo-profile test-ci -p <crate> -E '<filterset>'
 
 > 执行 #30 S0-A capability census，并在同一轮继续实现 #24 的第一个 interrupt/cancellation 最小闭环；不得在 census/plan 阶段结束。
 
+### 2026-09-02 / daily-ops live 轮
+
+**代码改动**：无 SM slice——本轮工程预算用于上游吸收批次 1（bun 5 项 correctness，commit `c0a09301`）；file_lock MCP 已恢复（09-01 回归清除），本程序启动阻塞解除。
+
+**下一唯一动作**：沿袭 2026-09-01 bootstrap 裁决——S0-A capability census + 同轮 #24 interrupt/cancellation 最小闭环，不得以 census 结束。
+
 ---
 
 ## 9. 最终完成定义

@@ -153,7 +153,8 @@ Do not assume these are bugs; they are audit anchors:
 - Bun upstream baseline must be read from `.claude/upstream-baseline.json` at execution time; do not freeze the value here.
 
 ### Completed slices
-None yet.
+
+- 2026-09-02 (daily-ops live): taxonomy applied to the standing 2026-08-30 triage backlog — the 39 items judged "absorb" are re-labeled DIRECT-ABSORB (no re-triage). Batch 1 landed in commit `c0a09301`: bd630c1d7e (errno: out-of-table kernel errno → EUNKNOWN, in-crate transmute count now 0), 79936e42ab (JSON string formatters escape lone surrogates / malformed UTF-8), d578a8c70d (json5 escape errors point at the offending character), 77d916c56e (scoped debug log single write(2)), 1beee7ae72 (CSS tokens printed as CSS in parse errors). Verification: scoped nextest over the 6 touched crates — 127 run / 127 passed / 1 skipped / 0 failed. Backlog 58 → 53; 85 further bun commits in-window remain untriaged (nine-way taxonomy mandatory for them). Adjacent pre-existing divergence registered, out of batch scope: `src/highway` `index_of_needs_escape_for_javascript_string` fast path returns the first `\` before an earlier quote char (upstream SIMD returns first-overall; reachable via `quote_for_json` today).
 
 ### BCE residual
 Unknown until B0 census.
