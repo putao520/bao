@@ -2,7 +2,7 @@
 name = "bun_zstd"
 # 0.1.1 (2026-08-19): pub list_ptr/list fields now ChanVec<u8>
 # (channel-portable Vec identity, core 0.1.2).
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
