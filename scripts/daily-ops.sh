@@ -79,13 +79,21 @@ rm -f "$RUNDIR/inbox-raw.json"
 # command 用 node 绝对路径 spawn——服务 PATH 无 nvm,字面 "node" 启动失败即工具集缺 file_lock)
 # 2026-09-01 加固:插件缓存目录由自动更新器并发写入,原 "sort -V | tail -1" 可能选中刚落盘的坏版本
 # (当日 06:08 选中 6.8.1618——携带 spec-tools 顶层加载 ReferenceError 的切割版,加载即崩 → MCP 零挂载
-#  → 按无头约束 fail-closed 整轮降级只读)。修复:30 分钟稳定窗 + initialize 握手探测,失败逐级回退。
+#  → 按无头约束 fail-closed 整轮降级只读)。修复:30 分钟稳定窗 + 两段握手探测,失败逐级回退。
+# 探针两段断言(上游 gsc ISSUE #23「initialize 假绿」类:initialize 正常返回 serverInfo 但
+# tool registry 全灭——initialize-only 探针对该类恒过,回退永不触发,必须拦截):
+# ① id=1 initialize 响应须含 serverInfo;② id=2 tools/list 响应的 result.tools 须非空且含
+#   file_lock(会话启动硬依赖,无 file_lock 即 fail-closed 降级)——缺任一/超时/无响应均判
+#   该候选坏,回退下一候选。捕获上限 200000B(68 工具的 tools/list 响应远超 400B,截断会误杀)。
 probe_bootstrap() {
   local candidate="$1" resp
   [ -f "$candidate" ] || return 1
-  resp="$((printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"dailyops-probe","version":"0"}}}'; sleep 3) \
-    | timeout 6 "$NODE_BIN" "$candidate" 2>/dev/null | head -c 400 || true)"
-  printf '%s' "$resp" | command grep -q '"serverInfo"'
+  resp="$((printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"dailyops-probe","version":"0"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+sleep 4) | timeout 8 "$NODE_BIN" "$candidate" 2>/dev/null | head -c 200000 || true)"
+  printf '%s' "$resp" | jq -e 'select(.id == 1) | .result.serverInfo != null' >/dev/null 2>&1 || return 1
+  printf '%s' "$resp" | jq -e 'select(.id == 2) | .result.tools | length > 0 and any(.[]; .name == "file_lock")' >/dev/null 2>&1
 }
 BOOTSTRAP=""
 if [ -z "$NODE_BIN" ]; then
