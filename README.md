@@ -1,46 +1,116 @@
 # Bao (包子)
 
-**A high-performance anti-fingerprint browser runtime in a single Rust stack** — SpiderMonkey (JS engine) + Servo (full browser engine) + always-on Node.js/Bun API compatibility + built-in Stealth, in one Rust runtime. No Chromium, no Node child process, no automation bridge: the browser engine *is* the runtime.
+**An embeddable programmable JS/TS system runtime for Rust applications.**
+
+Bao combines SpiderMonkey, Rust-native Node.js/Bun-compatible system APIs, Servo Web Runtime, CDP compatibility, and Stealth in one library. The goal is **not** to build another Node/Bun replacement or another browser automation product. The goal is to give a Rust application a programmable execution layer for dynamic logic, automation, workflows, plugins, and Agent-generated programs — while the Rust host keeps ownership of resources, lifecycle, and product boundaries.
+
+**The browser is a capability of the runtime, not the product.** A task can stay in normal JS/TS for files, HTTP, crypto, SQLite, modules, and application logic, then enter a real Web/DOM runtime only when the job actually needs a page.
 
 **[中文文档](./README.zh-CN.md)** · Status: **0.x alpha** — Linux x86_64 · APIs may change · [CHANGELOG](./CHANGELOG.md)
 
 ---
 
+## Why Bao exists
+
+A Rust product often wants two things at the same time:
+
+1. a stable, strongly owned native core; and
+2. a fast-changing programmable layer for rules, automation, plugins, workflows, and AI-generated task logic.
+
+A tiny embedded expression engine is often too small once scripts need files, networking, modules, crypto, databases, async I/O, or Web APIs. Starting a separate Node service works, but it moves state, lifecycle, packaging, permissions, and failures across a process boundary.
+
+Bao explores a different shape:
+
+```text
+Rust application
+│
+├── stable native core
+│   ├── resources / state
+│   ├── scheduling
+│   ├── permissions
+│   └── performance-sensitive code
+│
+└── Bao programmable layer
+    ├── JS / TS control flow
+    ├── Node/Bun-style system APIs
+    ├── HTTP / filesystem / crypto / SQLite / ...
+    ├── Web / DOM runtime when needed
+    └── CDP compatibility boundary
+```
+
+For Agent workloads, this means the model does not have to turn every deterministic step into a separate tool call. It can generate a short program, let normal language constructs (`for`, `try/catch`, `Promise.all`, modules, streams, etc.) carry local control flow, and return to the model when a real decision is needed.
+
+Bao is **runtime infrastructure**, not an Agent framework: it does not try to own planning, memory, tool registries, or long-running workflow products.
+
+## What Bao is — and is not
+
+| If your main problem is... | Usually start with... | Where Bao fits |
+|---|---|---|
+| A standalone JavaScript/TypeScript server or CLI | Node.js / Bun | Bao is not trying to replace them as executable runtimes. |
+| Pure browser automation with maximum Chromium compatibility | Playwright + Chromium | Bao is interesting when Web is one capability inside a larger Rust-hosted execution environment. |
+| A small embedded rule/expression language | Rhai or another small scripting engine | Bao is intentionally much heavier because it aims to provide a full system runtime, not just expressions. |
+| A compact isolated plugin ABI | WASM may be a better fit | Bao focuses on a familiar JS/TS programming environment with rich system/Web capabilities; a complete untrusted-code sandbox is not finished. |
+| A Rust product that needs rich dynamic scripting, automation, or Agent execution close to application state | **Bao** | This is the problem Bao is designed to explore. |
+
+QuickJS and other embeddable JS engines solve an important lower-level problem: embedding JavaScript. Bao starts one layer higher — the difficult part is not only evaluating JS, but providing the system APIs, async runtime semantics, Web runtime, lifecycle, compatibility, and host-controlled execution model that real application scripts quickly need.
+
+## The library advantage
+
+Bao is intended to be **linked into the Rust product**, rather than treated as a separate service that the product has to orchestrate.
+
+That distinction matters when you want the host to keep control of:
+
+- task and runtime lifecycle;
+- permissions and resource ownership;
+- application state and native objects;
+- threads and scheduling;
+- files, sockets, database connections, and page handles;
+- cancellation, shutdown, and error propagation.
+
+The long-term direction is to make application capabilities programmable without forcing every low-level operation to become a remote tool or RPC. Node/Bun compatibility, Servo, CDP, and Stealth are building blocks toward that goal, not the product definition by themselves.
+
 ## Using the library
 
-**Package name vs import name (read this first):** the crate is published as
-**`bao-core`**, the library name is pinned to **`bao`** — your `Cargo.toml`
-says `bao-core`, your code says `use bao::…`:
+**Package name vs import name:** the crate is published as **`bao-core`**, while the library name is **`bao`**. Your `Cargo.toml` says `bao-core`; your Rust code says `use bao::…`.
 
 ```toml
 [dependencies]
-bao-core = "0.1.0"
+bao-core = "0.1.5"
 ```
 
 ```rust
-use bao::{BaoConfig, BaoRuntime};   // ← `bao`, not `bao_core`
+use bao::{BaoConfig, BaoRuntime};
 ```
 
-### Integration path 1 — embed the browser (primary)
+### Entry 1 — Node/Bun-style system runtime without a page
 
-Top-level `BaoRuntime` → `create_page` → `navigate` → JS → screenshot
-(snippet adapted from `examples/01-browser` in the repository):
+If you need the system-runtime surface without creating a browser page, Bao re-exports the `bun_runtime` host under:
+
+```rust
+bao::runtime::*
+```
+
+This is the path for Node/Bun-style modules and system APIs when Web/DOM is not part of the task.
+
+> **Two `BaoRuntime` types currently exist:** `bao::runtime::BaoRuntime` is the Node/Bun API host, while top-level `bao::BaoRuntime` is the unified browser coordinator. This naming is an alpha-era API constraint and may evolve.
+
+### Entry 2 — add Web/DOM when the task needs it
+
+Top-level `BaoRuntime` gives the Rust host access to Servo pages. The important point is that Web capability stays inside the same Bao stack rather than requiring a Node → Playwright → Chromium sidecar chain.
 
 ```rust,no_run
 use std::time::Duration;
 use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig, PageState, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
-    // One runtime = servo + SpiderMonkey + built-in CDP/Node/Stealth.
     let runtime = BaoRuntime::new(BaoConfig::default())?;
     let page = runtime.create_page(&PageConfig::default())?;
 
     page.navigate("https://example.com")?;
-    // Hard servo constraint: wait for the pipeline before evaluating,
-    // or you risk SIGSEGV.
+    // Current Servo lifecycle constraint: wait for the pipeline before evaluating.
     page.wait_for_pipeline_ready(Duration::from_secs(30))?;
 
-    // Page Realm: Web API only (no require/fs here).
+    // Page Realm: Web API only — no require/fs.
     let title = page.evaluate_js_web("document.title")?;
 
     let png = page.take_screenshot(ScreenshotFormat::Png)?;
@@ -50,47 +120,9 @@ fn main() -> Result<(), BrowserError> {
 }
 ```
 
-### Integration path 2 — CDP automation (Playwright-style)
+### Entry 3 — trusted system script + DOM in one task
 
-Start the CDP server from library config — `BaoConfig::cdp_port` — then
-connect the Playwright-style client in-process (zero-copy, no port) or over
-WebSocket:
-
-```rust,no_run
-use bao::{BaoConfig, BaoRuntime, Browser, BrowserError, ConnectError};
-
-fn start_runtime_with_cdp() -> Result<(), BrowserError> {
-    // cdp_port starts the built-in CDP server on ws://127.0.0.1:<port>.
-    let _runtime = BaoRuntime::new(BaoConfig {
-        cdp_port: Some(9222),
-        ..BaoConfig::default()
-    })?;
-    Ok(())
-}
-
-fn connect() -> Result<(), ConnectError> {
-    // In-process transport — or "ws://127.0.0.1:9222" (Playwright/Puppeteer
-    // can point at the same URL).
-    let mut browser = Browser::connect("memory://bao")?;
-    let _version = browser.version()?;   // CDP Browser.version
-    let _targets = browser.pages()?;     // equivalent of GET /json/list
-    Ok(())
-}
-```
-
-**Pump contract** — servo-domain CDP commands (`Runtime.evaluate`,
-`Page.navigate`, …) execute on the runtime thread and need the main
-thread to drive it: call `runtime.pump_cdp(Duration)` in a loop, or use
-the `run()` loop form. Protocol-domain commands (`Browser.version`,
-`pages()`) need no pumping. An unpumped servo-domain command times out
-honestly after 2s — it never returns a fake value.
-
-### Integration path 3 — Node/Bun APIs inside the page (dual realm)
-
-`page.evaluate_js` runs in the **Node Realm**: the same global scope has the
-DOM *and* `require` / `fs` / `fetch` / `Bun` / `process` (`Bao` is an alias
-of the same `Bun` object). Snippet adapted from `examples/03-node-dom` /
-`examples/04-crawler`:
+`page.evaluate_js` runs in Bao's **Node Realm**. A host-triggered trusted script can use DOM together with Node/Bun-style system APIs:
 
 ```rust,no_run
 # use std::time::Duration;
@@ -101,101 +133,108 @@ of the same `Bun` object). Snippet adapted from `examples/03-node-dom` /
 #     page.navigate("https://example.com")?;
 #     page.wait_for_pipeline_ready(Duration::from_secs(30))?;
 let script = r#"
-    const h1 = document.querySelector('h1')?.textContent ?? "(none)"; // DOM (servo)
-    const fs  = require('fs');                                         // Node API (Bao)
+    const h1 = document.querySelector('h1')?.textContent ?? "(none)";
+    const fs = require('fs');
     const txt = fs.readFileSync('demo.txt', 'utf8');
-    const res = await fetch('https://example.com/robots.txt');        // Node fetch
+    const res = await fetch('https://example.com/robots.txt');
     JSON.stringify({ h1, txt, status: res.status })
 "#;
-let json = page.evaluate_js(script)?;   // Node Realm — Web + Node/Bun in one scope
+let json = page.evaluate_js(script)?;
 let _ = json;
 #     Ok(())
 # }
 ```
 
-For Node/Bun host setup without a page, the `bun_runtime` surface is
-re-exported at `bao::runtime::` (see the trap note below).
+The page's own JavaScript does **not** get those system capabilities. Bao separates the normal Page Realm from the host-controlled Node Realm; putting `fs` on arbitrary page `window` objects would defeat the security boundary.
 
-### ⚠ Same-name trap: two `BaoRuntime` types
+### Entry 4 — CDP automation compatibility
 
-`bao::runtime::BaoRuntime` (the Node/Bun API host from `bun_runtime`) is
-**not** the top-level `bao::BaoRuntime` (the browser coordinator). Rule of
-thumb, straight from `src/bao/src/lib.rs`:
+Bao also exposes a CDP server and a Playwright-style Rust client. The same client abstraction can connect in-process through `memory://bao` or over WebSocket.
 
-> *browser embedding → use the top-level `bao::BaoRuntime`;
-> Node/Bun host setup → use `bao::runtime::`*.
+```rust,no_run
+use bao::{BaoConfig, BaoRuntime, Browser, BrowserError, ConnectError};
 
-### Hard constraints & prerequisites (be aware before you start)
+fn start_runtime_with_cdp() -> Result<(), BrowserError> {
+    let _runtime = BaoRuntime::new(BaoConfig {
+        cdp_port: Some(9222),
+        ..BaoConfig::default()
+    })?;
+    Ok(())
+}
 
-- **JSContext is thread-local.** DOM ↔ Node.js interop must happen on the
-  creating thread. Passing `JSObject` pointers across threads corrupts the
-  activation stack → SIGSEGV. Cross-thread, pass `PageId` / handles /
-  serialized data only. Same rule for skipping
-  `wait_for_pipeline_ready()` before evaluating.
-- **The full stack is always linked — there are no Cargo feature toggles**
-  for browser/CDP/stealth/Node. Behaviour is selected at *runtime*
-  (`StealthProfile`, `Permission` guards).
-- **First build compiles SpiderMonkey from source** (clang, python3, make
-  required; expect 20–40 min once — cached afterwards).
-- **Linux media playback needs system GStreamer runtime libraries** — the
-  servo media stack (`bao-servo-media-auto` on Linux) loads them at
-  runtime: `apt install libgstreamer1.0-0 gstreamer1.0-plugins-base
-  gstreamer1.0-plugins-bad` (or your distro's equivalent; `-dev` packages
-  are a compile-time concern only).
-- **Rust nightly toolchain required** — the repo pins
-  `nightly-2026-07-20` (see `rust-toolchain.toml`); rustup consumers run
-  `rustup override set nightly-2026-07-20` or equivalent. Stable fails
-  with E0554 (`#![feature]` on a non-nightly compiler).
-- **Disk & build time** — the first build compiles SpiderMonkey from
-  source with symbols downgraded to line-tables (`-gdwarf-4 -g1`, shipped
-  in the `bao-mozjs-sys` build since the DWARF downgrade): the SM objects
-  land at **~284 MB** (roughly 6× smaller than full DWARF; single
-  translation units shrink ~83%). Expect **~20–40 min** for the first
-  build and a target-dir peak in the **single-digit GBs, not tens of GB**.
-  Requires `bao-core` ≥ 0.0.3 (its dependency closure locks
-  `bao-mozjs-sys` 140.13.0-6, where the downgrade ships).
-  Consumers who want their own crates leaner can add
-  `[profile.dev] debug = "line-tables-only"`.
-- **Environment variables**: `BUN_*` is honoured, and `BAO_<SUFFIX>` is
-  aliased onto `BUN_<SUFFIX>` at startup (e.g. `BUN_BUNFIG` ≡ `BAO_BUNFIG`).
-- **macOS is not yet proven on hardware.** The compile surface is mac-ready
-  (kqueue event loop + per-target C build matrix landed; see
-  [docs/build-macos.md](./docs/build-macos.md) for the exact status matrix,
-  where a cross-build stops today, and the real-machine verification
-  checklist) — but no build, link, or test run has happened on Apple
-  hardware yet. Linux x86_64 is the only verified platform.
+fn connect() -> Result<(), ConnectError> {
+    let mut browser = Browser::connect("memory://bao")?;
+    let _version = browser.version()?;
+    let _targets = browser.pages()?;
+    Ok(())
+}
+```
 
-## Capability matrix
+**Pump contract:** Servo-domain CDP commands (`Runtime.evaluate`, `Page.navigate`, …) execute on the runtime thread and currently need the host to drive that thread with `runtime.pump_cdp(Duration)` or the `run()` loop. Protocol-only commands such as `Browser.version` and `pages()` do not. An unpumped Servo-domain command times out instead of returning fake success.
 
-| Area | What you get |
+CDP support is a compatibility boundary, not a claim that Bao is Chrome. Method coverage, event ordering, object lifecycle, and Playwright assumptions are still being tested and expanded.
+
+## Current capability stack
+
+| Layer | What Bao provides |
 |---|---|
-| Browser engine | Servo DOM/CSS/layout/render, multi-page `PagePool` / `PageHandle`, screenshots |
-| JS engine | SpiderMonkey, thread-local JSContext, dual realms (Web / Node+Bun) |
-| Node/Bun API | `require`, `fs`, `http`, `crypto`, `bun:sqlite`, `fetch`, `Bun.*` (= `Bao.*`), always on |
-| CDP | Server started via `BaoConfig::cdp_port` (`ws://…`, Playwright/Puppeteer compatible) + Playwright-style Rust client (`Browser::connect("memory://bao" \| ws URL)`) |
-| Stealth | TLS JA3/JA4, HTTP/2, Canvas/WebGL/Audio/Navigator/behavior fingerprints; runtime `StealthProfile` |
+| Programmable language | SpiderMonkey-based JavaScript runtime; TS/tooling support is part of the broader runtime direction |
+| System runtime | Node/Bun-style modules and APIs: `require`, filesystem, HTTP/fetch, crypto, `bun:sqlite`, process/runtime primitives, and related Rust-native building blocks |
+| Web runtime | Servo DOM/CSS/layout/rendering, multi-page `PagePool` / `PageHandle`, screenshots |
+| Realm boundary | Page Realm for site code; host-controlled Node Realm for trusted system scripts |
+| Automation compatibility | Built-in CDP surface + Playwright-style Rust client, including `memory://bao` in-process transport |
+| Stealth | TLS/HTTP and browser-visible fingerprint controls through runtime `StealthProfile` configuration |
+
+## Important current limitations
+
+Bao is still **0.x alpha**. In particular:
+
+- Linux x86_64 is the only fully verified platform today.
+- Node/Bun, Web, and CDP compatibility are substantial but not complete; handler/API existence is not treated as proof of semantic compatibility.
+- Realm separation is **not** a finished arbitrary-untrusted-code sandbox. Fine-grained capability, quota, audit, and stronger isolation work is still ongoing.
+- `JSContext` is thread-local. Never pass `JSObject` / GC pointers across threads; cross-thread paths must use ids, handles, owned messages, or serialized data and execute JS back on the owning thread.
+- The full stack is currently always linked; there are no Cargo product features that remove browser/CDP/Stealth/Node layers. Runtime configuration selects behavior.
+- The first build compiles SpiderMonkey from source and is intentionally heavier than a small scripting crate.
+- Rust nightly is currently required; the repository pins the supported toolchain.
+- macOS has compile-surface work but has not yet completed real-hardware build/link/test validation.
+
+These trade-offs are deliberate for the current phase: Bao is first trying to make one integrated runtime behaviorally reliable before turning every subsystem into an optional matrix.
+
+## Build prerequisites
+
+- clang, python3, make (SpiderMonkey build)
+- the repository-pinned Rust nightly toolchain
+- Linux media playback requires the appropriate system GStreamer runtime libraries
+
+The first SpiderMonkey build is cached afterwards. See repository build documentation for the current toolchain, platform, and media details.
 
 ## Package family on crates.io
 
-`bao-core` is the package you depend on; everything below it is published
-for direct use when you need a slice:
+`bao-core` is the consumer-facing facade. The published family also exposes lower-level pieces for users who need a specific slice:
 
 | Package | Role |
 |---|---|
-| `bao-core` | Unified facade — the integration surface in this README |
+| `bao-core` | Unified library facade |
 | `bao-engine` / `bun-sm` | SpiderMonkey engine layer |
+| `bun-runtime` | Node.js/Bun-style system runtime host |
+| `bun-*` | Rust-native base layers: HTTP, resolver, install, crypto-related plumbing, bundler pieces, etc. |
 | `bao-browser` | Servo embedding: `BaoRuntime`, `PagePool`, `PageHandle` |
-| `bao-stealth` | Anti-fingerprint engine + `StealthProfile` |
-| `bao-cdp` / `bao-cdp-client` | CDP server surface / Playwright-style client |
-| `bun-runtime` | Node.js/Bun API compatibility host |
-| `bun-*` | Base layer (base64, zlib, http, dns, resolver, transpiler, …) |
-| `bao-mozjs`, `bao-mozjs-sys` (+ `bao-mozjs-src-*`), `bao-servo-*`, `bao-stylo`, `bao-ipc-channel` | Maintained forks vendored as first-class packages |
+| `bao-cdp` / `bao-cdp-client` | CDP server surface / Playwright-style Rust client |
+| `bao-stealth` | Stealth engine + `StealthProfile` |
+| `bao-mozjs`, `bao-mozjs-sys`, `bao-mozjs-src-*`, `bao-servo-*`, `bao-stylo`, `bao-ipc-channel` | Maintained runtime/browser dependency family |
+
+## Project direction
+
+Bao is being developed around a simple question:
+
+> **Can a Rust application expose a rich, familiar, programmable execution environment without giving up native ownership — and can that same layer become useful for Agent-generated programs as well as human-written scripts?**
+
+That is why the project cares as much about lifecycle, error semantics, event-loop fairness, Realm boundaries, cancellation, compatibility, GC ownership, and host safety as it does about adding API names.
 
 ## License
 
-MPL-2.0 (SpiderMonkey + Servo) · MIT (Bun-derived crates). See
-`LICENSE-MPL-2.0` / `LICENSE-MIT` and `THIRD_PARTY_LICENSES.md`.
+MPL-2.0 (SpiderMonkey + Servo) · MIT (Bun-derived crates). See `LICENSE-MPL-2.0`, `LICENSE-MIT`, and `THIRD_PARTY_LICENSES.md`.
 
 ---
 
-*Developing the repository itself: clone [putao520/bao](https://github.com/putao520/bao); the `examples/` directory contains the four runnable samples these snippets are adapted from.*
+*Developing the repository itself: clone [putao520/bao](https://github.com/putao520/bao). The `examples/` directory contains runnable integration examples.*
