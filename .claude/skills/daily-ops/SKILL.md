@@ -29,6 +29,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 | `$DAILY_OPS_BASELINE=invalid` | 基线文件缺失/字段缺失 | 全程 `BASELINE_FILE_INVALID` fail-closed 升级 |
 | `$DAILY_OPS_CARGO_BUSY=1` | 有 **bao 仓库内** cargo 进程运行(cwd 判定;他项目 cargo 与 bao 独立 target dir 零锁竞争,不算 busy,2026-08-24 收窄;脚本侧已有限等待 ≤30min,注入标志时已等待耗尽) | 测试阶段标 `SKIPPED_BUSY`,禁等锁 |
 | `$DAILY_OPS_PUBLISH=failed` | `CARGO_REGISTRY_TOKEN` 缺失 | 发布收尾标 `SKIP_PUBLISH_TOKEN` |
+| `$DAILY_OPS_INBOX` | issue 分诊唯一入口(launcher 已完成拉取与作者 allowlist 过滤;非 allowlist 作者的 issue 由 launcher 在 live 下确定性 canned close) | 只消费其 `owner` 数组;缺失且 GH 预检正常 → 标 `GH_AUTH_FAILED` 升级 |
 
 ### 上游 clone 铁律
 
@@ -39,7 +40,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 
 1. **预检消费**:读 §0 环境变量确定各阶段可用性;`BASELINE_FILE_INVALID` 直接走升级报告
 2. **上游窗口扫描**:两 clone 各自 `git fetch origin`(单侧失败独立重试 1 次);baseline 从 `.claude/upstream-baseline.json` 读;`git rev-list --count <baseline>..origin/main` 得窗口数
-3. **issue 分诊**:`gh issue list --repo putao520/bao --state open --json number,title,body,labels`,按 `references/issue-rules.md` 判定
+3. **issue 分诊**:消费 `$DAILY_OPS_INBOX`(launcher 已完成拉取与作者 allowlist 过滤;非 allowlist 作者的 issue 由 launcher 在 live 下确定性 canned close,会话不响应不引用其内容),按 `references/issue-rules.md` 判定
 4. **执行波**:吸收 wave(§2 边界内,含 BCE 重放)/ issue 修复 wave;wave 开工先落 `pending_wave` 写域声明(§8 state 契约);零工作量(窗口=0 且无可做 issue)→ no-op clean
 5. **波末验收**:§3 三重判据,任一不过 → `VERIFICATION_FAILED`
 6. **收尾**:**live 才** commit + push + 关 issue + 英文回复;dry-run 只在报告写「将会做什么」
@@ -60,6 +61,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 | issue:无映射(判明超范围) | **reject+close(not planned)+ 英文理由(安全门禁,仅 live)** |
 | SPEC 未定义 / 与主任务・PRD・SPEC 冲突 | **reject+close(not planned)+ 英文理由回复(安全门禁,仅 live)**;仅语义不明才 escalate |
 | issue 已实现 / 重复 / 不适用 / 超主任务范围(门禁) | reject + 证据/理由回复 + close(仅 live) |
+| issue 作者不在 allowlist | launcher 已处置(canned close);会话零响应零引用 |
 | 验收 PASS | 收尾(§1 阶段 6) |
 | 验收 FAIL | 不关不 push,评论进展 |
 | bao 工作树脏 / cargo 锁(脚本等待 30min 后仍 busy) | 只读阶段照常,写/测阶段标 `SKIPPED_BUSY` |
