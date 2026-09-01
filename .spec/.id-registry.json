@@ -275,6 +275,13 @@
             8
           ],
           "deleted": []
+        },
+        "DEPLOY": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
         }
       }
     },

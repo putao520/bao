@@ -59,7 +59,9 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 | issue:SPEC 有 REQ 映射 + 范围内 | 修复 wave(C-E-W-V;scope 任意,触 vendor 按 upstream-daily.md §3 安全协议) |
 | issue/吸收:mozjs 跨版本升级 | **自主(长任务协议 SKILL.md §9)**:单轮 7 天预算,耗尽 escalate |
 | issue:无映射(判明超范围) | **reject+close(not planned)+ 英文理由(安全门禁,仅 live)** |
-| SPEC 未定义 / 与主任务・PRD・SPEC 冲突 | **reject+close(not planned)+ 英文理由回复(安全门禁,仅 live)**;仅语义不明才 escalate |
+| SPEC 未定义 + 新能力/特性诉求(范围扩张) | **reject+close(not planned)+ 英文理由回复(安全门禁,仅 live)** |
+| SPEC 未定义 + **消费者缺陷报告**(已发布/已交付能力在某环境不工作) | **escalate 用户裁决,禁 reject**(宪法:SPEC 未定义=停止报告用户;先例:#10 musl 误拒教训 2026-09-01,目标矩阵类事项裁决权在用户) |
+| 与主任务・PRD・SPEC 冲突 | reject+close(not planned)+ 英文理由回复(安全门禁,仅 live);仅语义不明才 escalate |
 | issue 已实现 / 重复 / 不适用 / 超主任务范围(门禁) | reject + 证据/理由回复 + close(仅 live) |
 | issue 作者不在 allowlist | launcher 已处置(canned close);会话零响应零引用 |
 | 验收 PASS | 收尾(§1 阶段 6) |
