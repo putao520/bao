@@ -1,0 +1,836 @@
+{
+  "version": 1,
+  "generated_from": "2026-09-02 目录级 diff",
+  "scope_note": "覆盖 workspace 全部成员(cargo metadata workspace_members=98:79 显式 members 数组 + 19 路径依赖自动成员);src/ 下非成员目录 4 个(codegen/node-fallbacks/string/tcc_sys)收编于顶层 non_member_domains 节",
+  "notes": [
+    "mirror = 与上游 bun(/home/putao/code/rust/bun/src/)同名目录,上游基线见 .claude/upstream-baseline.json",
+    "own = Bao 自有实现(17 bao_* + bun_sm + cdp-server + collections_macros);fork_sys = lsquic_sys(vendored lsquic C 库)",
+    "divergence 仅登记 registered_debts(.plans/bun-evolution.md)等已实证分歧;未登记一律 none,禁编造",
+    "publish 按 crates.io 实查(curl 带 UA,HTTP 200 且 repository=putao520/bao);bao_bin/bao_cli 恒 false(既定不发布裁决;crates.io 的 bao_bin 为无关同名 crate oconnor663/bao,非本项目)",
+    "non_member_domains 分类实证:codegen 38 文件中 37 与上游逐字节同(1 上游独有);node-fallbacks 32 文件中 31 同(仅 events.js 差);tcc_sys lib.rs/tcc.rs 与上游同(1 上游独有 tcc.zig)且 crates.io 404 未发布;string 目录为空(上游 10 个 Zig 文件),域已 own-ref 分叉"
+  ],
+  "crates": [
+    {
+      "dir": "src/bao",
+      "package": "bao-core",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_engine",
+      "package": "bao_engine",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_engine_macros",
+      "package": "bao_engine_macros",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_crypto",
+      "package": "bao_crypto",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_runtime",
+      "package": "bun_runtime",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_workflow_host",
+      "package": "bao_workflow_host",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_browser",
+      "package": "bao-browser",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_cli",
+      "package": "bao_cli",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": false
+    },
+    {
+      "dir": "src/bao_bundler",
+      "package": "bao_bundler",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_bin",
+      "package": "bao_bin",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": false
+    },
+    {
+      "dir": "src/bao_cdp",
+      "package": "bao_cdp",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_cdp_client",
+      "package": "bao_cdp_client",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_boringssl_bridge",
+      "package": "bao_boringssl_bridge",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_stealth",
+      "package": "bao_stealth",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_native_stubs",
+      "package": "bao_native_stubs",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_uloop",
+      "package": "bao_uloop",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bao_lints",
+      "package": "bao_lints",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bun_sm",
+      "package": "bun_sm",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/jsc_macros",
+      "package": "bun_jsc_macros",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/jsc_macros",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/opaque",
+      "package": "bun_opaque",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/opaque",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bun_alloc",
+      "package": "bun_alloc",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/bun_alloc",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bun_core",
+      "package": "bun_core",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/bun_core",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bun_output_tags",
+      "package": "bun_output_tags",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/bun_output_tags",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bun_core_macros",
+      "package": "bun_core_macros",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/bun_core_macros",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/ptr",
+      "package": "bun_ptr",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/ptr",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/wyhash",
+      "package": "bun_wyhash",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/wyhash",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/dispatch",
+      "package": "bun_dispatch",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/dispatch",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/errno",
+      "package": "bun_errno",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/errno",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/threading",
+      "package": "bun_threading",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/threading",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/io",
+      "package": "bun_io",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/io",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/resolve_builtins",
+      "package": "bun_resolve_builtins",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/resolve_builtins",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/glob",
+      "package": "bun_glob",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/glob",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/parsers",
+      "package": "bun_parsers",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/parsers",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/base64",
+      "package": "bun_base64",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/base64",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/safety",
+      "package": "bun_safety",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/safety",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/shell_parser",
+      "package": "bun_shell_parser",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/shell_parser",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/exe_format",
+      "package": "bun_exe_format",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/exe_format",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/which",
+      "package": "bun_which",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/which",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/perf",
+      "package": "bun_perf",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/perf",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/sha_hmac",
+      "package": "bun_sha_hmac",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/sha_hmac",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/url",
+      "package": "bun_url",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/url",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/hash",
+      "package": "bun_hash",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/hash",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/highway",
+      "package": "bun_highway",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/highway",
+      "divergence": "快路径 index_of_needs_escape_for_javascript_string 返回较早引号字符后的首个反斜杠,上游 SIMD 返回全串首个(经 quote_for_json 可达);registered_debts 登记 2026-09-02(.plans/bun-evolution.md)",
+      "publish": true
+    },
+    {
+      "dir": "src/brotli",
+      "package": "bun_brotli",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/brotli",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/zstd",
+      "package": "bun_zstd",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/zstd",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/zlib",
+      "package": "bun_zlib",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/zlib",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/spawn",
+      "package": "bun_spawn",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/spawn",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/picohttp",
+      "package": "bun_picohttp",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/picohttp",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/router",
+      "package": "bun_router",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/router",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/windows_sys",
+      "package": "bun_windows_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/windows_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/dotenv",
+      "package": "bun_dotenv",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/dotenv",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/watcher",
+      "package": "bun_watcher",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/watcher",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/md",
+      "package": "bun_md",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/md",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/crash_handler",
+      "package": "bun_crash_handler",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/crash_handler",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/clap",
+      "package": "bun_clap",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/clap",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/clap_macros",
+      "package": "bun_clap_macros",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/clap_macros",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/install_types",
+      "package": "bun_install_types",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/install_types",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/options_types",
+      "package": "bun_options_types",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/options_types",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/platform",
+      "package": "bun_platform",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/platform",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/ast",
+      "package": "bun_ast",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/ast",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/js_parser",
+      "package": "bun_js_parser",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/js_parser",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/js_printer",
+      "package": "bun_js_printer",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/js_printer",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/http",
+      "package": "bun_http",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/http",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/http_types",
+      "package": "bun_http_types",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/http_types",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/event_loop",
+      "package": "bun_event_loop",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/event_loop",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/sql",
+      "package": "bun_sql",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/sql",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/s3_signing",
+      "package": "bun_s3_signing",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/s3_signing",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/sourcemap",
+      "package": "bun_sourcemap",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/sourcemap",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/semver",
+      "package": "bun_semver",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/semver",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/resolver",
+      "package": "bun_resolver",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/resolver",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/paths",
+      "package": "bun_paths",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/paths",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/sys",
+      "package": "bun_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/collections",
+      "package": "bun_collections",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/collections",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/collections_macros",
+      "package": "bun_collections_macros",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/install",
+      "package": "bun_install",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/install",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/output",
+      "package": "bun_output",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/output",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/transpiler",
+      "package": "bun_transpiler",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/transpiler",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/lsquic_sys",
+      "package": "bun_lsquic_sys",
+      "origin": "fork_sys",
+      "upstream_path": "https://github.com/litespeedtech/lsquic (LiteSpeed QUIC/HTTP3 C 库,vendored 于 src/lsquic_sys/csrc)",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/lolhtml_sys",
+      "package": "bun_lolhtml_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/lolhtml_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/analytics",
+      "package": "bun_analytics",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/analytics",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/api",
+      "package": "bun_api",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/api",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/boringssl",
+      "package": "bun_boringssl",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/boringssl",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/boringssl_sys",
+      "package": "bun_boringssl_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/boringssl_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bundler",
+      "package": "bun_bundler",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/bundler",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/bunfig",
+      "package": "bun_bunfig",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/bunfig",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/cares_sys",
+      "package": "bun_cares_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/cares_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/cdp-server",
+      "package": "cdp-server",
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/css",
+      "package": "bun_css",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/css",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/css_derive",
+      "package": "bun_css_derive",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/css_derive",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/dns",
+      "package": "bun_dns",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/dns",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/libarchive",
+      "package": "bun_libarchive",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/libarchive",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/libuv_sys",
+      "package": "bun_libuv_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/libuv_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/mimalloc_sys",
+      "package": "bun_mimalloc_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/mimalloc_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/simdutf_sys",
+      "package": "bun_simdutf_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/simdutf_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/spawn_sys",
+      "package": "bun_spawn_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/spawn_sys",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/standalone_graph",
+      "package": "bun_standalone_graph",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/standalone_graph",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/uws",
+      "package": "bun_uws",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/uws",
+      "divergence": "none",
+      "publish": true
+    },
+    {
+      "dir": "src/uws_sys",
+      "package": "bun_uws_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/uws_sys",
+      "divergence": "none",
+      "publish": true
+    }
+  ],
+  "non_member_domains": [
+    {
+      "dir": "src/codegen",
+      "package": null,
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/codegen",
+      "divergence": "none",
+      "publish": false,
+      "member": false
+    },
+    {
+      "dir": "src/node-fallbacks",
+      "package": null,
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/node-fallbacks",
+      "divergence": "none",
+      "publish": false,
+      "member": false
+    },
+    {
+      "dir": "src/string",
+      "package": null,
+      "origin": "own",
+      "upstream_path": null,
+      "divergence": "String 域自研 own-ref(分叉起点 bc713f9543;src/string 目录已清空,实现迁 Bao 自有):上游 97420a74fb StringImpl 跨线程 atom 表、3e8b2e6b1e Utf8Bytes/EncodedSlice lifetime 化(244 文件)均登记不吸收;台账出处 .claude/upstream-baseline.json(bun.notes 2026-08-31 窗口)与 .claude/daily-ops/reports/2026-08-26.md escalation_ledger",
+      "publish": false,
+      "member": false
+    },
+    {
+      "dir": "src/tcc_sys",
+      "package": "bun_tcc_sys",
+      "origin": "mirror",
+      "upstream_path": "~/code/rust/bun/src/tcc_sys",
+      "divergence": "none",
+      "publish": false,
+      "member": false
+    }
+  ]
+}

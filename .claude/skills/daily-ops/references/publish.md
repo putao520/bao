@@ -7,6 +7,11 @@ daily-ops §1 阶段 8(发布收尾)的操作细则。**前置四条件(缺一�
 - **变更闭包**:本波被触 crate 的 workspace 依赖闭包(`cargo metadata` 计算),闭包内逐 crate patch bump(fix/absorb 语义)
 - **CLI 永不发布**:`bao_bin` / `bao_cli` 为既定裁决不发布,不在闭包内
 - **版本号唯一性**:已用号禁复用;失败重试靠新 patch 号,或同号幂等(先 curl registry 查验已上库则跳过)
+- **sibling 精确下限(用户裁决 2026-09-02)**:
+  - 裁定精神:**始终最新版本优先并适配**,无低版本匹配义务——不为兼容 registry 上的旧 sibling 而压低自家新 API
+  - 规则:发布闭包内**消费同波 sibling 新 API** 的 crate,其对 sibling 的版本 req 下限必须**=引入该 API 的版本**(实例:bun_sys→bun_core `"0.1.10"`)。识别与落实:发布 dry-run 的 link 失败(符号/link 宏缺失)即该 req 下限不足的自动信号,据此 bump 下限;发布拓扑序仍保留,仅作波内时序保障,不替代精确下限
+  - 追溯:2026-09-02 闭包中 bun_sys 0.1.6 消费了同波 bun_core 0.1.10 的新 `quiet_writer_write_all`(当时沿袭宽松 caret + 拓扑序交付)——**下一轮 daily-ops 发布闭包须重发 bun_sys 0.1.7,其 bun_core req 下限收紧为 `"0.1.10"`**
+- **manifest metadata 补全(2026-09-02 登记)**:下一轮发布闭包顺带为 5 个包(`bao_bundler` / `bao_engine` / `bao_workflow_host` / `bun_runtime` / `bun_sm`)的 Cargo.toml 补 `repository` 字段并 patch bump 重发——经 crates.io `/owners` 实证均属 putao520,但 manifest 缺该字段,registry 页面无源码指向;补全后以 `GET /api/v1/crates/<pkg>/versions` 最新版 `repository` = `https://github.com/putao520/bao` 复核收口
 
 ## cargo 发布序
 

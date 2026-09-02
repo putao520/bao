@@ -79,7 +79,6 @@ members = [
     "src/install",
     "src/output",
     "src/transpiler",
-    "src/bun_sm",
     "src/lsquic_sys",
     "src/lolhtml_sys",
 ]

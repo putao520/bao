@@ -65,6 +65,13 @@ cd ~/code/tools/servo && git fetch origin && git log --oneline <BASELINE>..origi
 
 C/Zig 文件:非 Rust 但 Bao 有对应 C 源(packages/bun-usockets 等)时仍可吸收;servo 的 .ini/WPT 测试期望默认跳过。
 
+### Provenance 门禁(分诊前置,强制)
+
+对照 `.claude/crate-provenance.json`(crate 来源 SSOT):
+
+1. **mirror 且 divergence≠none 的 crate 禁 DIRECT-ABSORB**——必须走**分歧核对**(patch 重放到分叉面是否仍成立 / 与自有实现语义对照),核对结论写入 triage 记录后才可吸收;跳过核对直接吸收 = 违规(会静默覆盖已登记分叉)
+2. **闭包与吸收涉面(含 non_member_domains)必须已登记**:凡进入发布闭包的 crate、或本次吸收触及的目录域(含 `.claude/crate-provenance.json` 顶层 `non_member_domains` 非成员域),若不在 provenance 清单中,先补登记(目录 diff + origin 判定 + crates.io 实查)再发布/再吸收,禁发布或吸收未登记域——门禁判定源统一为该清单
+
 ## 3. 派工吸收(并行 implementer,合同模板)
 
 每个 E 的 prompt 必含(scope/completion/retry/stop),核心结构:
