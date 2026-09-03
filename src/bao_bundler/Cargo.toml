@@ -1,10 +1,11 @@
 [package]
 name = "bao_bundler"
 # 0.1.1 (2026-08-19): no_mangle __force_link_entry single-owner (6f515eab); non-closure, lead-approved.
-version = "0.1.7"
+version = "0.1.8"
 description = "SpiderMonkey CYCLEBREAK bridge for bun_bundler — provides SM-backed link-time symbols and dispatch interfaces"
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/putao520/bao"
 
 [dependencies]
 # Core dependency: reuse ALL bundler logic, only provide SM implementations

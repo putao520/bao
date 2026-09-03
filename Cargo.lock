@@ -2058,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "bao_bundler"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bao_engine",
  "bun_alloc",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2216,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "bao_workflow_host"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3431,7 +3431,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3592,7 +3592,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3728,7 +3728,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sys"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",

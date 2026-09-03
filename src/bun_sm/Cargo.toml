@@ -2,10 +2,11 @@
 name = "bun_sm"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. spawn watch loop-alive + exit double-dispatch root fix.
-version = "0.1.9"
+version = "0.1.10"
 description = "SpiderMonkey-backed API compatibility layer replacing bun_jsc"
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/putao520/bao"
 
 [dependencies]
 # NOTE: bun_sm is the bottom layer — it does NOT depend on bao_engine.

@@ -1,6 +1,6 @@
 [package]
 name = "bun_sys"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
@@ -24,7 +24,9 @@ enum-map.workspace = true
 libc.workspace = true
 bitflags.workspace = true
 bun_alloc.workspace = true
-bun_core.workspace = true
+# sibling 精确下限(用户裁决 2026-09-02):0.1.6 消费 bun_core 0.1.10 的
+# quiet_writer_write_all;workspace 定义被 10+ crate 共用,故 inline 收紧。
+bun_core = { path = "../bun_core", version = "0.1.10" }
 bun_errno.workspace = true
 bun_paths.workspace = true
 bun_windows_sys.workspace = true
