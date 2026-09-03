@@ -474,6 +474,10 @@ impl JsContext {
         // CLI mode: get or init the process-wide JSEngine, then create a Runtime.
         let handle = ensure_engine_handle()?;
         let runtime = mozjs::rust::Runtime::new(handle);
+        // Fresh JSContext on this thread — reset the interrupt-callback
+        // install tracker so the new context installs its own callback (a
+        // recycled context address must never skip the install).
+        crate::execution_control::on_runtime_created();
 
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
             message: "Runtime::new failed to set CONTEXT TLS".into(),
@@ -587,6 +591,9 @@ impl JsContext {
 
         let engine_handle = ensure_engine_handle_locked()?;
         let runtime = mozjs::rust::Runtime::new(engine_handle);
+        // Fresh JSContext on this thread — reset the interrupt-callback
+        // install tracker (see init_runtime).
+        crate::execution_control::on_runtime_created();
 
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
             message: "Runtime::new failed to set CONTEXT TLS".into(),
@@ -649,6 +656,12 @@ impl JsContext {
         unsafe {
             mozjs::gc::RootedTraceableSet::clear();
         }
+
+        // 0b. The JSContext is about to be destroyed — drop the
+        //     interrupt-callback install tracker so a later context on this
+        //     thread (possibly at a recycled address) installs a fresh
+        //     callback instead of skipping on a stale address match.
+        crate::execution_control::on_context_destroyed();
 
         // 1. Drop Runtime — calls JS_DestroyContext, clears mozjs CONTEXT TLS.
         RUNTIME_TLS.with(|tls| {

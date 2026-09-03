@@ -18,6 +18,7 @@ mod dispatch_sm_tests;
 mod engine_core_tests;
 mod error_handling_tests;
 mod es_advanced_features_tests;
+mod execution_control_tests;
 mod host_fn_tests;
 mod job_queue_context_tests;
 mod js_context_fusion_tests;

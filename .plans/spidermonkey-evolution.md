@@ -55,12 +55,12 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 
 ### 当前明确缺口
 
-- Bao 源码未发现 `JS_RequestInterruptCallback` 接入；
-- 未形成 Bao Stencil/XDR script cache；
+- ~~Bao 源码未发现 `JS_RequestInterruptCallback` 接入~~ → 2026-09-04 已落地最小闭环：`src/bao_engine/src/execution_control.rs`（JS_AddInterruptCallback once-per-JSContext + owner 线程 armed 栈 + thread-safe cancel + deadline watcher + TerminalState + reset 防污染；内部试验面，S1 继续统一到全部 eval 入口与 scheduler）；
+- 未形成 Bao Stencil/XDR script cache（binding 已具备 Stencil wrappers，见 ledger）；
 - 未发现 Realm-native locale/timezone override 的 Bao 侧使用；
-- CDP Debugger 仍未证明由 SM 原生 debugger/script/frame/object facts 驱动；
+- CDP Debugger 仍未证明由 SM 原生 debugger/script/frame/object facts 驱动（JS::Debugger binding 缺失，bun_sm::debugger 为 emulated CRUD）；
 - GC/rooting 中仍有 intentional leak / `mem::forget` / foreign-thread fail-safe 路径，需量化；
-- mozjs upgrade 已有 patch replay，但没有 JSAPI capability drift/adoption ledger。
+- mozjs upgrade 已有 patch replay + capability ledger（`.claude/sm-capability-ledger.json`，2026-09-04 首轮 #30 census）；drift 自动化（升级波 diff 报告）待下次 mozjs 前移时首跑。
 
 ### Upstream
 
@@ -227,32 +227,43 @@ SET EXACT NEXT ACTION
 
 ---
 
-## 5. SpiderMonkey capability inventory（初始种子，待 #30 变成机器生成）
+## 5. SpiderMonkey capability inventory（2026-09-04 #30 S0-A 真实 census 数据）
 
-| Capability | 当前判断 | Bao 当前状态 | 目标 | Issue |
-|---|---|---|---|---|
-| JSEngine / JSContext ownership | Public embedding core | native | 收口生命周期 | #23/#29 |
-| Realm | Public | native/partial mapping | 显式 topology | #23 |
-| Compartment | Public | 待审计 | 裁决隔离边界 | #23 |
-| Zone | Public/internal embedding surface | 待审计 | 裁决 GC topology | #23/#29 |
-| Realm locale override | Public/current ref 待绑定 | missing | engine-native Stealth | #28 |
-| Realm timezone override | Public/current ref 待绑定 | missing | engine-native Stealth | #28 |
-| debugger visibility | Public options/patch-related | partial | unified policy | #27/#28 |
-| JIT preserve/options | Public options/current ref 待绑定 | unknown | benchmark-based policy | #28 |
-| SharedMemory/Atomics/SAB policy | Realm creation options | unknown | explicit capability policy | #28 |
-| Embedder JobQueue | Public | native | scheduler contract | #25 |
-| Interrupt callback/request | Public | missing | timeout/cancel | #24 |
-| Stencil | Experimental | missing | internal cache first | #26 |
-| Stencil/XDR | Experimental/internal mix | missing | persistent cache if proven | #26 |
-| Off-thread compile | Public/experimental mix | unknown | threshold-based use | #26 |
-| Debugger/script/frame/object facts | mixed | partial/unknown | typed adapter | #27 |
-| Memory/GC observability | mixed | partial/unknown | soak metrics | #27/#29 |
-| Rooting APIs | Public | native | complete ledger | #29 |
-| Structured Clone | Public | unknown/Servo-used | audit later | #30 |
-| WebAssembly engine controls | Public | unknown | audit relevance | #30 |
-| Principals/security hooks | Public | unknown | audit relevance | #30/#20 |
+机器 ledger SSOT：`.claude/sm-capability-ledger.json`（55 capabilities / 13 domains，逐项
+symbol/header/stability/bao_status/code_refs/issue/last_audited=2026-09-04）。本表只保留
+Domain summary（数字来自 ledger，禁手工漂移）。
 
-注意：本表不是完成证明。#30 建立机器 ledger 后，本表只保留 Domain summary。
+| Domain | capabilities | used-native | wrapped | emulated | engine-internal | missing | deliberately-unused |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| runtime/context/realm/compartment/zone | 8 | 4 | — | — | — | 3 | 1 |
+| compile/stencil/module/xdr/cache | 7 | 3 | — | — | — | 4 | — |
+| jobs/promise/event-loop | 2 | 2 | — | — | — | — | — |
+| interrupt/cancellation | 4 | — | 2 | — | 1 | — | 1 |
+| debugger/profiling/memory | 8 | 1 | — | 1 | — | 5 | 1 |
+| GC/rooting/heap/weak-refs | 6 | 3 | — | — | 1 | 2 | — |
+| structured-clone/serialization | 1 | 1 | — | — | — | — | — |
+| wasm | 2 | — | — | — | 1 | — | 1 |
+| intl/locale/timezone | 3 | — | — | — | 1 | 2 | — |
+| shared-memory/atomics | 3 | 1 | — | — | 1 | 1 | — |
+| principals/security/options | 3 | — | — | — | 1 | 2 | — |
+| embedding-hooks/callbacks | 7 | 3 | — | — | — | 4 | — |
+| core-value/object-surface（基础面汇总条目） | 1 | 1 | — | — | — | — | — |
+| **合计** | **55** | **19** | **2** | **1** | **6** | **23** | **4** |
+
+关键事实修正（相对 2026-09-01 种子表）：
+
+- Interrupt：种子表 `missing` → **wrapped**（本轮 #24 最小闭环，`src/bao_engine/src/execution_control.rs`）。
+- Stencil：种子表「待绑定」→ mozjs binding **已具备** 10 个 Stencil wrappers
+  （`jsapi2_wrappers.in.rs:330-341`，CompileGlobalScriptToStencil/Instantiate/DecodeStencil 等），
+  bao 侧零调用——#26 是纯接入工作，无 binding 阻塞。
+- Debugger：JS::Debugger C++ API 在 mozjs rust binding **不可达**（bun_sm/src/debugger.rs 自述），
+  CDP Debugger 复用受 binding 阻塞（emulated 现状）→ #27 需先裁决 binding 扩展 vs adapter 自持。
+- Structured Clone / RealmOptions / SetPromiseRejectionTracker / SAB realm flag：种子表
+  unknown → **used-native**（node_worker_threads / node_realm_options / uncaught.rs / global_object.rs）。
+- Principals/security：zero 使用——Page/Node 隔离目前靠 object-level（分 global），非 principal-level。
+- mozjs baseline：bao-mozjs 0.22.0 / bao-mozjs-sys 140.14.0-0 / servo-mozjs main `eb36274`。
+
+注意：本表不是完成证明；drift 自动化（升级波 capability diff 报告）在下次 mozjs 前移时首跑。
 
 ---
 
@@ -333,6 +344,59 @@ cargo nextest run --cargo-profile test-ci -p <crate> -E '<filterset>'
 **代码改动**：无 SM slice——本轮工程预算用于上游吸收批次 1（bun 5 项 correctness，commit `c0a09301`）；file_lock MCP 已恢复（09-01 回归清除），本程序启动阻塞解除。
 
 **下一唯一动作**：沿袭 2026-09-01 bootstrap 裁决——S0-A capability census + 同轮 #24 interrupt/cancellation 最小闭环，不得以 census 结束。
+
+### 2026-09-04 / S0-A census + #24 最小闭环（单 slice：census + 代码 + 测试）
+
+**基线**：bao master `4976f330`；mozjs bao-mozjs 0.22.0 / bao-mozjs-sys 140.14.0-0 / servo-mozjs main `eb36274`。
+
+**Census（#30 首轮，真实扫描）**：
+
+- 扫描面：`vendor/mozjs/src-js/mozjs/js/public/**`（105 headers）+ `experimental/`（11）+ mozjs rust binding（`rust.rs` / `jsapi2_wrappers.in.rs` / bindgen out）。
+- Bao 采用面：`command grep` 全 `src/` 树（每个"零命中"结论均带阳性对照——`JS_NewGlobalObject` 对照组命中正常）。
+- 产出：`.claude/sm-capability-ledger.json`（55 capabilities / 13 domains；
+  used-native 19 / wrapped 2 / emulated 1 / engine-internal 6 / missing 23 / deliberately-unused 4；
+  schema=symbol/header/stability/bao_status/code_refs/note/issue/last_audited=2026-09-04）。
+- 本文件 §1 缺口与 §5 inventory 表已更新为真实数据。
+- 关键新事实：Stencil binding 已具备（10 wrappers，非 binding 阻塞）；JS::Debugger binding 不可达
+  （#27 受阻需裁决）；`JS_ResetInterruptCallback(cx, enable)` 在 vendored 版语义为
+  `interruptCallbackDisabled = enable`（参数命名与直觉相反，已记入 ledger note）。
+
+**代码改动（#24 最小闭环）**：
+
+- 新增 `src/bao_engine/src/execution_control.rs`：
+  - `ExecutionControl`（Arc 共享 handle；外部线程仅 `cancel()`=atomic flag + 文档化线程安全
+    `JS_RequestInterruptCallback`，零 JSObject/GC 指针跨线程）；
+  - `TerminalState`（Running/Completed/Errored/Cancelled/TimedOut，AtomicU8 latch，首写者赢）；
+  - owner 线程 armed 栈（thread-local；callback 只看栈顶；**空栈必返回 true**——引擎内部 GC
+    interrupt 不得误杀共享 context 上的无关脚本，这是安全不变量）；
+  - `JS_AddInterruptCallback` once-per-JSContext 安装（TLS 地址追踪；Runtime 重建/销毁路径重置）；
+  - deadline watcher（condvar 可取消，eval 帧内 join——request 只发生在 context 可证存活窗口；
+    快速 eval 不阻塞到 deadline）;
+  - `JsContext::eval_with_control`（复用 `eval` 持久 realm 路径；terminated 时引擎自清 pending
+    exception——`HandleInterrupt`→`reportUncatchableException` 已核实——返回稳定终止错误）。
+- `src/bao_engine/src/context.rs`：`init_runtime`/`for_test` Runtime 创建后 + `shutdown_thread_sm`
+  销毁前重置 callback 安装追踪（防地址复用 stale-skip）。
+- `src/bao_engine/src/lib.rs`：`pub mod execution_control`。
+- 内部试验面承诺边界：全部 `#[doc(hidden)]`，无 pub 稳定 API 承诺（S1 统一时再定合同）。
+
+**测试**（`src/bao_engine/tests/suite/execution_control_tests.rs`，suite 单 harness 约定）：
+
+1. `while(true){try/catch}` + 500ms deadline → TimedOut 稳定终态（不可 catch、<5s、≥400ms）；
+2. 正常 eval 不受影响（Completed=42、快速返回不阻塞到 5s deadline、JS 错误 latch Errored、
+   无 control 的 plain eval 正常）；
+3. timeout 后 `reset()` 二次 eval 零污染（同 control 复用 + plain eval）；
+4. 外部线程 `cancel()` → Cancelled 稳定终态（<5s）。
+
+**验证**：`cargo nt -p bao_engine`（波末一次测）：**373 run / 373 passed / 0 failed / 0 skipped**，
+含 `execution_control_tests::test_execution_control_all`（1.129s，四子项时延与各自 deadline 相符，
+证实终止来自 deadline/cancel 而非早退）。
+
+**BCE 检查**：本轮为能力新增非 bug 修复；同类横扫面=「engine-interrupt 回调误杀空栈脚本」类
+不变量已以 armed-栈空栈-continue 设计 + 测试 2 锁定，无同类残留实例。
+
+**下一唯一动作**：S0 收口——#23 Realm/Compartment/Zone topology census（Realm/Zone 创建点
+inventory + Page/Host/Worker topology 图落账本），随后 S1 把 ExecutionControl 接到
+bao_runtime 脚本入口与 scheduler（#24/#25 合流）。
 
 ---
 

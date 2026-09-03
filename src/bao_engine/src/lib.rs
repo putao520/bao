@@ -84,7 +84,11 @@ pub use bun_sm::module_loader::{
 // ─── Modules still owned by bao_engine ───────────────────────────────────
 // @trace REQ-ENG-003 [api:POST /host-fn/call] [entity:JsCallback] — host_fn safe FFI wrapper owned module surface (JS call / type conversion / GC root RAII)
 // @trace REQ-ENG-004 [api:POST /event-loop/drain] [entity:BaoRuntime] — Event Loop bridge (SpiderMonkey JobQueue → uSockets I/O) owned module surface
+// @trace REQ-ENG-001 [entity:BaoRuntime] — engine-native interrupt/timeout/cancellation
+// (SpiderMonkey Interrupt.h → ExecutionControl, SM-EVOLUTION #24; internal
+// experimental surface, not a stable API commitment)
 pub mod context;
+pub mod execution_control;
 pub mod job_queue;
 
 // @trace REQ-ENG-002 [api:POST /codegen/generate] [entity:CodegenBackend] — codegen backend rewrite (.classes.ts → SpiderMonkey bindings) re-exported via bun_sm::codegen / bun_sm::generated

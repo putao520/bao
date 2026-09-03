@@ -1,0 +1,714 @@
+{
+  "schema_version": 1,
+  "ledger": ".claude/sm-capability-ledger.json",
+  "plan": ".plans/spidermonkey-evolution.md",
+  "issue": "#30 (parent #22)",
+  "mozjs_baseline": {
+    "crate": "bao-mozjs 0.22.0 (lib name mozjs)",
+    "sys_crate": "bao-mozjs-sys 140.14.0-0",
+    "upstream_ref": "servo/mozjs main eb36274 (23-file surgical transplant; bao commit 6b259cc2 2026-08-22)",
+    "bao_fork_patches": {
+      "semantic": 5,
+      "build_rs": 2,
+      "list": "CLAUDE.md mozjs fork BAO patch 清单 (EBUSY / JSEngine init race / set_hide_script_from_debugger / BaselineFrame NULL activation guard / JS_NewEmulatesUndefinedFunction)"
+    },
+    "public_headers_scanned": "vendor/mozjs/src-js/mozjs/js/public/** (105 headers) + experimental/ (11 headers)",
+    "rust_binding_scanned": "vendor/mozjs/mozjs/src (rust.rs, jsapi2_wrappers.in.rs) + bindgen jsapi.rs (bao-mozjs-sys build out)"
+  },
+  "last_audited": "2026-09-04",
+  "status_legend": {
+    "used-native": "bao code calls the JSAPI/binding directly",
+    "wrapped": "bao-level abstraction owns the capability (internal experimental surface)",
+    "emulated": "bao re-implements because the mozjs binding does not expose the engine capability",
+    "missing": "no bao use; no recorded decision yet (tracked by issue)",
+    "deliberately-unused": "recorded decision not to adopt (reason in note)",
+    "engine-internal": "SpiderMonkey handles it internally; bao has no call sites by design"
+  },
+  "summary": {
+    "domains": 13,
+    "capabilities": 55,
+    "bao_status_distribution": {
+      "deliberately-unused": 4,
+      "emulated": 1,
+      "engine-internal": 6,
+      "missing": 23,
+      "used-native": 19,
+      "wrapped": 2
+    }
+  },
+  "capabilities": [
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "JSEngine lifecycle (JS_Init/JS_ShutDown)",
+      "header": "js/public/Initialization.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/context.rs:374 ensure_engine_handle",
+        "src/bao_engine/src/context.rs shutdown_engine"
+      ],
+      "note": "process-singleton via OnceLock<JSEngineHandle> + ENGINE_INIT_LOCK; mozjs fork patch #2 (init race recovery)",
+      "issue": "#23/#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "JSContext thread-local ownership",
+      "header": "js/public/Context.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/context.rs (Runtime::get TLS parasitism, from_servo_runtime)"
+      ],
+      "note": "global JSEngine + per-ScriptThread thread-local JSContext (CLAUDE.md JSContext 模型)",
+      "issue": "#23",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "JS_NewGlobalObject + JS::RealmOptions",
+      "header": "js/public/RealmOptions.h, js/public/GlobalObject.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/context.rs ensure_realm_global (JS_NewGlobalObject)",
+        "src/bun_sm/src/global_object.rs:52 node_realm_options",
+        "src/bao_runtime/src/node_vm.rs:657 node:vm sandbox compartment"
+      ],
+      "note": "persistent realm-per-context + Node-semantics realm options (sharedMemoryAndAtomics_)",
+      "issue": "#23",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "Realm enter/leave (AutoRealm)",
+      "header": "js/public/Realm.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/job_queue.rs:168",
+        "src/bao_engine/src/context.rs eval (AutoRealm into persistent realm)",
+        "src/bao_runtime/src/{bun_listen,node_http,uncaught,bun_api,node_tls,node_worker_threads,fetch_async,web_api}.rs"
+      ],
+      "note": "every cross-realm JS touch AutoRealms into the owning global",
+      "issue": "#23",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "Zone (GC topology)",
+      "header": "js/public/Zone.h",
+      "stability": "public/internal embedding surface",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "no bao-side Zone use; system realm/zone mapping undecided",
+      "issue": "#23/#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "ShadowRealm callbacks",
+      "header": "js/public/ShadowRealmCallbacks.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "ShadowRealm not wired",
+      "issue": "#30 audit-later",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "Realm locale/timezone override",
+      "header": "js/public/RealmOptions.h, js/public/LocaleSensitive.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "no bao-side use; engine-native stealth identity planned; bao_stealth currently has no timezone module at any layer",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "runtime/context/realm/compartment/zone",
+      "symbol": "JS::ContextOptions (JIT/asmJS/wasm flags)",
+      "header": "js/public/ContextOptions.h",
+      "stability": "public",
+      "bao_status": "deliberately-unused",
+      "code_refs": [],
+      "note": "engine defaults only; no bao configuration call sites; JIT policy pending #28 benchmark gate",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "compile/stencil/module/xdr/cache",
+      "symbol": "CompileOptions (CompileOptionsWrapper)",
+      "header": "js/public/CompileOptions.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/context.rs:752",
+        "src/bun_sm/src/module_loader.rs:9"
+      ],
+      "note": "",
+      "issue": "#26",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "compile/stencil/module/xdr/cache",
+      "symbol": "Evaluate/Execute (JS::Evaluate)",
+      "header": "js/public/CompilationAndEvaluation.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/context.rs eval + src/bao_engine/src/execution_control.rs eval_with_control -> mozjs::rust::evaluate_script"
+      ],
+      "note": "",
+      "issue": "#26",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "compile/stencil/module/xdr/cache",
+      "symbol": "Module loader hooks (JS::SetModulePrivate/GetModulePrivate)",
+      "header": "js/public/Modules.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bun_sm/src/module_loader.rs:234,1136,2170"
+      ],
+      "note": "ESM hooks -> Bun resolver bridge",
+      "issue": "#26",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "compile/stencil/module/xdr/cache",
+      "symbol": "Stencil (CompileGlobalScriptToStencil/InstantiateGlobalStencil/...)",
+      "header": "js/public/experimental/JSStencil.h, js/public/experimental/CompileScript.h",
+      "stability": "experimental",
+      "bao_status": "missing",
+      "code_refs": [
+        "binding surface: vendor/mozjs/mozjs/src/jsapi2_wrappers.in.rs:330-341"
+      ],
+      "note": "binding available (10 wrappers), zero bao call sites; internal cache first",
+      "issue": "#26",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "compile/stencil/module/xdr/cache",
+      "symbol": "XDR (JS_EncodeScript/DecodeScript/TranscodeRange)",
+      "header": "js/public/Transcoding.h",
+      "stability": "public/internal mix",
+      "bao_status": "missing",
+      "code_refs": [
+        "src/bao_bundler/src/bytecode.rs:8 Phase-2 comment"
+      ],
+      "note": "persistent bytecode cache deferred until correctness done",
+      "issue": "#26",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "compile/stencil/module/xdr/cache",
+      "symbol": "Off-thread compile (HelperThreadAPI)",
+      "header": "js/public/HelperThreadAPI.h",
+      "stability": "public/experimental mix",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "no bao call sites; adopt only after benchmark proves benefit",
+      "issue": "#26",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "compile/stencil/module/xdr/cache",
+      "symbol": "BuildId",
+      "header": "js/public/BuildId.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "required only with XDR persistent cache",
+      "issue": "#26",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "jobs/promise/event-loop",
+      "symbol": "JS::JobQueue + JobQueueTraps (CreateJobQueue/SetJobQueue/RunJobs)",
+      "header": "js/public/Promise.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/job_queue.rs:66-90"
+      ],
+      "note": "own trap impl: enqueuePromiseJob/runJobs/empty; pushNewInterruptQueue/popInterruptQueue/dropInterruptQueues = None (unset)",
+      "issue": "#25",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "jobs/promise/event-loop",
+      "symbol": "Promise rejection tracker (SetPromiseRejectionTrackerCallback)",
+      "header": "js/public/Promise.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_runtime/src/uncaught.rs:93"
+      ],
+      "note": "unhandled-rejection flush at drain tail",
+      "issue": "#25",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "interrupt/cancellation",
+      "symbol": "JS_AddInterruptCallback",
+      "header": "js/public/Interrupt.h",
+      "stability": "public",
+      "bao_status": "wrapped",
+      "code_refs": [
+        "src/bao_engine/src/execution_control.rs ensure_callback_installed (2026-09-04 minimal closed loop)"
+      ],
+      "note": "installed once per JSContext; callback continues execution when no control armed (engine-internal GC interrupts must not kill unrelated scripts)",
+      "issue": "#24",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "interrupt/cancellation",
+      "symbol": "JS_RequestInterruptCallback (thread-safe)",
+      "header": "js/public/Interrupt.h",
+      "stability": "public",
+      "bao_status": "wrapped",
+      "code_refs": [
+        "src/bao_engine/src/execution_control.rs InterruptRequester (cancel + deadline watcher)"
+      ],
+      "note": "documented thread-safe: external threads only submit atomic flag + this request; watcher joined by the eval frame",
+      "issue": "#24",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "interrupt/cancellation",
+      "symbol": "JS_CheckForInterrupt / JS_DisableInterruptCallback / JS_ResetInterruptCallback",
+      "header": "js/public/Interrupt.h",
+      "stability": "public",
+      "bao_status": "deliberately-unused",
+      "code_refs": [
+        "binding: vendor/mozjs/mozjs/src/jsapi2_wrappers.in.rs:397-400"
+      ],
+      "note": "callback-driven model only this slice; Disable/Reset reserved for S1 re-entrancy policy (note: vendored JS_ResetInterruptCallback(cx, enable) sets interruptCallbackDisabled = enable — inverted naming)",
+      "issue": "#24",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "interrupt/cancellation",
+      "symbol": "Engine-internal interrupt reasons (GC slices, off-thread attach)",
+      "header": "js/src/vm/JSContext.h InterruptReason",
+      "stability": "internal-only",
+      "bao_status": "engine-internal",
+      "code_refs": [
+        "vendor/mozjs/src-js/mozjs/js/src/vm/Runtime.cpp HandleInterrupt"
+      ],
+      "note": "callbacks also fire for engine-internal reasons; empty-stack => continue is the safety invariant",
+      "issue": "#24",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "JS::Debugger C++ API (breakpoints/frames/onNewScript)",
+      "header": "js/public/Debug.h",
+      "stability": "public(C++)/binding-missing",
+      "bao_status": "emulated",
+      "code_refs": [
+        "src/bun_sm/src/debugger.rs"
+      ],
+      "note": "mozjs rust binding does not expose JS::Debugger; bao keeps own breakpoint CRUD + state tracking pending binding availability",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "JS_DefineDebuggerObject",
+      "header": "js/public/Debug.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [
+        "binding: vendor/mozjs/mozjs/src/jsapi2_wrappers.in.rs:380"
+      ],
+      "note": "zero bao call sites",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "hideScriptFromDebugger (CompileOptions setter)",
+      "header": "js/public/CompileOptions.h",
+      "stability": "mozjs-fork-patch",
+      "bao_status": "used-native",
+      "code_refs": [
+        "vendor/mozjs/mozjs/src/rust.rs (BAO patch #3, BCE-20260622-004)",
+        "servo script_thread disable gate (BCE-20260621-002)"
+      ],
+      "note": "suppresses onNewScript -> AtomCacheHashTable SIGSEGV path",
+      "issue": "#27/#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "Profiling (ProfilingStack/ProfilingFrameIterator/Tracer labels)",
+      "header": "js/public/ProfilingStack.h, js/public/ProfilingFrameIterator.h",
+      "stability": "public",
+      "bao_status": "deliberately-unused",
+      "code_refs": [
+        "binding: JS_Tracer* wrappers jsapi2_wrappers.in.rs:381-385"
+      ],
+      "note": "no bao use; no product requirement yet",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "Memory metrics / UbiNode census",
+      "header": "js/public/MemoryMetrics.h, js/public/UbiNode*.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "CDP HeapProfiler/memory not yet SM-fact-driven",
+      "issue": "#27/#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "Allocation recording/logging",
+      "header": "js/public/AllocationRecording.h, js/public/AllocationLogging.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "PCCount / CodeCoverage (experimental)",
+      "header": "js/public/experimental/PCCountProfiling.h, js/public/experimental/CodeCoverage.h",
+      "stability": "experimental",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "debugger/profiling/memory",
+      "symbol": "Warnings reporter / ErrorInterceptor",
+      "header": "js/public/Warnings.h, js/public/ErrorInterceptor.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "interrupt termination emits JSMSG_TERMINATED warning via WarnNumberUC — no bao warning reporter installed",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "GC/rooting/heap/weak-refs",
+      "symbol": "JS_GC / GC reasons",
+      "header": "js/public/GCAPI.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_runtime/src/bun_api.rs:5164 (Bun.gc)",
+        "browser: servo GarbageCollectAllContexts via bao_cdp/src/protocol.rs:1879"
+      ],
+      "note": "",
+      "issue": "#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "GC/rooting/heap/weak-refs",
+      "symbol": "Extra raw roots (AddRawValueRoot/RemoveRawValueRoot)",
+      "header": "js/public/GCAPI.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/context.rs PersistentGlobal + RawValueRootGuard (AddRawValueRoot)"
+      ],
+      "note": "persistent realm global + async-window value rooting",
+      "issue": "#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "GC/rooting/heap/weak-refs",
+      "symbol": "Rooted handles (Rooted/Handle/MutableHandle)",
+      "header": "js/public/RootingAPI.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "mozjs rooted! macro — pervasive (job_queue.rs, context.rs, module_loader.rs, ...)"
+      ],
+      "note": "",
+      "issue": "#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "GC/rooting/heap/weak-refs",
+      "symbol": "GC callbacks (JSGCStatusCallback/slice callbacks)",
+      "header": "js/public/GCAPI.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "zero bao use; GC observability for soak pending",
+      "issue": "#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "GC/rooting/heap/weak-refs",
+      "symbol": "WeakMap/WeakMapPtr",
+      "header": "js/public/WeakMap.h, js/public/WeakMapPtr.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "",
+      "issue": "#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "GC/rooting/heap/weak-refs",
+      "symbol": "GCHashTable/GCVector/GCPolicy",
+      "header": "js/public/GCHashTable.h, js/public/GCVector.h, js/public/GCPolicyAPI.h",
+      "stability": "public",
+      "bao_status": "engine-internal",
+      "code_refs": [
+        "mozjs binding internals"
+      ],
+      "note": "consumed inside mozjs wrappers only",
+      "issue": "#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "structured-clone/serialization",
+      "symbol": "JS_WriteStructuredClone / JS_ReadStructuredClone / JSAutoStructuredCloneBuffer",
+      "header": "js/public/StructuredClone.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_runtime/src/node_worker_threads.rs:335-343 (DifferentProcess scope, postMessage)"
+      ],
+      "note": "",
+      "issue": "#30",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "wasm",
+      "symbol": "WebAssembly standard classes",
+      "header": "js/public/WasmFeatures.h",
+      "stability": "public",
+      "bao_status": "engine-internal",
+      "code_refs": [
+        "REQ-ENG-001 acceptance: bao -e WebAssembly.validate(...)"
+      ],
+      "note": "engine-provided standard classes (mozjs intl+jit features); no bao-side engine control",
+      "issue": "#30",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "wasm",
+      "symbol": "WasmModule transfer (JS::WasmModule)",
+      "header": "js/public/WasmModule.h",
+      "stability": "public",
+      "bao_status": "deliberately-unused",
+      "code_refs": [],
+      "note": "no product surface (no wasm compile/serialize API in Bao 1.0 scope)",
+      "issue": "#30",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "intl/locale/timezone",
+      "symbol": "Intl standard functions (LocaleSensitive)",
+      "header": "js/public/LocaleSensitive.h",
+      "stability": "public",
+      "bao_status": "engine-internal",
+      "code_refs": [],
+      "note": "Intl builtins active via mozjs intl feature; no bao-side locale configuration",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "intl/locale/timezone",
+      "symbol": "experimental Intl",
+      "header": "js/public/experimental/Intl.h",
+      "stability": "experimental",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "intl/locale/timezone",
+      "symbol": "Timezone override (SetTimeZoneOverride-class surface)",
+      "header": "js/public/Date.h / RealmOptions",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "no bao use at engine layer; bao_stealth has no timezone module at JS layer either",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "shared-memory/atomics",
+      "symbol": "Realm sharedMemoryAndAtomics_ flag",
+      "header": "js/public/RealmOptions.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bun_sm/src/global_object.rs:54 node_realm_options sets true"
+      ],
+      "note": "Node-semantics SAB/Atomics standard classes on",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "shared-memory/atomics",
+      "symbol": "SharedArrayBuffer/ArrayBufferMaybeShared APIs",
+      "header": "js/public/SharedArrayBuffer.h, js/public/ArrayBufferMaybeShared.h",
+      "stability": "public",
+      "bao_status": "engine-internal",
+      "code_refs": [],
+      "note": "SAB object lifecycle inside engine; no direct bao calls",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "shared-memory/atomics",
+      "symbol": "WaitCallbacks (futex embedding hooks)",
+      "header": "js/public/WaitCallbacks.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "engine default wait/notify used; no embedding hooks installed",
+      "issue": "#28",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "principals/security/options",
+      "symbol": "JSPrincipals / JSSecurityCallbacks / SetTrustedPrincipals",
+      "header": "js/public/Principals.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "bao realm isolation currently via separate globals/realms without principals; Page/Node boundary is object-level not principal-level",
+      "issue": "#20/#23",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "principals/security/options",
+      "symbol": "Cross-compartment wrappers (Wrapper/WrapperCallbacks)",
+      "header": "js/public/Wrapper.h, js/public/WrapperCallbacks.h",
+      "stability": "public",
+      "bao_status": "engine-internal",
+      "code_refs": [],
+      "note": "CCWs used implicitly by engine; no bao configuration",
+      "issue": "#23",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "principals/security/options",
+      "symbol": "ObjectWithStashedPointer",
+      "header": "js/public/ObjectWithStashedPointer.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "",
+      "issue": "#20",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "embedding-hooks/callbacks",
+      "symbol": "JobQueue traps (embedding job hooks)",
+      "header": "js/public/Promise.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/job_queue.rs"
+      ],
+      "note": "same as jobs/promise entry — embedding-hook view",
+      "issue": "#25",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "embedding-hooks/callbacks",
+      "symbol": "PromiseRejectionTracker hook",
+      "header": "js/public/Promise.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_runtime/src/uncaught.rs:93"
+      ],
+      "note": "",
+      "issue": "#25",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "embedding-hooks/callbacks",
+      "symbol": "StreamConsumer (JS-consume stream API)",
+      "header": "js/public/StreamConsumer.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "fetch body streaming implemented natively in bao_runtime, not via SM stream consumer",
+      "issue": "#30",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "embedding-hooks/callbacks",
+      "symbol": "Memory callbacks/functions (custom allocators)",
+      "header": "js/public/MemoryCallbacks.h, js/public/MemoryFunctions.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "mozjs default allocators",
+      "issue": "#29",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "embedding-hooks/callbacks",
+      "symbol": "Telemetry timers",
+      "header": "js/public/TelemetryTimers.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "",
+      "issue": "#19",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "embedding-hooks/callbacks",
+      "symbol": "SavedFrame/stack capture",
+      "header": "js/public/SavedFrameAPI.h, js/public/Stack.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "src/bao_engine/src/context.rs extract_exception -> mozjs glue error_info_from_exception_stack"
+      ],
+      "note": "error stack extraction",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "embedding-hooks/callbacks",
+      "symbol": "JS_DefineDebuggerObject (global Debugger object)",
+      "header": "js/public/Debug.h",
+      "stability": "public",
+      "bao_status": "missing",
+      "code_refs": [],
+      "note": "duplicate view of debugger domain entry from the hooks angle; zero call sites",
+      "issue": "#27",
+      "last_audited": "2026-09-04"
+    },
+    {
+      "domain": "core-value/object-surface (foundational, cross-domain)",
+      "symbol": "Value/String/Array/Object/Property/Call/Conversions/CharacterEncoding/Id/Symbol/BigInt/Class/Proxy/PropertySpec",
+      "header": "js/public/{Value,String,Array,Object,PropertyAndElement,CallAndConstruct,CallArgs,CallNonGenericMethod,Conversions,CharacterEncoding,Id,Symbol,BigInt,Class,Proxy,PropertySpec}.h",
+      "stability": "public",
+      "bao_status": "used-native",
+      "code_refs": [
+        "pervasive: JS_DefineProperty, JS_CallFunctionValue, rooted!, HandleValue (job_queue.rs, context.rs, module_loader.rs, host_fn.rs, ...)"
+      ],
+      "note": "foundational embedding surface — one summary entry, not a symbol dump (issue #30 prohibition)",
+      "issue": "#30",
+      "last_audited": "2026-09-04"
+    }
+  ]
+}

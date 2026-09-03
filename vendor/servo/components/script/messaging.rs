@@ -370,7 +370,9 @@ impl QueuedTaskConversion for MainThreadScriptMsg {
 
 impl OpaqueSender<CommonScriptMsg> for ScriptEventLoopSender {
     fn send(&self, message: CommonScriptMsg) {
-        self.send(message).unwrap()
+        if self.send(message).is_err() {
+            log::warn!("Error communicating with the target thread from the profiler");
+        }
     }
 }
 
@@ -544,5 +546,44 @@ impl ScriptThreadReceivers {
             return MixedMessage::FromWebGPUServer(message.unwrap()).into();
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod opaque_sender_tests {
+    use super::*;
+
+    struct NoopTask;
+
+    impl TaskBox for NoopTask {
+        fn name(&self) -> &'static str {
+            "NoopTask"
+        }
+
+        fn run_box(self: Box<Self>, _cx: &mut js::context::JSContext) {}
+    }
+
+    /// A memory-report callback can outlive the event loop it targets (e.g. a
+    /// page whose worker terminated before the profiler's next sweep). Sending
+    /// to the shut-down loop must warn instead of unwrapping the `SendError`
+    /// and taking down the process-wide profiler thread.
+    #[test]
+    fn profiler_send_to_shut_down_event_loop_does_not_panic() {
+        let (sender, receiver) = crossbeam_channel::bounded::<MainThreadScriptMsg>(1);
+        // Shut the loop down: every later send fails with a `SendError`.
+        drop(receiver);
+        let event_loop_sender = ScriptEventLoopSender::MainThread(sender);
+        let message = CommonScriptMsg::Task(
+            ScriptThreadEventCategory::ScriptEvent,
+            Box::new(NoopTask),
+            None,
+            TaskSourceName::DOMManipulation,
+        );
+        // Pre-fix this unwrapped the `SendError`; post-fix it logs a warning
+        // and returns. Reaching this point without panicking is the assertion.
+        <ScriptEventLoopSender as OpaqueSender<CommonScriptMsg>>::send(
+            &event_loop_sender,
+            message,
+        );
     }
 }
