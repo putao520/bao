@@ -314,23 +314,28 @@ fn bao_bin_can_forward_to_cli_run() {
 /// @trace REQ-CLI-001 [test:TEST-CLI-001]
 /// 验收 #7 (C7): BAO_* 环境变量作为 BUN_* 的别名。
 ///
-/// BaoRuntime::new() 调用 init_env_aliases(), 把所有 BAO_<SUFFIX> 复制到
-/// BUN_<SUFFIX> (仅当 BUN_ 版本未设置时)。这是 BAO_* 兼容 BUN_ 上游生态
-/// 的核心契约 (CLAUDE.md: BUN_* 保留 + BAO_* 新增别名)。
+/// 别名在读取层解析 (issue #32 / B0 census row 16): `bun_core::getenv_z`
+/// 对未命中的 `BUN_<SUFFIX>` 回退读 `BAO_<SUFFIX>` (显式 BUN_ 恒胜);
+/// `BaoRuntime::new()` 不再把 BAO_* 经 `init_env_aliases` 物化进宿主 env
+/// (该 set_var 机制已删除 — 库构造器禁止改写宿主进程 env)。
+/// JS 枚举面 (process.env 快照, bun_api.rs `populate_process_object`) 对每个
+/// 无显式 `BUN_<SUFFIX>` 的 `BAO_<SUFFIX>` 额外以 `BUN_<SUFFIX>` 为名定义
+/// JS 属性取 BAO_ 值 (纯 JS 对象操作, 零宿主 env 写入)。
 ///
-/// 对抗意图: 端到端验证别名机制生效。设置一个唯一的 BAO_TEST_xxx env,
-/// 构造 BaoRuntime (会触发 init_env_aliases), 然后断言 BUN_TEST_xxx 被设置。
-/// 这是对「BAO_* 作为 BUN_* 别名」的可执行证据 (而非主观声明)。
+/// 对抗意图: 端到端验证「消费者读到值」。设置唯一的 BAO_TEST_xxx env,
+/// 构造 BaoRuntime, 然后断言 JS 消费者 (`process.env.BUN_TEST_xxx`) 读到
+/// 别名值 — 这是 BUN_* 上游生态消费路径 (CLAUDE.md: BUN_* 保留 +
+/// BAO_* 新增别名) 的可执行证据 (而非主观声明)。
 ///
 /// 边界覆盖:
-///   - 正向: BAO_* 设置 → BUN_* 被填充
-///   - 不覆盖: BUN_* 已存在时不被 BAO_* 覆盖 (init_env_aliases 的 if is_err 守卫)
+///   - 正向: BAO_* 设置 → JS 面 BUN_* 可读 (值 = BAO_ 值)
+///   - 负向: 宿主进程 env 不出现物化的 BUN_* (构造器零宿主写入)
 #[test]
 fn bao_env_vars_aliased_to_bun_at_runtime_init() {
     use std::sync::Mutex;
 
     // env 变更在多线程 cargo test 下有竞态, 用 Mutex 串行化本测试。
-    // (MozJS EBUSY patch 后默认多线程测试, env 是进程级全局, 必须串行。)
+    // (env 是进程级全局, 必须串行。)
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -347,19 +352,16 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
     let bun_key = unique.replacen("BAO_", "BUN_", 1);
     let value = "alias_value_proof";
 
-    // 清理: 确保起始状态干净 (前后都清)。
+    // 清理: 确保起始状态干净 (前后都清), 然后设置 BAO_*。
+    // SAFETY: 单线程持锁内操作 env, 无并发风险。
     unsafe {
         std::env::remove_var(&unique);
         std::env::remove_var(&bun_key);
-    }
-
-    // 正向: 设置 BAO_* → 构造 runtime → BUN_* 应被填充。
-    // SAFETY: 单线程持锁内操作 env, 无并发风险。
-    unsafe {
         std::env::set_var(&unique, value);
     }
 
-    // 构造 BaoRuntime 触发 init_env_aliases()。
+    // 构造 BaoRuntime — 新语义下构造器零宿主 env 写入, 别名在读取层
+    // (getenv_z) + JS 枚举面 (process.env 快照) 解析。
     // 若 SpiderMonkey 初始化失败 (环境缺库), skip 而非 fail —
     // 本测试验证的是 env 别名机制, 不是 SpiderMonkey 可用性。
     let mut rt = match bun_runtime::BaoRuntime::new() {
@@ -377,20 +379,31 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
             return;
         }
     };
-    // 触发一次 eval 让 runtime 稳定 (避免未使用警告 + 确保 init 完整)。
-    let _ = rt.eval("0", "<alias-test>");
 
-    // 断言正向: BAO_* → BUN_* 被填充。
-    let aliased = std::env::var(&bun_key).ok();
-    assert_eq!(
-        aliased.as_deref(),
-        Some(value),
-        "BAO_* env var '{}' must be aliased to BUN_* var '{}' after BaoRuntime::new()",
-        unique,
+    // 正向: JS 消费者读到别名值 — process.env.<BUN_key> === value。
+    // (eval 返回该比较的布尔结果; key/value 均为测试常量, 无注入面。)
+    let probe = format!("process.env.{} === '{}'", bun_key, value);
+    let seen = rt
+        .eval(&probe, "<alias-test>")
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(
+        seen,
+        "JS consumer must read process.env.{} = '{}' via the BAO_* alias \
+         (read layer + process.env enumeration surface)",
+        bun_key,
+        value
+    );
+
+    // 负向: 宿主进程 env 未被物化 (库构造器零 set_var)。
+    assert!(
+        std::env::var(&bun_key).is_err(),
+        "BaoRuntime::new() must NOT materialize '{}' into the host process env",
         bun_key
     );
 
-    // 清理正向测试的痕迹。
+    // 清理测试的痕迹。
     drop(rt);
     unsafe {
         std::env::remove_var(&unique);
@@ -400,10 +413,11 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
 
 /// @trace REQ-CLI-001 [test:TEST-CLI-001]
 /// 验收 #7 (C7) 边界: BUN_* 已存在时, BAO_* 不覆盖它。
-/// init_env_aliases 的 `if env::var(&bun_key).is_err()` 守卫保证:
+/// 读取层语义 (`getenv_z`: 显式 BUN_ 命中即返回, 不查 BAO_ 回退) +
+/// JS 枚举面语义 (宿主已有 BUN_<SUFFIX> 时, 快照不用 BAO_ 值覆盖它):
 /// 用户显式设置的 BUN_* 优先, BAO_* 仅作为 fallback 别名。
 ///
-/// 对抗意图: 防止有人把守卫去掉 (让 BAO_* 强制覆盖 BUN_*),
+/// 对抗意图: 防止有人把优先序反过来 (让 BAO_* 强制覆盖 BUN_*),
 /// 这会破坏 BUN_* 上游生态的显式优先语义。
 #[test]
 fn bao_env_vars_do_not_override_existing_bun_vars() {
@@ -426,7 +440,7 @@ fn bao_env_vars_do_not_override_existing_bun_vars() {
         std::env::remove_var(&bun_key);
         // 预设 BUN_* 为「显式值」。
         std::env::set_var(&bun_key, "explicit_bun_value");
-        // 再设 BAO_* 为「别名值」(应被忽略)。
+        // 再设 BAO_* 为「别名值」(必须被显式值压住)。
         std::env::set_var(&unique, "bao_alias_value");
     }
 
@@ -441,9 +455,22 @@ fn bao_env_vars_do_not_override_existing_bun_vars() {
             return;
         }
     };
-    let _ = rt.eval("0", "<no-override-test>");
 
-    // 断言: BUN_* 保持显式值, 不被 BAO_* 覆盖。
+    // 断言 (JS 面): process.env.BUN_* 读到显式值, 不是 BAO_ 别名值。
+    let probe = format!("process.env.{} === '{}'", bun_key, "explicit_bun_value");
+    let seen = rt
+        .eval(&probe, "<no-override-test>")
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(
+        seen,
+        "JS consumer must read explicit process.env.{} = 'explicit_bun_value'; \
+         BAO_* alias must NOT override an existing BUN_*",
+        bun_key
+    );
+
+    // 断言 (宿主 env): BUN_* 保持显式值不被改写。
     let final_bun = std::env::var(&bun_key).ok();
     assert_eq!(
         final_bun.as_deref(),

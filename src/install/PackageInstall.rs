@@ -451,6 +451,32 @@ fn open_dir_a(dir: Fd, subpath: &[u8]) -> Result<Dir, bun_core::Error> {
         .map_err(Into::into)
 }
 
+// @trace REQ-CLI-001 [criterion:REQ-CLI-001-C4] — `bao install` 安装依赖:copyfile
+// 后端的目标打开不得清空 hardlink 共享 inode。目标可能是源文件的 hardlink
+// (hoisted linker 的 hardlink 后端与 cache 共享 inode),`O_TRUNC` 会把两个名字
+// 同时清空,留下 0-byte 文件(upstream bun 30f8159888 / #41228)。改用 `O_EXCL`;
+// `EEXIST` 时 unlink 既有名字再打开——unlink 只移除一个目录项,不动共享 inode
+// 的内容,拷贝写入新文件。Extracted from the copy `create` closure for
+// unit-testing the hardlink invariant.
+#[cfg(not(windows))]
+fn open_copy_dest(dir: &Dir, path: &ZStr) -> sys::Maybe<Fd> {
+    let open = || {
+        sys::openat(
+            dir.fd(),
+            path,
+            sys::O::WRONLY | sys::O::CREAT | sys::O::EXCL,
+            0o666,
+        )
+    };
+    match open() {
+        Err(err) if err.get_errno() == sys::E::EEXIST => {
+            let _ = sys::unlinkat(dir, path);
+            open()
+        }
+        result => result,
+    }
+}
+
 // macOS clonefileat(2) — routed through the safe `sys::clonefileat` wrapper
 // (takes `Fd`/`&ZStr`, returns `Maybe<()>`). The Zig source matched on the raw
 // `int` return + thread-local errno; the wrapper preserves the errno via
@@ -1429,21 +1455,38 @@ impl<'a> PackageInstall<'a> {
                             }
                         }
                         EntryKind::File => {
+                            // `dest` can be a hardlink of `src`, which CopyFileW cannot
+                            // overwrite (both names share the inode; overwriting truncates
+                            // the source too). Fail if the file exists, then delete and
+                            // copy again (upstream bun 30f8159888, #41228).
                             // SAFETY: FFI — src/dest are valid NUL-terminated WStr buffers.
-                            if unsafe { windows::CopyFileW(src.as_ptr(), dest.as_ptr(), 0) } == 0 {
-                                if let Some(entry_dirname) =
-                                    bun_paths::Dirname::dirname_u16(entry.path.as_slice())
-                                {
-                                    let _ = bun_sys::MakePath::make_path_u16(
-                                        destination_dir_,
-                                        entry_dirname,
-                                    );
-                                    // SAFETY: FFI — src/dest are valid NUL-terminated WStr buffers.
-                                    if unsafe { windows::CopyFileW(src.as_ptr(), dest.as_ptr(), 0) }
-                                        != 0
-                                    {
-                                        continue;
+                            let copy_file =
+                                || unsafe { windows::CopyFileW(src.as_ptr(), dest.as_ptr(), 1) }
+                                    != 0;
+                            if !copy_file() {
+                                let copied = match windows::Win32Error::get() {
+                                    windows::Win32Error::FILE_EXISTS
+                                    | windows::Win32Error::ALREADY_EXISTS => {
+                                        // SAFETY: FFI — dest is a valid NUL-terminated WStr buffer.
+                                        unsafe { windows::DeleteFileW(dest.as_ptr()) };
+                                        copy_file()
                                     }
+                                    _ => {
+                                        match bun_paths::Dirname::dirname_u16(entry.path.as_slice())
+                                        {
+                                            Some(entry_dirname) => {
+                                                let _ = bun_sys::MakePath::make_path_u16(
+                                                    destination_dir_,
+                                                    entry_dirname,
+                                                );
+                                                copy_file()
+                                            }
+                                            None => false,
+                                        }
+                                    }
+                                };
+                                if copied {
+                                    continue;
                                 }
 
                                 if let Some(progress) = progress_.as_deref_mut() {
@@ -1492,16 +1535,10 @@ impl<'a> PackageInstall<'a> {
                         destination_dir_.fd(),
                         bstr::BStr::new(entry.path.as_bytes())
                     );
-                    // Zig: `std.fs.Dir.createFile(dir, path, .{})` — open O_WRONLY|O_CREAT|O_TRUNC,
-                    // mode = std.fs.File.default_mode (0o666).
-                    let create = |path: &ZStr| {
-                        sys::openat(
-                            destination_dir_.fd(),
-                            path,
-                            sys::O::WRONLY | sys::O::CREAT | sys::O::TRUNC,
-                            0o666,
-                        )
-                    };
+                    // The file can be a hardlink of `in_file`, and O_TRUNC would empty both
+                    // (the names share one inode): open O_EXCL and unlink + retry on EEXIST,
+                    // so the copy goes into a new file (upstream bun 30f8159888, #41228).
+                    let create = |path: &ZStr| open_copy_dest(destination_dir_, path);
                     let outfile = match create(entry.path) {
                         Ok(f) => f,
                         Err(_) => 'brk: {
@@ -2551,3 +2588,110 @@ impl<'a> PackageInstall<'a> {
 type Walker = walker_skippable::Walker;
 
 // ported from: src/install/PackageInstall.zig
+
+// ───────────────────────────── tests ─────────────────────────────
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    // @trace TEST-CLI-001-COPYFILE-HARDLINK [req:REQ-CLI-001] [level:unit]
+    //
+    // Regression for upstream bun 30f8159888 (#41228): the copy backend's
+    // destination open must not truncate a destination that hardlinks the
+    // source file. `O_TRUNC` on the hardlink emptied the shared inode and
+    // left 0-byte files in node_modules and the package cache.
+
+    fn write_all(fd: Fd, mut buf: &[u8]) {
+        while !buf.is_empty() {
+            let n = sys::write(fd, buf).expect("write to copy destination");
+            buf = &buf[n..];
+        }
+    }
+
+    fn temp_base(tag: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "bun_install_copyfile_{tag}_{}_{:?}",
+            std::process::id(),
+            std::time::Instant::now(),
+        ));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+        base
+    }
+
+    /// NUL-terminated byte path for `sys::link` (takes `&ZStr`).
+    fn zpath(path: &std::path::Path) -> Vec<u8> {
+        let mut v = path.as_os_str().as_bytes().to_vec();
+        v.push(0);
+        v
+    }
+
+    /// The destination is a hardlink of the source (the state a previous
+    /// hardlink-backend install leaves behind): both names share one inode.
+    /// Opening the copy destination must unlink + recreate instead of
+    /// truncating, so the source keeps its content and the destination gets
+    /// the complete new file.
+    #[test]
+    fn copy_dest_open_does_not_empty_hardlinked_source() {
+        let base = temp_base("hardlink");
+        let src = base.join("cache-file.js");
+        let dest = base.join("dest-file.js");
+        let original = b"// original cache content\nexport default 1;\n";
+        std::fs::write(&src, original).expect("write source file");
+        let src_z = zpath(&src);
+        let dest_z = zpath(&dest);
+        sys::link(
+            ZStr::from_slice_with_nul(&src_z),
+            ZStr::from_slice_with_nul(&dest_z),
+        )
+        .expect("hardlink dest to src");
+
+        let dir = Dir::open(base.as_os_str().as_bytes()).expect("open temp dir");
+        let outfile = open_copy_dest(&dir, ZStr::from_slice_with_nul(b"dest-file.js\0"))
+            .expect("open copy destination over hardlink");
+        let _close = sys::CloseOnDrop::new(outfile);
+        let replacement = b"// replacement content written through the copy backend\n";
+        write_all(outfile, replacement);
+        drop(_close);
+
+        // (1) The source keeps its content — the shared inode was not truncated.
+        assert_eq!(
+            std::fs::read(&src).expect("read source"),
+            original,
+            "hardlink sibling must not be emptied"
+        );
+        // (2) The destination is a new file holding the complete copied content.
+        assert_eq!(
+            std::fs::read(&dest).expect("read destination"),
+            replacement,
+            "destination must hold the full copied content"
+        );
+
+        std::fs::remove_dir_all(&base).expect("cleanup temp dir");
+    }
+
+    /// Fresh install path: no existing destination, `O_EXCL` alone must
+    /// create the file and the copy content must land complete.
+    #[test]
+    fn copy_dest_open_creates_file_when_destination_absent() {
+        let base = temp_base("fresh");
+        let dest = base.join("dest-file.js");
+        let contents = b"// fresh destination content\nexport default 2;\n";
+
+        let dir = Dir::open(base.as_os_str().as_bytes()).expect("open temp dir");
+        let outfile = open_copy_dest(&dir, ZStr::from_slice_with_nul(b"dest-file.js\0"))
+            .expect("open copy destination");
+        let _close = sys::CloseOnDrop::new(outfile);
+        write_all(outfile, contents);
+        drop(_close);
+
+        assert_eq!(
+            std::fs::read(&dest).expect("read destination"),
+            contents,
+            "fresh destination must hold the full copied content"
+        );
+
+        std::fs::remove_dir_all(&base).expect("cleanup temp dir");
+    }
+}

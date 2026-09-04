@@ -816,8 +816,50 @@ unsafe fn populate_process_object(
 
         rooted!(&in(cx) let env_target = JS_NewPlainObject(cx));
         if !env_target.get().is_null() {
+            // BAO_<SUFFIX> entries of the host env, deferred to the alias pass
+            // below (single enumeration pass; value cloned only for BAO_ keys).
+            let mut bao_entries: ::std::vec::Vec<(::std::string::String, ::std::string::String)> =
+                ::std::vec::Vec::new();
             for (key, value) in ::std::env::vars() {
+                if key.starts_with("BAO_") {
+                    bao_entries.push((key.clone(), value.clone()));
+                }
                 let c_key = ZBox::from_bytes(key.as_bytes());
+                let c_val = ZBox::from_bytes(value.as_bytes());
+                let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
+                if !val_str.is_null() {
+                    rooted!(&in(cx) let v = StringValue(&*val_str));
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        env_target.handle().into(),
+                        c_key.as_ptr(),
+                        v.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+
+            // BAO_* → BUN_* alias on the JS enumeration surface: the env read
+            // layer (`bun_core::getenv_z`) resolves keyed `BUN_<SUFFIX>`
+            // lookups against `BAO_<SUFFIX>`, but enumeration (`env::vars()`)
+            // cannot surface a `BUN_` key that only exists as `BAO_` — under
+            // `BAO_DEBUG=1`, JS `process.env.BUN_DEBUG` would be undefined.
+            // For every `BAO_<SUFFIX>` whose `BUN_<SUFFIX>` is absent from the
+            // host env, define `BUN_<SUFFIX>` on the snapshot with the BAO_
+            // value. An explicit `BUN_` always wins (same precedence as
+            // `getenv_z`). Pure JS-object definition — the host process env is
+            // never mutated here (`std::env::set_var` forbidden; issue #32 /
+            // B0 census row 16). `process.env.X = v` write semantics (the
+            // Proxy set trap → `__bao_setEnv`) are untouched.
+            // @trace REQ-CLI-001 — BAO_* alias visible on the process.env JS surface
+            for (bao_key, value) in bao_entries {
+                let bun_key = format!("BUN_{}", &bao_key["BAO_".len()..]);
+                // Explicit BUN_ wins: the host-env pass above already defined
+                // it from env::vars(); never overwrite with the BAO_ value.
+                if ::std::env::var_os(&bun_key).is_some() {
+                    continue;
+                }
+                let c_key = ZBox::from_bytes(bun_key.as_bytes());
                 let c_val = ZBox::from_bytes(value.as_bytes());
                 let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
                 if !val_str.is_null() {

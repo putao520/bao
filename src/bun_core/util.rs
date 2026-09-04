@@ -349,7 +349,39 @@ impl core::ops::Deref for ZStr {
 /// `libc::getenv`; on Windows scans `environ` case-insensitively.
 ///
 /// Port of `bun.zig:getenvZ` / `getenvZAnyCase`.
+///
+/// BAO_* alias (bao-specific, no Bun counterpart): a `BUN_<SUFFIX>` lookup
+/// that misses the host environment falls back to `BAO_<SUFFIX>`. An explicit
+/// `BUN_<SUFFIX>` always wins — the precedence of the retired
+/// `BaoRuntime::init_env_aliases` `set_var` guard that this read-time
+/// resolution replaces (issue #32 / B0 census row 16): a library constructor
+/// must not mutate the host process environment, so the alias is resolved
+/// here, at the single read primitive every keyed `BUN_*` consumer funnels
+/// through (`env_var.rs` declarations and direct `getenv_z` call sites).
+// @trace REQ-CLI-001 — BAO_* → BUN_* alias resolved at the env read layer
 pub fn getenv_z(key: &ZStr) -> Option<&'static [u8]> {
+    if let Some(v) = getenv_z_direct(key) {
+        return Some(v);
+    }
+    let alias = bao_alias_key(key)?;
+    getenv_z_direct(alias.as_zstr())
+}
+
+/// Build the `BAO_<suffix>` alias key for a `BUN_<suffix>` lookup key.
+/// Returns `None` for keys without the `BUN_` prefix (nothing to alias).
+// @trace REQ-CLI-001 — BAO_* → BUN_* alias resolved at the env read layer
+fn bao_alias_key(key: &ZStr) -> Option<ZBox> {
+    let suffix = key.as_bytes().strip_prefix(b"BUN_")?;
+    let mut buf = Vec::with_capacity(b"BAO_".len() + suffix.len() + 1);
+    buf.extend_from_slice(b"BAO_");
+    buf.extend_from_slice(suffix);
+    // ZBox::from_vec appends the NUL terminator.
+    Some(ZBox::from_vec(buf))
+}
+
+/// Host-env-only lookup (no BAO_ alias fallback) — the pre-alias half of
+/// [`getenv_z`].
+fn getenv_z_direct(key: &ZStr) -> Option<&'static [u8]> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = key;
@@ -374,7 +406,7 @@ pub fn getenv_z(key: &ZStr) -> Option<&'static [u8]> {
         // populated at startup by `bun_sys::windows::env::convert_env_to_wtf8`
         // (main.zig:47). The block is `Box::leak`'d for process lifetime so
         // `'static` borrows here are sound.
-        getenv_z_any_case(key)
+        getenv_z_any_case_direct(key)
     }
 }
 
@@ -399,7 +431,22 @@ pub fn c_environ() -> *const *const core::ffi::c_char {
 
 /// `bun.getenvZAnyCase` — case-insensitive env lookup (used on POSIX for
 /// CI-detection vars where casing varies across providers).
+///
+/// BAO_* alias: same read-time fallback as [`getenv_z`] — a `BUN_<SUFFIX>`
+/// miss retries `BAO_<suffix>` (case-insensitively), so any-case consumers
+/// (e.g. output.rs `BUN_DEBUG_<tag>`) keep seeing `BAO_*` aliases.
+// @trace REQ-CLI-001 — BAO_* → BUN_* alias resolved at the env read layer
 pub fn getenv_z_any_case(key: &ZStr) -> Option<&'static [u8]> {
+    if let Some(v) = getenv_z_any_case_direct(key) {
+        return Some(v);
+    }
+    let alias = bao_alias_key(key)?;
+    getenv_z_any_case_direct(alias.as_zstr())
+}
+
+/// Host-env-only case-insensitive lookup (no BAO_ alias fallback) — the
+/// pre-alias half of [`getenv_z_any_case`].
+fn getenv_z_any_case_direct(key: &ZStr) -> Option<&'static [u8]> {
     #[cfg(unix)]
     unsafe {
         // SAFETY: `environ` is the C env block; entries are NUL-terminated `KEY=VALUE`.

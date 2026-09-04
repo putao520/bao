@@ -19,7 +19,14 @@ pub struct BaoRuntime {
 
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
-        Self::init_env_aliases();
+        // BAO_* → BUN_* env aliasing is resolved at the env read layer
+        // (`bun_core::getenv_z` / `getenv_z_any_case`): a `BUN_<SUFFIX>` lookup
+        // that misses falls back to `BAO_<SUFFIX>` (explicit BUN_ wins). The
+        // constructor no longer copies BAO_* into the host process env via
+        // `std::env::set_var` — a library constructor must not irreversibly
+        // mutate the host environment (issue #32 / B0 census row 16;
+        // the retired `init_env_aliases` lived here).
+        // @trace REQ-CLI-001 — alias contract preserved, moved to read time
         // @trace REQ-H3-001: 默认启用 h3/HTTP3 fetch 能力（BAO 是正常 BUN）。
         // 在 HTTP 线程启动前设置，确保 bun_http::h3_alt_svc_enabled() 返回 true，
         // fetch() 默认支持 Alt-Svc 协商 + force_http3 显式协议选项。
@@ -38,19 +45,6 @@ impl BaoRuntime {
         // exitCode set by a listener is respected by the CLI main loop.
         ctx.set_post_eval_hook(crate::bun_api::post_eval_drain_then_exit);
         ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard })
-    }
-
-    fn init_env_aliases() {
-        for (key, value) in ::std::env::vars() {
-            if let Some(suffix) = key.strip_prefix("BAO_") {
-                let bun_key = format!("BUN_{}", suffix);
-                if ::std::env::var(&bun_key).is_err() {
-                    unsafe {
-                        ::std::env::set_var(&bun_key, &value);
-                    }
-                }
-            }
-        }
     }
 
     pub fn eval(

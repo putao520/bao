@@ -156,15 +156,34 @@ Do not assume these are bugs; they are audit anchors:
 
 - 2026-09-02 (daily-ops live): taxonomy applied to the standing 2026-08-30 triage backlog — the 39 items judged "absorb" are re-labeled DIRECT-ABSORB (no re-triage). Batch 1 landed in commit `c0a09301`: bd630c1d7e (errno: out-of-table kernel errno → EUNKNOWN, in-crate transmute count now 0), 79936e42ab (JSON string formatters escape lone surrogates / malformed UTF-8), d578a8c70d (json5 escape errors point at the offending character), 77d916c56e (scoped debug log single write(2)), 1beee7ae72 (CSS tokens printed as CSS in parse errors). Verification: scoped nextest over the 6 touched crates — 127 run / 127 passed / 1 skipped / 0 failed. Backlog 58 → 53; 85 further bun commits in-window remain untriaged (nine-way taxonomy mandatory for them). Adjacent pre-existing divergence registered, out of batch scope: `src/highway` `index_of_needs_escape_for_javascript_string` fast path returns the first `\` before an earlier quote char (upstream SIMD returns first-overall; reachable via `quote_for_json` today).
 
+### B0 — Process/IPC architecture census (2026-09-05, issue #32)
+
+Full census table (50 rows + 8-scope-row coverage statement): `.plans/b0-census-2026-09-05.md` (companion file, this entry is the summary + pointer).
+
+Coverage result per §4 B0 scope: internal spawn/fork/exec helpers = **zero internal-orchestration hits** (all spawns are public API semantics or CLI entries); internal IPC = **zero process-shaped transport** (typed mpsc channels already; the one socketpair `IpcChannel` exists only as public child_process/cluster IPC support); daemon/background helper processes = **zero hit**; internal worker processes/compile/installer/runtime helpers = **zero hit** (workers are threads; lifecycle scripts are npm public contract; TestParallelWorker/MultiRun/FilterRun/Cron/Chrome exit-kinds registered but runner-less, dormant); process-global mutable state = 15 RUNTIME-LOCALIZE rows; PID/exit/signal lifecycle = orderly-exit already TLS+drop-chain, signal-forwarding quartet is windowed public spawnSync semantics, `Global::exit`/ParentDeathWatchdog machinery dormant from all live bao-layer paths; crash isolation = zero internal OS-process isolation (KEEP-OS-ISOLATION adjudication: none required); shutdown/error paths = bao layer returns control to host (only `bao_bin` main exits the process).
+
+Label distribution (closed nine-class set, unknown=0): PUBLIC-PROCESS-SEMANTICS 12 · KEEP-OS-ISOLATION 0 · THREAD-TRANSPOSE 0 remaining · TASK-TRANSPOSE 1 · CHANNEL-TRANSPOSE 0 remaining · RUNTIME-LOCALIZE 15 · TLS-LOCALIZE 0 remaining · ALREADY-TRANSPOSED 12 · N/A 10.
+
+Top-3 transposition slice candidates (ranked correctness/lifecycle > resource ownership > host-process safety > simplification > performance):
+1. **UNBLOCKED** — `src/bao_runtime/src/runtime.rs:43-55` `init_env_aliases()` mutates host process env via `std::env::set_var` inside the library constructor (`BaoRuntime::new`). RUNTIME-LOCALIZE. UB-adjacent under threads, irreversible, cross-runtime interference, hottest library entry point.
+2. **UNBLOCKED** — `src/bao_stealth/src/http2.rs:186` `GLOBAL_HTTP2_FINGERPRINT` process-global: per-runtime stealth profiles fight over one H2 fingerprint while TLS/JS fingerprints are per-realm → detectable inconsistency. RUNTIME-LOCALIZE; per-realm keying pattern already exists (`engine_props.rs:333`).
+3. **UNBLOCKED (largest)** — detached-thread cluster (row 43 of census: CDP server thread `bao_browser/src/lib.rs:574` never joined; WS-connect/fs/crypto/build per-op threads; per-child `pipe_poll_thread`): mechanism already threads, remaining gap is cancel/drain/join ownership on `BaoRuntime::drop`. TASK-TRANSPOSE; v1 = CDP server thread stop+join.
+
+Blocked rows (documented): servo per-runtime Opts (servo upstream process-global `OnceLock<Opts>`); `NODE_REALM_BY_WEBVIEW`/`PAGE_GLOBAL_BY_WEBVIEW` multi-instance keying (#23 Realm topology); console timers/counter scoping (product-semantics ruling needed).
+
+Permanent invariants carried into B1-B3: no bao-layer path may reach `bun_core::Global::exit`; `ParentDeathWatchdog` and crash auto-reload stay CLI-host-only (never armed from library paths).
+
+Bun references verified read-only at local clone HEAD `e85606d484` (2026-09-05): `src/jsc/ipc.zig`, `src/runtime/api/bun/process.zig:318-406` (WaiterThread), `src/runtime/api/bun/subprocess.zig`/`spawn.zig`, `src/install/PackageManager.rs:84` (exact GLOBAL_CTX mirror), `src/bun_core/Global.zig:103-230` (is_exiting/Bun__onExit), `src/bun.zig:1574/1686/2012`, `src/jsc/VirtualMachine.zig:327` (threadlocal vm), `src/jsc/web_worker.zig`, `src/io/ParentDeathWatchdog.zig`, `src/runtime/cli/test/parallel/Worker.zig`.
+
 ### BCE residual
-Unknown until B0 census.
+B0 census (2026-09-05): zero live BUG-class internal-process assumptions — every process-exit/process-global residue found is either already transposed (TLS/channel/thread + orderly-exit), public process semantics, or dormant executable-tier machinery unreachable from bao-layer paths (invariants recorded above). Transposition targets are architecture debt (B1-B3), not open BCE cases.
 
 ### Simplification ledger
 None yet.
 
 ## 9. Next single action
 
-**Execute #32 Phase B0 census and, in the same run, complete one real process/process-local/IPC -> thread/runtime/channel transposition slice with tests.**
+**B0 census is complete (2026-09-05, ledger §8 + `.plans/b0-census-2026-09-05.md`). Execute the #32 transposition slice: candidate #1 — localize `init_env_aliases` (`src/bao_runtime/src/runtime.rs:43-55`) so `BaoRuntime::new()` never mutates the host process environment (runtime-scoped `BAO_*` alias reads), with positive/negative/lifecycle tests.** Candidates #2 (per-runtime H2 fingerprint) and #3 v1 (CDP server thread stop+join on drop) follow in that order.
 
 ## 10. Definition of Done
 
