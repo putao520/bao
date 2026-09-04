@@ -5,7 +5,7 @@
 name = "bao-core"
 # 0.0.2 (2026-08-19): README facade docs refresh (6a29ca8e/9574254e) +
 # full 0.1.1 dep-tree convergence beneath.
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 license.workspace = true
 description = "Bao unified library — SpiderMonkey + servo + Node/Bun API + CDP + Stealth (always-on full stack)"

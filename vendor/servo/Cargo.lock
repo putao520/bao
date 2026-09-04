@@ -876,13 +876,12 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
  "arboard",
  "bao-ipc-channel",
- "bao-servo",
  "bao-servo-background-hang-monitor",
  "bao-servo-base",
  "bao-servo-bluetooth",
@@ -1120,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1219,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1428,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1789,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -2041,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2592,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2636,7 +2635,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",

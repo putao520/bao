@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2058,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "bao_bundler"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "bao_engine",
  "bun_alloc",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bao_engine",
  "bun_uws",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp_client"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bao_cdp",
  "bao_engine",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2187,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3431,7 +3431,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
