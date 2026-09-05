@@ -1,7 +1,7 @@
 [package]
 name = "bun_http"
 # 0.1.1 (2026-08-19): 15-station ChanVec facade conversion — dual-channel green (e54bfb47).
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
