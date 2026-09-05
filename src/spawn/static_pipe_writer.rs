@@ -199,9 +199,16 @@ impl<P: StaticPipeWriterProcess> StaticPipeWriter<P> {
         }
         #[cfg(not(windows))]
         {
+            use bun_sys::FdExt as _;
             // Zig: `this.stdio_result.?` — on POSIX `StdioResult` is `?bun.FD`.
-            match self.writer.start(self.stdio_result.unwrap(), true) {
+            let fd = self.stdio_result.unwrap();
+            match self.writer.start(fd, true) {
                 bun_sys::Result::Err(err) => {
+                    // Upstream 3044dc6834: the writer did not take `fd` on Err
+                    // (failed start() releases its poll without closing the
+                    // fd); nothing else closes it — the caller closes it here.
+                    self.stdio_result = None;
+                    fd.close();
                     // start() failed: `started` stays false so no release
                     // site fires — release start()'s `+1` here.
                     // SAFETY: `self` is the live `Self` we ref'd at the top

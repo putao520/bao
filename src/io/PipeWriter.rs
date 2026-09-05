@@ -576,6 +576,8 @@ impl<Parent: PosixBufferedWriterParent> PosixBufferedWriter<Parent> {
 
     /// Zig accepts `bun.FD`, `*bun.MovableIfWindowsFd`, or `bun.MovableIfWindowsFd`.
     // TODO(port): MovableIfWindowsFd overload — add an Into<Fd> bound or a separate fn.
+    ///
+    /// On `Err` the writer holds nothing; `fd` is still the caller's to close.
     pub fn start(&mut self, rawfd: Fd, pollable: bool) -> sys::Result<()> {
         let fd = rawfd;
         self.pollable = pollable;
@@ -584,7 +586,8 @@ impl<Parent: PosixBufferedWriterParent> PosixBufferedWriter<Parent> {
             self.handle = PollOrFd::Fd(fd);
             return sys::Result::Ok(());
         }
-        let poll = match self.get_poll() {
+        let existing_poll = self.get_poll();
+        let poll = match existing_poll {
             Some(p) => p,
             None => {
                 let p = self.create_poll(fd);
@@ -596,6 +599,16 @@ impl<Parent: PosixBufferedWriterParent> PosixBufferedWriter<Parent> {
 
         match poll.register_with_fd(loop_, FilePollKind::Writable, fd) {
             sys::Result::Err(err) => {
+                // Upstream 3044dc6834: a failed start() is side-effect free.
+                // Release the poll created by THIS start() without closing the
+                // fd (upstream `PollOrFd::close_without_closing_fd`; bao composes
+                // the existing `close_impl(.., close_fd: false)`), leaving the fd
+                // with the caller. A poll left over from an earlier start() is
+                // not touched: it still holds that earlier fd, which the writer
+                // does own.
+                if existing_poll.is_none() {
+                    self.handle.close_impl(None, None::<fn(*mut c_void)>, false);
+                }
                 return sys::Result::Err(err);
             }
             sys::Result::Ok(()) => {
@@ -1097,6 +1110,7 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
         );
     }
 
+    /// On `Err` the writer holds nothing; `fd` is still the caller's to close.
     pub fn start(&mut self, fd: Fd, is_pollable: bool) -> sys::Result<()> {
         if !is_pollable {
             self.close();
@@ -1106,7 +1120,8 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
 
         // SAFETY: parent BACKREF set via set_parent; outlives this writer.
         let loop_ = unsafe { Parent::event_loop(self.parent()) };
-        let poll = match self.get_poll() {
+        let existing_poll = self.get_poll();
+        let poll = match existing_poll {
             Some(p) => p,
             None => {
                 let p = FilePollRef::init(
@@ -1121,6 +1136,16 @@ impl<Parent: PosixStreamingWriterParent> PosixStreamingWriter<Parent> {
 
         match poll.register_with_fd(loop_.loop_(), FilePollKind::Writable, fd) {
             sys::Result::Err(err) => {
+                // Upstream 3044dc6834: a failed start() is side-effect free.
+                // Release the poll created by THIS start() without closing the
+                // fd (upstream `PollOrFd::close_without_closing_fd`; bao composes
+                // the existing `close_impl(.., close_fd: false)`), leaving the fd
+                // with the caller. A poll left over from an earlier start() is
+                // not touched: it still holds that earlier fd, which the writer
+                // does own.
+                if existing_poll.is_none() {
+                    self.handle.close_impl(None, None::<fn(*mut c_void)>, false);
+                }
                 return sys::Result::Err(err);
             }
             sys::Result::Ok(()) => {}
