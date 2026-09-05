@@ -2333,7 +2333,8 @@ lexer_impl_header! {
                     let offset = self.scan_pragma(
                         self.start + i + (text.len() - rest.len()),
                         chunk,
-                        false,
+                        CommentKind::MultiLine,
+                        PureAnnotation::Allow,
                     );
 
                     rest = &rest[
@@ -2437,6 +2438,8 @@ lexer_impl_header! {
     fn scan_single_line_comment(&mut self) {
         // PERF: keep the source slice register-resident — see `next_codepoint_with`.
         let contents: &[u8] = self.contents;
+        // Only the first `#` / `@` of a `//` comment can start a `__PURE__` annotation.
+        let mut first_marker = true;
         loop {
             // Find index of newline (ASCII/Unicode), non-ASCII, '#', or '@'.
             if let Some(relative_index) =
@@ -2461,13 +2464,30 @@ lexer_impl_header! {
                     0x23 | 0x40 => {
                         if !J::IS_JSON {
                             let pragma_trigger_pos = self.end; // Position OF #/@
+                            // `@__PURE__` / `#__PURE__` is an annotation only when it is
+                            // the first word: only whitespace may sit between `//` and
+                            // the marker. Text after the marker is still allowed.
+                            let pure = if first_marker
+                                && strings::is_all_whitespace(
+                                    &contents[self.start + 2..pragma_trigger_pos],
+                                )
+                            {
+                                PureAnnotation::Allow
+                            } else {
+                                PureAnnotation::Ignore
+                            };
+                            first_marker = false;
                             // Use remaining() which starts *after* the consumed #/@
                             // PORT NOTE: reshaped for borrowck — `remaining()` borrows
                             // `self.contents`; `scan_pragma` needs `&mut self`.
                             // Detach via `StoreStr` (arena-owned, lives for parse).
                             let chunk = js_ast::StoreStr::new(self.remaining());
-                            let offset =
-                                self.scan_pragma(pragma_trigger_pos, chunk.slice(), true);
+                            let offset = self.scan_pragma(
+                                pragma_trigger_pos,
+                                chunk.slice(),
+                                CommentKind::SingleLine,
+                                pure,
+                            );
 
                             if offset > 0 {
                                 // Pragma found (e.g., __PURE__).
@@ -2511,9 +2531,12 @@ lexer_impl_header! {
         &mut self,
         offset_for_errors: usize,
         chunk: &[u8],
-        allow_newline: bool,
+        comment: CommentKind,
+        pure: PureAnnotation,
     ) -> usize {
-        if !self.has_pure_comment_before {
+        // A `//` comment ends at the line break, so a pragma argument stops there.
+        let allow_newline = comment == CommentKind::SingleLine;
+        if pure == PureAnnotation::Allow && !self.has_pure_comment_before {
             if strings::has_prefix_with_word_boundary(chunk, b"__PURE__") {
                 self.has_pure_comment_before = true;
                 return "__PURE__".len();
@@ -3968,6 +3991,19 @@ pub fn latin1_identifier_continue_length_scalar(name: &[u8]) -> usize {
     }
 
     name.len()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommentKind {
+    SingleLine,
+    MultiLine,
+}
+
+/// Whether a `__PURE__` match at this position marks the next call.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PureAnnotation {
+    Allow,
+    Ignore,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
