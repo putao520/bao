@@ -66,6 +66,60 @@ fn needs_escape_for_js_string() {
     );
 }
 
+/// Regression: quote appearing BEFORE a backslash must win the index — the
+/// old short-circuit memchr returned the (larger) backslash index, leaving a
+/// bare quote in the emitted JSON string (upstream SIMD returns
+/// first-overall).
+#[test]
+fn needs_escape_quote_before_backslash_returns_quote_index() {
+    // `a"b\c`: quote at 1 precedes backslash at 3 → must return 1.
+    assert_eq!(
+        index_of_needs_escape_for_javascript_string(b"a\"b\\c", b'"'),
+        Some(1),
+    );
+    // Same shape with single-quote strings.
+    assert_eq!(
+        index_of_needs_escape_for_javascript_string(b"a'b\\c", b'\''),
+        Some(1),
+    );
+}
+
+/// Backslash before quote keeps returning the (minimal) backslash index.
+#[test]
+fn needs_escape_backslash_before_quote_returns_backslash_index() {
+    // `a\b"c`: backslash at 1 precedes quote at 3.
+    assert_eq!(
+        index_of_needs_escape_for_javascript_string(b"a\\b\"c", b'"'),
+        Some(1),
+    );
+    // Backslash-only content returns the first backslash.
+    assert_eq!(
+        index_of_needs_escape_for_javascript_string(b"hello\\world", b'"'),
+        Some(5),
+    );
+}
+
+/// Control-class bytes (>= 127, < 0x20, `$` for backtick strings) appearing
+/// before both memchr hits must be returned instead of the memchr minimum.
+#[test]
+fn needs_escape_control_char_before_backslash_and_quote() {
+    // `\n` at 1 precedes quote at 3 and backslash at 5.
+    assert_eq!(
+        index_of_needs_escape_for_javascript_string(b"a\nb\"c\\d", b'"'),
+        Some(1),
+    );
+    // DEL (0x7F, >= 127) at 1 precedes quote at 3 and backslash at 5.
+    assert_eq!(
+        index_of_needs_escape_for_javascript_string(b"a\x7Fb\"c\\d", b'"'),
+        Some(1),
+    );
+    // `$` at 1 in a backtick string precedes backslash at 3 (no quote hit).
+    assert_eq!(
+        index_of_needs_escape_for_javascript_string(b"a$b\\c", b'`'),
+        Some(1),
+    );
+}
+
 #[test]
 fn multiline_comment_interesting_chars() {
     assert_eq!(

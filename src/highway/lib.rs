@@ -193,16 +193,44 @@ pub fn index_of_needs_escape_for_javascript_string(slice: &[u8], quote_char: u8)
     if slice.is_empty() {
         return None;
     }
-    // Try single-byte fast paths for the two most common escapes.
+    // Fast paths: run BOTH single-byte memchr probes and keep the minimum,
+    // mirroring upstream's SIMD version (`IndexOfNeedsEscapeForJavaScriptStringImpl`
+    // in highway_strings.cpp), which ORs every escape class into one mask and
+    // returns the first-overall index. Short-circuiting on the backslash hit
+    // alone would return a later index when `quote_char` (or a control-class
+    // byte) appears earlier, emitting a bare quote into the JSON string.
+    let mut fast_min: Option<usize> = None;
     if quote_char != b'\\' {
         if let Some(idx) = memchr::memchr(b'\\', slice) {
-            return Some(idx as u32);
+            fast_min = Some(idx);
         }
     }
     if quote_char != b'$' && quote_char != b'\\' {
         if let Some(idx) = memchr::memchr(quote_char, slice) {
-            return Some(idx as u32);
+            fast_min = Some(fast_min.map_or(idx, |min| min.min(idx)));
         }
+    }
+    if let Some(min) = fast_min {
+        // Control-class bytes (>= 127, < 0x20, `$`, `\r`, `\n`) may precede
+        // both memchr hits; scan the prefix [0, min) with the slow-path
+        // predicate so the earliest escape-worthy index wins.
+        for (i, &c) in slice[..min].iter().enumerate() {
+            if (c >= 127 || c < 0x20 || c == b'$' || c == b'\r' || c == b'\n')
+                && c != quote_char
+                && c != b'\\'
+            {
+                if cfg!(debug_assertions) {
+                    debug_assert!(
+                        c >= 127 || c < 0x20 || c == b'\\' || c == quote_char || c == b'$' || c == b'\r' || c == b'\n',
+                        "Invalid character found in indexOfNeedsEscapeForJavaScriptString: U+{:x}. Full string: \"{}\"",
+                        c,
+                        bstr::BStr::new(slice),
+                    );
+                }
+                return Some(i as u32);
+            }
+        }
+        return Some(min as u32);
     }
     for (i, &c) in slice.iter().enumerate() {
         if (c >= 127 || c < 0x20 || c == b'$' || c == b'\r' || c == b'\n')
