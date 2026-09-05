@@ -1,6 +1,6 @@
 [package]
 name = "bun_lsquic_sys"
-version = "0.1.6"
+version = "0.1.7"
 description = "Compiled lsquic C library (LiteSpeed QUIC/HTTP3) with lsqpack + lshpack"
 edition = "2021"
 repository.workspace = true
