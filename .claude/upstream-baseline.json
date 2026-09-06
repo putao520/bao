@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-08-31",
-  "updated_by": "daily-ops-2026-08-31-wave",
+  "updated_at": "2026-09-07",
+  "updated_by": "daily-ops-2026-09-07-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "fb657755e9677c8987a2f5775f0e54dbfb538848",
-      "baseline_date": "2026-08-31",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。窗口 225e617fc8..fb657755e9 21 commits 全判定收口(wave-b 2026-08-27..31,E1-E7 落盘,08-28/29 file_lock 故障停摆后续跑收口):吸收 12(f4d864bb56 fetch SNI/cert 身份永不取自 Host 头,横贯 AsyncHTTP/HTTPContext/InternalState/ProxyTunnel/h2/h3;84923b46dc spawnSync+GC keep-alive 失衡修复(SpawnSyncEventLoop);ca521aa89f chunk folding+死跨块 import 剔除,mergeSmallChunks.rs 支配树新建;a28eae342a module_info 定宽 tagged wire format(StandaloneModuleGraph);731aa92dad 跨块绑定全 bundle 单名,crossChunkNames.rs 新建;1a50bfa2c4 --splitting --target bun 下 require() ES module 为 chunk 边界(ImportRecordFlags::CROSS_CHUNK_REQUIRE bit16+can_be_lazy_chunk,bao 分叉 bit 位);ca214f2b5d 未压缩跨块绑定二次方命名修复;192116610b 跨块 import 按源求值序排序;e2204e3f31 wait loop 前排空 deferred peers;06820dc10f isolated store early-dedupe key 含未解析 peers;93eecdc98b package-lock 迁移后 github deps 静默丢弃修复;82123d3a61 bun_ptr RefPtr Drop 释放+移除 ScopedRef/IntrusiveRc/DestructorCtx,src/ptr 净删 832/增 657+51 调用点)+前向吸收 1(49ff888ffe refcounted teardown impl Drop/destroy hooks 移除——属下一窗口 fb65..origin,E7 同域提前对齐吸收,下轮 triage 按已含处理)+登记 1(97420a74fb StringImpl 跨线程 atom 表,String 域已分叉 own-ref 沿 3e8b2e6b1e 台账)+不适用 8(fb657755e9 纯测试清理;5c0f449b6d junit runner 域无宿主差异;63afd77bd2 WebKit;6d13a3a9bf Windows WTF;a3745c2642 bytecode bao 不产;52baef6801 WS 客户端宿主在 http_jsc 无镜像;7ae34259d1 bun:test setSystemTime/timeOrigin bao bun_test 无该 API(grep 实证零命中);34396b65d7 NODE_COMPILE_CACHE standalone bao 无该 env 分支(grep 实证零命中))。测试基建:h2_fetch_node_stack_e2e 满队 deadline 饥饿隔离(.config/nextest.toml threads-required;套件 7444→10478 并发压力使 20s 硬限越限,判别矩阵:默认 j 三跑各倒一个不同 h2 e2e/套件 -j4 1747 全绿/隔离 0.2s=90x 余量→调度饥饿非逻辑回归)"
+      "baseline": "d316760e8cae0d69ae927898d5afc933ecf34671",
+      "baseline_date": "2026-09-07",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 f42e980255..d316760e8c 21 commits 全判定(triage-bun-2026-09-07.md):吸收 1(e8541037c4 PathBuffer uninit UB→pool,177 调用点 sweep,登记下批队列首位)/ALREADY 3(indexOfLine 解码器天然免疫、shell then() 预结算 promise、failed-spawn fd RAII 已宽)/N-A-HOST 5(util.inspect 名单机制、test --parallel、ipc envelope、subprocess stdio ReadableStream、Bun.file().stream())/N-A 10(8 test/docs+CI 脚本+JSC/ICU 构建图)/不可达 2(07f629a4c6 dns EAI_AGAIN:init_eai 零调用+活映射已正确,附 SEMANTIC-PORT 登记 dns.lookup 空结果 vs Node EAI error;0131d75016 sourcemap 缓存:无磁盘 load 路径,Phase 2 落盘须带 is_valid_blob 登记债)。本波吸收落地下批队列 4 项(f42e980255 zstd drain/bdbe669b15 brotli drain/86b2e060cf lockfile pool-by-bytes/c01965ff72 [hash] widen)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "e8b5b8aa1de4c31e9b9cd1dc376a723601fcccbf",
-      "baseline_date": "2026-08-31",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md),本窗口触及 script_thread.rs 一处,BAO 补丁锚点 12 处存活验证(router_proxy BCE-20260627-009/disable_script_debugger BCE-20260621-002/embedder 回调)。窗口 94d656caa..e8b5b8aa1d 17 commits:吸收 11(36cc4ea5e DOMString 静态串零拷贝高效转换(domstring.rs);91eb2b059 fetch Headers JS API String 降分配(fetch/headers.rs 迭代器);8b3cef87b GPU/GPUBindGroup/GPUBindGroupLayout/GPUBuffer/GPUColorWrite/GPUConvert 迁 script_webgpu——dom/webgpu 留 promise listener 双新文件+script_webgpu 增 datablock/traits/gpu 等七新文件;7bec306af choose-a-navigable 规范对齐(script_window_proxies/windowproxy);73d091761 live range 更新步骤规范对齐(range.rs);9f15757dd PaintWorkletGlobalScope borrow hazard 修复;8a42026ea WorkletThreadPool trait 化(worklet.rs+workletglobalscope.rs);7d060b53d Attr 节点内存仅测一次(b4b6d8c6a 细粒度内存报告域续篇);dc43f81f9 a11y bounds 并入常规树更新(layout/accessibility_tree.rs);1e373f15c Grid container baselines+子基线+坐标转换;b5624984e net Duration→ApproxDuration(net/http_cache.rs))+不适用 6(e8b5b8aa1 纯 docs;dc1693f28 chardetng bump;0743a7cdd csp bump;e83f31170 redox bump;13cd7dcdf ohos CI token;c4d8c0f7f android)。下一窗口 fb65..(bun 128@08-31 fetch)/e8b5..(servo 49@08-31 fetch)triage 见 /tmp/triage-{bun,servo}-2026-08-30.md(bun 99=吸收39/已含5/不适用53/需判2;servo 37=吸收19(6 BCE 重放)/不适用15/需判3 含 mozjs SM153esr LONG_TASK),58 项吸收增量登记 state.json pending 分批执行"
+      "baseline": "b422215605b811a4e6d0f196fb4599c7ea277301",
+      "baseline_date": "2026-09-07",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md)。窗口 fb160c4ca..b42221560 7 commits 全判定(triage-servo-2026-09-07.md):吸收 2(13ce4588e 键盘→execCommand、c38769e82 text/media no-quirks——与 09-06 队列 fb160c4ca about:blank/srcdoc origin 继承同波落地;script_thread.rs BCE 9 锚点三次 grep 零漂移;fb 重放的 E0277 根因=上游前置 3c4f721c1(删 FetchResponseListener for ParserContext)缺失,按上游已定型形态最小修复,其另一半 ScriptThread 参数化登记后续波单独移植)/族归并 3(d8671305a MicrotaksQueue→JSContext owned JobQueue 依赖 servo/mozjs#811→并入 a7b65192d SM153esr 长任务族,关联 SM-EVOLUTION #25;f20c81400 traced/rooted WebIDL callbacks+35041ab72 AsyncBluetoothListener rooted→463b9e444 rooting 迁移族)/N/A 2(android、WPT sync)"
     }
   }
 }

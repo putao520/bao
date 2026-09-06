@@ -181,9 +181,20 @@ B0 census (2026-09-05): zero live BUG-class internal-process assumptions — eve
 ### Simplification ledger
 None yet.
 
+### Slice #1 completion (recorded 2026-09-07; landed in `dad8135d`, batch-3 wave)
+
+`init_env_aliases` localization — **DONE, evidence**: `BaoRuntime::new()` no longer mutates host env (`src/bao_runtime/src/runtime.rs:26-28` retirement comment); alias resolved at the env read layer (`src/bun_core/util.rs:353-382` — `BUN_<SUFFIX>` miss falls back to `BAO_<SUFFIX>`, host-env-only variant preserved); zero direct `env::var("BUN_*")` reads remain in the bao layer; tests: `src/bao_runtime/tests/suite/env_alias_tests.rs` + `src/bao_cli/tests/cli_dispatch.rs:319`. (Ledger §9 had gone stale pointing at this slice; corrected 2026-09-07.)
+
+### 2026-09-07 (daily-ops live)
+
+- Nine-way taxonomy applied to the 21-commit bun window `f42e980255..d316760e8c`: ABSORB 1 (`e8541037c4` PathBuffer uninit UB → next-batch queue head; 177 call-site sweep) / ALREADY 3 / N-A-HOST 5 / N-A-UNREACHABLE 2 / N/A 10. Evidence: `.claude/daily-ops/triage-bun-2026-09-07.md`.
+- SEMANTIC-PORT registered: bao `dns.lookup` returns empty result on EAI failure (`node_dns.rs:1823` `unwrap_or_default` + JS shim `callback(null, "", 4)`) where Node reports `getaddrinfo EAI_*` — found while judging `07f629a4c6` (whose init_eai fold bug is unreachable in bao: zero callers, live mapping `gai_error_to_dns_code` already correct).
+- Batch-1 code: bun correctness ×4 queued from 09-06 (`f42e980255` zstd drain, `bdbe669b15` brotli drain, `86b2e060cf` install lockfile pool-by-bytes, `c01965ff72` bundler `[hash]` widen) + **#32 candidate #3 v1: CDP server thread stop+join** (`cdp-server/src/server.rs:93` run loop has no stop condition; `bao_browser/src/lib.rs:574` spawns without join; the existing `unpark()` is a no-op against a sleeping thread).
+- Candidate #2 premise revision (blocking re-rank, not execution): `GLOBAL_HTTP2_FINGERPRINT` (`bao_stealth/src/http2.rs:186`) is process-global, but so is the TLS wire config it mirrors — both set at the same lifecycle point (`bao_browser/src/runtime_bridge.rs:1258` `servo::set_stealth_tls_config` + `:1274` h2 snapshot). The census's "TLS per-realm vs H2 global" contrast only holds for the JS-visible face (`engine_props.rs:333` REALM_PROFILES). Per-page wire fingerprinting (TLS+H2 together) requires page-identity plumbing into the servo net connector — one architecture decision covering both surfaces, not an H2-only fix. Re-ranked below #3 v1.
+
 ## 9. Next single action
 
-**B0 census is complete (2026-09-05, ledger §8 + `.plans/b0-census-2026-09-05.md`). Execute the #32 transposition slice: candidate #1 — localize `init_env_aliases` (`src/bao_runtime/src/runtime.rs:43-55`) so `BaoRuntime::new()` never mutates the host process environment (runtime-scoped `BAO_*` alias reads), with positive/negative/lifecycle tests.** Candidates #2 (per-runtime H2 fingerprint) and #3 v1 (CDP server thread stop+join on drop) follow in that order.
+**#32 candidate #3 v1 — CDP server thread stop+join on drop — is in flight (2026-09-07 batch-1). On completion, the next single action is the re-scoped candidate #2: wire page-identity through to the servo net connector so BOTH `StealthTlsWireConfig` and the H2 fingerprint can be keyed per-page (single decision, both surfaces; `runtime_bridge.rs:1258/1274` is the seam).** Then the e8541037c4 PathBuffer pool sweep (177 call sites).
 
 ## 10. Definition of Done
 
