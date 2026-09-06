@@ -2729,37 +2729,10 @@ impl<'a> StringBuilder<'a> {
         Ok(())
     }
 
+    /// Keys the pool by the hash of `slice`, as `count` does, so it never writes uncounted bytes.
     #[inline]
     pub fn append<T: StringBuilderType>(&mut self, slice: &[u8]) -> T {
-        self.append_with_hash::<T>(slice, SemverStringBuilder::string_hash(slice))
-    }
-
-    /// SlicedString is not supported due to inline strings.
-    pub fn append_without_pool<T: StringBuilderType>(&mut self, slice: &[u8], hash: u64) -> T {
-        if SemverString::can_inline(slice) {
-            return T::from_init(self.string_bytes.as_slice(), slice, hash);
-        }
-        if cfg!(debug_assertions) {
-            debug_assert!(self.len <= self.cap); // didn't count everything
-            debug_assert!(self.ptr.is_some()); // must call allocate first
-        }
-
-        // `allocate()` resized `string_bytes` to `off + cap`; write via safe
-        // indexing instead of the cached raw `ptr` + `copy_nonoverlapping`.
-        let start = self.off + self.len;
-        let end = start + slice.len();
-        self.string_bytes[start..end].copy_from_slice(slice);
-        let final_slice = &self.string_bytes[start..end];
-        self.len += slice.len();
-
-        if cfg!(debug_assertions) {
-            debug_assert!(self.len <= self.cap);
-        }
-
-        T::from_init(self.string_bytes.as_slice(), final_slice, hash)
-    }
-
-    pub fn append_with_hash<T: StringBuilderType>(&mut self, slice: &[u8], hash: u64) -> T {
+        let hash = SemverStringBuilder::string_hash(slice);
         if SemverString::can_inline(slice) {
             return T::from_init(self.string_bytes.as_slice(), slice, hash);
         }
@@ -2787,6 +2760,31 @@ impl<'a> StringBuilder<'a> {
         }
 
         T::from_pooled(*string_entry.value_ptr, hash)
+    }
+
+    /// SlicedString is not supported due to inline strings.
+    pub fn append_without_pool<T: StringBuilderType>(&mut self, slice: &[u8], hash: u64) -> T {
+        if SemverString::can_inline(slice) {
+            return T::from_init(self.string_bytes.as_slice(), slice, hash);
+        }
+        if cfg!(debug_assertions) {
+            debug_assert!(self.len <= self.cap); // didn't count everything
+            debug_assert!(self.ptr.is_some()); // must call allocate first
+        }
+
+        // `allocate()` resized `string_bytes` to `off + cap`; write via safe
+        // indexing instead of the cached raw `ptr` + `copy_nonoverlapping`.
+        let start = self.off + self.len;
+        let end = start + slice.len();
+        self.string_bytes[start..end].copy_from_slice(slice);
+        let final_slice = &self.string_bytes[start..end];
+        self.len += slice.len();
+
+        if cfg!(debug_assertions) {
+            debug_assert!(self.len <= self.cap);
+        }
+
+        T::from_init(self.string_bytes.as_slice(), final_slice, hash)
     }
 }
 

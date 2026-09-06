@@ -191,7 +191,7 @@ impl CatalogMap {
                         .expect("infallible: is_string checked");
 
                     let dep_name_hash = StringBuilderNs::string_hash(dep_name_str);
-                    let dep_name = builder.append_with_hash::<String>(dep_name_str, dep_name_hash);
+                    let dep_name = builder.append::<String>(dep_name_str);
 
                     if let ExprData::EString(version_str) = &value.data {
                         let version_literal = builder.append::<String>(&version_str.data);
@@ -252,8 +252,7 @@ impl CatalogMap {
                                 .as_utf8_string_literal()
                                 .expect("infallible: is_string checked");
                             let dep_name_hash = StringBuilderNs::string_hash(dep_name_str);
-                            let dep_name =
-                                builder.append_with_hash::<String>(dep_name_str, dep_name_hash);
+                            let dep_name = builder.append::<String>(dep_name_str);
                             if let ExprData::EString(version_str) = &value.data {
                                 let version_literal = builder.append::<String>(&version_str.data);
                                 let buf = builder.string_bytes.as_slice();

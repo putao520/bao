@@ -480,7 +480,7 @@ pub fn parse_override_value(
     let literal_sliced = literal_string.sliced(string_bytes);
 
     let name_hash = SemverBuilder::string_hash(key);
-    let name = builder.append_with_hash::<SemverString>(key, name_hash);
+    let name = builder.append::<SemverString>(key);
 
     let version = match dependency::parse(
         name,
