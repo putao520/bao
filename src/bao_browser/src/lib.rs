@@ -571,12 +571,21 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         // Arc<EventBroadcaster> shares the same SessionMap with the server.
         let broadcaster = server.broadcaster();
 
-        let _handle = std::thread::spawn(move || {
+        // Grab the stop handle BEFORE moving the server into its thread —
+        // the spawner signals shutdown through this shared flag.
+        let stop_flag = server.stop_handle();
+        let server_thread = std::thread::spawn(move || {
             let _ = server.run();
         });
 
         let result = runtime.run_with_bridge(bridge_rx, servo_event_rx, broadcaster);
-        _handle.thread().unpark();
+        // Deterministic CDP shutdown (B0 census #3): signal the cooperative
+        // stop and join the server thread so the listener port, registry and
+        // sessions are released before run_browser returns. Bounded: run()
+        // checks the flag each iteration (10ms cadence), so the join only
+        // waits on the already-signaled exit path.
+        stop_flag.store(true, std::sync::atomic::Ordering::Release);
+        let _ = server_thread.join();
         return result;
     }
 

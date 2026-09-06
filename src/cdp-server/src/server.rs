@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,6 +27,10 @@ pub struct CdpServer {
     target_provider: Option<Arc<dyn TargetProvider>>,
     broadcaster: Arc<EventBroadcaster>,
     sessions: Arc<Mutex<HashMap<String, Arc<crate::session::SessionHandle>>>>,
+    /// Cooperative stop signal. `stop()` (or a `stop_handle()` store from the
+    /// spawning thread) sets it; the run loop observes it each iteration
+    /// (10ms cadence) and exits to finalize remaining sessions.
+    stop_flag: Arc<AtomicBool>,
     /// Receiver for typed console messages forwarded from servo delegates.
     /// Each message is either a structured CDP event (ConsoleMessage::Event)
     /// or a plain log (ConsoleMessage::Log).
@@ -56,6 +61,7 @@ impl CdpServer {
             target_provider: None,
             broadcaster,
             sessions,
+            stop_flag: Arc::new(AtomicBool::new(false)),
             console_rx: None,
         }
     }
@@ -89,7 +95,24 @@ impl CdpServer {
         )
     }
 
-    /// Main event loop. Blocks until shutdown.
+    /// Request shutdown: the run loop checks this flag at the top of each
+    /// iteration (10ms cadence), finalizes remaining sessions and returns
+    /// `Ok(())`. For callers that move the server into its own thread,
+    /// grab `stop_handle()` before the move.
+    pub fn stop(&self) {
+        self.stop_flag.store(true, Ordering::Release);
+    }
+
+    /// Shared stop flag for the thread that owns the running server (the
+    /// run-loop thread owns `self`, so the spawner signals through this
+    /// handle). Store `true` (Release) to request shutdown; `run()`
+    /// observes it within one loop iteration.
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop_flag)
+    }
+
+    /// Main event loop. Blocks until `stop()` (or a `stop_handle()` store),
+    /// then finalizes any remaining sessions and returns `Ok(())`.
     pub fn run(&mut self) -> Result<(), String> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let listener = TcpListener::bind(&addr).map_err(|e| format!("bind: {}", e))?;
@@ -104,6 +127,12 @@ impl CdpServer {
         );
 
         loop {
+            // Cooperative stop: observed every iteration, so shutdown
+            // latency is bounded by the 10ms sleep at the loop tail.
+            if self.stop_flag.load(Ordering::Acquire) {
+                break;
+            }
+
             // Drain session events (not used currently, but placeholder for future command channel).
             self.check_session_timeouts();
 
@@ -229,6 +258,25 @@ impl CdpServer {
 
             std::thread::sleep(Duration::from_millis(10));
         }
+
+        // Shutdown: finalize any remaining sessions with the same semantics
+        // as the per-iteration to_remove path (state -> Closed +
+        // notify_session_destroyed), then release the listener by returning.
+        let drained: Vec<(String, Arc<crate::session::SessionHandle>)> = match self.sessions.lock()
+        {
+            Ok(mut sessions) => sessions.drain().collect(),
+            Err(_) => Vec::new(),
+        };
+        for (_id, handle) in drained {
+            if let Ok(mut session) = handle.session.lock() {
+                let domains = session.enabled_domains();
+                let sid = session.session_id().to_string();
+                session.finalize();
+                drop(session);
+                self.registry.notify_session_destroyed(&domains, &sid);
+            }
+        }
+        Ok(())
     }
 
     fn handle_connection(&self, mut stream: TcpStream) {
@@ -444,6 +492,15 @@ mod tests {
         let server = CdpServer::new(ServerConfig::default());
         let _registry = server.registry();
         let _broadcaster = server.broadcaster();
+    }
+
+    #[test]
+    fn cdp_server_stop_sets_shared_flag() {
+        let server = CdpServer::new(ServerConfig::default());
+        let handle = server.stop_handle();
+        assert!(!handle.load(Ordering::Acquire));
+        server.stop();
+        assert!(handle.load(Ordering::Acquire));
     }
 
     // --- Console receiver tests (REQ-CDP-007) ---

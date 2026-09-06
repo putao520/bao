@@ -25,6 +25,7 @@ mod registry_session_event_deep_tests;
 mod server_api_boundary_tests;
 mod server_api_lifecycle_deep_tests;
 mod server_config_builder_deep_tests;
+mod server_stop_tests;
 mod server_transport_protocol_deep_tests;
 mod stress_recovery_tests;
 mod transport_http_parse_tests;
