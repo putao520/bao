@@ -2542,6 +2542,96 @@ pub enum PlaceholderField {
     Target,
 }
 
+/// A 64-bit content hash as bundler output names print it: `[hash]` is the
+/// 8 characters of `bun_core::fmt::truncated_hash32` (40 bits); `[hashN]`
+/// prints `N ≤ 13`, the first 8 identical to `[hash]` and the rest carrying
+/// the remaining 24 bits, so `[hash13]` distinguishes any two distinct
+/// hashes. At 40 bits two of a few thousand chunks share a name about once
+/// per million builds (upstream c01965ff72).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentHash {
+    pub value: u64,
+    pub len: u8,
+}
+
+impl ContentHash {
+    pub const DEFAULT_LEN: usize = 8;
+    pub const MAX_LEN: usize = 13;
+
+    pub const fn new(value: u64, len: usize) -> ContentHash {
+        let len = if len == 0 {
+            1
+        } else if len > Self::MAX_LEN {
+            Self::MAX_LEN
+        } else {
+            len
+        };
+        ContentHash {
+            value,
+            len: len as u8,
+        }
+    }
+
+    pub const fn short(value: u64) -> ContentHash {
+        ContentHash::new(value, Self::DEFAULT_LEN)
+    }
+
+    pub const fn len(self) -> usize {
+        self.len as usize
+    }
+
+    pub const fn bytes(self) -> [u8; Self::MAX_LEN] {
+        const CHARS: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+        let b = self.value.to_ne_bytes();
+        let mut out = [0u8; Self::MAX_LEN];
+        let mut rest: u32 = 0;
+        let mut i = 0;
+        while i < 8 {
+            out[i] = CHARS[(b[i] & 31) as usize];
+            rest |= ((b[i] >> 5) as u32) << (3 * i);
+            i += 1;
+        }
+        while i < Self::MAX_LEN {
+            out[i] = CHARS[(rest & 31) as usize];
+            rest >>= 5;
+            i += 1;
+        }
+        out
+    }
+
+    /// Widen any two names that have different values but print the same, to
+    /// one character past their common prefix. Returns whether any changed.
+    pub fn widen_to_distinguish(names: &mut [ContentHash]) -> bool {
+        let mut order: Vec<usize> = (0..names.len()).collect();
+        // Only equal-width names can print the same; sorting by width first keeps them adjacent.
+        order.sort_unstable_by_key(|&i| (names[i].len(), names[i].bytes()));
+        let mut widened = false;
+        for pair in order.windows(2) {
+            let (a, b) = (names[pair[0]], names[pair[1]]);
+            if a.value == b.value || a.bytes()[..a.len()] != b.bytes()[..b.len()] {
+                continue;
+            }
+            let common = (a.bytes().iter().zip(b.bytes().iter()))
+                .take_while(|(x, y)| x == y)
+                .count();
+            for &i in pair {
+                if names[i].len() <= common {
+                    names[i] = ContentHash::new(names[i].value, common + 1);
+                    widened = true;
+                }
+            }
+        }
+        widened
+    }
+}
+
+impl core::fmt::Display for ContentHash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // All 32 alphabet characters are ASCII.
+        f.write_str(core::str::from_utf8(&self.bytes()[..self.len()]).expect("base32 ASCII"))
+    }
+}
+
 // Shared body for PathTemplate::needs / PathTemplateConst::needs (D064).
 #[inline]
 pub(crate) fn path_template_needs(data: &[u8], field: PlaceholderField) -> bool {
@@ -2550,10 +2640,43 @@ pub(crate) fn path_template_needs(data: &[u8], field: PlaceholderField) -> bool 
         PlaceholderField::Dir => b"[dir]",
         PlaceholderField::Name => b"[name]",
         PlaceholderField::Ext => b"[ext]",
-        PlaceholderField::Hash => b"[hash]",
+        PlaceholderField::Hash => return path_template_hash_len(data).is_some(),
         PlaceholderField::Target => b"[target]",
     };
     strings::contains(data, needle)
+}
+
+/// `[hash]` or `[hashN]`: the field and how many characters it prints.
+fn placeholder_field(name: &[u8]) -> Option<(PlaceholderField, usize)> {
+    if let Some(field) = PLACEHOLDER_MAP.get(name).copied() {
+        return Some((field, ContentHash::DEFAULT_LEN));
+    }
+    let digits = name.strip_prefix(b"hash")?;
+    if digits.is_empty() || digits.len() > 2 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let len = digits
+        .iter()
+        .fold(0usize, |n, &d| n * 10 + (d - b'0') as usize);
+    if len == 0 {
+        return None;
+    }
+    Some((PlaceholderField::Hash, len))
+}
+
+/// The width of the first `[hash]`/`[hashN]` placeholder in `data`, if any.
+pub(crate) fn path_template_hash_len(data: &[u8]) -> Option<usize> {
+    let mut remain = data;
+    while let Some(open) = strings::index_of(remain, b"[hash") {
+        remain = &remain[open + 1..];
+        let Some(close) = strings::index_of_char(remain, b']') else {
+            break;
+        };
+        if let Some((PlaceholderField::Hash, len)) = placeholder_field(&remain[..close as usize]) {
+            return Some(ContentHash::new(0, len).len());
+        }
+    }
+    None
 }
 
 // Shared body for PathTemplate::print / PathTemplateConst::print (D064).
@@ -2566,7 +2689,7 @@ pub(crate) fn path_template_print<W: bun_io::Write>(
     dir: &[u8],
     name: &[u8],
     ext: &[u8],
-    hash: Option<u64>,
+    hash: Option<ContentHash>,
     target: &[u8],
 ) -> bun_io::Result<()> {
     let mut remain: &[u8] = data;
@@ -2598,7 +2721,7 @@ pub(crate) fn path_template_print<W: bun_io::Write>(
 
         let placeholder = &remain[0..end_len];
 
-        let Some(field) = PLACEHOLDER_MAP.get(placeholder).copied() else {
+        let Some((field, hash_len)) = placeholder_field(placeholder) else {
             PathTemplate::write_replacing_slashes_on_windows(writer, placeholder)?;
             remain = &remain[end_len..];
             continue;
@@ -2628,7 +2751,10 @@ pub(crate) fn path_template_print<W: bun_io::Write>(
             PlaceholderField::Ext => PathTemplate::write_replacing_slashes_on_windows(writer, ext)?,
             PlaceholderField::Hash => {
                 if let Some(hash) = hash {
-                    writer.write_fmt(format_args!("{}", bun_core::fmt::truncated_hash32(hash)))?;
+                    writer.write_fmt(format_args!(
+                        "{}",
+                        ContentHash::new(hash.value, hash_len.max(hash.len()))
+                    ))?;
                 }
             }
             PlaceholderField::Target => {
@@ -2644,6 +2770,22 @@ pub(crate) fn path_template_print<W: bun_io::Write>(
 impl PathTemplate {
     pub fn needs(&self, field: PlaceholderField) -> bool {
         path_template_needs(&self.data, field)
+    }
+
+    /// The width this template's `[hash]`/`[hashN]` asks for.
+    pub(crate) fn hash_len(&self) -> usize {
+        path_template_hash_len(&self.data).unwrap_or(ContentHash::DEFAULT_LEN)
+    }
+
+    /// `hash` at the width this template prints its own hash: what `[hashN]`
+    /// asks for, or wider if the linker widened it to keep names distinct.
+    pub(crate) fn content_hash(&self, hash: u64) -> ContentHash {
+        ContentHash::new(
+            hash,
+            self.placeholder
+                .hash
+                .map_or_else(|| self.hash_len(), |h| h.len()),
+        )
     }
 
     #[inline]
@@ -2728,7 +2870,7 @@ pub struct Placeholder {
     pub dir: Box<[u8]>,
     pub name: Box<[u8]>,
     pub ext: Box<[u8]>,
-    pub hash: Option<u64>,
+    pub hash: Option<ContentHash>,
     pub target: Box<[u8]>,
 }
 
@@ -2754,7 +2896,7 @@ pub struct PlaceholderConst {
     pub dir: &'static [u8],
     pub name: &'static [u8],
     pub ext: &'static [u8],
-    pub hash: Option<u64>,
+    pub hash: Option<ContentHash>,
     pub target: &'static [u8],
 }
 
@@ -2829,3 +2971,115 @@ impl From<PathTemplateConst> for PathTemplate {
 }
 
 // ported from: src/bundler/options.zig
+
+#[cfg(test)]
+mod content_hash_tests {
+    use super::{ContentHash, PathTemplate, Placeholder, path_template_hash_len};
+
+    /// `[hash]` prints exactly what `bun_core::fmt::truncated_hash32` always
+    /// printed — a no-collision build is byte-identical to before.
+    #[test]
+    fn short_hash_matches_truncated_hash32() {
+        for value in [0u64, 1, 0x62605c2b05cfc0c0, 0x2220bccba5af2060, u64::MAX] {
+            assert_eq!(
+                format!("{}", ContentHash::short(value)),
+                format!("{}", bun_core::fmt::truncated_hash32(value)),
+                "value {value:#x}"
+            );
+            assert_eq!(ContentHash::short(value).len(), 8);
+        }
+    }
+
+    /// Two hashes that differ only past the printed characters widen to one
+    /// character past their common prefix; already-distinct names stay put.
+    #[test]
+    fn widen_to_distinguish_resolves_printed_collisions() {
+        let a = 0x0123456789abcdefu64;
+        // Flip the top 3 bits of byte 2: invisible to the first 8 characters
+        // (they carry `byte & 31`), visible from character 9 on.
+        let b = a ^ (0b111u64 << (8 * 2 + 5));
+        assert_eq!(
+            ContentHash::short(a).bytes()[..8],
+            ContentHash::short(b).bytes()[..8],
+            "fixture must collide at [hash] width"
+        );
+        assert_ne!(a, b);
+
+        let mut names = [ContentHash::short(a), ContentHash::short(b)];
+        assert!(ContentHash::widen_to_distinguish(&mut names));
+        assert!(names[0].len() > 8 && names[1].len() > 8);
+        assert_ne!(
+            names[0].bytes()[..names[0].len()],
+            names[1].bytes()[..names[1].len()],
+            "widened names must print differently"
+        );
+        // Idempotent at the fixpoint, and a no-op for distinct names.
+        assert!(!ContentHash::widen_to_distinguish(&mut names));
+        let mut distinct = [ContentHash::short(3), ContentHash::short(0xdeadbeef)];
+        assert!(!ContentHash::widen_to_distinguish(&mut distinct));
+    }
+
+    /// `[hashN]` parsing: widths 1..=13, `[hash99]` clamps to 13, anything
+    /// else is not a hash placeholder.
+    #[test]
+    fn hash_len_parses_placeholders() {
+        assert_eq!(path_template_hash_len(b"[hash]"), Some(8));
+        assert_eq!(path_template_hash_len(b"[hash1]"), Some(1));
+        assert_eq!(path_template_hash_len(b"[hash5]"), Some(5));
+        assert_eq!(path_template_hash_len(b"[hash10]"), Some(10));
+        assert_eq!(path_template_hash_len(b"[hash13]"), Some(13));
+        assert_eq!(path_template_hash_len(b"[hash99]"), Some(13));
+        assert_eq!(path_template_hash_len(b"[name]-[hash5].[ext]"), Some(5));
+        assert_eq!(path_template_hash_len(b"[hash0]"), None);
+        assert_eq!(path_template_hash_len(b"[hashx]"), None);
+        assert_eq!(path_template_hash_len(b"[hashish]"), None);
+        assert_eq!(path_template_hash_len(b"no placeholder"), None);
+    }
+
+    fn printed(data: &[u8], hash: ContentHash) -> String {
+        let template = PathTemplate {
+            data: Box::from(data),
+            placeholder: Placeholder {
+                hash: Some(hash),
+                ext: Box::from(b"ext".as_slice()),
+                ..Default::default()
+            },
+        };
+        let mut out = Vec::new();
+        template.print(&mut out).expect("print");
+        String::from_utf8(out).expect("ASCII")
+    }
+
+    /// The printed width is the max of what `[hashN]` asks for and what the
+    /// linker widened the hash to; `[hash13]` prints the full 64-bit hash.
+    #[test]
+    fn template_prints_hash_at_requested_width() {
+        let value = 0x0123456789abcdefu64;
+        assert_eq!(
+            printed(b"e[hash].[ext]", ContentHash::short(value)),
+            format!("e{}.ext", ContentHash::short(value))
+        );
+        // A [hash1] template's placeholder hash carries len 1 (what
+        // `PathTemplate::content_hash` stores for it); it prints 1 char.
+        assert_eq!(
+            printed(b"e[hash1].[ext]", ContentHash::new(value, 1)),
+            format!("e{}.ext", ContentHash::new(value, 1))
+        );
+        // [hash10] asks for more than the 8 the hash carries.
+        assert_eq!(
+            printed(b"e[hash10].[ext]", ContentHash::short(value)),
+            format!("e{}.ext", ContentHash::new(value, 10))
+        );
+        // A linker-widened hash prints at its widened width even under [hash].
+        assert_eq!(
+            printed(b"e[hash].[ext]", ContentHash::new(value, 11)),
+            format!("e{}.ext", ContentHash::new(value, 11))
+        );
+        // [hash13] is the full 64-bit hash and distinguishes any two values.
+        let b = value ^ (0b111u64 << (8 * 2 + 5));
+        assert_ne!(
+            printed(b"c[hash13].[ext]", ContentHash::new(value, 13)),
+            printed(b"c[hash13].[ext]", ContentHash::new(b, 13))
+        );
+    }
+}

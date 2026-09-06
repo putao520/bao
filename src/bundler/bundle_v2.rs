@@ -4195,6 +4195,7 @@ pub mod bv2_impl {
                     )
                 };
                 let mut additional_output_files: Vec<options::OutputFile> = Vec::new();
+                let mut templates: Vec<(usize, options::PathTemplate)> = Vec::new();
 
                 for reachable_source in reachable_files {
                     let index = reachable_source.get() as usize;
@@ -4223,9 +4224,8 @@ pub mod bv2_impl {
                             template.data.clone_from(asset_naming);
                         }
 
-                        let source = &mut sources[index];
-
-                        let output_path: Box<[u8]> = {
+                        {
+                            let source = &sources[index];
                             // TODO: outbase
                             let pathname =
                                 Fs::PathName::init(bun_paths::resolve_path::relative_platform::<
@@ -4245,8 +4245,10 @@ pub mod bv2_impl {
                             template.placeholder.ext = ext.to_vec().into_boxed_slice();
 
                             if template.needs(options::PlaceholderField::Hash) {
-                                template.placeholder.hash =
-                                    Some(content_hashes_for_additional_files[index]);
+                                template.placeholder.hash = Some(
+                                    template
+                                        .content_hash(content_hashes_for_additional_files[index]),
+                                );
                             }
 
                             if template.needs(options::PlaceholderField::Target) {
@@ -4255,45 +4257,70 @@ pub mod bv2_impl {
                                     .to_vec()
                                     .into_boxed_slice();
                             }
-                            let mut v = Vec::new();
-                            template.print(&mut v).expect("oom");
-                            v.into_boxed_slice()
-                        };
-
-                        let loader = loaders[index];
-
-                        // Zig hands the existing `source.contents` buffer to the
-                        // OutputFile (with its allocator) — no copy. Mirror that by
-                        // moving the contents out instead of `to_vec()`-cloning,
-                        // which is prohibitively expensive for large assets.
-                        let contents_len = source.contents.len();
-                        let contents = match core::mem::take(&mut source.contents) {
-                            std::borrow::Cow::Owned(v) => v.into_boxed_slice(),
-                            std::borrow::Cow::Borrowed(b) => Box::<[u8]>::from(b),
-                        };
-
-                        additional_output_files.push(options::OutputFile::init(
-                            crate::output_file::Options {
-                                source_index: crate::output_file::Index::init(index as u32)
-                                    .to_optional(),
-                                data: crate::output_file::OptionsData::Buffer { data: contents },
-                                size: Some(contents_len),
-                                output_path,
-                                input_path: source.path.text.to_vec().into_boxed_slice(),
-                                input_loader: Loader::File,
-                                output_kind: crate::options::OutputKind::Asset,
-                                loader,
-                                hash: Some(content_hashes_for_additional_files[index]),
-                                side: Some(crate::options::Side::Client),
-                                entry_point_index: None,
-                                is_executable: false,
-                                ..Default::default()
-                            },
-                        ));
-                        additional_files[index].push(crate::AdditionalFile::OutputFile(
-                            (additional_output_files.len() - 1) as u32,
-                        ));
+                        }
+                        templates.push((index, template));
                     }
+                }
+
+                // Two assets whose hashes differ only past `[hash]`'s width get wider names.
+                {
+                    let hashed: Vec<usize> = (0..templates.len())
+                        .filter(|&i| templates[i].1.placeholder.hash.is_some())
+                        .collect();
+                    let mut names: Vec<options::ContentHash> = hashed
+                        .iter()
+                        .map(|&i| templates[i].1.placeholder.hash.unwrap())
+                        .collect();
+                    while options::ContentHash::widen_to_distinguish(&mut names) {}
+                    for (&i, name) in hashed.iter().zip(names) {
+                        templates[i].1.placeholder.hash = Some(name);
+                    }
+                }
+
+                for (index, template) in templates {
+                    let loader = loaders[index];
+
+                    let output_path: Box<[u8]> = {
+                        let mut v = Vec::new();
+                        template.print(&mut v).expect("oom");
+                        v.into_boxed_slice()
+                    };
+
+                    // Zig hands the existing `source.contents` buffer to the
+                    // OutputFile (with its allocator) — no copy. Mirror that by
+                    // moving the contents out instead of `to_vec()`-cloning,
+                    // which is prohibitively expensive for large assets.
+                    let source = &mut sources[index];
+                    let contents_len = source.contents.len();
+                    let contents = match core::mem::take(&mut source.contents) {
+                        std::borrow::Cow::Owned(v) => v.into_boxed_slice(),
+                        std::borrow::Cow::Borrowed(b) => Box::<[u8]>::from(b),
+                    };
+
+                    additional_output_files.push(options::OutputFile::init(
+                        crate::output_file::Options {
+                            source_index: crate::output_file::Index::init(index as u32)
+                                .to_optional(),
+                            data: crate::output_file::OptionsData::Buffer { data: contents },
+                            size: Some(contents_len),
+                            output_path,
+                            input_path: source.path.text.to_vec().into_boxed_slice(),
+                            input_loader: Loader::File,
+                            output_kind: crate::options::OutputKind::Asset,
+                            loader,
+                            hash: Some(
+                                template
+                                    .content_hash(content_hashes_for_additional_files[index]),
+                            ),
+                            side: Some(crate::options::Side::Client),
+                            entry_point_index: None,
+                            is_executable: false,
+                            ..Default::default()
+                        },
+                    ));
+                    additional_files[index].push(crate::AdditionalFile::OutputFile(
+                        (additional_output_files.len() - 1) as u32,
+                    ));
                 }
 
                 self.graph.additional_output_files = additional_output_files;

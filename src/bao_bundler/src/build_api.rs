@@ -372,7 +372,7 @@ fn map_outputs(output_files: &mut [OutputFile]) -> Vec<NativeOutputFile> {
             kind: kind.to_string(),
             loader: loader.to_string(),
             mime_type: mime,
-            hash: of.hash,
+            hash: of.hash.value,
             bytes,
             sourcemap_index,
         });

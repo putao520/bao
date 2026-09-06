@@ -3,7 +3,7 @@ use core::ffi::c_void;
 use crate::options::Loader;
 // `bake::Side` / `jsc.api.BuildArtifact.OutputKind` are TYPE_ONLY move-ins;
 // the `options` module already defines them locally.
-use crate::options::{OutputKind, Side};
+use crate::options::{ContentHash, OutputKind, Side};
 use bun_core::Error;
 use bun_core::{PathString, String as BunString};
 use bun_paths::PathBuffer;
@@ -26,7 +26,7 @@ pub struct OutputFile {
     pub value: Value,
     pub size: usize,
     pub size_without_sourcemap: usize,
-    pub hash: u64,
+    pub hash: ContentHash,
     pub is_executable: bool,
     pub source_map_index: u32,
     pub bytecode_index: u32,
@@ -60,7 +60,7 @@ impl OutputFile {
             value: Value::Noop,
             size: 0,
             size_without_sourcemap: 0,
-            hash: 0,
+            hash: ContentHash::short(0),
             is_executable: false,
             source_map_index: u32::MAX,
             bytecode_index: u32::MAX,
@@ -353,7 +353,7 @@ pub enum OptionsData {
 pub struct Options {
     pub loader: Loader,
     pub input_loader: Loader,
-    pub hash: Option<u64>,
+    pub hash: Option<ContentHash>,
     pub source_map_index: Option<u32>,
     pub bytecode_index: Option<u32>,
     pub module_info_index: Option<u32>,
@@ -391,7 +391,7 @@ impl OutputFile {
             source_index: options.source_index,
             size,
             size_without_sourcemap: options.display_size as usize,
-            hash: options.hash.unwrap_or(0),
+            hash: options.hash.unwrap_or(ContentHash::short(0)),
             output_kind: options.output_kind,
             bytecode_index: options.bytecode_index.unwrap_or(u32::MAX),
             module_info_index: options.module_info_index.unwrap_or(u32::MAX),

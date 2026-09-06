@@ -373,3 +373,91 @@ fn run_await_text_scenario(ctx: &mut JsContext) {
         "artifact.text() must settle (Blob face)"
     );
 }
+
+/// Upstream c01965ff72 (bundler `[hash]` widen, oven-sh/bun#41317): `[hash]`
+/// is a *minimum* width — when two outputs' content hashes differ only past
+/// the printed characters, the linker widens their names instead of failing
+/// the build. 30 entries under `[hash1]` naming (32-character alphabet)
+/// guarantee printed collisions (P(no collision) ≈ 10⁻⁶); the build must
+/// succeed with pairwise distinct names. `[hash13]` prints the full 64-bit
+/// hash (13 chars).
+#[test]
+fn test_bun_build_hash_widen_on_collision() {
+    bun_core::output::init_test();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    bao_bundler::build_api::install();
+
+    let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    let dir = temp_dir("hash_widen");
+    let entries: Vec<String> = (0..30)
+        .map(|i| write(&dir, &format!("e{i}.ts"), &format!("export const v{i} = {i};\n")))
+        .collect();
+    let entry_list = entries
+        .iter()
+        .map(|e| format!("'{}'", e))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    run_build_scenario(
+        &mut ctx,
+        &format!(r#"{{ entrypoints: [{entry_list}], naming: {{ entry: 'e[hash1].[ext]' }} }}"#),
+    );
+    assert!(settled(&mut ctx), "promise must settle");
+    assert_eq!(
+        eval_string(&mut ctx, "globalThis.__r.rejected"),
+        "false",
+        "colliding [hash1] names must not fail the build"
+    );
+    assert_eq!(eval_string(&mut ctx, "globalThis.__r.value.success"), "true");
+    assert_eq!(
+        eval_string(&mut ctx, "globalThis.__r.value.outputs.length"),
+        "30"
+    );
+
+    let paths = eval_string(
+        &mut ctx,
+        "globalThis.__r.value.outputs.map(function (o) { return o.path; }).join('\\n')",
+    );
+    let list: Vec<&str> = paths.split('\n').collect();
+    assert_eq!(list.len(), 30, "one path per entry: {:?}", list);
+    let mut sorted = list.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        30,
+        "output names must be pairwise distinct after widening: {:?}",
+        list
+    );
+    for path in &list {
+        let hash_part = path
+            .strip_prefix("e")
+            .and_then(|p| p.strip_suffix(".js"))
+            .unwrap_or_else(|| panic!("unexpected output name {}", path));
+        assert!(
+            !hash_part.is_empty() && hash_part.len() <= 13,
+            "name {} carries no widened [hashN] part",
+            path
+        );
+    }
+
+    // [hash13] prints the full 64-bit hash: 13 characters, always.
+    run_build_scenario(
+        &mut ctx,
+        &format!(
+            r#"{{ entrypoints: ['{}'], naming: {{ entry: 'e[hash13].[ext]' }} }}"#,
+            entries[0]
+        ),
+    );
+    assert!(settled(&mut ctx), "promise must settle");
+    assert_eq!(eval_string(&mut ctx, "globalThis.__r.value.success"), "true");
+    let wide = eval_string(&mut ctx, "globalThis.__r.value.outputs[0].path");
+    let hash_part = wide
+        .strip_prefix("e")
+        .and_then(|p| p.strip_suffix(".js"))
+        .unwrap_or_else(|| panic!("unexpected output name {}", wide));
+    assert_eq!(hash_part.len(), 13, "[hash13] name: {}", wide);
+}
