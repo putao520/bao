@@ -173,10 +173,13 @@ impl<'a, V: bun_core::vec::SpareBytesVec> ZstdReaderArrayList<'a, V> {
 
         let dstream = self.zstd.as_mut().ok_or(ZstdError::ZstdFailedToCreateInstance)?;
 
+        // zstd may hold decoded bytes it could not fit into the last output
+        // window. Call it again with no input until it leaves the window short.
+        let mut output_full = false;
         while self.state == State::Uninitialized || self.state == State::Inflating {
             let next_in = &self.input[self.total_in..];
 
-            if next_in.is_empty() {
+            if next_in.is_empty() && !output_full {
                 if is_done {
                     if self.state == State::Inflating {
                         self.state = State::Error;
@@ -220,6 +223,7 @@ impl<'a, V: bun_core::vec::SpareBytesVec> ZstdReaderArrayList<'a, V> {
 
             let bytes_written = out_pos;
             let bytes_read = in_pos;
+            output_full = bytes_written == out_cap;
 
             unsafe { bun_core::vec::commit_spare(self.list_ptr, bytes_written) };
             self.total_in += bytes_read;
@@ -243,7 +247,7 @@ impl<'a, V: bun_core::vec::SpareBytesVec> ZstdReaderArrayList<'a, V> {
             }
 
             if bytes_read == next_in.len() {
-                if bytes_written > 0 {
+                if output_full {
                     continue;
                 }
                 if is_done {

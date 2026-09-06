@@ -1,6 +1,7 @@
 use std::io::Read as StdRead;
 use std::io::Write as StdWrite;
 
+use brotli::SliceWrapper;
 use bun_core::{Error, err};
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -139,6 +140,30 @@ fn is_alloc_failure(code: i32) -> bool {
     )
 }
 
+/// Mirror of upstream `BrotliDecoderHasMoreOutput` (brotli-decompressor
+/// `decode.rs`, upstream bdbe669b15): the `brotli` crate does not re-export
+/// it, so compute it from the public `BrotliState` fields. True when decoded
+/// bytes are still held in the decoder's ring buffer.
+fn decoder_has_more_output(
+    s: &brotli::BrotliState<
+        brotli::HeapAlloc<u8>,
+        brotli::HeapAlloc<u32>,
+        brotli::HeapAlloc<brotli::HuffmanCode>,
+    >,
+) -> bool {
+    // After an unrecoverable error the remaining output is nonsensical.
+    if (s.error_code as i64) < 0 {
+        return false;
+    }
+    if s.ringbuffer.slice().is_empty() {
+        return false;
+    }
+    // `UnwrittenBytes(s, false)`: decoded into the ring buffer but not yet
+    // handed to the caller.
+    let partial_pos_rb = (s.rb_roundtrips * s.ringbuffer_size as usize) + s.pos as usize;
+    partial_pos_rb != s.partial_pos_out
+}
+
 pub struct BrotliReaderArrayList<'a> {
     pub input: &'a [u8],
     pub list_ptr: &'a mut bun_core::vec::ChanVec<u8>,
@@ -271,6 +296,13 @@ impl<'a> BrotliReaderArrayList<'a> {
                 }
                 brotli::BrotliResult::NeedsMoreInput => {
                     self.state = ReaderState::Inflating;
+                    // Brotli reports `needs_more_input` even with output left
+                    // in its ring buffer (the flush-copy at that exit fills the
+                    // window and stops). Keep calling with the same input until
+                    // the ring buffer is drained short.
+                    if output_offset > 0 && decoder_has_more_output(&self.decoder) {
+                        continue;
+                    }
                     if is_done {
                         // Truncated stream at the final chunk.
                         return Err(self.fail());

@@ -1,4 +1,4 @@
-use bun_zstd::{compress, compress_bound, decompress, decompress_alloc, get_decompressed_size, Result, ZstdReaderArrayList};
+use bun_zstd::{compress, compress_bound, decompress, decompress_alloc, get_decompressed_size, Result, ZstdError, ZstdReaderArrayList};
 
 #[test]
 fn compress_then_decompress_roundtrip() {
@@ -158,4 +158,35 @@ fn default_compression_level() {
         Result::Err(e) => panic!("default level decompress failed: {}", e),
     };
     assert_eq!(&decompressed[..dn], data);
+}
+
+/// Upstream f42e980255 (fetch zstd streaming, oven-sh/bun#41439): a flushed
+/// chunk that decodes to more than one output window must reach the reader in
+/// full. The decoder used to hand over one 4096-byte window and keep the rest
+/// until the next compressed chunk arrived.
+#[test]
+fn streaming_delivers_whole_decoded_frame_without_more_input() {
+    let data = vec![b'x'; 20_001];
+    let bound = compress_bound(data.len());
+    let mut compressed = vec![0u8; bound];
+    let n = match compress(&mut compressed, &data, Some(3)) {
+        Result::Success(n) => n,
+        Result::Err(e) => panic!("compress failed: {}", e),
+    };
+    let compressed = &compressed[..n];
+
+    let mut output = Vec::new();
+    let mut reader = ZstdReaderArrayList::init(compressed, &mut output).expect("init failed");
+    // `is_done == false`: the body may still receive more chunks, yet every
+    // byte decodable from the input already handed over must be delivered now.
+    match reader.read_all(false) {
+        Ok(()) => {}
+        // The "waiting for more input" signal is fine — pending output is not.
+        Err(e) if matches!(e, ZstdError::ShortRead) => {}
+        Err(e) => panic!("read_all failed: {}", e),
+    }
+    drop(reader);
+
+    assert_eq!(output.len(), data.len(), "decoder kept decoded bytes pending");
+    assert_eq!(output, data);
 }
