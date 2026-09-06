@@ -38,7 +38,7 @@ use script_bindings::script_runtime::temp_cx;
 use script_traits::DocumentActivity;
 use servo_base::id::{PipelineId, WebViewId};
 use servo_config::pref;
-use servo_constellation_traits::{LoadOrigin, TargetSnapshotParams};
+use servo_constellation_traits::TargetSnapshotParams;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use style::context::QuirksMode as ServoQuirksMode;
 use tendril::stream::LossyDecoder;
@@ -63,7 +63,7 @@ use crate::dom::bindings::settings_stack::is_execution_stack_empty;
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
-use crate::dom::csp::{Violation, parse_csp_list_from_metadata};
+use crate::dom::csp::parse_csp_list_from_metadata;
 use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
 use crate::dom::document::{Document, DocumentSource, HasBrowsingContext, IsHTMLDocument};
 use crate::dom::documentfragment::DocumentFragment;
@@ -93,7 +93,6 @@ use crate::dom::text::Text;
 use crate::dom::types::{HTMLElement, HTMLMediaElement, HTMLOptionElement};
 use crate::event_loop::document_loader::{DocumentLoader, LoadType};
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::network_listener::FetchResponseListener;
 use crate::navigation::determine_the_origin;
 use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::IntroductionType;
@@ -938,7 +937,12 @@ pub(crate) struct ParserContext {
     /// To report CSP violations to the global that initiated the navigation
     parent_info: Option<PipelineId>,
     target_snapshot_params: TargetSnapshotParams,
-    load_origin: LoadOrigin,
+    /// The source origin this load if this navigation was initiated by script.
+    /// This is used to ensure that `about:blank` and `about:srcdoc` pages are
+    /// able to inherit the aliased [`MutableOrigin`] of their initiating pages
+    /// properly. In the case that the initiator is in another event loop, this
+    /// will be a non-aliased copy of the origin.
+    source_origin: Option<MutableOrigin>,
     document: Option<Trusted<Document>>,
 }
 
@@ -950,7 +954,7 @@ impl ParserContext {
         creation_sandboxing_flag_set: SandboxingFlagSet,
         parent_info: Option<PipelineId>,
         target_snapshot_params: TargetSnapshotParams,
-        load_origin: LoadOrigin,
+        source_origin: Option<MutableOrigin>,
     ) -> ParserContext {
         ParserContext {
             parser: None,
@@ -971,7 +975,7 @@ impl ParserContext {
                 iframe_element_referrer_policy: Default::default(),
             },
             target_snapshot_params,
-            load_origin,
+            source_origin,
             document: None,
         }
     }
@@ -1183,6 +1187,8 @@ impl ParserContext {
         parser.push_string_input_chunk(page);
         parser.parse_sync(cx);
         parser.tokenizer.set_plaintext_state();
+        // Step 3. Set document's mode to "no-quirks".
+        parser.document.set_quirks_mode(ServoQuirksMode::NoQuirks);
         // The first task that the networking task source places on the task queue while fetching
         // runs must process link headers given document, navigationParams's response, and "media",
         // after the task has been processed by the HTML parser.
@@ -1207,6 +1213,8 @@ impl ParserContext {
         let page = "<html><body></body></html>".into();
         parser.push_string_input_chunk(page);
         parser.parse_sync(cx);
+        // Step 2. Set document's mode to "no-quirks".
+        parser.document.set_quirks_mode(ServoQuirksMode::NoQuirks);
 
         let doc = &parser.document;
         // Step 5. Set the appropriate attribute of the element host element, as described below,
@@ -1320,14 +1328,10 @@ impl ParserContext {
 
         document.notify_embedder_of_load_completion();
     }
-}
-
-impl FetchResponseListener for ParserContext {
-    fn process_request_body(&mut self, _: RequestId) {}
 
     /// Implements parts of
     /// <https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document>
-    fn process_response(
+    pub(crate) fn process_response(
         &mut self,
         cx: &mut JSContext,
         _: RequestId,
@@ -1392,16 +1396,10 @@ impl FetchResponseListener for ParserContext {
         // Step 21.11. Set responseOrigin to the result of determining the origin
         // given response's URL, finalSandboxFlags, and entry's document state's
         // initiator origin.
-        let source_origin = match self.load_origin {
-            LoadOrigin::Script(ref snapshot) => {
-                Some(MutableOrigin::from_snapshot(snapshot.clone()))
-            },
-            _ => None,
-        };
         let origin = determine_the_origin(
             metadata.as_ref().map(|metadata| &metadata.final_url),
             final_sandboxing_flag_set,
-            source_origin,
+            self.source_origin.clone(),
         );
 
         let Some(document) = ScriptThread::page_headers_available(
@@ -1555,7 +1553,12 @@ impl FetchResponseListener for ParserContext {
         }
     }
 
-    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, payload: Vec<u8>) {
+    pub(crate) fn process_response_chunk(
+        &mut self,
+        cx: &mut JSContext,
+        _: RequestId,
+        payload: Vec<u8>,
+    ) {
         if self.is_synthesized_document {
             return;
         }
@@ -1585,7 +1588,7 @@ impl FetchResponseListener for ParserContext {
     // This method is called via script_thread::handle_fetch_eof, so we must call
     // submit_resource_timing in this function
     // Resource listeners are called via net_traits::Action::process, which handles submission for them
-    fn process_response_eof(
+    pub(crate) fn process_response_eof(
         mut self,
         cx: &mut JSContext,
         _: RequestId,
@@ -1642,10 +1645,6 @@ impl FetchResponseListener for ParserContext {
         if document.is_initial_about_blank() {
             self.finish_synchronous_load_for_initial_about_blank(cx, &document);
         }
-    }
-
-    fn process_csp_violations(&mut self, _: &mut JSContext, _: RequestId, _: Vec<Violation>) {
-        unreachable!("Script_thread should handle reporting violations for parser contexts");
     }
 }
 
