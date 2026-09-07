@@ -13,7 +13,7 @@ use bun_core::strings;
 use std::borrow::Cow;
 
 /// Port of `options.JSX.Runtime` (options.zig:1359 — `pub const Runtime =
-/// api.JsxRuntime;`). 4-state including `_None` so `Pragma.runtime` preserves
+/// api.JsxRuntime;`). 3-state including `_None` so `Pragma.runtime` preserves
 /// the zero value when an `api.Jsx` arrives with `runtime == _none` (Zig
 /// options.zig:1344 assigns it directly). `#[default]` is `Automatic` (Zig:
 /// `runtime: api.Api.JsxRuntime = .automatic`).
@@ -24,7 +24,6 @@ pub enum Runtime {
     #[default]
     Automatic,
     Classic,
-    Solid,
 }
 
 impl From<api::JsxRuntime> for Runtime {
@@ -32,7 +31,6 @@ impl From<api::JsxRuntime> for Runtime {
         match r {
             api::JsxRuntime::_none => Runtime::_None,
             api::JsxRuntime::Classic => Runtime::Classic,
-            api::JsxRuntime::Solid => Runtime::Solid,
             api::JsxRuntime::Automatic => Runtime::Automatic,
         }
     }
