@@ -1,7 +1,7 @@
 [package]
 name = "bao_bundler"
 # 0.1.1 (2026-08-19): no_mangle __force_link_entry single-owner (6f515eab); non-closure, lead-approved.
-version = "0.1.11"
+version = "0.1.12"
 description = "SpiderMonkey CYCLEBREAK bridge for bun_bundler — provides SM-backed link-time symbols and dispatch interfaces"
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ repository = "https://github.com/putao520/bao"
 [dependencies]
 # Core dependency: reuse ALL bundler logic, only provide SM implementations
 # for the CYCLEBREAK symbols and dispatch interfaces.
-bun_bundler = { path = "../bundler", version = "0.1.0" }
+bun_bundler = { path = "../bundler", version = "0.1.11" }
 # Arena for the per-build Transpiler lifetime (Bun.build native driver).
 bun_alloc = { path = "../bun_alloc", version = "0.1.0" }
 # Macro-seam CYCLEBREAK types (MacroContext / MacroRemapEntry) for macro_context.rs.

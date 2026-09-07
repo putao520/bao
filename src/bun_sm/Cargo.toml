@@ -2,7 +2,7 @@
 name = "bun_sm"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. spawn watch loop-alive + exit double-dispatch root fix.
-version = "0.1.12"
+version = "0.1.13"
 description = "SpiderMonkey-backed API compatibility layer replacing bun_jsc"
 edition.workspace = true
 license.workspace = true

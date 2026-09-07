@@ -10,7 +10,7 @@ name = "bao-browser"
 # (c45aee6f): Phase 2 drives a pending navigation's load to completion
 # (nav_seq-gated), so the verbatim README path1 snippet works as
 # documented; servo =0.5.0 pins unchanged.
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
 description.workspace = true
 license.workspace = true
@@ -21,7 +21,7 @@ readme = "README.md"
 name = "bao_browser"
 
 [dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.5", default-features = false, features = ["baked-in-resources", "media-gstreamer"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.6", default-features = false, features = ["baked-in-resources", "media-gstreamer"] }
 servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url", version = "=0.5.4" }
 dpi = "0.1"
 url = "2"
@@ -35,7 +35,7 @@ bao_stealth = { path = "../bao_stealth", version = "0.1.0" }
 bao_engine = { path = "../bao_engine", version = "0.1.0" }
 bun_runtime.workspace = true
 bun_http.workspace = true
-cdp-server = { path = "../cdp-server", version = "0.1.0" }
+cdp-server = { path = "../cdp-server", version = "0.1.2" }
 bun_core.workspace = true
 bun_sys.workspace = true
 mozjs = { path = "../../vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.22" }
@@ -56,7 +56,7 @@ bun_boringssl_sys.workspace = true
 bun_uws.workspace = true
 # page_net_bun_fingerprint_e2e_tests: drives servo-net's bun_bridge flag /
 # request counter from the e2e harness (same path dep servo uses — unified).
-servo-net = { path = "../../vendor/servo/components/net", package = "bao-servo-net", version = "=0.5.6" }
+servo-net = { path = "../../vendor/servo/components/net", package = "bao-servo-net", version = "=0.5.7" }
 # h2_fetch_node_stack_e2e_tests: bun_url::URL + bun_threading Batch for the
 # AsyncHTTP harness (the exact wire path window.fetch drives —
 # fetch_async::start).

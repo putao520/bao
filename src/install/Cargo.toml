@@ -3,7 +3,7 @@ name = "bun_install"
 # 0.1.2 (2026-08-19): stable-channel fixes — WorkspaceMap dual-mode keys,
 # adopt_std_box key write, folder_resolver std-Vec read + adopt; +build.rs
 # channel probe (facade types need the bao_nightly cfg).
-version = "0.1.11"
+version = "0.1.12"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
