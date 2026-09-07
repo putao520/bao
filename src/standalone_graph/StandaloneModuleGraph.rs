@@ -18,9 +18,7 @@ use bun_options_types::bundle_enums::{Format, WindowsOptions};
 #[cfg(not(windows))]
 use bun_paths::SEP_STR;
 use bun_paths::fs as bun_fs;
-use bun_paths::{self as path, PathBuffer, strings};
-#[cfg(windows)]
-use bun_paths::{OSPathBuffer, WPathBuffer};
+use bun_paths::{self as path, strings};
 use bun_sourcemap as SourceMap;
 use bun_sys::{self as Syscall, Fd, FdExt as _, Stat};
 
@@ -168,7 +166,7 @@ impl StandaloneModuleGraph {
     pub fn find_assume_standalone_path(&mut self, name: &[u8]) -> Option<&mut File> {
         #[cfg(windows)]
         {
-            let mut normalized_buf = PathBuffer::uninit();
+            let mut normalized_buf = bun_paths::path_buffer_pool::get();
             let input = strings::paths::without_nt_prefix::<u8>(name);
             let normalized =
                 path::resolve_path::platform_to_posix_buf::<u8>(input, &mut normalized_buf);
@@ -205,7 +203,7 @@ impl bun_resolver::StandaloneModuleGraph for StandaloneModuleGraph {
     fn find_assume_standalone_path(&self, name: &[u8]) -> Option<&[u8]> {
         #[cfg(windows)]
         let file = {
-            let mut normalized_buf = PathBuffer::uninit();
+            let mut normalized_buf = bun_paths::path_buffer_pool::get();
             let input = strings::paths::without_nt_prefix::<u8>(name);
             let normalized =
                 path::resolve_path::platform_to_posix_buf::<u8>(input, &mut normalized_buf);
@@ -1133,7 +1131,7 @@ pub(crate) fn inject(
     target: &CompileTarget,
 ) -> Fd {
     let _ = inject_options;
-    let mut buf = PathBuffer::uninit();
+    let mut buf = bun_paths::path_buffer_pool::get();
     // PORT NOTE: `tmpname` borrows `buf` mutably for the &ZStr it returns. The
     // tmpdir-fallback retry below may need to repoint `zname` at a heap-owned
     // buffer instead, so hoist that owner here so it outlives the loop.
@@ -1170,10 +1168,10 @@ pub(crate) fn inject(
         {
             // copy self and then open it for writing
 
-            let mut in_buf = WPathBuffer::uninit();
+            let mut in_buf = bun_paths::w_path_buffer_pool::get();
             strings::copy_u8_into_u16(&mut in_buf, self_exe.as_bytes());
             in_buf[self_exe.len()] = 0;
-            let mut out_buf = WPathBuffer::uninit();
+            let mut out_buf = bun_paths::w_path_buffer_pool::get();
             strings::copy_u8_into_u16(&mut out_buf, zname.as_bytes());
             out_buf[zname.len()] = 0;
 
@@ -1821,7 +1819,7 @@ pub fn to_executable(
             }
         }
     } else {
-        let mut exe_path_buf = PathBuffer::uninit();
+        let mut exe_path_buf = bun_paths::path_buffer_pool::get();
         // TODO(port): std.fmt.allocPrintSentinel — build NUL-terminated owned string.
         let mut version_str: Vec<u8> = Vec::new();
         let _ = write!(&mut version_str, "{}", target);
@@ -1886,7 +1884,7 @@ pub fn to_executable(
     #[cfg(windows)]
     {
         // Get the current path of the temp file
-        let mut temp_buf = PathBuffer::uninit();
+        let mut temp_buf = bun_paths::path_buffer_pool::get();
         let temp_path = match bun_sys::get_fd_path(fd, &mut temp_buf) {
             Ok(p) => p,
             Err(e) => {
@@ -1903,7 +1901,7 @@ pub fn to_executable(
         // Build the absolute destination path
         // On Windows, we need an absolute path for MoveFileExW
         // Get the current working directory and join with outfile
-        let mut cwd_buf = PathBuffer::uninit();
+        let mut cwd_buf = bun_paths::path_buffer_pool::get();
         let cwd_path: &[u8] = match bun_sys::getcwd(&mut cwd_buf) {
             Ok(len) => &cwd_buf[..len],
             Err(e) => {
@@ -1923,8 +1921,8 @@ pub fn to_executable(
         };
 
         // Convert paths to Windows UTF-16
-        let mut temp_buf_w = OSPathBuffer::uninit();
-        let mut dest_buf_w = OSPathBuffer::uninit();
+        let mut temp_buf_w = bun_paths::os_path_buffer_pool::get();
+        let mut dest_buf_w = bun_paths::os_path_buffer_pool::get();
         let temp_w_len = strings::paths::to_w_path_normalized(&mut temp_buf_w, temp_path).len();
         let dest_w_len = strings::paths::to_w_path_normalized(&mut dest_buf_w, dest_path).len();
 
@@ -2007,7 +2005,7 @@ pub fn to_executable(
 
     #[cfg(not(windows))]
     {
-        let mut buf2 = PathBuffer::uninit();
+        let mut buf2 = bun_paths::path_buffer_pool::get();
         // PORT NOTE: borrowck — `get_fd_path` returns `&mut [u8]` borrowing `buf2`;
         // copy it into an owned buffer so `temp_posix_buf` can also borrow `buf2`'s
         // sibling without overlap.
@@ -2025,10 +2023,10 @@ pub fn to_executable(
         };
         // TODO(port): std.posix.toPosixPath — copy into NUL-terminated fixed buffer.
         // `resolve_path::z` does the same (copy + NUL) and yields `&ZStr`.
-        let mut temp_posix_buf = PathBuffer::uninit();
+        let mut temp_posix_buf = bun_paths::path_buffer_pool::get();
         let temp_posix = path::resolve_path::z(&temp_location, &mut temp_posix_buf);
         let outfile_basename = bun_paths::basename(outfile);
-        let mut outfile_posix_buf = PathBuffer::uninit();
+        let mut outfile_posix_buf = bun_paths::path_buffer_pool::get();
         let outfile_posix = path::resolve_path::z(outfile_basename, &mut outfile_posix_buf);
 
         if let Err(e) =

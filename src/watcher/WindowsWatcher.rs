@@ -39,7 +39,7 @@ impl Default for WindowsWatcher {
                 buf: [0u8; 64 * 1024],
                 dir_handle: w::INVALID_HANDLE_VALUE,
             },
-            buf: PathBuffer::uninit(),
+            buf: PathBuffer::ZEROED,
             base_idx: 0,
         }
     }
@@ -228,7 +228,7 @@ impl WindowsWatcher {
     // crate::Watcher (64KB+ buffers; avoid moving). Zig sig: `fn init(this, root) !void`.
     pub(crate) fn init(&mut self, root: &[u8]) -> Result<(), bun_core::Error> {
         use bun_paths::string_paths as paths;
-        let mut pathbuf = WPathBuffer::uninit();
+        let mut pathbuf = bun_paths::w_path_buffer_pool::get();
         let wpath = paths::to_nt_path(&mut pathbuf, root);
         let path_len_bytes: u16 = (wpath.len() * 2) as u16;
         let mut nt_name = w::UNICODE_STRING {

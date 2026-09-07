@@ -500,7 +500,7 @@ impl<'a> Loader<'a> {
     fn load_ccache_path_impl(&mut self, fs: &bun_paths::fs::FileSystem) -> Result<(), AllocError> {
         // if they have ccache installed, put it in env variable `CMAKE_CXX_COMPILER_LAUNCHER` so
         // cmake can use it to hopefully speed things up
-        let mut buf = PathBuffer::uninit();
+        let mut buf = bun_paths::path_buffer_pool::get();
         let path = match self.get(b"PATH") {
             Some(p) => p,
             None => return Ok(()),
@@ -544,7 +544,7 @@ impl<'a> Loader<'a> {
         fs: &bun_paths::fs::FileSystem,
         override_node: &[u8],
     ) -> Result<bool, bun_core::Error> {
-        let mut buf = PathBuffer::uninit();
+        let mut buf = bun_paths::path_buffer_pool::get();
 
         let node_path_to_use: Box<[u8]> = if !override_node.is_empty() {
             Box::from(override_node)

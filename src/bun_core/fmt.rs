@@ -609,7 +609,7 @@ pub struct DebugUTF32PathFormatter<'a> {
 
 impl Display for DebugUTF32PathFormatter<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut path_buf = crate::PathBuffer::uninit();
+        let mut path_buf = crate::PathBuffer::ZEROED;
         let buf = path_buf.as_mut_slice();
         // SAFETY: FFI reads exactly path.len() u32s and writes ≤ MAX_PATH_BYTES bytes.
         let result = unsafe {

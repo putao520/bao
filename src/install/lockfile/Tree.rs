@@ -248,7 +248,7 @@ impl<'a, const PATH_STYLE: u8> Iterator<'a, PATH_STYLE> {
             hoisted_dependencies,
             dependencies,
             string_bytes,
-            path_buf: PathBuffer::uninit(),
+            path_buf: PathBuffer::ZEROED,
             // Zig: `depth_stack: DepthBuf = undefined` (Tree.zig:94)
             depth_stack: depth_buf_uninit(),
         };

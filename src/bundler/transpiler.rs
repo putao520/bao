@@ -493,7 +493,7 @@ impl<'a> Transpiler<'a> {
         match self._resolve_entry_point(entry_point) {
             Ok(r) => self.reject_disabled_entry_point(r, entry_point),
             Err(err) => {
-                let mut cache_bust_buf = bun_paths::PathBuffer::uninit();
+                let mut cache_bust_buf = bun_paths::path_buffer_pool::get();
 
                 // Bust directory cache and try again
                 // PORT NOTE: reshaped for borrowck — Zig's labelled-block
@@ -1831,7 +1831,7 @@ impl<'a> Transpiler<'a> {
                                     // (bun.zig:3502) — no Rust const re-export
                                     // in `bun_core` yet, so inline the literal.
                                     const BYTECODE_EXT: &[u8] = b".jsc";
-                                    let mut path_buf2 = bun_paths::PathBuffer::uninit();
+                                    let mut path_buf2 = bun_paths::path_buffer_pool::get();
                                     let n = path.text.len();
                                     path_buf2[..n].copy_from_slice(path.text);
                                     path_buf2[n..][..BYTECODE_EXT.len()]

@@ -6,7 +6,7 @@ use bun_ast::Loc;
 use bun_core::fmt::quote;
 use bun_core::{Error, err};
 use bun_core::{PathString, String as BunString, immutable as strings};
-use bun_paths::{self as paths, PathBuffer};
+use bun_paths::{self as paths};
 use bun_wyhash::hash;
 
 use crate::LinkerContext;
@@ -77,7 +77,7 @@ pub fn write_output_files_to_disk(
     let mut _max_heap_allocator_source_map = MaxHeapAllocator::init();
     let mut _max_heap_allocator_inline_source_map = MaxHeapAllocator::init();
 
-    let mut pathbuf = PathBuffer::uninit();
+    let mut pathbuf = bun_paths::path_buffer_pool::get();
     // SAFETY: c points to LinkerContext which is the `linker` field of BundleV2.
     let bv2: &mut BundleV2 =
         unsafe { &mut *LinkerContext::bundle_v2_ptr(std::ptr::from_mut::<LinkerContext>(c)) };
@@ -328,7 +328,7 @@ pub fn write_output_files_to_disk(
                 };
 
                 if loader.is_javascript_like() {
-                    let mut fdpath = PathBuffer::uninit();
+                    let mut fdpath = bun_paths::path_buffer_pool::get();
                     let source_provider_url = BunString::create_format(format_args!(
                         "{}{}",
                         bstr::BStr::new(&chunk.final_rel_path),

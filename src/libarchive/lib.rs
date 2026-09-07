@@ -20,7 +20,7 @@ use bun_core::{MutableString, slice_to_nul, strings};
 use bun_core::{Output, ZStr, slice_as_bytes};
 #[cfg(unix)]
 use bun_paths::PathBuffer;
-use bun_paths::{OSPathBuffer, OSPathChar, SEP, SEP_STR};
+use bun_paths::{OSPathChar, SEP, SEP_STR};
 use bun_sys::{self, Fd, FdExt};
 use bun_wyhash::hash;
 
@@ -1711,7 +1711,7 @@ impl Archiver {
         #[cfg(unix)]
         let mut created_symlinks: Vec<Vec<u8>> = Vec::new();
 
-        let mut normalized_buf = OSPathBuffer::uninit();
+        let mut normalized_buf = bun_paths::os_path_buffer_pool::get();
         let mut use_pwrite = cfg!(unix);
         let mut use_lseek = true;
 

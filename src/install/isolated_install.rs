@@ -34,7 +34,7 @@ use bun_collections::{
 };
 use bun_core::{Environment, Global, Output, fast_random, fmt as bun_fmt};
 use bun_paths::path_options::AssumeOk as _;
-use bun_paths::{self as paths, AutoAbsPath as AbsPath, AutoRelPath, PathBuffer};
+use bun_paths::{self as paths, AutoAbsPath as AbsPath, AutoRelPath};
 use bun_semver as semver;
 use bun_sys::{self as sys, Fd};
 use bun_wyhash::{Wyhash, Wyhash11};
@@ -1244,7 +1244,7 @@ pub(crate) fn install_isolated_packages(
                                 // shared global copy would either diverge from the
                                 // patch or be mutated underneath other projects.
                                 if lockfile.patched_dependencies.count() > 0 {
-                                    let mut name_version_buf = PathBuffer::uninit();
+                                    let mut name_version_buf = bun_paths::path_buffer_pool::get();
                                     // TODO(port): std.fmt.bufPrint returned the written
                                     // slice; emulate via cursor write into the PathBuffer.
                                     let mut cursor =
@@ -1825,7 +1825,7 @@ pub(crate) fn install_isolated_packages(
                     // 3. rename temp into 'node_modules/.old_modules-{hex}'
                     // 4. attempt renaming 'node_modules/.old_modules-{hex}/.cache' to 'node_modules/.cache'
                     // 5. rename each workspace 'node_modules' into 'node_modules/.old_modules-{hex}/old_{basename}_modules'
-                    let mut temp_node_modules_buf = PathBuffer::uninit();
+                    let mut temp_node_modules_buf = bun_paths::path_buffer_pool::get();
                     let temp_node_modules = paths::fs::FileSystem::tmpname(
                         b"tmp_modules",
                         &mut temp_node_modules_buf.0,

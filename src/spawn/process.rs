@@ -1855,7 +1855,7 @@ mod spawn_process_body {
         // accessor for the set-once `.uv_loop` field of the `uws::WindowsLoop`.
         let loop_ = options.windows.loop_.uv_loop();
 
-        let mut cwd_buf = bun_core::PathBuffer::uninit();
+        let mut cwd_buf = bun_paths::path_buffer_pool::get();
         cwd_buf[..options.cwd.len()].copy_from_slice(&options.cwd);
         cwd_buf[options.cwd.len()] = 0;
         // SAFETY: cwd_buf[options.cwd.len()] == 0 written above

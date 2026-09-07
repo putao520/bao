@@ -165,7 +165,7 @@ impl WorkspacePackageJSONCache {
         debug_assert!(is_absolute(abs_package_json_path));
 
         #[cfg(windows)]
-        let mut buf = PathBuffer::uninit();
+        let mut buf = bun_paths::path_buffer_pool::get();
         #[cfg(not(windows))]
         let path: &[u8] = abs_package_json_path;
         #[cfg(windows)]
@@ -244,7 +244,7 @@ impl WorkspacePackageJSONCache {
         debug_assert!(is_absolute(source.path.text()));
 
         #[cfg(windows)]
-        let mut buf = PathBuffer::uninit();
+        let mut buf = bun_paths::path_buffer_pool::get();
         #[cfg(not(windows))]
         let path: &[u8] = source.path.text();
         #[cfg(windows)]

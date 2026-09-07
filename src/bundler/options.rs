@@ -2041,7 +2041,7 @@ impl<'a> BundleOptions<'a> {
             // PORT NOTE: Zig `fs.getFdPath(.fromStdDir(handle))` interns into
             // `dirname_store`; the inline `bun_resolver::fs::FileSystem` does
             // not yet expose `get_fd_path`, so resolve via `bun_sys` and box.
-            let mut buf = bun_paths::PathBuffer::uninit();
+            let mut buf = bun_paths::path_buffer_pool::get();
             let dir = bun_sys::get_fd_path(handle, &mut buf).map_err(bun_core::Error::from)?;
             opts.output_dir = Box::from(&dir[..]);
         }
@@ -2121,7 +2121,7 @@ pub fn open_output_dir(output_dir: &[u8]) -> Result<Dir, bun_core::Error> {
             // Zig: `std.fs.cwd().makeDir(output_dir)` — single-level mkdir
             // (fails ENOENT if parent missing). Do NOT use `make_path` (the
             // recursive `mkdir -p` variant) here.
-            let mut buf = bun_paths::PathBuffer::uninit();
+            let mut buf = bun_paths::path_buffer_pool::get();
             let len = output_dir.len().min(buf.0.len() - 1);
             buf.0[..len].copy_from_slice(&output_dir[..len]);
             buf.0[len] = 0;

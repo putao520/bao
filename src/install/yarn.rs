@@ -27,7 +27,6 @@ use crate::repository::Repository;
 use crate::resolution_real::{Resolution, Tag as ResolutionTag, TaggedValue as ResolutionValue};
 use crate::versioned_url::VersionedURL;
 use bun_core::strings;
-use bun_paths::PathBuffer;
 use bun_semver::{self as Semver, SlicedString, String as SemverString};
 use bun_sys::Fd;
 
@@ -723,7 +722,7 @@ pub(crate) fn migrate_yarn_lockfile<'a>(
 
         // `Source` owns its bytes (interned fd path + `Cow::Owned` contents)
         // so the path/contents buffers no longer need to outlive it.
-        let mut package_json_path_buf = PathBuffer::uninit();
+        let mut package_json_path_buf = bun_paths::path_buffer_pool::get();
         let package_json_source = {
             let Ok(package_json_path) =
                 bun_sys::get_fd_path(package_json_fd.handle(), &mut package_json_path_buf)

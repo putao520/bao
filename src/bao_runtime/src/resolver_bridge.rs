@@ -56,7 +56,7 @@ fn create_resolver() -> Resolver<'static> {
 
 /// Get current working directory via `bun_core::getcwd`, falling back to "/".
 fn bun_core_cwd() -> String {
-    let mut buf = bun_core::PathBuffer::default();
+    let mut buf = bun_paths::path_buffer_pool::get();
     bun_core::getcwd(&mut buf)
         .map(|z| String::from_utf8_lossy(z.as_bytes()).into_owned())
         .unwrap_or_else(|_| "/".to_string())

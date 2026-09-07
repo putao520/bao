@@ -31,7 +31,7 @@ impl Default for FallbackEntryPoint {
     fn default() -> Self {
         Self {
             code_buffer: [0u8; 8192],
-            path_buffer: PathBuffer::uninit(),
+            path_buffer: PathBuffer::ZEROED,
             source: bun_ast::Source::default(),
             built_code: b"",
         }
@@ -130,7 +130,7 @@ impl Default for ClientEntryPoint {
     fn default() -> Self {
         Self {
             code_buffer: [0u8; 8192],
-            path_buffer: PathBuffer::uninit(),
+            path_buffer: PathBuffer::ZEROED,
             source: bun_ast::Source::default(),
         }
     }

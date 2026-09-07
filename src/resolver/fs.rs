@@ -11,7 +11,7 @@ use bun_core::{FeatureFlags, Generation, ZStr, env_var};
 use bun_core::{MutableString, PathString};
 use bun_paths::resolve_path::platform;
 use bun_paths::strings;
-use bun_paths::{MAX_PATH_BYTES, PathBuffer, SEP, resolve_path as path_handler};
+use bun_paths::{MAX_PATH_BYTES, SEP, resolve_path as path_handler};
 use bun_sys::{self, Fd};
 use bun_threading::Mutex;
 
@@ -762,7 +762,7 @@ impl DirEntry {
         // case (matches `DirEntry::get`); only a basename longer than
         // `MAX_PATH_BYTES` — which `getdents`/`FindNextFile` can't produce —
         // would touch the heap.
-        let mut name_lc_buf = PathBuffer::uninit();
+        let mut name_lc_buf = bun_paths::path_buffer_pool::get();
         let name_lc_heap: Option<bun_collections::StringHashMapContext::PrehashedCaseInsensitive> =
             if name_slice.len() <= MAX_PATH_BYTES {
                 None
@@ -911,7 +911,7 @@ impl DirEntry {
         if query_.is_empty() || query_.len() > MAX_PATH_BYTES {
             return None;
         }
-        let mut scratch_lookup_buffer = PathBuffer::uninit();
+        let mut scratch_lookup_buffer = bun_paths::path_buffer_pool::get();
 
         let query = strings::copy_lowercase_if_needed(query_, &mut scratch_lookup_buffer[..]);
         let &result_ptr = self.data.get(query)?;
@@ -1161,7 +1161,7 @@ impl RealFS {
             }
 
             if let Some(profile) = env_var::HOME::get() {
-                let mut buf = PathBuffer::uninit();
+                let mut buf = bun_paths::path_buffer_pool::get();
                 let parts: [&[u8]; 1] = [b"AppData\\Local\\Temp"];
                 let out = path_handler::join_abs_string_buf::<platform::Loose>(
                     profile,
@@ -1171,7 +1171,7 @@ impl RealFS {
                 return DirnameStore::instance().append(out).expect("oom");
             }
 
-            let mut tmp_buf = PathBuffer::uninit();
+            let mut tmp_buf = bun_paths::path_buffer_pool::get();
             // TODO(port): std.posix.getcwd — bun_sys::getcwd
             let n =
                 bun_sys::getcwd(&mut tmp_buf[..]).expect("Failed to get cwd for platformTempDir");
@@ -2320,7 +2320,7 @@ impl RealFS {
 
         let dir = dir_;
         let combo: [&[u8]; 2] = [dir, base];
-        let mut outpath = PathBuffer::uninit();
+        let mut outpath = bun_paths::path_buffer_pool::get();
         let entry_path =
             path_handler::join_abs_string_buf::<platform::Auto>(self.cwd, &mut outpath[..], &combo);
         let entry_path_len = entry_path.len();

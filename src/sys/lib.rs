@@ -825,7 +825,7 @@ pub fn open_dir_for_iteration_os_path(dir: Fd, path: &bun_paths::OSPathSlice) ->
     {
         // PORT NOTE: Zig `openDirForIterationOSPath` uses
         // `O_DIRECTORY | O_RDONLY | O_CLOEXEC` (`| O_NONBLOCK` on Linux).
-        let mut buf = bun_paths::PathBuffer::default();
+        let mut buf = bun_paths::path_buffer_pool::get();
         // bun.zig:883 → `sys.openatA` → `std.posix.toPosixPath`: ENAMETOOLONG on
         // overflow, never silently truncate (would open the wrong directory).
         if path.len() >= buf.len() {
@@ -3904,7 +3904,7 @@ mod windows_impl {
     }
     pub fn getcwd(buf: &mut [u8]) -> Maybe<usize> {
         // sys.zig:349 — GetCurrentDirectoryW + WTF16→UTF8.
-        let mut wbuf = WPathBuffer::default();
+        let mut wbuf = bun_paths::w_path_buffer_pool::get();
         let len =
             unsafe { w::kernel32::GetCurrentDirectoryW(wbuf.len() as u32, wbuf.as_mut_ptr()) };
         if len == 0 {
@@ -3925,7 +3925,7 @@ mod windows_impl {
         // sys.zig:829 mkdiratW — `openDirAtWindowsNtPath(dir, path,
         // .{ .iterable = false, .can_rename_or_delete = true, .op = .only_create })`
         // then close the resulting handle on success.
-        let mut wbuf = WPathBuffer::default();
+        let mut wbuf = bun_paths::w_path_buffer_pool::get();
         let wpath = bun_paths::string_paths::to_nt_path(&mut wbuf, path.as_bytes());
         let made = super::open_dir_at_windows_nt_path(
             dir,
@@ -3944,8 +3944,8 @@ mod windows_impl {
         let from_dir = from_dir.as_fd();
         let to_dir = to_dir.as_fd();
         // sys.zig:2572 — windows arm goes through renameAtW.
-        let mut wf = WPathBuffer::default();
-        let mut wt = WPathBuffer::default();
+        let mut wf = bun_paths::w_path_buffer_pool::get();
+        let mut wt = bun_paths::w_path_buffer_pool::get();
         let from_w = bun_paths::string_paths::to_nt_path(&mut wf, from.as_bytes());
         let to_w = bun_paths::string_paths::to_nt_path(&mut wt, to.as_bytes());
         super::windows::rename_at_w(from_dir, from_w, to_dir, to_w, true)
@@ -3968,7 +3968,7 @@ mod windows_impl {
         // dirfd.cast() else null` and `.remove_dir = flags & AT.REMOVEDIR != 0`.
         // `std.posix.AT.REMOVEDIR` on Windows = 0x200 (std/c.zig).
         const AT_REMOVEDIR: i32 = 0x200;
-        let mut wbuf = WPathBuffer::default();
+        let mut wbuf = bun_paths::w_path_buffer_pool::get();
         let wpath = bun_paths::string_paths::to_nt_path(&mut wbuf, path.as_bytes());
         super::windows::DeleteFileBun(
             wpath,
@@ -4029,7 +4029,7 @@ mod windows_impl {
         if sub.is_empty() || sub == b"." {
             return Ok(());
         }
-        let mut buf = bun_core::PathBuffer::default();
+        let mut buf = bun_paths::path_buffer_pool::get();
         if sub.len() >= buf.0.len() {
             return Err(Error::new(E::ENAMETOOLONG, Tag::mkdir));
         }
@@ -4104,7 +4104,7 @@ mod windows_impl {
         // makePath (NtCreateFile rejects them anyway).
         let it = ComponentIterator::init(&buf.0[..w], PathFormat::Windows)
             .map_err(|_| Error::new(E::EINVAL, Tag::mkdir))?;
-        let mut z = bun_core::PathBuffer::default();
+        let mut z = bun_paths::path_buffer_pool::get();
         bun_paths::make_path_with(it, |p| {
             z.0[..p.len()].copy_from_slice(p);
             z.0[p.len()] = 0;
@@ -4120,12 +4120,12 @@ mod windows_impl {
         let src_dir = src_dir.as_fd();
         let dest_dir = dest_dir.as_fd();
         // No native `linkat` on Windows — resolve to absolute and CreateHardLinkW.
-        let mut sb = bun_core::PathBuffer::default();
-        let mut db = bun_core::PathBuffer::default();
+        let mut sb = bun_paths::path_buffer_pool::get();
+        let mut db = bun_paths::path_buffer_pool::get();
         let s = super::get_fd_path(src_dir, &mut sb)?;
         let d = super::get_fd_path(dest_dir, &mut db)?;
-        let mut sj = bun_core::PathBuffer::default();
-        let mut dj = bun_core::PathBuffer::default();
+        let mut sj = bun_paths::path_buffer_pool::get();
+        let mut dj = bun_paths::path_buffer_pool::get();
         let s_abs = bun_paths::resolve_path::join_string_buf_z::<bun_paths::platform::Windows>(
             &mut sj.0,
             &[s, src.as_bytes()],
@@ -4143,9 +4143,9 @@ mod windows_impl {
     pub fn symlinkat(target: &ZStr, dirfd: impl AsFd, dest: &ZStr) -> Maybe<()> {
         let dirfd = dirfd.as_fd();
         // sys.zig:2641 — windows: resolve `dest` against `dirfd`, then symlinkUV.
-        let mut db = bun_core::PathBuffer::default();
+        let mut db = bun_paths::path_buffer_pool::get();
         let d = super::get_fd_path(dirfd, &mut db)?;
-        let mut dj = bun_core::PathBuffer::default();
+        let mut dj = bun_paths::path_buffer_pool::get();
         let d_abs = bun_paths::resolve_path::join_string_buf_z::<bun_paths::platform::Windows>(
             &mut dj.0,
             &[d, dest.as_bytes()],
@@ -4155,9 +4155,9 @@ mod windows_impl {
     pub fn readlinkat(fd: impl AsFd, path: &ZStr, buf: &mut [u8]) -> Maybe<usize> {
         let fd = fd.as_fd();
         // No `readlinkat` on Windows — resolve and call `readlink`.
-        let mut db = bun_core::PathBuffer::default();
+        let mut db = bun_paths::path_buffer_pool::get();
         let d = super::get_fd_path(fd, &mut db)?;
-        let mut dj = bun_core::PathBuffer::default();
+        let mut dj = bun_paths::path_buffer_pool::get();
         let abs = bun_paths::resolve_path::join_string_buf_z::<bun_paths::platform::Windows>(
             &mut dj.0,
             &[d, path.as_bytes()],
@@ -4166,9 +4166,9 @@ mod windows_impl {
     }
     pub fn fchmodat(dir: impl AsFd, path: &ZStr, mode: Mode, _flags: i32) -> Maybe<()> {
         let dir = dir.as_fd();
-        let mut db = bun_core::PathBuffer::default();
+        let mut db = bun_paths::path_buffer_pool::get();
         let d = super::get_fd_path(dir, &mut db)?;
-        let mut dj = bun_core::PathBuffer::default();
+        let mut dj = bun_paths::path_buffer_pool::get();
         let abs = bun_paths::resolve_path::join_string_buf_z::<bun_paths::platform::Windows>(
             &mut dj.0,
             &[d, path.as_bytes()],
@@ -4203,7 +4203,7 @@ mod windows_impl {
         // `(mode & W_OK) != 0` AND the file is read-only AND it is NOT a
         // directory, return `.err = EPERM`.
         const W_OK: i32 = 2;
-        let mut wbuf = WPathBuffer::default();
+        let mut wbuf = bun_paths::w_path_buffer_pool::get();
         let wpath = bun_paths::string_paths::to_kernel32_path(&mut wbuf, path.as_bytes());
         let attrs = unsafe { w::kernel32::GetFileAttributesW(wpath.as_ptr()) };
         if attrs == w::INVALID_FILE_ATTRIBUTES {
@@ -4318,7 +4318,7 @@ mod windows_impl {
         // .vbs/...` in addition to `.exe/.cmd/.bat/.com` (per the comment block
         // at sys.zig:3744-3761). Do NOT hand-roll an extension whitelist —
         // PORTING.md §Forbidden bars re-implementing linked OS API surface.
-        let mut wbuf = WPathBuffer::default();
+        let mut wbuf = bun_paths::w_path_buffer_pool::get();
         let wpath = bun_paths::string_paths::to_w_path(&mut wbuf, path.as_bytes());
         // `bFromShellExecute = FALSE` so `.exe` files are included
         // (https://learn.microsoft.com/en-us/windows/win32/api/winsafer/nf-winsafer-saferiisexecutablefiletype).
@@ -4394,7 +4394,7 @@ mod windows_impl {
         // sys.zig:452-455 — windows: `SetCurrentDirectoryW(toWDirPath(..))`.
         // `toWDirPath` appends a trailing backslash so e.g. `"C:"` is treated
         // as the drive root, not the drive's saved cwd.
-        let mut wbuf = WPathBuffer::default();
+        let mut wbuf = bun_paths::w_path_buffer_pool::get();
         let wpath = bun_paths::string_paths::to_w_dir_path(&mut wbuf, path.as_bytes());
         if unsafe { w::SetCurrentDirectoryW(wpath.as_ptr()) } == 0 {
             return Err(Error::new(w::get_last_errno(), Tag::chdir).with_path(path.as_bytes()));
@@ -4402,9 +4402,9 @@ mod windows_impl {
         Ok(())
     }
     pub fn fchdir(fd: Fd) -> Maybe<()> {
-        let mut buf = bun_core::PathBuffer::default();
+        let mut buf = bun_paths::path_buffer_pool::get();
         let p = super::get_fd_path(fd, &mut buf)?;
-        let mut zb = bun_core::PathBuffer::default();
+        let mut zb = bun_paths::path_buffer_pool::get();
         zb.0[..p.len()].copy_from_slice(p);
         zb.0[p.len()] = 0;
         // SAFETY: NUL-terminated above.
@@ -6120,7 +6120,7 @@ unsafe impl Sync for DynLib {}
 impl DynLib {
     /// `dlopen(path, RTLD_LAZY)` / `LoadLibraryA(path)`.
     pub fn open(path: &[u8]) -> core::result::Result<Self, bun_core::Error> {
-        let mut buf = bun_paths::PathBuffer::default();
+        let mut buf = bun_paths::path_buffer_pool::get();
         // `std.DynLib.open` returns `error.NameTooLong`; never truncate (could
         // dlopen a different library whose path is a prefix of the requested one).
         if path.len() >= buf.0.len() {
@@ -6262,7 +6262,7 @@ pub fn open_a(path: &[u8], flags: i32, perm: Mode) -> Maybe<Fd> {
 /// `openatA` — like `openat` but takes a non-NUL-terminated slice.
 pub fn openat_a(dir: impl AsFd, path: &[u8], flags: i32, perm: Mode) -> Maybe<Fd> {
     let dir = dir.as_fd();
-    let mut buf = bun_paths::PathBuffer::default();
+    let mut buf = bun_paths::path_buffer_pool::get();
     if path.len() >= buf.0.len() {
         return Err(Error::from_code_int(libc::ENAMETOOLONG, Tag::open).with_path(path));
     }
@@ -7811,7 +7811,7 @@ pub fn make_path_w(dir: Fd, sub_path: &[u16]) -> Maybe<()> {
     // bun.zig:2319-2324 — "was going to copy/paste makePath and use all W
     // versions but they didn't all exist and this buffer was needed anyway":
     // transcode UTF-16 → UTF-8, then call `makePath` (`mkdir_recursive_at`).
-    let mut buf = bun_paths::PathBuffer::default();
+    let mut buf = bun_paths::path_buffer_pool::get();
     let utf8 = bun_paths::strings::from_w_path(&mut buf.0[..], sub_path);
     mkdir_recursive_at(dir, utf8.as_bytes())
 }
@@ -8941,14 +8941,14 @@ pub fn renameat_concurrently_a(
     opts: RenameatConcurrentlyOptions,
 ) -> Maybe<()> {
     // Z-terminate both paths into stack buffers (Zig signature is `[:0]const u8`).
-    let mut from_buf = bun_paths::PathBuffer::default();
+    let mut from_buf = bun_paths::path_buffer_pool::get();
     let from_len = from.len().min(from_buf.0.len() - 1);
     from_buf.0[..from_len].copy_from_slice(&from[..from_len]);
     from_buf.0[from_len] = 0;
     // SAFETY: NUL-terminated above.
     let from_z = ZStr::from_buf(&from_buf.0[..], from_len);
 
-    let mut to_buf = bun_paths::PathBuffer::default();
+    let mut to_buf = bun_paths::path_buffer_pool::get();
     let to_len = to.len().min(to_buf.0.len() - 1);
     to_buf.0[..to_len].copy_from_slice(&to[..to_len]);
     to_buf.0[to_len] = 0;
@@ -8966,7 +8966,7 @@ pub fn iterate_dir(dir: Fd) -> dir_iterator::WrappedIterator {
 /// [`exists_z`]: copies into a stack `PathBuffer`, NUL-terminates, then
 /// `access(path, F_OK)` (POSIX) / `GetFileAttributesW` (Windows).
 pub fn exists(path: &[u8]) -> bool {
-    let mut buf = bun_paths::PathBuffer::default();
+    let mut buf = bun_paths::path_buffer_pool::get();
     if path.len() >= buf.0.len() {
         // Zig: `std.posix.toPosixPath(path) catch return false`
         return false;

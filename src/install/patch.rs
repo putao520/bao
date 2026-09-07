@@ -59,7 +59,7 @@ struct ApplyState {
 impl ApplyState {
     fn new() -> Self {
         Self {
-            pathbuf: PathBuffer::uninit(),
+            pathbuf: PathBuffer::ZEROED,
             patch_dir_abs_path: None,
         }
     }
@@ -235,7 +235,7 @@ impl<'a> PatchFile<'a> {
                             sys::Result::Ok(p) => p,
                             sys::Result::Err(e) => return Some(e.without_path()),
                         };
-                        let mut buf = PathBuffer::uninit();
+                        let mut buf = bun_paths::path_buffer_pool::get();
                         let joined_absfilepath =
                             paths::resolve_path::join_z_buf::<paths::platform::Auto>(
                                 &mut buf[..],
@@ -1844,7 +1844,7 @@ pub fn git_diff_internal(
     // Zig used `std.process.Child`, which searches `$PATH` for argv[0].
     // `bun_spawn::sync` execs argv[0] verbatim (execve, no PATH search), so
     // resolve `git` here — same as `patchCommit`'s `bun.which` call.
-    let mut gitbuf = PathBuffer::uninit();
+    let mut gitbuf = bun_paths::path_buffer_pool::get();
     let git = bun_which::which(
         &mut gitbuf,
         bun_core::env_var::PATH.get().unwrap_or(b""),
@@ -1973,8 +1973,8 @@ fn git_diff_postprocess(
     let old_folder_trimmed = strings::trim(old_folder, b"/");
     let new_folder_trimmed = strings::trim(new_folder, b"/");
 
-    let mut old_buf = PathBuffer::uninit();
-    let mut new_buf = PathBuffer::uninit();
+    let mut old_buf = bun_paths::path_buffer_pool::get();
+    let mut new_buf = bun_paths::path_buffer_pool::get();
 
     let (a_old_folder_slash, b_new_folder_slash) = {
         let ob = &mut old_buf[..];

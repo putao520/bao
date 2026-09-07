@@ -7,7 +7,7 @@ use bun_core::{ZStr, strings};
 use bun_glob as glob;
 use bun_paths as path;
 use bun_paths::resolve_path;
-use bun_paths::{MAX_PATH_BYTES, PathBuffer, SEP_STR};
+use bun_paths::{MAX_PATH_BYTES, SEP_STR};
 
 use crate::lockfile_real::StringBuilder;
 use crate::package_manager::workspace_package_json_cache::{
@@ -217,7 +217,7 @@ impl WorkspaceMap {
         let orig_msgs_len = log.msgs.len();
 
         let mut workspace_globs: Vec<Box<[u8]>> = Vec::new();
-        let mut filepath_buf_os: Box<PathBuffer> = Box::new(PathBuffer::uninit());
+        let mut filepath_buf_os = bun_paths::path_buffer_pool::get();
         // PERF(port): Zig used allocator.create(PathBuffer) to avoid large stack frame
         let filepath_buf: &mut [u8] = &mut filepath_buf_os.0[..];
 

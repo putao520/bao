@@ -317,7 +317,7 @@ pub mod fs {
                     // through `bun_core::getcwd` so a deleted cwd surfaces as
                     // `CurrentWorkingDirectoryUnlinked` instead of a bare
                     // ENOENT (upstream a2496de44).
-                    let mut buf = bun_paths::PathBuffer::default();
+                    let mut buf = bun_paths::path_buffer_pool::get();
                     DirnameStore::instance().append_slice(
                         bun_core::getcwd(&mut buf)?.as_bytes(),
                     )?
@@ -338,7 +338,7 @@ pub mod fs {
             unsafe {
                 (*INSTANCE.get()).write(FileSystem {
                     top_level_dir: cwd,
-                    top_level_dir_buf: bun_paths::PathBuffer::uninit(),
+                    top_level_dir_buf: bun_paths::PathBuffer::ZEROED,
                     fs: Implementation::init(cwd),
                     dirname_store: DirnameStore::instance(),
                     filename_store: FilenameStore::instance(),
@@ -795,7 +795,7 @@ pub mod fs {
                 scopeguard::defer! { let _ = bun_sys::close(tmp_dir); }
                 let flags = bun_sys::O::CREAT | bun_sys::O::WRONLY | bun_sys::O::CLOEXEC;
                 self.fd = bun_sys::openat(tmp_dir, name, flags, 0)?;
-                let mut buf = bun_paths::PathBuffer::uninit();
+                let mut buf = bun_paths::path_buffer_pool::get();
                 let existing_path = bun_sys::get_fd_path(self.fd, &mut buf)?;
                 self.existing_path = Box::<[u8]>::from(&*existing_path);
                 Ok(())
@@ -827,8 +827,8 @@ pub mod fs {
                 use bun_sys::windows as w;
                 use w::Win32ErrorUnwrap as _;
                 let _ = from_name;
-                let mut existing_buf = bun_paths::WPathBuffer::uninit();
-                let mut new_buf = bun_paths::WPathBuffer::uninit();
+                let mut existing_buf = bun_paths::w_path_buffer_pool::get();
+                let mut new_buf = bun_paths::w_path_buffer_pool::get();
                 self.close();
                 let existing = bun_paths::strings::paths::to_extended_path_normalized(
                     &mut new_buf.0[..],
@@ -1347,7 +1347,7 @@ pub mod fs {
             };
 
             let combo: [&[u8]; 2] = [dir_, base];
-            let mut outpath = bun_paths::PathBuffer::uninit();
+            let mut outpath = bun_paths::path_buffer_pool::get();
             let entry_path_len =
                 join_abs_string_buf::<platform::Auto>(self.cwd, &mut outpath[..], &combo).len();
 
@@ -1637,14 +1637,14 @@ pub mod fs {
                             return out;
                         }
                         if let Some(profile) = env_var::HOME.get() {
-                            let mut buf = bun_paths::PathBuffer::uninit();
+                            let mut buf = bun_paths::path_buffer_pool::get();
                             let parts: [&[u8]; 1] = [b"AppData\\Local\\Temp"];
                             let out = bun_paths::resolve_path::join_abs_string_buf::<
                                 bun_paths::resolve_path::platform::Loose,
                             >(profile, &mut buf[..], &parts);
                             return out.to_vec();
                         }
-                        let mut tmp_buf = bun_paths::PathBuffer::uninit();
+                        let mut tmp_buf = bun_paths::path_buffer_pool::get();
                         let cwd = match bun_sys::getcwd(&mut tmp_buf[..]) {
                             Ok(len) => &tmp_buf[..len],
                             Err(_) => panic!("Failed to get cwd for platformTempDir"),
@@ -1924,7 +1924,7 @@ pub mod dir_entry_accessor {
         type DirIter = DirEntryDirIter;
 
         fn statat(handle: DirEntryHandle, path_: &ZStr) -> Maybe<Stat> {
-            let mut buf = PathBuffer::uninit();
+            let mut buf = bun_paths::path_buffer_pool::get();
             let path: &ZStr = if !Platform::AUTO.is_absolute(path_.as_bytes()) {
                 if let Some(entry) = handle.value {
                     let slice = resolve_path::join_string_buf::<bun_paths::platform::Auto>(
@@ -1946,7 +1946,7 @@ pub mod dir_entry_accessor {
 
         /// Like statat but does not follow symlinks.
         fn lstatat(handle: DirEntryHandle, path_: &ZStr) -> Maybe<Stat> {
-            let mut buf = PathBuffer::uninit();
+            let mut buf = bun_paths::path_buffer_pool::get();
             if let Some(entry) = handle.value {
                 return Syscall::lstatat(entry.fd, path_);
             }
@@ -1978,7 +1978,7 @@ pub mod dir_entry_accessor {
             handle: DirEntryHandle,
             path_: &ZStr,
         ) -> Result<Maybe<DirEntryHandle>, bun_core::Error> {
-            let mut buf = PathBuffer::uninit();
+            let mut buf = bun_paths::path_buffer_pool::get();
             let mut path: &[u8] = path_.as_bytes();
 
             if !Platform::AUTO.is_absolute(path) {
@@ -2614,7 +2614,6 @@ mod getcwd_deleted_cwd_tests {
     //! The repro mutates process state (`chdir` + `rmdir`), so it re-execs
     //! the test binary as a child instead of running in-process: cargo test
     //! threads share one cwd, and deleting it would break every other test.
-    use bun_paths::PathBuffer;
 
     #[test]
     fn deleted_cwd_reports_current_working_directory_unlinked() {
@@ -2627,7 +2626,7 @@ mod getcwd_deleted_cwd_tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::env::set_current_dir(&dir).unwrap();
             std::fs::remove_dir(&dir).unwrap();
-            let mut buf = PathBuffer::default();
+            let mut buf = bun_paths::path_buffer_pool::get();
             // `ZStr` has no `Debug`, so no `unwrap_err()` — match by hand.
             let err = match bun_core::getcwd(&mut buf) {
                 Ok(_) => panic!("getcwd must fail when the cwd was deleted"),

@@ -347,7 +347,7 @@ pub fn run(opts: RunOptions<'_>) -> core::result::Result<RunResult, bun_core::Er
     // calls `posix.execvpeZ_expandArg0`). `process::sync::spawn` below execs
     // via `execve` (no PATH search), so do the lookup here. Use the *child's*
     // env PATH — that's what Zig's expandArg0 walks.
-    let mut argv0_buf = bun_core::PathBuffer::uninit();
+    let mut argv0_buf = bun_paths::path_buffer_pool::get();
     let mut argv0_storage: Option<Box<[u8]>> = None;
     'argv0: {
         let Some(&first) = opts.argv.first() else {

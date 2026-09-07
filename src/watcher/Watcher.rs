@@ -848,7 +848,7 @@ impl Watcher {
         // Only open fd if we might need it
         #[cfg(any(target_os = "macos", target_os = "freebsd"))]
         let fd: Fd = {
-            let mut path_z = bun_paths::PathBuffer::uninit();
+            let mut path_z = bun_paths::path_buffer_pool::get();
             if file_path.len() >= path_z.len() {
                 return false;
             }

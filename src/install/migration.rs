@@ -3,7 +3,7 @@ use bun_collections::VecExt;
 use bun_collections::{StringArrayHashMap, StringHashMap};
 use bun_core::strings;
 use bun_core::{Error, Global, Output, err, zstr};
-use bun_paths::{self, MAX_PATH_BYTES, PathBuffer};
+use bun_paths::{self, MAX_PATH_BYTES};
 use bun_semver::query::token::Wildcard;
 use bun_semver::{self as Semver, SlicedString, String as SemverString};
 use bun_sys::{self, Fd, File, O};
@@ -51,7 +51,7 @@ pub fn detect_and_load_other_lockfile<'a>(
             break 'npm;
         };
         // file closes on Drop
-        let mut lockfile_path_buf = PathBuffer::uninit();
+        let mut lockfile_path_buf = bun_paths::path_buffer_pool::get();
         let Ok(lockfile_path) = bun_sys::get_fd_path(lockfile.handle(), &mut lockfile_path_buf)
         else {
             break 'npm;

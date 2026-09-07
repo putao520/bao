@@ -408,7 +408,7 @@ unsafe extern "C" fn path_join(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 unsafe extern "C" fn path_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let cwd = {
-        let mut buf = bun_core::PathBuffer::default();
+        let mut buf = bun_paths::path_buffer_pool::get();
         bun_core::getcwd(&mut buf)
             .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
             .unwrap_or_else(|_| PathBuf::from("."))
@@ -732,7 +732,7 @@ use bun_paths::resolve_path::{self, platform::Posix};
 /// Resolve the current working directory as an owned byte vector, falling
 /// back to `b"."` so absolute-path joins never see an empty cwd.
 fn cwd_bytes() -> Vec<u8> {
-    let mut buf = bun_core::PathBuffer::default();
+    let mut buf = bun_paths::path_buffer_pool::get();
     match bun_core::getcwd(&mut buf) {
         Ok(z) => z.as_bytes().to_vec(),
         Err(_) => b".".to_vec(),

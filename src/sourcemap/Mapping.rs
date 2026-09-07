@@ -418,7 +418,7 @@ impl Lookup {
 
             let name: &[u8] = &source_map.external_source_names[index];
 
-            let mut buf = bun_paths::PathBuffer::uninit();
+            let mut buf = bun_paths::path_buffer_pool::get();
             // PORT NOTE: Zig passed runtime `.auto` / `.loose`; bun_paths
             // exposes const-generic `PlatformT` ZSTs. `platform::Auto` is
             // cfg-selected (Posix on unix, Windows on windows) — same result.
