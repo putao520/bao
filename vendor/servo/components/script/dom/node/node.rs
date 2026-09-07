@@ -630,7 +630,7 @@ impl Node {
             0,                                  // twist
             PI / 2.0,                           // altitude_angle
             0.0,                                // azimuth_angle
-            DOMString::from(""),                // pointer_type
+            DOMString::new(),                   // pointer_type
             false,                              // is_primary
             vec![],                             // coalesced_events
             vec![],                             // predicted_events

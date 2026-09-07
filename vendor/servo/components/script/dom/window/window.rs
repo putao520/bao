@@ -2298,7 +2298,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     fn Name(&self) -> DOMString {
         match self.undiscarded_window_proxy() {
             Some(proxy) => proxy.get_name(),
-            None => "".into(),
+            None => DOMString::new(),
         }
     }
 

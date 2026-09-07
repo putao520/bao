@@ -1152,7 +1152,7 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
                 .upcast::<Element>()
                 .get_attribute_string_value(&local_name!("value"))
                 .map(|value| value.into())
-                .unwrap_or(DOMString::from("on")),
+                .unwrap_or(DOMString::from_static("on")),
             ValueMode::Filename => {
                 let mut path = DOMString::new();
                 match self.input_type().as_specific().get_files() {
@@ -1653,7 +1653,7 @@ impl HTMLInputElement {
                             // but this is _type_ of element rather than content right?
                             ty,
                             name,
-                            value: FormDatumValue::String(DOMString::from("")),
+                            value: FormDatumValue::String(DOMString::new()),
                         })
                     },
                     // Step 5.8.2: Otherwise, for each file in selected files, create an entry with name and a File object representing the file, and append it to entry list.
