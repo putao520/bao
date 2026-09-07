@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-09-07",
-  "updated_by": "daily-ops-2026-09-07-wave",
+  "updated_at": "2026-09-08",
+  "updated_by": "daily-ops-2026-09-08-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "d316760e8cae0d69ae927898d5afc933ecf34671",
-      "baseline_date": "2026-09-07",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 f42e980255..d316760e8c 21 commits 全判定(triage-bun-2026-09-07.md):吸收 1(e8541037c4 PathBuffer uninit UB→pool,177 调用点 sweep,登记下批队列首位)/ALREADY 3(indexOfLine 解码器天然免疫、shell then() 预结算 promise、failed-spawn fd RAII 已宽)/N-A-HOST 5(util.inspect 名单机制、test --parallel、ipc envelope、subprocess stdio ReadableStream、Bun.file().stream())/N-A 10(8 test/docs+CI 脚本+JSC/ICU 构建图)/不可达 2(07f629a4c6 dns EAI_AGAIN:init_eai 零调用+活映射已正确,附 SEMANTIC-PORT 登记 dns.lookup 空结果 vs Node EAI error;0131d75016 sourcemap 缓存:无磁盘 load 路径,Phase 2 落盘须带 is_valid_blob 登记债)。本波吸收落地下批队列 4 项(f42e980255 zstd drain/bdbe669b15 brotli drain/86b2e060cf lockfile pool-by-bytes/c01965ff72 [hash] widen)"
+      "baseline": "3f2610e24af70b9eca8d7e8201fbfbd7e4b5051a",
+      "baseline_date": "2026-09-08",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 d316760e8c..3f2610e24a 6 commits 全判定(triage-bun-2026-09-08.md):吸收 3(66c669c962 fetch fragment/8940b0eec7 minify spread 守卫+cache v21/5baea6630d solid 移除——同波落地)/已含 1(85c9f6e60d 早拒收上报:SM tracker 模型构造性覆盖,uncaught.rs:93)/N-A-HOST 1(3f2610e24a FileSink 未移植)/N-A 1(CI 脚本)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "b422215605b811a4e6d0f196fb4599c7ea277301",
-      "baseline_date": "2026-09-07",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md)。窗口 fb160c4ca..b42221560 7 commits 全判定(triage-servo-2026-09-07.md):吸收 2(13ce4588e 键盘→execCommand、c38769e82 text/media no-quirks——与 09-06 队列 fb160c4ca about:blank/srcdoc origin 继承同波落地;script_thread.rs BCE 9 锚点三次 grep 零漂移;fb 重放的 E0277 根因=上游前置 3c4f721c1(删 FetchResponseListener for ParserContext)缺失,按上游已定型形态最小修复,其另一半 ScriptThread 参数化登记后续波单独移植)/族归并 3(d8671305a MicrotaksQueue→JSContext owned JobQueue 依赖 servo/mozjs#811→并入 a7b65192d SM153esr 长任务族,关联 SM-EVOLUTION #25;f20c81400 traced/rooted WebIDL callbacks+35041ab72 AsyncBluetoothListener rooted→463b9e444 rooting 迁移族)/N/A 2(android、WPT sync)"
+      "baseline": "478bb535bc40e1b51e1a3345d4df1b338d9e8961",
+      "baseline_date": "2026-09-08",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md)。窗口 b42221560..478bb535b 17 commits 全判定(triage-servo-2026-09-08.md):本波吸收 3(bbf86944f/3a35f8c5a/7821ec2dd)/入队 6(478bb535b+7459ed3ab selection 配对、cc703a583 依赖的 d1ec9c5b2+b2ef2cf63、01201db19、7773388cb、4fccc53b2 webgl default、6c680f538 threadboost)/N-A 6(wpt+5 dep bump)"
     }
   }
 }

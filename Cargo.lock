@@ -3650,6 +3650,7 @@ dependencies = [
  "bun_io",
  "bun_opaque",
  "bun_output",
+ "bun_paths",
  "bun_ptr",
  "bun_spawn_sys",
  "bun_sys",
