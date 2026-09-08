@@ -77,6 +77,17 @@ jobs:
             sudo apt-get update && sudo apt-get install -y libdeflate-dev
           elif command -v brew >/dev/null 2>&1; then
             brew install libdeflate
+            # Homebrew's prefix (/opt/homebrew on arm64, /usr/local on x86_64)
+            # is not on clang's default search path — run 34263009204 failed
+            # with "libdeflate.h not found" despite the install. CPATH and
+            # LIBRARY_PATH are honored by clang, so cc-rs picks them up; the
+            # write lands for the later steps (GITHUB_ENV is not visible to
+            # the current step, which is fine — the compile step is the only
+            # consumer).
+            {
+              echo "CPATH=$(brew --prefix)/include"
+              echo "LIBRARY_PATH=$(brew --prefix)/lib"
+            } >> "$GITHUB_ENV"
           else
             echo "unsupported runner: no apt-get/brew for libdeflate" >&2
             exit 1
