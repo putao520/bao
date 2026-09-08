@@ -5003,10 +5003,16 @@ pub mod spawn_ffi {
                 return rc as isize;
             }
 
-            let mut flags: core::ffi::c_short =
-                (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as core::ffi::c_short;
             // POSIX_SPAWN_SETSID (0x80) is a Linux-only bit; on Apple the same
             // value is POSIX_SPAWN_START_SUSPENDED and would freeze the child.
+            // `mut` lives only on the Linux arm: the set-bit is the sole
+            // mutation, so a bare `let` elsewhere keeps -D unused-mut quiet.
+            #[cfg(target_os = "linux")]
+            let mut flags: core::ffi::c_short =
+                (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as core::ffi::c_short;
+            #[cfg(not(target_os = "linux"))]
+            let flags: core::ffi::c_short =
+                (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as core::ffi::c_short;
             #[cfg(target_os = "linux")]
             if req.new_process_group {
                 flags |= 0x80; // POSIX_SPAWN_SETSID on Linux
