@@ -1,6 +1,6 @@
 [package]
 name = "bao_cdp_client"
-version = "0.1.12"
+version = "0.1.13"
 rust-version = "1.85"
 authors = ["Bao Project"]
 edition = "2021"
