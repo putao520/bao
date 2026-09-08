@@ -65,6 +65,21 @@ pub extern "C" fn Bun__StackCheck__initialize() {}
 /// a single token).
 #[unsafe(no_mangle)]
 pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
+    // macOS: `pthread_getattr_np`/`pthread_attr_getstack` are glibc-only;
+    // the Apple equivalents are `pthread_get_stackaddr_np` (the ORIGIN, high
+    // end) minus `pthread_get_stacksize_np` — the same bounds formula std
+    // (`std::sys::pal::unix::stack_overflow::get_stack_start`) and WTF
+    // `StackBounds` use on Darwin.
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let th = libc::pthread_self();
+        let origin = libc::pthread_get_stackaddr_np(th) as usize;
+        let size = libc::pthread_get_stacksize_np(th);
+        (origin.wrapping_sub(size)) as *mut c_void
+    }
+    // Linux (glibc): pthread_attr path; `stack_addr` is already the low
+    // bound on down-growing stacks — do NOT add `stack_size` (the origin).
+    #[cfg(not(target_os = "macos"))]
     unsafe {
         let mut attr: libc::pthread_attr_t = core::mem::zeroed();
         if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) == 0 {
@@ -72,8 +87,6 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
             let mut stack_size: usize = 0;
             if libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size) == 0 {
                 libc::pthread_attr_destroy(&mut attr);
-                // `stack_addr` is already the low bound on down-growing
-                // stacks — do NOT add `stack_size` (that is the origin).
                 return stack_addr;
             }
             libc::pthread_attr_destroy(&mut attr);

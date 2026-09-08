@@ -66,6 +66,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Bare hosted runners lack libdeflate; bun_uws_sys's uSockets C seam
+      # includes <libdeflate.h> (run 34256204868: fatal error on ubuntu).
+      # Windows is skipped — it is a fail-anyway baseline probe (#33) and
+      # stays dependency-free.
+      - name: Install system deps (libdeflate for uSockets seam)
+        if: runner.os != 'Windows'
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y libdeflate-dev
+          elif command -v brew >/dev/null 2>&1; then
+            brew install libdeflate
+          else
+            echo "unsupported runner: no apt-get/brew for libdeflate" >&2
+            exit 1
+          fi
+
       # Installs exactly what rust-toolchain.toml pins (channel + components);
       # the pin lives only in that file — the workflow never restates it.
       - name: Install pinned toolchain from rust-toolchain.toml

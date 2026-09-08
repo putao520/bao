@@ -4955,7 +4955,18 @@ pub mod spawn_ffi {
             }
 
             if !req.chdir_buf.is_null() {
-                libc::posix_spawn_file_actions_addchdir_np(&mut fa, req.chdir_buf);
+                // `posix_spawn_file_actions_addchdir_np` is a glibc extension;
+                // the libc crate only declares it for Linux. Non-Linux unix is
+                // fail-closed (ENOSYS), never a silent skip of the chdir.
+                #[cfg(target_os = "linux")]
+                {
+                    libc::posix_spawn_file_actions_addchdir_np(&mut fa, req.chdir_buf);
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    libc::posix_spawn_file_actions_destroy(&mut fa);
+                    return libc::ENOSYS as isize;
+                }
             }
 
             for i in 0..req.actions.len {
@@ -4994,6 +5005,9 @@ pub mod spawn_ffi {
 
             let mut flags: core::ffi::c_short =
                 (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as core::ffi::c_short;
+            // POSIX_SPAWN_SETSID (0x80) is a Linux-only bit; on Apple the same
+            // value is POSIX_SPAWN_START_SUSPENDED and would freeze the child.
+            #[cfg(target_os = "linux")]
             if req.new_process_group {
                 flags |= 0x80; // POSIX_SPAWN_SETSID on Linux
             }
