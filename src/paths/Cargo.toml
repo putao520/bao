@@ -2,7 +2,7 @@
 name = "bun_paths"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. adt_const_params eradicated — crate fully stable-clean + const-generic regression tests.
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
@@ -27,6 +27,8 @@ libc.workspace = true
 bitflags.workspace = true
 bytemuck = "1"
 bun_alloc.workspace = true
-bun_core.workspace = true
+# sibling 精确下限(用户裁决 2026-09-02):path_buffer_pool 消费 bun_core 0.1.13
+# 的 asan::ignore_object(2026-09-08 PathBuffer pool sweep 波引入)。
+bun_core = { path = "../bun_core", version = "0.1.13" }
 
 thiserror.workspace = true
