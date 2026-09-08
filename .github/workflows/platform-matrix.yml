@@ -1,0 +1,74 @@
+# Bao minimal platform matrix (issue #38; 2026-09-08 user ruling supersedes the
+# 2026-08-22 "CI stays local" decision — local scripts/local-ci.sh is untouched
+# and remains the local gate).
+#
+# Scope (issue #38 requests 1/2/3 verbatim + #18 Scope D nightly pin gate):
+#   1. ubuntu/macos: `cargo check -p bao-core --locked` — the top-level registry
+#      consumption surface (bao-core links the full stack, so this compiles
+#      vendor/mozjs SpiderMonkey from source; first run is heavy).
+#   2. windows: same command with continue-on-error — baseline probe recording
+#      how far a Windows build gets, tightened over time (#33/#34/#35).
+#   3. Triggers are deliberately unfiltered (every push to master + every PR),
+#      so any rust-toolchain.toml nightly bump automatically runs the full
+#      matrix and can never skip the pin gate (#18 Scope D).
+#
+# No secrets; pure static build gate. The pinned toolchain is NOT duplicated
+# here: `rustup toolchain install` with no argument installs the active
+# toolchain, which rustup resolves from the checked-out rust-toolchain.toml
+# (SSOT) — bumping that one file is all a pin-bump PR needs to do.
+name: platform-matrix
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Superseded pushes/PR syncs cancel their 1h+ SpiderMonkey compiles early.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # First run compiles SpiderMonkey (vendor/mozjs) from source: expect 1h+ on
+    # the 4-core hosted runners; cached reruns land well under this ceiling.
+    timeout-minutes: 120
+    continue-on-error: ${{ matrix.allow-failure }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            allow-failure: false
+            label: required gate
+          - os: macos-latest
+            allow-failure: false
+            label: required gate
+          - os: windows-latest
+            allow-failure: true
+            label: "baseline: expected to fail — see #33/#34/#35"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs exactly what rust-toolchain.toml pins (channel + components);
+      # the pin lives only in that file — the workflow never restates it.
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+
+      # Keep the 10GB repo cache budget for the required gates; the Windows
+      # baseline probe stays cacheless (it is expected to fail anyway).
+      - name: Cache cargo (registry, git, target)
+        uses: Swatinem/rust-cache@v2
+        if: matrix.allow-failure == false
+
+      - name: cargo check -p bao-core --locked (${{ matrix.label }})
+        run: cargo check -p bao-core --locked
