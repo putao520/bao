@@ -1623,9 +1623,17 @@ pub const MAX_COUNT: usize = u32::MAX as usize;
 #[cfg(unix)]
 pub(crate) mod safe_libc {
     use core::ffi::c_int;
+    // macOS: std interposes the runtime `close` symbol, and rustc's
+    // `suspicious_runtime_symbol_definitions` gate (workspace `warnings = "deny"`
+    // turns it into a hard error) rejects every *safe* declaration of that
+    // symbol — `#[link_name]` does not dodge it, the gate keys on the resolved
+    // symbol. So the raw decl stays `unsafe` under a Rust name decoupled from
+    // the symbol, and the `close` wrapper below restores the by-value-fd safe
+    // contract for call sites.
     unsafe extern "C" {
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        pub(crate) safe fn close(fd: c_int) -> c_int;
+        #[link_name = "close"]
+        pub(crate) fn close_runtime(fd: c_int) -> c_int;
         pub(crate) safe fn dup2(old: c_int, new: c_int) -> c_int;
         pub(crate) safe fn isatty(fd: c_int) -> c_int;
         pub(crate) safe fn fsync(fd: c_int) -> c_int;
@@ -1684,6 +1692,14 @@ pub(crate) mod safe_libc {
         ) -> c_int;
         pub(crate) safe fn getrlimit(resource: c_int, rlim: &mut libc::rlimit) -> c_int;
         pub(crate) safe fn setrlimit(resource: c_int, rlim: &libc::rlimit) -> c_int;
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    pub(crate) fn close(fd: c_int) -> c_int {
+        // SAFETY: by-value `c_int` fd — the kernel validates it and reports
+        // failure via the return value / `errno`; a bad fd is `EBADF`, never
+        // UB (same precondition contract as the `safe fn` shims above).
+        unsafe { close_runtime(fd) }
     }
 }
 
