@@ -81,11 +81,39 @@ fn main() {
                 usockets_src.join("eventing/epoll_kqueue.c"),
                 usockets_src.join("crypto/root_certs_linux.cpp"),
             ),
-            "windows" => (
-                "LIBUS_USE_LIBUV",
-                usockets_src.join("eventing/libuv.c"),
-                usockets_src.join("crypto/root_certs_windows.cpp"),
-            ),
+            "windows" => {
+                // Fail-closed (issue #34): the windows eventing backend is
+                // LIBUS_USE_LIBUV — eventing/libuv.c and libuwsockets.cpp are
+                // compiled against libuv's uv_* API, but this workspace
+                // vendors only the <uv.h> include face
+                // (csrc/bun-usockets/src/deps/libuv/include) and compiles no
+                // libuv object code anywhere. bun_libuv_sys — the
+                // cfg(windows) dependency this crate's manifest points at for
+                // the supply — is a pure FFI declaration crate: it compiles
+                // no C and supplies no uv_* symbols. Upstream Bun satisfies
+                // uv_* from its C++/CMake build; that supply path has not
+                // been ported to Bao, so a windows build would end in
+                // undefined uv_* symbols at link time. Refuse before any C
+                // is compiled instead of surfacing an opaque linker error.
+                // Closing the supply (vendor libuv or port the CMake path) is
+                // a separate wave — issue #34; platform matrix:
+                // docs/platform-support.md.
+                eprintln!(
+                    "error: bun_uws_sys is not buildable for windows targets (fail-closed; issue #34)
+
+The windows eventing backend (LIBUS_USE_LIBUV) compiles eventing/libuv.c and
+libuwsockets.cpp against libuv's uv_* API, but only the <uv.h> include face is
+vendored (csrc/bun-usockets/src/deps/libuv/include) and no libuv object code is
+compiled anywhere in this workspace: bun_libuv_sys (the cfg(windows) dependency
+nominally supplying the symbols) is a pure FFI declaration crate. The upstream
+Bun uv_* supply path (C++/CMake) has not been ported, so linking would fail with
+undefined uv_* symbols.
+
+To close the gap: vendor libuv or port the CMake supply path (issue #34).
+Platform support matrix: docs/platform-support.md"
+                );
+                std::process::exit(1);
+            }
             other => panic!("unsupported target OS for bun_uws_sys: {other}"),
         };
     let non_windows_socket_shape = target_os != "windows";
