@@ -618,7 +618,9 @@ mod tests {
     pub(crate) static DISPATCH_CALLS: std::sync::Mutex<Vec<(c_int, c_int, c_int)>> =
         std::sync::Mutex::new(Vec::new());
     /// Serializes probe usage across parallel test threads: `dispatch_once`
-    /// must be the only writer between clear and read.
+    /// must be the only writer between clear and read. (Only locked by the
+    /// Linux-gated dispatch-table helpers — issue #36.)
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     static DISPATCH_PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // ──── BaoPoll layout ────
@@ -680,15 +682,18 @@ mod tests {
 
     #[test]
     fn bao_poll_events_decoding() {
+        // Interest asserted in LIBUS units (the dispatch contract units,
+        // epoll_kqueue.h): on Linux these ARE the epoll flags, on kqueue they
+        // are the 1/2 bitfield — issue #36 (platform-neutral decode check).
         let mut p: BaoPoll = unsafe { core::mem::zeroed() };
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN);
-        assert_eq!(p.events(), libc::EPOLLIN);
+        assert_eq!(p.events(), LIBUS_SOCKET_READABLE);
 
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_OUT);
-        assert_eq!(p.events(), libc::EPOLLOUT);
+        assert_eq!(p.events(), LIBUS_SOCKET_WRITABLE);
 
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN | POLL_TYPE_POLLING_OUT);
-        assert_eq!(p.events(), libc::EPOLLIN | libc::EPOLLOUT);
+        assert_eq!(p.events(), LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
 
         p.set_poll_type(POLL_TYPE_SOCKET);
         assert_eq!(p.events(), 0);
@@ -830,7 +835,6 @@ mod tests {
     #[test]
     fn poll_start_stop_cycle() {
         let loop_ = super::super::uws_get_loop();
-        let epfd = unsafe { (*loop_).fd };
 
         // Create a pipe — fd[0] is readable, fd[1] is writable
         let mut fds: [c_int; 2] = [-1; 2];
@@ -847,27 +851,43 @@ mod tests {
         assert_eq!(unsafe { us_poll_fd(poll) }, rfd);
         assert_eq!(unsafe { us_internal_poll_type(poll) }, POLL_TYPE_CALLBACK);
 
-        // Start polling for readable
+        // Start polling for readable (LIBUS interest units — epoll flags on
+        // Linux, the 1/2 kqueue bitfield on macOS, per epoll_kqueue.h).
         unsafe {
-            us_poll_start(poll, loop_, libc::EPOLLIN);
+            us_poll_start(poll, loop_, LIBUS_SOCKET_READABLE);
         }
-        assert_eq!(unsafe { us_poll_events(poll) }, libc::EPOLLIN);
+        assert_eq!(unsafe { us_poll_events(poll) }, LIBUS_SOCKET_READABLE);
 
-        // Verify it's registered in epoll by checking with epoll_ctl MOD (should succeed)
-        let mut ev: libc::epoll_event = unsafe { core::mem::zeroed() };
-        ev.events = libc::EPOLLIN as u32;
-        ev.u64 = 999; // sentinel
-        let rc = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_MOD, rfd, &mut ev) };
-        assert_eq!(rc, 0, "epoll_ctl MOD should succeed after poll_start");
+        // Kernel-side registration probe (issue #36): epoll answers an
+        // EPOLL_CTL_MOD on the loop's epoll fd while the poll is armed and
+        // ENOENT after us_poll_stop. kqueue has no epoll_ctl equivalent —
+        // probing kqueue registration is an open real-machine item tracked
+        // under issue #36.
+        #[cfg(target_os = "linux")]
+        {
+            let epfd = unsafe { (*loop_).fd };
+            let mut ev: libc::epoll_event = unsafe { core::mem::zeroed() };
+            ev.events = libc::EPOLLIN as u32;
+            ev.u64 = 999; // sentinel
+            let rc = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_MOD, rfd, &mut ev) };
+            assert_eq!(rc, 0, "epoll_ctl MOD should succeed after poll_start");
+        }
 
         // Stop polling
         unsafe {
             us_poll_stop(poll, loop_);
         }
 
-        // Verify it's removed from epoll
-        let rc2 = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_MOD, rfd, &mut ev) };
-        assert!(rc2 != 0, "epoll_ctl MOD should fail after poll_stop");
+        // Verify it's removed from epoll (Linux-only probe, see above)
+        #[cfg(target_os = "linux")]
+        {
+            let epfd = unsafe { (*loop_).fd };
+            let mut ev: libc::epoll_event = unsafe { core::mem::zeroed() };
+            ev.events = libc::EPOLLIN as u32;
+            ev.u64 = 999; // sentinel
+            let rc2 = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_MOD, rfd, &mut ev) };
+            assert!(rc2 != 0, "epoll_ctl MOD should fail after poll_stop");
+        }
 
         // Clean up
         unsafe {
@@ -896,23 +916,23 @@ mod tests {
             us_poll_init(poll, rfd, POLL_TYPE_CALLBACK);
         }
         unsafe {
-            us_poll_start(poll, loop_, libc::EPOLLIN);
+            us_poll_start(poll, loop_, LIBUS_SOCKET_READABLE);
         }
-        assert_eq!(unsafe { us_poll_events(poll) }, libc::EPOLLIN);
+        assert_eq!(unsafe { us_poll_events(poll) }, LIBUS_SOCKET_READABLE);
 
         // Change to poll for writable
         unsafe {
-            us_poll_change(poll, loop_, libc::EPOLLOUT);
+            us_poll_change(poll, loop_, LIBUS_SOCKET_WRITABLE);
         }
-        assert_eq!(unsafe { us_poll_events(poll) }, libc::EPOLLOUT);
+        assert_eq!(unsafe { us_poll_events(poll) }, LIBUS_SOCKET_WRITABLE);
 
         // Change to poll for both
         unsafe {
-            us_poll_change(poll, loop_, libc::EPOLLIN | libc::EPOLLOUT);
+            us_poll_change(poll, loop_, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
         }
         assert_eq!(
             unsafe { us_poll_events(poll) },
-            libc::EPOLLIN | libc::EPOLLOUT
+            LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE
         );
 
         unsafe {
@@ -941,7 +961,7 @@ mod tests {
         unsafe {
             us_poll_init(poll, rfd, POLL_TYPE_CALLBACK);
         }
-        let rc = unsafe { us_poll_start_rc(poll, loop_, libc::EPOLLIN) };
+        let rc = unsafe { us_poll_start_rc(poll, loop_, LIBUS_SOCKET_READABLE) };
         assert_eq!(rc, 0, "us_poll_start_rc must return 0 on success");
 
         unsafe {
@@ -1055,19 +1075,21 @@ mod tests {
 
     #[test]
     fn bao_poll_events_all_combinations() {
+        // LIBUS interest units (issue #36, platform-neutral decode check —
+        // epoll flags on Linux, the 1/2 kqueue bitfield on macOS).
         let mut p: BaoPoll = unsafe { core::mem::zeroed() };
         // No polling bits
         p.set_poll_type(POLL_TYPE_SOCKET);
         assert_eq!(p.events(), 0);
         // POLLING_IN only
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN);
-        assert_eq!(p.events(), libc::EPOLLIN);
+        assert_eq!(p.events(), LIBUS_SOCKET_READABLE);
         // POLLING_OUT only
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_OUT);
-        assert_eq!(p.events(), libc::EPOLLOUT);
+        assert_eq!(p.events(), LIBUS_SOCKET_WRITABLE);
         // Both
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN | POLL_TYPE_POLLING_OUT);
-        assert_eq!(p.events(), libc::EPOLLIN | libc::EPOLLOUT);
+        assert_eq!(p.events(), LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
     }
 
     #[test]
@@ -1123,10 +1145,21 @@ mod tests {
     }
 
     // ──── epoll → libus dispatch mapping (upstream e5a3fe6dc alignment) ────
+    //
+    // issue #36: this whole cluster is epoll-arm-only. It feeds raw epoll
+    // flags into `PosixLoop.ready_polls` (an `[epoll_event; N]` on Linux; the
+    // macOS `kevent64_s` arm has no `.events`/`.u64` fields) and asserts the
+    // epoll-branch normalization (epoll_kqueue.c:205-215). The kqueue twin —
+    // a kevent-driven table over the two-pass coalescing decode
+    // (epoll_kqueue.c:219-298, mirrored by the `#[cfg(target_os = "macos")]`
+    // arm of `dispatch_ready_polls` above) — is an open real-machine item
+    // tracked under issue #36; on macOS only the shared-constant anchor
+    // (`kqueue_normalization_table_anchor`) and the dispatch probe compile.
 
     /// Run `dispatch_ready_polls` over a synthetic PosixLoop whose ready_polls
     /// carry exactly `entries` = (data pointer, raw epoll events), and return
     /// every (error, eof, events) triple the dispatch probe recorded.
+    #[cfg(target_os = "linux")]
     fn dispatch_entries(entries: &[(usize, u32)]) -> Vec<(c_int, c_int, c_int)> {
         let _probe_guard = DISPATCH_PROBE_LOCK.lock().unwrap();
         let mut calls = DISPATCH_CALLS.lock().unwrap();
@@ -1154,6 +1187,7 @@ mod tests {
     /// Build a minimal PosixLoop whose ready_polls[0] carries `raw_events`
     /// for `poll`, run `dispatch_ready_polls`, and return the
     /// (error, eof, events) triple the C dispatch entry received.
+    #[cfg(target_os = "linux")]
     fn dispatch_once(raw_events: u32, poll: &mut BaoPoll) -> (c_int, c_int, c_int) {
         let calls = dispatch_entries(&[(poll as *mut BaoPoll as usize, raw_events)]);
         assert_eq!(calls.len(), 1, "exactly one dispatch expected");
@@ -1161,6 +1195,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn epollhup_is_tagged_as_libus_poll_hangup() {
         // AF_UNIX peer close: EPOLLHUP (16) + readable data, armed IN|OUT.
         // Upstream semantics: eof = LIBUS_POLL_HANGUP (2), NOT the raw 16 —
@@ -1179,6 +1214,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn epollerr_is_normalized_and_events_masked_to_armed_interest() {
         // EPOLLERR (8) + EPOLLHUP + EPOLLRDHUP + EPOLLOUT arriving on a poll
         // armed read-only: error must come through as 0/1 (a raw 8 would read
@@ -1200,6 +1236,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn plain_epollin_drains_without_eof_marker() {
         // A read-side FIN is EPOLLIN + recv()==0 — the dispatch itself folds
         // it into LIBUS_POLL_EOF. The epoll layer must pass eof = 0 here.
@@ -1214,6 +1251,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn rdhup_without_hup_is_not_a_hangup() {
         // EPOLLRDHUP (peer FIN) alone: eof = 0 — only a full EPOLLHUP means
         // both directions down. The FIN is discovered via the read drain.

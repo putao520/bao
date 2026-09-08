@@ -34,7 +34,19 @@
 #![allow(dead_code)]
 // BUG-353 fix: loop entry points now extern "C" from C/C++ libs.
 // Internal helpers retained for poll.rs (FilePoll graft).
-#![cfg(any(target_os = "linux", target_os = "macos"))] // 74-C.1: Linux; 74-C.8 (macOS M2)
+//
+// issue #35: the event-loop backend exists only on Linux (epoll, 74-C.1) and
+// macOS (kqueue, 74-C.8). Windows/IOCP is NOT implemented. The former
+// crate-level `#![cfg(any(linux, macos))]` silently compiled this crate to an
+// EMPTY shell on every other target — consumers linked successfully and only
+// discovered the missing loop at runtime. Fail loudly instead (issue #35,
+// support matrix: docs/platform-support.md).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "bao_uloop: unsupported platform (Unsupported) — only Linux (epoll) and \
+     macOS (kqueue) have an event-loop backend; the Windows/IOCP backend is \
+     not implemented (issue #35, matrix: docs/platform-support.md)"
+);
 
 pub mod poll;
 
@@ -1240,7 +1252,13 @@ mod write_rearm_paused_tests {
     use std::os::fd::AsRawFd;
 }
 
-#[cfg(test)]
+// issue #36: Linux-only by construction. The CLOEXEC red/green discriminator
+// is MSG_CMSG_CLOEXEC, which exists only in the libc crate's linux_like arm
+// (macOS has no such recvmsg flag), and the leak probe reads /proc/self/fd
+// (Linux procfs). The macOS-side behavioral verification of the CMSG_SPACE
+// recvmsg fix (SCM_RIGHTS fd passing over AF_UNIX) has no equivalent path
+// here — open real-machine item tracked under issue #36.
+#[cfg(all(test, target_os = "linux"))]
 mod ipc_recvmsg_tests {
     //! Behavioral test for upstream 3753c8bfc (the usockets part): the
     //! recvmsg control buffer must be sized with CMSG_SPACE (full aligned
