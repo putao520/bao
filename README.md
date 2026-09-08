@@ -189,7 +189,7 @@ CDP support is a compatibility boundary, not a claim that Bao is Chrome. Method 
 
 Bao is still **0.x alpha**. In particular:
 
-- Linux x86_64 is the only fully verified platform today.
+- Linux x86_64 is the only fully verified platform today. The full target matrix — musl, macOS, Windows, each with an explicit status — lives in [docs/platform-support.md](docs/platform-support.md).
 - Node/Bun, Web, and CDP compatibility are substantial but not complete; handler/API existence is not treated as proof of semantic compatibility.
 - Realm separation is **not** a finished arbitrary-untrusted-code sandbox. Fine-grained capability, quota, audit, and stronger isolation work is still ongoing.
 - `JSContext` is thread-local. Never pass `JSObject` / GC pointers across threads; cross-thread paths must use ids, handles, owned messages, or serialized data and execute JS back on the owning thread.
