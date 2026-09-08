@@ -9,7 +9,9 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use core::ffi::{c_int, c_void};
+use core::ffi::c_void;
+#[cfg(target_os = "linux")]
+use core::ffi::c_int;
 
 // Dual-def rule (full product path always co-links higher crates):
 //   - `Bun__lock__size`              → real export in `bun_threading::Mutex`
@@ -32,7 +34,11 @@ pub extern "C" fn Bun__panic(msg: *const u8, len: usize) -> ! {
     std::process::abort()
 }
 
-/// Linux epoll_pwait2 syscall wrapper. Used by libusockets.a's epoll_kqueue.c.
+/// Linux epoll_pwait2 syscall wrapper. Used by libusockets.a's epoll_kqueue.c
+/// (epoll half only — the kqueue half compiles under LIBUS_USE_KQUEUE and never
+/// references this symbol, so it is gated out on non-linux where libc has no
+/// epoll_event / SYS_epoll_pwait2).
+#[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
 pub extern "C" fn sys_epoll_pwait2(
     epfd: c_int,
