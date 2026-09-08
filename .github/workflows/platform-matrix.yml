@@ -1,13 +1,20 @@
-# Bao minimal platform matrix (issue #38; 2026-09-08 user ruling supersedes the
+# Bao minimal platform matrix (issue #38; 2026-09-08 user rulings supersede the
 # 2026-08-22 "CI stays local" decision — local scripts/local-ci.sh is untouched
 # and remains the local gate).
 #
-# Scope (issue #38 requests 1/2/3 verbatim + #18 Scope D nightly pin gate):
-#   1. ubuntu/macos: `cargo check -p bao-core --locked` — the top-level registry
-#      consumption surface (bao-core links the full stack, so this compiles
-#      vendor/mozjs SpiderMonkey from source; first run is heavy).
+# Scope (2026-09-08 user ruling): CI only verifies the heavily cross-platform
+# crate set — the exact platform surfaces tracked in #33/#34/#35/#36:
+#   bao_uloop · bun_uws_sys · bun_libuv_sys · bun_mimalloc_sys
+#   `cargo check -p bao_uloop -p bun_uws_sys -p bun_libuv_sys -p bun_mimalloc_sys --locked`
+# Closure verified locally: this set pulls none of mozjs / freetype / servo
+# (the full-stack bao-core check was dropped: SpiderMonkey + freetype-sys
+# rebuilds are hour-class on hosted runners and freetype-sys needs system
+# libraries the bare runners lack — see #10 for the musl/dependency track).
+# Full-stack verification stays on real machines and the #10 track.
+#
+#   1. ubuntu/macos: the command above — required gate.
 #   2. windows: same command with continue-on-error — baseline probe recording
-#      how far a Windows build gets, tightened over time (#33/#34/#35).
+#      how far a Windows build gets (expected to fail at the #33 mimalloc wall).
 #   3. Triggers are deliberately unfiltered (every push to master + every PR),
 #      so any rust-toolchain.toml nightly bump automatically runs the full
 #      matrix and can never skip the pin gate (#18 Scope D).
@@ -27,7 +34,7 @@ on:
 permissions:
   contents: read
 
-# Superseded pushes/PR syncs cancel their 1h+ SpiderMonkey compiles early.
+# Superseded pushes/PR syncs cancel the previous run early.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -36,9 +43,9 @@ jobs:
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # First run compiles SpiderMonkey (vendor/mozjs) from source: expect 1h+ on
-    # the 4-core hosted runners; cached reruns land well under this ceiling.
-    timeout-minutes: 120
+    # The light crate set checks in minutes locally (closure-verified, no
+    # mozjs/freetype/servo); 30min leaves ample headroom for cold caches.
+    timeout-minutes: 30
     continue-on-error: ${{ matrix.allow-failure }}
     strategy:
       fail-fast: false
@@ -70,5 +77,5 @@ jobs:
         uses: Swatinem/rust-cache@v2
         if: matrix.allow-failure == false
 
-      - name: cargo check -p bao-core --locked (${{ matrix.label }})
-        run: cargo check -p bao-core --locked
+      - name: cargo check (cross-platform crate set) (${{ matrix.label }})
+        run: cargo check -p bao_uloop -p bun_uws_sys -p bun_libuv_sys -p bun_mimalloc_sys --locked
