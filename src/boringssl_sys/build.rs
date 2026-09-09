@@ -20,7 +20,14 @@ fn main() {
     }
 
     let mut build = cc::Build::new();
-    build.compiler("clang++");
+    // cc-rs honors an explicit .compiler() before consulting CC/CXX_<target>
+    // env (cc 1.2.x get_base_compiler early-returns), so a hardcoded compiler
+    // silently bypasses per-target cross toolchains: the musl PoC (issue #10)
+    // exited 0 while every archive carried the host clang producer. Probe the
+    // cc-compatible env chain first (see env_cc below); clang++ is only the
+    // fallback, so host builds with no cross env keep the historical
+    // toolchain unchanged.
+    build.compiler(env_cc("CXX").unwrap_or_else(|| "clang++".into()));
     build.opt_level(2);
 
     // C++ standard and code generation flags
@@ -399,4 +406,21 @@ fn main() {
     build.compile("boringssl");
 
     println!("cargo:rerun-if-changed={}/", bssl_dir.display());
+}
+
+// cc-rs-compatible per-target compiler probe, mirroring cc's own resolution
+// order: {key}_{target-hyphen} → {key}_{target-underscore} → TARGET_{key} →
+// {key}. An empty value counts as unset; no hit at all means the caller's
+// hardcoded fallback applies (host builds keep the historical toolchain).
+fn env_cc(key: &str) -> Option<std::ffi::OsString> {
+    let target = env::var("TARGET").ok()?;
+    let underscored = target.replace('-', "_");
+    [
+        format!("{key}_{target}"),
+        format!("{key}_{underscored}"),
+        format!("TARGET_{key}"),
+        key.to_string(),
+    ]
+    .into_iter()
+    .find_map(|name| env::var_os(name).filter(|v| !v.is_empty()))
 }

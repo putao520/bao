@@ -38,7 +38,12 @@ fn main() {
     }
 
     let mut build = cc::Build::new();
-    build.compiler("clang++");
+    // Same env-first probe as boringssl_sys: cc-rs honors .compiler() before
+    // its own CC/CXX_<target> env chain (cc 1.2.x get_base_compiler
+    // early-return), so hardcoding clang++ silently bypasses per-target cross
+    // toolchains (issue #10 musl wave). clang++ stays the no-cross-env
+    // fallback — host builds are unchanged.
+    build.compiler(env_cc("CXX").unwrap_or_else(|| "clang++".into()));
     build.opt_level(2);
 
     // Compile as C++. Required because we link against C++ code that uses
@@ -78,4 +83,21 @@ fn main() {
     build.compile("mimalloc");
 
     println!("cargo:rerun-if-changed={}/", mi_dir.display());
+}
+
+// cc-rs-compatible per-target compiler probe, mirroring cc's own resolution
+// order: {key}_{target-hyphen} → {key}_{target-underscore} → TARGET_{key} →
+// {key}. An empty value counts as unset; no hit at all means the caller's
+// hardcoded fallback applies (host builds keep the historical toolchain).
+fn env_cc(key: &str) -> Option<std::ffi::OsString> {
+    let target = env::var("TARGET").ok()?;
+    let underscored = target.replace('-', "_");
+    [
+        format!("{key}_{target}"),
+        format!("{key}_{underscored}"),
+        format!("TARGET_{key}"),
+        key.to_string(),
+    ]
+    .into_iter()
+    .find_map(|name| env::var_os(name).filter(|v| !v.is_empty()))
 }

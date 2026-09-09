@@ -64,3 +64,7 @@ rust_out
 .grok/
 .gsc/
 src/bao_browser/bottles/
+
+# gsc pre-spec-first-gate AC02 布局 accommodation:repo 根 SPEC -> .spec symlink
+# (SSOT 仍是 .spec/,symlink 只是门的字面路径别名;见 gsc#89,上游修复后移除)
+/SPEC

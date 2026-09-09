@@ -129,8 +129,12 @@ Platform support matrix: docs/platform-support.md"
 
     // Use clang: the uSockets C sources use __attribute__((always_inline))
     // on static functions, which is incompatible with GCC + -fPIC.
-    // Bun's upstream build uses clang exclusively.
-    c_build.compiler("clang");
+    // Bun's upstream build uses clang exclusively. A per-target CC env (cross
+    // toolchain, issue #10 musl wave) must still override it: cc-rs honors
+    // .compiler() before its own env chain (cc 1.2.x get_base_compiler
+    // early-return), so probe the env here — clang is only the no-cross-env
+    // fallback (host builds unchanged).
+    c_build.compiler(env_cc("CC").unwrap_or_else(|| "clang".into()));
 
     // Compiler flags
     c_build
@@ -220,7 +224,9 @@ Platform support matrix: docs/platform-support.md"
     if with_tls {
         let boringssl_dir = csrc_dir.join("boringssl");
         let mut tls_cpp = cc::Build::new();
-        tls_cpp.compiler("clang++");
+        // Env-first per-target probe (see the C build note above); clang++ is
+        // only the no-cross-env fallback.
+        tls_cpp.compiler(env_cc("CXX").unwrap_or_else(|| "clang++".into()));
         tls_cpp.cpp(true);
         tls_cpp.opt_level(1);
         tls_cpp
@@ -246,7 +252,9 @@ Platform support matrix: docs/platform-support.md"
     let uws_src = uws_dir.join("src");
 
     let mut cpp_build = cc::Build::new();
-    cpp_build.compiler("clang++");
+    // Env-first per-target probe (see the C build note above); clang++ is
+    // only the no-cross-env fallback.
+    cpp_build.compiler(env_cc("CXX").unwrap_or_else(|| "clang++".into()));
     cpp_build.cpp(true);
     cpp_build.opt_level(1);
     cpp_build
@@ -371,4 +379,21 @@ Platform support matrix: docs/platform-support.md"
             }
         }
     }
+}
+
+// cc-rs-compatible per-target compiler probe, mirroring cc's own resolution
+// order: {key}_{target-hyphen} → {key}_{target-underscore} → TARGET_{key} →
+// {key}. An empty value counts as unset; no hit at all means the caller's
+// hardcoded fallback applies (host builds keep the historical toolchain).
+fn env_cc(key: &str) -> Option<std::ffi::OsString> {
+    let target = env::var("TARGET").ok()?;
+    let underscored = target.replace('-', "_");
+    [
+        format!("{key}_{target}"),
+        format!("{key}_{underscored}"),
+        format!("TARGET_{key}"),
+        key.to_string(),
+    ]
+    .into_iter()
+    .find_map(|name| env::var_os(name).filter(|v| !v.is_empty()))
 }
