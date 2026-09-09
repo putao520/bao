@@ -845,48 +845,50 @@ make_u32_getter!(getter_color_depth, TL_COLOR_DEPTH, color_depth);
 make_f64_getter!(getter_dpr, TL_DPR, dpr);
 make_f64_getter!(getter_device_memory, TL_DEVICE_MEMORY, device_memory);
 
-/// Getter for navigator.languages — returns a JS array of strings.
-/// Uses JS_DefineProperty with numeric string keys to build an array-like object
-/// since raw-pointer engine_props cannot use the rooted!/wrappers2 API.
+/// Getter for navigator.languages — returns a REAL JS Array of strings.
+///
+/// Real browsers expose `navigator.languages` as an Array: `Array.isArray()`
+/// is true and `Array.prototype.toString` joins the elements ("en-US,en").
+/// The previous array-like plain object shape (JS_NewPlainObject + numeric
+/// index keys) stringified to "[object Object]" and failed `Array.isArray` —
+/// a real fingerprint detection vector (found by REQ-BRW-004 worker
+/// fingerprint consistency live test C16).
+///
+/// Built with NewArrayObject1 + JS_DefineElement, mirroring the mozjs
+/// sequence-conversion precedent (mozjs/src/conversions.rs
+/// `ToJSValConvertible for [T]`), since raw-pointer engine_props cannot use
+/// the wrappers2 `safe_to_jsval` entry points directly.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    use mozjs::rust::wrappers2::{JS_DefineElement, NewArrayObject1};
+
     let args = CallArgs::from_vp(vp, _argc);
     let langs: Vec<String> = read_realm_field(cx, |rp| rp.languages.clone())
         .unwrap_or_else(|| TL_LANGUAGES.with(|v| v.borrow().clone()));
-    // Create array-like plain object and set numeric index properties
-    let obj = JS_NewPlainObject(cx);
-    if obj.is_null() {
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    // Real JS Array — NOT an array-like plain object (see doc above).
+    rooted!(&in(wrapped_cx) let arr_root = NewArrayObject1(&mut wrapped_cx, langs.len()));
+    if arr_root.handle().is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx =
-        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj_root = obj);
-    for (i, lang) in langs.iter().enumerate() {
-        let idx_cstr = format!("{}", i);
-        let c_idx = bun_core::ZBox::from_bytes(idx_cstr.as_bytes());
+    rooted!(&in(wrapped_cx) let mut val = UndefinedValue());
+    for (index, lang) in langs.iter().enumerate() {
         let c_lang = bun_core::ZBox::from_bytes(lang.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_lang.as_ptr());
         if !js_str.is_null() {
-            rooted!(&in(wrapped_cx) let str_root = js_str as *mut JSObject);
-            JS_DefineProperty3(
-                cx,
-                obj_root.handle().into(),
-                c_idx.as_ptr(),
-                str_root.handle().into(),
+            val.set(StringValue(&*js_str));
+            JS_DefineElement(
+                &mut wrapped_cx,
+                arr_root.handle(),
+                index as u32,
+                val.handle(),
                 JSPROP_ENUMERATE as u32,
             );
         }
     }
-    JS_DefineProperty1(
-        cx,
-        obj_root.handle().into(),
-        c"length".as_ptr(),
-        None,
-        None,
-        (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32,
-    );
-    args.rval().set(ObjectValue(obj_root.get()));
+    args.rval().set(ObjectValue(arr_root.get()));
     true
 }
 

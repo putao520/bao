@@ -72,5 +72,6 @@ mod stealth_profile_config_tests;
 mod task_10_integration;
 mod thread_safety_concurrency_tests;
 mod worker_concurrent_servo_tests;
+mod worker_fingerprint_consistency_tests;
 mod worker_onerror_integration_tests;
 mod worker_tests;
