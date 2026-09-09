@@ -30,6 +30,17 @@
 //      before resolving, per serviceworker_controller_tests ④) new requests
 //      must receive the NATIVE response (mediation deregistered).
 //
+//   ④ `sw_scope_injector_starvation_…` — SW scope injector starvation: a
+//      same-page DEDICATED Worker created BEFORE `serviceWorker.register`
+//      consumes the consume-once worker-scope queue, so the later-registered
+//      SW scope drained an EMPTY one-shot queue and (before the per-Worker
+//      injector tier was extended to the SW path) ran with ZERO embedder
+//      injection — a bare fingerprintable SW realm. The SW scope must still
+//      be FULLY injected in that timing: engine getter (ua === page profile
+//      UA, permanent accessor) AND the W1a JS hooks (audio getChannelData /
+//      webgl getParameter, delivered at the SW's own post-define point) with
+//      the double-define guards holding (e36 gate; hooks blob exactly once).
+//
 // Contract discipline (V-batch release item): these tests assert the SPEC
 // subclauses as written. A subclause that does not hold on the live path
 // goes RED here with the gap named — product code is NOT touched from this
@@ -1380,4 +1391,287 @@ fn c19_sub3_sw_cross_page_inheritance_and_terminate_deregistration_live() {
          terminate: {post_verdict}"
     );
     eprintln!("[c19-sub3] === SUBCLAUSE ③ GREEN: cross-page liveness + inheritance + deregistration ===");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ④ SW scope injector starvation — same-page DedicatedWorker created BEFORE
+//    the SW registration must not starve the SW scope of embedder injection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// URL-encode a JS worker body for a data: URL (the worker_multi_injection
+/// percent-encoding form — proves on this page's webview).
+fn encode_js_body(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            },
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", b));
+            },
+        }
+    }
+    out
+}
+
+/// Extract a `|`-separated marker field (worker_multi_injection form).
+fn marker_field<'a>(r: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    r.split('|').find_map(|f| f.strip_prefix(&prefix))
+}
+
+/// Dedicated-Worker probe body (the starvation setup AND the exhaustion
+/// proof): worker #1 of this webview drains the consume-once one-shot scope
+/// queue; its own marker proves it ran and was fully injected (the one-shot
+/// + injector double delivery, worker-#1 semantics).
+const STARVE_WORKER_PROBE: &str = r#"
+var __r = (function () {
+  try {
+    var ua = String(navigator.userAgent);
+    var audioHooked = typeof AudioBuffer !== 'undefined'
+      && String(AudioBuffer.prototype.getChannelData).indexOf('detNoise') !== -1;
+    return 'DEDRAN|ua=' + ua + '|audiohooked=' + (audioHooked ? 1 : 0);
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})();
+self.postMessage(__r);
+"#;
+
+/// @trace REQ-BRW-004 [criterion:12..17] SW scope injector starvation
+///
+/// The v49/arch-closeout-③ defect: the SW scope's only embedder injection
+/// was the consume-once one-shot drain (S1 f77faf8b). A page that created a
+/// Dedicated Worker BEFORE registering its SW had already exhausted that
+/// queue, so the SW scope ran with ZERO injection — bare native
+/// navigator.userAgent, no W1a audio/webgl JS hooks — a fingerprintable SW
+/// realm (the exact e43 multi-worker starvation shape, on the SW path).
+///
+/// Fix under test: the per-Worker NON-consuming injector tier
+/// (5627cf8e) delivered on the SW path at both points — after the SW's
+/// one-shot drain (engine getters) and after the SW's own
+/// `define_all_exposed_interfaces` (W1a JS hooks; the SW path never reaches
+/// `WorkerGlobalScope::on_complete`, so without this delivery point the
+/// hooks NEVER landed on any SW realm).
+///
+/// Timing under test: worker FIRST (exhausts one-shot), SW registration
+/// SECOND. The SW-realm probe (computed inside the fetch handler, returned
+/// via respondWith — the sub3 verdict transport) must carry the FULL
+/// injection state: ua === page profile UA (engine getter, permanent
+/// accessor), audiohooked=1 + wglhooked=1 (W1a hooks), orignative=1 (e36
+/// gate) — and each marker exactly once (hooks blob single delivery, no
+/// double-define).
+#[test]
+fn sw_scope_injector_starvation_after_dedicated_worker_live() {
+    if !common::run_isolated(
+        "sw_stealth_profile_tests::sw_scope_injector_starvation_after_dedicated_worker_live",
+    ) {
+        return;
+    }
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+    bun_core::Output::init_test();
+
+    let fixture = SwC19HttpFixture::spawn();
+    let origin = format!("http://127.0.0.1:{}/", fixture.port);
+    // The SW answers /api/starve with the FULL injection probe computed in
+    // the SW realm (the worker_multi_injection probe form, returned through
+    // the sub3 respondWith transport).
+    fixture.set_script(
+        "self.addEventListener('fetch', function (e) { \
+           var u = String(e.request.url); \
+           if (u.indexOf('/api/starve') !== -1) { \
+             var ua = String(navigator.userAgent); \
+             var audioHooked = typeof AudioBuffer !== 'undefined' \
+               && String(AudioBuffer.prototype.getChannelData).indexOf('detNoise') !== -1; \
+             var wglHooked = 'n/a'; \
+             var origNative = 'n/a'; \
+             if (typeof WebGLRenderingContext !== 'undefined') { \
+               wglHooked = String(WebGLRenderingContext.prototype.getParameter).indexOf('dbgRenderer') !== -1 ? 1 : 0; \
+               var orig = WebGLRenderingContext.prototype.__originalGetParameter__; \
+               origNative = (typeof orig === 'function' && String(orig).indexOf('dbgRenderer') === -1) ? 1 : 0; \
+             } \
+             var d = Object.getOwnPropertyDescriptor(navigator, 'userAgent'); \
+             var permGetter = d && d.configurable === false && typeof d.get === 'function' ? 1 : 0; \
+             e.respondWith(new Response( \
+               'SWPROBE|ua=' + ua + '|audiohooked=' + (audioHooked ? 1 : 0) \
+               + '|wglhooked=' + wglHooked + '|orignative=' + origNative \
+               + '|permgetter=' + permGetter, \
+               { status: 201, statusText: 'SW Starve', \
+                 headers: { 'Content-Type': 'text/plain' } })); \
+           } \
+         });"
+        .to_string(),
+    );
+
+    let runtime = BaoRuntime::new(BaoConfig::default())
+        .expect("gated live test: BaoRuntime::new must succeed");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(origin.clone()),
+            stealth_profile: Some(StealthProfile::firefox_default()),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page must succeed");
+    pump(&page, 500);
+
+    // The page's OWN profile UA — the SW realm must match it exactly.
+    let page_ua = unquote_bridge(
+        page.evaluate_js_web("navigator.userAgent")
+            .expect("page navigator.userAgent read must succeed")
+            .trim()
+            .to_string(),
+    );
+    assert!(
+        page_ua.contains("Firefox"),
+        "④ page must run the Firefox stealth profile, got UA: {page_ua}"
+    );
+
+    // ── 1. DEDICATED WORKER FIRST — the starvation setup: worker #1 of this
+    //        webview drains the consume-once one-shot scope queue. Its marker
+    //        is the exhaustion proof (a fully-injected worker ran).
+    let _ = page.evaluate_js_web("window.__swStarveW = null;");
+    let worker_js = format!(
+        "(function () {{ try {{ \
+           var w = new Worker('data:text/javascript,{}'); \
+           w.onmessage = function (e) {{ window.__swStarveW = String(e.data); }}; \
+           w.onerror = function (ev) {{ \
+             window.__swStarveW = 'WORKER-ERROR:' + ((ev && ev.message) ? ev.message : 'unknown'); \
+             return true; \
+           }}; \
+           return 'worker-created'; \
+         }} catch (e) {{ window.__swStarveW = 'CREATE-ERROR:' + String(e); }} }})()",
+        encode_js_body(STARVE_WORKER_PROBE)
+    );
+    let created = page.evaluate_js_web(&worker_js);
+    match created {
+        Ok(s) => assert!(
+            s.contains("worker-created"),
+            "④ dedicated Worker creation must succeed (starvation setup), got: {s}"
+        ),
+        Err(e) => panic!("④ dedicated Worker dispatch failed: {e}"),
+    }
+    let worker_res = wait_for(
+        || match page.evaluate_js_web("window.__swStarveW") {
+            Ok(s) => {
+                let t = s.trim();
+                let t = unquote_bridge(t.to_string());
+                if t.is_empty() || t == "null" || t == "undefined" {
+                    None
+                } else {
+                    Some(t)
+                }
+            },
+            Err(_) => None,
+        },
+        Duration::from_secs(45),
+        "dedicated worker (starvation setup) marker",
+    )
+    .unwrap_or_else(|| "<no marker>".to_string());
+    eprintln!("[sw-starve] dedicated worker #1: {worker_res}");
+    assert!(
+        worker_res.starts_with("DEDRAN|"),
+        "④ dedicated worker probe must complete (the one-shot exhaustion \
+         setup), got: {worker_res}"
+    );
+    let w_ua = marker_field(&worker_res, "ua").unwrap_or("");
+    assert_eq!(
+        w_ua, page_ua,
+        "④ worker #1 must carry the page profile UA (one-shot consumed by a \
+         FULLY-INJECTED worker — this is what starves a later SW without the \
+         injector tier): worker={w_ua} vs page={page_ua}"
+    );
+    assert!(
+        worker_res.contains("|audiohooked=1|") || worker_res.ends_with("|audiohooked=1"),
+        "④ worker #1 must carry the W1a audio hook (injection machinery live \
+         on this webview), got: {worker_res}"
+    );
+
+    // ── 2. NOW register the SW — the starved timing (one-shot already
+    //        consumed by the dedicated worker above).
+    let reg = register_sw(&page, "/sw.js");
+    eprintln!("[sw-starve] register outcome = {reg}");
+    assert!(
+        reg.contains("ok"),
+        "④ serviceWorker.register must resolve ok (live-path prerequisite), got: {reg}"
+    );
+
+    // ── 3. The SW-realm full-injection probe (retry: activation async).
+    let verdict = {
+        let mut verdict = String::new();
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            verdict = one_probe(&page, "/api/starve");
+            eprintln!("[sw-starve] attempt = {verdict}");
+            if verdict.contains("status=201") || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        verdict
+    };
+    assert!(
+        verdict.contains("/api/starve status=201"),
+        "④ the SW-mediated probe must reach the page as 201 (live \
+         prerequisite), got: {verdict}"
+    );
+    let body = verdict
+        .split("body=")
+        .nth(1)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    assert!(
+        body.starts_with("SWPROBE|"),
+        "④ the mediated body must be the SW-realm probe marker, got: {body}"
+    );
+    eprintln!("[sw-starve] SW-realm probe: {body}");
+
+    // THE starvation assertion: engine getter — the SW realm's UA must
+    // EXACTLY equal the page profile UA even though the one-shot queue was
+    // already consumed (before the fix this was the servo native UA).
+    let sw_ua = marker_field(&body, "ua").unwrap_or("");
+    assert_eq!(
+        sw_ua, page_ua,
+        "④ SW INJECTION STARVATION: the SW realm's navigator.userAgent must \
+         serve the page profile UA even when a Dedicated Worker consumed the \
+         one-shot queue first — a native UA means the SW scope ran with ZERO \
+         embedder injection (bare fingerprintable SW realm): sw={sw_ua} vs \
+         page={page_ua}"
+    );
+    // W1a JS hooks — landed at the SW's own post-define delivery point.
+    assert!(
+        body.contains("|audiohooked=1|") || body.ends_with("|audiohooked=1"),
+        "④ SW realm must carry the W1a audio getChannelData JS hook (the SW \
+         path never reaches on_complete — without the SW post-define delivery \
+         this hook NEVER landed on a SW realm), got: {body}"
+    );
+    assert!(
+        body.contains("|wglhooked=1|") || body.ends_with("|wglhooked=1"),
+        "④ SW realm must carry the W1a webgl getParameter JS hook, got: {body}"
+    );
+    // Double-define guards — single delivery, no re-save loop (completion ③:
+    // the SW scope injected exactly once).
+    assert!(
+        body.contains("|orignative=1|") || body.ends_with("|orignative=1"),
+        "④ e36 gate — __originalGetParameter__ must stay the servo native \
+         (no double-define loop on the SW path), got: {body}"
+    );
+    assert!(
+        body.contains("|permgetter=1|") || body.ends_with("|permgetter=1"),
+        "④ navigator.userAgent must be a non-configurable accessor getter in \
+         the SW realm (define_permanent_getter prior-install arm held), got: \
+         {body}"
+    );
+    assert_eq!(
+        body.matches("SWPROBE|").count(),
+        1,
+        "④ the SW probe marker must appear exactly once (single mediated \
+         response, no double delivery of the probe itself): {body}"
+    );
+    eprintln!("[sw-starve] === ④ GREEN: SW scope fully injected in the starved timing ===");
 }

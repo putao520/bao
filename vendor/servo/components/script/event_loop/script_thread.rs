@@ -393,16 +393,22 @@ pub(crate) fn drain_worker_interfaces_ready_callbacks(
 // observation on the fa084a64 drain points).
 //
 // This tier inverts the delivery semantics: an injector registered for a
-// webview is delivered to EVERY Dedicated Worker scope that webview creates
-// (clone of an `Arc<dyn Fn>` — the entry is never consumed). The one-shot
-// tier above is kept untouched and still drains first, so:
+// webview is delivered to EVERY worker scope that webview creates —
+// Dedicated Worker AND ServiceWorker (clone of an `Arc<dyn Fn>` — the entry
+// is never consumed). The one-shot tier above is kept untouched and still
+// drains first, so:
 //   - Worker #1 receives the one-shot callback(s) AND the injector — the
 //     embedder's install is idempotent (define_permanent_getter "prior
 //     install" arm / e36 __originalGetParameter__ gate), so the double run
 //     is safe;
-//   - ServiceWorkerGlobalScope's own one-shot drain (S-family,
-//   serviceworkerglobalscope.rs) is NOT extended to this tier and keeps its
-//   exact current behavior.
+//   - ServiceWorkerGlobalScope drains the one-shot scope tier (S-family,
+//   serviceworkerglobalscope.rs) UNCHANGED, and additionally delivers this
+//   injector tier at its own two points (scope + post-define). Without the
+//   SW injector delivery, a page that created a Dedicated Worker BEFORE
+//   registering its SW starved the SW scope: the one-shot queue was already
+//   consumed by the Worker, so the SW realm ran with ZERO embedder injection
+//   (bare, fingerprintable). The injector tier is what makes SW injection
+//   timing-independent (arch-spec-closeout disclosure ③).
 // Registration is an UPSERT per webview (one injector per webview per phase):
 // re-registering replaces the previous entry instead of stacking a second
 // delivery. `unregister_worker_injectors` removes both phases' entries when
@@ -431,9 +437,12 @@ fn upsert_worker_injector(
 }
 
 /// Register a per-Worker injector for `webview_id`: delivered to EVERY
-/// Dedicated Worker scope that webview creates (never consumed), inside
+/// worker scope that webview creates (never consumed) — inside
 /// `DedicatedWorkerGlobalScope::run_worker_scope` after the one-shot
-/// callbacks have drained.
+/// callbacks have drained, and inside
+/// `ServiceWorkerGlobalScope::run_worker_scope` after ITS one-shot drain
+/// (the SW starvation fix: a same-page Dedicated Worker created before the
+/// SW registration already consumed the one-shot queue).
 ///
 /// The injector receives `(cx: *mut c_void, global: *mut c_void)` which are
 /// `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)` and runs on
@@ -445,7 +454,11 @@ pub fn register_worker_scope_injector(webview_id: WebViewId, injector: EmbedderW
 /// Register a per-Worker injector delivered at the SECOND drain point —
 /// inside `WorkerGlobalScope::on_complete`, right after
 /// `define_all_exposed_interfaces` and before the worker script runs, for
-/// EVERY Dedicated Worker of `webview_id` (never consumed).
+/// EVERY Dedicated Worker of `webview_id` (never consumed). The SW path
+/// never reaches `on_complete` (it defines + evaluates synchronously), so
+/// `ServiceWorkerGlobalScope::run_worker_scope` delivers this phase at its
+/// OWN post-`define_all_exposed_interfaces` point instead — without it the
+/// W1a JS hooks (audio/webgl) never landed on a SW realm at all.
 pub fn register_worker_interfaces_ready_injector(
     webview_id: WebViewId,
     injector: EmbedderWorkerInjector,

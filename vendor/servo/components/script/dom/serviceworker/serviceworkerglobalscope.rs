@@ -467,6 +467,33 @@ impl ServiceWorkerGlobalScope {
                         );
                     }
                 }
+                // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                // patch): per-Worker injector delivery on the SW path — the
+                // one-shot drain above is consumed by the FIRST worker-scope
+                // drain of this webview, and that drain may belong to a
+                // DEDICATED Worker created by the same page BEFORE the SW
+                // registration (starvation: page runs `new Worker(...)` first,
+                // then `serviceWorker.register(...)`). In that timing the SW
+                // scope drained an EMPTY queue and ran with ZERO embedder
+                // injection — a bare fingerprintable SW realm. The injector
+                // tier is NON-consuming (same form as the dedicated-worker
+                // delivery in dedicatedworkerglobalscope.rs): every worker
+                // scope of this webview — Dedicated AND ServiceWorker —
+                // receives the engine-getter install. Runs after the one-shot
+                // callbacks; the install is idempotent
+                // (define_permanent_getter "prior install" arm), so a fresh
+                // page's double run (one-shot + injector) is safe.
+                // @trace REQ-BRW-004 [criterion:12..17] SW starvation fix
+                for injector in
+                    crate::event_loop::script_thread::worker_scope_injectors(webview_id)
+                {
+                    unsafe {
+                        injector(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope).get_jsobject().get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
 
                 if devtools_enabled {
                     debugger_global.fire_add_debuggee(
@@ -521,6 +548,36 @@ impl ServiceWorkerGlobalScope {
                     let mut realm = enter_auto_realm(cx, worker_scope);
                     let mut realm = realm.current_realm();
                     define_all_exposed_interfaces(&mut realm, global_scope);
+                    // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                    // patch): per-Worker injector delivery at the SW's own
+                    // define point — AFTER `define_all_exposed_interfaces`
+                    // (the SW global's WebIDL interface constructors exist)
+                    // and BEFORE the SW script runs. The Dedicated path
+                    // delivers this phase in `WorkerGlobalScope::on_complete`,
+                    // which the SW path never reaches (SW loads its script
+                    // synchronously via `load_whole_resource` and evaluates it
+                    // below), so without this site the W1a JS hooks (audio
+                    // getChannelData / webgl getParameter) NEVER landed on a
+                    // SW realm — the first-point install above runs before the
+                    // interfaces exist and its typeof-guarded blob skips every
+                    // JS hook (same reason the Dedicated path has a second
+                    // drain point). NON-consuming tier; only the injector
+                    // delivers here (the one-shot interfaces-ready queue is
+                    // never drained on the SW path), so each SW scope runs the
+                    // hooks blob EXACTLY once — no audio double-wrap.
+                    // @trace REQ-BRW-004 [criterion:15] SW JS-hook delivery
+                    for injector in crate::event_loop::script_thread::worker_interfaces_ready_injectors(
+                        webview_id,
+                    ) {
+                        unsafe {
+                            injector(
+                                realm.raw_cx_no_gc() as *mut std::ffi::c_void,
+                                script_bindings::reflector::DomObject::reflector(global_scope)
+                                    .get_jsobject()
+                                    .get() as *mut std::ffi::c_void,
+                            );
+                        }
+                    }
 
                     let script = global_scope.create_a_classic_script(
                         &mut realm,
