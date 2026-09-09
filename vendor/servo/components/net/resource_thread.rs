@@ -26,7 +26,7 @@ use net_traits::request::{Destination, PreloadEntry, PreloadId, RequestBuilder, 
 use net_traits::response::{Response, ResponseInit};
 use net_traits::{
     AsyncRuntime, CookieAsyncResponse, CookieData, CookieSource, CoreResourceMsg,
-    CoreResourceThread, CustomResponseMediator, DiscardFetch, FetchChannels, FetchTaskTarget,
+    CoreResourceThread, DiscardFetch, FetchChannels, FetchTaskTarget,
     NetworkError, ResourceFetchTiming, ResourceThreads, ResourceTimingType, WebSocketDomAction,
     WebSocketNetworkEvent,
 };
@@ -46,7 +46,7 @@ use servo_base::generic_channel::{
     GenericSelectionResult,
 };
 use servo_base::id::CookieStoreId;
-use servo_url::{ImmutableOrigin, ServoUrl};
+use servo_url::ServoUrl;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::async_runtime::{init_async_runtime, spawn_task};
@@ -58,7 +58,7 @@ use crate::fetch::cors_cache::CorsCache;
 use crate::fetch::fetch_params::{FetchParams, SharedPreloadedResources};
 use crate::fetch::methods::{
     AutoRequestBodyStreamCloser, CancellationListener, FetchContext,
-    SharedInflightKeepAliveRecords, WebSocketChannel, fetch,
+    SharedInflightKeepAliveRecords, SwManagers, WebSocketChannel, fetch,
     transfers_request_body_stream_to_later_manual_redirect,
 };
 use crate::filemanager_thread::FileManager;
@@ -598,8 +598,11 @@ impl ResourceChannelManager {
                 self.cookie_listeners.remove(&cookie_store_id);
             },
             CoreResourceMsg::NetworkMediator(mediator_chan, origin) => {
+                // BAO PATCH (REQ-BRW-004 C19): shared registry — the async
+                // fetch tasks consult it to invoke "handle fetch".
                 self.resource_manager
                     .sw_managers
+                    .lock()
                     .insert(origin, mediator_chan);
             },
             CoreResourceMsg::ListCookies(sender) => {
@@ -692,7 +695,11 @@ pub struct AuthCache {
 
 pub struct CoreResourceManager {
     devtools_sender: Option<Sender<DevtoolsControlMsg>>,
-    sw_managers: HashMap<ImmutableOrigin, IpcSender<CustomResponseMediator>>,
+    /// BAO PATCH (REQ-BRW-004 C19): per-origin service-worker manager
+    /// channels, shared with the async fetch tasks (see `SwManagers`). The
+    /// upstream field was a plain `HashMap` that was only ever written —
+    /// this registry is the read path upstream never had.
+    sw_managers: SwManagers,
     filemanager: FileManager,
     request_interceptor: RequestInterceptor,
     ca_certificates: CACertificates,
@@ -776,6 +783,7 @@ impl CoreResourceManager {
         let devtools_chan = self.devtools_sender.clone();
         let filemanager = self.filemanager.clone();
         let request_interceptor = self.request_interceptor.clone();
+        let sw_managers = self.sw_managers.clone();
 
         let timing_type = match request_builder.destination {
             Destination::Document => ResourceTimingType::Navigation,
@@ -836,6 +844,7 @@ impl CoreResourceManager {
                 ca_certificates,
                 ignore_certificate_errors,
                 preloaded_resources: preloaded_resources.clone(),
+                sw_managers,
                 in_flight_keep_alive_records,
             };
 
@@ -899,6 +908,7 @@ impl CoreResourceManager {
         let ca_certificates = self.ca_certificates.clone();
         let ignore_certificate_errors = self.ignore_certificate_errors;
         let in_flight_keep_alive_records = self.in_flight_keep_alive_records.clone();
+        let sw_managers = self.sw_managers.clone();
         let preloaded_resources = self.preloaded_resources.clone();
 
         spawn_task(async move {
@@ -935,6 +945,7 @@ impl CoreResourceManager {
                         ca_certificates,
                         ignore_certificate_errors,
                         preloaded_resources,
+                        sw_managers,
                         in_flight_keep_alive_records,
                     };
                     fetch(request, &mut event_sender, &context).await;

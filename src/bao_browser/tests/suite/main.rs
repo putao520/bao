@@ -77,3 +77,4 @@ mod worker_onerror_integration_tests;
 mod worker_tests;
 mod stealth_offscreencanvas_tests;
 mod serviceworker_fetchevent_tests;
+mod serviceworker_mediation_tests;

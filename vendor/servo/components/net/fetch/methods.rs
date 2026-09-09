@@ -31,9 +31,9 @@ use net_traits::request::{
 };
 use net_traits::response::{Response, ResponseBody, ResponseType, TerminationReason};
 use net_traits::{
-    FetchTaskTarget, NetworkError, ReferrerPolicy, ResourceAttribute, ResourceFetchTiming,
-    ResourceFetchTimingContainer, ResourceTimeValue, ResourceTimingType, WebSocketDomAction,
-    WebSocketNetworkEvent, set_default_accept_language,
+    CustomResponseMediator, FetchTaskTarget, NetworkError, ReferrerPolicy, ResourceAttribute,
+    ResourceFetchTiming, ResourceFetchTimingContainer, ResourceTimeValue, ResourceTimingType,
+    WebSocketDomAction, WebSocketNetworkEvent, set_default_accept_language,
 };
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
@@ -41,7 +41,7 @@ use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::CallbackSetter;
 use servo_base::id::PipelineId;
-use servo_url::{Host, ServoUrl};
+use servo_url::{Host, ImmutableOrigin, ServoUrl};
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc::{UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender};
 
@@ -95,9 +95,22 @@ pub struct InFlightKeepAliveRecord {
 pub type SharedInflightKeepAliveRecords =
     Arc<Mutex<FxHashMap<PipelineId, Vec<InFlightKeepAliveRecord>>>>;
 
+/// BAO PATCH (REQ-BRW-004 C19): per-origin service-worker manager channels,
+/// shared between the resource thread (which registers them on
+/// `CoreResourceMsg::NetworkMediator`) and the async fetch tasks (which
+/// consult them to invoke "handle fetch"). The `Mutex` is a true cross-thread
+/// share (resource thread writes, tokio fetch workers read), which is the
+/// allowed exception in the去锁化 principle.
+pub type SwManagers =
+    Arc<Mutex<FxHashMap<ImmutableOrigin, IpcSender<CustomResponseMediator>>>>;
+
 #[derive(Clone)]
 pub struct FetchContext {
     pub state: Arc<HttpState>,
+    /// BAO PATCH (REQ-BRW-004 C19): the `SwManagers` registry of the
+    /// `CoreResourceManager` that spawned this fetch, consulted by
+    /// `http_fetch` step 3 to invoke "handle fetch".
+    pub sw_managers: SwManagers,
     pub user_agent: String,
     pub devtools_chan: Option<Sender<DevtoolsControlMsg>>,
     pub filemanager: FileManager,

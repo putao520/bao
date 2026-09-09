@@ -89,7 +89,6 @@ impl ServiceWorker {
 }
 
 /// When updating a registration, which worker are we targetting?
-#[expect(dead_code)]
 enum RegistrationUpdateTarget {
     Installing,
     Waiting,
@@ -652,6 +651,24 @@ impl ServiceWorkerManager {
         // TODO: registration.update_registration_state(RegistrationUpdateTarget::Installing, None);
         // Note: commenting out for now, because it causes errors in tests,
         // probably because we are still lacking functionality elsewhere.
+
+        // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): the spec's
+        // "Try Activate" step (install finishes by activating the waiting
+        // worker when the registration has no active worker —
+        // <https://w3c.github.io/ServiceWorkers/#activation-algorithm>: set
+        // the active worker to the waiting worker and clear waiting). Upstream
+        // never passes `RegistrationUpdateTarget::Active` anywhere, so
+        // `active_worker` stays null forever and `handle_message_from_resource`
+        // answers every fetch mediation with pass-through — a service worker
+        // could never intercept anything. An existing active worker keeps
+        // control (the waiting worker stays waiting, browser update
+        // semantics).
+        if registration.active_worker.is_none() &&
+            let Some(waiting) = registration.waiting_worker.clone()
+        {
+            registration.update_registration_state(RegistrationUpdateTarget::Active, Some(waiting));
+            registration.update_registration_state(RegistrationUpdateTarget::Waiting, None);
+        }
 
         // Step 21: Wait for all the tasks queued by Update Worker State invoked in this algorithm to have executed.
         // TODO: queue tasks above and wait for them to execute.

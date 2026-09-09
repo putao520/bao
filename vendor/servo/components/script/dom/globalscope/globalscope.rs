@@ -45,6 +45,7 @@ use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder, RequestClient,
+    ServiceWorkersMode,
 };
 use net_traits::{
     CoreResourceMsg, CoreResourceThread, ReferrerPolicy, ResourceThreads, fetch_async,
@@ -3406,6 +3407,21 @@ impl GlobalScope {
         request_builder: RequestBuilder,
         network_listener: NetworkListener<Listener>,
     ) {
+        // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): the fetch
+        // spec applies "if globalObject is a ServiceWorkerGlobalScope object,
+        // set request's service-workers mode to 'none'" at the fetch
+        // algorithm level, for every request the SW global initiates.
+        // Upstream only implemented it on the `fetch()` DOM entry
+        // (fetch/fetch.rs), leaving e.g. sync XHR to self-mediate: the SW
+        // thread is then blocked inside the XHR event pump and can never
+        // answer its own mediator (HANDLE_FETCH_TIMEOUT deadlock per
+        // request). Downgrade here — the single choke point every
+        // script-initiated fetch from any global funnels through.
+        let request_builder = if self.is::<ServiceWorkerGlobalScope>() {
+            request_builder.service_workers_mode(ServiceWorkersMode::None)
+        } else {
+            request_builder
+        };
         fetch_async(
             &self.core_resource_thread(),
             request_builder,

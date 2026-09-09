@@ -143,6 +143,7 @@ fn new_fetch_context(
         ignore_certificate_errors: false,
         preloaded_resources: Default::default(),
         in_flight_keep_alive_records: Default::default(),
+        sw_managers: Default::default(),
     }
 }
 impl FetchTaskTarget for FetchResponseCollector {

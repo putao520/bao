@@ -233,12 +233,16 @@ make bce-check
 
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
-#### servo 定制文件清单(24 个条目,上游同步时逐个重放)
+#### servo 定制文件清单(28 个条目,上游同步时逐个重放)
 
 上游同步 servo 时,先 `grep -rln "BCE-\|BAO " vendor/servo/components/` 重建清单,再按"upstream 基底 + patch 精确重放"迁移(patch 锚点与完整记录见 git log 各 stage commit message):
 
 | 文件 | Patch 概要 |
 |------|-----------|
+| `net/http_loader.rs` | **http_fetch step 3 "handle fetch" 落地**(上游裸 TODO):`invoke_handle_fetch`——按 origin 查 `SwManagers` 注册表 → 构造 `CustomResponseMediator` 发给 SW manager → `tokio::task::spawn_blocking` + `IpcReceiver::try_recv_timeout(30s)` 有界等待回注(阻塞 recv 不占 async worker,同 websocket_loader DNS 形态)→ `Some(CustomResponse)` 转 net `Response`(status/headers/body 一次性 Done);任何失败(无 manager/通道失败/超时)→ None → 走原网络路径;`Destination::ServiceWorker` 排除(SW 脚本自抓防环,防 update job 自拦)(REQ-BRW-004 C19 S2b,用户裁决 2026-09-09 vendor patch) |
+| `net/resource_thread.rs` + `net/fetch/methods.rs` | `CoreResourceManager.sw_managers` 上游只写不读的 `HashMap` → `SwManagers`(`Arc<Mutex<FxHashMap>>` 共享注册表,resource 线程写 NetworkMediator / tokio fetch 任务读);`FetchContext` 新增 `sw_managers` 字段贯通(net/tests 两处 FetchContext literal 同步补字段)(REQ-BRW-004 C19 S2b) |
+| `script/dom/serviceworker/serviceworker_manager.rs` | **install() 补 "Try Activate" 步**(spec activation-algorithm:无 active worker 时 waiting→active 并清 waiting;上游从不传 `RegistrationUpdateTarget::Active`,`active_worker` 恒 None → SW 拦截永不生效)(REQ-BRW-004 C19 S2b,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/globalscope/globalscope.rs` | `fetch_with_network_listener` 补 spec main-fetch 级 SW-realm 降级:`is::<ServiceWorkerGlobalScope>()` → `service_workers_mode=None`(上游只在 fetch() DOM 入口降级,XHR 等 SW-realm 请求自拦截 → SW 线程阻塞在 sync 事件泵无法应答自己的 mediator → 30s 死锁)(REQ-BRW-004 C19 S2b) |
 | `script/event_loop/script_thread.rs` | embedder 脚本/Worker-scope 回调注册(drain 于 handle_evaluate_javascript / run_worker_scope)、router_proxy 安装(BCE-20260627-009)、disable_script_debugger 门控(BCE-20260621-002) |
 | `script/engine/handle.rs`(2026-08-23 上游 b54baa327 移动后新家)| **Bao 补丁版 JSEngineSetup**:`JSEngineSetup(Option<JSEngine>)` 幂等 init(Ok→存 handle;AlreadyInitialized→`JSEngine::process_handle()` 优先 + JS_ENGINE spin 回退 50×1ms;AlreadyShutDown→None;其他 Err→panic)+ Drop engine-leak(`mem::forget`,不清 JS_ENGINE,多 BaoRuntime 生命周期)。上游版 handle.rs 是裸 `JSEngineSetup(JSEngine)`,重放禁用上游版 |
 | `script/lib.rs` | 26-28 行:`pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};`(Bao embedder 回调 re-export,上游同步合并时必保) |

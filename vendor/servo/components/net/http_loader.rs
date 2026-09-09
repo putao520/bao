@@ -47,9 +47,10 @@ use net_traits::request::{
 };
 use net_traits::response::{CacheState, RedirectTaint, Response, ResponseBody, ResponseType};
 use net_traits::{
-    CookieSource, DOCUMENT_ACCEPT_HEADER_VALUE, DiscardFetch, NetworkError, RedirectEndValue,
-    RedirectStartValue, ReferrerPolicy, ResourceAttribute, ResourceFetchTimingContainer,
-    ResourceTimeValue, TlsSecurityInfo, TlsSecurityState,
+    CookieSource, CustomResponse, CustomResponseMediator, DOCUMENT_ACCEPT_HEADER_VALUE,
+    DiscardFetch, NetworkError, RedirectEndValue, RedirectStartValue, ReferrerPolicy,
+    ResourceAttribute, ResourceFetchTiming, ResourceFetchTimingContainer, ResourceTimeValue,
+    ResourceTimingType, TlsSecurityInfo, TlsSecurityState,
 };
 use parking_lot::{Mutex, RwLock};
 use profile_traits::mem::{Report, ReportKind};
@@ -553,6 +554,65 @@ pub(crate) fn obtain_response_setup_router_callback(
     Ok(())
 }
 
+/// How long the net side waits for the service worker's `respondWith` to
+/// settle before giving up on mediation and falling through to the network
+/// path. The managed chain answers `None` (pass-through) immediately when no
+/// scope matches or no worker is active, so this bound only ever trips on a
+/// hung service-worker handler.
+const HANDLE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): "handle fetch", net
+/// side — the counterpart of the upstream TODO this patch replaces. Sends a
+/// [`CustomResponseMediator`] to the service-worker manager registered for
+/// the request origin (the manager applies the scope/active-worker match and
+/// answers `None` on miss) and awaits the mediated response.
+///
+/// Every failure mode (no manager registered for the origin, channel
+/// creation failure, dead manager thread, timeout, join failure) yields
+/// `None`, which lets `http_fetch` fall through to the regular network path —
+/// the upstream behaviour when no service worker is involved.
+///
+/// The answer travels on an ipc channel whose receive blocks, so the bounded
+/// wait runs on the blocking pool (`tokio::task::spawn_blocking`, same shape
+/// as the DNS resolution in `websocket_loader`) and the async fetch worker
+/// stays free.
+async fn invoke_handle_fetch(request: &Request, context: &FetchContext) -> Option<Response> {
+    let load_url = request.current_url();
+    let manager_chan = context
+        .sw_managers
+        .lock()
+        .get(&load_url.origin())
+        .cloned()?;
+
+    let (response_chan, response_port) = ipc::channel::<Option<CustomResponse>>().ok()?;
+    let mediator = CustomResponseMediator {
+        response_chan,
+        load_url: load_url.clone(),
+    };
+    manager_chan.send(mediator).ok()?;
+
+    let answer = tokio::task::spawn_blocking(move || {
+        response_port.try_recv_timeout(HANDLE_FETCH_TIMEOUT).ok()
+    })
+    .await
+    .ok()?
+    .flatten()?;
+
+    Some(custom_response_into_response(answer, load_url))
+}
+
+/// BAO PATCH (REQ-BRW-004 C19): build the net [`Response`] a service worker
+/// settled with. The body is the fully-read byte sequence the SW realm
+/// extracted (`CustomResponse.body` is a one-shot `Vec<u8>`, not a stream),
+/// so the response is born complete: `ResponseBody::Done`.
+fn custom_response_into_response(custom: CustomResponse, url: ServoUrl) -> Response {
+    let mut response = Response::new(url, ResourceFetchTiming::new(ResourceTimingType::Resource));
+    response.status = HttpStatus::new(custom.raw_status.0, custom.raw_status.1.into_bytes());
+    response.headers = custom.headers;
+    *response.body.lock() = ResponseBody::Done(custom.body);
+    response
+}
+
 /// [HTTP fetch](https://fetch.spec.whatwg.org/#concept-http-fetch)
 #[async_recursion]
 #[allow(clippy::too_many_arguments)]
@@ -576,8 +636,15 @@ pub(crate) async fn http_fetch(
 
     // Step 3. If request’s service-workers mode is "all", then
     if request.service_workers_mode == ServiceWorkersMode::All {
-        // TODO: Substep 1
-        // Set response to the result of invoking handle fetch for request.
+        // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): Substep 1 —
+        // set response to the result of invoking handle fetch for request.
+        // A service-worker script load is excluded: a worker must not
+        // mediate its own script fetch (guards the update job, which
+        // re-fetches the script while an active worker exists; upstream
+        // leaves that request's service-workers mode at the default "all").
+        if request.destination != Destination::ServiceWorker {
+            response = invoke_handle_fetch(request, context).await;
+        }
 
         // Substep 2
         if let Some(ref res) = response {
