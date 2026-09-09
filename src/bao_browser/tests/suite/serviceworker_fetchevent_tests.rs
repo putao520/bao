@@ -119,10 +119,10 @@ try {
 } catch (err) {
   __result.error = String(err);
 }
-var __pub = __sync('__ORIGIN__/sw-probe?result=' + encodeURIComponent(JSON.stringify(__result)));
-__sync('__ORIGIN__/sw-publish-check?' + encodeURIComponent(__pub));
+var __pub = __sync('__ORIGIN__sw-probe?result=' + encodeURIComponent(JSON.stringify(__result)));
+__sync('__ORIGIN__sw-publish-check?' + encodeURIComponent(__pub));
 if (typeof fetch === 'function') {
-  fetch('__ORIGIN__/sw-heartbeat-async').then(function () {}, function () {});
+  fetch('__ORIGIN__sw-heartbeat-async').then(function () {}, function () {});
 }
 "#;
 

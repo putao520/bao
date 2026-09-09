@@ -315,6 +315,125 @@ fn fetch_axis_probe_t_settimeout() {
     );
 }
 
+/// URL-shape control probe — double-slash path (`//dbl`) from the PAGE realm.
+///
+/// Discriminates whether an `origin//path` URL (the fetchevent probe's
+/// `__ORIGIN__` + "/sw-probe" concatenation shape) egresses at all: the SW
+/// probe's publish fetch "completed" with a 200-shaped response while the
+/// fixture never saw a connection. If the same URL shape misbehaves from a
+/// plain page realm too, the defect is in the shared egress (bridge/bun URL
+/// handling), not the SW thread.
+#[test]
+fn fetch_axis_probe_urlshape_double_slash() {
+    if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_urlshape_double_slash") {
+        return;
+    }
+    if should_skip() {
+        return;
+    }
+    let fixture = H1ProbeFixture::spawn();
+    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(fixture.url("/")),
+            ..Default::default()
+        })
+        .expect("create_page");
+
+    let js = format!(
+        "(function() {{ window.__fr = null; \
+         fetch('{origin}//dbl_probe').then(function(r) {{ return r.text(); }}) \
+         .then(function(t) {{ window.__fr = 'OK:' + t; }}) \
+         .catch(function(e) {{ window.__fr = 'ERR:' + ((e && e.message) || String(e)); }}); \
+         return 'sent'; }})()",
+        origin = fixture.url("/"),
+    );
+    let sent = page.evaluate_js_web(&js).expect("probe dispatch");
+    assert!(sent.contains("sent"), "probe dispatch failed: {sent:?}");
+
+    let settled = poll_sink(&page, "__fr", Duration::from_secs(15));
+    eprintln!(
+        "[urlshape-dbl] settled={settled:?} fixture_hits={:?}",
+        fixture.hits()
+    );
+    // The double slash is normalized to a single slash somewhere in the
+    // egress chain (observed live: the fixture records "/dbl_probe").
+    assert!(
+        fixture.hits().iter().any(|p| p.starts_with("/dbl_probe")),
+        "url-shape: fixture never saw //dbl_probe (or its normalized form): {:?}",
+        fixture.hits()
+    );
+    assert_eq!(
+        settled.as_deref(),
+        Some("OK:probe-body"),
+        "url-shape: double-slash fetch never settled with the fixture body: {:?}",
+        fixture.hits()
+    );
+}
+
+/// Query-string control probe — page-realm SYNC XHR (pure servo bridge path,
+/// no node-stack involvement) with and without a query string.
+///
+/// The fetchevent SW probe's publish XHR (`/sw-probe?result=…`) entered the
+/// bridge and "completed" with the PREVIOUS exchange's response bytes
+/// (Content-Length 48 = the "/" document) while the fixture never saw a
+/// connection. Every historically-green bridge test URL carries no query
+/// string — this probe discriminates query-vs-not on the bridge path.
+#[test]
+fn fetch_axis_probe_query_string_xhr() {
+    if !common::run_isolated("fetch_axis_probe_tests::fetch_axis_probe_query_string_xhr") {
+        return;
+    }
+    if should_skip() {
+        return;
+    }
+    let fixture = H1ProbeFixture::spawn();
+    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(fixture.url("/")),
+            ..Default::default()
+        })
+        .expect("create_page");
+
+    // One sync XHR WITHOUT a query (control), one WITH (the suspect shape).
+    let js = "(function() { window.__x1 = null; window.__x2 = null; \
+         try { var a = new XMLHttpRequest(); a.open('GET', '/plain', false); a.send(null); \
+               window.__x1 = 'st=' + a.status + 'body=' + a.responseText; } \
+         catch (e) { window.__x1 = 'THREW:' + e; } \
+         try { var b = new XMLHttpRequest(); b.open('GET', '/withq?result=xyz', false); b.send(null); \
+               window.__x2 = 'st=' + b.status + 'body=' + b.responseText; } \
+         catch (e) { window.__x2 = 'THREW:' + e; } \
+         return 'sent'; })()";
+    let sent = page.evaluate_js_web(js).expect("probe dispatch");
+    assert!(sent.contains("sent"), "probe dispatch failed: {sent:?}");
+
+    let x1 = poll_sink(&page, "__x1", Duration::from_secs(10));
+    let x2 = poll_sink(&page, "__x2", Duration::from_secs(10));
+    eprintln!(
+        "[query-xhr] plain={x1:?} withq={x2:?} fixture_hits={:?}",
+        fixture.hits()
+    );
+    assert!(
+        fixture.saw("/plain"),
+        "control: fixture never saw /plain: {:?}",
+        fixture.hits()
+    );
+    assert!(
+        fixture.hits().iter().any(|p| p.starts_with("/withq")),
+        "QUERY DEFECT: fixture never saw /withq (silently answered elsewhere): {:?}",
+        fixture.hits()
+    );
+    assert!(
+        x1.as_deref().is_some_and(|v| v.contains("st=200")),
+        "control XHR must be a real 200: {x1:?}"
+    );
+    assert!(
+        x2.as_deref().is_some_and(|v| v.contains("st=200body=probe-body")),
+        "query XHR must return the fixture body, got: {x2:?}"
+    );
+}
+
 /// C axis — WORKER realm servo-native fetch (workers carry no bao fetch
 /// override; this exercises servo's own fetch_async → FetchThread →
 /// resource-thread → bun bridge → response-task round trip from a worker

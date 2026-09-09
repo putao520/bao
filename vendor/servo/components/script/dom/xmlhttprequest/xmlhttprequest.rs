@@ -1637,7 +1637,19 @@ impl XMLHttpRequest {
 
         if let Some(script_port) = script_port {
             loop {
-                if !global.process_event(script_port.recv().unwrap(), cx) {
+                let msg = match script_port.recv() {
+                    Ok(msg) => msg,
+                    Err(()) => {
+                        // BAO PATCH (R1, fail-closed): the sync task-source
+                        // sender was dropped without a terminal task — the
+                        // fetch machinery will never deliver a verdict.
+                        // Upstream `unwrap()` panicked the (SW/worker) thread;
+                        // the XHR spec's "network error" arm is the correct
+                        // observable: a failed request with status 0.
+                        return Err(Error::Network(None));
+                    },
+                };
+                if !global.process_event(msg, cx) {
                     // We're exiting.
                     return Err(Error::Abort(None));
                 }
