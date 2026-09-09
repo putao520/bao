@@ -201,6 +201,15 @@ impl BaoRuntime {
         // worker-realm canvas surface (CreepJS/fp-collect probe OffscreenCanvas
         // inside Workers; `undefined` there is itself a fingerprint signal).
         preferences.dom_offscreen_canvas_enabled = true;
+        // `dom_serviceworker_enabled` defaults to false upstream; the vendor SW
+        // implementation is real (`ServiceWorkerContainer.register` → job →
+        // `ServiceWorkerGlobalScope::run_serviceworker_scope`). The pref gates
+        // `navigator.serviceWorker`, the container interface and the
+        // ServiceWorkerGlobalScope global (webidl `Pref=`), so without the flip
+        // pages see no SW surface at all and the SW scope's embedder drain
+        // (REQ-BRW-004 S1, DF-WK-10 stealth inheritance) can never fire.
+        // REQ-BRW-004 C19 prerequisite + user ruling 2026-09-09.
+        preferences.dom_serviceworker_enabled = true;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls

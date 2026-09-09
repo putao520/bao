@@ -341,6 +341,7 @@ impl ServiceWorkerGlobalScope {
             script_url,
             init,
             worker_load_origin,
+            webview_id,
             ..
         } = scope_things;
 
@@ -412,6 +413,32 @@ impl ServiceWorkerGlobalScope {
 
                 let worker_scope = global.upcast::<WorkerGlobalScope>();
                 let global_scope = global.upcast::<GlobalScope>();
+                // Bao vendor patch (REQ-BRW-004 S1 / DF-WK-10): drain embedder
+                // Worker scope callbacks keyed to the webview that REGISTERED
+                // this service worker. `ScopeThings.webview_id` is captured from
+                // the registering page's GlobalScope in
+                // `ServiceWorkerRegistration::create_scope_things` and travels
+                // through the registration job, so the SW scope inherits that
+                // page's stealth profile via the same `worker_scope_init_native`
+                // path used by dedicated workers (DEC-WK-007 / CRIT-STL-WK).
+                // Per-worker keying (same cross-page crosstalk fix as
+                // dedicatedworkerglobalscope.rs): only callbacks registered for
+                // THIS webview are drained.
+                // BAO PATCH (BCE-20260627-009): realm entry for embedder
+                // callbacks is handled INSIDE the callback (worker_scope_init_native)
+                // because this thread's cx starts in the null realm; the
+                // callback owns its own realm lifecycle.
+                // @trace REQ-BRW-004 [criterion:12..17] SW stealth inheritance
+                for callback in
+                    crate::event_loop::script_thread::drain_worker_scope_callbacks(webview_id)
+                {
+                    unsafe {
+                        callback(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope).get_jsobject().get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
 
                 if devtools_enabled {
                     debugger_global.fire_add_debuggee(
