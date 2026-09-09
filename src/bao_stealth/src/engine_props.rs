@@ -964,9 +964,15 @@ unsafe extern "C" fn webgl_get_parameter_override(
             args.rval().set(result.to_jsval(cx));
             true
         }
-        Err(_) => {
-            args.rval().set(UndefinedValue());
-            true
+        // Pass-through (e36): `call_function` has already CONSUMED the pending
+        // exception (`take_exception` clears it), so re-throw it on the
+        // context and return false — the page then observes exactly what the
+        // unwrapped servo native call would have produced. The old
+        // `undefined; true` arm silently masked real failures as literal
+        // `undefined` with `getError()==NO_ERROR` (zero signal to the page).
+        Err(err) => {
+            err.throw_on(cx);
+            false
         }
     }
 }
@@ -1215,6 +1221,25 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
         return true;
     }
     rooted!(&in(wrapped_cx) let proto_root = proto_val.to_object());
+
+    // Idempotency guard (e36): `__originalGetParameter__` is defined ONLY by
+    // this function — servo never installs that name. If the slot already
+    // exists, a prior install's override chain is in place and the CURRENT
+    // proto.getParameter is our JS hook, NOT the servo native. Re-saving it
+    // into the "original" slot would poison the fall-through with a
+    // self-referential JS-hook ↔ native-override loop: every un-intercepted
+    // getParameter cycles forever and surfaces as literal `undefined`
+    // (e36 evidence: .claude/prompts/brw004-getparameter-evidence.md).
+    let mut already_installed: bool = false;
+    if has_property_clearing(
+        cx,
+        proto_root.handle().into(),
+        c"__originalGetParameter__",
+        &mut already_installed,
+    ) && already_installed
+    {
+        return true;
+    }
 
     // Save original getParameter as __originalGetParameter__
     let mut orig_gp = UndefinedValue();

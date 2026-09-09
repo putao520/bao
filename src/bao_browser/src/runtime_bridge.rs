@@ -1272,15 +1272,22 @@ unsafe fn install_all_native(
         // same lifecycle as the wire-config global above (engine_props'
         // ScriptThread-scoped profile lookups are unreachable there).
         bao_stealth::set_global_http2_fingerprint(Some(&profile.http2));
+
+        // Install stealth properties using raw JSAPI (no Handle wrapper
+        // needed). PROFILE-GATED (e36 BCE): a stealth-free page
+        // (`stealth_profile: None`) must carry NO stealth JS/native chain at
+        // all — the previous unconditional install wrapped
+        // WebGLRenderingContext.prototype.getParameter (and navigator/screen/
+        // canvas surfaces) even for stealth-free pages, reproducing the e36
+        // double-injection getParameter defect in "stealth OFF" mode.
+        bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
     } else {
         bun_runtime::fetch_api::set_fetch_stealth_profile(None);
         servo::set_stealth_tls_config(None);
         bao_stealth::set_global_http2_fingerprint(None);
+        // e36 completion ③: no install_stealth_props here — stealth-free
+        // pages keep servo-native surfaces (zero Bao wrappers).
     }
-
-
-    // Install stealth properties using raw JSAPI (no Handle wrapper needed)
-    bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
 
     // Create a proper JSContext wrapper and root the global for Web API installation
     let cx_nn = match NonNull::new(raw_cx) {
@@ -1348,19 +1355,16 @@ unsafe fn install_all_native(
     }
 }
 
-/// Inject both Node.js APIs and stealth scripts into a page.
-pub fn inject_all(page: &PageHandle, stealth: bool) -> Result<(), BrowserError> {
-    let profile = if stealth {
-        page.stealth_profile()
-    } else {
-        None
-    };
-    inject_node_apis_with_stealth(page, profile)
-}
-
 /// Inject Node.js APIs and (if profile present) stealth properties into a page.
 ///
 /// Stealth properties are installed as PERMANENT engine-layer getters (zero JS injection).
+///
+/// BCE (e36): this is the SINGLE page-injection entry of the crate, called
+/// exactly once per page from `PagePool::create_page`. The old bool-based
+/// `inject_all` wrapper plus the second call in `BaoRuntime::create_page`
+/// formed the double-install vector that dead-looped un-intercepted
+/// `getParameter` into literal `undefined` (evidence:
+/// `.claude/prompts/brw004-getparameter-evidence.md`).
 //
 // DEC-WK-001 / TASK-1 (双轨收敛): Also registers a servo-native Worker scope
 // callback via `servo::register_worker_scope_callback`. When a Worker is

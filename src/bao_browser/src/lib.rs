@@ -288,15 +288,17 @@ impl BaoRuntime {
     }
 
     pub fn create_page(&self, config: &PageConfig) -> Result<PageHandle, BrowserError> {
+        // ALL page injection (engine/Web APIs + stealth props + Worker-scope
+        // callback) happens exactly ONCE inside PagePool::create_page — the
+        // single true source. This method used to re-run
+        // inject_all_with_profile on the already-injected page; the second
+        // install_webgl_override re-saved the first pass's JS hook as
+        // "__originalGetParameter__", dead-looping every un-intercepted
+        // getParameter into literal `undefined` in the Window realm (e36).
+        // Pipeline readiness is established inside PagePool::create_page
+        // (wait_for_pipeline_ready + drain_callbacks) before that injection.
         let page = self.page_pool.create_page(config)?;
 
-        // Drive servo's event loop until the WebView pipeline is ready.
-        // Without this, inject_all_with_profile() → drain_callbacks() → evaluate_js_web()
-        // will SIGSEGV because servo's script thread hasn't finished setting up
-        // the pipeline for this WebView.
-        page.wait_for_pipeline_ready(Duration::from_secs(5))?;
-
-        runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
         // The memory:// flat client face follows the newest page.
         if let Some(bridge) = &self.cdp_bridge {
             bridge.set_default_target(page.id().to_string());

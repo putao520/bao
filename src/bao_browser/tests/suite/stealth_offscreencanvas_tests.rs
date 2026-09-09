@@ -305,11 +305,15 @@ fn c13_window_realm_offscreencanvas_exposed_after_pref_flip() {
 /// GL error / thrown exception. The pixel readback of a `clearColor(1,0,0,1)`
 /// clear is asserted EXACT (fixed-point 1.0 ⇒ 255, no premultiply drift).
 ///
-/// Note: the basic getParameter probe uses 0x1F01, which in servo's webidl is
-/// RENDERER (desktop-GL constant ordering) and returns the driver's VERSION
-/// string. `gl.VERSION` (0x1F02) currently returns `undefined` from servo's
-/// native GetParameter in BOTH realms — a pre-existing upstream quirk, not a
-/// worker-channel issue (verified identical on the Window path).
+/// Note: the basic getParameter probe uses 0x1F01 (UNMASKED_RENDERER_WEBGL).
+/// CORRECTED (e36): an earlier comment claimed `gl.getParameter(0x1F02)`
+/// returned `undefined` "from servo's native GetParameter in BOTH realms — a
+/// pre-existing upstream quirk". That was a misdiagnosis: the worker realm
+/// (zero Bao wrappers) always returned the correct "WebGL 1.0" string, and
+/// the `undefined` came ONLY from the Bao-side double stealth injection
+/// dead-looping un-intercepted params in the Window realm (see §6 and
+/// .claude/prompts/brw004-getparameter-evidence.md). servo upstream is
+/// innocent — do NOT file an upstream issue for this.
 const WORKER_WEBGL_BODY: &str = r#"
 var __r = (function () {
   try {
@@ -685,5 +689,263 @@ fn c14_window_realm_webgl2_control_probe_works() {
         r.starts_with("OK:255,0,255,255:SP"),
         "window-realm canvas WebGL2 must create a context, clear magenta, read back exactly and \
          return legal shader precision (digest: {r})"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// §6 e36 BCE regression — double stealth injection dead-loop. Root cause:
+// PagePool::create_page AND BaoRuntime::create_page each injected, so the
+// second install_webgl_override stored the FIRST pass's JS hook into
+// __originalGetParameter__; every un-intercepted getParameter (0x1F02
+// VERSION, 0x8B8C GLSL_ES_VERSION, and ALL other non-intercepted enums)
+// dead-looped JS hook ↔ native override and surfaced as literal `undefined`
+// with getError()==NO_ERROR. The fix: single injection in
+// PagePool::create_page + install idempotency guard + profile-gated install
+// (stealth_profile: None ⇒ NO stealth chain at all).
+// Evidence: .claude/prompts/brw004-getparameter-evidence.md
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Window-realm probe digest for the un-intercepted getParameter path on a
+/// canvas WebGL1 context. `ORIG=1` ⇔ __originalGetParameter__ stringifies as
+/// `[native code]` (the TRUE servo native — under double injection it was the
+/// JS hook source instead); `HOOK=1` ⇔ proto.getParameter is the stealth JS
+/// hook (outer layer present); V1F02/V8B8C are the raw pass-through values.
+fn e36_window_probe_js() -> &'static str {
+    r#"
+(function () {
+  try {
+    var c = document.createElement('canvas');
+    c.width = 32; c.height = 16;
+    var gl = c.getContext('webgl');
+    if (!gl) { return 'NULL-WEBGL-CTX'; }
+    var proto = Object.getPrototypeOf(gl);
+    var orig = proto.__originalGetParameter__;
+    var v1 = gl.getParameter(0x1F02);
+    var v2 = gl.getParameter(0x8B8C);
+    var err = gl.getError();
+    return 'OK:'
+      + (typeof v1 === 'undefined' ? 'UNDEF' : String(v1)) + '|'
+      + (typeof v2 === 'undefined' ? 'UNDEF' : String(v2)) + '|'
+      + 'ORIG=' + (orig ? (String(orig).indexOf('[native code]') !== -1 ? 1 : 0) : -1) + '|'
+      + 'HOOK=' + (String(proto.getParameter).indexOf('dbgRenderer') !== -1 ? 1 : 0) + '|'
+      + 'ERR=' + err;
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})()"#
+}
+
+/// Worker-realm probe: same two un-intercepted enums through the zero-Bao-
+/// wrapper servo native path (worker scopes never receive the Window
+/// injection chain). The digest shape matches the window probe's OK arm.
+const E36_WORKER_GETPARAM_BODY: &str = r#"
+var __r = (function () {
+  try {
+    var c = new OffscreenCanvas(64, 48);
+    var gl = c.getContext('webgl');
+    if (!gl) { return 'NULL-WEBGL-CTX'; }
+    var v1 = gl.getParameter(0x1F02);
+    var v2 = gl.getParameter(0x8B8C);
+    return 'OK:'
+      + (typeof v1 === 'undefined' ? 'UNDEF' : String(v1)) + '|'
+      + (typeof v2 === 'undefined' ? 'UNDEF' : String(v2));
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})();
+self.postMessage(__r);
+"#;
+
+/// e36 completion ①(live): Window realm un-intercepted getParameter returns
+/// the TRUE servo values — identical to the worker realm's zero-wrapper
+/// results — and `__originalGetParameter__` holds the servo native, not a
+/// stealth JS hook.
+#[test]
+fn e36_window_getparameter_unintercepted_matches_worker_native() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    // Window side.
+    let raw = page
+        .evaluate_js_web(e36_window_probe_js())
+        .expect("e36 window getParameter probe must evaluate");
+    let win = unquote_bridge(raw.trim().to_string());
+    assert!(
+        win.starts_with("OK:"),
+        "window probe must succeed (double-injection regression?), digest: {win}"
+    );
+    assert!(
+        win.contains("OK:WebGL 1.0|WebGL GLSL ES 1.0|"),
+        "Window realm un-intercepted getParameter(0x1F02/0x8B8C) must return the servo native \
+         strings, not undefined (digest: {win})"
+    );
+    assert!(
+        win.contains("|ORIG=1|"),
+        "__originalGetParameter__ must be the servo native ([native code]), not a stealth JS \
+         hook — double-injection signature (digest: {win})"
+    );
+    assert!(
+        win.contains("|HOOK=1|"),
+        "proto.getParameter must still be the stealth JS hook (interception capability intact, \
+         digest: {win})"
+    );
+    assert!(
+        win.ends_with("|ERR=0"),
+        "probe must leave getError()==NO_ERROR (digest: {win})"
+    );
+
+    // Worker side (same page, zero-wrapper servo native).
+    let _ = page.evaluate_js_web("window.__ocResult = null;");
+    let body = encode_worker_body(E36_WORKER_GETPARAM_BODY);
+    let created = page.evaluate_js_web(&make_worker_driver(&body));
+    match created {
+        Ok(s) => assert!(
+            s.contains("worker-created"),
+            "Worker creation must succeed, got: {s}"
+        ),
+        Err(e) => panic!("Worker creation dispatch failed: {e}"),
+    }
+    let wr = wait_for_worker_result(&page, Duration::from_secs(30))
+        .unwrap_or_else(|| panic!("worker getParameter digest did not arrive"));
+    assert!(
+        !wr.starts_with("WORKER-ERROR:") && !wr.starts_with("CREATE-ERROR:"),
+        "worker probe must not error: {wr}"
+    );
+    assert_eq!(
+        wr, "OK:WebGL 1.0|WebGL GLSL ES 1.0",
+        "worker realm (zero Bao wrappers) un-intercepted getParameter must keep returning the \
+         servo native strings"
+    );
+    let win_values = &win["OK:".len()..];
+    let wr_values = &wr["OK:".len()..];
+    assert_eq!(
+        win_values.split("|ORIG").next().unwrap_or(""),
+        wr_values,
+        "Window realm un-intercepted values must EQUAL the worker realm's native values \
+         (e36 completion ①: 与 worker 零包装一致)"
+    );
+}
+
+/// e36 completion ②(live): the interception capability is fully intact —
+/// JS-hook-layer enums (0x9246/0x9245/0x0D33) and native-override-layer enums
+/// (0x1F00/0x1F01) still return the stealth profile's configured values.
+#[test]
+fn e36_window_getparameter_intercepted_enums_still_profile_driven() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile.clone()));
+
+    let probe = r#"
+(function () {
+  try {
+    var c = document.createElement('canvas');
+    c.width = 32; c.height = 16;
+    var gl = c.getContext('webgl');
+    if (!gl) { return 'NULL-WEBGL-CTX'; }
+    return 'OK:' + String(gl.getParameter(0x9246)) + '|'
+                 + String(gl.getParameter(0x9245)) + '|'
+                 + String(gl.getParameter(0x0D33)) + '|'
+                 + String(gl.getParameter(0x1F00)) + '|'
+                 + String(gl.getParameter(0x1F01)) + '|'
+                 + 'ERR=' + gl.getError();
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})()"#;
+    let raw = page
+        .evaluate_js_web(probe)
+        .expect("intercepted-enum probe must evaluate");
+    let r = unquote_bridge(raw.trim().to_string());
+    let expected = format!(
+        "OK:{}|{}|{}|{}|{}|ERR=0",
+        profile.webgl.renderer,
+        profile.webgl.vendor,
+        profile.webgl.max_texture_size,
+        profile.webgl.vendor,     // 0x1F00 UNMASKED_VENDOR (native override layer)
+        profile.webgl.renderer,   // 0x1F01 UNMASKED_RENDERER (native override layer)
+    );
+    assert_eq!(
+        r, expected,
+        "intercepted enums must return the profile values on both stealth layers (JS hook + \
+         native override)"
+    );
+}
+
+/// e36 completion ③(live): a stealth-free page (`stealth_profile: None`)
+/// carries NO stealth chain at all — no __originalGetParameter__ slot, no JS
+/// hook on getParameter, pure servo-native surfaces returning true values.
+#[test]
+fn e36_stealth_free_page_has_no_stealth_chain() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let (_runtime, page) = live_page(None);
+
+    let probe = r#"
+(function () {
+  try {
+    if (typeof WebGLRenderingContext === 'undefined') { return 'ABSENT:WebGLRenderingContext'; }
+    var proto = WebGLRenderingContext.prototype;
+    var hasOrig = typeof proto.__originalGetParameter__ !== 'undefined';
+    var gpSrc = String(proto.getParameter);
+    var hooked = gpSrc.indexOf('dbgRenderer') !== -1;
+    var native = gpSrc.indexOf('[native code]') !== -1;
+    var c = document.createElement('canvas');
+    c.width = 32; c.height = 16;
+    var gl = c.getContext('webgl');
+    if (!gl) { return 'NULL-WEBGL-CTX'; }
+    var v1 = gl.getParameter(0x1F02);
+    var v2 = gl.getParameter(0x8B8C);
+    return 'OK:HASORIG=' + (hasOrig ? 1 : 0) + '|HOOKED=' + (hooked ? 1 : 0)
+      + '|NATIVE=' + (native ? 1 : 0)
+      + '|V1F02=' + (typeof v1 === 'undefined' ? 'UNDEF' : String(v1))
+      + '|V8B8C=' + (typeof v2 === 'undefined' ? 'UNDEF' : String(v2))
+      + '|ERR=' + gl.getError();
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})()"#;
+    let raw = page
+        .evaluate_js_web(probe)
+        .expect("stealth-free probe must evaluate");
+    let r = unquote_bridge(raw.trim().to_string());
+    assert!(
+        r.starts_with("OK:"),
+        "stealth-free probe must succeed (digest: {r})"
+    );
+    assert!(
+        r.contains("HASORIG=0|"),
+        "stealth_profile: None must NOT install __originalGetParameter__ (digest: {r})"
+    );
+    assert!(
+        r.contains("|HOOKED=0|"),
+        "stealth_profile: None must NOT install the JS getParameter hook (digest: {r})"
+    );
+    assert!(
+        r.contains("|NATIVE=1|"),
+        "stealth_profile: None getParameter must be the servo native function (digest: {r})"
+    );
+    assert!(
+        r.contains("|V1F02=WebGL 1.0|"),
+        "stealth-free Window realm must return the true servo VERSION string (digest: {r})"
+    );
+    assert!(
+        r.contains("|V8B8C=WebGL GLSL ES 1.0|"),
+        "stealth-free Window realm must return the true servo GLSL ES string (digest: {r})"
+    );
+    assert!(
+        r.ends_with("|ERR=0"),
+        "stealth-free probe must leave getError()==NO_ERROR (digest: {r})"
     );
 }
