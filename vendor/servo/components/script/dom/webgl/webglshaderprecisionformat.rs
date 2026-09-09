@@ -9,7 +9,7 @@ use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 
 use crate::dom::bindings::codegen::Bindings::WebGLShaderPrecisionFormatBinding::WebGLShaderPrecisionFormatMethods;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::window::Window;
+use crate::dom::globalscope::GlobalScope;
 
 #[dom_struct]
 pub(crate) struct WebGLShaderPrecisionFormat {
@@ -29,9 +29,12 @@ impl WebGLShaderPrecisionFormat {
         }
     }
 
+    /// (Bao) Takes the owning `GlobalScope` instead of `&Window`: shader
+    /// precision probes must reflect on worker `OffscreenCanvas` WebGL
+    /// contexts too (REQ-BRW-004 C14).
     pub(crate) fn new(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         range_min: i32,
         range_max: i32,
         precision: i32,
@@ -40,7 +43,7 @@ impl WebGLShaderPrecisionFormat {
             Box::new(WebGLShaderPrecisionFormat::new_inherited(
                 range_min, range_max, precision,
             )),
-            window,
+            global,
             cx,
         )
     }

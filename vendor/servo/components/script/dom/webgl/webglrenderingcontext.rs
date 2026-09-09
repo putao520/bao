@@ -3697,9 +3697,12 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         ));
 
         let (range_min, range_max, precision) = receiver.recv().unwrap();
+        // (Bao) Reflect on the owning global, not `as_window()`: shader
+        // precision probes are reachable from worker `OffscreenCanvas` WebGL
+        // contexts (REQ-BRW-004 C14).
         Some(WebGLShaderPrecisionFormat::new(
             cx,
-            self.global().as_window(),
+            &self.global(),
             range_min,
             range_max,
             precision,

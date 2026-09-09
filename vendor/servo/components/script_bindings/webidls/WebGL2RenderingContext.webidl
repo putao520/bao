@@ -578,7 +578,10 @@ interface mixin WebGL2RenderingContextOverloads
                   /*[AllowShared]*/ ArrayBufferView dstData, GLuint dstOffset);
 };
 
-[Exposed=Window, Func="WebGL2RenderingContext::is_webgl2_enabled"]
+// (Bao) Exposed=(Window,Worker): WebGL2 on OffscreenCanvas is a worker surface
+// per the WebGL spec; upstream pins Window-only only because its OffscreenCanvas
+// WebGL2 path is Window-downcast (REQ-BRW-004 C14, user ruling 2026-09-09).
+[Exposed=(Window,Worker), Func="WebGL2RenderingContext::is_webgl2_enabled"]
 interface WebGL2RenderingContext
 {
 };

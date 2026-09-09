@@ -210,6 +210,16 @@ impl BaoRuntime {
         // (REQ-BRW-004 S1, DF-WK-10 stealth inheritance) can never fire.
         // REQ-BRW-004 C19 prerequisite + user ruling 2026-09-09.
         preferences.dom_serviceworker_enabled = true;
+        // `dom_webgl2_enabled` defaults to false upstream; the vendor WebGL2
+        // implementation (`script/dom/webgl/webgl2renderingcontext.rs`) is real
+        // and the pref is the first gate in
+        // `OffscreenCanvas::get_or_init_webgl2_context` (via
+        // `WebGL2RenderingContext::is_webgl2_enabled`), before any channel
+        // dispatch — without the flip `getContext('webgl2')` returns null in
+        // BOTH realms. Real browsers ship WebGL2 on, so a missing webgl2
+        // surface is itself a fingerprint signal. REQ-BRW-004 C14 + user
+        // ruling 2026-09-09.
+        preferences.dom_webgl2_enabled = true;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls

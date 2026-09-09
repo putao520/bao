@@ -10,6 +10,8 @@
 //         E26 断点: WorkerGlobalScopeInit.webgl_chan 在 new_inherited 被丢弃 /
 //         WebGLRenderingContext::new_inherited 锚死 &Window / offscreencanvas
 //         WebGL 路径 Window downcast)
+//         W3b (§5): WebGL2 同形态通道 + getShaderPrecisionFormat 解
+//         as_window 锚 + dom_webgl2_enabled embedder flip
 //
 // Mechanism under test: the ONLY gate is the WebIDL
 // `Pref="dom_offscreen_canvas_enabled"` exposure check (per-realm). The
@@ -442,5 +444,246 @@ fn c14_window_realm_webgl1_control_probe_works() {
         r.starts_with("OK:0,255,0,255:"),
         "window-realm canvas WebGL1 must create a context, clear green and read back exactly \
          (digest: {r})"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// §5 C14 (W3b) — WebGL2 OffscreenCanvas INSIDE a Worker realm + worker
+//                 getShaderPrecisionFormat (Bao vendor patch:
+//                 WebGL2RenderingContext::new_inherited decoupled from
+//                 &Window + new_in_worker + offscreencanvas WebGL2 dispatch
+//                 + GetShaderPrecisionFormat reflect on the owning global +
+//                 dom_webgl2_enabled embedder flip)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Worker script body: run the OffscreenCanvas WebGL2 pipeline INSIDE the
+/// Worker thread and post a compact digest back. The clear color is BLUE
+/// (distinct from the WebGL1 §3 RED) so a digest mix-up between the two
+/// channel dispatch arms cannot pass silently. The pixel readback of a
+/// `clearColor(0,0,1,1)` clear is asserted EXACT (fixed-point 1.0 ⇒ 255).
+const WORKER_WEBGL2_BODY: &str = r#"
+var __r = (function () {
+  try {
+    if (typeof OffscreenCanvas === 'undefined') { return 'ABSENT:OffscreenCanvas'; }
+    var c = new OffscreenCanvas(64, 48);
+    var gl = c.getContext('webgl2');
+    if (!gl) { return 'NULL-WEBGL2-CTX'; }
+    if (gl.drawingBufferWidth !== 64 || gl.drawingBufferHeight !== 48) {
+      return 'BAD-SIZE:' + gl.drawingBufferWidth + 'x' + gl.drawingBufferHeight;
+    }
+    gl.clearColor(0, 0, 1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    var px = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    var err = gl.getError();
+    if (err !== gl.NO_ERROR) { return 'GL-ERROR:' + err; }
+    return 'OK:' + px[0] + ',' + px[1] + ',' + px[2] + ',' + px[3];
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})();
+self.postMessage(__r);
+"#;
+
+/// @trace REQ-BRW-004 [criterion:14] worker-realm OffscreenCanvas WebGL2
+/// pipeline (live, servo-native Worker thread, stealth page)
+///
+/// The whole pipeline runs inside the Worker: construction,
+/// getContext('webgl2') non-null (before the W3b vendor patch the WebGL2 arm
+/// of `get_or_init_webgl2_context` Window-downcast the global and returned
+/// null in workers), drawingBuffer geometry, clear + readPixels round-trip,
+/// getError()==NO_ERROR.
+#[test]
+fn c14_worker_offscreencanvas_webgl2_pipeline_works() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    let _ = page.evaluate_js_web("window.__ocResult = null;");
+    let body = encode_worker_body(WORKER_WEBGL2_BODY);
+    let created = page.evaluate_js_web(&make_worker_driver(&body));
+    match created {
+        Ok(s) => assert!(
+            s.contains("worker-created"),
+            "Worker creation must succeed on the servo-native path, got: {s}"
+        ),
+        Err(e) => panic!("Worker creation dispatch failed: {e}"),
+    }
+
+    let r = wait_for_worker_result(&page, Duration::from_secs(30)).unwrap_or_else(|| {
+        panic!(
+            "worker WebGL2 digest did not arrive within timeout — worker postMessage → onmessage \
+             or worker execution is broken on the live path"
+        )
+    });
+    assert!(
+        !r.starts_with("WORKER-ERROR:"),
+        "worker script threw before posting a digest: {r}"
+    );
+    assert!(
+        !r.starts_with("CREATE-ERROR:"),
+        "Worker constructor failed on the live path: {r}"
+    );
+    assert_eq!(
+        r, "OK:0,0,255,255",
+        "worker-realm OffscreenCanvas WebGL2 pipeline must create a context, clear blue and read \
+         back exactly"
+    );
+}
+
+/// Worker script body: probe `getShaderPrecisionFormat` in the worker on BOTH
+/// context types (webgl2 FRAGMENT_SHADER/HIGH_FLOAT and webgl
+/// VERTEX_SHADER/HIGH_INT — the implementation is the shared base method
+/// whose reflection anchor W3b moved from `as_window()` to the owning
+/// global). Every field must be an integer ≥ 0 (legal GL precision values,
+/// not throw / not undefined / not null).
+const WORKER_SPF_BODY: &str = r#"
+var __r = (function () {
+  try {
+    if (typeof OffscreenCanvas === 'undefined') { return 'ABSENT:OffscreenCanvas'; }
+    function check(sp, tag) {
+      if (!sp || typeof sp !== 'object') { return 'BAD-' + tag + ':' + String(sp); }
+      if (!Number.isInteger(sp.rangeMin) || !Number.isInteger(sp.rangeMax) ||
+          !Number.isInteger(sp.precision)) {
+        return 'BAD-' + tag + '-FIELDS:' + sp.rangeMin + ',' + sp.rangeMax + ',' + sp.precision;
+      }
+      if (sp.rangeMin < 0 || sp.rangeMax < 0 || sp.precision < 0) {
+        return 'NEG-' + tag + ':' + sp.rangeMin + ',' + sp.rangeMax + ',' + sp.precision;
+      }
+      return null;
+    }
+    var c2 = new OffscreenCanvas(32, 24);
+    var gl2 = c2.getContext('webgl2');
+    if (!gl2) { return 'NULL-WEBGL2-CTX'; }
+    var sp2 = gl2.getShaderPrecisionFormat(gl2.FRAGMENT_SHADER, gl2.HIGH_FLOAT);
+    var bad = check(sp2, 'SP2');
+    if (bad) { return bad; }
+    var c1 = new OffscreenCanvas(32, 24);
+    var gl1 = c1.getContext('webgl');
+    if (!gl1) { return 'NULL-WEBGL-CTX'; }
+    var sp1 = gl1.getShaderPrecisionFormat(gl1.VERTEX_SHADER, gl1.HIGH_INT);
+    bad = check(sp1, 'SP1');
+    if (bad) { return bad; }
+    return 'OK:' + sp2.rangeMin + ',' + sp2.rangeMax + ',' + sp2.precision +
+           ':' + sp1.rangeMin + ',' + sp1.rangeMax + ',' + sp1.precision;
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})();
+self.postMessage(__r);
+"#;
+
+/// @trace REQ-BRW-004 [criterion:14] worker-realm getShaderPrecisionFormat
+/// (live, servo-native Worker thread, both WebGL1 and WebGL2 contexts)
+///
+/// Before the W3b vendor patch the base `GetShaderPrecisionFormat` reflected
+/// the result via `self.global().as_window()`, which panics ("expected a
+/// Window scope") in a worker. This probe must return a legal
+/// WebGLShaderPrecisionFormat (three integers ≥ 0) on BOTH context types.
+#[test]
+fn c14_worker_webgl_getshaderprecisionformat_works() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    let _ = page.evaluate_js_web("window.__ocResult = null;");
+    let body = encode_worker_body(WORKER_SPF_BODY);
+    let created = page.evaluate_js_web(&make_worker_driver(&body));
+    match created {
+        Ok(s) => assert!(
+            s.contains("worker-created"),
+            "Worker creation must succeed on the servo-native path, got: {s}"
+        ),
+        Err(e) => panic!("Worker creation dispatch failed: {e}"),
+    }
+
+    let r = wait_for_worker_result(&page, Duration::from_secs(30)).unwrap_or_else(|| {
+        panic!(
+            "worker shader-precision digest did not arrive within timeout — worker postMessage → \
+             onmessage or worker execution is broken on the live path"
+        )
+    });
+    assert!(
+        !r.starts_with("WORKER-ERROR:"),
+        "worker script threw before posting a digest: {r}"
+    );
+    assert!(
+        !r.starts_with("CREATE-ERROR:"),
+        "Worker constructor failed on the live path: {r}"
+    );
+    let Some(fields) = r.strip_prefix("OK:") else {
+        panic!("worker getShaderPrecisionFormat must return legal values, digest: {r}")
+    };
+    let values: Vec<&str> = fields.split(':').collect();
+    assert_eq!(
+        values.len(),
+        2,
+        "digest must carry webgl2 and webgl precision triples: {r}"
+    );
+    for triple in values {
+        let parts: Vec<&str> = triple.split(',').collect();
+        assert_eq!(parts.len(), 3, "precision triple shape: {r}");
+        for p in parts {
+            let v: i64 = p
+                .parse()
+                .unwrap_or_else(|_| panic!("precision field must be an integer, digest: {r}"));
+            assert!(v >= 0, "precision field must be ≥ 0, digest: {r}");
+        }
+    }
+}
+
+/// @trace REQ-BRW-004 [criterion:14] window-realm canvas WebGL2 control probe
+/// (live, direct probe of the UNCHANGED Window path through the refactored
+/// WebGL2 new/new_inherited + the re-anchored GetShaderPrecisionFormat)
+#[test]
+fn c14_window_realm_webgl2_control_probe_works() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    let probe = r#"
+(function () {
+  try {
+    if (typeof HTMLCanvasElement === 'undefined') { return 'ABSENT:HTMLCanvasElement'; }
+    var c = document.createElement('canvas');
+    c.width = 32; c.height = 16;
+    var gl = c.getContext('webgl2');
+    if (!gl) { return 'NULL-WEBGL2-CTX'; }
+    gl.clearColor(1, 0, 1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    var px = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    var err = gl.getError();
+    if (err !== gl.NO_ERROR) { return 'GL-ERROR:' + err; }
+    var sp = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+    if (!sp || typeof sp !== 'object' || !Number.isInteger(sp.precision) || sp.precision < 0) {
+      return 'BAD-SP:' + String(sp && sp.precision);
+    }
+    return 'OK:' + px[0] + ',' + px[1] + ',' + px[2] + ',' + px[3] +
+           ':SP' + sp.rangeMin + ',' + sp.rangeMax + ',' + sp.precision;
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})()"#;
+    let raw = page
+        .evaluate_js_web(probe)
+        .expect("window-realm WebGL2 control probe evaluation must succeed");
+    let r = unquote_bridge(raw.trim().to_string());
+    assert!(
+        r.starts_with("OK:255,0,255,255:SP"),
+        "window-realm canvas WebGL2 must create a context, clear magenta, read back exactly and \
+         return legal shader precision (digest: {r})"
     );
 }

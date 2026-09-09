@@ -6,6 +6,6 @@
 // https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.17
 //
 
-[Exposed=(Window), Pref="dom_webgl2_enabled"]
+[Exposed=(Window,Worker), Pref="dom_webgl2_enabled"]
 interface WebGLVertexArrayObject : WebGLObject {
 };
