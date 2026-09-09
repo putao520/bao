@@ -1803,14 +1803,27 @@ mod _event_loop_draft {
 
                 let uws_loop = self.uws_loop_mut();
                 uws_loop.inc();
-                // BCE-20260618-007-R3 extension: the HTTPThread's tick used the
-                // NULL-timeout us_loop_run_bun_tick, which makes epoll_pwait2
-                // block indefinitely when no fd is ready. R3 fixed this for the
-                // JS thread (timers.rs) but missed the HTTPThread. Use the
-                // zero-timeout tick_without_idle so the loop returns after
-                // draining ready fds — the HTTPThread's process_events loop
-                // re-enters immediately, no CPU waste (it only does HTTP I/O).
-                uws_loop.tick_without_idle();
+                // Upstream parity (Bun HTTPThread.zig:643 `this.loop.loop.tick()`
+                // → us_loop_run_bun_tick(loop, null)): park the HTTP thread in
+                // epoll until an fd is ready (socket event, wakeup eventfd, or a
+                // folded QUIC/sweep timer deadline — the C tick folds
+                // quic_next_tick and the integrate-armed sweep timer internally).
+                //
+                // BCE-20260618-007-R3-ext had swapped this for the zero-timeout
+                // `tick_without_idle`, claiming "no CPU waste" — in fact a
+                // zero-timeout epoll tick returns immediately when idle, so
+                // process_events spun drain_events→queued_tasks.pop
+                // (unbounded_queue Atomic::load) at 100% CPU for the process
+                // lifetime (live-verified: the "HTTP Client" thread pinned a
+                // core inside process_events→drain_queued_transport_pauses while
+                // idle; e44 fe6298e1 observed the same spin). The real BCE-007
+                // fetch hangs were the RT liveness miss and the R2 vtable
+                // disconnect — not the NULL-timeout park, which is the upstream
+                // design. All wake producers already pair their enqueue with
+                // `wakeup()` (every schedule*/from_any_thread entry), so the
+                // blocking tick cannot lose a drain: num_polls is forced ≥ 2 in
+                // process_events, arming the wakeup poll.
+                uws_loop.tick();
                 uws_loop.dec();
 
                 if cfg!(debug_assertions) {

@@ -1999,3 +1999,92 @@ regressionAssertion:
 
 **本 BCE session 交付**: BCE-20260627-001 完整根治（PageState::Closing 缺失），残留=0，oracle_gate canCommit=true。其余对抗性发现为测试覆盖设计缺陷，已记录为后续 BCE 任务。
 
+
+---
+
+## BCE-20260910-001 — HTTPThread 零超时 tick 忙转（e44 升级工单 Q1,已根治）
+
+### patternId / title
+`BCE-20260910-001` · bao 移植把 HTTP Client 线程的 process_events tick 从上游的 NULL-timeout(阻塞 epoll_pwait2)换成了零超时 `tick_without_idle` → 线程空闲时永不停靠,100% CPU 死转 `drain_events → queued_tasks.pop`(unbounded_queue Atomic::load)。
+
+### layer
+移植偏差(上游语义误判 — 上游 Bun 是 park,不是 spin)。
+
+### 根因(rootCause)
+- **location**: `src/http/HTTPThread.rs` `process_events`(原 1813 行)`uws_loop.tick_without_idle()`。
+- **why**: BCE-20260618-007-R3-ext 注释声称零超时 tick「no CPU waste」——事实相反:零 timespec 在 ep_poll 有 fast path,不进调度器直接返回,空闲时 process_events 外层循环变成纯用户态自旋。上游 Bun(HTTPThread.zig:643 `this.loop.loop.tick()` → Loop.zig tick → `us_loop_run_bun_tick(loop, null)`)HTTP 线程**设计上 park 在 epoll**,靠 wakeup eventfd/socket fd/折叠进 tick 的 QUIC+sweep timer 唤醒。BCE-007 真正的 fetch 挂根因是 RT(liveness 注册缺失)与 R2(vtable 断链),不是 NULL-timeout park 本身。
+- **evidence**(live, 2026-09-10, fetchevent 复现窗口内 gdb attach):
+  - HTTP Client 线程栈停在 `process_events:1801 → drain_events:884 → drain_queued_transport_pauses:869`;
+  - 修复后同一窗口:utime delta = 0 ticks / 3s,wchan=`ep_poll`(与上游一致)。
+
+### 同类判定标准(sameClassCriterion)
+任何从上游 Zig/uSockets 移植的 loop tick 点,改 timeout 语义前必须对照上游调用方:上游传 NULL = 设计性 park;只有上游显式传零 timespec 的调用点才允许 `tick_without_idle`。禁止以「避免阻塞」为由把设计性 park 改成零超时轮询。
+
+### 根治(fixTemplate)— 已落地
+`uws_loop.tick_without_idle()` → `uws_loop.tick()`(NULL timeout,上游 parity)。唤醒契约核查:所有跨线程 `schedule*` 入口与 HTTP-thread-local schedule 均配对 `wakeup()`;`num_polls.max(2)` 保证首个 tick integrate 后 wakeup poll 在 epoll 就位;shutdown 走 `SHUTDOWN_REQUESTED + wakeup()`。
+
+### 全量确认报告
+```yaml
+confirmReport:
+  patternId: BCE-20260910-001
+  sweepScope: "src/http/ + src/bao_runtime/ + src/bao_browser/ (全量 tick 调用点)"
+  instancesFound: 1              # HTTPThread process_events(唯一被改成零超时的设计性 park 点)
+  instancesFixed: 1
+  residual: 0
+  residualEvidence:
+    - "bun_http 全量 30/30 PASS(transport_backpressure/h2/tls/streaming)"
+    - "bun_runtime fetch_ 47/47 + http_ 66/66 PASS(nextest per-test 隔离)"
+    - "bao_browser: fetch_axis 9/9 + serviceworker_mediation + serviceworker_controller + h2_fetch_node_stack 7/7 PASS"
+    - "live: 修复后 HTTP Client 线程 idle utime 0 delta / wchan=ep_poll"
+  releaseGateImpact: none
+```
+
+### 防复发(阶段6)
+- 回归锚:`fetch_only_loop_tick_regression_tests`(missed-wakeup 类)+ bun_http transport_backpressure/h2 套件。
+- 知识库:本条目;上游对照法(HTTPThread.zig)写入 fix 注释。
+
+---
+
+## BCE-20260910-002 — e44「tokio 注入队列饿死」证伪 + 真根因:无 webview fetch 的 embedder 往返无人泵(修复待派发)
+
+### patternId / title
+`BCE-20260910-002` · e44(fe6298e1)升级的「tokio spawn 后注入队列零 poll 22s 饿死/bun HTTPThread 忙转互作」归因**错误**。真根因:SW/worker 发起的 fetch(`target_webview_id=None`)在 `main_fetch` 的 request interceptor 里向 embedder 发 `WebResourceRequested` 后**阻塞等 embedder 回答**,而 net→embedder 通道只有 `Servo::spin_event_loop`(servo.rs:259 selector)会 drain,bao 只在页面交互 API(evaluate/screenshot 等)里泵它——页面空闲时无人泵 → 拦截消息永不被处理 → `WebResourceLoad` 不构造不 drop → `IpcResponder` 的默认 `DoNotIntercept` 永不发送 → interceptor 的 tokio mpsc `receiver.recv()` 永久挂起 → SW 的 sync XHR 永久挂起 → 测试超时 panic → teardown drop 通道 → recv 返回 None → fetch 在毫秒级走完(e44 观察到的「风暴后才首 poll、毫秒完成」其实是通道 drop 唤醒,不是 tokio 被搅醒)。
+
+### layer
+架构缺陷(embedder 泵契约缺口 — 上游 servo 假定 embedder 主循环持续 spin,bao 是惰性泵)。
+
+### 根因(rootCause)— 证据链(全部 live 实证,2026-09-10)
+- **e44 归因证伪(canary 实验)**: `async_runtime::spawn_task` 内 spawn 后立即 spawn canary 任务——**包括被卡的 publish fetch 在内的每一次 spawn,canary 都在 +48µs 内被 poll**。tokio 调度器唤醒完全健康,「注入队列零 poll」不成立。
+- **卡点定位(probe 链)**: wedged fetch 的 probe 序列 = `spawn_task returned +16µs → CANARY +48µs → main_fetch enter` 然后 **25s 无进展**,teardown 后才 `main_fetch post-interceptor → http_fetch(sw_mode=None dest=None) → 毫秒完成`。卡点= `main_fetch` 里 `context.request_interceptor.lock().await.intercept_request(...).await`(vendor/servo/components/net/fetch/methods.rs ~560)。
+- **拦截器机制**: `request_interceptor.rs:44-53` 发 `NetToEmbedderMsg::WebResourceRequested(target_webview_id, ...)` 后 `receiver.recv().await`。SW 全局的 RequestBuilder `target_webview_id=None`(worker 无 webview)。
+- **路由与泵缺口**: servo.rs:408 `WebResourceRequested` 由 `spin_event_loop` 的 selector drain;`webview_id=None` → 走外层 `ServoDelegate::load_web_resource`(默认 no-op → drop → DoNotIntercept,本应快速放行)。bao(BaoServoDelegate/BaoWebViewDelegate)未覆写 `load_web_resource`(继承 no-op,本身正确);**缺口在 spin_event_loop 不被调用**:bao 只在 PageHandle 交互 API(page.rs evaluate_js_web→spin_servo 等)泵 embedder 循环。fetchevent 测试的 probe wait 只轮询 fixture Vec(`fixture.probe_result()`),不碰 page → 25s 零泵。
+- **对照**: register wait(每 200ms evaluate_js_web)期间同一 embedder 往返毫秒级完成(page "/" 与 "/sw.js" 两条 fetch 的 post-interceptor 均及时)——泵在,fetch 通;泵停,fetch 卡。因果闭合。
+- **六 worker 全 park**: task 挂在 mpsc recv 上,worker park 是健康空闲的表征,非病因。
+
+### 同类判定标准(sameClassCriterion)
+bao 嵌入态下,任何 `target_webview_id=None` 的 fetch(SW/SharedWorker/无页面上下文发起)在页面空闲(无 PageHandle API 调用)期间发起 → 必卡在 interceptor 等 embedder 应答;页面有交互泵则不卡。同族:e39/e40(09cabe17)的 page-realm fetch settlement——同属「servo 侧等待 embedder 侧动作,而 bao 的 embedder 循环无人泵」类。
+
+### 根治(待派发 — 本工单 scope 外,修复位置已锁定)
+按 09cabe17 的 pump-bridge 模式扩展到 embedder 循环(候选,主会话裁定):
+- A. bao_browser 嵌入层(runtime_bridge/BaoRuntime 域)起常驻 embedder 泵(专用线程或 waker 驱动 `Servo::spin_event_loop`)——架构正解,匹配上游「embedder 主循环持续 spin」契约;
+- B. 窄修:拦截器路径对 `webview_id=None` 直接短路(不经 embedder)——改上游 request_interceptor 语义,需 vendor patch 论证;
+- C. 最小:SW sync-XHR 嵌套泵(xmlhttprequest.rs,fe6298e1 域)同时泵 embedder 循环——治标。
+推荐 A(契约级)。**禁碰域注意**: runtime_bridge(d2db4c55)/xmlhttprequest-serviceworker(fe6298e1)/bao_cdp(e52)均为在途工单域,重派发时需错峰。
+
+### 全量确认报告
+```yaml
+confirmReport:
+  patternId: BCE-20260910-002
+  sweepScope: "只读取证,零代码改动(probe 全部已回退)"
+  instancesFound: 1              # 无 webview fetch + 空闲页面 embedder 泵缺口
+  instancesFixed: 0              # 修复在禁碰域,升级主会话重派发
+  residual: 1
+  residualEvidence:
+    - "serviceworker_fetchevent 仍 FAIL(25.4s 超时,SW-realm verdict 本身全绿,仅 publish 通道被卡)"
+    - "canary/probe 链实证:卡点=interceptor,非 tokio、非 bun_threading/bun_http、非 async_runtime"
+  releaseGateImpact: block(fetchevent 3/3 绿是 REQ-BRW-004 C19 验收项,修复依赖本条派发)
+```
+
+### 防复发(阶段6)
+- 修复落地时:新增「页面空闲 + SW fetch egress」回归用例(fetchevent 即载体,转绿即闭环);
+- 归因纪律沉淀:动到「tokio 饿死」结论前先做 canary spawn 同队列实验——同队列任务被 poll 即证伪调度器归因。
