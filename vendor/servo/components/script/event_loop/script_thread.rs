@@ -382,6 +382,117 @@ pub(crate) fn drain_worker_interfaces_ready_callbacks(
     matching.into_iter().map(|(_, cb)| cb).collect()
 }
 
+// ============================================================================
+// Embedder Worker Injectors — per-Worker delivery tier (Bao vendor patch -
+// REQ-BRW-004, user ruling 2026-09-09 vendor patch)
+// ============================================================================
+// The two FnOnce registries above are consume-once: the FIRST Worker-scope
+// drain for a webview empties the queue, so the SECOND and later
+// `new Worker()` in the same page received ZERO embedder injection — engine
+// getters and JS hooks all absent, a fingerprintable bare Worker (e43
+// observation on the fa084a64 drain points).
+//
+// This tier inverts the delivery semantics: an injector registered for a
+// webview is delivered to EVERY Dedicated Worker scope that webview creates
+// (clone of an `Arc<dyn Fn>` — the entry is never consumed). The one-shot
+// tier above is kept untouched and still drains first, so:
+//   - Worker #1 receives the one-shot callback(s) AND the injector — the
+//     embedder's install is idempotent (define_permanent_getter "prior
+//     install" arm / e36 __originalGetParameter__ gate), so the double run
+//     is safe;
+//   - ServiceWorkerGlobalScope's own one-shot drain (S-family,
+//   serviceworkerglobalscope.rs) is NOT extended to this tier and keeps its
+//   exact current behavior.
+// Registration is an UPSERT per webview (one injector per webview per phase):
+// re-registering replaces the previous entry instead of stacking a second
+// delivery. `unregister_worker_injectors` removes both phases' entries when
+// the page closes so closed pages do not accumulate injectors.
+pub type EmbedderWorkerInjector =
+    std::sync::Arc<dyn Fn(*mut c_void, *mut c_void) + Send + Sync>;
+
+static EMBEDDER_WORKER_SCOPE_INJECTORS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerInjector)>> =
+    std::sync::Mutex::new(Vec::new());
+
+static EMBEDDER_WORKER_INTERFACES_READY_INJECTORS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerInjector)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn upsert_worker_injector(
+    registry: &std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerInjector)>>,
+    webview_id: WebViewId,
+    injector: EmbedderWorkerInjector,
+) {
+    let mut guard = registry.lock().unwrap();
+    // Upsert (one injector per webview): drop any previous entry for this
+    // webview, then push the new one.
+    guard.retain(|(wid, _)| *wid != webview_id);
+    guard.push((webview_id, injector));
+}
+
+/// Register a per-Worker injector for `webview_id`: delivered to EVERY
+/// Dedicated Worker scope that webview creates (never consumed), inside
+/// `DedicatedWorkerGlobalScope::run_worker_scope` after the one-shot
+/// callbacks have drained.
+///
+/// The injector receives `(cx: *mut c_void, global: *mut c_void)` which are
+/// `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)` and runs on
+/// the Worker thread.
+pub fn register_worker_scope_injector(webview_id: WebViewId, injector: EmbedderWorkerInjector) {
+    upsert_worker_injector(&EMBEDDER_WORKER_SCOPE_INJECTORS, webview_id, injector);
+}
+
+/// Register a per-Worker injector delivered at the SECOND drain point —
+/// inside `WorkerGlobalScope::on_complete`, right after
+/// `define_all_exposed_interfaces` and before the worker script runs, for
+/// EVERY Dedicated Worker of `webview_id` (never consumed).
+pub fn register_worker_interfaces_ready_injector(
+    webview_id: WebViewId,
+    injector: EmbedderWorkerInjector,
+) {
+    upsert_worker_injector(&EMBEDDER_WORKER_INTERFACES_READY_INJECTORS, webview_id, injector);
+}
+
+/// Snapshot the per-Worker scope injectors for `webview_id` (NON-consuming:
+/// the entries stay registered for the next Worker of the same webview).
+pub(crate) fn worker_scope_injectors(webview_id: WebViewId) -> Vec<EmbedderWorkerInjector> {
+    EMBEDDER_WORKER_SCOPE_INJECTORS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(wid, _)| *wid == webview_id)
+        .map(|(_, inj)| std::sync::Arc::clone(inj))
+        .collect()
+}
+
+/// Snapshot the per-Worker interfaces-ready injectors for `webview_id`
+/// (NON-consuming — mirrors `worker_scope_injectors`).
+pub(crate) fn worker_interfaces_ready_injectors(
+    webview_id: WebViewId,
+) -> Vec<EmbedderWorkerInjector> {
+    EMBEDDER_WORKER_INTERFACES_READY_INJECTORS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(wid, _)| *wid == webview_id)
+        .map(|(_, inj)| std::sync::Arc::clone(inj))
+        .collect()
+}
+
+/// Remove every per-Worker injector registered for `webview_id` (both drain
+/// phases). Called by the embedder when the page closes so a closed page's
+/// injector does not linger in the registry.
+pub fn unregister_worker_injectors(webview_id: WebViewId) {
+    EMBEDDER_WORKER_SCOPE_INJECTORS
+        .lock()
+        .unwrap()
+        .retain(|(wid, _)| *wid != webview_id);
+    EMBEDDER_WORKER_INTERFACES_READY_INJECTORS
+        .lock()
+        .unwrap()
+        .retain(|(wid, _)| *wid != webview_id);
+}
+
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
 
 fn with_optional_script_thread<R>(f: impl FnOnce(Option<&ScriptThread>) -> R) -> R {

@@ -27,10 +27,15 @@ mod tasks;
 // register_worker_interfaces_ready_callback (REQ-BRW-004 C15, user ruling
 // 2026-09-09) is the second worker-scope drain point — drained after
 // define_all_exposed_interfaces so embedder JS hooks see defined interfaces.
+// The register_*_injector pair (REQ-BRW-004, user ruling 2026-09-09) is the
+// per-Worker NON-consuming delivery tier: every Dedicated Worker of the
+// webview receives the injector (the FnOnce callbacks above are consume-once
+// — only the first Worker drained them).
 pub use event_loop::script_thread::{
-    register_embedder_callback, register_worker_interfaces_ready_callback,
-    register_worker_scope_callback,
-    register_bao_event_loop_pump, bao_current_thread_wake_fn, BaoEventLoopPump,
+    register_bao_event_loop_pump, bao_current_thread_wake_fn, register_embedder_callback,
+    register_worker_interfaces_ready_callback, register_worker_interfaces_ready_injector,
+    register_worker_scope_callback, register_worker_scope_injector, unregister_worker_injectors,
+    BaoEventLoopPump, EmbedderWorkerInjector,
 };
 pub(crate) mod conversions;
 mod css;

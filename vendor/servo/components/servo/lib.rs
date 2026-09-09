@@ -181,6 +181,54 @@ pub fn register_worker_interfaces_ready_callback(
     script::register_worker_interfaces_ready_callback(webview_id, callback);
 }
 
+/// Register a per-Worker injector delivered to EVERY Dedicated Worker scope
+/// created for `webview_id` (Bao vendor patch, REQ-BRW-004, user ruling
+/// 2026-09-09).
+///
+/// Unlike the consume-once callbacks above — which only the FIRST Worker of
+/// the webview drains — an injector is delivered at every Worker's scope
+/// construction (first drain point, after the one-shot callbacks) and is
+/// never consumed, so the SECOND and later `new Worker()` in the same page
+/// receive the same embedder install (engine getters + JS hooks) instead of
+/// a bare, fingerprintable Worker global. The injector receives
+/// `(cx: *mut c_void, global: *mut c_void)` which are actually
+/// `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)` and runs on
+/// each Worker thread. Registration is an upsert: one injector per webview.
+pub fn register_worker_scope_injector(
+    webview_id: WebViewId,
+    injector: script::EmbedderWorkerInjector,
+) {
+    script::register_worker_scope_injector(webview_id, injector);
+}
+
+/// Register a per-Worker injector delivered at the SECOND drain point —
+/// right after `define_all_exposed_interfaces` and before the worker script
+/// runs — for EVERY Dedicated Worker of `webview_id` (never consumed).
+///
+/// Bao vendor patch (REQ-BRW-004, user ruling 2026-09-09): same per-Worker
+/// delivery semantics as [`register_worker_scope_injector`], landing the
+/// W1a-guarded JS prototype hooks that require defined interfaces.
+pub fn register_worker_interfaces_ready_injector(
+    webview_id: WebViewId,
+    injector: script::EmbedderWorkerInjector,
+) {
+    script::register_worker_interfaces_ready_injector(webview_id, injector);
+}
+
+/// Remove every per-Worker injector registered for `webview_id` (both drain
+/// phases). The embedder calls this when the page closes so a closed page's
+/// injectors do not linger in the registries.
+pub fn unregister_worker_injectors(webview_id: WebViewId) {
+    script::unregister_worker_injectors(webview_id);
+}
+
+/// The per-Worker injector type behind
+/// [`register_worker_scope_injector`] /
+/// [`register_worker_interfaces_ready_injector`]: a shared closure receiving
+/// `(cx: *mut c_void, global: *mut c_void)` on each Worker thread of the
+/// webview it is registered for.
+pub use script::EmbedderWorkerInjector;
+
 /// Set anti-fingerprinting TLS/HTTP2 configuration for servo's network layer
 /// (Bao vendor patch, REQ-STL-001: browser-level JA3/JA4 anti-fingerprinting).
 ///

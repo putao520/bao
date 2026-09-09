@@ -724,6 +724,27 @@ impl WorkerGlobalScope {
                             );
                         }
                     }
+                    // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                    // patch): per-Worker injector delivery at the second
+                    // drain point — NON-consuming, so EVERY Dedicated Worker
+                    // of this webview gets the post-interfaces install (the
+                    // one-shot drain above only covers the first Worker).
+                    // `WorkerGlobalScope::on_complete` is not reached by the
+                    // ServiceWorker path (SW has its own define + drain in
+                    // serviceworkerglobalscope.rs), so S-family semantics are
+                    // untouched.
+                    for injector in crate::event_loop::script_thread::worker_interfaces_ready_injectors(
+                        webview_id,
+                    ) {
+                        unsafe {
+                            injector(
+                                cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                                script_bindings::reflector::DomObject::reflector(global_scope)
+                                    .get_jsobject()
+                                    .get() as *mut std::ffi::c_void,
+                            );
+                        }
+                    }
                 }
             }
             // Step 9. Set inside settings's execution ready flag.

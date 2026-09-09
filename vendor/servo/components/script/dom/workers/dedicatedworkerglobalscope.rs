@@ -613,6 +613,26 @@ impl DedicatedWorkerGlobalScope {
                         );
                     }
                 }
+                // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                // patch): per-Worker injector delivery — the one-shot drain
+                // above is consumed by the FIRST Worker of this webview, so
+                // without this loop the SECOND and later `new Worker()` in
+                // the same page received zero embedder injection (bare,
+                // fingerprintable Worker). The injector tier is
+                // NON-consuming: every Dedicated Worker scope this webview
+                // creates receives a delivery. Runs after the one-shot
+                // callbacks; the embedder's install is idempotent, so the
+                // first Worker's double run (one-shot + injector) is safe.
+                for injector in
+                    crate::event_loop::script_thread::worker_scope_injectors(webview_id)
+                {
+                    unsafe {
+                        injector(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope).get_jsobject().get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
 
                 // Step 12. Obtain script by switching on options["type"]:
                 {

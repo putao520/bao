@@ -1594,6 +1594,63 @@ pub fn register_worker_scope_callback_native(
     servo::register_worker_scope_callback(webview_id, callback);
 }
 
+/// Register a PER-WORKER stealth injector via the vendor patch
+/// `servo::register_worker_scope_injector` (REQ-BRW-004, user ruling
+/// 2026-09-09 vendor patch).
+///
+/// Delivery semantics (the e43 multi-worker gap fix): the one-shot callback
+/// registered by `register_worker_scope_callback_native` is consume-once —
+/// the FIRST Worker scope of the webview drains it and every SECOND and
+/// later page-JS `new Worker()` ran with ZERO bao injection (engine getters
+/// and JS hooks all absent — a fingerprintable bare Worker, hidden until the
+/// second drain point made multi-worker pages observable). This injector
+/// tier is NON-consuming: EVERY Dedicated Worker scope the webview creates
+/// receives the same `worker_scope_init_native` install at the first drain
+/// point (after the one-shot callbacks). Worker #1 runs both paths; the
+/// install is idempotent (define_permanent_getter "prior install" arm), so
+/// the double run is safe.
+///
+/// Registered at page init (see `PagePool::create_page`) with the PAGE's
+/// profile; per-worker slot-backfill stays on the one-shot tier
+/// (`create_worker_with_url`), which remains consume-once.
+///
+/// @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK per-Worker delivery
+/// @trace DEC-WK-001 servo-native Worker path (vendor patch)
+pub fn register_worker_scope_injector_native(
+    webview_id: servo::WebViewId,
+    profile: Option<bao_stealth::StealthProfile>,
+) {
+    let config = match profile.as_ref() {
+        Some(p) => crate::delegate::WorkerScopeConfig::from(p),
+        None => crate::delegate::WorkerScopeConfig::default(),
+    };
+
+    let injector: servo::EmbedderWorkerInjector = std::sync::Arc::new(move |cx_ptr, global_ptr| {
+        // SAFETY: Called on each Worker thread with that Worker's valid
+        // JSContext + global. Per BCE-20260621-001 this is the owning thread,
+        // so dereferencing the raw pointers is safe.
+        let raw_cx = cx_ptr as *mut mozjs::jsapi::JSContext;
+        let raw_global = global_ptr as *mut mozjs::jsapi::JSObject;
+        if raw_cx.is_null() || raw_global.is_null() {
+            log::warn!(
+                "[register_worker_scope_injector_native] NULL cx/global — \
+                 skipping Worker scope init (REQ-BRW-004 per-Worker delivery)"
+            );
+            return;
+        }
+        log::debug!(
+            "[register_worker_scope_injector_native] per-Worker stealth \
+             install (REQ-BRW-004: every Worker of this webview inherits)"
+        );
+        unsafe {
+            worker_scope_init_native(raw_cx, raw_global, &config);
+        }
+    });
+
+    // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK per-Worker delivery
+    servo::register_worker_scope_injector(webview_id, injector);
+}
+
 // ─── Worker Scope Initialization Bridge (REQ-BRW-004) ──────────────
 // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
 // @trace REQ-BRW-004 [entity:Worker] [criterion:12..17]

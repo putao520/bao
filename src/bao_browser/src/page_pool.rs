@@ -96,17 +96,46 @@ impl PagePool {
         // .claude/prompts/brw004-getparameter-evidence.md).
         crate::runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
 
-        // Second-phase worker stealth registration (REQ-BRW-004 C15, user
-        // ruling 2026-09-09 vendor patch): the worker-scope callback registered
-        // just above (inside inject_all_with_profile) is drained BEFORE the
-        // worker global's WebIDL interfaces exist, so bao_stealth's W1a-guarded
-        // JS prototype hooks were silently skipped there. This second callback
-        // is drained after define_all_exposed_interfaces (vendor
-        // workerglobalscope.rs) and re-runs the idempotent install, landing the
-        // audio/webgl JS hooks in every page-script-created Worker.
-        // @trace REQ-BRW-004 [criterion:15] worker JS-hook second drain
+        // PER-WORKER delivery tier (REQ-BRW-004, user ruling 2026-09-09
+        // vendor patch — e43 multi-worker gap): the worker-scope callback
+        // registered just above (inside inject_all_with_profile) is
+        // consume-once, so the FIRST Worker of this page drained it and every
+        // 2nd+ page-JS `new Worker()` ran with ZERO stealth injection (engine
+        // getters + JS hooks all absent — a bare fingerprintable Worker).
+        // These injectors are NON-consuming: EVERY Dedicated Worker this page
+        // creates receives both phases (scope init at the first drain point +
+        // post-interfaces JS-hook install at the second).
+        //
+        // Second-drain note (C15 history): the OLD page-init one-shot
+        // registration for the second drain point (interfaces-ready callback)
+        // is RETIRED by this tier — with both registered, Worker #1 ran the
+        // JS hooks blob TWICE at the second point (one-shot + injector), and
+        // the audio getChannelData wrapper has no property-slot idempotency
+        // guard (unlike getParameter's e36 __originalGetParameter__ gate), so
+        // the double wrap applied the deterministic noise twice and broke
+        // cross-realm digest equality (c15_worker_window_cross_realm_noise_
+        // consistency). The injector alone gives EVERY worker exactly one
+        // blob run; SW never drains the interfaces-ready queue (its own path
+        // only drains the scope registry), so nothing else consumed the
+        // retired one-shot.
+        //
+        // The FIRST-point double run (scope one-shot + scope injector, both
+        // before interfaces exist) stays safe: the JS blob's typeof guards
+        // skip everything pre-interfaces and the engine layer is idempotent
+        // (define_permanent_getter "prior install" arm / e36 gate) — verified
+        // by worker_multi_injection_tests (ua exact-match + permgetter=1 +
+        // orignative=1). The scope one-shot itself is kept: a page's
+        // ServiceWorker consumes it (S1 f77faf8b), and that drain is
+        // S-family domain — untouched here.
+        //
+        // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK per-Worker
+        // @trace REQ-BRW-004 [criterion:15] worker JS-hook per-Worker delivery
         if let Some(webview_id) = page.webview_id() {
-            crate::register_worker_interfaces_ready_callback_native(
+            crate::runtime_bridge::register_worker_scope_injector_native(
+                webview_id,
+                config.stealth_profile.clone(),
+            );
+            crate::register_worker_interfaces_ready_injector_native(
                 webview_id,
                 config.stealth_profile.clone(),
             );

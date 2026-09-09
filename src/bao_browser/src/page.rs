@@ -1323,6 +1323,13 @@ impl PageHandle {
                 let cur_pg = crate::runtime_bridge::get_page_global(wid);
                 let cur_ng = crate::runtime_bridge::get_node_realm_global(wid);
                 crate::runtime_bridge::remove_node_realm_by_id(wid);
+                // Per-Worker stealth injectors are NON-consuming (delivered
+                // to every Worker this webview creates, REQ-BRW-004 user
+                // ruling 2026-09-09 vendor patch), so unlike the consume-once
+                // callbacks they must be explicitly removed at page close —
+                // otherwise a closed page's injector (carrying its stealth
+                // profile clone) lingers in the vendor registry forever.
+                servo::unregister_worker_injectors(wid);
                 if !cur_pg.is_null() {
                     pg = cur_pg;
                 }

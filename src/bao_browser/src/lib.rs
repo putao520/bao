@@ -433,14 +433,17 @@ impl BaoRuntime {
             scope_config.stealth_profile.clone(),
             Some(handle.worker_global_addr_arc()),
         );
-        // Second-phase registration (REQ-BRW-004 C15): same coverage as the
-        // callback above, drained after the worker's interfaces are defined so
-        // the W1a JS prototype hooks actually land.
-        // @trace REQ-BRW-004 [criterion:15] worker JS-hook second drain
-        register_worker_interfaces_ready_callback_native(
-            webview_id,
-            scope_config.stealth_profile.clone(),
-        );
+        // Second-phase per-worker registration RETIRED (REQ-BRW-004, e43
+        // multi-worker gap fix): the page-init per-Worker interfaces-ready
+        // INJECTOR (registered in PagePool::create_page, non-consuming) now
+        // covers EVERY Worker of this page at the same post-interfaces drain
+        // point — including this bao-created one. Keeping BOTH made the first
+        // Worker run the W1a JS hooks blob twice at that point, and the audio
+        // getChannelData wrapper (closure-based, no property-slot idempotency
+        // guard) double-applied the deterministic noise, breaking cross-realm
+        // digest equality. The scope callback above (slot backfill) stays
+        // consume-once.
+        // @trace REQ-BRW-004 [criterion:15] worker JS-hook per-Worker delivery
 
         // Create channel bridge (DF-WK-4/5). Even though servo owns the Worker
         // thread, bao still tracks the bidirectional structured-clone traffic
@@ -599,77 +602,69 @@ impl Drop for BaoRuntime {
     }
 }
 
-/// Register the second-phase (interfaces-ready) worker stealth callback
-/// (REQ-BRW-004 C15, user ruling 2026-09-09 vendor patch).
+/// RETIRED (REQ-BRW-004, e43 multi-worker gap fix): the consume-once
+/// interfaces-ready callback registration that used to live here was replaced
+/// by the PER-WORKER injector below (`register_worker_interfaces_ready_
+/// injector_native`, registered once at page init and delivered to EVERY
+/// Dedicated Worker of the page). Keeping both made the first Worker run the
+/// W1a JS hooks blob twice at the second drain point — the audio
+/// getChannelData wrapper is closure-based with no property-slot idempotency
+/// guard (unlike getParameter's e36 __originalGetParameter__ gate), so the
+/// double wrap double-applied the deterministic noise and broke cross-realm
+/// digest equality (c15_worker_window_cross_realm_noise_consistency). The
+/// vendor one-shot queue (`servo::register_worker_interfaces_ready_callback`)
+/// remains for any future one-shot consumer; bao no longer registers one.
 ///
-/// The FIRST worker-scope callback (`register_worker_scope_callback_native`)
-/// is drained inside `DedicatedWorkerGlobalScope::run_worker_scope` — BEFORE
-/// the worker global's WebIDL interface constructors exist (they are defined
-/// later, in `WorkerGlobalScope::run_worker_script`'s
-/// `define_all_exposed_interfaces`). bao_stealth's JS prototype hooks use W1a
-/// `typeof` guards, so at the first drain they saw every interface as
-/// `undefined` and installed nothing; engine-layer getters, which do not
-/// depend on interfaces, did install (live-verified: the worker realm had
-/// the profile's Firefox UA getters while audio/webgl JS hooks were absent).
+/// Register the second-phase (interfaces-ready) injector with PER-WORKER
+/// delivery (REQ-BRW-004, user ruling 2026-09-09 vendor patch).
 ///
-/// This callback is drained at the vendor patch's SECOND point — right after
-/// `define_all_exposed_interfaces` — and re-runs the SAME idempotent install:
-/// `set_profile_for_global` (map-keyed re-assert of the same profile) +
-/// `install_stealth_props`. Idempotency basis (must hold for the re-run):
-/// engine_props' `define_permanent_getter` documents the "prior
-/// install_stealth_props call" arm — a delete+define on an already-PERMANENT
-/// getter fails safely with the pending exception cleared — so this pass
-/// only lands the previously skipped JS prototype hooks (the whole W1a
-/// guarded-hook family: audio getChannelData/startRendering, webgl
-/// getParameter/getSupportedExtensions).
+/// Same install as [`register_worker_interfaces_ready_callback_native`]
+/// (re-run of the idempotent `set_profile_for_global` +
+/// `install_stealth_props`), but delivered to EVERY Dedicated Worker of the
+/// webview instead of only the first one that drains the consume-once queue
+/// (e43 multi-worker gap: the 2nd+ page-JS `new Worker()` previously got
+/// neither the engine getters nor any W1a JS hook — a bare fingerprintable
+/// Worker). Never consumed; upserted per webview at page init.
 ///
-/// Registered at exactly the two sites that register the first callback
-/// (page-init in `PagePool::create_page` after `inject_all_with_profile`,
-/// and per-worker in `create_worker_with_url`), so its coverage mirrors the
-/// first drain's coverage. Profile-gated like every stealth install
-/// (stealth_profile: None ⇒ no stealth chain at all, e36 semantics).
-fn register_worker_interfaces_ready_callback_native(
+/// @trace REQ-BRW-004 [criterion:15] worker JS-hook per-Worker delivery
+fn register_worker_interfaces_ready_injector_native(
     webview_id: servo::WebViewId,
     profile: Option<bao_stealth::StealthProfile>,
 ) {
-    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
-        Box::new(move |cx_ptr, global_ptr| {
-            let raw_cx = cx_ptr as *mut mozjs::jsapi::JSContext;
-            let raw_global = global_ptr as *mut mozjs::jsapi::JSObject;
-            if raw_cx.is_null() || raw_global.is_null() {
-                log::warn!(
-                    "[register_worker_interfaces_ready_callback_native] NULL cx/global — \
-                     skipping interfaces-ready install (REQ-BRW-004 C15)"
-                );
-                return;
-            }
-            let Some(ref profile) = profile else {
-                return;
-            };
-            unsafe {
-                // Realm entry mirrors worker_scope_init_native (runtime_bridge):
-                // the worker thread's cx starts in the NULL realm, and any JSAPI
-                // that atomizes dereferences a NULL zone and SIGSEGVs without
-                // this. AutoRealm roots the global and restores the NULL
-                // starting realm on drop (leaveRealm is null-safe).
-                use mozjs::context::JSContext;
-                use mozjs::realm::AutoRealm;
-                use std::ptr::NonNull;
-                let cx_nn = NonNull::new_unchecked(raw_cx);
-                let mut cx = JSContext::from_ptr(cx_nn);
-                let _worker_realm = AutoRealm::new(&mut cx, NonNull::new_unchecked(raw_global));
+    let injector: servo::EmbedderWorkerInjector = std::sync::Arc::new(move |cx_ptr, global_ptr| {
+        let raw_cx = cx_ptr as *mut mozjs::jsapi::JSContext;
+        let raw_global = global_ptr as *mut mozjs::jsapi::JSObject;
+        if raw_cx.is_null() || raw_global.is_null() {
+            log::warn!(
+                "[register_worker_interfaces_ready_injector_native] NULL cx/global — \
+                 skipping interfaces-ready install (REQ-BRW-004 per-Worker delivery)"
+            );
+            return;
+        }
+        let Some(ref profile) = profile else {
+            return;
+        };
+        unsafe {
+            // Realm entry mirrors worker_scope_init_native (runtime_bridge):
+            // the worker thread's cx starts in the NULL realm, and any JSAPI
+            // that atomizes dereferences a NULL zone and SIGSEGVs without
+            // this. AutoRealm roots the global and restores the NULL
+            // starting realm on drop (leaveRealm is null-safe).
+            use mozjs::context::JSContext;
+            use mozjs::realm::AutoRealm;
+            use std::ptr::NonNull;
+            let cx_nn = NonNull::new_unchecked(raw_cx);
+            let mut cx = JSContext::from_ptr(cx_nn);
+            let _worker_realm = AutoRealm::new(&mut cx, NonNull::new_unchecked(raw_global));
 
-                bao_stealth::engine_props::set_profile_for_global(raw_global as usize, profile);
-                bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
-                // E22 audit defect A guard (same as the first drain): do NOT
-                // re-seed the servo rendering-layer canvas noise here — this
-                // runs on the Worker thread where the canvas_seed() thread-local
-                // holds defaults; the rendering-layer noise stays owned by the
-                // page install path. Realm-scoped noise is delivered via
-                // set_profile_for_global above.
-            }
-        });
-    servo::register_worker_interfaces_ready_callback(webview_id, callback);
+            bao_stealth::engine_props::set_profile_for_global(raw_global as usize, profile);
+            bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
+            // E22 audit defect A guard (same as the one-shot drain): do NOT
+            // re-seed the servo rendering-layer canvas noise here — realm-
+            // scoped noise is delivered via set_profile_for_global above.
+        }
+    });
+    servo::register_worker_interfaces_ready_injector(webview_id, injector);
 }
 
 pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
