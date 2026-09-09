@@ -270,6 +270,11 @@ pub(crate) enum ScriptEventLoopReceiver {
     MainThread(Receiver<MainThreadScriptMsg>),
     /// A receiver that receives messages to shared worker event loops.
     SharedWorker(Receiver<SharedWorkerScriptMsg>),
+    // BAO PATCH (REQ-BRW-004 C19): ServiceWorker arm so that
+    // `WorkerGlobalScope::new_script_pair` can serve the SW event loop
+    // (upstream left the third arm as a `panic!` TODO in workerglobalscope.rs).
+    /// A receiver that receives messages to a `ServiceWorker` event loop.
+    ServiceWorker(Receiver<ServiceWorkerScriptMsg>),
     /// A receiver that receives messages to dedicated workers (such as a generic Web Worker) event loop.
     DedicatedWorker(Receiver<DedicatedWorkerScriptMsg>),
 }
@@ -287,6 +292,15 @@ impl ScriptEventLoopReceiver {
                     Ok(message)
                 },
                 Ok(_) => panic!("unexpected shared worker event message!"),
+                Err(_) => Err(()),
+            },
+            // BAO PATCH (REQ-BRW-004 C19): mirror of the SharedWorker arm —
+            // the sync-XHR consumer drains this receiver on the SW thread itself.
+            Self::ServiceWorker(receiver) => match receiver.recv() {
+                Ok(ServiceWorkerScriptMsg::CommonWorker(WorkerScriptMsg::Common(message))) => {
+                    Ok(message)
+                },
+                Ok(_) => panic!("unexpected service worker event message!"),
                 Err(_) => Err(()),
             },
             Self::DedicatedWorker(receiver) => match receiver.recv() {

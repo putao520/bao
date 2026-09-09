@@ -233,7 +233,7 @@ make bce-check
 
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
-#### servo 定制文件清单(23 个条目,上游同步时逐个重放)
+#### servo 定制文件清单(24 个条目,上游同步时逐个重放)
 
 上游同步 servo 时,先 `grep -rln "BCE-\|BAO " vendor/servo/components/` 重建清单,再按"upstream 基底 + patch 精确重放"迁移(patch 锚点与完整记录见 git log 各 stage commit message):
 
@@ -243,9 +243,10 @@ make bce-check
 | `script/engine/handle.rs`(2026-08-23 上游 b54baa327 移动后新家)| **Bao 补丁版 JSEngineSetup**:`JSEngineSetup(Option<JSEngine>)` 幂等 init(Ok→存 handle;AlreadyInitialized→`JSEngine::process_handle()` 优先 + JS_ENGINE spin 回退 50×1ms;AlreadyShutDown→None;其他 Err→panic)+ Drop engine-leak(`mem::forget`,不清 JS_ENGINE,多 BaoRuntime 生命周期)。上游版 handle.rs 是裸 `JSEngineSetup(JSEngine)`,重放禁用上游版 |
 | `script/lib.rs` | 26-28 行:`pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};`(Bao embedder 回调 re-export,上游同步合并时必保) |
 | `script/dom/workers/dedicatedworkerglobalscope.rs` | worker-scope 回调 drain(2026-09-09 起按 `webview_id` per-worker 键控,6b3caa34 跨页串扰根治)+ clear_js_runtime 前 realm flush(UAF 防护) |
-| `script/dom/serviceworker/serviceworkerglobalscope.rs` | ServiceWorkerGlobalScope 接 WebViewId-keyed `drain_worker_scope_callbacks`(SW scope 的 stealth 注入点,REQ-BRW-004 C19 S1,f77faf8b)<br>Response(mediator) 分支重写为 `FetchEvent::handle_mediator` 真 FetchEvent 管线(替代上游裸 Event TODO)+ `onfetch` event_handler(REQ-BRW-004 C19 S2a,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/serviceworker/serviceworkerglobalscope.rs` | ServiceWorkerGlobalScope 接 WebViewId-keyed `drain_worker_scope_callbacks`(SW scope 的 stealth 注入点,REQ-BRW-004 C19 S1,f77faf8b)<br>Response(mediator) 分支重写为 `FetchEvent::handle_mediator` 真 FetchEvent 管线(替代上游裸 Event TODO)+ `onfetch` event_handler(REQ-BRW-004 C19 S2a,用户裁决 2026-09-09 vendor patch)<br>`new_script_pair()`(镜像 SharedWorker 形态,`unbounded()` 新通道)——SW realm 同步 DOM API 通道载体(REQ-BRW-004 C19,用户裁决 2026-09-09 vendor patch) |
 | `script/dom/serviceworker/fetchevent.rs`(新增,上游无此文件)+ `script_bindings/webidls/FetchEvent.webidl`(新增)| FetchEvent DOM 类型(request/respondWith/waitUntil 全实现;respondWith 单次 InvalidStateError 门);`handle_mediator`:构造 Request → dispatch 受信 fetch 事件 → PromiseNativeHandler 在 SW 事件循环异步 settle → 读 status/headers/body → `CustomResponse::new` → `response_chan.send(Some)`,未调用/rejected/非 Response → pass-through `None`(dom/serviceworker/mod.rs 注册 + ServiceWorkerGlobalScope.webidl `onfetch` 解注释,REQ-BRW-004 C19 S2a,用户裁决 2026-09-09 vendor patch) |
-| `script/dom/workers/workerglobalscope.rs` | 存 `init.webgl_chan`(原 new_inherited 丢弃)+ accessor——worker 继承父 Window 的 WebGL 通道,OffscreenCanvas WebGL1 worker 通路载体(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/workers/workerglobalscope.rs` | 存 `init.webgl_chan`(原 new_inherited 丢弃)+ accessor——worker 继承父 Window 的 WebGL 通道,OffscreenCanvas WebGL1 worker 通路载体(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch)<br>`new_script_pair` 补第三臂 `downcast::<ServiceWorkerGlobalScope>()`(上游 `panic!` TODO,SW 线程同步 XHR 即死),尾 else 改 `unreachable!`(REQ-BRW-004 C19,用户裁决 2026-09-09 vendor patch) |
+| `script/messaging.rs` | `ScriptEventLoopReceiver` 补 `ServiceWorker(Receiver<ServiceWorkerScriptMsg>)` 变体 + `recv()` 臂(镜像 SharedWorker 臂;sender 侧 `ScriptEventLoopSender::ServiceWorker` 上游已有),使 SW realm 同步 DOM API(sync XHR)的 new_script_pair 通道闭合(REQ-BRW-004 C19,用户裁决 2026-09-09 vendor patch) |
 | `script/dom/webgl/webglrenderingcontext.rs` | `new_inherited` 解 Window 锚定(收 `&GlobalScope`,`webgl_chan_from_global` helper 按 Window/WorkerGlobalScope 分派 + `new_in_worker` 入口);`mark_as_dirty` 的 XR 检查 Window 降级(原 `as_window()` 对 worker 首次 draw 即 panic);`GetShaderPrecisionFormat` 反射锚 `as_window()` → 所在 global(原 worker 侧 panic)(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch) |
 | `script/dom/webgl/webgl2renderingcontext.rs` | `new_inherited` 解 Window 锚定(收 `&GlobalScope`,base 创建按 Window/Worker 分派)+ `new_in_worker` worker-realm 入口(W3a 同形态,REQ-BRW-004 C14 W3b,用户裁决 2026-09-09 vendor patch) |
 | `script/dom/webgl/webglshaderprecisionformat.rs` | `new` 收 `&GlobalScope`(原 `&Window`)——worker 侧 getShaderPrecisionFormat 反射载体(W3b 连带) |
