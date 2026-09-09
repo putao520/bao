@@ -257,6 +257,27 @@ pub fn set_network_event_tap(tap: Option<BaoNetworkTap>) {
     net::http_loader::set_network_event_tap(tap);
 }
 
+/// Webview-less `WebResourceRequested` local-verdict types + installer
+/// (Bao vendor patch, BCE-20260910-002).
+///
+/// Upstream servo answers every `WebResourceRequested` round-trip from a
+/// resident embedder main loop (`Servo::spin_event_loop`). Bao's embedder
+/// is a lazy pump (PageHandle interaction APIs) and `Servo` is !Send, so a
+/// fetch with `target_webview_id == None` (SW/worker realms) could park in
+/// the interceptor's embedder wait forever while the owning page sat idle.
+/// The embedder (bao_browser, at `BaoRuntime::new`) installs one
+/// process-wide handler that the net request interceptor consults locally
+/// for those requests. With no handler installed, the upstream embedder
+/// round-trip is preserved unchanged; webview-owned requests always keep
+/// the full round-trip.
+pub use net::request_interceptor::{
+    BaoWebviewlessResourceHandler, BaoWebviewlessResourceVerdict,
+};
+
+pub fn set_webviewless_resource_handler(handler: Option<BaoWebviewlessResourceHandler>) {
+    net::request_interceptor::set_webviewless_resource_handler(handler);
+}
+
 /// Set anti-fingerprinting canvas noise seed and amplitude (REQ-STL-003).
 /// The noise is applied at the servo rendering layer, undetectable from JS.
 pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {

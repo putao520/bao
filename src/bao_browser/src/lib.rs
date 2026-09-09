@@ -281,6 +281,29 @@ impl BaoRuntime {
             })
         });
 
+        // BCE-20260910-002 (embedder pump gap — webview-less fetch): SW/worker
+        // realms carry no webview, so their fetches round-trip
+        // `WebResourceRequested(target_webview_id=None)` through the
+        // net→embedder channel, which ONLY `Servo::spin_event_loop` drains —
+        // and bao pumps that solely from PageHandle interaction APIs. With the
+        // owning page idle (no evaluate/screenshot in flight), the round-trip
+        // was never answered and the SW's fetch parked forever (the
+        // fetchevent 25s stall). A resident pump thread is structurally
+        // impossible: `Servo(Rc<ServoInner>)` is !Send/!Sync (RefCell/Rc
+        // state), so only the creating thread may spin — and that thread can
+        // be asleep in user code no bao hook can reach. Instead the net
+        // interceptor consults this process-global handler for webview-less
+        // requests; `PassThrough` is byte-equivalent to what the embedder
+        // path produces for bao today (BaoServoDelegate inherits the no-op
+        // `ServoDelegate::load_web_resource` → `WebResourceLoad` drop →
+        // default DoNotIntercept). Webview-owned requests keep the full
+        // embedder round-trip (CDP/stealth mediation unchanged). If bao ever
+        // overrides `load_web_resource` for webview-less loads, that logic
+        // belongs in this handler.
+        servo::set_webviewless_resource_handler(Some(Arc::new(
+            |_request| servo::BaoWebviewlessResourceVerdict::PassThrough,
+        )));
+
         let page_pool = Rc::new(PagePool::new(
             Rc::clone(&servo),
             Rc::clone(&delegate),

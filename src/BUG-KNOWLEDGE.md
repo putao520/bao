@@ -2045,7 +2045,7 @@ confirmReport:
 
 ---
 
-## BCE-20260910-002 — e44「tokio 注入队列饿死」证伪 + 真根因:无 webview fetch 的 embedder 往返无人泵(修复待派发)
+## BCE-20260910-002 — e44「tokio 注入队列饿死」证伪 + 真根因:无 webview fetch 的 embedder 往返无人泵(已根治 2026-09-10)
 
 ### patternId / title
 `BCE-20260910-002` · e44(fe6298e1)升级的「tokio spawn 后注入队列零 poll 22s 饿死/bun HTTPThread 忙转互作」归因**错误**。真根因:SW/worker 发起的 fetch(`target_webview_id=None`)在 `main_fetch` 的 request interceptor 里向 embedder 发 `WebResourceRequested` 后**阻塞等 embedder 回答**,而 net→embedder 通道只有 `Servo::spin_event_loop`(servo.rs:259 selector)会 drain,bao 只在页面交互 API(evaluate/screenshot 等)里泵它——页面空闲时无人泵 → 拦截消息永不被处理 → `WebResourceLoad` 不构造不 drop → `IpcResponder` 的默认 `DoNotIntercept` 永不发送 → interceptor 的 tokio mpsc `receiver.recv()` 永久挂起 → SW 的 sync XHR 永久挂起 → 测试超时 panic → teardown drop 通道 → recv 返回 None → fetch 在毫秒级走完(e44 观察到的「风暴后才首 poll、毫秒完成」其实是通道 drop 唤醒,不是 tokio 被搅醒)。
@@ -2064,27 +2064,36 @@ confirmReport:
 ### 同类判定标准(sameClassCriterion)
 bao 嵌入态下,任何 `target_webview_id=None` 的 fetch(SW/SharedWorker/无页面上下文发起)在页面空闲(无 PageHandle API 调用)期间发起 → 必卡在 interceptor 等 embedder 应答;页面有交互泵则不卡。同族:e39/e40(09cabe17)的 page-realm fetch settlement——同属「servo 侧等待 embedder 侧动作,而 bao 的 embedder 循环无人泵」类。
 
-### 根治(待派发 — 本工单 scope 外,修复位置已锁定)
-按 09cabe17 的 pump-bridge 模式扩展到 embedder 循环(候选,主会话裁定):
-- A. bao_browser 嵌入层(runtime_bridge/BaoRuntime 域)起常驻 embedder 泵(专用线程或 waker 驱动 `Servo::spin_event_loop`)——架构正解,匹配上游「embedder 主循环持续 spin」契约;
-- B. 窄修:拦截器路径对 `webview_id=None` 直接短路(不经 embedder)——改上游 request_interceptor 语义,需 vendor patch 论证;
-- C. 最小:SW sync-XHR 嵌套泵(xmlhttprequest.rs,fe6298e1 域)同时泵 embedder 循环——治标。
-推荐 A(契约级)。**禁碰域注意**: runtime_bridge(d2db4c55)/xmlhttprequest-serviceworker(fe6298e1)/bao_cdp(e52)均为在途工单域,重派发时需错峰。
+### 根治(已落地 2026-09-10 — 方案 A 实证不可行,方案 B 落地)
+**方案 A(常驻 embedder 泵)双变体均实证不可行**:
+- 专用线程变体:`Servo(Rc<ServoInner>)`(servo.rs:891)`!Send + !Sync`(`delegate: RefCell<Rc<dyn ServoDelegate>>`、`paint: Rc<RefCell<Paint>>`、`webviews: RefCell<...>`),编译层禁止跨线程持有,unsafe 共享 = RefCell borrow flag 数据竞争 UB——只有创建线程能 `spin_event_loop`,常驻泵线程结构性不存在。
+- waker 驱动变体:`EventLoopWaker::wake()` 在**发送线程**(fetch 线程)触发,而 Servo 所属线程可睡眠在**用户/测试代码**里(fetchevent 的 `wait_for` = `std::thread::sleep(200ms)` 轮询 fixture Vec,bao 栈上无任何可唤醒代码点);覆盖全部 embedder 阻塞习语 = 重构 page.rs 全部泵循环 + 用户可见 API 契约,非最小差分。
+
+**方案 B 落地(webview-less 拦截器本地裁决,pump-bridge 模式延伸)**:
+- `vendor/servo/components/net/request_interceptor.rs`:`intercept_request` 对 `target_webview_id.is_none()` 的请求先查进程级 `BAO_WEBVIEWLESS_RESOURCE_HANDLER`(parking_lot RwLock 全局 setter——同 http_loader C19-② network tap 模式);handler 裁决 `PassThrough` → 直接 `return`(无 embedder 往返),与 bao 继承的 no-op `ServoDelegate::load_web_resource` → `WebResourceLoad` drop → `IpcResponder` 默认 `DoNotIntercept`(webview_delegate.rs:252-258)**字节等价**;无 handler 安装(纯 servo embedder)→ 上游 embedder 往返原样保留。
+- `vendor/servo/components/servo/lib.rs`(在册 patch 文件):`pub use net::request_interceptor::{BaoWebviewlessResourceHandler, BaoWebviewlessResourceVerdict}` + `set_webviewless_resource_handler`(镜像 `set_network_event_tap` 暴露面)。
+- `src/bao_browser/src/lib.rs`:`BaoRuntime::new` 在既有 pump-bridge 注册旁安装 handler(现恒 `PassThrough`);未来 bao 若为 webview-less 请求覆写 `load_web_resource`,逻辑归属此 handler。
+- **页面拦截语义无冲突论证**:webview 持有请求(`Some(webview_id)`)恒走完整 embedder 往返(CDP/stealth mediation 不变);`None` 请求在 bao 当前 delegate 现状下往返可证明退化为立即 DoNotIntercept,本地 PassThrough 产出同一裁决,唯一差分 = 移除对 embedder 泵的依赖。
 
 ### 全量确认报告
 ```yaml
 confirmReport:
   patternId: BCE-20260910-002
-  sweepScope: "只读取证,零代码改动(probe 全部已回退)"
+  sweepScope: "net request_interceptor(vendor)+ servo/lib.rs 暴露面 + bao_browser BaoRuntime::new 安装;webview 持有请求路径零触碰"
   instancesFound: 1              # 无 webview fetch + 空闲页面 embedder 泵缺口
-  instancesFixed: 0              # 修复在禁碰域,升级主会话重派发
-  residual: 1
-  residualEvidence:
-    - "serviceworker_fetchevent 仍 FAIL(25.4s 超时,SW-realm verdict 本身全绿,仅 publish 通道被卡)"
-    - "canary/probe 链实证:卡点=interceptor,非 tokio、非 bun_threading/bun_http、非 async_runtime"
-  releaseGateImpact: block(fetchevent 3/3 绿是 REQ-BRW-004 C19 验收项,修复依赖本条派发)
+  instancesFixed: 1
+  residual: 0
+  residualEvidence: []
+  releaseGateImpact: clear
+  verification:
+    - "serviceworker_fetchevent_tests::c19_sw_realm_exposes_fetchevent_pipeline_live: PASS 0.58s(修复前 25.4s 超时 FAIL;probe verdict 完整到达)"
+    - "C19 三 subclause 全绿:sw_stealth_profile c19_sub1(1.58s)/c19_sub2 CDP Network 可观测(12.3s)/c19_sub3 跨页继承+terminate 注销(2.04s)"
+    - "红线零回归:serviceworker_mediation c19_sw_mediates / serviceworker_controller / fetch_axis 7 探针 — SW 家族 18/18 PASS"
+    - "realworld_anti_scraping(test-ci profile):PASS 29.4s"
+    - "cargo build -p bao-servo -p bao-browser -j4:EXIT 0(仅既有 warning)"
 ```
 
 ### 防复发(阶段6)
-- 修复落地时:新增「页面空闲 + SW fetch egress」回归用例(fetchevent 即载体,转绿即闭环);
+- 回归锚:`serviceworker_fetchevent_tests`(页面零交互窗口内 SW fetch publish 必 settle——本条转绿即闭环)+ SW 家族红线(mediation/controller/sw_stealth_profile 3 subclause/fetch_axis)。
 - 归因纪律沉淀:动到「tokio 饿死」结论前先做 canary spawn 同队列实验——同队列任务被 poll 即证伪调度器归因。
+- 嵌入态结构性边界沉淀:凡是「servo 侧等待 embedder 侧动作」的往返(net→embedder 通道、ScriptThread MiniEventLoop、worker scope 回调),必须先问「 bao 的惰性泵模型下谁在 drain」;`Servo(Rc<ServoInner>)` !Send 决定了任何「常驻线程泵 servo」方案都不可行,正解是 09cabe17/本条的全局回调 bridge 模式(在等待点本地裁决)。
