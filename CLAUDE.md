@@ -233,7 +233,7 @@ make bce-check
 
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
-#### servo 定制文件清单(14 个,上游同步时逐个重放)
+#### servo 定制文件清单(17 个,上游同步时逐个重放)
 
 上游同步 servo 时,先 `grep -rln "BCE-\|BAO " vendor/servo/components/` 重建清单,再按"upstream 基底 + patch 精确重放"迁移(patch 锚点与完整记录见 git log 各 stage commit message):
 
@@ -244,6 +244,9 @@ make bce-check
 | `script/lib.rs` | 26-28 行:`pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};`(Bao embedder 回调 re-export,上游同步合并时必保) |
 | `script/dom/workers/dedicatedworkerglobalscope.rs` | worker-scope 回调 drain(2026-09-09 起按 `webview_id` per-worker 键控,6b3caa34 跨页串扰根治)+ clear_js_runtime 前 realm flush(UAF 防护) |
 | `script/dom/serviceworker/serviceworkerglobalscope.rs` | ServiceWorkerGlobalScope 接 WebViewId-keyed `drain_worker_scope_callbacks`(SW scope 的 stealth 注入点,REQ-BRW-004 C19 S1,f77faf8b) |
+| `script/dom/workers/workerglobalscope.rs` | 存 `init.webgl_chan`(原 new_inherited 丢弃)+ accessor——worker 继承父 Window 的 WebGL 通道,OffscreenCanvas WebGL1 worker 通路载体(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/webgl/webglrenderingcontext.rs` | `new_inherited` 解 Window 锚定(收 `&GlobalScope`,`webgl_chan_from_global` helper 按 Window/WorkerGlobalScope 分派 + `new_in_worker` 入口);`mark_as_dirty` 的 XR 检查 Window 降级(原 `as_window()` 对 worker 首次 draw 即 panic)(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/canvas/offscreencanvas.rs` | `get_or_init_webgl_context` 按 global 类型分派(Window 旧路 fire `webglcontextcreationerror` / Worker 新路 `new_in_worker`;原 Window downcast 对 worker 恒 null)(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch;WebGL2 分支仍 Window-only = W3b 遗留) |
 | `canvas/canvas_paint_thread.rs` | `CanvasCommand::GetImageData` handler 接全局 canvas 噪声(seed=0 字节零 diff 硬保证;单咽喉覆盖 convertToBlob/transferToImageBitmap/createImageBitmap/texImage2D/createPattern,REQ-BRW-004 C13 W2,6bcf30af) |
 | `canvas/canvas_noise.rs`(Bao 新增,上游无此文件) | `CanvasNoiseConfig` 确定性噪声算法 + 全局 seed set/get(`set_canvas_noise_seed` 的消费载体;W2 起被 paint 线程读取) |
 | `script_bindings/lock.rs` | ThreadUnsafeOnceLock 等(Bao 扩展) |

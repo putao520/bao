@@ -380,6 +380,12 @@ pub(crate) struct WorkerGlobalScope {
     #[conditional_malloc_size_of]
     #[no_trace]
     font_context: Arc<FontContext>,
+
+    /// A handle for communicating messages to the WebGL thread, if available.
+    /// (Bao) Inherited from the parent `Window` via `WorkerGlobalScopeInit.webgl_chan`
+    /// so OffscreenCanvas WebGL contexts can be created in workers (REQ-BRW-004 C14).
+    #[no_trace]
+    webgl_chan: Option<WebGLChan>,
 }
 
 impl WorkerGlobalScope {
@@ -454,11 +460,16 @@ impl WorkerGlobalScope {
             )),
             origin: MutableOrigin::new(init.origin),
             font_context,
+            webgl_chan: init.webgl_chan,
         }
     }
 
     pub(crate) fn font_context(&self) -> Arc<FontContext> {
         self.font_context.clone()
+    }
+
+    pub(crate) fn webgl_chan(&self) -> Option<WebGLChan> {
+        self.webgl_chan.clone()
     }
 
     pub(crate) fn timers(&self) -> &OneshotTimers {

@@ -1,10 +1,15 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:13] [level:integration]
-// OffscreenCanvas worker-realm live tests for REQ-BRW-004 criterion #13.
+// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:13] [criterion:14] [level:integration]
+// OffscreenCanvas worker-realm live tests for REQ-BRW-004 criteria #13/#14.
 //
 // SPEC criterion under test:
 //   C13: "CRIT-STL-WK OffscreenCanvas: worker 内 new OffscreenCanvas(w,h) +
 //         getContext('2d') + 绘制 + getImageData 可用 (用户裁决 2026-09-09
 //         破例立法; E26 侦察: 上游实现完整, 唯一门 = prefs.rs 默认 false)"
+//   C14: WebGL1 worker 通道 — worker 内 new OffscreenCanvas + getContext('webgl')
+//         非 null + 基本 getParameter (用户裁决 2026-09-09 破例 vendor patch;
+//         E26 断点: WorkerGlobalScopeInit.webgl_chan 在 new_inherited 被丢弃 /
+//         WebGLRenderingContext::new_inherited 锚死 &Window / offscreencanvas
+//         WebGL 路径 Window downcast)
 //
 // Mechanism under test: the ONLY gate is the WebIDL
 // `Pref="dom_offscreen_canvas_enabled"` exposure check (per-realm). The
@@ -283,5 +288,159 @@ fn c13_window_realm_offscreencanvas_exposed_after_pref_flip() {
     assert_eq!(
         r, "OK:0,255,0,255",
         "window-realm OffscreenCanvas must be exposed and functional after the pref flip"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// §3 C14 — WebGL1 OffscreenCanvas INSIDE a Worker realm (Bao vendor patch:
+//          WorkerGlobalScope.webgl_chan + WebGLRenderingContext::new_inherited
+//          decoupled from &Window + offscreencanvas worker dispatch)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Worker script body: run the OffscreenCanvas WebGL1 pipeline INSIDE the
+/// Worker thread and post a compact digest back. Markers distinguish: interface
+/// absent / null context / wrong drawing buffer size / non-string getParameter /
+/// GL error / thrown exception. The pixel readback of a `clearColor(1,0,0,1)`
+/// clear is asserted EXACT (fixed-point 1.0 ⇒ 255, no premultiply drift).
+///
+/// Note: the basic getParameter probe uses 0x1F01, which in servo's webidl is
+/// RENDERER (desktop-GL constant ordering) and returns the driver's VERSION
+/// string. `gl.VERSION` (0x1F02) currently returns `undefined` from servo's
+/// native GetParameter in BOTH realms — a pre-existing upstream quirk, not a
+/// worker-channel issue (verified identical on the Window path).
+const WORKER_WEBGL_BODY: &str = r#"
+var __r = (function () {
+  try {
+    if (typeof OffscreenCanvas === 'undefined') { return 'ABSENT:OffscreenCanvas'; }
+    var c = new OffscreenCanvas(64, 48);
+    var gl = c.getContext('webgl');
+    if (!gl) { return 'NULL-WEBGL-CTX'; }
+    if (gl.drawingBufferWidth !== 64 || gl.drawingBufferHeight !== 48) {
+      return 'BAD-SIZE:' + gl.drawingBufferWidth + 'x' + gl.drawingBufferHeight;
+    }
+    var version = gl.getParameter(0x1F01);
+    if (typeof version !== 'string' || version.length === 0) {
+      return 'BAD-VERSION:' + String(version);
+    }
+    gl.clearColor(1, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    var px = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    var err = gl.getError();
+    if (err !== gl.NO_ERROR) { return 'GL-ERROR:' + err; }
+    return 'OK:' + px[0] + ',' + px[1] + ',' + px[2] + ',' + px[3] + ':' + version;
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})();
+self.postMessage(__r);
+"#;
+
+/// @trace REQ-BRW-004 [criterion:14] worker-realm OffscreenCanvas WebGL1
+/// pipeline (live, servo-native Worker thread, stealth page)
+///
+/// The whole pipeline runs inside the Worker: construction, getContext('webgl')
+/// non-null (requires the inherited parent `Window` WebGL channel — before the
+/// vendor patch this returned null because the WebGL1 path Window-downcast the
+/// global), drawingBuffer geometry, getParameter(VERSION), clear + readPixels
+/// round-trip, getError()==NO_ERROR.
+#[test]
+fn c14_worker_offscreencanvas_webgl1_pipeline_works() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    let _ = page.evaluate_js_web("window.__ocResult = null;");
+    let body = encode_worker_body(WORKER_WEBGL_BODY);
+    let created = page.evaluate_js_web(&make_worker_driver(&body));
+    match created {
+        Ok(s) => assert!(
+            s.contains("worker-created"),
+            "Worker creation must succeed on the servo-native path, got: {s}"
+        ),
+        Err(e) => panic!("Worker creation dispatch failed: {e}"),
+    }
+
+    let r = wait_for_worker_result(&page, Duration::from_secs(30)).unwrap_or_else(|| {
+        panic!(
+            "worker WebGL digest did not arrive within timeout — worker postMessage → onmessage \
+             or worker execution is broken on the live path"
+        )
+    });
+    assert!(
+        !r.starts_with("WORKER-ERROR:"),
+        "worker script threw before posting a digest: {r}"
+    );
+    assert!(
+        !r.starts_with("CREATE-ERROR:"),
+        "Worker constructor failed on the live path: {r}"
+    );
+    assert!(
+        r.starts_with("OK:255,0,0,255:"),
+        "worker-realm OffscreenCanvas WebGL1 pipeline must create a context, clear red and \
+         read back exactly (digest: {r})"
+    );
+    let version = r
+        .strip_prefix("OK:255,0,0,255:")
+        .expect("digest already prefix-asserted");
+    assert!(
+        !version.is_empty(),
+        "getParameter(VERSION) must be a non-empty string (digest: {r})"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// §4 C14 — Window-realm canvas WebGL1 control probe (the UNCHANGED Window
+//          path through the refactored new_inherited). Isolates
+//          "environment cannot do GL" from "worker wiring broken".
+// ═══════════════════════════════════════════════════════════════════════
+
+/// @trace REQ-BRW-004 [criterion:14] window-realm canvas WebGL1 control probe
+/// (live, direct probe of the Window path)
+#[test]
+fn c14_window_realm_webgl1_control_probe_works() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    let probe = r#"
+(function () {
+  try {
+    if (typeof HTMLCanvasElement === 'undefined') { return 'ABSENT:HTMLCanvasElement'; }
+    var c = document.createElement('canvas');
+    c.width = 32; c.height = 16;
+    var gl = c.getContext('webgl');
+    if (!gl) { return 'NULL-WEBGL-CTX'; }
+    var version = gl.getParameter(0x1F01);
+    if (typeof version !== 'string' || version.length === 0) {
+      return 'BAD-VERSION:' + String(version);
+    }
+    gl.clearColor(0, 1, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    var px = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    var err = gl.getError();
+    if (err !== gl.NO_ERROR) { return 'GL-ERROR:' + err; }
+    return 'OK:' + px[0] + ',' + px[1] + ',' + px[2] + ',' + px[3] + ':' + version;
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})()"#;
+    let raw = page
+        .evaluate_js_web(probe)
+        .expect("window-realm WebGL control probe evaluation must succeed");
+    let r = unquote_bridge(raw.trim().to_string());
+    assert!(
+        r.starts_with("OK:0,255,0,255:"),
+        "window-realm canvas WebGL1 must create a context, clear green and read back exactly \
+         (digest: {r})"
     );
 }
