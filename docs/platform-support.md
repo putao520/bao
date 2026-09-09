@@ -8,16 +8,17 @@
 > Every non-listed platform state below is explicit; there are no gray zones.
 >
 > Companion documents: [`build-macos.md`](build-macos.md) (macOS layer-by-layer
-> map, real-machine checklist) and the issues linked throughout.
+> map, real-machine checklist), [`musl-cross.md`](musl-cross.md) (musl cross
+> toolchain/sysroot/env recipe) and the issues linked throughout.
 >
-> Last updated: 2026-09-08.
+> Last updated: 2026-09-09.
 
 ## 1. Target matrix
 
 | Target | Status | Notes |
 |---|---|---|
 | `x86_64-unknown-linux-gnu` | **Supported** | The daily-driver platform; full stack (SpiderMonkey, servo, boringssl, uWS) built and tested in-repo every wave. |
-| `x86_64-unknown-linux-musl` | **Supported** | Decided 2026-09-01 under REQ-DEPLOY-1; the native-closure cross-build work runs under the daily-ops long-task protocol — surface blockers tracked in [#10](https://github.com/putao520/bao/issues/10) (e.g. freetype-sys cross pkg-config). |
+| `x86_64-unknown-linux-musl` | **Supported** | Decided 2026-09-01 under REQ-DEPLOY-1; the native-closure cross-build work runs under the daily-ops long-task protocol — surface blockers tracked in [#10](https://github.com/putao520/bao/issues/10) (e.g. freetype-sys cross pkg-config). Cross toolchain/sysroot/env recipe: [`musl-cross.md`](musl-cross.md). |
 | macOS (`x86_64`/`aarch64-apple-darwin`) | **Experimental** | Compile surfaces are landed (`bun_uws_sys` kqueue arm, `bao_uloop` kqueue backend, darwin root certs — see [`build-macos.md`](build-macos.md) §1/§2). No real-machine build/link/test pass has ever run: [#36](https://github.com/putao520/bao/issues/36) (test surface), [#37](https://github.com/putao520/bao/issues/37) (mozjs source build). |
 | Windows (`x86_64-pc-windows-msvc` / `-gnu`) | **Unsupported** | Fail-closed by construction at three native points (§3): [#33](https://github.com/putao520/bao/issues/33) mimalloc MSVC arm, [#34](https://github.com/putao520/bao/issues/34) `uv_*` symbol closure, [#35](https://github.com/putao520/bao/issues/35) `bao_uloop` IOCP arm. See §4 for the open-item list. |
 
