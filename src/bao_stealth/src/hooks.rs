@@ -219,48 +219,73 @@ impl StealthHooks {
     }}
   }}
 
-  var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-  HTMLCanvasElement.prototype.toDataURL = function() {{
-    var ctx = this.getContext('2d');
-    if (ctx && seed > 0n) {{
-      try {{
-        var imgData = ctx.getImageData(0, 0, this.width, this.height);
-        addNoiseToImageData(imgData, this.width);
-        var temp = document.createElement('canvas');
-        temp.width = this.width;
-        temp.height = this.height;
-        temp.getContext('2d').putImageData(imgData, 0, 0);
-        return origToDataURL.apply(temp, arguments);
-      }} catch(e) {{}}
-    }}
-    return origToDataURL.apply(this, arguments);
-  }};
+  // Worker-realm guard (REQ-BRW-004 C13/C15): HTMLCanvasElement / document /
+  // CanvasRenderingContext2D are [Exposed=Window] — a bare reference throws
+  // ReferenceError inside a DedicatedWorkerGlobalScope and aborts the whole
+  // hooks script (every IIFE after the throw never installs). Same-shape
+  // typeof guard as the navigator/WebGL segment.
+  if (typeof HTMLCanvasElement !== 'undefined' && typeof document !== 'undefined') {{
+    var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function() {{
+      var ctx = this.getContext('2d');
+      if (ctx && seed > 0n) {{
+        try {{
+          var imgData = ctx.getImageData(0, 0, this.width, this.height);
+          addNoiseToImageData(imgData, this.width);
+          var temp = document.createElement('canvas');
+          temp.width = this.width;
+          temp.height = this.height;
+          temp.getContext('2d').putImageData(imgData, 0, 0);
+          return origToDataURL.apply(temp, arguments);
+        }} catch(e) {{}}
+      }}
+      return origToDataURL.apply(this, arguments);
+    }};
 
-  var origToBlob = HTMLCanvasElement.prototype.toBlob;
-  HTMLCanvasElement.prototype.toBlob = function(callback, mimeType, qualityArgument) {{
-    var ctx = this.getContext('2d');
-    if (ctx && seed > 0n) {{
-      try {{
-        var imgData = ctx.getImageData(0, 0, this.width, this.height);
-        addNoiseToImageData(imgData, this.width);
-        var temp = document.createElement('canvas');
-        temp.width = this.width;
-        temp.height = this.height;
-        temp.getContext('2d').putImageData(imgData, 0, 0);
-        return origToBlob.call(temp, callback, mimeType, qualityArgument);
-      }} catch(e) {{}}
-    }}
-    return origToBlob.apply(this, arguments);
-  }};
+    var origToBlob = HTMLCanvasElement.prototype.toBlob;
+    HTMLCanvasElement.prototype.toBlob = function(callback, mimeType, qualityArgument) {{
+      var ctx = this.getContext('2d');
+      if (ctx && seed > 0n) {{
+        try {{
+          var imgData = ctx.getImageData(0, 0, this.width, this.height);
+          addNoiseToImageData(imgData, this.width);
+          var temp = document.createElement('canvas');
+          temp.width = this.width;
+          temp.height = this.height;
+          temp.getContext('2d').putImageData(imgData, 0, 0);
+          return origToBlob.call(temp, callback, mimeType, qualityArgument);
+        }} catch(e) {{}}
+      }}
+      return origToBlob.apply(this, arguments);
+    }};
+  }}
 
-  var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-  CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
-    var imgData = origGetImageData.call(this, sx, sy, sw, sh);
-    if (seed > 0n) {{
-      addNoiseToImageData(imgData, sw);
-    }}
-    return imgData;
-  }};
+  if (typeof CanvasRenderingContext2D !== 'undefined') {{
+    var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
+      var imgData = origGetImageData.call(this, sx, sy, sw, sh);
+      if (seed > 0n) {{
+        addNoiseToImageData(imgData, sw);
+      }}
+      return imgData;
+    }};
+  }}
+
+  // OffscreenCanvas surface (REQ-BRW-004 C15): worker realms expose
+  // OffscreenCanvasRenderingContext2D (no CanvasRenderingContext2D). Same
+  // deterministic noise algorithm, same per-Realm seed — this JS blob is
+  // regenerated per realm by engine_props::inject_js_hooks via REALM_PROFILES,
+  // so the seed literal already carries the current realm's profile value.
+  if (typeof OffscreenCanvasRenderingContext2D !== 'undefined') {{
+    var origOffscreenGetImageData = OffscreenCanvasRenderingContext2D.prototype.getImageData;
+    OffscreenCanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
+      var imgData = origOffscreenGetImageData.call(this, sx, sy, sw, sh);
+      if (seed > 0n) {{
+        addNoiseToImageData(imgData, sw);
+      }}
+      return imgData;
+    }};
+  }}
 }})();"#,
             seed = seed,
             amplitude = amplitude,
@@ -286,16 +311,22 @@ impl StealthHooks {
     return Number(BigInt.asUintN(64, state)) / 18446744073709551615 - 0.5;
   }}
 
-  var origGetChannelData = AudioBuffer.prototype.getChannelData;
-  AudioBuffer.prototype.getChannelData = function(channel) {{
-    var data = origGetChannelData.call(this, channel);
-    if (seed > 0n && amplitude > 0) {{
-      for (var i = 0; i < data.length; i++) {{
-        data[i] += detNoise(i) * amplitude;
+  // Worker-realm guard (REQ-BRW-004 C13/C15): AudioBuffer is [Exposed=Window]
+  // — a bare prototype reference throws ReferenceError in a worker realm and
+  // kills the rest of the hooks blob. OfflineAudioContext below is already
+  // typeof-guarded.
+  if (typeof AudioBuffer !== 'undefined') {{
+    var origGetChannelData = AudioBuffer.prototype.getChannelData;
+    AudioBuffer.prototype.getChannelData = function(channel) {{
+      var data = origGetChannelData.call(this, channel);
+      if (seed > 0n && amplitude > 0) {{
+        for (var i = 0; i < data.length; i++) {{
+          data[i] += detNoise(i) * amplitude;
+        }}
       }}
-    }}
-    return data;
-  }};
+      return data;
+    }};
+  }}
 
   if (typeof OfflineAudioContext !== 'undefined') {{
     var origStartRendering = OfflineAudioContext.prototype.startRendering;
@@ -1344,6 +1375,58 @@ mod tests {
     }
 
     #[test]
+    fn canvas_js_worker_safe_guards_window_exclusive_globals() {
+        // REQ-BRW-004 C13/C15: every [Exposed=Window] global referenced by the
+        // canvas blob must sit behind a typeof guard, so the blob evaluates
+        // cleanly in a DedicatedWorkerGlobalScope (where HTMLCanvasElement /
+        // document / CanvasRenderingContext2D do not exist) instead of
+        // ReferenceError-aborting the whole hooks script.
+        let hooks = firefox_hooks();
+        let js = hooks.canvas_js();
+        assert!(
+            js.contains("typeof HTMLCanvasElement !== 'undefined'"),
+            "canvas JS must guard HTMLCanvasElement behind typeof (worker realm has no such global)"
+        );
+        assert!(
+            js.contains("typeof document !== 'undefined'"),
+            "canvas JS must guard document behind typeof (worker realm has no document)"
+        );
+        assert!(
+            js.contains("typeof CanvasRenderingContext2D !== 'undefined'"),
+            "canvas JS must guard CanvasRenderingContext2D behind typeof"
+        );
+    }
+
+    #[test]
+    fn canvas_js_patches_offscreen_getimagedata() {
+        // REQ-BRW-004 C15: worker realms expose only
+        // OffscreenCanvasRenderingContext2D — its getImageData must get the
+        // same deterministic noise (same per-realm seed literal, same
+        // addNoiseToImageData algorithm).
+        let hooks = firefox_hooks();
+        let js = hooks.canvas_js();
+        assert!(
+            js.contains("typeof OffscreenCanvasRenderingContext2D !== 'undefined'"),
+            "Offscreen patch must be typeof-guarded (contexts without it must skip)"
+        );
+        assert!(
+            js.contains("OffscreenCanvasRenderingContext2D.prototype.getImageData"),
+            "canvas JS must patch OffscreenCanvasRenderingContext2D.getImageData"
+        );
+        assert!(
+            js.contains("origOffscreenGetImageData"),
+            "Offscreen patch must wrap the original getImageData"
+        );
+        // Same noise algorithm: both the 2D and the Offscreen overrides route
+        // through addNoiseToImageData with the per-pixel width argument.
+        assert_eq!(
+            js.matches("addNoiseToImageData(imgData, sw)").count(),
+            2,
+            "both the 2D and Offscreen getImageData overrides must apply the same noise"
+        );
+    }
+
+    #[test]
     fn canvas_js_contains_noise_injection() {
         let hooks = firefox_hooks();
         let js = hooks.canvas_js();
@@ -1424,6 +1507,18 @@ mod tests {
         assert!(
             js.contains("0x517CC1B727220A95n"),
             "audio JS must contain the index-multiply constant"
+        );
+    }
+
+    #[test]
+    fn audio_js_worker_safe_guards_audiobuffer() {
+        // REQ-BRW-004 C13/C15: AudioBuffer is [Exposed=Window]; the audio blob
+        // must not ReferenceError in a worker realm.
+        let hooks = firefox_hooks();
+        let js = hooks.audio_js();
+        assert!(
+            js.contains("typeof AudioBuffer !== 'undefined'"),
+            "audio JS must guard AudioBuffer behind typeof (worker realm has no such global)"
         );
     }
 
