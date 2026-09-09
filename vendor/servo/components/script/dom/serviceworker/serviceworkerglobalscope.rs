@@ -2,6 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cell::Cell;
+use std::collections::VecDeque;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread::{self, JoinHandle};
@@ -10,6 +13,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, after, unbounded};
 use devtools_traits::DevtoolScriptControlMsg;
 use dom_struct::dom_struct;
+use script_bindings::cell::DomRefCell;
 use fonts::FontContext;
 use js::context::{JSContext, RawJSContext};
 use js::jsapi::JS_AddInterruptCallback;
@@ -54,6 +58,7 @@ use crate::dom::extendablemessageevent::ExtendableMessageEvent;
 use crate::dom::fetchevent::FetchEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::RethrowErrors;
+use crate::dom::promise::Promise;
 use crate::dom::script_execution::ScriptOptions;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
@@ -188,8 +193,29 @@ pub(crate) struct ServiceWorkerGlobalScope {
     #[no_trace]
     control_receiver: Receiver<ServiceWorkerControlMsg>,
 
+    /// Settled-pending `respondWith` promises (Bao vendor patch, user ruling
+    /// 2026-09-09, C19 SIGSEGV fix): every mediated fetch's registered
+    /// response promise is re-anchored here as a native `Rc<Promise>` so its
+    /// `AddRawValueRoot` GC anchor outlives the dispatching `FetchEvent`.
+    /// Entries are removed at settlement (`fetchevent.rs` settle callbacks),
+    /// mirroring the `serviceworkercontainer` pending-promise pattern.
+    #[ignore_malloc_size_of = "anchored promises are transient per fetch"]
+    pending_fetch_responses: DomRefCell<VecDeque<PendingFetchResponse>>,
+
+    /// Monotonic key source for `pending_fetch_responses` entries.
+    pending_fetch_response_key: Cell<usize>,
+
     #[no_trace]
     worker_id: ServiceWorkerId,
+}
+
+/// One anchored `respondWith` promise plus its removal key.
+#[derive(MallocSizeOf, JSTraceable)]
+struct PendingFetchResponse {
+    #[ignore_malloc_size_of = "plain counter"]
+    key: usize,
+    #[conditional_malloc_size_of]
+    promise: Rc<Promise>,
 }
 
 impl WorkerEventLoopMethods for ServiceWorkerGlobalScope {
@@ -272,6 +298,8 @@ impl ServiceWorkerGlobalScope {
             swmanager_sender,
             scope_url,
             control_receiver,
+            pending_fetch_responses: DomRefCell::new(VecDeque::new()),
+            pending_fetch_response_key: Cell::new(0),
             worker_id,
         }
     }
@@ -613,6 +641,26 @@ impl ServiceWorkerGlobalScope {
 
     pub(crate) fn event_loop_sender(&self) -> ScriptEventLoopSender {
         ScriptEventLoopSender::ServiceWorker(self.own_sender.clone())
+    }
+
+    /// Anchor a `respondWith` promise natively for the lifetime of its
+    /// settlement (Bao vendor patch, user ruling 2026-09-09, C19 SIGSEGV fix).
+    /// Returns the pending-list key the settler must hand back to
+    /// `remove_pending_fetch_response`.
+    pub(crate) fn add_pending_fetch_response(&self, promise: Rc<Promise>) -> usize {
+        let key = self.pending_fetch_response_key.get();
+        self.pending_fetch_response_key.set(key + 1);
+        self.pending_fetch_responses
+            .borrow_mut()
+            .push_back(PendingFetchResponse { key, promise });
+        key
+    }
+
+    /// Release the native anchor of a settled `respondWith` promise.
+    pub(crate) fn remove_pending_fetch_response(&self, key: usize) {
+        self.pending_fetch_responses
+            .borrow_mut()
+            .retain(|entry| entry.key != key);
     }
 
     // BAO PATCH (REQ-BRW-004 C19): mirror of `SharedWorkerGlobalScope::new_script_pair`

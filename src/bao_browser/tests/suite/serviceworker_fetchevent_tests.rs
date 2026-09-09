@@ -292,26 +292,16 @@ fn wait_for<F: Fn() -> Option<T>, T>(mut poll: F, timeout: Duration, what: &str)
 /// SW scope to come up, and asserts the FetchEvent surface from INSIDE the SW
 /// realm (the probe publishes its JSON verdict through the fixture).
 ///
-/// IGNORED (2026-09-09, S2a close-out): the pipeline under test is live and
-/// the probe DOES execute — live runs proved navigator.serviceWorker.register
-/// resolves, the SW scope thread spawns, loads /sw.js over real HTTP, and runs
-/// the probe through the ENTIRE FetchEvent introspection block (FetchEvent/
-/// Request construction, instanceof, listener wiring, respondWith) — but the
-/// thread then dies at the publish step with
-///   thread 'SW:…/sw.js' panicked at
-///   vendor/servo/components/script/dom/workers/workerglobalscope.rs:1114
-///   need to implement a sender for ServiceWorker
-/// i.e. upstream's `WorkerGlobalScope::new_script_pair` TODO has no
-/// ServiceWorker arm (XMLHttpRequest triggers it; plain SW-realm fetch()
-/// silently never egresses either). `ScriptEventLoopSender::ServiceWorker`
-/// already exists (vendor/servo/components/script/messaging.rs:217), so the
-/// fix is a third `downcast::<ServiceWorkerGlobalScope>()` arm returning a
-/// ServiceWorker sender/receiver pair. That file is OUTSIDE the S2a contract
-/// (explicitly forbidden), so the value-level assertions stay parked here
-/// until a follow-up task implements it. Everything before the publish step
-/// is proven live by the panic's own position (it fires after the
-/// introspection block).
-#[ignore = "SW realm has no egress channel: upstream new_script_pair TODO (workerglobalscope.rs:1114) panics on XHR; fetch() silently never egresses. Unblock = implement the ServiceWorker arm, then remove this ignore."]
+/// Un-IGNORED (2026-09-09, C19 close-out): the publish channel is live — the
+/// upstream `WorkerGlobalScope::new_script_pair` TODO (which panicked with
+/// "need to implement a sender for ServiceWorker" the moment the probe's sync
+/// XHR ran) now has the missing third arm: BAO PATCH adds
+/// `ServiceWorkerGlobalScope::new_script_pair` (serviceworkerglobalscope.rs)
+/// + `ScriptEventLoopReceiver::ServiceWorker` (messaging.rs) + the
+/// `downcast::<ServiceWorkerGlobalScope>()` arm (workerglobalscope.rs), all
+/// mechanical mirrors of the existing Dedicated/Shared arms. The respondWith
+/// settle side stays compile-verified only until S2b produces mediators from
+/// the net layer (see the header note above).
 #[test]
 fn c19_sw_realm_exposes_fetchevent_pipeline_live() {
     if should_skip() {

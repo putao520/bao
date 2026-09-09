@@ -27,6 +27,8 @@ use dom_struct::dom_struct;
 use http::StatusCode;
 use ipc_channel::ipc::IpcSender;
 use js::context::JSContext;
+use js::jsapi::Heap;
+use js::jsval::{JSVal, ObjectValue};
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject, HandleValue};
 use net_traits::{CustomResponse, CustomResponseMediator};
@@ -41,7 +43,7 @@ use crate::dom::bindings::codegen::Bindings::ResponseBinding::ResponseMethods;
 use crate::dom::bindings::conversions::root_from_handlevalue;
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
@@ -61,8 +63,18 @@ pub(crate) struct FetchEvent {
     event: ExtendableEvent,
     /// <https://w3c.github.io/ServiceWorker/#fetch-event-request>
     request: Dom<Request>,
-    /// The promise registered through `respondWith`, if it was called.
-    respond_with_promise: MutNullableDom<Promise>,
+    /// The JS promise object registered through `respondWith`, held as a
+    /// traced value. The binding hands `respondWith` a throwaway native
+    /// `Rc<Promise>` wrapper whose `AddRawValueRoot` anchor dies with the
+    /// binding frame, so a native handle cannot survive to the dispatcher —
+    /// this GC-traced value is what bridges the promise across dispatch.
+    /// Bao vendor patch (user ruling 2026-09-09, C19 SIGSEGV fix): the
+    /// previous `MutNullableDom<Promise>` left the promise anchored by
+    /// nothing once the binding's Rc dropped, and the SW thread crashed on
+    /// `IsPromiseObject` over GC-poisoned memory (0xdf…) inside
+    /// `append_native_handler`.
+    #[ignore_malloc_size_of = "SM handles JS values"]
+    respond_with_value: Heap<JSVal>,
     /// Whether `respondWith` was already called (spec: at most once).
     respond_with_entered: Cell<bool>,
     /// The mediator channel this event answers on. `None` for events
@@ -81,7 +93,7 @@ impl FetchEvent {
         FetchEvent {
             event: ExtendableEvent::new_inherited(),
             request: Dom::from_ref(request),
-            respond_with_promise: Default::default(),
+            respond_with_value: Heap::default(),
             respond_with_entered: Cell::new(false),
             response_sender,
         }
@@ -172,25 +184,36 @@ impl FetchEvent {
         let target = scope.upcast::<EventTarget>();
         event.upcast::<Event>().fire(cx, target);
 
-        match event.respond_with_promise.get() {
+        match event.respond_with_entered.get() {
             // No `respondWith` call: keep upstream pass-through semantics.
-            None => {
+            false => {
                 let _ = mediator.response_chan.send(None);
             },
-            Some(promise) => {
+            true => {
+                // Re-anchor the registered promise natively. The event's
+                // `respond_with_value` kept the JS promise object alive
+                // across dispatch; a fresh native `Rc<Promise>` (with its own
+                // `AddRawValueRoot` anchor, pinned on the SW scope's pending
+                // list until settlement) is what the reactions attach to.
                 // The reactions run on this worker thread's event loop when
                 // the promise settles — no blocking wait is involved.
+                rooted!(&in(cx) let registered =
+                    event.respond_with_value.get().to_object());
+                let anchored = Promise::new_with_js_promise(cx, registered.handle());
+                let pending_key = scope.add_pending_fetch_response(anchored.clone());
                 let handler = PromiseNativeHandler::new(
                     cx,
                     global,
                     Some(Box::new(FetchResponseResolveHandler {
                         response_sender: Some(mediator.response_chan.clone()),
+                        pending_key,
                     })),
                     Some(Box::new(FetchResponseRejectHandler {
                         response_sender: Some(mediator.response_chan),
+                        pending_key,
                     })),
                 );
-                promise.append_native_handler(cx, &handler);
+                anchored.append_native_handler(cx, &handler);
             },
         }
     }
@@ -203,6 +226,10 @@ struct FetchResponseResolveHandler {
     #[no_trace]
     #[ignore_malloc_size_of = "Ipc channel sender"]
     response_sender: Option<IpcSender<Option<CustomResponse>>>,
+    /// Key of this promise's entry on the SW scope's pending list; removed on
+    /// settlement so the native anchor (`Rc<Promise>` raw root) is bounded by
+    /// the promise's lifetime.
+    pending_key: usize,
 }
 
 /// Rejection steps of the `respondWith` promise: pass-through.
@@ -211,10 +238,13 @@ struct FetchResponseRejectHandler {
     #[no_trace]
     #[ignore_malloc_size_of = "Ipc channel sender"]
     response_sender: Option<IpcSender<Option<CustomResponse>>>,
+    /// See `FetchResponseResolveHandler::pending_key`.
+    pending_key: usize,
 }
 
 impl Callback for FetchResponseResolveHandler {
     fn callback(&self, cx: &mut CurrentRealm, value: HandleValue) {
+        settle_pending_fetch_response(cx, self.pending_key);
         let Some(sender) = self.response_sender.clone() else {
             return;
         };
@@ -287,10 +317,20 @@ impl Callback for FetchResponseResolveHandler {
 }
 
 impl Callback for FetchResponseRejectHandler {
-    fn callback(&self, _cx: &mut CurrentRealm, _value: HandleValue) {
+    fn callback(&self, cx: &mut CurrentRealm, _value: HandleValue) {
+        settle_pending_fetch_response(cx, self.pending_key);
         if let Some(ref sender) = self.response_sender {
             let _ = sender.send(None);
         }
+    }
+}
+
+/// Drop the settled promise's entry from the SW scope's pending list, ending
+/// its native anchor. Runs inside the settle callbacks on the SW thread.
+fn settle_pending_fetch_response(cx: &mut CurrentRealm, pending_key: usize) {
+    let global = GlobalScope::from_current_realm(cx);
+    if let Some(scope) = global.downcast::<ServiceWorkerGlobalScope>() {
+        scope.remove_pending_fetch_response(pending_key);
     }
 }
 
@@ -335,10 +375,13 @@ impl FetchEventMethods<crate::DomTypeHolder> for FetchEvent {
         if self.respond_with_entered.replace(true) {
             return Err(Error::InvalidState(None));
         }
-        // Steps: the promise's settlement decides the response; the reactions
-        // are installed by the dispatcher once the event finished running
-        // (see `FetchEvent::handle_mediator`).
-        self.respond_with_promise.set(Some(p));
+        // Steps: remember the promise's JS object (GC-traced through this
+        // event) so the dispatcher can re-anchor it natively and install the
+        // settlement reactions once the event finished running (see
+        // `FetchEvent::handle_mediator`). The binding's native `Rc<Promise>`
+        // wrapper for `p` is throwaway — its GC root dies with the binding
+        // frame — so a native handle cannot be kept across dispatch.
+        self.respond_with_value.set(ObjectValue(*p.promise_obj()));
         Ok(())
     }
 
