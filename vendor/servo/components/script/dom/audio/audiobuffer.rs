@@ -21,7 +21,7 @@ use crate::dom::bindings::codegen::Bindings::AudioBufferBinding::{
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::window::Window;
+use crate::dom::globalscope::GlobalScope;
 use crate::realms::enter_auto_realm;
 
 // Spec mandates at least [8000, 96000], we use [8000, 192000] to match Firefox
@@ -81,7 +81,7 @@ impl AudioBuffer {
 
     pub(crate) fn new(
         cx: &mut JSContext,
-        global: &Window,
+        global: &GlobalScope,
         number_of_channels: u32,
         length: u32,
         sample_rate: f32,
@@ -101,7 +101,7 @@ impl AudioBuffer {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
         cx: &mut JSContext,
-        global: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         number_of_channels: u32,
         length: u32,
@@ -194,7 +194,7 @@ impl AudioBufferMethods<crate::DomTypeHolder> for AudioBuffer {
     /// <https://webaudio.github.io/web-audio-api/#dom-audiobuffer-audiobuffer>
     fn Constructor(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         options: &AudioBufferOptions,
     ) -> Fallible<DomRoot<AudioBuffer>> {
@@ -208,7 +208,7 @@ impl AudioBufferMethods<crate::DomTypeHolder> for AudioBuffer {
         }
         Ok(AudioBuffer::new_with_proto(
             cx,
-            window,
+            global,
             proto,
             options.numberOfChannels,
             options.length,

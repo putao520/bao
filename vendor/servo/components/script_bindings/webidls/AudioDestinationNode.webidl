@@ -6,7 +6,10 @@
  * https://webaudio.github.io/web-audio-api/#dom-audiodestinationnode
  */
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): BaseAudioContext.destination return type,
+// exposed by type-visibility consequence (REQ-BRW-004 C15, user ruling
+// 2026-09-09).
+[Exposed=(Window,Worker)]
 interface AudioDestinationNode : AudioNode {
   readonly attribute unsigned long maxChannelCount;
 };

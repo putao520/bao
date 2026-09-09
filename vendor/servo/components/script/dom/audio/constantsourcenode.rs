@@ -22,6 +22,8 @@ use crate::dom::bindings::codegen::Bindings::ConstantSourceNodeBinding::{
 };
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::inheritance::Castable;
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -51,7 +53,7 @@ impl ConstantSourceNode {
         let node_id = source_node.node().node_id();
         let offset = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             node_id,
             AudioNodeType::ConstantSourceNode,

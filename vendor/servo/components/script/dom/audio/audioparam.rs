@@ -21,7 +21,7 @@ use crate::dom::bindings::codegen::Bindings::AudioParamBinding::{
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::window::Window;
+use crate::dom::globalscope::GlobalScope;
 
 #[dom_struct]
 pub(crate) struct AudioParam {
@@ -71,7 +71,7 @@ impl AudioParam {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         context: &BaseAudioContext,
         node: Option<NodeId>,
         node_type: AudioNodeType,
@@ -91,7 +91,7 @@ impl AudioParam {
             min_value,
             max_value,
         );
-        reflect_dom_object_with_cx(Box::new(audio_param), window, cx)
+        reflect_dom_object_with_cx(Box::new(audio_param), global, cx)
     }
 
     fn message_node(&self, message: AudioNodeMessage) {

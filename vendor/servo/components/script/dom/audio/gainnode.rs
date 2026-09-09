@@ -23,7 +23,7 @@ use crate::dom::bindings::codegen::Bindings::AudioParamBinding::AutomationRate;
 use crate::dom::bindings::codegen::Bindings::GainNodeBinding::{GainNodeMethods, GainOptions};
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::window::Window;
+use crate::dom::globalscope::GlobalScope;
 
 #[dom_struct]
 pub(crate) struct GainNode {
@@ -35,7 +35,7 @@ impl GainNode {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_inherited(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         context: &BaseAudioContext,
         options: &GainOptions,
     ) -> Fallible<GainNode> {
@@ -54,7 +54,7 @@ impl GainNode {
         )?;
         let gain = AudioParam::new(
             cx,
-            window,
+            global,
             context,
             node.node_id(),
             AudioNodeType::GainNode,
@@ -72,26 +72,26 @@ impl GainNode {
 
     pub(crate) fn new(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         context: &BaseAudioContext,
         options: &GainOptions,
     ) -> Fallible<DomRoot<GainNode>> {
-        Self::new_with_proto(cx, window, None, context, options)
+        Self::new_with_proto(cx, global, None, context, options)
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &GainOptions,
     ) -> Fallible<DomRoot<GainNode>> {
-        let node = GainNode::new_inherited(cx, window, context, options)?;
+        let node = GainNode::new_inherited(cx, global, context, options)?;
         Ok(reflect_dom_object_with_proto(
             cx,
             Box::new(node),
-            window,
+            global,
             proto,
         ))
     }
@@ -101,12 +101,12 @@ impl GainNodeMethods<crate::DomTypeHolder> for GainNode {
     /// <https://webaudio.github.io/web-audio-api/#dom-gainnode-gainnode>
     fn Constructor(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &GainOptions,
     ) -> Fallible<DomRoot<GainNode>> {
-        GainNode::new_with_proto(cx, window, proto, context, options)
+        GainNode::new_with_proto(cx, global, proto, context, options)
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-gainnode-gain>

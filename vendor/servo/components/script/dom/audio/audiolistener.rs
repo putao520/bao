@@ -19,6 +19,8 @@ use crate::dom::bindings::codegen::Bindings::AudioParamBinding::{
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::inheritance::Castable;
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -45,7 +47,7 @@ impl AudioListener {
 
         let position_x = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -57,7 +59,7 @@ impl AudioListener {
         );
         let position_y = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -69,7 +71,7 @@ impl AudioListener {
         );
         let position_z = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -81,7 +83,7 @@ impl AudioListener {
         );
         let forward_x = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -93,7 +95,7 @@ impl AudioListener {
         );
         let forward_y = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -105,7 +107,7 @@ impl AudioListener {
         );
         let forward_z = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -117,7 +119,7 @@ impl AudioListener {
         );
         let up_x = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -129,7 +131,7 @@ impl AudioListener {
         );
         let up_y = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,
@@ -141,7 +143,7 @@ impl AudioListener {
         );
         let up_z = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             Some(node),
             AudioNodeType::AudioListenerNode,

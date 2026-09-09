@@ -259,6 +259,62 @@ pub(crate) fn drain_worker_scope_callbacks(webview_id: WebViewId) -> Vec<Embedde
     matching.into_iter().map(|(_, cb)| cb).collect()
 }
 
+// ============================================================================
+// Embedder Worker Interfaces-Ready Callbacks (Bao vendor patch - REQ-BRW-004
+// C15, user ruling 2026-09-09)
+// ============================================================================
+// Second worker-scope drain point, structurally identical to
+// `EMBEDDER_WORKER_SCOPE_CALLBACKS` above (same WebViewId keying, same
+// FnOnce consume-once semantics) but drained at a LATER lifecycle point:
+// `WorkerGlobalScope::run_worker_script` drains these right AFTER
+// `define_all_exposed_interfaces` has defined the worker global's WebIDL
+// interface constructors.
+//
+// Why a second point is needed: the first drain (in
+// `DedicatedWorkerGlobalScope::run_worker_scope`) runs before the worker's
+// interface objects exist, so an embedder JS-hook blob guarded with
+// `typeof` checks (bao_stealth W1a guards) saw every interface as
+// `undefined` at that point and installed nothing — engine-layer getters
+// (which do not depend on interfaces) worked, JS prototype hooks did not.
+// Re-running the embedder install at this later point lands the previously
+// skipped hooks; the embedder's install is idempotent (its property defines
+// on already-PERMANENT getters fail safely, see the embedder's
+// define_permanent_getter "prior install" arm).
+static EMBEDDER_WORKER_INTERFACES_READY_CALLBACKS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerScopeCallback)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native worker global's interfaces are defined **for `webview_id`**
+/// (inside `WorkerGlobalScope::run_worker_script`, after
+/// `define_all_exposed_interfaces` and before the worker script runs).
+///
+/// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+/// are actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+/// It runs on the Worker thread (not the ScriptThread).
+pub fn register_worker_interfaces_ready_callback(
+    webview_id: WebViewId,
+    callback: EmbedderWorkerScopeCallback,
+) {
+    EMBEDDER_WORKER_INTERFACES_READY_CALLBACKS
+        .lock()
+        .unwrap()
+        .push((webview_id, callback));
+}
+
+/// Drain pending worker interfaces-ready callbacks registered for
+/// `webview_id`. Mirrors `drain_worker_scope_callbacks`: callbacks for other
+/// webviews stay queued; each callback runs at most once.
+pub(crate) fn drain_worker_interfaces_ready_callbacks(
+    webview_id: WebViewId,
+) -> Vec<EmbedderWorkerScopeCallback> {
+    let mut guard = EMBEDDER_WORKER_INTERFACES_READY_CALLBACKS.lock().unwrap();
+    let (matching, remaining): (Vec<_>, Vec<_>) =
+        guard.drain(..).partition(|(wid, _)| *wid == webview_id);
+    *guard = remaining;
+    matching.into_iter().map(|(_, cb)| cb).collect()
+}
+
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
 
 fn with_optional_script_thread<R>(f: impl FnOnce(Option<&ScriptThread>) -> R) -> R {

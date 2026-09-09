@@ -31,8 +31,8 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
-use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct OfflineAudioContext {
@@ -73,7 +73,7 @@ impl OfflineAudioContext {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         channel_count: u32,
         length: u32,
@@ -86,13 +86,13 @@ impl OfflineAudioContext {
         {
             return Err(Error::NotSupported(None));
         }
-        let pipeline_id = window.pipeline_id();
+        let pipeline_id = global.pipeline_id();
         let context =
             OfflineAudioContext::new_inherited(channel_count, length, sample_rate, pipeline_id)?;
         Ok(reflect_dom_object_with_proto(
             cx,
             Box::new(context),
-            window,
+            global,
             proto,
         ))
     }
@@ -102,13 +102,13 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext>
     fn Constructor(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         options: &OfflineAudioContextOptions,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
         OfflineAudioContext::new(
             cx,
-            window,
+            global,
             proto,
             options.numberOfChannels,
             options.length,
@@ -119,13 +119,13 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext-numberofchannels-length-samplerate>
     fn Constructor_(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         number_of_channels: u32,
         length: u32,
         sample_rate: Finite<f32>,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
-        OfflineAudioContext::new(cx, window, proto, number_of_channels, length, *sample_rate)
+        OfflineAudioContext::new(cx, global, proto, number_of_channels, length, *sample_rate)
     }
 
     // https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-oncomplete
@@ -186,7 +186,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                     }
                     let buffer = AudioBuffer::new(
                         cx,
-                        this.global().as_window(),
+                        &this.global(),
                         this.channel_count,
                         this.length,
                         *this.context.SampleRate(),
@@ -200,9 +200,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                             .unwrap()
                     };
                     promise.resolve_native(cx, &buffer);
-                    let global = &this.global();
-                    let window = global.as_window();
-                    let event = OfflineAudioCompletionEvent::new(cx, window,
+                    let event = OfflineAudioCompletionEvent::new(cx, &this.global(),
                                                                  atom!("complete"),
                                                                  EventBubbles::DoesNotBubble,
                                                                  EventCancelable::NotCancelable,

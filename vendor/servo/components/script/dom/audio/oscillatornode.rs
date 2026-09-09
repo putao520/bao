@@ -30,7 +30,7 @@ use crate::dom::bindings::codegen::Bindings::OscillatorNodeBinding::{
 };
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::window::Window;
+use crate::dom::globalscope::GlobalScope;
 
 #[dom_struct]
 pub(crate) struct OscillatorNode {
@@ -44,7 +44,7 @@ impl OscillatorNode {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_inherited(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         context: &BaseAudioContext,
         options: &OscillatorOptions,
     ) -> Fallible<OscillatorNode> {
@@ -63,7 +63,7 @@ impl OscillatorNode {
         let node_id = source_node.node().node_id();
         let frequency = AudioParam::new(
             cx,
-            window,
+            global,
             context,
             node_id,
             AudioNodeType::OscillatorNode,
@@ -75,7 +75,7 @@ impl OscillatorNode {
         );
         let detune = AudioParam::new(
             cx,
-            window,
+            global,
             context,
             node_id,
             AudioNodeType::OscillatorNode,
@@ -95,26 +95,26 @@ impl OscillatorNode {
 
     pub(crate) fn new(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         context: &BaseAudioContext,
         options: &OscillatorOptions,
     ) -> Fallible<DomRoot<OscillatorNode>> {
-        Self::new_with_proto(cx, window, None, context, options)
+        Self::new_with_proto(cx, global, None, context, options)
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &OscillatorOptions,
     ) -> Fallible<DomRoot<OscillatorNode>> {
-        let node = OscillatorNode::new_inherited(cx, window, context, options)?;
+        let node = OscillatorNode::new_inherited(cx, global, context, options)?;
         Ok(reflect_dom_object_with_proto(
             cx,
             Box::new(node),
-            window,
+            global,
             proto,
         ))
     }
@@ -124,12 +124,12 @@ impl OscillatorNodeMethods<crate::DomTypeHolder> for OscillatorNode {
     /// <https://webaudio.github.io/web-audio-api/#dom-oscillatornode-oscillatornode>
     fn Constructor(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &OscillatorOptions,
     ) -> Fallible<DomRoot<OscillatorNode>> {
-        OscillatorNode::new_with_proto(cx, window, proto, context, options)
+        OscillatorNode::new_with_proto(cx, global, proto, context, options)
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-oscillatornode-frequency>

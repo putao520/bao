@@ -21,7 +21,9 @@ dictionary OscillatorOptions : AudioNodeOptions {
   // PeriodicWave periodicWave;
 };
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): oscillator source of the offline audio
+// fingerprint vector (REQ-BRW-004 C15, user ruling 2026-09-09).
+[Exposed=(Window,Worker)]
 interface OscillatorNode : AudioScheduledSourceNode {
   [Throws] constructor(BaseAudioContext context, optional OscillatorOptions options = {});
   [SetterThrows]

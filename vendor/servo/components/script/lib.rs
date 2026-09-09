@@ -24,7 +24,13 @@ extern crate stylo_atoms;
 mod tasks;
 // Bao embedder-callback API (vendor patch) lives on the upstream ScriptThread
 // in event_loop; re-exported here so `servo` crate / bao embedders can reach it.
-pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};
+// register_worker_interfaces_ready_callback (REQ-BRW-004 C15, user ruling
+// 2026-09-09) is the second worker-scope drain point — drained after
+// define_all_exposed_interfaces so embedder JS hooks see defined interfaces.
+pub use event_loop::script_thread::{
+    register_embedder_callback, register_worker_interfaces_ready_callback,
+    register_worker_scope_callback,
+};
 pub(crate) mod conversions;
 mod css;
 mod fetch;

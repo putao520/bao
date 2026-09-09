@@ -32,6 +32,7 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -100,7 +101,7 @@ impl PannerNode {
         let id = node.node_id();
         let position_x = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             id,
             AudioNodeType::PannerNode,
@@ -112,7 +113,7 @@ impl PannerNode {
         );
         let position_y = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             id,
             AudioNodeType::PannerNode,
@@ -124,7 +125,7 @@ impl PannerNode {
         );
         let position_z = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             id,
             AudioNodeType::PannerNode,
@@ -136,7 +137,7 @@ impl PannerNode {
         );
         let orientation_x = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             id,
             AudioNodeType::PannerNode,
@@ -148,7 +149,7 @@ impl PannerNode {
         );
         let orientation_y = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             id,
             AudioNodeType::PannerNode,
@@ -160,7 +161,7 @@ impl PannerNode {
         );
         let orientation_z = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             id,
             AudioNodeType::PannerNode,

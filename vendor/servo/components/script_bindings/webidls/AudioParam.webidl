@@ -11,7 +11,9 @@ enum AutomationRate {
   "k-rate"
 };
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): parameter surface of the worker-exposed
+// offline audio node family (REQ-BRW-004 C15, user ruling 2026-09-09).
+[Exposed=(Window,Worker)]
 interface AudioParam {
              attribute float value;
              [SetterThrows] attribute AutomationRate automationRate;

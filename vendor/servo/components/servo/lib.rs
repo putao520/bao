@@ -138,6 +138,27 @@ pub fn register_worker_scope_callback(
     script::register_worker_scope_callback(webview_id, callback);
 }
 
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native worker global's WebIDL interfaces are defined **for
+/// `webview_id`** — drained inside `WorkerGlobalScope::run_worker_script`
+/// right after `define_all_exposed_interfaces` and before the worker script
+/// runs.
+///
+/// The callback receives `(cx: *mut c_void, global: *mut c_void)` which are
+/// actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+///
+/// Bao vendor patch (REQ-BRW-004 C15, user ruling 2026-09-09): the FIRST
+/// worker-scope drain point runs before the worker's interface objects
+/// exist, so bao_stealth's JS prototype hooks (W1a `typeof` guards) were
+/// silently skipped there. This second, later drain point lets the embedder
+/// re-run its idempotent install once interfaces are defined.
+pub fn register_worker_interfaces_ready_callback(
+    webview_id: WebViewId,
+    callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send>,
+) {
+    script::register_worker_interfaces_ready_callback(webview_id, callback);
+}
+
 /// Set anti-fingerprinting TLS/HTTP2 configuration for servo's network layer
 /// (Bao vendor patch, REQ-STL-001: browser-level JA3/JA4 anti-fingerprinting).
 ///

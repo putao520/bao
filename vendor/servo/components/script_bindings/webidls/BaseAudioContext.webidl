@@ -15,12 +15,17 @@ enum AudioContextState {
 callback DecodeErrorCallback = undefined (DOMException error);
 callback DecodeSuccessCallback = undefined (AudioBuffer decodedData);
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): base of OfflineAudioContext, whose offline
+// rendering is pure software and global-agnostic (REQ-BRW-004 C15, user ruling
+// 2026-09-09). Members returning node types that stay Window-only carry
+// member-level [Exposed=Window] gates.
+[Exposed=(Window,Worker)]
 interface BaseAudioContext : EventTarget {
   readonly attribute AudioDestinationNode destination;
   readonly attribute float sampleRate;
   readonly attribute double currentTime;
-  readonly attribute AudioListener listener;
+  // (Bao) AudioListener stays Window-only.
+  [Exposed=Window] readonly attribute AudioListener listener;
   readonly attribute AudioContextState  state;
   Promise<undefined> resume();
   attribute EventHandler onstatechange;
@@ -31,22 +36,24 @@ interface BaseAudioContext : EventTarget {
                                        optional DecodeSuccessCallback successCallback,
                                        optional DecodeErrorCallback errorCallback);
   [Throws] AudioBufferSourceNode createBufferSource();
-  [Throws] ConstantSourceNode createConstantSource();
+  // (Bao) The node factories below return node types that remain Window-only
+  // (not part of the C15 worker surface), so they are gated member-level.
+  [Exposed=Window, Throws] ConstantSourceNode createConstantSource();
   // ScriptProcessorNode createScriptProcessor(optional unsigned long bufferSize = 0,
   //                                           optional unsigned long numberOfInputChannels = 2,
   //                                           optional unsigned long numberOfOutputChannels = 2);
-  [Throws] AnalyserNode createAnalyser();
+  [Exposed=Window, Throws] AnalyserNode createAnalyser();
   [Throws]  GainNode createGain();
   // DelayNode createDelay(optional double maxDelayTime = 1);
-  [Throws] BiquadFilterNode createBiquadFilter();
-  [Throws] IIRFilterNode createIIRFilter(sequence<double> feedforward,
+  [Exposed=Window, Throws] BiquadFilterNode createBiquadFilter();
+  [Exposed=Window, Throws] IIRFilterNode createIIRFilter(sequence<double> feedforward,
                                 sequence<double> feedback);
   // WaveShaperNode createWaveShaper();
-  [Throws] PannerNode createPanner();
-  [Throws] StereoPannerNode createStereoPanner();
+  [Exposed=Window, Throws] PannerNode createPanner();
+  [Exposed=Window, Throws] StereoPannerNode createStereoPanner();
   // ConvolverNode createConvolver();
-  [Throws] ChannelSplitterNode createChannelSplitter(optional unsigned long numberOfOutputs = 6);
-  [Throws] ChannelMergerNode createChannelMerger(optional unsigned long numberOfInputs = 6);
+  [Exposed=Window, Throws] ChannelSplitterNode createChannelSplitter(optional unsigned long numberOfOutputs = 6);
+  [Exposed=Window, Throws] ChannelMergerNode createChannelMerger(optional unsigned long numberOfInputs = 6);
   // DynamicsCompressorNode createDynamicsCompressor();
   [Throws]  OscillatorNode createOscillator();
   // PeriodicWave createPeriodicWave(sequence<float> real,

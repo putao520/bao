@@ -693,6 +693,39 @@ impl WorkerGlobalScope {
             let mut realm = enter_auto_realm(cx, self);
             let cx = &mut realm.current_realm();
             define_all_exposed_interfaces(cx, self.upcast());
+            // BAO PATCH (REQ-BRW-004 C15, user ruling 2026-09-09 vendor
+            // patch): second worker-scope drain point — AFTER
+            // `define_all_exposed_interfaces` has defined this worker
+            // global's WebIDL interface constructors. The first drain (in
+            // `DedicatedWorkerGlobalScope::run_worker_scope`) runs BEFORE
+            // these exist, so an embedder JS-hook blob guarded with `typeof`
+            // checks (bao_stealth W1a guards) saw every interface as
+            // `undefined` and installed nothing — engine-layer getters do
+            // not depend on interfaces, which is why they worked from the
+            // first drain while the JS prototype hooks did not. The embedder
+            // re-runs its install here; it is idempotent (its defines on
+            // already-PERMANENT getters fail safely — the embedder's
+            // define_permanent_getter documents the "prior install" arm),
+            // so only the previously skipped JS hooks land now. Callbacks
+            // are keyed by WebViewId (same shape as the first drain) and run
+            // on this Worker thread, before any worker script executes.
+            {
+                let global_scope = self.upcast::<GlobalScope>();
+                if let Some(webview_id) = global_scope.webview_id() {
+                    for callback in crate::event_loop::script_thread::drain_worker_interfaces_ready_callbacks(
+                        webview_id,
+                    ) {
+                        unsafe {
+                            callback(
+                                cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                                script_bindings::reflector::DomObject::reflector(global_scope)
+                                    .get_jsobject()
+                                    .get() as *mut std::ffi::c_void,
+                            );
+                        }
+                    }
+                }
+            }
             // Step 9. Set inside settings's execution ready flag.
             self.execution_ready.store(true, Ordering::Relaxed);
             match script {

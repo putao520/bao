@@ -96,6 +96,22 @@ impl PagePool {
         // .claude/prompts/brw004-getparameter-evidence.md).
         crate::runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
 
+        // Second-phase worker stealth registration (REQ-BRW-004 C15, user
+        // ruling 2026-09-09 vendor patch): the worker-scope callback registered
+        // just above (inside inject_all_with_profile) is drained BEFORE the
+        // worker global's WebIDL interfaces exist, so bao_stealth's W1a-guarded
+        // JS prototype hooks were silently skipped there. This second callback
+        // is drained after define_all_exposed_interfaces (vendor
+        // workerglobalscope.rs) and re-runs the idempotent install, landing the
+        // audio/webgl JS hooks in every page-script-created Worker.
+        // @trace REQ-BRW-004 [criterion:15] worker JS-hook second drain
+        if let Some(webview_id) = page.webview_id() {
+            crate::register_worker_interfaces_ready_callback_native(
+                webview_id,
+                config.stealth_profile.clone(),
+            );
+        }
+
         self.active_pages.borrow_mut().insert(id, page.clone());
         *self.total_created.borrow_mut() += 1;
 
