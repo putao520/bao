@@ -24,13 +24,17 @@
 [env]
 CFLAGS = "-g1"
 CXXFLAGS = "-g1"
-# ── musl 交叉工具链(issue #10 / REQ-DEPLOY-1 第一波 PoC,2026-09-09)──
-# 来源:musl.cc x86_64-linux-musl-cross(GCC 11.2.1,解压于 ~/musl-cross/)。
-# 仅 musl 目标生效:cc-rs 及 mozjs-sys build.rs get_cc_rs_env_os 的解析序为
-# CC_<target-hyphen> → CC_<target-underscore> → TARGET_CC → CC,本键是 per-target
-# 形态,gnu 目标构建不读取(host 构建零影响,结构性保证)。
-CC_x86_64_unknown_linux_musl = "/home/putao/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
-CXX_x86_64_unknown_linux_musl = "/home/putao/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
+# ── musl 交叉工具链(issue #10 / REQ-DEPLOY-1;p3.5 起 clang-musl wrapper 形态)──
+# p1(musl.cc GCC 11.2.1,~/musl-cross/)的 per-target env 已被 p3-fix(FCFEC13B)的
+# build.rs env-first 选型接通。p3.5 发现 GCC 路线在 uWS C 源撞 always_inline
+# 不相容(loop.c/us_wakeup_loop,GCC 已知限制,build.rs 注释早有警示)——CC/CXX 改指
+# scripts/clang-musl{,++}.sh wrapper(系统 clang 23 + --target musl + GCC 工具链
+# sysroot/C++ 头):保留 C 源假设的 clang 语义,产物 target 为真 musl(判据见
+# scripts/check-musl-tu.c:musl 不定义 __GLIBC__;clang 的 .comment producer 不分
+# target,不可作判据)。AR 沿用 GCC 工具链 ar。仅 musl 目标生效(per-target 键,
+# gnu 构建不读取,host 零影响)。
+CC_x86_64_unknown_linux_musl = "/home/putao/code/rust/bao/scripts/clang-musl.sh"
+CXX_x86_64_unknown_linux_musl = "/home/putao/code/rust/bao/scripts/clang-musl++.sh"
 AR_x86_64_unknown_linux_musl = "/home/putao/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-ar"
 
 [target.x86_64-unknown-linux-musl]

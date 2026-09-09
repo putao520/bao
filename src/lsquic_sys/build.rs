@@ -39,6 +39,7 @@ fn main() {
         .flag("-DLS_HPACK_USE_LARGE_TABLES=1")
         .flag("-DLS_HPACK_BSS_LARGE_TABLES=1")
         .flag("-DXXH_HEADER_NAME=\"xxhash.h\"");
+    lshpack_build.include(&csrc_dir); // vendored sys/queue.h first (musl, p3.5)
     lshpack_build.include(&lshpack_dir);
     lshpack_build.include(lshpack_dir.join("deps/xxhash"));
     lshpack_build.file(lshpack_dir.join("lshpack.c"));
@@ -142,8 +143,11 @@ fn main() {
         .define("LSQUIC_QIR", Some("0"))
         .define("LSQUIC_WEBTRANSPORT_SERVER_SUPPORT", Some("0"));
 
-    // Include paths
+    // Include paths. csrc/ comes first so `#include <sys/queue.h>` resolves
+    // to the vendored BSD queue.h (csrc/sys/queue.h) before any system path —
+    // musl has no sys/queue.h (issue #10 musl wave, p3.5).
     build
+        .include(&csrc_dir)
         .include(lsquic_dir.join("include"))
         .include(&lsquic_src)
         .include(boringssl_dir.join("include"))
