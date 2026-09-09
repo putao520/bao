@@ -79,3 +79,4 @@ mod stealth_offscreencanvas_tests;
 mod stealth_worker_audio_tests;
 mod serviceworker_fetchevent_tests;
 mod serviceworker_mediation_tests;
+mod fetch_axis_probe_tests;

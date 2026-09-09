@@ -133,7 +133,7 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     // (uppercased string), headers (Headers instance) and _bodyText /
     // _bodyBytes / _bodyBlob body slots.
     let input_val = *args.get(0).ptr;
-    let url: String;
+    let mut url: String;
     let mut method: String = "GET".to_string();
     let mut headers: Vec<(String, String)> = Vec::new();
     let mut body: Option<Vec<u8>> = None;
@@ -336,6 +336,50 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                             let c_msg = ZBox::from_bytes(msg.as_bytes());
                             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                             return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Page-realm relative-URL resolution ─────────────────────────────────
+    // WHATWG fetch resolves a relative input against the global's associated
+    // document base URL before anything else. The Node stack requires an
+    // absolute URL — a page realm's `fetch('/x')` used to reach AsyncHTTP as
+    // the literal "/x" and die at URL parse ("fetch failed" rejection; the
+    // fixture never saw the request). Resolve against `document.baseURI`
+    // when the realm exposes one (servo page realms do; node realms carry no
+    // document — their inputs pass through unchanged, preserving Node's
+    // absolute-URL contract).
+    if !url.contains("://") && !url.starts_with("data:") && !url.starts_with("blob:") {
+        // SAFETY: cx is live on this thread for the whole fetch_fn call.
+        let global = JS::CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            rooted!(&in(wrapped_cx) let global_obj = global);
+            // SAFETY: global_obj is rooted above; both readers are the
+            // exception-clearing probes (a failed read reads as "absent").
+            let doc_val = unsafe { get_val_prop(cx, global_obj.handle(), "document") };
+            if doc_val.is_object() {
+                rooted!(&in(wrapped_cx) let doc_obj = doc_val.to_object());
+                if let ::std::option::Option::Some(base) =
+                    unsafe { get_string_prop(cx, doc_obj.handle(), "baseURI") }
+                {
+                    if base.contains("://") {
+                        let joined = bun_url::join(
+                            &bun_core::String::from(base.as_str()),
+                            &bun_core::String::from(url.as_str()),
+                        );
+                        // `dead()` (unresolvable base) reads as empty — keep
+                        // the original input in that case and let the URL
+                        // parse downstream fail visibly instead.
+                        let joined_bytes = joined.utf8();
+                        if !joined.is_empty() {
+                            if let ::std::result::Result::Ok(s) =
+                                ::std::str::from_utf8(joined_bytes)
+                            {
+                                url = s.to_string();
+                            }
                         }
                     }
                 }

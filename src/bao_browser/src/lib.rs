@@ -255,6 +255,32 @@ impl BaoRuntime {
         let delegate = Rc::new(BaoServoDelegate::new());
         servo.set_delegate(Rc::clone(&delegate) as Rc<dyn servo::ServoDelegate>);
 
+        // BCE (page-realm async fetch black hole): wire the embedder
+        // event-loop pump bridge — BOTH directions, process-globally (first
+        // registration wins, so a second BaoRuntime re-registers no-ops).
+        //
+        // Page realms install the Node-stack `fetch` override (same stack,
+        // same fingerprint — the page-net unification posture), whose resolve
+        // ConcurrentTask lands on the ScriptThread's bao MiniEventLoop — a
+        // loop servo never ticks: `handle_msgs` blocks on servo's own
+        // receivers. Without the bridge the request egressed but the page's
+        // `fetch()` Promise never settled (fetch_axis_probe_tests B axis).
+        //   pump side: servo calls it on each ScriptThread right after its
+        //     blocking recv wakes, with the thread's JSContext.
+        //   wake side: the fetch machinery captures the creating thread's
+        //     wake closure (a servo `WakeUp` self-send) and fires it from the
+        //     HTTPThread on resolve — that is exactly what unblocks the recv
+        //     above. Node-realm threads have no servo wake entry (`None`) and
+        //     keep their node-loop pumping unchanged.
+        servo::register_bao_event_loop_pump(Box::new(|cx_ptr| {
+            bun_runtime::timers::pump_embedder_thread(cx_ptr as *mut mozjs::jsapi::JSContext);
+        }));
+        bun_runtime::fetch_async::set_thread_wakeup_bridge(|| {
+            servo::bao_current_thread_wake_fn().map(|wake| {
+                wake as bun_runtime::fetch_async::ThreadWakeup
+            })
+        });
+
         let page_pool = Rc::new(PagePool::new(
             Rc::clone(&servo),
             Rc::clone(&delegate),

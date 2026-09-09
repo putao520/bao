@@ -5,7 +5,7 @@ use ::std::time::Duration;
 use mozjs::jsapi::*;
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
-use mozjs::rust::wrappers2::JS_DefineFunction;
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_HasProperty};
 
 use crate::gc_store::{gc_store_get_ns, gc_store_insert_ns, gc_store_remove_ns};
 
@@ -192,39 +192,62 @@ pub fn install_timer_globals(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     init();
+    // Whether THIS realm got the bao timer natives (vs keeping pre-existing
+    // WebIDL ones) — gates the promisify stamping below.
+    let defined_bao_timers;
+    // BCE (page-realm timer shadowing): a servo page realm ALREADY has the
+    // WebIDL timer globals on its prototype chain — servo's natives are wired
+    // to servo's own TimerScheduler (deadline wakes, task-integrated
+    // dispatch). Defining bao's timer natives over them replaces a working
+    // implementation with one whose callbacks dispatch through this thread's
+    // bao MiniEventLoop — a loop the servo ScriptThread never ticks (only the
+    // node runtime and JsContext harnesses pump it), so every page
+    // setTimeout/setInterval callback hung forever (the fetch_axis_probe_tests
+    // T axis black). Skip names the global already resolves (pages keep the
+    // natives; bare node realms have none, so they install exactly as
+    // before). `setImmediate` has no servo-native counterpart and stays
+    // bao-installed (it dispatches through the same loop the embedder pump
+    // bridge drains — see `pump_embedder_thread`).
     unsafe {
-        JS_DefineFunction(
-            cx,
-            global,
-            c"setTimeout".as_ptr(),
-            ::std::option::Option::Some(set_timeout),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        JS_DefineFunction(
-            cx,
-            global,
-            c"clearTimeout".as_ptr(),
-            ::std::option::Option::Some(clear_timeout),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        JS_DefineFunction(
-            cx,
-            global,
-            c"setInterval".as_ptr(),
-            ::std::option::Option::Some(set_interval),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        JS_DefineFunction(
-            cx,
-            global,
-            c"clearInterval".as_ptr(),
-            ::std::option::Option::Some(clear_interval),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
+        let mut found = false;
+        if JS_HasProperty(cx, global, c"setTimeout".as_ptr(), &mut found) && found {
+            // Native timers present (servo page realm): keep them.
+            defined_bao_timers = false;
+        } else {
+            defined_bao_timers = true;
+            JS_DefineFunction(
+                cx,
+                global,
+                c"setTimeout".as_ptr(),
+                ::std::option::Option::Some(set_timeout),
+                2,
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineFunction(
+                cx,
+                global,
+                c"clearTimeout".as_ptr(),
+                ::std::option::Option::Some(clear_timeout),
+                1,
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineFunction(
+                cx,
+                global,
+                c"setInterval".as_ptr(),
+                ::std::option::Option::Some(set_interval),
+                2,
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineFunction(
+                cx,
+                global,
+                c"clearInterval".as_ptr(),
+                ::std::option::Option::Some(clear_interval),
+                1,
+                JSPROP_ENUMERATE as u32,
+            );
+        }
         JS_DefineFunction(
             cx,
             global,
@@ -252,11 +275,71 @@ pub fn install_timer_globals(
     // realm before its node segment) skips silently — the node-segment
     // stamp point covers it. Idempotent: re-stamping is a plain value
     // overwrite. The async_hooks wrapper forwards the symbol onward.
+    // BCE (page-realm timer shadowing): only stamp when the bao natives were
+    // actually installed — a servo page realm that kept its WebIDL natives
+    // must not get them value-stamped with the node module-cache promises.
     // SAFETY: raw_cx is the live install-time JSContext; get_builtin is a
     // read-only cache lookup.
-    let promises_singleton = unsafe { crate::require::get_builtin(cx.raw_cx(), "timers/promises") };
-    if let ::std::option::Option::Some(p) = promises_singleton {
-        crate::node_timers_module::stamp_promisify_customs(cx, p);
+    if defined_bao_timers {
+        let promises_singleton =
+            unsafe { crate::require::get_builtin(cx.raw_cx(), "timers/promises") };
+        if let ::std::option::Option::Some(p) = promises_singleton {
+            crate::node_timers_module::stamp_promisify_customs(cx, p);
+        }
+    }
+}
+
+/// Embedder-driven pump for threads whose event loop bao does NOT own — the
+/// servo ScriptThread (BCE page-realm async fetch black hole).
+///
+/// Bao's page-realm `fetch` override resolves through a ConcurrentTask on the
+/// calling thread's lazily-materialized MiniEventLoop (see
+/// `fetch_async::schedule_resolve_on_js_thread`). The servo ScriptThread
+/// never runs `drain_and_check` (that is the node runtime's main-loop pump),
+/// so resolves sat in the never-drained queue and page `fetch()` promises
+/// never settled — the request egressed, the fixture answered, and the
+/// promise hung (fetch_axis_probe_tests B axis). The embedder registers this
+/// pump on the servo side (script_thread.rs `handle_msgs` calls it right
+/// after its blocking recv wakes, with the thread's JSContext).
+///
+/// One pass: run pending promise jobs (reactions from the previous pass),
+/// fire due bao timers, one non-blocking MiniEventLoop tick (dispatches the
+/// ConcurrentTask queue — fetch resolves, setImmediate), then run jobs again
+/// so the just-dispatched resolves' reactions land in the same pass. Cheap
+/// no-op when nothing is pending. Chained work re-wakes the thread through
+/// the fetch wakeup bridge (a `MainThreadScriptMsg::WakeUp` self-send).
+///
+/// # Safety
+/// - `cx` must be the live JSContext of the calling thread (the servo
+///   ScriptThread's own context) — the caller guarantees this by invoking
+///   the pump from `handle_msgs`.
+pub fn pump_embedder_thread(cx: *mut JSContext) {
+    if cx.is_null() {
+        return;
+    }
+    unsafe {
+        register_current_cx(cx);
+    }
+    let _cx_guard = CxGuard::new();
+    // 1. Reactions queued by the previous pass's resolves/timer callbacks.
+    unsafe {
+        mozjs_sys::jsapi::js::RunJobs(cx);
+    }
+    // 2. Fire due bao timers (BAO_REGISTRY wall-clock deadlines; node realms
+    //    only — servo page realms keep WebIDL natives after the shadowing
+    //    fix, but a stray node-realm-style registration still drains here).
+    unsafe {
+        drain_bao_timers(cx);
+    }
+    // 3. One non-blocking tick — dispatch pending ConcurrentTasks (fetch
+    //    resolves). `tick_without_idle` never blocks (zero epoll timeout,
+    //    BCE-007-R3).
+    with_event_loop(|loop_| {
+        loop_.tick_without_idle(core::ptr::null_mut());
+    });
+    // 4. Flush the jobs the dispatched resolves just enqueued.
+    unsafe {
+        mozjs_sys::jsapi::js::RunJobs(cx);
     }
 }
 

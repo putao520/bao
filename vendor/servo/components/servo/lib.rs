@@ -118,6 +118,28 @@ pub fn register_script_thread_callback(
     script::register_embedder_callback(webview_id, callback);
 }
 
+/// Register the process-global embedder event-loop pump (Bao vendor patch —
+/// page-realm async fetch settlement).
+///
+/// Bao's page-realm `fetch` override resolves through a ConcurrentTask on the
+/// ScriptThread's bao MiniEventLoop, which servo never ticks by itself. The
+/// registered pump is called by `handle_msgs` on each ScriptThread right
+/// after its blocking recv returns (a fetch completion wakes that recv via
+/// [`bao_current_thread_wake_fn`]), with the thread's JSContext as
+/// `*mut c_void` (actually `*mut mozjs::jsapi::JSContext`).
+pub fn register_bao_event_loop_pump(pump: script::BaoEventLoopPump) {
+    script::register_bao_event_loop_pump(pump);
+}
+
+/// The current thread's wake closure, if this thread is a servo ScriptThread
+/// (Bao vendor patch — the fetch side of the pump bridge above). The fetch
+/// machinery captures this ON THE CREATING THREAD at fetch start and fires
+/// it from its HTTPThread when a resolve lands; the closure sends a
+/// `MainThreadScriptMsg::WakeUp` to the owning ScriptThread.
+pub fn bao_current_thread_wake_fn() -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+    script::bao_current_thread_wake_fn()
+}
+
 /// Register a callback to be executed on the Worker thread the next time a
 /// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
 /// constructing the Worker global object **for `webview_id`**.

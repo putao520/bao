@@ -204,6 +204,73 @@ fn drain_embedder_callbacks(webview_id: WebViewId) -> Vec<EmbedderScriptCallback
 }
 
 // ============================================================================
+// Embedder Event-Loop Pump Bridge (Bao vendor patch — page-realm async fetch
+// settlement)
+// ============================================================================
+// Bao's page realms install the Node-stack `fetch` override (same stack,
+// same fingerprint — the page-net unification posture). Its response
+// resolution is delivered as a ConcurrentTask on the calling thread's bao
+// MiniEventLoop (`bun_runtime::timers::with_event_loop`). The servo
+// ScriptThread never runs that loop: `handle_msgs` blocks on servo's own
+// receivers, and the only bao pumps (`drain_and_check` /
+// `tick_without_idle`) exist in the node runtime and JsContext test
+// harnesses. Without this bridge the request egresses (the server sees it)
+// but the resolve task sits in the never-drained queue and the page's
+// `fetch()` Promise never settles — the "page-realm async fetch black hole"
+// (e39 evidence; fetch_axis_probe_tests B axis).
+//
+// Bridge contract (both directions, registered by the embedder at runtime
+// init):
+//   1. `register_bao_event_loop_pump(cb)`: process-global pump callback.
+//      `handle_msgs` calls it on the ScriptThread with the thread's
+//      JSContext right after its blocking recv returns. Bao registers
+//      `bun_runtime::timers::pump_embedder_thread` (RunJobs + due bao
+//      timers + one non-blocking MiniEventLoop tick).
+//   2. `bao_current_thread_wake_fn()`: per-thread wake closure (clones this
+//      ScriptThread's `self_sender` and sends `MainThreadScriptMsg::WakeUp`).
+//      The fetch machinery captures it ON THE CREATING THREAD at fetch start
+//      and fires it from its HTTPThread when a resolve lands, so the blocked
+//      recv above wakes and the pump dispatches it. Node-realm threads have
+//      no entry here (`None`) — the node loop keeps pumping as before.
+pub type BaoEventLoopPump = Box<dyn Fn(*mut c_void) + Send + Sync>;
+
+static BAO_EVENT_LOOP_PUMP: std::sync::OnceLock<BaoEventLoopPump> = std::sync::OnceLock::new();
+
+thread_local! {
+    static BAO_SCRIPT_THREAD_WAKE: std::cell::RefCell<
+        Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Register the process-global embedder event-loop pump (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init; the
+/// first registration wins (OnceLock semantics, matching the other embedder
+/// registries).
+pub fn register_bao_event_loop_pump(pump: BaoEventLoopPump) {
+    let _ = BAO_EVENT_LOOP_PUMP.set(pump);
+}
+
+/// The current thread's wake closure, if this thread is a servo ScriptThread
+/// created by this process. `None` on node-realm / worker threads.
+pub fn bao_current_thread_wake_fn() -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+    BAO_SCRIPT_THREAD_WAKE.with(|w| w.borrow().clone())
+}
+
+/// Run the embedder pump (if registered) on this ScriptThread. Called from
+/// `handle_msgs` right after its blocking recv returns — the point where a
+/// wake (see `bao_current_thread_wake_fn`) has just unblocked the thread.
+fn bao_pump_embedder_event_loop(cx: &mut JSContext) {
+    if let Some(pump) = BAO_EVENT_LOOP_PUMP.get() {
+        // SAFETY: the RAW SpiderMonkey context pointer (same conversion as
+        // the embedder-evaluate drain in `handle_evaluate_javascript`: the
+        // wrapper's address must never leak through as a JSContext*). The
+        // pump runs JS (which can GC), so the no_gc borrowing only covers
+        // the pointer read itself.
+        pump(unsafe { cx.raw_cx_no_gc() } as *mut c_void);
+    }
+}
+
+// ============================================================================
 // Embedder Worker Scope Callbacks (Bao vendor patch - DEC-WK-001 / TASK-1)
 // ============================================================================
 // Mirrors `register_embedder_callback` but for servo-native DOM Worker scope
@@ -1012,6 +1079,19 @@ impl ScriptThread {
         let mut runtime =
             Runtime::new(Some(ScriptEventLoopSender::MainThread(self_sender.clone())));
 
+        // BAO PATCH (embedder event-loop pump bridge): publish this
+        // ScriptThread's wake closure (a `WakeUp` self-send) so fetch
+        // ConcurrentTask completions on other threads can unblock this
+        // thread's `handle_msgs` recv; the pump installed alongside then
+        // dispatches the queue. `ScriptThread::new` runs on the script
+        // thread itself, so the thread-local lands on the owning thread.
+        BAO_SCRIPT_THREAD_WAKE.with(|w| {
+            let sender = self_sender.clone();
+            *w.borrow_mut() = Some(std::sync::Arc::new(move || {
+                let _ = sender.send(MainThreadScriptMsg::WakeUp);
+            }));
+        });
+
         // SAFETY: We ensure that only one JSContext exists in this thread.
         // This is the first one and the only one
         let mut cx = unsafe { runtime.cx() };
@@ -1533,6 +1613,14 @@ impl ScriptThread {
             &self.timer_scheduler.borrow(),
             &fully_active,
         );
+
+        // BAO PATCH (embedder event-loop pump bridge): the blocking recv just
+        // returned — dispatch pending bao ConcurrentTasks (page-realm fetch
+        // resolves / setImmediate) on this thread before processing the
+        // woken event. A fetch completion wakes this recv precisely so this
+        // pump runs (see `bao_current_thread_wake_fn`). Cheap no-op when the
+        // embedder registered no pump (pure-servo usage).
+        bao_pump_embedder_event_loop(cx);
 
         loop {
             debug!("Handling event: {event:?}");

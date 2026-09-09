@@ -381,6 +381,42 @@ thread_local! {
 /// Process-global stream-source id allocator.
 static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 
+// ── BCE (page-realm async fetch black hole): embedder wake bridge ─────────
+//
+// Bao's page-realm `fetch` override runs on servo ScriptThreads, whose event
+// loop bao does not own: the resolve ConcurrentTask lands on the thread's
+// lazily-materialized MiniEventLoop, which the servo ScriptThread never
+// ticks (its `handle_msgs` blocks on servo's own receivers). The bridge
+// closes the loop: the EMBEDDER (bao_browser) registers a thread-wakeup
+// LOOKUP fn; `start_with_kind` calls it ON THE CREATING THREAD to capture a
+// wake closure (a servo `MainThreadScriptMsg::WakeUp` self-send), and the
+// HTTPThread fires it when a resolve is enqueued — the ScriptThread wakes,
+// and the servo-side pump (registered alongside, see
+// `timers::pump_embedder_thread`) dispatches the queue.
+//
+// On node-realm threads the lookup returns `None` (no entry), the wake is
+// skipped, and the node main loop keeps draining the queue itself — the
+// node path is byte-for-byte unchanged.
+
+/// Wake closure type shared between the fetch machinery (fires it from the
+/// HTTPThread) and the embedder (created it on the JS thread).
+pub type ThreadWakeup = Arc<dyn Fn() + Send + Sync>;
+
+static THREAD_WAKEUP_BRIDGE: ::std::sync::OnceLock<fn() -> Option<ThreadWakeup>> =
+    ::std::sync::OnceLock::new();
+
+/// Register the process-global thread-wakeup LOOKUP fn (called on the
+/// fetch-creating thread; returns that thread's wake closure, if any).
+/// Set once by the embedder (bao_browser) at runtime init; the first
+/// registration wins (matching servo's OnceLock registries).
+pub fn set_thread_wakeup_bridge(lookup: fn() -> Option<ThreadWakeup>) {
+    let _ = THREAD_WAKEUP_BRIDGE.set(lookup);
+}
+
+fn capture_thread_wakeup() -> Option<ThreadWakeup> {
+    THREAD_WAKEUP_BRIDGE.get().and_then(|lookup| lookup())
+}
+
 /// Read the current phase (test/observation hook).
 pub fn stream_phase(this: *mut PendingFetch) -> StreamPhase {
     if this.is_null() {
@@ -472,6 +508,14 @@ pub struct PendingFetch {
     abort_flag: Option<Arc<AtomicBool>>,
     /// ABORT_REGISTRY key; the entry is removed by `resolve_tasklet` cleanup.
     abort_id: Option<u32>,
+    /// BCE (page-realm async fetch black hole): embedder wake closure
+    /// captured ON THE CREATING THREAD at fetch start. Fired from the
+    /// HTTPThread after a ConcurrentTask resolve is enqueued, so a thread
+    /// whose event loop bao does not own (a servo ScriptThread blocked in
+    /// `handle_msgs`) wakes and pumps the loop. `None` on node-realm threads
+    /// (the node main loop drains the queue itself — byte-for-byte the
+    /// previous behaviour).
+    wakeup: Option<ThreadWakeup>,
 }
 
 // SAFETY: `cx`/`promise_val` are only ever dereferenced on the JS thread that
@@ -777,6 +821,7 @@ unsafe fn start_with_kind(
         headers_owned: None, // filled after headers_buf lift below
         abort_flag: abort.as_ref().map(|req| Arc::clone(&req.flag)),
         abort_id: abort.as_ref().map(|req| req.id),
+        wakeup: capture_thread_wakeup(),
     });
     let pending_ptr = Box::into_raw(pending);
 
@@ -3057,6 +3102,17 @@ fn schedule_resolve_on_js_thread(pending_ptr: *mut PendingFetch) {
             loop_ref.enqueue_task_concurrent(unsafe {
                 core::ptr::NonNull::new_unchecked(concurrent_task_ptr)
             });
+            // BCE (page-realm async fetch black hole): the enqueue above only
+            // parks the resolve in the creating thread's MiniEventLoop — a
+            // servo ScriptThread never ticks that loop by itself. Fire the
+            // embedder wake captured at fetch start (a
+            // `MainThreadScriptMsg::WakeUp` self-send) so the blocked
+            // `handle_msgs` recv returns and the servo-side pump dispatches
+            // it. No-op (`None`) on node-realm threads, whose main loop
+            // drains the queue itself.
+            if let Some(wake) = unsafe { &*pending_ptr }.wakeup.clone() {
+                wake();
+            }
         }
     }
 }
@@ -3693,6 +3749,7 @@ mod tests {
             headers_owned: None,
             abort_flag: None,
             abort_id: None,
+            wakeup: None,
         };
         assert!(!pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
         assert!(
