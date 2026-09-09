@@ -3,16 +3,20 @@
 // REQ-BRW-004 criterion #15 (user ruling 2026-09-09 vendor patch).
 //
 // SPEC criterion under test:
-//   C15: worker 侧 Audio 栈暴露 — OfflineAudioContext 全栈(OfflineAudioContext
+//   C15: worker 侧 Audio 栈暴露 — criterion literal 「worker 内 AudioContext」:
+//         实时 AudioContext 构造器 worker 可达(渲染跑在 servo-media 自有
+//         AudioRenderThread,调用线程仅做通道控制 + 有界 init 握手,零
+//         Window 依赖)+ OfflineAudioContext 全栈(OfflineAudioContext
 //         / AudioBuffer / AudioNode / AudioParam / AudioDestinationNode /
 //         AudioScheduledSourceNode / OscillatorNode / GainNode /
-//         AudioBufferSourceNode / OfflineAudioCompletionEvent;
-//         实时 AudioContext 与 AnalyserNode/Analyser 族保持 Window-only)
+//         AudioBufferSourceNode / OfflineAudioCompletionEvent);
+//         AnalyserNode/Analyser 族与 AudioListener 保持 Window-only)
 //
 // Vendor patch under test (Bao, upstream stays Window-only):
-//   - 11 audio webidl files `[Exposed=Window]` → `[Exposed=(Window,Worker)]`
+//   - 12 audio webidl files `[Exposed=Window]` → `[Exposed=(Window,Worker)]`
 //     + member-level `[Exposed=Window]` gates on BaseAudioContext members
-//     returning Window-only node types (listener + 8 factories).
+//     returning Window-only node types (listener + 8 factories) and on the
+//     four AudioContext createMedia* members (Window-only type references).
 //   - Implementation signatures `&Window` → `&GlobalScope` (constructor/
 //     factory/reflect paths), mirroring the in-tree AudioDestinationNode
 //     precedent and the C14 W3a/W3b decoupling shape.
@@ -149,6 +153,19 @@ function __baoRenderFp() {
     return { digest: __baoDigest(d), nonzero: nonzero };
   });
 }
+function __baoRtFp() {
+  // Real-time-context fingerprint carrier (C15 literal): the audiofp vector
+  // on a real-time AudioContext is createBuffer → getChannelData (the hooked
+  // getter adds deterministic per-seed noise). Realtime output itself goes to
+  // the servo-media sink and is not JS-retrievable, so the buffer data IS the
+  // observable fingerprint surface for this class.
+  var c = new AudioContext();
+  var b = c.createBuffer(1, 4410, 44100);
+  var d = b.getChannelData(0);
+  var nonzero = 0;
+  for (var i = 0; i < d.length; i++) { if (d[i] !== 0) nonzero++; }
+  return { digest: __baoDigest(d), nonzero: nonzero };
+}
 "#;
 
 /// Worker body: exposure surface + completion ① full chain + same-seed double
@@ -167,8 +184,20 @@ var __r = (async function () {
     if (typeof GainNode === 'undefined') { return 'ABSENT:GainNode'; }
     if (typeof AudioBufferSourceNode === 'undefined') { return 'ABSENT:AudioBufferSourceNode'; }
     if (typeof OfflineAudioCompletionEvent === 'undefined') { return 'ABSENT:OfflineAudioCompletionEvent'; }
+    // ── Real-time AudioContext exposure (C15 criterion literal) ──────────
+    if (typeof AudioContext === 'undefined') { return 'ABSENT:AudioContext'; }
+    // createMedia* members stay behind member-level [Exposed=Window] gates
+    // (Window-only type references) — they must NOT appear in the worker.
+    if (typeof AudioContext.prototype.createMediaElementSource !== 'undefined') { return 'LEAK:createMediaElementSource'; }
+    if (typeof AudioContext.prototype.createMediaStreamSource !== 'undefined') { return 'LEAK:createMediaStreamSource'; }
+    if (typeof AudioContext.prototype.createMediaStreamTrackSource !== 'undefined') { return 'LEAK:createMediaStreamTrackSource'; }
+    if (typeof AudioContext.prototype.createMediaStreamDestination !== 'undefined') { return 'LEAK:createMediaStreamDestination'; }
+    var rt = new AudioContext();
+    var rtState = rt.state;
+    if (['suspended', 'running', 'closed'].indexOf(rtState) === -1) { return 'BADSTATE:' + rtState; }
+    if (typeof rt.createBuffer !== 'function') { return 'ABSENT:rt.createBuffer'; }
+    if (typeof rt.destination === 'undefined') { return 'ABSENT:rt.destination'; }
     // Window-only classes must NOT leak into the worker surface.
-    if (typeof AudioContext !== 'undefined') { return 'LEAK:AudioContext'; }
     if (typeof AnalyserNode !== 'undefined') { return 'LEAK:AnalyserNode'; }
     if (typeof AudioListener !== 'undefined') { return 'LEAK:AudioListener'; }
     var probe = new OfflineAudioContext(1, 8, 8000);
@@ -203,11 +232,19 @@ var __r = (async function () {
     var r2 = await __baoRenderFp();
     var same = r1.digest === r2.digest;
 
+    // ── Real-time noise arms (same-seed determinism on the rt carrier) ──
+    var rt1 = __baoRtFp();
+    var rt2 = __baoRtFp();
+    var rtSame = rt1.digest === rt2.digest;
+
     return 'OK:type=' + (okType ? 1 : 0) + ':len=' + (okLen ? 1 : 0)
          + ':hooked=' + (hooked ? 1 : 0)
          + ':wglhooked=' + webglHooked
          + ':r1=' + r1.digest + ':r2=' + r2.digest + ':same=' + (same ? 1 : 0)
-         + ':nonzero=' + r1.nonzero;
+         + ':nonzero=' + r1.nonzero
+         + ':rtstate=' + rtState
+         + ':rt1=' + rt1.digest + ':rt2=' + rt2.digest + ':rtsame=' + (rtSame ? 1 : 0)
+         + ':rtnonzero=' + rt1.nonzero;
   } catch (e) {
     return 'THROW:' + ((e && e.message) ? e.message : String(e));
   }
@@ -308,6 +345,15 @@ fn worker_digest_r1(r: &str) -> &str {
         .unwrap_or_else(|| panic!("digest must carry r1=, got: {r}"))
 }
 
+/// Extract `rt1=` (real-time carrier digest) from an `OK:` digest.
+fn worker_digest_rt(r: &str) -> &str {
+    let fields: Vec<&str> = r.split(':').collect();
+    fields
+        .iter()
+        .find_map(|f| f.strip_prefix("rt1="))
+        .unwrap_or_else(|| panic!("digest must carry rt1=, got: {r}"))
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // §1 C15 completion ① — OfflineAudioContext full stack INSIDE a Worker
 // ═══════════════════════════════════════════════════════════════════════
@@ -316,13 +362,17 @@ fn worker_digest_r1(r: &str) -> &str {
 /// stack (live, servo-native Worker thread, stealth page)
 ///
 /// Everything runs inside the Worker: the whole C15 worker surface is
-/// exposed (10 interfaces + the completion event), the Window-only classes
-/// do NOT leak (AudioContext / AnalyserNode / AudioListener + the gated
-/// member-level factories), `new OfflineAudioContext(1, 44100, 44100)`
+/// exposed (real-time AudioContext + 10 offline interfaces + the completion
+/// event), `new AudioContext()` constructs with a legal state and its
+/// createBuffer → getChannelData carrier is noise-covered, the Window-only
+/// surface does NOT leak (AnalyserNode / AudioListener +
+/// the gated member-level factories incl. the four createMedia* members),
+/// `new OfflineAudioContext(1, 44100, 44100)`
 /// renders and `startRendering()` resolves to an AudioBuffer whose
 /// `getChannelData(0)` is a Float32Array of length 44100. Also pins the
-/// same-seed bit-level determinism (completion ② first arm) and the
-/// bao_stealth audio hook presence on the W1a worker injection chain.
+/// same-seed bit-level determinism on BOTH carriers (offline render + the
+/// real-time buffer carrier) and the bao_stealth audio hook presence on the
+/// W1a worker injection chain.
 #[test]
 fn c15_worker_offlineaudiocontext_full_stack_works() {
     if should_skip() {
@@ -370,6 +420,32 @@ fn c15_worker_offlineaudiocontext_full_stack_works() {
         "the rendered oscillator graph must produce non-zero samples (render pipeline live), \
          digest: {r}"
     );
+
+    // ── Real-time AudioContext (C15 criterion literal) ───────────────────
+    let rt_state = r
+        .split(':')
+        .find_map(|f| f.strip_prefix("rtstate="))
+        .unwrap_or("<missing>");
+    assert!(
+        ["suspended", "running", "closed"].contains(&rt_state),
+        "worker new AudioContext() must construct with a legal AudioContextState, \
+         got {rt_state}, digest: {r}"
+    );
+    assert!(
+        r.contains(":rtsame=1"),
+        "worker real-time carrier (AudioContext.createBuffer → hooked getChannelData) must \
+         be same-seed bit-level deterministic (realtime determinism arm), digest: {r}"
+    );
+    let rt_nonzero: i64 = r
+        .split(':')
+        .find_map(|f| f.strip_prefix("rtnonzero="))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        rt_nonzero > 0,
+        "worker real-time carrier must carry non-zero noise samples (audio hook live on the \
+         AudioContext-created buffer, zero bao_stealth patch), digest: {r}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -386,8 +462,9 @@ fn window_render_probe_js() -> String {
   try {{
     if (typeof OfflineAudioContext === 'undefined') {{ window.__auWinResult = 'ABSENT:OfflineAudioContext'; return; }}
 {digest}
+    var rt = __baoRtFp();
     __baoRenderFp().then(function (r) {{
-      window.__auWinResult = 'OK:r1=' + r.digest + ':nonzero=' + r.nonzero;
+      window.__auWinResult = 'OK:r1=' + r.digest + ':nonzero=' + r.nonzero + ':rt1=' + rt.digest;
     }}, function (e) {{
       window.__auWinResult = 'REJECT:' + String(e);
     }});
@@ -424,10 +501,12 @@ fn wait_for_window_result(page: &bao_browser::PageHandle, timeout: Duration) -> 
 /// keyed by the worker global address, backfilled by the W1a worker-scope
 /// callback), so the audio JS hooks run with the SAME seed in both realms.
 /// The classic fingerprint vector (Oscillator → Gain → destination →
-/// startRendering → getChannelData) must therefore produce BIT-IDENTICAL
-/// output in both realms of the same page — the cross-realm fingerprint
-/// consistency arm of completion ②. Any divergence is a detector-visible
-/// inconsistency (different fingerprints for the same "browser").
+/// startRendering → getChannelData) AND the real-time carrier
+/// (AudioContext.createBuffer → hooked getChannelData) must therefore
+/// produce BIT-IDENTICAL output in both realms of the same page — the
+/// cross-realm fingerprint consistency arm of completion ②, pinned on both
+/// carriers. Any divergence is a detector-visible inconsistency (different
+/// fingerprints for the same "browser").
 #[test]
 fn c15_worker_window_cross_realm_noise_consistency() {
     if should_skip() {
@@ -442,6 +521,7 @@ fn c15_worker_window_cross_realm_noise_consistency() {
     let wr = run_worker_probe(&page);
     assert!(wr.starts_with("OK:"), "worker audio probe must succeed: {wr}");
     let worker_digest = worker_digest_r1(&wr);
+    let worker_rt_digest = worker_digest_rt(&wr);
 
     // Window side on the SAME page.
     let _ = page.evaluate_js_web("window.__auWinResult = null;");
@@ -456,12 +536,19 @@ fn c15_worker_window_cross_realm_noise_consistency() {
         .unwrap_or_else(|| panic!("window render digest did not arrive within timeout"));
     assert!(win.starts_with("OK:"), "window audio probe must succeed: {win}");
     let window_digest = worker_digest_r1(&win);
+    let window_rt_digest = worker_digest_rt(&win);
 
     assert_eq!(
         worker_digest, window_digest,
         "cross-realm fingerprint consistency (completion ②): the same page must render the \
          same-seed audio fingerprint BIT-IDENTICALLY in the Worker realm ({worker_digest}) and \
          the Window realm ({window_digest})"
+    );
+    assert_eq!(
+        worker_rt_digest, window_rt_digest,
+        "cross-realm consistency on the REAL-TIME carrier (C15 literal): the same page must \
+         produce the bit-identical AudioContext.createBuffer → getChannelData fingerprint in \
+         the Worker realm ({worker_rt_digest}) and the Window realm ({window_rt_digest})"
     );
 }
 
@@ -476,8 +563,9 @@ fn c15_worker_window_cross_realm_noise_consistency() {
 /// A second page whose profile carries a different audio seed (777 vs the
 /// firefox_default 42) must render a DIFFERENT worker-side fingerprint —
 /// proving the worker-realm noise is actually driven by the profile seed
-/// (the hook's `detNoise`), not a constant offset. Also re-pins determinism
-/// on the second page (same=1).
+/// (the hook's `detNoise`), not a constant offset — on BOTH carriers (the
+/// offline render vector and the real-time AudioContext buffer carrier).
+/// Also re-pins determinism on the second page (same=1, rtsame=1).
 #[test]
 fn c15_worker_noise_diverges_across_seeds() {
     if should_skip() {
@@ -493,7 +581,12 @@ fn c15_worker_noise_diverges_across_seeds() {
         ra.contains(":same=1"),
         "page A same-seed determinism must hold, digest: {ra}"
     );
+    assert!(
+        ra.contains(":rtsame=1"),
+        "page A real-time carrier determinism must hold, digest: {ra}"
+    );
     let digest_a = worker_digest_r1(&ra);
+    let rt_digest_a = worker_digest_rt(&ra);
 
     let mut profile_b = StealthProfile::firefox_default();
     profile_b.audio = AudioProfile::new(777);
@@ -504,12 +597,23 @@ fn c15_worker_noise_diverges_across_seeds() {
         rb.contains(":same=1"),
         "page B same-seed determinism must hold, digest: {rb}"
     );
+    assert!(
+        rb.contains(":rtsame=1"),
+        "page B real-time carrier determinism must hold, digest: {rb}"
+    );
     let digest_b = worker_digest_r1(&rb);
+    let rt_digest_b = worker_digest_rt(&rb);
 
     assert_ne!(
         digest_a, digest_b,
         "different audio seeds must produce different worker-realm fingerprints (completion ② \
          divergence arm) — got identical digests {digest_a} for seeds 42 and 777"
+    );
+    assert_ne!(
+        rt_digest_a, rt_digest_b,
+        "different audio seeds must produce different worker-realm REAL-TIME carrier \
+         fingerprints (divergence arm on the AudioContext buffer carrier) — got identical \
+         digests {rt_digest_a} for seeds 42 and 777"
     );
 }
 
@@ -523,14 +627,16 @@ fn c15_worker_noise_diverges_across_seeds() {
 /// pin (live, direct probe of the UNCHANGED Window surface)
 ///
 /// The C15 vendor patch only WIDENS exposure (`Exposed=Window` →
-/// `(Window,Worker)`) and mechanically swaps `&Window` for `&GlobalScope`
-/// behind the same codegen'd Window wrappers. This probe pins the Window
-/// side: OfflineAudioContext still renders exactly, the real-time
-/// AudioContext interface keeps its full shape (including the
-/// Window-only createMedia* members), the gated members
-/// (listener / createAnalyser / createBiquadFilter ...) remain present on
-/// the Window surface, and the audio noise hook is still installed on the
-/// Window realm's AudioBuffer prototype.
+/// `(Window,Worker)`, now including the real-time AudioContext) and
+/// mechanically swaps `&Window` for `&GlobalScope` behind the same codegen'd
+/// Window wrappers. This probe pins the Window side: OfflineAudioContext
+/// still renders exactly, the real-time AudioContext interface keeps its
+/// full shape (constructs with a legal state through the re-anchored
+/// `&GlobalScope` constructor, and retains the Window-only createMedia*
+/// members), the gated members (listener / createAnalyser /
+/// createBiquadFilter ...) remain present on the Window surface, and the
+/// audio noise hook is still installed on the Window realm's AudioBuffer
+/// prototype.
 #[test]
 fn c15_window_audio_family_zero_regression() {
     if should_skip() {
@@ -546,8 +652,11 @@ fn c15_window_audio_family_zero_regression() {
         r#"
 (function () {{
   try {{
-    // Real-time class intact (Window-only by design, unchanged by C15).
+    // Real-time class intact on the Window surface (now (Window,Worker); the
+    // constructor goes through the re-anchored &GlobalScope path).
     if (typeof AudioContext === 'undefined') {{ window.__auWinResult = 'ABSENT:AudioContext'; return; }}
+    var rt = new AudioContext();
+    if (['suspended', 'running', 'closed'].indexOf(rt.state) === -1) {{ window.__auWinResult = 'BADSTATE:' + rt.state; return; }}
     if (typeof AudioContext.prototype.createMediaElementSource !== 'function') {{ window.__auWinResult = 'ABSENT:createMediaElementSource'; return; }}
     if (typeof AudioContext.prototype.createMediaStreamSource !== 'function') {{ window.__auWinResult = 'ABSENT:createMediaStreamSource'; return; }}
     if (typeof AudioContext.prototype.createMediaStreamDestination !== 'function') {{ window.__auWinResult = 'ABSENT:createMediaStreamDestination'; return; }}
@@ -567,6 +676,7 @@ fn c15_window_audio_family_zero_regression() {
 {digest}
     __baoRenderFp().then(function (r) {{
       window.__auWinResult = 'OK:hooked=' + (hooked ? 1 : 0)
+        + ':rtstate=' + rt.state
         + ':r1=' + r.digest + ':nonzero=' + r.nonzero;
     }}, function (e) {{
       window.__auWinResult = 'REJECT:' + String(e);
