@@ -616,33 +616,6 @@ impl ServiceWorkerManager {
             Some(new_worker.clone()),
         );
 
-        // Step 7: Invoke Resolve Job Promise with job and registration
-        let client = job.client.clone();
-        if client
-            .send(ServiceWorkerAlgorithmResult::Job(
-                JobResult::ResolvePromise(JobResultValue::Register(
-                    ServiceWorkerRegistrationInfo {
-                        scope_url: job.scope_url.clone(),
-                        storage_key: job.storage_key.clone(),
-                        script_url: job.script_url.clone(),
-                        id: registration.id,
-                        installing_worker: registration
-                            .installing_worker
-                            .as_ref()
-                            .map(|worker| worker.id),
-                        waiting_worker: registration
-                            .waiting_worker
-                            .as_ref()
-                            .map(|worker| worker.id),
-                        active_worker: registration.active_worker.as_ref().map(|worker| worker.id),
-                    },
-                )),
-            ))
-            .is_err()
-        {
-            warn!("Failed to send resolve job promise result to script.");
-        }
-
         // Step 17: Run the Update Registration State algorithm passing registration,
         // "waiting" and registration’s installing worker as the arguments.
         registration.update_registration_state(RegistrationUpdateTarget::Waiting, Some(new_worker));
@@ -668,6 +641,42 @@ impl ServiceWorkerManager {
         {
             registration.update_registration_state(RegistrationUpdateTarget::Active, Some(waiting));
             registration.update_registration_state(RegistrationUpdateTarget::Waiting, None);
+        }
+
+        // Step 7: Invoke Resolve Job Promise with job and registration.
+        // BAO PATCH (REQ-BRW-004 C19 controller wave, user ruling 2026-09-09):
+        // upstream sent this resolution at Step 7, before the waiting→active
+        // transitions, so the resolved ServiceWorkerRegistrationInfo always
+        // carried pre-activation state (active_worker: None on first
+        // registration). Moved after the activation transitions: this resolve
+        // is the only activation notification the registering client ever
+        // gets, and the page-side container needs `active_worker` populated
+        // here to assign `navigator.serviceWorker.controller` in the same
+        // task that settles the register() promise.
+        let client = job.client.clone();
+        if client
+            .send(ServiceWorkerAlgorithmResult::Job(
+                JobResult::ResolvePromise(JobResultValue::Register(
+                    ServiceWorkerRegistrationInfo {
+                        scope_url: job.scope_url.clone(),
+                        storage_key: job.storage_key.clone(),
+                        script_url: job.script_url.clone(),
+                        id: registration.id,
+                        installing_worker: registration
+                            .installing_worker
+                            .as_ref()
+                            .map(|worker| worker.id),
+                        waiting_worker: registration
+                            .waiting_worker
+                            .as_ref()
+                            .map(|worker| worker.id),
+                        active_worker: registration.active_worker.as_ref().map(|worker| worker.id),
+                    },
+                )),
+            ))
+            .is_err()
+        {
+            warn!("Failed to send resolve job promise result to script.");
         }
 
         // Step 21: Wait for all the tasks queued by Update Worker State invoked in this algorithm to have executed.

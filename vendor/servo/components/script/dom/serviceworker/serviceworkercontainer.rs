@@ -14,6 +14,7 @@ use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
 use script_bindings::reflector::reflect_dom_object_with_cx;
 use servo_base::generic_channel::GenericCallback;
+use servo_base::id::ServiceWorkerId;
 use servo_constellation_traits::{
     Job, JobError, JobResult, JobResultValue, JobType, ScriptToConstellationMessage,
     ServiceWorkerAlgorithm, ServiceWorkerAlgorithmResult, ServiceWorkerRegistrationInfo,
@@ -33,7 +34,7 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::serviceworker::ServiceWorker;
-use crate::dom::serviceworkerregistration::ServiceWorkerRegistration;
+use crate::dom::serviceworkerregistration::{ServiceWorkerRegistration, longest_prefix_match};
 use crate::dom::types::MessageEvent;
 
 #[dom_struct]
@@ -107,6 +108,13 @@ impl ServiceWorkerContainer {
                             scope_url,
                             script_url,
                         } = value;
+                        // BAO PATCH (REQ-BRW-004 C19 controller wave): the
+                        // manager resolves this job after the waiting→active
+                        // transitions, so `active_worker` below reflects the
+                        // post-activation state — assign the container's
+                        // controller in the same task that settles the
+                        // register() promise (see refresh_controller).
+                        self.refresh_controller(cx, &script_url, &scope_url, active_worker);
                         // Step 2.2: If equivalentJob’s job type is either register or update,
                         // set convertedValue to the result of getting the service worker registration object
                         // that represents value in equivalentJob’s client.
@@ -130,6 +138,41 @@ impl ServiceWorkerContainer {
         }
     }
 
+    /// BAO PATCH (REQ-BRW-004 C19 controller wave, user ruling 2026-09-09):
+    /// upstream never assigns the container's `controller` field (the getter
+    /// hardcoded `None`), so page JS had no way to observe that the document
+    /// sits in a registered scope with an active worker. Minimal
+    /// activated-assignment chain: whenever a registration answer reaching
+    /// this container (the register-job resolution, or a getRegistration
+    /// match) carries an active worker whose scope prefixes this global's
+    /// URL, store the page-side ServiceWorker object for that worker as this
+    /// container's controller.
+    /// Boundary (deliberately minimal — spec claim()/clients territory):
+    /// only the container that registered or queried is refreshed, since the
+    /// manager keeps a single client callback per registration; a page that
+    /// never touches the SW API keeps `controller === null` (navigation
+    /// SW-ification is not implemented upstream); the attribute is never
+    /// cleared — unregister leaves the stale object in place while
+    /// interception itself stops at the manager (which drops the
+    /// registration).
+    fn refresh_controller(
+        &self,
+        cx: &mut JSContext,
+        script_url: &ServoUrl,
+        scope_url: &ServoUrl,
+        active_worker: Option<ServiceWorkerId>,
+    ) {
+        let Some(worker_id) = active_worker else {
+            return;
+        };
+        let global = self.global();
+        if !longest_prefix_match(scope_url, &global.get_url()) {
+            return;
+        }
+        let worker = global.get_serviceworker(cx, script_url, scope_url, worker_id);
+        self.controller.set(Some(&*worker));
+    }
+
     /// Continuation of the parallel steps from
     /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkercontainer-getregistration>
     fn handle_match_registration_result(
@@ -149,6 +192,11 @@ impl ServiceWorkerContainer {
 
         // Step 8.3: Resolve promise with the result of getting the service worker registration object
         // that represents registration in promise’s relevant settings object.
+        // BAO PATCH (REQ-BRW-004 C19 controller wave): pull-path refresh — a
+        // page that queries getRegistration() gets its controller assigned
+        // from the matched registration's active worker (see
+        // refresh_controller).
+        self.refresh_controller(cx, &info.script_url, &info.scope_url, info.active_worker);
         let registration = self.global().get_serviceworker_registration(
             cx,
             &info.script_url,
@@ -315,8 +363,12 @@ impl ServiceWorkerContainer {
 
 impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContainer {
     /// <https://w3c.github.io/ServiceWorker/#service-worker-container-controller-attribute>
+    /// BAO PATCH (REQ-BRW-004 C19 controller wave, user ruling 2026-09-09):
+    /// upstream hardcoded `None` here while the `controller` field sat
+    /// unassigned tree-wide. Return the field, which refresh_controller
+    /// populates from registration answers carrying an active worker.
     fn GetController(&self) -> Option<DomRoot<ServiceWorker>> {
-        None
+        self.controller.get()
     }
 
     /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkercontainer-register> - A
