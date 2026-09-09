@@ -131,6 +131,21 @@ pub fn gc_store_insert(cx: *mut JSContext, key: &str, obj: *mut JSObject) {
 
 /// Retrieve a JSObject from the GC-safe store by key.
 /// Returns None if the key is not tracked or the global is unavailable.
+///
+/// # GC rooting contract (BCE — dangling-nursery-pointer SIGSEGV class)
+///
+/// The returned `*mut JSObject` is a BARE pointer into the GC heap — the
+/// cached object may live in the NURSERY, where a minor GC MOVES it (the
+/// from-space address is then zeroed). Callers MUST pass it through
+/// `rooted!(&in(cx) let r = p)` (or otherwise root it) BEFORE any operation
+/// that can allocate or run JS (`JS_New*`, `JS::Evaluate*`, `JS_Call*`,
+/// `JS_Define*`, `JS_SetProperty`, getter-capable `JS_GetProperty` on
+/// non-plain objects). Rooting after such an operation captures an already
+/// stale address and protects nothing. Same contract for
+/// [`gc_store_get_ns`] and [`crate::require::get_builtin`]. Live-gdb
+/// evidence: worker-realm install crashed in `JSObject::getOpsGetProperty`
+/// (si_addr=0) after `JS::Evaluate2` moved the promises singleton —
+/// c12/c16/c17 under `dom_webgl2_enabled`.
 pub fn gc_store_get(cx: *mut JSContext, key: &str) -> Option<*mut JSObject> {
     GC_STORE.with(|s| s.borrow().get(cx, "", key))
 }
@@ -154,6 +169,9 @@ pub fn gc_store_insert_ns(cx: *mut JSContext, namespace: &str, key: &str, obj: *
 }
 
 /// Retrieve a JSObject from the GC-safe store by namespaced key.
+///
+/// Same GC rooting contract as [`gc_store_get`]: root the returned bare
+/// pointer before any allocation or JS execution.
 pub fn gc_store_get_ns(cx: *mut JSContext, namespace: &str, key: &str) -> Option<*mut JSObject> {
     GC_STORE.with(|s| s.borrow().get(cx, namespace, key))
 }

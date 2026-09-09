@@ -180,6 +180,20 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
   g.setImmediate[custom] = p.setImmediate;
 })"#;
     unsafe {
+        // (Bao, BCE) Root the incoming promises singleton BEFORE any
+        // allocation below. The object is a nursery-allocated
+        // JS_NewPlainObject handed in as a bare `*mut JSObject`; the factory
+        // compile+eval (JS::Evaluate2) allocates and can trigger a minor GC
+        // that MOVES it. A bare pointer held across that window goes stale —
+        // the from-space address is zeroed after evacuation, and the in-call
+        // `p.setTimeout` read then dereferences dead nursery memory
+        // (SIGSEGV in `JSObject::getOpsGetProperty`, si_addr=0; live-gdb
+        // evidence: faulting object at a mimalloc-backed nursery address,
+        // zeroed cells, worker-realm install path — c12/c16/c17 under
+        // dom_webgl2_enabled). Rooting AFTER the evaluation captures the
+        // already-stale address and protects nothing — the root must
+        // precede the first allocation.
+        rooted!(&in(cx) let promises_root = promises_obj);
         let mut stamp_js = mozjs::rust::transform_str_to_source_text(STAMP_SRC);
         let mut factory_val = UndefinedValue();
         let factory_h = MutableHandle::<Value> {
@@ -206,8 +220,9 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
         rooted!(&in(cx) let global_root = global);
         rooted!(&in(cx) let factory_obj = factory_val.to_object());
         rooted!(&in(cx) let factory_call_val = ObjectValue(factory_obj.get()));
-        // Array-backed args: the slice outlives the call.
-        let elems = [ObjectValue(global_root.get()), ObjectValue(promises_obj)];
+        // Array-backed args: the slice outlives the call. `promises_root`
+        // was pinned at function entry — its slot tracks any GC move.
+        let elems = [ObjectValue(global_root.get()), ObjectValue(promises_root.get())];
         let args = HandleValueArray {
             length_: 2,
             elements_: elems.as_ptr(),

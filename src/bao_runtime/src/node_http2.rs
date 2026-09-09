@@ -1360,6 +1360,12 @@ unsafe fn h2_emit_event(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
+    // (Bao, BCE) Root the incoming arg BEFORE any allocation below, and the
+    // just-fetched `emit` value BEFORE the event-string allocation
+    // (JS_NewStringCopyZ) — a minor GC there moves nursery objects and bare
+    // values held across it go stale (same UB class as the
+    // stamp_promisify_customs SIGSEGV).
+    rooted!(&in(cx_ref) let arg_root = arg.unwrap_or_else(UndefinedValue));
 
     let mut emit_val = UndefinedValue();
     JS_GetProperty(
@@ -1374,6 +1380,7 @@ unsafe fn h2_emit_event(
     if !emit_val.is_object() {
         return false;
     }
+    rooted!(&in(cx_ref) let emit_fn = emit_val.to_object());
 
     let c_event = ZBox::from_bytes(event.as_bytes());
     let event_str = JS_NewStringCopyZ(cx, c_event.as_ptr());
@@ -1383,7 +1390,6 @@ unsafe fn h2_emit_event(
 
     let ev_val = StringValue(&*event_str);
     rooted!(&in(cx_ref) let ev_root = ev_val);
-    rooted!(&in(cx_ref) let arg_root = arg.unwrap_or_else(UndefinedValue));
 
     let args_vals = [ev_root.get(), arg_root.get()];
     let call_args = HandleValueArray {
@@ -1391,7 +1397,6 @@ unsafe fn h2_emit_event(
         elements_: args_vals.as_ptr(),
     };
 
-    rooted!(&in(cx_ref) let emit_fn = emit_val.to_object());
     let emit_fn_val = ObjectValue(emit_fn.get());
     rooted!(&in(cx_ref) let emit_fn_root = emit_fn_val);
 
@@ -2154,24 +2159,29 @@ unsafe fn h2_on_data(
         Some(o) if !o.is_null() => o,
         _ => return,
     };
+    // (Bao, BCE) Root the stream object BEFORE the chunk→Uint8Array
+    // allocation below — bytes_to_js_uint8array can trigger a minor GC that
+    // moves the nursery object; a bare pointer held across it goes stale
+    // (same UB class as the stamp_promisify_customs SIGSEGV).
+    rooted!(&in(_cx_ref) let stream_root = stream_obj);
 
     // Synthetic-end guard: a bodyless request already got 'end' inline (and
     // the route handler finished the state).
-    if h2_get_bool_prop(cx, stream_obj, "_bodyEnded") {
+    if h2_get_bool_prop(cx, stream_root.get(), "_bodyEnded") {
         return;
     }
 
     if !chunk.is_empty() {
         let chunk_val = crate::bun_api::bytes_to_js_uint8array(cx, chunk);
         if !chunk_val.is_undefined() {
-            h2_emit_event(cx, stream_obj, "data", Some(chunk_val));
+            h2_emit_event(cx, stream_root.get(), "data", Some(chunk_val));
         }
     }
     if !last {
         return;
     }
-    h2_set_bool_prop(cx, stream_obj, "_bodyEnded", true);
-    h2_emit_event(cx, stream_obj, "end", None);
+    h2_set_bool_prop(cx, stream_root.get(), "_bodyEnded", true);
+    h2_emit_event(cx, stream_root.get(), "end", None);
     // Body fully delivered and the handler still has not responded —
     // explicit 500 (never fall through to uWS std::terminate).
     if !res.state().is_http_end_called() {
@@ -3499,6 +3509,14 @@ unsafe extern "C" fn uws_h2_listen_callback(
 
     let cb = gc_store_get_ns(cx, "http2", &cb_key);
     let server_obj = gc_store_get_ns(cx, "http2", &server_key);
+    // (Bao, BCE) Root both BEFORE the error-object allocations below —
+    // JS_NewPlainObject / JS_NewStringCopyZ can trigger a minor GC that
+    // moves the nursery objects; bare pointers held across them go stale
+    // (same UB class as the stamp_promisify_customs SIGSEGV). Null is a
+    // representable root value; the None-shaping below is preserved via
+    // is_null checks.
+    rooted!(&in(cx_ref) let cb_root_ptr = cb.unwrap_or(::std::ptr::null_mut()));
+    rooted!(&in(cx_ref) let server_root_ptr = server_obj.unwrap_or(::std::ptr::null_mut()));
 
     if listen_socket.is_null() {
         // Bind failed: node calls cb(err) and emits 'error' on the server.
@@ -3531,50 +3549,23 @@ unsafe extern "C" fn uws_h2_listen_callback(
                     JSPROP_ENUMERATE as u32,
                 );
             }
-            if let Some(server) = server_obj {
-                if !server.is_null() {
-                    h2_emit_event(cx, server, "error", Some(ObjectValue(err_obj.get())));
-                }
+            if !server_root_ptr.get().is_null() {
+                h2_emit_event(cx, server_root_ptr.get(), "error", Some(ObjectValue(err_obj.get())));
             }
-            if let Some(cb) = cb {
-                if !cb.is_null() {
-                    rooted!(&in(cx_ref) let cb_root = ObjectValue(cb));
-                    rooted!(&in(cx_ref) let arg_root = ObjectValue(err_obj.get()));
-                    let call_vals = [arg_root.get()];
-                    let call_args = HandleValueArray {
-                        length_: 1,
-                        elements_: call_vals.as_ptr(),
-                    };
-                    let mut rval = UndefinedValue();
-                    JS_CallFunctionValue(
-                        cx,
-                        realm_global_root.handle().into(),
-                        cb_root.handle().into(),
-                        &call_args,
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut rval,
-                        },
-                    );
-                    JS_ClearPendingException(cx);
-                }
-            }
-        }
-    } else {
-        if let Some(server) = server_obj {
-            if !server.is_null() {
-                h2_emit_event(cx, server, "listening", None);
-            }
-        }
-        if let Some(cb) = cb {
-            if !cb.is_null() {
-                rooted!(&in(cx_ref) let cb_root = ObjectValue(cb));
+            if !cb_root_ptr.get().is_null() {
+                rooted!(&in(cx_ref) let cb_root = ObjectValue(cb_root_ptr.get()));
+                rooted!(&in(cx_ref) let arg_root = ObjectValue(err_obj.get()));
+                let call_vals = [arg_root.get()];
+                let call_args = HandleValueArray {
+                    length_: 1,
+                    elements_: call_vals.as_ptr(),
+                };
                 let mut rval = UndefinedValue();
                 JS_CallFunctionValue(
                     cx,
                     realm_global_root.handle().into(),
                     cb_root.handle().into(),
-                    &HandleValueArray::empty(),
+                    &call_args,
                     MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData,
                         ptr: &mut rval,
@@ -3582,6 +3573,25 @@ unsafe extern "C" fn uws_h2_listen_callback(
                 );
                 JS_ClearPendingException(cx);
             }
+        }
+    } else {
+        if !server_root_ptr.get().is_null() {
+            h2_emit_event(cx, server_root_ptr.get(), "listening", None);
+        }
+        if !cb_root_ptr.get().is_null() {
+            rooted!(&in(cx_ref) let cb_root = ObjectValue(cb_root_ptr.get()));
+            let mut rval = UndefinedValue();
+            JS_CallFunctionValue(
+                cx,
+                realm_global_root.handle().into(),
+                cb_root.handle().into(),
+                &HandleValueArray::empty(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                },
+            );
+            JS_ClearPendingException(cx);
         }
     }
 

@@ -248,6 +248,11 @@ unsafe fn dispatch_accept(s: *mut us_socket_t) {
     if handler.is_null() {
         return;
     }
+    // (Bao, BCE) Root the cached handler BEFORE the JS allocations below —
+    // the __net_make_socket call runs JS and can trigger a minor GC that
+    // moves the nursery-allocated callback; a bare pointer held across it
+    // goes stale (same UB class as the stamp_promisify_customs SIGSEGV).
+    rooted!(&in(realm_cx) let handler_root = handler);
 
     // Build the JS socket: __net_make_socket(ptr) → new Socket with _ptr set.
     rooted!(&in(realm_cx) let ptr_arg = DoubleValue(s as usize as f64));
@@ -299,7 +304,7 @@ unsafe fn dispatch_accept(s: *mut us_socket_t) {
     );
 
     // connection handler(socket)
-    rooted!(&in(realm_cx) let handler_val = ObjectValue(handler));
+    rooted!(&in(realm_cx) let handler_val = ObjectValue(handler_root.get()));
     rooted!(&in(realm_cx) let sock_elem = ObjectValue(sock_obj.get()));
     let call_args = HandleValueArray {
         length_: 1,

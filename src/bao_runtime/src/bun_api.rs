@@ -4123,6 +4123,13 @@ unsafe extern "C" fn ws_on_message(
     if ws_obj.is_null() || ws_handler.is_null() {
         return;
     }
+    // (Bao, BCE) Root BOTH before any allocation below — the handler
+    // property read can run a JS getter and the message building allocates
+    // (string/Uint8Array); a minor GC there moves nursery objects and bare
+    // pointers held across it go stale (same UB class as the
+    // stamp_promisify_customs SIGSEGV). `ws_obj` is consumed further down
+    // (ws_arg) — previously only ws_handler was pinned.
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
     rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
 
     let mut msg_val = UndefinedValue();
@@ -4167,7 +4174,7 @@ unsafe extern "C" fn ws_on_message(
 
     // Call message(ws, messageData).
     rooted!(&in(cx_ref) let msg_fn_val = ObjectValue(msg_fn.get()));
-    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj));
+    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj_root.get()));
     rooted!(&in(cx_ref) let msg_arg_root = msg_arg);
     let args = [ws_arg.handle().get(), msg_arg_root.handle().get()];
     let call_args = HandleValueArray {

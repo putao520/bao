@@ -23,6 +23,11 @@ pub fn cache_builtin(cx: &mut mozjs::context::JSContext, name: &str, obj: *mut J
     gc_store::gc_store_insert(unsafe { cx.raw_cx() }, &cache_key, obj);
 }
 
+/// Look up a cached builtin module object.
+///
+/// Same GC rooting contract as [`gc_store::gc_store_get`]: the returned
+/// bare pointer may point at a nursery object that a minor GC can MOVE —
+/// root it (`rooted!`) before any allocation or JS execution, not after.
 pub fn get_builtin(cx: *mut JSContext, name: &str) -> Option<*mut JSObject> {
     let cache_key = format!("builtin:{}", name);
     gc_store::gc_store_get(cx, &cache_key).filter(|p| !p.is_null())
@@ -39,13 +44,19 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
         return;
     }
 
+    // (Bao, BCE) Root the cached module BEFORE allocating below —
+    // JS_NewPlainObject can trigger a minor GC that moves the nursery
+    // object, and a bare pointer held across it goes stale (same UB class
+    // as the stamp_promisify_customs SIGSEGV: dangling nursery pointer
+    // dereferenced on first property read).
+    rooted!(&in(cx) let assert_root = assert_obj);
+
     rooted!(&in(cx) let strict_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if strict_obj.get().is_null() {
         return;
     }
 
     unsafe {
-        rooted!(&in(cx) let assert_root = assert_obj);
         let strict_h = strict_obj.handle();
 
         for (name, _n_args) in &[
