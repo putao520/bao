@@ -325,9 +325,13 @@ pub fn pump_embedder_thread(cx: *mut JSContext) {
     unsafe {
         mozjs_sys::jsapi::js::RunJobs(cx);
     }
-    // 2. Fire due bao timers (BAO_REGISTRY wall-clock deadlines; node realms
-    //    only — servo page realms keep WebIDL natives after the shadowing
-    //    fix, but a stray node-realm-style registration still drains here).
+    // 2. Fire due bao timers (BAO_REGISTRY wall-clock deadlines). The
+    //    drain dispatches into each timer's REGISTRATION realm (fire_js
+    //    AutoRealms into the raw-rooted global) — required here because
+    //    this pump runs OUTSIDE any entered realm (before handle_msgs
+    //    enters the woken event's realm), where global-property reads and
+    //    dispatch would otherwise silently no-op (page-realm setImmediate
+    //    black, shadow_axis_probe_tests I axis).
     unsafe {
         drain_bao_timers(cx);
     }
@@ -893,6 +897,35 @@ pub fn schedule_raw(
         c.set(v.wrapping_add(1));
         v
     });
+    // I-axis (page-realm setImmediate BLACK, shadow_axis_probe_tests): at
+    // fire time the callback lookup (gc_store_get_ns) reads a property off
+    // CurrentGlobalOrNull(cx) — NULL on the embedder pump drain, which runs
+    // OUTSIDE any entered realm (before handle_msgs enters the woken
+    // event's realm) — so the popped timer's callback silently missed and
+    // page-realm setImmediate never fired. Root the registration-time
+    // global in a raw value root: the slot's ADDRESS is registered with the
+    // GC (value updated in place on move), so fire_js can read it and enter
+    // the realm WITHOUT needing a realm first. The registering realm IS
+    // entered here (setImmediate / setTimeout run inside a script). Same
+    // fix class as fetch_async's dispatch-site AutoRealm entries (cx->realm_
+    // NULL on pump/drain paths, BCE-BUG-ENG-370).
+    if !cx.is_null() {
+        // SAFETY: cx is the live registration cx.
+        let global = unsafe { CurrentGlobalOrNull(cx) };
+        if !global.is_null() {
+            bao_obj.global_root = Some(ObjectValue(global));
+            // SAFETY: the slot is the heap-stable field inside the
+            // registry-owned Box<BaoTimeoutObject> (moving the Box never
+            // moves its target); the root is released in
+            // cleanup_callback/Drop before that memory is freed.
+            let slot = bao_obj.global_root.as_mut().unwrap() as *mut JSVal;
+            // SAFETY: cx is the live registration cx.
+            let ok = unsafe { AddRawValueRoot(cx, slot, c"bao_timer_global".as_ptr()) };
+            if !ok {
+                bao_obj.global_root = None;
+            }
+        }
+    }
     BAO_REGISTRY.with(|r| r.borrow_mut().insert(bao_obj));
 
     id
@@ -900,7 +933,7 @@ pub fn schedule_raw(
 
 pub fn cancel_raw(id: u32) {
     BAO_REGISTRY.with(|r| {
-        if let ::std::option::Option::Some(obj) = r.borrow_mut().remove(id) {
+        if let ::std::option::Option::Some(mut obj) = r.borrow_mut().remove(id) {
             // GC-safe: remove callback from GcStore if cx is available.
             let cx = current_cx();
             if !cx.is_null() {
@@ -958,7 +991,7 @@ unsafe extern "C" fn clear_timeout(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             };
             let id = id_i32 as u32;
             let removed = BAO_REGISTRY.with(|r| {
-                r.borrow_mut().remove(id).map(|obj| {
+                r.borrow_mut().remove(id).map(|mut obj| {
                     obj.cleanup_callback(cx);
                 })
             });
@@ -1097,6 +1130,16 @@ pub struct BaoTimeoutObject {
     /// the legacy `TimerEntry`. Stored on the object so cancel_raw can
     /// identify the right BaoTimeoutObject when clearing.
     pub timer_id: u32,
+    /// I-axis (page-realm setImmediate BLACK, shadow_axis_probe_tests): the
+    /// registration-time global, raw-rooted via `AddRawValueRoot` on this
+    /// slot's heap-stable address. fire_js enters its realm before
+    /// dispatch: the embedder pump drain runs OUTSIDE any entered realm,
+    /// where both the gc_store callback lookup (a global-property read via
+    /// CurrentGlobalOrNull) and the dispatch itself silently no-op. The GC
+    /// updates the address-registered slot in place, so the value is read
+    /// live and valid without a realm. None = registered with a null cx
+    /// (test harness) — legacy global-resolution path.
+    pub global_root: ::std::option::Option<JSVal>,
 }
 
 impl BaoTimeoutObject {
@@ -1111,6 +1154,7 @@ impl BaoTimeoutObject {
             args: ::std::vec::Vec::new(),
             interval: ::std::option::Option::None,
             timer_id: 0,
+            global_root: ::std::option::Option::None,
         }
     }
 
@@ -1151,6 +1195,41 @@ impl BaoTimeoutObject {
     /// - `self.args` slice must point to `JSVal`s rooted by the caller.
     pub unsafe fn fire_js(&mut self, raw_cx: *mut JSContext, now: &Timespec) {
         self.fire(now);
+        // I-axis: dispatch into the REGISTRATION realm. The embedder pump
+        // drain (servo ScriptThread handle_msgs) runs OUTSIDE any entered
+        // realm; without this, CurrentGlobalOrNull is null and BOTH the
+        // gc_store callback lookup and the dispatch itself silently no-op
+        // (page-realm setImmediate never fired — the popped timer vanished).
+        // The raw-rooted global slot is readable without a realm (the GC
+        // updates its address-registered slot in place). Node drain paths
+        // already have the realm entered; re-entering it is a no-op. No
+        // captured root (null-cx test registration) keeps the legacy path.
+        //
+        // SAFETY: raw_cx is the live dispatch cx (same contract as
+        // fire_js_callback_raw); the slot value is re-rooted locally for
+        // the AutoRealm guard's lifetime.
+        let gval = self.global_root;
+        if let ::std::option::Option::Some(v) = gval {
+            if v.is_object() && !v.is_null() {
+                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(
+                    ::std::ptr::NonNull::new_unchecked(raw_cx),
+                );
+                let cx_ref = &mut wrapped_cx;
+                rooted!(&in(cx_ref) let g_root = v.to_object());
+                let _realm = mozjs::realm::AutoRealm::new_from_handle(cx_ref, g_root.handle());
+                unsafe { self.dispatch(raw_cx) };
+                return;
+            }
+        }
+        unsafe { self.dispatch(raw_cx) };
+    }
+
+    /// Resolve the callback from GcStore and dispatch it (shared by the
+    /// realm-entered and legacy fire paths).
+    ///
+    /// # Safety
+    /// `raw_cx` must be the live dispatch JSContext (pump/drain contract).
+    unsafe fn dispatch(&mut self, raw_cx: *mut JSContext) {
         if let ::std::option::Option::Some(ref key) = self.callback_key {
             if let ::std::option::Option::Some(cb) = gc_store_get_ns(raw_cx, "timer", key) {
                 if !cb.is_null() {
@@ -1160,10 +1239,39 @@ impl BaoTimeoutObject {
         }
     }
 
-    /// Remove the callback from GcStore. Call on cancel/remove.
-    fn cleanup_callback(&self, cx: *mut JSContext) {
+    /// Remove the callback from GcStore and release the raw global root.
+    /// Call on cancel/remove.
+    fn cleanup_callback(&mut self, cx: *mut JSContext) {
         if let ::std::option::Option::Some(ref key) = self.callback_key {
             gc_store_remove_ns(cx, "timer", key);
+        }
+        if let ::std::option::Option::Some(mut slot) = self.global_root.take() {
+            if !cx.is_null() {
+                // SAFETY: the slot address is the one passed to
+                // AddRawValueRoot at registration; released exactly once
+                // (take() — the Drop backstop observes None afterwards).
+                unsafe { RemoveRawValueRoot(cx, &mut slot) };
+            }
+            // cx null: leak the rooted slot rather than leave the GC root
+            // table pointing at freed memory (same bounded-leak convention
+            // as bao_engine RawValueRootGuard on a dead runtime).
+        }
+    }
+}
+
+impl Drop for BaoTimeoutObject {
+    fn drop(&mut self) {
+        // Backstop for paths that release the object without
+        // cleanup_callback (pending timers at thread teardown): release the
+        // raw root while this slot's address is still valid. No live cx:
+        // leak the slot (root table may outlive the thread) — same
+        // convention as cleanup_callback above.
+        if let ::std::option::Option::Some(mut slot) = self.global_root.take() {
+            let cx = current_cx();
+            if !cx.is_null() {
+                // SAFETY: exact slot address from AddRawValueRoot.
+                unsafe { RemoveRawValueRoot(cx, &mut slot) };
+            }
         }
     }
 }
