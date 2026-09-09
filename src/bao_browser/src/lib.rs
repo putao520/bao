@@ -359,13 +359,21 @@ impl BaoRuntime {
         let handle = WorkerHandle::new(url.to_string());
 
         // Register a per-worker scope callback carrying this handle's
-        // global-addr slot. Registered strictly before the `new Worker(url)`
-        // dispatch so the callback is queued when servo's Worker thread drains
-        // EMBEDDER_WORKER_SCOPE_CALLBACKS at scope construction (DEC-WK-001).
-        // On the callback's first run the Worker global's address is backfilled
-        // into the handle and the page's stealth profile is installed
-        // (criteria #12-17). @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
+        // global-addr slot, keyed to THIS page's WebViewId so only Workers
+        // created by this page drain it (cross-page crosstalk fix: without
+        // the key a global queue drain let one page's Worker consume another
+        // page's queued callback). Registered strictly before the
+        // `new Worker(url)` dispatch so the callback is queued when servo's
+        // Worker thread drains EMBEDDER_WORKER_SCOPE_CALLBACKS at scope
+        // construction (DEC-WK-001). On the callback's first run the Worker
+        // global's address is backfilled into the handle and the page's
+        // stealth profile is installed (criteria #12-17).
+        // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
+        let webview_id = page
+            .webview_id()
+            .ok_or_else(|| BrowserError::Init("page has no webview".into()))?;
         runtime_bridge::register_worker_scope_callback_native(
+            webview_id,
             scope_config.stealth_profile.clone(),
             Some(handle.worker_global_addr_arc()),
         );

@@ -1381,9 +1381,14 @@ pub fn inject_all_with_profile(
     inject_node_apis_with_stealth(page, profile.clone())?;
 
     // Register the servo-native Worker scope callback. This fires on any
-    // DedicatedWorker created via servo's DOM `new Worker()`. The callback
-    // captures this page's WorkerScopeConfig (which carries the parent page's
-    // stealth profile) so the Worker inherits stealth fingerprint noise.
+    // DedicatedWorker created via servo's DOM `new Worker()` in THIS page —
+    // the callback is keyed to this page's WebViewId so only this page's
+    // Workers drain it (cross-page crosstalk fix: without the key a global
+    // queue drain let one page's Worker consume another page's queued
+    // callback, installing the wrong stealth profile).
+    // The callback captures this page's WorkerScopeConfig (which carries the
+    // parent page's stealth profile) so the Worker inherits stealth
+    // fingerprint noise.
     // No global-addr slot here: at page-init time no WorkerHandle exists yet.
     // Workers created via BaoRuntime::create_worker_with_url register their own
     // per-worker callback carrying the handle's addr slot (REQ-BRW-004
@@ -1392,7 +1397,10 @@ pub fn inject_all_with_profile(
     // no bao-side handle to backfill.
     // @trace DEC-WK-001 servo-native Worker path (vendor patch drain)
     // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK stealth inheritance
-    register_worker_scope_callback_native(profile.clone(), None);
+    let webview_id = page
+        .webview_id()
+        .ok_or_else(|| BrowserError::Init("page has no webview".into()))?;
+    register_worker_scope_callback_native(webview_id, profile.clone(), None);
 
     Ok(())
 }
@@ -1400,13 +1408,18 @@ pub fn inject_all_with_profile(
 /// Register a servo-native Worker scope callback via the vendor patch
 /// `servo::register_worker_scope_callback` (DEC-WK-001 / TASK-1).
 ///
-/// The callback is queued in servo's global `EMBEDDER_WORKER_SCOPE_CALLBACKS`
-/// vector and drained once per Worker scope creation inside
-/// `DedicatedWorkerGlobalScope::run_worker_scope` — after the Worker's global
-/// is built but before the event loop starts. It runs on the Worker thread
-/// (the same thread that owns the Worker's JSContext), so it is safe to
-/// dereference the raw `cx`/`global` pointers there (per BCE-20260621-001:
-/// DOM↔Node interop must happen on the owning thread).
+/// The callback is queued in servo's WebViewId-keyed
+/// `EMBEDDER_WORKER_SCOPE_CALLBACKS` vector and drained once per Worker scope
+/// creation inside `DedicatedWorkerGlobalScope::run_worker_scope` — after the
+/// Worker's global is built but before the event loop starts. It runs on the
+/// Worker thread (the same thread that owns the Worker's JSContext), so it is
+/// safe to dereference the raw `cx`/`global` pointers there (per
+/// BCE-20260621-001: DOM↔Node interop must happen on the owning thread).
+///
+/// Per-worker association (cross-page crosstalk fix): the queue entry is
+/// keyed by `webview_id` and only Workers created by THAT webview drain it —
+/// page-JS `new Worker()` on page B can never consume page A's queued
+/// callback.
 ///
 /// What the callback does (mirrors `worker_scope_init_native` for the bypass):
 ///   - Install stealth profile inheritance keyed by the Worker global's address
@@ -1423,6 +1436,8 @@ pub fn inject_all_with_profile(
 /// only needed for bao_engine::WebWorker (DEC-WK-003 dual-track).
 ///
 /// # Arguments
+/// * `webview_id` - The page's WebViewId the callback is bound to; the worker
+///   scope drain only fires this callback for Workers created by that page.
 /// * `profile` - The parent page's stealth profile the Worker inherits
 ///   (criteria #12-17), or None for a default (non-stealth) Worker scope.
 /// * `global_addr_slot` - Slot to backfill the Worker global's address into
@@ -1435,6 +1450,7 @@ pub fn inject_all_with_profile(
 /// @trace DEC-WK-003 dual-track isolation (bypass not abandoned)
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8,12..17]
 pub fn register_worker_scope_callback_native(
+    webview_id: servo::WebViewId,
     profile: Option<bao_stealth::StealthProfile>,
     global_addr_slot: Option<Arc<AtomicU64>>,
 ) {
@@ -1481,7 +1497,8 @@ pub fn register_worker_scope_callback_native(
             }
         });
 
-    servo::register_worker_scope_callback(callback);
+    // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK (webview-keyed drain)
+    servo::register_worker_scope_callback(webview_id, callback);
 }
 
 // ─── Worker Scope Initialization Bridge (REQ-BRW-004) ──────────────
@@ -1528,11 +1545,28 @@ unsafe fn worker_scope_init_native(
     config: &crate::delegate::WorkerScopeConfig,
 ) {
     use mozjs::context::JSContext;
+    use mozjs::realm::AutoRealm;
     use std::ptr::NonNull;
 
     if raw_cx.is_null() || global.is_null() {
         return;
     }
+
+    // Realm entry (P0, found by BRW-004 wave1 live tests): the Worker thread's
+    // cx starts in the NULL realm (vendor dedicatedworkerglobalscope.rs embedder
+    // drain note — "the callback owns its own realm lifecycle"), so any JSAPI
+    // that atomizes (JS_HasProperty → Atomize → zone->atomCache()) dereferences
+    // a NULL zone and SIGSEGVs the whole process on the first stealth install.
+    // Enter the Worker global's realm for the duration of the install:
+    // AutoRealm roots `global`, sets the cx's current realm/zone, and on drop
+    // restores the NULL starting realm (leaveRealm is null-safe —
+    // JSContext-inl.h leaveRealm skips startingRealm->leave() when null).
+    // Same pattern as `evaluate_in_node_realm` above.
+    // SAFETY: raw_cx/global were null-checked above; the AutoRealm keeps the
+    // global rooted for the whole install block.
+    let cx_nn = NonNull::new_unchecked(raw_cx);
+    let mut cx = JSContext::from_ptr(cx_nn);
+    let _worker_realm = AutoRealm::new(&mut cx, NonNull::new_unchecked(global));
 
     // @trace REQ-BRW-004 [criterion:12..17] stealth consistency
     // Install stealth properties on Worker global if profile is provided.

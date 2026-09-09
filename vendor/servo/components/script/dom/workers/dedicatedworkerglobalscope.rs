@@ -599,7 +599,13 @@ impl DedicatedWorkerGlobalScope {
                 // callback owns its own realm lifecycle.
                 // @trace DEC-WK-001 servo-native Worker path (vendor patch)
                 // @trace REQ-BRW-004 [criterion:1,3,7] Worker thread owns Runtime/JSContext
-                for callback in crate::event_loop::script_thread::drain_worker_scope_callbacks() {
+                // BAO PATCH (per-worker association): drain only the callbacks
+                // registered for THIS Worker's webview, so page-JS `new Worker()`
+                // can never consume another page's queued callback
+                // (cross-page stealth-profile crosstalk).
+                for callback in
+                    crate::event_loop::script_thread::drain_worker_scope_callbacks(webview_id)
+                {
                     unsafe {
                         callback(
                             cx.raw_cx_no_gc() as *mut std::ffi::c_void,

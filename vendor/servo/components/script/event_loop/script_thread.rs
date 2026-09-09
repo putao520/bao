@@ -221,33 +221,42 @@ fn drain_embedder_callbacks(webview_id: WebViewId) -> Vec<EmbedderScriptCallback
 //   - hook self.close()/importScripts natives (criteria #4/#5/#8)
 type EmbedderWorkerScopeCallback = Box<dyn FnOnce(*mut c_void, *mut c_void) + Send>;
 
-static EMBEDDER_WORKER_SCOPE_CALLBACKS: std::sync::Mutex<Vec<EmbedderWorkerScopeCallback>> =
+// BAO PATCH (per-worker association): entries are keyed by WebViewId so a
+// Worker scope creation only drains callbacks registered for ITS webview.
+// Mirrors the WebViewId-keyed `EMBEDDER_SCRIPT_CALLBACKS` / `drain_embedder_callbacks`
+// above. Without the key, a global Vec drain let one page's Worker consume
+// another page's queued callback (cross-page stealth-profile crosstalk).
+static EMBEDDER_WORKER_SCOPE_CALLBACKS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerScopeCallback)>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Register a callback to be executed on the Worker thread the next time a
 /// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
-/// constructing the Worker global object.
+/// constructing the Worker global object **for `webview_id`**.
 ///
 /// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
 /// are actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
 /// It runs on the Worker thread (not the ScriptThread).
-pub fn register_worker_scope_callback(callback: EmbedderWorkerScopeCallback) {
+pub fn register_worker_scope_callback(webview_id: WebViewId, callback: EmbedderWorkerScopeCallback) {
     EMBEDDER_WORKER_SCOPE_CALLBACKS
         .lock()
         .unwrap()
-        .push(callback);
+        .push((webview_id, callback));
 }
 
-/// Drain all pending Worker scope callbacks.
+/// Drain pending Worker scope callbacks registered for `webview_id`.
 ///
-/// Called once per Worker scope creation; each callback runs at most once.
-/// This must be invoked from the Worker thread after the Worker's global
-/// object is constructed but before the event loop starts processing
-/// messages - see `DedicatedWorkerGlobalScope::run_worker_scope`.
-pub(crate) fn drain_worker_scope_callbacks() -> Vec<EmbedderWorkerScopeCallback> {
+/// Callbacks registered for other webviews stay queued for their own Worker
+/// scope creation. Called once per Worker scope creation; each callback runs
+/// at most once. This must be invoked from the Worker thread after the
+/// Worker's global object is constructed but before the event loop starts
+/// processing messages - see `DedicatedWorkerGlobalScope::run_worker_scope`.
+pub(crate) fn drain_worker_scope_callbacks(webview_id: WebViewId) -> Vec<EmbedderWorkerScopeCallback> {
     let mut guard = EMBEDDER_WORKER_SCOPE_CALLBACKS.lock().unwrap();
-    let drained: Vec<_> = guard.drain(..).collect();
-    drained
+    let (matching, remaining): (Vec<_>, Vec<_>) =
+        guard.drain(..).partition(|(wid, _)| *wid == webview_id);
+    *guard = remaining;
+    matching.into_iter().map(|(_, cb)| cb).collect()
 }
 
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });

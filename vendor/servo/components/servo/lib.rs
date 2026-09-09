@@ -120,7 +120,7 @@ pub fn register_script_thread_callback(
 
 /// Register a callback to be executed on the Worker thread the next time a
 /// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
-/// constructing the Worker global object.
+/// constructing the Worker global object **for `webview_id`**.
 ///
 /// The callback receives `(cx: *mut c_void, global: *mut c_void)` which are
 /// actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
@@ -128,10 +128,14 @@ pub fn register_script_thread_callback(
 /// Bao vendor patch (DEC-WK-001 / TASK-1: servo-native Worker path): inject
 /// stealth profile inheritance, WorkerHandle lifecycle tracking, and
 /// self.close()/importScripts native hooks.
+/// Bao patch (per-worker association): keyed by WebViewId — a Worker scope
+/// creation only drains callbacks registered for its own webview, so page-JS
+/// `new Worker()` can never consume another page's queued callback.
 pub fn register_worker_scope_callback(
+    webview_id: WebViewId,
     callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send>,
 ) {
-    script::register_worker_scope_callback(callback);
+    script::register_worker_scope_callback(webview_id, callback);
 }
 
 /// Set anti-fingerprinting TLS/HTTP2 configuration for servo's network layer
