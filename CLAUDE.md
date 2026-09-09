@@ -233,7 +233,7 @@ make bce-check
 
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
-#### servo 定制文件清单(17 个,上游同步时逐个重放)
+#### servo 定制文件清单(23 个条目,上游同步时逐个重放)
 
 上游同步 servo 时,先 `grep -rln "BCE-\|BAO " vendor/servo/components/` 重建清单,再按"upstream 基底 + patch 精确重放"迁移(patch 锚点与完整记录见 git log 各 stage commit message):
 
@@ -243,10 +243,15 @@ make bce-check
 | `script/engine/handle.rs`(2026-08-23 上游 b54baa327 移动后新家)| **Bao 补丁版 JSEngineSetup**:`JSEngineSetup(Option<JSEngine>)` 幂等 init(Ok→存 handle;AlreadyInitialized→`JSEngine::process_handle()` 优先 + JS_ENGINE spin 回退 50×1ms;AlreadyShutDown→None;其他 Err→panic)+ Drop engine-leak(`mem::forget`,不清 JS_ENGINE,多 BaoRuntime 生命周期)。上游版 handle.rs 是裸 `JSEngineSetup(JSEngine)`,重放禁用上游版 |
 | `script/lib.rs` | 26-28 行:`pub use event_loop::script_thread::{register_embedder_callback, register_worker_scope_callback};`(Bao embedder 回调 re-export,上游同步合并时必保) |
 | `script/dom/workers/dedicatedworkerglobalscope.rs` | worker-scope 回调 drain(2026-09-09 起按 `webview_id` per-worker 键控,6b3caa34 跨页串扰根治)+ clear_js_runtime 前 realm flush(UAF 防护) |
-| `script/dom/serviceworker/serviceworkerglobalscope.rs` | ServiceWorkerGlobalScope 接 WebViewId-keyed `drain_worker_scope_callbacks`(SW scope 的 stealth 注入点,REQ-BRW-004 C19 S1,f77faf8b) |
+| `script/dom/serviceworker/serviceworkerglobalscope.rs` | ServiceWorkerGlobalScope 接 WebViewId-keyed `drain_worker_scope_callbacks`(SW scope 的 stealth 注入点,REQ-BRW-004 C19 S1,f77faf8b)<br>Response(mediator) 分支重写为 `FetchEvent::handle_mediator` 真 FetchEvent 管线(替代上游裸 Event TODO)+ `onfetch` event_handler(REQ-BRW-004 C19 S2a,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/serviceworker/fetchevent.rs`(新增,上游无此文件)+ `script_bindings/webidls/FetchEvent.webidl`(新增)| FetchEvent DOM 类型(request/respondWith/waitUntil 全实现;respondWith 单次 InvalidStateError 门);`handle_mediator`:构造 Request → dispatch 受信 fetch 事件 → PromiseNativeHandler 在 SW 事件循环异步 settle → 读 status/headers/body → `CustomResponse::new` → `response_chan.send(Some)`,未调用/rejected/非 Response → pass-through `None`(dom/serviceworker/mod.rs 注册 + ServiceWorkerGlobalScope.webidl `onfetch` 解注释,REQ-BRW-004 C19 S2a,用户裁决 2026-09-09 vendor patch) |
 | `script/dom/workers/workerglobalscope.rs` | 存 `init.webgl_chan`(原 new_inherited 丢弃)+ accessor——worker 继承父 Window 的 WebGL 通道,OffscreenCanvas WebGL1 worker 通路载体(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch) |
-| `script/dom/webgl/webglrenderingcontext.rs` | `new_inherited` 解 Window 锚定(收 `&GlobalScope`,`webgl_chan_from_global` helper 按 Window/WorkerGlobalScope 分派 + `new_in_worker` 入口);`mark_as_dirty` 的 XR 检查 Window 降级(原 `as_window()` 对 worker 首次 draw 即 panic)(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch) |
-| `script/dom/canvas/offscreencanvas.rs` | `get_or_init_webgl_context` 按 global 类型分派(Window 旧路 fire `webglcontextcreationerror` / Worker 新路 `new_in_worker`;原 Window downcast 对 worker 恒 null)(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch;WebGL2 分支仍 Window-only = W3b 遗留) |
+| `script/dom/webgl/webglrenderingcontext.rs` | `new_inherited` 解 Window 锚定(收 `&GlobalScope`,`webgl_chan_from_global` helper 按 Window/WorkerGlobalScope 分派 + `new_in_worker` 入口);`mark_as_dirty` 的 XR 检查 Window 降级(原 `as_window()` 对 worker 首次 draw 即 panic);`GetShaderPrecisionFormat` 反射锚 `as_window()` → 所在 global(原 worker 侧 panic)(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/webgl/webgl2renderingcontext.rs` | `new_inherited` 解 Window 锚定(收 `&GlobalScope`,base 创建按 Window/Worker 分派)+ `new_in_worker` worker-realm 入口(W3a 同形态,REQ-BRW-004 C14 W3b,用户裁决 2026-09-09 vendor patch) |
+| `script/dom/webgl/webglshaderprecisionformat.rs` | `new` 收 `&GlobalScope`(原 `&Window`)——worker 侧 getShaderPrecisionFormat 反射载体(W3b 连带) |
+| `script/dom/canvas/offscreencanvas.rs` | `get_or_init_webgl_context` / `get_or_init_webgl2_context` 均按 global 类型分派(Window 旧路 fire `webglcontextcreationerror` / Worker 新路 `new_in_worker`;原 Window downcast 对 worker 恒 null)(REQ-BRW-004 C14,用户裁决 2026-09-09 vendor patch;WebGL2 分派为 W3b) |
+| `script_bindings/webidls/WebGL2RenderingContext.webidl` | `Exposed=Window` → `(Window,Worker)`:worker 侧 WebGL2 原型方法组(readPixels 等 mixin 成员随 includer 暴露)原在 worker realm 不定义(REQ-BRW-004 C14 W3b,用户裁决 2026-09-09 vendor patch) |
+| `script_bindings/webidls/WebGL{Query,Sampler,Sync,TransformFeedback,VertexArrayObject}.webidl`(5 个) | `Exposed=Window` → `(Window,Worker)`(保 `Pref="dom_webgl2_enabled"`):WebIDL parser 强制方法返回类型须在方法暴露处可见——WebGL2 方法返回这些 Window-only 辅助接口,不改则 codegen 拒绝(同 W3b 连带) |
 | `canvas/canvas_paint_thread.rs` | `CanvasCommand::GetImageData` handler 接全局 canvas 噪声(seed=0 字节零 diff 硬保证;单咽喉覆盖 convertToBlob/transferToImageBitmap/createImageBitmap/texImage2D/createPattern,REQ-BRW-004 C13 W2,6bcf30af) |
 | `canvas/canvas_noise.rs`(Bao 新增,上游无此文件) | `CanvasNoiseConfig` 确定性噪声算法 + 全局 seed set/get(`set_canvas_noise_seed` 的消费载体;W2 起被 paint 线程读取) |
 | `script_bindings/lock.rs` | ThreadUnsafeOnceLock 等(Bao 扩展) |

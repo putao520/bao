@@ -16,7 +16,10 @@ interface ServiceWorkerGlobalScope : WorkerGlobalScope {
 
   //attribute EventHandler oninstall;
   //attribute EventHandler onactivate;
-  //attribute EventHandler onfetch;
+  // Bao vendor patch (user ruling 2026-09-09): exposed with the FetchEvent
+  // pipeline (REQ-BRW-004 C19 S2a); oninstall/onactivate remain commented
+  // (their lifecycle events have no dispatch sites yet).
+  attribute EventHandler onfetch;
 
   // event
   attribute EventHandler onmessage; // event.source of the message events is Client object

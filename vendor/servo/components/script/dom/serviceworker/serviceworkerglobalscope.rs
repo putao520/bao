@@ -49,9 +49,9 @@ use crate::dom::csp::Violation;
 use crate::dom::debugger::debuggerglobalscope::DebuggerGlobalScope;
 use crate::dom::dedicatedworkerglobalscope::AutoWorkerReset;
 use crate::dom::event::Event;
-use crate::dom::eventtarget::EventTarget;
 use crate::dom::extendableevent::ExtendableEvent;
 use crate::dom::extendablemessageevent::ExtendableMessageEvent;
+use crate::dom::fetchevent::FetchEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::RethrowErrors;
 use crate::dom::script_execution::ScriptOptions;
@@ -595,11 +595,17 @@ impl ServiceWorkerGlobalScope {
                 self.upcast::<WorkerGlobalScope>().process_event(msg, cx);
             },
             Response(mediator) => {
-                // TODO XXXcreativcoder This will eventually use a FetchEvent interface to fire event
-                // when we have the Request and Response dom api's implemented
-                // https://w3c.github.io/ServiceWorker/#fetchevent-interface
-                self.upcast::<EventTarget>().fire_event(cx, atom!("fetch"));
-                let _ = mediator.response_chan.send(None);
+                // Bao vendor patch (user ruling 2026-09-09): replaces upstream
+                // TODO XXXcreativcoder's bare `Event` placeholder with the real
+                // FetchEvent pipeline
+                // (https://w3c.github.io/ServiceWorker/#fetchevent-interface).
+                // The event carries the mediated Request and owns the
+                // respondWith receiver; the mediator channel is answered
+                // inside FetchEvent::handle_mediator (Some(CustomResponse)
+                // when respondWith fulfilled, None as pass-through otherwise —
+                // identical to the previous unconditional send(None) fallback).
+                let mut realm = enter_auto_realm(cx, self.upcast::<WorkerGlobalScope>());
+                FetchEvent::handle_mediator(&mut realm.current_realm(), self, mediator);
             },
             WakeUp => {},
         }
@@ -637,6 +643,9 @@ impl ServiceWorkerGlobalScopeMethods<crate::DomTypeHolder> for ServiceWorkerGlob
 
     // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onmessageerror
     event_handler!(messageerror, GetOnmessageerror, SetOnmessageerror);
+
+    // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onfetch
+    event_handler!(fetch, GetOnfetch, SetOnfetch);
 }
 
 impl HasOrigin for ServiceWorkerGlobalScope {

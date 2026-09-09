@@ -7,6 +7,7 @@ pub(crate) mod cachestorage;
 pub(crate) mod client;
 pub(crate) mod extendableevent;
 pub(crate) mod extendablemessageevent;
+pub(crate) mod fetchevent;
 pub(crate) mod navigationpreloadmanager;
 pub(crate) mod notification;
 #[allow(
