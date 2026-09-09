@@ -1564,6 +1564,16 @@ unsafe fn worker_scope_init_native(
     // Same pattern as `evaluate_in_node_realm` above.
     // SAFETY: raw_cx/global were null-checked above; the AutoRealm keeps the
     // global rooted for the whole install block.
+    //
+    // Authorship (user ruling 2026-09-09): this AutoRealm NULL-realm fix was
+    // authored during BRW-004 wave1 and landed aboard the per-worker commit
+    // 6b3caa34 (shared-file race, kept unsplit — already pushed, no force);
+    // claimed here by the wave1 P0 closer. Synergy with 6b3caa34's WebViewId
+    // partitioning: without THIS fix the first stealth install atomizes on a
+    // NULL zone and kills the process (no test can even run); without THAT
+    // fix a page's Worker drains another page's queued callback and gets the
+    // WRONG stealth profile. Both are required for correct stealth
+    // inheritance (REQ-BRW-004 C12-17).
     let cx_nn = NonNull::new_unchecked(raw_cx);
     let mut cx = JSContext::from_ptr(cx_nn);
     let _worker_realm = AutoRealm::new(&mut cx, NonNull::new_unchecked(global));
