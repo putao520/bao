@@ -80,3 +80,7 @@ servo vendor patch 已就绪(register_worker_scope_callback + dedicatedworkerglo
 - SPEC: BCE-20260627-008 残留=0 | 实现: (1) grep bao_engine::WebWorker 全项目 = 0;(2) cargo build --all;(3) cargo test -p bao_browser --test worker_tests 全 pass;(4) cargo test -p bao_browser --test bce004_stress_tests 全 pass(含 concurrent_terminate,无 #[ignore]);(5) oracle_gate(REQ-BRW-004)
 - 依赖: TASK-4
 - 状态: pending
+
+## 2026-09-10 状态注记(主会话轻触记账,不改上方任务树)
+
+TASK-1~5 实际均已落地(bypass 零残留:web_worker.rs 已删/bao_engine::WebWorker 全项目零活引用/worker 路径 servo 原生——2026-09-09/10 BRW-004 大波 24+ commits 完成 C1-C19 主体,V 批判词与剩余红面见 .claude/prompts/brw004-wave-continuation.md 与 brw004-v-batch-report.md)。本 plan 的 epoch 任务树保持原样作历史档案;REQ-BRW-004 收口以 wave-continuation 文件为准。
