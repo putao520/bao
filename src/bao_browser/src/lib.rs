@@ -192,6 +192,15 @@ impl BaoRuntime {
         // at runtime per IDB open, so every page (and worker) scope gets it.
         let mut preferences = Preferences::default();
         preferences.dom_indexeddb_enabled = true;
+        // `dom_offscreen_canvas_enabled` defaults to false upstream
+        // (experimental); the vendor OffscreenCanvas implementation
+        // (`script/dom/canvas/offscreencanvas.rs`) is complete
+        // (Constructor/getContext/transferToImageBitmap/convertToBlob,
+        // `Exposed=(Window,Worker)`), so the pref is the only gate.
+        // REQ-BRW-004 C13 + user ruling 2026-09-09: stealth pages need a
+        // worker-realm canvas surface (CreepJS/fp-collect probe OffscreenCanvas
+        // inside Workers; `undefined` there is itself a fingerprint signal).
+        preferences.dom_offscreen_canvas_enabled = true;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls

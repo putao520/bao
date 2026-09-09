@@ -75,3 +75,4 @@ mod worker_concurrent_servo_tests;
 mod worker_fingerprint_consistency_tests;
 mod worker_onerror_integration_tests;
 mod worker_tests;
+mod stealth_offscreencanvas_tests;
