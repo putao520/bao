@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 /// Global canvas noise seed (0 = disabled). Written from Bao runtime bridge,
 /// read from canvas paint thread.
@@ -190,6 +190,32 @@ mod tests {
         let mut pixels = [128u8, 64, 32, 255];
         config.apply_to_pixels(&mut pixels, 0, 0);
         assert_eq!(pixels, [128, 64, 32, 255]);
+    }
+
+    #[test]
+    fn global_seed_zero_yields_none_and_roundtrip() {
+        // Bao (REQ-BRW-004 C13): hard gate for the paint-thread wiring —
+        // seed 0 (never set / explicitly disabled) must read back as `None`
+        // so `CanvasCommand::GetImageData` stays byte-identical to upstream.
+        // Single test: the statics are process-global, so the sequence must
+        // not race any sibling test in this binary.
+        assert_eq!(get_global_canvas_noise(), None);
+
+        set_global_canvas_noise(0, 0.001);
+        assert_eq!(get_global_canvas_noise(), None);
+
+        set_global_canvas_noise(42, 0.001);
+        match get_global_canvas_noise() {
+            Some((seed, amplitude)) => {
+                assert_eq!(seed, 42);
+                assert!((amplitude - 0.001).abs() < 1e-12);
+            },
+            None => panic!("seed 42 must read back as enabled"),
+        }
+
+        // Hygiene: leave the process-global in the disabled state.
+        set_global_canvas_noise(0, 0.0);
+        assert_eq!(get_global_canvas_noise(), None);
     }
 
     #[test]

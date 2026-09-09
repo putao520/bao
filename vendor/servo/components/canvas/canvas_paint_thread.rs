@@ -21,6 +21,9 @@ use servo_canvas_traits::canvas::*;
 use webrender_api::ImageKey;
 
 use crate::canvas_data::*;
+// Bao (REQ-BRW-004 C13, user ruling 2026-09-09 vendor patch): global canvas
+// noise consumed at the paint-thread readback choke point.
+use crate::canvas_noise::{CanvasNoiseConfig, get_global_canvas_noise};
 
 pub struct CanvasPaintThread {
     canvases: FxHashMap<CanvasId, Canvas>,
@@ -301,7 +304,18 @@ impl CanvasPaintThread {
                 );
             },
             CanvasCommand::GetImageData(dest_rect, sender) => {
-                let snapshot = self.canvas(canvas_id).read_pixels(dest_rect);
+                let mut snapshot = self.canvas(canvas_id).read_pixels(dest_rect);
+                // Bao (REQ-BRW-004 C13, user ruling 2026-09-09 vendor patch):
+                // deterministic canvas noise at the paint-thread readback choke
+                // point. Every pixel read that leaves the canvas — JS
+                // `getImageData` (window and worker realms), `toDataURL`,
+                // `toBlob`, `convertToBlob`, `transferToImageBitmap`,
+                // `createImageBitmap` — funnels through this command, a surface
+                // JS-realm hooks cannot fully cover. Unset/disabled seed
+                // resolves to `None` here: byte-for-byte identical to upstream.
+                // Coordinates are region-local, matching the JS hook's
+                // `addNoiseToImageData(imgData, sw)` semantics.
+                apply_canvas_noise(&mut snapshot, get_global_canvas_noise());
                 if let Err(error) = sender.send(snapshot.to_shared()) {
                     warn!("GetImageData response failed ({error})");
                 }
@@ -632,5 +646,121 @@ impl Canvas {
             Canvas::Vello(canvas_data) => canvas_data.recreate(size),
             Canvas::VelloCPU(canvas_data) => canvas_data.recreate(size),
         }
+    }
+}
+
+/// Bao (REQ-BRW-004 C13): apply the global deterministic canvas noise to a
+/// readback [`Snapshot`] in place. `noise` is `get_global_canvas_noise()`;
+/// `None` (seed never set or explicitly disabled) leaves the bytes untouched,
+/// so the upstream behaviour is preserved bit-for-bit. Only the returned copy
+/// is mutated — the canvas surface itself is never noised, matching the JS
+/// hook which noises the returned `ImageData` only.
+fn apply_canvas_noise(snapshot: &mut Snapshot, noise: Option<(u64, f64)>) {
+    if let Some((seed, amplitude)) = noise {
+        let size = snapshot.size();
+        CanvasNoiseConfig::new(seed, amplitude).apply_to_pixels(
+            snapshot.as_raw_bytes_mut(),
+            size.width,
+            size.height,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pixels::{SnapshotAlphaMode, SnapshotPixelFormat};
+
+    fn patterned_snapshot(width: u32, height: u32) -> Snapshot {
+        let len = width as usize * height as usize * 4;
+        Snapshot::from_vec(
+            Size2D::new(width, height),
+            SnapshotPixelFormat::RGBA,
+            SnapshotAlphaMode::Transparent {
+                premultiplied: true,
+            },
+            (0..len).map(|i| (i % 251) as u8).collect(),
+        )
+    }
+
+    #[test]
+    fn noise_none_leaves_bytes_untouched() {
+        // Hard gate (completion ①): seed unset/disabled => zero diff.
+        let mut snapshot = patterned_snapshot(4, 3);
+        let before = snapshot.as_raw_bytes().to_vec();
+        apply_canvas_noise(&mut snapshot, None);
+        assert_eq!(snapshot.as_raw_bytes(), &before[..]);
+    }
+
+    #[test]
+    fn noise_is_deterministic_for_same_seed() {
+        // Hard gate (completion ③): two reads under the same seed are
+        // byte-identical.
+        let mut first = patterned_snapshot(8, 8);
+        let mut second = patterned_snapshot(8, 8);
+        apply_canvas_noise(&mut first, Some((42, 0.001)));
+        apply_canvas_noise(&mut second, Some((42, 0.001)));
+        assert_eq!(first.as_raw_bytes(), second.as_raw_bytes());
+    }
+
+    #[test]
+    fn noise_different_seeds_diverge() {
+        let mut seed_42 = patterned_snapshot(8, 8);
+        let mut seed_43 = patterned_snapshot(8, 8);
+        apply_canvas_noise(&mut seed_42, Some((42, 0.5)));
+        apply_canvas_noise(&mut seed_43, Some((43, 0.5)));
+        assert_ne!(seed_42.as_raw_bytes(), seed_43.as_raw_bytes());
+    }
+
+    #[test]
+    fn noise_changes_readback_and_preserves_alpha() {
+        let mut snapshot = patterned_snapshot(8, 8);
+        let before = snapshot.as_raw_bytes().to_vec();
+        apply_canvas_noise(&mut snapshot, Some((42, 0.5)));
+        assert_ne!(snapshot.as_raw_bytes(), &before[..]);
+        let after = snapshot.as_raw_bytes();
+        for alpha_index in (3..after.len()).step_by(4) {
+            assert_eq!(after[alpha_index], before[alpha_index]);
+        }
+    }
+
+    #[test]
+    fn noise_coordinates_are_region_local() {
+        // Parity with the JS hook: `addNoiseToImageData(imgData, sw)` keys the
+        // noise on coordinates local to the returned region, so a sub-rect
+        // read must be byte-identical to the same region of a full read.
+        let raw_full = patterned_snapshot(8, 8);
+        let raw_crop = raw_full.get_rect(Rect::from_size(Size2D::new(4, 4)));
+        // Precondition: the crop is the top-left 4x4 of the full snapshot
+        // (`rgba8_get_rect` walks the source with the source's stride).
+        let full_stride = 8usize * 4;
+        let row_len = 4usize * 4;
+        let raw_crop_bytes = raw_crop.as_raw_bytes();
+        let raw_full_bytes = raw_full.as_raw_bytes();
+        for row in 0..4usize {
+            let src = row * full_stride;
+            assert_eq!(
+                &raw_crop_bytes[row * row_len..(row + 1) * row_len],
+                &raw_full_bytes[src..src + row_len],
+            );
+        }
+
+        let mut full = raw_full;
+        let mut crop = raw_crop;
+        apply_canvas_noise(&mut full, Some((42, 0.5)));
+        apply_canvas_noise(&mut crop, Some((42, 0.5)));
+
+        let noised_region_of_full = full.get_rect(Rect::from_size(Size2D::new(4, 4)));
+        assert_eq!(crop.as_raw_bytes(), noised_region_of_full.as_raw_bytes());
+    }
+
+    #[test]
+    fn noise_ignores_undersized_or_empty_data() {
+        // `CanvasNoiseConfig::apply_to_pixels` no-ops on empty snapshots
+        // (`read_pixels` returns `Snapshot::empty()` for off-canvas reads).
+        let mut empty = Snapshot::empty();
+        let before = empty.as_raw_bytes().to_vec();
+        apply_canvas_noise(&mut empty, Some((42, 0.5)));
+        assert_eq!(empty.as_raw_bytes(), &before[..]);
     }
 }
