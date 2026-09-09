@@ -421,6 +421,10 @@ pub async fn main_fetch(
     // Step 1: Let request be fetchParam's request.
     let request = &mut fetch_params.request;
     send_early_httprequest_to_devtools(request, context);
+    // BAO PATCH (REQ-BRW-004 C19-②): request-side Network event tap — the
+    // embedder-installed observability face beside the devtools
+    // instrumentation. No-op unless servo::set_network_event_tap installed one.
+    crate::http_loader::bao_emit_network_request_tap(request);
     // Step 2: Let response be null.
     let mut response = None;
 
@@ -860,6 +864,11 @@ pub async fn main_fetch(
         if !response_loaded {
             wait_for_response(request, &mut response, target, done_chan, context).await;
         }
+        // BAO PATCH (REQ-BRW-004 C19-②): response-side Network event tap for
+        // the synchronous branch — the upstream devtools response send skips
+        // this path entirely, but synchronous XHR is a first-class CDP
+        // observation surface (the sub2 live probe drives a sync XHR).
+        crate::http_loader::bao_emit_network_response_tap(request, &response);
         // overloaded similarly to process_response
         target.process_response_eof(request, &response);
         return response;
@@ -879,6 +888,11 @@ pub async fn main_fetch(
     // Send Response to Devtools
     send_response_to_devtools(request, context, &response, None);
     send_security_info_to_devtools(request, context, &response);
+    // BAO PATCH (REQ-BRW-004 C19-②): response-side Network event tap — the
+    // embedder observability face. Headers/status are final here (CDP
+    // responseReceived semantics); service-worker-mediated and plain network
+    // responses both settle through this point.
+    crate::http_loader::bao_emit_network_response_tap(request, &response);
 
     // Step 23.
     if !response_loaded {

@@ -94,6 +94,13 @@ impl FrameDecoder {
                     ))
                 }
                 Ok(k) => self.buffer.extend_from_slice(&chunk[..k]),
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    // EINTR: the syscall was interrupted before any byte was
+                    // consumed — buffer state is intact, retry the read (the
+                    // canonical POSIX read loop; without this a signal during
+                    // a long blocking WS read surfaces as a hard Io error).
+                    continue;
+                },
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>

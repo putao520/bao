@@ -243,6 +243,20 @@ pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
     net::connector::set_stealth_tls_config(config);
 }
 
+/// Network event tap types + installer for embedder-side network observability
+/// (Bao vendor patch, REQ-BRW-004 criterion #19 subclause ②: CDP Network
+/// domain observability of SW-intercepted and regular fetches).
+///
+/// When a tap is installed, `main_fetch`'s request/response instrumentation
+/// points forward every fetch (service-worker-mediated responses and the SW
+/// realm's own sub-fetches included) to the closure. The closure runs on
+/// fetch worker threads and must not block.
+pub use net::http_loader::{BaoNetworkTap, BaoNetworkTapEvent};
+
+pub fn set_network_event_tap(tap: Option<BaoNetworkTap>) {
+    net::http_loader::set_network_event_tap(tap);
+}
+
 /// Set anti-fingerprinting canvas noise seed and amplitude (REQ-STL-003).
 /// The noise is applied at the servo rendering layer, undetectable from JS.
 pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {

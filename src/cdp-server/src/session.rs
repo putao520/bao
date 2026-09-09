@@ -34,6 +34,18 @@ impl ReplayStream {
             replay: Cursor::new(peeked),
         }
     }
+
+    /// Switch the underlying socket to non-blocking mode.
+    ///
+    /// The server run loop is a 10ms poll design: `CdpSession::process` must
+    /// return promptly when no command is pending so the loop can drain every
+    /// session's event outbox and the console_rx channel. A blocking socket
+    /// parks the whole loop inside `ws.read()` until the client happens to
+    /// send the next command — server-initiated events (Network.*,
+    /// Log.entryAdded) never reach any client in that state.
+    pub fn set_nonblocking(&mut self, nonblocking: bool) -> std::io::Result<()> {
+        self.stream.set_nonblocking(nonblocking)
+    }
 }
 
 impl Read for ReplayStream {
@@ -262,6 +274,13 @@ fn read_ws_message(ws: &mut WebSocket<ReplayStream>) -> Result<Option<String>, S
         Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => Ok(None),
         Ok(Message::Close(_)) => Err(SessionError::Closed),
         Ok(Message::Frame(_)) => Ok(None),
+        // Non-blocking socket with nothing to read: no message this poll
+        // iteration (tungstenite buffers partial frames across calls).
+        Err(tungstenite::Error::Io(ref e))
+            if e.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            Ok(None)
+        }
         Err(_) => Err(SessionError::Io),
     }
 }

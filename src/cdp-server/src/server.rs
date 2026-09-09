@@ -362,13 +362,20 @@ impl CdpServer {
                 };
 
             let replay = ReplayStream::new(stream, buf[..n].to_vec());
-            let ws = match accept(replay) {
+            let mut ws = match accept(replay) {
                 Ok(ws) => ws,
                 Err(e) => {
                     log::warn!("CDP WebSocket accept error: {}", e);
                     return;
                 }
             };
+            // Handshake done on the blocking socket; the session now polls
+            // non-blocking so the run loop never parks inside ws.read() and
+            // event outboxes (server-initiated CDP events) drain every
+            // iteration.
+            if let Err(e) = ws.get_mut().set_nonblocking(true) {
+                log::warn!("CDP WebSocket nonblocking switch failed: {}", e);
+            }
 
             let session_id = generate_session_id();
             let session = CdpSession::new(session_id.clone(), target_id, ws, is_browser);

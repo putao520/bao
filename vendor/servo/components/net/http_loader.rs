@@ -561,6 +561,150 @@ pub(crate) fn obtain_response_setup_router_callback(
 /// hung service-worker handler.
 const HANDLE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
+// ── BAO PATCH (REQ-BRW-004 C19-②): net-layer Network event tap ─────────────
+//
+// Spec clause #19 subclause ②: "CDP Network 域可观测 SW 发起的请求/响应".
+// The embedder (bao_browser, on CDP Network.enable) installs one process-wide
+// tap here; `main_fetch`'s upstream devtools instrumentation points call the
+// `bao_emit_*` helpers below, so BOTH service-worker-mediated fetches and
+// regular page fetches — including the SW realm's own sub-fetches — surface
+// as Network.requestWillBeSent / Network.responseReceived on the embedder's
+// event channel. Same global-setter pattern as `connector::STEALTH_TLS_CONFIG`.
+
+/// One network observation forwarded to the embedder's tap.
+#[derive(Debug, Clone)]
+pub enum BaoNetworkTapEvent {
+    /// A request entered the net fetch pipeline (main_fetch step 1).
+    Request {
+        request_id: String,
+        url: String,
+        method: String,
+        /// Header name/value pairs (lossy-UTF8, wire order).
+        headers: Vec<(String, String)>,
+        /// CDP ResourceType string (best-effort Destination mapping).
+        resource_type: String,
+        /// The originating webview, when the net layer knows it.
+        webview_id: Option<String>,
+    },
+    /// A response settled (headers known; body may still stream).
+    Response {
+        request_id: String,
+        url: String,
+        status: u16,
+        status_text: String,
+        headers: Vec<(String, String)>,
+        mime_type: String,
+        webview_id: Option<String>,
+    },
+}
+
+/// The embedder-installed tap. Called on fetch worker threads; must be cheap
+/// and must not block (the embedder side only pushes into an mpsc channel).
+pub type BaoNetworkTap = StdArc<dyn Fn(BaoNetworkTapEvent) + Send + Sync>;
+
+static BAO_NETWORK_TAP: RwLock<Option<BaoNetworkTap>> = RwLock::new(None);
+
+/// Install or remove the process-wide network event tap (embedder API face is
+/// `servo::set_network_event_tap`).
+pub fn set_network_event_tap(tap: Option<BaoNetworkTap>) {
+    *BAO_NETWORK_TAP.write() = tap;
+}
+
+fn with_network_tap<F: FnOnce(&BaoNetworkTap)>(f: F) {
+    let tap = BAO_NETWORK_TAP.read().clone();
+    if let Some(ref tap) = tap {
+        f(tap);
+    }
+}
+
+/// `content_security_policy::Destination` → CDP `ResourceType` string.
+fn bao_destination_to_resource_type(destination: Destination) -> &'static str {
+    match destination {
+        Destination::Document | Destination::Frame | Destination::IFrame => "Document",
+        Destination::Script | Destination::ServiceWorker | Destination::SharedWorker |
+        Destination::Worker | Destination::Xslt => "Script",
+        Destination::Style => "Stylesheet",
+        Destination::Image => "Image",
+        Destination::Font => "Font",
+        Destination::Audio | Destination::Video | Destination::Track => "Media",
+        Destination::Manifest => "Manifest",
+        Destination::Json => "Fetch",
+        Destination::None |
+        Destination::AudioWorklet |
+        Destination::Embed |
+        Destination::Object |
+        Destination::PaintWorklet |
+        Destination::Report |
+        Destination::WebIdentity => "Other",
+    }
+}
+
+fn bao_header_pairs(headers: &HeaderMap<HeaderValue>) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Request-side tap emit (main_fetch step 1, beside
+/// `send_early_httprequest_to_devtools`). Data URLs are skipped, mirroring
+/// the devtools instrumentation.
+pub(crate) fn bao_emit_network_request_tap(request: &Request) {
+    if request.url().scheme() == "data" {
+        return;
+    }
+    with_network_tap(|tap| {
+        tap(BaoNetworkTapEvent::Request {
+            request_id: request.id.0.to_string(),
+            url: request.current_url().to_string(),
+            method: request.method.as_str().to_string(),
+            headers: bao_header_pairs(&request.headers),
+            resource_type: bao_destination_to_resource_type(request.destination).to_string(),
+            webview_id: request.target_webview_id.map(|id| id.to_string()),
+        });
+    });
+}
+
+/// Response-side tap emit (main_fetch step 22 and the synchronous-XHR
+/// branch). Error responses (status 0 — `HttpStatus::new_error`) are skipped:
+/// they carry no wire status to observe.
+pub(crate) fn bao_emit_network_response_tap(request: &Request, response: &Response) {
+    if response.status.raw_code() == 0 {
+        return;
+    }
+    let url = match response.url() {
+        Some(url) => url.to_string(),
+        None => return,
+    };
+    let status = response.status.raw_code();
+    let status_text = String::from_utf8_lossy(response.status.message()).into_owned();
+    let headers = bao_header_pairs(&response.headers);
+    let mime_type = response
+        .headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let webview_id = request.target_webview_id.map(|id| id.to_string());
+    with_network_tap(|tap| {
+        tap(BaoNetworkTapEvent::Response {
+            request_id: request.id.0.to_string(),
+            url,
+            status,
+            status_text,
+            headers,
+            mime_type,
+            webview_id,
+        });
+    });
+}
+// ── end BAO PATCH (REQ-BRW-004 C19-②) ──────────────────────────────────────
+
 /// BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): "handle fetch", net
 /// side — the counterpart of the upstream TODO this patch replaces. Sends a
 /// [`CustomResponseMediator`] to the service-worker manager registered for

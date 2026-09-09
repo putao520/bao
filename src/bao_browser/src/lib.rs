@@ -27,7 +27,7 @@ pub use config::{BaoConfig, BrowserConfig, PageConfig};
 pub use cdp_handler::handle_bridge_command;
 pub use delegate::{
     crash_safe_teardown_worker, is_javascript_mime_type, AutoCloseWorker, BaoServoDelegate,
-    BaoWebViewDelegate, BaoWebViewState, DedicatedWorkerGlobalScopeState, ServiceWorkerFetchEvent,
+    BaoWebViewDelegate, BaoWebViewState, DedicatedWorkerGlobalScopeState,
     ServiceWorkerFetchInterceptMode, ServiceWorkerGlobalScopeState, ServiceWorkerHandle,
     ServiceWorkerRegistrationId, ServiceWorkerRegistrationState, ServiceWorkerRegistrationTracking,
     ServiceWorkerScopeConfig, SharedWorkerChannelBridge, SharedWorkerConnectEvent,
@@ -506,9 +506,19 @@ impl BaoRuntime {
 
     /// Set the structured event forwarding channel on the servo delegate.
     /// When set, servo callbacks push ServoEvent (Path B) as the primary event path.
+    /// Also propagates the sender to every existing page's webview state —
+    /// servo routes per-webview callbacks (console/url/load) through the
+    /// per-webview delegate, which reads `state.event_tx`, so the channel
+    /// must live on each state, not only the runtime-level delegate.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn set_event_channel(&self, tx: std::sync::mpsc::Sender<ServoEvent>) {
-        self.delegate.set_event_tx(tx);
+        self.delegate.set_event_tx(tx.clone());
+        let stats = self.page_pool.stats();
+        for id in 1..=(stats.active + stats.idle) {
+            if let Some(page) = self.page_pool.get_page(id) {
+                page.webview_state().borrow_mut().event_tx = Some(tx.clone());
+            }
+        }
     }
 
     pub fn run(&self) -> Result<(), BrowserError> {

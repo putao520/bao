@@ -867,6 +867,16 @@ impl PageHandle {
         if let Some(tx) = servo_delegate.console_log_tx() {
             webview_state.borrow_mut().console_log_tx = Some(tx);
         }
+        // Propagate the structured ServoEvent channel the same way: servo
+        // routes per-webview callbacks (console/url/load) through the
+        // per-webview delegate, which reads state.event_tx — without this the
+        // Path B event channel set on the runtime-level delegate never
+        // reaches per-webview events (v49 sub2: the console control marker
+        // died exactly here).
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        if let Some(tx) = servo_delegate.event_tx() {
+            webview_state.borrow_mut().event_tx = Some(tx);
+        }
         // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK stealth consistency
         // Auto-populate worker_scope_config from the page's StealthProfile so that
         // Workers spawned from this page inherit identical navigator/Canvas/WebGL/Audio

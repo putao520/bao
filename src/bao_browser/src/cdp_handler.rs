@@ -2,6 +2,7 @@
 // Runs on the main thread during the event loop to process CDP commands.
 
 use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse};
+use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
 use serde_json::Value;
 use servo::{CookieSource, StorageType};
@@ -152,8 +153,12 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             "Network.getResponseBody not supported: servo does not expose stored response bodies to the embedder".into(),
         ),
 
-        // Network domain — cache/cookies clearing, enable/disable
-        BridgeCommand::NetworkEnable { .. } => ok_empty(),
+        // Network domain — cache/cookies clearing, enable/disable.
+        // NetworkEnable installs the net-layer Network event tap so
+        // requestWillBeSent/responseReceived flow to the WS event stream.
+        BridgeCommand::NetworkEnable { target_id } => {
+            with_page(pool, &target_id, cmd_network_enable)
+        }
         BridgeCommand::NetworkDisable { .. } => ok_empty(),
         BridgeCommand::NetworkSetCacheDisabled {
             target_id,
@@ -554,6 +559,84 @@ fn worker_target_json(target_id: &str, target_type: &str) -> Value {
         "url": target_id,
         "attached": false,
     })
+}
+
+/// Network.enable — install the process-wide net-layer Network event tap
+/// (REQ-BRW-004 criterion #19 subclause ②: "CDP Network 域可观测 SW 发起的
+/// 请求/响应").
+///
+/// The tap is the reuse of the existing EventSubscriber (Path B) channel:
+/// events become `ServoEvent::NetworkRequest` / `NetworkResponse`, which the
+/// runtime's event loop (`run_with_bridge` / the harness spin shape) already
+/// drains → `translate` → `Network.requestWillBeSent` / `responseReceived` on
+/// the WS broadcaster. `translate`'s mapping predates this wiring; nothing
+/// new is invented on the channel side.
+///
+/// Fail-closed: without a wired event channel Network events cannot be
+/// delivered, so the enable is an explicit error rather than a silent no-op
+/// ok (the v49 sub2 RED root cause).
+///
+/// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
+fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
+    let event_tx = {
+        let state = page.webview_state();
+        let st = state.borrow();
+        st.event_tx.clone()
+    };
+    let Some(event_tx) = event_tx else {
+        return Err(
+            "Network.enable cannot observe requests: no runtime event channel \
+             (set_event_channel) is wired for this page"
+                .into(),
+        );
+    };
+
+    let tap: servo::BaoNetworkTap = std::sync::Arc::new(move |event| match event {
+        servo::BaoNetworkTapEvent::Request {
+            request_id,
+            url,
+            method,
+            headers,
+            resource_type,
+            webview_id,
+        } => {
+            let _ = event_tx.send(ServoEvent::NetworkRequest {
+                // Attribution: the webview that issued the request when the
+                // net layer knows it (delivery is broadcast-gated by session
+                // domain enablement, not by this field).
+                target_id: webview_id.unwrap_or_else(|| "0".to_string()),
+                request_id,
+                url,
+                method,
+                headers: headers.into_iter().collect(),
+                post_data: None,
+                resource_type,
+                frame_id: "0".to_string(),
+            });
+        },
+        servo::BaoNetworkTapEvent::Response {
+            request_id,
+            url,
+            status,
+            status_text,
+            headers,
+            mime_type,
+            webview_id,
+        } => {
+            let _ = event_tx.send(ServoEvent::NetworkResponse {
+                target_id: webview_id.unwrap_or_else(|| "0".to_string()),
+                request_id,
+                url,
+                status,
+                status_text,
+                headers: headers.into_iter().collect(),
+                mime_type,
+                remote_ip: None,
+            });
+        },
+    });
+    servo::set_network_event_tap(Some(tap));
+    Ok(serde_json::json!({}))
 }
 
 fn to_browser_error(e: BrowserError) -> String {

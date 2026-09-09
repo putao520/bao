@@ -2947,32 +2947,6 @@ pub struct ServiceWorkerRegistrationTracking {
     pub has_fetch_handler: bool,
 }
 
-/// A ServiceWorker fetch interception event observed by the bao layer.
-///
-/// When a ServiceWorker intercepts a fetch request (DF-WK-8), this struct
-/// captures the metadata for stealth boundary verification and CDP observability.
-///
-/// Per SPEC criterion #19: "SW 拦截并转发的 fetch 仍走主页同一 stealth
-/// TLS(JA3/JA4)+HTTP2(AKAMAI) profile (不绕过反指纹)"
-///
-/// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19] DF-WK-8
-#[derive(Debug, Clone)]
-pub struct ServiceWorkerFetchEvent {
-    /// Which ServiceWorker registration intercepted this fetch.
-    pub registration_id: ServiceWorkerRegistrationId,
-    /// The URL of the intercepted request.
-    pub request_url: String,
-    /// The HTTP method of the intercepted request.
-    pub method: String,
-    /// Whether the stealth profile was correctly applied to the outgoing fetch.
-    /// Per SPEC criterion #19: SW-intercepted fetch must use the same
-    /// TLS(JA3/JA4)/HTTP2(AKAMAI) profile as the registering page.
-    /// This field is set to true when the stealth layer confirms the profile
-    /// matches; false indicates a stealth boundary violation.
-    /// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19]
-    pub stealth_profile_applied: bool,
-}
-
 /// A ServiceWorkerGlobalScope state tracked by bao_browser.
 ///
 /// This struct represents the bao-side view of a ServiceWorker's global scope.
@@ -4249,41 +4223,6 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:ServiceWorkerGlobalScope]
     pub fn remove_service_worker_scope(&mut self) -> Option<ServiceWorkerGlobalScopeState> {
         self.service_worker_scope.take()
-    }
-
-    /// Forward a ServiceWorker fetch interception event to the CDP event path.
-    ///
-    /// Per SPEC criterion #19: "CDP Network 域可观测 SW 发起的请求/响应".
-    /// When a ServiceWorker intercepts a fetch, this method forwards the metadata
-    /// for CDP Network domain observability.
-    ///
-    /// @trace REQ-BRW-004 [entity:ServiceWorker] [criterion:19] DF-WK-8
-    pub fn forward_service_worker_fetch_event(&self, event: ServiceWorkerFetchEvent) {
-        if let Some(ref tx) = self.event_tx {
-            let stealth_status = if event.stealth_profile_applied {
-                "stealth profile applied"
-            } else {
-                "⚠️ STEALTH BOUNDARY VIOLATION"
-            };
-            let _ = tx.send(ServoEvent::Console {
-                target_id: "0".to_string(),
-                level: if event.stealth_profile_applied {
-                    ConsoleLevel::Debug
-                } else {
-                    ConsoleLevel::Warning
-                },
-                text: format!(
-                    "[ServiceWorker] fetch {} {} -> {} ({})",
-                    event.method,
-                    event.request_url,
-                    event.registration_id.script_url,
-                    stealth_status
-                ),
-                url: None,
-                line: None,
-                column: None,
-            });
-        }
     }
 
     /// Set the ServiceWorker scope config from the registering page's StealthProfile.

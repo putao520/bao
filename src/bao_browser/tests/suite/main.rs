@@ -81,4 +81,5 @@ mod worker_multi_injection_tests;
 mod serviceworker_fetchevent_tests;
 mod serviceworker_mediation_tests;
 mod serviceworker_controller_tests;
+mod sw_stealth_profile_tests;
 mod fetch_axis_probe_tests;
