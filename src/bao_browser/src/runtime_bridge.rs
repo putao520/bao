@@ -22,7 +22,7 @@ use dashmap::DashMap;
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
@@ -1384,9 +1384,15 @@ pub fn inject_all_with_profile(
     // DedicatedWorker created via servo's DOM `new Worker()`. The callback
     // captures this page's WorkerScopeConfig (which carries the parent page's
     // stealth profile) so the Worker inherits stealth fingerprint noise.
+    // No global-addr slot here: at page-init time no WorkerHandle exists yet.
+    // Workers created via BaoRuntime::create_worker_with_url register their own
+    // per-worker callback carrying the handle's addr slot (REQ-BRW-004
+    // criterion #18 backfill); this page-init registration only covers workers
+    // created by page script directly (`new Worker()` in page JS), which have
+    // no bao-side handle to backfill.
     // @trace DEC-WK-001 servo-native Worker path (vendor patch drain)
     // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK stealth inheritance
-    register_worker_scope_callback_native(profile.clone());
+    register_worker_scope_callback_native(profile.clone(), None);
 
     Ok(())
 }
@@ -1406,18 +1412,32 @@ pub fn inject_all_with_profile(
 ///   - Install stealth profile inheritance keyed by the Worker global's address
 ///     (DEC-WK-007 / CRIT-STL-WK: Worker navigator/Canvas/WebGL/Audio match
 ///     parent page).
-///   - Install DedicatedWorkerGlobalScope Web APIs (fetch/timers/crypto/
-///     performance/etc., criterion #8).
+///   - If `global_addr_slot` is provided, backfill the Worker global's address
+///     into the owning WorkerHandle's slot on the callback's first run so the
+///     handle's teardown paths can unregister the REALM_PROFILES entry
+///     (REQ-BRW-004 criterion #18, E22 audit defect C).
 ///
 /// Note: lifecycle natives (self.close/importScripts) are installed by servo
 /// upstream's DedicatedWorkerGlobalScope binding for native Workers, so the
 /// bao bypass's `install_worker_lifecycle_natives` is NOT needed here — it is
 /// only needed for bao_engine::WebWorker (DEC-WK-003 dual-track).
 ///
+/// # Arguments
+/// * `profile` - The parent page's stealth profile the Worker inherits
+///   (criteria #12-17), or None for a default (non-stealth) Worker scope.
+/// * `global_addr_slot` - Slot to backfill the Worker global's address into
+///   (criterion #18). Pass `Some(handle.worker_global_addr_arc())` when
+///   registering per-worker (see `BaoRuntime::create_worker_with_url`); pass
+///   `None` for the page-init registration covering page-script-created
+///   Workers, which have no bao-side handle.
+///
 /// @trace DEC-WK-001 servo-native Worker path (vendor patch)
 /// @trace DEC-WK-003 dual-track isolation (bypass not abandoned)
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8,12..17]
-pub fn register_worker_scope_callback_native(profile: Option<bao_stealth::StealthProfile>) {
+pub fn register_worker_scope_callback_native(
+    profile: Option<bao_stealth::StealthProfile>,
+    global_addr_slot: Option<Arc<AtomicU64>>,
+) {
     // Build a WorkerScopeConfig from the stealth profile (parent page's config).
     // This is what worker_scope_init_native needs to install the right stealth
     // properties + navigator values on the Worker's global.
@@ -1441,10 +1461,16 @@ pub fn register_worker_scope_callback_native(profile: Option<bao_stealth::Stealt
                 );
                 return;
             }
-            // TASK-63 DIAG: confirm worker scope callback fired (worker thread alive + scope created)
-            eprintln!(
-                "[TASK-63-DIAG] worker scope callback FIRED (worker thread alive, scope created)"
-            );
+            // REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销: backfill the
+            // Worker global's address into the owning WorkerHandle's slot on the
+            // callback's first (and only) run. The handle's teardown paths gate
+            // REALM_PROFILES unregistration on this slot being non-zero; without
+            // this backfill every worker leaked its REALM_PROFILES entry
+            // (E22 audit defect C). Only the address crosses the thread boundary
+            // — never a JSObject pointer (BCE-20260621-001).
+            if let Some(slot) = &global_addr_slot {
+                slot.store(raw_global as usize as u64, Ordering::Release);
+            }
             log::debug!(
                 "[register_worker_scope_callback_native] servo-native Worker \
                  scope created — installing bao stealth + Web APIs (DEC-WK-001 / \
@@ -1519,11 +1545,21 @@ unsafe fn worker_scope_init_native(
         // @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK navigator 一致
         bao_stealth::engine_props::set_profile_for_global(global as usize, profile);
         bao_stealth::engine_props::install_stealth_props(raw_cx, global);
-        // Set canvas noise at servo rendering layer for Worker (REQ-STL-003).
-        servo::set_canvas_noise_seed(
-            bao_stealth::engine_props::canvas_seed(),
-            bao_stealth::engine_props::canvas_amplitude(),
-        );
+        // E22 audit defect A (REQ-BRW-004): the Worker path must NOT re-seed
+        // the servo rendering-layer canvas noise (the servo canvas-noise
+        // seeding API writes a process-GLOBAL static — vendor canvas_noise.rs,
+        // "called once during stealth profile initialization on the script
+        // thread"), and this function runs on the Worker thread where
+        // `engine_props::set_profile` has never run — so `canvas_seed()`/
+        // `canvas_amplitude()` read the thread-local DEFAULTS (42 / 0.001) and
+        // clobbered the parent page's profile values in the servo rendering
+        // layer. The correct values are already global (the page install path
+        // `install_all_native` pushes the same inherited profile), so
+        // re-setting is either a no-op (single page) or a rollback of a newer
+        // page's profile (multi page). Worker-scoped canvas noise is delivered
+        // per-Realm via `set_profile_for_global` above (REALM_PROFILES keyed,
+        // consumed by the engine-layer getters) — the global rendering-layer
+        // noise stays owned by the page install path.
     }
 
     // BCE-20260627-009: Web APIs (fetch/timers/crypto/performance/etc.) are NOT
@@ -3347,6 +3383,35 @@ mod tests {
         assert!(
             !func_body.contains("bun_runtime::globals::install_structured_clone"),
             "BCE-20260627-009 REGRESSION: worker_scope_init_native must NOT install structuredClone (servo native)"
+        );
+    }
+
+    /// E22 audit defect A (REQ-BRW-004): worker_scope_init_native runs on the
+    /// Worker thread where `engine_props::set_profile` has never run, so
+    /// `canvas_seed()`/`canvas_amplitude()` return the thread-local defaults
+    /// (42 / 0.001). `servo::set_canvas_noise_seed` writes a process-GLOBAL
+    /// static owned by the page install path — calling it from the Worker path
+    /// clobbered the parent page's profile values in the servo rendering layer.
+    #[test]
+    fn worker_scope_init_native_does_not_touch_global_canvas_noise() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source
+            .find("unsafe fn worker_scope_init_native")
+            .expect("worker_scope_init_native function not found");
+        let search_end = source[func_start..]
+            .find("\n// @trace REQ-SEC-003 [entity:WebPolyfills]")
+            .or_else(|| source[func_start..].find("\nconst WEB_POLYFILLS"))
+            .unwrap_or(5000)
+            .min(5000);
+        let func_body = &source[func_start..func_start + search_end];
+
+        assert!(
+            !func_body.contains("set_canvas_noise_seed"),
+            "E22 DEFECT A REGRESSION: worker_scope_init_native must NOT call \
+             servo::set_canvas_noise_seed — the servo rendering-layer canvas \
+             noise is a process-global owned by the page install path \
+             (install_all_native); the Worker thread only reads thread-local \
+             defaults (42/0.001) and would clobber the page's profile"
         );
     }
 

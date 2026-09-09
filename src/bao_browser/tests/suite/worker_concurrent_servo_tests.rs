@@ -22,7 +22,9 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{
+    crash_safe_teardown_worker, BaoConfig, BaoRuntime, PageConfig, WorkerTeardownPath,
+};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -441,6 +443,75 @@ fn c18_three_path_teardown_crash_free() {
     }
 
     eprintln!("[C18] three-path teardown crash-free passed");
+}
+
+/// @trace REQ-BRW-004 [criterion:18] worker global addr production backfill (E22 defect C)
+///
+/// E22 audit defect C: `set_worker_global_addr`/`worker_global_addr_arc` had
+/// zero production callers, so `worker_global_addr` stayed 0 and every teardown
+/// path skipped REALM_PROFILES unregistration — one leaked entry per worker.
+/// The fix backfills the slot from the per-worker scope callback that
+/// `create_worker_with_url` registers before dispatching `new Worker(url)`.
+/// This test drives the real servo-native worker path and asserts the backfill
+/// lands and crash-safe teardown reports REALM_PROFILES unregistration.
+#[test]
+fn c18_worker_global_addr_backfilled_and_unregistered() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[skip] runtime init failed: {e}");
+            return;
+        }
+    };
+    let page = match runtime.create_page(&PageConfig {
+        url: Some("about:blank".into()),
+        ..Default::default()
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[skip] create_page: {e}");
+            return;
+        }
+    };
+    if page
+        .wait_for_pipeline_ready(Duration::from_secs(5))
+        .is_err()
+    {
+        eprintln!("[skip] pipeline not ready");
+        return;
+    }
+
+    let worker_url = "data:text/javascript,self.postMessage('ready');".to_string();
+    let handle = match runtime.create_worker_with_url(&page, &worker_url) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[skip] create_worker failed: {e}");
+            return;
+        }
+    };
+
+    // The per-worker scope callback runs on the Worker thread after servo
+    // constructs the DedicatedWorkerGlobalScope; wait bounded for the backfill.
+    let backfilled =
+        common::wait_for_condition(Duration::from_secs(10), || handle.worker_global_addr() != 0);
+    assert!(
+        backfilled,
+        "E22 DEFECT C REGRESSION: worker scope callback must backfill \
+         worker_global_addr (criterion #18); got 0 — REALM_PROFILES unregister \
+         is unreachable in production"
+    );
+
+    let result = crash_safe_teardown_worker(&handle, WorkerTeardownPath::Terminate);
+    assert!(
+        result.realm_profile_unregistered,
+        "E22 DEFECT C REGRESSION: crash-safe teardown must report REALM_PROFILES \
+         unregistration now that the worker global addr is backfilled"
+    );
+    eprintln!("[C18] worker_global_addr backfill + REALM_PROFILES unregister passed");
 }
 
 // ═══════════════════════════════════════════════════════════════════════

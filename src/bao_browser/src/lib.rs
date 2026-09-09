@@ -288,9 +288,11 @@ impl BaoRuntime {
     /// bao's role is reduced to:
     ///   1. Steering stealth profile + DedicatedWorkerGlobalScope Web APIs by
     ///      registering the scope callback via
-    ///      `register_worker_scope_callback_native` (invoked at page-init time,
-    ///      see `inject_all_with_profile`). The callback runs on the Worker
-    ///      thread via the servo vendor patch `drain_worker_scope_callbacks`.
+    ///      `register_worker_scope_callback_native` (per-worker, see
+    ///      `create_worker_with_url`; page-init registration for page-script
+    ///      created Workers lives in `inject_all_with_profile`). The callback
+    ///      runs on the Worker thread via the servo vendor patch
+    ///      `drain_worker_scope_callbacks`.
     ///   2. Tracking the WorkerHandle for CDP observability + page-unload
     ///      termination (criterion #10, AutoCloseWorker).
     ///   3. Providing a WorkerChannelBridge for page↔worker postMessage
@@ -338,9 +340,8 @@ impl BaoRuntime {
         let webview_state = page.webview_state();
 
         // Get the page's WorkerScopeConfig for stealth consistency.
-        // The scope callback (registered at page-init via
-        // register_worker_scope_callback_native) inherits this profile onto
-        // the Worker's DedicatedWorkerGlobalScope.
+        // The per-worker scope callback registered below inherits this profile
+        // onto the Worker's DedicatedWorkerGlobalScope.
         // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
         let scope_config = webview_state.borrow().worker_scope_config.clone();
 
@@ -349,10 +350,25 @@ impl BaoRuntime {
 
         // Create WorkerHandle — tracks closing/terminated state via
         // Arc<AtomicBool> and the worker_global_addr for REALM_PROFILES
-        // cleanup (criterion #18). The servo-native scope callback (registered
-        // globally) writes the Worker's global address here on creation.
+        // cleanup (criterion #18). The per-worker scope callback registered
+        // below (before the `new Worker(url)` dispatch) writes the Worker's
+        // global address into this handle's slot on its first run on the
+        // Worker thread, making crash-safe teardown's REALM_PROFILES
+        // unregistration production-reachable (E22 audit defect C).
         // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
         let handle = WorkerHandle::new(url.to_string());
+
+        // Register a per-worker scope callback carrying this handle's
+        // global-addr slot. Registered strictly before the `new Worker(url)`
+        // dispatch so the callback is queued when servo's Worker thread drains
+        // EMBEDDER_WORKER_SCOPE_CALLBACKS at scope construction (DEC-WK-001).
+        // On the callback's first run the Worker global's address is backfilled
+        // into the handle and the page's stealth profile is installed
+        // (criteria #12-17). @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
+        runtime_bridge::register_worker_scope_callback_native(
+            scope_config.stealth_profile.clone(),
+            Some(handle.worker_global_addr_arc()),
+        );
 
         // Create channel bridge (DF-WK-4/5). Even though servo owns the Worker
         // thread, bao still tracks the bidirectional structured-clone traffic
