@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004,REQ-BRW-4] [criterion:19] [level:integration]
+// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] [level:integration]
 // ServiceWorker navigator.serviceWorker.controller assignment live tests —
 // REQ-BRW-004 C19 controller wave.
 //

@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] [level:integration]
+// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:16] [level:integration]
 // Shadow-axis probes — page-realm bao-installed globals that have no
 // servo-native counterpart (setImmediate) or shadow one (queueMicrotask,
 // crypto). Provenance (e44 09cabe17 boundary note, 2026-09-10): the page

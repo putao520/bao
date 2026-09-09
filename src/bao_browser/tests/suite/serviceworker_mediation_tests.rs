@@ -1,4 +1,4 @@
-// @trace TEST-BRW-004 [req:REQ-BRW-004,REQ-BRW-4] [criterion:19] [level:integration]
+// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] [level:integration]
 // ServiceWorker net-layer fetch mediation live tests — REQ-BRW-004 C19 S2b.
 //
 // Verifies, on the live servo path (real registration → real SW scope → real
