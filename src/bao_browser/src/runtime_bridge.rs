@@ -112,10 +112,38 @@ impl EvaluateResult {
 // @trace REQ-BRW-003 [req:REQ-BRW-003] [criterion:C10]
 // C10 (NFR-THREAD-SAFETY): no cross-thread *mut JSObject dereference. Pointers
 // flow only WebViewId-keyed ⇒ same-ScriptThread access.
-static NODE_REALM_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, usize>> = OnceLock::new();
+static NODE_REALM_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, NodeRealmEntry>> =
+    OnceLock::new();
 static PAGE_GLOBAL_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, usize>> = OnceLock::new();
 
-fn node_realm_by_webview() -> &'static DashMap<servo::WebViewId, usize> {
+/// Node Realm registry entry: the realm global's address plus the identity of
+/// the owning script-thread context.
+///
+/// BCE (pagepool chaos SIGSEGV, evaluate_in_node_realm): the Node Realm
+/// physically belongs to the ScriptThread/JSContext that created it. Servo
+/// navigation swaps the pipeline — the WebViewId keeps routing callbacks, but
+/// to a NEW ScriptThread with its own JSContext, while the old context's heap
+/// (including the Node Realm global) is destroyed. A registry that stores
+/// only the address hands the next evaluate a dead foreign object:
+/// `AutoRealm::new` → `JS::EnterRealm` SIGSEGV (live-gdb evidence: realm
+/// created at cx=0x20006e00000 evaluated on a different ScriptThread; the
+/// object's cells read back all-zero in a retained js-gc-heap chunk — arena
+/// pages released when the owning context died).
+///
+/// Identity: `ThreadId` never recycles within the process, so it is the
+/// primary owner marker; the cx address is a same-thread secondary (cx
+/// addresses DO get reused across ScriptThread spawn/death — observed ABA
+/// under gdb). Every consumer validates via
+/// [`node_realm_belongs_to_current_context`] and re-creates the realm on the
+/// current context on mismatch.
+#[derive(Clone, Copy)]
+struct NodeRealmEntry {
+    node_global: usize,
+    owner_thread: std::thread::ThreadId,
+    owner_cx: usize,
+}
+
+fn node_realm_by_webview() -> &'static DashMap<servo::WebViewId, NodeRealmEntry> {
     NODE_REALM_BY_WEBVIEW.get_or_init(DashMap::new)
 }
 
@@ -137,23 +165,57 @@ thread_local! {
 /// SAFETY contract (BCE-20260621-001 C10): both pointers must have been created
 /// on the same ScriptThread that owns `webview_id`. The pointers are stored as
 /// addresses only; they MUST NOT be dereferenced off that ScriptThread.
+/// `owner_cx` is the creating JSContext's address — captured together with the
+/// creating thread's id so consumers can detect a pipeline swap (see
+/// [`NodeRealmEntry`]).
 fn store_node_realm(
     webview_id: servo::WebViewId,
     page_global: *mut mozjs::jsapi::JSObject,
     node_global: *mut mozjs::jsapi::JSObject,
+    owner_cx: usize,
 ) {
-    node_realm_by_webview().insert(webview_id, node_global as usize);
+    node_realm_by_webview().insert(
+        webview_id,
+        NodeRealmEntry {
+            node_global: node_global as usize,
+            owner_thread: std::thread::current().id(),
+            owner_cx,
+        },
+    );
     page_global_by_webview().insert(webview_id, page_global as usize);
+}
+
+/// True when the stored Node Realm for `webview_id` belongs to the CURRENT
+/// script-thread context (`cx_ptr` is the live context the callback runs on).
+///
+/// False (or no entry) means the stored address must not be dereferenced:
+/// either the pipeline was swapped under this WebViewId (navigation — the
+/// owning context is destroyed) or no realm exists yet. Callers re-create the
+/// realm on the current context in that case; see [`NodeRealmEntry`] for the
+/// crash evidence that motivates this check.
+fn node_realm_belongs_to_current_context(
+    webview_id: servo::WebViewId,
+    cx_ptr: *mut std::ffi::c_void,
+) -> bool {
+    match node_realm_by_webview().get(&webview_id) {
+        Some(entry) => {
+            entry.owner_thread == std::thread::current().id()
+                && entry.owner_cx == cx_ptr as usize
+        }
+        None => false,
+    }
 }
 
 /// Look up Node Realm global pointer for a specific page (by WebViewId).
 ///
 /// Returns an opaque address — callers must only use it on the same ScriptThread
 /// that owns `webview_id` (i.e., inside a `register_script_thread_callback`
-/// callback for that WebViewId).
+/// callback for that WebViewId), and only after
+/// [`node_realm_belongs_to_current_context`] validated the entry against the
+/// live context.
 fn get_node_realm_by_id(webview_id: servo::WebViewId) -> *mut mozjs::jsapi::JSObject {
     match node_realm_by_webview().get(&webview_id) {
-        Some(v) => *v as *mut mozjs::jsapi::JSObject,
+        Some(v) => v.node_global as *mut mozjs::jsapi::JSObject,
         None => ptr::null_mut(),
     }
 }
@@ -200,10 +262,11 @@ pub fn register_refresh_dom_proxies(
 ) {
     // Capture the WebViewId by value. We do NOT need the old page_global
     // pointer anymore — the mapping is keyed by WebViewId, and the callback
-    // receives the NEW page_global directly from servo.
+    // receives the NEW page_global directly from servo. The cx pointer rides
+    // along for owner-identity validation (NodeRealmEntry BCE).
     let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
-        Box::new(move |_cx_ptr, new_page_global_ptr| unsafe {
-            refresh_dom_proxies_native(webview_id, new_page_global_ptr);
+        Box::new(move |cx_ptr, new_page_global_ptr| unsafe {
+            refresh_dom_proxies_native(webview_id, cx_ptr, new_page_global_ptr);
         });
 
     servo::register_script_thread_callback(webview_id, callback);
@@ -215,6 +278,7 @@ pub fn register_refresh_dom_proxies(
 /// Updates PAGE_GLOBAL_BY_WEBVIEW so lazy getters find the new Page Realm.
 unsafe fn refresh_dom_proxies_native(
     webview_id: servo::WebViewId,
+    cx_ptr: *mut std::ffi::c_void,
     new_page_global_ptr: *mut std::ffi::c_void,
 ) {
     use mozjs::jsapi::JSObject;
@@ -223,6 +287,18 @@ unsafe fn refresh_dom_proxies_native(
 
     if new_page_global.is_null() {
         return;
+    }
+
+    // BCE (pagepool chaos SIGSEGV, NodeRealmEntry): navigation also
+    // invalidates the Node Realm — its owning ScriptThread/JSContext was
+    // swapped with the pipeline. Re-create it on the CURRENT context so the
+    // registry never holds an address from a destroyed context.
+    if !node_realm_belongs_to_current_context(webview_id, cx_ptr) {
+        create_node_realm_native(
+            webview_id,
+            cx_ptr,
+            new_page_global as *mut std::ffi::c_void,
+        );
     }
 
     // Update the per-WebViewId page_global mapping. Lazy DOM getters will
@@ -450,11 +526,22 @@ pub fn evaluate_js_via_node_realm(
     let script_owned = script.to_string();
 
     let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> = Box::new(
-        move |cx_ptr: *mut std::ffi::c_void, _page_global: *mut std::ffi::c_void| {
+        move |cx_ptr: *mut std::ffi::c_void, page_global: *mut std::ffi::c_void| {
             // Look up Node Realm for THIS page via WebViewId. servo routes this
             // callback to the ScriptThread that owns this WebViewId, so the
             // node_global pointer is dereferenced on the thread that created it.
-            let node_global = get_node_realm_by_id(webview_id);
+            let mut node_global = get_node_realm_by_id(webview_id);
+            // BCE (pagepool chaos SIGSEGV, NodeRealmEntry): a navigation swaps
+            // the pipeline under a stable WebViewId — the stored realm belongs
+            // to the DESTROYED old ScriptThread/JSContext and must never be
+            // dereferenced. Re-create the realm on the CURRENT context (the
+            // callback carries the live page global) and evaluate against it.
+            if !node_global.is_null()
+                && !node_realm_belongs_to_current_context(webview_id, cx_ptr)
+            {
+                unsafe { create_node_realm_native(webview_id, cx_ptr, page_global) };
+                node_global = get_node_realm_by_id(webview_id);
+            }
             unsafe {
                 evaluate_in_node_realm(cx_ptr, node_global, &script_owned, result_clone);
             }
@@ -547,7 +634,9 @@ unsafe fn create_node_realm_native(
     }
 
     // Store per-page: keyed by WebViewId (NOT page_global pointer address).
-    store_node_realm(webview_id, page_global, global.get());
+    // The creating context's address is captured with the thread id so later
+    // consumers can detect a pipeline swap (NodeRealmEntry BCE).
+    store_node_realm(webview_id, page_global, global.get(), raw_cx as usize);
 
     // BUG-ENG-366: alias the Node Realm global to the same per-page stealth
     // profile. Stealth getters executing inside the Node Realm (REQ-SEC-002
@@ -3819,13 +3908,21 @@ mod tests {
 
     /// REQ-SEC-002: WebViewId-keyed storage API exists and is structurally sound.
     /// BCE-20260621-001: all accessor signatures are WebViewId-based.
+    /// NodeRealmEntry BCE: store_node_realm additionally captures the owning
+    /// context identity (cx address) for swap detection.
     #[test]
     fn webview_id_keyed_storage_api_exists() {
         // Compile-time check that the WebViewId-keyed API exists.
-        let _store: fn(servo::WebViewId, *mut mozjs::jsapi::JSObject, *mut mozjs::jsapi::JSObject) =
-            super::store_node_realm;
+        let _store: fn(
+            servo::WebViewId,
+            *mut mozjs::jsapi::JSObject,
+            *mut mozjs::jsapi::JSObject,
+            usize,
+        ) = super::store_node_realm;
         let _get_node: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject =
             super::get_node_realm_by_id;
+        let _belongs: fn(servo::WebViewId, *mut std::ffi::c_void) -> bool =
+            super::node_realm_belongs_to_current_context;
         let _get_page: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject =
             super::get_page_global_by_id;
         let _get_node_global: fn(servo::WebViewId) -> *mut mozjs::jsapi::JSObject =

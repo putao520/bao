@@ -1305,22 +1305,38 @@ impl PageHandle {
                     ws.terminate_all_workers();
                 }
             }
-            let pg = *inner.page_global.borrow();
-            let ng = *inner.node_realm_global.borrow();
+            let cached_pg = *inner.page_global.borrow();
+            let cached_ng = *inner.node_realm_global.borrow();
+            let mut pg = cached_pg;
+            let mut ng = cached_ng;
             // BCE-20260621-001: remove per-page Node Realm entries via WebViewId
             // (NOT raw *mut JSObject). The raw pointers are kept locally only to
             // drop the stealth profile mappings.
+            //
+            // BCE (pagepool chaos SIGSEGV, NodeRealmEntry): a navigation may
+            // have re-created the Node Realm (and swapped the page global)
+            // since PageInner cached its copies — prefer the LIVE registry
+            // values for the stealth cleanup, and also drop the cached stale
+            // addresses' profiles so no dead-address alias entry survives to
+            // be hit by address reuse (BUG-ENG-366 class).
             if let Some(wid) = inner.webview_id_opt() {
+                let cur_pg = crate::runtime_bridge::get_page_global(wid);
+                let cur_ng = crate::runtime_bridge::get_node_realm_global(wid);
                 crate::runtime_bridge::remove_node_realm_by_id(wid);
+                if !cur_pg.is_null() {
+                    pg = cur_pg;
+                }
+                if !cur_ng.is_null() {
+                    ng = cur_ng;
+                }
             }
-            if !pg.is_null() {
-                // BUG-ENG-366: drop the per-Realm stealth profiles so the next
-                // page reusing the same global address does not inherit a stale
-                // fingerprint. @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
-                bao_stealth::engine_props::remove_profile_for_global(pg as usize);
-            }
-            if !ng.is_null() {
-                bao_stealth::engine_props::remove_profile_for_global(ng as usize);
+            // BUG-ENG-366: drop the per-Realm stealth profiles so the next
+            // page reusing the same global address does not inherit a stale
+            // fingerprint. @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+            for addr in [pg as usize, ng as usize, cached_pg as usize, cached_ng as usize] {
+                if addr != 0 {
+                    bao_stealth::engine_props::remove_profile_for_global(addr);
+                }
             }
             // SM PageLifecycle: cleanup_complete → Closed
             // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: cleanup_complete transition
