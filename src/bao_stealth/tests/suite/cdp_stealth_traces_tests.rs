@@ -319,10 +319,17 @@ fn cdp_combined_js_has_all_overrides() {
     );
     let combined = hooks.combined_js();
 
-    // Assert — must contain canvas, audio, and navigator overrides
+    // Assert — must contain audio and navigator overrides; the canvas JS
+    // segment is RETIRED (user ruling 2026-09-09, BRW-004 C13): canvas noise
+    // flows through the paint-thread choke point, so the injected blob must
+    // carry NO canvas interception.
     assert!(
-        combined.contains("HTMLCanvasElement.prototype.toDataURL"),
-        "Combined JS must include canvas toDataURL override"
+        !combined.contains("HTMLCanvasElement.prototype.toDataURL"),
+        "Combined JS must NOT include the retired canvas toDataURL override"
+    );
+    assert!(
+        !combined.contains("CanvasRenderingContext2D.prototype.getImageData"),
+        "Combined JS must NOT include the retired canvas getImageData override"
     );
     assert!(
         combined.contains("AudioBuffer.prototype.getChannelData"),
@@ -365,12 +372,9 @@ fn cdp_individual_hooks_nonempty() {
         &profile.iframe,
     );
 
-    // Assert — each hook must produce non-trivial JS
-    assert!(
-        hooks.canvas_js().len() > 100,
-        "Canvas JS hook must be non-trivial (>100 chars), got: {}",
-        hooks.canvas_js().len()
-    );
+    // Assert — each remaining hook must produce non-trivial JS. The canvas
+    // JS segment is RETIRED (user ruling 2026-09-09, BRW-004 C13): canvas
+    // noise is applied at the paint-thread choke point, not in the JS blob.
     assert!(
         hooks.audio_js().len() > 100,
         "Audio JS hook must be non-trivial (>100 chars), got: {}",
@@ -640,12 +644,8 @@ fn cdp_hook_output_deterministic() {
         &profile.iframe,
     );
 
-    // Assert — same profile must produce identical hook JS
-    assert_eq!(
-        hooks1.canvas_js(),
-        hooks2.canvas_js(),
-        "Canvas JS must be deterministic for same profile — CDP session consistency"
-    );
+    // Assert — same profile must produce identical hook JS (canvas JS segment
+    // retired 2026-09-09; canvas determinism lives at the paint layer)
     assert_eq!(
         hooks1.audio_js(),
         hooks2.audio_js(),
@@ -719,10 +719,9 @@ fn cdp_firefox_chrome_hooks_differ() {
         ch_hooks.navigator_js(),
         "Firefox/Chrome navigator JS must differ — engine distinguishability"
     );
-    // Canvas JS differs only in seed (42 vs 137)
-    assert_ne!(
-        ff_hooks.canvas_js(),
-        ch_hooks.canvas_js(),
-        "Firefox/Chrome canvas JS must differ (seed) — session distinguishability"
-    );
+    // Canvas JS segment retired (user ruling 2026-09-09): per-session canvas
+    // distinguishability now lives at the paint layer — each realm's
+    // canvas_seed() (engine_props per-Realm store) drives the paint-thread
+    // noise, pinned by engine_props per-Realm isolation tests and the live
+    // cross-path parity test in bao_browser stealth_offscreencanvas_tests.
 }

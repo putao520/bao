@@ -211,11 +211,21 @@ fn headless_canvas_noise_deterministic() {
     );
 }
 
-// ---- 2.3 Canvas toDataURL JS hook exists ----
+// ---- 2.3 Canvas JS hook segment retired — noise via paint layer ----
 // @trace REQ-STL-003 [req:REQ-STL-003] [level:integration]
+//
+// User ruling 2026-09-09 (BRW-004 C13): the four canvas read-out JS hooks
+// (toDataURL / toBlob / 2d getImageData / Offscreen 2d getImageData) are
+// RETIRED. Canvas noise now flows exclusively through the paint-thread
+// single choke point (CanvasCommand::GetImageData — vendor
+// canvas_paint_thread.rs, commit 6bcf30af) which covers EVERY read-out path
+// with one same-seed noise layer. The old JS layer double-noised the Window
+// getImageData/toDataURL/toBlob family while convertToBlob stayed
+// single-noised — a cross-path inconsistency. Live cross-path parity is
+// pinned in bao_browser stealth_offscreencanvas_tests (§7).
 #[test]
-fn headless_canvas_todataurl_hook_present() {
-    // Arrange — headless canvas returns static data; hook must inject noise
+fn headless_canvas_js_segment_retired() {
+    // Arrange — the combined blob is what gets injected into the page
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas,
@@ -237,17 +247,21 @@ fn headless_canvas_todataurl_hook_present() {
         &profile.connection,
         &profile.iframe,
     );
-    let js = hooks.canvas_js();
+    let js = hooks.combined_js();
 
-    // Assert — must override toDataURL, getImageData, toBlob
-    assert!(
-        js.contains("HTMLCanvasElement.prototype.toDataURL"),
-        "Canvas JS must override toDataURL — headless leak prevention"
-    );
-    assert!(
-        js.contains("CanvasRenderingContext2D.prototype.getImageData"),
-        "Canvas JS must override getImageData — headless leak prevention"
-    );
+    // Assert — zero retired canvas interception residue in the injected blob
+    for residue in [
+        "HTMLCanvasElement.prototype.toDataURL",
+        "HTMLCanvasElement.prototype.toBlob",
+        "CanvasRenderingContext2D.prototype.getImageData",
+        "OffscreenCanvasRenderingContext2D.prototype.getImageData",
+        "addNoiseToImageData",
+    ] {
+        assert!(
+            !js.contains(residue),
+            "retired canvas JS hook residue in injected blob: {residue}"
+        );
+    }
 }
 
 // ===========================================================================

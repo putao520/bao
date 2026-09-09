@@ -949,3 +949,273 @@ fn e36_stealth_free_page_has_no_stealth_chain() {
         "stealth-free probe must leave getError()==NO_ERROR (digest: {r})"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// §7 C13 canvas JS segment retirement (user ruling 2026-09-09) — live
+//          cross-path noise parity at the paint-thread single choke point.
+//
+// The four canvas read-out JS hooks (toDataURL/toBlob/2d getImageData/
+// Offscreen 2d getImageData) were retired from bao_stealth::hooks. Canvas
+// noise now flows exclusively through CanvasCommand::GetImageData
+// (vendor canvas_paint_thread.rs, commit 6bcf30af), the single choke point
+// shared by EVERY read-out path. These tests prove on the live servo path:
+//   ① Window getImageData noise still present (paint layer) and toDataURL
+//      encodes EXACTLY the same noisy pixels getImageData returns.
+//   ② Worker-realm OffscreenCanvas getImageData noise still present (paint
+//      layer — the retired JS blob never reached workers anyway after W1a's
+//      guards; now nothing JS-layer exists at all) and convertToBlob decodes
+//      to EXACTLY the same noisy pixels.
+// Cross-path parity is the reason the JS segment had to go: with the JS
+// layer stacked on top, Window getImageData/toDataURL/toBlob got TWO noise
+// layers while convertToBlob got one — an inconsistency detectors can flag.
+//
+// Parity method (no double-read arithmetic): to compare path-X pixels with
+// getImageData pixels `p1`, draw path-X's decoded output into canvas B1 and
+// p1 into canvas B3 via putImageData (raw write), then read BOTH through
+// getImageData. Both reads apply the same deterministic position-seeded
+// noise, so q1 == q3 ⟺ B1's stored pixels == B3's stored pixels ⟺ path-X
+// encoded exactly p1's pixels. Mid-gray 128 fill: the truncating u8 noise
+// makes negative deltas visible as 127 (positive deltas stay 128), so
+// "some channel != 128" proves noise is live without pinning exact values.
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Window-realm probe: canvas 2d noise via paint layer + toDataURL parity.
+/// Async (image decode); result lands on `window.__xpResult` and is polled.
+fn c13_retirement_window_probe_js() -> &'static str {
+    r#"
+(function () {
+  try {
+    var W = 64, H = 48;
+    var c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    var ctx = c.getContext('2d');
+    if (!ctx) { window.__xpResult = 'NULL-CTX'; return; }
+    ctx.fillStyle = 'rgb(128,128,128)';
+    ctx.fillRect(0, 0, W, H);
+    var p1 = ctx.getImageData(0, 0, W, H);
+    var noisy = 0;
+    for (var i = 0; i < p1.data.length; i += 4) {
+      for (var k = 0; k < 3; k++) {
+        if (p1.data[i + k] !== 128 && p1.data[i + k] >= 126 && p1.data[i + k] <= 130) { noisy++; }
+      }
+      if (p1.data[i + 3] !== 255) { window.__xpResult = 'BAD-ALPHA:' + p1.data[i + 3]; return; }
+    }
+    var det = true;
+    var p2 = ctx.getImageData(0, 0, W, H);
+    for (var j = 0; j < p1.data.length; j++) { if (p1.data[j] !== p2.data[j]) { det = false; break; } }
+    var url = c.toDataURL('image/png');
+    if (typeof url !== 'string' || url.indexOf('data:image/png') !== 0) {
+      window.__xpResult = 'BAD-URL:' + String(url).slice(0, 40); return;
+    }
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var B1 = document.createElement('canvas'); B1.width = W; B1.height = H;
+        var c1 = B1.getContext('2d');
+        c1.drawImage(img, 0, 0);
+        var q1 = c1.getImageData(0, 0, W, H);
+        var B3 = document.createElement('canvas'); B3.width = W; B3.height = H;
+        var c3 = B3.getContext('2d');
+        c3.putImageData(p1, 0, 0);
+        var q3 = c3.getImageData(0, 0, W, H);
+        var cross = true, diffAt = -1;
+        for (var m = 0; m < q1.data.length; m++) {
+          if (q1.data[m] !== q3.data[m]) { cross = false; diffAt = m; break; }
+        }
+        window.__xpResult = 'OK:noisy=' + noisy + ':det=' + (det ? 1 : 0)
+          + ':cross=' + (cross ? 1 : 0) + (cross ? '' : ':diff@' + diffAt);
+      } catch (e2) { window.__xpResult = 'INNER-THROW:' + String(e2); }
+    };
+    img.onerror = function () { window.__xpResult = 'IMG-ERROR'; return true; };
+    img.src = url;
+  } catch (e) { window.__xpResult = 'THROW:' + ((e && e.message) ? e.message : String(e)); }
+})()"#
+}
+
+/// Poll `window.__xpResult` (generic sink, same shape as the worker sink).
+fn wait_for_page_result(page: &bao_browser::PageHandle, timeout: Duration) -> Option<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(s) = page.evaluate_js_web("window.__xpResult") {
+            let trimmed = s.trim();
+            let is_set = !trimmed.is_empty() && trimmed != "null" && trimmed != "\"null\"";
+            if is_set {
+                return Some(unquote_bridge(trimmed.to_string()));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Parse `noisy=/det=/cross=` fields out of the §7 digest shape.
+fn parse_retirement_digest(r: &str) -> (i64, i64, i64) {
+    let mut noisy = -1i64;
+    let mut det = -1i64;
+    let mut cross = -1i64;
+    for field in r.trim().split(':') {
+        if let Some(v) = field.strip_prefix("noisy=") {
+            noisy = v.parse().unwrap_or(-1);
+        } else if let Some(v) = field.strip_prefix("det=") {
+            det = v.parse().unwrap_or(-1);
+        } else if let Some(v) = field.strip_prefix("cross=") {
+            cross = v.parse().unwrap_or(-1);
+        }
+    }
+    (noisy, det, cross)
+}
+
+/// @trace REQ-BRW-004 [criterion:13] window-realm canvas noise via paint
+/// layer + toDataURL/getImageData cross-path parity (JS segment retired,
+/// user ruling 2026-09-09).
+#[test]
+fn c13_retirement_window_getimagedata_noise_and_todataurl_parity() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    let _ = page.evaluate_js_web("window.__xpResult = null;");
+    let raw = page
+        .evaluate_js_web(c13_retirement_window_probe_js())
+        .expect("window retirement probe must evaluate");
+    assert!(
+        raw.trim().is_empty() || raw.trim() == "undefined",
+        "probe is fire-and-forget (result via __xpResult), got: {raw}"
+    );
+
+    let r = wait_for_page_result(&page, Duration::from_secs(20)).unwrap_or_else(|| {
+        panic!("window toDataURL parity digest did not arrive within timeout (image decode hung?)")
+    });
+    assert!(
+        r.starts_with("OK:"),
+        "window canvas retirement probe must succeed, digest: {r}"
+    );
+    let (noisy, det, cross) = parse_retirement_digest(&r);
+    assert!(
+        noisy > 0,
+        "Window getImageData noise must still be present via the PAINT layer \
+         (JS segment retired) — expected some mid-gray channels shifted off 128, digest: {r}"
+    );
+    assert_eq!(
+        det, 1,
+        "paint-layer noise must be deterministic, digest: {r}"
+    );
+    assert_eq!(
+        cross, 1,
+        "toDataURL must encode EXACTLY the same noisy pixels getImageData returns \
+         (single paint-layer choke point — the point of the JS segment retirement), digest: {r}"
+    );
+}
+
+/// Worker script body: OffscreenCanvas 2d noise via paint layer +
+/// convertToBlob/getImageData cross-path parity, all inside the Worker.
+const C13_RETIREMENT_WORKER_BODY: &str = r#"
+var __r = (async function () {
+  try {
+    var W = 64, H = 48;
+    var A = new OffscreenCanvas(W, H);
+    var ctx = A.getContext('2d');
+    if (!ctx) { return 'NULL-CTX'; }
+    ctx.fillStyle = 'rgb(128,128,128)';
+    ctx.fillRect(0, 0, W, H);
+    var p1 = ctx.getImageData(0, 0, W, H);
+    var noisy = 0;
+    for (var i = 0; i < p1.data.length; i += 4) {
+      for (var k = 0; k < 3; k++) {
+        if (p1.data[i + k] !== 128 && p1.data[i + k] >= 126 && p1.data[i + k] <= 130) { noisy++; }
+      }
+      if (p1.data[i + 3] !== 255) { return 'BAD-ALPHA:' + p1.data[i + 3]; }
+    }
+    var det = true;
+    var p2 = ctx.getImageData(0, 0, W, H);
+    for (var j = 0; j < p1.data.length; j++) { if (p1.data[j] !== p2.data[j]) { det = false; break; } }
+    var blob = await A.convertToBlob();
+    if (!blob) { return 'NULL-BLOB'; }
+    var bmp = await createImageBitmap(blob);
+    if (bmp.width !== W || bmp.height !== H) {
+      return 'BAD-BMP-SIZE:' + bmp.width + 'x' + bmp.height;
+    }
+    var B1 = new OffscreenCanvas(W, H);
+    var c1 = B1.getContext('2d');
+    c1.drawImage(bmp, 0, 0);
+    var q1 = c1.getImageData(0, 0, W, H);
+    var B3 = new OffscreenCanvas(W, H);
+    var c3 = B3.getContext('2d');
+    c3.putImageData(p1, 0, 0);
+    var q3 = c3.getImageData(0, 0, W, H);
+    var cross = true, diffAt = -1;
+    for (var m = 0; m < q1.data.length; m++) {
+      if (q1.data[m] !== q3.data[m]) { cross = false; diffAt = m; break; }
+    }
+    return 'OK:noisy=' + noisy + ':det=' + (det ? 1 : 0)
+      + ':cross=' + (cross ? 1 : 0) + (cross ? '' : ':diff@' + diffAt);
+  } catch (e) {
+    return 'THROW:' + ((e && e.message) ? e.message : String(e));
+  }
+})();
+__r.then(function (v) { self.postMessage(v); },
+         function (e) { self.postMessage('REJECT:' + String(e)); });
+"#;
+
+/// @trace REQ-BRW-004 [criterion:13] worker-realm OffscreenCanvas noise via
+/// paint layer + convertToBlob/getImageData cross-path parity (JS segment
+/// retired, user ruling 2026-09-09; W1a's worker JS-hook regression is
+/// superseded by this paint-layer live pin).
+#[test]
+fn c13_retirement_worker_noise_and_converttoblob_parity() {
+    if should_skip() {
+        return;
+    }
+    let _guard = lock_serializer();
+
+    let profile = StealthProfile::firefox_default();
+    let (_runtime, page) = live_page(Some(profile));
+
+    let _ = page.evaluate_js_web("window.__ocResult = null;");
+    let body = encode_worker_body(C13_RETIREMENT_WORKER_BODY);
+    let created = page.evaluate_js_web(&make_worker_driver(&body));
+    match created {
+        Ok(s) => assert!(
+            s.contains("worker-created"),
+            "Worker creation must succeed on the servo-native path, got: {s}"
+        ),
+        Err(e) => panic!("Worker creation dispatch failed: {e}"),
+    }
+
+    let r = wait_for_worker_result(&page, Duration::from_secs(30)).unwrap_or_else(|| {
+        panic!("worker convertToBlob parity digest did not arrive within timeout")
+    });
+    assert!(
+        !r.starts_with("WORKER-ERROR:") && !r.starts_with("CREATE-ERROR:"),
+        "worker probe must not error: {r}"
+    );
+    assert!(
+        !r.starts_with("REJECT:"),
+        "worker convertToBlob/createImageBitmap promise must resolve: {r}"
+    );
+    assert!(
+        r.starts_with("OK:"),
+        "worker canvas retirement probe must succeed, digest: {r}"
+    );
+    let (noisy, det, cross) = parse_retirement_digest(&r);
+    assert!(
+        noisy > 0,
+        "worker-realm OffscreenCanvas getImageData noise must still be present \
+         via the PAINT layer (JS segment retired), digest: {r}"
+    );
+    assert_eq!(
+        det, 1,
+        "paint-layer noise must be deterministic, digest: {r}"
+    );
+    assert_eq!(
+        cross, 1,
+        "convertToBlob must decode to EXACTLY the same noisy pixels getImageData \
+         returns (single paint-layer choke point across realms), digest: {r}"
+    );
+}

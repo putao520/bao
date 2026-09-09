@@ -9,7 +9,6 @@ use crate::profile::{
 use crate::webgl_audio::{AudioProfile, WebGLProfile};
 
 pub struct StealthHooks {
-    canvas_js: String,
     audio_js: String,
     navigator_js: String,
     font_js: String,
@@ -29,7 +28,18 @@ pub struct StealthHooks {
 
 impl StealthHooks {
     pub fn from_profile(
-        canvas: &CanvasNoise,
+        // Canvas noise JS segment RETIRED (user ruling 2026-09-09, BRW-004 C13):
+        // the four canvas read-out JS hooks (toDataURL / toBlob / 2d getImageData /
+        // Offscreen 2d getImageData) stacked a SECOND noise layer on top of the
+        // paint-thread single choke point (CanvasCommand::GetImageData, commit
+        // 6bcf30af) — Window getImageData/toDataURL/toBlob got double noise
+        // while the convertToBlob/transferToImageBitmap family got single
+        // noise: a cross-path inconsistency detectors can flag. Noise now
+        // flows exclusively through the paint layer. The parameter stays
+        // because engine_props (frozen caller) and the profile plumbing still
+        // feed the canvas seed downstream to the servo rendering layer via
+        // canvas_seed()/canvas_amplitude().
+        _canvas: &CanvasNoise,
         audio: &AudioProfile,
         navigator: &NavigatorProfile,
         screen: &ScreenProfile,
@@ -49,7 +59,6 @@ impl StealthHooks {
         iframe: &IframeConfig,
     ) -> Self {
         StealthHooks {
-            canvas_js: Self::build_canvas_js(canvas),
             audio_js: Self::build_audio_js(audio),
             navigator_js: Self::build_navigator_js(navigator, screen, webgl),
             font_js: Self::build_font_js(font),
@@ -66,10 +75,6 @@ impl StealthHooks {
             connection_js: Self::build_connection_js(connection),
             iframe_js: Self::build_iframe_js(iframe),
         }
-    }
-
-    pub fn canvas_js(&self) -> &str {
-        &self.canvas_js
     }
 
     pub fn audio_js(&self) -> &str {
@@ -134,8 +139,7 @@ impl StealthHooks {
 
     pub fn combined_js(&self) -> String {
         let mut out = String::with_capacity(
-            self.canvas_js.len()
-                + self.audio_js.len()
+            self.audio_js.len()
                 + self.navigator_js.len()
                 + self.font_js.len()
                 + self.battery_js.len()
@@ -152,8 +156,6 @@ impl StealthHooks {
                 + self.iframe_js.len()
                 + 16,
         );
-        out.push_str(&self.canvas_js);
-        out.push('\n');
         out.push_str(&self.audio_js);
         out.push('\n');
         out.push_str(&self.navigator_js);
@@ -187,110 +189,17 @@ impl StealthHooks {
     }
 
     // ── Canvas hooks ──────────────────────────────────────────────
-
-    fn build_canvas_js(canvas: &CanvasNoise) -> String {
-        let seed = canvas.seed();
-        let amplitude = canvas.noise_amplitude();
-
-        format!(
-            r#"(function() {{
-  var seed = {seed}n;
-  var amplitude = {amplitude};
-
-  function detNoise(x, y) {{
-    var state = seed;
-    state ^= BigInt(x) * 0x517CC1B727220A95n;
-    state ^= BigInt(y) * 0x6C62272E07BB0142n;
-    state = BigInt.asUintN(64, state * 0x2545F4914F6CDD1Dn);
-    state ^= state >> 33n;
-    state = BigInt.asUintN(64, state * 0x27D4EB2D1659B4D6n);
-    state ^= state >> 33n;
-    return Number(BigInt.asUintN(64, state)) / 18446744073709551615 - 0.5;
-  }}
-
-  function addNoiseToImageData(imgData, width) {{
-    for (var i = 0; i < imgData.data.length; i += 4) {{
-      var x = (i / 4) % width;
-      var y = Math.floor((i / 4) / width);
-      var noise = detNoise(x, y);
-      imgData.data[i]   = Math.max(0, Math.min(255, imgData.data[i]   + noise * amplitude * 255));
-      imgData.data[i+1] = Math.max(0, Math.min(255, imgData.data[i+1] + noise * amplitude * 127));
-      imgData.data[i+2] = Math.max(0, Math.min(255, imgData.data[i+2] + noise * amplitude * 63));
-    }}
-  }}
-
-  // Worker-realm guard (REQ-BRW-004 C13/C15): HTMLCanvasElement / document /
-  // CanvasRenderingContext2D are [Exposed=Window] — a bare reference throws
-  // ReferenceError inside a DedicatedWorkerGlobalScope and aborts the whole
-  // hooks script (every IIFE after the throw never installs). Same-shape
-  // typeof guard as the navigator/WebGL segment.
-  if (typeof HTMLCanvasElement !== 'undefined' && typeof document !== 'undefined') {{
-    var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-    HTMLCanvasElement.prototype.toDataURL = function() {{
-      var ctx = this.getContext('2d');
-      if (ctx && seed > 0n) {{
-        try {{
-          var imgData = ctx.getImageData(0, 0, this.width, this.height);
-          addNoiseToImageData(imgData, this.width);
-          var temp = document.createElement('canvas');
-          temp.width = this.width;
-          temp.height = this.height;
-          temp.getContext('2d').putImageData(imgData, 0, 0);
-          return origToDataURL.apply(temp, arguments);
-        }} catch(e) {{}}
-      }}
-      return origToDataURL.apply(this, arguments);
-    }};
-
-    var origToBlob = HTMLCanvasElement.prototype.toBlob;
-    HTMLCanvasElement.prototype.toBlob = function(callback, mimeType, qualityArgument) {{
-      var ctx = this.getContext('2d');
-      if (ctx && seed > 0n) {{
-        try {{
-          var imgData = ctx.getImageData(0, 0, this.width, this.height);
-          addNoiseToImageData(imgData, this.width);
-          var temp = document.createElement('canvas');
-          temp.width = this.width;
-          temp.height = this.height;
-          temp.getContext('2d').putImageData(imgData, 0, 0);
-          return origToBlob.call(temp, callback, mimeType, qualityArgument);
-        }} catch(e) {{}}
-      }}
-      return origToBlob.apply(this, arguments);
-    }};
-  }}
-
-  if (typeof CanvasRenderingContext2D !== 'undefined') {{
-    var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-    CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
-      var imgData = origGetImageData.call(this, sx, sy, sw, sh);
-      if (seed > 0n) {{
-        addNoiseToImageData(imgData, sw);
-      }}
-      return imgData;
-    }};
-  }}
-
-  // OffscreenCanvas surface (REQ-BRW-004 C15): worker realms expose
-  // OffscreenCanvasRenderingContext2D (no CanvasRenderingContext2D). Same
-  // deterministic noise algorithm, same per-Realm seed — this JS blob is
-  // regenerated per realm by engine_props::inject_js_hooks via REALM_PROFILES,
-  // so the seed literal already carries the current realm's profile value.
-  if (typeof OffscreenCanvasRenderingContext2D !== 'undefined') {{
-    var origOffscreenGetImageData = OffscreenCanvasRenderingContext2D.prototype.getImageData;
-    OffscreenCanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
-      var imgData = origOffscreenGetImageData.call(this, sx, sy, sw, sh);
-      if (seed > 0n) {{
-        addNoiseToImageData(imgData, sw);
-      }}
-      return imgData;
-    }};
-  }}
-}})();"#,
-            seed = seed,
-            amplitude = amplitude,
-        )
-    }
+    // RETIRED (user ruling 2026-09-09, BRW-004 C13): the four canvas read-out
+    // JS hooks (toDataURL / toBlob / CanvasRenderingContext2D.getImageData /
+    // OffscreenCanvasRenderingContext2D.getImageData) were removed. Canvas
+    // noise is applied exclusively at the paint-thread single choke point
+    // (vendor canvas_paint_thread.rs, CanvasCommand::GetImageData — commit
+    // 6bcf30af), which covers every read-out path (window/worker getImageData,
+    // toDataURL, toBlob, convertToBlob, transferToImageBitmap,
+    // createImageBitmap, texImage2D-from-canvas, createPattern) with one
+    // layer of the same-seed deterministic noise. The old JS layer stacked a
+    // second layer on the Window getImageData/toDataURL/toBlob family only —
+    // a cross-path inconsistency. Do NOT reintroduce JS-layer canvas noise.
 
     // ── Audio hooks ───────────────────────────────────────────────
 
@@ -1340,135 +1249,106 @@ mod tests {
         )
     }
 
+    // ── Canvas JS segment retirement (user ruling 2026-09-09, BRW-004 C13) ──
+    // The four canvas read-out JS hooks are RETIRED: canvas noise flows
+    // exclusively through the paint-thread single choke point
+    // (CanvasCommand::GetImageData, commit 6bcf30af). These assertions pin
+    // the zero-residue state of the combined hook blob.
+
     #[test]
-    fn canvas_js_contains_todataurl_override() {
+    fn canvas_js_segment_retired_zero_interception_in_combined() {
         let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
+        let combined = hooks.combined_js();
+        // The retired four segments' unique interception signatures — none may
+        // survive in the injected blob.
+        for residue in [
+            "HTMLCanvasElement.prototype.toDataURL",
+            "origToDataURL",
+            "HTMLCanvasElement.prototype.toBlob",
+            "origToBlob",
+            "CanvasRenderingContext2D.prototype.getImageData",
+            "origGetImageData",
+            "OffscreenCanvasRenderingContext2D.prototype.getImageData",
+            "origOffscreenGetImageData",
+            "addNoiseToImageData",
+        ] {
+            assert!(
+                !combined.contains(residue),
+                "retired canvas JS hook residue in combined blob: {residue}"
+            );
+        }
+    }
+
+    #[test]
+    fn canvas_js_segment_retired_worker_and_window_blobs_clean() {
+        // W1a's worker-safety typeof guards existed only to let the canvas
+        // blob install inside a DedicatedWorkerGlobalScope; with the segment
+        // retired, the canvas-specific guards must be gone too (the audio
+        // segment keeps its own AudioBuffer guard).
+        let hooks = firefox_hooks();
+        let combined = hooks.combined_js();
         assert!(
-            js.contains("HTMLCanvasElement.prototype.toDataURL"),
-            "canvas JS must override toDataURL"
+            !combined.contains("typeof HTMLCanvasElement"),
+            "canvas blob typeof guards retired with the segment"
         );
         assert!(
-            js.contains("origToDataURL"),
-            "canvas JS must store original toDataURL"
+            !combined.contains("typeof OffscreenCanvasRenderingContext2D"),
+            "Offscreen canvas patch retired with the segment"
+        );
+        // The audio segment's worker guard is NOT collateral damage.
+        assert!(
+            combined.contains("typeof AudioBuffer !== 'undefined'"),
+            "audio worker-realm guard must survive the canvas retirement"
         );
     }
 
     #[test]
-    fn canvas_js_contains_toblob_override() {
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.contains("HTMLCanvasElement.prototype.toBlob"),
-            "canvas JS must override toBlob"
+    fn from_profile_keeps_canvas_seed_parameter_for_paint_layer() {
+        // The from_profile signature still accepts the CanvasNoise profile:
+        // the paint-layer seed plumbing (engine_props canvas_seed()/
+        // canvas_amplitude() → servo set_canvas_noise_seed) is unchanged by
+        // the JS segment retirement. Compile-level pin + non-empty blob.
+        let canvas = CanvasNoise::new(4242);
+        let audio = AudioProfile::new(42);
+        let nav = NavigatorProfile::firefox();
+        let screen = ScreenProfile::new(1920, 1080, 1.0);
+        let webgl = WebGLProfile::firefox();
+        let font = FontConfig::new(42);
+        let battery = BatteryConfig::default();
+        let timing = TimingConfig::default();
+        let clientrects = ClientRectsConfig::default();
+        let screen_display = ScreenDisplayConfig::default();
+        let plugin = PluginConfig::default();
+        let speech = SpeechConfig::default();
+        let media_devices = MediaDevicesConfig::default();
+        let permissions = PermissionsConfig::default();
+        let webgl_context = WebGLContextConfig::default();
+        let connection = ConnectionConfig::default();
+        let iframe = IframeConfig::default();
+        let hooks = StealthHooks::from_profile(
+            &canvas,
+            &audio,
+            &nav,
+            &screen,
+            &webgl,
+            &font,
+            &battery,
+            WebRtcMode::Default,
+            &timing,
+            &clientrects,
+            &screen_display,
+            &plugin,
+            &speech,
+            &media_devices,
+            &permissions,
+            &webgl_context,
+            &connection,
+            &iframe,
         );
-    }
-
-    #[test]
-    fn canvas_js_contains_getimagedata_override() {
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
+        assert_eq!(canvas.seed(), 4242);
         assert!(
-            js.contains("CanvasRenderingContext2D.prototype.getImageData"),
-            "canvas JS must override getImageData"
-        );
-    }
-
-    #[test]
-    fn canvas_js_worker_safe_guards_window_exclusive_globals() {
-        // REQ-BRW-004 C13/C15: every [Exposed=Window] global referenced by the
-        // canvas blob must sit behind a typeof guard, so the blob evaluates
-        // cleanly in a DedicatedWorkerGlobalScope (where HTMLCanvasElement /
-        // document / CanvasRenderingContext2D do not exist) instead of
-        // ReferenceError-aborting the whole hooks script.
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.contains("typeof HTMLCanvasElement !== 'undefined'"),
-            "canvas JS must guard HTMLCanvasElement behind typeof (worker realm has no such global)"
-        );
-        assert!(
-            js.contains("typeof document !== 'undefined'"),
-            "canvas JS must guard document behind typeof (worker realm has no document)"
-        );
-        assert!(
-            js.contains("typeof CanvasRenderingContext2D !== 'undefined'"),
-            "canvas JS must guard CanvasRenderingContext2D behind typeof"
-        );
-    }
-
-    #[test]
-    fn canvas_js_patches_offscreen_getimagedata() {
-        // REQ-BRW-004 C15: worker realms expose only
-        // OffscreenCanvasRenderingContext2D — its getImageData must get the
-        // same deterministic noise (same per-realm seed literal, same
-        // addNoiseToImageData algorithm).
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.contains("typeof OffscreenCanvasRenderingContext2D !== 'undefined'"),
-            "Offscreen patch must be typeof-guarded (contexts without it must skip)"
-        );
-        assert!(
-            js.contains("OffscreenCanvasRenderingContext2D.prototype.getImageData"),
-            "canvas JS must patch OffscreenCanvasRenderingContext2D.getImageData"
-        );
-        assert!(
-            js.contains("origOffscreenGetImageData"),
-            "Offscreen patch must wrap the original getImageData"
-        );
-        // Same noise algorithm: both the 2D and the Offscreen overrides route
-        // through addNoiseToImageData with the per-pixel width argument.
-        assert_eq!(
-            js.matches("addNoiseToImageData(imgData, sw)").count(),
-            2,
-            "both the 2D and Offscreen getImageData overrides must apply the same noise"
-        );
-    }
-
-    #[test]
-    fn canvas_js_contains_noise_injection() {
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.contains("addNoiseToImageData"),
-            "canvas JS must have noise injection function"
-        );
-        assert!(
-            js.contains("detNoise"),
-            "canvas JS must have deterministic noise function"
-        );
-    }
-
-    #[test]
-    fn canvas_js_contains_seed_value() {
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.contains("42n"),
-            "canvas JS must contain the seed as BigInt"
-        );
-    }
-
-    #[test]
-    fn canvas_js_contains_deterministic_noise_constants() {
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.contains("0x517CC1B727220A95n"),
-            "canvas JS must contain the x-multiply constant"
-        );
-        assert!(
-            js.contains("0x6C62272E07BB0142n"),
-            "canvas JS must contain the y-multiply constant"
-        );
-        assert!(
-            js.contains("0x2545F4914F6CDD1Dn"),
-            "canvas JS must contain the first multiply constant"
-        );
-        assert!(
-            js.contains("0x27D4EB2D1659B4D6n"),
-            "canvas JS must contain the second multiply constant"
+            !hooks.combined_js().is_empty(),
+            "non-canvas hooks must still generate"
         );
     }
 
@@ -1625,9 +1505,11 @@ mod tests {
     fn combined_js_concatenates_all() {
         let hooks = firefox_hooks();
         let combined = hooks.combined_js();
+        // Canvas JS segment retired (user ruling 2026-09-09): noise via the
+        // paint layer — the combined blob must carry NO canvas interception.
         assert!(
-            combined.contains("HTMLCanvasElement.prototype.toDataURL"),
-            "combined JS must contain canvas hooks"
+            !combined.contains("HTMLCanvasElement.prototype.toDataURL"),
+            "combined JS must NOT contain retired canvas hooks"
         );
         assert!(
             combined.contains("AudioBuffer.prototype.getChannelData"),
@@ -1688,17 +1570,6 @@ mod tests {
         assert!(
             combined.contains("contentWindow"),
             "combined JS must contain iframe hooks"
-        );
-    }
-
-    #[test]
-    fn different_profiles_produce_different_canvas_js() {
-        let ff = firefox_hooks();
-        let ch = chrome_hooks();
-        assert_ne!(
-            ff.canvas_js(),
-            ch.canvas_js(),
-            "Firefox and Chrome should produce different canvas JS (different seeds)"
         );
     }
 
@@ -1765,28 +1636,6 @@ mod tests {
     }
 
     #[test]
-    fn canvas_noise_algorithm_matches_rust_constants() {
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.contains("0x517CC1B727220A95n"),
-            "JS must use same x-multiply constant as Rust deterministic_noise"
-        );
-        assert!(
-            js.contains("0x6C62272E07BB0142n"),
-            "JS must use same y-multiply constant as Rust deterministic_noise"
-        );
-        assert!(
-            js.contains("0x2545F4914F6CDD1Dn"),
-            "JS must use same first multiply constant as Rust deterministic_noise"
-        );
-        assert!(
-            js.contains("0x27D4EB2D1659B4D6n"),
-            "JS must use same second multiply constant as Rust deterministic_noise"
-        );
-    }
-
-    #[test]
     fn audio_noise_algorithm_matches_rust_constants() {
         let hooks = firefox_hooks();
         let js = hooks.audio_js();
@@ -1801,32 +1650,12 @@ mod tests {
     }
 
     #[test]
-    fn canvas_js_amplitude_matches_profile() {
-        let canvas = CanvasNoise::new(42);
-        let js = StealthHooks::build_canvas_js(&canvas);
-        assert!(
-            js.contains("0.001"),
-            "Canvas JS must contain the default noise amplitude 0.001"
-        );
-    }
-
-    #[test]
     fn audio_js_amplitude_matches_profile() {
         let audio = AudioProfile::new(42);
         let js = StealthHooks::build_audio_js(&audio);
         assert!(
             js.contains("1e-7") || js.contains("0.0000001"),
             "Audio JS must contain the default noise amplitude 1e-7"
-        );
-    }
-
-    #[test]
-    fn custom_canvas_seed_appears_in_js() {
-        let canvas = CanvasNoise::new(9999);
-        let js = StealthHooks::build_canvas_js(&canvas);
-        assert!(
-            js.contains("9999n"),
-            "Canvas JS must contain the custom seed as BigInt"
         );
     }
 
@@ -1917,20 +1746,6 @@ mod tests {
         assert!(
             js.contains("2"),
             "Custom device pixel ratio must appear in navigator JS"
-        );
-    }
-
-    #[test]
-    fn canvas_js_is_valid_iife() {
-        let hooks = firefox_hooks();
-        let js = hooks.canvas_js();
-        assert!(
-            js.starts_with("(function() {") || js.starts_with("(function(){{"),
-            "Canvas JS must be an IIFE"
-        );
-        assert!(
-            js.ends_with("})();"),
-            "Canvas JS must end with IIFE closure"
         );
     }
 
