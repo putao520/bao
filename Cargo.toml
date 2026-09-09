@@ -249,6 +249,16 @@ inherits = "test"
 opt-level = 2
 strip = true
 
+# opt-profile crash symbolization vehicle (v47 R2): identical codegen to
+# test-ci (opt-level 2, debug-assertions via the test->dev chain) but
+# full DWARF + symbols for gdb. strip happens post-link so the running
+# machine code is byte-identical to test-ci — reproduction fidelity holds.
+# Usage: cargo nextest run --cargo-profile test-ci-dbg
+[profile.test-ci-dbg]
+inherits = "test-ci"
+debug = 2
+strip = false
+
 [workspace.lints.rust]
 # Every rustc warning is an error. Individual lints below can override this
 # back to "warn" (their priority 0 beats the group's -1) where a warning level

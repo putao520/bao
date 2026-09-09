@@ -147,6 +147,52 @@ fn node_realm_by_webview() -> &'static DashMap<servo::WebViewId, NodeRealmEntry>
     NODE_REALM_BY_WEBVIEW.get_or_init(DashMap::new)
 }
 
+// BCE (R2 realworld opt-profile SIGSEGV, 2026-09-10): the Node Realm global
+// was created unrooted — `create_node_realm_native`'s stack `rooted!` guard
+// dies at return, and the registry below holds only a raw address, invisible
+// to SpiderMonkey's tracer. The realm lives in its own
+// `NewCompartmentAndZone` zone with no other referents, so the first major
+// GC swept the whole zone; the next evaluate dereferenced the zeroed cell
+// (`JS::EnterRealm` si_addr=0, cell inside [anon:js-gc-heap] all-zero;
+// live-gdb on the test-ci-dbg profile, evaluation_id=239 of the realworld
+// anti-scraping test — dev survives only by GC-timing luck). Root fix: an
+// extra GC roots tracer per owning context traces every
+// `NodeRealmEntry.node_global` of that context for as long as the entry
+// exists (removed at page close / replaced on pipeline swap), and
+// `CallObjectTracer` rewrites the slot so a compacting GC cannot stale it.
+thread_local! {
+    static NODE_REALM_TRACER_CX: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+unsafe extern "C" fn trace_node_realm_roots(
+    trc: *mut mozjs::jsapi::JSTracer,
+    data: *mut std::ffi::c_void,
+) {
+    let owner_cx = data as usize;
+    for mut entry in node_realm_by_webview().iter_mut() {
+        if entry.owner_cx != owner_cx || entry.node_global == 0 {
+            continue;
+        }
+        // SAFETY: the stored usize is layout-compatible with
+        // `Heap<*mut JSObject>` (single pointer field) — the standard
+        // servo-side cast for Heap slots living in plain Rust structs.
+        // Entries matching this tracer's cx were created on THIS runtime's
+        // heap and stay rooted until their registry entry is removed or
+        // replaced (both happen on this same thread), so the traced
+        // pointer is always a live object of this runtime. No registry Ref
+        // is ever held across a JS/allocating call anywhere in this
+        // module, so the shard write locks taken here cannot deadlock.
+        unsafe {
+            mozjs::glue::CallObjectTracer(
+                trc,
+                (&mut entry.node_global) as *mut usize
+                    as *mut mozjs::jsapi::Heap<*mut mozjs::jsapi::JSObject>,
+                c"bao_node_realm_global".as_ptr(),
+            );
+        }
+    }
+}
+
 fn page_global_by_webview() -> &'static DashMap<servo::WebViewId, usize> {
     PAGE_GLOBAL_BY_WEBVIEW.get_or_init(DashMap::new)
 }
@@ -420,10 +466,15 @@ pub unsafe fn evaluate_in_node_realm(
     // The Page Realm's Window global is physically inaccessible from here.
     //
     // SAFETY: node_global is a valid, live JSObject pointer (checked above).
-    // AutoRealm::new roots the object internally via JSAutoRealm, ensuring
-    // GC safety. We then use global_and_reborrow() to obtain a GC-safe Handle
-    // (backed by AutoRealm's internal rooting) instead of from_marked_location
-    // which would point to an unrooted stack location.
+    // Its lifetime across GC cycles is owned by the per-context extra GC
+    // roots tracer registered in `create_node_realm_native`
+    // (`trace_node_realm_roots`) for as long as its registry entry exists —
+    // JSAutoRealm itself only ENTERS the realm, it does not root the object
+    // (BCE R2: the old "AutoRealm roots internally" claim was false; the
+    // unrooted global was swept by the first major GC). We then use
+    // global_and_reborrow() to obtain a GC-safe Handle (backed by AutoRealm's
+    // internal rooting) instead of from_marked_location which would point to
+    // an unrooted stack location.
     let mut realm = AutoRealm::new(&mut cx, NonNull::new(node_global).unwrap());
     let (node_global_handle, realm) = realm.global_and_reborrow();
 
@@ -637,6 +688,31 @@ unsafe fn create_node_realm_native(
     // The creating context's address is captured with the thread id so later
     // consumers can detect a pipeline swap (NodeRealmEntry BCE).
     store_node_realm(webview_id, page_global, global.get(), raw_cx as usize);
+
+    // BCE (R2 opt-profile SIGSEGV): register this context's extra GC roots
+    // tracer so the stored global survives GC cycles (see
+    // `trace_node_realm_roots`). One registration per context — the
+    // thread-local cx guard dedupes the one-runtime-per-thread architecture
+    // (BCE-20260621-001: each ScriptThread owns a single thread-local
+    // JSContext for its whole life); a different cx on the same thread would
+    // re-register. The stack `rooted!` guard above protects the global until
+    // this function returns; from here on the tracer owns its lifetime.
+    NODE_REALM_TRACER_CX.with(|registered| {
+        if registered.get() == raw_cx as usize {
+            return;
+        }
+        registered.set(raw_cx as usize);
+        // SAFETY: raw_cx is the live JSContext this callback runs on; the
+        // registration (and the data pointer's meaning) dies with this
+        // runtime, which dies with this thread.
+        unsafe {
+            mozjs::jsapi::JS_AddExtraGCRootsTracer(
+                raw_cx,
+                Some(trace_node_realm_roots),
+                raw_cx as *mut std::ffi::c_void,
+            );
+        }
+    });
 
     // BUG-ENG-366: alias the Node Realm global to the same per-page stealth
     // profile. Stealth getters executing inside the Node Realm (REQ-SEC-002
