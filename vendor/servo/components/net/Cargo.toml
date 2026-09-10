@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net"
-version = "0.5.8"
+version = "0.5.9"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -43,7 +43,10 @@ async-tungstenite = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-content-security-policy = { workspace = true }
+# Pinned exactly: 0.8.3 breaks this crate at compile time (match on Csp
+# directives — the `Text` arm was removed upstream), and the caret req let
+# consumers resolve past the repo lock. Released as 0.5.9 (e71 #10).
+content-security-policy = { version = "=0.8.1", features = ["serde"] }
 cookie = { workspace = true }
 crossbeam-channel = { workspace = true }
 data-url = { workspace = true }
@@ -120,7 +123,7 @@ hyper = { workspace = true, features = ["full"] }
 hyper-util = { workspace = true, features = ["server-graceful"] }
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
-net = { package = "bao-servo-net", path = ".", version = "=0.5.8", features = ["test-util"] }
+net = { package = "bao-servo-net", path = ".", version = "=0.5.9", features = ["test-util"] }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 servo-default-resources = { workspace = true }
 

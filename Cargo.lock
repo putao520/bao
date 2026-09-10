@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "async-compression",
  "async-recursion",

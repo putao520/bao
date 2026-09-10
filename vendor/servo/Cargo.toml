@@ -348,7 +348,7 @@ layout_api = { package = "bao-servo-layout-api", version = "=0.5.4", path = "com
 malloc_size_of = { package = "bao-servo-malloc-size-of", version = "=0.5.3", path = "components/malloc_size_of" }
 media = { package = "bao-servo-media-thread", version = "=0.5.4", path = "components/media/media-thread" }
 metrics = { package = "bao-servo-metrics", version = "=0.5.4", path = "components/metrics" }
-net = { package = "bao-servo-net", version = "=0.5.8", path = "components/net" }
+net = { package = "bao-servo-net", version = "=0.5.9", path = "components/net" }
 net_traits = { package = "bao-servo-net-traits", version = "=0.5.4", path = "components/shared/net" }
 paint = { package = "bao-servo-paint", version = "=0.5.4", path = "components/paint" }
 paint_api = { package = "bao-servo-paint-api", version = "=0.5.4", path = "components/shared/paint" }
