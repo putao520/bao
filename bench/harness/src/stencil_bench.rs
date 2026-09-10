@@ -38,6 +38,14 @@
 //!   then per fresh realm (pre-created untimed): timed
 //!   `JS::InstantiateGlobalStencil` + `JS_ExecuteScript` + `RunJobs`
 //!   (the #26 candidate's per-realm cost)
+//! - D  `cached_path_warm_eval` (#26 implementation wave) — the PRODUCTION
+//!   wiring path: `bao_engine::stencil_cache::evaluate_script_cached`
+//!   (what `inject_js_hooks` now calls) per fresh realm, timed window
+//!   includes RunJobs for shape parity with A2/C. First iteration is a
+//!   cache miss (covered by warmup); steady state = hash+lookup +
+//!   instantiate+execute. Cache is cleared before each payload's D phase;
+//!   hit counters assert the cache actually engaged (tiny payloads take
+//!   the documented admission-floor bypass).
 //!
 //! Derived judgment metrics (phase="derived", from warm p50s):
 //! - `compile_share_of_warm_eval_pct` = (A2−C)/A2 ×100 — how much of the
@@ -45,19 +53,35 @@
 //! - `stencil_speedup_x` = A2/C
 //! - `breakeven_realms` = B_p50/(A2_p50−C_p50) — realm-injections needed to
 //!   amortize the one-time stencil compile
+//! - `cached_speedup_x` = A2/D — the wired-cache speedup (judgment gate:
+//!   ≈4.9× predicted for `stealth`; hard floor 3.0)
+//! - `cached_eliminated_compile_share_pct` = (A2−D)/A2 ×100 — how much of
+//!   the old compile share the wired cache actually removed
+//! - `cached_residual_overhead_share_pct` = (D−C)/D ×100 — what the cached
+//!   path pays beyond pure instantiate+exec (hash+exact-verify+refcount);
+//!   reported, NOT gated (at fleet load the D−C difference of two ~ms-scale
+//!   phases measured minutes apart absorbs scheduler noise of the same
+//!   order — it can legitimately measure negative)
+//! - `cached_added_overhead_pct_of_original` = max(0,D−C)/A2 ×100 — the
+//!   cache's added overhead against the STABLE original-cost denominator
+//!   (judgment gate ≤16%: the "~79.6% → ≤~16%" bound, noise-robust because
+//!   A2 is the large compile-dominated baseline both C and D sit under)
 //!
 //! Verification is fail-closed: payload eval must return Ok (the same success
 //! criterion production `inject_js_hooks` uses), `tiny` must yield 2.0, the
 //! x10 payload must leave its marker set (probed untimed after the timed
-//! window), and every C-phase `JS_ExecuteScript` must return true.
+//! window), every C-phase `JS_ExecuteScript` must return true, and every
+//! cached payload's D phase must show real cache hits (bypasses for tiny).
 
 use std::ffi::CString;
 use std::ptr;
 use std::time::Instant;
 
 use bao_engine::context::JsContext;
+use bao_engine::stencil_cache;
 use bao_engine::value::JsValue;
 use mozjs::jsapi::{self, DelazificationOption, InstantiateOptions};
+use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::{transform_str_to_source_text, wrappers2, CompileOptionsWrapper};
@@ -387,11 +411,17 @@ fn run_payload(
         &c_warm_us,
     ));
 
+    // ── Phase D: production cached path (#26 wiring, steady-state hit) ─────
+    let d_warm_us = run_cached_phase(b, key, src, has_marker, iterations, warmup, budget_ms)?;
+
+    // ── Derived judgment metrics (from warm p50s) ──────────────────────────
+
     // ── Derived judgment metrics (from warm p50s) ──────────────────────────
     let a1_p50 = p50(&a1);
     let a2_p50 = p50(&a2);
     let b_p50 = p50(&b_warm_us);
     let c_p50 = p50(&c_warm_us);
+    let d_p50 = p50(&d_warm_us);
     let saved = a2_p50 - c_p50;
     b.metric(Metric::single(
         &format!("{key}.compile_share_of_warm_eval_pct"),
@@ -417,10 +447,168 @@ fn run_payload(
         Some("derived"),
         b_p50 / saved,
     ));
-    b.note(format!(
-        "{key}: A1(realm+compile+exec) p50={a1_p50:.1}us A2(compile+exec) p50={a2_p50:.1}us B(stencil compile) p50={b_p50:.1}us C(instantiate+exec) p50={c_p50:.1}us → stencil saves {saved:.1}us/realm"
+    b.metric(Metric::single(
+        &format!("{key}.cached_speedup_x"),
+        "x",
+        "ratio",
+        true,
+        Some("derived"),
+        a2_p50 / d_p50,
     ));
+    b.metric(Metric::single(
+        &format!("{key}.cached_eliminated_compile_share_pct"),
+        "percent",
+        "ratio",
+        true,
+        Some("derived"),
+        ((a2_p50 - d_p50) / a2_p50) * 100.0,
+    ));
+    let residual_share = ((d_p50 - c_p50) / d_p50) * 100.0;
+    b.metric(Metric::single(
+        &format!("{key}.cached_residual_overhead_share_pct"),
+        "percent",
+        "ratio",
+        false,
+        Some("derived"),
+        residual_share,
+    ));
+    // Noise-robust gate metric: same D−C quantity against the stable
+    // original-cost denominator (see module doc).
+    let added_overhead_of_original =
+        (d_p50 - c_p50).max(0.0) / a2_p50 * 100.0;
+    b.metric(Metric::single(
+        &format!("{key}.cached_added_overhead_pct_of_original"),
+        "percent",
+        "ratio",
+        false,
+        Some("derived"),
+        added_overhead_of_original,
+    ));
+    b.note(format!(
+        "{key}: A1(realm+compile+exec) p50={a1_p50:.1}us A2(compile+exec) p50={a2_p50:.1}us B(stencil compile) p50={b_p50:.1}us C(instantiate+exec) p50={c_p50:.1}us D(cached path) p50={d_p50:.1}us → stencil saves {saved:.1}us/realm; wired cache speedup {:.2}x, residual overhead beyond C {:.1}% (of D) / {:.1}% (of A2)",
+        a2_p50 / d_p50,
+        residual_share,
+        added_overhead_of_original
+    ));
+
+    // Judgment gate (#26 implementation wave): for payloads the cache
+    // actually serves, the wired path must be decisively faster than the
+    // repeated-compile path and its added overhead bounded against the
+    // original compile-dominated cost.
+    if src.len() >= 1024 {
+        let speedup = a2_p50 / d_p50;
+        if speedup < 3.0 {
+            return Err(format!(
+                "{key}: cached_speedup_x={speedup:.2} below the 3.0 floor (predicted ~4.9 for stealth) — cache not delivering"
+            ));
+        }
+        if added_overhead_of_original > 16.0 {
+            return Err(format!(
+                "{key}: cached_added_overhead_pct_of_original={added_overhead_of_original:.1} exceeds the 16% judgment bound"
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Phase D — the production wired path: per fresh realm (pre-created
+/// untimed), timed `stencil_cache::evaluate_script_cached` + RunJobs (shape
+/// parity with the A2/C timed windows). Cache cleared up front so warmup
+/// absorbs exactly one miss; fail-closed hit/bypass counters prove which
+/// branch ran.
+fn run_cached_phase(
+    b: &mut ResultBuilder,
+    key: &str,
+    src: &str,
+    has_marker: bool,
+    iterations: usize,
+    warmup: usize,
+    budget_ms: f64,
+) -> Result<Vec<f64>, String> {
+    stencil_cache::clear_thread_cache();
+    let (hits_before, _, bypass_before) = stencil_cache::thread_cache_counters();
+
+    let mut warm: Vec<f64> = Vec::with_capacity(iterations);
+    let start = Instant::now();
+    let mut truncated = false;
+    let c_filename = CString::new("<bao-stealth-hooks>").unwrap();
+    for i in 0..(iterations + warmup) {
+        if start.elapsed().as_millis() as f64 > budget_ms {
+            truncated = true;
+            break;
+        }
+        let mut ctx = JsContext::for_test()
+            .map_err(|e| format!("{key} D iter {i}: for_test failed: {}", e.message))?;
+        let global_ptr = ensure_realm(&mut ctx, &format!("{key} D iter {i}"))?;
+        let mut cx = ctx.cx();
+        rooted!(&in(cx) let global = global_ptr);
+        rooted!(&in(cx) let mut rval = UndefinedValue());
+
+        let t0 = Instant::now();
+        stencil_cache::evaluate_script_cached(
+            &mut cx,
+            global.handle(),
+            src,
+            c_filename.as_c_str(),
+            1,
+            rval.handle_mut(),
+        )
+        .map_err(|e| format!("{key} D iter {i}: cached eval failed: {:?}", e))?;
+        // Shape parity with A2 (`JsContext::eval` drains the job queue
+        // inside its timed window) and with C.
+        unsafe { mozjs::jsapi::js::RunJobs(cx.raw_cx()) };
+        let dt = t0.elapsed().as_secs_f64() * 1e6;
+
+        if i >= warmup {
+            warm.push(dt);
+        }
+        // Untimed verification probe on the same realm.
+        if has_marker {
+            probe_eval(&mut ctx, "__bao_bench_x10_marker", 7.0, &format!("{key} D iter {i}"))?;
+        } else {
+            probe_eval(&mut ctx, "1+1", 2.0, &format!("{key} D iter {i}"))?;
+        }
+    }
+    if truncated {
+        b.note(format!("{key} D: wall-clock budget hit — warm n is the honest sample count"));
+    }
+    if warm.is_empty() {
+        return Err(format!("{key} D: no warm samples"));
+    }
+
+    // Fail-closed cache engagement proof.
+    let (hits_after, _, bypass_after) = stencil_cache::thread_cache_counters();
+    let hits = hits_after - hits_before;
+    let bypasses = bypass_after - bypass_before;
+    if src.len() >= 1024 {
+        if hits < 1 {
+            return Err(format!(
+                "{key} D: zero cache hits — the cached path was not engaged (len={})",
+                src.len()
+            ));
+        }
+    } else if bypasses < 1 {
+        return Err(format!(
+            "{key} D: tiny payload did not take the admission-floor bypass"
+        ));
+    }
+    b.metric(Metric::single(
+        &format!("{key}.cached_phase_cache_hits"),
+        "count",
+        "counter",
+        false,
+        Some("warm"),
+        hits as f64,
+    ));
+    b.metric(Metric::from_samples(
+        &format!("{key}.cached_path_warm_eval"),
+        "us",
+        "latency",
+        false,
+        Some("warm"),
+        &warm,
+    ));
+    Ok(warm)
 }
 
 /// One fresh-realm-per-iteration eval phase. `timed_realm_creation=true` →

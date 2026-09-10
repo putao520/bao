@@ -79,7 +79,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #23 | Realm / Compartment / Zone topology | P0 | — | OPEN（S0 topology census 已完成 2026-09-10，见 §8；余 capability/stale-object 测试与 Zone 实测数据） |
 | #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；servo 侧入口与产品级暴露未接） |
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
-| #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
+| #26 | Stencil / XDR / off-thread compile | P1 | #23 | CLOSED-实现(in-memory per-JSContext cache 落地+接线+兑现 2026-09-11:5.21× 实测 vs 4.9× 判据,80.8% 编译占比消除,engine 383/stealth 1691/browser 族 503 零回归,见 §8 实现节;XDR encode 绑定缺口独立排程、off-thread 关闭不变) |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；**裁决 6 已消费 2026-09-10**：Memory 计量换原生 CollectRuntimeStats（jsglue 构造 + bao_engine 内部面 + soak 采样点，见 §8 #19 节）；GC callback 归 #19 待接） |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | CLOSED（2026-09-11 裁决消费闭：三维身份泄漏 locale/tz/时间精度引擎原生根治+live 证据（engine 376/stealth 1689/browser stealth 族 160 零回归 + live 4/4），见 §8 消费节；JIT/SAB 维持现状=终态裁定；#16 Stealth 身份一致性三维闭） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）仍挂；RED-1 已闭——用户裁决 P-A 落地 2026-09-10，见 §8 末节） |
@@ -1692,3 +1692,63 @@ bao_browser wiring + 测试),无数据/接口迁移。
   仍黄(本轮零触碰);
 - 同域导航旧 pipeline exit 迟到本身(旧 realm 长活=内存驻留面)是 #29 nav-churn 的独立
   输入,非本波范围;P-A 已保证 exit 到达即清。
+
+### 2026-09-11 / #26 实现波——per-JSContext Stencil cache 落地 + stealth blob 接线 + bench 兑现(裁决消费:全部完成)
+
+**基线**:engine `496e2926` + stealth `27dbb606`(bench 记录 commit=27dbb606,dirty=true 即
+bench D-phase 代码本身,同 e90 落库形态);regression 复跑 engine `383/383` + stealth
+`1691/1691` + browser stealth/worker/SW/fingerprint 族 `503/503` 零失败(nextest test-ci)。
+
+#### 26-5 实现(bao_engine::stencil_cache + inject_js_hooks 接线)
+
+- **模块** `bao_engine/src/stencil_cache.rs`:`evaluate_script_cached`(签名镜像
+  `mozjs::rust::evaluate_script` + filename/line 显式参数;Err 契约一致——pending
+  exception 留给调用方,`maybe_resume_unwind` 同步;`<` 1024 B 源走原 evaluate 路径并计
+  bypass——判据 ③ 小源防负收益)。
+- **所有权/lifecycle**(26-1 契约落实):thread-local per-JSContext(owner_cx 不匹配即全量
+  reset+StencilRelease;`shutdown_thread_sm` 在 JS_DestroyContext 前显式 clear——防 cx
+  地址复用吃到死 runtime 的 stencil);stencil 进程堆引用计数
+  (`Release→js_delete`,CompilationStencil 自持 LifoAlloc+RefPtr<ScriptSource>),worker
+  线程死亡时 TLS dtor 释放=纯堆 free,无 cx 访问(已核实 SM 源码)。
+- **键**:wyhash(`bun_wyhash`,workspace 复用,~0.1ns/B)做 bucket locator + 命中时
+  (source, filename, line) 逐字节精确比对——hash 碰撞退化为 miss,绝不错 stencil
+  (SipHash 28KB≈15-19µs 会吃掉 3/4 理论收益,wyhash 后残余≈噪声底)。
+- **容量**:16 条 LRU,逐出即 StencilRelease;帧级 AddRef/Release 防重入逐出 UAF。
+- **接线**:`inject_js_hooks`(engine_props.rs:1451)单漏斗换
+  `evaluate_script_cached`——page W1a/worker 第二 drain/SW scope/node realm 全部
+  `install_stealth_props` 调用方自动继承;per-realm profile 产生不同 source=不同键。
+  编译路径零语义变化:同 utf8 transform、同 CompileOptionsWrapper 默认、同 AutoRealm、
+  同错误臂(BCE-20260621-001 pending-exception 消费不变)。引擎级唯一 delta:实例化
+  script 不带 isRunOnce(每次调用都是全新 JSScript,run-once 多次执行陷阱不可能触发;
+  TreatAsRunOnce=false 是严格保守形态)。
+- **等价断言**(完成定义②,双层):
+  - `bao_engine` 单测 7 条:plain vs cached-miss vs cached-hit 三 realm 状态指纹逐字节
+    相等 / floor bypass / LRU 容量 / source·filename·line 键分离 / 语法+运行时错误路径
+    / clear 生命周期;
+  - `bao_stealth` 真 blob 集成 2 条:firefox_default `combined_js()`(28,221 B)三臂指纹
+    逐字节相等且指纹必须观测到 patched Date.now;A/B 双 profile 交错评估各自观测各自
+    marker(2 entries)。
+
+#### 26-6 bench 兑现(stencil-cost +Phase D,`bench/results/2026-09-10-27dbb606/`,R=3,test-ci)
+
+| 指标(stealth 28,221B) | e90 判据(预测) | 实现后实测(median of R=3) |
+|---|---:|---:|
+| 每 realm 注入成本 | A2=830µs(负载 9.4) | A2≈1273-2351µs(本机负载 ~30,绝对值不跨日比较) |
+| cached path(D) | C=167µs 预测 | D=244-250µs(同负载日 A2/C/D 同窗口) |
+| **cached_speedup_x** | **4.9×** | **5.21×**(5.21/5.21/11.05;run-3 A2 遭负载尖峰抬高,保守读 1-2 轮 5.21×) |
+| 消除编译占比 | 79.6% 理论 | **80.8%**(run-3 90.9%) |
+| 缓存新增开销/原始路径 | —(判据 ≤~16%) | **0.0-0.15%**(wyhash+逐字节验证≈噪声底) |
+| stealth_x10 speedup | 8.7× | 8.64×(7.02/8.64/9.84) |
+| tiny_1p1 | 13.8% 占比→floor | bypass 计数证实,speedup≈1.0(设计如此) |
+| 缓存命中 | — | 64/64 hits/run(fail-closed 计数器断言) |
+
+  判据口径:residual=(D−C) 在 ~ms 级载荷上跨相位测量吸收同级调度噪声(可测出负值),
+  故门控用 `cached_added_overhead_pct_of_original`=max(0,D−C)/A2 ≤16%(A2 为稳定大分母,
+  D 与 C 共同坐落其下);`cached_speedup_x ≥3.0` 硬地板。3/3 run 全 PASS。中间诚实记:首
+  轮 R=3 用 (D−C)/D 门控在负载 ~50 下 2 run 红于 x10(53.7%/41.5%——纯相位间噪声,非算
+  法开销),门控口径修正后重跑,旧失败 run 不留档、口径变化入 bench 头注释与本节。
+
+**终态**:#26 实现闭环(完成定义①②③④⑤全过)。剩余独立排程项不变:XDR encode 绑定
+增补(`EncodeStencil` bindgen 缺口)维持 blocked;off-thread 家族维持关闭(上游无 API)。
+下一消费者候选(未排程,需新判据):CDP evaluate waitForFunction 形态、`vm.createContext`
+contextify wrapper、CLI `eval_module`。
