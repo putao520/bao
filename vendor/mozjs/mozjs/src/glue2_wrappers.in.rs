@@ -24,6 +24,10 @@ wrap!(glue: pub fn CreateRootedIdVector(cx: &mut JSContext) -> *mut PersistentRo
 wrap!(glue: pub fn AppendToIdVector(v: MutableHandleIdVector, id: HandleId) -> bool);
 wrap!(glue: pub fn CreateRootedObjectVector(aCx: &mut JSContext) -> *mut PersistentRootedObjectVector);
 wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
+// BAO patch (SM-EVOLUTION #27 verdict-6, consumed by #19 soak): engine-native
+// memory metering — JS::CollectRuntimeStats behind the jsglue.cpp subclass
+// (Rust cannot construct RuntimeStats: pure-virtual hooks + js::Vector members).
+wrap!(glue: pub fn BaoCollectRuntimeStats(cx: &mut JSContext, servoSizes: *mut ServoSizes, out: *mut glue::BaoRuntimeStatsPOD) -> bool);
 wrap!(glue: pub fn JS_GetPromiseResult(promise: HandleObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_MaybeGetScriptPrivate(obj: *mut JSObject, dest: MutableHandleValue));

@@ -25,6 +25,7 @@ mod job_queue_context_tests;
 mod js_context_fusion_tests;
 mod jserror_parseresult_deep_tests;
 mod jsvalue_display_format_tests;
+mod memory_stats_tests;
 mod module_loader_host_fn_tests;
 mod raw_value_root_guard_tests;
 mod realm_policy_tests;

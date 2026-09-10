@@ -13,6 +13,13 @@
 //! die with their ScriptThreads on close. RSS is read pre/post around settle
 //! windows. After the churn a post-idle phase samples the reclamation trend.
 //!
+//! Engine-native heap metering (SM-EVOLUTION #27 裁决 6 → #19): each probe
+//! also samples `JS::CollectRuntimeStats` on the probe page's ScriptThread
+//! (via the bao_engine glue — pre and post around the forced GC), so the
+//! verdict data carries engine-level GC-heap / live-GC-things / malloc-heap
+//! numbers next to the process RSS proxy. Engine-metering failure degrades
+//! only those fields — recorded honestly, never zero-filled.
+//!
 //! Raw per-cycle / per-segment / per-probe records stream to a
 //! `<out>.segments.jsonl` sidecar (crash-safe append — a killed run keeps its
 //! series); the final `--out` document is schema-conformant.
@@ -67,6 +74,51 @@ struct ProbeRec {
     gc_eval_ms: f64,
     fd: f64,
     threads: f64,
+    /// Engine-native heap sample taken before the forced GC (None = the
+    /// engine metering failed for this probe; recorded honestly).
+    engine_pre: Option<EngineHeapSample>,
+    /// Engine-native heap sample taken after the forced GC + settle.
+    engine_post: Option<EngineHeapSample>,
+}
+
+/// Engine-native heap numbers for one probe sample, KiB / counts
+/// (`JS::CollectRuntimeStats` via bao_engine, on the probe page's
+/// ScriptThread — the same runtime the forced GC covers).
+#[derive(Clone, Copy)]
+struct EngineHeapSample {
+    gc_heap_chunk_total_kib: f64,
+    gc_heap_gc_things_kib: f64,
+    zone_live_gc_things_kib: f64,
+    malloc_heap_kib: f64,
+    zones: f64,
+    realms: f64,
+}
+
+impl EngineHeapSample {
+    fn collect(probe: &PageHandle) -> Result<Self, String> {
+        let s = probe
+            .collect_engine_memory_stats()
+            .map_err(|e| format!("engine stats collection failed: {e}"))?;
+        Ok(EngineHeapSample {
+            gc_heap_chunk_total_kib: s.gc_heap_chunk_total as f64 / 1024.0,
+            gc_heap_gc_things_kib: s.gc_heap_gc_things as f64 / 1024.0,
+            zone_live_gc_things_kib: s.zone_live_gc_things as f64 / 1024.0,
+            malloc_heap_kib: s.servo_malloc_heap as f64 / 1024.0,
+            zones: s.zone_count as f64,
+            realms: s.realm_count as f64,
+        })
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "gc_heap_chunk_total_kib": self.gc_heap_chunk_total_kib,
+            "gc_heap_gc_things_kib": self.gc_heap_gc_things_kib,
+            "zone_live_gc_things_kib": self.zone_live_gc_things_kib,
+            "malloc_heap_kib": self.malloc_heap_kib,
+            "zones": self.zones,
+            "realms": self.realms,
+        })
+    }
 }
 
 /// Ordinary least-squares slope of ys over ts (seconds → KiB/s). Returns None
@@ -94,12 +146,26 @@ fn lsq_slope_kib_per_s(ts_s: &[f64], ys_kib: &[f64]) -> Option<f64> {
 /// Forced-GC probe on the long-lived probe page. Two `Bun.gc()` passes
 /// (GCReason::API full GC; second pass sweeps finalized survivors), RSS read
 /// before the first and after a settle window following the second so malloc
-/// trim / mmap changes become visible in /proc.
-fn forced_gc_probe(probe: &PageHandle, settle_ms: u64) -> Result<ProbeRec, String> {
+/// trim / mmap changes become visible in /proc. Engine-native heap samples
+/// (`JS::CollectRuntimeStats`, probe page's ScriptThread) bracket the GC —
+/// their failures degrade only the engine fields (returned for honest
+/// reporting), never the GC/RSS probe itself.
+fn forced_gc_probe(
+    probe: &PageHandle,
+    settle_ms: u64,
+) -> Result<(ProbeRec, Vec<String>), String> {
     std::thread::sleep(Duration::from_millis(settle_ms));
     let rss_pre = common::vm_rss_kib().unwrap_or(0) as f64;
     let fd = common::fd_count().unwrap_or(0) as f64;
     let threads = common::thread_count().unwrap_or(0) as f64;
+    let mut engine_failures: Vec<String> = Vec::new();
+    let engine_pre = match EngineHeapSample::collect(probe) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            engine_failures.push(format!("pre: {e}"));
+            None
+        }
+    };
 
     let t0 = Instant::now();
     probe
@@ -112,16 +178,28 @@ fn forced_gc_probe(probe: &PageHandle, settle_ms: u64) -> Result<ProbeRec, Strin
 
     std::thread::sleep(Duration::from_millis(settle_ms));
     let rss_post = common::vm_rss_kib().unwrap_or(0) as f64;
-    Ok(ProbeRec {
-        t_ms: 0.0, // caller stamps wall time
-        segment: None,
-        rss_pre_kib: rss_pre,
-        rss_post_kib: rss_post,
-        rss_drop_kib: rss_pre - rss_post,
-        gc_eval_ms,
-        fd,
-        threads,
-    })
+    let engine_post = match EngineHeapSample::collect(probe) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            engine_failures.push(format!("post: {e}"));
+            None
+        }
+    };
+    Ok((
+        ProbeRec {
+            t_ms: 0.0, // caller stamps wall time
+            segment: None,
+            rss_pre_kib: rss_pre,
+            rss_post_kib: rss_post,
+            rss_drop_kib: rss_pre - rss_post,
+            gc_eval_ms,
+            fd,
+            threads,
+            engine_pre,
+            engine_post,
+        },
+        engine_failures,
+    ))
 }
 
 fn write_rec(sc: &mut std::fs::File, value: serde_json::Value) -> Result<(), String> {
@@ -182,6 +260,14 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
     b.param(
         "forced_gc",
         "Bun.gc() x2 via probe-page Node Realm (GCReason::API)".into(),
+    );
+    b.param(
+        "engine_metering",
+        "JS::CollectRuntimeStats via bao_engine glue (vendor mozjs jsglue.cpp), \
+         sampled pre/post around each forced GC on the probe page's \
+         ScriptThread — engine heap/GC numbers next to the process RSS proxy \
+         (SM-EVOLUTION #27 裁决 6 → #19)"
+            .into(),
     );
 
     if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
@@ -253,6 +339,7 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
     let mut segments: Vec<SegmentRec> = Vec::new();
     let mut probes: Vec<ProbeRec> = Vec::new();
     let mut probe_failures: Vec<String> = Vec::new();
+    let mut engine_metering_failures: Vec<String> = Vec::new();
     let mut segment_cycles_start = 0usize;
     let mut steady_from_cycle: Option<usize> = None;
     let mut next_boundary = segment_secs;
@@ -320,9 +407,15 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
         if start.elapsed().as_secs() >= next_boundary {
             let seg_idx = segments.len();
             match forced_gc_probe(&probe_page, gc_settle_ms) {
-                Ok(mut pr) => {
+                Ok((mut pr, engine_errs)) => {
                     pr.t_ms = now_ms();
                     pr.segment = Some(seg_idx);
+                    if !engine_errs.is_empty() {
+                        engine_metering_failures.push(format!(
+                            "segment {seg_idx}: {}",
+                            engine_errs.join("; ")
+                        ));
+                    }
                     write_rec(
                         &mut sc,
                         json!({
@@ -330,6 +423,8 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
                             "rss_pre_kib": pr.rss_pre_kib, "rss_post_kib": pr.rss_post_kib,
                             "rss_drop_kib": pr.rss_drop_kib, "gc_eval_ms": pr.gc_eval_ms,
                             "fd": pr.fd, "threads": pr.threads,
+                            "engine_pre": pr.engine_pre.map(|s| s.to_json()),
+                            "engine_post": pr.engine_post.map(|s| s.to_json()),
                         }),
                     )?;
                     probes.push(pr);
@@ -391,8 +486,12 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
 
     // ── Final probe + post-idle reclamation phase ──────────────────────────
     let final_probe = match forced_gc_probe(&probe_page, gc_settle_ms) {
-        Ok(mut pr) => {
+        Ok((mut pr, engine_errs)) => {
             pr.t_ms = now_ms();
+            if !engine_errs.is_empty() {
+                engine_metering_failures
+                    .push(format!("final probe: {}", engine_errs.join("; ")));
+            }
             write_rec(
                 &mut sc,
                 json!({
@@ -400,6 +499,8 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
                     "rss_pre_kib": pr.rss_pre_kib, "rss_post_kib": pr.rss_post_kib,
                     "rss_drop_kib": pr.rss_drop_kib, "gc_eval_ms": pr.gc_eval_ms,
                     "fd": pr.fd, "threads": pr.threads,
+                    "engine_pre": pr.engine_pre.map(|s| s.to_json()),
+                    "engine_post": pr.engine_post.map(|s| s.to_json()),
                 }),
             )?;
             Some(pr)
@@ -638,6 +739,92 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
             None,
             &gc_ms,
         ));
+
+        // Engine-native heap metering (n = probes with a successful post-GC
+        // engine sample; metering failures are counted, never fabricated).
+        let engine_post: Vec<&EngineHeapSample> = all_probes
+            .iter()
+            .filter_map(|p| p.engine_post.as_ref())
+            .collect();
+        if !engine_post.is_empty() {
+            let heap: Vec<f64> = engine_post
+                .iter()
+                .map(|s| s.gc_heap_chunk_total_kib)
+                .collect();
+            b.metric(Metric::from_samples(
+                "forced_gc_engine_gc_heap_kib",
+                "KiB",
+                "memory",
+                false,
+                None,
+                &heap,
+            ));
+            let things: Vec<f64> = engine_post
+                .iter()
+                .map(|s| s.gc_heap_gc_things_kib)
+                .collect();
+            b.metric(Metric::from_samples(
+                "forced_gc_engine_gc_things_kib",
+                "KiB",
+                "memory",
+                false,
+                None,
+                &things,
+            ));
+            let malloc: Vec<f64> = engine_post
+                .iter()
+                .map(|s| s.malloc_heap_kib)
+                .collect();
+            b.metric(Metric::from_samples(
+                "forced_gc_engine_malloc_heap_kib",
+                "KiB",
+                "memory",
+                false,
+                None,
+                &malloc,
+            ));
+            let zones: Vec<f64> = engine_post.iter().map(|s| s.zones).collect();
+            b.metric(Metric::from_samples(
+                "forced_gc_engine_zone_count",
+                "count",
+                "count",
+                false,
+                None,
+                &zones,
+            ));
+            let realms: Vec<f64> = engine_post.iter().map(|s| s.realms).collect();
+            b.metric(Metric::from_samples(
+                "forced_gc_engine_realm_count",
+                "count",
+                "count",
+                false,
+                None,
+                &realms,
+            ));
+
+            // Engine-level GC reclamation: live-GC-things bytes freed by the
+            // forced GC (probes with BOTH samples; a probe missing either
+            // side is excluded, not zero-filled).
+            let drops: Vec<f64> = all_probes
+                .iter()
+                .filter_map(|p| match (p.engine_pre, p.engine_post) {
+                    (Some(pre), Some(post)) => {
+                        Some(pre.gc_heap_gc_things_kib - post.gc_heap_gc_things_kib)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !drops.is_empty() {
+                b.metric(Metric::from_samples(
+                    "forced_gc_engine_gc_things_drop_kib",
+                    "KiB",
+                    "memory",
+                    false,
+                    None,
+                    &drops,
+                ));
+            }
+        }
     }
 
     // Post-idle reclamation trend.
@@ -670,6 +857,16 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
     b.note(
         "forced GC (Bun.gc x2, GCReason::API) covers the long-lived probe page's JSRuntime only — each JSContext owns its JSRuntime and churn-page heaps are reclaimed by ScriptThread exit on close; post-GC RSS delta is therefore a lower bound on reclaimable memory",
     );
+    b.note(
+        "engine metering (forced_gc_engine_*) is JS::CollectRuntimeStats on the SAME probe-page runtime the forced GC covers — engine-level GC-heap/live-things/malloc numbers, not process totals",
+    );
+    if !engine_metering_failures.is_empty() {
+        b.note(format!(
+            "{} engine-metering failure(s) — engine heap fields are degraded for those probes, not fabricated: {:?}",
+            engine_metering_failures.len(),
+            engine_metering_failures
+        ));
+    }
     b.note(
         "segment 0 is warm-up (allocator arenas / JIT / code caches / servo init): vm_rss_slope_over_soak is warm-up dominated — leak-rate adjudication must use vm_rss_slope_steady (excludes segment 0)",
     );

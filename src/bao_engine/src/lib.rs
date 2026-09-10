@@ -86,9 +86,13 @@ pub use bun_sm::module_loader::{
 // @trace REQ-ENG-001 [entity:BaoRuntime] — engine-native interrupt/timeout/cancellation
 // (SpiderMonkey Interrupt.h → ExecutionControl, SM-EVOLUTION #24; internal
 // experimental surface, not a stable API commitment)
+// @trace REQ-ENG-001 [entity:BaoRuntime] — engine-native memory metering
+// (JS::CollectRuntimeStats glue, SM-EVOLUTION #27 裁决 6 → #19 soak;
+// internal experimental surface, not a stable API commitment)
 pub mod context;
 pub mod execution_control;
 pub mod job_queue;
+pub mod memory_stats;
 
 // @trace REQ-ENG-002 [api:POST /codegen/generate] [entity:CodegenBackend] — codegen backend rewrite (.classes.ts → SpiderMonkey bindings) re-exported via bun_sm::codegen / bun_sm::generated
 

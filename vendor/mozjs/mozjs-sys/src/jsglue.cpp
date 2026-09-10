@@ -968,6 +968,52 @@ bool CollectServoSizes(JSContext* cx, JS::ServoSizes* sizes, GetSize gs) {
   return JS::AddServoSizeOf(cx, MallocSizeOf, &sdv, sizes);
 }
 
+// BAO patch (SM-EVOLUTION #27 verdict-6, consumed by #19 soak): engine-native
+// memory metering. JS::RuntimeStats is C++-construct-only from Rust (pure
+// virtual initExtra*Stats hooks + js::Vector members), so the concrete
+// subclass is built here and the headline numbers copied into a plain-C POD.
+// opv=nullptr is explicitly tolerated upstream (MemoryMetrics.cpp guards
+// `if (ObjectPrivateVisitor* opv = ...)`).
+struct BaoRuntimeStatsPOD {
+  size_t gcHeapChunkTotal;
+  size_t gcHeapGCThings;
+  size_t zoneUnusedGcThings;
+  size_t zoneLiveGcThings;
+  size_t realmLiveGcThings;
+  size_t zoneCount;
+  size_t realmCount;
+};
+
+class BaoRuntimeStats : public JS::RuntimeStats {
+ public:
+  BaoRuntimeStats() : JS::RuntimeStats(MallocSizeOf) {}
+
+  void initExtraRealmStats(JS::Realm*, JS::RealmStats*,
+                           const JS::AutoRequireNoGC&) override {}
+  void initExtraZoneStats(JS::Zone*, JS::ZoneStats*,
+                          const JS::AutoRequireNoGC&) override {}
+};
+
+bool BaoCollectRuntimeStats(JSContext* cx, JS::ServoSizes* servoSizes,
+                            BaoRuntimeStatsPOD* out) {
+  BaoRuntimeStats rtStats;
+  if (!JS::CollectRuntimeStats(cx, &rtStats, nullptr, false)) {
+    return false;
+  }
+  mozilla::PodZero(servoSizes);
+  rtStats.addToServoSizes(servoSizes);
+  rtStats.zTotals.addToServoSizes(servoSizes);
+  rtStats.realmTotals.addToServoSizes(servoSizes);
+  out->gcHeapChunkTotal = rtStats.gcHeapChunkTotal;
+  out->gcHeapGCThings = rtStats.gcHeapGCThings;
+  out->zoneUnusedGcThings = rtStats.zTotals.unusedGCThings.totalSize();
+  out->zoneLiveGcThings = rtStats.zTotals.sizeOfLiveGCThings();
+  out->realmLiveGcThings = rtStats.realmTotals.sizeOfLiveGCThings();
+  out->zoneCount = rtStats.zoneStatsVector.length();
+  out->realmCount = rtStats.realmStatsVector.length();
+  return true;
+}
+
 void InitializeMemoryReporter(WantToMeasure wtm) { gWantToMeasure = wtm; }
 
 // Expose templated functions for tracing

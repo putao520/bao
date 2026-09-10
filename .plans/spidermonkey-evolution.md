@@ -79,8 +79,8 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #23 | Realm / Compartment / Zone topology | P0 | — | OPEN（S0 topology census 已完成 2026-09-10，见 §8；余 capability/stale-object 测试与 Zone 实测数据） |
 | #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；servo 侧入口与产品级暴露未接） |
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
-| #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN（核查+判据 bench 完成 2026-09-10：**in-memory per-JSContext cache 值得做**——stealth blob（28KB）每 realm 编译占比 79.6%/4.9×、breakeven 0.9 realm（stencil-cost bench R=3）；XDR encode=EncodeStencil 绑定缺口；off-thread=上游 public API 缺失关闭；见 §8；实现波待 S3 排程） |
-| #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；Memory 计量（CollectRuntimeStats glue）+ GC callback 归 #19） |
+| #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
+| #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；**裁决 6 已消费 2026-09-10**：Memory 计量换原生 CollectRuntimeStats（jsglue 构造 + bao_engine 内部面 + soak 采样点，见 §8 #19 节）；GC callback 归 #19 待接） |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN（核查轮+裁决提案已落 2026-09-10 见 §8：locale 缺口=1 行 include 非C++墙、tz/时间精度引擎原生实测可达、JIT/SAB 维持现状；三维页面可见身份待用户立法） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN（自动化 v1 已落地 2026-09-10：三脚本+seed inventory+adoption report+drift 基线，见 §8；升级波首跑+DoD 收口待下次 mozjs 前移） |
@@ -1419,6 +1419,57 @@ Script 同 url 异 id 已入断言口径）；GetEnvironment bridge face 新数�
 8. GC/root/leak 可观测且进入 72h soak；
 9. mozjs upgrade 自动产生 capability drift/adoption report；
 10. 不存在长期“只写计划不执行”的 open slice。
+
+### 2026-09-10 / #19——引擎原生 Memory 计量落地（#27 裁决 6 消费：CollectRuntimeStats jsglue 构造 + bao_engine 内部面 + soak 采样点接入）
+
+**#27 裁决 6 实施**（"Memory 引擎计量（#19 soak）→ 换原生（CollectRuntimeStats），前置=
+mozjs-sys jsglue.cpp RuntimeStats glue"）：类型构造墙以 vendor glue 破——
+`JS::RuntimeStats` 纯虚 `initExtra*Stats` + `js::Vector` 成员使 Rust 不可安全构造
+（bindgen 字段全 pub 但零化构造 UB 风险，#27 核查轮结论），C++ 侧子类化 + POD
+copy-out 是最小差分。opv=null 显式容忍（MemoryMetrics.cpp null 守卫，servo 形态）。
+
+**三层落地**：
+- **vendor/mozjs**（在册 patch 文件，CSP 记账式追加，零删除）：jsglue.cpp 追加
+  `BaoRuntimeStatsPOD`（7×usize：gcHeapChunkTotal/gcHeapGCThings/zone·realm live
+  GC things/zoneUnusedGcThings/zone·realm count）+ `BaoRuntimeStats : JS::RuntimeStats`
+  子类（no-op extra hooks，MallocSizeOf 复用文件内既有 malloc_usable_size 形态）+
+  `BaoCollectRuntimeStats(cx, ServoSizes*, POD*)`——ServoSizes rollup =
+  runtime+zTotals+realmTotals 三段 addToServoSizes（单一 rtStats.addToServoSizes 不含
+  zone/realm 段，会低估）；mozjs glue2_wrappers.in.rs 追加 wrap!。
+- **bao_engine 内部面**（`#[doc(hidden)]`+零 pub 稳定承诺，execution_control 同形态）：
+  `memory_stats.rs` 的 `EngineMemoryStats`（13 字段）+ `collect_runtime_stats(cx)`；
+  fail-closed——引擎失败返 Err，禁零填充占位。合同：须在 cx 属主线程静止点调用。
+- **bao_browser 桥 + soak 采样点**：`runtime_bridge::register_engine_memory_stats_
+  collection`（ScriptThread 回调，与 Node-Realm evaluate 同 FIFO 队列同
+  happens-before 形态）+ `PageHandle::collect_engine_memory_stats`（register →
+  drain → OnceLock 读）；soak `forced_gc_probe` 探针旁加 pre/post 引擎采样
+  （`Bun.gc()` ×2 前后各一次），sidecar gc-probe 记录含 `engine_pre/engine_post`，
+  result doc 新增 `forced_gc_engine_{gc_heap,gc_things,malloc_heap}_kib` /
+  `zone_count` / `realm_count` / `gc_things_drop_kib`（引擎级 GC 回收判定数据——
+  #29 soak 量化缺的正是这个）；引擎计量失败降级记录不伪造（probe 契约同型）。
+  JS-face 零新增（纯 Rust 内部观测面，无产品语义扩张）。
+
+**引擎实证**（`bao_engine/tests/suite/memory_stats_tests.rs`，30k live strings 负载）：
+①全字段非零（gc_heap_chunk_total/gc_things/zone·realm live/malloc_heap ≥ 各自下界，
+  zero 即 copy-out 破损）；②SM totals 恒等式**精确成立**：
+  `gcHeapGCThings == zTotals.sizeOfLiveGCThings() + realmTotals.sizeOfLiveGCThings()`
+  （MemoryMetrics.cpp:723 就是这么算的，同一 finalized 对象 copy-out）；③chunk 覆盖
+  一致性 + ServoSizes used-heap 与 headline GC-things 双 rollup 同源相等。
+  `cargo nt -p bao_engine -E 'test(engine_memory_stats)'` **1/1 PASS**。
+
+**soak 2min 截短验证数据面**（`bench/results/2026-09-10-03396a13/soak.run-1.{json,
+segments.jsonl}`，duration=2min/segment=1min/post=0，git_dirty=true 如实入档）：
+gc-probe sidecar 记录含 engine_pre/engine_post 全字段；result doc 含
+forced_gc_engine_* 六指标。引擎计量面数据通路闭合。
+
+**回归**：`cargo nextest run -p bao_engine --cargo-profile test-ci` **376/376 PASS**
+（374 基线 + debugger_native 1 + 本轮 1）；`cargo nextest run -p bao-browser
+--cargo-profile test-ci`（xvfb）**1824/1824 PASS**（1216 基线已随今晚多波增长；
+含本轮 page/runtime_bridge 改动的全套浏览器回归，2 slow 均 PASS）。
+
+**账本状态更新**：#27 裁决 6（Memory 引擎计量）**已消费**；GC callback
+（JS_SetGCCallback 族,已 wrapped）仍归 #19 待接。soak 的 RSS 代理 + 引擎级 heap/GC
+双数据面就位——#29 soak 量化的引擎级判定数据（live-GC-things 回收/增长趋势）自此可测。
 
 ### 2026-09-10 / #26——Stencil 可达面核查 + stencil-cost 收益判据 bench（裁决：in-memory cache 值得做；XDR encode=绑定缺口；off-thread=上游 API 缺失关闭）
 

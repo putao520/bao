@@ -28,6 +28,12 @@
 page-churn 形态长跑(page-churn 同一循环体)+ 逐循环 RSS/fd/thread 采样 +
 分段摘要 + 段界 forced-GC 探针(长寿命探针页 Node Realm `Bun.gc()`×2)+
 post-idle 回收相位;逐循环序列 crash-safe 落 `.segments.jsonl` sidecar。
+2026-09-10 起探针叠加**引擎原生 heap 计量**(SM-EVOLUTION #27 裁决 6→#19):
+每次 forced-GC 探针在 `Bun.gc()` 前后各采一次 `JS::CollectRuntimeStats`
+(bao_engine glue,探针页 ScriptThread 静止点),产出
+`forced_gc_engine_{gc_heap,gc_things,malloc_heap}_kib`/`zone_count`/`realm_count`/
+`gc_things_drop_kib` 指标——引擎级 GC 回收判定,补齐进程 RSS 代理之下的
+heap 真值;计量失败降级记录不伪造。
 
 **更早的 harness:evaluate() 往返延迟**(#2),位于
 `src/bao_engine/benches/evaluate_roundtrip.rs`(cargo bench 标准 `[[bench]]` target,

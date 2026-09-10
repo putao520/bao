@@ -144,6 +144,37 @@ impl PageInner {
         ))
     }
 
+    /// Engine-native memory stats for THIS page's JSRuntime
+    /// (SM-EVOLUTION #27 裁决 6 → #19 soak): `JS::CollectRuntimeStats` via
+    /// the vendor mozjs jsglue glue, executed on the page's ScriptThread at
+    /// the same quiescent embedder drain point the Node-Realm evaluate path
+    /// uses. Per the process JSContext model (one JSRuntime per
+    /// ScriptThread) this measures the runtime hosting BOTH of this page's
+    /// realms (page + Node) and nothing else — the same scope the forced-GC
+    /// probe's `Bun.gc()` covers.
+    ///
+    /// Fail-closed: any failure (drain, callback, engine) surfaces as an
+    /// error, never zero-filled numbers.
+    ///
+    /// Internal experimental surface — NOT a stable API commitment
+    /// (bench/soak observability face; zero JS-visible product surface).
+    #[doc(hidden)]
+    pub fn collect_engine_memory_stats(
+        &self,
+    ) -> Result<bao_engine::memory_stats::EngineMemoryStats, BrowserError> {
+        let slot = crate::runtime_bridge::register_engine_memory_stats_collection(self.webview.id());
+        self.drain_callbacks()?;
+        // The drain guarantees the callback ran (servo drains the queue
+        // before executing the drain eval); an unset slot means the queue
+        // was dropped without execution — reported honestly, not guessed.
+        slot.get()
+            .cloned()
+            .unwrap_or_else(|| {
+                Err("engine memory stats: script-thread callback never ran".to_string())
+            })
+            .map_err(BrowserError::JavaScript)
+    }
+
     /// Evaluate JavaScript in privileged mode (REQ-SEC-002).
     ///
     /// Scripts run via this method have full Node.js/Bun runtime access:
@@ -1111,6 +1142,27 @@ impl PageHandle {
 
     pub fn drain_callbacks(&self) -> Result<String, BrowserError> {
         self.with_inner(|inner| inner.drain_callbacks())
+    }
+
+    /// Engine-native memory stats for THIS page's JSRuntime
+    /// (SM-EVOLUTION #27 裁决 6 → #19 soak): `JS::CollectRuntimeStats` via
+    /// the vendor mozjs jsglue glue, executed on the page's ScriptThread at
+    /// the same quiescent embedder drain point the Node-Realm evaluate path
+    /// uses. Per the process JSContext model (one JSRuntime per
+    /// ScriptThread) this measures the runtime hosting BOTH of this page's
+    /// realms (page + Node) and nothing else — the same scope the forced-GC
+    /// probe's `Bun.gc()` covers.
+    ///
+    /// Fail-closed: any failure (drain, callback, engine) surfaces as an
+    /// error string, never zero-filled numbers.
+    ///
+    /// Internal experimental surface — NOT a stable API commitment
+    /// (bench/soak observability face; zero JS-visible product surface).
+    #[doc(hidden)]
+    pub fn collect_engine_memory_stats(
+        &self,
+    ) -> Result<bao_engine::memory_stats::EngineMemoryStats, BrowserError> {
+        self.with_inner(|inner| inner.collect_engine_memory_stats())
     }
 
     /// Evaluate JS with Node API injection (trusted context).

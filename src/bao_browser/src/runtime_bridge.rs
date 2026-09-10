@@ -701,6 +701,52 @@ pub fn register_node_realm_debugger_install(webview_id: servo::WebViewId) {
     servo::register_script_thread_callback(webview_id, callback);
 }
 
+/// Register an engine-native memory stats collection on THIS page's
+/// ScriptThread (SM-EVOLUTION #27 裁决 6 → #19 soak consumption).
+///
+/// The callback drains at the same quiescent point as
+/// [`evaluate_js_via_node_realm`]'s (`handle_evaluate_javascript`, before the
+/// paired eval executes) and receives the ScriptThread's JSContext — the
+/// owner of the runtime hosting BOTH of this page's realms (page + Node).
+/// `bao_engine`'s `collect_runtime_stats` runs there: the C++-constructed
+/// `JS::RuntimeStats` subclass lives in vendor mozjs jsglue.cpp (Rust cannot
+/// construct the type); null `ObjectPrivateVisitor` is explicitly tolerated
+/// upstream.
+///
+/// Pairs with `PageHandle::drain_callbacks()`: register → drain → read the
+/// returned OnceLock (same FIFO/happens-before shape as the evaluate path).
+/// Failure is reported honestly as `Err` in the slot — never zero-filled.
+pub fn register_engine_memory_stats_collection(
+    webview_id: servo::WebViewId,
+) -> std::sync::Arc<
+    std::sync::OnceLock<Result<bao_engine::memory_stats::EngineMemoryStats, String>>,
+> {
+    let slot: std::sync::Arc<
+        std::sync::OnceLock<Result<bao_engine::memory_stats::EngineMemoryStats, String>>,
+    > = std::sync::Arc::new(std::sync::OnceLock::new());
+    let sink = slot.clone();
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> = Box::new(
+        move |cx_ptr: *mut std::ffi::c_void, _page_global: *mut std::ffi::c_void| {
+            let stats = if cx_ptr.is_null() {
+                Err("engine memory stats: script thread delivered a null JSContext".into())
+            } else {
+                // SAFETY: cx_ptr is the live owner-thread JSContext handed to
+                // this callback by handle_evaluate_javascript; no JS executes
+                // on the thread at the drain point, which is exactly the
+                // quiescent contract collect_runtime_stats requires.
+                unsafe {
+                    bao_engine::memory_stats::collect_runtime_stats(
+                        cx_ptr.cast::<mozjs::jsapi::JSContext>(),
+                    )
+                }
+            };
+            let _ = sink.set(stats);
+        },
+    );
+    servo::register_script_thread_callback(webview_id, callback);
+    slot
+}
+
 /// Native face install: `JS_DefineDebuggerObject` on the Node Realm global,
 /// guarded by HasProperty for idempotency. No-op on null pointers (the
 /// paired JS setup surfaces a precise error when the face is missing).
