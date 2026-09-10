@@ -76,6 +76,9 @@ use profile_traits::time::ProfilerCategory;
 use profile_traits::time_profile;
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
+// BAO PATCH (BCE-20260910-004): servo's own "prepare to run script" wrapper,
+// used by `bao_run_in_script_settings` for embedder-side JS dispatches.
+use script_bindings::settings_stack::run_a_script;
 use script_traits::{
     ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, InitialScriptState,
     NewPipelineInfo, Painter, ProgressiveWebMetricType, ScriptThreadMessage,
@@ -268,6 +271,45 @@ fn bao_pump_embedder_event_loop(cx: &mut JSContext) {
         // the pointer read itself.
         pump(unsafe { cx.raw_cx_no_gc() } as *mut c_void);
     }
+}
+
+/// BAO PATCH (BCE-20260910-004, settings-stack push for embedder JS
+/// dispatch): run `f` with this thread's script settings stack pushed for
+/// `global_object`'s realm — the "prepare to run script" step every servo JS
+/// entry performs (script evaluation via `run_a_classic_script`, WebIDL
+/// callback invocation via `call_setup`). Bao's embedder event-loop pump
+/// (above) fires page-realm timers OUTSIDE any settings-stack entry; a page
+/// callback then touching `location.*` getters, `document.open()` or canvas
+/// origin-clean checks dereferenced `entry_global().unwrap()` on an EMPTY
+/// stack and panicked (dom/bindings/settings_stack.rs:36, Script#3 on
+/// meituan's WAF JS — the realworld anti-scraping wedge; the panicked
+/// ScriptThread also wedged `ServoInner::drop`'s shutdown spin). Registered
+/// by the embedder into `bun_runtime::timers` (registry mirror of the pump
+/// bridge above) and called by `BaoTimeoutObject::fire_js` around its
+/// page-realm dispatch. `run_a_script` is exactly servo's own wrapper: it
+/// pushes a `StackEntryKind::Entry` and performs a microtask checkpoint when
+/// the stack empties again.
+pub fn bao_run_in_script_settings(
+    cx: *mut c_void,
+    global_object: *mut c_void,
+    f: &mut dyn FnMut(),
+) {
+    if cx.is_null() || global_object.is_null() {
+        f();
+        return;
+    }
+    // SAFETY: both pointers come from the embedder pump contract — the live
+    // JSContext of the calling ScriptThread and the raw-rooted global of a
+    // live realm on that thread (same conversion as
+    // `bao_pump_embedder_event_loop` / `fire_js`'s AutoRealm root).
+    let global = unsafe {
+        GlobalScope::from_object(global_object as *mut js::jsapi::JSObject)
+    };
+    let mut cx = unsafe {
+        JSContext::from_ptr(core::ptr::NonNull::new_unchecked(cx as *mut _))
+    };
+    let cx = &mut cx;
+    run_a_script::<crate::DomTypeHolder, _, _>(cx, &global, |_| f());
 }
 
 // ============================================================================

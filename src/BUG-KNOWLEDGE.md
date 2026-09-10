@@ -2097,3 +2097,58 @@ confirmReport:
 - 回归锚:`serviceworker_fetchevent_tests`(页面零交互窗口内 SW fetch publish 必 settle——本条转绿即闭环)+ SW 家族红线(mediation/controller/sw_stealth_profile 3 subclause/fetch_axis)。
 - 归因纪律沉淀:动到「tokio 饿死」结论前先做 canary spawn 同队列实验——同队列任务被 poll 即证伪调度器归因。
 - 嵌入态结构性边界沉淀:凡是「servo 侧等待 embedder 侧动作」的往返(net→embedder 通道、ScriptThread MiniEventLoop、worker scope 回调),必须先问「 bao 的惰性泵模型下谁在 drain」;`Servo(Rc<ServoInner>)` !Send 决定了任何「常驻线程泵 servo」方案都不可行,正解是 09cabe17/本条的全局回调 bridge 模式(在等待点本地裁决)。
+
+## BCE-20260910-004 — page-realm setImmediate 派发缺 servo settings-stack Entry push(439f4ec1 激活死路径)+ 深层 servo IDB 双终局竞态暴露;teardown 忙旋=panic 下游(已根治 2026-09-10)
+
+### patternId / title
+`BCE-20260910-004` · 两层洋葱。v61 认证暴露 `realworld_anti_scraping_e2e` 确定性红 2/2:①Script#3 panic @ `settings_stack.rs:36 entry_global().unwrap()` 空栈(meituan 阶段)②同页 2 项 evaluate 毒化 InternalError SKIP ③内部断言全过后 teardown 忙旋(118-163% CPU)永不自终(须 SIGTERM)。
+
+**层 1(主根因)**:439f4ec1(page-realm setImmediate fires)让原本静默黑洞的 bao timer page-realm 派发真正开始执行——但 `fire_js` 只做 `AutoRealm`(JS compartment 进入),**从不 push servo script settings stack**(servo 一切 JS 入口都经 `run_a_script`/`call_setup` push `StackEntryKind::Entry`)。meituan WAF JS 在 setImmediate 回调里读 `location.hash` → `Location::GetHash` → `get_url_if_same_origin` → `document_if_same_origin` → `GlobalScope::entry()` → 空栈 `unwrap()` panic。**层 2(根治层 1 后暴露)**:回调跑通后,同页 WAF IDB 探测(open→upgrade→abort 竞争 auto-commit)命中 servo 上游 IDB 双终局缺陷:`finalize_commit`/`finalize_abort` 只在**入队时**检查 `finished`,backend commit-Ok 与 abort ack 竞态双双入队终局任务,任务体不复查 → 先跑者清 upgrade transaction 并置 finished,后跑者再清(已 None)→ `clear_upgrade_transaction` 的 `expect` panic(idbdatabase.rs:152)。**层 3(BCE-20260910-004c,同 commit 439f4ec1 的第二缺陷轴)**:`RemoveRawValueRoot(cx, &mut slot)` 传的是 `take()` 出来的**栈局部副本地址**,而非 `AddRawValueRoot` 注册的 Box 字段 payload 地址——移除永不命中、注册泄漏,Box 释放后 GC root 表仍持悬挂地址,下一次 minor GC `TraceTaggedPtrEdge<JS::Value>` 在已释放内存读到 garbage JSVal → `ReportBadValueTypeAndCrash` SIGSEGV(gdb 实证;`net_socket_pause_resume_no_loss` 3/3 确定性复现,定向 revert 439f4ec1 即绿)。**忙旋(非独立缺陷)**:ScriptThread panic 死亡 → constellation 终结条件永不满足 → `ServoInner::drop`(servo.rs:877)`while spin_event_loop() sleep(500µs)` 永真(测试 worker 卡死)+ ResourceManager 100% 消息风暴——panic 不发生则 teardown 干净自终(revert 实证)。
+
+### layer
+架构缺陷(bao 派发进 servo DOM realm 未守 servo settings-stack 契约)+ 上游 servo IDB 缺陷(终局任务体缺 finished 复查)。
+
+### 根因(rootCause)— 证据链(全部 live 实证,2026-09-10,test-ci-dbg 档)
+- **符号化真栈(completion ①)**:`entry_global` ← `document_if_same_origin`(location.rs:223)← `GetHash` ← Location proxy getter ← `js::Interpret` ← `DoCallFallback`(JIT 帧截断)——页面 JS 在无 settings push 的入口里跑 `location.hash`。
+- **忙旋线程身份(gdb attach 活体)**:测试 worker = `servo::servo::ServoInner::drop`(servo.rs:877)sleep 循环(测试函数末尾 `drop(runtime)` 触发);ResourceManager = crossbeam `start_recv` 100%(消息风暴);主线程 = libtest recv 正常 park。三者皆 panic 下游。
+- **三候选定谳(completion ②,scoped revert 二分)**:仅 revert 439f4ec1 的 `timers.rs` hunk → 0 panic、29.68s 干净自终(EXIT=0)——**439f4ec1 实锤**;d2db4c55/4771b599 无罪(留在构建中)。时序旁证:d2db4c55 落地时自带 realworld 3/3 PASS 证据(panic 不存在);439f4ec1 激活派发路径后 panic 才现。
+- **层 2 实锤(插桩 forensics)**:`[IDBTRACE]` 序列显示同一 Versionchange tx(serial=5):`request_backend_abort`×2 → `dispatch_complete`(enqueue)→ `finalize_abort`(enqueue)→ complete body 先跑 `clear_upgrade_transaction`(current=tx,合法)→ abort body 后跑 `clear_upgrade_transaction`(current=0x0)→ panic。`finished` 只在入队时检查的铁证。
+- **根治层 1 后 panic 点迁移**(settings_stack:36 消失 → idbdatabase:152 出现)即洋葱分层实证。
+
+### 同类判定标准(sameClassCriterion)
+1. bao 任何派发 JS 进 servo DOM realm 的路径(timer/任务/微任务/resolve 派发),若无 settings-stack Entry push,页面回调一触 `location.*`/`document.open()`/canvas origin-clean(`entry_global` 全部 6 个调用方)即 panic——**AutoRealm ≠ settings push**,两者都是 servo JS 入口契约的必要件。
+2. servo 终局类任务(abort/complete/finish)任务体不复查终态标志 + 入队点分散 = 双终局竞态类;任何「backend 双应答竞态」(commit-Ok vs abort-ack)可双双入队即触发。
+
+### 根治(已落地 2026-09-10)
+**层 1(settings-stack 借用桥,pump-bridge 模式延伸)**:
+- `vendor/servo/components/script/event_loop/script_thread.rs`:`bao_run_in_script_settings(cx, global, f)`——`GlobalScope::from_object` + `run_a_script::<DomTypeHolder>`(push Entry + 空栈 microtask checkpoint),镜像 servo `call_setup` Step 8 形态(settings push OUTER、realm entry INNER);re-export 经 `script/lib.rs` → `components/servo/lib.rs`(embedder API 面)。
+- `src/bao_runtime/src/timers.rs`:`BAO_SETTINGS_RUNNER` OnceLock 注册表 + `register_bao_settings_runner`;`fire_js` 的 AutoRealm 之后、dispatch 之外包 `run(raw_cx, g_root.get(), &mut dispatch)`;未注册(node realm/测试)保持裸派发。
+- `src/bao_browser/src/lib.rs`:`BaoRuntime::new` 在泵注册旁接线(servo 实现注入 bun_runtime 注册表)。
+- 层 2(upstream 最小差分 + 清单注记):`vendor/servo/components/script/dom/indexeddb/idbtransaction.rs` 两个终局任务体(`send_abort_notification`/`send_complete_notification`)顶部补 `if this.finished.get() { return; }`(IndexedDB §transaction-lifetime:finished 保持 finished,迟到终局=幂等 no-op);`clear_upgrade_transaction` 的 expect 保持 fail-closed 不动。上游 issue 草案已备(见防复发)。
+- 层 3(timers.rs):`cleanup_callback` 与 `Drop` backstop 的 raw-root 释放改为 `self.global_root.as_mut()` 的**字段 payload 地址**(与 AddRawValueRoot 注册地址一致),`take()` 栈副本地址弃用;null-cx 分支保持有界泄漏约定。
+
+### 全量确认报告
+```yaml
+confirmReport:
+  patternId: BCE-20260910-004
+  sweepScope: "bun_runtime timers fire_js(page-realm 派发唯一入口)+ raw-root 释放双点(cleanup_callback/Drop backstop)+ servo script_thread/script lib/servo lib re-export 链 + idbtransaction 双终局门;bao 其余派发路径(fetch_async resolve/fetch dispatch)在 pump 内已有 realm 进入且不触 entry_global 家族,无同类实例"
+  instancesFound: 3              # settings-stack 缺 push(1) + IDB 双终局(1) + raw-root 释放地址(1,含 cleanup/Drop 两点)
+  instancesFixed: 3
+  residual: 0
+  residualEvidence: []
+  releaseGateImpact: clear
+  verification:
+    - "test-ci-dbg realworld_anti_scraping_e2e 3/3 PASS(~29.7s 自终,EXIT=0);内部断言 17P/2S→19P/0S/0F(原毒化 evaluate 转绿)"
+    - "net_socket_pause_resume_no_loss:修复前 3/3 确定性 SIGSEGV(gdb 栈 TraceTaggedPtrEdge→ReportBadValueTypeAndCrash),修复后 1/1 PASS"
+    - "v61 矩阵全族复跑(bao-browser lib+suite,test-ci,-j4,BAO_TEST_NETWORK=1,xvfb):1817/1817 PASS,退出码 0(含 realworld 29.8s 自终、v61-P1 destination_matrix 本轮绿、pagepool_chaos 167s 唯一 slow 属常态)"
+    - "shadow_axis 6/6(I 轴 page-realm setImmediate 保持 fire)、fetch_axis 9/9(BAO_TEST_NETWORK=1)"
+    - "bun_runtime suite 终态:fetch_only 2/2(守卫过);唯一残余 = fs_watch_file_stat_polling_fires fleet 条件 flake(隔离 2/2 绿,与本案无涉)"
+    - "cargo build dev bao_bin(过 fetch_only staleness 守卫)+ test-ci 全测试目标:EXIT 0"
+```
+
+### 防复发(阶段6)
+- 回归锚:`realworld_anti_scraping_e2e`(3/3 自终即闭环)+ `shadow_axis_probe_tests` I 轴(setImmediate 必须继续 fire——防根治退化回黑洞)。
+- 派发契约沉淀:**bao 把 JS 派发进 servo DOM realm 时,AutoRealm(或 EnterRealm)只解决 compartment,settings-stack Entry push 必须一并做**——servo 侧 `entry_global` 6 个调用方(location×2/document.open/canvas×2/webgpu)都是空栈 panic 面;新派发路径一律走 `bao_run_in_script_settings` 等价封装。
+- servo fail-open 断言清单意识:`entry_global().unwrap()` / `clear_upgrade_transaction().expect()` 均为上游把「不可达」当 panic 的断言,页面上**合法** JS 序列可将其变为可达——遇到即按最小差分 fail-closed/spec-aligned 化 + 清单注记 + 上游 issue。
+- IDB 双终局缺陷已按上游纪律备妥 servo GitHub issue 草案(`.claude/prompts/upstream-servo-idb-double-finalize-issue.md`,本机 gh token 对 servo/servo 无 createIssue scope,待人工提报)——patch 与 issue 并行,上游修复后吸收替换。
+- 忙旋类判定沉淀:进程不终 + CPU 飙 = 先 gdb attach 查线程身份与栈,再判「独立缺陷 vs 某 panic 的下游」;本案忙旋 100% 随 panic 消失而消失,单独修 spin 是治标。

@@ -347,6 +347,38 @@ pub fn pump_embedder_thread(cx: *mut JSContext) {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// BCE-20260910-004: servo settings-stack push for embedder-side page-realm
+// JS dispatches (registry mirror of the pump bridge — servo-side counterpart
+// is `script_thread::bao_run_in_script_settings`, registered by bao_browser
+// at runtime init via `register_bao_settings_runner`).
+//
+// The embedder pump above fires page-realm bao timers OUTSIDE any entered
+// realm AND outside any servo script settings-stack entry: AutoRealm (added
+// by the I-axis fix) only enters the JS compartment. A page callback then
+// touching `location.*` getters, `document.open()` or canvas origin-clean
+// checks dereferenced servo `entry_global().unwrap()` on an EMPTY settings
+// stack and panicked (settings_stack.rs:36, Script#3 on meituan's WAF JS —
+// the realworld anti-scraping wedge; the dead ScriptThread also wedged
+// servo's shutdown spin at 100% CPU). Every servo JS entry wraps its
+// dispatch in `run_a_script` ("prepare to run script"); this registry lets
+// the servo layer lend that same wrapper to bao's dispatches without a
+// crate-dependency inversion. Node-realm threads keep the bare dispatch —
+// the node stack has no settings-stack contract (registry unregistered
+// there falls through).
+pub type BaoSettingsRunner =
+    Box<dyn Fn(*mut JSContext, *mut JSObject, &mut dyn FnMut()) + Send + Sync>;
+
+static BAO_SETTINGS_RUNNER: ::std::sync::OnceLock<BaoSettingsRunner> =
+    ::std::sync::OnceLock::new();
+
+/// Register the process-global settings-stack runner (see the block comment
+/// above). Called once by the embedder at runtime init; first registration
+/// wins (OnceLock semantics, matching the servo-side pump registry).
+pub fn register_bao_settings_runner(runner: BaoSettingsRunner) {
+    let _ = BAO_SETTINGS_RUNNER.set(runner);
+}
+
 /// Deadline-aware wait for the timer-only branches of `drain_and_check` /
 /// `drain_one_pass`. Replaces the former `sleep(1ms)` busy-poll that burned
 /// CPU advancing the wall clock toward the next BAO_REGISTRY deadline.
@@ -1217,7 +1249,20 @@ impl BaoTimeoutObject {
                 let cx_ref = &mut wrapped_cx;
                 rooted!(&in(cx_ref) let g_root = v.to_object());
                 let _realm = mozjs::realm::AutoRealm::new_from_handle(cx_ref, g_root.handle());
-                unsafe { self.dispatch(raw_cx) };
+                // BCE-20260910-004: dispatch inside the servo settings-stack
+                // entry for the registration realm. AutoRealm alone only
+                // enters the JS compartment — every servo JS entry
+                // additionally pushes a settings-stack Entry
+                // (`run_a_script`); without it a page callback touching
+                // `location.*` / `document.open()` / canvas origin-clean hit
+                // `entry_global().unwrap()` on an empty stack and panicked
+                // (Script#3, meituan WAF JS). Unregistered (node realms /
+                // null-cx harnesses) keeps the bare dispatch.
+                let mut dispatch = || unsafe { self.dispatch(raw_cx) };
+                match BAO_SETTINGS_RUNNER.get() {
+                    ::std::option::Option::Some(run) => run(raw_cx, g_root.get(), &mut dispatch),
+                    ::std::option::Option::None => dispatch(),
+                }
                 return;
             }
         }
@@ -1245,16 +1290,27 @@ impl BaoTimeoutObject {
         if let ::std::option::Option::Some(ref key) = self.callback_key {
             gc_store_remove_ns(cx, "timer", key);
         }
-        if let ::std::option::Option::Some(mut slot) = self.global_root.take() {
+        // BCE-20260910-004c (raw-root release must use the REGISTERED
+        // address): `AddRawValueRoot` registered the address of this
+        // `global_root` payload INSIDE the Box; removing via a take()'d
+        // stack copy (`&mut slot`) never matched the table entry — the
+        // registration leaked, the Box freed, and the next minor GC traced
+        // the dangling slot (`TraceTaggedPtrEdge<JS::Value>` →
+        // `ReportBadValueTypeAndCrash` → SIGSEGV; deterministic in
+        // net_socket_pause_resume_no_loss). Release with the exact field
+        // address, exactly once (the Drop backstop sees None afterwards).
+        if self.global_root.is_some() {
             if !cx.is_null() {
-                // SAFETY: the slot address is the one passed to
-                // AddRawValueRoot at registration; released exactly once
-                // (take() — the Drop backstop observes None afterwards).
-                unsafe { RemoveRawValueRoot(cx, &mut slot) };
+                // SAFETY: the payload address inside this live Box — the
+                // same address `schedule_raw` passed to AddRawValueRoot.
+                if let ::std::option::Option::Some(slot) = self.global_root.as_mut() {
+                    unsafe { RemoveRawValueRoot(cx, slot as *mut JSVal) };
+                }
             }
             // cx null: leak the rooted slot rather than leave the GC root
             // table pointing at freed memory (same bounded-leak convention
             // as bao_engine RawValueRootGuard on a dead runtime).
+            self.global_root = ::std::option::Option::None;
         }
     }
 }
@@ -1266,12 +1322,21 @@ impl Drop for BaoTimeoutObject {
         // raw root while this slot's address is still valid. No live cx:
         // leak the slot (root table may outlive the thread) — same
         // convention as cleanup_callback above.
-        if let ::std::option::Option::Some(mut slot) = self.global_root.take() {
+        // BCE-20260910-004c: same registered-address fix as
+        // cleanup_callback — remove via the field payload address, not a
+        // take()'d stack copy (see the comment there for the SIGSEGV chain
+        // the stack-copy release caused).
+        if self.global_root.is_some() {
             let cx = current_cx();
             if !cx.is_null() {
-                // SAFETY: exact slot address from AddRawValueRoot.
-                unsafe { RemoveRawValueRoot(cx, &mut slot) };
+                // SAFETY: the payload address inside this live Box — the
+                // same address `schedule_raw` passed to AddRawValueRoot
+                // (drop runs before the Box memory is freed).
+                if let ::std::option::Option::Some(slot) = self.global_root.as_mut() {
+                    unsafe { RemoveRawValueRoot(cx, slot as *mut JSVal) };
+                }
             }
+            self.global_root = ::std::option::Option::None;
         }
     }
 }

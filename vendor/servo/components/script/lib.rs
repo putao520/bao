@@ -35,7 +35,7 @@ pub use event_loop::script_thread::{
     register_bao_event_loop_pump, bao_current_thread_wake_fn, register_embedder_callback,
     register_worker_interfaces_ready_callback, register_worker_interfaces_ready_injector,
     register_worker_scope_callback, register_worker_scope_injector, unregister_worker_injectors,
-    BaoEventLoopPump, EmbedderWorkerInjector,
+    bao_run_in_script_settings, BaoEventLoopPump, EmbedderWorkerInjector,
 };
 pub(crate) mod conversions;
 mod css;

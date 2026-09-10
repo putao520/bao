@@ -131,6 +131,27 @@ pub fn register_bao_event_loop_pump(pump: script::BaoEventLoopPump) {
     script::register_bao_event_loop_pump(pump);
 }
 
+/// Run `f` with the calling ScriptThread's script settings stack pushed for
+/// `global_object`'s realm (Bao vendor patch — BCE-20260910-004, the
+/// settings-stack side of the pump bridge above).
+///
+/// The embedder's event-loop pump fires page-realm bao timers OUTSIDE any
+/// settings-stack entry; a page callback touching `location.*` getters,
+/// `document.open()` or canvas origin-clean checks then dereferenced
+/// `entry_global().unwrap()` on an empty stack and panicked
+/// (`dom/bindings/settings_stack.rs:36`). This is servo's own "prepare to
+/// run script" step (`run_a_script`), exported so the embedder can wrap its
+/// JS dispatches in the same contract every servo JS entry honors. Both
+/// pointers are `*mut c_void` (actually `*mut mozjs::jsapi::JSContext` /
+/// `*mut mozjs::jsapi::JSObject`); null falls back to running `f` bare.
+pub fn bao_run_in_script_settings(
+    cx: *mut std::ffi::c_void,
+    global_object: *mut std::ffi::c_void,
+    f: &mut dyn FnMut(),
+) {
+    script::bao_run_in_script_settings(cx, global_object, f);
+}
+
 /// The current thread's wake closure, if this thread is a servo ScriptThread
 /// (Bao vendor patch — the fetch side of the pump bridge above). The fetch
 /// machinery captures this ON THE CREATING THREAD at fetch start and fires

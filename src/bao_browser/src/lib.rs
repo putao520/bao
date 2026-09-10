@@ -275,6 +275,23 @@ impl BaoRuntime {
         servo::register_bao_event_loop_pump(Box::new(|cx_ptr| {
             bun_runtime::timers::pump_embedder_thread(cx_ptr as *mut mozjs::jsapi::JSContext);
         }));
+        // BCE-20260910-004 (settings-stack push — the missing half of the
+        // pump bridge): the pump fires page-realm bao timers outside any
+        // servo script settings-stack entry, so a page callback touching
+        // `location.*` / `document.open()` / canvas origin-clean hit
+        // `entry_global().unwrap()` on an empty stack and panicked
+        // (settings_stack.rs:36, Script#3 meituan). Lend servo's own
+        // "prepare to run script" wrapper (`run_a_script`) to bao's timer
+        // dispatch — the same contract every servo JS entry honors.
+        bun_runtime::timers::register_bao_settings_runner(Box::new(
+            |cx, global, f| {
+                servo::bao_run_in_script_settings(
+                    cx as *mut std::ffi::c_void,
+                    global as *mut std::ffi::c_void,
+                    f,
+                );
+            },
+        ));
         bun_runtime::fetch_async::set_thread_wakeup_bridge(|| {
             servo::bao_current_thread_wake_fn().map(|wake| {
                 wake as bun_runtime::fetch_async::ThreadWakeup

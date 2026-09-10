@@ -567,6 +567,21 @@ impl IDBTransaction {
             .dom_manipulation_task_source()
             .queue(task!(send_abort_notification: move |cx| {
                 let this = this.root();
+                // BAO PATCH (BCE-20260910-004b, upstream double-finalize): the
+                // `finished` guard in `finalize_abort` only covers ENQUEUE
+                // time; commit and abort finalizations can BOTH be enqueued
+                // while `finished` is still false (backend commit-Ok racing
+                // the abort ack — meituan's WAF IDB probing hits this on
+                // every load). Whichever body runs first clears the upgrade
+                // transaction and sets `finished`; the second body then
+                // re-cleared `db.upgrade_transaction` (already None) and
+                // panicked at `clear_upgrade_transaction`'s expect()
+                // (idbdatabase.rs). Per IndexedDB §transaction-lifetime a
+                // finished transaction stays finished — a late finalization
+                // is a no-op, never a second lifecycle transition.
+                if this.finished.get() {
+                    return;
+                }
                 this.active.set(false);
                 if this.mode == IDBTransactionMode::Versionchange {
                     if let Some(old_version) = this.version_change_old_version.get() {
@@ -628,6 +643,15 @@ impl IDBTransaction {
         global.task_manager().database_access_task_source().queue(
             task!(send_complete_notification: move |cx| {
                 let this = this.root();
+                // BAO PATCH (BCE-20260910-004b): enqueue-time `finished`
+                // guard only — see the mirror comment in
+                // `send_abort_notification`. A commit finalization racing an
+                // abort finalization ran BOTH bodies; the second re-cleared
+                // the upgrade transaction and panicked. First finalization
+                // wins; the late one is a no-op.
+                if this.finished.get() {
+                    return;
+                }
                 this.committing.set(false);
                 this.commit_started.set(false);
                 this.version_change_old_version.set(None);
