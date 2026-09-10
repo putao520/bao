@@ -29,6 +29,7 @@ use ::std::cell::RefCell;
 use ::std::ptr::{self, NonNull};
 
 use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::gc::RootedTraceableBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
@@ -43,51 +44,174 @@ use crate::require::cache_builtin;
 // VM Context Registry (thread-local)
 // ──────────────────────────────────────────────────────────────────────────
 
-// Tracks contextified objects on this thread so `vm.isContext()` can
-// recognise them. Each entry maps a JSObject* to its sandbox global, the
-// active code-generation policy (REQ-ENG-011 criterion 8), and the baseline
-// set of the realm global's own keys at creation time (standard classes +
-// realm intrinsics — captured BEFORE sandbox seeding so that seeded and
-// code-created keys both propagate back on write-through).
+// Tracks contextified objects on this thread. Each entry maps a JSObject*
+// (the contextified sandbox) to the active code-generation policy
+// (REQ-ENG-011 criterion 8) and the baseline set of the realm global's own
+// keys at creation time (standard classes + realm intrinsics — captured
+// BEFORE sandbox seeding so that seeded and code-created keys both
+// propagate back on write-through).
+//
+// BCE (SM-EVOLUTION #29 rooting inventory; same class as the R2 opt-profile
+// SIGSEVP / `trace_node_realm_roots` in bao_browser): the sandbox realm's
+// global used to be stored HERE as a raw `*mut JSObject`. This Vec is plain
+// Rust memory — invisible to SpiderMonkey's tracer — and the realm lives in
+// its own NewCompartmentAndZone zone with no other referents, so the first
+// major GC after `vm_create_context` returned could sweep the whole zone;
+// the next `runInContext` would `AutoRealm` into a freed realm (UAF /
+// SIGSEGV; dev survives only by GC-timing luck, the opt-only SIGSEGV
+// family). The raw-address KEY had the mirrored hazard: entries were never
+// removed, so an object later allocated at a dead sandbox's recycled
+// address false-positived `is_context_registered`.
+//
+// Root fix (gc_store idiom — store JS values as properties so the GC traces
+// them naturally): `vm_create_context` defines
+// `sandbox[Symbol.for("bao.vm.context.global")] = <sandbox global>` — a
+// non-enumerable, read-only, permanent registered-symbol property. That
+// property IS the GC edge: the realm stays alive exactly as long as the
+// sandbox object (Node vm lifetime semantics), with no tracer registration
+// and no permanent pin. All lookups read the edge and unwrap the CCW, which
+// also kills the recycled-address false positive — a fresh object at the
+// same address cannot carry the edge. This Vec now holds only Rust-side
+// metadata (policy + baseline) and is consulted only after the edge proved
+// the object is a live, genuine contextified sandbox.
 thread_local! {
-    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, *mut JSObject, CodeGenerationFlags, ::std::rc::Rc<Vec<String>>)>> = RefCell::new(Vec::new());
+    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, CodeGenerationFlags, ::std::rc::Rc<Vec<String>>)>> = RefCell::new(Vec::new());
 }
 
-/// Register a sandbox object as contextified, with its associated global,
-/// code-generation policy, and global-key baseline.
+/// Description of the registered symbol carrying the context GC edge.
+/// Registered symbols are pinned by the runtime's symbol registry (same
+/// property as the `nodejs.util.inspect.custom` lookup in
+/// bun_inspect_api), so the symbol itself needs no rooting.
+const VM_CONTEXT_SYMBOL_DESC: &[u8] = b"bao.vm.context.global";
+
+/// The registered-symbol jsid for the context edge, creating it on first
+/// use. Returns `None` only if the runtime could not create/look up the
+/// symbol (OOM); callers then degrade to "not contextified" (fail-safe:
+/// the realm is re-created on the next entry, never dereferenced stale).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn vm_context_symbol_id(cx: *mut JSContext) -> Option<jsid> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let c_desc = bun_core::ZBox::from_bytes(VM_CONTEXT_SYMBOL_DESC);
+    let sym = JS_NewStringCopyZ(cx, c_desc.as_ptr());
+    if sym.is_null() {
+        return None;
+    }
+    rooted!(&in(cx_ref) let key = sym);
+    let sym = JS::GetSymbolFor(cx, key.handle().into());
+    if sym.is_null() {
+        return None;
+    }
+    Some(mozjs::jsid::SymbolId(sym))
+}
+
+/// Read the context GC edge off a candidate sandbox. Returns the sandbox
+/// realm's global (CCW unwrapped) iff this object was contextified by us
+/// and the edge is intact.
+///
+/// A Proxy sandbox dispatches to its `get` trap; a throwing trap is
+/// consumed here and reported as "no edge" (absent is the handled outcome,
+/// mirroring the wrap_and_install_dom_proxy BCE in bao_browser).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_context_edge(cx: *mut JSContext, obj: *mut JSObject) -> Option<*mut JSObject> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let o = obj);
+    let id = vm_context_symbol_id(cx)?;
+    let mut val = UndefinedValue();
+    if !JS_GetPropertyById(
+        cx,
+        o.handle().into(),
+        Handle::from_marked_location(&id),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if !val.is_object() {
+        return None;
+    }
+    // The stored value is the CCW the define created in the caller's
+    // compartment; unwrap to the sandbox realm's real global. Only bao
+    // ever writes this property, so the wrapper is one of ours.
+    let unwrapped = js::UncheckedUnwrap(val.to_object(), false, ptr::null_mut());
+    if unwrapped.is_null() {
+        None
+    } else {
+        Some(unwrapped)
+    }
+}
+
+/// Attach the context GC edge `sandbox[symbol] = CCW(sandbox_global)`.
+///
+/// MUST run in the sandbox object's compartment (the caller's realm):
+/// `JS_DefineProperty` wants the target in the current compartment, and the
+/// foreign realm's global is auto-wrapped into a CCW — which is exactly the
+/// reference that keeps the target realm reachable through the GC.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn attach_context_edge(cx: *mut JSContext, sandbox: *mut JSObject, global: *mut JSObject) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let sb = sandbox);
+    rooted!(&in(cx_ref) let gv = ObjectValue(global));
+    let Some(id) = vm_context_symbol_id(cx) else {
+        return;
+    };
+    JS_DefinePropertyById2(
+        cx,
+        sb.handle().into(),
+        Handle::from_marked_location(&id),
+        gv.handle().into(),
+        (JSPROP_READONLY | JSPROP_PERMANENT) as u32,
+    );
+}
+
+/// Register a sandbox object as contextified (Rust-side metadata only: the
+/// code-generation policy and the global-key baseline). The GC edge is
+/// attached separately by `vm_create_context` — see the registry BCE note.
 fn register_context(
     sandbox: *mut JSObject,
-    global: *mut JSObject,
     flags: CodeGenerationFlags,
     baseline: ::std::rc::Rc<Vec<String>>,
 ) {
     VM_CONTEXT_MAP.with(|m| {
-        m.borrow_mut().push((sandbox, global, flags, baseline));
+        m.borrow_mut().push((sandbox, flags, baseline));
     });
 }
 
-/// Check whether an object has been contextified.
-fn is_context_registered(obj: *mut JSObject) -> bool {
-    VM_CONTEXT_MAP.with(|m| m.borrow().iter().any(|&(s, ..)| ptr::eq(s, obj)))
+/// Check whether an object has been contextified (edge presence — a live
+/// GC edge is the single source of truth; the Vec only carries metadata).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn is_context_registered(cx: *mut JSContext, obj: *mut JSObject) -> bool {
+    read_context_edge(cx, obj).is_some()
 }
 
-/// Look up the sandbox global for a contextified object.
-fn get_context_global(obj: *mut JSObject) -> Option<*mut JSObject> {
+/// Look up the sandbox global for a contextified object (reads the live GC
+/// edge — never a cached address, so the pointer cannot go stale).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_context_global(cx: *mut JSContext, obj: *mut JSObject) -> Option<*mut JSObject> {
+    read_context_edge(cx, obj)
+}
+
+/// Look up the global-key baseline for a contextified object. Gated on the
+/// edge first so metadata of a dead sandbox can never be matched by an
+/// object allocated at its recycled address.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_context_baseline(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+) -> Option<::std::rc::Rc<Vec<String>>> {
+    if read_context_edge(cx, obj).is_none() {
+        return None;
+    }
     VM_CONTEXT_MAP.with(|m| {
         m.borrow()
             .iter()
             .find(|&&(s, ..)| ptr::eq(s, obj))
-            .map(|&(_, g, ..)| g)
-    })
-}
-
-/// Look up the global-key baseline for a contextified object.
-fn get_context_baseline(obj: *mut JSObject) -> Option<::std::rc::Rc<Vec<String>>> {
-    VM_CONTEXT_MAP.with(|m| {
-        m.borrow()
-            .iter()
-            .find(|&&(s, ..)| ptr::eq(s, obj))
-            .map(|&(_, _, _, ref b)| b.clone())
+            .map(|&(_, _, ref b)| b.clone())
     })
 }
 
@@ -645,7 +769,7 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
     }
 
     // If already contextified, return as-is.
-    if is_context_registered(sandbox) {
+    if is_context_registered(cx, sandbox) {
         args.rval().set(ObjectValue(sandbox));
         return true;
     }
@@ -707,14 +831,17 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         // Apply code-generation restrictions (eval/Function/WebAssembly).
         apply_code_generation_restrictions(realm_cx, sandbox_global.get(), cgen_flags);
 
-        // Register as contextified (baseline captured pre-seed).
-        register_context(
-            sandbox,
-            sandbox_global.get(),
-            cgen_flags,
-            ::std::rc::Rc::new(baseline),
-        );
+        // Register Rust-side metadata (baseline captured pre-seed).
+        register_context(sandbox, cgen_flags, ::std::rc::Rc::new(baseline));
     }
+
+    // Attach the GC edge in the sandbox object's compartment (the caller's
+    // realm — the AutoRealm above has been dropped). This edge is what
+    // keeps the sandbox realm alive across GCs; see the registry BCE note.
+    // A rejected define (e.g. a frozen sandbox) degrades to edge-absent on
+    // later lookups — the realm is then simply re-created, never
+    // dereferenced stale.
+    attach_context_edge(cx, sandbox, sandbox_global.get());
 
     // Mark with __isVMContext for isContext() backwards compat.
     rooted!(&in(cx_ref) let sandbox_root = sandbox);
@@ -741,10 +868,20 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
 /// object lives in the caller's compartment. From the sandbox realm it would
 /// be a CCW, and `Object.keys()` / `GetPropertyKeys` on a CCW may not
 /// enumerate properties correctly.
+///
+/// GC rooting (BCE, same class as the registry note above): `Heap` alone is
+/// barrier-only — a malloc-side slot is invisible to the major-GC tracer,
+/// so a value produced by a getter (referenced ONLY by us for the
+/// collect→define window) could be swept mid-phase. Each value is therefore
+/// additionally rooted in the `RootedTraceableSet` for the Vec's lifetime
+/// (dropped/unrooted when the Vec goes out of scope).
 fn collect_sandbox_properties(
     cx: &mut mozjs::context::JSContext,
     sandbox: *mut JSObject,
-) -> Vec<(::std::string::String, Box<Heap<JS::Value>>)> {
+) -> Vec<(
+    ::std::string::String,
+    mozjs::gc::RootedTraceableBox<Heap<JS::Value>>,
+)> {
     let mut props = Vec::new();
     if sandbox.is_null() {
         return props;
@@ -792,9 +929,10 @@ fn collect_sandbox_properties(
             continue;
         }
 
-        // Store key as Rust String, value as Box<Heap<Value>> (GC-traced,
-        // survives across realm switches).
-        let heap_val = Heap::boxed(val);
+        // Store key as Rust String, value as a rooted Box<Heap<Value>> —
+        // barrier-pinned (Heap::boxed) AND tracer-visible
+        // (RootedTraceableSet) across the realm switch below.
+        let heap_val = RootedTraceableBox::from_box(Heap::boxed(val));
         props.push((key, heap_val));
     }
 
@@ -809,7 +947,7 @@ fn collect_sandbox_properties(
 fn define_properties_on_global(
     realm_cx: &mut mozjs::context::JSContext,
     global: *mut JSObject,
-    props: &[(::std::string::String, Box<Heap<JS::Value>>)],
+    props: &[(::std::string::String, RootedTraceableBox<Heap<JS::Value>>)],
 ) {
     if global.is_null() {
         return;
@@ -825,9 +963,12 @@ fn define_properties_on_global(
         }
 
         // SpiderMonkey automatically wraps cross-compartment values as CCWs
-        // when defining the property. Heap::handle() returns a Handle<Value>
-        // from mozjs_sys which is compatible with the raw JS_DefineProperty.
-        let val_h = unsafe { heap_val.handle() };
+        // when defining the property. Deref to the inner Heap first — the
+        // box's own handle() returns the mozjs-crate Handle, but the raw
+        // JS_DefineProperty wants the bindgen Handle<Value> that
+        // Heap::handle() produces.
+        let heap_inner: &Heap<JS::Value> = &*heap_val;
+        let val_h = unsafe { heap_inner.handle() };
         unsafe {
             JS_DefineProperty(
                 raw_cx,
@@ -1018,8 +1159,8 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
     };
 
     // Create or reuse context.
-    let sandbox_global = if is_context_registered(sandbox) {
-        get_context_global(sandbox).unwrap_or(ptr::null_mut())
+    let sandbox_global = if is_context_registered(cx, sandbox) {
+        get_context_global(cx, sandbox).unwrap_or(ptr::null_mut())
     } else {
         // Call vm_create_context internally to create the Realm.
         // Forward arg 0 (sandbox) AND arg 2 (options, carries codeGeneration)
@@ -1063,11 +1204,14 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
                             if c_key.as_ptr().is_null() {
                                 continue;
                             }
+                            // Deref to the inner Heap for the bindgen Handle
+                            // (same note as define_properties_on_global).
+                            let heap_inner: &Heap<JS::Value> = &**hv;
                             JS_DefineProperty(
                                 cx,
                                 spread.handle().into(),
                                 c_key.as_ptr(),
-                                hv.handle(),
+                                unsafe { heap_inner.handle() },
                                 JSPROP_ENUMERATE as u32,
                             );
                         }
@@ -1086,7 +1230,7 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
             return false;
         }
         // After createContext, sandbox is registered.
-        get_context_global(sandbox).unwrap_or(ptr::null_mut())
+        get_context_global(cx, sandbox).unwrap_or(ptr::null_mut())
     };
 
     if sandbox_global.is_null() {
@@ -1157,7 +1301,7 @@ unsafe extern "C" fn vm_run_in_new_context(cx: *mut JSContext, argc: u32, vp: *m
     }
 
     // Write-through (global → sandbox): vm writes land on the sandbox object.
-    if let Some(baseline) = get_context_baseline(sandbox) {
+    if let Some(baseline) = get_context_baseline(cx, sandbox) {
         copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline);
     }
 
@@ -1194,7 +1338,7 @@ unsafe extern "C" fn vm_run_in_context(cx: *mut JSContext, argc: u32, vp: *mut J
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let sandbox = (*args.get(1).ptr).to_object());
 
-    let sandbox_global = match get_context_global(sandbox.get()) {
+    let sandbox_global = match get_context_global(cx, sandbox.get()) {
         Some(g) if !g.is_null() => g,
         _ => {
             JS_ReportErrorUTF8(
@@ -1255,7 +1399,7 @@ unsafe extern "C" fn vm_run_in_context(cx: *mut JSContext, argc: u32, vp: *mut J
     }
 
     // Write-through (global → sandbox).
-    if let Some(baseline) = get_context_baseline(sandbox.get()) {
+    if let Some(baseline) = get_context_baseline(cx, sandbox.get()) {
         copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox.get(), &baseline);
     }
 
@@ -1334,10 +1478,10 @@ unsafe extern "C" fn vm_is_context(_cx: *mut JSContext, argc: u32, vp: *mut JSVa
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx));
         let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let obj = (*args.get(0).ptr).to_object());
-        // Check our VM_CONTEXT_MAP registry (primary) AND the legacy
-        // __isVMContext marker (secondary, for objects contextified before
-        // this process started or from a different isolate).
-        let registered = is_context_registered(obj.get());
+        // Check the context GC edge (primary) AND the legacy __isVMContext
+        // marker (secondary, for objects contextified before this process
+        // started or from a different isolate).
+        let registered = is_context_registered(_cx, obj.get());
         let marker = if !registered {
             let mut val = UndefinedValue();
             JS_GetProperty(
@@ -1746,7 +1890,7 @@ unsafe extern "C" fn vm_script_run_in_context(
     }
     rooted!(&in(cx_ref) let sandbox = (*args.get(0).ptr).to_object());
 
-    let sandbox_global = get_context_global(sandbox.get());
+    let sandbox_global = get_context_global(cx, sandbox.get());
     if sandbox_global.is_none() {
         JS_ReportErrorUTF8(
             cx,
@@ -1795,7 +1939,7 @@ unsafe extern "C" fn vm_script_run_in_context(
 
     // Write-through (global → sandbox): assignments inside the script land on
     // the contextified sandbox object (the vm contract this function owes).
-    if let Some(baseline) = get_context_baseline(sandbox.get()) {
+    if let Some(baseline) = get_context_baseline(cx, sandbox.get()) {
         copy_global_writes_to_sandbox(cx_ref, global_ptr, sandbox.get(), &baseline);
     }
 
@@ -1867,8 +2011,8 @@ unsafe extern "C" fn vm_script_run_in_new_context(
 
     // Create or reuse context. Forward arg 1 (options, carries codeGeneration)
     // to vm_create_context so criterion 8 applies to script-created contexts.
-    let sandbox_global = if is_context_registered(sandbox) {
-        get_context_global(sandbox).unwrap_or(ptr::null_mut())
+    let sandbox_global = if is_context_registered(cx, sandbox) {
+        get_context_global(cx, sandbox).unwrap_or(ptr::null_mut())
     } else {
         let opts_val = if argc > 1 {
             *args.get(1).ptr
@@ -1885,7 +2029,7 @@ unsafe extern "C" fn vm_script_run_in_new_context(
             args.rval().set(UndefinedValue());
             return false;
         }
-        get_context_global(sandbox).unwrap_or(ptr::null_mut())
+        get_context_global(cx, sandbox).unwrap_or(ptr::null_mut())
     };
 
     if sandbox_global.is_null() {
@@ -1930,7 +2074,7 @@ unsafe extern "C" fn vm_script_run_in_new_context(
         }
     }
 
-    if let Some(baseline) = get_context_baseline(sandbox) {
+    if let Some(baseline) = get_context_baseline(cx, sandbox) {
         copy_global_writes_to_sandbox(cx_ref, sandbox_global, sandbox, &baseline);
     }
 

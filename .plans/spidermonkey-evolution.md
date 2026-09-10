@@ -59,7 +59,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 - 未形成 Bao Stencil/XDR script cache（binding 已具备 Stencil wrappers，见 ledger）；
 - 未发现 Realm-native locale/timezone override 的 Bao 侧使用；
 - CDP Debugger 仍未证明由 SM 原生 debugger/script/frame/object facts 驱动（JS::Debugger binding 缺失，bun_sm::debugger 为 emulated CRUD）；
-- GC/rooting 中仍有 intentional leak / `mem::forget` / foreign-thread fail-safe 路径，需量化；
+- GC/rooting 中仍有 intentional leak / `mem::forget` / foreign-thread fail-safe 路径，需量化（2026-09-10 S2 已完成全仓行号级 inventory 与首个缺陷类根治——vm context 未 root 注册表，见 §8 S2 节；bounded leak 分类清单已落账，soak 触发率量化仍缺）；
 - mozjs upgrade 已有 patch replay + capability ledger（`.claude/sm-capability-ledger.json`，2026-09-04 首轮 #30 census）；drift 自动化（升级波 diff 报告）待下次 mozjs 前移时首跑。
 
 ### Upstream
@@ -82,7 +82,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN |
-| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN |
+| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2 首 slice 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 缺陷类根治，见 §8 S2 节；soak 量化与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN |
 
 与 Bao 1.0 Domain 的消费关系：
@@ -726,6 +726,120 @@ MiniEventLoop 残任务与 interval zombie 内存形态归 #29。
 **下一唯一动作**:S2——GC/lifecycle closure(#29:root/GC-pointer inventory 100% +
 async root owner/release 100%,输入=S0-3 拓扑表与本轮 RED-1/泄漏记账);若用户先裁决
 RED-1 P-A,则优先插队其 vendor patch 落地波。
+
+### 2026-09-10 / S2——#29 GC/rooting 全仓 inventory + vm context 未 root 缺陷类根治（inventory+代码+测试）
+
+**基线**：bao master `642da220`（S1-续同日）；mozjs 不变。RED-1（BAO_REGISTRY interval
+zombie/realm pin）按用户裁决挂起——本轮零触碰。
+
+#### A. 全仓 rooting/leak inventory（行号级，`command grep` + 阳性对照）
+
+**A-1 正确 root（必要，不动）**：
+
+| # | 位置 | 机制 |
+|---|---|---|
+| 1 | `bao_engine/src/context.rs:80 PersistentGlobal` | persistent realm global `AddRawValueRoot` cx 寿命；Drop 带存活守卫移除 |
+| 2 | `bao_engine/src/context.rs:142 RawValueRootGuard` | async 窗口值根（Box 钉地址）；Drop/into_inner 移除；失败回滚前缀 |
+| 3 | `context.rs:238 THREAD_REALM_GLOBAL` | #1 已 root 的 global 地址发布（dispatch AutoRealm 锚） |
+| 4 | `bao_runtime/src/gc_store.rs` | 值挂 realm global 属性——GC 自然 trace（**模范模式，本轮 vm 修复的范式来源**） |
+| 5 | `bao_runtime/src/timers.rs:971` BAO_REGISTRY `global_root` | AddRawValueRoot/Drop 移除（cx 死亡跳过）——**RED-1 关联禁碰** |
+| 6 | `bao_browser/src/runtime_bridge.rs:167 trace_node_realm_roots` | R2 修复后 per-cx extra GC roots tracer（全树唯一 `JS_AddExtraGCRootsTracer`） |
+| 7 | `PAGE_GLOBAL_BY_WEBVIEW`/`PER_THREAD_PAGE_GLOBAL`（runtime_bridge.rs:117/:205） | servo-owned Window global 生命周期（servo realm 持有；runtime_bridge.rs:755 注释明示） |
+| 8 | `REALM_PROFILES`（engine_props.rs:333） | usize→Arc<RealmProfile>，无 GC 指针（纯投影层） |
+| 9 | 作用域 `rooted!`（全树千级） | 栈根 RAII，正确惯用 |
+| 10 | `node_tls.rs:4136` 等 `RawValueRootGuard` 消费点 | RAII 正用（tasklet 跨 tick 根） |
+
+**A-2 主动 leak 分类（bounded/deliberate，全部记录不动）**：
+
+| # | 位置 | 形态 | 裁决 |
+|---|---|---|---|
+| 1 | `context.rs:205/:227` | RawValueRootGuard foreign-thread/dead-runtime → `mem::forget` rooted slots | **必要**（root table 可能仍持地址；释放=dangling GC scan 地址，严格更糟；文档化 bounded） |
+| 2 | `context.rs:719` | shutdown_engine `mem::forget(engine)` | **必要**（OnceLock handle 致 outstanding>0 assert；进程退出一次） |
+| 3 | `context.rs NeverDrop`/RUNTIME_TLS ManuallyDrop | TLS 析构序（cx 不在 `__call_tls_dtors` 中死） | **必要**（历史 BCE；timers.rs:12-41 注释） |
+| 4 | `timers.rs:40 BAO_RUNTIME_LOOP` | `Box::into_raw` MiniEventLoop | **deliberate**（BCE-20260621-001 reentry 根治；1/thread 单例；OS 回收） |
+| 5 | `bun_sm/dispatch_sm.rs:60` | `mem::forget` runtime drop 链 | **必要**（文档化所有权链） |
+| 6 | fetch_async/bun_listen/bun_udp/node_http/node_fs 等 `Box::into_raw` FFI userdata | C 回调侧配对 `from_raw` | **非 leak**（配对回收模式） |
+| 7 | `node_vm.rs VM_CONTEXT_MAP`（本轮前） | 未 root 的 realm global 裸指针 + 永不删除的 key | **可消除缺陷 → 本轮已修（§B）** |
+
+**A-3 S0-3 事实修正（#29 输入裁决）**：
+
+- **风险 (c) 已失效**：CLI `eval_module` 生产路径已全部走 in-realm 变体
+  （`bao_runtime/runtime.rs:88 eval_module`→`eval_module_in_realm`、`:149
+  eval_module_with_control`、`:259 run_test_file`→`in_realm_then`）；fresh-realm 变体
+  （`ModuleLoader::eval_module`）仅 bao_engine 测试调用（每测试自建 JsContext，无
+  churn）。生产 zone churn (c) 已被 2026-08-14 realm-per-context 根治，账本 S0-3 (c)
+  作废。
+- **风险 (b) 非缺陷**：跨 registered domain 导航=换 ScriptThread，旧 node realm zone
+  随旧线程 cx **即刻**销毁（无堆积）；同域导航 `node_realm_belongs_to_current_context`
+  判定通过→Node Realm 幸存（runtime_bridge.rs:304 注释）——servo-owned 生命周期，
+  bao 层无需显式 zone 回收。
+- **风险 (d)(e) 维持原判**（S0-4 裁决不变）。
+
+#### B. 缺陷类根治：node_vm context 注册表未 root（R2 同类横扫命中）
+
+**缺陷**（与 R2 realworld opt-profile SIGSEVP / `trace_node_realm_roots` BCE 同类，
+`opt-only-sigsegv-gc-rooting` 家族）：`VM_CONTEXT_MAP`（原 node_vm.rs:53）把 sandbox
+realm 的 global 存为 thread-local Vec 裸指针——malloc 侧内存对 SM tracer 不可见；
+realm 在自有 `NewCompartmentAndZone` zone 无其他引用者，createContext 返回后首次
+major GC 可整 zone 扫掉，下次 `runInContext` 的 `AutoRealm` 解引用已释放 realm
+（UAF/SIGSEGV；dev 档靠 GC 时序运气存活）。**已核实机制**：`Heap` 的
+`ValuePostWriteBarrier`（Barrier.h:372 `ValuePostWriteBarrier`）只在值位于 nursery 时
+入 store buffer，不构成 major GC 持续 trace——malloc 侧 GC 引用必须 embedder 自证。
+镜像缺陷：key 为永不删除的裸地址（dead sandbox 条目残留→地址复用 false-positive）；
+`collect_sandbox_properties` 的 `Box<Heap<Value>>` 同窗裸奔（getter 产物仅我们持有的
+值在 collect→define 窗口可被扫）。
+
+**修复**（gc_store 范式：JS 值挂属性让 GC 自然 trace）：
+
+- `sandbox[Symbol.for("bao.vm.context.global")] = <sandbox global>`——registered
+  symbol 属性（runtime registry 钉住 symbol 免 rooting，同
+  bun_inspect_api `nodejs.util.inspect.custom` 先例；READONLY|PERMANENT 非枚举）。
+  **属性即 GC 边**：realm 存活期 ≡ sandbox 存活期（Node vm 语义），无 tracer 注册、
+  无永久 pin。
+- 查询全走边：`is_context_registered`/`get_context_global` 读边 + `UncheckedUnwrap`
+  解 CCW——永不返回缓存地址（指针不可能 stale），fresh 对象不可能带边（杀 ABA）；
+  `get_context_baseline` 先验证边再查 Vec（死条目不可达）。
+- `collect_sandbox_properties`：`Heap::boxed` → `RootedTraceableBox::from_box`
+  （RootedTraceableSet 全 GC 可见，Vec drop 自动 unroot）。
+- 降级语义：边定义失败（frozen sandbox / Proxy trap 拒绝）→ 后续查询边缺失 →
+  重创建 realm，绝不 stale 解引用（fail-safe）。
+
+**测试**（`bao_runtime/tests/suite/node_vm_gc_rooting_tests.rs`，2 用例）：createContext
+→ 强制 `JS_GC(API)` 全量 GC ×2 → realm 存活 + **identity 断言**（GC 前 realm 内
+`globalThis.marker` GC 后可读——swept/re-created realm 必答不出）+ write-through 双向
++ 64 fresh 对象 isContext 全 false + drop 引用后新 context 健康（无 pin 崩溃）+ 4 轮
+8-context churn 交错 GC。**RED→GREEN 证明**：注释掉 attach_context_edge 一行复跑 →
+2 用例全红（"sandbox is not a contextified object"）；恢复 → 全绿（测试有判别力，
+边是承重的）。
+
+#### C. 遗留 findings（记录不动，后续波候选）
+
+1. `runtime_bridge.rs:163 NODE_REALM_TRACER_CX` TLS dedupe 的 cx 地址 ABA：同线程第二
+   cx 复用同地址时跳过 `JS_AddExtraGCRootsTracer` 重注册 → node realm 裸奔（R2 类
+   残余）。生产不可达（ScriptThread 一生一 cx）；测试路径（for_test 重建 cx）可构造。
+   修复候选：注册时对照 `Runtime::get()` 或放弃 dedupe（重复注册幂等无害）。
+2. `bun_api.rs:7861 element_objs: Vec<*mut JSObject>`：`JS_GetElement` 可跑 getter→GC，
+   循环内早先元素未 root（gc_store.rs:135 dangling-nursery 合同的 frame 级违例；
+   `Bun.concatArrayBuffers` 非普通数组入参可触发）。修复候选：逐元素 rooted 收集。
+3. node_vm `CodeGenerationFlags` 存 map 后无读取方（创建时已应用，stored-but-unread）。
+4. soak 量化（intentional leak 触发率/100+ page churn RSS）依赖 #19，未开始。
+
+**验证**（波末一次测）：`cargo nt -p bao_engine` **373/373**；`cargo nt -p bun_runtime
+--no-fail-fast` **1211 passed / 1 pre-existing skipped**（1209 基线+2 新；首轮 1 红
+`fs_watch_file_stat_polling_fires` 隔离复跑 7/7 绿=负载时序 flake，非本改动面——
+fswatch 面有专门在途 agent，归属其波次）；scoped vm 全谱 11/11。
+
+**BCE 横扫结论**：同类（malloc 侧 GC 引用无 tracer 可见性）全仓横扫已完成——A-1/A-2
+清单穷尽全部 GC 指针持有形态（注册表/根/guard/tracer/FFI userdata）；命中实例=vm
+注册表（已修）+ findings 1/2（已记账待后续波）；gc_store/PersistentGlobal/
+RawValueRootGuard/tracer 为正例基线。
+
+**回滚点**：单 commit revert（node_vm.rs + suite 测试文件 + main.rs 两行 + 账本），
+无数据/接口迁移。
+
+**下一唯一动作**：S2 续——finding 2 落地（`bun_api.rs` concatArrayBuffers 元素收集
+rooting，frame 级 dangling-nursery 类，单函数+单测小 slice）；若用户裁决 RED-1 P-A
+则插队其 vendor patch 波；findings 1（tracer dedupe ABA）与 soak 量化随后。
 
 ---
 

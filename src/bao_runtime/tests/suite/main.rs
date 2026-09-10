@@ -117,6 +117,7 @@ mod node_stdlib_wave_tests;
 mod node_stream_qs_tests;
 mod node_string_decoder_deep_tests;
 mod node_timers_module_deep_tests;
+mod node_vm_gc_rooting_tests;
 mod node_timers_tests;
 mod node_tty_deep_tests;
 mod node_url_tests;
