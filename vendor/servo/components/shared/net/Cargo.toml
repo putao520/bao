@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net-traits"
-version = "0.5.5"
+version = "0.5.6"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -24,7 +24,7 @@ test-util = []
 # don't cover (E0004), and this crate re-exports `csp::Destination` as public
 # API (request.rs) — a drifting resolution extends the break to every
 # downstream match over that re-export.
-content-security-policy = { version = "=0.8.1", features = ["serde"] }
+content-security-policy = { workspace = true }
 cookie = { workspace = true }
 crossbeam-channel = { workspace = true }
 data-url = { workspace = true }
