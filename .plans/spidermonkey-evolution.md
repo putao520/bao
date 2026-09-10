@@ -80,7 +80,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；servo 侧入口与产品级暴露未接） |
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
-| #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
+| #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；「换原生」消费归 #11/#19，删除/glue=后续微波） |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN（核查轮+裁决提案已落 2026-09-10 见 §8：locale 缺口=1 行 include 非C++墙、tz/时间精度引擎原生实测可达、JIT/SAB 维持现状；三维页面可见身份待用户立法） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN（自动化 v1 已落地 2026-09-10：三脚本+seed inventory+adoption report+drift 基线，见 §8；升级波首跑+DoD 收口待下次 mozjs 前移） |
@@ -258,6 +258,9 @@ Domain summary（数字来自 ledger，禁手工漂移）。
   bao 侧零调用——#26 是纯接入工作，无 binding 阻塞。
 - Debugger：JS::Debugger C++ API 在 mozjs rust binding **不可达**（bun_sm/src/debugger.rs 自述），
   CDP Debugger 复用受 binding 阻塞（emulated 现状）→ #27 需先裁决 binding 扩展 vs adapter 自持。
+  **2026-09-10 #27 修正**：该判定仅对 Rust typed C++ face 成立；JS-face（JS_DefineDebuggerObject，
+  wrapped）一直可达，Bao CDP Debugger 域实际已走 page-realm JS Debugger（非 emulated）——
+  裁决=保持 JS-face，详见 §8 #27 节。
 - Structured Clone / RealmOptions / SetPromiseRejectionTracker / SAB realm flag：种子表
   unknown → **used-native**（node_worker_threads / node_realm_options / uncaught.rs / global_object.rs）。
 - Principals/security：zero 使用——Page/Node 隔离目前靠 object-level（分 global），非 principal-level。
@@ -1098,6 +1101,128 @@ patch supersession/adoption policy 分类/§8 追加/BASELINE 前移）。
 
 **下一唯一动作**：升级波首跑待下次 mozjs 前移（#22 合同消费点）；#30 余项（patch
 supersession 自动对照、cap ledger last_audited 联动刷新）归下次 census 轮。
+
+### 2026-09-10 / #27——Debugger/observability 核查轮：SM debugger/script/frame/object/memory 原生可观测 inventory + 裁决提案（+1 引擎实证测试）
+
+**方法**：#30 inventory（`inventory-2026-09-10-a3220511.json`）过滤 debugger/memory 族
+1077 symbol + bindgen jsapi.rs（`c7c33b2c` build out）绑定级双核实 + mozjs/servo 源码
+核实（MemoryMetrics.h / MemoryMetrics.cpp / Stack.h / Debug.h / debugger.js）。
+
+#### 27-1 绑定可达面（四分类）
+
+- **safe-wrapper 已有（直接可调）**：`JS_DefineDebuggerObject`
+  （jsapi2_wrappers.in.rs:380；servo `dom/debugger/debuggerglobalscope.rs:136` 同型使用）、
+  `ExposeScriptToDebugger`（:226）、`JS_Tracer*` 5 个（:381-385）、`CaptureCurrentStack`
+  （:173）、`BuildStackString`（:175）、`JS_StackCapture_FirstSubsumedFrame`（:654）、
+  `CollectRuntimeStats`、`JS_SetGCCallback`、`SetGCSliceCallback`、
+  `AddGCNurseryCollectionCallback`/`Remove`、`SetWarningReporter`、
+  `JS_GetOwnPropertyDescriptor(ById)`/`JS_GetPropertyDescriptor(ById)`、
+  `SetAllocationMetadataBuilder`、`JS_GetGCParameter`（:373，已采：
+  bun_sm/virtual_machine.rs:112 JSGC_BYTES）。
+- **bindgen raw-only（unsafe FFI 可达）**：`GetDebuggeeGlobals`/`IsDebugger`/
+  `GetDebuggerMallocSizeOf`/`SetDebuggerMallocSizeOf`/`GetDebuggerObservesWasm`（JS::dbg）、
+  `GetAllocationMetadata`（js）、`EnableContextProfilingStack`/
+  `SetContextProfilingStack`/`RegisterContextProfilingEventMarker`/
+  `SetProfilingThreadCallbacks`/`JS_DefineProfilingFunctions`/
+  `GetProfilingCategoryPairInfo`。
+- **类型墙（C++ 阻，inventory 0 命中）**：`JS::Debugger` C++ class API（Debug.h 的
+  onNewScript/onEnterFrame hook、breakpoint、Debugger.Frame typed 面）——非 bindgen 面；
+  `JS::ubi::Census`/UbiNode（heap snapshot 全族）；`ProfilingFrameIterator`（sampling
+  profiler 阻断，cdp_handler.rs:275-281 注释仍准确）；`ProfilingStack` 构造。
+- **符号可达但类型构造墙**：`CollectRuntimeStats` 符号可达且 **null opv 显式容忍**
+  （MemoryMetrics.cpp:380 `if (ObjectPrivateVisitor* opv = ...)` 守卫；opv 纯虚类
+  MemoryMetrics.h:910 Rust 不可实现，但传 null 合法）；`RuntimeStats`
+  （MemoryMetrics.h:839 非 virtual struct，bindgen 字段全 pub）含 `js::Vector` 成员
+  （RealmStatsVector/ZoneStatsVector），Rust 零化构造 UB 风险 → **需 mozjs-sys
+  jsglue.cpp ~5 行 C++ glue（new/free RuntimeStats）才能安全采**。
+- **对 2026-09-04 ledger 的修正**：「CDP Debugger 复用受 binding 阻塞（emulated 现状）」
+  对 **JS-face 不成立**——`JS_DefineDebuggerObject` 一直是 wrapped 的；受阻的只是
+  Rust-side typed C++ face（JS::Debugger class）。
+
+#### 27-2 Bao CDP 自模拟面锚定
+
+- **CDP Debugger 域不是 Rust 自模拟**：走 page-realm **JS-level SM Debugger**
+  （`DEBUGGER_SETUP` cdp_handler.rs:981-1026：`new Debugger()` + onNewScript/
+  onDebuggerStatement + findScripts；事件经 console.log `__BAO_EVT__` 嗅探回传）。
+  原生 JS face，但胶水层保真缺口：
+  - 断点 hit 的 paused 事件 `callFrames` 恒 `[]`（:1057 setBreakpoint hit 回调）；
+  - onDebuggerStatement 帧 location lineNumber/columnNumber 硬编码 0（:1006）；
+  - `cmd_debugger_list_frames` lineNumber:0（:1093）；
+  - `cmd_debugger_get_environment` 恒 `{environment:{}}`（:1099）——空占位；
+  - `cmd_debugger_get_possible_breakpoints` 逐行合成非真实可断点位置（:1117；SM
+    `Debugger.Script.getPossibleBreakpoints()` 原生可用未用）；
+  - `cmd_debugger_set_breakpoint` 用 `s.offsetLine(line,col)`（:1057）——
+    Debugger.Script **无此双参 API**（真 API=`getLineOffsets(line)`/
+    `getPossibleBreakpoints`）→ JS 胶水层「未读 SSOT 猜 API」缺陷类；
+  - blackbox/unblackbox 静默 no-op 返回 ok（:1133-1145）——silent fake success。
+- **CDP Runtime 域 native JS 语义**：page-realm `window.__bao_cdp` registry +
+  getOwnPropertyNames/getOwnPropertyDescriptor（cdp_handler.rs:1441-1479），objectId 真
+  roundtrip；exceptionDetails 无 stackTrace/line/column（`exceptionId:0`，:703）——
+  Error.stack（SavedFrame 后端）可供而未供。
+- **Profiler/HeapProfiler/Memory fail-closed 显式错误**（cdp_handler.rs:278-301）无自
+  模拟；collectGarbage/forciblyPurgeJSMemory 真（JS_GC）；
+  `Memory.prepareForLeakDetection` ok_empty()（protocol.rs:1924）——无声 no-op 小残留。
+- **bun_sm::debugger（Rust breakpoint CRUD，cap ledger 标 emulated）全仓零消费者**
+  （唯一引用=bao_engine/src/lib.rs:54 re-export）——死代码。
+- servo 侧 debugger.js + DebuggerGlobalScope（about:internal/debugger）在 bao 未接
+  （不连 servo devtools：`disable_script_debugger=true` bao_browser/src/lib.rs:79/115/170
+  + BCE-20260621-002 gate script_thread.rs:3977）。
+
+#### 27-3 hideScriptFromDebugger（BCE-20260622-004）因果链复核
+
+- patch 在位：vendored mozjs rust.rs:607-624
+  `CompileOptionsWrapper::set_hide_script_from_debugger`（直写
+  `TransitiveCompileOptions.hideScriptFromDebugger_`）。
+- 调用面恰 2 处、全在 bao_browser/runtime_bridge.rs（:552 evaluate_in_node_realm
+  filename=`bao_evaluate_js`；:1569 wasm-init 探针）；servo 零调用。
+- 因果链与 BUG-KNOWLEDGE.md BCE-20260622-004 记录一致（onNewScript →
+  RememberSourceURL → AtomizeUTF8Chars → AtomCacheHashTable::lookupForAdd → 多 Realm
+  create/destroy 生命周期 deref GC'd atom chars → SIGSEGV；runtime_bridge.rs:544-551）。
+- **与 CDP Debugger 域交互（本轮新结论）**：hide 仅作用于两处 bao 内部 Node-realm
+  编译；页面脚本走 servo 正常编译路径 → page-realm `new Debugger()` 的
+  onNewScript/scriptParsed **不受该 patch 抑制**，当前无冲突。**前瞻约束**：若未来
+  #11 typed adapter 或 Node-realm 观测需要覆盖这两类脚本的 onNewScript，hide flag 将
+  静默隐藏之——届时需将该 patch 语义纳入裁决（修因/root 或显式豁免）；本轮仅记录。
+- 与 BCE-20260621-002 gate 分工：gate 挡 servo devtools `fire_add_debuggee`
+  （Realm::setIsDebuggee + BaselineInterpreter 翻转，initForOsr NULL deref 崩溃类）；
+  hide 挡 onNewScript atom-cache UAF 类。两 patch + mozjs patch #4（BaselineFrame
+  NULL activation guard）构成「debugger visibility ↔ 稳定性」治理面全景，已统一入账。
+
+#### 27-4 裁决提案（每面三选一；产品语义面=提案禁实施）
+
+| 面 | 现状 | 提案 | 依据 |
+|---|---|---|---|
+| CDP Debugger 域架构 | page-realm JS Debugger + console 嗅探 | **保持 JS-face**（不引 Rust C++ JS::Debugger） | C++ JS::Debugger 类型墙（需大量手写 glue）；JS face 已覆盖 scriptParsed/breakpoint/pause/step；缺口在胶水保真不在 API 面 |
+| Debugger 胶水保真（callFrames:[]/lineNumber:0/environment{} /possibleBreakpoints/offsetLine 假 API） | 占位/假 API | **换原生（JS-face 内修）** | 数据全部 JS Debugger API 原生可取（frame.script.getOffsetLocation、getPossibleBreakpoints、frame.environment）；offsetLine 是缺陷类必改；#11 消费 |
+| Debugger blackbox/unblackbox | 静默 no-op ok | **换 explicit-unsupported 错误** | SM 无原生 blackbox（Debug.h 0 命中）；servo 亦仅 client-side Map 模拟（debugger.js:13/801+）；fake success 违宪法 |
+| Runtime exceptionDetails stackTrace | exceptionId:0 无栈 | **换原生（page-realm Error.stack/SavedFrame）** | 零 Rust 绑定需求；Rust 侧 CaptureCurrentStack 受 StackCapture（mozilla::Variant）构造墙——zeroed ABI 未验证禁猜，不走 |
+| HeapProfiler snapshot | fail-closed 错误 | **保持 fail-closed** | ubi/Census 0 可达 |
+| Memory 引擎计量（#19 soak） | 无 | **换原生（CollectRuntimeStats）**，前置=mozjs-sys jsglue.cpp ~5 行 RuntimeStats glue | 符号可达+null opv 容忍（MemoryMetrics.cpp:380），只差类型构造 glue |
+| GC 事件观测（#19） | 无 | **换原生** | JS_SetGCCallback/SetGCSliceCallback/AddGCNurseryCollectionCallback 已 wrapped |
+| Profiler（sampling） | fail-closed 错误 | **保持 fail-closed** | ProfilingFrameIterator 0 可达（cdp_handler.rs:275 注释准确） |
+| bun_sm::debugger 死模块 | 零消费者 | **删除**（独立微波） | 自模拟占位结构违反禁占位门；本轮零删除纪律不实施 |
+| WarningReporter/ErrorInterceptor | 未接 | **显式不用（当前）** | SetWarningReporter 已 wrapped；无产品需求驱动（interrupt warning 暂无观测面） |
+| AllocationMetadata | 未接 | **显式不用（当前）** | 需 C++ AllocationMetadataBuilder 子类（类型墙），收益未证 |
+
+#### 27-5 本轮落地（无争议项=1 个引擎实证测试；零产品语义、零 vendor、零绑定再生成）
+
+- `src/bao_engine/tests/suite/debugger_native_tests.rs`（main.rs 挂载，
+  `@trace TEST-ENG-001-DBG [req:REQ-ENG-001] [level:integration]`）：
+  `JS_DefineDebuggerObject` 原生装出 ①`typeof Debugger === 'function'` ②5 个 hook
+  （onNewScript/onDebuggerStatement/onEnterFrame/onExceptionUnwind/onPromiseSettled）
+  全在 prototype ③`new Debugger()` 可构造且 findScripts/addDebuggee/
+  removeAllDebuggees 方法面完整（无 addDebuggee——不触碰 BCE-20260621-002 崩溃类）。
+  JS-face 可达性的活体证据=「保持 JS-face」裁决的锚。
+- 验证（scoped）：`cargo nt -p bao_engine -E 'test(debugger_object_native_install)'`
+  **1 run / 1 passed / 0 failed**。
+
+**stop 条款核对**：无「大面积绑定缺失」降级——缺口精确四项（C++ JS::Debugger class
+类型墙、ubi 0 可达、ProfilingFrameIterator 0 可达、RuntimeStats 需 glue），每项有
+三选一裁决与依据。
+
+**下一唯一动作**：裁决「换原生」各面归 #11 CDP 波消费（Debugger 胶水保真批 +
+blackbox fail-closed）；CollectRuntimeStats glue + GC callback = #19 soak 前置；
+bun_sm::debugger 删除=独立微波。#27 核查轮本体完成（proposal-complete）。
 
 ---
 

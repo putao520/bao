@@ -14,6 +14,7 @@ mod codegen_edge_case_tests;
 mod codegen_generate_all_module_tests;
 mod codegen_roundtrip_tests;
 mod console_routing_tests;
+mod debugger_native_tests;
 mod dispatch_sm_tests;
 mod engine_core_tests;
 mod error_handling_tests;
