@@ -1224,6 +1224,87 @@ supersession 自动对照、cap ledger last_audited 联动刷新）归下次 cen
 blackbox fail-closed）；CollectRuntimeStats glue + GC callback = #19 soak 前置；
 bun_sm::debugger 删除=独立微波。#27 核查轮本体完成（proposal-complete）。
 
+### 2026-09-10 / soak——#29 首轮 soak 收账：run-1 + aborted-1 判词三件 + run-1 挂死取证定性（数据分析轮，零产品代码改动）
+
+**数据基线**（本轮已入库 `bench/results/2026-09-10-{ab114dce,d644e5df}/`）：
+- **aborted-1**（ab114dce 构建，15:20-15:50）：10989 cycles / 1818.6s（30.3min），3 完整
+  segment + 3 GC 探针，SIGTERM 外部终止（run.sh soak 无 timeout 包装，log 尾
+  "Terminated"=e83 手 kill 后换 d644e5df 重建重launch）；
+- **run-1**（d644e5df 构建，15:55 起，预期 60min）：5928 cycles / 926.1s（**15.4min，
+  26%完整度**），1 segment + 1 GC 探针后 **t=926.1s（cycle 5928 内）进程挂死**，
+  18:5x 取证后 kill（处置记录见下）。终局文档 soak.run-1.json 未产出——sidecar
+  （append+flush per record）为完整数据载体。
+
+**判词一（线性斜率外推 → 72h）**：唯一可外推项是 **post-GC 基线棘轮**——aborted-1
+三探针序列 377.9→394.6→419.3 MiB（t=606/1206/1806s），OLS **+2.07 MiB/min =
+35.4 KiB/s = 5.85 KiB/cycle**（6.04 cycles/s）。72h 线性外推 = **+8.7 GiB 基线**（另加
+~250-300 MiB 垃圾稳态包络 + warm-up ~250 MiB 瞬态）。**局限（如实）**：3 探针/20min/
+单机/两构建；段内分钟斜率（aborted-1 三段 +1.94/−2.00/+4.92，run-1 seg0 +3.31/seg1
+部分 −1.35 MiB/min）短窗噪声 ±2 MiB/min 级；**线性 vs 平台未分辨**——探针增量
++16.7→+24.7 MiB/10min 呈加速倾向而非收敛；HWM 包络同向（aborted-1 30min 内
+634.8→725.4 MiB）。结论：+8.7 GiB 只是量级预期不可作承诺；**需完整 60min（6 探针）
+分辨线性/平台后方可谈 72h 数字**。
+
+**判词二（突变段定性）**：①warm-up 瞬态：t≤1.6s HWM 415.6→634.8 MiB（引擎+首页
+bring-up，指标设计已排除 segment 0 warm-up）；②**GC 边界事件=唯一显著突变源**：探针
+即回收 202.1-268.3 MiB（4/4 次，见判词三），回收后 40-75s 内 churn 重建短暂越过前
+HWM（run-1 全程 HWM 峰 698.8 MiB 首达 t=645.9s=探针后 40s；aborted-1 越 667.6 MiB 于
+t=680.8s=探针后 75s）——malloc trim 归还后重 fault-in 的 overshoot，非新增峰值增长；
+③其余分钟均值平滑无阶跃无悬崖；per-cycle RSS 锯齿 ±100 MiB 为每页分配/释放常态；
+④**run-1 挂死本身即突变**：i=5928 突发停滞，零前驱——末 5 cycle 各相位延迟全部正常
+（cycle 85-118ms，与全程均值一致）、RSS 646 MiB 中带（远低于 HWM）、fd=16/threads=87
+全程恒定 → 非资源耗竭，是 page-pipeline 停摆。
+
+**判词三（GC 回落性）**：**良好**。4/4 探针（跨两构建）`Bun.gc()`×2 回收
+202.1/268.3/260.9/241.5 MiB（pre 的 35-42%），gc_eval_ms 4.1-5.4（GC 本身廉价），3s
+settle 后 drop 已可见（malloc trim 生效）；回收后 ~60s 内垃圾回升至 ~600-630 MiB
+工作集（锯齿上包络仍 <HWM）。run-1 单探针 post 369.5 MiB **低于** i=0 采样 414.5 MiB
+（aborted-1 同构：probe-1 post 377.9 < rss_first 404.5）→ 10min 净增长 100% 可回收。
+**无 GC-immobile 堆累积**；非 GC 棘轮归 C 级/thread-local 丢弃（见下对照）。
+
+**S2 A-2 bounded leak 清单对照（「实测触发率」首个数据点，S2 退出标准尾项）**：
+- fd=16 恒定（两跑全程零漂移）——零描述符泄漏；threads=87 恒定——零线程泄漏
+  （页管线生命周期闭合，N1 形态无堆积）；
+- **+5.85 KiB/cycle 非 GC 残留**：量级与 A-2 #3（NeverDrop TLS）/#4
+  （BAO_RUNTIME_LOOP `Box::into_raw` MiniEventLoop 1/thread deliberate）+ N1
+  （线程死亡 thread-local 丢弃，每页 1 ScriptThread）类完全一致——per-event bounded、
+  总量线性累积的 C 级残留；**非 GC rooting 失败**（否则表现为不可回收堆，判词三已排除）；
+- A-2 #1（foreign-thread forget）本形态零可观测；类别归因计数器（A-2 级粒度）仍缺，
+  soak 只给聚合 RSS/GC 面。
+
+**run-1 超时存活进程取证与定性（挂死，已处置）**：
+- 证据链：PID 3214308（`bench-harness soak --duration-mins 60 --out
+  .../soak.run-1.json`）；sidecar/log 最后 mtime 16:10（=t=926.1s 末记录），此后
+  **2h45m 零写入**（健康期 6.4 记录/s）；主线程 wchan=futex_do_wait（内核栈 futex 链）；
+  136/136 线程全 S、3s CPU delta=0（**纯静默死锁**；ps 累计 67:22 CPU 为健康期 churn
+  线程组合计，非在烧）；终局文档不存在；挂死期 RSS 49.9 MiB/VmHWM 698.8 MiB/
+  threads 136 = 87 基线 + 49 个挂死 cycle 页管线线程（页事件循环活着但永不应答）。
+- 定性：**run-1 本体挂死（非 run-2、非正常长跑）**。挂点 ∈ cycle 5928 的
+  {create_page, navigate, evaluate_js_web, close_page}——churn_cycle 内
+  wait_for_pipeline_ready/wait_for_navigation 均有 15s 有界超时（触发会写 soak-end
+  cycle-failure 记录，run-1 无此记录），**挂死根因面=无超时保护的阻塞调用**。
+- **频率（头号发现，#19/#29 soak 目标即此）**：合并两跑 16917 cycles / 2744.7s churn
+  1 次挂死 → MTBF 点估计 **≈46min**（Poisson n=1，95% CI ≈ [8min, 30h]）；60min 补跑
+  单次挂死概率 ≈73%；**72h soak 预期 ~94 次挂死——RCA + 根治（或 churn_cycle 全相位
+  有界化）前 72h 不可行，且不带 RCA 的 60min 补跑基本必败**。
+- 处置：取证完毕后 kill（SIGTERM→SIGKILL 进程树 3213085/3214292/3214308，19:01
+  清空零残留）；disposition=temporarily-missing：run-1 完整 60min 数据缺，以已落盘
+  15.4min 分段为准。
+
+**72h 调度建议（具体方案）**：
+1. **前置 P0**：挂死 RCA 独立合同（candidate：cycle 内四个无界阻塞调用的相位级
+   超时 + 挂死现场路由取证；顺带定性 node_timers_module promisify-custom 每 cycle
+   一条 stderr 噪声，890KB/15min，低害但污染日志）；
+2. **60min 完整跑 ×N**（分辨棘轮线性 vs 平台，需 ≥6 探针序列）：**systemd user
+   timer `bao-soak.timer`**（OnCalendar 每日一跑；**TimeoutStartSec=90min 硬超时**
+   ——run-1 挂死正是缺此保护的实证；结果落 `bench/results/<date>-<rev>/`，daily-ops
+   次晨收账）。**不并入 daily-ops 串行窗口**（60min+ 会阻塞值班窗口）；
+3. **72h 全时长**：手动 tmux/nohup + `timeout 78h` 外壳，不进常驻 timer；进入条件=
+   60min 连续 ≥3 次零挂死 + 棘轮线性/平台已分辨。
+
+**遗留移交**：①挂死 RCA 合同（P0，阻塞一切长跑）；②60min 完整补跑（RCA 后）；
+③A-2 类别级 leak 计数器（S2 退出标准尾项）；④RED-1 裁决仍挂（前轮遗留，不变）。
+
 ---
 
 本计划完成时必须满足：
