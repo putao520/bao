@@ -115,6 +115,7 @@ mod node_readline_deep_tests;
 mod node_silent_fake_eradication_tests;
 mod node_stdlib_wave_tests;
 mod node_stream_qs_tests;
+mod bun_concat_gc_rooting_tests;
 mod node_string_decoder_deep_tests;
 mod node_timers_module_deep_tests;
 mod node_vm_gc_rooting_tests;

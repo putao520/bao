@@ -11,6 +11,7 @@ use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::gc::{RootableVec, RootedVec};
 use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue,
@@ -7858,7 +7859,23 @@ unsafe extern "C" fn bun_concat_array_buffers(
         0
     };
 
-    let mut element_objs: Vec<*mut JSObject> = Vec::with_capacity(list_len);
+    // GC rooting (SM-EVOLUTION #29 S2-续, frame-level dangling-nursery class —
+    // same family as the gc_store.rs rooting contract and the e4675351 vm
+    // registry fix): `JS_GetElement` can run a user-defined getter, which
+    // allocates and can trigger GC mid-loop. Elements held as bare
+    // `*mut JSObject` in a plain Vec are invisible to the tracer — earlier
+    // elements can be swept (getter-returned buffers with no other referent,
+    // e.g. `Bun.concatArrayBuffers({length: 2, get 0() {...}, get 1() {...}})`)
+    // or moved out of the nursery while we keep dereferencing them in the
+    // second sweep. RootedVec<Box<Heap<*mut JSObject>>> (servo structuredclone
+    // reader idiom) keeps every collected element tracer-visible
+    // (RootedTraceableSet) and barrier-pinned (Heap::boxed at a Box-stable
+    // address, so post-write-barrier slot addresses survive Vec growth). The
+    // rooted guard lives to end of frame, keeping backing stores alive through
+    // the memcpy pass.
+    let mut element_objs_rootable: RootableVec<Box<Heap<*mut JSObject>>> =
+        RootableVec::new_unrooted();
+    let mut element_objs = RootedVec::new(&mut element_objs_rootable);
     for i in 0..list_len {
         let mut elem = UndefinedValue();
         JS_GetElement(
@@ -7870,11 +7887,11 @@ unsafe extern "C" fn bun_concat_array_buffers(
                 ptr: &mut elem,
             },
         );
-        element_objs.push(if elem.is_object() {
+        element_objs.push(Heap::boxed(if elem.is_object() {
             elem.to_object()
         } else {
             ::std::ptr::null_mut()
-        });
+        }));
     }
 
     // Second sweep: read each element's *current* (post-getter) length/data.
@@ -7883,15 +7900,15 @@ unsafe extern "C" fn bun_concat_array_buffers(
     let mut element_data: Vec<*mut u8> = Vec::with_capacity(list_len);
     let mut total: usize = 0;
     for obj in element_objs.iter() {
-        if obj.is_null() {
+        if obj.get().is_null() {
             element_lengths.push(0);
             element_data.push(::std::ptr::null_mut());
             continue;
         }
-        let (len, data) = if unsafe { is_array_buffer(*obj) } {
-            unsafe { ab_bytes(*obj) }
+        let (len, data) = if unsafe { is_array_buffer(obj.get()) } {
+            unsafe { ab_bytes(obj.get()) }
         } else {
-            unsafe { ta_bytes(*obj) }
+            unsafe { ta_bytes(obj.get()) }
         };
         // Detach fingerprint: data pointer is null even though the object is
         // an ArrayBuffer / typed-array view. Bun throws to avoid UB and
@@ -7992,7 +8009,7 @@ unsafe extern "C" fn bun_concat_array_buffers(
     // remain valid (no GC, no detach).
     let mut cursor: usize = 0;
     for (i, obj) in element_objs.iter().enumerate() {
-        if obj.is_null() || cursor >= target_total {
+        if obj.get().is_null() || cursor >= target_total {
             continue;
         }
         let len = *element_lengths.get(i).unwrap_or(&0);

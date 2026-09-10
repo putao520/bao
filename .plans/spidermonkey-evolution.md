@@ -82,7 +82,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN |
-| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2 首 slice 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 缺陷类根治，见 §8 S2 节；soak 量化与 RED-1 裁决仍挂） |
+| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证），见 §8 S2/S2-续 节；soak 量化与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN |
 
 与 Bao 1.0 Domain 的消费关系：
@@ -840,6 +840,59 @@ RawValueRootGuard/tracer 为正例基线。
 **下一唯一动作**：S2 续——finding 2 落地（`bun_api.rs` concatArrayBuffers 元素收集
 rooting，frame 级 dangling-nursery 类，单函数+单测小 slice）；若用户裁决 RED-1 P-A
 则插队其 vendor patch 波；findings 1（tracer dedupe ABA）与 soak 量化随后。
+
+### 2026-09-10 / S2-续——#29 finding ② 根治：bun_api concatArrayBuffers 元素收集 frame 级 rooting（代码+测试）
+
+**基线**：bao master `642da220` + e4675351（S2 同日续）；mozjs 不变。RED-1 零触碰。
+
+**缺陷**（S2 遗留 finding ②，`gc_store.rs` dangling-nursery 合同的 frame 级违例，
+e4675351/9f5f4692 同族）：`bun_concat_array_buffers` 第一遍 sweep 逐元素
+`JS_GetElement` 触发用户 getter 后把元素对象存进 `Vec<*mut JSObject>` 裸指针 Vec
+——malloc 侧内存对 SM tracer 不可见。getter 可分配→GC：早先元素（getter 返回、
+无其他引用者的 fresh buffer，如 `{length:8, get 0(){...}}` 形态）被整块扫掉或
+nursery 搬迁，第二遍 sweep 与 memcpy 继续解引用悬垂对象/已释放 backing store。
+**未证崩（S2 记账）→ 本轮实证为确定性 SIGSEGV**（见 RED 证明）。
+
+**修复**（servo structuredclone reader 同形先例 `RootedVec<Box<Heap<*mut JSObject>>>`）：
+
+- `RootableVec::new_unrooted()` + `RootedVec::new(&mut ...)`：整个收集 Vec 注册进
+  `RootedTraceableSet`（`Runtime::new` 的 `JS_AddExtraGCRootsTracer(trace_traceables)`
+  全 context GC 可见——rust.rs:393 接线已核）；每元素 `Heap::boxed(obj)`——Box 钉死
+  Heap 槽位地址（post-write-barrier 槽地址不随 Vec 扩容漂移），`Heap<*mut JSObject>`
+  的 `HeapObjectWriteBarriers` + `CallObjectTracer` 双保险。
+- 消费点改 `obj.get()`（第二遍 sweep 的 `is_array_buffer`/`ab_bytes`/`ta_bytes` 与
+  copy pass 的 null 判定）；rooted guard 活到 frame 尾——backing store 存活覆盖
+  memcpy 全窗。
+- null 槽（非对象元素）为 `Heap::boxed(null)`，barrier no-op，语义不变。
+
+**RED→GREEN 证明**（先例纪律，测试有判别力、root 是承重的）：临时还原裸 Vec 复跑
+→ **2 用例全 SIGSEGV**（`test_concat_getter_forced_full_gc`：每个 getter 内
+`Bun.gc()`（→`JS_GC` API reason）确定性 full GC 恰落在 JS_GetElement 之间；
+`test_concat_getter_allocation_storm`：大数组 128×64KiB + 每 getter 4 MiB 分配
+churn 触发自然 major GC——两路径都崩，缺陷是 live crasher 非 theoretical）；
+恢复修复 → 2/2 绿。测试 = `bun_concat_gc_rooting_tests.rs`（getter 返回值全树
+零 JS 引用者，唯一引用=收集器；逐字节 pattern 断言非仅 length 抽查）。
+
+**横扫结论**（API 族面 = bun_api.rs 全文件 + 同族收集形态）：`Vec<*mut JSObject>` /
+`Vec<JSVal>` / `Vec<Value>` frame 级收集全仓（含 node_vm 复核）**仅此一处**（grep
+零漏报已过阳性对照——目标行自身命中）；残留=0。
+
+**findings ③ 处置（顺带核明，不改码——node_vm 不在本 slice 代码面）**：
+`VM_CONTEXT_MAP` 元组 `.1`（`CodeGenerationFlags`）确认 stored-but-unread——限制在
+createContext 时经 `apply_code_generation_restrictions` 一次性落地（eval/Function
+替换 + WebAssembly 删除，行为已由 vm_codegen 测试覆盖 11/11）；纯死数据无 GC 指针
+无运行时危害。处置：记录为 bounded dead data，下轮触碰 node_vm 的波顺带删字段。
+
+**验证**（波末一次测）：`cargo nt -p bao_engine` **373/373**；`cargo nt -p
+bun_runtime --no-fail-fast` **1213 passed / 1 pre-existing skipped**（1211 基线+2 新，
+零红零新增 flake）；scoped vm 全谱 `test(vm)` **11/11**。本轮无 fswatch 面触碰。
+
+**回滚点**：单 commit revert（bun_api.rs 收集段 + suite 测试文件 + main.rs 一行 +
+账本），无 API/数据/接口变更。
+
+**下一唯一动作**：S2 遗留 findings 1（`runtime_bridge.rs` NODE_REALM_TRACER_CX TLS
+dedupe cx 地址 ABA——修复候选=注册时对照 `Runtime::get()` 或放弃 dedupe）为下一切片；
+soak 量化依赖 #19（未开始）；RED-1 等用户裁决（P-A 则插队 vendor patch 波）。
 
 ---
 
