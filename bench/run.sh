@@ -51,6 +51,8 @@ declare -A BENCH_RUNS=(
   [rss-sample]="${RUNS:-3}"
   [page-churn]="${RUNS_PAGE:-1}"
   [soak]="${RUNS_SOAK:-1}"
+  # #26 SM-EVOLUTION judgment bench (not in ORDERED_BENCHES — on demand).
+  [stencil-cost]="${RUNS:-3}"
 )
 
 ORDERED_BENCHES=(

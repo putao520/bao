@@ -11,6 +11,7 @@ publish = false
 bao_engine = { path = "../../src/bao_engine" }
 bun_runtime = { path = "../../src/bao_runtime" }
 bao-browser = { path = "../../src/bao_browser" }
+bao_stealth = { path = "../../src/bao_stealth" }
 mozjs.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

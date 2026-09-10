@@ -2261,6 +2261,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-harness"
+version = "0.1.0"
+dependencies = [
+ "bao-browser",
+ "bao-mozjs",
+ "bao_engine",
+ "bao_stealth",
+ "bun_runtime",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "better_scoped_tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

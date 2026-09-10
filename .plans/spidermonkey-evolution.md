@@ -79,7 +79,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #23 | Realm / Compartment / Zone topology | P0 | — | OPEN（S0 topology census 已完成 2026-09-10，见 §8；余 capability/stale-object 测试与 Zone 实测数据） |
 | #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；servo 侧入口与产品级暴露未接） |
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
-| #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
+| #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN（核查+判据 bench 完成 2026-09-10：**in-memory per-JSContext cache 值得做**——stealth blob（28KB）每 realm 编译占比 79.6%/4.9×、breakeven 0.9 realm（stencil-cost bench R=3）；XDR encode=EncodeStencil 绑定缺口；off-thread=上游 public API 缺失关闭；见 §8；实现波待 S3 排程） |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；Memory 计量（CollectRuntimeStats glue）+ GC callback 归 #19） |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN（核查轮+裁决提案已落 2026-09-10 见 §8：locale 缺口=1 行 include 非C++墙、tz/时间精度引擎原生实测可达、JIT/SAB 维持现状；三维页面可见身份待用户立法） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
@@ -1419,3 +1419,95 @@ Script 同 url 异 id 已入断言口径）；GetEnvironment bridge face 新数�
 8. GC/root/leak 可观测且进入 72h soak；
 9. mozjs upgrade 自动产生 capability drift/adoption report；
 10. 不存在长期“只写计划不执行”的 open slice。
+
+### 2026-09-10 / #26——Stencil 可达面核查 + stencil-cost 收益判据 bench（裁决：in-memory cache 值得做；XDR encode=绑定缺口；off-thread=上游 API 缺失关闭）
+
+**基线**：bao master `03396a13`（worktree dirty=true——本波 stencil-cost bench 代码即
+dirty 内容，结果与代码同 commit 落库可复现）；mozjs 不变（bao-mozjs-sys 140.14.0-0，
+bindgen jsapi.rs md5 `ffaa6002` = #30 seed inventory 同源）。零产品代码改动（纯核查 +
+bench 场景新增）。
+
+**方法**：#30 inventory（1077 symbol）过滤 stencil/xdr/transcode/offthread 族 + 绑定级
+双核实（jsapi2_wrappers.in.rs / bindgen jsapi.rs 行号）+ vendored SM 源码契约核实
+（JSStencil.h / CompilationAndEvaluation.cpp）+ 新 bench `stencil-cost`
+（`bench/harness/src/stencil_bench.rs`，METHODOLOGY 六要素 + R=3 进程级重跑，
+`bench/run.sh stencil-cost`）。
+
+#### 26-1 绑定可达面（in-memory cache 全链路无阻塞）
+
+| 能力 | 符号 | 绑定 | 位置 |
+|---|---|---|---|
+| 编译→Stencil（utf8/u16） | `CompileGlobalScriptToStencil`(+1) | safe-wrapper（wrappers2） | jsapi2_wrappers.in.rs:330-331 |
+| 模块→Stencil | `CompileModuleScriptToStencil`(+1) | wrappers2 | :332-333 |
+| Stencil 实例化（script/module） | `InstantiateGlobalStencil` / `InstantiateModuleStencil` | wrappers2 | :334-335 |
+| XDR decode | `DecodeStencil`(+1) | wrappers2 | :336 |
+| delazification 收集 | `StartCollectingDelazifications` 族 7 个 | wrappers2 | :337-343 |
+| 执行实例化 script | `JS_ExecuteScript` | wrappers2 | :585 |
+| 引用计数/元数据 | `StencilAddRef`/`StencilRelease`/`IsStencilCacheable`/`SizeOfStencil`/`StencilIsBorrowed` | bindgen raw | jsapi.rs:14652+ |
+| Rust 侧 wrapper | `mozjs::rust::Stencil`（Drop→StencilRelease） | 已有 | rust.rs:663-691 |
+| **XDR encode** | `EncodeStencil` | **bindgen 0 命中**（C++ 有：JSStencil.h:188） | **绑定缺口** |
+| **off-thread 编译** | `JS::CompileToStencilOffThread` 族 | **上游 public API 不存在**（仅 CompileOptions.h:19 注释残留 + HelperThreads 内部任务；bindgen 只有 JIT 侧 `JS_SetOffthread{Baseline,Ion}CompilationEnabled` jsapi2:577-578） | **不可达** |
+
+关键契约事实（vendored JSStencil.h）：stencil "may be instantiated into any Realm on
+the current runtime and may be used multiple times"——**跨 realm 复用是文档化支持面**；
+`InstantiateGlobalStencil` 的 `InstantiationStorage` 参数可传 null（C++ 默认
+`= nullptr`，规避未绑定的非平凡析构）。另一面：mozjs rust.rs:667-668 的
+`unsafe impl Send/Sync for Stencil` 被上游**注释保留**——stencil 非 Send/Sync，且
+runtime-scoped → **缓存只能是 per-JSContext，禁跨线程共享**（与 S0-3 拓扑一致：每
+ScriptThread/CLI/worker 线程各自的 cx 各持缓存）。
+
+#### 26-2 现状编译路径事实（每 realm 重复编译的机制根源）
+
+`JsContext::eval` → `mozjs::rust::evaluate_script` → `wrappers2::Evaluate2`
+（`JS::Evaluate` utf8）→ `EvaluateSourceBuffer`
+（vendored `vm/CompilationAndEvaluation.cpp:642-663`）：**每次调用**
+`frontend::CompileGlobalScript` 全量 parse+bytecode 生成 + `setIsRunOnce(true)`；
+该 SM snapshot **eval cache 已移除**（`lookupEvalCache` 全文件 0 命中）——同源重复
+eval 无任何缓存层。
+
+生产重复编译面（每 realm/每调用付费）：
+
+1. **stealth blob**：`inject_js_hooks`（engine_props.rs:1392，`install_stealth_props`
+   尾部 :1586 调用）——每 Page Realm + 每 Worker/SW realm 全量 eval
+   `combined_js()`（28,221 B，typeof-guarded bare-realm 安全，36 处守卫）；
+2. **CDP evaluate**（Runtime.evaluate 每调用编译；Playwright/Puppeteer
+   waitForFunction 轮询=同源高频重复形态）；
+3. **`vm.createContext`**（node_vm.rs:657，同 cx 每 sandbox 重复编译 contextify wrapper）；
+4. **CLI `eval_module`**（S0-3 #4 churn 风险 c：每次调用 fresh realm 全量编译）。
+
+#### 26-3 stencil-cost bench 数字（R=3 × n=60/phase，loadavg 9.37 共享机入档；test-ci 档）
+
+| payload（bytes） | A1 realm+编译+执行 | A2 编译+执行 | B stencil 编译 | C 实例化+执行 | 编译占比 | 加速比 | breakeven |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| stealth（28,221） | 968.2 µs | 830.4 µs | 598.8 µs | 166.6 µs | **79.6%** | **4.9×** | **0.9 realm** |
+| stealth_x10（282,258，合成） | 6,687.5 µs | 6,591.0 µs | 5,602.0 µs | 755.5 µs | **88.6%** | **8.7×** | 1.0 realm |
+| tiny_1p1（3） | 161.6 µs | 39.1 µs | 2.0 µs | 34.1 µs | 13.8% | 1.2× | — |
+
+（中位数；判定指标 run 间 spread≤1.0%（stealth/x10 占比），tiny 绝对值小故 spread 大。
+结果文件 `bench/results/2026-09-10-03396a13/stencil-cost.run-{1,2,3}.json`，
+fail-closed 全验证过——x10 marker 探针 + 逐 realm 功能探针 + C 相 JS_ExecuteScript
+全 true。）另：realm 建造成本 ≈ A1−A2 ≈ 138 µs（与 realm-create-drop 基线一致量级）。
+
+#### 26-4 裁决
+
+- **in-memory per-JSContext Stencil cache：值得做**（完成定义第 6 条门通过）——生产
+  stealth blob 编译占比 **79.6%**（阈值 5% 的 16 倍），加速 **4.9×**，breakeven
+  **0.9 realm**（同 cx 第 2 个注入 realm 即回本）；载荷越大占比越高（x10=88.6%），
+  parse 主导。实现波范围（S3 排程，本波零实现）：
+  ① `bao_engine` 层 StencilCache（per-JSContext 所有权——S0-3 表 owner 语义：cx 属主
+  线程持有，stencil 非 Send/Sync + runtime-scoped，禁跨线程/跨 cx 共享；key=源
+  hash+编译选项相关字段；显式 opt-in API，非全局拦截）；
+  ② 调用点优先级：stealth `inject_js_hooks`（per-profile blob）> `vm.createContext`
+  contextify wrapper > CDP evaluate 同源重复（waitForFunction 形态）> CLI `eval_module`；
+  ③ tiny 事实（3B 编译仅 2.0 µs、占比 13.8%）→ 缓存准入需 size/hit 感知
+  （小源查表成本占比高，防负收益）。
+- **XDR persistent cache：blocked-绑定缺口**——`EncodeStencil` C++ 存在但 bindgen
+  未绑定（DecodeStencil 已绑，非对称）；需 mozjs-sys wrapper 增补（候选入 vendor patch
+  清单）；维持 S3「只有正确性完成后」门，未解锁。
+- **off-thread compile：关闭（上游 API 缺失）**——该 SM snapshot public 面无
+  off-thread stencil 编译族（仅内部 HelperThreads + JIT 侧开关）；且主线程 blob 编译
+  仅 ~600 µs，收益上限小。不列为 Bao 目标。
+
+**下一唯一动作**：#26 实现波（S3 排程）——`bao_engine` StencilCache 最小闭环 +
+`inject_js_hooks` 接入 + 同 bench 对照复跑（A2 vs C 作为回归判据）；XDR encode 绑定
+增补独立排程。
