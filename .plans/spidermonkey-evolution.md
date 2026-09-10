@@ -82,7 +82,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN |
-| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证），见 §8 S2/S2-续 节；soak 量化与 RED-1 裁决仍挂） |
+| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治（findings ①②闭），见 §8 S2/S2-续/S2-续2 节；soak 量化与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN |
 
 与 Bao 1.0 Domain 的消费关系：
@@ -893,6 +893,63 @@ bun_runtime --no-fail-fast` **1213 passed / 1 pre-existing skipped**（1211 基�
 **下一唯一动作**：S2 遗留 findings 1（`runtime_bridge.rs` NODE_REALM_TRACER_CX TLS
 dedupe cx 地址 ABA——修复候选=注册时对照 `Runtime::get()` 或放弃 dedupe）为下一切片；
 soak 量化依赖 #19（未开始）；RED-1 等用户裁决（P-A 则插队 vendor patch 波）。
+
+### 2026-09-10 / S2-续2——#29 finding ① 根治：NODE_REALM_TRACER_CX dedupe cx 地址 ABA（代码+测试）
+
+**基线**：bao master `642da220` + S2/S2-续（同日）；mozjs 不变。RED-1 零触碰。
+
+**缺陷**（S2 遗留 finding ①，60fb645c NodeRealmEntry 身份同族）：`create_node_realm_native`
+的 `JS_AddExtraGCRootsTracer` 注册以 thread-local `NODE_REALM_TRACER_CX`（裸 cx 地址
+Cell）dedupe——cache 存活期超过它采样的 runtime：同线程旧 cx 死后 malloc 把同地址交给
+新 cx（S0/S1 期 60fb645c gdb 已实证同址复用）→ cache 命中 → 跳过重注册 → 新 cx 的全部
+node realm 无 tracer（R2 类残余，realm 可被 major GC 整 zone 扫掉）。生产不可达
+（ScriptThread 一生一 cx 且新 ScriptThread=新线程，thread-local 随线程消亡）；for_test
+同线程重建 cx 可构造。**连带发现并同轮根治**：tracer 过滤器 `trace_node_realm_roots`
+只比 `owner_cx`（单因子）——注册表是进程级 DashMap，跨线程地址碰撞可让本线程 tracer
+追踪外线程（可能已死的）同址条目（GC trace 期 UAF 面）；60fb645c 给 NodeRealmEntry 加
+的 `owner_thread` 因子在 tracer 侧一直未被消费。
+
+**修复**（60fb645c 双因子形态 REUSE + 注册权威源迁移）：
+
+- **注册去 embedder-cache 化**：dedupe 状态从 embedder 侧地址 cache（跨 runtime 残留、
+  可 ABA）迁到 **live runtime 自己的 blackRootTracers 列表**——
+  `JS_RemoveExtraGCRootsTracer`（首个 (op,data) 匹配删除、缺席 no-op，GC.cpp:1615/1631
+  已核）+ `JS_AddExtraGCRootsTracer` 成对无条件调用：每 runtime 恰好一条，列表随
+  runtime 原子死亡。`NODE_REALM_TRACER_CX` thread-local 整体删除——漏装类**按构造不可
+  达**（无任何跨 runtime 缓存状态参与注册决策），无需时序论证。
+- **tracer 过滤器双因子化**（60fb645c 形态落地）：新增单一身份谓词
+  `node_realm_entry_matches(entry, thread, cx)`（ThreadId 主因子进程内永不回收 + cx
+  同线程次因子），`node_realm_belongs_to_current_context` / tracer 过滤器 / 注册期
+  scrub 三消费方统一走同一谓词（identity 单真源）。跨线程同址碰撞从此不匹配。
+- **生命周期对齐（scrub）**：注册时 `scrub_stale_cx_entries(thread, current_cx)` 丢弃
+  本线程 `owner_cx != current_cx` 的条目（BCE-20260621-001 单活 cx/线程 ⇒ 同线程异 cx
+  条目必属死代 cx）；外线程条目永不动（其自身 tracer 持根）。残留角落=同线程**同址**
+  死条目，系 60fb645c 地址身份无死亡回调的固有边界，生产不可达（新 ScriptThread=新
+  线程），已在谓词文档与 tracer SAFETY 注释记录。
+
+**RED→GREEN 证明**：临时回退 tracer 为单因子（`entry.owner_cx != owner_cx`）→
+`tracer_filter_is_two_factor` 红；临时回退 cache+skip dedupe 形态 →
+`tracer_registration_is_runtime_authoritative` 红（needle 运行时拼接防断言自匹配）；
+恢复 → 全绿。测试有判别力、双因子与去 cache 是承重的。
+
+**测试**（runtime_bridge.rs tests，4 新用例）：①注册权威性（全文件无
+`static NODE_REALM_TRACER_CX` 残留 + remove 先于 add + 注册段禁条件 skip + scrub 在场）；
+②tracer 双因子（共享谓词 + thread 因子在场）；③身份谓词行为（spawn 真实线程取
+ThreadId：全匹配唯一真，同线程异 cx / 跨线程同址 / 双异皆假——跨线程同址即旧单因子
+ABA 盲区）；④scrub keep-rule（外线程同址条目保留=不误拆他线程根、本线程活 cx 保留、
+本线程死代 cx 丢弃）。真实同址双 cx 的 live 负向构造不可确定性构造（malloc 复用不受
+控），由结构论证承载——与 60fb645c 先例同形。
+
+**验证**（波末一次测）：`cargo nt -p bao-browser --lib` **583/583**（含 4 新）；
+`cargo nt -p bao_engine` **373/373**；`cargo nt -p bun_runtime --no-fail-fast`
+**1213 passed / 1 pre-existing skipped**（基线零红）。
+
+**回滚点**：单 commit revert（runtime_bridge.rs + 账本），无 API/数据/接口变更，无
+vendor 触碰。
+
+**下一唯一动作**：#29 代码面 findings 清零（①②已闭；③为 bounded dead data，随下轮
+触碰 node_vm 的波顺带删字段）；soak 量化依赖 #19（未开始）；RED-1 等用户裁决（P-A 则
+插队其 vendor patch 波）。
 
 ---
 

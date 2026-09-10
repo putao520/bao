@@ -143,6 +143,23 @@ struct NodeRealmEntry {
     owner_cx: usize,
 }
 
+/// Two-factor realm identity (60fb645c form): an entry is live for
+/// `(thread, cx)` only when BOTH owner markers match. `ThreadId` never
+/// recycles within the process, so a foreign thread can never collide; the
+/// cx address alone CAN collide — across threads in the process-global
+/// registry, and across cx churn on one thread (dead cx → malloc reuses the
+/// address). Single source of truth for every consumer that must decide
+/// "does this entry belong to the context I am running on": the
+/// belongs-to-current-context check, the GC roots tracer filter, and the
+/// stale-entry scrub at tracer registration.
+fn node_realm_entry_matches(
+    entry: &NodeRealmEntry,
+    thread: std::thread::ThreadId,
+    cx: usize,
+) -> bool {
+    entry.owner_thread == thread && entry.owner_cx == cx
+}
+
 fn node_realm_by_webview() -> &'static DashMap<servo::WebViewId, NodeRealmEntry> {
     NODE_REALM_BY_WEBVIEW.get_or_init(DashMap::new)
 }
@@ -160,28 +177,44 @@ fn node_realm_by_webview() -> &'static DashMap<servo::WebViewId, NodeRealmEntry>
 // `NodeRealmEntry.node_global` of that context for as long as the entry
 // exists (removed at page close / replaced on pipeline swap), and
 // `CallObjectTracer` rewrites the slot so a compacting GC cannot stale it.
-thread_local! {
-    static NODE_REALM_TRACER_CX: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+//
+// S2 findings ① (cx-address ABA, 2026-09-10): the tracer used to be deduped
+// by a thread-local cache of the last registered cx ADDRESS, which survives
+// the runtime it sampled — when a dead cx's address got reused by the next
+// cx on that thread, the cache suppressed re-registration and the new
+// context's realms went unrooted (R2-class residual; production unreachable
+// because a new ScriptThread is a new thread, but the for_test churn path
+// can construct it). Registration is now decided by the live runtime's OWN
+// tracer list via remove+add (see `create_node_realm_native`) and the trace
+// filter below matches the full two-factor identity — no embedder-side
+// address cache remains anywhere on this path.
 
 unsafe extern "C" fn trace_node_realm_roots(
     trc: *mut mozjs::jsapi::JSTracer,
     data: *mut std::ffi::c_void,
 ) {
+    // The extra-roots tracer runs on the runtime's owning thread, so the
+    // entry must match THIS thread AND this tracer's cx (`data`). cx alone
+    // would ABA across threads too: the registry is process-global and a
+    // foreign thread's (possibly dead) entry can carry the same cx address.
     let owner_cx = data as usize;
+    let owner_thread = std::thread::current().id();
     for mut entry in node_realm_by_webview().iter_mut() {
-        if entry.owner_cx != owner_cx || entry.node_global == 0 {
+        if !node_realm_entry_matches(&entry, owner_thread, owner_cx) || entry.node_global == 0 {
             continue;
         }
         // SAFETY: the stored usize is layout-compatible with
         // `Heap<*mut JSObject>` (single pointer field) — the standard
         // servo-side cast for Heap slots living in plain Rust structs.
-        // Entries matching this tracer's cx were created on THIS runtime's
-        // heap and stay rooted until their registry entry is removed or
-        // replaced (both happen on this same thread), so the traced
-        // pointer is always a live object of this runtime. No registry Ref
-        // is ever held across a JS/allocating call anywhere in this
-        // module, so the shard write locks taken here cannot deadlock.
+        // Entries matching (this thread, this cx) were created by the one
+        // live context this thread owns (BCE-20260621-001: one JSContext per
+        // thread for its whole life) and stay rooted until their registry
+        // entry is removed or replaced (both happen on this same thread);
+        // same-thread stale entries of earlier cx generations are dropped at
+        // tracer registration by `scrub_stale_cx_entries`. The traced
+        // pointer is therefore always a live object of this runtime. No
+        // registry Ref is ever held across a JS/allocating call anywhere in
+        // this module, so the shard write locks taken here cannot deadlock.
         unsafe {
             mozjs::glue::CallObjectTracer(
                 trc,
@@ -244,10 +277,11 @@ fn node_realm_belongs_to_current_context(
     cx_ptr: *mut std::ffi::c_void,
 ) -> bool {
     match node_realm_by_webview().get(&webview_id) {
-        Some(entry) => {
-            entry.owner_thread == std::thread::current().id()
-                && entry.owner_cx == cx_ptr as usize
-        }
+        Some(entry) => node_realm_entry_matches(
+            entry.value(),
+            std::thread::current().id(),
+            cx_ptr as usize,
+        ),
         None => false,
     }
 }
@@ -278,6 +312,33 @@ fn get_page_global_by_id(webview_id: servo::WebViewId) -> *mut mozjs::jsapi::JSO
 pub fn remove_node_realm_by_id(webview_id: servo::WebViewId) {
     node_realm_by_webview().remove(&webview_id);
     page_global_by_webview().remove(&webview_id);
+}
+
+/// Drop `thread`'s registry entries that were created by a DIFFERENT
+/// JSContext than `current_cx` (S2 findings ① lifecycle alignment, called
+/// at tracer registration).
+///
+/// Sound because a thread owns at most one live JSContext at a time and for
+/// its whole life (BCE-20260621-001): a same-thread entry with a foreign
+/// owner_cx can only come from an earlier, now-dead cx generation (for_test
+/// churn on one thread — production gives each ScriptThread a fresh thread,
+/// so this never fires there). Foreign-thread entries are never touched:
+/// another live ScriptThread's realms must stay rooted by their own tracer.
+/// The retain closure performs no JS/allocating call, so no DashMap shard
+/// lock is held across anything that could re-enter the registry.
+fn scrub_stale_cx_entries(thread: std::thread::ThreadId, current_cx: usize) {
+    node_realm_by_webview().retain(|_, entry| entry_is_live_for_scrub(entry, thread, current_cx));
+}
+
+/// The scrub keep-rule (see [`scrub_stale_cx_entries`]): keep foreign-thread
+/// entries unconditionally; keep this thread's entries only when they carry
+/// the live cx.
+fn entry_is_live_for_scrub(
+    entry: &NodeRealmEntry,
+    thread: std::thread::ThreadId,
+    current_cx: usize,
+) -> bool {
+    entry.owner_thread != thread || node_realm_entry_matches(entry, thread, current_cx)
 }
 
 /// Clear all stored Node Realm pointers (for test isolation).
@@ -689,30 +750,43 @@ unsafe fn create_node_realm_native(
     // consumers can detect a pipeline swap (NodeRealmEntry BCE).
     store_node_realm(webview_id, page_global, global.get(), raw_cx as usize);
 
-    // BCE (R2 opt-profile SIGSEGV): register this context's extra GC roots
-    // tracer so the stored global survives GC cycles (see
-    // `trace_node_realm_roots`). One registration per context — the
-    // thread-local cx guard dedupes the one-runtime-per-thread architecture
-    // (BCE-20260621-001: each ScriptThread owns a single thread-local
-    // JSContext for its whole life); a different cx on the same thread would
-    // re-register. The stack `rooted!` guard above protects the global until
-    // this function returns; from here on the tracer owns its lifetime.
-    NODE_REALM_TRACER_CX.with(|registered| {
-        if registered.get() == raw_cx as usize {
-            return;
-        }
-        registered.set(raw_cx as usize);
-        // SAFETY: raw_cx is the live JSContext this callback runs on; the
-        // registration (and the data pointer's meaning) dies with this
-        // runtime, which dies with this thread.
-        unsafe {
-            mozjs::jsapi::JS_AddExtraGCRootsTracer(
-                raw_cx,
-                Some(trace_node_realm_roots),
-                raw_cx as *mut std::ffi::c_void,
-            );
-        }
-    });
+    // BCE (R2 opt-profile SIGSEGV) + S2 findings ①: register this context's
+    // extra GC roots tracer so the stored global survives GC cycles (see
+    // `trace_node_realm_roots`). Idempotent per runtime BY CONSTRUCTION:
+    // SpiderMonkey's own blackRootTracers list is the dedupe state — remove
+    // (first (op,data) match, no-op when absent) then add leaves exactly one
+    // entry for this (tracer, cx) pair no matter how many realms this
+    // context creates, and the list dies atomically with its runtime. There
+    // is deliberately NO embedder-side "already registered" cache: a
+    // thread-local cx-address cache outlives the runtime it sampled and is
+    // ABA-able across cx churn (dead cx → malloc hands the next cx the same
+    // address → re-registration suppressed → new realms unrooted). The stack
+    // `rooted!` guard above protects the global until this function returns;
+    // from here on the tracer owns its lifetime.
+    //
+    // SAFETY: raw_cx is the live JSContext this callback runs on, the heap
+    // is idle here (realm creation, no GC in flight), and the two FFI calls
+    // are consecutive statements — no JS can run between them. The
+    // registration (and the data pointer's meaning) dies with this runtime.
+    unsafe {
+        mozjs::jsapi::JS_RemoveExtraGCRootsTracer(
+            raw_cx,
+            Some(trace_node_realm_roots),
+            raw_cx as *mut std::ffi::c_void,
+        );
+        mozjs::jsapi::JS_AddExtraGCRootsTracer(
+            raw_cx,
+            Some(trace_node_realm_roots),
+            raw_cx as *mut std::ffi::c_void,
+        );
+    }
+    // Lifecycle alignment: drop this thread's entries from earlier cx
+    // generations — by the one-live-cx-per-thread model
+    // (BCE-20260621-001), any same-thread entry with a different owner_cx
+    // belongs to a dead context. Consumers already reject those via
+    // `node_realm_belongs_to_current_context`; removing them here keeps the
+    // tracer's scan set free of dead pointers.
+    scrub_stale_cx_entries(std::thread::current().id(), raw_cx as usize);
 
     // BUG-ENG-366: alias the Node Realm global to the same per-page stealth
     // profile. Stealth getters executing inside the Node Realm (REQ-SEC-002
@@ -4073,6 +4147,134 @@ mod tests {
         // Clear twice — must be idempotent.
         super::clear_all_node_realms();
         super::clear_all_node_realms();
+    }
+
+    /// S2 findings ① (SM-EVOLUTION #29): tracer registration must be decided
+    /// by the live runtime's own tracer list (remove+add), never by an
+    /// embedder-side cx-address cache — a cached address survives its runtime
+    /// and suppresses re-registration when a dead cx's address is reused
+    /// (ABA), leaving the new context's realms unrooted (R2-class residual).
+    #[test]
+    fn tracer_registration_is_runtime_authoritative() {
+        let source = include_str!("runtime_bridge.rs");
+        // The ABA-able thread-local cache must be gone entirely. The needle is
+        // assembled at runtime so this assertion's own text cannot satisfy it.
+        let stale_cache = format!("static NODE_{}", "REALM_TRACER_CX");
+        assert!(
+            !source.contains(&stale_cache),
+            "S2 findings ① REGRESSION: stale cx-address dedupe cache must not exist"
+        );
+        // The registration site must unconditionally remove+add on the live
+        // cx (dedupe state = the runtime's blackRootTracers list).
+        let func_start = source.find("fn create_node_realm_native").expect(
+            "S2 findings ① REGRESSION: create_node_realm_native must exist",
+        );
+        let window = &source[func_start..(func_start + 8000).min(source.len())];
+        let remove_at = window
+            .find("JS_RemoveExtraGCRootsTracer")
+            .expect("registration must pair a remove before the add");
+        let add_at = window
+            .find("JS_AddExtraGCRootsTracer")
+            .expect("registration must add the tracer");
+        assert!(
+            remove_at < add_at,
+            "S2 findings ① REGRESSION: remove must precede add (idempotent per runtime)"
+        );
+        assert!(
+            !window.contains("registered.get()"),
+            "S2 findings ① REGRESSION: no conditional skip may guard registration"
+        );
+        // Registration must align the registry lifecycle with the live cx.
+        assert!(
+            window.contains("scrub_stale_cx_entries"),
+            "S2 findings ① REGRESSION: registration must scrub stale cx entries"
+        );
+    }
+
+    /// S2 findings ①: the GC roots tracer filter must match the full
+    /// two-factor identity (owner_thread AND owner_cx) — the registry is
+    /// process-global, so an owner_cx-only match can trace a foreign
+    /// thread's (possibly dead) entry whose cx address collides.
+    #[test]
+    fn tracer_filter_is_two_factor() {
+        let source = include_str!("runtime_bridge.rs");
+        let fn_start = source
+            .find("fn trace_node_realm_roots")
+            .expect("tracer must exist");
+        let window = &source[fn_start..(fn_start + 2000).min(source.len())];
+        assert!(
+            window.contains("node_realm_entry_matches"),
+            "S2 findings ① REGRESSION: tracer must use the shared two-factor predicate"
+        );
+        assert!(
+            window.contains("owner_thread"),
+            "S2 findings ① REGRESSION: tracer filter must check the thread factor"
+        );
+    }
+
+    /// S2 findings ①: the two-factor identity predicate — ThreadId is the
+    /// never-recycling primary, the cx address only a same-thread secondary.
+    /// A cx address alone (same thread OR cross thread) must never match.
+    #[test]
+    fn node_realm_entry_matches_requires_both_factors() {
+        use super::NodeRealmEntry;
+        let this_thread = std::thread::current().id();
+        let foreign_thread = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .expect("probe thread must join");
+        let entry = NodeRealmEntry {
+            node_global: 0x1000,
+            owner_thread: this_thread,
+            owner_cx: 0xAAAA,
+        };
+        // Full match — the only combination that may count as "mine".
+        assert!(super::node_realm_entry_matches(&entry, this_thread, 0xAAAA));
+        // Same thread, different cx: earlier (dead) cx generation.
+        assert!(!super::node_realm_entry_matches(&entry, this_thread, 0xBBBB));
+        // Cross-thread address collision (foreign thread's entry carrying
+        // this cx's exact address) — the ABA the old cx-only checks missed.
+        assert!(!super::node_realm_entry_matches(&entry, foreign_thread, 0xAAAA));
+        // Nothing matches on both factors being wrong.
+        assert!(!super::node_realm_entry_matches(&entry, foreign_thread, 0x1234));
+    }
+
+    /// S2 findings ①: the registration-time scrub keep-rule — foreign-thread
+    /// entries survive unconditionally (their own tracer roots them); this
+    /// thread's entries survive only with the live cx.
+    #[test]
+    fn scrub_keep_rule_preserves_foreign_thread_and_live_cx() {
+        use super::NodeRealmEntry;
+        let this_thread = std::thread::current().id();
+        let foreign_thread = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .expect("probe thread must join");
+        let live_cx = 0xAAAAusize;
+        let foreign_entry_same_addr = NodeRealmEntry {
+            node_global: 0x1000,
+            owner_thread: foreign_thread,
+            owner_cx: live_cx,
+        };
+        let mine_live = NodeRealmEntry {
+            node_global: 0x2000,
+            owner_thread: this_thread,
+            owner_cx: live_cx,
+        };
+        let mine_stale = NodeRealmEntry {
+            node_global: 0x3000,
+            owner_thread: this_thread,
+            owner_cx: 0xBBBB,
+        };
+        // Foreign thread keeps its entry even at the same cx address — its
+        // own ScriptThread's tracer owns it, we must not unroot it.
+        assert!(super::entry_is_live_for_scrub(
+            &foreign_entry_same_addr,
+            this_thread,
+            live_cx
+        ));
+        // This thread's live-cx entry keeps its root.
+        assert!(super::entry_is_live_for_scrub(&mine_live, this_thread, live_cx));
+        // This thread's earlier-generation (dead cx) entry is dropped.
+        assert!(!super::entry_is_live_for_scrub(&mine_stale, this_thread, live_cx));
     }
 
     /// REQ-SEC-002: lazy getter functions exist and have correct ABI.
