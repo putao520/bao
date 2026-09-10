@@ -2,6 +2,7 @@
 // @trace REQ-CLI-001: bao CLI entry point and runtime initialization
 use bao_engine::context::{JsContext, SmRuntimeGuard};
 use bao_engine::error::JsError;
+use bao_engine::execution_control::ExecutionControl;
 use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
 use mozjs::realm::AutoRealm;
@@ -85,6 +86,68 @@ impl BaoRuntime {
         let global_ptr = self.ensure_realm()?;
         rooted!(&in(cx) let global = global_ptr);
         ModuleLoader::eval_module_in_realm(&mut cx, source, filename, hook, global.handle())
+    }
+
+    // ── SM-EVOLUTION #24 S1 wiring (internal experimental surface) ──────────
+    //
+    // `#[doc(hidden)]`: NOT a stable public API commitment. These variants
+    // exist so the engine-native interrupt/cancellation control
+    // (`bao_engine::execution_control`) reaches the REAL production entries —
+    // the same bodies `bao run` / `bao -e` / `bao --module` use — without
+    // changing any user-visible behavior. Product-level exposure (CLI flag,
+    // signal wiring) requires SPEC legislation first (ledger S1 boundary).
+
+    /// `ExecutionControl` bound to THIS runtime's owner-thread context.
+    /// Must be called on the runtime's own thread (same contract as the
+    /// entries below); the returned handle may be cloned to any thread,
+    /// which may then only submit `cancel()` / poll the terminal state.
+    #[doc(hidden)]
+    pub fn execution_control(&self) -> ExecutionControl {
+        ExecutionControl::new()
+    }
+
+    /// `eval` + engine-native control (#24 S1 wiring of the script entry —
+    /// the `bao -e` / CJS `bao run` body). Behavior identical to
+    /// [`BaoRuntime::eval`] unless the deadline passes or the control is
+    /// cancelled, in which case the runaway script is terminated with an
+    /// uncatchable interrupt and a stable termination error is returned.
+    #[doc(hidden)]
+    pub fn eval_with_control(
+        &mut self,
+        control: &ExecutionControl,
+        source: &str,
+        filename: &str,
+        timeout: Option<::std::time::Duration>,
+    ) -> ::std::result::Result<JsValue, JsError> {
+        self.ctx
+            .run_with_control(control, timeout, |ctx| ctx.eval(source, filename))
+    }
+
+    /// `eval_module` + engine-native control (#24 S1 wiring of the module
+    /// entry — the `bao run *.mjs` body). The control is armed around the
+    /// WHOLE entry: module link/evaluate AND the post-eval event-loop pump,
+    /// so a runaway in module top level or inside a timer/job/pump callback
+    /// is terminated deterministically. On termination the stable
+    /// termination error propagates out of the entry exactly like a script
+    /// error (the CLI's existing `Err` → exit-code-1 mapping applies).
+    #[doc(hidden)]
+    pub fn eval_module_with_control(
+        &mut self,
+        control: &ExecutionControl,
+        source: &str,
+        filename: &str,
+        timeout: Option<::std::time::Duration>,
+    ) -> ::std::result::Result<JsValue, JsError> {
+        let hook = self.ctx.post_eval_hook();
+        let global_ptr = self.ensure_realm()?;
+        // The persistent realm's global is AddRawValueRoot-ed for the
+        // context's lifetime (`ensure_realm_global`), so re-rooting it inside
+        // the runner is the same contract as `eval_module` above.
+        self.ctx.run_with_control(control, timeout, |ctx| {
+            let mut cx = ctx.cx();
+            rooted!(&in(cx) let global = global_ptr);
+            ModuleLoader::eval_module_in_realm(&mut cx, source, filename, hook, global.handle())
+        })
     }
 
     pub fn run_file(&mut self, path: &str) -> ::std::result::Result<JsValue, JsError> {

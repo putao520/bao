@@ -52,6 +52,7 @@ mod event_loop_module_tests;
 mod event_loop_timing_tests;
 mod events_deep_tests;
 mod events_path_deep_tests;
+mod execution_control_entry_tests;
 mod exit_handler_tests;
 mod fetch_abort_e2e_tests;
 mod fetch_api_tests;

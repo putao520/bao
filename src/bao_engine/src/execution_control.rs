@@ -400,25 +400,33 @@ impl ExecutionControl {
     }
 }
 
-// ── Controlled eval entry ───────────────────────────────────────────────────
+// ── Controlled runner + eval entry ──────────────────────────────────────────
 
 impl JsContext {
-    /// `eval` with engine-native timeout/cancellation (#24 minimal closed
-    /// loop). Runs on the same persistent-realm path as [`JsContext::eval`];
-    /// when the deadline passes or [`ExecutionControl::cancel`] is invoked,
-    /// the owner-thread interrupt callback terminates the script (uncatchable
-    /// by JS `try/catch`) and this returns a stable termination error.
+    /// Generic controlled runner (#24 S1 wiring): arm `control` (+ optional
+    /// deadline) around ANY owner-thread execution path on this context —
+    /// plain `eval`, module link/evaluate, the post-eval event-loop pump —
+    /// and map the outcome to the stable terminal-state/error contract on
+    /// every exit path. A termination latched by the interrupt callback
+    /// (deadline / external `cancel`) wins over whatever the inner path
+    /// reported, so a mid-pump kill cannot surface as success or as a
+    /// generic "Unknown JS error".
+    ///
+    /// Deadline semantics: the watcher terminates *executing JS* (loop
+    /// back-edges / JIT stack checks observe the interrupt). An entry whose
+    /// event loop goes idle and ends by its own liveness verdict after the
+    /// deadline still reports its real outcome — the deadline is a runaway
+    /// control, not a total-runtime bound.
     ///
     /// Internal experimental surface — NOT a stable API commitment
     /// (SM-EVOLUTION S1 unifies it with the runtime scheduler).
     #[doc(hidden)]
-    pub fn eval_with_control(
+    pub fn run_with_control<T>(
         &mut self,
         control: &ExecutionControl,
-        source: &str,
-        filename: &str,
         timeout: Option<Duration>,
-    ) -> Result<JsValue, JsError> {
+        run: impl FnOnce(&mut Self) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
         // Fail-closed misuse guard: the control's requester must point at
         // THIS context (created on this thread, same live runtime).
         assert_eq!(
@@ -442,10 +450,10 @@ impl JsContext {
             timeout.map(|t| Instant::now() + t),
         );
 
-        // 4. Run the standard eval path (persistent realm, AutoRealm,
-        //    evaluate_script, microtask drain) — the interrupt callback fires
-        //    inside evaluate_script on loop back-edges.
-        let result = self.eval(source, filename);
+        // 4. Run the caller's path — the interrupt callback fires inside any
+        //    JS execution (script, module evaluate, timer/job callbacks the
+        //    path pumps) on loop back-edges.
+        let result = run(self);
 
         // 5. Map to the terminal state: a control termination already latched
         //    by the callback wins over Completed/Errored; otherwise a JS
@@ -457,14 +465,34 @@ impl JsContext {
             }
         }
 
-        // 6. A control-terminated eval reports the stable termination error
-        //    (the engine cleared its pending exception; the generic fallback
-        //    would surface as "Unknown JS error" — replaced here).
-        match control.terminal_state() {
+        // 6. A control-terminated execution reports the stable termination
+        //    error (the engine cleared its pending exception; the generic
+        //    fallback would surface as "Unknown JS error" — replaced here).
+        let outcome = match control.terminal_state() {
             TerminalState::TimedOut => Err(control.termination_error(TerminalState::TimedOut)),
             TerminalState::Cancelled => Err(control.termination_error(TerminalState::Cancelled)),
             _ => result,
-        }
+        };
         // `_armed` drops here: watcher joined, armed entry popped.
+        outcome
+    }
+
+    /// `eval` with engine-native timeout/cancellation (#24 minimal closed
+    /// loop). Runs on the same persistent-realm path as [`JsContext::eval`];
+    /// when the deadline passes or [`ExecutionControl::cancel`] is invoked,
+    /// the owner-thread interrupt callback terminates the script (uncatchable
+    /// by JS `try/catch`) and this returns a stable termination error.
+    ///
+    /// Internal experimental surface — NOT a stable API commitment
+    /// (SM-EVOLUTION S1 unifies it with the runtime scheduler).
+    #[doc(hidden)]
+    pub fn eval_with_control(
+        &mut self,
+        control: &ExecutionControl,
+        source: &str,
+        filename: &str,
+        timeout: Option<Duration>,
+    ) -> Result<JsValue, JsError> {
+        self.run_with_control(control, timeout, |cx| cx.eval(source, filename))
     }
 }
