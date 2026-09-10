@@ -72,10 +72,13 @@ use crate::require::cache_builtin;
 // and no permanent pin. All lookups read the edge and unwrap the CCW, which
 // also kills the recycled-address false positive — a fresh object at the
 // same address cannot carry the edge. This Vec now holds only Rust-side
-// metadata (policy + baseline) and is consulted only after the edge proved
-// the object is a live, genuine contextified sandbox.
+// metadata (the global-key baseline) and is consulted only after the edge
+// proved the object is a live, genuine contextified sandbox. The
+// code-generation policy is NOT stored here: it is applied once at creation
+// time (`apply_code_generation_restrictions`) and never consulted again, so
+// storing it would be dead data.
 thread_local! {
-    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, CodeGenerationFlags, ::std::rc::Rc<Vec<String>>)>> = RefCell::new(Vec::new());
+    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, ::std::rc::Rc<Vec<String>>)>> = RefCell::new(Vec::new());
 }
 
 /// Description of the registered symbol carrying the context GC edge.
@@ -170,15 +173,11 @@ unsafe fn attach_context_edge(cx: *mut JSContext, sandbox: *mut JSObject, global
 }
 
 /// Register a sandbox object as contextified (Rust-side metadata only: the
-/// code-generation policy and the global-key baseline). The GC edge is
-/// attached separately by `vm_create_context` — see the registry BCE note.
-fn register_context(
-    sandbox: *mut JSObject,
-    flags: CodeGenerationFlags,
-    baseline: ::std::rc::Rc<Vec<String>>,
-) {
+/// global-key baseline). The GC edge is attached separately by
+/// `vm_create_context` — see the registry BCE note.
+fn register_context(sandbox: *mut JSObject, baseline: ::std::rc::Rc<Vec<String>>) {
     VM_CONTEXT_MAP.with(|m| {
-        m.borrow_mut().push((sandbox, flags, baseline));
+        m.borrow_mut().push((sandbox, baseline));
     });
 }
 
@@ -210,8 +209,8 @@ unsafe fn get_context_baseline(
     VM_CONTEXT_MAP.with(|m| {
         m.borrow()
             .iter()
-            .find(|&&(s, ..)| ptr::eq(s, obj))
-            .map(|&(_, _, ref b)| b.clone())
+            .find(|&&(s, _)| ptr::eq(s, obj))
+            .map(|&(_, ref b)| b.clone())
     })
 }
 
@@ -832,7 +831,7 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         apply_code_generation_restrictions(realm_cx, sandbox_global.get(), cgen_flags);
 
         // Register Rust-side metadata (baseline captured pre-seed).
-        register_context(sandbox, cgen_flags, ::std::rc::Rc::new(baseline));
+        register_context(sandbox, ::std::rc::Rc::new(baseline));
     }
 
     // Attach the GC edge in the sandbox object's compartment (the caller's

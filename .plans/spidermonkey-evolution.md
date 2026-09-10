@@ -82,7 +82,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN |
-| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治（findings ①②闭），见 §8 S2/S2-续/S2-续2 节；soak 量化与 RED-1 裁决仍挂） |
+| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN |
 
 与 Bao 1.0 Domain 的消费关系：
@@ -950,6 +950,44 @@ vendor 触碰。
 **下一唯一动作**：#29 代码面 findings 清零（①②已闭；③为 bounded dead data，随下轮
 触碰 node_vm 的波顺带删字段）；soak 量化依赖 #19（未开始）；RED-1 等用户裁决（P-A 则
 插队其 vendor patch 波）。
+
+### 2026-09-10 / S2-续3——#29 findings ③ 清除：VM_CONTEXT_MAP flags stored-but-unread 死数据删除（代码面清零）
+
+**基线**：bao master `642da220` + S2/S2-续/S2-续2（同日）；mozjs 不变。RED-1 零触碰。
+
+**缺陷**（S2-续 findings ③，本波即「下轮触碰 node_vm 的波」——e4675351/1bf2d5ee
+已动 node_vm/bun_api 域）：`node_vm.rs` 的 `VM_CONTEXT_MAP` 元组 `.1`
+（`CodeGenerationFlags`）写入（`register_context` push）后全仓零读取——唯一 map
+消费方 `get_context_baseline` 只读 `.2` baseline（`(_, _, ref b)`）；限制在
+createContext 时经 `apply_code_generation_restrictions` 一次性落地（eval/Function
+替换 + WebAssembly 删除，行为由 vm_codegen 测试承载）。纯死数据：无 GC 指针、无
+运行时危害（e74 判定），仅 bounded 存储噪声。
+
+**修复**（最小差分，字段级删除）：
+
+- `VM_CONTEXT_MAP` 元组 `(*mut JSObject, CodeGenerationFlags, Rc<Vec<String>>)` →
+  `(*mut JSObject, Rc<Vec<String>>)`；
+- `register_context` 去 `flags` 参数（唯一调用点 vm_create_context 同步）；
+- `get_context_baseline` find/map 模式随元组收窄（`&&(s, _)` / `&(_, ref b)`）；
+- **`CodeGenerationFlags` struct 本体保留**——创建时活性消费
+  （`parse_code_generation_options` → `apply_code_generation_restrictions`），非死代码；
+- 注释同步：registry BCE 注释记「policy 不入 map——创建时一次性落地，再查即死数据」，
+  防未来回填。
+
+**读取者实证**（删除前 grep，阳性对照过）：`VM_CONTEXT_MAP` 全仓仅 3 处
+（定义/push/get_context_baseline，全在 node_vm.rs）；`strings_allowed|wasm_allowed`
+域外唯一命中为测试函数名（非 map 读取者）；`register_context` 非 pub、唯一调用点
+vm_create_context。删除后 `cargo check -p bun_runtime` 零新警告
+（node_vm 仅余 4 个 pre-existing `unsafe_jsstr_to_string` deprecation）。
+
+**验证**（波末一次测）：`cargo nt -p bao_engine` **373/373**；`cargo nt -p
+bun_runtime --no-fail-fast` **1213 passed / 1 pre-existing skipped**（基线零红）；
+scoped `test(vm)` **11/11**。本轮无 vendor 触碰。
+
+**回滚点**：单 commit revert（node_vm.rs + 账本），无 API/数据/接口变更。
+
+**下一唯一动作**：#29 代码面 findings 清零达成（①②③全闭）→ soak 量化前置 =
+启动 #19（未开始）；RED-1 等用户裁决（P-A 则插队其 vendor patch 波）。
 
 ---
 
