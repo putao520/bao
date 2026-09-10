@@ -663,6 +663,12 @@ impl JsContext {
         //     callback instead of skipping on a stale address match.
         crate::execution_control::on_context_destroyed();
 
+        // 0c. Release every stencil cached for this JSContext while the
+        //     runtime is still alive (SM-EVOLUTION #26; also guarantees a
+        //     context created later at a recycled address can never be
+        //     served stencils compiled on the dead runtime).
+        crate::stencil_cache::clear_thread_cache();
+
         // 1. Drop Runtime — calls JS_DestroyContext, clears mozjs CONTEXT TLS.
         RUNTIME_TLS.with(|tls| {
             if tls.is_some() {

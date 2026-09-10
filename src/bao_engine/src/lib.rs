@@ -98,6 +98,11 @@ pub mod memory_stats;
 // (JS::SetTimeResolutionUsec) / timezone arming for Node-semantics realms
 // (SM-EVOLUTION #28, verdict consumed 2026-09-10)
 pub mod realm_policy;
+// @trace REQ-ENG-001 [entity:JsContext] — engine-native per-JSContext
+// stencil cache: compile-once/instantiate-per-realm for repeated global
+// script injection (SM-EVOLUTION #26, verdict 2026-09-10; internal
+// experimental surface, not a stable API commitment)
+pub mod stencil_cache;
 
 // @trace REQ-STL-007 [entity:StealthProfile] — Node-semantics realm
 // forceUTC arming (creation-time flag consumed by node_realm_options)

@@ -21,6 +21,9 @@ bun_io = { path = "../io", version = "0.1.0" }
 bun_spawn = { path = "../spawn", version = "0.1.0" }
 bun_crash_handler = { path = "../crash_handler", version = "0.1.0" }
 bun_core = { path = "../bun_core", version = "0.1.0" }
+# SM-EVOLUTION #26: fast cache-key hash for the per-JSContext stencil cache
+# (28 KB stealth blob must hash in ~µs, not the ~15 µs DefaultHasher pays).
+bun_wyhash = { path = "../wyhash", version = "0.1.0" }
 bun_uws = { path = "../uws", version = "0.1.0" }
 bun_collections = { path = "../collections", version = "0.1.0" }
 # bun_ast / bun_bundler deferred to Wave 73-F (bun_bundler has unresolved lolhtml_sys)

@@ -2146,6 +2146,7 @@ dependencies = [
  "bun_sm",
  "bun_spawn",
  "bun_uws",
+ "bun_wyhash",
  "libc",
  "log",
  "serde_json",
