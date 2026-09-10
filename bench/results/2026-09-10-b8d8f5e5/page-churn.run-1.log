@@ -1,0 +1,21 @@
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[node_timers_module] promisify-custom wiring call failed: can't access property Symbol.for("nodejs.util.promisify.custom"), g.setTimeout is undefined
+[bench-harness] result written to bench/results/2026-09-10-b8d8f5e5/page-churn.run-1.json

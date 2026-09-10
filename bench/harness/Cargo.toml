@@ -1,0 +1,16 @@
+[package]
+name = "bench-harness"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reproducible performance baseline harness (issue #19 Phase A) — drives bao_engine/bun_runtime/bao_browser in standalone processes, never under test-fleet deadlines"
+publish = false
+
+[dependencies]
+bao_engine = { path = "../../src/bao_engine" }
+bun_runtime = { path = "../../src/bao_runtime" }
+bao-browser = { path = "../../src/bao_browser" }
+mozjs.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

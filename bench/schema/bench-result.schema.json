@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/putao520/bao/bench/schema/bench-result.schema.json",
+  "title": "Bao bench result document",
+  "description": "Machine-readable result format for issue #19 Phase A. One document per bench per run, emitted to stdout by bench-harness, persisted as bench/results/<date>-<commit>/<bench>.run-<k>.json. Normative companion: bench/METHODOLOGY.md.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "benchmark",
+    "date_utc",
+    "environment",
+    "parameters",
+    "metrics"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bump on any breaking shape change; consumers must pin-check."
+    },
+    "benchmark": {
+      "type": "string",
+      "enum": [
+        "runtime-create-drop",
+        "realm-create-drop",
+        "page-churn",
+        "fetch-small-payload",
+        "rss-sample"
+      ],
+      "description": "Stable benchmark id; matches the harness subcommand."
+    },
+    "date_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "environment": { "$ref": "#/$defs/environment" },
+    "parameters": {
+      "type": "object",
+      "description": "Benchmark inputs (iterations, warmup, budgets, payload sizes). Values are numbers or strings.",
+      "additionalProperties": { "type": ["number", "string", "boolean"] }
+    },
+    "metrics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/metric" },
+      "description": "At least one metric on success; may be empty when top-level error is present."
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest disclosures: shared host, tail shape, cold-sample caveats, observed anomalies."
+    },
+    "error": {
+      "type": "string",
+      "description": "Present iff the bench failed (fail-closed); process exit code must be non-zero alongside."
+    }
+  },
+  "$defs": {
+    "environment": {
+      "type": "object",
+      "required": [
+        "host",
+        "kernel",
+        "cpu_model",
+        "cpu_cores",
+        "mem_total_kib",
+        "loadavg",
+        "git_commit",
+        "git_dirty",
+        "rustc",
+        "cargo_profile",
+        "display",
+        "date_utc"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string" },
+        "kernel": { "type": "string", "description": "/proc/version" },
+        "cpu_model": { "type": "string" },
+        "cpu_cores": { "type": "integer", "minimum": 1 },
+        "mem_total_kib": { "type": "integer", "minimum": 0 },
+        "loadavg": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "1/5/15-minute load at bench start."
+        },
+        "git_commit": { "type": "string" },
+        "git_dirty": { "type": "boolean" },
+        "rustc": { "type": "string" },
+        "cargo_profile": { "type": "string", "description": "e.g. test-ci / release. Cross-profile comparison is forbidden (METHODOLOGY.md section 2)." },
+        "display": { "type": ["string", "null"], "description": "DISPLAY value; null when not set. Browser benches run under xvfb-run." },
+        "date_utc": { "type": "string" }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "required": [
+        "name",
+        "unit",
+        "kind",
+        "higher_is_better",
+        "n",
+        "min",
+        "p50",
+        "p90",
+        "p95",
+        "p99",
+        "max",
+        "mean",
+        "cv",
+        "unstable"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Stable metric id within the benchmark, snake_case." },
+        "unit": {
+          "type": "string",
+          "enum": ["us", "ms", "s", "ops_per_s", "MB_per_s", "KiB", "KiB_per_s", "count"],
+          "description": "SI unit registry; see METHODOLOGY.md section 4."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["latency", "throughput", "memory", "count"]
+        },
+        "higher_is_better": { "type": "boolean" },
+        "phase": {
+          "type": "string",
+          "enum": ["cold", "warm"],
+          "description": "Absent for metrics where cold/warm does not apply (RSS phases, throughput totals)."
+        },
+        "n": { "type": "integer", "minimum": 1 },
+        "min": { "type": "number" },
+        "p50": { "type": "number" },
+        "p90": { "type": "number" },
+        "p95": { "type": "number" },
+        "p99": { "type": "number" },
+        "max": { "type": "number" },
+        "mean": { "type": "number" },
+        "cv": { "type": "number", "minimum": 0, "description": "stddev/mean; unstable iff cv > 0.05 for run-median class metrics." },
+        "unstable": { "type": "boolean", "description": "cv gate flag; unstable results are ineligible for comparison/regression adjudication until re-run." },
+        "samples": {
+          "type": "array",
+          "items": { "type": "number" },
+          "description": "Optional raw samples; emitted when n <= 2000 for auditability."
+        }
+      }
+    }
+  }
+}

@@ -81,6 +81,9 @@ members = [
     "src/transpiler",
     "src/lsquic_sys",
     "src/lolhtml_sys",
+    # Performance baseline harness (issue #19 Phase A); pure addition — no
+    # product member changes. Shares the workspace lockfile/target cache.
+    "bench/harness",
 ]
 
 [workspace.package]

@@ -16,11 +16,18 @@
 
 ## 当前状态
 
-**首个 harness 已落地:evaluate() 往返延迟**(#2),位于
+**Phase A 基建已落地(issue #19,2026-09-10)**:方法论(`METHODOLOGY.md`)、
+机器可读结果格式(`schema/bench-result.schema.json`)、独立进程 harness
+(`bench/harness` + `bench/run.sh`,deadline 与测试 fleet 隔离)、首批 5 项 seed
+基线(`results/`):runtime create/drop、realm create/drop、page churn
+(create/navigate/evaluate/close + RSS/fd/thread 探针)、fetch 小负载吞吐
+(Node 栈,本地 server)、RSS 三相采样。
+
+**更早的 harness:evaluate() 往返延迟**(#2),位于
 `src/bao_engine/benches/evaluate_roundtrip.rs`(cargo bench 标准 `[[bench]]` target,
 仓库 bench 先例 `src/js_parser/benches/`)。首跑数据见 §3.1。
 
-其余维度仍 TBD(本目录仍只有方法论 + 维度规划)。
+其余维度(§4 全部、CDP 双 transport、soak、对照)仍 TBD。
 
 ## 测量维度(规划)
 
@@ -60,7 +67,7 @@ Harness:`src/bao_engine/benches/evaluate_roundtrip.rs` — 引擎直驱
 `JsContext::eval` 往返(compile + execute + RunJobs + 值转 native)。CDP
 `Runtime.evaluate` / `Runtime.callFunctionOn` 经 servo bridge 落到同一
 SpiderMonkey 求值面;本数字覆盖 **JS↔native 环路**,不含 WS/CDP 传输跳
-(那是独立的 "CDP roundtrip" 维度)。测量方法见 `METHODLOGY.md` §4
+(那是独立的 "CDP roundtrip" 维度)。测量方法见 `METHODOLOGY.md` §4
 in-process 延迟:per-op `Instant` delta,p50/p95/p99,warmup 2000 次剔除,
 每 iteration 结果校验(fail-closed)。
 
@@ -82,7 +89,7 @@ in-process 延迟:per-op `Instant` delta,p50/p95/p99,warmup 2000 次剔除,
 
 解读:evaluate(`1+1`)热态往返 ≈ **2.4µs 中位(~417k calls/s)**。cv
 21–33% 为逐调用延迟分布的尾部形态(SM GC 停顿落在 p95+/max),非跑间
-抖动(`METHODLOGY.md` 的 cv>5% 规则针对跑间 median)。
+抖动(`METHODOLOGY.md` 的 cv>5% 规则针对跑间 median)。
 
 ### 4. Node / Bun API(I/O 层)
 
@@ -114,17 +121,15 @@ in-process 延迟:per-op `Instant` delta,p50/p95/p99,warmup 2000 次剔除,
 
 ```
 bench/
-  README.md       (本文件)
-  METHODLOGY.md   (测量方法)
+  README.md            (本文件)
+  METHODOLOGY.md       (测量方法 — issue #19 Phase A 六要素/噪声/deadline 隔离)
+  schema/
+    bench-result.schema.json   (机器可读结果格式,JSON Schema 2020-12)
+  harness/             (cargo workspace member `bench-harness`:独立进程 bench driver)
+  run.sh               (编排:env 绑定(commit/host/日期)→ 构建 → 跑 → results/ 落盘)
+  results/             (seed 基线数据,随仓库版本化;<date>-<commit>/<bench>.run-<k>.json)
+  REPORT.md            (未来:自动生成的完整报告,issue #19 I 节)
 ```
 
-后续 harness 落地后会扩展:
-
-```
-bench/
-  runtime/        # 启动 / JS exec / memory
-  browser/        # 首页 / RSS / page churn
-  automation/     # nav/s / evaluate/s / CDP roundtrip
-  node_api/       # fs / http / compression / crypto
-  REPORT.md       # 最新一次完整报告(版本绑定)
-```
+后续维度(harness subcommand 扩展):fs / crypto / sqlite / spawn / bundler
+(§4)、CDP 双 transport、多页并发 RSS、soak(#19 F/G)。
