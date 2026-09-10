@@ -1614,7 +1614,7 @@ unsafe fn install_all_native(
         // Convert bao_stealth config to servo net connector config (two identical structs
         // in different crates — servo net cannot depend on bao_stealth).
         let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
-        servo::set_stealth_tls_config(Some(servo::StealthTlsWireConfig {
+        let wire = servo::StealthTlsWireConfig {
             tls12_cipher_suites: stc.tls12_cipher_suites,
             tls13_cipher_suites: stc.tls13_cipher_suites,
             signature_algorithms: stc.signature_algorithms,
@@ -1625,7 +1625,22 @@ unsafe fn install_all_native(
             h2_initial_connection_window_size: stc.h2_initial_connection_window_size,
             h2_max_frame_size: stc.h2_max_frame_size,
             h2_max_header_list_size: stc.h2_max_header_list_size,
-        }));
+        };
+        // R53-A net face: the per-WebViewId registry entry is the
+        // AUTHORITATIVE config for this page's keyed requests (page
+        // fetch/XHR egress carrying target_webview_id, worker realms with
+        // their owning page, SW realms stamped with the registering page).
+        // The process-global write below remains ONLY as the identity-less
+        // fallback bucket (SW script updates and other infra fetches) and
+        // for the existing public getter semantics — before R53-A it was
+        // the sole storage, so a second page with a different profile
+        // silently overwrote every other page's wire fingerprint.
+        servo::set_stealth_wire_config_for_webview(
+            webview_id,
+            Some(wire.clone()),
+            Some(profile.http2.clone()),
+        );
+        servo::set_stealth_tls_config(Some(wire));
         // U2 stage 2: the servo-net bun bridge (net thread) reads the h2
         // pseudo-header order / preface PRIORITY frames from this global —
         // same lifecycle as the wire-config global above (engine_props'
@@ -1679,6 +1694,10 @@ unsafe fn install_all_native(
         bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
     } else {
         bun_runtime::fetch_api::set_fetch_stealth_profile(None);
+        // R53-A: an explicit stealth-free keyed entry — a page created
+        // without a profile must not inherit another page's profile through
+        // the process-global fallback.
+        servo::set_stealth_wire_config_for_webview(webview_id, None, None);
         servo::set_stealth_tls_config(None);
         bao_stealth::set_global_http2_fingerprint(None);
         // SM-EVOLUTION #28: restore upstream host-derived locale/time state

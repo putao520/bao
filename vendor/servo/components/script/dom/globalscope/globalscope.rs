@@ -770,6 +770,25 @@ impl GlobalScope {
         None
     }
 
+    /// Bao vendor patch (R53-A net face): the webview identity for
+    /// PAGE-EGRESS network requests (`fetch()` / XHR Request construction).
+    /// Identical to [`GlobalScope::webview_id`] except that a
+    /// `ServiceWorkerGlobalScope` — whose `webview_id()` is `None` by
+    /// upstream design (storage partitioning etc. deliberately see no
+    /// owning webview) — resolves to the REGISTERING page's WebViewId
+    /// (`ScopeThings` inheritance, `owning_webview_id`), so SW-realm
+    /// egress rides the host page's per-webview stealth TLS/H2 wire
+    /// profile. Dedicated and shared workers already carry their owning
+    /// page's webview id natively through `webview_id()`.
+    pub(crate) fn egress_webview_id(&self) -> Option<WebViewId> {
+        if let Some(sw) = self
+            .downcast::<crate::dom::serviceworker::serviceworkerglobalscope::ServiceWorkerGlobalScope>()
+        {
+            return sw.owning_webview_id();
+        }
+        self.webview_id()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_inherited(
         devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,

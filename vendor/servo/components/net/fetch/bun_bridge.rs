@@ -99,7 +99,7 @@ use net_traits::ResourceAttribute;
 use net_traits::request::{BodyChunkRequest, Destination};
 use parking_lot::Mutex;
 use servo_base::cross_process_instant::CrossProcessInstant;
-use servo_base::id::{BrowsingContextId, PipelineId};
+use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
 use servo_url::ServoUrl;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -1797,6 +1797,7 @@ pub(crate) async fn obtain_response_bun(
     request_headers: &mut HeaderMap,
     body_sender: Option<StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>>,
     pipeline_id: &Option<PipelineId>,
+    target_webview_id: Option<WebViewId>,
     request_id: Option<&str>,
     destination: Destination,
     is_xhr: bool,
@@ -1924,18 +1925,22 @@ pub(crate) async fn obtain_response_bun(
         .set_attribute(ResourceAttribute::RequestStart);
 
     // Stealth TLS + h2 fingerprint + per-request CA (stage 2):
-    // - the global wire config the embedder derived from the page profile
-    //   (single source: connector's STEALTH_TLS_CONFIG, kept in sync with
-    //   the profile window.fetch uses); its ALPN list drives the h2 offer
-    //   (`is_page_egress`): the page egress migrated from hyper-h2 and must
-    //   keep offering `h2,http/1.1` — downgrading to h1 would change the
-    //   page's TLS fingerprint.
+    // - the wire config resolved for THIS request's webview identity
+    //   (R53-A: connector's per-WebViewId registry first — keyed by
+    //   `target_webview_id`, with dedicated/shared workers carrying their
+    //   owning page and SW egress stamped with its registering page; the
+    //   process-global remains the identity-less fallback), kept in sync
+    //   with the profile window.fetch uses; its ALPN list drives the h2
+    //   offer (`is_page_egress`): the page egress migrated from hyper-h2
+    //   and must keep offering `h2,http/1.1` — downgrading to h1 would
+    //   change the page's TLS fingerprint.
     // - the profile's full `Http2Fingerprint` snapshot (pseudo-header order
-    //   + preface PRIORITY frames — REQ-STL-002 / REQ-STL-002-C3).
+    //   + preface PRIORITY frames — REQ-STL-002 / REQ-STL-002-C3),
+    //   resolved per-webview the same way.
     // - `context.ca_certificates`: `Override(list)` replaces the trust store
     //   for this request's connections (connector `create_tls_config`
     //   semantics); `Default` keeps the system roots.
-    let (wire_config, profile_offers_h2) = match crate::connector::get_stealth_tls_config() {
+    let (wire_config, profile_offers_h2) = match crate::connector::resolve_stealth_tls_config(target_webview_id) {
         Some(ref wire) => (
             Some(wire.clone()),
             wire.alpn_protocols
@@ -1966,7 +1971,7 @@ pub(crate) async fn obtain_response_bun(
     }
     let ssl_config = build_ssl_config(
         wire_config.as_ref(),
-        bao_stealth::global_http2_fingerprint().as_ref(),
+        crate::connector::resolve_http2_fingerprint(target_webview_id).as_ref(),
         ca_override.as_deref(),
     );
     // Stage 3 (h2 coalescing): intern the config through bun's global

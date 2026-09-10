@@ -264,6 +264,29 @@ pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
     net::connector::set_stealth_tls_config(config);
 }
 
+/// Per-WebViewId stealth wire configuration (R53-A net face).
+///
+/// The process-global setter above stays as the identity-less fallback
+/// default; keyed entries are authoritative for requests carrying
+/// `target_webview_id` (page fetch/XHR egress, worker realms with their
+/// owning page, SW realms stamped with the registering page), so two pages
+/// with different `stealth_profile`s no longer silently cross-contaminate
+/// each other's TLS/H2 wire fingerprint.
+pub use net::connector::Http2Fingerprint;
+
+pub fn set_stealth_wire_config_for_webview(
+    webview_id: WebViewId,
+    tls: Option<StealthTlsWireConfig>,
+    h2: Option<Http2Fingerprint>,
+) {
+    net::connector::set_stealth_wire_config_for_webview(webview_id, tls, h2);
+}
+
+/// Drop a webview's keyed stealth wire-config entries (page close).
+pub fn clear_stealth_wire_config_for_webview(webview_id: WebViewId) {
+    net::connector::clear_stealth_wire_config_for_webview(webview_id);
+}
+
 /// Network event tap types + installer for embedder-side network observability
 /// (Bao vendor patch, REQ-BRW-004 criterion #19 subclause ②: CDP Network
 /// domain observability of SW-intercepted and regular fetches).

@@ -1477,6 +1477,10 @@ impl PageHandle {
                 // otherwise a closed page's injector (carrying its stealth
                 // profile clone) lingers in the vendor registry forever.
                 servo::unregister_worker_injectors(wid);
+                // R53-A net face: drop this webview's keyed stealth
+                // wire-config entries (same lifecycle discipline — the
+                // entries pin the profile's TLS/H2 config memory otherwise).
+                servo::clear_stealth_wire_config_for_webview(wid);
                 if !cur_pg.is_null() {
                     pg = cur_pg;
                 }

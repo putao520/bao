@@ -311,9 +311,30 @@ No vendor delta. bao API enforces one-profile-per-process: `PagePool::create_pag
 
 **No implementation performed this round** (design-only; per §0 the decision belongs to the user).
 
+#### ⑥ R53-A phase 1 IMPLEMENTED — net face (user ruling 2026-09-10: option A, do it thoroughly, net face first)
+
+User ruling 2026-09-10: **option A, staged, net face first** (canvas face = phase 2, out of this wave). Webview-less ownership ruling (⑤.1): **registering page's profile** — ScopeThings-webview_id-inheritance made explicit on the net Request (same host-page semantics dedicated/shared workers have natively and W1a stealth inheritance uses).
+
+What landed (single wave, commit `<this-wave>`):
+
+1. **vendor `net/connector.rs`** — `STEALTH_TLS_BY_WEBVIEW` / `STEALTH_H2_BY_WEBVIEW` (LazyLock RwLock<HashMap<WebViewId, Option<…>>>; explicit `None` value = stealth-free page stays stealth-free, no fallback inheritance) + `set/clear_stealth_wire_config_for_webview` + `resolve_stealth_{tls_config,http2_fingerprint}(Option<WebViewId>)` (keyed hit authoritative; miss/identity-less → process-global fallback — SW script-update and other infra fetches keep pre-R53 behavior) + `create_tls_config` gains `webview_id` param (WS path). Process-global `set_stealth_tls_config` / `GLOBAL_HTTP2_FINGERPRINT` PRESERVED as fallback + existing getter semantics (zero break).
+2. **vendor `net/fetch/bun_bridge.rs`** — `obtain_response_bun` gains `target_webview_id`; both faces resolve keyed. SSLConfig interning self-segregates pools per profile (content → distinct pointer → distinct connection bucket).
+3. **vendor `net/http_loader.rs`** — passes `request.target_webview_id` at both call sites (bun bridge + WS `create_tls_config`).
+4. **vendor script stamps** — `ServiceWorkerGlobalScope.owning_webview_id` (from `ScopeThings`, #[no_trace]) + `GlobalScope::egress_webview_id()` (SW → registering page; others = `webview_id()`; upstream's deliberate `None`-for-SW storage-partition semantics untouched) + `net_request_from_global` (dom/fetch/request.rs) and XHR (xmlhttprequest.rs) Request construction stamped with egress identity.
+5. **bao_browser** — `install_all_native` dual-writes (keyed authoritative entry + process-global fallback bucket, both arms incl. explicit stealth-free entry); `Page::close` clears the keyed entries next to `unregister_worker_injectors`.
+6. **Tests** — `stealth_per_page_wire_tests.rs` (suite): ① `per_page_divergent_wire_profiles_live` (two pages Firefox/Chrome in ONE runtime, each page's ClientHello carries ITS profile's supported-groups anchor — Firefox keeps P-521; JA3s differ; both ALPN h2,http/1.1) ② `sw_egress_rides_host_page_profile_under_divergence_live` (SW-forwarded fetch rides the REGISTERING page's Firefox profile while a Chrome page coexists). **RED proven first on unchanged code** (both pages' JA3 identical = last page's profile; SW egress = chrome), then GREEN.
+
+Evidence: RED run (pre-change) both new tests FAIL with the cross-contamination symptom; GREEN run 16/16 (new 2 + sw_stealth_profile 4/4 + page_net_bun_fingerprint e2e); wider regression 53/53 (page_wss, page_net_bun_full_matrix, stealth_fingerprint, serviceworker mediation/controller/fetchevent, worker_fingerprint_consistency). Known-flake exclusion: `h2_fetch_node_stack_e2e_tests::window_fetch_wire_h2_post_body_roundtrip` failed twice under machine saturation — pre-classified starvation flake (brw004-final-certification.md "按 flake 挂账"; 7/7 green at certification; test drives AsyncHTTP/HTTPThread directly, zero call-path overlap with this wave's deltas).
+
+Residuals (phase 2 / documented):
+- **Canvas face** (census R53 member 3): per-canvas noise config, deletes `canvas_noise.rs` globals — `CanvasMsg` path carries no webview identity today; heaviest plumbing, deliberately staged out.
+- **Fallback bucket last-write-wins** (identity-less fetches only, post-SW-stamp = SW script updates + misc infra): process-global still written per install; pre-R53 behavior preserved by design; documented residual, not a page-visible surface.
+- `fetch()` thread-local profile face (proposal member 5, `TL_STEALTH_PROFILE` last-install-wins on shared ScriptThread) — NOT in this wave's scope; same-seam follow-up candidate.
+- Webviewless resource handler (member 4) — untouched, constant verdict, per proposal.
+
 ## 9. Next single action
 
-**#32 candidate #3 v1 — CDP server thread stop+join on drop — is in flight (2026-09-07 batch-1). On completion, the next single action is the re-scoped candidate #2: wire page-identity through to the servo net connector so BOTH `StealthTlsWireConfig` and the H2 fingerprint can be keyed per-page (single decision, both surfaces; `runtime_bridge.rs:1258/1274` is the seam).** Then the e8541037c4 PathBuffer pool sweep (177 call sites).
+**R53-A net face landed (⑥ above). Next single action from §8: R53-A phase 2 canvas face — per-canvas `CanvasNoiseConfig` stamped at canvas creation, read at the `GetImageData` choke point, deleting the `canvas_noise.rs` globals** (identity must be threaded onto the `CanvasMsg` command path first). Then the e8541037c4 PathBuffer pool sweep (177 call sites).
 
 ## 10. Definition of Done
 

@@ -27,7 +27,7 @@ use net_traits::request::{
 use rand::random;
 use script_bindings::interfaces::HasOrigin;
 use servo_base::generic_channel::{GenericReceiver, GenericSend, GenericSender, RoutedReceiver};
-use servo_base::id::{PipelineId, ServiceWorkerId};
+use servo_base::id::{PipelineId, ServiceWorkerId, WebViewId};
 use servo_config::pref;
 use servo_constellation_traits::{
     ScopeThings, ServiceWorkerMsg, WorkerGlobalScopeInit, WorkerScriptLoadOrigin,
@@ -207,6 +207,17 @@ pub(crate) struct ServiceWorkerGlobalScope {
 
     #[no_trace]
     worker_id: ServiceWorkerId,
+
+    /// Bao vendor patch (R53-A net face): the WebViewId of the page that
+    /// REGISTERED this service worker, captured from `ScopeThings`. The
+    /// SW realm's own outbound `fetch()`/XHR stamp it as the egress webview
+    /// identity (`GlobalScope::egress_webview_id`), so the net connector
+    /// resolves the REGISTERING page's per-webview stealth TLS/H2 profile
+    /// for SW-realm egress — the same host-page inheritance dedicated and
+    /// shared workers have natively. Upstream's `webview_id()` stays `None`
+    /// for SW scopes (storage partitioning semantics untouched).
+    #[no_trace]
+    owning_webview_id: Option<WebViewId>,
 }
 
 /// One anchored `respondWith` promise plus its removal key.
@@ -260,6 +271,13 @@ impl WorkerEventLoopMethods for ServiceWorkerGlobalScope {
 }
 
 impl ServiceWorkerGlobalScope {
+    /// The REGISTERING page's WebViewId (R53-A SW egress identity) — see
+    /// the `owning_webview_id` field doc. `None` only for scopes built
+    /// without `ScopeThings` (none on the live path today).
+    pub(crate) fn owning_webview_id(&self) -> Option<WebViewId> {
+        self.owning_webview_id
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new_inherited(
         init: WorkerGlobalScopeInit,
@@ -275,6 +293,7 @@ impl ServiceWorkerGlobalScope {
         closing: Arc<AtomicBool>,
         font_context: Arc<FontContext>,
         worker_id: ServiceWorkerId,
+        owning_webview_id: Option<WebViewId>,
     ) -> ServiceWorkerGlobalScope {
         ServiceWorkerGlobalScope {
             workerglobalscope: WorkerGlobalScope::new_inherited(
@@ -301,6 +320,7 @@ impl ServiceWorkerGlobalScope {
             pending_fetch_responses: DomRefCell::new(VecDeque::new()),
             pending_fetch_response_key: Cell::new(0),
             worker_id,
+            owning_webview_id,
         }
     }
 
@@ -320,6 +340,7 @@ impl ServiceWorkerGlobalScope {
         font_context: Arc<FontContext>,
         debugger_global: &DebuggerGlobalScope,
         worker_id: ServiceWorkerId,
+        owning_webview_id: Option<WebViewId>,
         cx: &mut JSContext,
     ) -> DomRoot<ServiceWorkerGlobalScope> {
         let scope = Box::new(ServiceWorkerGlobalScope::new_inherited(
@@ -336,6 +357,7 @@ impl ServiceWorkerGlobalScope {
             closing,
             font_context,
             worker_id,
+            owning_webview_id,
         ));
         let scope = ServiceWorkerGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(
             cx,
@@ -436,6 +458,9 @@ impl ServiceWorkerGlobalScope {
                     font_context,
                     &debugger_global,
                     worker_id,
+                    // R53-A: the SW realm carries its REGISTERING page's
+                    // webview id for egress identity (see field doc).
+                    Some(webview_id),
                     cx,
                 );
 

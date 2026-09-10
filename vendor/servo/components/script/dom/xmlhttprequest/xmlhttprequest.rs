@@ -718,7 +718,10 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
         };
 
         let global = self.global();
-        let mut request = RequestBuilder::new(global.webview_id(), url, self.referrer.clone())
+        // Bao vendor patch (R53-A net face): SW-realm XHR egress stamps the
+        // REGISTERING page's webview id (host-page stealth profile
+        // ownership), same as the fetch() path.
+        let mut request = RequestBuilder::new(global.egress_webview_id(), url, self.referrer.clone())
             .method(self.request_method.borrow().clone())
             .headers((*self.request_headers.borrow()).clone())
             .unsafe_request(true)

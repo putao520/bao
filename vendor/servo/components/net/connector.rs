@@ -10,12 +10,13 @@
 #![allow(unsafe_code)]
 
 use std::collections::hash_map::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use http_body_util::combinators::BoxBody;
 use hyper::body::Bytes;
 use log::warn;
 use parking_lot::Mutex;
+use servo_base::id::WebViewId;
 
 use bao_boringssl_bridge::TlsClient;
 use bao_stealth::{boringssl_cipher_list_string, boringssl_curves_list_string, boringssl_sigalgs_list_string};
@@ -99,6 +100,101 @@ pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
 /// Read the current global stealth TLS/HTTP2 configuration.
 pub(crate) fn get_stealth_tls_config() -> Option<StealthTlsWireConfig> {
     STEALTH_TLS_CONFIG.read().unwrap().clone()
+}
+
+// ── Per-WebViewId stealth wire-config registry (R53-A net face) ─────────
+//
+// The process-global above is a LAST-WRITE-WINS snapshot: with more than
+// one page carrying different stealth profiles, every page install
+// overwrote the whole process's wire config, so ALL pages' subsequent
+// connections rode the LAST-created page's fingerprint (silent
+// cross-contamination inside a single runtime — BUN-EVOLUTION R53). The
+// registries below key the SAME two faces (TLS wire config + the h2
+// fingerprint snapshot the bun bridge reads) by the request's
+// `target_webview_id`, which `net_traits::request::Request` already
+// carries end-to-end:
+//
+//   keyed hit    → that entry is AUTHORITATIVE, including an explicit
+//                  `None` (a stealth-free page must not inherit another
+//                  page's profile through the fallback);
+//   miss / None  → the process-global above (embedder-set default; the
+//                  pre-R53 behavior, preserved for identity-less
+//                  infrastructure fetches such as SW script updates).
+//
+// Dedicated/shared-worker egress carries the owning page's webview id
+// natively (`GlobalScope::webview_id`); service-worker egress is stamped
+// with the REGISTERING page's webview id by the script-side vendor patch
+// (`GlobalScope::egress_webview_id`), so worker/SW realms resolve to
+// their host page's profile.
+
+static STEALTH_TLS_BY_WEBVIEW: LazyLock<RwLock<HashMap<WebViewId, Option<StealthTlsWireConfig>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+static STEALTH_H2_BY_WEBVIEW: LazyLock<RwLock<HashMap<WebViewId, Option<bao_stealth::Http2Fingerprint>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Re-export so the `servo` facade can name the h2 fingerprint type in the
+/// keyed setter without a direct `bao_stealth` dependency of its own (the
+/// net crate already depends on it).
+pub use bao_stealth::Http2Fingerprint;
+
+/// Upsert one webview's stealth wire configuration (TLS + HTTP/2 faces
+/// together — the embedder always installs both from a single profile).
+pub fn set_stealth_wire_config_for_webview(
+    webview_id: WebViewId,
+    tls: Option<StealthTlsWireConfig>,
+    h2: Option<Http2Fingerprint>,
+) {
+    STEALTH_TLS_BY_WEBVIEW
+        .write()
+        .unwrap()
+        .insert(webview_id, tls);
+    STEALTH_H2_BY_WEBVIEW
+        .write()
+        .unwrap()
+        .insert(webview_id, h2);
+}
+
+/// Drop a webview's keyed entries (page close). Webview ids are not
+/// reused within a process, but the entries pin profile memory otherwise.
+pub fn clear_stealth_wire_config_for_webview(webview_id: WebViewId) {
+    STEALTH_TLS_BY_WEBVIEW.write().unwrap().remove(&webview_id);
+    STEALTH_H2_BY_WEBVIEW.write().unwrap().remove(&webview_id);
+}
+
+/// Resolve the stealth TLS wire config for a request's webview identity.
+/// A keyed hit is authoritative (explicit `None` included — stealth-free
+/// pages stay stealth-free); a miss or an identity-less request falls
+/// back to the process-global default.
+pub(crate) fn resolve_stealth_tls_config(
+    webview_id: Option<WebViewId>,
+) -> Option<StealthTlsWireConfig> {
+    match webview_id {
+        Some(id) => STEALTH_TLS_BY_WEBVIEW
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(get_stealth_tls_config),
+        None => get_stealth_tls_config(),
+    }
+}
+
+/// Resolve the HTTP/2 fingerprint snapshot for a webview identity (same
+/// resolution semantics as [`resolve_stealth_tls_config`]; falls back to
+/// `bao_stealth`'s process-global snapshot).
+pub(crate) fn resolve_http2_fingerprint(
+    webview_id: Option<WebViewId>,
+) -> Option<Http2Fingerprint> {
+    match webview_id {
+        Some(id) => STEALTH_H2_BY_WEBVIEW
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(bao_stealth::global_http2_fingerprint),
+        None => bao_stealth::global_http2_fingerprint(),
+    }
 }
 
 // ── IANA cipher/group/sigalg ID → OpenSSL name mapping ────────────────
@@ -262,16 +358,21 @@ pub struct StealthPerConnection {
 /// Certificate verification uses BoringSSL's built-in system root CA store
 /// by default (same as Chrome).
 ///
+/// `webview_id` is the requesting fetch's webview identity: the stealth
+/// wire config resolves per-webview first (R53-A), falling back to the
+/// process-global default for identity-less requests.
+///
 /// FIXME: The `ignore_certificate_errors` argument ignores all certificate errors. This
 /// is used when running the WPT tests, because BoringSSL currently rejects the WPT certificate.
 #[servo_tracing::instrument(skip_all)]
 pub fn create_tls_config(
+    webview_id: Option<WebViewId>,
     ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     override_manager: CertificateErrorOverrideManager,
 ) -> TlsConfig {
     // Build the BoringSSL TlsClient
-    let (client, stealth_per_connection) = match get_stealth_tls_config() {
+    let (client, stealth_per_connection) = match resolve_stealth_tls_config(webview_id) {
         Some(stealth) => {
             // Use stealth profile to configure cipher suites
             let client = TlsClient::new()

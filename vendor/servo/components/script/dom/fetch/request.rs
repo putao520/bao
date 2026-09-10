@@ -592,7 +592,10 @@ impl Request {
 
 fn net_request_from_global(global: &GlobalScope, url: ServoUrl) -> NetTraitsRequest {
     let url = ensure_blob_referenced_by_url_is_kept_alive(global, url);
-    RequestBuilder::new(global.webview_id(), url, global.get_referrer())
+    // Bao vendor patch (R53-A net face): SW-realm fetch() egress stamps the
+    // REGISTERING page's webview id (host-page stealth profile ownership);
+    // windows and dedicated/shared workers keep their native identity.
+    RequestBuilder::new(global.egress_webview_id(), url, global.get_referrer())
         .with_global_scope(global)
         .build()
 }

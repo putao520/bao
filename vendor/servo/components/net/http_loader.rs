@@ -2103,6 +2103,7 @@ async fn http_network_fetch(
             };
 
             let mut tls_config = create_tls_config(
+                request.target_webview_id,
                 context.ca_certificates.clone(),
                 context.ignore_certificate_errors,
                 context.state.override_manager.clone(),
@@ -2151,6 +2152,7 @@ async fn http_network_fetch(
                 &mut request.headers,
                 body,
                 &request.pipeline_id,
+                request.target_webview_id,
                 Some(&request_id),
                 request.destination,
                 is_xhr,
