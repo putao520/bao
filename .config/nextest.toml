@@ -42,3 +42,25 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'package(bao-browser) and test(h2_fetch_node_stack_e2e_tests)'
 threads-required = "num-test-threads"
+
+# Test resource isolation (task: page_net destination_matrix fleet starvation,
+# diagnosed 2026-09-10 during the v61 final certification batch):
+#
+# `page_net_bun_full_matrix_e2e_tests::page_net_bun_full_destination_matrix`
+# is a full-engine e2e: it boots a whole BaoRuntime (servo ScriptThread +
+# constellation) plus real H1/H2 fixture servers and round-trips the entire
+# page→bun-bridge destination matrix. In isolation it passes in ~16.7s with 4×
+# deadline headroom, but in the full bao-browser fleet at default concurrency
+# it starves past its delivery deadline exactly like the two entries above:
+# v61 observed FAIL 62.952s with "h2 document never arrived (streams: [],
+# alpn-h2 conns: 1, non-h2: 0)" — ALPN h2 handshake completes but zero streams
+# get scheduled — 1 red in 3 runs, fleet-only, never isolated (scheduling
+# starvation, not a logic regression).
+#
+# Reserve the full test-thread budget so this deadline-bound matrix never
+# co-runs with the fleet (same documented mechanism as the two entries above;
+# module-level filter per the precedent — the module currently holds exactly
+# this one full-engine test). No test code or assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bao-browser) and test(page_net_bun_full_matrix_e2e_tests)'
+threads-required = "num-test-threads"
