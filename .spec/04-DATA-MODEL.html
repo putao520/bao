@@ -630,7 +630,7 @@ BaoRuntime (单例根)
 <h2>§8 缓存/索引策略</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D11">
+<div id="artifact-use-case-diagram-2" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D11">
 <h3>缓存策略</h3>
 <table>
 <tr><td>缓存对象</td><td>存储结构</td><td>键</td><td>失效策略</td><td>预估大小</td></tr>
@@ -647,7 +647,7 @@ BaoRuntime (单例根)
 <h2>§9 Crate 数据模型</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+<div id="artifact-use-case-diagram-3" data-type="document" data-artifact-type="use-case-diagram">
 <h3>新增 Crate 与数据流</h3>
 <pre>
 bao_engine/
@@ -799,7 +799,7 @@ bao_stealth/
 <tr data-field="handle" data-type="integer" data-required="false"><td>handle</td><td>int</td><td>否</td><td></td><td>dlopen handle pointer</td></tr>
 <tr data-field="isOpen" data-type="boolean" data-required="true"><td>isOpen</td><td>bool</td><td>是</td><td></td><td>Whether library is loaded</td></tr>
 <tr data-field="symbolCount" data-type="integer" data-required="true"><td>symbolCount</td><td>int</td><td>是</td><td></td><td>Resolved symbol count</td></tr></table><p data-xref-type="entity" data-xref-id="FfiLibrary">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-009">REQ-ENG-009</span></p></section>
-<section id="artifact-model-tree" data-type="document" data-artifact-type="model-tree" data-delivery="D10"><h3>模型树</h3><div>Bao 数据模型树:
+<section id="artifact-model-tree-2" data-type="document" data-artifact-type="model-tree" data-delivery="D10"><h3>模型树</h3><div>Bao 数据模型树:
 ├── BaoRuntime (根实体，单例)
 │   ├── PagePool (页面池)
 │   │   └── PageHandle (页面句柄)
@@ -811,7 +811,7 @@ bao_stealth/
 ├── BaoError (错误枚举)
 └── WebViewId (页面标识)</div></section>
 
-<section id="artifact-cache-index-strategy" data-type="document" data-artifact-type="cache-index-strategy" data-delivery="D11"><h3>缓存/索引策略</h3><div>缓存策略:
+<section id="artifact-cache-index-strategy-2" data-type="document" data-artifact-type="cache-index-strategy" data-delivery="D11"><h3>缓存/索引策略</h3><div>缓存策略:
 1. PagePool: LRU 淘汰 + idle TTL 回收（默认 60s）
 2. CdpSession: Weak 引用，页面关闭自动清理
 3. Module Cache: SpiderMonkey 内置模块缓存（SM 编译缓存）

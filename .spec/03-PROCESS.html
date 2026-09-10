@@ -86,7 +86,7 @@ Main Thread / Bao 控制线程 (bao_browser, bao_cdp 路由, PagePool, CLI)
         </script>
       </div>
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-2" data-type="document" data-artifact-type="use-case-diagram">
         <h3>渲染流程时序图</h3>
         <pre>
 CDP: Page.navigate(url)
@@ -144,7 +144,7 @@ CDP: Page.navigate(url)
         </script>
       </div>
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-3" data-type="document" data-artifact-type="use-case-diagram">
         <h3>CDP Domain 路由</h3>
         <pre>
 WebSocket Client (Playwright)
@@ -253,7 +253,7 @@ WebSocket Client (Playwright)
       <h2>§5 Event Loop 桥接流程</h2>
       <!-- ============================================================ -->
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-4" data-type="document" data-artifact-type="use-case-diagram">
         <h3>SpiderMonkey JobQueue ↔ Bun uSockets 桥接</h3>
         <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────┐
@@ -288,7 +288,7 @@ WebSocket Client (Playwright)
       <h2>§6 Module Loader 桥接流程</h2>
       <!-- ============================================================ -->
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-5" data-type="document" data-artifact-type="use-case-diagram">
         <h3>SpiderMonkey Module Loader ↔ Bun Resolver 桥接</h3>
         <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────────┐
@@ -452,7 +452,7 @@ WebSocket Client (Playwright)
       <h2>§8 线程模型与数据流</h2>
       <!-- ============================================================ -->
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-artifact-alias="thread-model-summary">
+      <div id="artifact-use-case-diagram-6" data-type="document" data-artifact-type="use-case-diagram" data-artifact-alias="thread-model-summary">
         <h3>线程模型摘要 (与 §8 主线程模型一致)</h3>
         <pre>
 servo ScriptThread (JSContext 唯一所有者)
@@ -475,7 +475,7 @@ Main Thread / Bao 控制线程 (PagePool, CDP 路由, CLI)
       <h2>§9 多页面管理流程</h2>
       <!-- ============================================================ -->
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-7" data-type="document" data-artifact-type="use-case-diagram">
         <h3>Page 创建流程时序图</h3>
         <pre>
 调用方: runtime.createPage(config)
@@ -514,7 +514,7 @@ Main Thread / Bao 控制线程 (PagePool, CDP 路由, CLI)
 </pre>
       </div>
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-8" data-type="document" data-artifact-type="use-case-diagram">
         <h3>CDP 路由分发流程时序图</h3>
         <pre>
 调用方: cdp.send('Domain.method', params)
@@ -544,7 +544,7 @@ Main Thread / Bao 控制线程 (PagePool, CDP 路由, CLI)
 </pre>
       </div>
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-9" data-type="document" data-artifact-type="use-case-diagram">
         <h3>PagePool 空闲回收流程时序图</h3>
         <pre>
 事件循环每轮 tick:
@@ -578,7 +578,7 @@ Main Thread / Bao 控制线程 (PagePool, CDP 路由, CLI)
       <h2>§10 异常流程</h2>
       <!-- ============================================================ -->
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+      <div id="artifact-use-case-diagram-10" data-type="document" data-artifact-type="use-case-diagram">
         <h3>异常处理流程</h3>
         <pre>
 JS 执行异常:
@@ -1050,7 +1050,7 @@ JS 获得 return value
           }
         </script>
       <p data-xref-type="sm" data-xref-id="FetchTaskletLifecycle">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-010">REQ-ENG-010</span></p></section>
-      <section id="artifact-state-machine" data-state-machine="WF 回跳上限状态机" data-artifact-type="state-machine">
+      <section id="artifact-state-machine-2" data-state-machine="WF 回跳上限状态机" data-artifact-type="state-machine">
         <h3>WF 回跳上限状态机 状态机</h3>
         <script type="application/ld+json">
           {
