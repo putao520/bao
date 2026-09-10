@@ -1,0 +1,41 @@
+{
+ "schema_version": 1,
+ "tool": "scripts/sm-audit/drift.py",
+ "old": {
+  "label": "2026-09-10-a3220511",
+  "bao_commit": "a3220511235e147de8080122f852b4ed657c77f7",
+  "mozjs": {
+   "crate": "bao-mozjs 0.22.0",
+   "sys_crate": "bao-mozjs-sys 140.14.0-0",
+   "jsapi_md5": "ffaa600241bbe90f7c49b9ce919bb3e3"
+  }
+ },
+ "new": {
+  "label": "2026-09-10-a3220511",
+  "bao_commit": "a3220511235e147de8080122f852b4ed657c77f7",
+  "mozjs": {
+   "crate": "bao-mozjs 0.22.0",
+   "sys_crate": "bao-mozjs-sys 140.14.0-0",
+   "jsapi_md5": "ffaa600241bbe90f7c49b9ce919bb3e3"
+  }
+ },
+ "summary": {
+  "added": 0,
+  "removed": 0,
+  "renamed": 0,
+  "signature_changed": 0,
+  "stability_flip": 0,
+  "removed_bao_used": 0
+ },
+ "added": [],
+ "removed": [],
+ "renamed": [],
+ "signature_changed": [],
+ "stability_flip": [],
+ "rollup_by_category": {
+  "added": {},
+  "removed": {},
+  "renamed": {},
+  "signature_changed": {}
+ }
+}

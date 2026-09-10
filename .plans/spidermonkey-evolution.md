@@ -60,7 +60,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 - 未发现 Realm-native locale/timezone override 的 Bao 侧使用；
 - CDP Debugger 仍未证明由 SM 原生 debugger/script/frame/object facts 驱动（JS::Debugger binding 缺失，bun_sm::debugger 为 emulated CRUD）；
 - GC/rooting 中仍有 intentional leak / `mem::forget` / foreign-thread fail-safe 路径，需量化（2026-09-10 S2 已完成全仓行号级 inventory 与首个缺陷类根治——vm context 未 root 注册表，见 §8 S2 节；bounded leak 分类清单已落账，soak 触发率量化仍缺）；
-- mozjs upgrade 已有 patch replay + capability ledger（`.claude/sm-capability-ledger.json`，2026-09-04 首轮 #30 census）；drift 自动化（升级波 diff 报告）待下次 mozjs 前移时首跑。
+- mozjs upgrade 已有 patch replay + capability ledger（`.claude/sm-capability-ledger.json`，2026-09-04 首轮 #30 census）；drift 自动化 v1 已落地（`scripts/sm-audit/` 三脚本 + seed inventory/adoption + `.claude/sm-audit/BASELINE` 基线指针，2026-09-10，见 §8 #30 节）；升级波首跑待下次 mozjs 前移。
 
 ### Upstream
 
@@ -83,7 +83,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN（核查轮+裁决提案已落 2026-09-10 见 §8：locale 缺口=1 行 include 非C++墙、tz/时间精度引擎原生实测可达、JIT/SAB 维持现状；三维页面可见身份待用户立法） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
-| #30 | mozjs capability inventory/drift automation | P0 | — | OPEN |
+| #30 | mozjs capability inventory/drift automation | P0 | — | OPEN（自动化 v1 已落地 2026-09-10：三脚本+seed inventory+adoption report+drift 基线，见 §8；升级波首跑+DoD 收口待下次 mozjs 前移） |
 
 与 Bao 1.0 Domain 的消费关系：
 
@@ -1051,6 +1051,53 @@ C++ 墙），裁决提案未降级为纯 C++ 面评估；三维页面可见身�
 
 **下一唯一动作**：不变——#29 soak 量化前置 #19 启动；RED-1 待用户裁决（本 slice 为
 并行核查，不触碰主线）。
+
+### 2026-09-10 / #30——UpstreamAudit 自动化 v1：capability inventory + drift detector + Bao 使用映射（纯工具轮，零产品代码改动）
+
+**基线**：bao master `a3220511`（生成时共享树 dirty=true，已如实入 inventory 元数据；
+本 slice 仅新增 scripts/ 与 .claude/sm-audit/ 产物，不改 API 面）；mozjs 不变
+（bao-mozjs-sys 140.14.0-0，jsapi.rs md5 `ffaa6002`，多 build out 副本 md5 一致）。
+
+**交付（scripts/sm-audit/ 三脚本 + 共享模块 + README，纯 Python3 标准库）**：
+
+1. `extract_inventory.py`——源 A=bindgen jsapi.rs（bao-mozjs-sys build out 自动发现，
+   env `BAO_SM_AUDIT_JSAPI` 可覆写）全部 extern "C" pub fn（symbol/rust_path/mangled/
+   归一化签名 hash/surface/category_guess/stability_guess）；源 B=mozjs 安全层绑定分类
+   （safe-wrapper(wrappers2) 667 > wrappers1-deprecated > mozjs-layer-reference > raw-only）。
+   fail-closed 自检：阳性对照（JS_NewContext/EnterRealm@root::JS/
+   ReportOutOfMemory@root::js）+ extern 块计数（fn+static==blocks）；失败退出码 2，
+   stop 条件降级路径已文档化（rust.rs 单源）。
+2. `usage_map.py`——src/**/*.rs 全树（1491 文件，含 bun_* vendored 与 tests，S0-A 同口径）
+   单遍 tokenize 词边界计数 → **native-used 154 / unused-pending-verdict 923** 两分类
+   初判 + confidence 三级（high/medium/low，通用名误报防呆：low 仅 1）。
+3. `drift.py`——两版 inventory 三分类（added/removed/renamed，改名=同命名空间名相似度
+   ≥0.75 配对）+ signature_changed + stability_flip（experimental↔public，实验头词表
+   交叉）+ 域级 rollup（#30 禁令：不裸 diff bindgen）+ 旧版 adoption 自动发现标注
+   removed_bao_used（升级波阻断候选）。
+4. seed 产物（.claude/sm-audit/）：`inventory-2026-09-10-a3220511.json`（1077 symbols：
+   public 860/friend 154/glue 46/internal 17；experimental 56）+
+   `adoption-*.json`/`adoption-report-*.md` + `drift-selfcheck-baseline.json`（零漂移
+   证明）+ `BASELINE` 基线指针（下次 mozjs 前移的 diff 锚）。
+
+**验证**（波末一次测=工具自证，无 Rust 编译面）：
+
+- extractor：667/667 wrapper 全匹配（0 unmatched）；1189 extern 块=1077 fn+112 static 记平。
+- usage_map：6 symbol 抽样计数与独立 `command grep -rw` 全等（24/8/101/0/863/21）；
+  语义对照账本既有事实——`JS_RequestInterruptCallback` 唯一文件=execution_control.rs
+  （#24 闭环）、`CompileGlobalScriptToStencil`=0（#26 纯接入）、`JS_NewGlobalObject`=24。
+- drift：同基线自比=全零；合成变异 4/4 检出（added/removed/renamed/signature_changed
+  各 1）+ 一致性守卫触发（同 commit+md5 却有 diff → 退出码 2）。
+
+**与人工账本分工**（#30 契约）：inventory/adoption 是 symbol 级 FACTS；capability 裁决
+（used-native/wrapped/emulated/missing/deliberately-unused）仍由
+`.claude/sm-capability-ledger.json` 人工层持有；unused-pending-verdict ≠ 弃用。
+
+**daily-ops 集成点**（建议已录 `scripts/sm-audit/README.md`，不改 daily-ops 本体）：
+mozjs 升级波编译绿后 patch replay 前跑 extract→drift→消费三步（阻断候选/
+patch supersession/adoption policy 分类/§8 追加/BASELINE 前移）。
+
+**下一唯一动作**：升级波首跑待下次 mozjs 前移（#22 合同消费点）；#30 余项（patch
+supersession 自动对照、cap ledger last_audited 联动刷新）归下次 census 轮。
 
 ---
 

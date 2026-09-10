@@ -1,0 +1,7 @@
+# SM capability inventory drift 基线指针(#30 UpstreamAudit)
+# 下次 mozjs 前移后:extract_inventory.py 生成新 inventory,再
+# drift.py <本基线> <新inventory> → 报告落盘 + 账本 §8 追加。
+inventory-2026-09-10-a3220511.json
+bao_commit=a3220511 (tree dirty at generation; scripts-only 后续提交不改 API 面)
+mozjs=bao-mozjs 0.22.0 / bao-mozjs-sys 140.14.0-0
+jsapi_md5=ffaa600241bbe90f7c49b9ce919bb3e3
