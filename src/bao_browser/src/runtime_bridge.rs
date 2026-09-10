@@ -1632,6 +1632,43 @@ unsafe fn install_all_native(
         // ScriptThread-scoped profile lookups are unreachable there).
         bao_stealth::set_global_http2_fingerprint(Some(&profile.http2));
 
+        // SM-EVOLUTION #28 (verdict consumed 2026-09-10, REQ-STL identity
+        // consistency): engine-native locale + two-layer time precision.
+        //
+        // locale — JS_SetDefaultLocale on THIS script thread's runtime. We
+        // run on the servo script thread (the embedder callback hands over
+        // the thread's own context), so the sink covers every realm on it
+        // (page + Node + later Workers/SW) with zero JS hooks to detect.
+        // Before this, `Intl.*` defaulted to the HOST environment locale
+        // (LANG/LC_* → ICU) — a zh-CN host leaked zh-CN into every page.
+        // Runtime-scoped sink: pages sharing one script thread share the
+        // last written locale (per-realm locale is C++-only,
+        // SM-EVOLUTION #28 census 28-1). navigator.language stays served by
+        // the NavigatorProfile JS-hook layer (both default en-US).
+        //
+        // time precision — the Date layer (engine-native clamp,
+        // process-wide) and the DOM layer (servo's ToDOMHighResTimeStamp
+        // grid) are fed from the SAME profile field as the JS-hook timing
+        // layer (build_timing_js), so all three time layers advertise ONE
+        // grid — differing Date/performance precision is itself a
+        // fingerprint signal (upstream servo's 10µs native grid was a
+        // servo-specific tell).
+        if !unsafe { bao_engine::realm_policy::set_default_locale(raw_cx, &profile.locale.locale) }
+        {
+            // Engine rejected the locale tag: report loudly instead of
+            // silently continuing on the host-derived locale (an identity
+            // leak would otherwise be invisible).
+            eprintln!(
+                "[stealth] JS_SetDefaultLocale rejected locale tag {:?} — \
+                 Intl identity falls back to host locale",
+                profile.locale.locale
+            );
+        }
+        bao_engine::realm_policy::set_time_resolution_usec(
+            u32::try_from(profile.timing.precision_us).unwrap_or(u32::MAX),
+        );
+        servo::set_dom_time_precision_us(profile.timing.precision_us);
+
         // Install stealth properties using raw JSAPI (no Handle wrapper
         // needed). PROFILE-GATED (e36 BCE): a stealth-free page
         // (`stealth_profile: None`) must carry NO stealth JS/native chain at
@@ -1644,6 +1681,16 @@ unsafe fn install_all_native(
         bun_runtime::fetch_api::set_fetch_stealth_profile(None);
         servo::set_stealth_tls_config(None);
         bao_stealth::set_global_http2_fingerprint(None);
+        // SM-EVOLUTION #28: restore upstream host-derived locale/time state
+        // for stealth-free pages — a stealthed page earlier in the process
+        // must not leak its policy here (locale reset runs on this script
+        // thread's own context; the timezone creation flags are reset at
+        // page creation in page_pool::create_page).
+        unsafe {
+            bao_engine::realm_policy::reset_default_locale(raw_cx);
+        }
+        bao_engine::realm_policy::set_time_resolution_usec(0);
+        servo::set_dom_time_precision_us(0);
         // e36 completion ③: no install_stealth_props here — stealth-free
         // pages keep servo-native surfaces (zero Bao wrappers).
     }

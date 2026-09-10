@@ -1350,7 +1350,22 @@ unsafe extern "C" fn performance_now(_cx: *mut JSContext, _argc: u32, vp: *mut J
     let now = ::std::time::SystemTime::now()
         .duration_since(::std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let ms = now.as_secs_f64() * 1000.0;
+    let mut ms = now.as_secs_f64() * 1000.0;
+    // SM-EVOLUTION #28 (verdict consumed 2026-09-10, REQ-STL identity
+    // consistency): quantize to the profile's timing grid — the SAME grid
+    // the engine-native Date clamp (`JS::SetTimeResolutionUsec`) and
+    // servo's DOM `ToDOMHighResTimeStamp` conversion use, read from the
+    // engine_props thread-local profile. The page's `performance` object is
+    // THIS native (servo's DOM Performance is replaced at install), so this
+    // is the precision surface page JS actually observes; raw sub-grid
+    // values — or a grid disagreeing with the Date layer — are each
+    // fingerprint signals. Floored (not rounded) to match the engine
+    // clamp's coarsening semantics; 0 = disabled (raw, upstream-equivalent).
+    let precision_us = bao_stealth::engine_props::timing_precision_us();
+    if precision_us > 0 {
+        let grid_ms = precision_us as f64 / 1000.0;
+        ms = (ms / grid_ms).floor() * grid_ms;
+    }
     args.rval().set(mozjs::jsval::DoubleValue(ms));
     true
 }

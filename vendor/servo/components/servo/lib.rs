@@ -305,6 +305,40 @@ pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {
     servo_canvas::canvas_noise::set_global_canvas_noise(seed, noise_amplitude);
 }
 
+/// Set anti-fingerprinting engine-native realm timezone policy
+/// (SM-EVOLUTION #28, verdict consumed 2026-09-10 — REQ-STL identity
+/// consistency).
+///
+/// Arms SpiderMonkey's creation-time `forceUTC_` flag on every subsequently
+/// created servo realm (Window / DedicatedWorker / SharedWorker /
+/// ServiceWorker — `create_global_object` is the single choke point): all
+/// Date local-time computations run in UTC+0 (SM maps the flag to the real
+/// IANA zone Atlantic/Reykjavik, Firefox RFP shape) instead of leaking the
+/// host zone through `getTimezoneOffset` / `toString` / Intl offsets.
+///
+/// The flag is creation-time only (no post-creation setter): arm it BEFORE
+/// the target page's pipeline realms exist (bao_browser arms it at page
+/// creation). Last write wins process-wide; `false` restores upstream
+/// host-derived behavior for stealth-free pages.
+pub fn set_force_utc_realms(force: bool) {
+    script::set_force_utc_realms(force);
+}
+
+/// Set anti-fingerprinting DOM high-resolution timestamp grid, in
+/// microseconds (SM-EVOLUTION #28; 0 = upstream 10µs grid, byte-for-byte).
+///
+/// Every DOM high-resolution timestamp (`performance.now`, `timeOrigin`,
+/// performance/resource/LCP entries) funnels through the single
+/// `ToDOMHighResTimeStamp` conversion this configures — quantizing it to
+/// the SAME grid the engine-native Date clamp (`JS::SetTimeResolutionUsec`,
+/// armed by the embedder from the same `StealthProfile::timing` field)
+/// uses, so the two time layers can never advertise different precisions
+/// (the inconsistency itself is a fingerprint signal; upstream's
+/// servo-specific 10µs grid is one too).
+pub fn set_dom_time_precision_us(precision_us: u64) {
+    script::set_dom_time_precision_us(precision_us);
+}
+
 pub use crate::clipboard_delegate::{ClipboardDelegate, StringRequest};
 #[cfg(feature = "gamepad")]
 pub use crate::gamepad_delegate::{

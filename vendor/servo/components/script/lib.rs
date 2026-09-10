@@ -37,6 +37,17 @@ pub use event_loop::script_thread::{
     register_worker_scope_callback, register_worker_scope_injector, unregister_worker_injectors,
     bao_run_in_script_settings, BaoEventLoopPump, EmbedderWorkerInjector,
 };
+// BAO PATCH (SM-EVOLUTION #28, verdict consumed 2026-09-10 — REQ-STL
+// identity consistency): engine-native identity sinks re-exported so the
+// `servo` crate / bao embedders reach them — realm forceUTC arming
+// (script_bindings' `create_global_object` is the single choke point for
+// every DOM realm) and the DOM high-res timestamp grid (the single
+// `ToDOMHighResTimeStamp` conversion every performance timestamp funnels
+// through).
+pub use script_bindings::interface::{force_utc_realms, set_force_utc_realms};
+pub use crate::dom::performance::performance::{
+    dom_time_precision_us, set_dom_time_precision_us,
+};
 pub(crate) mod conversions;
 mod css;
 mod fetch;

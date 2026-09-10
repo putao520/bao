@@ -753,6 +753,18 @@ pub fn canvas_amplitude() -> f64 {
     TL_CANVAS_AMPLITUDE.with(|v| *v.borrow())
 }
 
+/// Current performance timing precision grid, in microseconds
+/// (SM-EVOLUTION #28, verdict consumed 2026-09-10): the single
+/// `StealthProfile::timing` source that ALL THREE time layers quantize to —
+/// the engine-native Date clamp (`JS::SetTimeResolutionUsec`, process-wide),
+/// servo's DOM `ToDOMHighResTimeStamp` grid (process global), and bun's
+/// native `performance.now` (this thread-local, read by bao_runtime).
+/// Differing precision between Date and performance surfaces is itself a
+/// fingerprint signal; 0 disables quantization.
+pub fn timing_precision_us() -> u64 {
+    TL_TIMING_PRECISION_US.with(|v| *v.borrow())
+}
+
 /// Returns true iff a profile has been explicitly set on this thread
 /// (heuristic: user-agent is non-empty after a real `set_profile` call).
 pub fn is_profile_set() -> bool {

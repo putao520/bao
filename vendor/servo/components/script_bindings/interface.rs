@@ -132,6 +132,36 @@ impl InterfaceConstructorBehavior {
 /// A trace hook.
 pub(crate) type TraceHook = unsafe extern "C" fn(trc: *mut JSTracer, obj: *mut JSObject);
 
+// BAO PATCH (SM-EVOLUTION #28, user ruling 2026-09-10 — REQ-STL identity
+// consistency): process-global switch arming `forceUTC_` on every realm
+// `create_global_object` creates (Window / DedicatedWorker / SharedWorker /
+// ServiceWorker globals all funnel through this choke point). Before this,
+// every Date local-time computation ran in the HOST zone — a +0800 host
+// leaked straight through getTimezoneOffset/toString/Intl offsets.
+//
+// Engine semantics: `forceUTC_` is a creation-time-only per-realm flag (no
+// post-creation setter) with Firefox-RFP shape — SM maps it to the real IANA
+// zone Atlantic/Reykjavik (UTC+0, real DST history). The embedder (bao_browser)
+// arms this from `StealthProfile::timezone` BEFORE the page's pipeline realms
+// are created; last write wins process-wide (engine-level sink granularity,
+// same class as the canvas noise seed global). With the switch off (default,
+// and what stealth-free pages reset it to), upstream host-derived behavior is
+// preserved byte-for-byte.
+static FORCE_UTC_REALMS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Arm/clear the engine-native forceUTC timezone policy for all subsequently
+/// created servo realms (BAO embedder API; re-exported via `servo` crate).
+pub fn set_force_utc_realms(force: bool) {
+    FORCE_UTC_REALMS.store(force, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether subsequently created servo realms run Date local-time methods in
+/// UTC+0.
+pub fn force_utc_realms() -> bool {
+    FORCE_UTC_REALMS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Create a global object with the given class.
 pub(crate) unsafe fn create_global_object<D: DomTypes>(
     cx: &mut js::context::JSContext,
@@ -147,6 +177,8 @@ pub(crate) unsafe fn create_global_object<D: DomTypes>(
     let mut options = RealmOptions::default();
     options.creationOptions_.traceGlobal_ = Some(trace);
     options.creationOptions_.sharedMemoryAndAtomics_ = false;
+    // BAO PATCH (SM-EVOLUTION #28): engine-native timezone identity.
+    options.creationOptions_.forceUTC_ = force_utc_realms();
     if use_system_compartment {
         options.creationOptions_.compSpec_ = CompartmentSpecifier::NewCompartmentAndZone;
         options.creationOptions_.__bindgen_anon_1.comp_ = std::ptr::null_mut();

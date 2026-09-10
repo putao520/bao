@@ -81,7 +81,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；**裁决 6 已消费 2026-09-10**：Memory 计量换原生 CollectRuntimeStats（jsglue 构造 + bao_engine 内部面 + soak 采样点，见 §8 #19 节）；GC callback 归 #19 待接） |
-| #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN（核查轮+裁决提案已落 2026-09-10 见 §8：locale 缺口=1 行 include 非C++墙、tz/时间精度引擎原生实测可达、JIT/SAB 维持现状；三维页面可见身份待用户立法） |
+| #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | CLOSED（2026-09-11 裁决消费闭：三维身份泄漏 locale/tz/时间精度引擎原生根治+live 证据（engine 376/stealth 1689/browser stealth 族 160 零回归 + live 4/4），见 §8 消费节；JIT/SAB 维持现状=终态裁定；#16 Stealth 身份一致性三维闭） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN（自动化 v1 已落地 2026-09-10：三脚本+seed inventory+adoption report+drift 基线，见 §8；升级波首跑+DoD 收口待下次 mozjs 前移） |
 
@@ -1054,6 +1054,67 @@ C++ 墙），裁决提案未降级为纯 C++ 面评估；三维页面可见身�
 
 **下一唯一动作**：不变——#29 soak 量化前置 #19 启动；RED-1 待用户裁决（本 slice 为
 并行核查，不触碰主线）。
+
+### 2026-09-11 / #28——裁决消费：宿主 locale/timezone/时间精度身份泄漏引擎原生根治（三维页面可见身份，用户裁决 2026-09-10 直做）
+
+**基线**：master `ec4a0e5a` 消费起跳（并行 slice 共存：e92 timers / e93 net 域文件零
+触碰）；jsapi.rs 再生成=全 workspace 下游重编，28-1 预告的「接线波首动作」兑现（无
+make 增量 bug 触发——SM 源零改动，仅 bindgen shim + glue 重编）。
+
+#### 消费实现（三维 → 引擎原生 sink）
+
+| 维度 | 裁决 | 落地 |
+|---|---|---|
+| locale | 引擎原生（runtime 级 JS_SetDefaultLocale；per-realm setLocaleCopyZ C++-only 不采纳） | ① vendor/mozjs shim 补 `js/LocaleSensitive.h` include → jsapi.rs 再生成（Set/Get/Reset :19014/:19022/:19027）② `bao_engine::realm_policy::set_default_locale/reset_default_locale`（SM 每 JSContext 私有 runtime → 实际粒度=per-ScriptThread，同线程多页 last-write-wins——engine 级粒度如实入档）③ 接线=runtime_bridge install_all_native（script thread 自有 cx 上调用，覆盖 page+Node+后续 Worker/SW 全 realm，零 JS hook 可检测） |
+| timezone | 引擎原生 forceUTC（RFP Reykjavik 语义）；任意 tz 引擎层显式不用（Chrome 级 tz 仿真=未来 mozjs vendor patch 立法案，未采） | 双落点读同一组进程级创建期旗标：servo `create_global_object`（script_bindings/interface.rs——Window/DedicatedWorker/SharedWorker/SW 全 DOM realm 单咽喉）+ `bun_sm::node_realm_options`（Node 语义 realm，NODE_FORCE_UTC）；bao_browser 于 page_pool::create_page 在 pipeline realm 创建**前**武装（forceUTC 无 post-creation setter，晚于 wait_for_pipeline_ready 即静默漏页） |
+| 时间精度 | 引擎原生 + 两层齐动（两层不一致本身是指纹信号） | Date 层=`JS::SetTimeResolutionUsec`（process 级 static；clampAndJitterTime_ C++ 默认 true 两构造器均保持）。performance 层**实测双钳制点**（live 首跑发现：页面 `performance` 对象是 bao_runtime `install_performance` 装的 epoch 基原生对象——servo DOM Performance 在 install 时被整体替换，页面 JS 观测面不是 servo Performance）：① servo `ToDOMHighResTimeStamp for Duration`（performance.rs——servo 自有换算面/timeOrigin/entries 单咽喉；上游 10µs 网格=servo 特有 tell，unset 时字节等价保留）② bun `performance_now` 原生按 engine_props `timing_precision_us()` 网格化（页面实际观测面，floor 语义同引擎钳制）。全部同源 `StealthProfile::timing.precision_us`，JS hook 层（build_timing_js）亦同源=一网格 |
+
+**StealthProfile 扩字段**（纯新增，默认=Chrome 桌面常见形态、宿主派生零参与）：
+`locale: LocaleConfig`（en-US）+ `timezone: TimezoneConfig`（force_utc=true）；
+时间精度复用既有 `timing.precision_us`（100µs，防第二真源）。三字段 per-page 可覆盖
+（clone+mutate，单测锁）。stealth-free 页（profile=None）显式复位三 sink
+（reset_default_locale/精度 0/forceUTC false）——早先 stealth 页不得把策略泄漏给后建
+stealth-free 页（与既有 TLS/canvas 全局复位语义同构）。
+
+**精确缺口记录**（stop 条款预置面）：performance DOM 层钳制点=servo 有此面
+（ToDOMHighResTimeStamp），已接——零缺口发生。
+
+**验证**（波末一次测）：
+
+- `cargo nt -p bao_engine`：**376/376 passed**（基线 374+并行 slice 增量，零红；
+  realm_policy_tests 扩 2 维：forceUTC×100ms 任意精度组合往返 + locale sink 双 tag
+  de-DE→ja-JP 主机无关证明）。
+- `cargo nt -p bao_stealth`：**1689/1689 passed**。
+- `cargo nt -p bao-browser -E 'test(stealth)'`（stealth 全族非网络面）：**160/160
+  passed**（live 门控项按既有纪律自跳过；live 门控面由上述
+  stealth_identity_locale_tz_tests 单独全绿覆盖）。
+- live RED→GREEN（`BAO_TEST_NETWORK=1 xvfb-run`，bao-browser
+  `stealth_identity_locale_tz_tests`，宿主 Asia/Shanghai+0800 / LANG=en_US.UTF-8）：
+  ① profile 页（chrome_default）UTC offset 0（1 月+7 月瞬时；宿主 +0800 下修复前
+  live 泄漏面=-480）+ Intl 默认 locale=en-US + navigator.language=en-US（hook 层与
+  引擎层一致）+ 100µs 网格；② per-page 覆盖（en-GB/1s）：Intl 跟随 + Date.now
+  引擎钳制 %1000==0 + performance.now 同 1s 网格（两层一致断言）；③ stealth-free
+  页宿主态恢复（locale/offset 宿主值打印=泄漏态存证）。**终态 4/4 PASS**。
+  精度维的 RED 证据即来自首跑：performance.now 返回裸值 `1789057624036.04`
+  （epoch 基 40µs 尾，100µs profile 下不在网格）——由此发现页面 `performance`
+  观测面是 bao_runtime 原生对象（servo DOM Performance 被 install_performance
+  整体替换），钳制点补齐到 bun `performance_now` 后 GREEN（该发现已回写上表
+  时间精度行）。
+- locale 维 live 证据说明（如实）：本机宿主 LANG=en_US.UTF-8 → Intl 宿主泄漏面在本机
+  不可与 en-US 目标态 live 区分；locale sink 机制证据=引擎级双 tag 证明（宿主无关），
+  tz 泄漏面（+0800）为本机 live 主证据。
+
+**mozjs/servo 清单旁注**（清单本体归主会话）：CLAUDE.md mozjs fork patch 清单旁注=
+bindgen shim include 行（jsapi.cpp 内带 BAO PATCH 注释块）；servo 定制文件清单新增
+4 文件（script_bindings/interface.rs、script/lib.rs、script/dom/performance/
+performance.rs、servo/lib.rs——各自带 SM-EVOLUTION #28 BAO PATCH 注释）。
+
+**回滚点**：2 commit revert（① 引擎机制层 9c92fd04 ② 接线+profile+vendor servo）；
+无 API 移除、无数据迁移；stealth-free 路径字节等价（精度 0=上游 10µs 网格、locale
+reset=OS 派生、forceUTC false=上游）。
+
+**下一唯一动作**：#28 CLOSED（五维全裁定：locale/tz/精度已消费，JIT/SAB 维持现状=
+终态裁定）；#16 Stealth 身份一致性缺陷三维闭。
 
 ### 2026-09-10 / #30——UpstreamAudit 自动化 v1：capability inventory + drift detector + Bao 使用映射（纯工具轮，零产品代码改动）
 

@@ -68,6 +68,13 @@ impl Default for BatteryConfig {
 }
 
 /// Performance timing precision configuration.
+///
+/// SM-EVOLUTION #28 (verdict consumed 2026-09-10): this field is the single
+/// source for BOTH time-precision layers — the engine-native Date clamp
+/// (`JS::SetTimeResolutionUsec`, all `Date.*` read paths) and servo's DOM
+/// high-res-timestamp grid (`performance.now` & friends) — so the two layers
+/// can never advertise different grids (the inconsistency itself is a
+/// fingerprint signal).
 #[derive(Debug, Clone)]
 pub struct TimingConfig {
     /// Precision in microseconds. Default 100 = 0.1ms rounding.
@@ -77,6 +84,63 @@ pub struct TimingConfig {
 impl Default for TimingConfig {
     fn default() -> Self {
         TimingConfig { precision_us: 100 }
+    }
+}
+
+/// Engine-native locale identity (SM-EVOLUTION #28, verdict consumed
+/// 2026-09-10).
+///
+/// Before this dimension the `Intl.*` default locale (and locale-sensitive
+/// Date string methods) derived from the HOST environment (LANG/LC_* → ICU
+/// default) — a zh-CN host leaked zh-CN into every page. The profile value
+/// is applied engine-natively via `JS_SetDefaultLocale` (runtime-scoped
+/// sink; see `bao_engine::realm_policy`), covering servo page/Worker/SW
+/// realms AND the Node-semantics realms on the same context, with no JS
+/// hooks to detect. `navigator.language`/`languages` remain served by
+/// [`NavigatorProfile`] (JS-hook layer) — both default to `en-US` and must
+/// be kept consistent by profile authors.
+#[derive(Debug, Clone)]
+pub struct LocaleConfig {
+    /// BCP-47 default locale tag (e.g. "en-US"). Default = Chrome desktop
+    /// common form, host-INDEPENDENT.
+    pub locale: String,
+}
+
+impl Default for LocaleConfig {
+    fn default() -> Self {
+        LocaleConfig {
+            locale: "en-US".into(),
+        }
+    }
+}
+
+/// Engine-native timezone identity (SM-EVOLUTION #28, verdict consumed
+/// 2026-09-10).
+///
+/// Before this dimension every Date local-time computation ran in the HOST
+/// zone (a +0800 host leaked through `getTimezoneOffset` / `toString` /
+/// `Intl.DateTimeFormat` offsets). The engine exposes exactly one
+/// creation-time per-realm switch — `forceUTC_` — whose semantics are
+/// Firefox-RFP-shaped: SM maps it to the real IANA zone Atlantic/Reykjavik
+/// (UTC+0, real DST history), not a bare +0000. Arbitrary per-page IANA
+/// timezone emulation is NOT engine-exposed (Chrome's
+/// `Emulation.setTimezoneOverride` equivalent would require a mozjs vendor
+/// patch — deliberately not taken, per the 2026-09-10 ruling).
+///
+/// The flag must be armed BEFORE the page's realms are created (creation-
+/// time only, no post-creation setter); bao_browser arms it at page
+/// creation. Engine-level granularity: the arming globals are
+/// process-wide, last write wins (same class as the canvas noise seed).
+#[derive(Debug, Clone)]
+pub struct TimezoneConfig {
+    /// Force all Date local-time computations to UTC+0 (default true —
+    /// host-independent identity; `false` keeps the host zone).
+    pub force_utc: bool,
+}
+
+impl Default for TimezoneConfig {
+    fn default() -> Self {
+        TimezoneConfig { force_utc: true }
     }
 }
 
@@ -320,6 +384,12 @@ pub struct StealthProfile {
     pub webgl_context: WebGLContextConfig,
     pub connection: ConnectionConfig,
     pub iframe: IframeConfig,
+    // Engine-native identity dimensions (SM-EVOLUTION #28, verdict consumed
+    // 2026-09-10): host-derived locale/timezone leak eradication. Applied at
+    // the ENGINE layer (JS_SetDefaultLocale / forceUTC realm creation), not
+    // JS hooks — undetectable and realm-complete (page/Worker/SW + Node).
+    pub locale: LocaleConfig,
+    pub timezone: TimezoneConfig,
 }
 
 impl StealthProfile {
@@ -349,6 +419,8 @@ impl StealthProfile {
             webgl_context: WebGLContextConfig::default(),
             connection: ConnectionConfig::default(),
             iframe: IframeConfig::default(),
+            locale: LocaleConfig::default(),
+            timezone: TimezoneConfig::default(),
         }
     }
 
@@ -378,6 +450,8 @@ impl StealthProfile {
             webgl_context: WebGLContextConfig::default(),
             connection: ConnectionConfig::default(),
             iframe: IframeConfig::default(),
+            locale: LocaleConfig::default(),
+            timezone: TimezoneConfig::default(),
         }
     }
 }
@@ -586,5 +660,66 @@ mod tests {
     fn default_iframe_config_enabled() {
         let profile = StealthProfile::firefox_default();
         assert!(profile.iframe.enabled);
+    }
+
+    // ── SM-EVOLUTION #28: engine-native identity dimensions ───────────
+
+    #[test]
+    fn default_identity_dimensions_are_chrome_form() {
+        // Chrome desktop common form, host-INDEPENDENT: en-US / UTC / 100µs.
+        for profile in [StealthProfile::chrome_default(), StealthProfile::firefox_default()] {
+            assert_eq!(
+                profile.locale.locale, "en-US",
+                "default locale must be en-US (Chrome form), got {}",
+                profile.locale.locale
+            );
+            assert!(
+                profile.timezone.force_utc,
+                "default timezone must force UTC (Chrome form)"
+            );
+            assert_eq!(
+                profile.timing.precision_us, 100,
+                "default time precision must be 100µs (Chrome form)"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_dimensions_default_locale_is_not_host_derived() {
+        // The locale string is a fixed literal, not read from env/locale
+        // APIs — this pins the non-host-derived property structurally (the
+        // value can only come from the Default impl above).
+        let a = LocaleConfig::default();
+        let b = LocaleConfig::default();
+        assert_eq!(a.locale, b.locale);
+        assert!(a.locale.contains('-'), "BCP-47 tag expected, got {}", a.locale);
+    }
+
+    #[test]
+    fn identity_dimensions_are_per_page_overridable() {
+        // Per-page override = clone the constructor profile and mutate the
+        // three dimensions; the rest of the identity is untouched.
+        let mut page_b = StealthProfile::chrome_default();
+        page_b.locale.locale = "en-GB".into();
+        page_b.timezone.force_utc = false;
+        page_b.timing.precision_us = 1_000_000;
+
+        let base = StealthProfile::chrome_default();
+        assert_eq!(page_b.locale.locale, "en-GB");
+        assert!(!page_b.timezone.force_utc);
+        assert_eq!(page_b.timing.precision_us, 1_000_000);
+        // everything else identical
+        assert_eq!(page_b.navigator.user_agent, base.navigator.user_agent);
+        assert_eq!(page_b.canvas.seed(), base.canvas.seed());
+        assert_eq!(page_b.tls.ja3_hash, base.tls.ja3_hash);
+    }
+
+    #[test]
+    fn navigator_language_and_engine_locale_agree_by_default() {
+        // The two locale surfaces (JS-hook navigator.language vs
+        // engine-native Intl default) share one identity by default;
+        // profile authors overriding one must keep them consistent.
+        let profile = StealthProfile::chrome_default();
+        assert_eq!(profile.navigator.language, profile.locale.locale);
     }
 }

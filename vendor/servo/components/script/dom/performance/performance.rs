@@ -813,6 +813,35 @@ pub(crate) trait ToDOMHighResTimeStamp {
     fn to_dom_high_res_time_stamp(&self) -> DOMHighResTimeStamp;
 }
 
+// BAO PATCH (SM-EVOLUTION #28, user ruling 2026-09-10 — REQ-STL identity
+// consistency): profile-driven grid for EVERY DOM high-resolution timestamp
+// (`performance.now`, `timeOrigin`, performance entries' startTime/duration,
+// resource timing, LCP render times — all funnel through this single
+// conversion). Upstream quantizes to a servo-specific 10µs grid; that grid
+// is itself a fingerprint tell, and it disagreeing with the Date-layer grid
+// (engine-native `JS::SetTimeResolutionUsec`, fed from the SAME
+// `StealthProfile::timing` field by bao_browser) would be another one.
+//
+// 0 (default) keeps the upstream 10µs grid byte-for-byte — stealth-free
+// pages and upstream WPT behavior are unaffected. Non-zero floors to the
+// profile grid (floor matches the engine clamp's coarsening semantics).
+// Process-global, last write wins (engine-level sink granularity, same
+// class as the canvas noise seed global).
+static DOM_TIME_PRECISION_US: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Set the DOM high-resolution timestamp grid in microseconds
+/// (0 = upstream 10µs grid). BAO embedder API, re-exported via the `servo`
+/// crate; armed from `StealthProfile::timing.precision_us`.
+pub fn set_dom_time_precision_us(precision_us: u64) {
+    DOM_TIME_PRECISION_US.store(precision_us, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The currently armed DOM timestamp grid in microseconds (0 = upstream).
+pub fn dom_time_precision_us() -> u64 {
+    DOM_TIME_PRECISION_US.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl ToDOMHighResTimeStamp for Duration {
     fn to_dom_high_res_time_stamp(&self) -> DOMHighResTimeStamp {
         // https://www.w3.org/TR/hr-time-2/#clock-resolution
@@ -820,7 +849,15 @@ impl ToDOMHighResTimeStamp for Duration {
         // exactly representable f64 so WPT tests might occasionally corner-case on
         // rounding.  web-platform-tests/wpt#21526 wants us to use an integer number of
         // microseconds; the next divisor of milliseconds up from 5 microseconds is 10.
-        let microseconds_rounded = (self.whole_microseconds() as f64 / 10.).floor() * 10.;
+        let precision_us = dom_time_precision_us();
+        let microseconds_rounded = if precision_us == 0 {
+            (self.whole_microseconds() as f64 / 10.).floor() * 10.
+        } else {
+            // BAO PATCH (SM-EVOLUTION #28): profile-driven grid, floored to
+            // match the engine-native Date clamp's coarsening semantics.
+            (self.whole_microseconds() as f64 / precision_us as f64).floor()
+                * precision_us as f64
+        };
         Finite::wrap(microseconds_rounded / 1000.)
     }
 }

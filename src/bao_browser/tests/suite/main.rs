@@ -83,6 +83,7 @@ mod serviceworker_fetchevent_tests;
 mod serviceworker_mediation_tests;
 mod serviceworker_controller_tests;
 mod sw_stealth_profile_tests;
+mod stealth_identity_locale_tz_tests;
 mod fetch_axis_probe_tests;
 mod worker_realm_api_tests;
 mod shadow_axis_probe_tests;

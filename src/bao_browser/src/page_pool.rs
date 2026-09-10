@@ -67,6 +67,27 @@ impl PagePool {
             )));
         }
 
+        // SM-EVOLUTION #28 (verdict consumed 2026-09-10, REQ-STL identity
+        // consistency): arm the CREATION-TIME engine timezone policy before
+        // ANY realm of this page exists — `forceUTC_` is a per-realm
+        // creation option with NO post-creation setter, and this page's
+        // Window realm is created during the pipeline setup inside
+        // `PageHandle::new` + `wait_for_pipeline_ready` below, so arming any
+        // later would silently miss it. Both sinks (servo DOM realms via
+        // `set_force_utc_realms` + bao Node-semantics realms via
+        // `set_node_force_utc`) are fed from the same
+        // `StealthProfile::timezone` field. Stealth-free pages reset the
+        // flags explicitly — a stealthed page earlier in the process must
+        // not leak its policy onto a stealth-free page's realms
+        // (process-global creation-time flags, last write wins; engine-level
+        // sink granularity, same class as the canvas noise seed global).
+        let force_utc = config
+            .stealth_profile
+            .as_ref()
+            .map_or(false, |p| p.timezone.force_utc);
+        servo::set_force_utc_realms(force_utc);
+        bao_engine::set_node_force_utc(force_utc);
+
         let id = {
             let mut next = self.next_id.borrow_mut();
             let id = *next;
