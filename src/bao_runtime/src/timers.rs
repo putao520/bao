@@ -846,6 +846,22 @@ fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
             obj.fire_js(raw_cx, &now_ts);
         }
 
+        // #25 verdict ① (ledger S1-续, 2026-09-10): Node ≥11 / browser task
+        // semantics — one timer callback = one task, so a microtask
+        // checkpoint runs after EACH fired callback, not once after the
+        // whole due batch. Node 11.0.0 SEMVER-MAJOR #22842 "run nextTicks
+        // after each immediate and timer"; the HTML event loop performs a
+        // microtask checkpoint after every task. Draining here — while
+        // CURRENT_FIRING_TIMER still advertises the firing id — also lets a
+        // continuation's clearInterval() hit the CLEARED_DURING_FIRE guard
+        // (interval re-arm correctly skipped). js::RunJobs routes to
+        // whichever job queue the cx has installed (bao JOB_IDS on node
+        // realms, servo's MicrotaskQueue on page/worker realms — same call
+        // the embedder pump uses).
+        unsafe {
+            mozjs_sys::jsapi::js::RunJobs(raw_cx);
+        }
+
         // BCE-20260619-001: stop advertising the firing id before reading
         // the flag — any later cancel on a different id must not see this id.
         CURRENT_FIRING_TIMER.with(|c| c.set(0));

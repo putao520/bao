@@ -22,8 +22,9 @@
 //      process.exit(0): should_exit() stays false, exit_code() stays 0.
 //   5. #25 scheduler ordering: sync body → microtasks (nextTick via
 //      queueMicrotask / promise continuations, FIFO by enqueue) → event-loop
-//      passes (due bao timers batch-fire, then the job queue drains in the
-//      SAME pass) — locked as the deterministic sequence.
+//      passes (due bao timers fire in deadline order with a microtask
+//      checkpoint after EACH callback — Node ≥11 / browser task semantics,
+//      verdict ① landed in the S1-续 round; see the two-timer case below).
 
 use std::time::{Duration, Instant};
 
@@ -228,19 +229,26 @@ fn module_entry_controlled_normal_and_control_reuse() {
     assert_eq!(eval_str(&mut rt, "String(globalThis.__x)"), "second");
 }
 
-/// 5. #25 scheduler ordering contract (locked 2026-09-10, ledger S1):
+/// 5. #25 scheduler ordering contract (locked 2026-09-10, ledger S1;
+///    timer interleaving updated by verdict ① in the S1-续 round):
 ///
 ///   sync body → microtask checkpoint (RunJobs right after script evaluate:
 ///   nextTick [enqueued via queueMicrotask], promise continuation,
 ///   queueMicrotask — FIFO by enqueue time) → event-loop passes
-///   (drain_and_check: due bao timers batch-fire, THEN the job queue drains
-///   in the SAME pass — a timer callback's promise continuation runs before
-///   the next pass).
+///   (drain_and_check: due bao timers fire in deadline order, with a
+///   microtask checkpoint after EACH fired callback — Node ≥11 / browser
+///   task semantics).
 ///
-/// Known divergences from Node recorded in the ledger (not changed here):
-/// due timers batch-fire before the microtask drain (Node drains between
-/// timer callbacks); nextTick shares the microtask FIFO (Node runs a
-/// separate, strictly-prior nextTick queue).
+///   The two-timer case locks the per-callback checkpoint: t1's promise
+///   continuation must run BEFORE t2 fires, even when both are due in the
+///   same pass (heap order fires t1 first; the checkpoint is inside the
+///   fire loop, so the assertion is timing-robust). Before verdict ① the
+///   whole due batch fired first ("t1","t2","t1-cont" — Node ≤10 legacy).
+///
+/// Remaining recorded divergence (verdict ②, plan in the ledger, not
+/// implemented): nextTick shares the microtask FIFO — Node runs a separate,
+/// strictly-prior next-tick queue (drained fully before the microtask
+/// queue at each checkpoint).
 #[test]
 fn scheduler_ordering_contract_microtasks_before_timers() {
     let mut rt = BaoRuntime::new().expect("BaoRuntime");
@@ -256,6 +264,13 @@ fn scheduler_ordering_contract_microtasks_before_timers() {
             o.push('timer');
             Promise.resolve().then(() => o.push('timer-cont'));
         }, 50);
+        setTimeout(() => {
+            o.push('t1');
+            Promise.resolve().then(() => o.push('t1-cont'));
+        }, 20);
+        setTimeout(() => {
+            o.push('t2');
+        }, 45);
         o.push('sync');
     "#,
         "<ordering.js>",
@@ -264,7 +279,12 @@ fn scheduler_ordering_contract_microtasks_before_timers() {
 
     let order = eval_str(&mut rt, "JSON.stringify(globalThis.__order)");
     assert_eq!(
-        order, "[\"sync\",\"nextTick\",\"microtask\",\"qmt\",\"timer\",\"timer-cont\"]",
+        order,
+        concat!(
+            "[\"sync\",\"nextTick\",\"microtask\",\"qmt\",",
+            "\"t1\",\"t1-cont\",\"t2\",",
+            "\"timer\",\"timer-cont\"]"
+        ),
         "scheduler ordering contract violated"
     );
 }

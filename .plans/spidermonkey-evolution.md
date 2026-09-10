@@ -78,7 +78,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #22 | META / scheduled-agent contract | P0 | — | OPEN |
 | #23 | Realm / Compartment / Zone topology | P0 | — | OPEN（S0 topology census 已完成 2026-09-10，见 §8；余 capability/stale-object 测试与 Zone 实测数据） |
 | #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；servo 侧入口与产品级暴露未接） |
-| #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；Node 分歧 2 项待裁决 + navigation/close lifecycle 待收口） |
+| #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN |
@@ -607,6 +607,125 @@ suite main.rs），无数据/接口迁移。
 **下一唯一动作**：S1 续——navigation/page-close/runtime-shutdown pending-work 永久悬挂
 审计收口（S1 目标第 4 条；输入=本节 inventory），同轮裁决 #25 已记录 Node 分歧（nextTick
 独立队列 / timer 间微任务 drain 是否对齐）。
+
+### 2026-09-10 / S1-续——navigation/page-close/shutdown pending-work 悬挂核查 + #25 Node 分歧两项裁决（审计+裁决+分歧①落地）
+
+**基线**：bao master `dbbbcc8f`（S1 同日）；mozjs 不变。
+
+#### A. pending-work 归属结构事实（三场景共用）
+
+全部 pending 结构均 thread-local（绑定 owner 线程的 cx）：
+
+| pending 结构 | 位置 | realm 锚定方式 |
+|---|---|---|
+| bao JobQueue（JOB_IDS） | bao_engine/job_queue.rs:53 thread-local VecDeque | job 存 global 属性；**global 本身无第二根**（依赖 realm 存活） |
+| servo MicrotaskQueue（page/worker realm 微任务） | script_runtime.rs:884 CreateJobQueue+SetJobQueue；microtask.rs:31 | `EnqueuedPromiseCallback.global: Dom<GlobalScope>`（microtask.rs:79）——**根持 global，realm 生命线** |
+| bao BAO_REGISTRY timers | timers.rs:51 thread-local | `global_root` AddRawValueRoot 原根（timers.rs:1174）——**根持 registration global，realm 生命线**；Drop 时 RemoveRawValueRoot（timers.rs:1318，cx 死亡则跳过） |
+| MiniEventLoop（ConcurrentTask 队列） | timers.rs:40 thread-local，Box::into_raw **leak 永不释放** | 任务各自持 JS 侧根（gc_store/raw root） |
+
+关键拓扑:servo constellation 按 **registered domain(eTLD+1)+webview** 复用 EventLoop
+（constellation.rs:874 get_event_loop / bc_group.event_loops 键=Host）——**同 registered
+domain 导航=同一 ScriptThread/cx 存活,旧 realm 在同线程内 discard**;跨 registered domain
+才换新 ScriptThread。bao 每页独立 WebView+独立 bc group（无 opener）→ 跨页恒独立线程。
+
+#### B. 三场景核查矩阵(悬挂=红,明确终态=绿)
+
+| 场景 | pending 类 | 归属(drain/丢弃/等待) | 终态 | 证据 |
+|---|---|---|---|---|
+| **N1 导航·跨 registered domain** | 全部(servo 微任务/BAO timers/JOB_IDS/ConcurrentTask) | 旧 pipeline ExitScriptThread(event_loop.rs:53 Drop 发消息)→handle_exit_pipeline_msg(script_thread.rs:3619,逐 doc clear_js_runtime+cancel_all_tasks_and_ignore_future_tasks)→线程退出→thread-local dtor 丢弃 | **丢弃(随线程死)** | script_thread.rs:3619-3706;BAO_REGISTRY Box drop 无 JS 调用(timers.rs:1318, current_cx 已清);leaked MiniEventLoop 残任务永不 tick=OS 进程退出回收(#29 记账) | 绿 |
+| **N2 导航·同 registered domain(主流场景,ScriptThread 存活)** | servo 微任务(旧 realm) | Dom<GlobalScope> 根持;下一次 checkpoint(任意 pump 步骤1 RunJobs)照常执行 | **执行(spec 一致:微任务队列属 event loop,旧 doc 的已入队微任务合法运行)** | microtask.rs:76-94;script_runtime.rs:318-327 | 绿 |
+| **N2 同上** | **BAO_REGISTRY timers(旧 realm)** | **无人取消,无人丢弃**:Window::clear_js_runtime(window.rs:2500)只 cancel servo task-source,BAO_REGISTRY 无 discard 钩子(cancel_raw 仅 JS clearTimeout/clearInterval 调用);global_root 原根 pin 旧 realm | **无终态:deadline 到→fire_js 进 discard 后旧 realm 执行 zombie 回调;interval=永久 re-arm(zombie 永续+旧 realm 永不可回收+每次同域导航累积)** | window.rs:2500-2530(无 bao 调用);timers.rs:858-868(re-arm 无 liveness 检查);cancel_raw 唯一取消源 timers.rs:966 | **红(RED-1)** |
+| **N2 同上** | ConcurrentTask 完成指向旧 realm | 该线程 MiniEventLoop 共享(不分 realm);完成照常派发进旧 realm(一次性,bounded) | 执行一次(与 RED-1 同族 discard 语义缺口,非永久) | pump_embedder_thread 步骤3(timers.rs:341) | 黄(随 RED-1 一并裁决) |
+| **page-close** | 全部 | page.close()(page.rs:1290,embedder 线程:terminate workers+清注册表)→PageInner drop→WebViewInner::drop(webview.rs:144)→CloseWebView→constellation 逐 pipeline 退出→每 ScriptThread 走 N1 路径 | **丢弃(随线程死;不 drain——已关页面的 pending 不再执行=浏览器语义)** | page.rs:1290-1363;webview.rs:144-152;script_thread.rs:3619 | 绿 |
+| **shutdown·browser** | 全部 | BaoRuntime::drop→close_all(lib.rs:644-653)→每页 page.close() 同上;ServoInner::drop(servo.rs:872)spin 至 ScriptThreads join | 丢弃 | 同上+servo.rs:872-880 | 绿 |
+| **shutdown·CLI(bao run/-e)** | 微任务/JOB_IDS | drain_and_check 每遍历末尾 JobQueue::drain(timers.rs:534,560)→liveness 判定前队列恒空(判定不含 JobQueue 的原因:drain 刚跑过) | 执行完毕(自持链在单次 RunJobs 内耗尽) | timers.rs:532-580 | 绿 |
+| | timers/IO | has_pending_work(timers.rs:694)持续等待至无 pending(Node 语义:timers 保活进程) | 等待后执行 | timers.rs:442-580 | 绿 |
+| | process.exit 短路 | drain_and_check 入口 should_exit→false 直接断(bun_api.rs:7233-7239 post_eval_drain_then_exit→'exit' handlers→exit) | 丢弃(Node 'exit' 后 setTimeout 永不跑的官方语义) | timers.rs:445;Node process 文档 exit 节 | 绿 |
+| **CLI JsContext 销毁** | 残留一切 | shutdown_thread_sm(context.rs:651):RootedTraceableSet clear+JS_DestroyContext;BAO_REGISTRY 主线程随进程丢弃 | 丢弃 | context.rs:651-689 | 绿 |
+| **bao JOB_IDS 裸指针 liveness 专项** | bao job queue 残留 job | 安装面仅 CLI JsContext(持久 realm=线程寿命)与 node_worker_threads bypass(线程寿命);CLI eval_module fresh realm 的 job 每遍历 drain 后才退出/退出时队列恒空;无 realm 先死场景 | 无悬挂指针活化路径 | job_queue.rs 安装点 context.rs:491/536/607+node_worker_threads.rs:457 | 绿 |
+
+#### C. RED-1 立法提案(未实施——产品语义+vendor patch 双重用户裁决面)
+
+**现象**:同 registered domain 导航后,旧 realm 的 bao setTimeout/setInterval 继续按
+deadline 在旧(已 discard,WindowState::Zombie)realm 里执行;interval 永续;旧 realm 被
+global_root 原根 pin 无法回收;每次同域导航累积。浏览器语义(Chrome 非 bfcache 逐出路径:
+导航即销毁旧 doc timers)与 Bao 反指纹保真均要求终止。
+
+**为何不能 bao 层自修**:BAO_REGISTRY 是 thread-local,只有 ScriptThread 本人可 purge;
+realm discard 事件发生在 servo `Window::clear_js_runtime`(vendor 代码),无既有 embedder
+回调(对照:pump/settings-runner 两桥均为 dispatch 侧注册)。修复必须新 vendor patch:
+在 clear_js_runtime(或 handle_exit_pipeline_msg)处调用 bao 注册的
+`cancel_timers_for_global(global)`(镜像 register_bao_event_loop_pump 桥模式)。
+
+**双方案(用户裁决)**:
+- P-A(对齐浏览器):discard 时 cancel 该 global 的全部 BAO_REGISTRY timers(含
+  ConcurrentTask 旧 realm 完成路径同族裁决);
+- P-B(维持现状+护栏):fire 前查 global 存活登记表,死 global 静默 drop——仍需 vendor
+  hook 登记 discard,且 zombie window 期间(deadline 早于 discard 后首个 GC)依旧执行,
+  不推荐,列出仅为完备。
+
+**连带**:#29 输入——interval zombie + realm pin 是 nav churn 内存增长源之一;修 P-A 后
+nav 累积消除。
+
+#### D. #25 分歧裁决(两项,Node 官方依据)
+
+**① timers 整批后 drain 微任务 → 裁决:对齐 Node ≥11(=浏览器 task 语义),本轮已落地。**
+
+- 依据:Node 11.0.0 release notes(nodejs.org/en/blog/release/v11.0.0)Notable Changes:
+  「nextTick queue will be run after each immediate and timer」+ SEMVER-MAJOR 条目
+  「timers: run nextTicks after each immediate and timer (Anatoli Papirovski) #22842」
+  (2018-10 起 Node 全系如此;HTML 事件循环同构:每 task 后 microtask checkpoint,
+  timer callback=task)。Bao 现状=Node ≤10 legacy。无产品级保留理由(双目标 Bun 兼容+
+  浏览器保真同向)→ 非用户裁决面,工程对齐。
+- 落地:`drain_bao_timers` fire 循环内、`fire_js` 之后 `CURRENT_FIRING_TIMER` 清零之前
+  插入 `js::RunJobs`(timers.rs:843-861)——微任务里的 clearInterval 仍命中
+  CLEARED_DURING_FIRE 守卫(interval re-arm 正确跳过);js::RunJobs 自动路由到所在 cx
+  的队列(bao JOB_IDS / servo MicrotaskQueue),CLI drain_and_check、test-runner
+  drain_one_pass、servo pump_embedder_thread 三个 drain 消费方同点受益(单一咽喉)。
+- 合同测试更新:execution_control_entry_tests.rs #5 增两 timer 穿刺用例
+  (t1@20ms 排 continuation、t2@45ms:期望 t1,t1-cont,t2——旧批序为 t1,t2,t1-cont;
+  断言 timing-robust:同批 due 时 heap 序仍保证 t1 先火、checkpoint 在循环内)。
+
+**② nextTick 与微任务同队列 FIFO → 裁决:对齐 Node CJS 语义(独立 next-tick 队列),目标
+确定,实现属大改,本轮只记方案。**
+
+- 依据:Node 官方 process 文档(nodejs.org/api/process.html,v26):
+  「`process.nextTick()` adds callback to the "next tick queue". This queue is fully
+  drained after the current operation … before the event loop is allowed to continue」;
+  「every time the "next tick queue" is drained, the microtask queue is drained
+  immediately after」;「in CJS modules process.nextTick() callbacks are always run
+  before queueMicrotask() ones」(官方示例 CJS 输出 `nextTick, resolve, microtask`;
+  ESM 反序——ESM 顶层本身处于微任务 drain 中)。Bao 现状(process_nextTick 委托
+  queueMicrotask,bun_api.rs:7296)在 nextTick 后排的 promise/qmt 之前不插队=与 CJS
+  反序。
+- 方案(未实现):新 thread-local `NEXT_TICK_QUEUE`(回调+args 经 gc_store 或 raw root
+  锚 registration global,镜像 timers 模式);`drain_next_ticks(cx)` 循环「清空
+  next-tick 队列(每回调 AutoRealm+settings-runner 进注册 realm)→ RunJobs 清微任务
+  → 若 next-tick 又被填则重复」;在 S1 inventory 的全部 checkpoint 位
+  (context.rs eval 后/module_loader 4 变体/各 pump/dispatch_sm:263)以
+  checkpoint(cx)=drain_next_ticks+RunJobs 包装替换;runaway 递归 nextTick 由
+  ExecutionControl whole-entry arm 覆盖(可终止);合同测试重写(首 checkpoint 序不变
+  sync,nextTick,microtask,qmt…,需加 CJS 插队用例)。规模 4-6 文件,含全部 drain 位
+  触达+合同测试——超出本轮「小改落地」线,排 S2 前 #25 收尾波。
+- 注记:Node 自 v22.7.0 起 nextTick 标 Stability: 3 - Legacy(官方推荐
+  queueMicrotask)——不影响裁决(兼容承诺以现状 Node 语义为准),但提示新代码面无需
+  扩展 nextTick 特性。
+
+**BCE 检查**:分歧①落地非 bug 修复;同类面=「批内多 timer 的 continuation 晚于同批后继
+timer」已由新两 timer 用例锁定;RED-1 属立法提案未动代码。
+
+**验证**(波末一次测):`cargo nt -p bao_engine` **373/373**;`cargo nt -p bun_runtime`
+**1209 passed / 1 pre-existing skipped**(含更新后的 ordering 合同)。
+
+**回滚点**:单 commit revert(timers.rs drain 循环 6 行 + 合同测试更新 + 账本),无
+数据/接口迁移。
+
+**遗留移交**:RED-1 立法提案(§C)待用户裁决;分歧②方案待 #25 收尾波;leaked
+MiniEventLoop 残任务与 interval zombie 内存形态归 #29。
+
+**下一唯一动作**:S2——GC/lifecycle closure(#29:root/GC-pointer inventory 100% +
+async root owner/release 100%,输入=S0-3 拓扑表与本轮 RED-1/泄漏记账);若用户先裁决
+RED-1 P-A,则优先插队其 vendor patch 落地波。
 
 ---
 
