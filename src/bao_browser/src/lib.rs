@@ -15,6 +15,7 @@ mod delegate;
 mod error;
 mod page;
 mod page_pool;
+mod phase_watch;
 mod permission;
 mod runtime_bridge;
 mod screenshot;
@@ -327,6 +328,14 @@ impl BaoRuntime {
             &config,
         ));
 
+        // #40 page-pipeline stall watchdog: every page op runs on this
+        // thread; when one wedges inside a never-returning primitive the
+        // process hangs silently (soak MTBF≈46min). The watchdog thread is
+        // the only in-process witness that can still speak — it dumps the
+        // stalled phase + thread wchan snapshot to the log (idempotent,
+        // process-wide, pure observer).
+        phase_watch::spawn_watchdog();
+
         // memory:// CDP transport (published consumer contract:
         // `Browser::connect("memory://bao")` → `version()`/`pages()`).
         // Install the host-side bridge into bao_cdp_client's process
@@ -541,7 +550,23 @@ impl BaoRuntime {
     /// Set the console log forwarding channel on the servo delegate.
     /// Console messages from servo will be sent to this channel.
     pub fn set_console_log_channel(&self, tx: std::sync::mpsc::Sender<cdp_server::ConsoleMessage>) {
-        self.delegate.set_console_log_tx(tx);
+        self.delegate.set_console_log_tx(tx.clone());
+        // Retro-propagate to every existing page's webview state, exactly
+        // like set_event_channel below: servo routes console messages
+        // per-webview (ShowConsoleApiMessage → the webview delegate reads
+        // state.console_log_tx), so a channel set only on the runtime-level
+        // delegate never reaches pages created before this call — in
+        // run_browser that is precisely the initial page, whose
+        // `__BAO_EVT__` CDP-event texts (Debugger.scriptParsed/.paused,
+        // SM-EVOLUTION #27 裁决 2 transport) would die in the webview
+        // delegate's unset state.
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        let stats = self.page_pool.stats();
+        for id in 1..=(stats.active + stats.idle) {
+            if let Some(page) = self.page_pool.get_page(id) {
+                page.webview_state().borrow_mut().console_log_tx = Some(tx.clone());
+            }
+        }
     }
 
     /// Set the structured event forwarding channel on the servo delegate.

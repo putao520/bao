@@ -204,12 +204,14 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             "Security.setOverrideCertificateErrors not supported at runtime: certificate-error override is startup-only (BaoConfig.ignore_certificate_errors)".into(),
         ),
 
-        // Debugger domain — route through EvaluateJs to servo's debugger.js
-        // These BridgeCommands are typed (no JS string injection from CDP layer).
-        // cdp_handler translates them into servo debugger.js control messages.
-        // @trace BUG-CDP-006 [domain:Debugger]: current path is EvaluateJs →
-        // servo debugger.js. A future enhancement is direct routing via
-        // DevtoolScriptControlMsg once servo's devtools channel is exposed to Bao.
+        // Debugger domain — SM Debugger, JS face in the Node Realm (the
+        // SM-mandated separate compartment; the page global is attached as
+        // debuggee). These BridgeCommands are typed (no JS string injection
+        // from CDP layer); cdp_handler translates them into Debugger API
+        // calls via evaluate_js (SM-EVOLUTION #27 裁决 2: native
+        // getLineOffsets/getPossibleBreakpoints/getOffsetLocation/frame
+        // chain — the old offsetLine/echo-location glue is eradicated).
+        // @trace BUG-CDP-006 [domain:Debugger]
         BridgeCommand::DebuggerEnable { target_id } => {
             with_page(pool, &target_id, |page| cmd_debugger_enable(page))
         }
@@ -971,71 +973,255 @@ fn cmd_sw_registration_info(
 }
 
 // ---------------------------------------------------------------------------
-// Debugger domain commands — servo debugger.js bridge
+// Debugger domain commands — SpiderMonkey Debugger, JS face in the Node Realm
 // ---------------------------------------------------------------------------
-
-/// JS that sets up servo's built-in SpiderMonkey Debugger instance.
-/// Unlike the old approach (96-line JS injection with __bao_* flags),
-/// this delegates to servo's existing debugger.js infrastructure via
-/// the DebuggerGlobalScope event system.
+// SM-EVOLUTION #27 裁决 2 (2026-09-10, ledger §8 #27): the Debugger glue uses
+// the native JS-face Debugger API. All data below comes from real SM Debugger
+// objects: `script.getLineOffsets`/`getPossibleBreakpoints`/`getOffsetLocation`,
+// `frame.script/offset/older/environment/callee`, `Debugger.Environment`
+// type/scopeKind/names/getVariable. SM locations are 1-origin; CDP protocol
+// locations are 0-origin — every boundary converts.
+//
+// REALM PLACEMENT (SM hard rule: a Debugger must live in a DIFFERENT
+// compartment than its debuggees): the Debugger instance and glue run in the
+// page's Node Realm (`evaluate_js` — a separate compartment in the same
+// JSContext, same script thread), and the page global is attached via
+// `dbg.addDebuggee(window)`, where `window` is the Node Realm's
+// cross-compartment wrapper of the page global. Constructing the Debugger in
+// the page realm (`new Debugger(window)`) is impossible — same compartment.
+//
+// Events (scriptParsed/paused) travel as `__BAO_EVT__` texts through the
+// PAGE realm console (`window.console.log` — the Node Realm's own console
+// writes to process stdout, not the servo delegate), parsed by
+// `BaoEvent::from_console_text` (delegate console Path A) and broadcast by
+// the CDP server. `paused` is notification-grade: the handler returns
+// `undefined` (continue) because the single-threaded servo embedder cannot
+// block the script thread awaiting Debugger.resume — callFrames are captured
+// real at hit time.
+//
+// BCE-20260621-002 note: `addDebuggee` toggles debuggee realm JIT
+// instrumentation (Realm::setIsDebuggee) — the same class the servo-side
+// fire_add_debuggee path was disabled for. The mozjs BaselineFrame
+// NULL-activation guard (fork patch #4) covers the initForOsr NULL-activation
+// crash shape; the servo Rust-side path stays disabled
+// (disable_script_debugger). This wave's live e2e
+// (cdp_debugger_fidelity_tests.rs) exercises attach + breakpoints + post-
+// attach JIT activity as the stability proof.
 const DEBUGGER_SETUP: &str = r#"
 (function() {
-    if (window.__bao_dbg_active) return;
-    window.__bao_dbg_active = true;
+    var g = globalThis;
+    if (g.__bao_dbg_active) return 'already-active';
+    g.__bao_dbg_active = true;
+    // Fail-closed setup with staged diagnostics: any failure aborts the
+    // install and returns a 'debugger-setup:' string (the node-realm
+    // evaluate face drops JS exception messages — returning the reason rides
+    // the success path), which cmd_debugger_enable turns into an explicit
+    // error — never a half-installed debugger.
     try {
-        const dbg = new Debugger();
-        window.__bao_dbg = dbg;
-        dbg.onNewScript = function(script) {
-            const info = JSON.stringify({
-                id: script.id || ('s-' + Date.now()),
-                url: script.url || '',
-                startLine: script.startLine || 0,
-                endLine: script.startLine + (script.lineCount || 1) - 1,
-            });
-            console.log('__BAO_EVT__Debugger.scriptParsed\n' + info);
+    if (typeof Debugger !== 'function')
+        throw new Error('Debugger constructor missing on the Node Realm global (native install callback did not run)');
+    var dbg;
+    try {
+        dbg = new Debugger();
+    } catch (e) {
+        throw new Error('new Debugger() threw: ' + e);
+    }
+    g.__bao_dbg = dbg;
+    // Breakpoint registry — created EAGERLY: the command glue reads it as a
+    // bare global, and a bare read of a never-created property throws
+    // ReferenceError on the first setBreakpointByUrl.
+    g.__bao_dbg_bps = {};
+    // Attach the page global (this-realm `window` lazy getter wraps the Page
+    // Realm global cross-compartment — the SM-mandated different compartment).
+    try {
+        dbg.addDebuggee(window);
+    } catch (e) {
+        throw new Error('addDebuggee(window) threw: ' + e);
+    }
+
+    // Stable script identity: SM Debugger.Script has NO id accessor. The
+    // Debugger instance caches wrappers per JSScript (ScriptWeakMap), so the
+    // wrapper object is a stable identity key within this Debugger's life.
+    var nextScriptId = 1;
+    var scriptIds = new WeakMap();
+    g.__bao_dbg_scripts = {};
+    g.__bao_dbg_sid = function(s) {
+        var id = scriptIds.get(s);
+        if (id === undefined) {
+            id = String(nextScriptId++);
+            scriptIds.set(s, id);
+            g.__bao_dbg_scripts[id] = s;
+        }
+        return id;
+    };
+
+    // SM offset -> CDP Location (0-origin), via native getOffsetLocation.
+    g.__bao_dbg_cdp_loc = function(s, offset) {
+        try {
+            var loc = s.getOffsetLocation(offset);
+            return {
+                scriptId: g.__bao_dbg_sid(s),
+                lineNumber: Math.max(0, (loc.lineNumber || 1) - 1),
+                columnNumber: Math.max(0, (loc.columnNumber || 1) - 1),
+            };
+        } catch (e) {
+            return { scriptId: g.__bao_dbg_sid(s), lineNumber: 0, columnNumber: 0 };
+        }
+    };
+
+    // Debuggee value -> CDP RemoteObject, WITHOUT running debuggee code:
+    // primitives cross as plain values; debuggee objects arrive as
+    // Debugger.Object wrappers and are described (className), never read.
+    g.__bao_dbg_val = function(v) {
+        try {
+            if (v === null) return { type: 'object', subtype: 'null' };
+            var t = typeof v;
+            if (t === 'object') return { type: 'object', className: (v && typeof v.class === 'string') ? v.class : 'Object' };
+            if (t === 'undefined') return { type: 'undefined' };
+            if (t === 'string') return { type: 'string', value: String(v) };
+            if (t === 'number') return { type: 'number', value: v };
+            if (t === 'boolean') return { type: 'boolean', value: v };
+            return { type: t };
+        } catch (e) {
+            return { type: 'undefined' };
+        }
+    };
+
+    // Debugger.Environment -> CDP Scope. Declarative envs classify by native
+    // scopeKind ('function' -> local); object envs: outermost -> global,
+    // intermediate -> closure; 'with' -> with. The scope's object cannot be
+    // materialized as an inspectable RemoteObject (its properties would
+    // require running debuggee code) — className describes it honestly.
+    g.__bao_dbg_scope = function(env) {
+        var type = env.type;
+        var cdpType;
+        if (type === 'with') cdpType = 'with';
+        else if (type === 'object') cdpType = env.parent === null ? 'global' : 'closure';
+        else if (env.scopeKind === 'function') cdpType = 'local';
+        else cdpType = 'closure';
+        var cls = 'Object';
+        try { if (env.object) cls = env.object.class || 'Object'; } catch (e) {}
+        return { type: cdpType, object: { type: 'object', className: cls } };
+    };
+
+    g.__bao_dbg_frame = function(f, idx) {
+        var info = {
+            callFrameId: 'frame-' + idx,
+            functionName: '(anonymous)',
+            location: { scriptId: '', lineNumber: 0, columnNumber: 0 },
+            scopeChain: [],
+            this: { type: 'undefined' },
         };
-        dbg.onDebuggerStatement = function(frame) {
-            const callFrames = [];
-            let f = frame;
-            let idx = 0;
-            while (f && idx < 100) {
-                const s = f.script;
-                callFrames.push({
-                    callFrameId: 'frame-' + idx + '-' + (s ? s.id : 'x'),
-                    functionName: f.callee ? (f.callee.name || '(anonymous)') : '(anonymous)',
-                    location: { scriptId: s ? String(s.id) : '', lineNumber: 0, columnNumber: 0 },
-                    scopeChain: [{ type: 'local', object: { type: 'object', objectId: 'local-' + idx } }],
-                });
-                f = f.older;
-                idx++;
+        try {
+            if (f.callee && typeof f.callee.name === 'string' && f.callee.name)
+                info.functionName = f.callee.name;
+        } catch (e) {}
+        try {
+            var s = f.script;
+            if (s && f.offset !== undefined) info.location = g.__bao_dbg_cdp_loc(s, f.offset);
+        } catch (e) {}
+        try {
+            var env = f.environment;
+            var chain = [];
+            while (env && chain.length < 50) {
+                chain.push(g.__bao_dbg_scope(env));
+                env = env.parent;
             }
-            const paused = JSON.stringify({ callFrames, reason: 'debuggerStatement', hitBreakpoints: [] });
-            console.log('__BAO_EVT__Debugger.paused\n' + paused);
-        };
-        dbg.findScripts().forEach(function(script) {
-            const info = JSON.stringify({
-                id: script.id || ('s-' + Date.now()),
+            info.scopeChain = chain;
+        } catch (e) {}
+        try { info.this = g.__bao_dbg_val(f.this); } catch (e) {}
+        return info;
+    };
+
+    // Walk the live frame chain at pause time and emit the CDP paused event
+    // through the PAGE console (servo delegate transport — see header).
+    g.__bao_dbg_emit_paused = function(frame, reason, hitBps) {
+        var callFrames = [];
+        var f = frame;
+        var idx = 0;
+        while (f && idx < 100) {
+            callFrames.push(g.__bao_dbg_frame(f, idx));
+            try { f = f.older; } catch (e) { break; }
+            idx++;
+        }
+        window.console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({
+            callFrames: callFrames,
+            reason: reason,
+            hitBreakpoints: hitBps || [],
+        }));
+    };
+
+    function emitParsed(script) {
+        var info;
+        try {
+            // SM startLine/lineCount are 1-origin; CDP scriptParsed is 0-origin.
+            var start = script.startLine || 1;
+            info = JSON.stringify({
+                id: g.__bao_dbg_sid(script),
                 url: script.url || '',
-                startLine: script.startLine || 0,
-                endLine: script.startLine + (script.lineCount || 1) - 1,
+                startLine: Math.max(0, start - 1),
+                endLine: Math.max(0, start + (script.lineCount || 1) - 2),
             });
-            console.log('__BAO_EVT__Debugger.scriptParsed\n' + info);
-        });
-    } catch(e) {}
+        } catch (e) { return; }
+        window.console.log('__BAO_EVT__Debugger.scriptParsed\n' + info);
+    }
+
+    dbg.onNewScript = function(script) { emitParsed(script); };
+    dbg.onDebuggerStatement = function(frame) {
+        g.__bao_dbg_emit_paused(frame, 'debuggerStatement', []);
+        return undefined;
+    };
+
+    // Surface scripts that predate this enable (findScripts sees them now
+    // that the page global is a debuggee) — the enable-time scriptParsed
+    // flush clients rely on.
+    dbg.findScripts().forEach(emitParsed);
+    return 'ok';
+    } catch (e) {
+        g.__bao_dbg_active = false;
+        g.__bao_dbg = undefined;
+        return 'debugger-setup: ' + (e && e.message ? e.message : String(e));
+    }
 })();
 "#;
 
 fn cmd_debugger_enable(page: &PageHandle) -> Result<Value, String> {
-    let _ = page.evaluate_js(DEBUGGER_SETUP).map_err(to_browser_error)?;
+    // Native prerequisite: install the Debugger constructor on the Node
+    // Realm global. `register_node_realm_debugger_install` queues a
+    // script-thread callback that drains FIFO ahead of the evaluate
+    // callback `evaluate_js` itself queues, with the same stale-realm
+    // lifecycle validation the evaluate applies (#27 裁决 2 gap closure —
+    // see the runtime_bridge helper's doc for the full rationale).
+    if let Some(webview_id) = page.webview_id() {
+        crate::runtime_bridge::register_node_realm_debugger_install(webview_id);
+    }
+    // Node-realm install (the separate-compartment home of the Debugger
+    // instance; the page global is attached inside the setup). The setup
+    // returns a status string ('ok' / 'already-active' / 'debugger-setup:
+    // <reason>') — an explicit error, never a half-installed debugger.
+    let status = page
+        .evaluate_js(DEBUGGER_SETUP)
+        .map_err(to_browser_error)?;
+    if status != "ok" && status != "already-active" {
+        return Err(format!("Debugger.enable failed: {status}"));
+    }
     Ok(serde_json::json!({}))
 }
 
 fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
-    let js = "if (window.__bao_dbg) { window.__bao_dbg.onNewScript = undefined; window.__bao_dbg.onDebuggerStatement = undefined; window.__bao_dbg = null; window.__bao_dbg_active = false; }";
+    // Tear down hooks + all breakpoints this Debugger owns. The debuggee
+    // attachment stays (dropping it would force a full JIT recompile cycle
+    // for a later re-enable); with no hooks installed, no events fire.
+    let js = "(function() { try { if (__bao_dbg) { var scripts = __bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) { try { scripts[i].clearAllBreakpoints(); } catch (e) {} } __bao_dbg.onNewScript = undefined; __bao_dbg.onDebuggerStatement = undefined; __bao_dbg.onEnterFrame = undefined; __bao_dbg = null; __bao_dbg_active = false; } } catch (e) { throw e; } })()";
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
+/// Native breakpoint binding: `script.getLineOffsets(smLine)` (the real SM
+/// API — the former `s.offsetLine(line, col)` call targeted a nonexistent
+/// method) selects the bytecode offset; when a column is requested the
+/// offsets are filtered by `getOffsetLocation().columnNumber`. The returned
+/// location is the REAL resolved offset location, not the request echo.
 fn cmd_debugger_set_breakpoint(
     page: &PageHandle,
     url: Option<&str>,
@@ -1043,64 +1229,184 @@ fn cmd_debugger_set_breakpoint(
     line: u32,
     column: Option<u32>,
 ) -> Result<Value, String> {
-    let col = column.unwrap_or(0);
-    // Build a script filter: match by url (exact) or urlRegex, fall back to line-range match
+    // Build a script filter: match by url (exact) or urlRegex, fall back to
+    // line-range match (SM line numbers are 1-origin; `line` is CDP 0-origin).
+    let sm_line = line + 1;
     let url_filter = match (url, url_regex) {
         (Some(u), _) => format!("s.url === {}", serde_json::to_string(u).unwrap_or_default()),
         (None, Some(r)) => format!(
             "new RegExp({}).test(s.url)",
             serde_json::to_string(r).unwrap_or_default()
         ),
-        (None, None) => format!("s.startLine <= {line} && {line} <= s.startLine + s.lineCount - 1"),
+        (None, None) => format!(
+            "s.startLine <= {sm_line} && {sm_line} <= s.startLine + s.lineCount - 1"
+        ),
     };
+    let col = column.unwrap_or(0);
+    let has_column = column.is_some();
+    // Fail-closed glue: no catch-all swallow. Unmatched script / empty line
+    // offsets surface as explicit errors — never a fake '{}' success.
     let js = format!(
-        "(function() {{ try {{ if (!window.__bao_dbg) return '{{}}'; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if ({url_filter}) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; var bpId = 'bp-' + String(s.id) + '-' + {line} + '-' + {col}; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_EVT__Debugger.paused\\n' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [bpId] }})); }} }}); if (!window.__bao_bps) window.__bao_bps = {{}}; window.__bao_bps[bpId] = {{ scriptId: String(s.id), offset: offset }}; return JSON.stringify({{ breakpointId: bpId, actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}); }} }} }} catch(e) {{}} return '{{}}'; }})()",
-        url_filter = url_filter, line = line, col = col
+        r#"(function() {{
+    try {{
+    if (!__bao_dbg) throw new Error('Debugger.enable required before setting breakpoints');
+    var scripts = __bao_dbg.findScripts();
+    var diag = 'scripts=' + scripts.length;
+    for (var i = 0; i < scripts.length; i++) {{
+        var s = scripts[i];
+        diag += ' [url=' + (s.url || '') + ' startLine=' + s.startLine + ' lineCount=' + s.lineCount + ' lo' + {sm_line} + '=';
+        var offsets = [];
+        try {{ offsets = s.getLineOffsets({sm_line}) || []; }} catch (e) {{ diag += 'threw:' + e.message + ']'; continue; }}
+        diag += offsets.length + ']';
+        if (!({url_filter})) continue;
+        if (offsets.length === 0) continue;
+        var chosen = offsets[0];
+        if ({has_column}) {{
+            var want = {col} + 1;
+            var matched = false;
+            for (var j = 0; j < offsets.length; j++) {{
+                try {{
+                    if (s.getOffsetLocation(offsets[j]).columnNumber === want) {{
+                        chosen = offsets[j];
+                        matched = true;
+                        break;
+                    }}
+                }} catch (e) {{}}
+            }}
+            if (!matched) throw new Error('no breakpoint offset at column {col} on line {line} of script ' + __bao_dbg_sid(s));
+        }}
+        var bpId = 'bp-' + __bao_dbg_sid(s) + '-' + {line} + '-' + {col};
+        var handler = {{
+            hit: (function(id) {{
+                return function(frame) {{
+                    __bao_dbg_emit_paused(frame, 'breakpoint', [id]);
+                    return undefined;
+                }};
+            }})(bpId)
+        }};
+        s.setBreakpoint(chosen, handler);
+        if (!__bao_dbg_bps) __bao_dbg_bps = {{}};
+        __bao_dbg_bps[bpId] = {{ scriptId: __bao_dbg_sid(s), offset: chosen, handler: handler }};
+        var loc = __bao_dbg_cdp_loc(s, chosen);
+        return JSON.stringify({{ breakpointId: bpId, locations: [loc] }});
+    }}
+    throw new Error('no script matched the breakpoint location (url/urlRegex/line {line}); diag: ' + diag);
+    }} catch (e) {{ return 'ERR: ' + (e && e.message ? e.message : String(e)); }}
+}})()"#,
+        url_filter = url_filter,
+        sm_line = sm_line,
+        has_column = has_column,
+        col = col,
+        line = line,
     );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    // The glue reports failures as 'ERR: <reason>' return strings (the
+    // node-realm evaluate face drops JS exception messages) — surface them
+    // as explicit errors, never as an unparseable-output parse failure.
+    if let Some(reason) = result.strip_prefix("ERR: ") {
+        return Err(format!("Debugger.setBreakpointByUrl failed: {reason}"));
+    }
     parse_js_result(&result)
 }
 
+/// Precise removal via `script.clearBreakpoint(handler)` — the former glue
+/// called `clearAllBreakpoints()` on an id miss, wiping every breakpoint on
+/// the page. Unknown ids are a no-op (the breakpoint is already gone).
 fn cmd_debugger_remove_breakpoint(page: &PageHandle, breakpoint_id: &str) -> Result<Value, String> {
     let js = format!(
-        "(function() {{ try {{ if (!window.__bao_dbg) return; if (window.__bao_bps && window.__bao_bps[{}]) {{ var info = window.__bao_bps[{}]; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ if (String(scripts[i].id) === info.scriptId) {{ scripts[i].clearAllBreakpoints(); break; }} }} delete window.__bao_bps[{}]; }} else {{ var scripts = window.__bao_dbg.findScripts(); scripts.forEach(function(s) {{ s.clearAllBreakpoints(); }}); }} }} catch(e) {{}} }})()",
-        serde_json::to_string(breakpoint_id).unwrap_or_default(),
-        serde_json::to_string(breakpoint_id).unwrap_or_default(),
-        serde_json::to_string(breakpoint_id).unwrap_or_default(),
+        r#"(function() {{
+    if (!__bao_dbg) throw new Error('Debugger.enable required before removing breakpoints');
+    var info = __bao_dbg_bps && __bao_dbg_bps[{bp_id}];
+    if (info) {{
+        var s = __bao_dbg_scripts[info.scriptId];
+        if (s && info.handler) {{
+            try {{ s.clearBreakpoint(info.handler); }} catch (e) {{}}
+        }}
+        delete __bao_dbg_bps[{bp_id}];
+    }}
+    return JSON.stringify({{}});
+}})()"#,
+        bp_id = serde_json::to_string(breakpoint_id).unwrap_or_default(),
     );
     let _ = page.evaluate_js(&js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
 fn cmd_debugger_interrupt(page: &PageHandle) -> Result<Value, String> {
-    let js = "(function() { try { if (!window.__bao_dbg) return; window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({ callFrames: [], reason: 'interrupt', hitBreakpoints: [] })); return undefined; }; return undefined; }; } catch(e) {} })()";
+    // One-shot interrupt: pause at the next step of the next entered frame,
+    // with the REAL frame chain captured at hit time.
+    let js = "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required before pause'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; __bao_dbg_emit_paused(frame, 'interrupt', []); return undefined; }; return undefined; }; })()";
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
 fn cmd_debugger_resume(page: &PageHandle, step_type: Option<&str>) -> Result<Value, String> {
     let js = match step_type {
-        Some("next") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
-        Some("step") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
-        Some("finish") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
-        _ => "(function() { /* resume: clear step hooks */ try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = undefined; } } catch(e) {} })()",
+        Some("next") => "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; __bao_dbg_emit_paused(frame, 'step', []); }; return undefined; }; })()",
+        Some("step") => "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; __bao_dbg_emit_paused(frame, 'step', []); return undefined; }; return undefined; }; })()",
+        Some("finish") => "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; __bao_dbg_emit_paused(frame, 'step', []); }; return undefined; }; })()",
+        _ => "(function() { /* resume: clear step hooks */ if (__bao_dbg) { __bao_dbg.onEnterFrame = undefined; } })()",
     };
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
 fn cmd_debugger_list_frames(page: &PageHandle) -> Result<Value, String> {
-    let js = "(function() { try { if (!window.__bao_dbg) return JSON.stringify({frames:[]}); var f = window.__bao_dbg.getNewestFrame(); var frames = []; var idx = 0; while (f && idx < 100) { frames.push({callFrameId: 'frame-' + idx, functionName: f.callee ? (f.callee.name || '(anonymous)') : '(anonymous)', location: {scriptId: f.script ? String(f.script.id) : '', lineNumber: 0}}); f = f.older; idx++; } return JSON.stringify({frames: frames}); } catch(e) { return JSON.stringify({frames: []}); } })()";
+    let js = "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required before listing frames'); var f = __bao_dbg.getNewestFrame(); var frames = []; var idx = 0; while (f && idx < 100) { frames.push(__bao_dbg_frame(f, idx)); f = f.older; idx++; } return JSON.stringify({frames: frames}); })()";
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
 
+/// Native environment inspection (former glue returned a hardcoded
+/// `{environment:{}}`): the newest debuggee frame's environment chain via
+/// `Debugger.Environment` — `type`/`scopeKind`/`names()` natively, and
+/// `getVariable` per name with the non-invoking read discipline: primitive
+/// values pass through, `{unavailable:true}` marks optimized-out /
+/// uninitialized / missing bindings and DebuggeeWouldRun refusals, and
+/// debuggee objects are described by className only (reading their
+/// properties would run debuggee code).
 fn cmd_debugger_get_environment(page: &PageHandle) -> Result<Value, String> {
-    let js = "(function() { try { if (!window.__bao_dbg) return '{}'; var f = window.__bao_dbg.getNewestFrame(); if (!f || !f.environment) return '{}'; return JSON.stringify({environment: {}}); } catch(e) { return '{}'; } })()";
-    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    let js = r#"(function() {
+    if (!__bao_dbg) throw new Error('Debugger.enable required before reading the environment');
+    var f = __bao_dbg.getNewestFrame();
+    if (!f || !f.environment) return JSON.stringify({environment: []});
+    var envs = [];
+    var env = f.environment;
+    while (env && envs.length < 50) {
+        var e = {type: env.type, scopeKind: null, names: [], namesTruncated: false, variables: {}};
+        try { e.scopeKind = env.scopeKind; } catch (err) {}
+        try {
+            var names = env.names() || [];
+            if (names.length > 50) { names = names.slice(0, 50); e.namesTruncated = true; }
+            e.names = names;
+        } catch (err) {}
+        for (var i = 0; i < e.names.length; i++) {
+            try {
+                var v = env.getVariable(e.names[i]);
+                if (v !== null && (typeof v === 'object') &&
+                    (v.optimizedOut || v.uninitialized || v.missingArgument)) {
+                    e.variables[e.names[i]] = {unavailable: true};
+                } else {
+                    e.variables[e.names[i]] = __bao_dbg_val(v);
+                }
+            } catch (err) {
+                // DebuggeeWouldRun (accessor binding in a with-env) — refusal, not silence.
+                e.variables[e.names[i]] = {unavailable: true};
+            }
+        }
+        envs.push(e);
+        env = env.parent;
+    }
+    return JSON.stringify({environment: envs});
+})()"#;
+    let result = page.evaluate_js(js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
 
+/// Native `script.getPossibleBreakpoints()` (former glue synthesized every
+/// line of every script — locations that were never breakable). SM returns
+/// recommended `{offset, lineNumber, columnNumber, isStepStart}` entries
+/// (1-origin), converted to CDP 0-origin locations here.
 fn cmd_debugger_get_possible_breakpoints(
     page: &PageHandle,
     start_script_id: &str,
@@ -1109,12 +1415,30 @@ fn cmd_debugger_get_possible_breakpoints(
         "true".to_string()
     } else {
         format!(
-            "String(s.id) === {}",
+            "__bao_dbg_sid(s) === {}",
             serde_json::to_string(start_script_id).unwrap_or_default()
         )
     };
     let js = format!(
-        "(function() {{ try {{ if (!window.__bao_dbg) return JSON.stringify({{locations: []}}); var scripts = window.__bao_dbg.findScripts(); var locs = []; scripts.forEach(function(s) {{ if ({filter}) {{ for (var line = s.startLine; line < s.startLine + s.lineCount; line++) {{ locs.push({{scriptId: String(s.id), lineNumber: line}}); }} }} }}); return JSON.stringify({{locations: locs}}); }} catch(e) {{ return JSON.stringify({{locations: []}}); }} }})()",
+        r#"(function() {{
+    if (!__bao_dbg) throw new Error('Debugger.enable required before querying possible breakpoints');
+    var scripts = __bao_dbg.findScripts();
+    var locs = [];
+    for (var i = 0; i < scripts.length; i++) {{
+        var s = scripts[i];
+        if (!({filter})) continue;
+        var candidates = [];
+        try {{ candidates = s.getPossibleBreakpoints() || []; }} catch (e) {{ continue; }}
+        for (var j = 0; j < candidates.length; j++) {{
+            locs.push({{
+                scriptId: __bao_dbg_sid(s),
+                lineNumber: Math.max(0, (candidates[j].lineNumber || 1) - 1),
+                columnNumber: Math.max(0, (candidates[j].columnNumber || 1) - 1),
+            }});
+        }}
+    }}
+    return JSON.stringify({{locations: locs}});
+}})()"#,
         filter = filter_by_script
     );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
@@ -1123,25 +1447,31 @@ fn cmd_debugger_get_possible_breakpoints(
 
 fn cmd_debugger_get_script_source(page: &PageHandle, script_id: u32) -> Result<Value, String> {
     let js = format!(
-        "(function() {{ try {{ if (!window.__bao_dbg) return JSON.stringify({{scriptSource: ''}}); var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ if (String(scripts[i].id) === '{}') return JSON.stringify({{scriptSource: scripts[i].source.text || ''}}); }} return JSON.stringify({{scriptSource: ''}}); }} catch(e) {{ return JSON.stringify({{scriptSource: ''}}); }} }})()",
-        script_id
+        r#"(function() {{
+    if (!__bao_dbg) throw new Error('Debugger.enable required before reading script source');
+    var s = __bao_dbg_scripts[String({script_id})];
+    if (!s) throw new Error('unknown script id {script_id}');
+    var text = '';
+    try {{ text = s.source.text || ''; }} catch (e) {{}}
+    return JSON.stringify({{scriptSource: text}});
+}})()"#,
+        script_id = script_id
     );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
 
-fn cmd_debugger_blackbox(page: &PageHandle) -> Result<Value, String> {
-    let _ = page
-        .evaluate_js("(function() { /* blackbox: not yet supported */ })()")
-        .map_err(to_browser_error)?;
-    Ok(serde_json::json!({}))
+/// SM-EVOLUTION #27 裁决 3: SpiderMonkey has no native blackbox face (Debug.h
+/// exposes nothing; servo's debugger.js only emulates it client-side with a
+/// Map). Explicit unsupported error — the former silent no-op `ok` was a
+/// fake success.
+fn cmd_debugger_blackbox(_page: &PageHandle) -> Result<Value, String> {
+    Err("Debugger.blackbox not supported: SpiderMonkey's Debugger API has no native blackbox; refusing to fake success".into())
 }
 
-fn cmd_debugger_unblackbox(page: &PageHandle) -> Result<Value, String> {
-    let _ = page
-        .evaluate_js("(function() { /* unblackbox: not yet supported */ })()")
-        .map_err(to_browser_error)?;
-    Ok(serde_json::json!({}))
+/// See [`cmd_debugger_blackbox`] — 裁决 3 (#27).
+fn cmd_debugger_unblackbox(_page: &PageHandle) -> Result<Value, String> {
+    Err("Debugger.unblackbox not supported: SpiderMonkey's Debugger API has no native blackbox; refusing to fake success".into())
 }
 
 // ---------------------------------------------------------------------------

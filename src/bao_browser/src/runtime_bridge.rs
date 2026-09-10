@@ -664,6 +664,80 @@ pub fn evaluate_js_via_node_realm(
     result
 }
 
+/// Queue a native install of the SpiderMonkey `Debugger` API face on THIS
+/// page's Node Realm global (SM-EVOLUTION #27 裁决 2, CDP Debugger domain).
+///
+/// Neither realm has the face for free: servo defines it only on
+/// about:internal's `DebuggerGlobalScope`, and the Node Realm's standard
+/// Node/web globals do not include it. `JS_DefineDebuggerObject` (mozjs
+/// jsapi2_wrappers:380 — the same call shape servo's debuggerglobalscope
+/// uses, live-proven by the #27 engine census test) defines it natively.
+///
+/// Pairs with [`evaluate_js_via_node_realm`]: register this BEFORE the
+/// evaluate call — the callback queue is FIFO and both drain at
+/// `handle_evaluate_javascript`, so the face is on the global by the time
+/// the script runs. The stale-realm validation mirrors the evaluate
+/// callback's exactly (a navigation can swap the ScriptThread/JSContext
+/// under a stable WebViewId; the realm is re-created on the CURRENT context
+/// first, so the face lands on the global the paired evaluate will use —
+/// never on a destroyed realm's global). Idempotent per global: a
+/// HasProperty guard keeps the existing face and its object identity.
+pub fn register_node_realm_debugger_install(webview_id: servo::WebViewId) {
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> = Box::new(
+        move |cx_ptr: *mut std::ffi::c_void, page_global: *mut std::ffi::c_void| {
+            let mut node_global = get_node_realm_by_id(webview_id);
+            // Same stale-realm lifecycle as evaluate_js_via_node_realm's
+            // callback (see the BCE note there) — the install must target
+            // the global the paired evaluate will actually evaluate on.
+            if !node_global.is_null()
+                && !node_realm_belongs_to_current_context(webview_id, cx_ptr)
+            {
+                unsafe { create_node_realm_native(webview_id, cx_ptr, page_global) };
+                node_global = get_node_realm_by_id(webview_id);
+            }
+            unsafe { define_debugger_object_native(cx_ptr, node_global) };
+        },
+    );
+    servo::register_script_thread_callback(webview_id, callback);
+}
+
+/// Native face install: `JS_DefineDebuggerObject` on the Node Realm global,
+/// guarded by HasProperty for idempotency. No-op on null pointers (the
+/// paired JS setup surfaces a precise error when the face is missing).
+unsafe fn define_debugger_object_native(
+    cx_ptr: *mut std::ffi::c_void,
+    node_global: *mut mozjs::jsapi::JSObject,
+) {
+    use mozjs::context::JSContext;
+    use mozjs::realm::AutoRealm;
+    use mozjs::rooted;
+    use mozjs::rust::wrappers2::{JS_DefineDebuggerObject, JS_HasProperty};
+    use std::ptr::NonNull;
+
+    if cx_ptr.is_null() || node_global.is_null() {
+        return;
+    }
+    let cx_nn = match NonNull::new(cx_ptr.cast::<mozjs::jsapi::JSContext>()) {
+        Some(nn) => nn,
+        None => return,
+    };
+    let mut cx = JSContext::from_ptr(cx_nn);
+    rooted!(&in(cx) let global = node_global);
+    if global.get().is_null() {
+        return;
+    }
+    // JS_DefineDebuggerObject requires the cx entered in the target realm
+    // (same discipline as servo's debuggerglobalscope and the #27 census
+    // test).
+    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+    let name = b"Debugger\0".as_ptr().cast();
+    let mut found = false;
+    if !JS_HasProperty(&mut realm, global.handle(), name, &mut found) || found {
+        return;
+    }
+    let _ = JS_DefineDebuggerObject(&mut realm, global.handle());
+}
+
 /// Bridge callback: create Node Realm on servo's script thread.
 ///
 /// Creates a new JS global object in its own Compartment (NewCompartmentAndZone),

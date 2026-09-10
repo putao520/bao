@@ -51,7 +51,6 @@ pub use bun_sm::abort_signal;
 pub use bun_sm::builtin_name;
 pub use bun_sm::codegen;
 pub use bun_sm::common_strings;
-pub use bun_sm::debugger;
 pub use bun_sm::dispatch_sm;
 pub use bun_sm::error;
 pub use bun_sm::fetch_headers;

@@ -1784,6 +1784,13 @@ fn handle_debugger(
             }
         }
         "setPauseOnExceptions" => ok_empty(),
+        // SM-EVOLUTION #27 裁决 3: SpiderMonkey has no native blackbox face
+        // (Debug.h exposes nothing) — explicit unsupported error, never a
+        // canned ok that pretends sources were blackboxed.
+        "blackbox" | "unblackbox" => Err(not_supported(
+            &format!("Debugger.{command}"),
+            "SpiderMonkey's Debugger API has no native blackbox; bao does not emulate one",
+        )),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Debugger.{}' wasn't found", command),

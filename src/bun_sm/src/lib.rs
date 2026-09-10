@@ -81,7 +81,6 @@ pub mod common_strings;
 pub mod console_object;
 pub mod counters;
 pub mod create_utf;
-pub mod debugger;
 pub mod fetch_headers;
 pub mod format_tag;
 pub mod global_ref;
@@ -174,9 +173,6 @@ pub use dispatch_sm::BaoEventLoop;
 // ─── Codegen / generated ────────────────────────────────────────────────
 pub use codegen::{ClassDef, GeneratedBindings, ParseResult, PropertyDef, PropertyKind};
 pub use generated::{BracesOptions, GenList, GenOpt, GenVal, ProcessConfigOptions};
-
-// ─── Debugger ───────────────────────────────────────────────────────────
-pub use debugger::{Breakpoint, Debugger, DebuggerError, SourceInfo};
 
 // ─── Rare data ──────────────────────────────────────────────────────────
 pub use rare_data::{HotMap, HotMapEntry, RareData};

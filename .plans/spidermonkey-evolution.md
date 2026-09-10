@@ -80,7 +80,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；servo 侧入口与产品级暴露未接） |
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
-| #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；「换原生」消费归 #11/#19，删除/glue=后续微波） |
+| #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；Memory 计量（CollectRuntimeStats glue）+ GC callback 归 #19） |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN（核查轮+裁决提案已落 2026-09-10 见 §8：locale 缺口=1 行 include 非C++墙、tz/时间精度引擎原生实测可达、JIT/SAB 维持现状；三维页面可见身份待用户立法） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN（自动化 v1 已落地 2026-09-10：三脚本+seed inventory+adoption report+drift 基线，见 §8；升级波首跑+DoD 收口待下次 mozjs 前移） |
@@ -1304,6 +1304,69 @@ settle 后 drop 已可见（malloc trim 生效）；回收后 ~60s 内垃圾回�
 
 **遗留移交**：①挂死 RCA 合同（P0，阻塞一切长跑）；②60min 完整补跑（RCA 后）；
 ③A-2 类别级 leak 计数器（S2 退出标准尾项）；④RED-1 裁决仍挂（前轮遗留，不变）。
+
+### 2026-09-10 / #27 消费——CDP Debugger 保真批落地（裁决 2/3/9 实施：胶水换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除；+1 live e2e）
+
+**裁决 2（胶水保真换原生）六项终态**（cdp_handler.rs Debugger 域重写）：
+①断点 hit callFrames 恒 `[]` → `__bao_dbg_emit_paused` 命中时走真实帧链
+（callee/script/offset/environment/this 全真值）；②硬编码 location（onDebuggerStatement
+/list_frames lineNumber:0）→ `getOffsetLocation` 真值 + SM 1-origin→CDP 0-origin
+边界换算；③假 API `s.offsetLine(line,col)` → `getLineOffsets(smLine)`（真 API）+
+列号过滤 `getOffsetLocation().columnNumber`；④possibleBreakpoints 逐行合成 →
+`getPossibleBreakpoints()` 原生；⑤getEnvironment `{environment:{}}` 占位 →
+`frame.environment` 链原生（type/scopeKind/names()/getVariable 非调用式读，
+`{unavailable:true}` 标 optimized-out/DebuggeeWouldRun 拒读）；另：断点注册表/
+移除由「id miss → clearAllBreakpoints 全页 wipe」改为 `clearBreakpoint(handler)`
+精确移除；catch-all 吞错全部改显式错误（fail-closed）。
+
+**裁决 3（blackbox）**：cdp_handler 与 protocol.rs 双层显式
+`not_supported(-32000)`（"SpiderMonkey's Debugger API has no native blackbox;
+bao does not emulate one"），替代静默 no-op ok 假成功。
+
+**裁决 9（死模块）**：`bun_sm/src/debugger.rs`（166 行 Rust breakpoint CRUD，
+全仓零消费者）删除；`bun_sm/lib.rs` mod+re-export、`bao_engine/lib.rs` re-export
+同步摘除。
+
+**实施中发现并根治的三个真缺口**（e85 遗产复核暴露——原六项改造建立在不可用
+地基上，旧行为从未真正工作过）：
+- **G1 Debugger face 缺失**：servo 仅在 about:internal DebuggerGlobalScope 定义
+  Debugger 构造器，Node Realm/page realm 均无 → `new Debugger()` ReferenceError
+  被旧胶水 catch-all 吞掉（域从未活过）。根治：
+  `runtime_bridge::register_node_realm_debugger_install`——脚本线程回调内
+  `JS_DefineDebuggerObject`（jsapi2_wrappers:380 原生 face）装到 Node Realm
+  global，HasProperty 幂等守卫，**与 evaluate 回调同 FIFO 队列 + 同 stale-realm
+  生命周期校验**（navigation 换 ScriptThread/cx 后 realm 在当前 cx 重建，
+  install 落在配对 evaluate 真正使用的 global 上）。
+- **G2 SM compartment 铁律**：Debugger 必须与其 debuggee 异 compartment
+  （page realm 内 `new Debugger(window)` 直接 throw）。Debugger 实例与胶水落
+  **Node Realm**（`evaluate_js` face），`dbg.addDebuggee(window)`（window =
+  Node Realm 对 page global 的跨 compartment wrapper）。事件发射走
+  `window.console.log`（page console → servo delegate 传输；Node Realm 自有
+  console 写 process stdout，不可用作 `__BAO_EVT__` 通道）——delegate 双实现
+  （BaoServoDelegate + BaoWebViewDelegate）补 `__BAO_EVT__` 前缀臂：结构化事件
+  走 ConsoleMessage parser（Path A），Path B 活跃时不再降级 Log.entryAdded。
+- **G3 console_log_tx 无回传**：`set_console_log_channel` 只设 runtime 级
+  delegate，servo 控制台消息按 webview 路由（读 `state.console_log_tx`）——
+  run_browser 先建页后装通道，**首页 state 恒 None**（set_event_channel 早修过
+  同型缺口，console 通道漏修）。根治：镜像 event_tx 回传到全部现存页 state。
+
+**BCE-20260621-002 复核**：JS-face `addDebuggee` 同样触发
+`Realm::setIsDebuggee` JIT instrumentation（servo Rust-side fire_add_debuggee
+被 disable_script_debugger 挡住，JS face 不经该门）——mozjs fork patch #4
+（BaselineFrame NULL activation guard）为防护；live e2e 实证 attach+断点+后续
+JIT 活动零崩溃。BCE-20260622-004（hideScriptFromDebugger）：仅作用于 node-realm
+evaluate 编译，与 Debugger 域 onNewScript 无冲突（27-3 前瞻约束仍立）。
+
+**live 保真 e2e**（`bao_browser/tests/suite/cdp_debugger_fidelity_tests.rs`，
+生产 run_browser 全布线：console receiver + event channel + WS registry）：
+保真三角——scriptParsed.startLine、setBreakpointByUrl 解析 location
+（getOffsetLocation 真值非请求回显）、paused 帧 location 三处独立原生读必须
+同线；断点命中 callFrames 非空 + functionName/location/scopeChain
+（local/closure/global + className 描述、无假 objectId）/this 全真值断言；
+getPossibleBreakpoints 原生条目含已证可断行；blackbox/unblackbox 显式
+-32000；removeBreakpoint 后负窗口零复发；`debugger;` 语句真位置暂停（函数级
+Script 同 url 异 id 已入断言口径）；GetEnvironment bridge face 新数组形态。
+**1 run / 1 passed（~4.2s）**；attach 后多次 evaluate+JIT 活动无 SIGSEGV。
 
 ---
 

@@ -4632,6 +4632,22 @@ impl ServoDelegate for BaoServoDelegate {
         log::trace!("[servo] {message}");
 
         // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        // `__BAO_EVT__` texts are the JS→Rust CDP event transport (Debugger
+        // .scriptParsed/.paused etc., emitted by the page-realm Debugger glue
+        // in cdp_handler) — structured event data, not a log line. They route
+        // through the ConsoleMessage parser (Path A) even when the raw
+        // ServoEvent path (Path B) is active: Path B has no structured-event
+        // equivalent, so without this arm the events would degrade to
+        // Log.entryAdded and never reach Debugger-domain subscribers
+        // (SM-EVOLUTION #27 裁决 2 transport closure).
+        if message.starts_with("__BAO_EVT__") {
+            if let Some(ref tx) = *self.console_log_tx.borrow() {
+                if let Some(ConsoleMessage::Event(evt)) = BaoEvent::from_console_text(&message) {
+                    let _ = tx.send(ConsoleMessage::Event(evt));
+                    return;
+                }
+            }
+        }
         // When event_tx is set, push structured ServoEvent::Console (Path B) as the primary
         // event path. Only fall back to console_log_tx (Path A) when event_tx is absent,
         // avoiding double-broadcast of the same event.
@@ -4826,7 +4842,20 @@ impl WebViewDelegate for BaoWebViewDelegate {
 
         // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
         // Same dual-path logic as BaoServoDelegate::show_console_message:
-        // event_tx (Path B) is primary; console_log_tx (Path A) is fallback.
+        // `__BAO_EVT__` structured CDP events route to the ConsoleMessage
+        // parser (Path A) even when Path B is active (see the twin
+        // implementation above for the full rationale), then event_tx
+        // (Path B) is primary for plain logs; console_log_tx (Path A) is
+        // fallback.
+        if message.starts_with("__BAO_EVT__") {
+            let tx = self.state.borrow().console_log_tx.clone();
+            if let Some(ref tx) = tx {
+                if let Some(ConsoleMessage::Event(evt)) = BaoEvent::from_console_text(&message) {
+                    let _ = tx.send(ConsoleMessage::Event(evt));
+                    return;
+                }
+            }
+        }
         let event_tx = self.state.borrow().event_tx.clone();
         if let Some(ref tx) = event_tx {
             let servo_level = match level {
