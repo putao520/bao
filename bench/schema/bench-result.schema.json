@@ -26,7 +26,8 @@
         "realm-create-drop",
         "page-churn",
         "fetch-small-payload",
-        "rss-sample"
+        "rss-sample",
+        "soak"
       ],
       "description": "Stable benchmark id; matches the harness subcommand."
     },

@@ -8,10 +8,15 @@
 # Usage:
 #   bench/run.sh                      # all 5 seed benches
 #   bench/run.sh fetch-small-payload  # one bench (repeatable unit)
+#   bench/run.sh soak                 # long soak (NOT in the default set —
+#                                      # minutes-to-hours scale; first bounded
+#                                      # round 60min, 72h via SOAK_DURATION_MINS)
 #
 # Environment:
-#   CARGO_TARGET_DIR  defaults to the shared build cache (see CLAUDE.md)
-#   RUNS              per-bench process reruns (default 3; page-churn uses 1)
+#   CARGO_TARGET_DIR      defaults to the shared build cache (see CLAUDE.md)
+#   RUNS                  per-bench process reruns (default 3; page-churn/soak use 1)
+#   SOAK_DURATION_MINS    soak duration (default 60); per-cycle series lands
+#                         next to the result as <bench>.run-<k>.segments.jsonl
 
 set -euo pipefail
 
@@ -38,13 +43,14 @@ echo "[bench] commit=$GIT_SHORT dirty=$GIT_DIRTY profile=$PROFILE rustc=$RUSTC_V
 echo "[bench] results → $RESULTS_DIR"
 
 # bench name → runs (process-level reruns; browser churn is seconds-per-cycle,
-# R=1 recorded with reason per METHODOLOGY §3)
+# R=1 recorded with reason per METHODOLOGY §3; soak is minutes-scale, R=1)
 declare -A BENCH_RUNS=(
   [runtime-create-drop]="${RUNS:-3}"
   [realm-create-drop]="${RUNS:-3}"
   [fetch-small-payload]="${RUNS:-3}"
   [rss-sample]="${RUNS:-3}"
   [page-churn]="${RUNS_PAGE:-1}"
+  [soak]="${RUNS_SOAK:-1}"
 )
 
 ORDERED_BENCHES=(
@@ -75,6 +81,11 @@ run_one() {
     page-churn)
       # Browser stack needs a DISPLAY — xvfb provides an isolated virtual one.
       xvfb-run -a "$BIN" "$bench" --out "$out" >"$log" 2>&1
+      ;;
+    soak)
+      # Browser stack (xvfb) + minutes-scale duration; the per-cycle series
+      # streams to $out-derived .segments.jsonl inside the harness.
+      xvfb-run -a "$BIN" "$bench" --duration-mins "${SOAK_DURATION_MINS:-60}" --out "$out" >"$log" 2>&1
       ;;
     *)
       "$BIN" "$bench" --out "$out" >"$log" 2>&1

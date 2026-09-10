@@ -213,15 +213,25 @@ Interpretation: <一句话总结,允许 "Bao slower -X%">
 - 回归检测进入发布门(未来 H 节):对照上次版本化基线,负偏移超阈值 →
   fail / require adjudication(重复样本 + cv 规则,不用单次数字)
 
-## 11. 当前限制(2026-09-10,Phase A 交付时点)
+## 11. 当前限制(2026-09-10,Phase A 交付时点;soak 首轮同日追加)
 
 - 首批 seed 基线 5 项(见 `bench/results/`):runtime create/drop、realm create/drop、
   page churn、fetch 小负载吞吐(Node 栈,`JsContext` + 本地 HTTP server)、RSS 三相采样
 - seed 全部 test-ci 档 + 共享开发机(非独占空闲)——正式对照报告待 fat-LTO release
   档 + governor=performance 窗口
+- **soak 子命令已落地(2026-09-10 首轮有界)**:`bench/run.sh soak`(默认 60min,
+  `SOAK_DURATION_MINS` 覆盖;72h 全量同入口)——page-churn 形态共享循环体
+  (`page_bench::churn_cycle`,数字与 seed 可比)、逐循环 RSS/fd/thread 采样、
+  `segment-mins` 分段 + 段界 forced-GC 探针(长寿命探针页 Node Realm `Bun.gc()`×2,
+  pre/post RSS)、跑后 post-idle 回收相位;逐循环序列落
+  `<bench>.run-<k>.segments.jsonl`(crash-safe append);泄漏率判定用
+  `vm_rss_slope_steady`(剔 warm-up 段),整程斜率 `vm_rss_slope_over_soak` 仅供
+  与 page-churn seed 对齐口径。**forced-GC 只覆盖探针页自身 JSRuntime**
+  (每 JSContext 独立 JSRuntime,churn 页堆随 ScriptThread 退出回收)——post-GC
+  RSS delta 是可回收内存下界,如实入 notes
 - 未覆盖(按 issue #19 分节推进):evaluate round-trip 已有
   `src/bao_engine/benches/evaluate_roundtrip.rs`(2026-08-21 首跑);fs/crypto/sqlite/
-  spawn/bundler、CDP 双 transport、多页并发 RSS、soak、Node/Bun/Chromium 对照 = 后续 Phase
+  spawn/bundler、CDP 双 transport、多页并发 RSS、Node/Bun/Chromium 对照 = 后续 Phase
 - 已知观察项:`bao -e` / `bao run *.mjs` 顶层 await fetch 在 CLI 自驱 drain 下挂起
   (2026-09-10 探测,详见 results 目录 notes 与 issue #19 评论)——bench ④ 因此走
   测试已证明的 embedder-pump 形态;该 CLI 缺陷本身待独立 issue 根治

@@ -23,11 +23,17 @@
 (create/navigate/evaluate/close + RSS/fd/thread 探针)、fetch 小负载吞吐
 (Node 栈,本地 server)、RSS 三相采样。
 
+**soak 子命令已落地(SM-EVOLUTION #29,2026-09-10 首轮有界)**:
+`bench/run.sh soak`(默认 60min,`SOAK_DURATION_MINS` 覆盖,72h 全量同入口)。
+page-churn 形态长跑(page-churn 同一循环体)+ 逐循环 RSS/fd/thread 采样 +
+分段摘要 + 段界 forced-GC 探针(长寿命探针页 Node Realm `Bun.gc()`×2)+
+post-idle 回收相位;逐循环序列 crash-safe 落 `.segments.jsonl` sidecar。
+
 **更早的 harness:evaluate() 往返延迟**(#2),位于
 `src/bao_engine/benches/evaluate_roundtrip.rs`(cargo bench 标准 `[[bench]]` target,
 仓库 bench 先例 `src/js_parser/benches/`)。首跑数据见 §3.1。
 
-其余维度(§4 全部、CDP 双 transport、soak、对照)仍 TBD。
+其余维度(§4 全部、CDP 双 transport、对照)仍 TBD。
 
 ## 测量维度(规划)
 
@@ -132,4 +138,4 @@ bench/
 ```
 
 后续维度(harness subcommand 扩展):fs / crypto / sqlite / spawn / bundler
-(§4)、CDP 双 transport、多页并发 RSS、soak(#19 F/G)。
+(§4)、CDP 双 transport、多页并发 RSS(soak 已落地——#19 F/G 泄漏量化)。

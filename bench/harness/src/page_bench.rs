@@ -14,6 +14,94 @@ use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
 
 use crate::common::{self, Metric, Params, ResultBuilder};
 
+/// Per-phase timing of one churn cycle (all fields in ms; `cycle_ms` is the
+/// sum). Shared shape for the page-churn bench and the soak long run.
+pub(crate) struct CycleTiming {
+    pub create_ms: f64,
+    pub ready_ms: f64,
+    pub nav_ms: f64,
+    pub load_ms: f64,
+    pub eval_ms: f64,
+    pub close_ms: f64,
+    pub cycle_ms: f64,
+}
+
+/// One churn cycle: create(about:blank) → pipeline ready → navigate(data:
+/// URL) → load complete → verified evaluate → close. Single source of truth
+/// for the cycle shape — the page-churn bench and the soak long run share it,
+/// so their numbers stay comparable (METHODOLOGY.md §2 cross-run comparison
+/// requires the same command shape).
+///
+/// Fail-closed: any step failure or marker mismatch returns Err (carrying the
+/// iteration index) — no green numbers on wrong results.
+pub(crate) fn churn_cycle(runtime: &BaoRuntime, i: usize) -> Result<CycleTiming, String> {
+    let marker = format!("benchmark-{i}");
+    // Space-free / quote-free HTML: the WHATWG URL parser percent-encodes
+    // both inside a data: URL path, which would corrupt the markup — so
+    // the attribute is unquoted (`id=b`) and the marker has no spaces.
+    let data_url = format!("data:text/html,<h1 id=b>{marker}</h1>");
+
+    let tc = Instant::now();
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some("about:blank".into()),
+            ..Default::default()
+        })
+        .map_err(|e| format!("iter {i}: create_page failed: {e}"))?;
+    let t_create = tc.elapsed().as_secs_f64() * 1e3;
+
+    let tr = Instant::now();
+    page.wait_for_pipeline_ready(Duration::from_secs(15))
+        .map_err(|e| format!("iter {i}: pipeline not ready: {e}"))?;
+    let t_ready = tr.elapsed().as_secs_f64() * 1e3;
+
+    let tn = Instant::now();
+    page.navigate(&data_url)
+        .map_err(|e| format!("iter {i}: navigate failed: {e}"))?;
+    let t_nav = tn.elapsed().as_secs_f64() * 1e3;
+
+    // wait_for_navigation (not a readyState poll): about:blank is already
+    // "complete", so polling readyState would observe the STALE previous
+    // load and check the marker before the new document commits — the
+    // primitive waits for the fresh Started→Complete cycle instead.
+    let tl = Instant::now();
+    page.wait_for_navigation(Duration::from_secs(15))
+        .map_err(|e| format!("iter {i}: {e}"))?;
+    let t_load = tl.elapsed().as_secs_f64() * 1e3;
+
+    let te = Instant::now();
+    let check = page
+        .evaluate_js_web(&format!(
+            "String(document.getElementById('b') && document.getElementById('b').textContent === '{marker}')"
+        ))
+        .map_err(|e| format!("iter {i}: marker eval failed: {e}"))?;
+    let t_eval = te.elapsed().as_secs_f64() * 1e3;
+    if !check.contains("true") {
+        return Err(format!(
+            "iter {i}: marker verification failed (got {check:?}) — fail-closed, no green numbers on wrong results"
+        ));
+    }
+
+    let pid = page.id();
+    let tcl = Instant::now();
+    runtime
+        .page_pool()
+        .close_page(pid)
+        .map_err(|e| format!("iter {i}: close_page failed: {e}"))?;
+    let t_close = tcl.elapsed().as_secs_f64() * 1e3;
+
+    let cycle = t_create + t_ready + t_nav + t_load + t_eval + t_close;
+    Ok(CycleTiming {
+        create_ms: t_create,
+        ready_ms: t_ready,
+        nav_ms: t_nav,
+        load_ms: t_load,
+        eval_ms: t_eval,
+        close_ms: t_close,
+        cycle_ms: cycle,
+    })
+}
+
 pub fn run(p: &Params) -> Result<ResultBuilder, String> {
     let iterations = p.usize_of("iterations", 15);
     let warmup = p.usize_of("warmup", 2);
@@ -100,70 +188,15 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
             break;
         }
         executed += 1;
-        let marker = format!("benchmark-{i}");
-        // Space-free / quote-free HTML: the WHATWG URL parser percent-encodes
-        // both inside a data: URL path, which would corrupt the markup — so
-        // the attribute is unquoted (`id=b`) and the marker has no spaces.
-        let data_url = format!("data:text/html,<h1 id=b>{marker}</h1>");
-
-        let tc = Instant::now();
-        let page = runtime
-            .create_page(&PageConfig {
-                url: Some("about:blank".into()),
-                ..Default::default()
-            })
-            .map_err(|e| format!("iter {i}: create_page failed: {e}"))?;
-        let t_create = tc.elapsed().as_secs_f64() * 1e3;
-
-        let tr = Instant::now();
-        page.wait_for_pipeline_ready(Duration::from_secs(15))
-            .map_err(|e| format!("iter {i}: pipeline not ready: {e}"))?;
-        let t_ready = tr.elapsed().as_secs_f64() * 1e3;
-
-        let tn = Instant::now();
-        page.navigate(&data_url)
-            .map_err(|e| format!("iter {i}: navigate failed: {e}"))?;
-        let t_nav = tn.elapsed().as_secs_f64() * 1e3;
-
-        // wait_for_navigation (not a readyState poll): about:blank is already
-        // "complete", so polling readyState would observe the STALE previous
-        // load and check the marker before the new document commits — the
-        // primitive waits for the fresh Started→Complete cycle instead.
-        let tl = Instant::now();
-        page.wait_for_navigation(Duration::from_secs(15))
-            .map_err(|e| format!("iter {i}: {e}"))?;
-        let t_load = tl.elapsed().as_secs_f64() * 1e3;
-
-        let te = Instant::now();
-        let check = page
-            .evaluate_js_web(&format!(
-                "String(document.getElementById('b') && document.getElementById('b').textContent === '{marker}')"
-            ))
-            .map_err(|e| format!("iter {i}: marker eval failed: {e}"))?;
-        let t_eval = te.elapsed().as_secs_f64() * 1e3;
-        if !check.contains("true") {
-            return Err(format!(
-                "iter {i}: marker verification failed (got {check:?}) — fail-closed, no green numbers on wrong results"
-            ));
-        }
-
-        let pid = page.id();
-        let tcl = Instant::now();
-        runtime
-            .page_pool()
-            .close_page(pid)
-            .map_err(|e| format!("iter {i}: close_page failed: {e}"))?;
-        let t_close = tcl.elapsed().as_secs_f64() * 1e3;
-
-        let cycle = t_create + t_ready + t_nav + t_load + t_eval + t_close;
+        let t = churn_cycle(&runtime, i)?;
         if i >= warmup {
-            create_ms.push(t_create);
-            ready_ms.push(t_ready);
-            nav_ms.push(t_nav);
-            load_ms.push(t_load);
-            eval_ms.push(t_eval);
-            close_ms.push(t_close);
-            cycle_ms.push(cycle);
+            create_ms.push(t.create_ms);
+            ready_ms.push(t.ready_ms);
+            nav_ms.push(t.nav_ms);
+            load_ms.push(t.load_ms);
+            eval_ms.push(t.eval_ms);
+            close_ms.push(t.close_ms);
+            cycle_ms.push(t.cycle_ms);
             rss_after_close.push(common::vm_rss_kib().unwrap_or(0) as f64);
             hwm_after_close.push(common::vm_hwm_kib().unwrap_or(0) as f64);
             fd_after_close.push(common::fd_count().unwrap_or(0) as f64);

@@ -6,7 +6,7 @@
 //!
 //! Usage: bench-harness <bench> [--key value ...]
 //! Benches: runtime-create-drop | realm-create-drop | page-churn |
-//!          fetch-small-payload | rss-sample
+//!          fetch-small-payload | rss-sample | soak
 
 mod common;
 mod fetch_bench;
@@ -14,11 +14,12 @@ mod page_bench;
 mod realm_bench;
 mod rss_bench;
 mod runtime_bench;
+mod soak_bench;
 
 use std::collections::HashMap;
 
 fn usage() -> ! {
-    eprintln!("usage: bench-harness <runtime-create-drop|realm-create-drop|page-churn|fetch-small-payload|rss-sample> [--key value ...]");
+    eprintln!("usage: bench-harness <runtime-create-drop|realm-create-drop|page-churn|fetch-small-payload|rss-sample|soak> [--key value ...]");
     std::process::exit(2);
 }
 
@@ -48,6 +49,8 @@ fn main() {
         "page-churn" => page_bench::run(&params),
         "fetch-small-payload" => fetch_bench::run(&params),
         "rss-sample" => rss_bench::run(&params),
+        // soak streams a per-cycle series to a sidecar derived from --out.
+        "soak" => soak_bench::run(&params, out_path.as_deref()),
         _ => usage(),
     };
 
