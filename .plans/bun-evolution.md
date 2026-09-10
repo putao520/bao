@@ -192,6 +192,125 @@ None yet.
 - Batch-1 code: bun correctness ×4 queued from 09-06 (`f42e980255` zstd drain, `bdbe669b15` brotli drain, `86b2e060cf` install lockfile pool-by-bytes, `c01965ff72` bundler `[hash]` widen) + **#32 candidate #3 v1: CDP server thread stop+join** (`cdp-server/src/server.rs:93` run loop has no stop condition; `bao_browser/src/lib.rs:574` spawns without join; the existing `unpark()` is a no-op against a sleeping thread).
 - Candidate #2 premise revision (blocking re-rank, not execution): `GLOBAL_HTTP2_FINGERPRINT` (`bao_stealth/src/http2.rs:186`) is process-global, but so is the TLS wire config it mirrors — both set at the same lifecycle point (`bao_browser/src/runtime_bridge.rs:1258` `servo::set_stealth_tls_config` + `:1274` h2 snapshot). The census's "TLS per-realm vs H2 global" contrast only holds for the JS-visible face (`engine_props.rs:333` REALM_PROFILES). Per-page wire fingerprinting (TLS+H2 together) requires page-identity plumbing into the servo net connector — one architecture decision covering both surfaces, not an H2-only fix. Re-ranked below #3 v1.
 
+### 2026-09-10 / B0 census refresh (#32 Phase 0 re-scan, pure inventory round)
+
+**Baseline**: bao master `cc7f885a`. Method: delta re-scan vs the 2026-09-05 census (`.plans/b0-census-2026-09-05.md`) after the 2026-09-09/10 BRW-004 worker/SW waves + settings-stack/pump-bridge fixes; all `file:line` below read this run; test-only (`#[cfg(test)]`) code excluded. Zero code changes this round.
+
+#### Resolved since 2026-09-05 census
+
+- **Row 16 (top candidate #1) RETIRED** — `init_env_aliases` landed in `dad8135d` (see Slice #1 entry above); `runtime.rs:27` now carries the explicit "#32 / no `std::env::set_var` in the constructor" retirement comment.
+- **Row 43 first item (top candidate #3 v1) LANDED** — CDP server thread is now cooperatively stopped and joined: `bao_browser/src/lib.rs:782-794` (stop_handle before move, `store(true, Release)` + `join()` on exit path), run loop polls the flag (`cdp-server/src/server.rs:33,103-111`), commit `f9005cf5`.
+
+#### Family ① — spawn/fork/exec call sites (delta: unchanged)
+
+All prior rows still hold verbatim: every runtime spawn site is public API semantics (`bun_spawn_sync.rs:412` Bun.spawnSync; `bun_api.rs:1991` Bun.spawn; `bun_shell.rs:520` $-shell /bin/sh; `bun_api.rs:9063` openInNewTab opener; `node_child_process.rs:1001+` child_process posix_spawn+pipes+fd-3; `node_cluster.rs` cluster.fork child processes; `install/lifecycle_script_runner.rs:1245` npm lifecycle) or build-time (`*/build.rs` rustc probes) or dormant executable machinery (`crash_handler/lib.rs:2887-2900` fork+execve auto-reload; `bun_core/util.rs:4707+` reload_process — still no bao-layer setter). **Zero internal-orchestration spawns** conclusion unchanged. Labels: all PUBLIC-PROCESS-SEMANTICS / N/A-dormant as in census rows 1-8, 13-15.
+
+#### Family ② — IPC/pipe/socketpair/process message transport (delta: unchanged)
+
+- `ipc_channel.rs:174-181` socketpair — still the single socketpair, still public child_process/cluster IPC support (census row 9).
+- Internal transport still typed in-process mpsc everywhere new: BridgeChannel (`bao_cdp/src/servo_bridge.rs`), EventSubscriber pair (`bao_browser/src/lib.rs:749-750`, C19-② net tap), SW `CustomResponseMediator`/`SwManagers` (vendor, typed ipc-router channels — already the §2 target form).
+- In-process wake pipes (not process IPC): `node_tls.rs:560` driver wake pipe, `node_fs.rs:3453` fswatch wake pipe — thread-wake machinery owned by joined threads (see family ③). **Zero process-shaped internal IPC** unchanged (row 10).
+
+#### Family ③ — daemon/background helper/server loops (delta: 2 resolutions, 3 newly-listed detached threads)
+
+- Daemon/background helper **processes**: still zero hit.
+- CDP server thread: RESOLVED as above (owned + joined) → ALREADY-TRANSPOSED exemplar.
+- NEW exemplar: fswatch hub worker `node_fs.rs:3358-3385` — `FswHub::Drop` = wake-pipe signal + `handle.join()` + fd close; the cancel→drain→join discipline this plan §2 prescribes. ALREADY-TRANSPOSED.
+- Prior-missed production detached threads (pre-existing on 09-05, now listed; none new since):
+  - `bao_runtime/src/dispatch.rs:200-211` `bao-dns-prefetch` fire-and-forget one-shot getaddrinfo thread (result discarded, warms OS resolver only; touches no bao state; self-terminating).
+  - `bao_runtime/src/node_tls.rs:583` `bao-tls-driver` — process-global permanent wake-drain reader thread (companion of census row 23 `DRIVER` OnceLock; never joined, lives for process).
+  - `bao_runtime/src/node_tls.rs:2848` `bao-tls-connect` per-op blocking-connect worker (10s internal deadline; detached).
+  - Row 43 remainder unchanged: `web_api.rs:958` WS-connect slot (leak on JS-thread teardown), `node_crypto.rs:5531` / `node_fs.rs:709` / `bun_build.rs:289` per-op completion threads, `node_child_process.rs:288,3682` per-child `cp-fork-{pid}` pipe_poll (10ms sleep-poll).
+  - All: mechanism already threads; gap remains ownership on `BaoRuntime::drop` → TASK-TRANSPOSE (per-op one-shots are bounded and bao-state-free; risk ordering below).
+
+#### Family ④ — process-local global state (delta: +3 new rows, +1 vendor-seam cluster row, rest verified intact)
+
+Prior rows verified still present at shifted lines: 17 servo Opts (`bao_browser/src/lib.rs:76` BAO_SERVO_OPTS_INIT), 18 PROCESS_MEMORY_BRIDGE (`bao_cdp_client/src/browser.rs:40`), 19 NODE_REALM/PAGE_GLOBAL (`runtime_bridge.rs:116-117`, blocked on #23), 20 GLOBAL_HTTP2_FINGERPRINT (`bao_stealth/src/http2.rs:186`, unchanged), 21 CONSOLE_TIMERS/COUNTERS (`node_console.rs:20-23`, blocked), 22 UDP_REGISTRY (`node_dgram.rs:18`), 23 DRIVER (`node_tls.rs:492+`), 24 WORKER_REGISTRY (`node_worker_threads.rs:44`), 25 CP_ASYNC_STATES/CP_IPC_CHANNELS/CP_STDIN_FDS (`node_child_process.rs:41+`), 26 BAO_PROCESS_START_NS (`bun_api.rs:7659`, public uptime anchor), 27-31 linked-tier weak rows unchanged.
+
+NEW rows (all landed 2026-09-09/10 waves):
+
+| # | Code path | Responsibility | Label |
+|---|---|---|---|
+| R51 | `src/bao_runtime/src/timers.rs:372-380` `BAO_SETTINGS_RUNNER: OnceLock<Box<dyn Fn>>` | Process-global servo settings-stack runner, registered per `BaoRuntime::new` (`bao_browser/src/lib.rs:286`, BCE-20260910-004), first-writer-wins | RUNTIME-LOCALIZE — same class as census row 30 engine hooks; multi-runtime: 2nd runtime's runner silently ignored (benign today only because every runtime registers the same closure) |
+| R52 | `src/bao_runtime/src/fetch_async.rs:405-417` `THREAD_WAKEUP_BRIDGE: OnceLock<fn>` | Process-global thread-wake lookup bridge, registered per `BaoRuntime::new` (`lib.rs:294`), first-writer-wins | RUNTIME-LOCALIZE — same class as R51 |
+| R53 | Vendor-seam per-runtime installer cluster: `servo::set_webviewless_resource_handler` (`lib.rs:320`, servo-side RwLock **last-write-wins**), `set_canvas_noise_seed` (`runtime_bridge.rs:1412`), `set_stealth_tls_config` (`runtime_bridge.rs:1423/1451` process-global wire config) | Every `BaoRuntime::new` overwrites process-global servo net/render config with that runtime's stealth profile | RUNTIME-LOCALIZE — **BLOCKED** on the re-scoped candidate #2 page-identity plumbing (this row IS that candidate's census anchor); multi-runtime = last runtime's TLS/canvas/H2 fingerprint silently wins process-wide |
+| R54 | `src/bao_runtime/src/gc_store.rs:119-126` `thread_local! GC_STORE` | Bare-JSObject rooting store keyed per thread, rooted before allocation windows (9f5f4692) | ALREADY-TRANSPOSED (TLS exemplar; never crosses threads) |
+| R55 | `src/bao_runtime/src/dispatch.rs:207` dns-prefetch + `node_tls.rs:583/2848` threads (family ③) | detached one-shot / permanent / per-op threads | TASK-TRANSPOSE (family ③ remainder) |
+
+Also verified: zero `tokio::spawn`/`spawn_blocking` in bao layer (the C19 S2b `spawn_blocking` pattern lives only in vendor `http_loader.rs`); zero `atexit`; signal sites remain the public windowed quartet (`product_native_symbols.rs:58-122` `Bun__currentSyncPID`) + `process.kill` self-check/SIG_DFL (`bun_api.rs:7547-7555`) = PUBLIC-PROCESS-SEMANTICS; `process.env` write bridge `bun_api.rs:7597/7617` = PUBLIC-PROCESS-SEMANTICS (public env API, distinct from the retired constructor mutation). `runtime_bridge.rs:1141` / `web_api.rs:1869` `static mut FORMAT` JSErrorFormatString tables = N/A (immutable format tables). Per-WebView-keyed vendor injector registries (`EMBEDDER_WORKER_SCOPE_INJECTORS` etc., upsert per webview + `unregister_worker_injectors` on page close, `page.rs:1342`) = correctly keyed, no interference.
+
+#### To-translate list (target form per plan §2)
+
+| Item | Target form |
+|---|---|
+| R53 vendor-seam stealth/net config cluster (+ census row 20 GLOBAL_HTTP2_FINGERPRINT) | page/runtime-identity keyed config plumbed into servo connector (re-scoped candidate #2; single decision covering TLS wire + H2 + canvas seed + webviewless handler faces) |
+| R51 BAO_SETTINGS_RUNNER / R52 THREAD_WAKEUP_BRIDGE | runtime-owned registration (per-runtime slot or keyed registry), or explicit first-runtime-wins contract documented + enforced |
+| Family ③ remainder (dns-prefetch one-shots; tls-connect/WS-connect/crypto/fs/build per-op threads) | task/owned-thread with cancel→drain→join on `BaoRuntime::drop` (fswatch hub + CDP server are the in-tree patterns to copy); tls-driver thread → runtime-scoped driver with explicit shutdown |
+| Census rows 22-25 registries (UDP/WORKER/CP) | BaoRuntime-owned registries cleared on drop (B1) |
+| Census row 18 PROCESS_MEMORY_BRIDGE | token-keyed map or newest-wins documented (B1) |
+| Blocked: rows 17/19/21 | unchanged blockers (servo upstream Opts / #23 scoping / product-semantics ruling) |
+
+#### Public API legitimate-retention list
+
+`Bun.spawn`/`spawnSync`/`$`shell/`openInNewTab`, Node `child_process.*` (spawn/fork/exec + fd-3 IPC socketpair), `cluster.fork` + primary/worker PID messaging, `process.env` read/write bridge, `process.pid`/`process.kill` (+ windowed signal forwarding), `process.uptime` start anchor, `inspector.Session` fail-closed, npm install lifecycle child processes, test-harness `bunExe`/`bunRun`. All real OS-process semantics by contract — out of elimination scope per #32.
+
+#### Risk ranking (unchanged order; refresh conclusions)
+
+1. **Biggest risk: R53 vendor-seam cluster** — process-global stealth TLS/H2/canvas config overwritten per-runtime is a product-correctness defect under multi-runtime embedding (undetectable inconsistency between runtimes' fingerprints; also the ledger's re-scoped candidate #2). BLOCKED on page-identity plumbing architecture decision.
+2. Family ③ detached-thread ownership remainder (bounded one-shots, lower urgency; `bao-tls-driver` permanent thread + WS-connect slot leak are the two with actual lifetime hazards).
+3. R51/R52 first-wins bridges (benign today, contract should be made explicit).
+
+**§9 premise note (additive, no rewrite)**: §9's "#3 v1 in flight" premise is stale — it landed in `f9005cf5`. Per §9's own second sentence, the standing next single action is the re-scoped candidate #2 (= R53 cluster above).
+
+### 2026-09-10 / R53 decision proposal (design-only round; zero code changed)
+
+Purpose: unblock the risk-rank-#1 row via an explicit user decision. **Nothing below is implemented; implementation of any option requires a user ruling first.**
+
+#### ① Current-state precise anchors (all re-read this run)
+
+Cluster members, per member: storage / setter path / consumers / lifecycle.
+
+1. **TLS wire config** — storage `vendor/servo/components/net/connector.rs:88` `static STEALTH_TLS_CONFIG: RwLock<Option<StealthTlsWireConfig>>`; setter chain `connector.rs:94` ← `servo::lib.rs:263` ← bao `runtime_bridge.rs:1423`(Some)/`:1451`(None); consumers `connector.rs:274` `create_tls_config` (websocket path `http_loader.rs:2105`) and `bun_bridge.rs:1938` `obtain_response_bun` (THE page egress path — reads the global **per request**).
+2. **H2 fingerprint** — storage `src/bao_stealth/src/http2.rs:186` `GLOBAL_HTTP2_FINGERPRINT: RwLock<Option<Http2Fingerprint>>`; setter `http2.rs:191` ← `runtime_bridge.rs:1439`/`:1452`; consumer `bun_bridge.rs:1969` per request.
+3. **Canvas noise** — storage `vendor/servo/components/canvas/canvas_noise.rs:9,13,16` (three atomics); setter `canvas_noise.rs:22` ← `servo::lib.rs:304` ← `runtime_bridge.rs:1412`; consumer `canvas_paint_thread.rs:318` `apply_canvas_noise(.., get_global_canvas_noise())` — ONE process-wide paint thread (`canvas_paint_thread.rs:28-32`, `canvases: FxHashMap<CanvasId, _>`), commands keyed by `CanvasId` only, **no webview identity on the canvas command path**.
+4. **Webviewless resource handler** — storage `vendor/servo/components/net/request_interceptor.rs:53` `BAO_WEBVIEWLESS_RESOURCE_HANDLER: parking_lot::RwLock<Option<Arc<dyn Fn>>>`; setter `request_interceptor.rs:58` ← `servo::lib.rs:298` ← `bao_browser/src/lib.rs:320` (inside `BaoRuntime::new`); consumer `request_interceptor.rs:95` for `target_webview_id == None` fetches. Today every runtime installs the identical constant `PassThrough` closure → last-write-wins is currently **semantically invisible** (benign until an embedder installs real logic).
+5. (Adjacent, same family, discovered this run) **fetch() thread-local profile** — `src/bao_runtime/src/fetch_api.rs:26` `TL_STEALTH_PROFILE` set per page install (`runtime_bridge.rs:1410/1450`); read by page egress on the ScriptThread. Pages sharing one ScriptThread (`force_isolate=false`) get last-install-wins on the JS-visible fetch face — same seam class, keyed-per-realm lookup (`engine_props::set_profile_for_global`, `runtime_bridge.rs:1408`) exists but fetch does not use it.
+
+**Census correction (supersedes the row-53 wording)**: the TLS/H2/canvas setters do NOT fire per `BaoRuntime::new` — they fire **per page creation**: `PagePool::create_page` (`page_pool.rs:97`) → `inject_all_with_profile` (`runtime_bridge.rs:1549`) → `install_all_native` (`runtime_bridge.rs:1412/1423/1439`). Only member 4 is per-runtime. Consequence: the silent cross-contamination is **already reachable in a single runtime** — two pages with different `PageConfig.stealth_profile` (`config.rs:15`, public per-page field) leave the process wire config + canvas seed = last-created page's profile, applied to *all* pages' subsequent new connections and canvas readbacks. Multi-runtime is the second axis, not the only one.
+
+**Identity carrier already exists in the net layer**: `net::request::Request` carries `target_webview_id: Option<WebViewId>` + `pipeline_id: Option<PipelineId>` (`shared/net/request.rs:497-498`), threaded through `http_loader` (`:129,668,693,2386`) and into `obtain_response_bun` (`bun_bridge.rs:1799` — receives `pipeline_id` today, not yet `target_webview_id`). The SSLConfig intern registry (`bun_bridge.rs:1969` comment) already keys connection pools by config pointer — distinct per-page configs automatically get distinct connection buckets (no cross-profile connection reuse).
+
+#### ② Option space
+
+**A — page-identity plumbing (per-WebViewId config registries)**
+Net face: `STEALTH_TLS_CONFIG` and `GLOBAL_HTTP2_FINGERPRINT` become `WebViewId → config` registries (+ explicit fallback entry for identity-less requests); `install_all_native` writes keyed by `webview_id` (already in scope); `http_loader` passes `request.target_webview_id` into `obtain_response_bun`; reads at `bun_bridge.rs:1938/1969` and `create_tls_config` resolve per request. Canvas face: per-canvas noise config instead of the global — stamp `CanvasNoiseConfig` at canvas creation (script thread knows both page and canvas) into the `Canvas`, read it at the `GetImageData` choke point; deletes `canvas_noise.rs` globals entirely. Webviewless handler: keyed by an owner tag threaded from the runtime (or left process-global with a documented single-verdict contract — it is constant today).
+Single-runtime single-profile = zero behavior change (every page writes the same entry; lookups return it). Fixes both multi-page-divergence (live defect) and multi-runtime. Heaviest canvas plumbing (CanvasMsg path has no identity today). Open semantics sub-decision: **which profile owns a webview-less (SW/worker-realm) outbound fetch** — owning page / registration scope / process default; needs a ruling or a fail-closed default.
+
+**B — per-BaoRuntime instance-domain isolation**
+Config slots move from process statics into per-Servo-instance state (net resource thread / canvas thread are per-constellation = per-instance), embedder passes a config bundle handle at `BaoRuntime::new`. Solves multi-runtime cross-talk; does NOT solve multi-page divergence inside one runtime (last-page-install-wins persists within the instance). Medium vendor delta, embedder API shape change. Zero-regression argument trivial (one instance).
+
+**C — status quo + explicit fail-closed contract**
+No vendor delta. bao API enforces one-profile-per-process: `PagePool::create_page` (and runtime construction) rejects a second distinct `stealth_profile` with an explicit error instead of silently contaminating; SPEC documents the constraint. Converts the silent defect into an explicit refusal. Cheapest; forecloses per-page profile divergence (which the public `PageConfig` API already implies possible).
+
+#### ③ Per-option impact matrix
+
+| | vendor patch delta | bao delta | stealth consistency | single-runtime single-profile regression risk | effort |
+|---|---|---|---|---|---|
+| A | connector + bridge + http_loader identity arg + canvas per-canvas config (heaviest) | keyed setters + page-close unregister + webview-less fallback | full: wire layer identity granularity finally matches the JS layer's per-realm model (`engine_props`) | zero change (same entry content, same lookups); connection pooling self-segregates via SSLConfig interning | L (canvas face is most of it; net face is small — identity already flows) |
+| B | per-instance config plumbing in net/canvas threads | config bundle handle at construction | partial: fixes multi-runtime only; in-runtime page divergence stays broken | trivial | M |
+| C | none | profile-uniqueness guard in PagePool/runtime | none gained; defect becomes explicit error | trivial (guard must allow the homogeneous case) | S |
+
+#### ④ Recommendation
+
+**A**, staged: net face first (TLS+H2 keyed by `target_webview_id` — small, identity already threaded, fixes the live single-runtime defect), canvas face second (per-canvas config, deletes the canvas globals), with C's fail-closed guard as an interim guardrail only if staging spans waves. Basis: the JS-visible layer already made this exact decision (per-realm profiles, BUG-ENG-366 / `set_profile_for_global`) — the wire/render layer lagging it is the residual; B solves only the second axis; C documents a defect instead of closing it. Blocking input for the user ruling is the **第零项 prerequisite** below plus the webview-less-fetch profile-ownership semantics.
+
+#### ⑤ 第零项 prerequisite (user decision required before ANY option)
+
+0. Is **per-page stealth profile divergence** (different `PageConfig.stealth_profile` for pages of one runtime) a supported product scenario, and is **multi-runtime embedding with divergent profiles** one? The answer picks the option: both supported → A; only multi-runtime → B; neither (one profile per process is the contract) → C. (Today's public API shape implies per-page divergence is offered, but no user ruling on record confirms it as a *supported scenario* rather than an unexercised struct field.)
+1. If A: which profile governs a webview-less (SW/worker-realm) outbound fetch — owning page, registration scope, or process default?
+
+**No implementation performed this round** (design-only; per §0 the decision belongs to the user).
+
 ## 9. Next single action
 
 **#32 candidate #3 v1 — CDP server thread stop+join on drop — is in flight (2026-09-07 batch-1). On completion, the next single action is the re-scoped candidate #2: wire page-identity through to the servo net connector so BOTH `StealthTlsWireConfig` and the H2 fingerprint can be keyed per-page (single decision, both surfaces; `runtime_bridge.rs:1258/1274` is the seam).** Then the e8541037c4 PathBuffer pool sweep (177 call sites).
