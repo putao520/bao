@@ -205,10 +205,11 @@
           "deleted": []
         },
         "CLI": {
-          "nextN": 3,
+          "nextN": 4,
           "allocated": [
             1,
-            2
+            2,
+            3
           ],
           "deleted": []
         },
@@ -570,7 +571,7 @@
           ]
         },
         "CLI": {
-          "nextN": 8,
+          "nextN": 9,
           "allocated": [
             1,
             2,
@@ -578,7 +579,8 @@
             4,
             5,
             6,
-            7
+            7,
+            8
           ],
           "deleted": []
         },
