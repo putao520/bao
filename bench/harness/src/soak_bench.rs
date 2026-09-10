@@ -147,6 +147,15 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
     let interval_ms = p.u64_of("interval-ms", 1000);
     let settle_ms = p.u64_of("settle-ms", 50);
     let gc_settle_ms = p.u64_of("gc-settle-ms", 3000);
+    // #40: continue-on-cycle-failure mode. Default off = the original
+    // fail-closed abort (a cycle error kills the run). With
+    // BAO_SOAK_CONTINUE_ON_FAIL=1 a bounded phase timeout (post-fix churn
+    // phases return Err instead of hanging) becomes a COUNTED event —
+    // written to the sidecar and the result doc, never silently swallowed —
+    // so a 72h soak survives isolated cycle failures and quantifies them.
+    let continue_on_fail = std::env::var("BAO_SOAK_CONTINUE_ON_FAIL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
     let out_path = out_path.ok_or(
         "soak requires --out: the per-cycle series streams to a sidecar derived from the result path (stdout carries servo log noise)",
@@ -247,12 +256,25 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
     let mut segment_cycles_start = 0usize;
     let mut steady_from_cycle: Option<usize> = None;
     let mut next_boundary = segment_secs;
+    let mut cycle_failures: Vec<(usize, String)> = Vec::new();
     let mut i = 0usize;
 
     while start.elapsed().as_secs() < duration_secs {
         let t = match churn_cycle(&runtime, i) {
             Ok(t) => t,
             Err(e) => {
+                let _ = write_rec(
+                    &mut sc,
+                    json!({"type": "cycle-failure", "i": i, "t_ms": now_ms(),
+                           "error": e}),
+                );
+                if continue_on_fail {
+                    // Counted failure, run continues (fail-closed reporting —
+                    // the event is in the sidecar AND the final doc).
+                    cycle_failures.push((i, e));
+                    i += 1;
+                    continue;
+                }
                 let _ = write_rec(
                     &mut sc,
                     json!({"type": "soak-end", "t_ms": now_ms(),
@@ -422,6 +444,7 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
             "cycles": cycles.len(), "segments": segments.len(),
             "probes_ok": probes.len() + usize::from(final_probe.is_some()),
             "probe_failures": probe_failures.len(),
+            "cycle_failures": cycle_failures.len(),
         }),
     )?;
 
@@ -433,6 +456,17 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
 
     // ── Metrics ─────────────────────────────────────────────────────────────
     b.param("executed_cycles", cycles.len().into());
+    b.param("cycle_failures", cycle_failures.len().into());
+    if !cycle_failures.is_empty() {
+        b.note(format!(
+            "{} churn cycle failure(s) under BAO_SOAK_CONTINUE_ON_FAIL — \
+             every failure is a per-cycle sidecar record of type \
+             cycle-failure (phase timeouts are counted, not swallowed): first \
+             = {:?}",
+            cycle_failures.len(),
+            cycle_failures.first().map(|(i, e)| format!("cycle {i}: {e}"))
+        ));
+    }
     b.param("full_segments", segments.len().into());
     b.param("forced_gc_probes_ok", (probes.len() + usize::from(final_probe.is_some())).into());
     b.param("forced_gc_probe_failures", probe_failures.len().into());

@@ -80,7 +80,14 @@ impl PageInner {
     pub fn navigate(&self, url: &str) -> Result<(), BrowserError> {
         let parsed = url::Url::parse(url)
             .map_err(|e| BrowserError::Navigation(format!("invalid URL: {e}")))?;
+        // #40 phase breadcrumb — async dispatch, but the URL parse + channel
+        // send land in the span so a wedge here is attributable.
+        let _nav_phase = crate::phase_watch::PhaseGuard::enter(
+            crate::phase_watch::phase::NAVIGATE,
+            self.id as u64,
+        );
         self.webview.load(parsed);
+        drop(_nav_phase);
         self.touch();
         *self.state.borrow_mut() = PageState::Navigating;
         // BCE (stale Complete race): a second navigation to the same page
@@ -107,16 +114,24 @@ impl PageInner {
     // @trace REQ-BRW-001 [entity:PageHandle]
     pub fn drain_callbacks(&self) -> Result<String, BrowserError> {
         let max_attempts = 100;
-
+        // #40: name the drain loop explicitly (nested inside create/eval
+        // spans; the guard restores the outer context on any exit).
+        let _drain_phase = crate::phase_watch::PhaseGuard::enter(
+            crate::phase_watch::phase::DRAIN_CALLBACKS,
+            self.id as u64,
+        );
         for attempt in 0..max_attempts {
             match self.evaluate_js_web(";") {
                 Ok(result) => return Ok(result),
                 Err(BrowserError::JavaScript(msg)) if msg.contains("InternalError") => {
                     // Pipeline not ready — spin servo event loop and retry.
                     // Yield after every few attempts to avoid CPU spinning.
+                    // #40 (BCE-20260910-003): NO `webview.paint()` here —
+                    // compositing is not pipeline readiness; the GL composite
+                    // on the embedder thread is the deadlock primitive (Mesa
+                    // llvmpipe cond_wait, see spin_servo).
                     if attempt % 5 == 4 {
                         self.servo.spin_event_loop();
-                        self.webview.paint();
                     }
                     continue;
                 }
@@ -157,6 +172,11 @@ impl PageInner {
     // stored fields remain as opaque addresses for close()/cleanup, but the
     // evaluate path uses WebViewId-keyed access exclusively.
     pub fn evaluate_js(&self, script: &str) -> Result<String, BrowserError> {
+        // #40 phase breadcrumb: Node Realm evaluate (drain + result read).
+        let _node_phase = crate::phase_watch::PhaseGuard::enter(
+            crate::phase_watch::phase::EVAL_NODE,
+            self.id as u64,
+        );
         let webview_id = self.webview.id();
 
         // Refresh stale DOM proxies after navigation (REQ-SEC-002 safety).
@@ -203,6 +223,12 @@ impl PageInner {
     /// Executes directly in the Page Realm (Window global).
     /// Page JS has only Web API access — typeof require === 'undefined'.
     pub fn evaluate_js_web(&self, script: &str) -> Result<String, BrowserError> {
+        // #40 phase breadcrumb: the async dispatch is instant; spin_servo is
+        // the blocking span (and the primitive a buried servo recv can wedge).
+        let _phase = crate::phase_watch::PhaseGuard::enter(
+            crate::phase_watch::phase::EVAL_WEB,
+            self.id as u64,
+        );
         let saved = Rc::new(RefCell::new(None));
         let cb_saved = saved.clone();
         self.webview
@@ -460,15 +486,14 @@ impl PageInner {
                 }
                 Ok(_) => {}
                 Err(BrowserError::JavaScript(ref msg)) if msg.contains("InternalError") => {
-                    // Pipeline not ready — spin and retry
+                    // Pipeline not ready — spin and retry. #40: no GL
+                    // composite on the embedder thread (deadlock primitive).
                     self.servo.spin_event_loop();
-                    self.webview.paint();
                     continue;
                 }
                 Err(e) => return Err(e),
             }
             self.servo.spin_event_loop();
-            self.webview.paint();
             std::thread::yield_now();
         }
         Err(BrowserError::Init(format!(
@@ -494,14 +519,13 @@ impl PageInner {
                 }
                 Ok(_) => {}
                 Err(BrowserError::JavaScript(ref msg)) if msg.contains("InternalError") => {
+                    // #40: no GL composite on the embedder thread.
                     self.servo.spin_event_loop();
-                    self.webview.paint();
                     continue;
                 }
                 Err(e) => return Err(e),
             }
             self.servo.spin_event_loop();
-            self.webview.paint();
             std::thread::yield_now();
         }
         Err(BrowserError::Init(format!(
@@ -521,6 +545,12 @@ impl PageInner {
         // so if we're already at Complete, we wait for a new Started first.
         let initial_status = self.webview_state.borrow().load_status;
         let mut saw_new_navigation = initial_status != servo::LoadStatus::Started;
+        // #40 phase breadcrumb: this spin loop drives servo until the fresh
+        // load completes — a buried servo recv wedges the whole wait.
+        let _nav_wait_phase = crate::phase_watch::PhaseGuard::enter(
+            crate::phase_watch::phase::WAIT_NAV,
+            self.id as u64,
+        );
 
         while start.elapsed() < timeout {
             let current_status = self.webview_state.borrow().load_status;
@@ -535,8 +565,15 @@ impl PageInner {
                 return Ok(());
             }
 
+            // #40 (BCE-20260910-003): load completion arrives via servo
+            // messages (constellation → delegate), driven by spin_event_loop
+            // alone — the GL composite (`webview.paint()`) that used to run
+            // here is pure output work AND the proven deadlock primitive:
+            // Mesa llvmpipe's render path can cond_wait forever with all
+            // rasterizer workers idle (lost fence wakeup, headless/xvfb,
+            // ~1/17k cycles), wedging the embedder thread inside ONE spin
+            // iteration where no caller timeout can ever fire.
             self.servo.spin_event_loop();
-            self.webview.paint();
             std::thread::yield_now();
         }
         Err(BrowserError::Init(format!(
@@ -567,8 +604,10 @@ impl PageInner {
 
         // Dispatch mouseDown then mouseUp
         self.dispatch_mouse_event(MouseButtonAction::Down, MouseButton::Primary, x, y);
+        // #40: pump messages between down/up; no GL composite here (input
+        // delivery is message-driven, the composite was visual-only and is
+        // the deadlock primitive).
         self.servo.spin_event_loop();
-        self.webview.paint();
         self.dispatch_mouse_event(MouseButtonAction::Up, MouseButton::Primary, x, y);
         Ok(())
     }
@@ -594,8 +633,8 @@ impl PageInner {
                 Modifiers::empty(),
                 false,
             );
+            // #40: message pump only — no GL composite (deadlock primitive).
             self.servo.spin_event_loop();
-            self.webview.paint();
             self.dispatch_key_event_full(
                 KeyState::Up,
                 key,
@@ -668,8 +707,8 @@ impl PageInner {
             Modifiers::empty(),
             false,
         );
+        // #40: message pump only — no GL composite (deadlock primitive).
         self.servo.spin_event_loop();
-        self.webview.paint();
         self.dispatch_key_event_full(
             KeyState::Up,
             key_val,
@@ -738,8 +777,9 @@ impl PageInner {
             if capped_height != original_viewport.height {
                 self.set_viewport(original_viewport.width, capped_height);
                 // Allow servo to re-layout at the new viewport size.
+                // #40: layout is pipeline-driven (spin_event_loop); the
+                // explicit composite is done by take_screenshot itself.
                 self.servo.spin_event_loop();
-                self.webview.paint();
             }
         }
 
@@ -815,6 +855,17 @@ impl PageInner {
 
     /// Spin servo's event loop until the callback returns false or timeout.
     /// Uses yield_now instead of sleep to avoid blocking the thread.
+    ///
+    /// #40 (BCE-20260910-003): this loop MUST stay free of GL composites.
+    /// The historical `webview.paint()` per iteration put the Mesa llvmpipe
+    /// render path (`Painter::render` → `renderer.render()` → llvmpipe fence
+    /// `pthread_cond_wait`) on the embedder thread inside ONE iteration —
+    /// where a lost fence wakeup (all rasterizer workers idle, ~1/17k
+    /// headless cycles) blocks forever and NO caller timeout can fire,
+    /// because the timeout check only runs between iterations. All state
+    /// this loop drives (eval results, load status, frame-ready flags)
+    /// arrives through servo messages that `spin_event_loop` pumps; the
+    /// composite is output-only and belongs to take_screenshot.
     // @trace REQ-BRW-001 [entity:PageHandle]
     fn spin_servo(
         &self,
@@ -824,7 +875,6 @@ impl PageInner {
         let start = Instant::now();
         while callback() {
             self.servo.spin_event_loop();
-            self.webview.paint();
             if start.elapsed() > timeout {
                 return Err(BrowserError::Init("operation timed out".into()));
             }
@@ -987,22 +1037,57 @@ impl PageHandle {
                     .with_inner_opt(|inner| Some(inner.nav_seq.get()))
                     .unwrap_or(0);
                 if nav_seq > 0 {
+                    // #40 (BCE-20260910-003 companion): LoadStatus::Complete
+                    // alone can be the OLD pipeline's (or arrive before the
+                    // session-history commit), and the COMMIT (URLChanged →
+                    // embedder-visible url/title swap) is driven by the
+                    // script thread's rendering updates — which only tick
+                    // when script executes. A bare event-loop spin stalled
+                    // cross-pipeline navigations until some ~5s timer fired.
+                    // Exit contract: Complete AND the url moved (commit
+                    // observed); same-URL navigations (reload) fall back to
+                    // Complete held for COMMIT_GRACE. The per-few-spins
+                    // minimal evaluate is the tick — NOT a query, errors
+                    // pre-pipeline are expected and ignored. No GL composite
+                    // here (that is the deadlock primitive this BCE removes).
+                    const COMMIT_GRACE: Duration = Duration::from_millis(1_000);
+                    let url_at_entry = self.current_url();
+                    let mut complete_since: Option<Instant> = None;
+                    let mut ticks: u32 = 0;
                     while start.elapsed() < timeout {
-                        let loaded = self
+                        let (loaded, url_now) = self
                             .with_inner_opt(|inner| {
-                                Some(
+                                Some((
                                     inner.webview_state.borrow().load_status
                                         == servo::LoadStatus::Complete,
-                                )
+                                    inner.current_url(),
+                                ))
                             })
-                            .unwrap_or(false);
+                            .unwrap_or((false, None));
                         if loaded {
-                            break;
+                            let url_moved = match (&url_at_entry, &url_now) {
+                                (Some(a), Some(b)) => a != b,
+                                _ => false,
+                            };
+                            let held_long_enough = complete_since
+                                .is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
+                            if url_moved || held_long_enough {
+                                break;
+                            }
+                            if complete_since.is_none() {
+                                complete_since = Some(Instant::now());
+                            }
+                        } else {
+                            complete_since = None;
                         }
                         self.with_inner(|inner| {
                             inner.servo.spin_event_loop();
                             Ok(())
                         })?;
+                        ticks = ticks.wrapping_add(1);
+                        if ticks % 8 == 0 {
+                            let _ = self.evaluate_js_web(";");
+                        }
                         std::thread::yield_now();
                     }
                 }

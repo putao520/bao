@@ -173,7 +173,19 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 /// one stderr line — a silent no-op is exactly how the earlier wirings died
 /// undetected.
 pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj: *mut JSObject) {
+    // Guard-first form (#40 noise, 2026-09-10): in a fresh realm the node
+    // segment runs BEFORE `install_timer_globals`, so `g.setTimeout` et al.
+    // are legitimately undefined at stamp point 1 — the designed skip that
+    // stamp point 2 (install_timer_globals, per-realm web phase) covers.
+    // That expected skip used to throw once per realm creation (5930 stderr
+    // lines / 15min soak); the guard makes it silent by design. A wiring
+    // failure on a realm where the globals DO exist still throws and stays
+    // logged below — the observability contract ("silent no-op is how the
+    // earlier wirings died undetected") is preserved for genuine failures.
     const STAMP_SRC: &str = r#"(function(g, p) {
+  if (typeof g.setTimeout !== 'function' ||
+      typeof g.setInterval !== 'function' ||
+      typeof g.setImmediate !== 'function') return;
   var custom = Symbol.for('nodejs.util.promisify.custom');
   g.setTimeout[custom] = p.setTimeout;
   g.setInterval[custom] = p.setInterval;

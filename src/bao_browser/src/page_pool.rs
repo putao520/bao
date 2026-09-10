@@ -74,13 +74,20 @@ impl PagePool {
             id
         };
 
-        let page = PageHandle::new(
-            Rc::clone(&self.servo),
-            Rc::clone(&self.servo_delegate),
-            config,
-            self.default_viewport,
-            id,
-        )?;
+        let page = {
+            // #40 phase breadcrumb: the webview build itself is async, but
+            // keep the span named — a wedge here pins it precisely.
+            crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_WEBVIEW_NEW, id as u64);
+            let p = PageHandle::new(
+                Rc::clone(&self.servo),
+                Rc::clone(&self.servo_delegate),
+                config,
+                self.default_viewport,
+                id,
+            );
+            crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_WAIT_READY, id as u64);
+            p?
+        };
 
         // Eager Node Realm init — REQ-SEC-002: eliminate lazy init path
         page.wait_for_pipeline_ready(Duration::from_secs(10))?;
@@ -94,6 +101,7 @@ impl PagePool {
         // looped JS hook ↔ native override forever and surfaced as literal
         // `undefined` (e36 evidence:
         // .claude/prompts/brw004-getparameter-evidence.md).
+        crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_INJECT, id as u64);
         crate::runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
 
         // PER-WORKER delivery tier (REQ-BRW-004, user ruling 2026-09-09
@@ -143,6 +151,8 @@ impl PagePool {
 
         self.active_pages.borrow_mut().insert(id, page.clone());
         *self.total_created.borrow_mut() += 1;
+        // create_page fully returned — park the watchdog until the next phase.
+        crate::phase_watch::enter_phase(crate::phase_watch::phase::IDLE, 0);
 
         Ok(page)
     }
@@ -161,6 +171,13 @@ impl PagePool {
     }
 
     pub fn close_page(&self, id: usize) -> Result<(), BrowserError> {
+        crate::phase_watch::enter_phase(crate::phase_watch::phase::CLOSE, id as u64);
+        let result = self.close_page_inner(id);
+        crate::phase_watch::enter_phase(crate::phase_watch::phase::IDLE, 0);
+        result
+    }
+
+    fn close_page_inner(&self, id: usize) -> Result<(), BrowserError> {
         if let Some(page) = self.active_pages.borrow_mut().remove(&id) {
             page.close()?;
             *self.total_destroyed.borrow_mut() += 1;
