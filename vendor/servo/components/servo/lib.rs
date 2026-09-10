@@ -328,6 +328,28 @@ pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {
     servo_canvas::canvas_noise::set_global_canvas_noise(seed, noise_amplitude);
 }
 
+/// Upsert one webview's canvas noise configuration (BUN-EVOLUTION R53-A
+/// phase 2). The keyed entry is AUTHORITATIVE for canvases created by that
+/// webview (window AND worker realms alike — identity is stamped at canvas
+/// creation via `GlobalScope::egress_webview_id` and threaded to the paint
+/// thread). `seed == 0` writes an explicit DISABLED entry so a stealth-free
+/// page reads its canvases back byte-exact instead of inheriting another
+/// page's seed through the process-global fallback (which
+/// [`set_canvas_noise_seed`] still owns).
+pub fn set_canvas_noise_for_webview(webview_id: WebViewId, seed: u64, noise_amplitude: f64) {
+    servo_canvas::canvas_noise::set_canvas_noise_for_webview(
+        webview_id,
+        seed,
+        noise_amplitude,
+    );
+}
+
+/// Drop a webview's keyed canvas noise entry (page close; same lifecycle
+/// discipline as [`clear_stealth_wire_config_for_webview`]).
+pub fn clear_canvas_noise_for_webview(webview_id: WebViewId) {
+    servo_canvas::canvas_noise::clear_canvas_noise_for_webview(webview_id);
+}
+
 /// Set anti-fingerprinting engine-native realm timezone policy
 /// (SM-EVOLUTION #28, verdict consumed 2026-09-10 — REQ-STL identity
 /// consistency).

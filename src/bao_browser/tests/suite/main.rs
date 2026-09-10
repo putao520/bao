@@ -70,6 +70,7 @@ mod servo_render_pipeline_tests;
 mod stealth_diagnostic_detection_tests;
 mod stealth_fingerprint_e2e_tests;
 mod stealth_per_page_wire_tests;
+mod stealth_per_page_canvas_tests;
 mod stealth_profile_config_tests;
 mod task_10_integration;
 mod thread_safety_concurrency_tests;

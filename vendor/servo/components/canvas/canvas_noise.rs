@@ -2,7 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{LazyLock, RwLock};
+
+use servo_base::id::WebViewId;
 
 /// Global canvas noise seed (0 = disabled). Written from Bao runtime bridge,
 /// read from canvas paint thread.
@@ -36,6 +40,54 @@ pub fn get_global_canvas_noise() -> Option<(u64, f64)> {
             Some((seed, amplitude))
         },
         _ => None,
+    }
+}
+
+/// Bao (BUN-EVOLUTION R53-A phase 2): per-WebViewId canvas noise registry.
+/// The three atomics above remain the process-global fallback bucket
+/// (identity-less canvases, pre-R53 semantics); a page install writes its
+/// keyed entry here. A keyed hit is AUTHORITATIVE — an explicit `None`
+/// entry keeps a stealth-free page noise-free instead of letting it
+/// inherit another page's seed through the fallback (the pre-R53
+/// last-write-wins cross-contamination). Value = `(seed, amplitude)`.
+static CANVAS_NOISE_BY_WEBVIEW: LazyLock<RwLock<HashMap<WebViewId, Option<(u64, f64)>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Upsert one webview's canvas noise configuration. `seed == 0` writes an
+/// explicit DISABLED entry (mirroring the global setter's seed semantics):
+/// that webview's canvases read back byte-exact even while other pages run
+/// profiles.
+pub fn set_canvas_noise_for_webview(webview_id: WebViewId, seed: u64, noise_amplitude: f64) {
+    let entry = if seed > 0 {
+        Some((seed, noise_amplitude))
+    } else {
+        None
+    };
+    CANVAS_NOISE_BY_WEBVIEW
+        .write()
+        .unwrap()
+        .insert(webview_id, entry);
+}
+
+/// Drop a webview's keyed entry (page close). Webview ids are not reused
+/// within a process, but a lingering entry pins the config memory.
+pub fn clear_canvas_noise_for_webview(webview_id: WebViewId) {
+    CANVAS_NOISE_BY_WEBVIEW
+        .write()
+        .unwrap()
+        .remove(&webview_id);
+}
+
+/// Resolve the canvas noise configuration for a canvas owned by
+/// `webview_id`. A keyed hit is authoritative (explicit `None` = the
+/// stealth-free page reads back byte-exact); a MISS falls back to the
+/// process-global default (pre-R53 behavior for canvases created before
+/// their page's install or after its keyed entry was cleared).
+pub fn canvas_noise_for_webview(webview_id: WebViewId) -> Option<(u64, f64)> {
+    match CANVAS_NOISE_BY_WEBVIEW.read().unwrap().get(&webview_id) {
+        Some(Some(config)) => Some(*config),
+        Some(None) => None,
+        None => get_global_canvas_noise(),
     }
 }
 
@@ -214,6 +266,49 @@ mod tests {
         }
 
         // Hygiene: leave the process-global in the disabled state.
+        set_global_canvas_noise(0, 0.0);
+        assert_eq!(get_global_canvas_noise(), None);
+    }
+
+    #[test]
+    fn keyed_hit_authoritative_miss_falls_back_clear_removes() {
+        // Bao (BUN-EVOLUTION R53-A phase 2): per-WebViewId resolution
+        // semantics — keyed hit authoritative (explicit disabled entry
+        // included), miss → process-global fallback, clear → back to
+        // fallback. Same process-global-statics discipline as
+        // `global_seed_zero_yields_none_and_roundtrip`: one sequential
+        // scenario, restored hygiene at the end.
+        use servo_base::id::{PainterId, PipelineNamespace, PipelineNamespaceId};
+
+        // WebViewId::new mints a BrowsingContextId, which needs a pipeline
+        // namespace on this thread (idempotent per the Bao patch; unit
+        // tests otherwise run namespace-less).
+        PipelineNamespace::install(PipelineNamespaceId(7));
+
+        set_global_canvas_noise(42, 0.001);
+        let wv_a = WebViewId::new(PainterId::next());
+        let wv_b = WebViewId::new(PainterId::next());
+
+        // Miss → process-global fallback.
+        assert_eq!(canvas_noise_for_webview(wv_a), Some((42, 0.001)));
+
+        // Keyed hit authoritative — overrides the global.
+        set_canvas_noise_for_webview(wv_a, 137, 0.002);
+        assert_eq!(canvas_noise_for_webview(wv_a), Some((137, 0.002)));
+        // Other webviews still see the fallback.
+        assert_eq!(canvas_noise_for_webview(wv_b), Some((42, 0.001)));
+
+        // Explicit disabled entry (stealth-free page): zero noise even with
+        // a live process-global.
+        set_canvas_noise_for_webview(wv_b, 0, 0.0);
+        assert_eq!(canvas_noise_for_webview(wv_b), None);
+
+        // Clear → miss → fallback again.
+        clear_canvas_noise_for_webview(wv_a);
+        assert_eq!(canvas_noise_for_webview(wv_a), Some((42, 0.001)));
+
+        // Hygiene: leave the process-global disabled and the registry empty.
+        clear_canvas_noise_for_webview(wv_b);
         set_global_canvas_noise(0, 0.0);
         assert_eq!(get_global_canvas_noise(), None);
     }

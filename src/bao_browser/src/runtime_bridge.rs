@@ -1603,6 +1603,19 @@ unsafe fn install_all_native(
         bao_stealth::engine_props::set_profile(profile);
         bun_runtime::fetch_api::set_fetch_stealth_profile(Some(profile.clone()));
         // Set canvas noise at servo rendering layer (REQ-STL-003).
+        // R53-A phase 2: the per-WebViewId registry entry is the
+        // AUTHORITATIVE config for this page's canvases (window AND worker
+        // realms — the owning-webview identity is stamped at canvas
+        // creation via egress_webview_id and threaded to the paint
+        // thread); the process-global write below remains the
+        // identity-less fallback bucket (pre-R53 sole storage — a second
+        // page with a different profile silently overwrote every other
+        // page's canvas noise).
+        servo::set_canvas_noise_for_webview(
+            webview_id,
+            bao_stealth::engine_props::canvas_seed(),
+            bao_stealth::engine_props::canvas_amplitude(),
+        );
         servo::set_canvas_noise_seed(
             bao_stealth::engine_props::canvas_seed(),
             bao_stealth::engine_props::canvas_amplitude(),
@@ -1698,6 +1711,13 @@ unsafe fn install_all_native(
         // without a profile must not inherit another page's profile through
         // the process-global fallback.
         servo::set_stealth_wire_config_for_webview(webview_id, None, None);
+        // R53-A phase 2: explicit stealth-free canvas noise entry — this
+        // page's canvases (window and worker realms) must read back
+        // byte-exact, not inherit an earlier stealthed page's
+        // process-global seed. The process-global canvas noise is NOT
+        // touched here (pre-R53 semantics: stealth-free installs never
+        // wrote it).
+        servo::set_canvas_noise_for_webview(webview_id, 0, 0.0);
         servo::set_stealth_tls_config(None);
         bao_stealth::set_global_http2_fingerprint(None);
         // SM-EVOLUTION #28: restore upstream host-derived locale/time state

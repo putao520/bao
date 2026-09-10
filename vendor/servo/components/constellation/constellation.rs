@@ -1891,8 +1891,8 @@ where
                     warn!("Error replying to remove iframe ({})", e);
                 }
             },
-            ScriptToConstellationMessage::CreateCanvasPaintThread(size, response_sender) => {
-                self.handle_create_canvas_paint_thread_msg(size, response_sender)
+            ScriptToConstellationMessage::CreateCanvasPaintThread(size, webview_id, response_sender) => {
+                self.handle_create_canvas_paint_thread_msg(size, webview_id, response_sender)
             },
             ScriptToConstellationMessage::SetDocumentState(state) => {
                 self.document_states.insert(source_pipeline_id, state);
@@ -5202,6 +5202,7 @@ where
     fn handle_create_canvas_paint_thread_msg(
         &mut self,
         size: UntypedSize2D<u64>,
+        webview_id: Option<WebViewId>,
         response_sender: GenericSender<Option<(GenericSender<CanvasMsg>, CanvasId)>>,
     ) {
         let (canvas_data_sender, canvas_data_receiver) = unbounded();
@@ -5212,6 +5213,7 @@ where
         let response = if let Err(e) = canvas_sender.send(ConstellationCanvasMsg::Create {
             sender: canvas_data_sender,
             size,
+            webview_id,
         }) {
             warn!("Create canvas paint thread failed ({})", e);
             None

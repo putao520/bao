@@ -327,14 +327,40 @@ What landed (single wave, commit `<this-wave>`):
 Evidence: RED run (pre-change) both new tests FAIL with the cross-contamination symptom; GREEN run 16/16 (new 2 + sw_stealth_profile 4/4 + page_net_bun_fingerprint e2e); wider regression 53/53 (page_wss, page_net_bun_full_matrix, stealth_fingerprint, serviceworker mediation/controller/fetchevent, worker_fingerprint_consistency). Known-flake exclusion: `h2_fetch_node_stack_e2e_tests::window_fetch_wire_h2_post_body_roundtrip` failed twice under machine saturation — pre-classified starvation flake (brw004-final-certification.md "按 flake 挂账"; 7/7 green at certification; test drives AsyncHTTP/HTTPThread directly, zero call-path overlap with this wave's deltas).
 
 Residuals (phase 2 / documented):
-- **Canvas face** (census R53 member 3): per-canvas noise config, deletes `canvas_noise.rs` globals — `CanvasMsg` path carries no webview identity today; heaviest plumbing, deliberately staged out.
+- **Canvas face** — LANDED as phase 2 (⑦ below); no longer a residual.
 - **Fallback bucket last-write-wins** (identity-less fetches only, post-SW-stamp = SW script updates + misc infra): process-global still written per install; pre-R53 behavior preserved by design; documented residual, not a page-visible surface.
 - `fetch()` thread-local profile face (proposal member 5, `TL_STEALTH_PROFILE` last-install-wins on shared ScriptThread) — NOT in this wave's scope; same-seam follow-up candidate.
 - Webviewless resource handler (member 4) — untouched, constant verdict, per proposal.
 
+### 2026-09-11 / ⑦ R53-A phase 2 IMPLEMENTED — canvas face (per-WebViewId canvas noise)
+
+User ruling 2026-09-10 (R53-A, staged): phase 2 = canvas face. Semantics carried over from the net face (⑥): keyed hit AUTHORITATIVE (explicit `None` = stealth-free page reads back byte-exact, no inheritance through the fallback); miss / identity-less → process-global fallback (pre-R53 behavior); worker/SW-realm canvases ride their HOST page's profile (same ownership ruling — identity = `GlobalScope::egress_webview_id`). The `canvas_noise.rs` globals are NOT deleted — they remain the identity-less fallback bucket (zero break, mirroring the net face's preserved process-global getters).
+
+What landed:
+
+1. **vendor `canvas/canvas_noise.rs`** — `CANVAS_NOISE_BY_WEBVIEW` (`LazyLock<RwLock<HashMap<WebViewId, Option<(seed, amplitude)>>>>`; explicit `None` value = stealth-free) + `set/clear_canvas_noise_for_webview` + `canvas_noise_for_webview` (keyed hit authoritative incl. explicit `None`; miss → `get_global_canvas_noise()`).
+2. **vendor canvas identity chain (4 files)** — `ConstellationCanvasMsg::Create` (`shared/canvas/lib.rs`) and `ScriptToConstellationMessage::CreateCanvasPaintThread` (`from_script_message.rs`) gain `Option<WebViewId>`; `CanvasState::new` (`script/dom/canvas/2d/canvas_state.rs`) stamps `global.egress_webview_id()` at the single canvas-creation site (worker/SW → host page; window → own id); `constellation.rs` is a pure relay (does not interpret the identity — no constellation restructure needed).
+3. **vendor `canvas/canvas_paint_thread.rs`** — `canvas_webviews: FxHashMap<CanvasId, WebViewId>` stamped at `create_canvas`, dropped at `CanvasCommand::Destroy`; the `GetImageData` choke point resolves per owning webview (keyed → identity-less → process-global fallback). W2 gate untouched: a disabled resolution still applies zero noise (byte-identical readback).
+4. **vendor `servo/lib.rs`** — `set_canvas_noise_for_webview` / `clear_canvas_noise_for_webview` embedder API (seed 0 writes the explicit disabled entry).
+5. **bao_browser** — `install_all_native` dual-writes canvas noise (keyed authoritative + process-global fallback) in the profile arm; the stealth-free arm writes ONLY the keyed explicit-`None` entry (the process-global canvas noise is untouched there — pre-R53 semantics: stealth-free installs never wrote it). `Page::close` clears the keyed entry beside the wire-config clear.
+
+Tests — `stealth_per_page_canvas_tests.rs` (suite, flat rgb(128,128,128) fills put every byte on a u8 rounding boundary, so a full readback is the deterministic noise sign map: zero noise = byte-exact, different seeds = different maps):
+- ① `per_page_divergent_canvas_noise_live` — two pages (Firefox seed 42 / Chrome seed 137) in ONE runtime; each page's full-canvas `getImageData` digest is deterministic and the two DIFFER (each rides its own seed); both noisy.
+- ② `stealth_free_page_canvas_zero_noise_live` — a stealth-free page created AFTER a stealthed page reads back byte-exact (flips == 0) while the stealthed page stays noisy.
+- ③ `worker_offscreencanvas_rides_host_page_profile_live` — each page's Worker OffscreenCanvas readback rides its HOST page's profile (digests differ across pages, each internally deterministic ×2 readbacks).
+- **RED proven first on unchanged code**: ① both pages identical digest `OK:2165:-127038693` (= last page's seed served both) ② the stealth-free page inherited the stealthed page's seed (`OK:2037:-1981572419`, flips 2037 ≠ 0) ③ both workers identical (`OK:1646:-1967652232`). Then GREEN 6/6.
+- Canvas-crate unit tests 16/16: new keyed hit-authoritative / miss-fallback / explicit-`None` / clear semantics + preserved W2 zero-diff family (`noise_none_leaves_bytes_untouched`, `global_seed_zero_yields_none_and_roundtrip`, parity).
+
+Regression: 78/78 GREEN — stealth_per_page_wire (incl. both live wire tests), stealth_offscreencanvas 15/15 (incl. the W2 noise-parity live assertions `c13_retirement_{window,worker}_noise_*_parity` and `e36_stealth_free_page_has_no_stealth_chain`), stealth_fingerprint 6/6, sw_stealth_profile 7/7 (incl. c19 SW TLS/H2 + CDP observability), worker_fingerprint_consistency 9/9; canvas-crate unit 16/16.
+
+Residuals (documented):
+- Identity-less canvas fallback bucket (canvases created before their page's install / identity-less realms) still process-global last-write-wins — same documented residual class as the net face's fallback bucket; not a page-visible surface.
+- An OffscreenCanvas transferred cross-webview via structured clone keeps its CREATION-time webview identity (the noise config travels with the canvas, matching pixel content drawn under that profile) — edge semantic, documented here.
+- `fetch()` thread-local profile face + webviewless handler — unchanged from ⑥'s residual list.
+
 ## 9. Next single action
 
-**R53-A net face landed (⑥ above). Next single action from §8: R53-A phase 2 canvas face — per-canvas `CanvasNoiseConfig` stamped at canvas creation, read at the `GetImageData` choke point, deleting the `canvas_noise.rs` globals** (identity must be threaded onto the `CanvasMsg` command path first). Then the e8541037c4 PathBuffer pool sweep (177 call sites).
+**R53-A fully landed (net face ⑥ + canvas face ⑦). Next single action from §8: the e8541037c4 PathBuffer pool sweep (177 call sites).** The R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
 
 ## 10. Definition of Done
 

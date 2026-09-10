@@ -1481,6 +1481,10 @@ impl PageHandle {
                 // wire-config entries (same lifecycle discipline — the
                 // entries pin the profile's TLS/H2 config memory otherwise).
                 servo::clear_stealth_wire_config_for_webview(wid);
+                // R53-A phase 2: drop the keyed canvas noise entry (same
+                // lifecycle discipline — without this, a closed page's
+                // noise config lingers in the paint-side registry).
+                servo::clear_canvas_noise_for_webview(wid);
                 if !cur_pg.is_null() {
                     pg = cur_pg;
                 }

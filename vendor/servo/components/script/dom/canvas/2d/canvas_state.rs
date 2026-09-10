@@ -230,9 +230,17 @@ impl CanvasState {
         let script_to_constellation_chan = global.script_to_constellation_chan();
         debug!("Asking constellation to create new canvas thread.");
         let size = adjust_canvas_size(size);
+        // Bao (BUN-EVOLUTION R53-A phase 2): stamp the canvas's owning
+        // webview identity at creation — worker/SW realms resolve to their
+        // HOST page (`egress_webview_id`), window realms to their own. The
+        // paint thread stores it beside the canvas and uses it to resolve
+        // the per-WebViewId canvas noise config at the `GetImageData`
+        // choke point (pre-R53: one process-global seed served every page).
         script_to_constellation_chan
             .send(ScriptToConstellationMessage::CreateCanvasPaintThread(
-                size, sender,
+                size,
+                global.egress_webview_id(),
+                sender,
             ))
             .unwrap();
         let (canvas_thread_sender, canvas_id) = receiver.recv().ok()??;

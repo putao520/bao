@@ -692,8 +692,13 @@ pub enum ScriptToConstellationMessage {
     ChangeWorkerAnimationFrameProviderState(WorkerId, bool),
     /// Requests that a new 2D canvas thread be created. (This is done in the constellation because
     /// 2D canvases may use the GPU and we don't want to give untrusted content access to the GPU.)
+    /// Bao (BUN-EVOLUTION R53-A phase 2): carries the requesting realm's
+    /// owning-webview identity (`GlobalScope::egress_webview_id`) so the
+    /// paint thread can resolve the per-WebViewId canvas noise config at
+    /// the `GetImageData` choke point. `None` = identity-less realm.
     CreateCanvasPaintThread(
         UntypedSize2D<u64>,
+        Option<WebViewId>,
         GenericSender<Option<(GenericSender<CanvasMsg>, CanvasId)>>,
     ),
     /// Notifies the constellation that this pipeline is requesting focus.
