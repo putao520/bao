@@ -131,6 +131,23 @@ pub fn register_bao_event_loop_pump(pump: script::BaoEventLoopPump) {
     script::register_bao_event_loop_pump(pump);
 }
 
+/// Register the process-global realm-discard timer cancel (Bao vendor
+/// patch — RED-1 P-A, user ruling 2026-09-10).
+///
+/// Same-registered-domain navigation reuses the ScriptThread and
+/// eventually discards the old page realm; the registered cancel is
+/// invoked from `handle_exit_pipeline_msg` (BEFORE the `window_detached`
+/// gate — a detached window never reaches `clear_js_runtime`) with
+/// `(cx, global)` as `*mut c_void` (actually `*mut mozjs::jsapi::JSContext`
+/// / `*mut mozjs::jsapi::JSObject` — the discarded realm's global) so the
+/// embedder purges the thread's bao timer registry for exactly that
+/// global. Without it, the old realm's bao timers fired zombie callbacks
+/// into the discarded realm forever and the raw-rooted global pinned it
+/// against GC (per-nav accumulation).
+pub fn register_bao_realm_discard_cancel(cancel: script::BaoRealmDiscardCancel) {
+    script::register_bao_realm_discard_cancel(cancel);
+}
+
 /// Run `f` with the calling ScriptThread's script settings stack pushed for
 /// `global_object`'s realm (Bao vendor patch — BCE-20260910-004, the
 /// settings-stack side of the pump bridge above).

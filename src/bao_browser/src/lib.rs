@@ -276,6 +276,23 @@ impl BaoRuntime {
         servo::register_bao_event_loop_pump(Box::new(|cx_ptr| {
             bun_runtime::timers::pump_embedder_thread(cx_ptr as *mut mozjs::jsapi::JSContext);
         }));
+        // RED-1 P-A (user ruling 2026-09-10): same-registered-domain
+        // navigation discards the old page realm on the REUSED
+        // ScriptThread — servo cancels its own task sources in
+        // `Window::clear_js_runtime`, but bao timers registered against the
+        // old realm's global survived it: deadlines fired zombie callbacks
+        // into the WindowState::Zombie realm, re-arming setImmediate chains
+        // ran forever, and the raw-rooted `global_root` pinned the realm
+        // against GC (per-navigation accumulation). Bridge the discard
+        // (vendor patch, same registration face as the pump above) to bao's
+        // per-thread timer registry purge — a document's timers die with
+        // the document (browser navigation semantics).
+        servo::register_bao_realm_discard_cancel(Box::new(|cx_ptr, global_ptr| {
+            bun_runtime::timers::cancel_timers_for_global(
+                cx_ptr as *mut mozjs::jsapi::JSContext,
+                global_ptr as *mut mozjs::jsapi::JSObject,
+            );
+        }));
         // BCE-20260910-004 (settings-stack push — the missing half of the
         // pump bridge): the pump fires page-realm bao timers outside any
         // servo script settings-stack entry, so a page callback touching

@@ -82,7 +82,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；**裁决 6 已消费 2026-09-10**：Memory 计量换原生 CollectRuntimeStats（jsglue 构造 + bao_engine 内部面 + soak 采样点，见 §8 #19 节）；GC callback 归 #19 待接） |
 | #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | CLOSED（2026-09-11 裁决消费闭：三维身份泄漏 locale/tz/时间精度引擎原生根治+live 证据（engine 376/stealth 1689/browser stealth 族 160 零回归 + live 4/4），见 §8 消费节；JIT/SAB 维持现状=终态裁定；#16 Stealth 身份一致性三维闭） |
-| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
+| #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）仍挂；RED-1 已闭——用户裁决 P-A 落地 2026-09-10，见 §8 末节） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN（自动化 v1 已落地 2026-09-10：三脚本+seed inventory+adoption report+drift 基线，见 §8；升级波首跑+DoD 收口待下次 mozjs 前移） |
 
 与 Bao 1.0 Domain 的消费关系：
@@ -637,7 +637,7 @@ domain 导航=同一 ScriptThread/cx 存活,旧 realm 在同线程内 discard**;
 |---|---|---|---|---|
 | **N1 导航·跨 registered domain** | 全部(servo 微任务/BAO timers/JOB_IDS/ConcurrentTask) | 旧 pipeline ExitScriptThread(event_loop.rs:53 Drop 发消息)→handle_exit_pipeline_msg(script_thread.rs:3619,逐 doc clear_js_runtime+cancel_all_tasks_and_ignore_future_tasks)→线程退出→thread-local dtor 丢弃 | **丢弃(随线程死)** | script_thread.rs:3619-3706;BAO_REGISTRY Box drop 无 JS 调用(timers.rs:1318, current_cx 已清);leaked MiniEventLoop 残任务永不 tick=OS 进程退出回收(#29 记账) | 绿 |
 | **N2 导航·同 registered domain(主流场景,ScriptThread 存活)** | servo 微任务(旧 realm) | Dom<GlobalScope> 根持;下一次 checkpoint(任意 pump 步骤1 RunJobs)照常执行 | **执行(spec 一致:微任务队列属 event loop,旧 doc 的已入队微任务合法运行)** | microtask.rs:76-94;script_runtime.rs:318-327 | 绿 |
-| **N2 同上** | **BAO_REGISTRY timers(旧 realm)** | **无人取消,无人丢弃**:Window::clear_js_runtime(window.rs:2500)只 cancel servo task-source,BAO_REGISTRY 无 discard 钩子(cancel_raw 仅 JS clearTimeout/clearInterval 调用);global_root 原根 pin 旧 realm | **无终态:deadline 到→fire_js 进 discard 后旧 realm 执行 zombie 回调;interval=永久 re-arm(zombie 永续+旧 realm 永不可回收+每次同域导航累积)** | window.rs:2500-2530(无 bao 调用);timers.rs:858-868(re-arm 无 liveness 检查);cancel_raw 唯一取消源 timers.rs:966 | **红(RED-1)** |
+| **N2 同上** | **BAO_REGISTRY timers(旧 realm)** | **已闭(RED-1 P-A 落地 2026-09-10,§8 末节)**:vendor hook 于 `handle_exit_pipeline_msg`(window_detached 门**之前**——detached 分支整个跳过 clear_js_runtime,hook 只挂那里会竞态漏 purge)→ bao `cancel_timers_for_global` 按 global 精确清条目+释 raw root+zombie-fire 探针;实测发现同域导航旧 pipeline exit 常态**迟到**(有时只到 teardown),迟到期间旧 realm 活着非 zombie——确定性 discard 面=page close/线程 teardown | 终态=discard 时清零;zombie 执行计数=0(e2e 锁定) | script_thread.rs(handle_exit_pipeline_msg hook);timers.rs(cancel_timers_for_global/zombie 探针) | **绿(已闭)** |
 | **N2 同上** | ConcurrentTask 完成指向旧 realm | 该线程 MiniEventLoop 共享(不分 realm);完成照常派发进旧 realm(一次性,bounded) | 执行一次(与 RED-1 同族 discard 语义缺口,非永久) | pump_embedder_thread 步骤3(timers.rs:341) | 黄(随 RED-1 一并裁决) |
 | **page-close** | 全部 | page.close()(page.rs:1290,embedder 线程:terminate workers+清注册表)→PageInner drop→WebViewInner::drop(webview.rs:144)→CloseWebView→constellation 逐 pipeline 退出→每 ScriptThread 走 N1 路径 | **丢弃(随线程死;不 drain——已关页面的 pending 不再执行=浏览器语义)** | page.rs:1290-1363;webview.rs:144-152;script_thread.rs:3619 | 绿 |
 | **shutdown·browser** | 全部 | BaoRuntime::drop→close_all(lib.rs:644-653)→每页 page.close() 同上;ServoInner::drop(servo.rs:872)spin 至 ScriptThreads join | 丢弃 | 同上+servo.rs:872-880 | 绿 |
@@ -647,7 +647,7 @@ domain 导航=同一 ScriptThread/cx 存活,旧 realm 在同线程内 discard**;
 | **CLI JsContext 销毁** | 残留一切 | shutdown_thread_sm(context.rs:651):RootedTraceableSet clear+JS_DestroyContext;BAO_REGISTRY 主线程随进程丢弃 | 丢弃 | context.rs:651-689 | 绿 |
 | **bao JOB_IDS 裸指针 liveness 专项** | bao job queue 残留 job | 安装面仅 CLI JsContext(持久 realm=线程寿命)与 node_worker_threads bypass(线程寿命);CLI eval_module fresh realm 的 job 每遍历 drain 后才退出/退出时队列恒空;无 realm 先死场景 | 无悬挂指针活化路径 | job_queue.rs 安装点 context.rs:491/536/607+node_worker_threads.rs:457 | 绿 |
 
-#### C. RED-1 立法提案(未实施——产品语义+vendor patch 双重用户裁决面)
+#### C. RED-1 立法提案(用户裁决 2026-09-10 P-A 直做——已落地,见 §8 末节 2026-09-10 / RED-1)
 
 **现象**:同 registered domain 导航后,旧 realm 的 bao setTimeout/setInterval 继续按
 deadline 在旧(已 discard,WindowState::Zombie)realm 里执行;interval 永续;旧 realm 被
@@ -1623,3 +1623,72 @@ fail-closed 全验证过——x10 marker 探针 + 逐 realm 功能探针 + C 相
 **下一唯一动作**：#26 实现波（S3 排程）——`bao_engine` StencilCache 最小闭环 +
 `inject_js_hooks` 接入 + 同 bench 对照复跑（A2 vs C 作为回归判据）；XDR encode 绑定
 增补独立排程。
+
+### 2026-09-10 / RED-1 P-A 落地——同域导航 realm discard 时 bao timers 随 realm 终止(vendor hook + registry purge + zombie-fire 探针;RED→GREEN live)
+
+**基线**:bao master `642da220` + 当日并行波 dirty tree(多 Agent 共树);mozjs 不变。用户裁决
+2026-09-10 P-A 直做(浏览器行为一致:导航丢弃旧 realm 时同步 cancel 其全部 bao timers)。
+
+**形态**(镜像 pump 桥注册面,ADAPT):
+
+1. **vendor(servo script,均在册 patch 文件)**:
+   - `event_loop/script_thread.rs`:`BAO_REALM_DISCARD_CANCEL` OnceLock + `register_bao_realm_discard_cancel`
+     (`Box<dyn Fn(*mut c_void, *mut c_void)>`——c_void 双参解耦两 mozjs crate 实例,同 pump 桥)
+     + `bao_cancel_timers_for_discarded_realm(cx, global)`。**调用点在
+     `handle_exit_pipeline_msg` 的 `window_detached` 门之前**——同域导航 browsing context
+     已迁移时 `clear_js_runtime` 整段被跳过(detached 分支),hook 只挂 clear_js_runtime
+     会竞态漏 purge(live 实证:同测试同 binary 两种结局);两侧分支均覆盖。
+   - `script/lib.rs` re-export(`register_bao_realm_discard_cancel` / `BaoRealmDiscardCancel`);
+     `components/servo/lib.rs` wrapper(`servo::register_bao_realm_discard_cancel`)。
+   - window.rs **零触碰**(中间形态曾改 `clear_js_runtime(&self, cx)` 签名,因 detached
+     竞态发现后整体回退——vendor diff 最小化)。
+2. **`bao_runtime/timers.rs`**:
+   - `cancel_timers_for_global(cx, global)`:DEAD_GLOBALS 标记 + 两阶段(候选快照→
+     remove+cleanup_callback(REGISTERED in-Box slot 地址释 raw root,同 BCE-20260910-004c
+     教训)+ gc_store 回调清除);per-thread ID + per-global 精确匹配,他 realm/他线程零误伤
+     (unit 锁定:global_b 存活+无 root 条目不动)。
+   - 探针三件(process-global AtomicUsize,跨线程可读):`realm_discard_events_total`
+     (hook 到达次数,含零 purge——链条可能已在垂死 realm 自断)、
+     `realm_discard_cancelled_total`(实际清除条数)、`zombie_fires_total`
+     (**DEAD_GLOBALS 上执行的 fire 计数**——ABA 安全:schedule_raw 对同地址注册即 un-mark)。
+3. **`bao_browser/lib.rs`**:`BaoRuntime::new` 里 `servo::register_bao_realm_discard_cancel`
+   → `bun_runtime::timers::cancel_timers_for_global`(pump 桥注册旁,OnceLock 首注即定)。
+
+**RED 证据**(wiring 注释掉=pre-fix 语义,同 binary 对照):
+- 行为面(首轮):武装 setImmediate 链(fetch 打点)同域导航后 **25×`n=NaN` zombie tick
+  持续执行**(2s 观察窗 37≠17);trace 级:schedule/fire 逐 id 递增过 nav 点,
+  `n=NaN`=window proxy 已换而 tick 仍执行(commit→clear 窗口签名)。
+- 探针面(终版测试):`same_domain_nav_discards` FAIL「pipeline exits at page close never
+  reached cancel_timers_for_global (events 0 -> 0)」;`churn` FAIL「4 navs must deliver
+  ≥4 realm-discard notifications (events 0)」;cross-host 轴 pre-fix 即绿(线程整体退场,
+  registry 随线程死——N1 语义,回归轴)。
+
+**GREEN**:`realm_discard_timers_tests` 3 e2e(同域导航 zombie=0+close 触发 discard 探针、
+4 页 churn 每页 zombie=0+events≥N、跨域+页关零回归)+ `cancel_timers_for_global_matches_
+only_that_global` unit——全绿。timers 单元族 60/60。
+
+**关键实测发现**(测试方法学沉淀,后续 lifecycle 测试必读):
+1. **同域导航旧 pipeline exit 常态迟到**(有时只到 teardown):迟到期间旧 realm *活着*
+   (proxy 已换、`n=NaN`,但非 zombie)——确定性 discard 面=page close(强制 pipeline
+   exits)与线程 teardown。zombie 风险窗口=exit 迟到但最终到达且条目仍在的部分。
+2. **fixture/HTTP 到达≠执行**:tick 的 fetch 在 egress 队列里可滞后秒级落地,arrival 计数
+   会把 pre-discard fetch 误判为 zombie hit(两轮假 RED/GREEN 教训);必须数**执行**
+   (zombie-fire 探针/闭包内 k 计数),不得数到达。
+3. **垂死 realm 自断链**:commit→exit 窗口内 tick 的 fetch 可抛错→链条停止 re-arm→
+   exit 时 registry 已空(purge=0 但 discard 正常发生)——「清除条数」不可作确定性断言,
+   「hook 到达 events + zombie 执行=0」才是合同。
+
+**验证**(波末一次测):`cargo nt -p bao-browser -E 'test(realm_discard_timers_tests)'`
+**6/6**;`-p bun_runtime -E 'test(timers::)'` **60/60**;回归 `-p bun_runtime -p bao_engine`
+全量 **1600/1600**(1595 直绿 + 5 个 stale-binary 守卫测试在 `cargo build -p bao_bin` 后
+复跑 5/5 + 1 pre-existing skip)+ bao-browser worker 族 **355/355**(同树并行波次文件的
+瞬时编译错误按归属分责,未计入)。
+
+**回滚点**:单 commit revert(vendor 4 文件 hook+re-export + timers.rs purge/探针 +
+bao_browser wiring + 测试),无数据/接口迁移。
+
+**遗留如实记**:
+- N2 第二行(ConcurrentTask 完成指向旧 realm,一次性 bounded)未随 P-A 立法——原黄,
+  仍黄(本轮零触碰);
+- 同域导航旧 pipeline exit 迟到本身(旧 realm 长活=内存驻留面)是 #29 nav-churn 的独立
+  输入,非本波范围;P-A 已保证 exit 到达即清。

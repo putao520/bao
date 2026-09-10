@@ -842,6 +842,18 @@ fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
 
         // Fire JS callback — no BAO_REGISTRY borrow held.
         // SAFETY: raw_cx is a live JSContext* registered by drain_and_check.
+        // RED-1 zombie-fire probe: a due timer whose registration global was
+        // already discarded should be impossible (the discard purge is the
+        // enforcement) — count it if it ever happens, so lifecycle tests
+        // can tell "chain stopped" from "chain's fetches still landing".
+        if let ::std::option::Option::Some(v) = obj.global_root {
+            if v.is_object()
+                && !v.is_null()
+                && DEAD_GLOBALS.lock().unwrap().contains(&(v.to_object() as usize))
+            {
+                ZOMBIE_FIRES.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         unsafe {
             obj.fire_js(raw_cx, &now_ts);
         }
@@ -962,6 +974,10 @@ pub fn schedule_raw(
         let global = unsafe { CurrentGlobalOrNull(cx) };
         if !global.is_null() {
             bao_obj.global_root = Some(ObjectValue(global));
+            // Zombie-fire probe ABA guard: scheduling against this address
+            // proves the realm is live (either never discarded, or the
+            // address was recycled by a new realm) — un-mark it.
+            DEAD_GLOBALS.lock().unwrap().remove(&(global as usize));
             // SAFETY: the slot is the heap-stable field inside the
             // registry-owned Box<BaoTimeoutObject> (moving the Box never
             // moves its target); the root is released in
@@ -975,7 +991,6 @@ pub fn schedule_raw(
         }
     }
     BAO_REGISTRY.with(|r| r.borrow_mut().insert(bao_obj));
-
     id
 }
 
@@ -1000,6 +1015,129 @@ pub fn cancel_raw(id: u32) {
     if firing != 0 && firing == id {
         CLEARED_DURING_FIRE.with(|c| c.set(true));
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// RED-1 P-A (user ruling 2026-09-10): realm-discard timer cancel.
+//
+// Same-registered-domain navigation reuses the servo ScriptThread and
+// discards the old page realm via `Window::clear_js_runtime` (vendor
+// patch). Until this hook existed, nothing removed the discarded realm's
+// BAO_REGISTRY entries: the deadline fired a zombie callback into the
+// `WindowState::Zombie` realm, a re-arming setImmediate/interval chain ran
+// forever, and the raw-rooted `global_root` pinned the old realm against
+// GC (per-navigation accumulation). `clear_js_runtime` now bridges the
+// discard here (same registration face as the pump bridge — process-global
+// callback in servo, wired by bao_browser), and this purge is the cancel
+// side: browser navigation semantics (a document's timers die with the
+// document).
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Total bao timers cancelled by realm discard (process-global probe for
+/// lifecycle tests / diagnostics; counts every purge by
+/// [`cancel_timers_for_global`]). The purge itself runs on the owning
+/// ScriptThread; this counter is what other threads can observe.
+pub fn realm_discard_cancelled_total() -> usize {
+    REALM_DISCARD_CANCELLED.load(::std::sync::atomic::Ordering::Relaxed)
+}
+
+static REALM_DISCARD_CANCELLED: ::std::sync::atomic::AtomicUsize =
+    ::std::sync::atomic::AtomicUsize::new(0);
+
+/// Total realm-discard notifications delivered to
+/// [`cancel_timers_for_global`] (process-global probe). Every pipeline
+/// exit that carries a Window realm counts, whether or not that realm
+/// still held bao timers at the instant (a chain whose last re-arm
+/// failed in the dying realm leaves nothing to purge — the discard still
+/// ran, and [`zombie_fires_total`] is the behavioral assert).
+pub fn realm_discard_events_total() -> usize {
+    REALM_DISCARD_EVENTS.load(::std::sync::atomic::Ordering::Relaxed)
+}
+
+static REALM_DISCARD_EVENTS: ::std::sync::atomic::AtomicUsize =
+    ::std::sync::atomic::AtomicUsize::new(0);
+
+// RED-1 P-A companion probe: count timer fires whose registration global
+// was already discarded (a "zombie fire" — executing a dead realm's
+// callback). The purge is the enforcement; this counter only observes, so
+// lifecycle tests can assert the discard actually stopped executions
+// (fixture/HTTP arrival timestamps lag fetch invocations by the egress
+// queue depth and cannot make that distinction).
+//
+// ABA safety: a global address re-used by a later realm is un-marked the
+// moment that realm schedules a timer (a schedule proves the realm is
+// live), so a recycled address cannot inflate the count.
+static DEAD_GLOBALS: ::std::sync::LazyLock<
+    ::std::sync::Mutex<::std::collections::HashSet<usize>>,
+> = ::std::sync::LazyLock::new(|| {
+    ::std::sync::Mutex::new(::std::collections::HashSet::new())
+});
+
+static ZOMBIE_FIRES: ::std::sync::atomic::AtomicUsize =
+    ::std::sync::atomic::AtomicUsize::new(0);
+
+/// Total fires of timers registered against already-discarded realms
+/// (process-global probe; see the block comment above).
+pub fn zombie_fires_total() -> usize {
+    ZOMBIE_FIRES.load(::std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Cancel every BAO_REGISTRY timer whose registration global is `global`
+/// (the discarded realm's Window global).
+///
+/// Runs on the owning ScriptThread with its live cx (the
+/// `clear_js_runtime` bridge contract); removes matching registry entries,
+/// releases their raw roots (registered in-Box slot address — see
+/// `cleanup_callback`) and drops their gc-store callbacks. Returns how
+/// many timers were cancelled. Entries with no captured global (null-cx
+/// test registrations) are not attributable to a realm and stay; a null
+/// `global` is a no-op. Timer IDs are per-thread, so the purge is exact —
+/// other realms' timers on the same thread (and every other thread's
+/// registry) are untouched.
+pub fn cancel_timers_for_global(cx: *mut JSContext, global: *mut JSObject) -> usize {
+    if global.is_null() {
+        return 0;
+    }
+    // Zombie-fire probe: mark the discarded global so any LATER fire
+    // against it is counted (the purge above removes what exists NOW; the
+    // mark catches anything that slips through by construction change).
+    DEAD_GLOBALS.lock().unwrap().insert(global as usize);
+    REALM_DISCARD_EVENTS.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+    // Two-phase: snapshot candidate ids with a shared borrow, then
+    // remove/clean each — cleanup_callback must see the REGISTERED in-Box
+    // slot address (never move the payload out first), and no borrow may
+    // be held across it.
+    let candidates: Vec<u32> = BAO_REGISTRY.with(|r| {
+        r.borrow()
+            .owned
+            .iter()
+            .filter_map(|(id, obj)| {
+                obj.global_root.and_then(|v| {
+                    // Pure payload read: the raw-rooted slot's value, no
+                    // realm needed (same read `fire_js` does).
+                    (v.is_object() && !v.is_null() && v.to_object() == global).then_some(*id)
+                })
+            })
+            .collect()
+    });
+    let mut cancelled = 0usize;
+    for id in candidates {
+        if let ::std::option::Option::Some(mut obj) =
+            BAO_REGISTRY.with(|r| r.borrow_mut().remove(id))
+        {
+            if !cx.is_null() {
+                obj.cleanup_callback(cx);
+            }
+            // cx null (test harness): the Drop backstop releases the raw
+            // root via `current_cx()` when possible — same convention as
+            // `cancel_raw`.
+            cancelled += 1;
+        }
+    }
+    if cancelled > 0 {
+        REALM_DISCARD_CANCELLED.fetch_add(cancelled, ::std::sync::atomic::Ordering::Relaxed);
+    }
+    cancelled
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2140,6 +2278,70 @@ mod bao_timeout_tests {
     fn cancel_raw_unknown_id_is_noop() {
         // cancel_raw with unknown ID should be a no-op (no panic).
         cancel_raw(999999); // Should not panic
+    }
+
+    /// RED-1 P-A (user ruling 2026-09-10): cancel_timers_for_global purges
+    /// EXACTLY the discarded realm's entries. Direct registry construction
+    /// (global_root set as a plain field, no AddRawValueRoot — the unit
+    /// harness has no live cx; production always roots via schedule_raw).
+    fn insert_with_global(id: u32, global: *mut JSObject, interval_ms: Option<u64>) {
+        let mut obj = Box::new(BaoTimeoutObject::new_paused());
+        obj.timer_id = id;
+        obj.event_loop_timer.next = bun_core::Timespec::now_allow_mocked_time().add_ms(100);
+        obj.interval = interval_ms.map(Duration::from_millis);
+        obj.global_root = ::std::option::Option::Some(ObjectValue(global));
+        BAO_REGISTRY.with(|r| {
+            let existing = r.borrow_mut().insert(obj);
+            assert_eq!(existing, id);
+        });
+    }
+
+    #[test]
+    fn cancel_timers_for_global_matches_only_that_global() {
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        // Fake global addresses must be pointer-aligned (ObjectValue tag +
+        // to_object's alignment assert).
+        let global_a: *mut JSObject = 0xaaa0000 as *mut JSObject;
+        let global_b: *mut JSObject = 0xbbb0000 as *mut JSObject;
+        let counter_before = realm_discard_cancelled_total();
+
+        insert_with_global(900_001, global_a, None);
+        insert_with_global(900_002, global_a, Some(40)); // interval shape
+        insert_with_global(900_003, global_b, None); // other realm: untouched
+        let no_root_id = schedule_raw(null_cx, 0xccc0000 as *mut JSObject, 100, false, &[]);
+
+        let cancelled = cancel_timers_for_global(null_cx, global_a);
+        assert_eq!(cancelled, 2, "both global_a entries (oneshot + interval)");
+        assert!(
+            !BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&900_001)),
+            "global_a oneshot purged"
+        );
+        assert!(
+            !BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&900_002)),
+            "global_a interval purged"
+        );
+        assert!(
+            BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&900_003)),
+            "global_b entry must survive (per-realm exactness)"
+        );
+        assert!(
+            BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&no_root_id)),
+            "unattributable (no captured global) entries stay — not this realm's"
+        );
+        assert_eq!(
+            realm_discard_cancelled_total(),
+            counter_before + 2,
+            "process-global discard counter bumps by the purged count"
+        );
+
+        // Null global is a no-op; cleanup of the survivors.
+        assert_eq!(cancel_timers_for_global(null_cx, ::std::ptr::null_mut()), 0);
+        assert!(
+            BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&900_003)),
+            "null-global no-op must not purge anything"
+        );
+        cancel_raw(900_003);
+        cancel_raw(no_root_id);
     }
 
     #[test]

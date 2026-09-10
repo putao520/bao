@@ -312,6 +312,57 @@ pub fn bao_run_in_script_settings(
     run_a_script::<crate::DomTypeHolder, _, _>(cx, &global, |_| f());
 }
 
+// BAO PATCH (RED-1 P-A, user ruling 2026-09-10): realm-discard timer
+// cancel bridge. Same-registered-domain navigation reuses this
+// ScriptThread (constellation event-loop reuse) and discards the old
+// page realm at pipeline exit — servo cancels its own task sources only
+// inside `Window::clear_js_runtime`, but bao timers registered against
+// the old realm's global (the thread's bao timer registry: page-realm
+// `setImmediate` chains, node-segment timers) had NO discard hook. The
+// deadline fired a zombie callback into the discarded realm, a
+// re-arming chain/interval ran forever, and the raw-rooted global
+// pinned the realm against GC (per-navigation accumulation). This
+// bridge hands the discard to the embedder, which purges the thread's
+// bao timer registry for exactly that global (browser navigation
+// semantics: a document's timers die with the document). Mirrors the
+// pump bridge registration face above (`*mut c_void` params keep the
+// two mozjs crate instances decoupled).
+pub type BaoRealmDiscardCancel = Box<dyn Fn(*mut c_void, *mut c_void) + Send + Sync>;
+
+static BAO_REALM_DISCARD_CANCEL: std::sync::OnceLock<BaoRealmDiscardCancel> =
+    std::sync::OnceLock::new();
+
+/// Register the process-global realm-discard cancel (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init;
+/// the first registration wins (OnceLock semantics, matching the other
+/// embedder registries).
+pub fn register_bao_realm_discard_cancel(cancel: BaoRealmDiscardCancel) {
+    let _ = BAO_REALM_DISCARD_CANCEL.set(cancel);
+}
+
+/// Invoke the registered realm-discard cancel for `global` — the JS
+/// global of the Window whose realm is being discarded. Called from
+/// `handle_exit_pipeline_msg` on this ScriptThread while its JSContext
+/// is still live (BEFORE the `window_detached` gate, so a detached
+/// window's realm is covered too — `clear_js_runtime` alone is
+/// unreachable on that path). The embedder side is a pure registry purge
+/// (releases raw roots; runs no JS).
+pub(crate) fn bao_cancel_timers_for_discarded_realm(
+    cx: &mut JSContext,
+    global: *mut js::jsapi::JSObject,
+) {
+    if global.is_null() {
+        return;
+    }
+    if let Some(cancel) = BAO_REALM_DISCARD_CANCEL.get() {
+        // SAFETY: the RAW SpiderMonkey context pointer (same conversion as
+        // `bao_pump_embedder_event_loop` above — the wrapper's address must
+        // never leak through as a JSContext*). The cancel runs no JS, so
+        // the no_gc borrowing only covers the pointer read itself.
+        cancel(unsafe { cx.raw_cx_no_gc() } as *mut c_void, global as *mut c_void);
+    }
+}
+
 // ============================================================================
 // Embedder Worker Scope Callbacks (Bao vendor patch - DEC-WK-001 / TASK-1)
 // ============================================================================
@@ -3641,6 +3692,27 @@ impl ScriptThread {
             if let Some(parser) = document.get_current_parser() {
                 parser.abort(cx);
             }
+
+            // BAO PATCH (RED-1 P-A, user ruling 2026-09-10): same-
+            // registered-domain navigation reuses this ScriptThread
+            // (constellation event-loop reuse), and the old realm's bao
+            // timers (registered against its Window global on this
+            // thread's bao timer registry) have no other discard hook —
+            // servo cancels its own task sources only inside
+            // `clear_js_runtime` below, which a detached window
+            // (same-origin nav already moved the browsing context) never
+            // reaches. Hand the discard to the embedder HERE so those
+            // timers die with the realm in both branches (browser
+            // navigation semantics) instead of firing zombie callbacks
+            // into the discarded realm and pinning it against GC. No-op
+            // when no embedder cancel is registered (upstream-only
+            // builds); runs no JS.
+            bao_cancel_timers_for_discarded_realm(
+                cx,
+                script_bindings::reflector::DomObject::reflector(&*document.window())
+                    .get_jsobject()
+                    .get(),
+            );
 
             if !document.window_detached() {
                 debug!("{pipeline_id}: Shutting down layout");
