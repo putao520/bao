@@ -3,6 +3,10 @@
 use bao_engine::context::{JsContext, SmRuntimeGuard};
 use bao_engine::error::JsError;
 use bao_engine::execution_control::ExecutionControl;
+// Re-export for the CLI-side terminal-state → exit-code mapping (#24 S1 CLI
+// wiring). Internal experimental surface — NOT a stable API commitment.
+#[doc(hidden)]
+pub use bao_engine::execution_control::TerminalState;
 use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
 use mozjs::realm::AutoRealm;
@@ -151,6 +155,38 @@ impl BaoRuntime {
     }
 
     pub fn run_file(&mut self, path: &str) -> ::std::result::Result<JsValue, JsError> {
+        let (source, is_module) = self.prepare_file_execution(path)?;
+        self.eval_file_body(path, &source, is_module, None, None)
+    }
+
+    /// `run_file` + engine-native control (#24 S1 wiring of the file entry —
+    /// the `bao run <file>` body). Same source-read / require-dir /
+    /// file-globals / script-vs-module dispatch as [`BaoRuntime::run_file`];
+    /// the chosen entry runs under `control` (+ optional deadline). The
+    /// control covers the WHOLE entry incl. the post-eval event-loop pump —
+    /// a runaway in module top level or a timer/job/pump callback is
+    /// terminated deterministically with the stable termination error.
+    ///
+    /// Internal experimental surface — NOT a stable API commitment.
+    #[doc(hidden)]
+    pub fn run_file_with_control(
+        &mut self,
+        control: &ExecutionControl,
+        path: &str,
+        timeout: ::std::option::Option<::std::time::Duration>,
+    ) -> ::std::result::Result<JsValue, JsError> {
+        let (source, is_module) = self.prepare_file_execution(path)?;
+        self.eval_file_body(path, &source, is_module, Some(control), timeout)
+    }
+
+    /// Shared pre-dispatch half of the file entries: read the file, anchor
+    /// the require dir, install per-file globals, and decide script vs
+    /// module. Order-identical to the historical inline `run_file` sequence
+    /// so the plain path is byte-for-byte the same execution.
+    fn prepare_file_execution(
+        &mut self,
+        path: &str,
+    ) -> ::std::result::Result<(String, bool), JsError> {
         let source = bun_sys::fs::read_to_string(path).map_err(|e| JsError {
             message: format!("Error reading {}: {}", path, e),
             filename: path.into(),
@@ -175,15 +211,11 @@ impl BaoRuntime {
             .unwrap_or_default();
         globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
 
-        if path.ends_with(".mjs") || path.ends_with(".mts") {
-            self.eval_module(&source, path)
+        let is_module = if path.ends_with(".mjs") || path.ends_with(".mts") {
+            true
         } else if path.ends_with(".ts") || path.ends_with(".tsx") || path.ends_with(".jsx") {
             // TypeScript/JSX files: treat as ESM if they contain import/export
-            if source.contains("import ") || source.contains("export ") {
-                self.eval_module(&source, path)
-            } else {
-                self.eval(&source, path)
-            }
+            source.contains("import ") || source.contains("export ")
         } else if source.contains("import ")
             && (source.contains(" from ")
                 || source.contains(" from\"")
@@ -191,11 +223,31 @@ impl BaoRuntime {
             && !source.contains("require(")
         {
             // JS files with ESM imports (and no require): treat as ESM
-            self.eval_module(&source, path)
+            true
         } else if source.trim_start().starts_with("import ") {
-            self.eval_module(&source, path)
+            true
         } else {
-            self.eval(&source, path)
+            false
+        };
+        ::std::result::Result::Ok((source, is_module))
+    }
+
+    /// Dispatch half of the file entries: script or module, plain or under
+    /// `control`. The four combinations are exact delegations — no behavior
+    /// of the plain path changes.
+    fn eval_file_body(
+        &mut self,
+        path: &str,
+        source: &str,
+        is_module: bool,
+        control: ::std::option::Option<&ExecutionControl>,
+        timeout: ::std::option::Option<::std::time::Duration>,
+    ) -> ::std::result::Result<JsValue, JsError> {
+        match (is_module, control) {
+            (true, Some(control)) => self.eval_module_with_control(control, source, path, timeout),
+            (true, None) => self.eval_module(source, path),
+            (false, Some(control)) => self.eval_with_control(control, source, path, timeout),
+            (false, None) => self.eval(source, path),
         }
     }
 

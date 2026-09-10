@@ -18,8 +18,27 @@ struct Cli {
     #[arg(short, long)]
     eval: Option<String>,
 
+    /// Terminate a runaway script after <MS> milliseconds (engine-native
+    /// interrupt; exit code 124, GNU-timeout convention). While a controlled
+    /// script entry is in flight, SIGINT (Ctrl-C) cancels it gracefully
+    /// (exit code 130) instead of killing the process. Applies only to
+    /// script execution (`bao run`, `bao -e`); without it nothing changes.
+    #[arg(long, global = true, value_parser = parse_timeout_ms)]
+    timeout: Option<u64>,
+
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+/// `--timeout` parser: positive milliseconds (0 is rejected — an instant
+/// deadline is always a flag mistake, fail-closed with a clap usage error).
+fn parse_timeout_ms(value: &str) -> ::std::result::Result<u64, String> {
+    match value.parse::<u64>() {
+        Ok(ms) if ms > 0 => Ok(ms),
+        _ => Err(String::from(
+            "--timeout expects a positive number of milliseconds (e.g. --timeout 5000)",
+        )),
+    }
 }
 
 #[derive(clap::Subcommand)]
@@ -102,11 +121,19 @@ pub fn run() -> ::std::result::Result<(), i32> {
     bao_bundler::build_api::install();
 
     let cli = Cli::parse();
+    // --timeout only drives script execution entries (SM-EVOLUTION #24 S1
+    // CLI wiring: `bao run` / top-level `-e`). On every other subcommand it
+    // is rejected fail-closed instead of being silently ignored.
+    let timeout_consumed = cli.eval.is_some() || matches!(cli.command, Some(Commands::Run { .. }));
+    if !timeout_consumed && cli.timeout.is_some() {
+        eprintln!("error: --timeout applies only to script execution (`bao run`, `bao -e`)");
+        return Err(2);
+    }
     // Top-level `-e` / `--eval` (Bun-compatible): runs the code as a script.
     // This is the form used by upstream test harnesses that spawn
     // `bunExe() -e script` to exercise TOCTOU PoCs in a fresh subprocess.
     if let Some(code) = cli.eval {
-        return run_eval(&code);
+        return run_eval(&code, cli.timeout);
     }
     match cli.command {
         Some(Commands::Run {
@@ -116,12 +143,12 @@ pub fn run() -> ::std::result::Result<(), i32> {
         }) => {
             if let Some(code) = eval {
                 if r#module {
-                    run_module_eval(&code)
+                    run_module_eval(&code, cli.timeout)
                 } else {
-                    run_eval(&code)
+                    run_eval(&code, cli.timeout)
                 }
             } else if let Some(path) = file {
-                run_file(&path, r#module)
+                run_file(&path, r#module, cli.timeout)
             } else {
                 eprintln!("bao run: no input file");
                 Err(1)
@@ -162,49 +189,155 @@ pub fn run() -> ::std::result::Result<(), i32> {
     }
 }
 
-fn run_eval(code: &str) -> ::std::result::Result<(), i32> {
+/// Exit code for a control-terminated entry (SM-EVOLUTION #24 S1 CLI wiring):
+/// `Some(124)` = GNU timeout(1) convention for a timed-out command;
+/// `Some(130)` = 128+SIGINT, the conventional shell-visible code for a
+/// SIGINT-interrupted process (the signal is converted into a controlled
+/// termination, so the equivalent code is surfaced instead of dying by
+/// signal). `None` = not a control termination (plain script error → the
+/// entries' existing exit-code-1 mapping). Rationale recorded per the S1
+/// CLI legislation (user ruling 2026-09-10).
+fn control_termination_exit_code(state: bun_runtime::runtime::TerminalState) -> Option<i32> {
+    match state {
+        bun_runtime::runtime::TerminalState::TimedOut => Some(124),
+        bun_runtime::runtime::TerminalState::Cancelled => Some(130),
+        _ => None,
+    }
+}
+
+fn run_eval(code: &str, timeout_ms: Option<u64>) -> ::std::result::Result<(), i32> {
     let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize SpiderMonkey");
         1
     })?;
-    let eval_result = match rt.eval(code, "<eval>") {
-        Ok(val) => {
-            flush_js_output();
-            if !val.is_undefined() {
-                println!("{}", val.to_display_string());
+    // Set by the controlled arm when the entry was terminated by the control
+    // (deadline / SIGINT→cancel); plain errors keep the exit-code-1 mapping.
+    let mut termination_exit: Option<i32> = None;
+    let eval_result = match timeout_ms {
+        None => match rt.eval(code, "<eval>") {
+            Ok(val) => {
+                flush_js_output();
+                if !val.is_undefined() {
+                    println!("{}", val.to_display_string());
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        Err(e) => {
-            flush_js_output();
-            eprintln!("Error: {}", e);
-            Err(1)
+            Err(e) => {
+                flush_js_output();
+                eprintln!("Error: {}", e);
+                Err(1)
+            }
+        },
+        Some(ms) => {
+            // #24 S1 CLI wiring: engine-native control around the script
+            // entry (deadline + SIGINT→cancel; see InterruptBridge).
+            let control = rt.execution_control();
+            let mut bridge = bun_runtime::interrupt_bridge::InterruptBridge::install();
+            bridge.arm(&control);
+            let result = rt.eval_with_control(
+                &control,
+                code,
+                "<eval>",
+                Some(::std::time::Duration::from_millis(ms)),
+            );
+            bridge.disarm();
+            let mapped = match result {
+                Ok(val) => {
+                    flush_js_output();
+                    if !val.is_undefined() {
+                        println!("{}", val.to_display_string());
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    flush_js_output();
+                    eprintln!("Error: {}", e);
+                    termination_exit = control_termination_exit_code(control.terminal_state());
+                    Err(termination_exit.unwrap_or(1))
+                }
+            };
+            // Drop re-raises a swallowed-but-unhandled SIGINT under the
+            // restored disposition before any further exit-code work.
+            drop(bridge);
+            mapped
         }
     };
     // Orderly exit: explicit process.exit() / Bun.exit(), or an exitCode
     // steered by the script / 'exit' listeners (Node: natural exit honours
     // process.exitCode).
+    //
+    // Control termination (deadline / SIGINT→cancel) takes precedence: the
+    // module pipeline routes the uncatchable termination through the
+    // uncaught-exception machinery, which request_exit(1)s as a side effect —
+    // the 124/130 contract is the truthful signal and must win over it.
+    if let Some(code) = termination_exit {
+        return Err(code);
+    }
     if bun_runtime::should_exit() || bun_runtime::exit_code() != 0 {
         return Err(bun_runtime::exit_code());
     }
     eval_result
 }
 
-fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
+fn run_file(
+    path: &str,
+    force_module: bool,
+    timeout_ms: Option<u64>,
+) -> ::std::result::Result<(), i32> {
     let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize SpiderMonkey");
         1
     })?;
 
-    let is_module = force_module || path.ends_with(".mjs");
-    let result = if is_module {
-        let source = std::fs::read_to_string(path).map_err(|e| {
-            eprintln!("Error reading {}: {}", path, e);
-            1
-        })?;
-        rt.eval_module(&source, path)
-    } else {
-        rt.run_file(path)
+    // Set by the controlled arm when the entry was terminated by the control
+    // (deadline / SIGINT→cancel); plain errors keep the exit-code-1 mapping.
+    let mut termination_exit: Option<i32> = None;
+    let result = match timeout_ms {
+        None => {
+            let is_module = force_module || path.ends_with(".mjs");
+            if is_module {
+                let source = std::fs::read_to_string(path).map_err(|e| {
+                    eprintln!("Error reading {}: {}", path, e);
+                    1
+                })?;
+                rt.eval_module(&source, path)
+            } else {
+                rt.run_file(path)
+            }
+        }
+        Some(ms) => {
+            // #24 S1 CLI wiring: the file entry (script-vs-module dispatch
+            // inside the runtime) runs under engine-native control.
+            let control = rt.execution_control();
+            let mut bridge = bun_runtime::interrupt_bridge::InterruptBridge::install();
+            bridge.arm(&control);
+            let outcome = if force_module || path.ends_with(".mjs") {
+                let source = std::fs::read_to_string(path).map_err(|e| {
+                    eprintln!("Error reading {}: {}", path, e);
+                    1
+                })?;
+                rt.eval_module_with_control(
+                    &control,
+                    &source,
+                    path,
+                    Some(::std::time::Duration::from_millis(ms)),
+                )
+            } else {
+                rt.run_file_with_control(
+                    &control,
+                    path,
+                    Some(::std::time::Duration::from_millis(ms)),
+                )
+            };
+            bridge.disarm();
+            drop(bridge);
+            // Capture the terminal-state exit code while `control` is live;
+            // the shared printer below cannot see it.
+            outcome.map_err(|e| {
+                termination_exit = control_termination_exit_code(control.terminal_state());
+                e
+            })
+        }
     };
 
     let eval_result = match result {
@@ -215,37 +348,84 @@ fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
         Err(e) => {
             flush_js_output();
             eprintln!("Error: {}", e);
-            Err(1)
+            Err(termination_exit.unwrap_or(1))
         }
     };
     // Orderly exit: explicit process.exit() / Bun.exit(), or an exitCode
     // steered by the script / 'exit' listeners (Node: natural exit honours
     // process.exitCode).
+    //
+    // Control termination takes precedence over the exit machinery (see
+    // run_module_eval for the module-path rationale).
+    if let Some(code) = termination_exit {
+        return Err(code);
+    }
     if bun_runtime::should_exit() || bun_runtime::exit_code() != 0 {
         return Err(bun_runtime::exit_code());
     }
     eval_result
 }
 
-fn run_module_eval(code: &str) -> ::std::result::Result<(), i32> {
+fn run_module_eval(code: &str, timeout_ms: Option<u64>) -> ::std::result::Result<(), i32> {
     let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize SpiderMonkey");
         1
     })?;
-    let eval_result = match rt.eval_module(code, "<module>") {
-        Ok(_) => {
-            flush_js_output();
-            Ok(())
-        }
-        Err(e) => {
-            flush_js_output();
-            eprintln!("Error: {}", e);
-            Err(1)
+    // Set by the controlled arm when the entry was terminated by the control
+    // (deadline / SIGINT→cancel); plain errors keep the exit-code-1 mapping.
+    let mut termination_exit: Option<i32> = None;
+    let eval_result = match timeout_ms {
+        None => match rt.eval_module(code, "<module>") {
+            Ok(_) => {
+                flush_js_output();
+                Ok(())
+            }
+            Err(e) => {
+                flush_js_output();
+                eprintln!("Error: {}", e);
+                Err(1)
+            }
+        },
+        Some(ms) => {
+            // #24 S1 CLI wiring: module entry under engine-native control
+            // (whole-entry arm incl. the post-eval event-loop pump).
+            let control = rt.execution_control();
+            let mut bridge = bun_runtime::interrupt_bridge::InterruptBridge::install();
+            bridge.arm(&control);
+            let result = rt.eval_module_with_control(
+                &control,
+                code,
+                "<module>",
+                Some(::std::time::Duration::from_millis(ms)),
+            );
+            bridge.disarm();
+            let mapped = match result {
+                Ok(_) => {
+                    flush_js_output();
+                    Ok(())
+                }
+                Err(e) => {
+                    flush_js_output();
+                    eprintln!("Error: {}", e);
+                    termination_exit = control_termination_exit_code(control.terminal_state());
+                    Err(termination_exit.unwrap_or(1))
+                }
+            };
+            drop(bridge);
+            mapped
         }
     };
     // Orderly exit: explicit process.exit() / Bun.exit(), or an exitCode
     // steered by the script / 'exit' listeners (Node: natural exit honours
     // process.exitCode).
+    //
+    // Control termination takes precedence over the exit machinery: the
+    // module pipeline routes the uncatchable termination through the
+    // uncaught-exception machinery, which request_exit(1)s as a side effect —
+    // the 124/130 contract is the truthful signal and must win over it.
+    if let Some(code) = termination_exit {
+        return Err(code);
+    }
     if bun_runtime::should_exit() || bun_runtime::exit_code() != 0 {
         return Err(bun_runtime::exit_code());
     }

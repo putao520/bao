@@ -96,6 +96,10 @@ pub mod permission_bridge;
 pub mod require;
 pub mod resolver_bridge;
 pub mod runtime;
+// @trace REQ-CLI-001 [entity:BaoRuntime] — SIGINT→ExecutionControl::cancel
+// bridge (SM-EVOLUTION #24 S1 CLI wiring; ledger S1 legislation proposal
+// consumed by user ruling 2026-09-10). Internal experimental surface.
+pub mod interrupt_bridge;
 pub mod s3_api;
 pub mod stealth_http;
 pub mod timers;

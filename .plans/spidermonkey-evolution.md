@@ -55,7 +55,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 
 ### 当前明确缺口
 
-- ~~Bao 源码未发现 `JS_RequestInterruptCallback` 接入~~ → 2026-09-04 已落地最小闭环：`src/bao_engine/src/execution_control.rs`（JS_AddInterruptCallback once-per-JSContext + owner 线程 armed 栈 + thread-safe cancel + deadline watcher + TerminalState + reset 防污染；内部试验面）；2026-09-10 S1 已接线真实入口（`BaoRuntime::{eval,eval_module}_with_control`，script/module/事件循环泵 whole-entry 覆盖 + #25 排序合同测试锁定，见 §8 S1 节）；servo 侧入口（ScriptThread/worker realm eval）与产品级暴露（CLI flag/SIGINT）未接；
+- ~~Bao 源码未发现 `JS_RequestInterruptCallback` 接入~~ → 2026-09-04 已落地最小闭环：`src/bao_engine/src/execution_control.rs`（JS_AddInterruptCallback once-per-JSContext + owner 线程 armed 栈 + thread-safe cancel + deadline watcher + TerminalState + reset 防污染；内部试验面）；2026-09-10 S1 已接线真实入口（`BaoRuntime::{eval,eval_module}_with_control`，script/module/事件循环泵 whole-entry 覆盖 + #25 排序合同测试锁定，见 §8 S1 节）；~~产品级暴露（CLI flag/SIGINT）未接~~ → 2026-09-11 已接（CLI `--timeout <ms>` + SIGINT→cancel，立法提案消费，见 §8 S1 CLI 消费节）；servo 侧入口（ScriptThread/worker realm eval）未接；
 - 未形成 Bao Stencil/XDR script cache（binding 已具备 Stencil wrappers，见 ledger）；
 - 未发现 Realm-native locale/timezone override 的 Bao 侧使用；
 - CDP Debugger 仍未证明由 SM 原生 debugger/script/frame/object facts 驱动（JS::Debugger binding 缺失，bun_sm::debugger 为 emulated CRUD）；
@@ -77,7 +77,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 |---|---|---:|---|---|
 | #22 | META / scheduled-agent contract | P0 | — | OPEN |
 | #23 | Realm / Compartment / Zone topology | P0 | — | OPEN（S0 topology census 已完成 2026-09-10，见 §8；余 capability/stale-object 测试与 Zone 实测数据） |
-| #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；servo 侧入口与产品级暴露未接） |
+| #24 | Interrupt / timeout / cancellation | P0 | #23 最终 policy；审计可并行 | OPEN（S1 已接线 bao_runtime script/module 入口 + whole-entry 泵覆盖，2026-09-10 见 §8；**产品级暴露已接 2026-09-11**：CLI `--timeout <ms>` + SIGINT→cancel（立法提案消费，见 §8 S1 CLI 消费节）；servo 侧入口未接） |
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | CLOSED-实现(in-memory per-JSContext cache 落地+接线+兑现 2026-09-11:5.21× 实测 vs 4.9× 判据,80.8% 编译占比消除,engine 383/stealth 1691/browser 族 503 零回归,见 §8 实现节;XDR encode 绑定缺口独立排程、off-thread 关闭不变) |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN（核查轮 2026-09-10 完成：可达面+自模拟面+裁决提案见 §8；**裁决 2/3/9 已消费 2026-09-10**：CDP Debugger 胶水保真批换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除 + 三真缺口根治（G1 face 原生装出/G2 Node Realm compartment 落位/G3 console 通道回传），live e2e 绿，见 §8 #27 消费节；**裁决 6 已消费 2026-09-10**：Memory 计量换原生 CollectRuntimeStats（jsglue 构造 + bao_engine 内部面 + soak 采样点，见 §8 #19 节）；GC callback 归 #19 待接） |
@@ -596,6 +596,8 @@ nextTick 队列严格先行）。
 
 **SPEC 立法提案停点（未实施）**：CLI `--timeout` / SIGINT→cancel 等产品级暴露属稳定公开
 行为，需 SPEC 立法后接线（本 slice 全部 `#[doc(hidden)]` 内部试验面）。
+→ **已消费（用户裁决 2026-09-10「全部完成」；2026-09-11 落地）**：CLI `--timeout <ms>` +
+SIGINT→cancel 产品级暴露已接线，见 §8 「S1 CLI 消费」节。
 
 **BCE 检查**：能力接线非 bug 修复；同类面=「control 终止伪装成功/污染下一 entry」已由
 run_with_control 的 latch-wins 映射 + arm 时 reset + 测试 2/4 锁定，无同类残留实例。
@@ -1752,3 +1754,65 @@ bench D-phase 代码本身,同 e90 落库形态);regression 复跑 engine `383/3
 增补(`EncodeStencil` bindgen 缺口)维持 blocked;off-thread 家族维持关闭(上游无 API)。
 下一消费者候选(未排程,需新判据):CDP evaluate waitForFunction 形态、`vm.createContext`
 contextify wrapper、CLI `eval_module`。
+
+### 2026-09-11 / S1 CLI 消费——`--timeout <ms>` + SIGINT→cancel 产品级暴露落地（立法提案：全部完成）
+
+**基线**：bao master `642da220`+（并行波工作树；servo 0.5.8 bump 同树）；mozjs 不变。
+**授权**：S1 节「SPEC 立法提案停点」——用户裁决 2026-09-10「全部完成」，本节为消费记录。
+
+**代码改动**（全部在 bao 层，bao_engine 零改动——纯消费 S1 既有接口）：
+
+- `bao_cli/src/cli.rs`：clap 全局可选参数 `--timeout <MS>`（value_parser 拒 0，fail-closed
+  exit 2）；仅脚本执行入口消费（`bao run` / 顶层 `-e` / `run -e` / `run --module -e` /
+  `bao run <file>`），非脚本子命令给了就拒（exit 2 + 消息，禁静默忽略）。三个入口
+  （run_eval / run_file / run_module_eval）的 None 路径字节级不动；Some 路径 =
+  `execution_control()` + `InterruptBridge` + `eval{,_module}_with_control` /
+  `run_file_with_control`。退出码契约：TimedOut→**124**（GNU timeout(1) 惯例）、
+  Cancelled→**130**（128+SIGINT，shell 惯例信号中断码；信号被转为受控终止故以等价码
+  呈现）、其余维持 1——退出码依据即提案停点预录的「默认 124/timeout 风格」。**关键语
+  义**：control 终止码优先于 should_exit/exit_code 尾检查——module 管线把 uncatchable
+  终止路由进 uncaught-exception 机制会 `request_exit(1)`（副作用），124/130 是真信号必须
+  胜出（无此前置时 `run --timeout x.mjs`/`run --module -e` 误报 1，实测复现后修复）。
+- `bao_runtime/src/interrupt_bridge.rs`（新增）：SIGINT→cancel 桥。**AS 安全设计**：
+  `cancel()` 走 `JS_RequestInterruptCallback` → 引擎 `requestInterrupt`（Runtime.cpp）取
+  FutexThread 锁 + wasm 中断锁——非 async-signal-safe，故 handler 体仅 `write(pipe, 1)`
+  （self-pipe），专职 watcher 线程 read→对 armed control 调 cancel（普通线程上下文）。
+  SA_RESTART（libuv 同款）；pipe2(O_CLOEXEC) 防 exec 子进程持有写端。**吞信补偿**：无
+  armed control 时收到的 SIGINT 记 `eaten_unhandled`，Drop 恢复先前 disposition 后
+  `raise(SIGINT)` 重放——Ctrl-C 永不被静默吞掉。**既有信号面交互（已查）**：
+  `Bun__registerSignalsForForwarding`（product_native_symbols.rs，sync spawn 前后注册/
+  注销）会覆盖本桥 handler 并在注销时置 SIG_DFL——此后 SIGINT 退回暴露前行为（默认
+  disposition），降级为现状语义、无腐蚀，记录接受；无 `process.on('SIGINT')` 分发机制，
+  无监听器冲突。
+- `bao_runtime/src/runtime.rs`：`run_file` 重构为 prepare_file_execution（读文件+require
+  dir+file globals+script/module 判定，顺序与历史逐字节同序）+ eval_file_body（四组合纯
+  委派）；新增 `#[doc(hidden)] run_file_with_control`。plain 路径行为零变化。另 re-export
+  `TerminalState`（CLI 退出码映射用）。
+
+**测试**（`bao_browser/tests/suite/bao_cli_timeout_e2e_tests.rs`，9 用例，真二进制子进程 +
+kill -INT）：T1 顶层 `-e` runaway 400ms→124（[350ms,10s] 确定性窗口 + stderr 稳定终止错
+误）；T2 `run --timeout x.mjs`→124（module 文件入口）；T3 `run --timeout x.js`→124
+（script 文件入口）；T4 大 deadline 快脚本→0（未用 deadline 不触发）；T5 `--timeout
+60000` runaway + kill -INT→130 + stderr "cancelled"（稳定 Cancelled 终态）；T6 **无
+--timeout + kill -INT→死于信号 2**（默认 disposition 负对照，「无 flag 行为不变」的可执
+行证据）；T7 `--timeout 0`→clap 拒 2；T8 `doctor --timeout`→拒 2；T9 `run --module
+--timeout -e`→124。
+
+**验证**（波末一次测）：`cargo nt -p bao-browser -E 'test(bao_cli)'` 9+2 全绿；
+`cargo nt -p bao_cli` 12/12；`cargo nt -p bao_engine` **383/383**（基线随并行波 376→383，
+零回归）；`cargo nt -p bun_runtime` **1217 passed / 1 pre-existing skipped**（基线
+1216→1217，零回归）。手工 smoke 补充：`process.exit(7)`+timeout→7（显式退出码不受优
+先级破坏）、无 flag throw→1、无 flag `process.exit(3)`→3。
+
+**已知边界（记录不改动）**：① module 管线在受控终止时额外打印一行「bao: uncaught
+exception: undefined」（module loader 错误路径对 uncatchable 清场后 pending 值的既有报
+告格式，属 bao_engine/module_loader 域，本波禁碰，未抑制）；② SIGINT 落在 eval 返回与
+disarm 之间的指令级窗口会被 cancel 静默消费（与内核信号投递固有竞态同级，Node/libuv
+同类）；③ 脚本阻塞在不可重启长 syscall 时 cancel 等返回 JS 后才生效（与 S1 deadline
+watcher 同类限制，已文档化）。
+
+**BCE 检查**：产品暴露非 bug 修复；发现的「module 路径终止码被 uncaught 路由覆盖」为
+本波引入即修（同一 commit 内闭环），无同类残留（三个入口统一 termination_exit 优先序）。
+
+**回滚点**：单 commit revert（cli.rs + runtime.rs + lib.rs + interrupt_bridge.rs 新模块 +
+suite 测试注册 + Cargo.toml dev-dep + 本账本节）。

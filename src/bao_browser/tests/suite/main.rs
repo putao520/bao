@@ -17,6 +17,7 @@ mod anti_crawler_detection_tests;
 mod bao_api_json_stringify_tests;
 mod bao_api_method_routing_tests;
 mod bao_cli_e2e_tests;
+mod bao_cli_timeout_e2e_tests;
 mod bce004_isolate_tests;
 mod bce004_parent_multinav_tests;
 mod bce004_repro_tests;

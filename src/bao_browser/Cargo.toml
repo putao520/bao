@@ -46,6 +46,9 @@ euclid = "0.22"
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "0.1.0" }
+# bao_cli_timeout_e2e_tests: kill(child, SIGINT) delivery for the
+# SIGINT→cancel / default-kill negative-control subprocess tests.
+libc = "0.2"
 # page_wss_bao_tls_e2e_tests: local TLS WS fixture (BoringSSL server +
 # bun_uws RFC 6455 codec) driving the page wss path end-to-end.
 bao_boringssl_bridge.workspace = true

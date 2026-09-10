@@ -475,6 +475,7 @@ dependencies = [
  "dpi",
  "euclid",
  "image",
+ "libc",
  "log",
  "serde",
  "serde_json",
