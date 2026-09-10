@@ -1,10 +1,10 @@
-# 开发计划: 删 bao_engine::WebWorker bypass + 重接线 servo 原生 Worker 路径 (BCE-20260627-008 根治) | epoch: 6 | status: active
+# 开发计划: 删 bao_engine::WebWorker bypass + 重接线 servo 原生 Worker 路径 (BCE-20260627-008 根治) | epoch: 6 | status: done
 
 ## epoch
 6
 
 ## status
-active
+done
 
 ## 背景与根因
 
@@ -84,3 +84,5 @@ servo vendor patch 已就绪(register_worker_scope_callback + dedicatedworkerglo
 ## 2026-09-10 状态注记(主会话轻触记账,不改上方任务树)
 
 TASK-1~5 实际均已落地(bypass 零残留:web_worker.rs 已删/bao_engine::WebWorker 全项目零活引用/worker 路径 servo 原生——2026-09-09/10 BRW-004 大波 24+ commits 完成 C1-C19 主体,V 批判词与剩余红面见 .claude/prompts/brw004-wave-continuation.md 与 brw004-v-batch-report.md)。本 plan 的 epoch 任务树保持原样作历史档案;REQ-BRW-004 收口以 wave-continuation 文件为准。
+
+2026-09-10 daily-ops 补记:canonical `status` 字段 active→done 翻转。上方注记已宣告终态,但 gsc Stop hook 的 completion-audit(PLAN_DONE_STATUS_RE)只认 `## status` 节内的 implemented|done|delivered|completed|shipped,散文注记不生效——status 漏翻导致一切无 BRW-004 action 证据的会话(含 daily-ops 值班轮)停止被硬拦。翻转依据 = 主权会话自己的终态宣告:`brw004-wave-continuation.md` 头部 2026-09-10 04:22「REQ-BRW-004 = implemented(SPEC 642da220),残余观察项三波全清,本文件转为历史档案」+ SPEC coverage REQ-BRW-004 status=implemented + 机械复核(src/bun_sm/src/web_worker.rs 已删 / bun_sm/src/lib.rs:152 与 bao_engine/src/lib.rs:77 移除注释在位 / new_with_structured_clone 全项目零命中 / bao_browser create_worker 走 servo Worker::Constructor)。任务树按上方注记保持原样。本改动未 commit(SKIPPED_BUSY 值班轮),随 BRW-004 收尾残留一并待交互会话审阅提交。
