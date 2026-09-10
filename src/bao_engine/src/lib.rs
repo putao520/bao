@@ -93,6 +93,15 @@ pub mod context;
 pub mod execution_control;
 pub mod job_queue;
 pub mod memory_stats;
+// @trace REQ-STL-007 [entity:StealthProfile] — engine-native realm identity
+// policy sinks: locale (JS_SetDefaultLocale) / Date time precision
+// (JS::SetTimeResolutionUsec) / timezone arming for Node-semantics realms
+// (SM-EVOLUTION #28, verdict consumed 2026-09-10)
+pub mod realm_policy;
+
+// @trace REQ-STL-007 [entity:StealthProfile] — Node-semantics realm
+// forceUTC arming (creation-time flag consumed by node_realm_options)
+pub use bun_sm::global_object::{node_force_utc, set_node_force_utc};
 
 // @trace REQ-ENG-002 [api:POST /codegen/generate] [entity:CodegenBackend] — codegen backend rewrite (.classes.ts → SpiderMonkey bindings) re-exported via bun_sm::codegen / bun_sm::generated
 

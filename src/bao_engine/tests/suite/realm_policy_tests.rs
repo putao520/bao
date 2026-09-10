@@ -2,8 +2,9 @@
 //
 // SM-EVOLUTION #28 — engine-native realm policy reachability proofs.
 //
-// Locks down, with live engine evidence, the two realm-policy dimensions the
-// 2026-09-10 census found Rust-reachable TODAY with zero binding work:
+// Locks down, with live engine evidence, the realm-policy dimensions the
+// 2026-09-10 census found Rust-reachable. The wiring wave (verdict consumed
+// 2026-09-10) added the third dimension:
 //
 //   1. Timezone: `RealmCreationOptions::forceUTC_` is a pub bindgen field
 //      (creation-time only, per-realm). Engine semantics = Firefox RFP shape:
@@ -18,14 +19,17 @@
 //      (C++ default true; mozjs glue preserves it). Proven by clamping to a
 //      1-second grid with jitter off and observing millisecond multiples of
 //      1000, then restoring resolution 0 (no clamping) and observing raw
-//      wall-clock values again.
+//      wall-clock values again. The combo test additionally proves forceUTC
+//      and an arbitrary (non-default) precision grid compose in one realm —
+//      the exact per-page override configuration bao_browser wires.
 //
-// Deliberately NOT covered here (binding gap, recorded in the ledger):
-// locale — `JS_SetDefaultLocale` is public C++ API but not bindgen-exposed
-// because mozjs-sys' bindgen shim (`src/jsapi.cpp`) does not include
-// `js/LocaleSensitive.h`; landing that include regenerates jsapi.rs and
-// rebuilds every dependent crate, so it belongs to the dedicated wiring wave,
-// not this test-only slice.
+//   3. Locale: `JS_SetDefaultLocale` / `JS_ResetDefaultLocale` landed with
+//      the LocaleSensitive.h bindgen include (the exact 1-line gap the
+//      census recorded). Proven by overriding the runtime default with TWO
+//      distinct valid tags and observing `Intl`'s default-locale resolution
+//      follow each one — host-independent proof that the sink, not the host
+//      environment (LANG/LC_* → ICU default, the pre-fix zh-CN leak path),
+//      owns the identity. The override is reset afterwards.
 //
 // Engine policy tests are process-global where noted: SetTimeResolutionUsec
 // writes a process-wide static, so the clamp is restored BEFORE any assertion
@@ -179,12 +183,100 @@ fn test_time_resolution_clamp_and_restore(ctx: &mut JsContext) {
     );
 }
 
+/// forceUTC composes with an ARBITRARY (non-default) time-resolution grid in
+/// one realm — the exact per-page override configuration bao_browser wires
+/// (`StealthProfile { timezone: { force_utc: true }, timing: { precision_us:
+/// <override> } }`). The grid restore happens BEFORE the assertion for the
+/// same process-static reason as the clamp test above.
+fn test_force_utc_with_time_resolution_combo(ctx: &mut JsContext) {
+    let mut cx = ctx.cx();
+
+    // 100ms grid (neither the 100µs profile default nor the 1s clamp-test
+    // grid) — proves the two dimensions are independent knobs.
+    unsafe { SetTimeResolutionUsec(100_000, false) };
+
+    let combo = eval_bool_in_force_utc_realm(
+        &mut cx,
+        "(function() { \
+           var offset = new Date(1688169600000).getTimezoneOffset(); \
+           var now = Date.now(); \
+           return offset === 0 && (now % 100) === 0; \
+         })()",
+        "force_utc_precision_combo.js",
+    );
+
+    // Restore BEFORE asserting (process-wide static).
+    unsafe { SetTimeResolutionUsec(0, false) };
+
+    assert!(
+        combo,
+        "forceUTC realm must report UTC offset 0 while Date.now is quantized \
+         to the 100ms grid (dimensions must compose)"
+    );
+}
+
+/// `JS_SetDefaultLocale` owns the `Intl` default-locale identity for the
+/// whole runtime — the engine-native sink behind
+/// `StealthProfile::locale`. Two DISTINCT valid tags are applied in turn so
+/// the assertion is host-independent: only the sink can produce the second
+/// tag after the first was observed.
+fn test_set_default_locale_overrides_intl_default(ctx: &mut JsContext) {
+    // Capture the raw context pointer up front (Copy — no lingering borrow,
+    // so `ctx.eval` stays usable between sink calls).
+    let raw_cx = unsafe { ctx.cx().raw_cx_no_gc() };
+
+    assert!(
+        unsafe { bao_engine::realm_policy::set_default_locale(raw_cx, "de-DE") },
+        "JS_SetDefaultLocale must accept the valid tag de-DE"
+    );
+    assert!(
+        ctx.eval(
+            "Intl.DateTimeFormat().resolvedOptions().locale === 'de-DE'",
+            "locale_de.js",
+        )
+        .expect("de-DE Intl eval must succeed")
+        .as_bool()
+        .expect("locale comparison must be boolean"),
+        "Intl default locale must follow the engine override (de-DE)"
+    );
+
+    // A second distinct tag proves the observation tracks the SINK, not any
+    // host coincidence.
+    assert!(
+        unsafe { bao_engine::realm_policy::set_default_locale(raw_cx, "ja-JP") },
+        "JS_SetDefaultLocale must accept the valid tag ja-JP"
+    );
+    assert!(
+        ctx.eval(
+            "Intl.DateTimeFormat().resolvedOptions().locale === 'ja-JP'",
+            "locale_ja.js",
+        )
+        .expect("ja-JP Intl eval must succeed")
+        .as_bool()
+        .expect("locale comparison must be boolean"),
+        "Intl default locale must follow the engine re-override (ja-JP)"
+    );
+
+    // Reset to OS defaults (cleanup for the rest of the suite — restores the
+    // host-derived default locale; its exact value is host-dependent and
+    // intentionally not asserted).
+    unsafe { bao_engine::realm_policy::reset_default_locale(raw_cx) };
+    let _ = ctx
+        .eval(
+            "Intl.DateTimeFormat().resolvedOptions().locale",
+            "locale_reset.js",
+        )
+        .expect("Intl must still resolve after locale reset");
+}
+
 #[test]
 fn test_realm_policy_all() {
     let mut ctx = JsContext::for_test().expect("Failed to create JsContext");
 
     test_force_utc_realm_dates_run_in_utc(&mut ctx);
     test_time_resolution_clamp_and_restore(&mut ctx);
+    test_force_utc_with_time_resolution_combo(&mut ctx);
+    test_set_default_locale_overrides_intl_default(&mut ctx);
 
     bao_engine::context::JsContext::shutdown_thread_sm();
 }

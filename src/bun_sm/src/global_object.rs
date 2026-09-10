@@ -49,9 +49,44 @@ pub struct JSGlobalObject(pub(crate) *mut RawJSContext);
 /// constructors then resolve lazily through `SIMPLE_GLOBAL_CLASS`'s
 /// `JS_ResolveStandardClass` hook exactly like every other standard class
 /// (no manual global registration involved).
+/// Bao engine-native timezone policy flag (SM-EVOLUTION #28, verdict
+/// consumed 2026-09-10 under the REQ-STL identity-consistency defect fix).
+///
+/// When armed, every Node-semantics realm created via
+/// [`node_realm_options`] runs its Date local-time computations in UTC+0
+/// (SpiderMonkey `RealmCreationOptions::forceUTC_`). Engine semantics =
+/// Firefox RFP shape: SM maps the flag to the real IANA zone
+/// Atlantic/Reykjavik (UTC+0, real DST history), not a bare +0000 offset.
+///
+/// `forceUTC_` is a CREATION-time-only per-realm option (no post-creation
+/// setter exists), so this flag must be armed BEFORE the realm is created —
+/// bao_browser arms it from `StealthProfile::timezone` at page creation,
+/// before the pipeline's realms exist. The flag mirrors servo's
+/// process-global realm-creation switch (`set_force_utc_realms`) that covers
+/// the DOM realms; last write wins process-wide — engine-level sink
+/// granularity, the same class as the servo realm-creation global.
+static NODE_FORCE_UTC: ::std::sync::atomic::AtomicBool =
+    ::std::sync::atomic::AtomicBool::new(false);
+
+/// Arm/clear the engine-native forceUTC timezone policy for realms created
+/// via [`node_realm_options`] (any thread; creation-time flag).
+pub fn set_node_force_utc(force: bool) {
+    NODE_FORCE_UTC.store(force, ::std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether Node-semantics realms are currently created with `forceUTC_`.
+pub fn node_force_utc() -> bool {
+    NODE_FORCE_UTC.load(::std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn node_realm_options() -> mozjs::rust::RealmOptions {
     let mut options = mozjs::rust::RealmOptions::default();
     options.creationOptions_.sharedMemoryAndAtomics_ = true;
+    // Engine-native identity policy (SM-EVOLUTION #28): mirror the page
+    // realm's forceUTC timezone so Node-realm Date surfaces (values that
+    // cross back into the page through the Bun API surface) cannot leak the
+    // host timezone while the profile forces UTC.
+    options.creationOptions_.forceUTC_ = node_force_utc();
     options
 }
 

@@ -21,6 +21,11 @@
 #include "js/Id.h"
 #include "js/Initialization.h"
 #include "js/JSON.h"
+// BAO PATCH (SM-EVOLUTION #28, user ruling 2026-09-10): expose
+// JS_SetDefaultLocale / JS_GetDefaultLocale / JS_ResetDefaultLocale to
+// bindgen. The allowlist regex (JS_.*) already matches these symbols; only
+// the header was missing from the include aggregation.
+#include "js/LocaleSensitive.h"
 #include "js/MemoryMetrics.h"
 #include "js/Modules.h"
 #include "js/Object.h"
