@@ -41,3 +41,9 @@ clear_upgrade_transaction  current=0x0 (abort body — panic)
 Per the IndexedDB spec's transaction-lifetime step ("when a transaction is committed or aborted, its state is set to finished"), a late finalization on an already-finished transaction should be a no-op, never a second lifecycle transition. Re-checking `finished` at the top of both task bodies (`send_complete_notification` / `send_abort_notification`) makes the first finalization win and the late one a no-op.
 
 Happy to turn this into a PR if the maintainers agree with the analysis — the guard is two lines in each task body.
+
+---
+
+## 提报状态(2026-09-10)
+
+查重命中 **servo/servo#47927**(2026-09-09 开,同 panic 位 `clear_upgrade_transaction called but no upgrade transaction is set`,触发形态不同:重复索引 vs 我们的 commit/abort 竞态)→ 按 skill 纪律不开新 issue,应在其下补证据评论。**本机 gh token(fine-grained PAT)无第三方仓 addComment 权限,已被 GraphQL 拒绝**——评论全文在上文「We hit the same panic...」段,需用户提报(或授权带 public_repo scope 的 token)。
