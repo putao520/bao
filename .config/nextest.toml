@@ -64,3 +64,24 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'package(bao-browser) and test(page_net_bun_full_matrix_e2e_tests)'
 threads-required = "num-test-threads"
+
+# Test resource isolation (task: bun_runtime fs.watchFile stat-poll fleet flake,
+# diagnosed 2026-09-10 during the e62 full-suite certification batch):
+#
+# `fs_watch_events_tests::test_fs_watch_file_stat_polling_fires` drives a real
+# fs.watchFile({ interval: 60 }) stat poller and rewrites the watched file at
+# 120ms; the deadline gate is the expected 10->13 size delta itself, re-checked
+# by up to 80 wait_until polls. In isolation it is green 2/2, but in the full
+# bun_runtime fleet at default concurrency the poll loop starves past the
+# rewrite window exactly like the three deadline-bound entries above — e62
+# observed it as the suite's sole residual red (fleet-only, never isolated;
+# scheduling starvation, not a logic regression).
+#
+# Reserve the full test-thread budget so this deadline-bound poller never
+# co-runs with the fleet (same documented mechanism as the three entries above;
+# test-level filter — unlike the h2_fetch/destination_matrix modules, this
+# module holds seven tests and only this one is deadline-flake evidence). No
+# test code or assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bun_runtime) and test(fs_watch_file_stat_polling_fires)'
+threads-required = "num-test-threads"
