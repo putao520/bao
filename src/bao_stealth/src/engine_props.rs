@@ -1405,7 +1405,7 @@ unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool 
     use ::std::ptr::NonNull;
     use mozjs::context::JSContext;
     use mozjs::rooted;
-    use mozjs::rust::{evaluate_script, CompileOptionsWrapper, Handle as RustHandle};
+    use mozjs::rust::Handle as RustHandle;
 
     let js_code = if let Some(rp) = current_realm_profile(raw_cx) {
         rp.build_hooks_js()
@@ -1443,12 +1443,25 @@ unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool 
     };
     let mut cx = JSContext::from_ptr(cx_nn);
 
-    // Evaluate the JS hook code in the Page Realm global
+    // Evaluate the JS hook code in the Page Realm global.
+    //
+    // SM-EVOLUTION #26 (verdict 2026-09-10): this blob is re-paid per realm —
+    // every page realm AND every worker/SW realm — and its parse+bytecode
+    // compile is 79.6% of the warm-realm injection cost. Route through the
+    // per-JSContext stencil cache: compile once per (source, filename, line),
+    // instantiate per realm. Same source, same result, same error contract
+    // (Err leaves the pending exception for the arm below — unchanged).
     let filename = c"<bao-stealth-hooks>".to_owned();
-    let options = CompileOptionsWrapper::new(&mut cx, filename, 1);
     rooted!(&in(cx) let mut rval = UndefinedValue());
     let global_handle = RustHandle::from_marked_location(&*global.ptr as *const _);
-    match evaluate_script(&mut cx, global_handle, &js_code, rval.handle_mut(), options) {
+    match bao_engine::stencil_cache::evaluate_script_cached(
+        &mut cx,
+        global_handle,
+        &js_code,
+        filename.as_c_str(),
+        1,
+        rval.handle_mut(),
+    ) {
         Ok(_) => true,
         Err(_) => {
             // JS evaluation failed (e.g., DOM APIs not yet available) — non-fatal
