@@ -25,6 +25,8 @@
 //           queueMicrotask callbacks interleave in enqueue order, nested
 //           microtasks append before the macrotask timer fires. Any
 //           macrotask-ish shadow (MiniEventLoop dispatch) would reorder.
+//           Spec TypeError parity (e59 ②): a non-callable argument throws
+//           a real TypeError naming queueMicrotask/function.
 //   C axis — crypto: install_crypto_global puts a plain object on the page
 //           global (BoringSSL CSPRNG randomUUID / getRandomValues), then
 //           install_crypto_subtle (tail of install_web_apis, via
@@ -33,8 +35,9 @@
 //           functional fidelity: getRandomValues fills and returns the same
 //           array, randomUUID matches the v4 shape and differs across calls,
 //           digest('SHA-256') resolves to the NIST "abc" vector. Object
-//           class-name identity (plain '[object Object]' vs a native
-//           '[object Crypto]') is recorded, not asserted.
+//           class-name identity (e59 ③): Object.prototype.toString.call(crypto)
+//           must be '[object Crypto]' (WebIDL [Symbol.toStringTag], not the
+//           plain '[object Object]').
 //
 // Environment gating: real servo rendering requires DISPLAY (Xvfb). No
 // network fixture is used.
@@ -181,7 +184,7 @@ fn shadow_axis_probe_q_queue_microtask_order() {
         .evaluate_js_web(
             "(function() { \
              window.__mq = null; window.__qarg = 'unobserved'; \
-             try { queueMicrotask(null); } catch (e) { window.__qarg = 'threw:' + e; } \
+             try { queueMicrotask(42); } catch (e) { window.__qarg = 'threw:' + e; } \
              var o = []; \
              Promise.resolve().then(function() { o.push('p1'); }); \
              queueMicrotask(function() { o.push('q1'); \
@@ -194,10 +197,20 @@ fn shadow_axis_probe_q_queue_microtask_order() {
         .expect("queueMicrotask arm");
     assert!(armed.contains("armed"), "queueMicrotask arm failed: {armed:?}");
 
-    // bao's queueMicrotask silently ignores non-function args (spec says
-    // TypeError) — recorded, not asserted.
+    // Spec TypeError parity (e59 ②): a non-callable argument (42) must throw
+    // a REAL TypeError whose message names queueMicrotask/function — the old
+    // shadow silently ignored non-object args.
     let qarg = page.evaluate_js_web("String(window.__qarg)").ok();
     eprintln!("[q-microtask] non-function-arg verdict={qarg:?}");
+    let qarg = qarg.unwrap_or_default();
+    assert!(
+        qarg.contains("threw:TypeError")
+            && qarg.contains("queueMicrotask")
+            && qarg.contains("function"),
+        "Q axis: queueMicrotask(42) must throw a TypeError naming queueMicrotask/function \
+         (spec: non-callable argument throws TypeError; a silent ignore is a \
+         typeof-probe-detectable divergence), got: {qarg:?}"
+    );
 
     let order = poll_sink(&page, "__mq", Duration::from_secs(10));
     eprintln!("[q-microtask] order={order:?}");
@@ -277,6 +290,14 @@ fn shadow_axis_probe_c_crypto_page_realm() {
         v.starts_with("g=true|u=true|"),
         "C axis: getRandomValues (same-array, filled) / randomUUID (v4 shape, fresh) \
          fidelity failed: {v}"
+    );
+    // Class-name fidelity (e59 ③): Object.prototype.toString.call(crypto) must
+    // be '[object Crypto]' (WebIDL [Symbol.toStringTag]); a bare plain object
+    // stringifies as '[object Object]' — probe-detectable against native realms.
+    assert!(
+        v.contains("|kind=[object Crypto]"),
+        "C axis: crypto must stringify as '[object Crypto]' (WebIDL interface class name; \
+         a plain object is '[object Object]'), got: {v}"
     );
     assert!(
         v.contains("|len=32|hex=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad|"),

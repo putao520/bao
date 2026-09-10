@@ -5271,6 +5271,28 @@ pub fn install_crypto_global(
             }
         }
 
+        // WebIDL interface class name — Object.prototype.toString.call(crypto)
+        // must be '[object Crypto]' (a bare plain object stringifies as
+        // '[object Object]', distinguishable by typeof/toString probes against
+        // native realms). Defined non-writable/non-enumerable/non-configurable,
+        // the WebIDL [Symbol.toStringTag] shape, so the enumerable property
+        // face (randomUUID/getRandomValues/subtle) is unchanged.
+        let tag_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+            cx.raw_cx(),
+            mozjs_sys::jsapi::JS::SymbolCode::toStringTag,
+        );
+        let tag_str = JS_NewStringCopyZ(cx.raw_cx(), c"Crypto".as_ptr());
+        if !tag_str.is_null() {
+            rooted!(&in(cx) let tag_val = StringValue(&*tag_str));
+            JS_DefinePropertyById2(
+                cx.raw_cx(),
+                crypto_obj.handle().into(),
+                Handle::from_marked_location(&tag_key),
+                tag_val.handle().into(),
+                0,
+            );
+        }
+
         JS_DefineProperty3(
             cx,
             global,

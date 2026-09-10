@@ -1846,11 +1846,60 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
     true
 }
 
+/// Report a REAL TypeError to the JS engine — `JS_ReportErrorNumberUTF8` with
+/// `JSEXN_TYPEERR` (same pattern as bao_browser's `report_reference_error` /
+/// `mozjs::error::throw_type_error_safe`; `JS_ReportErrorUTF8` would produce a
+/// generic Error, so `e instanceof TypeError` would be false).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn report_type_error(cx: *mut JSContext, message: &str) {
+    let c_msg = match CString::new(message.as_bytes()) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    // Static error format string: "{0}" — the entire message is the single arg.
+    // SAFETY: compile-time constant CStr, never mutated; the raw pointer is only
+    // consumed for the duration of the JS_ReportErrorNumberUTF8 call.
+    static FORMAT_STRING: &::std::ffi::CStr = c"{0}";
+
+    // SAFETY: read of a static; never moved or mutated after first access.
+    unsafe extern "C" fn get_type_error_format(
+        _user_ref: *mut ::std::os::raw::c_void,
+        _error_number: u32,
+    ) -> *const JSErrorFormatString {
+        static mut FORMAT: JSErrorFormatString = JSErrorFormatString {
+            name: c"RUSTMSG_TYPE_ERROR".as_ptr(),
+            format: FORMAT_STRING.as_ptr(),
+            argCount: 1,
+            exnType: JSExnType::JSEXN_TYPEERR as i16,
+        };
+        unsafe { &raw const FORMAT }
+    }
+
+    // SAFETY: JS_ReportErrorNumberUTF8 is the standard SpiderMonkey API for
+    // throwing typed errors; the callback returns a static format string with
+    // argCount=1 and the single argument is our message C string.
+    JS_ReportErrorNumberUTF8(
+        cx,
+        Some(get_type_error_format),
+        ::std::ptr::null_mut(),
+        JSExnType::JSEXN_TYPEERR as u32,
+        c_msg.as_ptr(),
+    );
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn queue_microtask_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 || !(*args.get(0).ptr).is_object() {
-        return true;
+    // HTML spec queueMicrotask(callback): the argument must be callable; a
+    // non-callable throws TypeError (the old is_object gate let plain objects
+    // slip into the reaction machinery and silently ignored primitives —
+    // typeof-arg probes can tell this apart from native realms).
+    let callable = argc > 0
+        && (*args.get(0).ptr).is_object()
+        && IsCallable((*args.get(0).ptr).to_object());
+    if !callable {
+        report_type_error(cx, "queueMicrotask: Argument 1 is not a function");
+        return false;
     }
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx = &mut wrapped_cx;
