@@ -2152,3 +2152,54 @@ confirmReport:
 - servo fail-open 断言清单意识:`entry_global().unwrap()` / `clear_upgrade_transaction().expect()` 均为上游把「不可达」当 panic 的断言,页面上**合法** JS 序列可将其变为可达——遇到即按最小差分 fail-closed/spec-aligned 化 + 清单注记 + 上游 issue。
 - IDB 双终局缺陷已按上游纪律备妥 servo GitHub issue 草案(`.claude/prompts/upstream-servo-idb-double-finalize-issue.md`,本机 gh token 对 servo/servo 无 createIssue scope,待人工提报)——patch 与 issue 并行,上游修复后吸收替换。
 - 忙旋类判定沉淀:进程不终 + CPU 飙 = 先 gdb attach 查线程身份与栈,再判「独立缺陷 vs 某 panic 的下游」;本案忙旋 100% 随 panic 消失而消失,单独修 spin 是治标。
+
+---
+
+## BCE-20260910-005 — CLI 自驱 drain 下 fetch 永挂(#39):流式 PendingFetch 的 liveness/所有权混同 + 不可 GC 的 liveness 环 + 非任务运行内 free 纪律(已根治 2026-09-10)
+
+### patternId / title
+`BCE-20260910-005` · issue #39(`bao -e` fetch promise 链与 `bao run *.mjs` 顶层 await fetch 永挂;embedder 泵形态同二进制全绿)。
+
+### layer
+设计缺陷(PENDING 注册表一表两用:GC-root 收集 × 事件循环 liveness;Bun FetchTasklet 的 liveness 止于 transport 终局而非 tasklet 释放)+ free 纪律缺陷(首版修复在 native pull 内联 free 暴露的 ConcurrentTask 节点链接窗口)。
+
+### 根因(rootCause)— 证据链(全部 live 实证,2026-09-10)
+- **症状切面**:strace 全量 — 主线程 5325×`clock_nanosleep(1ms)`(eval post-hook 自驱 drain 旋),**零** `epoll_pwait2`(tick 分支从未进);HTTPThread 正常收发(server 日志 200)。插桩 forensics(BAO_DEBUG_LIVENESS 临时探针,已移除):verdict 恒 `fetch=true`——PENDING 注册表在 fetch 完整 settle+body 全量消费后**永不清空**。tasklet 引用计数实证:`deref: 3→2`(ref A promise settle)→`transport release, refcount 2`→`deref: 2→1`(ref B transport 终局)→ **卡 1**:ref C(stream source)永不释放。
+- **ref C 的释放路径只有两条**:reader cancel(`fetch_body_cancel_native`)/ 源对象 GC finalize(`stream_source_finalize`)。读完成的流两者都不触发:controller.close() 不调 underlying cancel;而 finalize **不可能 fire**——fetch Promise 被 tasklet 自身的 `promise_root` 生根 → P0 的 resolution 持 Response → Response 持 `_bodyStreamSource` → 源对象,而 tasklet 又被 ref C 保活:**不可 GC 的 liveness 环**。`Bun.gc(true)` 后 PENDING 仍非空(gdb+探针双证)。
+- **为何只有 CLI 臂挂**:PENDING 非空 ⇒ `fetch_async::has_pending()`(node_http LIVENESS_PROBES 注册)⇒ `drain_and_check` verdict 恒 true ⇒ `JsContext::eval` post-hook 循环永不 break。embedder 泵形态(JsContext harness/bench)从不以 verdict 决定退出,故全绿。pumper 覆盖面第三臂:页面(09cabe17 pump 桥)/SW(BCE-20260910-002 本地裁决)/CLI(本条 verdict 语义)。
+- **守卫假绿成因**:`fetch_only_loop_tick_regression_tests` 两守卫在 .then 内显式 `process.exit()`——delivery 有断言,自然退出从未被测;`process.exit` 以 fiat break 循环,掩盖 verdict 永真。
+- **首版修复的 UAF(洋葱层 2)**:在 native pull Done 臂内联 `release_stream_ref_once` → chained fetch 确定性 SIGSEGV @ `AnyTaskWithExtraContext::run`(tick pop 出仍 LINKED 的悬挂节点);第二版 defer(latch+`schedule_tasklet_wake` 重链节点)又在同一 run 的 step-6 free → 悬挂;第三版 B-before-C 顺序修正后全绿。三重陷阱:①pull(JS-native 调用点,可能在任务运行外/内)不可 free——节点可能 linked;②同 run 内 latch+free——`schedule_tasklet_wake` CAS 重链后 step-6 不得 free(`has_schedule_callback` 门);③C 释放可能使 refcount 归零(B 早释于前序 run)→ B 释放不得后随(C 必须是最后 this 触碰)。
+
+### 同类判定标准(sameClassCriterion)
+1. 任何「loop liveness 探针 = 分配生命周期(注册表/Box 存活)而非活动语义(transport in-flight)」的子系统,在 CLI 自驱 drain 形态下都是永挂候选;liveness 必须止于确定性完成点(Bun FetchTasklet deactivate parity)。
+2. 任何依赖 **GC finalize** 清 liveness 的路径,遇到「被生根对象持回源对象」的环即失效——GC 不是确定性机制,不可作为 liveness/退出的承重墙。
+3. 任何在 ConcurrentTask 回调**之外**(JS-native 调用点/GC context)释放内嵌 ConcurrentTask 节点所在 Box 的 free,都是 tick 悬挂节点 UAF;free 只能发生在节点 pop+detach 之后的任务运行内,且运行内不得再重链(`has_schedule_callback` 门控)。
+
+### 根治(已落地 2026-09-10,`src/bao_runtime/src/fetch_async.rs` 三点)
+- **step-6 终局裁决**(process_stream_event):`terminal_observed` 时先从 PENDING 移除(liveness 止于 transport 终局观测——staged bytes/parked-pull root 由仍存活的 tasklet 承载,`free_tasklet` 的移除是幂等兜底),随后 B 释放在前、C 释放殿后(门控 `done_latched && source_attached && !node_linked`)。
+- **native pull Done 臂**:不再内联释放——latch `done_release_pending` + `schedule_tasklet_wake`(与 `finalize_pending` 同 defer-to-task-run 纪律),释放由下一次任务运行在 step-6 执行。
+- **unpark_stream 终局门**:`g.closed || g.fail.is_some()` 均不回添 PENDING(fail 终局后 reader 取消再 unpark 会重新 pin liveness——#39 类的 park 侧门)。
+- 回归锁:`fetch_only_loop_tick_regression_tests` 新增 3 个**自然退出**守卫(read-to-completion / chained / unread body——全部无 process.exit,30s deadline fail-closed)。
+
+### 全量确认报告
+```yaml
+confirmReport:
+  patternId: BCE-20260910-005
+  sweepScope: "fetch_async PENDING 注册表全部成员变更点(start/park/unpark/free/step-6)+ ref A/B/C 全释放路径 + has_pending 消费方(node_http LIVENESS_PROBES / timers drain_and_check / has_pending_work)"
+  instancesFound: 1              # 流式 fetch 完成态 PENDING 永驻(liveness 环)
+  instancesFixed: 1
+  residual: 0
+  residualEvidence: []
+  releaseGateImpact: clear
+  verification:
+    - "live 矩阵(修后 dev 二进制):① promise 链 5/5 SETTLED+exit0;② TLA mjs 3/3 exit0;③ unread body 3/3 exit0;④ chain3 5/5 exit0(修前 ①②③④ 全部 EXIT=124 永挂)"
+    - "fetch_only_loop_tick 5/5(含 3 新自然退出守卫;修前同类形态 30s deadline kill)"
+    - "bun_runtime 全量 1213/1213 PASS, 1 skipped(基线持平)"
+    - "fetch+timer+event_loop 家族 151/151;fetch_axis 9/9(BAO_TEST_NETWORK=1)"
+    - "bao-browser page_net/h2_fetch_node_stack/worker_fingerprint_consistency/streaming 28/28(xvfb)"
+```
+
+### 防复发(阶段6)
+- 回归锚:`fetch_only_loop_tick_regression_tests` 5 守卫(2 个 process.exit 交付守卫 + 3 个自然退出守卫——后者是本条独有覆盖面,禁删)。
+- 设计纪律沉淀:**liveness 探针必须报告活动而非存活**;需要「读完成」确定性信号的流式资源,其终结释放点 = 消费完成(native pull Done)/生产完成观测(step-6 终局),GC finalize 只能是兜底而永不能是唯一路径。
+- free 纪律沉淀:内嵌 intrusive 任务节点的 Box,释放只允许发生在该节点被 pop+detach 的任务回调内,且回调内若重链节点(`schedule_tasklet_wake`)则本次不得释放——三释放顺序 = PENDING 移除 → B → C(最后的 this 触碰)。

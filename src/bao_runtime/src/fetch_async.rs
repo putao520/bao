@@ -315,6 +315,15 @@ pub(crate) struct StreamingState {
     /// the next ConcurrentTask run performs the cancel + stream-ref deref
     /// on the JS thread proper (Parked+GC ⇒ Canceled).
     pub finalize_pending: AtomicBool,
+    /// BCE (#39 companion): the reader drained the stream to done (the
+    /// native pull's Done arm latched this) — the next ConcurrentTask run
+    /// releases the stream-source reference. The release must NOT run in
+    /// the pull itself: a JS-native call site can free the PendingFetch
+    /// while its embedded ConcurrentTask node is still linked in the
+    /// MiniEventLoop queue (a late re-enqueue), and the next tick pops a
+    /// dangling node — SIGSEGV in AnyTaskWithExtraContext::run. Same
+    /// defer-to-task-run discipline as `finalize_pending`.
+    pub done_release_pending: AtomicBool,
     // ── JS-thread exclusive below ──
     /// The fetch Promise settled (resolved at HeadersArrived or rejected on
     /// an early transport failure).
@@ -359,6 +368,7 @@ impl StreamingState {
             phase: AtomicU8::new(StreamPhase::Pending as u8),
             valve: BackpressureValve::park_at(UNOBSERVED_BODY_HIGH_WATER_MARK),
             finalize_pending: AtomicBool::new(false),
+            done_release_pending: AtomicBool::new(false),
             promise_settled: false,
             transport_released: false,
             stream_released: AtomicBool::new(false),
@@ -2203,12 +2213,77 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
     // 6. Transport reference release — MUST be the last `this` access: the
     //    release may drop the final reference (stream source already
     //    canceled / GC-finalized) and free the tasklet right here.
-    // SAFETY: JS thread; live entry until this call.
+    //    BCE (#39 — CLI self-drain fetch hang): liveness ends HERE. The
+    //    terminal event observed on the JS thread is the fetch's last
+    //    loop-relevant act (Bun `FetchTasklet` deactivates its loop ref at
+    //    response end, not at tasklet free). Remove the PENDING entry
+    //    BEFORE the reference releases: `has_pending()` (PENDING
+    //    membership) is the drain verdict's fetch arm, and PENDING
+    //    otherwise only clears at `free_tasklet` — which a completed
+    //    streaming fetch never reaches on its own (the stream-source
+    //    reference's release paths — reader cancel / GC finalize of the
+    //    source — never fire for a fully-received body: the source stays
+    //    reachable through the rooted fetch Promise → Response → source
+    //    cycle while the tasklet lives). A fully-received-but-unread body
+    //    therefore pinned `bao -e` / `bao run` in the post-eval drain
+    //    forever (issue #39; the embedder-pump shape never consults the
+    //    verdict for exit, which is why only the CLI arm wedged). Staged
+    //    bytes and any parked-pull root stay valid: the tasklet itself is
+    //    kept alive by the stream-source reference until the reader drains
+    //    it (the native pull's Done arm releases it) or the source is
+    //    canceled/GC'd; `free_tasklet`'s own PENDING removal is an
+    //    idempotent backstop.
+    //    Read-completion teardown: when the drain-down latched Done (closed
+    //    with empty staging — step 4) OR the native pull's Done arm latched
+    //    `done_release_pending` (reader saw done — deferred here because a
+    //    JS-native call site must not free the tasklet, see the pull's Done
+    //    arm), AND a stream source was attached, release the stream-source
+    //    reference here as well: the reader saw done (or never will — an
+    //    unread body dies with the tasklet, same discard semantics as the
+    //    null-body branch). Ordering: the B release BEFORE the C release —
+    //    whichever release drops the final reference frees the tasklet, so
+    //    the C release (the one that may newly reach zero: B can already
+    //    have been released on an earlier terminal pass while the reader
+    //    was still draining staging) must be the LAST `this` touch. When
+    //    the gate skips C, B's deref cannot reach zero (C still held).
+    //    Both latches are read BEFORE any release may free the entry.
+    //    Node-linkage gate (`!has_schedule_callback`): the C release may
+    //    reach refcount zero and free the PendingFetch — its embedded
+    //    ConcurrentTask node must NOT be linked in the MiniEventLoop queue
+    //    at that moment. A wake queued during THIS run (the pull's Done arm
+    //    re-links via `schedule_tasklet_wake`; a mid-delivery HTTPThread
+    //    wake does the same) sets `has_schedule_callback` — skip the
+    //    release then; the queued run is level-triggered on the same
+    //    latches and performs it with the node popped + detached.
+    // SAFETY: JS thread; live entry until these calls.
     unsafe {
         let terminal_observed =
             closed || (*this).streaming.as_ref().unwrap().shared.lock().unwrap().fail.is_some();
         if terminal_observed {
+            let source_attached = (*this)
+                .streaming
+                .as_ref()
+                .is_some_and(|s| s.source_id != 0);
+            let done_latched = current_phase(this) == StreamPhase::Done
+                || (*this)
+                    .streaming
+                    .as_ref()
+                    .unwrap()
+                    .done_release_pending
+                    .load(AtomicOrdering::Acquire);
+            let node_linked = unsafe { &*this }
+                .has_schedule_callback
+                .load(AtomicOrdering::Acquire);
+            PENDING.with(|p| {
+                let mut guard = p.borrow_mut();
+                if let Some(pos) = guard.iter().position(|&ptr| ptr == this) {
+                    guard.swap_remove(pos);
+                }
+            });
             release_transport_ref_once(this);
+            if done_latched && source_attached && !node_linked {
+                release_stream_ref_once(this);
+            }
         }
     }
 
@@ -2285,9 +2360,12 @@ fn unpark_stream(this: *mut PendingFetch) {
     let Some(state) = (unsafe { &*this }).streaming.as_ref() else {
         return;
     };
-    let closed = state.shared.lock().map_or(true, |g| g.closed);
+    let closed = state.shared.lock().map_or(true, |g| g.closed || g.fail.is_some());
     if closed {
-        // Nothing to resume — the terminal close-out handles the drain-down.
+        // Nothing to resume — the terminal close-out handles the drain-down
+        // (a fail-terminated fetch is just as terminal: re-adding the PENDING
+        // entry here would re-pin the CLI drain liveness for a fetch whose
+        // terminal event already ran — the #39 class through the park door).
         return;
     }
     // Upstream e4c2af4cef: record `Paused -> Flowing` (`Store::unpause_receive`).
@@ -2979,6 +3057,38 @@ unsafe extern "C" fn fetch_body_pull_native(
             PullAction::Done => {
                 // SAFETY: see above.
                 resolve_pull_result(cx, promise_h, ::std::option::Option::None);
+                // BCE (#39 companion — read-completion tasklet teardown):
+                // the reader drained the stream to done — the last
+                // deterministic consumer milestone. The stream-source
+                // reference must be released (a closed stream's controller
+                // never pulls again, and the alternative release paths —
+                // reader cancel; GC finalize of the source — never fire on
+                // this path: the source stays reachable through the fetch
+                // Promise (`promise_root`) → Response → source cycle for
+                // exactly as long as the tasklet lives, so without this
+                // release every fully-read streaming fetch leaked the
+                // whole PendingFetch cluster, promise root included,
+                // forever). But NOT here: a JS-native call site may free
+                // the PendingFetch while its embedded ConcurrentTask node
+                // is still linked in the MiniEventLoop queue (a late
+                // re-enqueue) — the next tick then pops a dangling node
+                // (SIGSEGV in AnyTaskWithExtraContext::run, observed on
+                // chained fetches). Latch the release and wake the
+                // tasklet: the release runs inside the next ConcurrentTask
+                // run (process_stream_event step 6), where the node is
+                // popped + detached before the callback fires — the same
+                // defer-to-task-run discipline as `finalize_pending`. The
+                // wake is CAS-guarded; a queued/running task observes the
+                // latch level-triggered. Later pulls (a second reader off
+                // the cached Response.body) see the STREAM_REGISTRY miss
+                // and read as an inert closed stream (done).
+                (*this)
+                    .streaming
+                    .as_ref()
+                    .unwrap()
+                    .done_release_pending
+                    .store(true, AtomicOrdering::Release);
+                schedule_tasklet_wake(this);
             }
             PullAction::Park => {
                 // Park the promise: resolved by the next delivery event

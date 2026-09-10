@@ -258,3 +258,160 @@ fn fetch_only_refused_connection_rejects_and_exits() {
         "fetch rejection not delivered (wedge class): stdout={stdout:?}"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// #39 regression locks — NATURAL exit (no process.exit anywhere).
+//
+// The two guards above force `process.exit()` inside the .then callbacks,
+// which breaks the drain loop by fiat and masked the #39 wedge: delivery
+// worked, but the loop's own liveness verdict never turned false. Root
+// cause (#39): the streaming PendingFetch stayed in the PENDING registry
+// forever — the stream-source reference (ref C) was released only by
+// reader-cancel or the source's GC finalizer, and the finalizer can never
+// fire while the fetch Promise is rooted by the tasklet itself
+// (`promise_root`) → Response → source — an un-GC-able liveness cycle.
+// `has_pending()` (PENDING membership) is the drain verdict's fetch arm,
+// so `bao -e` / `bao run` spun in the post-eval drain forever. The fix
+// removes the PENDING entry when the terminal event is observed on the JS
+// thread (process_stream_event step 6) and releases ref C at the
+// deterministic read-completion points (native pull Done — deferred to the
+// next ConcurrentTask run via `done_release_pending` — and the step-6
+// drain-down latch, gated on the node not being re-linked). These tests
+// assert the child exits on its OWN with the delivery intact.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn fetch_read_to_completion_exits_naturally() {
+    // `fetch().then(r=>r.text())` with NO explicit exit: the drain verdict
+    // must turn false after the terminal event is observed — the #39 shape
+    // verbatim (hung forever pre-fix; the 30s deadline kills with the
+    // diagnosis).
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral origin");
+    let port = listener.local_addr().expect("origin local addr").port();
+    let stop = Arc::new(AtomicBool::new(false));
+    spawn_close_server(listener, stop.clone());
+
+    let script = write_script(
+        "natural-read",
+        &format!(
+            r#"fetch("http://127.0.0.1:{port}/").then((r) => r.text()).then((t) => {{
+  require("fs").writeSync(1, "READ len=" + t.length + "\n");
+}});
+"#
+        ),
+    );
+
+    let bao = find_bao_binary();
+    let child = Command::new(&bao)
+        .arg("run")
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bao run natural-read script");
+
+    let (status, stdout) = wait_for_exit(child, "natural read-to-completion");
+    stop.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&script);
+
+    assert!(
+        status.success(),
+        "bao run natural-exit fetch exited {status}: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("READ len=18"),
+        "fetch .then(text) chain not delivered: stdout={stdout:?}"
+    );
+}
+
+#[test]
+fn chained_fetches_exit_naturally() {
+    // A fetch chained on a completed fetch's body — each tasklet must clear
+    // its PENDING liveness or the second link wedges the drain. Also covers
+    // the ConcurrentTask-node UAF class the first fix attempt introduced
+    // (freeing the tasklet from the native pull while its embedded task
+    // node was still linked in the MiniEventLoop queue → SIGSEGV in
+    // AnyTaskWithExtraContext::run on the next tick).
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral origin");
+    let port = listener.local_addr().expect("origin local addr").port();
+    let stop = Arc::new(AtomicBool::new(false));
+    spawn_close_server(listener, stop.clone());
+
+    let script = write_script(
+        "natural-chain",
+        &format!(
+            r#"fetch("http://127.0.0.1:{port}/").then((r) => r.text()).then((t) =>
+  fetch("http://127.0.0.1:{port}/")
+).then((r) => r.text()).then((t) => {{
+  require("fs").writeSync(1, "CHAIN2 done\n");
+}});
+"#
+        ),
+    );
+
+    let bao = find_bao_binary();
+    let child = Command::new(&bao)
+        .arg("run")
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bao run natural-chain script");
+
+    let (status, stdout) = wait_for_exit(child, "natural chained fetches");
+    stop.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&script);
+
+    assert!(
+        status.success(),
+        "bao run natural-exit chained fetches exited {status}: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("CHAIN2 done"),
+        "chained fetch delivery broken: stdout={stdout:?}"
+    );
+}
+
+#[test]
+fn unread_response_body_exits_naturally() {
+    // Headers-only consumption (body never read): the transport terminal
+    // must still clear the liveness registration — an unread body dies
+    // with the tasklet (same discard semantics as the null-body branch);
+    // PENDING membership must not outlive the transport.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral origin");
+    let port = listener.local_addr().expect("origin local addr").port();
+    let stop = Arc::new(AtomicBool::new(false));
+    spawn_close_server(listener, stop.clone());
+
+    let script = write_script(
+        "natural-unread",
+        &format!(
+            r#"fetch("http://127.0.0.1:{port}/").then((r) => {{
+  require("fs").writeSync(1, "STATUS " + r.status + "\n");
+}});
+"#
+        ),
+    );
+
+    let bao = find_bao_binary();
+    let child = Command::new(&bao)
+        .arg("run")
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bao run natural-unread script");
+
+    let (status, stdout) = wait_for_exit(child, "natural unread body");
+    stop.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&script);
+
+    assert!(
+        status.success(),
+        "bao run natural-exit unread body exited {status}: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("STATUS 200"),
+        "fetch status delivery broken: stdout={stdout:?}"
+    );
+}
