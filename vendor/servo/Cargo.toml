@@ -86,7 +86,7 @@ ed448-goldilocks = "=0.14.0-pre.15"
 k12 = "0.5"
 keccak = "0.2"
 x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
-script_webgpu = { package = "bao-servo-script-webgpu", path = "components/script_webgpu", version = "=0.5.5" }
+script_webgpu = { package = "bao-servo-script-webgpu", path = "components/script_webgpu", version = "=0.5.6" }
 servo-webvtt = { path = "components/webvtt", package = "bao-servo-webvtt", version = "=0.5.2" }
 cssparser = { version = "0.37", features = ["serde"] }
 ctr = { version = "0.10", features = ["zeroize"] }
@@ -349,14 +349,14 @@ malloc_size_of = { package = "bao-servo-malloc-size-of", version = "=0.5.3", pat
 media = { package = "bao-servo-media-thread", version = "=0.5.4", path = "components/media/media-thread" }
 metrics = { package = "bao-servo-metrics", version = "=0.5.4", path = "components/metrics" }
 net = { package = "bao-servo-net", version = "=0.5.9", path = "components/net" }
-net_traits = { package = "bao-servo-net-traits", version = "=0.5.4", path = "components/shared/net" }
+net_traits = { package = "bao-servo-net-traits", version = "=0.5.5", path = "components/shared/net" }
 paint = { package = "bao-servo-paint", version = "=0.5.4", path = "components/paint" }
 paint_api = { package = "bao-servo-paint-api", version = "=0.5.4", path = "components/shared/paint" }
 pixels = { package = "bao-servo-pixels", version = "=0.5.4", path = "components/pixels" }
 profile = { package = "bao-servo-profile", version = "=0.5.4", path = "components/profile" }
 profile_traits = { package = "bao-servo-profile-traits", version = "=0.5.4", path = "components/shared/profile" }
-script = { package = "bao-servo-script", version = "=0.5.8", path = "components/script" }
-script_bindings = { package = "bao-servo-script-bindings", version = "=0.5.5", path = "components/script_bindings" }
+script = { package = "bao-servo-script", version = "=0.5.9", path = "components/script" }
+script_bindings = { package = "bao-servo-script-bindings", version = "=0.5.6", path = "components/script_bindings" }
 script_traits = { package = "bao-servo-script-traits", version = "=0.5.4", path = "components/shared/script" }
 servo = { version = "=0.5.7", path = "components/servo", default-features = false, package = "bao-servo" }
 servo-allocator = { version = "=0.5.2", path = "components/allocator", package = "bao-servo-allocator" }

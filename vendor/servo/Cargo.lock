@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2190,7 +2190,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-webgpu"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-mozjs",
  "bao-servo-base",
