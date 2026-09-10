@@ -219,7 +219,7 @@ make bce-check
 
 如果 SIGSEGV 复现,第一步 `nm libmozjs_sys-*.rlib | grep MutexImplD1` 查 rlib 是否包含旧代码。
 
-#### mozjs fork BAO patch 清单(5 项,0.22.0 全部在位——升级波 6b259cc2 二进制级实证)
+#### mozjs fork BAO patch 清单(6 项,0.22.0 全部在位——升级波 6b259cc2 二进制级实证;第 6 项 2026-09-10 增)
 
 上游同步 mozjs 时必须逐项重放(参照 git 历史 `git show <old>:vendor/mozjs/...`):
 
@@ -230,6 +230,7 @@ make bce-check
 | 3 | set_hide_script_from_debugger | `mozjs/src/rust.rs`(BCE-20260622-004) | CompileOptions 的 `hideScriptFromDebugger_` setter:抑制 `onNewScript` → AtomCacheHashTable SIGSEGV 路径 |
 | 4 | BaselineFrame NULL activation guard | `mozjs-sys/mozjs/js/src/jit/BaselineFrame.cpp`(BCE-20260621-002) | OSR 入口 `cx->activation()`/`prev()` NULL 检查,bail 回 interpreter |
 | 5 | JS_NewEmulatesUndefinedFunction | `mozjs-sys/mozjs/js/src/jsapi.cpp` + `js/src/jsapi.h` + `mozjs/src/jsapi2_wrappers.in.rs` | callable NativeObject 且 `typeof` 为 "undefined"(镜像 Bun `Buffer.transcode` stub)。**注意:jsapi.h 声明必须在 `namespace JS` 外(全局作用域),否则 bindgen 生成 `JS::` 前缀 mangled link_name 与 cpp 全局定义不匹配 → 链接失败** |
+| 6 | BaoCollectRuntimeStats | `mozjs-sys/mozjs/jsglue.cpp` + `mozjs/src/glue2_wrappers.in.rs`(SM-EVOLUTION #27 裁决 6,a51a81ef) | `BAORuntimeStatsPOD`(7×usize)+ `JS::RuntimeStats` C++ 子类构造(no-op extra hooks)+三段 ServoSizes rollup(runtime+zone+realm,单段会低估);漏重放=loud 链接断,引擎 Memory 计量面(soak 探针)依赖 |
 
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
