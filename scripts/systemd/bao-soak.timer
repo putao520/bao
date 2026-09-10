@@ -1,0 +1,10 @@
+[Unit]
+Description=bao soak nightly trigger (00:07 local, 6h ahead of daily-ops 06:07)
+
+[Timer]
+OnCalendar=*-*-* 00:07:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

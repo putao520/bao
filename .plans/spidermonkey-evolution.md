@@ -1305,6 +1305,43 @@ settle 后 drop 已可见（malloc trim 生效）；回收后 ~60s 内垃圾回�
 **遗留移交**：①挂死 RCA 合同（P0，阻塞一切长跑）；②60min 完整补跑（RCA 后）；
 ③A-2 类别级 leak 计数器（S2 退出标准尾项）；④RED-1 裁决仍挂（前轮遗留，不变）。
 
+### 2026-09-10 / soak——调度基建落地：`bao-soak.timer` 每夜 60min soak（72h 阶梯 step ② 兑现上文建议第 2 条；纯新增基建，零产品代码改动）
+
+**Timer 状态**：单元对 canonical 在 repo、`~/.config/systemd/user/` 软链（daily-ops 形态照抄）：
+- `scripts/systemd/bao-soak.timer`——`OnCalendar=*-*-* 00:07:00` + `RandomizedDelaySec=10m` +
+  `Persistent=true`，与 daily-ops 06:07 错开 6h（soak 最坏 00:17+90min=01:47 收尾，不侵入值班窗口）；
+- `scripts/systemd/bao-soak.service`——Type=oneshot，**`TimeoutStartSec=90min` 硬超时**
+  （run-1 无保护挂死 2h45m 的根治面）、`TimeoutStopSec=2min`、`Environment=BAO_SOAK_MINS=60`
+  与 `BAO_TEST_NETWORK=1`，ExecStart=`scripts/soak-daily.sh`；
+- 调度器 `scripts/soak-daily.sh`：flock 防重入；**pending 标记 = TimeoutStartSec 击杀后唯一幸存
+  证人**（下夜启动见未清 marker → 记 killed-no-completion 且 streak 诚实清零）；同
+  date+commit 重跑守卫（segments sidecar 是 append 模式，先归档 `.prev-<HHMM>`）；run.sh 仍是
+  唯一 soak 前端，结果照旧落 `bench/results/<UTC日期>-<commit>/`。
+- 实测：daemon-reload + `enable --now` 成功，active (waiting)，**首跳 2026-09-11 00:07
+  （+≤10m 随机延迟）**，此后每夜一跑。
+
+**验证证据（2min 截短全链，2026-09-10 21:38–21:42 CST）**：drop-in `BAO_SOAK_MINS=2` 下
+`systemctl --user start bao-soak.service` → **exit 0/SUCCESS**（4min07s 含构建校验）；产出
+`bench/results/2026-09-10-a4a6738c/soak.run-1.{json,log,segments.jsonl}`：**1126 cycles /
+cycle_failures=0 / 零挂死**——a4a6738c（BCE-20260910-003）修复后首个 churn 数据点（2min
+截短跑，不构成 60min 判据）；`bench/soak-state/runs.jsonl` 首条 verdict=completed、
+`counts_toward_entry=false`；streak_write 的 jq 变换独立验证通过。未活测分支：击杀→pending→
+下夜清零路径（8 行，bash -n 过，待真实击杀事件自然验证）。
+
+**进入条件进度文件**：`bench/soak-state/entry-progress.json`（tracked，含 target_streak/ladder/
+ratchet_resolution）+ `runs.jsonl`（每夜一条全史）+ `last-run.json`（最新记录镜像）；transient 件
+（lock/pending/night-*.log）已 gitignore。**当前 streak = 0/3（如实）**——尚无一次完整 60min
+零挂死跑（run-1 挂死于 15.4min、aborted-1 30.3min 外部终止）；streak 只计 `duration_mins=60`
+的完整零挂死跑，验证跑不计数也不清零。阶梯现状：①RCA 已闭（a4a6738c）✅ ②本 timer 落地 ✅
+③72h tmux 外壳 blocked（进入条件 streak≥3 + 棘轮线性/平台分辨）。
+
+**daily-ops 次晨收账说明（只录说明，不改 daily-ops 本体）**：每晨值班在 soak 收集节点——
+①读 `bench/soak-state/last-run.json`（昨夜 verdict/zero_hang/duration_mins/note）与
+`runs.jsonl`（全史）；②读 `entry-progress.json` 的 `streak`/`ladder`/`ratchet_resolution`；
+③把昨夜 `bench/results/<date>-<commit>/soak.run-1.*` 连同 `bench/soak-state/` 状态文件一并
+commit（夜间 timer 留下的脏树属预期，run.sh 的 GIT_DIRTY 记录如实反映）；④streak 达 3/3 且
+棘轮分辨后，按上文建议第 3 条发起 72h tmux 外壳（手动 + `timeout 78h`，不进常驻 timer）。
+
 ### 2026-09-10 / #27 消费——CDP Debugger 保真批落地（裁决 2/3/9 实施：胶水换原生 + blackbox 显式 unsupported + bun_sm::debugger 死模块删除；+1 live e2e）
 
 **裁决 2（胶水保真换原生）六项终态**（cdp_handler.rs Debugger 域重写）：

@@ -1,0 +1,16 @@
+[Unit]
+Description=bao nightly 60min soak (#19/#29 72h ladder step 2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/putao/code/rust/bao
+Environment=PATH=/home/putao/.local/bin:/home/putao/.cargo/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
+Environment=BAO_TEST_NETWORK=1
+Environment=BAO_SOAK_MINS=60
+# run-1 hung unbounded for 2h45m with zero protection — this hard kill is the fix
+# (ledger 2026-09-10 soak section, plan item 2).
+TimeoutStartSec=90min
+TimeoutStopSec=2min
+ExecStart=/home/putao/code/rust/bao/scripts/soak-daily.sh

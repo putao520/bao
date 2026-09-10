@@ -1,0 +1,15 @@
+{
+  "purpose": "72h soak entry condition (ledger .plans/spidermonkey-evolution.md 2026-09-10 soak 节): 60min 连续 ≥3 次零挂死 + 棘轮线性/平台已分辨",
+  "target_streak": 3,
+  "streak": 0,
+  "window_start_utc": "2026-09-10",
+  "last_update": "2026-09-10",
+  "last_run": null,
+  "ladder": {
+    "1_rca": "closed — BCE-20260910-003 (a4a6738c, GL composite removed from embedder spin loops)",
+    "2_60min_nightly_timer": "landed — bao-soak.timer, OnCalendar 00:07 local (6h ahead of daily-ops 06:07), TimeoutStartSec=90min",
+    "3_72h_tmux_shell": "blocked — entry needs streak>=3 && ratchet_resolution"
+  },
+  "ratchet_resolution": "pending — 需完整 60min ≥6 探针序列分辨线性 vs 平台",
+  "note": "streak 只计 duration_mins=60 的完整零挂死跑(BAO_SOAK_MINS override 的验证跑 counts_toward_entry=false,不计数也不清零);pending 标记存活至下次启动=上夜被 TimeoutStartSec 击杀/断电,streak 诚实清零;夜间跑按 run.sh 惯例以 UTC 日期归档 bench/results/<date>-<commit>/"
+}

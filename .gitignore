@@ -65,6 +65,11 @@ rust_out
 .gsc/
 src/bao_browser/bottles/
 
+# soak nightly state: transient runtime bits only (streak/runs records ARE tracked)
+/bench/soak-state/lock
+/bench/soak-state/pending
+/bench/soak-state/night-*.log
+
 # gsc pre-spec-first-gate AC02 布局 accommodation:repo 根 SPEC -> .spec symlink
 # (SSOT 仍是 .spec/,symlink 只是门的字面路径别名;见 gsc#89,上游修复后移除)
 /SPEC
