@@ -81,7 +81,7 @@ Bao 已使用 mozjs `CreateJobQueue` / `SetJobQueue` / `RunJobs`：
 | #25 | JobQueue / scheduler ordering | P0 | #23 最终 Realm ownership | OPEN（S1 已落调用点 inventory + 排序合同测试，2026-09-10 见 §8；S1-续已裁决分歧①（per-timer 微任务 checkpoint，已落地）+②（nextTick 独立队列，方案已记待实现）+ navigation/close/shutdown pending-work 审计（1 红项立法提案待用户，见 §8 S1-续） |
 | #26 | Stencil / XDR / off-thread compile | P1 | #23 | OPEN |
 | #27 | Debugger / Memory / CDP observability | P1 | #23 | OPEN |
-| #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN |
+| #28 | Realm locale/timezone/JIT/shared-memory policy | P1 | #23 | OPEN（核查轮+裁决提案已落 2026-09-10 见 §8：locale 缺口=1 行 include 非C++墙、tz/时间精度引擎原生实测可达、JIT/SAB 维持现状；三维页面可见身份待用户立法） |
 | #29 | GC/rooting/Zone reclamation | P0/P1 | #23 | OPEN（S2+S2-续+S2-续2+S2-续3 落地 2026-09-10：全仓 rooting/leak inventory 落账 + vm context 未 root 根治 + bun_api concatArrayBuffers frame 级未 root 根治（RED→GREEN 双 SIGSEGV 实证）+ NODE_REALM_TRACER_CX dedupe ABA 根治 + VM_CONTEXT_MAP flags 死数据清除——代码面 findings ①②③全闭，见 §8 S2/S2-续/S2-续2/S2-续3 节；soak 量化（前置 #19）与 RED-1 裁决仍挂） |
 | #30 | mozjs capability inventory/drift automation | P0 | — | OPEN |
 
@@ -988,6 +988,69 @@ scoped `test(vm)` **11/11**。本轮无 vendor 触碰。
 
 **下一唯一动作**：#29 代码面 findings 清零达成（①②③全闭）→ soak 量化前置 =
 启动 #19（未开始）；RED-1 等用户裁决（P-A 则插队其 vendor patch 波）。
+
+### 2026-09-10 / #28——RealmPolicy 核查轮：locale/timezone/JIT/shared-memory 引擎原生策略 inventory + 裁决提案（+2 实证测试）
+
+**基线**：bao master `642da220`（并行 slice，零触碰 S2/S2-续* 文件域）；mozjs 不变
+（jsapi.rs 最新 d252b443，25342 行）。RED-1/soak 主线零触碰。
+
+#### 28-1 绑定可达面（行号=jsapi.rs；bindgen 输入=`mozjs-sys/src/jsapi.cpp` include 聚合 :9-42）
+
+| 维度 | API | C++ 锚 | Rust 可达性 |
+|---|---|---|---|
+| locale（runtime 级） | `JS_SetDefaultLocale` / `JS_GetDefaultLocale` / `JS_ResetDefaultLocale` | LocaleSensitive.h:34/:45，impl jsapi.cpp:4058/4063/4072 | **缺——但非 C++ 墙**：精确缺口=bindgen shim `src/jsapi.cpp` include 清单缺 `js/LocaleSensitive.h`；allowlist `JS_.*`（build.rs:1016-1021）已匹配；`UniqueChars` 返回类型 jsapi.rs 已解析（13 处引用）→ 补 1 行 include 即 bindgen 再生成可达。代价=jsapi.rs 变更→全 workspace 下游重编，归 locale 接线波首动作，非本 slice |
+| locale（per-realm） | `RealmCreationOptions::setLocaleCopyZ` | RealmOptions.h:215，impl jsapi.cpp:1783 | **C++ only**：raw 字段 `locale_: RefPtr<LocaleString>`（jsapi.rs:10854）Rust 不可安全构造（RefCounted 无绑定） |
+| locale（默认派生） | `JSRuntime::getDefaultLocale` | Runtime.cpp:527-560 | 未 override 时 ICU `Locale::GetDefaultLocale()` ← 进程环境（LANG/LC_*）→ **宿主身份泄漏面**（现状态） |
+| timezone（per-realm） | `forceUTC_` 字段 | RealmOptions.h:206-210/250；DateTime.cpp:486-490 | **可达（本轮测试实证）**：pub 字段 jsapi.rs:10860，creation-time only（无 post-creation setter）；语义=Firefox RFP 同形——真 IANA 区 Atlantic/Reykjavik（UTC+0、真实 DST 史），非裸 +0000 |
+| timezone（重查询） | `JS::ResetTimeZone` | Date.h:56，绑定 jsapi.rs:12470 | 可达（重读系统时区） |
+| timezone（任意时区名） | ——（不存在） | DateTime.cpp:486 硬编码 Reykjavik | **引擎不暴露**：任意 tz 只有 TZ env（进程级、宿主态、启动前）或 mozjs vendor patch 两路；对照 Chrome CDP `Emulation.setTimezoneOverride`（V8 ICU per-isolate override）是 SM 真实能力差 |
+| 时间精度 | `JS::SetTimeResolutionUsec` / `SetReduceMicrosecondTimePrecisionCallback` / `Get...Callback` | Date.h:204/:215，绑定 jsapi.rs:12569/12558 | **可达（本轮实证前者）**：`Date.now()`/`getTime` 钳制（jsdate.cpp:2096-2135 NowAsMillis）；per-realm 门=`RealmBehaviors.clampAndJitterTime_`（C++ 默认 **true**，RealmOptions.h:305；pub 字段 jsapi.rs RealmBehaviors） |
+| JIT | `ContextOptionsRef` + bitfield setters（`set_disableIon_`/`set_wasm_`/`set_wasmBaseline_`/`set_wasmIon_`/`set_fuzzing_` 等）；`JS::DisableJitBackend`；per-realm `preserveJitCode_` | ContextOptions.h；绑定 jsapi.rs:12450/12672；字段 :10859（默认 false，RealmOptions.h:242） | 可达；另有 build-time cargo feature `jit`（默认开；makefile.cargo 无 feature 时 `--disable-jit`） |
+| SAB/Atomics | `sharedMemoryAndAtomics_` / `defineSharedArrayBufferConstructor_` / `JS::SetWaitCallback` | 字段 jsapi.rs:10861-10862；SetWaitCallback :11271 | 可达（node_realm_options 已用前者；SetWaitCallback 零使用——不装时 Atomics.wait 仍走 condvar 可等（AtomicsObject.cpp:1670-1690），但阻塞期 embedder 无法泵 job/timer） |
+
+#### 28-2 Bao/Servo 现状锚
+
+- **locale**：bao 全层零处理——bao_stealth 无 locale 模块（模块清单核实）、
+  `StealthProfile` 无 locale/language 字段、无 LC/TZ env 读取；servo 全树零调用
+  SetDefaultLocale → 页面/Node realm 的 `Intl.*` locale 身份=宿主环境派生（泄漏面，#16 feed）。
+- **timezone**：同上零处理——页面 `Intl.DateTimeFormat().resolvedOptions().timeZone`
+  与 Date 偏移=宿主 TZ（本机 +0800）直接泄漏（#16 gap：stealth 身份维度未覆盖 tz/locale）。
+- **JIT**：servo `script_runtime.rs:911-943` ContextOptionsRef 由 servo prefs 驱动
+  （`js_ion_enabled`/`js_baseline_*`/`js_wasm_*` 默认全开）——**页面/worker JIT policy
+  owner=servo prefs 机制（上游形态，bao 继承不动）**；bao 层零触碰；runtime realm 默认 JIT on。
+- **SAB**：node 语义 realm true（`node_realm_options`，S0-3 已录）/servo 页面 realm false
+  （未跨站隔离默认）——双身份拆分为设计既定，无第二 owner。
+- **Atomics.wait liveness**：SetWaitCallback 未装 → CLI 主线程 `Atomics.wait` 阻塞期
+  job/timer/pump 全停 → feed #24/#25（liveness 非 policy）。
+
+#### 28-3 裁决提案（每维度三选一；页面可见身份=产品语义→立法提案，本轮禁实施）
+
+| 维度 | 裁决提案 | 依据 |
+|---|---|---|
+| locale | **引擎原生下沉（提案）**——runtime 级 `JS_SetDefaultLocale`（1 行 include 解锁绑定），per-realm setLocaleCopyZ 不采纳（C++ only） | stealth 一致性：JS hook 层模拟需 hook 全 Intl 构造器+resolvedOptions+collation 排序，引擎原生一处覆盖全 realm（含 servo 页面/worker/SW）；生命周期与 realm 一致免 hook。**页面可见 locale 身份=产品语义（StealthProfile 增 locale 字段=REQ-STL 范围）→待用户立法**；绑定解锁落地归 locale 接线波（共享树内多 agent 在途，jsapi.rs 再生成=全 workspace 重编，非并行 slice 动作） |
+| timezone | **引擎原生下沉（UTC 类）+ 任意 tz 引擎层显式不用** | forceUTC 已实测可达（per-realm creation-time，RFP 同形、真 IANA 区非裸 +0000）；任意时区名引擎不暴露——若未来用户裁决要 Chrome 级 tz 仿真=mozjs vendor patch 立法提案（DateTime.cpp timeZoneOverride 硬编码改可注入）。页面可见 tz 身份=产品语义→待立法；现状宿主 tz 泄漏已记 #16 gap |
+| 时间精度 | **引擎原生下沉（提案）** | `SetTimeResolutionUsec`/callback 全已绑定，Firefox RFP 机制原样；**覆盖面=Date.\*（NowAsMillis）——performance.now 是 DOM/servo 层**，#16 接线须两层齐动，否则 Date/perf 精度不一致本身是指纹信号；产品语义→待立法 |
+| JIT | **维持现状** | 页面/worker=servo prefs owner（上游机制）；bao runtime realm 默认 on；`preserveJitCode_` 归 #26/#29（churn/benchmark 实测前不动，S3 phase gate 原文）；JIT 开关非 fingerprint 面，无 stealth 收益，无产品语义 |
+| SAB/Atomics | **维持现状** | node on / web off 双身份拆分正确（页面 SAB 缺席=Chrome 未隔离页默认，指纹一致）；`SetWaitCallback` liveness 接线 feed #24/#25；`defineSharedArrayBufferConstructor_` 未用不动 |
+
+#### 28-4 本轮落地（无争议项=2 个引擎实证测试；零产品语义、零 vendor 变更）
+
+- `src/bao_engine/tests/suite/realm_policy_tests.rs`（`main.rs` 挂载，
+  `@trace TEST-ENG-001-REALMPOLICY [req:REQ-ENG-001] [level:integration]`）：
+  ① forceUTC realm 创建 + Date offset 双时点（1 月/7 月瞬时）===0 实证（宿主 +0800 下
+  为有效证明，7 月时点同时排除宿主 DST 泄漏）；② `SetTimeResolutionUsec` 1s 钳制 +
+  恢复 roundtrip（**断言前恢复**——进程级 static，防同进程后续测试被污染）。
+- locale 绑定解锁（include）本轮**未落**：jsapi.rs 再生成→全 workspace 下游重编，
+  共享工作树多 agent 在途，归 locale 接线波（#16 立法通过后）首动作。
+- **验证**（波末一次测）：`cargo nt -p bao_engine` **374 run / 374 passed / 0 failed**
+  （基线 373 + 新 1，零红）。无 vendor 触碰。
+
+**stop 条款修正**：locale/tz 的 Rust 绑定缺失=**精确缺口已录**（缺 1 行 include 而非
+C++ 墙），裁决提案未降级为纯 C++ 面评估；三维页面可见身份（locale/tz/时间精度）均属
+产品语义→立法提案待用户，本轮按 scope 纪律零实施。
+
+**下一唯一动作**：不变——#29 soak 量化前置 #19 启动；RED-1 待用户裁决（本 slice 为
+并行核查，不触碰主线）。
 
 ---
 

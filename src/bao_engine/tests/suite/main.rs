@@ -26,6 +26,7 @@ mod jserror_parseresult_deep_tests;
 mod jsvalue_display_format_tests;
 mod module_loader_host_fn_tests;
 mod raw_value_root_guard_tests;
+mod realm_policy_tests;
 mod resource_exhaustion_tests;
 mod value_boundary_tests;
 mod value_error_tests;
