@@ -937,21 +937,24 @@ impl FilePoll {
         #[cfg(debug_assertions)]
         debug_assert!(fd.native() >= 0 && fd != INVALID_FD);
 
-        if !(self.flags.contains(Flags::PollReadable)
+        let registered = self.flags.contains(Flags::PollReadable)
             || self.flags.contains(Flags::PollWritable)
             || self.flags.contains(Flags::PollProcess)
-            || self.flags.contains(Flags::PollMachport))
-        {
+            || self.flags.contains(Flags::PollMachport);
+        // The `needs_rearm` skip below keeps the disarmed kernel registration, so teardown must still delete it.
+        // upstream 14c6fda6a4
+        let disarmed_only = !registered && self.flags.contains(Flags::NeedsRearm);
+        if !registered && !(disarmed_only && force_unregister) {
             // no-op
             return sys::Result::Ok(());
         }
 
-        debug_assert!(fd != INVALID_FD);
         let watcher_fd = loop_.fd;
-        let both_directions =
-            self.flags.contains(Flags::PollReadable) && self.flags.contains(Flags::PollWritable);
+        let both_directions = disarmed_only
+            || (self.flags.contains(Flags::PollReadable)
+                && self.flags.contains(Flags::PollWritable));
         let flag: Flags = 'brk: {
-            if self.flags.contains(Flags::PollReadable) {
+            if disarmed_only || self.flags.contains(Flags::PollReadable) {
                 break 'brk Flags::Readable;
             }
             if self.flags.contains(Flags::PollWritable) {

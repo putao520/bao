@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-09-08",
-  "updated_by": "daily-ops-2026-09-08-wave",
+  "updated_at": "2026-09-16",
+  "updated_by": "daily-ops-2026-09-16-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "3f2610e24af70b9eca8d7e8201fbfbd7e4b5051a",
-      "baseline_date": "2026-09-08",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 d316760e8c..3f2610e24a 6 commits 全判定(triage-bun-2026-09-08.md):吸收 3(66c669c962 fetch fragment/8940b0eec7 minify spread 守卫+cache v21/5baea6630d solid 移除——同波落地)/已含 1(85c9f6e60d 早拒收上报:SM tracker 模型构造性覆盖,uncaught.rs:93)/N-A-HOST 1(3f2610e24a FileSink 未移植)/N-A 1(CI 脚本)"
+      "baseline": "37c28924eedb9a107dda7fe692ee715b2f1ae07d",
+      "baseline_date": "2026-09-16",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..37c28924ee 全判定(triage 09-08..09-16);09-16 波吸收 bun 批 A 四项落地(14a4f45c54 fold 线性化/e219300aa7 renamer reserve/14c6fda6a4 io highwater/f3e5bddded usockets queued_input 双树),b52d3e590a 判 N-A-no-bearer(#41286 前置未吸收,无承载形状)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "478bb535bc40e1b51e1a3345d4df1b338d9e8961",
-      "baseline_date": "2026-09-08",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收);BCE 清单 11 文件(CLAUDE.md)。窗口 b42221560..478bb535b 17 commits 全判定(triage-servo-2026-09-08.md):本波吸收 3(bbf86944f/3a35f8c5a/7821ec2dd)/入队 6(478bb535b+7459ed3ab selection 配对、cc703a583 依赖的 d1ec9c5b2+b2ef2cf63、01201db19、7773388cb、4fccc53b2 webgl default、6c680f538 threadboost)/N-A 6(wpt+5 dep bump)"
+      "baseline": "eb14a6f34a262ef166ec5ae22ef4aa79ba79e6a5",
+      "baseline_date": "2026-09-16",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..eb14a6f34 全判定(triage 09-08..09-16);09-16 波吸收 servo 微批 1 五项全落地(9ac8b4686 font spacing+canvas_state BAO patch 保留/44a8f30ef xpath/fb068ca46 is_editing_host/620263c56 ClipboardEvent placeholder/afd07955c struct layout)"
     }
   }
 }

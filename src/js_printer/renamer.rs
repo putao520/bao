@@ -1237,7 +1237,12 @@ pub fn compute_initial_reserved_names(
 
     let mut names = StringHashMap::<u32>::default();
 
-    const EXTRAS: [&[u8]; 2] = [b"Promise", b"Require"];
+    /// Globals the linker or printer reference by name in generated code. A
+    /// user binding with one of these names is renamed so the reference
+    /// reaches the global: the printer emits `ENumber` NaN/±Infinity and
+    /// `EUndefined` as the bare identifiers when the renamer has run.
+    // upstream e219300aa7: reserve NaN/Infinity/undefined alongside Promise/Require.
+    const EXTRAS: [&[u8]; 5] = [b"Promise", b"Require", b"NaN", b"Infinity", b"undefined"];
 
     const CJS_NAMES: [&[u8]; 2] = [b"exports", b"module"];
 

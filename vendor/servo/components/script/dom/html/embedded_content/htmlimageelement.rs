@@ -108,11 +108,9 @@ struct ImageRequest {
 #[dom_struct]
 pub(crate) struct HTMLImageElement {
     htmlelement: HTMLElement,
-    image_request: Cell<ImageRequestPhase>,
     current_request: DomRefCell<ImageRequest>,
     pending_request: DomRefCell<ImageRequest>,
     form_owner: MutNullableDom<HTMLFormElement>,
-    generation: Cell<u32>,
     source_set: DomRefCell<SourceSet>,
     /// <https://html.spec.whatwg.org/multipage/#concept-img-dimension-attribute-source>
     /// Always non-null after construction.
@@ -123,6 +121,8 @@ pub(crate) struct HTMLImageElement {
     image_decode_promises: DomRefCell<Vec<Rc<Promise>>>,
     /// Line number this element was created on
     line_number: u64,
+    image_request: Cell<ImageRequestPhase>,
+    generation: Cell<u32>,
 }
 
 impl HTMLImageElement {

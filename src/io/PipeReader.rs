@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 
 use bun_sys::{self as sys, Fd};
 
-use crate::{EventLoopHandle, FilePollFlag, FilePollKind, FilePollRef, Owner, PollTag};
+use crate::{EventLoopHandle, FilePollKind, FilePollRef, Owner, PollTag};
 // `bun.Async.Loop` — on POSIX the uws `us_loop_t`, on Windows the embedded
 // `uv_loop_t` (`bun_io::Loop` is the cfg-aliased nominal that picks the
 // right one). `BufferedReaderParent::loop_` returns this so callers in T3+
@@ -240,6 +240,11 @@ impl PosixBufferedReader {
         let Some(poll) = self.handle.get_poll() else {
             return;
         };
+        // An unarmed poll delivers nothing; `register_poll` applies KEEP_ALIVE when it arms.
+        // upstream 14c6fda6a4
+        if value && !poll.is_watching() {
+            return;
+        }
         poll.set_keeping_process_alive(self.vtable.event_loop(), value);
     }
 
@@ -469,9 +474,11 @@ impl PosixBufferedReader {
         };
         poll.set_owner(Owner::new(PollTag::BufferedReader, owner_ptr.cast()));
 
-        if !poll.has_flag(FilePollFlag::WasEverRegistered) {
-            poll.enable_keeping_process_alive(ev);
-        }
+        // Re-applied on every arm: `pause()` unregisters, which drops it.
+        // upstream 14c6fda6a4 — bao has no `PosixFlags::KEEP_ALIVE` (this
+        // port's keep-alive is unconditional), so the arm-time re-application
+        // is unconditional too.
+        poll.enable_keeping_process_alive(ev);
 
         match poll.register_with_fd(lp.cast(), FilePollKind::Readable, poll.fd()) {
             sys::Result::Err(err) => {

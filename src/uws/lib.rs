@@ -1271,6 +1271,8 @@ pub use bun_uws_sys::SocketKind;
 pub type DispatchKind = SocketKind;
 
 pub use bun_uws_sys::CloseCode;
+// upstream f3e5bddded
+pub use bun_uws_sys::QueuedInput;
 /// Legacy alias — `bun_uws_sys::CloseCode` is the one canonical `#[repr(i32)]`
 /// enum (`normal`/`failure`/`fast_shutdown`, with `Normal`/`Failure`/
 /// `FastShutdown` associated-const aliases).

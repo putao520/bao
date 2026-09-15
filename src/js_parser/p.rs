@@ -6680,6 +6680,14 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
     #[cold]
     #[inline(never)]
     pub fn wrap_inlined_enum(&mut self, value: Expr, comment: &'a [u8]) -> Expr {
+        // upstream 14a4f45c54
+        debug_assert!(
+            value
+                .data
+                .as_e_string()
+                .is_none_or(|str_| str_.next.is_none()),
+            "inlined enum strings must be flat, string folding appends to rope chains in place"
+        );
         if strings::contains(comment, b"*/") {
             // Don't wrap with a comment
             return value;

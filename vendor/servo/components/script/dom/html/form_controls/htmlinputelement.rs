@@ -111,16 +111,14 @@ pub(crate) struct HTMLInputElement {
     /// textual input. This is cached so that it can be read during layout.
     is_textual_or_password: Cell<bool>,
 
-    /// <https://html.spec.whatwg.org/multipage/#concept-input-checked-dirty-flag>
-    checked_changed: Cell<bool>,
     placeholder: DomRefCell<DOMString>,
     size: Cell<u32>,
     maxlength: Cell<i32>,
     minlength: Cell<i32>,
+    /// <https://html.spec.whatwg.org/multipage/#concept-input-checked-dirty-flag>
+    checked_changed: Cell<bool>,
     #[no_trace]
     textinput: DomRefCell<TextInput<EmbedderClipboardProvider>>,
-    /// <https://html.spec.whatwg.org/multipage/#concept-input-value-dirty-flag>
-    value_dirty: Cell<bool>,
     /// A [`SharedSelection`] that is shared with layout. This can be updated dyanmnically
     /// and layout should reflect the new value after a display list update.
     #[no_trace]
@@ -132,6 +130,8 @@ pub(crate) struct HTMLInputElement {
     validity_state: MutNullableDom<ValidityState>,
     #[no_trace]
     pending_webdriver_response: RefCell<Option<PendingWebDriverResponse>>,
+    /// <https://html.spec.whatwg.org/multipage/#concept-input-value-dirty-flag>
+    value_dirty: Cell<bool>,
 
     /// <https://w3c.github.io/selection-api/#dfn-has-scheduled-selectionchange-event>
     has_scheduled_selectionchange_event: Cell<bool>,
@@ -2355,6 +2355,7 @@ impl VirtualMethods for HTMLInputElement {
             }
             if !flags.is_empty() {
                 event.mark_as_handled();
+                self.update_placeholder_shown_state();
                 self.upcast::<Node>()
                     .dirty(cx.no_gc(), NodeDamage::ContentOrHeritage);
             }

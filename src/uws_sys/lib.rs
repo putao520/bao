@@ -419,7 +419,7 @@ pub use response::{AnyResponse, SocketAddress, WebSocketUpgradeContext};
 pub use socket_context::BunSocketContextOptions;
 pub use socket_group::ConnectResult;
 pub use socket_group::SocketGroup;
-pub use us_socket::{CloseCode, us_socket_stream_buffer_t, us_socket_t};
+pub use us_socket::{CloseCode, QueuedInput, us_socket_stream_buffer_t, us_socket_t};
 pub use web_socket::{AnyWebSocket, NewWebSocket, RawWebSocket, WebSocketBehavior};
 
 /// Zig `NewApp(ssl)` / `NewApp(ssl).Response` aliases.
