@@ -128,6 +128,7 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 - MODE 切换:`.claude/daily-ops/mode.conf` 写 `MODE=live`(gitignore 本地文件,不进 git)
 - 同日重跑:报告文件名加 `.HHMM` 后缀,不覆盖已有报告
 - 切 live 门槛:**连续 ≥ 5 天 dry-run 零违规 + 用户逐份审阅报告**
+- 升级推送出口:launcher(`scripts/daily-ops.sh`)在会话返回后解析当日报告——`SUMMARY escalated>0` 或近 3 份报告执行阶段连续 `SKIPPED_BUSY` → `notify-send` 桌面通知(`-u critical`,含日期+触发条件+报告路径);notify-send 缺失/失败 → stderr+journal WARN 显式降级。升级项不再以报告文件为唯一信号面(soak 死锁 6 轮无人察觉的教训)(2026-09-16 用户裁决 ②,默认通道 notify-send)
 
 ## §7 与 upstream-absorb 分工
 
@@ -150,6 +151,7 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 
 - **适用**:mozjs 跨版本升级等单轮 7 天预算内持续推进的长任务
 - **state.json 新增 `long_running` 字段**(schema:`{task, started, deadline, phase, notes}`);会话起手检查:有 long_running → **优先继续**(单轮 7 天预算内连续推进,不分日分片),无才走常规 8 阶段
-- **单轮 7 天预算(MAX_SECONDS=604800)耗尽 → timeout 中止,中途态保留,escalate 留人工**,报告登记当前 phase 与已完成证据;轮间中断(超时/失败)→ long_running 字段记录 phase,下轮优先续跑
+- **state↔gh 实态起手对账**:会话起手若 `state.long_running` 存在且含 issue 字段 → 先 `gh issue view <n> --repo putao520/bao --json state` 对账:CLOSED → 自动清空 long_running 字段 + 当日报告登记一行 `reconciled: long-running #<n> closed externally, ledger cleared` + 本轮禁对该 issue 发任何状态评论;OPEN → 照常续跑;gh 不可用(GH_AUTH_FAILED)→ 保持字段照旧续跑,报告登记 `reconciliation skipped (gh unavailable)`(显式降级可观测,对账是防漂移不是准入门)(2026-09-16 用户裁决,#10 已关 5 天台账仍在发评论的事故根除)
+- **预算按有效执行轮计:预算 = 7 个有效执行轮;`effective_rounds ≥ 7` 才是预算耗尽 → timeout 中止,中途态保留,escalate 留人工**。空转轮(执行阶段 `SKIPPED_BUSY` / `SKIPPED_*_FETCH_FAILED` / 暴毙零进展轮)不计数也不顺延——对预算完全不可见,仅观测记录;state.long_running schema 增 `effective_rounds` 与 `skipped_rounds` 两字段,每轮收尾按本轮 outcome 更新;MAX_SECONDS=604800 保持单会话 timeout 上限语义(每轮会话墙钟界,不是任务预算)。报告登记当前 phase 与已完成证据;轮间中断(超时/失败)→ long_running 字段记录 phase,下轮优先续跑(2026-09-16 用户裁决,soak 死锁饿死 musl 任务的不公报根除)
 - **完成** = 基线 bump 同 commit + §3 三重判据 + 发布闭包,清空 long_running 字段
 - **失败语义**:完全继承 §4 / pending 重试契约(用户裁决 2026-08-24 确认)
