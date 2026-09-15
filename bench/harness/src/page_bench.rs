@@ -77,8 +77,23 @@ pub(crate) fn churn_cycle(runtime: &BaoRuntime, i: usize) -> Result<CycleTiming,
         .map_err(|e| format!("iter {i}: marker eval failed: {e}"))?;
     let t_eval = te.elapsed().as_secs_f64() * 1e3;
     if !check.contains("true") {
+        // #41 diagnostic capture: embedder-side commit signal (current_url,
+        // swapped at URLChanged) vs realm-side reality (what the eval
+        // dispatch actually reached). One recurrence discriminates H1
+        // (commit recorded, eval routed to the old pipeline) vs H2 (a late
+        // Complete from the old pipeline accepted before any commit) vs
+        // realm-swap variants. Fail-closed is preserved: diagnostics only
+        // enrich the abort record, never bypass the failure.
+        let realm = page
+            .evaluate_js_web(
+                "JSON.stringify({url: document.URL, rs: document.readyState, \
+                 title: document.title, b: !!document.getElementById('b')})",
+            )
+            .unwrap_or_else(|e| format!("{{\"diagEvalFailed\": {e:?}}}"));
+        let embedder_url = page.current_url().unwrap_or_else(|| "<none>".into());
         return Err(format!(
-            "iter {i}: marker verification failed (got {check:?}) — fail-closed, no green numbers on wrong results"
+            "iter {i}: marker verification failed (got {check:?}) — fail-closed, no green numbers on wrong results \
+             [#41 diag: embedder-url={embedder_url} realm={realm}]"
         ));
     }
 
