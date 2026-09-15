@@ -86,13 +86,16 @@ rm -f "$RUNDIR/inbox-raw.json"
 #   commit_gate(工具面健康锚点,2026-09-03 起;原锚 file_lock 已随 gsc DEC-GSC-WORKSPACE-
 #   TOPOLOGY-1 W3b 退役,不再断言锁工具;无 commit_gate 即 fail-closed 降级)——缺任一/超时/无响应均判
 #   该候选坏,回退下一候选。捕获上限 200000B(68 工具的 tools/list 响应远超 400B,截断会误杀)。
+# 2026-09-16 时序放宽:sleep4/timeout8 窗在 tools/list 大响应(~153KB)流至 ~95% 处击杀 node
+#   → 尾行 JSON 截断 → jq 无 id==2 匹配 → 好版本被误判 probe-fail(间歇 3/6 轮假阴性,
+#   escalation_ledger environment_pending 2026-09-04 起挂起)→ 放宽为 sleep8/timeout15。
 probe_bootstrap() {
   local candidate="$1" resp
   [ -f "$candidate" ] || return 1
   resp="$((printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"dailyops-probe","version":"0"}}}'
 printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-sleep 4) | timeout 8 "$NODE_BIN" "$candidate" 2>/dev/null | head -c 200000 || true)"
+sleep 8) | timeout 15 "$NODE_BIN" "$candidate" 2>/dev/null | head -c 200000 || true)"
   printf '%s' "$resp" | jq -e 'select(.id == 1) | .result.serverInfo != null' >/dev/null 2>&1 || return 1
   printf '%s' "$resp" | jq -e 'select(.id == 2) | .result.tools | length > 0 and any(.[]; .name == "commit_gate")' >/dev/null 2>&1
 }
