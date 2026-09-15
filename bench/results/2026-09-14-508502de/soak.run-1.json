@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "benchmark": "soak",
+  "date_utc": "2026-09-14T16:58:22Z",
+  "environment": {
+    "host": "pt-worker",
+    "kernel": "Linux version 7.0.0-28-generic (buildd@lcy02-amd64-004) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #28~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Wed Jul  1 15:50:57 UTC 2",
+    "cpu_model": "Intel(R) Core(TM) i9-10900KF CPU @ 3.70GHz",
+    "cpu_cores": 20,
+    "mem_total_kib": 131813264,
+    "loadavg": [
+      38.85,
+      23.36,
+      18.07
+    ],
+    "git_commit": "508502de23ecaf6feb0ca98997ddf92cb883e439",
+    "git_dirty": true,
+    "rustc": "rustc 1.99.0-nightly (9f36de775 2026-07-19)",
+    "cargo_profile": "test-ci",
+    "display": ":117",
+    "date_utc": "2026-09-14T16:58:22Z"
+  },
+  "parameters": {},
+  "metrics": [],
+  "notes": [
+    "bench failed — fail-closed; this document carries the error, not a partial baseline"
+  ],
+  "error": "soak aborted after 17684 cycles / 3 full segments at cycle 17684: iter 17684: marker verification failed (got \"null\") — fail-closed, no green numbers on wrong results — per-cycle series preserved in bench/results/2026-09-14-508502de/soak.run-1.segments.jsonl"
+}
