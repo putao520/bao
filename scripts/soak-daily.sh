@@ -17,8 +17,12 @@
 #   - record the night in bench/soak-state/{runs.jsonl,last-run.json} and update
 #     the streak in bench/soak-state/entry-progress.json.
 #
-# daily-ops (06:07) collects the state files next morning — see the ledger
-# entry "soak 调度基建落地"; daily-ops itself is NOT modified.
+# Artifact handoff (2026-09-16 user ruling — soak→daily-ops net-tree deadlock
+# fix, A+B leg A): this script commits its own bench/ artifacts (soak-state ×3 +
+# results/<date>-<short>/) before exiting, so the tree is clean again by
+# morning. daily-ops (06:07) starts its wave on that clean tree; its SKILL.md
+# machine-artifact whitelist clause is only the fallback for a failed
+# self-collect. See the ledger entry "soak 调度基建落地".
 #
 # Environment:
 #   BAO_SOAK_MINS  soak duration (default 60). Any value != 60 is a verification
@@ -126,4 +130,34 @@ fi
 
 tail -n 1 "$STATE/runs.jsonl" > "$STATE/last-run.json"
 echo "[soak-daily] done: verdict=$VERDICT streak=$S/$MINS min" | tee -a "$RUNLOG"
+
+# ── Artifact self-collect (soak→daily-ops net-tree deadlock fix, leg A) ──────
+# 2026-09-16 user ruling (A+B double cover): soak commits its own bench/
+# artifacts (soak-state ×3 + results/<date>-<short>/) so the tree is clean by
+# morning. Without this, daily-ops' `git diff --quiet` pre-flight saw the
+# overnight soak dirt every day → SKIPPED_BUSY read-only yield → 6-day deadlock
+# (2026-09-11..15). The pathspec-scoped add+commit only ever touches bench/,
+# never out-of-domain in-flight work (even if someone already staged other
+# files). If any git step fails we warn loudly and still exit with the soak RC —
+# daily-ops' SKILL.md machine-artifact whitelist clause stays as the fallback.
+# Transients (soak-state/lock, night-*.log) are .gitignore'd; the pending
+# marker is already gone by this point (removed right after run.sh returns).
+collect_rc=0
+collect_status=""
+collect_status="$(git -C "$REPO" status --porcelain -- bench/)" || collect_rc=$?
+if [ "$collect_rc" -eq 0 ] && [ -n "$collect_status" ]; then
+  git -C "$REPO" add -- bench/ || collect_rc=$?
+  if [ "$collect_rc" -eq 0 ]; then
+    git -C "$REPO" commit \
+      -m "ops(soak): $TODAY nightly artifacts — verdict=$VERDICT streak=$S ${MINS}min (head $SHORT)" \
+      -- bench/ || collect_rc=$?
+  fi
+  if [ "$collect_rc" -eq 0 ]; then
+    echo "[soak-daily] artifact self-collect: bench/ committed" | tee -a "$RUNLOG"
+  fi
+fi
+if [ "$collect_rc" -ne 0 ]; then
+  echo "[soak-daily] WARN: artifact self-collect failed (rc=$collect_rc) — daily-ops machine-artifact clause will re-collect next morning" >&2
+fi
+
 exit "$RC"
