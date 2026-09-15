@@ -66,7 +66,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 | issue 作者不在 allowlist | launcher 已处置(canned close);会话零响应零引用 |
 | 验收 PASS | 收尾(§1 阶段 6) |
 | 验收 FAIL | 不关不 push,评论进展 |
-| bao 工作树脏 / cargo 锁(脚本等待 30min 后仍 busy) | 只读阶段照常,写/测阶段标 `SKIPPED_BUSY` |
+| bao 工作树脏 / cargo 锁(脚本等待 30min 后仍 busy) | 只读阶段照常,写/测阶段标 `SKIPPED_BUSY`(机器工件白名单命中时除外,先收编再开波,见 §4) |
 | pending 重试 1 次仍失败 | escalate 留人工(§4 不变) |
 | 发布收尾 | 四条件满足 → 按 `references/publish.md` 发 cargo 变更闭包 + GitHub release | 任一不满足 / 限流外失败 → `SKIP_PUBLISH` 登记 pending 次日重试 |
 
@@ -85,6 +85,7 @@ description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao52
 - gh 失败 → `GH_AUTH_FAILED`,跳过 issue 段
 - 修复波中途失败 → 不 close issue;live 下评论进展;**代码中途态保留,禁自动 reset**;`state.json` 记 pending,下次最多自动重试 1 次,再失败转 escalate
 - **暴毙中途态恢复(2026-08-24 缺口修补)**:会话起手若 `DAILY_OPS_DIRTY=1` 且 state.json 存在 `pending_wave`(见 §8 state 契约),脏树文件集 ⊆ `pending_wave.writes` 声明域 → 判定中途态恢复模式:**继续 wave(编译→测试→收口)而非 SKIPPED_BUSY**;脏树含声明域外文件 → 仍 SKIPPED_BUSY + 升级(防混入他人改动,原语义保留)
+- **机器工件白名单收编(2026-09-16 用户裁决 A+B 双保险,本条为 B 腿兜底)**:会话起手三条全满足(① `DAILY_OPS_DIRTY=1` ② state.json(`.claude/daily-ops/state.json`)`pending_wave=null`,非 wave 中途态,与上行恢复路径互斥 ③ bao 仓无活跃写进程,判定口径复用预检 `$DAILY_OPS_CARGO_BUSY`)且脏树文件集 ⊆ **机器例行工件白名单**(仅两前缀,穷举:`bench/soak-state/`、`bench/results/`)→ 判定为机器例行工件而非人在途工作:**起手先收编**(`git add` 白名单命中路径 + 单独 `ops(soak)` 粒度 commit),树净后走常规 8 阶段,而非 SKIPPED_BUSY(收编 commit 属写操作,受 §0 MODE 门约束:dry-run 不 commit,仅报告登记)。定位:主路径 = `scripts/soak-daily.sh` 尾部自收尾(A 腿),本条款兜底,覆盖 soak 收尾失败或 soak 进程被 `TimeoutStartSec` 杀死的情况。**原语义保留**:脏集含白名单外任一文件 → 仍 SKIPPED_BUSY + 升级(防混入他人改动)。**升级信号**:SKIPPED_BUSY 连续 ≥3 轮(读近 3 份 `.claude/daily-ops/reports/` 判定)→ 当日报告「升级项」置顶 + SUMMARY `escalated` 计数,禁只记日志静默累积(教训:soak 死锁 6 轮无人察觉、musl 长任务 7 天预算耗尽,2026-09-15 报告升级项 2)
 - **报告必产出**:任何失败路径都要先写报告再退出,禁静默退出
 
 ## §5 报告模板(写 `$DAILY_OPS_REPORT`)
