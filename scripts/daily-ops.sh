@@ -49,12 +49,15 @@ if [ -z "${DAILY_OPS_GH:-}" ]; then
     > "$RUNDIR/inbox-raw.json" 2>/dev/null || export DAILY_OPS_GH=failed
 fi
 if [ -z "${DAILY_OPS_GH:-}" ] && [ -s "$RUNDIR/inbox-raw.json" ]; then
+  # ops-notify 标签 issue 先于分桶排除(2026-09-16 用户裁决):它们是 launcher 自己的升级通知
+  # 载体,非工单——不进 owner/non_owner、不 canned close、不进会话 intake。
   jq -c --rawfile allow "$ALLOW_FILE" '
     ($allow | split("\n") | map(gsub("^\\s+|\\s+$"; ""))
       | map(select(length > 0 and (startswith("#") | not)))) as $o
+    | [ .[] | select([.labels[]?.name] | index("ops-notify") == null) ] as $items
     | {
-        owner: [.[] | select((.author.login // "") as $l | ($o | index($l)) != null)],
-        non_owner: [.[] | select((.author.login // "") as $l | ($o | index($l)) == null)
+        owner: [$items[] | select((.author.login // "") as $l | ($o | index($l)) != null)],
+        non_owner: [$items[] | select((.author.login // "") as $l | ($o | index($l)) == null)
                     | {number: .number, author: (.author.login // "")}]
       }' "$RUNDIR/inbox-raw.json" > "$INBOX"
   rm -f "$RUNDIR/inbox-raw.json"
@@ -148,9 +151,13 @@ RC=${PIPESTATUS[0]}
 set -e
 # ── 升级推送通知段(升级信号出口,用户裁决 2026-09-16 ②)────────────────────────────────
 # 此前升级项(escalated>0)与连续 SKIPPED_BUSY 空转只写进报告文件,无任何主动出口——用户不主动
-# 翻报告系统就沉默空转(2026-09-11..15 soak 死锁 6 轮无人察觉的教训)。两条件任一命中即推送
-# critical 桌面通知;位于下方 RC 分支之前,RC=0/124/其他全部路径都经过本段。
-# notify-send 缺失/失败显式 WARN 降级(journal 可见),|| 形态吸收失败,不改变 launcher 退出码。
+# 翻报告系统就沉默空转(2026-09-11..15 soak 死锁 6 轮无人察觉的教训)。两条件任一命中即推送;
+# 位于下方 RC 分支之前,RC=0/124/其他全部路径都经过本段。
+# 通道=GitHub @mention 邮件(2026-09-16 用户裁决:pt-worker headless 无图形会话,桌面通知
+# notify-send 物理不可达——实测 ServiceUnknown rc=1)。载体=putao520/bao 的 ops-notify 标签
+# issue:当日已存在则追加 @putao520 comment 去重,否则建新 issue 并 @putao520 触发邮件;
+# 该标签 issue 已被 intake 段排除,不会回流为当轮工单。
+# gh 失败(未认证/网络/权限)显式 WARN 降级(journal 可见),|| 形态吸收失败,不改变 launcher 退出码。
 ESC_N=""
 if [ -f "$REPORT" ]; then
   ESC_N="$(command grep '^SUMMARY:' "$REPORT" 2>/dev/null | command grep -o 'escalated=[0-9][0-9]*' \
@@ -175,14 +182,21 @@ if [ "$BUSY_SEEN" -eq 3 ] && [ "$BUSY_HITS" -eq 3 ]; then
 fi
 if [ -n "$ESC_TRIGGER" ]; then
   ESC_MSG="$(date +%F) $ESC_TRIGGER — see .claude/daily-ops/reports/$(basename "$REPORT")"
-  ESC_NOTIFY_RC=0
-  if command -v notify-send >/dev/null 2>&1; then
-    notify-send -u critical "bao daily-ops" "$ESC_MSG" || ESC_NOTIFY_RC=1
-    if [ "$ESC_NOTIFY_RC" -ne 0 ]; then
-      echo "[daily-ops] WARN: escalation notify unavailable/failed (trigger=$ESC_TRIGGER)" >&2
+  if [ "$MODE" = "live" ]; then
+    # 去重:当日已存 ops-notify 通知 issue(标题含当日日期)则 comment 追加,否则 create 新 issue
+    ESC_TODAY="$(gh issue list --repo putao520/bao --state open --label ops-notify \
+      --search "in:title $(date +%F)" --json number --jq '.[0].number' 2>/dev/null || true)"
+    if [ -n "$ESC_TODAY" ]; then
+      gh issue comment "$ESC_TODAY" --repo putao520/bao --body "@putao520 $ESC_MSG" >/dev/null 2>&1 \
+        || echo "[daily-ops] WARN: escalation notify via gh failed (trigger=$ESC_TRIGGER)" >&2
+    else
+      gh issue create --repo putao520/bao --title "[OPS-NOTIFY] $(date +%F) $ESC_TRIGGER" \
+        --body "@putao520 $ESC_MSG(report: .claude/daily-ops/reports/$(basename "$REPORT"))" \
+        --label ops-notify >/dev/null 2>&1 \
+        || echo "[daily-ops] WARN: escalation notify via gh failed (trigger=$ESC_TRIGGER)" >&2
     fi
   else
-    echo "[daily-ops] WARN: escalation notify unavailable/failed (trigger=$ESC_TRIGGER)" >&2
+    echo "[daily-ops] WARN: escalation notify skipped (dry-run, trigger=$ESC_TRIGGER)" >&2
   fi
 fi
 if [ "$RC" -eq 0 ]; then
