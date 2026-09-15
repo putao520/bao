@@ -1,6 +1,6 @@
 ---
 name: daily-ops
-description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao520/bao)。当用户说"每日同步/daily ops/处理 issue/issue 值班/issue 分诊/日常巡检/定时同步",或 headless 定时任务(systemd timer)执行时使用。自动边界:全自主:任意窗口吸收(含 >20 与 BCE patch 重放)+ mozjs 跨版本升级(§9 长任务协议)+ issue 根治(任意 scope)+ 波末验收 + commit/push/关 issue + 发布闭包;超范围 issue 直接 reject+close(安全门禁);语义不明/PRD-SPEC 冲突/重试耗尽/长任务单轮 7 天预算耗尽 → 升级人工。
+description: 每日运维值班:上游同步 + GitHub issue 分诊处理(putao520/bao)。当用户说"每日同步/daily ops/处理 issue/issue 值班/issue 分诊/日常巡检/定时同步",或 headless 定时任务(systemd timer)执行时使用。自动边界:全自主:任意窗口吸收(含 >20 与 BCE patch 重放)+ mozjs 跨版本升级(§9 长任务协议)+ issue 根治(任意 scope)+ 波末验收 + commit/push/关 issue + 发布闭包;超范围 issue 直接 reject+close(安全门禁);语义不明/PRD-SPEC 冲突/重试耗尽/长任务预算(7 个有效执行轮)耗尽 → 升级人工。
 ---
 
 # 每日运维值班(daily-ops)
@@ -128,7 +128,7 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 - MODE 切换:`.claude/daily-ops/mode.conf` 写 `MODE=live`(gitignore 本地文件,不进 git)
 - 同日重跑:报告文件名加 `.HHMM` 后缀,不覆盖已有报告
 - 切 live 门槛:**连续 ≥ 5 天 dry-run 零违规 + 用户逐份审阅报告**
-- 升级推送出口:launcher(`scripts/daily-ops.sh`)在会话返回后解析当日报告——`SUMMARY escalated>0` 或近 3 份报告执行阶段连续 `SKIPPED_BUSY` → `notify-send` 桌面通知(`-u critical`,含日期+触发条件+报告路径);notify-send 缺失/失败 → stderr+journal WARN 显式降级。升级项不再以报告文件为唯一信号面(soak 死锁 6 轮无人察觉的教训)(2026-09-16 用户裁决 ②,默认通道 notify-send)
+- 升级推送出口:launcher(`scripts/daily-ops.sh`)在会话返回后解析当日报告——`SUMMARY escalated>0` 或近 3 份报告执行阶段连续 `SKIPPED_BUSY` → live 下经 gh 发 putao520/bao 通知(带 `ops-notify` 标签,@putao520 mention 触发 GitHub 邮件;同日去重:已存当日 [OPS-NOTIFY] issue 则 comment 不新建);dry-run 零 gh 写仅 WARN;gh 失败 → stderr+journal WARN 显式降级。升级项不再以报告文件为唯一信号面(soak 死锁 6 轮无人察觉的教训);pt-worker 为 headless SSH 机无图形会话,notify-send 物理不可达,故选邮件通道(2026-09-16 用户裁决)
 
 ## §7 与 upstream-absorb 分工
 
@@ -149,8 +149,8 @@ SUMMARY: clean|acted|failed|timeout escalated=<N>
 
 ## §9 长任务协议(用户裁决 2026-08-24)
 
-- **适用**:mozjs 跨版本升级等单轮 7 天预算内持续推进的长任务
-- **state.json 新增 `long_running` 字段**(schema:`{task, started, deadline, phase, notes}`);会话起手检查:有 long_running → **优先继续**(单轮 7 天预算内连续推进,不分日分片),无才走常规 8 阶段
+- **适用**:mozjs 跨版本升级等预算(7 个有效执行轮)内持续推进的长任务
+- **state.json 新增 `long_running` 字段**(schema:`{task, started, deadline, phase, notes}`);会话起手检查:有 long_running → **优先继续**(预算(7 个有效执行轮)内连续推进,不分日分片),无才走常规 8 阶段
 - **state↔gh 实态起手对账**:会话起手若 `state.long_running` 存在且含 issue 字段 → 先 `gh issue view <n> --repo putao520/bao --json state` 对账:CLOSED → 自动清空 long_running 字段 + 当日报告登记一行 `reconciled: long-running #<n> closed externally, ledger cleared` + 本轮禁对该 issue 发任何状态评论;OPEN → 照常续跑;gh 不可用(GH_AUTH_FAILED)→ 保持字段照旧续跑,报告登记 `reconciliation skipped (gh unavailable)`(显式降级可观测,对账是防漂移不是准入门)(2026-09-16 用户裁决,#10 已关 5 天台账仍在发评论的事故根除)
 - **预算按有效执行轮计:预算 = 7 个有效执行轮;`effective_rounds ≥ 7` 才是预算耗尽 → timeout 中止,中途态保留,escalate 留人工**。空转轮(执行阶段 `SKIPPED_BUSY` / `SKIPPED_*_FETCH_FAILED` / 暴毙零进展轮)不计数也不顺延——对预算完全不可见,仅观测记录;state.long_running schema 增 `effective_rounds` 与 `skipped_rounds` 两字段,每轮收尾按本轮 outcome 更新;MAX_SECONDS=604800 保持单会话 timeout 上限语义(每轮会话墙钟界,不是任务预算)。报告登记当前 phase 与已完成证据;轮间中断(超时/失败)→ long_running 字段记录 phase,下轮优先续跑(2026-09-16 用户裁决,soak 死锁饿死 musl 任务的不公报根除)
 - **完成** = 基线 bump 同 commit + §3 三重判据 + 发布闭包,清空 long_running 字段
