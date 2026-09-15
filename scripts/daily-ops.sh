@@ -146,6 +146,45 @@ timeout --signal=TERM --kill-after=60 "$MAX_SECONDS" \
   --dangerously-skip-permissions 2>&1 | tee -a "$LOG_FILE"
 RC=${PIPESTATUS[0]}
 set -e
+# ── 升级推送通知段(升级信号出口,用户裁决 2026-09-16 ②)────────────────────────────────
+# 此前升级项(escalated>0)与连续 SKIPPED_BUSY 空转只写进报告文件,无任何主动出口——用户不主动
+# 翻报告系统就沉默空转(2026-09-11..15 soak 死锁 6 轮无人察觉的教训)。两条件任一命中即推送
+# critical 桌面通知;位于下方 RC 分支之前,RC=0/124/其他全部路径都经过本段。
+# notify-send 缺失/失败显式 WARN 降级(journal 可见),|| 形态吸收失败,不改变 launcher 退出码。
+ESC_N=""
+if [ -f "$REPORT" ]; then
+  ESC_N="$(command grep '^SUMMARY:' "$REPORT" 2>/dev/null | command grep -o 'escalated=[0-9][0-9]*' \
+    | cut -d= -f2 | sort -rn | head -n 1 || true)"
+fi
+ESC_TRIGGER=""
+if [ -n "$ESC_N" ] && [ "$ESC_N" -gt 0 ]; then
+  ESC_TRIGGER="escalated=$ESC_N"
+fi
+# 条件 b:最近 3 份报告(按 mtime,含当日)的「- 执行:」行均含 SKIPPED_BUSY = 连续 3 轮空转
+BUSY_SEEN=0
+BUSY_HITS=0
+while IFS= read -r rf; do
+  [ -n "$rf" ] || continue
+  BUSY_SEEN=$((BUSY_SEEN + 1))
+  if command grep -q '^-[[:space:]]*执行:.*SKIPPED_BUSY' "$rf" 2>/dev/null; then
+    BUSY_HITS=$((BUSY_HITS + 1))
+  fi
+done < <(ls -t "$RUNDIR"/reports/*.md 2>/dev/null | head -n 3)
+if [ "$BUSY_SEEN" -eq 3 ] && [ "$BUSY_HITS" -eq 3 ]; then
+  ESC_TRIGGER="skipped_busy_x3${ESC_TRIGGER:+ + $ESC_TRIGGER}"
+fi
+if [ -n "$ESC_TRIGGER" ]; then
+  ESC_MSG="$(date +%F) $ESC_TRIGGER — see .claude/daily-ops/reports/$(basename "$REPORT")"
+  ESC_NOTIFY_RC=0
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -u critical "bao daily-ops" "$ESC_MSG" || ESC_NOTIFY_RC=1
+    if [ "$ESC_NOTIFY_RC" -ne 0 ]; then
+      echo "[daily-ops] WARN: escalation notify unavailable/failed (trigger=$ESC_TRIGGER)" >&2
+    fi
+  else
+    echo "[daily-ops] WARN: escalation notify unavailable/failed (trigger=$ESC_TRIGGER)" >&2
+  fi
+fi
 if [ "$RC" -eq 0 ]; then
   if [ "$MODE" = "dry-run" ] && [ "$(git -C "$REPO" rev-parse HEAD)" != "$GIT_PRE" ]; then
     echo "VIOLATION: dry-run made commits ($(git -C "$REPO" rev-parse --short HEAD))" >> "$REPORT"
