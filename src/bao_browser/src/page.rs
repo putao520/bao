@@ -565,17 +565,49 @@ impl PageInner {
         )))
     }
 
-    /// Wait for page navigation to complete (load status transitions to Complete).
+    /// Wait for page navigation to complete (load Complete AND navigation
+    /// commit observed).
     ///
-    /// Tracks navigation via `LoadStatus` transitions rather than URL changes,
-    /// which correctly handles same-URL navigation (reload, pushState to current URL).
-    /// Detects when `load_status` transitions from Started/HeadParsed to Complete.
+    /// Navigation progress is still tracked via `LoadStatus` transitions
+    /// (Started/HeadParsed → Complete) rather than URL changes alone, which
+    /// correctly handles same-URL navigation (reload, pushState to the
+    /// current URL) that a pure URL poll would miss.
+    ///
+    /// # Why a bare `Complete` is not enough (#41)
+    ///
+    /// `LoadStatus::Complete` can reach the embedder BEFORE the constellation
+    /// commits the navigation: servo swaps the routing pointer
+    /// (`browsing_context.pipeline_id`) only in `change_session_history`
+    /// (update_current_entry), which can lag the load-complete message — and
+    /// `evaluate_javascript` is routed by exactly that pointer (constellation
+    /// `handle_evaluate_javascript`). Exiting on bare Complete lets the
+    /// caller's first eval land in the OLD document's realm: the observed #41
+    /// signature (~1/25k soak cycles) is a marker eval returning null while
+    /// the same page reads `readyState == "complete"` with the marker present
+    /// moments later.
+    ///
+    /// # Exit contract (mirrors the #40 companion in `wait_for_pipeline_ready`
+    /// Phase 2)
+    ///
+    /// `saw_new_navigation && LoadStatus::Complete` AND the commit is
+    /// observed: the embedder url (`current_url`, swapped on URLChanged) has
+    /// moved relative to the snapshot taken at entry, OR — for same-URL
+    /// navigations (reload) where the url never moves — Complete has been
+    /// held for `COMMIT_GRACE` (1s, same value as the companion). The grace
+    /// path adds at most 1s to a same-URL wait. Both signals are re-checked
+    /// every spin iteration.
     pub fn wait_for_navigation(&self, timeout: Duration) -> Result<(), BrowserError> {
         let start = Instant::now();
         // Record the initial load_status. Navigation begins with Started,
         // so if we're already at Complete, we wait for a new Started first.
         let initial_status = self.webview_state.borrow().load_status;
         let mut saw_new_navigation = initial_status != servo::LoadStatus::Started;
+        // #41 (commit gate): commit-observation inputs, snapshot at entry.
+        // The embedder url is the observable commit signal (URLChanged →
+        // embedder swap); `complete_since` arms the same-URL grace.
+        const COMMIT_GRACE: Duration = Duration::from_millis(1_000);
+        let url_at_entry = self.current_url();
+        let mut complete_since: Option<Instant> = None;
         // #40 phase breadcrumb: this spin loop drives servo until the fresh
         // load completes — a buried servo recv wedges the whole wait.
         let _nav_wait_phase = crate::phase_watch::PhaseGuard::enter(
@@ -585,6 +617,7 @@ impl PageInner {
 
         while start.elapsed() < timeout {
             let current_status = self.webview_state.borrow().load_status;
+            let url_now = self.current_url();
 
             if current_status == servo::LoadStatus::Started {
                 // A new navigation has begun — we now wait for it to complete.
@@ -592,8 +625,24 @@ impl PageInner {
             }
 
             if saw_new_navigation && current_status == servo::LoadStatus::Complete {
-                self.touch();
-                return Ok(());
+                let url_moved = match (&url_at_entry, &url_now) {
+                    (Some(a), Some(b)) => a != b,
+                    _ => false,
+                };
+                let held_long_enough =
+                    complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
+                if url_moved || held_long_enough {
+                    self.touch();
+                    return Ok(());
+                }
+                if complete_since.is_none() {
+                    complete_since = Some(Instant::now());
+                }
+            } else {
+                // Not the Complete we can commit on (Started/HeadParsed
+                // mid-cycle, or a second navigation's Started after a stale
+                // Complete) — the same-URL grace clock restarts.
+                complete_since = None;
             }
 
             // #40 (BCE-20260910-003): load completion arrives via servo
