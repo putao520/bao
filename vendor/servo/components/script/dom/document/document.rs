@@ -67,7 +67,9 @@ use servo_base::generic_channel::GenericSend;
 use servo_base::id::{PipelineId, WebViewId};
 use servo_base::{Epoch, generic_channel};
 use servo_config::pref;
-use servo_constellation_traits::{NavigationHistoryBehavior, ScriptToConstellationMessage};
+use servo_constellation_traits::{
+    NavigationHistoryBehavior, PaintMetricEvent, ScriptToConstellationMessage,
+};
 use servo_media::{ClientContextId, ServoMedia};
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use style::attr::AttrValue;
@@ -3588,44 +3590,40 @@ impl Document {
             .insert(id, Dom::from_ref(element));
     }
 
-    pub(crate) fn handle_paint_metric(
-        &self,
-        cx: &mut JSContext,
-        metric_type: ProgressiveWebMetricType,
-        metric_value: CrossProcessInstant,
-        first_reflow: bool,
-    ) {
+    pub(crate) fn handle_paint_metric(&self, cx: &mut JSContext, event: PaintMetricEvent) {
         let metrics = self.interactive_time.borrow();
-        match metric_type {
-            ProgressiveWebMetricType::FirstPaint |
-            ProgressiveWebMetricType::FirstContentfulPaint => {
-                let binding = PerformancePaintTiming::new(
+        let entry = match event {
+            PaintMetricEvent::FirstPaint(metric_value, first_reflow) => {
+                metrics.set_first_paint(metric_value, first_reflow);
+                DomRoot::upcast::<PerformanceEntry>(PerformancePaintTiming::new(
                     cx,
                     self.window.as_global_scope(),
-                    metric_type.clone(),
+                    ProgressiveWebMetricType::FirstPaint,
                     metric_value,
-                );
-                metrics.set_performance_paint_metric(metric_value, first_reflow, metric_type);
-                let entry = binding.upcast::<PerformanceEntry>();
-                self.window.Performance(cx).queue_entry(entry);
+                ))
             },
-            ProgressiveWebMetricType::LargestContentfulPaint { area, url, id } => {
-                let binding = LargestContentfulPaint::new(
+            PaintMetricEvent::FirstContentfulPaint(metric_value, first_reflow) => {
+                metrics.set_first_contentful_paint(metric_value, first_reflow);
+                DomRoot::upcast::<PerformanceEntry>(PerformancePaintTiming::new(
+                    cx,
+                    self.window.as_global_scope(),
+                    ProgressiveWebMetricType::FirstContentfulPaint,
+                    metric_value,
+                ))
+            },
+            PaintMetricEvent::LargestContentfulPaint(metric_value, area, url, id) => {
+                metrics.set_largest_contentful_paint(id, metric_value, area);
+                DomRoot::upcast::<PerformanceEntry>(LargestContentfulPaint::new(
                     cx,
                     self.window.as_global_scope(),
                     metric_value,
                     area,
                     url,
                     self.lcp_candidates.borrow_mut().remove(&id).as_deref(),
-                );
-                metrics.set_largest_contentful_paint(id, metric_value, area);
-                let entry = binding.upcast::<PerformanceEntry>();
-                self.window.Performance(cx).queue_entry(entry);
+                ))
             },
-            ProgressiveWebMetricType::TimeToInteractive => {
-                unreachable!("Unexpected non-paint metric.")
-            },
-        }
+        };
+        self.window.Performance(cx).queue_entry(&entry);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#document-write-steps>

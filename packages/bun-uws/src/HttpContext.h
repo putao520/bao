@@ -107,6 +107,14 @@ private:
     us_socket_group_t group{};
     HttpContextData<SSL> data;
 
+    /* The socket whose read onData is currently parsing, null outside a
+     * parse. A response completing on the parsed socket leaves the cork
+     * to onData's final uncork (the responses to requests pipelined in
+     * one read share a single send()); a response completing on any other
+     * socket (an async handler, possibly inside another socket's parse
+     * window via a drained microtask) uncorks itself. */
+    struct us_socket_t *parsingSocket = nullptr;
+
     /* Minimum allowed receive throughput per second (clients uploading less than 16kB/sec get dropped) */
     static constexpr int HTTP_RECEIVE_THROUGHPUT_BYTES = 16 * 1024;
 
@@ -236,6 +244,7 @@ private:
         // ~180k - 190k req/sec is with varying routing
 
         HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
+        HttpContext<SSL> *httpContext = fromSocket(s);
 
         /* Do not accept any data while in shutdown state */
         if (us_socket_is_shut_down((us_socket_t *) s)) {
@@ -253,6 +262,13 @@ private:
         /* Mark that we are inside the parser now */
         httpContextData->flags.isParsingHttp = true;
         httpResponseData->isIdle = false;
+
+        /* Track the parsed socket until the parse returns: a response that
+         * completes while its own socket is being parsed leaves the cork to
+         * onData's final uncork; one completing for any other socket uncorks
+         * itself. */
+        struct us_socket_t *prevParsingSocket = httpContext->parsingSocket;
+        httpContext->parsingSocket = s;
 
         // clients need to know the cursor after http parse, not servers!
         // how far did we read then? we need to know to continue with websocket parsing data? or?
@@ -274,7 +290,9 @@ private:
              * Important for denying async pipelining until, if ever, we want to support it.
              * Otherwise requests can get mixed up on the same connection. We still support sync pipelining. */
             if (httpResponseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) {
-                us_socket_close((us_socket_t *) s, 0, nullptr);
+                /* Responses that completed earlier in this read can still
+                 * sit in the cork buffer. close() sends them first. */
+                ((AsyncSocket<SSL> *) s)->close();
                 return nullptr;
             }
 
@@ -298,11 +316,22 @@ private:
                 }
             }
 
+            /* Bun.serve: every request of this read is dispatched corked, not only
+             * the first. A response to an earlier request can release the cork
+             * taken above (a body larger than the cork buffer, the sendfile
+             * path). The handler writes the status line, each header and the
+             * body as separate writes, and without the cork each of them is one
+             * send(). node:http corks in its own write calls. */
+            if (!httpContextData->flags.isNodeHttp) {
+                ((AsyncSocket<SSL> *) s)->cork();
+            }
+
             /* Route the method and URL */
             selectedRouter->getUserData() = {(HttpResponse<SSL> *) s, httpRequest};
             if (!selectedRouter->route(httpRequest->getCaseSensitiveMethod(), httpRequest->getUrlForRouting())) {
-                /* We have to force close this socket as we have no handler for it */
-                us_socket_close((us_socket_t *) s, 0, nullptr);
+                /* We have to force close this socket as we have no handler for it.
+                 * close() first sends the responses to earlier requests of this read. */
+                ((AsyncSocket<SSL> *) s)->close();
                 return nullptr;
             }
 
@@ -386,11 +415,16 @@ private:
 
         /* Mark that we are no longer parsing Http */
         httpContextData->flags.isParsingHttp = false;
+        httpContext->parsingSocket = prevParsingSocket;
         /* If we got fullptr that means the parser wants us to close the socket from error (same as calling the errorHandler) */
         if (httpErrorStatusCode) {
             if(httpContextData->onClientError) {
                 httpContextData->onClientError(SSL, s, result.parserError, data, length);
             }
+            /* The error response below bypasses the cork buffer. Responses to
+             * valid requests earlier in this read can still sit there, so send
+             * them first. */
+            ((AsyncSocket<SSL> *) s)->uncork();
             /* For errors, we only deliver them "at most once". We don't care if they get halfways delivered or not. */
             us_socket_write(s, httpErrorResponses[httpErrorStatusCode].data(), (int) httpErrorResponses[httpErrorStatusCode].length());
             us_socket_shutdown(s);

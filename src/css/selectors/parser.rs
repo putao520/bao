@@ -1291,24 +1291,24 @@ impl<'a> SelectorParser<'a> {
             19 => match name {
                 b"view-transition-old" => {
                     return Ok(PseudoElement::ViewTransitionOld {
-                        part_name: ViewTransitionPartName::parse(input)?,
+                        part_name: ViewTransitionPartName::parse(self, input)?,
                     });
                 }
                 b"view-transition-new" => {
                     return Ok(PseudoElement::ViewTransitionNew {
-                        part_name: ViewTransitionPartName::parse(input)?,
+                        part_name: ViewTransitionPartName::parse(self, input)?,
                     });
                 }
                 _ => {}
             },
             21 if name == b"view-transition-group" => {
                 return Ok(PseudoElement::ViewTransitionGroup {
-                    part_name: ViewTransitionPartName::parse(input)?,
+                    part_name: ViewTransitionPartName::parse(self, input)?,
                 });
             }
             26 if name == b"view-transition-image-pair" => {
                 return Ok(PseudoElement::ViewTransitionImagePair {
-                    part_name: ViewTransitionPartName::parse(input)?,
+                    part_name: ViewTransitionPartName::parse(self, input)?,
                 });
             }
             _ => {}
@@ -4288,7 +4288,7 @@ pub enum ViewTransitionPartName {
     /// <custom-ident>
     Name(CustomIdent),
     /// .<custom-ident>
-    Class(CustomIdent),
+    Class(<impl_::Selectors as SelectorImpl>::LocalIdentifier),
 }
 
 impl ViewTransitionPartName {
@@ -4304,21 +4304,35 @@ impl ViewTransitionPartName {
         match self {
             Self::All => dest.write_str("*"),
             Self::Name(name) => write_ci(name, dest),
-            Self::Class(name) => {
+            Self::Class(class) => {
                 dest.write_char(b'.')?;
-                write_ci(name, dest)
+                dest.write_ident_or_ref(*class, dest.css_module.is_some())
             }
         }
     }
 
-    pub fn parse(input: &mut CssParser) -> CResult<ViewTransitionPartName> {
+    pub fn parse(
+        parser: &mut SelectorParser<'_>,
+        input: &mut CssParser,
+    ) -> CResult<ViewTransitionPartName> {
         if input.try_parse(|i| i.expect_delim(b'*')).is_ok() {
             return Ok(Self::All);
         }
 
         // Try to parse a class selector (.<custom-ident>)
+        let loc = input.position();
         if input.try_parse(|i| i.expect_delim(b'.')).is_ok() {
-            return Ok(Self::Class(CustomIdent::parse(input)?));
+            let location = input.current_source_location();
+            let ident = input.expect_ident_cloned()?;
+            if crate::values::ident::is_reserved_custom_ident(ident) {
+                return Err(location.new_unexpected_token_error(Token::Ident(ident)));
+            }
+            return Ok(Self::Class(parser.new_local_identifier(
+                input,
+                css::CssRefTag::CLASS,
+                ident,
+                loc,
+            )));
         }
 
         Ok(Self::Name(CustomIdent::parse(input)?))
@@ -4327,7 +4341,8 @@ impl ViewTransitionPartName {
     pub fn eql(&self, rhs: &Self) -> bool {
         match (self, rhs) {
             (Self::All, Self::All) => true,
-            (Self::Name(a), Self::Name(b)) | (Self::Class(a), Self::Class(b)) => a.eql(b),
+            (Self::Name(a), Self::Name(b)) => a.eql(b),
+            (Self::Class(a), Self::Class(b)) => a.eql(b),
             _ => false,
         }
     }

@@ -81,8 +81,7 @@ use script_bindings::cell::DomRefCell;
 use script_bindings::settings_stack::run_a_script;
 use script_traits::{
     ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, InitialScriptState,
-    NewPipelineInfo, Painter, ProgressiveWebMetricType, ScriptThreadMessage,
-    UpdatePipelineIdReason,
+    NewPipelineInfo, Painter, ScriptThreadMessage, UpdatePipelineIdReason,
 };
 use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
@@ -96,10 +95,10 @@ use servo_canvas_traits::webgl::WebGLPipeline;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
 use servo_config::{pref, prefs};
 use servo_constellation_traits::{
-    HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, RemoteFocusOperation,
-    ScreenshotReadinessResponse, ScriptToConstellationChan, ScriptToConstellationMessage,
-    ScrollStateUpdate, SessionHistoryTraversalRequest, StructuredSerializedData,
-    TargetSnapshotParams, TraversalDirection, WindowSizeType,
+    HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, PaintMetricEvent,
+    RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
+    ScriptToConstellationMessage, ScrollStateUpdate, SessionHistoryTraversalRequest,
+    StructuredSerializedData, TargetSnapshotParams, TraversalDirection, WindowSizeType,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::StorageThreads;
@@ -2360,12 +2359,9 @@ impl ScriptThread {
             ) => {
                 self.handle_exit_pipeline_msg(webview_id, pipeline_id, discard_browsing_context, cx)
             },
-            ScriptThreadMessage::PaintMetric(
-                pipeline_id,
-                metric_type,
-                metric_value,
-                first_reflow,
-            ) => self.handle_paint_metric(cx, pipeline_id, metric_type, metric_value, first_reflow),
+            ScriptThreadMessage::PaintMetric(pipeline_id, event) => {
+                self.handle_paint_metric(cx, pipeline_id, event)
+            },
             ScriptThreadMessage::MediaSessionAction(pipeline_id, action) => {
                 self.handle_media_session_action(cx, pipeline_id, action)
             },
@@ -4983,17 +4979,13 @@ impl ScriptThread {
         &self,
         cx: &mut js::context::JSContext,
         pipeline_id: PipelineId,
-        metric_type: ProgressiveWebMetricType,
-        metric_value: CrossProcessInstant,
-        first_reflow: bool,
+        event: PaintMetricEvent,
     ) {
         match self.documents.borrow().find_document(pipeline_id) {
-            Some(document) => {
-                document.handle_paint_metric(cx, metric_type, metric_value, first_reflow)
+            Some(document) => document.handle_paint_metric(cx, event),
+            None => {
+                warn!("Received paint metric ({event:?}) for unknown document: {pipeline_id:?}")
             },
-            None => warn!(
-                "Received paint metric ({metric_type:?}) for unknown document: {pipeline_id:?}"
-            ),
         }
     }
 

@@ -2248,10 +2248,7 @@ pub mod __gated_printer {
 
         #[inline]
         pub fn print_space_before_identifier(&mut self) {
-            // `writer.written()` starts at -1, so `>= 0` means "at least one byte has
-            // been written". Using `> 0` here would skip the space when exactly one
-            // byte precedes a keyword (e.g. `x instanceof y` minified to `xinstanceof y`).
-            if self.writer.written() >= 0
+            if self.writer.written() > 0
                 && (lexer::is_identifier_continue(self.writer.prev_char() as i32)
                     || self.writer.written() == self.prev_reg_exp_end)
             {
@@ -7494,7 +7491,6 @@ impl<'a, W: WriterTrait + ?Sized> Write for StdWriterAdapter<'a, W> {
 
 pub struct Writer<C: WriterContext> {
     pub ctx: C,
-    pub written: i32,
     // Used by the printer
     pub prev_char: u8,
     pub prev_prev_char: u8,
@@ -7506,7 +7502,6 @@ impl<C: WriterContext> Writer<C> {
     pub fn init(ctx: C) -> Self {
         Self {
             ctx,
-            written: -1,
             prev_char: 0,
             prev_prev_char: 0,
             err: None,
@@ -7570,25 +7565,20 @@ impl<C: WriterContext> Writer<C> {
 
     pub fn advance(&mut self, count: u64) {
         self.ctx.advance_by(count);
-        // PERF(port): @intCast — output never approaches 2 GiB; checked add of
-        // a u64→i32 here was a measurable branch in the per-token print path.
-        // Keep Zig's debug-mode @intCast contract without paying for it in release.
-        debug_assert!(count <= i32::MAX as u64);
-        self.written = self.written.wrapping_add(count as i32);
     }
 
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<usize, bun_core::Error> {
-        let written = self.written.max(0);
+        // The position counter is derived from the buffer length (upstream
+        // #42767), so the bytes-written-by-this-call is the length delta.
+        let before = self.ctx.slice().len();
         self.print_slice(bytes);
-        debug_assert!(self.written >= 0);
-        Ok((self.written as usize).wrapping_sub(written as usize))
+        Ok(self.ctx.slice().len() - before)
     }
 
     #[inline]
     pub fn print_byte(&mut self, b: u8) {
         match self.ctx.write_byte(b) {
             Ok(n) => {
-                self.written = self.written.wrapping_add(n as i32);
                 if n == 0 {
                     self.err = Some(bun_core::err!("WriteFailed"));
                 }
@@ -7604,7 +7594,6 @@ impl<C: WriterContext> Writer<C> {
     pub fn print_slice(&mut self, s: &[u8]) {
         match self.ctx.write_all(s) {
             Ok(n) => {
-                self.written = self.written.wrapping_add(n as i32);
                 if n < s.len() {
                     self.err = Some(if n == 0 {
                         bun_core::err!("WriteFailed")
@@ -7629,9 +7618,10 @@ impl<C: WriterContext> Writer<C> {
 }
 
 impl<C: WriterContext> WriterTrait for Writer<C> {
+    /// Bytes in `ctx`'s buffer. The printer's position fields use -1 for "none".
     #[inline]
     fn written(&self) -> i32 {
-        self.written
+        self.ctx.slice().len() as i32
     }
     #[inline]
     fn prev_char(&self) -> u8 {
@@ -8169,8 +8159,9 @@ pub fn print_ast<'a, W: WriterTrait, const ASCII_ONLY: bool, const GENERATE_SOUR
         top_level_symbols.sort_unstable_by(rename::StableSymbolCount::less_than);
 
         minify_renamer.allocate_top_level_symbol_slots(&top_level_symbols)?;
-        let minifier = tree.char_freq.as_ref().unwrap().compile();
-        minify_renamer.assign_names_by_frequency(&minifier)?;
+        // `None` if the JS parser did not build `tree`: an empty file, a data loader.
+        let char_freq = tree.char_freq.as_ref().copied().unwrap_or_default();
+        minify_renamer.assign_names_by_frequency(&char_freq.compile())?;
 
         renamer = rename::Renamer::MinifyRenamer(&mut *minify_renamer);
     } else {
@@ -8308,7 +8299,7 @@ pub fn print_ast<'a, W: WriterTrait, const ASCII_ONLY: bool, const GENERATE_SOUR
 
     printer.writer.done()?;
 
-    Ok(usize::try_from(printer.writer.written().max(0)).expect("int cast"))
+    Ok(printer.writer.slice().len())
 }
 
 pub fn print_json<W: WriterTrait>(
@@ -8351,7 +8342,7 @@ pub fn print_json<W: WriterTrait>(
     printer.writer.get_error()?;
     printer.writer.done()?;
 
-    Ok(usize::try_from(printer.writer.written().max(0)).expect("int cast"))
+    Ok(printer.writer.slice().len())
 }
 
 pub fn print<'a, const GENERATE_SOURCE_MAPS: bool>(

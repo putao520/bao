@@ -2064,7 +2064,7 @@ impl DocumentEventHandler {
             cx,
             &self.window,
             None,
-            clipboard_event_type.as_str().into(),
+            clipboard_event_type.clone(),
             EventBubbles::Bubbles,
             EventCancelable::Cancelable,
             None,
@@ -2121,7 +2121,7 @@ impl DocumentEventHandler {
                     // Step 7.1.4 Update clipboard-event-data’s types to match clipboard-event-data’s items
                 }
             },
-            ClipboardEventType::Change => (),
+            ClipboardEventType::Change | ClipboardEventType::Other(..) => (),
         }
 
         // Step 3

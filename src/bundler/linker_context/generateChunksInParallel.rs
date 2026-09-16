@@ -26,7 +26,6 @@ use crate::LinkerContext;
 use crate::linker_context::generate_compile_result_for_css_chunk::generate_compile_result_for_css_chunk;
 use crate::linker_context::generate_compile_result_for_html_chunk::generate_compile_result_for_html_chunk;
 use crate::linker_context::generate_compile_result_for_js_chunk::generate_compile_result_for_js_chunk;
-use crate::linker_context::metafile_builder;
 use crate::linker_context::output_file_list_builder::OutputFileList as OutputFileListBuilder;
 use crate::linker_context::prepare_css_asts_for_chunk::{
     PrepareCssAstTask, prepare_css_asts_for_chunk,
@@ -41,9 +40,9 @@ const BYTECODE_EXTENSION: &str = ".jsc";
 
 bun_core::declare_scope!(PartRanges, hidden);
 
-// PORT NOTE: `Chunk.final_rel_path` / `metafile_chunk_json` are owned
-// `Box<[u8]>` (Zig stored them as linker-arena `[]const u8`); assignments
-// below move the boxed buffer directly — no lifetime promotion needed.
+// PORT NOTE: `Chunk.final_rel_path` is an owned `Box<[u8]>` (Zig stored it as a
+// linker-arena `[]const u8`); assignments below move the boxed buffer directly —
+// no lifetime promotion needed.
 use crate::linker_context_mod::debug;
 
 // TODO(port): Zig's return type is `!if (is_dev_server) void else ArrayList(OutputFile)`.
@@ -69,6 +68,12 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
         if c.graph.code_splitting && !c.options.minify_identifiers {
             crate::linker_context::cross_chunk_names::assign_unminified(c, chunks)?;
         }
+        if !c.options.minify_identifiers {
+            c.renamer_rows = crate::linker_context::rename_symbols_in_chunk::renamer_rows(
+                c.graph.symbols.symbols_for_source.len(),
+                chunks,
+            );
+        }
         // PORT NOTE: Zig `defer debug(...)` is moved to end-of-scope explicitly below.
         let ctx = GenerateChunkCtx {
             chunk: bun_ptr::BackRef::new_mut(&mut chunks[0]),
@@ -82,6 +87,12 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
         // link step); `pool` is the arena-allocated bundler ThreadPool.
         c.worker_pool()
             .each_ptr(ctx, LinkerContext::generate_js_renamer, chunks);
+        if !c.options.minify_identifiers {
+            // Nested renaming happens inside each `generate_js_renamer` task
+            // here (upstream defers it to a second task wave); either way the
+            // tables are final once the pool join above returns.
+            crate::linker_context::rename_symbols_in_chunk::log_renamer_tables(chunks);
+        }
         if c.graph.code_splitting {
             if c.options.minify_identifiers {
                 // Counts are in; name the cross-chunk bindings, pin them, then
@@ -588,17 +599,6 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
         }
     }
 
-    // Generate metafile JSON fragments for each chunk (after paths are resolved)
-    if c.options.metafile {
-        // PORT NOTE: reshaped for borrowck — `generate_chunk_json` reads all chunks
-        // immutably while we write one chunk's `metafile_chunk_json`; index split.
-        for i in 0..chunks.len() {
-            let json =
-                metafile_builder::generate_chunk_json(c, &chunks[i], chunks).unwrap_or_default();
-            chunks[i].metafile_chunk_json = json;
-        }
-    }
-
     let mut output_files =
         OutputFileListBuilder::init(c, chunks, c.parse_graph().additional_output_files.len())?;
 
@@ -682,6 +682,7 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
                 )?
                 .buffer;
             chunks[ci].intermediate_output = intermediate_output;
+            chunks[ci].final_output_size = buffer.len();
             scc[ci] = Some(buffer);
         }
 
@@ -1094,6 +1095,7 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
                 options::OutputKind::Chunk
             };
 
+            chunk.final_output_size = code_result.buffer.len();
             let chunk_index =
                 output_files.insert_for_chunk(options::OutputFile::init(options::OutputFileInit {
                     data: options::OutputFileData::Buffer {

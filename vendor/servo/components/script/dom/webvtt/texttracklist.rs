@@ -151,11 +151,12 @@ impl TextTrackListMethods<crate::DomTypeHolder> for TextTrackList {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttracklist-gettrackbyid>
     fn GetTrackById(&self, id: DOMString) -> Option<DomRoot<TextTrack>> {
+        // > When no tracks match the given argument, the method must return null.
         let id_str = String::from(id);
         self.dom_tracks
             .borrow()
             .iter()
-            .find(|track| track.id() == id_str)
+            .find(|track| *track.id() == id_str)
             .map(|t| DomRoot::from_ref(&**t))
     }
 

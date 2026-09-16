@@ -16,6 +16,7 @@ use bun_collections::{HashMap, StringHashMap, VecExt};
 use bun_core::Output;
 use bun_core::{MutableString, immutable as strings};
 use bun_options_types::Format;
+use bun_ptr::BackRef;
 use enum_map::EnumMap;
 
 /// Renamed-name strings are either borrowed from `Symbol.original_name` (AST
@@ -607,11 +608,33 @@ impl SlotAndCount {
     }
 }
 
+/// The linker's one name for each binding that crosses chunks. Values live in the linker arena.
+pub type CrossChunkNames = HashMap<Ref, &'static [u8]>;
+
+/// PORT NOTE: upstream keys this with an identity hasher (`IdHasher`); the
+/// tree has none, so the integer keys go through the standard wyhash builder
+/// (any deterministic `u32 → u32` map carries the semantics).
+type FileRowMap = bun_collections::hashbrown::HashMap<u32, u32, bun_wyhash::BuildHasher>;
+
+/// Source index -> row of `NumberRenamer::names`.
+enum RowOfSource {
+    /// The linker's table for all chunks, where the files of a chunk have consecutive rows.
+    Shared(BackRef<[u32]>),
+    /// A file is in several chunks (no code splitting): this chunk's files only.
+    Own(FileRowMap),
+}
+
 pub struct NumberRenamer {
     // PORT NOTE: see `NoOpRenamer.symbols` — non-owning view; Zig
     // `NumberRenamer.deinit` (renamer.zig:462) never frees `symbols`.
     pub symbols: ManuallyDrop<symbol::Map>,
+    row_of_source: RowOfSource,
+    /// The row of the chunk's first file. Row `first_row + i` is `names[i]`.
+    first_row: u32,
+    /// By file of the chunk, then inner index.
     pub names: Box<[Vec<NameStr>]>,
+    /// Names of symbols of other chunks' files. This renamer reserves them and stores no copy.
+    cross_chunk_names: BackRef<CrossChunkNames>,
     // PERF(port): Zig had separate allocator/temp_allocator; global mimalloc now
     pub number_scope_pool: HiveArrayFallback<NumberScope, 128>,
     // PERF(port): was arena bulk-free for NumberScope pool + name temp buffers
@@ -643,8 +666,13 @@ impl NumberRenamer {
     pub fn assign_name(&mut self, scope: &mut NumberScope, input_ref: Ref) {
         let ref_ = self.symbols.follow(input_ref);
 
+        // A symbol of another chunk's file prints under its `cross_chunk_names` entry.
+        let Some(row) = self.row(ref_.source_index()) else {
+            return;
+        };
+
         // Don't rename the same symbol more than once
-        let inner: &mut Vec<NameStr> = &mut self.names[ref_.source_index() as usize];
+        let inner: &mut Vec<NameStr> = &mut self.names[row];
         if inner.len() > ref_.inner_index() as usize && inner[ref_.inner_index() as usize].len() > 0
         {
             return;
@@ -670,14 +698,27 @@ impl NumberRenamer {
         inner[ref_.inner_index() as usize] = name;
     }
 
+    /// `files_in_chunk`: the files whose symbols the chunk declares, to size
+    /// the name table. `symbols` spans the whole bundle and every chunk's
+    /// renamer is alive at once, so sizing from it costs a bundle-sized table
+    /// per chunk.
     pub fn init(
         symbols: symbol::Map,
         root_names: &StringHashMap<u32>,
+        files_in_chunk: &[u32],
+        shared_rows: Option<&[u32]>,
+        cross_chunk_names: &CrossChunkNames,
     ) -> Result<Box<NumberRenamer>, bun_alloc::AllocError> {
-        let len = symbols.symbols_for_source.len();
-        let names: Box<[Vec<NameStr>]> = core::iter::repeat_with(Vec::<NameStr>::default)
-            .take(len)
-            .collect();
+        let (row_of_source, first_row) = match (shared_rows, files_in_chunk.first()) {
+            (Some(rows), Some(&first)) => (
+                RowOfSource::Shared(BackRef::new(rows)),
+                rows[first as usize],
+            ),
+            _ => {
+                let rows = files_in_chunk.iter().copied().zip(0u32..).collect();
+                (RowOfSource::Own(rows), 0)
+            }
+        };
 
         // PERF(port): HiveArray.Fallback was bound to arena.arena() in Zig
         let number_scope_pool = HiveArrayFallback::<NumberScope, 128>::init();
@@ -704,11 +745,30 @@ impl NumberRenamer {
 
         Ok(Box::new(NumberRenamer {
             symbols: ManuallyDrop::new(symbols),
-            names,
+            row_of_source,
+            first_row,
+            names: vec![Vec::new(); files_in_chunk.len()].into_boxed_slice(),
+            cross_chunk_names: BackRef::new(cross_chunk_names),
             number_scope_pool,
             root,
             arena,
         }))
+    }
+
+    /// The row of `names` for a file of the chunk. `None`: the file is in another chunk.
+    #[inline]
+    fn row(&self, source_index: u32) -> Option<usize> {
+        let row = match &self.row_of_source {
+            RowOfSource::Shared(rows) => rows.get().get(source_index as usize)?,
+            RowOfSource::Own(rows) => rows.get(&source_index)?,
+        };
+        let row = row.wrapping_sub(self.first_row) as usize;
+        (row < self.names.len()).then_some(row)
+    }
+
+    /// (rows, name slots) this renamer holds, for the `ChunkRenamer` debug log.
+    pub fn table_size(&self) -> (usize, usize) {
+        (self.names.len(), self.names.iter().map(Vec::len).sum())
     }
 
     pub fn assign_names_recursive(
@@ -842,20 +902,23 @@ impl NumberRenamer {
     /// Gives top-level symbol `ref_` the name `name` (taken to be free in the
     /// root scope) so later symbols are numbered around it. Used for bindings
     /// that cross chunks, so every chunk calls them the same.
-    pub fn pin_top_level_symbol(&mut self, ref_: Ref, name: &[u8]) {
+    pub fn pin_top_level_symbol(&mut self, ref_: Ref, name: &'static [u8]) {
         let ref_ = self.symbols.follow(ref_);
         if self.symbols.get_const(ref_).unwrap().slot_namespace() != SlotNamespace::Default {
             return;
         }
-        let duped: &[u8] = self.arena.alloc_slice_copy(name);
-        let name = NameStr::new(duped);
+        // The name is interned in the linker arena (`crossChunkNames.rs`), which
+        // outlives every chunk's renamer — no per-chunk copy.
+        let name = NameStr::new(name);
         self.root.name_counts.insert(NameKey(name), 1);
-        let inner: &mut Vec<NameStr> = &mut self.names[ref_.source_index() as usize];
-        let new_len = inner.len().max(ref_.inner_index() as usize + 1);
-        if inner.len() < new_len {
-            inner.resize(new_len, name_str_empty());
+        if let Some(row) = self.row(ref_.source_index()) {
+            let inner: &mut Vec<NameStr> = &mut self.names[row];
+            let new_len = inner.len().max(ref_.inner_index() as usize + 1);
+            if inner.len() < new_len {
+                inner.resize(new_len, name_str_empty());
+            }
+            inner[ref_.inner_index() as usize] = name;
         }
-        inner[ref_.inner_index() as usize] = name;
     }
 
     pub fn add_top_level_symbol(&mut self, ref_: Ref) {
@@ -885,7 +948,17 @@ impl NumberRenamer {
         let source_index = resolved.source_index();
         let inner_index = resolved.inner_index();
 
-        let renamed_list = &self.names[source_index as usize];
+        let Some(row) = self.row(source_index) else {
+            let symbol =
+                &self.symbols.symbols_for_source[source_index as usize][inner_index as usize];
+            if symbol.slot_namespace() == SlotNamespace::Default {
+                if let Some(&name) = self.cross_chunk_names.get().get(&resolved) {
+                    return name;
+                }
+            }
+            return symbol.original_name.slice();
+        };
+        let renamed_list = &self.names[row];
 
         if renamed_list.len() > inner_index as usize {
             let renamed: NameStr = renamed_list[inner_index as usize];
