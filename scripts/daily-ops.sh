@@ -158,42 +158,83 @@ set -e
 # issue:当日已存在则追加 @putao520 comment 去重,否则建新 issue 并 @putao520 触发邮件;
 # 该标签 issue 已被 intake 段排除,不会回流为当轮工单。
 # gh 失败(未认证/网络/权限)显式 WARN 降级(journal 可见),|| 形态吸收失败,不改变 launcher 退出码。
+# 判定面 pipe-swallow 根治(2026-09-16,范式 2039eb940):报告读取/提取进程内零管道;gh 去重查询
+# 失败与「查询为空」显式区分——失败=无法判定去重,跳过发送(误走 create 会重复建通知 issue),
+# 不静默降级为空;SKIPPED_BUSY 扫描失败显式 WARN 且该条件不触发,不冒充「已判定未命中」。
 ESC_N=""
 if [ -f "$REPORT" ]; then
-  ESC_N="$(command grep '^SUMMARY:' "$REPORT" 2>/dev/null | command grep -o 'escalated=[0-9][0-9]*' \
-    | cut -d= -f2 | sort -rn | head -n 1 || true)"
+  # bash 5.2 实证:$(<file) 重定向失败在 if/|| 内均为 shell 级致命(非命令退出态),
+  # 不可读判定必须前置 -r 门,禁依赖 $(<) 自身退出码。
+  if [ -r "$REPORT" ]; then
+    esc_max=0
+    content=""
+    content="$(<"$REPORT")"
+    # 提取域保持 ^SUMMARY: 行(报告正文另有散文 escalated=N,放宽域会改变触发语义);
+    # 逐行 BASH_REMATCH 提取全部 escalated=<N> 取最大,零 fork 零管道。
+    while IFS= read -r line || [ -n "$line" ]; do
+      [[ "$line" == SUMMARY:* ]] || continue
+      rest="$line"
+      while [[ "$rest" =~ escalated=([0-9]+) ]]; do
+        esc_val=$((10#${BASH_REMATCH[1]}))
+        if [ "$esc_val" -gt "$esc_max" ]; then esc_max=$esc_val; fi
+        rest="${rest#*escalated=${BASH_REMATCH[1]}}"
+      done
+    done <<< "$content"
+    ESC_N="$esc_max"
+  else
+    echo "[daily-ops] WARN: escalation scan degraded, report unreadable: $REPORT" >&2
+  fi
 fi
 ESC_TRIGGER=""
 if [ -n "$ESC_N" ] && [ "$ESC_N" -gt 0 ]; then
   ESC_TRIGGER="escalated=$ESC_N"
 fi
-# 条件 b:最近 3 份报告(按 mtime,含当日)的「- 执行:」行均含 SKIPPED_BUSY = 连续 3 轮空转
+# 条件 b:最近 3 份报告(按 mtime,含当日)的「- 执行:」行均含 SKIPPED_BUSY = 连续 3 轮空转。
+# 列表失败/单份报告不可读 → 显式 WARN 且该条件不触发(<3 份属正常的「轮数不足」,不 WARN)。
 BUSY_SEEN=0
 BUSY_HITS=0
-while IFS= read -r rf; do
-  [ -n "$rf" ] || continue
-  BUSY_SEEN=$((BUSY_SEEN + 1))
-  if command grep -q '^-[[:space:]]*执行:.*SKIPPED_BUSY' "$rf" 2>/dev/null; then
-    BUSY_HITS=$((BUSY_HITS + 1))
-  fi
-done < <(ls -t "$RUNDIR"/reports/*.md 2>/dev/null | head -n 3)
-if [ "$BUSY_SEEN" -eq 3 ] && [ "$BUSY_HITS" -eq 3 ]; then
+BUSY_SCAN_OK=1
+BUSY_LIST=""
+BUSY_LIST="$(ls -t "$RUNDIR"/reports/*.md 2>/dev/null)" || BUSY_SCAN_OK=0
+if [ "$BUSY_SCAN_OK" -eq 0 ]; then
+  echo "[daily-ops] WARN: skipped_busy scan degraded, report listing failed — busy condition not evaluated" >&2
+else
+  while IFS= read -r rf; do
+    [ -n "$rf" ] || continue
+    BUSY_SEEN=$((BUSY_SEEN + 1))
+    grep_rc=0
+    command grep -q '^-[[:space:]]*执行:.*SKIPPED_BUSY' "$rf" 2>/dev/null || grep_rc=$?
+    if [ "$grep_rc" -eq 0 ]; then
+      BUSY_HITS=$((BUSY_HITS + 1))
+    elif [ "$grep_rc" -ne 1 ]; then
+      BUSY_SCAN_OK=0
+      echo "[daily-ops] WARN: skipped_busy scan degraded, report unreadable: $rf — busy condition not evaluated" >&2
+    fi
+    [ "$BUSY_SEEN" -lt 3 ] || break
+  done <<< "$BUSY_LIST"
+fi
+if [ "$BUSY_SCAN_OK" -eq 1 ] && [ "$BUSY_SEEN" -eq 3 ] && [ "$BUSY_HITS" -eq 3 ]; then
   ESC_TRIGGER="skipped_busy_x3${ESC_TRIGGER:+ + $ESC_TRIGGER}"
 fi
 if [ -n "$ESC_TRIGGER" ]; then
   ESC_MSG="$(date +%F) $ESC_TRIGGER — see .claude/daily-ops/reports/$(basename "$REPORT")"
   if [ "$MODE" = "live" ]; then
-    # 去重:当日已存 ops-notify 通知 issue(标题含当日日期)则 comment 追加,否则 create 新 issue
-    ESC_TODAY="$(gh issue list --repo putao520/bao --state open --label ops-notify \
-      --search "in:title $(date +%F)" --json number --jq '.[0].number' 2>/dev/null || true)"
-    if [ -n "$ESC_TODAY" ]; then
-      gh issue comment "$ESC_TODAY" --repo putao520/bao --body "@putao520 $ESC_MSG" >/dev/null 2>&1 \
-        || echo "[daily-ops] WARN: escalation notify via gh failed (trigger=$ESC_TRIGGER)" >&2
+    # 去重:当日已存 ops-notify 通知 issue(标题含当日日期)则 comment 追加,否则 create 新 issue。
+    # 查询失败≠查询为空:失败跳过本次发送(loud WARN),禁误走 create 重复建通知 issue。
+    ESC_TODAY=""
+    if ESC_TODAY="$(gh issue list --repo putao520/bao --state open --label ops-notify \
+      --search "in:title $(date +%F)" --json number --jq '.[0].number' 2>/dev/null)"; then
+      if [ -n "$ESC_TODAY" ]; then
+        gh issue comment "$ESC_TODAY" --repo putao520/bao --body "@putao520 $ESC_MSG" >/dev/null 2>&1 \
+          || echo "[daily-ops] WARN: escalation notify via gh failed (trigger=$ESC_TRIGGER)" >&2
+      else
+        gh issue create --repo putao520/bao --title "[OPS-NOTIFY] $(date +%F) $ESC_TRIGGER" \
+          --body "@putao520 $ESC_MSG(report: .claude/daily-ops/reports/$(basename "$REPORT"))" \
+          --label ops-notify >/dev/null 2>&1 \
+          || echo "[daily-ops] WARN: escalation notify via gh failed (trigger=$ESC_TRIGGER)" >&2
+      fi
     else
-      gh issue create --repo putao520/bao --title "[OPS-NOTIFY] $(date +%F) $ESC_TRIGGER" \
-        --body "@putao520 $ESC_MSG(report: .claude/daily-ops/reports/$(basename "$REPORT"))" \
-        --label ops-notify >/dev/null 2>&1 \
-        || echo "[daily-ops] WARN: escalation notify via gh failed (trigger=$ESC_TRIGGER)" >&2
+      echo "[daily-ops] WARN: escalation dedup query failed, skip send (trigger=$ESC_TRIGGER)" >&2
     fi
   else
     echo "[daily-ops] WARN: escalation notify skipped (dry-run, trigger=$ESC_TRIGGER)" >&2
