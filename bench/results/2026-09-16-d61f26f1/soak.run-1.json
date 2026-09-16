@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "benchmark": "soak",
+  "date_utc": "2026-09-16T17:14:46Z",
+  "environment": {
+    "host": "pt-worker",
+    "kernel": "Linux version 7.0.0-28-generic (buildd@lcy02-amd64-004) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #28~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Wed Jul  1 15:50:57 UTC 2",
+    "cpu_model": "Intel(R) Core(TM) i9-10900KF CPU @ 3.70GHz",
+    "cpu_cores": 20,
+    "mem_total_kib": 131813264,
+    "loadavg": [
+      25.39,
+      14.1,
+      10.43
+    ],
+    "git_commit": "d61f26f19cca979284da0a9d4c60c6d42c22e391",
+    "git_dirty": false,
+    "rustc": "rustc 1.99.0-nightly (9f36de775 2026-07-19)",
+    "cargo_profile": "test-ci",
+    "display": ":117",
+    "date_utc": "2026-09-16T17:14:46Z"
+  },
+  "parameters": {},
+  "metrics": [],
+  "notes": [
+    "bench failed — fail-closed; this document carries the error, not a partial baseline"
+  ],
+  "error": "soak aborted after 25013 cycles / 4 full segments at cycle 25013: iter 25013: marker verification failed (got \"null\") — fail-closed, no green numbers on wrong results [#41 diag: embedder-url=data:text/html,<h1 id=b>benchmark-25013</h1> realm={\"url\":\"data:text/html,<h1 id=b>benchmark-25013</h1>\",\"rs\":\"complete\",\"title\":\"\",\"b\":true}] — per-cycle series preserved in bench/results/2026-09-16-d61f26f1/soak.run-1.segments.jsonl"
+}
