@@ -11,7 +11,11 @@ repository.workspace = true
 # 140.14.0-0 (2026-08-22): upstream SM 140.14.0 security bump (changeset
 # ee9f2b2aedc3c58347d66ca8d7b9f92ef1df3f53, servo/mozjs#798) + rust-side
 # #797/#800 absorbed.
-version = "140.14.0-0"
+# 140.14.0-1 (2026-09-16): content-repair republish — BAO patch#6
+# BaoCollectRuntimeStats (jsglue.cpp, SM-EVOLUTION #27 裁决 6, a51a81ef
+# 2026-09-10) shipped in-tree under 140.14.0-0 after the 2026-08-22
+# registry upload; same-number content drift corrected by patch bump.
+version = "140.14.0-1"
 authors = ["Mozilla", "The Servo Project Developers"]
 links = "mozjs"
 license.workspace = true
