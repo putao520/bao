@@ -689,3 +689,131 @@ fn wss_raw_handshake_isolation() {
         stealth
     );
 }
+
+/// R53-A keyed-per-Realm read-point pin for the wss egress profile: the
+/// WebSocket constructor must resolve its egress StealthProfile through
+/// `fetch_api::current_fetch_profile(cx)` (keyed authoritative, thread-local
+/// fallback) — the same contract the fetch() read point follows — instead of
+/// the identity-less thread-local alone (last-install-wins under multiple
+/// pages per ScriptThread).
+///
+/// Live form: a real JsContext with a persistent realm (the exact shape a
+/// page realm has) + the real BoringSSL wss echo server. Two arms:
+///   ① keyed hit: the realm global is registered with the Chrome profile
+///      while the thread-local bucket holds Firefox — the read point must
+///      resolve Chrome (the pre-R53-A read would return the thread-local
+///      Firefox), and a live wss round-trip rides that resolved profile
+///      end-to-end through WsConn::connect's real TLS handshake.
+///   ② keyed miss: clear the registration — the read point must fall back
+///      to the thread-local Firefox (byte-equivalent legacy behaviour).
+///
+/// Face identity is asserted on the resolution return value (the exact
+/// profile handed to `WsConn::connect`); a ClientHello JA3 capture is not
+/// part of this suite's harness — capture-grade per-page wire evidence
+/// lives in bao_browser's stealth_per_page_wire_tests.
+#[test]
+fn wss_egress_profile_resolves_keyed_before_thread_local() {
+    use bao_stealth::engine_props;
+
+    // Process-global keyed store: nextest gives every test its own process,
+    // but start clean and restore regardless (direct re-runs, libtest
+    // harnesses run every test in ONE process).
+    engine_props::clear_all_realm_profiles();
+    let saved_tl = bun_runtime::fetch_api::get_fetch_stealth_profile();
+
+    let mut ctx = new_test_ctx();
+    let cx = ctx.raw_cx();
+
+    // First eval lazily creates the persistent realm global (and applies the
+    // install_all setup) — thread_realm_global() is None before it.
+    assert_eq!(eval_str(&mut ctx, "1"), "1", "realm bootstrap eval failed");
+
+    // Pin the thread-local fallback face explicitly (install_all already put
+    // the Firefox default there) so arm ① is discriminating regardless of
+    // defaults.
+    let fallback = bao_stealth::StealthProfile::firefox_default();
+    bun_runtime::fetch_api::set_fetch_stealth_profile(Some(fallback.clone()));
+    let keyed = bao_stealth::StealthProfile::chrome_default();
+    assert_ne!(
+        keyed.tls.supported_groups, fallback.tls.supported_groups,
+        "test premise: keyed and thread-local faces must diverge (Firefox \
+         keeps P-521, Chrome does not)"
+    );
+
+    // The page realm: the persistent realm global this context evaluates in.
+    let global = bao_engine::context::thread_realm_global()
+        .expect("test JsContext must have a persistent realm global");
+    let global_addr = global as usize;
+
+    // ① keyed hit: resolve INSIDE the page realm — the production shape (the
+    // WebSocket constructor runs as a JSNative in the calling page's realm,
+    // where CurrentGlobalOrNull IS the realm global). Outside any realm
+    // entry (bare Rust call) CurrentGlobalOrNull is null and the keyed store
+    // is correctly bypassed in favour of the TLS fallback.
+    engine_props::set_profile_for_global(global_addr, &keyed);
+    let resolved = {
+        let mut cxm = ctx.cx();
+        rooted!(&in(cxm) let g_root = global);
+        let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
+        bun_runtime::fetch_api::current_fetch_profile(cx)
+            .expect("keyed page realm must resolve a profile")
+    };
+    assert_eq!(
+        resolved.tls.supported_groups, keyed.tls.supported_groups,
+        "wss egress must resolve the KEYED profile for the calling realm"
+    );
+    assert_ne!(
+        resolved.tls.supported_groups, fallback.tls.supported_groups,
+        "resolved profile must not be the thread-local fallback face"
+    );
+
+    // Live wss round-trip under keyed resolution: the resolved profile is
+    // what WsConn::connect configures BoringSSL with, so a green echo
+    // proves the keyed face rides the real handshake end-to-end.
+    let (port, _resumed) = spawn_tls_ws_server();
+    let setup = format!(
+        r#"
+        var wsLog = [];
+        var ws = new WebSocket("wss://127.0.0.1:{}/secure");
+        ws.onopen = function() {{ wsLog.push("open"); ws.send("ping"); }};
+        ws.onmessage = function(ev) {{ wsLog.push("msg:" + ev.data); if (ev.data.indexOf("ECHO:") === 0) {{ ws.close(); }} }};
+        ws.onerror = function(ev) {{ wsLog.push("error:" + (ev.data || "?")); }};
+        ws.onclose = function() {{ wsLog.push("close"); }};
+        "done"
+        "#,
+        port
+    );
+    assert_eq!(eval_str(&mut ctx, &setup), "done", "constructor eval failed");
+    let done = pump_until(&mut ctx, "wsLog.indexOf('close') >= 0", 8_000);
+    let log = eval_str(&mut ctx, "wsLog.join('|')");
+    assert!(
+        done,
+        "keyed wss round-trip did not finish in budget; log: {}",
+        log
+    );
+    assert!(
+        log.contains("msg:ECHO:ping"),
+        "keyed wss echo must deliver: {}",
+        log
+    );
+    assert!(!log.contains("error"), "no onerror expected: {}", log);
+
+    // ② keyed miss: clear the registration — the read point falls back to
+    // the thread-local (byte-equivalent legacy behaviour). Same realm-entry
+    // shape as arm ① so only the keyed-miss dimension varies.
+    engine_props::remove_profile_for_global(global_addr);
+    let fell_back = {
+        let mut cxm = ctx.cx();
+        rooted!(&in(cxm) let g_root = global);
+        let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
+        bun_runtime::fetch_api::current_fetch_profile(cx)
+            .expect("thread-local fallback must resolve a profile")
+    };
+    assert_eq!(
+        fell_back.tls.supported_groups, fallback.tls.supported_groups,
+        "keyed miss must fall back to the thread-local profile"
+    );
+
+    engine_props::clear_all_realm_profiles();
+    bun_runtime::fetch_api::set_fetch_stealth_profile(saved_tl);
+}

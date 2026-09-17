@@ -919,10 +919,21 @@ unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *m
     let ws_key = format!("ws_{}", ws_id);
     gc_store_insert(cx, &ws_key, ws_obj.get());
 
-    // Capture the realm global (dispatch AutoRealm target) and the thread's
+    // Capture the realm global (dispatch AutoRealm target) and the egress
     // stealth profile HERE, on the JS thread — both are thread-local state.
     let realm_global = CurrentGlobalOrNull(cx);
-    let profile = crate::fetch_api::get_fetch_stealth_profile();
+    // R53-A keyed-per-Realm resolution (same contract as the fetch() read
+    // point): the calling Realm's global keys the engine_props store — a hit
+    // is the AUTHORITATIVE profile, so two pages sharing one ScriptThread
+    // each drive their own wss TLS/HTTP2 fingerprint even though the install
+    // path's thread-local write is last-install-wins. Keyed miss / no
+    // current global (Node engine contexts, CLI mode, unit test JsContexts)
+    // falls back to the identity-less thread-local
+    // (`get_fetch_stealth_profile`), keeping the pre-existing behaviour
+    // byte-for-byte for those callers. Topology-independent hardening: with
+    // `force_isolate_event_loops` this is equivalence-preserving today, but
+    // the read no longer silently rides whichever page installed last.
+    let profile = crate::fetch_api::current_fetch_profile(cx);
 
     // Register the entry with a pending connect slot; _wsIdx must exist
     // immediately (send()/close() may be called while CONNECTING).
