@@ -301,15 +301,16 @@ impl BaoRuntime {
         // (settings_stack.rs:36, Script#3 meituan). Lend servo's own
         // "prepare to run script" wrapper (`run_a_script`) to bao's timer
         // dispatch — the same contract every servo JS entry honors.
-        bun_runtime::timers::register_bao_settings_runner(Box::new(
-            |cx, global, f| {
-                servo::bao_run_in_script_settings(
-                    cx as *mut std::ffi::c_void,
-                    global as *mut std::ffi::c_void,
-                    f,
-                );
-            },
-        ));
+        // Zero-capture forwarder is load-bearing: `BaoSettingsRunner` is a
+        // bare fn pointer, so every BaoRuntime's registration compares equal
+        // (first-writer-wins contract, see timers::register_bao_settings_runner).
+        bun_runtime::timers::register_bao_settings_runner(|cx, global, f| {
+            servo::bao_run_in_script_settings(
+                cx as *mut std::ffi::c_void,
+                global as *mut std::ffi::c_void,
+                f,
+            );
+        });
         bun_runtime::fetch_async::set_thread_wakeup_bridge(|| {
             servo::bao_current_thread_wake_fn().map(|wake| {
                 wake as bun_runtime::fetch_async::ThreadWakeup

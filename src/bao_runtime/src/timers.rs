@@ -366,17 +366,54 @@ pub fn pump_embedder_thread(cx: *mut JSContext) {
 // crate-dependency inversion. Node-realm threads keep the bare dispatch —
 // the node stack has no settings-stack contract (registry unregistered
 // there falls through).
-pub type BaoSettingsRunner =
-    Box<dyn Fn(*mut JSContext, *mut JSObject, &mut dyn FnMut()) + Send + Sync>;
+/// Process-global settings-stack runner.
+///
+/// Contract (B1, first-writer-wins by design): the runner is a **bare `fn`
+/// pointer**, not a boxed closure. Every `BaoRuntime` registers the same
+/// zero-capture forwarder (`servo::bao_run_in_script_settings`), so fn
+/// pointers from every runtime compare equal and re-registration is
+/// detectably idempotent. The type is the structural half of the
+/// enforcement: a future variant that needs to capture per-runtime state
+/// stops compiling here instead of silently diverging at runtime.
+pub type BaoSettingsRunner = fn(*mut JSContext, *mut JSObject, &mut dyn FnMut());
 
 static BAO_SETTINGS_RUNNER: ::std::sync::OnceLock<BaoSettingsRunner> =
     ::std::sync::OnceLock::new();
 
 /// Register the process-global settings-stack runner (see the block comment
-/// above). Called once by the embedder at runtime init; first registration
-/// wins (OnceLock semantics, matching the servo-side pump registry).
+/// above). Called by the embedder at runtime init — once per `BaoRuntime`,
+/// always the same zero-capture forwarder.
+///
+/// Contract (first-writer-wins by design):
+/// - the first registration installs (release semantics unchanged — zero
+///   behavior delta for the single-runtime shape);
+/// - re-registration with the **same** fn pointer is an idempotent no-op
+///   (the documented multi-runtime shape: N runtimes, N identical
+///   registrations, one shared forwarder serving the process);
+/// - re-registration with a **different** fn pointer means the callers
+///   genuinely diverged — surfaced fail-closed under `debug_assertions`;
+///   the first writer stays installed, so release keeps plain
+///   first-writer-wins.
 pub fn register_bao_settings_runner(runner: BaoSettingsRunner) {
-    let _ = BAO_SETTINGS_RUNNER.set(runner);
+    if let Err(incoming) = BAO_SETTINGS_RUNNER.set(runner) {
+        // `OnceLock::set` returns the REJECTED value in `Err` (the cell keeps
+        // its first writer), so `incoming` is the late registration.
+        let diverged = match BAO_SETTINGS_RUNNER.get() {
+            ::std::option::Option::Some(installed) => {
+                !::std::ptr::fn_addr_eq(*installed, incoming)
+            }
+            // set() only fails when a value is installed; defensive default.
+            ::std::option::Option::None => true,
+        };
+        debug_assert!(
+            !diverged,
+            "BAO_SETTINGS_RUNNER re-registration diverged: contract expects \
+             every BaoRuntime to register the SAME zero-capture \
+             `servo::bao_run_in_script_settings` forwarder \
+             (first-writer-wins by design); a differing fn pointer is real \
+             semantic drift, not an idempotent re-register"
+        );
+    }
 }
 
 /// Deadline-aware wait for the timer-only branches of `drain_and_check` /

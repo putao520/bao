@@ -417,10 +417,35 @@ static THREAD_WAKEUP_BRIDGE: ::std::sync::OnceLock<fn() -> Option<ThreadWakeup>>
 
 /// Register the process-global thread-wakeup LOOKUP fn (called on the
 /// fetch-creating thread; returns that thread's wake closure, if any).
-/// Set once by the embedder (bao_browser) at runtime init; the first
-/// registration wins (matching servo's OnceLock registries).
+/// Called by the embedder (bao_browser) at runtime init — once per
+/// `BaoRuntime`, always the same zero-capture lookup.
+///
+/// Contract (first-writer-wins by design):
+/// - the first registration installs (release semantics unchanged);
+/// - re-registration with the **same** fn pointer is an idempotent no-op
+///   (the documented multi-runtime shape: N runtimes register N identical
+///   lookups, the first one serves the whole process);
+/// - re-registration with a **different** fn pointer means the callers
+///   genuinely diverged — surfaced fail-closed under `debug_assertions`;
+///   the first writer stays installed, so release keeps plain
+///   first-writer-wins.
 pub fn set_thread_wakeup_bridge(lookup: fn() -> Option<ThreadWakeup>) {
-    let _ = THREAD_WAKEUP_BRIDGE.set(lookup);
+    if let Err(incoming) = THREAD_WAKEUP_BRIDGE.set(lookup) {
+        // `OnceLock::set` returns the REJECTED value in `Err` (the cell keeps
+        // its first writer), so `incoming` is the late registration.
+        let diverged = match THREAD_WAKEUP_BRIDGE.get() {
+            Some(installed) => !::std::ptr::fn_addr_eq(*installed, incoming),
+            // set() only fails when a value is installed; defensive default.
+            None => true,
+        };
+        debug_assert!(
+            !diverged,
+            "THREAD_WAKEUP_BRIDGE re-registration diverged: contract expects \
+             every BaoRuntime to register the SAME zero-capture wake lookup \
+             (first-writer-wins by design); a differing fn pointer is real \
+             semantic drift, not an idempotent re-register"
+        );
+    }
 }
 
 fn capture_thread_wakeup() -> Option<ThreadWakeup> {

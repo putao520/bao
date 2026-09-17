@@ -370,11 +370,26 @@ Residuals (documented):
 
 **BCE check**: single-site residual of an already-swept class; tree-wide `assume_init` audit above is the horizontal sweep — residual count now 0 for the uninit-integer-constructor class in `src/`.
 
+### 2026-09-17 / B1 first slice — R51/R52 first-writer-wins contract (fn-pointer tightening + equality enforce)
+
+**Adjudication** (interactive session, engineering-detail tier per §247 options): fact-check showed both registration sites are zero-capture forwarders (`bao_browser/src/lib.rs:304` settings runner → `servo::bao_run_in_script_settings`; `:313` wake lookup → `servo::bao_current_thread_wake_fn`), so first-writer-wins is semantically lossless today — contract form chosen over per-runtime slot/keyed registry (minimal diff; per-runtime ownership has no current consumer).
+
+**Code** (4 files + 1 test file):
+- `BaoSettingsRunner` tightened `Box<dyn Fn(..) + Send + Sync>` → **bare `fn` pointer** — the structural half of enforcement: any future registration that captures per-runtime state stops compiling instead of silently diverging. Registration site drops `Box::new` (closure coerces); forwarder body byte-identical. **Registry-visible breaking type change — next publish closure must bump `bun_runtime` minor (0.1.x → 0.2.0), not patch.**
+- Both setters: `set` failure arm compares rejected value vs installed via `std::ptr::fn_addr_eq` — equal → idempotent no-op (documented N-runtimes shape); different → `debug_assert!` fail-closed with contract text; release keeps plain first-wins (zero behavior delta).
+- Contract docs on both setters (multi-runtime shape, fail-closed semantics).
+
+**Tests** (`tests/suite/bridge_contract_tests.rs`, 4): R51/R52 same-pointer triple registration idempotent + registration-never-invokes counter assert; R51/R52 divergent-pointer `#[should_panic(expected="…re-registration diverged")]` under `#[cfg_attr(not(debug_assertions), ignore)]`. ICF-hardened via per-fn side-effect counters.
+
+**Evidence (V independent re-run)**: `cargo check -p bun_runtime` RC=0; `cargo check -p bao-browser` RC=0; `cargo nt -p bun_runtime -E 'test(bridge_contract)'` 4/4 PASS; `-E 'test(timers)'` 67/67 == baseline (suite total 1218→1222, +4 exactly the new tests).
+
+**B1 residual**: RUNTIME-LOCALIZE rows beyond R51/R52 (18 prior rows from the 2026-09-05 census, §8 tables) remain for subsequent B1 slices; same-pattern audit candidates: the servo-side OnceLock registries named in the R51 block comment (pump/realm-discard face) share the pattern but live at the vendor seam — next slice decides whether to contract-ize them symmetrically or leave vendor-seam registries as documented-acceptable.
+
 ## 9. Next single action
 
 **Correction 2026-09-17 (stale §9, same failure class as the 09-07 `init_env_aliases` stale): the e8541037c4 PathBuffer pool sweep was ALREADY LANDED in `f8f6bd0f` (2026-09-08, 69 files, 360+/338-).** The 09-11 §9 update that queued it as next was written without checking master history. Residual closure of that sweep landed 2026-09-17 (this wave): `depth_buf_uninit()` in `src/install/lockfile/Tree.rs` — the one `MaybeUninit::uninit().assume_init()` UB constructor the sweep missed (`DepthBuf` bare `[Id; N]` + lint-suppression `#[allow]`), PORTed to the upstream `[MaybeUninit<Id>; N]` shape (see §8 entry for evidence).
 
-**Next single action: B1 — Runtime/thread ownership, first slice.** B0's completion bar (census + one complete highest-risk transposition slice) is met by R53-A (net ⑥ + canvas ⑦) plus candidates #1/#3 retired/landed. Candidate selection for the B1 first slice, from the 2026-09-10 B0 refresh RUNTIME-LOCALIZE rows (18 prior + 3 new), to be adjudicated at consumption from §8 evidence: `THREAD_WAKEUP_BRIDGE` (`fetch_async.rs:405`) / `BAO_SETTINGS_RUNNER` (`timers.rs:373`) — the vendor-seam installer cluster row was consumed by R53-A. Fact-check 2026-09-17 (interactive session, read-only): R51/R52 are the **same OnceLock first-writer-wins pattern class** (R52's lookup is a non-capturing `fn() -> Option<ThreadWakeup>` pointer resolving per-thread wake closures; second-runtime registration is silently ignored in both, currently benign because every runtime registers equivalent logic) — the two rows can land as one transposition slice under the §247 adjudication options (runtime-owned slot/keyed registry vs documented+enforced first-wins contract). R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
+**Next single action: B1 slice 2 — continue the RUNTIME-LOCALIZE transposition from the 2026-09-05 census's remaining 18 rows** (first slice R51/R52 landed 2026-09-17, see §8 B1 entry + the 0.2.0 minor-bump note for `bun_runtime`). Vendor-seam OnceLock registries (pump / realm-discard face) are the same-pattern audit candidates for symmetric contract-ization vs documented-acceptance. R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
 
 ## 10. Definition of Done
 
