@@ -430,3 +430,13 @@ Earlier 2026-09-17/18 wave index: #42 spawn signal fix → B1 slice-2 resource s
 - multi-runtime and multi-thread isolation tests pass
 - daily Bun upstream waves permanently use the expanded evolution taxonomy
 - simplification/BCE evidence is continuously accumulated here
+
+### 2026-09-18 / BCE domain closure (interactive-session domain, 2 error-class events)
+
+**Attribution (SOL channel unavailable — gpt-5.6-sol model routing 400; main-session equivalent read-only attribution per hard-gate 6 fallback):**
+- Event A (E14 wss test first-red): class 偷懒 (test draft took the cheaper bare-call shape instead of mirroring the E12 AutoRealm precedent). Layers: surface = assertion arm called a realm-dependent resolution from bare Rust context (empty realm stack → CurrentGlobalOrNull null → designed-in TLS fallback → discriminating assert failed); design = none (the read point's fallback-on-no-realm IS the contract); paradigm = **same-family test shape alignment was not checklist-ized**.
+- Event B (46a103e3 overstatement): class 偷懒 (live-behavior claim made before constructing a RED). Layers: surface = commit message asserted "cross-contaminated" without subjunctive; design = none (code correct, contracts added); paradigm = **commit characterization must be evidence-gated on a constructed RED** — GREEN does not prove the defect exists (the RED-probe later showed the shared-ScriptThread shape is not live-constructible under the pinned force_isolate_event_loops=true).
+
+**Sweep (grep evidence, main session):** dual-source read points — production bare `get_fetch_stealth_profile` callers = 0 (fallback tail by design + setter/getter round-trip test pins only); `current_fetch_profile` production = exactly the two egress read points (fetch_api.rs:534, web_api.rs:936); both test call sites (web_socket_async_tests.rs:758/809) verified inside `AutoRealm::new_from_handle` with arm ①/② varying only the keyed dimension — zero bare-context same-type assertions remain. Same-shape risk spot-check across the wave's fix commits: 58a395f3 (should_panic genuinely fires = RED constructible), d812dca3 (overlay observed pre-fix), 3384d1ca (SigBlk before/after), resource sweeps T1-T7 (behavioral before/after) — all carry RED-evidence forms; 46a103e3 was the sole violator and its ledger correction landed in 8ab7c381.
+
+**Residual = 0.** Recurrence hardening persisted to operator memory (realm-dependent-test-shape-and-red-declaration): (1) realm-dependent test assertion arms must run inside AutoRealm mirroring the production JSNative shape; (2) fix-commit live-behavior claims require a constructed RED before assertion — V acceptance checks RED evidence form, not just GREEN.
