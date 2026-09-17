@@ -1326,6 +1326,11 @@ pub mod serialize {
                 part_name.to_css(dest)?;
                 dest.write_char(b')')?;
             }
+            PseudoElement::ViewTransitionGroupChildren { part_name } => {
+                dest.write_str(b"::view-transition-group-children(")?;
+                part_name.to_css(dest)?;
+                dest.write_char(b')')?;
+            }
             PseudoElement::Custom { name } => {
                 dest.write_str(b"::")?;
                 return dest.serialize_identifier(name);

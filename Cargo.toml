@@ -122,6 +122,9 @@ hashbrown = { version = "0.15", default-features = false, features = ["inline-mo
 allocator-api2 = { version = "0.2", default-features = false, features = ["alloc"] }
 bstr = { version = "1", default-features = false, features = ["alloc"] }
 scopeguard = "1"
+# UTS #46 IDNA for TLS server-identity hostname normalization (CVE-2026-48618
+# equivalent, upstream 8705d893b5) — same engine servo's WHATWG URL applies.
+idna = "1"
 const_format = "0.2"
 enum-map = "2"
 enumset = "1"

@@ -3524,6 +3524,15 @@ unsafe extern "C" fn tls_check_server_identity(
     // For now, return undefined (identity check passes by default).
     // Full implementation requires access to the peer certificate from JS,
     // which will be added when SSL_get_peer_certificate bindings are complete.
+    //
+    // Where the check REALLY runs today (post CVE-2026-48934/-48618 port):
+    // every `tls.connect` with `rejectUnauthorized` (the default) installs
+    // `TlsConnection::set_verify_peer` — full handshakes verify in-handshake
+    // via BoringSSL, resumed sessions are re-checked by the bridge at
+    // handshake completion (`connection.rs`), and both paths normalize
+    // non-ASCII hostnames through `bun_boringssl::check_x509_server_identity`.
+    // The JS-callable direct entry below remains a stub until the peer
+    // certificate is exposed to JS.
     let _ = (cx, argc);
     args.rval().set(UndefinedValue());
     true

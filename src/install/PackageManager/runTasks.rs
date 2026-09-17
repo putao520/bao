@@ -389,29 +389,23 @@ pub fn run_tasks<C: RunTasksCallbacks>(
                     }
                 }
 
-                // upstream 469a7b4ff4: Headers can arrive and the connection
-                // still die before the body does; for a 2xx/3xx that is a
-                // failed download too (an error status keeps its own handling
-                // below).
-                let download_failed = match &task.response.metadata {
-                    None => true,
-                    Some(m) => task.response.fail.is_some() && m.response.status_code < 400,
-                };
+                // upstream 469a7b4ff4 + 63a495cb46 (B1): headers can arrive
+                // and the connection still die before the body does; for a
+                // 2xx/3xx that is a failed download too (an error status keeps
+                // its own handling below). A refused CONNECT is the error
+                // `ProxyConnectFailed` with the proxy's head on the result, so
+                // `metadata` is None and the status comes from
+                // `proxy_connect_response`.
+                let DownloadOutcome {
+                    failed: download_failed,
+                    retry,
+                } = DownloadOutcome::of(&task.response);
                 if download_failed {
                     throttle_after_network_error(manager, &mut has_network_error);
                 }
 
                 // Handle retry-able errors.
-                if download_failed
-                    || task
-                        .response
-                        .metadata
-                        .as_ref()
-                        .unwrap()
-                        .response
-                        .status_code
-                        > 499
-                {
+                if retry {
                     let err = task
                         .response
                         .fail
@@ -449,7 +443,7 @@ pub fn run_tasks<C: RunTasksCallbacks>(
                     if C::HAS_ON_PACKAGE_MANIFEST_ERROR {
                         C::on_package_manifest_error(extract_ctx, name, err, &task.url_buf);
                     } else {
-                        let fmt_args = (err.name(), name);
+                        let fmt_args = (DownloadFailure(err.name(), &task.response), name);
                         if manager.is_network_task_required(task.task_id) {
                             bun_ast::add_error_pretty!(
                                 manager.log_mut(),
@@ -661,25 +655,16 @@ pub fn run_tasks<C: RunTasksCallbacks>(
                 // upstream 469a7b4ff4
                 debug_assert!(!task.streaming_committed);
 
-                // upstream 469a7b4ff4 (see the manifest arm above).
-                let download_failed = match &task.response.metadata {
-                    None => true,
-                    Some(m) => task.response.fail.is_some() && m.response.status_code < 400,
-                };
+                // upstream 469a7b4ff4 + 63a495cb46 (see the manifest arm above).
+                let DownloadOutcome {
+                    failed: download_failed,
+                    retry,
+                } = DownloadOutcome::of(&task.response);
                 if download_failed {
                     throttle_after_network_error(manager, &mut has_network_error);
                 }
 
-                if download_failed
-                    || task
-                        .response
-                        .metadata
-                        .as_ref()
-                        .unwrap()
-                        .response
-                        .status_code
-                        > 499
-                {
+                if retry {
                     let err = task
                         .response
                         .fail
@@ -770,7 +755,7 @@ pub fn run_tasks<C: RunTasksCallbacks>(
                             None,
                             bun_ast::Loc::EMPTY,
                             "{} downloading tarball <b>{}@{}<r>",
-                            err.name(),
+                            DownloadFailure(err.name(), &task.response),
                             bstr::BStr::new(extract.name.slice()),
                             extract
                                 .resolution
@@ -782,7 +767,7 @@ pub fn run_tasks<C: RunTasksCallbacks>(
                             None,
                             bun_ast::Loc::EMPTY,
                             "{} downloading tarball <b>{}@{}<r>",
-                            err.name(),
+                            DownloadFailure(err.name(), &task.response),
                             bstr::BStr::new(extract.name.slice()),
                             extract
                                 .resolution
@@ -1593,6 +1578,53 @@ pub fn run_tasks<C: RunTasksCallbacks>(
     }
 
     Ok(())
+}
+
+/// `failed`: the connection died, before a response or under a 2xx/3xx one
+/// (an error status keeps its own handling). `retry`: that, or a 5xx from the
+/// registry or from a proxy answering CONNECT. A proxy's 4xx (407, 403) would
+/// be the answer to the retry too.
+/// Upstream bun 63a495cb46 (B1): a refused CONNECT is the error
+/// `ProxyConnectFailed` carrying the proxy's head, not a `Response` with the
+/// proxy's status.
+struct DownloadOutcome {
+    failed: bool,
+    retry: bool,
+}
+
+impl DownloadOutcome {
+    fn of(response: &http::HTTPClientResult<'static>) -> Self {
+        let proxy_status = response
+            .proxy_connect_response
+            .as_ref()
+            .map(|reply| reply.response.status_code);
+        let failed = match &response.metadata {
+            None => proxy_status.is_none(),
+            Some(m) => response.fail.is_some() && m.response.status_code < 400,
+        };
+        let status = response
+            .metadata
+            .as_ref()
+            .map(|m| m.response.status_code)
+            .or(proxy_status);
+        Self {
+            failed,
+            retry: failed || status.is_some_and(|status| status > 499),
+        }
+    }
+}
+
+/// `ProxyConnectFailed (407)`: a refused CONNECT is reported with the proxy's status.
+struct DownloadFailure<'a>(&'static str, &'a http::HTTPClientResult<'static>);
+
+impl core::fmt::Display for DownloadFailure<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.0)?;
+        match &self.1.proxy_connect_response {
+            Some(reply) => write!(f, " ({})", reply.response.status_code),
+            None => Ok(()),
+        }
+    }
 }
 
 #[inline]

@@ -35,11 +35,12 @@ pub const REQUIRES_FILE_DESCRIPTORS: bool = false;
 
 /// Open flags for an fd that exists only to receive kqueue VNODE events.
 /// Darwin has O_EVTONLY (no read/write access requested); FreeBSD has no
-/// equivalent, so the watch fd is a plain O_RDONLY.
+/// equivalent, so the watch fd is a plain O_RDONLY. `O_CLOEXEC` keeps the fd
+/// out of the image that `--watch` and `--hot` `execve` into on reload.
 #[cfg(target_os = "macos")]
-pub const WATCH_OPEN_FLAGS: i32 = libc::O_EVTONLY;
+pub const WATCH_OPEN_FLAGS: i32 = libc::O_EVTONLY | bun_sys::O::CLOEXEC;
 #[cfg(not(target_os = "macos"))]
-pub const WATCH_OPEN_FLAGS: i32 = bun_sys::O::RDONLY;
+pub const WATCH_OPEN_FLAGS: i32 = bun_sys::O::RDONLY | bun_sys::O::CLOEXEC;
 
 pub type Event = WatchEvent;
 pub type Item = WatchItem;
@@ -587,7 +588,7 @@ impl Watcher {
         let fd = if stored_fd.is_valid() {
             stored_fd
         } else {
-            bun_sys::open_a(file_path, 0, 0)?
+            bun_sys::open_a(file_path, bun_sys::O::RDONLY | bun_sys::O::CLOEXEC, 0)?
         };
 
         // Zig: `if (clone_file_path) bun.asByteSlice(bun.handleOom(allocator.dupeZ(u8, file_path))) else file_path`.
@@ -1157,6 +1158,76 @@ impl WatchItemColumns for bun_collections::multi_array_list::Slice<WatchItem> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn items_eventlist_index(&self) -> &[platform::EventListIndex] {
         self.items_named::<platform::EventListIndex>("eventlist_index")
+    }
+}
+
+#[cfg(test)]
+mod cloexec_tests {
+    //! Upstream 1332495a42 (#42703): every fd the watcher opens must carry
+    //! `O_CLOEXEC`. A `--watch`/`--hot` reload is an `execve` of the same
+    //! binary; an fd without the flag survives into the new image, leaking one
+    //! directory fd per reload on platforms without a `close_range` sweep
+    //! (macOS). The watch fds exist only to receive kernel events — no child
+    //! or exec'd image needs them.
+    use super::*;
+    use bun_sys::FdExt as _;
+
+    // The lib-test harness links only crates the test unit references;
+    // `bun_core::Global::dump_current_stack_trace` declares the
+    // `#[no_mangle] __bun_crash_handler_dump_stack_trace` extern that only
+    // `bun_crash_handler` defines, so reference it here to pull the provider
+    // into the link.
+    #[allow(unused_imports)]
+    use bun_crash_handler as _;
+
+    #[test]
+    fn watch_open_flags_include_cloexec() {
+        assert_ne!(
+            WATCH_OPEN_FLAGS & bun_sys::O::CLOEXEC,
+            0,
+            "WATCH_OPEN_FLAGS must carry O_CLOEXEC (upstream 1332495a42)"
+        );
+    }
+
+    // The flag itself, not just the count: Linux hides a leak behind its
+    // `close_range` sweep, so read the fd's close-on-exec bit from /proc the
+    // way the upstream integration test does.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watched_directory_open_is_close_on_exec() {
+        let dir = std::env::temp_dir().join(format!(
+            "bao-watcher-cloexec-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_bytes: Vec<u8> = dir.clone().into_os_string().into_encoded_bytes();
+
+        // The exact flags `append_directory_assume_capacity` passes to
+        // `open_a` for the watched directory (previously `0`).
+        let fd =
+            bun_sys::open_a(&path_bytes, bun_sys::O::RDONLY | bun_sys::O::CLOEXEC, 0)
+                .expect("open watched directory");
+
+        let fdinfo =
+            std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.0)).expect("read fdinfo");
+        let flags_line = fdinfo
+            .lines()
+            .find(|l| l.starts_with("flags:"))
+            .expect("flags line in fdinfo");
+        let flags = u64::from_str_radix(
+            flags_line["flags:".len()..].trim(),
+            8,
+        )
+        .expect("octal flags");
+        assert_ne!(
+            flags & bun_sys::O::CLOEXEC as u64,
+            0,
+            "watched directory fd must be O_CLOEXEC (upstream 1332495a42); fdinfo flags: {flags:o}"
+        );
+
+        fd.close();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 

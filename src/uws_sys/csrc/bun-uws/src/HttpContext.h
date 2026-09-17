@@ -277,13 +277,35 @@ private:
 
         auto result = httpResponseData->consumePostPadded(httpContextData->maxHeaderSize, httpResponseData->isConnectRequest, httpContextData->flags.requireHostHeader,httpContextData->flags.useStrictMethodValidation, httpContextData->flags.isNodeHttp, data, (unsigned int) length, s, [httpContextData](void *s, HttpRequest *httpRequest) -> void * {
 
+            HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext((us_socket_t *) s);
+
+            /* Bun.serve, RFC 9112 9.6: a complete response marked this connection close
+             * and sawConnectionClose did not see it (a Connection: close response
+             * header). Run onData's tail now: the response-state reset below drops the
+             * mark. Latch first: a socket that has not drained stays open, and the
+             * parser holds this request's framing, so later bytes must not reach it.
+             * Before the timeout reset, so that socket still times out. */
+            if (!httpContextData->flags.isNodeHttp) {
+                constexpr uint32_t closeOrPending = HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE | HttpResponseData<SSL>::HTTP_RESPONSE_PENDING;
+                if ((httpResponseData->state & closeOrPending) == HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE) [[unlikely]] {
+                    httpResponseData->sawConnectionClose = true;
+                    us_socket_unref((us_socket_t *) s);
+                    ((AsyncSocket<SSL> *) s)->uncork();
+                    if (((AsyncSocket<SSL> *) s)->getBufferedAmount() == 0) {
+                        ((AsyncSocket<SSL> *) s)->shutdown();
+                        /* We need to force close after sending FIN since we want to hinder
+                         * clients from keeping to send their huge data */
+                        ((AsyncSocket<SSL> *) s)->close();
+                    }
+                    return nullptr;
+                }
+            }
 
             /* For every request we reset the timeout and hang until user makes action */
             /* Warning: if we are in shutdown state, resetting the timer is a security issue! */
             us_socket_timeout((us_socket_t *) s, 0);
 
             /* Reset httpResponse */
-            HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext((us_socket_t *) s);
             httpResponseData->offset = 0;
 
             /* Are we not ready for another request yet? Terminate the connection.
@@ -301,7 +323,7 @@ private:
 
 
             /* Mark this response as connectionClose if ancient or connection: close */
-            if (httpRequest->isAncient() || httpRequest->getHeader("connection").length() == 5) {
+            if (httpRequest->isAncient() || httpResponseData->sawConnectionClose) {
                 httpResponseData->state |= HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE;
             }
 

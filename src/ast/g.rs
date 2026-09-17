@@ -104,7 +104,10 @@ impl Class {
                 return false;
             }
 
-            if property.kind == PropertyKind::Normal && f.contains(flags::Property::IsStatic) {
+            if (property.kind == PropertyKind::Normal
+                || property.kind == PropertyKind::AutoAccessor)
+                && f.contains(flags::Property::IsStatic)
+            {
                 for val in [property.value, property.initializer].into_iter().flatten() {
                     match val.data {
                         ExprData::EArrow(..) | ExprData::EFunction(..) => {}
@@ -367,6 +370,90 @@ impl Arg {
             is_typescript_ctor_field: self.is_typescript_ctor_field,
             ts_metadata: self.ts_metadata.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod can_be_moved_tests {
+    //! Upstream ca82a3487e (#40887): a static `accessor` initializer is a side
+    //! effect like a static field initializer. `Class::can_be_moved` must
+    //! inspect `PropertyKind::AutoAccessor` the same way as `Normal`, or
+    //! `class C { static accessor s = f() }` is hoisted to the top of the
+    //! module and `f()` runs before the bindings above the class exist.
+    use super::*;
+    use crate::{E, Expr, ExprData, Loc, StoreRef};
+
+    fn static_property(kind: PropertyKind, initializer: Option<Expr>) -> Property {
+        Property {
+            initializer,
+            kind,
+            flags: flags::PROPERTY_NONE | flags::Property::IsStatic,
+            ..Property::default()
+        }
+    }
+
+    // `2` — a literal initializer with no side effects.
+    fn number_expr() -> Expr {
+        Expr {
+            data: ExprData::ENumber(E::Number { value: 2.0 }),
+            loc: Loc::EMPTY,
+        }
+    }
+
+    // Keep the property array and the `E::Call` payload in the caller's
+    // frame: `StoreSlice`/`StoreRef` are raw pointers into them, so they must
+    // outlive the `Class`.
+    fn class_over(props: &[Property]) -> Class {
+        Class {
+            properties: StoreSlice::new(props),
+            ..Class::default()
+        }
+    }
+
+    #[test]
+    fn static_auto_accessor_with_side_effect_initializer_keeps_class_in_place() {
+        // `class C { static accessor s = f() }` — a call initializer is not a
+        // literal or a function, so the class must stay where it was written.
+        // Pre-fix this returned `true` (hoisted) because the kind check only
+        // matched `PropertyKind::Normal`.
+        let mut call = E::Call::default();
+        let props = [static_property(
+            PropertyKind::AutoAccessor,
+            Some(Expr {
+                data: ExprData::ECall(StoreRef::from_bump(&mut call)),
+                loc: Loc::EMPTY,
+            }),
+        )];
+        let class = class_over(&props);
+        assert!(
+            !class.can_be_moved(),
+            "static auto-accessor call initializer must keep the class in place (upstream ca82a3487e)"
+        );
+    }
+
+    #[test]
+    fn static_auto_accessor_with_movable_initializer_still_moves() {
+        // `static accessor s = 2` — a literal initializer keeps the class
+        // movable, matching the `PropertyKind::Normal` treatment.
+        let props = [static_property(PropertyKind::AutoAccessor, Some(number_expr()))];
+        let class = class_over(&props);
+        assert!(class.can_be_moved());
+    }
+
+    #[test]
+    fn static_field_with_side_effect_initializer_still_keeps_class_in_place() {
+        // Parity control: the pre-existing `PropertyKind::Normal` arm is
+        // unchanged by the fix.
+        let mut call = E::Call::default();
+        let props = [static_property(
+            PropertyKind::Normal,
+            Some(Expr {
+                data: ExprData::ECall(StoreRef::from_bump(&mut call)),
+                loc: Loc::EMPTY,
+            }),
+        )];
+        let class = class_over(&props);
+        assert!(!class.can_be_moved());
     }
 }
 

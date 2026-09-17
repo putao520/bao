@@ -29,3 +29,11 @@ bun_paths.workspace = true
 bun_sys.workspace = true
 bun_threading.workspace = true
 bun_wyhash.workspace = true
+
+# The lib-test harness links the crate's dependency closure, and
+# `bun_core::Global::dump_current_stack_trace` declares
+# `__bun_crash_handler_dump_stack_trace` as an `extern "Rust"` symbol that
+# only `bun_crash_handler` defines (binaries link it; a standalone lib-test
+# binary does not). dev-depend on the provider so the unit tests link.
+[dev-dependencies]
+bun_crash_handler.workspace = true

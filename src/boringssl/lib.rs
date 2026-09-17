@@ -328,8 +328,38 @@ fn match_dns_name(pattern: &[u8], hostname: &[u8]) -> bool {
     strings::eql_case_insensitive_ascii(pattern, hostname, true)
 }
 
+/// `url.domainToASCII`-equivalent normalization for the native server-identity
+/// matcher (CVE-2026-48618, upstream 8705d893b5): IDNA (UTS #46) maps U+3002 /
+/// U+FF0E / U+FF61 to ".", so splitting on ASCII "." alone lets
+/// "foo。bar.example.com" match `*.example.com` two labels deep. A host that
+/// does not convert matches nothing. Uses the `idna` crate — the same UTS #46
+/// engine servo's WHATWG URL (and thus `url.domainToASCII`) applies.
+// @trace REQ-ENG-007 [entity:TlsConnection]
+fn domain_to_ascii_host(host: &[u8]) -> Option<Vec<u8>> {
+    let domain = core::str::from_utf8(host).ok()?;
+    idna::domain_to_ascii(domain).ok().map(String::into_bytes)
+}
+
+// @trace REQ-ENG-007 [entity:TlsConnection]
 pub fn check_x509_server_identity(x509: &mut boring::X509, hostname: &[u8]) -> bool {
+    // A host is an IP address only as typed, not after the IDNA mapping —
+    // Node keeps `domainToASCII("::1") == ""` out of the IP path
+    // (CVE-2026-48618, upstream 8705d893b5).
     let host_is_ip = strings::is_ip_address(hostname);
+    let ascii_hostname;
+    // Match a non-ASCII host on its domainToASCII form; a host that does not
+    // convert matches nothing. ASCII hosts are unchanged.
+    let hostname = if strings::first_non_ascii(hostname).is_some() {
+        match domain_to_ascii_host(hostname) {
+            Some(ascii) => {
+                ascii_hostname = ascii;
+                &ascii_hostname[..]
+            }
+            None => return false,
+        }
+    } else {
+        hostname
+    };
     // Node.js: CN is consulted only when the certificate carries no
     // DNS / IP / URI subjectAltName entries. Track whether any were seen.
     let mut has_identifier_san = false;
@@ -467,3 +497,73 @@ pub fn check_server_identity(ssl_ptr: &mut boring::SSL, hostname: &[u8]) -> bool
 // `bun_runtime`/`*_jsc` crate as an extension method.
 
 // ported from: src/boringssl/boringssl.zig
+
+#[cfg(test)]
+mod server_identity_tests {
+    //! CVE-2026-48618 (upstream 8705d893b5) matcher rows: non-ASCII hosts are
+    //! matched on their domainToASCII form, conversion failures match nothing,
+    //! and ASCII behavior is unchanged. `*` never matches an empty label.
+    // @trace REQ-ENG-007 [entity:TlsConnection]
+    use super::*;
+
+    #[test]
+    fn idna_full_stop_host_converts_and_rejects_wildcard() {
+        // "foo。bar.example.com" converts to a two-label-deep host under
+        // "*.example.com" — before the fix the U+3002 bytes hid the second
+        // label from the ASCII "." split and the wildcard matched.
+        let ascii =
+            domain_to_ascii_host("foo\u{3002}bar.example.com".as_bytes()).expect("converts");
+        assert_eq!(ascii, b"foo.bar.example.com".to_vec());
+        assert!(
+            !match_dns_name(b"*.example.com", &ascii),
+            "two-label host must not match a single-label wildcard"
+        );
+    }
+
+    #[test]
+    fn idna_fullwidth_and_halfwidth_full_stops_convert_identically() {
+        for host in ["foo\u{FF0E}bar.example.com", "foo\u{FF61}bar.example.com"] {
+            let ascii = domain_to_ascii_host(host.as_bytes()).expect("converts");
+            assert_eq!(ascii, b"foo.bar.example.com".to_vec());
+        }
+    }
+
+    #[test]
+    fn idna_unconvertible_host_matches_nothing() {
+        // Invalid UTF-8 has no UTS #46 form — the identity check rejects
+        // before any SAN/CN comparison (matches nothing, as in Node).
+        assert!(domain_to_ascii_host(b"\xff\xfe\x80").is_none());
+    }
+
+    #[test]
+    fn wildcard_never_matches_an_empty_first_label() {
+        // The deliberate difference from Node kept by upstream: "。example.com"
+        // converts to ".example.com", whose empty first label `*` must not
+        // match. Both the converted form (if UTS #46 emits it) and the raw
+        // form must be rejected.
+        let raw = "。example.com".as_bytes();
+        let effective = domain_to_ascii_host(raw).unwrap_or_else(|| raw.to_vec());
+        assert!(!match_dns_name(b"*.example.com", &effective[..]));
+        // The pure empty-label shape pins the matcher directly.
+        assert!(!match_dns_name(b"*.example.com", b".example.com"));
+    }
+
+    #[test]
+    fn ascii_hosts_keep_parity() {
+        assert!(match_dns_name(b"*.example.com", b"foo.example.com"));
+        assert!(match_dns_name(b"*.example.com", b"FOO.EXAMPLE.COM"));
+        assert!(!match_dns_name(b"*.example.com", b"foo.bar.example.com"));
+        assert!(!match_dns_name(b"*.example.com", b"example.com"));
+        assert!(match_dns_name(b"example.com", b"example.com"));
+    }
+
+    #[test]
+    fn idna_ulabel_converts_to_alabel() {
+        // "bücher" has no ASCII form without punycode; the matcher sees the
+        // A-label, exactly like a URL host would.
+        let ascii =
+            domain_to_ascii_host("b\u{00fc}cher.example.com".as_bytes()).expect("converts");
+        assert_eq!(ascii, b"xn--bcher-kva.example.com".to_vec());
+        assert!(match_dns_name(b"*.example.com", &ascii));
+    }
+}

@@ -459,6 +459,11 @@ pub struct TlsConnection {
     network_write_bio: *mut BIO,
     handshake_done: bool,
     saw_peer_closed: bool,
+    /// Hostname installed by `set_verify_peer` — the identity the peer must
+    /// match (Node `rejectUnauthorized: true`). Re-checked when a resumed
+    /// session completes the handshake, because resumption skips the
+    /// in-handshake certificate flight (CVE-2026-48934, upstream b8eacead4d).
+    verify_hostname: Option<Vec<u8>>,
 }
 
 impl core::fmt::Debug for TlsConnection {
@@ -524,6 +529,7 @@ impl TlsConnection {
             network_write_bio: bios.network_write_bio,
             handshake_done: false,
             saw_peer_closed: false,
+            verify_hostname: None,
         })
     }
 
@@ -574,6 +580,31 @@ impl TlsConnection {
         if !self.handshake_done {
             let ret = unsafe { SSL_do_handshake(self.ssl) };
             if ret == 1 {
+                // CVE-2026-48934 (upstream b8eacead4d): a resumed session
+                // skips the in-handshake certificate flight entirely, so the
+                // identity installed by `set_verify_peer` is re-checked here
+                // before the connection is handed over — the host-layer
+                // equivalent of upstream's `onClientHandshake` fix. BoringSSL
+                // keeps the peer chain on the resumed SSL_SESSION, so
+                // `check_server_identity` reads it from the session. This is
+                // deliberately NOT `SSL_CTX_set_reverify_on_resume`: that
+                // BoringSSL flag only feeds `SSL_CTX_set_custom_verify`
+                // callbacks and is documented incompatible with
+                // `SSL_VERIFY_NONE` (ssl.h), while this bridge drives classic
+                // per-connection verification.
+                if self.role == Role::Client
+                    && self.verify_hostname.is_some()
+                    && crate::session_cache::session_reused(self.ssl)
+                {
+                    let host = self.verify_hostname.as_deref().expect("checked is_some");
+                    // SAFETY: self.ssl is the live SSL of this connection,
+                    // which has just completed its handshake.
+                    if !bun_boringssl::check_server_identity(unsafe { &mut *self.ssl }, host) {
+                        return Err(TlsError::BoringSSL(
+                            "server identity re-check failed on resumed session",
+                        ));
+                    }
+                }
                 self.handshake_done = true;
                 state = TlsState::Active;
             } else {
@@ -807,6 +838,7 @@ impl TlsConnection {
     /// Disable peer-certificate verification (Node `rejectUnauthorized:
     /// false`). Must be called before the handshake starts.
     pub fn set_verify_off(&mut self) {
+        self.verify_hostname = None;
         // SAFETY: ssl is a live SSL owned by this connection, pre-handshake.
         unsafe { SSL_set_verify(self.ssl_ptr(), SSL_VERIFY_NONE, None) };
     }
@@ -827,7 +859,13 @@ impl TlsConnection {
         // name_c outlives both calls.
         unsafe {
             SSL_set_verify(self.ssl_ptr(), SSL_VERIFY_PEER, None);
-            SSL_set1_host(self.ssl_ptr(), name_c.as_ptr()) == 1
+            let installed = SSL_set1_host(self.ssl_ptr(), name_c.as_ptr()) == 1;
+            if installed {
+                // Remember the identity for the resumed-session re-check in
+                // `process` (CVE-2026-48934, upstream b8eacead4d).
+                self.verify_hostname = Some(hostname.as_bytes().to_vec());
+            }
+            installed
         }
     }
 
@@ -931,3 +969,135 @@ impl core::fmt::Display for TlsError {
 }
 
 impl std::error::Error for TlsError {}
+
+#[cfg(test)]
+mod resumed_identity_recheck_tests {
+    //! CVE-2026-48934 (upstream b8eacead4d) loopback proof: a resumed session
+    //! re-checks the server identity installed by `set_verify_peer`. The
+    //! cross-identity resume (session obtained under one servername, verified
+    //! against another) must be rejected; the same identity — including its
+    //! IDNA full-stop spelling (CVE-2026-48618) — must still resume.
+    // @trace REQ-ENG-007 [entity:TlsConnection]
+    use super::{TlsConnection, TlsError};
+    use crate::session_cache;
+    use crate::{TlsClient, TlsServer, generate_self_signed_pem, pem_parse_certs};
+
+    /// One mutual drive pass: client → server → client. Errors propagate —
+    /// the client-side identity re-check failure IS the assertion surface.
+    fn pump(c: &mut TlsConnection, s: &mut TlsConnection) -> Result<(), TlsError> {
+        c.process()?;
+        s.feed(&c.take_outgoing());
+        s.process()?;
+        c.feed(&s.take_outgoing());
+        Ok(())
+    }
+
+    /// Drive until both handshakes complete, then flush the deferred TLS 1.3
+    /// NewSessionTickets (the server sends them on its first write) so the
+    /// client's new-session callback populates the store.
+    fn complete_with_tickets(c: &mut TlsConnection, s: &mut TlsConnection) -> Result<(), TlsError> {
+        for _ in 0..64 {
+            pump(c, s)?;
+            if !c.is_handshaking() && !s.is_handshaking() {
+                break;
+            }
+        }
+        if c.is_handshaking() || s.is_handshaking() {
+            return Err(TlsError::BoringSSL("handshake did not complete in 64 passes"));
+        }
+        s.write(b"\x00")?;
+        for _ in 0..8 {
+            pump(c, s)?;
+        }
+        Ok(())
+    }
+
+    fn setup() -> (TlsServer, TlsClient) {
+        let (cert, key) = generate_self_signed_pem("resume.local", 365).expect("generate cert");
+        let der = pem_parse_certs(&cert).into_iter().next().expect("parse DER");
+        let server = TlsServer::new(&cert, &key).expect("TlsServer::new");
+        // TlsClient::new registers the session-cache callbacks (production path).
+        let client = TlsClient::new().expect("TlsClient::new");
+        assert!(client.add_trusted_der(&der), "trust anchor must install");
+        (server, client)
+    }
+
+    #[test]
+    fn cross_identity_resumed_session_is_rejected() {
+        let (server, client) = setup();
+        let cache = session_cache::global();
+        cache.clear();
+
+        // First connection: full handshake WITH verification (Node default).
+        let mut s1 = server.accept().expect("server accept");
+        let mut c1 = TlsConnection::new_client(&client, "resume.local").expect("client conn");
+        assert!(c1.set_verify_peer("resume.local"));
+        assert!(!session_cache::offer_session(c1.ssl_ptr(), "resume.local", 443, 0));
+        complete_with_tickets(&mut c1, &mut s1).expect("full handshake must verify and complete");
+        assert!(
+            cache.contains_key(&session_cache::origin_key("resume.local", 443, 0)),
+            "new-session callback must populate the store"
+        );
+
+        // Second connection: same origin (store hit) but verified against a
+        // DIFFERENT identity. Resumption skips the certificate flight, so
+        // without the re-check this handshake would complete unverified —
+        // the cross-servername resume of CVE-2026-48934.
+        let mut s2 = server.accept().expect("server accept");
+        let mut c2 = TlsConnection::new_client(&client, "resume.local").expect("client conn");
+        assert!(
+            session_cache::offer_session(c2.ssl_ptr(), "resume.local", 443, 0),
+            "conn2 must have resumed a cached session (else this test proves nothing)"
+        );
+        assert!(c2.set_verify_peer("evil.local"));
+        let verdict = complete_with_tickets(&mut c2, &mut s2);
+        // Pin the rejection to the resumed-session identity re-check itself:
+        // `offer_session` above proved SSL_set_session accepted (resumption
+        // path entered), and a resumed handshake has no certificate flight,
+        // so the only gate that can fail is the re-check in `process`.
+        match verdict.expect_err("cross-identity resumed session must be rejected") {
+            TlsError::BoringSSL(msg) => assert_eq!(
+                msg, "server identity re-check failed on resumed session",
+            ),
+            other => panic!("expected the identity re-check rejection, got: {other}"),
+        }
+        cache.clear();
+    }
+
+    #[test]
+    fn same_identity_resumed_session_still_resumes() {
+        let (server, client) = setup();
+        let cache = session_cache::global();
+        cache.clear();
+
+        let mut s1 = server.accept().expect("server accept");
+        let mut c1 = TlsConnection::new_client(&client, "resume.local").expect("client conn");
+        assert!(c1.set_verify_peer("resume.local"));
+        // Production wiring: `offer_session` on EVERY connection stashes the
+        // origin key the new-session callback consumes to insert the ticket
+        // (`on_new_session` skips connections that never went through it —
+        // see session_cache.rs). Without this call the store stays empty and
+        // conn2 below cannot resume. Miss on the empty store is expected.
+        assert!(!session_cache::offer_session(c1.ssl_ptr(), "resume.local", 443, 0));
+        complete_with_tickets(&mut c1, &mut s1).expect("full handshake");
+        assert!(
+            cache.contains_key(&session_cache::origin_key("resume.local", 443, 0)),
+            "conn1 ticket must populate the store before conn2 can resume"
+        );
+
+        // Same identity spelled with an ideographic full stop: the re-check
+        // normalizes (CVE-2026-48618, upstream 8705d893b5) before matching,
+        // so legitimate resumption is not blocked.
+        let mut s2 = server.accept().expect("server accept");
+        let mut c2 = TlsConnection::new_client(&client, "resume.local").expect("client conn");
+        assert!(session_cache::offer_session(c2.ssl_ptr(), "resume.local", 443, 0));
+        assert!(c2.set_verify_peer("resume\u{3002}local"));
+        complete_with_tickets(&mut c2, &mut s2)
+            .expect("same-identity (IDNA-normalized) resumption must succeed");
+        assert!(
+            session_cache::session_reused(c2.ssl_ptr()),
+            "the connection must actually have resumed"
+        );
+        cache.clear();
+    }
+}

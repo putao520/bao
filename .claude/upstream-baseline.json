@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-09-16",
-  "updated_by": "daily-ops-2026-09-16-wave",
+  "updated_at": "2026-09-18",
+  "updated_by": "daily-ops-2026-09-18-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "1332495a42",
-      "baseline_date": "2026-09-17",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..37c28924ee 全判定(triage 09-08..09-16);09-16 波吸收 bun 批 A 四项落地(14a4f45c54 fold 线性化/e219300aa7 renamer reserve/14c6fda6a4 io highwater/f3e5bddded usockets queued_input 双树),b52d3e590a 判 N-A-no-bearer(#41286 前置未吸收,无承载形状)"
+      "baseline": "fd8422ce47",
+      "baseline_date": "2026-09-18",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..fd8422ce47 全判定(triage 09-08..09-18);09-18 波吸收 12 项落地+81b7f41e5f 闭环(watcher/ast/css/quic.c×2/uws×3/fetch B-hunk/TLS CVE×2/certdata NSS 3.128),FetchSession 新 API 面排除(须 PRD/SPEC 立法)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "cc8272881",
-      "baseline_date": "2026-09-17",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..eb14a6f34 全判定(triage 09-08..09-16);09-16 波吸收 servo 微批 1 五项全落地(9ac8b4686 font spacing+canvas_state BAO patch 保留/44a8f30ef xpath/fb068ca46 is_editing_host/620263c56 ClipboardEvent placeholder/afd07955c struct layout)"
+      "baseline": "0f4d68e09",
+      "baseline_date": "2026-09-18",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..0f4d68e09 全判定(triage 09-08..09-18);09-18 波吸收 9 项落地(BufferSource 四文件/caret/test_util/Animation.timeline/webgl 链×3(C14 锚存活)/auto_root(worker drain 锚存活)/UniqueId);03f9dd18a gamepad stop=promise 基座未吸收"
     }
   },
   "pending_wave": {

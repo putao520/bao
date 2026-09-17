@@ -16,7 +16,7 @@ use fonts::FontContext;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::UndefinedValue;
-use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue};
+use js::rust::{CustomAutoRooterGuard, HandleValue};
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
@@ -1209,15 +1209,11 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
         message: HandleValue,
         options: RootedTraceableBox<StructuredSerializeOptions>,
     ) -> ErrorResult {
-        let mut rooted = CustomAutoRooter::new(
-            options
-                .transfer
-                .iter()
-                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-        #[expect(unsafe_code)]
-        let guard = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+        auto_root!(&in(cx) let guard = options
+            .transfer
+            .iter()
+            .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+            .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 

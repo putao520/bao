@@ -125,29 +125,31 @@ fn http_thread_timer_read() -> u64 {
     crate::http_thread().timer.elapsed().as_nanos() as u64
 }
 
-/// Build the `Proxy-Authorization: Basic <b64(user[:pass])>` header value.
-/// Returns `None` (and logs) if percent-decoding fails — Zig swallowed the
-/// error and continued without proxy auth.
-fn build_proxy_authorization(proxy: &URL<'_>) -> Option<Vec<u8>> {
-    if proxy.username.is_empty() {
+/// The `Basic <b64(user:pass)>` credentials for a URL's userinfo, as sent in
+/// `Authorization` / `Proxy-Authorization`. `None` when the URL has no
+/// userinfo, or (logged) when it does not percent-decode.
+/// Upstream bun 63a495cb46 (B10): renamed from `build_proxy_authorization` —
+/// URL userinfo is the request's credentials too, not only a proxy's.
+pub fn basic_authorization(url: &URL<'_>) -> Option<Vec<u8>> {
+    if url.username.is_empty() && url.password.is_empty() {
         return None;
     }
 
     // PERF(port): was stack-fallback (4096) — profile if hot
-    let username = match PercentEncoding::decode_alloc(proxy.username) {
+    let username = match PercentEncoding::decode_alloc(url.username) {
         Ok(u) => u,
         Err(err) => {
-            bun_core::scoped_log!(AsyncHTTP, "failed to decode proxy username: {:?}", err);
+            bun_core::scoped_log!(AsyncHTTP, "failed to decode URL username: {:?}", err);
             return None;
         }
     };
 
-    let auth: Vec<u8> = if !proxy.password.is_empty() {
+    let auth: Vec<u8> = if !url.password.is_empty() {
         // PERF(port): was stack-fallback (4096) — profile if hot
-        let password = match PercentEncoding::decode_alloc(proxy.password) {
+        let password = match PercentEncoding::decode_alloc(url.password) {
             Ok(p) => p,
             Err(err) => {
-                bun_core::scoped_log!(AsyncHTTP, "failed to decode proxy password: {:?}", err);
+                bun_core::scoped_log!(AsyncHTTP, "failed to decode URL password: {:?}", err);
                 return None;
             }
         };
@@ -289,6 +291,10 @@ pub struct Options<'a> {
     /// bridge (custom verbs like `FOO` must reach the wire, not fail
     /// closed).
     pub extension_method: Option<&'static [u8]>,
+    /// B4 (upstream bun 63a495cb46): a request that passes its own
+    /// `checkServerIdentity` closure neither takes nor returns a pooled
+    /// socket on its `https:` hops.
+    pub bypass_pool: Option<bool>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -568,9 +574,12 @@ impl<'a> AsyncHTTP<'a> {
         if let Some(val) = options.tls_props {
             this.client.tls_props = Some(val);
         }
+        if let Some(true) = options.bypass_pool {
+            this.client.flags.pool_bypass = crate::PoolBypass::NotThisHop;
+        }
 
         if let Some(proxy) = &this.http_proxy {
-            if let Some(auth) = build_proxy_authorization(proxy) {
+            if let Some(auth) = basic_authorization(proxy) {
                 this.client.proxy_authorization = Some(auth);
             }
         }

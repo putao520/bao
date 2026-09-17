@@ -46,6 +46,10 @@ pub struct InternalState<'a> {
     pub original_request_body: HTTPRequestBody<'a>,
     pub request_sent_len: usize,
     pub fail: Option<Error>,
+    /// `errno` of the failed `connect(2)` when `fail` is `ConnectionRefused`; 0 otherwise.
+    /// B10 (upstream bun 63a495cb46): socket-level failures report an
+    /// errno-style code (`ECONNREFUSED`, `ETIMEDOUT`, ...).
+    pub connect_errno: i32,
     pub request_stage: HTTPStage,
     pub response_stage: HTTPStage,
     pub certificate_info: Option<CertificateInfo>,
@@ -116,6 +120,7 @@ impl Default for InternalState<'_> {
             original_request_body: HTTPRequestBody::Bytes(b""),
             request_sent_len: 0,
             fail: None,
+            connect_errno: 0,
             request_stage: HTTPStage::Pending,
             response_stage: HTTPStage::Pending,
             certificate_info: None,

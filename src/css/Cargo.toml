@@ -38,3 +38,11 @@ bun_paths.workspace = true
 bun_ptr.workspace = true
 bun_wyhash.workspace = true
 bun_css_derive = { path = "../css_derive", version = "0.1.0" }
+
+# The lib-test harness links only crates the test unit references;
+# `bun_alloc`'s OOM guard declares `__bun_crash_handler_out_of_memory`
+# (defined `#[no_mangle]` only in `bun_crash_handler`; binaries link it,
+# standalone lib-test binaries do not). dev-depend on the provider so the
+# unit tests link.
+[dev-dependencies]
+bun_crash_handler.workspace = true

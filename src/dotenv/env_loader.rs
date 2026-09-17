@@ -350,34 +350,12 @@ impl<'a> Loader<'a> {
     }
 
     pub fn get_http_proxy_for(&mut self, url: &URL<'_>) -> Option<URL<'a>> {
-        self.get_http_proxy(url.is_http(), Some(url.hostname), Some(url.host))
-    }
-
-    pub fn has_http_proxy(&self) -> bool {
-        self.has(b"http_proxy")
-            || self.has(b"HTTP_PROXY")
-            || self.has(b"https_proxy")
-            || self.has(b"HTTPS_PROXY")
-    }
-
-    /// Get proxy URL for HTTP/HTTPS requests, respecting NO_PROXY.
-    /// `hostname` is the host without port (e.g., "localhost")
-    /// `host` is the host with port if present (e.g., "localhost:3000")
-    pub fn get_http_proxy(
-        &mut self,
-        is_http: bool,
-        hostname: Option<&[u8]>,
-        host: Option<&[u8]>,
-    ) -> Option<URL<'a>> {
-        // TODO: When Web Worker support is added, make sure to intern these strings
-        //
         // Lifetime: the returned `URL` borrows env-var values that are
         // `Box<[u8]>`-owned by `*self.map: Map`, which is borrowed for `'a`
         // (`map: &'a mut Map`). The boxed allocations are address-stable
         // across rehashes and Bun never removes/overwrites the proxy env vars
-        // after they are read here, so the slices are valid for `'a`. This is
-        // the same contract Zig `getHttpProxy` (env_loader.zig:174) relies on
-        // by returning `[]const u8` borrowing the loader's map. Encapsulating
+        // after they are read here, so the slices are valid for `'a`. Same
+        // contract as Zig `getHttpProxy` (env_loader.zig:174). Encapsulating
         // the extension here keeps every caller (PackageManager, fetch,
         // upgrade, create) free of `transmute` (PORTING.md §Forbidden).
         let extend = |s: &[u8]| -> &'a [u8] {
@@ -387,106 +365,65 @@ impl<'a> Loader<'a> {
             unsafe { core::slice::from_raw_parts(s.as_ptr(), s.len()) }
         };
 
-        let mut http_proxy: Option<URL<'a>> = None;
+        let proxy = URL::parse(extend(self.proxy_env_for_scheme(url.is_http())?));
+        if self.is_no_proxy(url.hostname, url.get_port_auto()) {
+            return None;
+        }
+        Some(proxy)
+    }
 
-        let proxy = if is_http {
+    pub fn has_http_proxy(&self) -> bool {
+        self.has(b"http_proxy")
+            || self.has(b"HTTP_PROXY")
+            || self.has(b"https_proxy")
+            || self.has(b"HTTPS_PROXY")
+            || self.all_proxy().is_some()
+    }
+
+    /// `http_proxy` / `HTTP_PROXY` (or the `https` pair), falling back to
+    /// `all_proxy` / `ALL_PROXY`.
+    ///
+    /// Upstream bun 63a495cb46 (B10): `ALL_PROXY` is the fallback for `http:`
+    /// and `https:` targets alike when the scheme-specific variable is unset.
+    pub fn proxy_env_for_scheme(&self, is_http: bool) -> Option<&[u8]> {
+        self.scheme_proxy(is_http).or_else(|| self.all_proxy())
+    }
+
+    fn scheme_proxy(&self, is_http: bool) -> Option<&[u8]> {
+        let specific = if is_http {
             self.get_lower_then_upper(b"http_proxy", b"HTTP_PROXY")
         } else {
             self.get_lower_then_upper(b"https_proxy", b"HTTPS_PROXY")
         };
-        if let Some(p) = proxy {
-            if !Self::is_emptyish(p) {
-                http_proxy = Some(URL::parse(extend(p)));
-            }
-        }
-
-        if http_proxy.is_some() && hostname.is_some() {
-            if self.is_no_proxy(hostname, host) {
-                return None;
-            }
-        }
-        http_proxy
+        specific.filter(|p| !Self::is_emptyish(p))
     }
 
-    /// Returns true if the given hostname/host should bypass the proxy
-    /// according to the NO_PROXY / no_proxy environment variable.
-    pub fn is_no_proxy(&self, hostname: Option<&[u8]>, host: Option<&[u8]>) -> bool {
-        // NO_PROXY filter
-        // See the syntax at https://about.gitlab.com/blog/2021/01/27/we-need-to-talk-no-proxy/
-        let Some(hn) = hostname else { return false };
+    /// The proxy for every target scheme. It commonly names a SOCKS proxy,
+    /// which the HTTP client cannot speak, so a value with some other scheme
+    /// than `http:` / `https:` is left alone. A value with no scheme is an
+    /// HTTP proxy, as for curl and for `HTTP_PROXY`: going direct instead would
+    /// silently bypass the proxy, where a wrong guess fails loudly.
+    fn all_proxy(&self) -> Option<&[u8]> {
+        let value = self
+            .get_lower_then_upper(b"all_proxy", b"ALL_PROXY")
+            .filter(|p| !Self::is_emptyish(p))?;
+        let url = URL::parse(value);
+        (url.protocol.is_empty() || url.has_http_like_protocol()).then_some(value)
+    }
 
-        let Some(no_proxy_text) = self.get_lower_then_upper(b"no_proxy", b"NO_PROXY") else {
-            return false;
-        };
-        if Self::is_emptyish(no_proxy_text) {
-            return false;
-        }
+    /// `no_proxy`, else `NO_PROXY`: one list, the lowercase name first, as curl,
+    /// node and undici read it.
+    pub fn no_proxy_list(&self) -> &[u8] {
+        let read = |name: &[u8]| self.get(name).filter(|v| !Self::is_emptyish(v));
+        read(b"no_proxy")
+            .or_else(|| read(b"NO_PROXY"))
+            .unwrap_or(b"")
+    }
 
-        for no_proxy_item in no_proxy_text.split(|&b| b == b',') {
-            let mut no_proxy_entry = strings::trim(no_proxy_item, &strings::WHITESPACE_CHARS);
-            if no_proxy_entry.is_empty() {
-                continue;
-            }
-            if no_proxy_entry == b"*" {
-                return true;
-            }
-            // strips .
-            if strings::starts_with_char(no_proxy_entry, b'.') {
-                no_proxy_entry = &no_proxy_entry[1..];
-                if no_proxy_entry.is_empty() {
-                    continue;
-                }
-            }
-
-            // Determine if entry contains a port or is an IPv6 address
-            // IPv6 addresses contain multiple colons (e.g., "::1", "2001:db8::1")
-            // Bracketed IPv6 with port: "[::1]:8080"
-            // Host with port: "localhost:8080" (single colon)
-            let colon_count = no_proxy_entry.iter().filter(|&&b| b == b':').count();
-            let is_bracketed_ipv6 = strings::starts_with_char(no_proxy_entry, b'[');
-            let has_port = 'blk: {
-                if is_bracketed_ipv6 {
-                    // Bracketed IPv6: check for "]:port" pattern
-                    if strings::index_of(no_proxy_entry, b"]:").is_some() {
-                        break 'blk true;
-                    }
-                    break 'blk false;
-                } else if colon_count == 1 {
-                    // Single colon means host:port (not IPv6)
-                    break 'blk true;
-                }
-                // Multiple colons without brackets = bare IPv6 literal (no port)
-                break 'blk false;
-            };
-
-            if has_port {
-                // Entry has a port, do exact match against host:port
-                if let Some(h) = host {
-                    if strings::eql_case_insensitive_ascii(h, no_proxy_entry, true) {
-                        return true;
-                    }
-                }
-            } else {
-                // Entry is hostname/IPv6 only, match exact or dot-boundary suffix (case-insensitive)
-                let entry_len = no_proxy_entry.len();
-                if hn.len() == entry_len {
-                    if strings::eql_case_insensitive_ascii(hn, no_proxy_entry, true) {
-                        return true;
-                    }
-                } else if hn.len() > entry_len
-                    && hn[hn.len() - entry_len - 1] == b'.'
-                    && strings::eql_case_insensitive_ascii(
-                        &hn[hn.len() - entry_len..],
-                        no_proxy_entry,
-                        true,
-                    )
-                {
-                    return true;
-                }
-            }
-        }
-
-        false
+    /// Returns true if `hostname` on `port` should bypass the proxy according
+    /// to the no_proxy / NO_PROXY environment variable.
+    pub fn is_no_proxy(&self, hostname: &[u8], port: u16) -> bool {
+        crate::no_proxy::matches(self.no_proxy_list(), hostname, port)
     }
 
     pub fn load_ccache_path(&mut self, fs: &bun_paths::fs::FileSystem) {
@@ -1730,3 +1667,148 @@ pub fn set_instance(loader: *mut Loader<'static>) {
 }
 
 // ported from: src/dotenv/env_loader.zig
+
+#[cfg(test)]
+mod proxy_env_tests {
+    //! B10 env-proxy resolution pin (upstream bun 63a495cb46): the
+    //! scheme-specific variable wins, `ALL_PROXY` is the fallback for both
+    //! schemes, a `socks*://` value is ignored, and a scheme-less value is an
+    //! HTTP proxy. `no_proxy` is the list and `NO_PROXY` is read when that is
+    //! unset or empty.
+
+    use super::{HashTable, Loader, Map};
+
+    /// Build a `Loader` over fresh entries and run `f` against it. The Loader
+    /// borrows the map, so the closure receives a shared view.
+    fn with_env<T>(entries: &[(&[u8], &[u8])], f: impl for<'a> FnOnce(&Loader<'a>) -> T) -> T {
+        let mut map = Map {
+            map: HashTable::default(),
+        };
+        for (key, value) in entries {
+            map.put(key, value).expect("test env map put");
+        }
+        let loader = Loader::init(&mut map);
+        f(&loader)
+    }
+
+    #[test]
+    fn scheme_variable_wins_over_all_proxy() {
+        with_env(
+            &[
+                (b"http_proxy", b"http://scheme:3128"),
+                (b"all_proxy", b"http://fallback:9"),
+            ],
+            |env| {
+                assert_eq!(env.proxy_env_for_scheme(true), Some(&b"http://scheme:3128"[..]));
+            },
+        );
+    }
+
+    #[test]
+    fn all_proxy_fallback_for_both_schemes() {
+        with_env(&[(b"all_proxy", b"http://fallback:9")], |env| {
+            assert_eq!(env.proxy_env_for_scheme(true), Some(&b"http://fallback:9"[..]));
+            assert_eq!(env.proxy_env_for_scheme(false), Some(&b"http://fallback:9"[..]));
+            assert!(env.has_http_proxy());
+        });
+    }
+
+    #[test]
+    fn https_scheme_variable_wins_http_falls_back() {
+        with_env(
+            &[
+                (b"https_proxy", b"http://secure:3129"),
+                (b"all_proxy", b"http://fallback:9"),
+            ],
+            |env| {
+                assert_eq!(env.proxy_env_for_scheme(false), Some(&b"http://secure:3129"[..]));
+                // http: has no scheme-specific variable → ALL_PROXY.
+                assert_eq!(env.proxy_env_for_scheme(true), Some(&b"http://fallback:9"[..]));
+            },
+        );
+    }
+
+    #[test]
+    fn socks_all_proxy_is_ignored() {
+        with_env(&[(b"all_proxy", b"socks5://127.0.0.1:1080")], |env| {
+            assert_eq!(env.proxy_env_for_scheme(true), None);
+            assert_eq!(env.proxy_env_for_scheme(false), None);
+            assert!(!env.has_http_proxy());
+        });
+        with_env(&[(b"ALL_PROXY", b"socks5h://proxy:1080")], |env| {
+            assert_eq!(env.proxy_env_for_scheme(true), None);
+        });
+    }
+
+    #[test]
+    fn scheme_less_all_proxy_is_an_http_proxy() {
+        with_env(&[(b"all_proxy", b"127.0.0.1:8080")], |env| {
+            assert_eq!(env.proxy_env_for_scheme(true), Some(&b"127.0.0.1:8080"[..]));
+            assert_eq!(env.proxy_env_for_scheme(false), Some(&b"127.0.0.1:8080"[..]));
+        });
+    }
+
+    #[test]
+    fn http_like_all_proxy_is_taken_as_written() {
+        with_env(&[(b"all_proxy", b"https://proxy:8443")], |env| {
+            assert_eq!(env.proxy_env_for_scheme(true), Some(&b"https://proxy:8443"[..]));
+        });
+    }
+
+    #[test]
+    fn emptyish_scheme_value_falls_through() {
+        // Empty lowercase falls through to the uppercase variable.
+        with_env(
+            &[(b"http_proxy", b""), (b"HTTP_PROXY", b"http://upper:1")],
+            |env| {
+                assert_eq!(env.proxy_env_for_scheme(true), Some(&b"http://upper:1"[..]));
+            },
+        );
+        // An emptyish scheme value is as good as unset → ALL_PROXY.
+        with_env(
+            &[(b"http_proxy", b"\"\""), (b"all_proxy", b"http://fallback:9")],
+            |env| {
+                assert_eq!(env.proxy_env_for_scheme(true), Some(&b"http://fallback:9"[..]));
+            },
+        );
+        // Emptyish ALL_PROXY is ignored entirely.
+        with_env(&[(b"all_proxy", b"''")], |env| {
+            assert_eq!(env.proxy_env_for_scheme(true), None);
+            assert!(!env.has_http_proxy());
+        });
+    }
+
+    #[test]
+    fn no_proxy_lowercase_list_wins_over_uppercase() {
+        with_env(&[(b"no_proxy", b"a.com"), (b"NO_PROXY", b"b.com")], |env| {
+            assert_eq!(env.no_proxy_list(), &b"a.com"[..]);
+        });
+        // Only the uppercase variable: that is the list.
+        with_env(&[(b"NO_PROXY", b"b.com")], |env| {
+            assert_eq!(env.no_proxy_list(), &b"b.com"[..]);
+        });
+        // An empty lowercase value falls through to the uppercase one.
+        with_env(&[(b"no_proxy", b""), (b"NO_PROXY", b"b.com")], |env| {
+            assert_eq!(env.no_proxy_list(), &b"b.com"[..]);
+        });
+        // Both emptyish: no list at all.
+        with_env(&[(b"no_proxy", b"\"\""), (b"NO_PROXY", b"")], |env| {
+            assert_eq!(env.no_proxy_list(), &b""[..]);
+        });
+    }
+
+    #[test]
+    fn is_no_proxy_delegates_to_the_shared_matcher() {
+        with_env(&[(b"no_proxy", b"example.com,10.0.0.0/8")], |env| {
+            assert!(env.is_no_proxy(b"example.com", 80));
+            assert!(env.is_no_proxy(b"sub.example.com", 80));
+            assert!(env.is_no_proxy(b"10.1.2.3", 80));
+            assert!(!env.is_no_proxy(b"other.com", 80));
+            assert!(!env.is_no_proxy(b"11.0.0.1", 80));
+        });
+        with_env(&[(b"NO_PROXY", b"*.internal")], |env| {
+            assert!(env.is_no_proxy(b"db.internal", 5432));
+            assert!(!env.is_no_proxy(b"db.external", 5432));
+        });
+    }
+}

@@ -2571,6 +2571,7 @@ dependencies = [
  "bun_cares_sys",
  "bun_core",
  "bun_sys",
+ "idna",
  "phf 0.11.3",
  "scopeguard",
 ]
@@ -2806,6 +2807,7 @@ dependencies = [
  "bun_base64",
  "bun_collections",
  "bun_core",
+ "bun_crash_handler",
  "bun_css_derive",
  "bun_io",
  "bun_paths",
@@ -3863,6 +3865,7 @@ dependencies = [
  "bstr",
  "bun_collections",
  "bun_core",
+ "bun_crash_handler",
  "bun_paths",
  "bun_ptr",
  "bun_sys",

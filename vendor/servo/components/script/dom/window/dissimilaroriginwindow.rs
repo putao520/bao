@@ -6,7 +6,7 @@ use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::UndefinedValue;
-use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue, MutableHandleValue};
+use js::rust::{CustomAutoRooterGuard, HandleValue, MutableHandleValue};
 use script_bindings::interfaces::HasOrigin;
 use servo_base::id::PipelineId;
 use servo_constellation_traits::{
@@ -171,16 +171,12 @@ impl DissimilarOriginWindowMethods<crate::DomTypeHolder> for DissimilarOriginWin
         message: HandleValue,
         options: RootedTraceableBox<WindowPostMessageOptions>,
     ) -> ErrorResult {
-        let mut rooted = CustomAutoRooter::new(
-            options
-                .parent
-                .transfer
-                .iter()
-                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-        #[expect(unsafe_code)]
-        let transfer = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+        auto_root!(&in(cx) let transfer = options
+            .parent
+            .transfer
+            .iter()
+            .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+            .collect::<Vec<_>>());
 
         self.post_message_impl(&options.targetOrigin, cx, message, transfer)
     }

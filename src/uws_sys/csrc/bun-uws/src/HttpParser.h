@@ -63,6 +63,7 @@ namespace uWS
         HTTP_PARSER_ERROR_INVALID_EOF = 8,
         HTTP_PARSER_ERROR_INVALID_METHOD = 9,
         HTTP_PARSER_ERROR_INVALID_HEADER_TOKEN = 10,
+        HTTP_PARSER_ERROR_CLOSED_CONNECTION = 11,
     };
 
 
@@ -240,6 +241,41 @@ namespace uWS
                 }
             }
             return std::string_view(nullptr, 0);
+        }
+
+        /* RFC 9112 9.6: "close" is a case-insensitive token in the Connection list. */
+        bool hasConnectionClose()
+        {
+            if (!bf.mightHave("connection")) {
+                return false;
+            }
+            for (Header *h = headers; (++h)->key.length();) {
+                if (h->key.length() != 10 || strncasecmp(h->key.data(), "connection", 10)) {
+                    continue;
+                }
+                const auto value = h->value;
+                size_t pos = 0;
+                while (pos < value.length()) {
+                    while (pos < value.length() && (value[pos] == ' ' || value[pos] == '\t')) {
+                        pos++;
+                    }
+                    size_t tokenStart = pos;
+                    while (pos < value.length() && value[pos] != ',') {
+                        pos++;
+                    }
+                    size_t tokenEnd = pos;
+                    while (tokenEnd > tokenStart && (value[tokenEnd - 1] == ' ' || value[tokenEnd - 1] == '\t')) {
+                        tokenEnd--;
+                    }
+                    if (tokenEnd - tokenStart == 5 && !strncasecmp(value.data() + tokenStart, "close", 5)) {
+                        return true;
+                    }
+                    if (pos < value.length()) {
+                        pos++;
+                    }
+                }
+            }
+            return false;
         }
 
         struct TransferEncoding {
@@ -823,6 +859,16 @@ namespace uWS
         data[length + 1] = 'a'; /* Anything that is not \n, to trigger "invalid request" */
         req->ancientHttp = false;
         for (;length;) {
+            /* RFC 9112 9.6 / llhttp's closed state: no further request is dispatched
+             * after one that forbade keep-alive. Bun.serve discards the rest of the
+             * buffer; node:http raises the parser's closed-state error. Must stay at
+             * the top of the loop, like llhttp's closed state. */
+            if (sawConnectionClose) {
+                if (isNodeHttp) {
+                    return HttpParserResult::error(HTTP_ERROR_400_BAD_REQUEST, HTTP_PARSER_ERROR_CLOSED_CONNECTION);
+                }
+                return HttpParserResult::success(consumedTotal + length, user);
+            }
             auto result = getHeaders(data, data + length, req->headers, req->ancientHttp, isConnectRequest, useStrictMethodValidation, maxHeaderSize);
             if(result.isError()) {
                 return result;
@@ -846,6 +892,9 @@ namespace uWS
 
             for (HttpRequest::Header *h = req->headers; (++h)->key.length(); ) {
                 req->bf.add(h->key);
+            }
+            if (req->isAncient() || req->hasConnectionClose()) {
+                sawConnectionClose = true;
             }
             /* Break if no host header (but we can have empty string which is different from nullptr) */
             if (!req->ancientHttp && requireHostHeader && !req->getHeader("host").data()) {
@@ -1019,6 +1068,9 @@ namespace uWS
     }
 
 public:
+    /* A request on this connection had Connection: close or was HTTP/1.0, or a Bun.serve response closed it (RFC 9112 9.6). */
+    bool sawConnectionClose = false;
+
     HttpParserResult consumePostPadded(uint64_t maxHeaderSize, bool& isConnectRequest, bool requireHostHeader, bool useStrictMethodValidation, bool isNodeHttp, char *data, unsigned int length, void *user, MoveOnlyFunction<void *(void *, HttpRequest *)> &&requestHandler, MoveOnlyFunction<void *(void *, std::string_view, bool)> &&dataHandler) {
         /* This resets BloomFilter by construction, but later we also reset it again.
         * Optimize this to skip resetting twice (req could be made global) */

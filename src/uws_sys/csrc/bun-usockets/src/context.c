@@ -703,6 +703,13 @@ void us_internal_socket_after_open(struct us_socket_t *s, int error) {
                     break;
                 }
                 default: {
+                    /* The probe only says the socket is not connected
+                     * (WSAENOTCONN); SO_ERROR has why the connect failed.
+                     * (upstream bun 63a495cb46) */
+                    int so_error = us_socket_get_error(s);
+                    if (so_error > 0) {
+                        error = so_error;
+                    }
                     break;
                 }
             }

@@ -404,16 +404,18 @@ fn on_handshake(
         scoped_log!(http_proxy_tunnel, "ProxyTunnel onHandshake success");
         // handshake completed but we may have ssl errors
         this.flags.did_have_handshaking_error = handshake_error.error_no != 0;
-        if this.flags.reject_unauthorized {
-            // only reject the connection if reject_unauthorized == true
-            if this.flags.did_have_handshaking_error {
-                let err = crate::get_cert_error_from_no(handshake_error.error_no);
-                // SAFETY: `this` dead (NLL); reenter via raw ptr so on_close's
-                // fresh `&mut *ctx` does not alias us.
-                ProxyTunnel::close_from_callback(proxy_nn, err);
-                return;
-            }
-
+        // only reject the connection if reject_unauthorized == true
+        if this.flags.reject_unauthorized && this.flags.did_have_handshaking_error {
+            let err = crate::get_cert_error_from_no(handshake_error.error_no);
+            // SAFETY: `this` dead (NLL); reenter via raw ptr so on_close's
+            // fresh `&mut *ctx` does not alias us.
+            ProxyTunnel::close_from_callback(proxy_nn, err);
+            return;
+        }
+        // B10 (upstream bun 63a495cb46): under `rejectUnauthorized: false` a
+        // JS `checkServerIdentity` callback still runs when the chain itself
+        // verified; its verdict is then not enforced.
+        if this.wants_server_identity_check() {
             // if checkServerIdentity returns false, we dont call open this means that the connection was rejected
             // Zig: `const ssl_ptr = proxy.wrapper.?.ssl orelse return;` —
             // `.?` asserts wrapper-is-Some; `orelse return` silently bails if
@@ -477,17 +479,25 @@ fn on_handshake(
         }
     } else {
         scoped_log!(http_proxy_tunnel, "ProxyTunnel onHandshake failed");
-        // if we are here is because server rejected us, and the error_no is the cause of this
-        // if we set reject_unauthorized == false this means the server requires custom CA aka NODE_EXTRA_CA_CERTS
-        if this.flags.did_have_handshaking_error && handshake_error.error_no != 0 {
+        // B1 (upstream bun 63a495cb46): the wrapper reports a failed handshake
+        // together with the verify result, which is `UNABLE_TO_GET_ISSUER_CERT`
+        // by default when the peer never got as far as sending a certificate.
+        // Only a certificate that was received can be what is wrong.
+        let peer_sent_certificate = ProxyTunnel::wrapper_ssl(proxy_nn).is_some_and(|ssl| {
+            // SAFETY: the live SSL handle of the tunnel's wrapper; the chain is borrowed.
+            !unsafe { bun_boringssl_sys::SSL_get_peer_cert_chain(ssl.as_ptr()) }.is_null()
+        });
+        if this.flags.reject_unauthorized && peer_sent_certificate && handshake_error.error_no > 0
+        {
             let err = crate::get_cert_error_from_no(handshake_error.error_no);
             // SAFETY: `this` dead (NLL); reenter via raw ptr.
             ProxyTunnel::close_from_callback(proxy_nn, err);
             return;
         }
-        // if handshake_success it self is false, this means that the connection was rejected
+        // A TLS handshake the peer did not complete is its own error (B10:
+        // `TLSHandshakeFailed`, reported as EPROTO by Node), not a refusal.
         // SAFETY: `this` dead (NLL); reenter via raw ptr.
-        ProxyTunnel::close_from_callback(proxy_nn, err!(ConnectionRefused));
+        ProxyTunnel::close_from_callback(proxy_nn, err!(TLSHandshakeFailed));
         return;
     }
 }
@@ -651,7 +661,12 @@ impl ProxyTunnel {
                 // invalid TLS Options. Nothing has been allocated yet (the
                 // tunnel is built only after the SSL wrapper succeeds), so
                 // there is no ref to release.
-                this.close_and_fail::<IS_SSL>(err!(ConnectionRefused), socket);
+                // B1 (upstream bun 63a495cb46): report what a direct request
+                // reports for them — bao's direct path maps every
+                // socket-context init failure to `FailedToOpenSocket`
+                // (HTTPThread.rs), so the tunnel does the same instead of
+                // `ECONNREFUSED`.
+                this.close_and_fail::<IS_SSL>(err!(FailedToOpenSocket), socket);
                 return;
             }
         };

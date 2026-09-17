@@ -128,7 +128,10 @@ impl ClientContext {
         // it as a C string so an interior NUL truncates on the C side. Mirror
         // that here instead of `CString::new`, which would reject interior NUL
         // and diverge by returning `false` where Zig proceeds.
-        let mut host_buf = hostname.to_vec();
+        // B3 (upstream bun 63a495cb46): resolution and certificate
+        // verification name an IPv6 literal without its brackets — `host_z` is
+        // both the QUIC dial host and the SNI/verification name below.
+        let mut host_buf = bun_url::strip_ipv6_brackets(hostname).to_vec();
         host_buf.push(0);
         let host_z = std::ffi::CStr::from_bytes_until_nul(&host_buf).expect("nul appended above");
         let session = ClientSession::new(hostname.to_vec(), port, reject);

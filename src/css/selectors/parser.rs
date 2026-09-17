@@ -1272,7 +1272,7 @@ impl<'a> SelectorParser<'a> {
         // `CustomFunction` in the spec — match that here by looking up `name`
         // verbatim with no case folding.
         //
-        // PERF(port): 6 entries with near-unique lengths (3/10/19/19/21/26) —
+        // PERF(port): 7 entries with near-unique lengths (3/10/19/19/21/26/30) —
         // a length-gated `match` rejects the overwhelmingly-common miss path
         // (unknown `::-webkit-foo(...)` etc.) on a single `usize` compare,
         // versus phf's hash + 2 table loads + slice compare. Only len==19 has
@@ -1308,6 +1308,11 @@ impl<'a> SelectorParser<'a> {
             }
             26 if name == b"view-transition-image-pair" => {
                 return Ok(PseudoElement::ViewTransitionImagePair {
+                    part_name: ViewTransitionPartName::parse(self, input)?,
+                });
+            }
+            30 if name == b"view-transition-group-children" => {
+                return Ok(PseudoElement::ViewTransitionGroupChildren {
                     part_name: ViewTransitionPartName::parse(self, input)?,
                 });
             }
@@ -3110,6 +3115,11 @@ pub enum PseudoElement {
         /// A part name selector.
         part_name: ViewTransitionPartName,
     },
+    /// The [::view-transition-group-children()](https://drafts.csswg.org/css-view-transitions-2/#::view-transition-group-children) functional pseudo element.
+    ViewTransitionGroupChildren {
+        /// A part name selector.
+        part_name: ViewTransitionPartName,
+    },
     /// An unknown pseudo element.
     Custom {
         /// The name of the pseudo element.
@@ -3204,6 +3214,7 @@ impl PseudoElement {
                 | PE::ViewTransitionImagePair { .. }
                 | PE::ViewTransitionNew { .. }
                 | PE::ViewTransitionOld { .. }
+                | PE::ViewTransitionGroupChildren { .. }
         )
     }
 
@@ -4393,5 +4404,130 @@ pub fn parse_attribute_flags(input: &mut CssParser) -> CResult<AttributeFlags> {
 }
 
 crate::css_eql_partialeq!(NthSelectorData, SpecificityAndFlags, Combinator);
+
+#[cfg(test)]
+mod view_transition_group_children_tests {
+    //! Upstream 93c400822b (#42779): `::view-transition-group-children()`
+    //! (css-view-transitions-2) parses as a view transition pseudo-element
+    //! taking the same part-name argument as `::view-transition-group()`
+    //! (`*`, a custom ident, or `.class`). Pre-fix it fell through to
+    //! `PseudoElement::CustomFunction`, which warns "unsupported pseudo
+    //! element" and keeps the raw argument tokens — so in a CSS module the
+    //! name/class never received the module hash and a class used only in
+    //! that selector was missing from the exports object.
+    use super::*;
+    // Pull the `#[no_mangle]` OOM/stack-trace provider into the lib-test
+    // link (see src/css/Cargo.toml dev-dependencies note).
+    #[allow(unused_imports)]
+    use bun_crash_handler as _;
+
+    /// Parse `source` and return the printed pseudo element + part name, plus
+    /// whether it reports as a view transition pseudo-element and whether a
+    /// bare `:only-child` was accepted after it.
+    ///
+    /// All work happens against an arena kept alive for the call: the parsed
+    /// `Str` payloads are `&'static`-erased borrows of it (see the `Str`
+    /// TODO(port) note above), so the list must not outlive the frame.
+    fn parse_pseudo_element(source: &[u8]) -> (String, String, bool, bool) {
+        let arena = Bump::new();
+        let mut input = css::ParserInput::new(source, &arena);
+        let mut parser = CssParser::new(&mut input, None, Default::default(), None);
+        let options = ParserOptions::default(None);
+        let list = SelectorList::parse_with_options(&mut parser, &options)
+            .map_err(|_| "selector parse failed")
+            .unwrap();
+        assert_eq!(list.v.len(), 1, "one selector in {source:?}");
+        let sel = &list.v.slice()[0];
+        let pe = sel
+            .components
+            .iter()
+            .find_map(|c| match c {
+                GenericComponent::PseudoElement(pe) => Some(pe),
+                _ => None,
+            })
+            .expect("a pseudo element component");
+
+        let part_name = if let PseudoElement::ViewTransitionGroupChildren { part_name } = pe {
+            part_name
+        } else {
+            panic!(
+                "expected ViewTransitionGroupChildren, got a different pseudo element in {source:?}"
+            )
+        };
+
+        let accepts_only_child = sel.components.iter().any(|c| {
+            matches!(
+                c,
+                GenericComponent::Nth(nth) if !nth.is_function
+            )
+        });
+
+        // Round-trip through the serializer (the printer arm lives in
+        // `selector.rs` `serialize::serialize_pseudo_element`).
+        let symbols = bun_ast::symbol::Map::default();
+        let pe_printed = {
+            let mut out = Vec::new();
+            {
+                let mut printer = Printer::new_buffered(&arena, &mut out, None, None, &symbols);
+                pe.to_css(&mut printer)
+                    .map_err(|_| "print pseudo element failed")
+                    .unwrap();
+            }
+            String::from_utf8(out).unwrap()
+        };
+        let part_printed = {
+            let mut out = Vec::new();
+            {
+                let mut printer = Printer::new_buffered(&arena, &mut out, None, None, &symbols);
+                part_name
+                    .to_css(&mut printer)
+                    .map_err(|_| "print part name failed")
+                    .unwrap();
+            }
+            String::from_utf8(out).unwrap()
+        };
+
+        (pe_printed, part_printed, pe.is_view_transition(), accepts_only_child)
+    }
+
+    #[test]
+    fn ident_argument_parses_as_view_transition_pseudo_element() {
+        let (printed, part, is_vt, _) =
+            parse_pseudo_element(b"::view-transition-group-children(hero)");
+        assert_eq!(printed, "::view-transition-group-children(hero)");
+        assert_eq!(part, "hero");
+        assert!(is_vt, "must join the is_view_transition family (upstream 93c400822b)");
+    }
+
+    #[test]
+    fn class_argument_parses() {
+        // The `.class` form is the CSS-module export carrier (the class gets
+        // the module hash there); without css_modules it stays a plain ident.
+        let (printed, part, is_vt, _) =
+            parse_pseudo_element(b"::view-transition-group-children(.big)");
+        assert_eq!(printed, "::view-transition-group-children(.big)");
+        assert_eq!(part, ".big");
+        assert!(is_vt);
+    }
+
+    #[test]
+    fn star_argument_parses() {
+        let (printed, part, is_vt, _) = parse_pseudo_element(b"::view-transition-group-children(*)");
+        assert_eq!(printed, "::view-transition-group-children(*)");
+        assert_eq!(part, "*");
+        assert!(is_vt);
+    }
+
+    #[test]
+    fn only_child_may_follow_as_in_chromium() {
+        // The `is_view_transition` arm is what lets `:only-child` follow the
+        // pseudo-element (AFTER_VIEW_TRANSITION state).
+        let (printed, _, is_vt, accepts_only_child) =
+            parse_pseudo_element(b"::view-transition-group-children(*):only-child");
+        assert_eq!(printed, "::view-transition-group-children(*)");
+        assert!(is_vt);
+        assert!(accepts_only_child, ":only-child must be accepted after the pseudo-element");
+    }
+}
 
 // ported from: src/css/selectors/parser.zig

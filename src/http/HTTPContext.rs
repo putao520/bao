@@ -1070,7 +1070,8 @@ impl<const SSL: bool> HTTPContext<SSL> {
             )
             .ptr(),
             false,
-        )?;
+        )
+        .inspect_err(|_| client.record_socket_open_errno())?;
         client.allow_retry = false;
         if SSL {
             if client.can_offer_h2() {
@@ -1185,16 +1186,19 @@ impl<const SSL: bool> Handler<SSL> {
             // handshake completed but we may have ssl errors
             client.flags.did_have_handshaking_error = handshake_error.error_no != 0;
             if handshake_success {
-                if client.flags.reject_unauthorized {
-                    // only reject the connection if reject_unauthorized == true
-                    if client.flags.did_have_handshaking_error {
-                        client.close_and_fail::<SSL>(
-                            get_cert_error_from_no(handshake_error.error_no),
-                            socket,
-                        );
-                        return;
-                    }
-
+                // only reject the connection if reject_unauthorized == true
+                if client.flags.reject_unauthorized && client.flags.did_have_handshaking_error {
+                    client.close_and_fail::<SSL>(
+                        get_cert_error_from_no(handshake_error.error_no),
+                        socket,
+                    );
+                    return;
+                }
+                // B10 (upstream bun 63a495cb46): under
+                // `rejectUnauthorized: false` a JS `checkServerIdentity`
+                // callback still runs when the chain itself verified; like
+                // Node, its verdict is then not enforced.
+                if client.wants_server_identity_check() {
                     // if checkServerIdentity returns false, we dont call firstCall — the connection was rejected
                     // SAFETY: the native handle on a TLS socket is `*mut SSL`,
                     // live and non-null after the handshake completes.
@@ -1219,15 +1223,11 @@ impl<const SSL: bool> Handler<SSL> {
             } else {
                 // if we are here is because server rejected us, and the error_no is the cause of this
                 // if we set reject_unauthorized == false this means the server requires custom CA aka NODE_EXTRA_CA_CERTS
-                if client.flags.did_have_handshaking_error {
-                    client.close_and_fail::<SSL>(
-                        get_cert_error_from_no(handshake_error.error_no),
-                        socket,
-                    );
-                    return;
-                }
-                // if handshake_success it self is false, this means that the connection was rejected
-                client.close_and_fail::<SSL>(bun_core::err!("ConnectionRefused"), socket);
+                // B10 (upstream bun 63a495cb46): a handshake the peer did not
+                // complete is `TLSHandshakeFailed` (reported as EPROTO by
+                // Node), not ConnectionRefused; a positive X509 code is the
+                // certificate error it names.
+                client.close_and_fail::<SSL>(crate::handshake_failure(handshake_error.error_no), socket);
                 return;
             }
         }
@@ -1354,11 +1354,11 @@ impl<const SSL: bool> Handler<SSL> {
         Self::on_long_timeout(ptr, socket);
     }
 
-    pub fn on_connect_error(ptr: *mut c_void, socket: HTTPSocket<SSL>, _: c_int) {
+    pub fn on_connect_error(ptr: *mut c_void, socket: HTTPSocket<SSL>, errno: c_int) {
         let tagged = HTTPContext::<SSL>::get_tagged(ptr);
         HTTPContext::<SSL>::mark_tagged_socket_as_dead(socket, tagged);
         if let Some(client) = tagged.client_mut() {
-            client.on_connect_error();
+            client.on_connect_error(errno);
         }
         // BCE (connect-refused socket spin): the single-address fast path
         // (`us_socket_group_connect_resolved_dns`, socket.c/context.c) creates
@@ -1541,7 +1541,7 @@ unsafe extern "C" fn http_vt_on_connect_error<const SSL: bool>(
 /// so touching socket-level state here would be use-after-free.
 unsafe extern "C" fn http_vt_on_connecting_error<const SSL: bool>(
     cs: *mut uws::ConnectingSocket,
-    _code: c_int,
+    code: c_int,
 ) -> *mut uws::ConnectingSocket {
     if cs.is_null() {
         return cs;
@@ -1557,10 +1557,9 @@ unsafe extern "C" fn http_vt_on_connecting_error<const SSL: bool>(
     if let Some(client) = tagged.client_mut() {
         // Same terminal the socket-level path uses: `fail(ConnectionRefused)`
         // → result callback → on_http_done → JS reject. The errno-style code
-        // is not surfaced (matching Handler::on_connect_error, which ignores
-        // its code argument too); Node maps DNS failure codes at the JS layer
-        // via the fetch rejection's `.cause`.
-        client.on_connect_error();
+        // rides on the result (`connect_errno`); Node maps DNS failure codes
+        // at the JS layer via the fetch rejection's `.cause`.
+        client.on_connect_error(code);
     }
     cs
 }
