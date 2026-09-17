@@ -35,6 +35,29 @@
 //   T6: two runtimes each spawn a child; dropping B reaps only B's child
 //       (A's child + its cp-poll thread survive); dropping A reaps A's too.
 //   T7: an IPC-stdio child's parent socketpair end is closed by the sweep.
+//
+// ── issue #42: spawn signal-state virtualization (用户裁决 2026-09-17) ─────
+//
+// posix_spawn_bun must start every child from the clean default signal state
+// of a standard process — the library host's blocked/ignored signals must not
+// leak into the child (execve only resets CAUGHT handlers; a blocked mask and
+// an ignored disposition are inherited verbatim), and the library must never
+// touch the host's own signal state. Regression target: the pre-fix spawner
+// declared POSIX_SPAWN_SETSIGMASK with a FULL mask, so children blocked every
+// signal — `kill(pid, SIGTERM)` returned 0 while the child kept running
+// (T5's drop sweep measured 2.07 s: SIGTERM stayed pending forever, only the
+// SIGKILL escalation worked).
+//
+//   T8: the child's own /proc/self/status (read by the child itself, returned
+//       via stdout) shows SIGTERM neither blocked (SigBlk) nor ignored
+//       (SigIgn).
+//   T9: SIGTERM terminates a spawned `sleep` child within 500 ms.
+//   T10: a full spawn→SIGTERM→reap cycle leaves the host's own
+//       SigBlk/SigIgn byte-identical ("免得一个库把进程杀了").
+//
+// T8-T10 use the proven child-event pump harness (JsContext + bounded drain
+// hook, see child_process_spawn_events_tests) because the stdout capture
+// chain is setTimeout-driven; T9/T10 only poll /proc from Rust.
 
 use std::net::UdpSocket;
 use std::time::Duration;
@@ -570,5 +593,253 @@ fn runtime_drop_closes_child_ipc_channels() {
         !sockets_after.values().any(|t| t == &new_sockets[0]),
         "ipc socketpair end {} must be closed after runtime drop",
         new_sockets[0]
+    );
+}
+
+// ── issue #42: spawn signal-state virtualization harness ──────────────────
+
+use bao_engine::context::JsContext;
+
+thread_local! {
+    static SIGSTATE_HOOK_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Bounded post-eval drain hook (the production CLI pump path — bare-Rust
+/// pumps silently drop timer callbacks; see child_process_spawn_events_tests
+/// for why the ChildProcess pipe chain needs it).
+fn sigstate_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
+    let exhausted = SIGSTATE_HOOK_BUDGET.with(|b| {
+        let n = b.get();
+        if n == 0 {
+            return true;
+        }
+        b.set(n - 1);
+        false
+    });
+    if exhausted {
+        return false;
+    }
+    bun_runtime::timers::drain_and_check(cx)
+}
+
+fn setup_sigstate_ctx() -> JsContext {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+    ctx.set_post_eval_hook(sigstate_drain_hook);
+    ctx
+}
+
+fn sigstate_eval_str(ctx: &mut JsContext, source: &str) -> String {
+    match ctx.eval(source, "<sigstate-test>") {
+        Ok(bao_engine::value::JsValue::String(s)) => s,
+        Ok(v) => format!("{:?}", v),
+        Err(e) => format!("ERROR: {:?}", e),
+    }
+}
+
+fn sigstate_eval_number(ctx: &mut JsContext, source: &str) -> f64 {
+    match ctx.eval(source, "<sigstate-test>") {
+        Ok(bao_engine::value::JsValue::Number(n)) => n,
+        _ => panic!("eval returned a non-number: {}", source),
+    }
+}
+
+/// SIGTERM = signal 15 → /proc status bitmap bit 1<<(15-1) = 0x4000.
+const SIGSTATE_SIGTERM_BIT: u64 = 1 << 14;
+
+/// Parse one "SigXXX: %016x" mask out of a /proc/*/status text.
+fn sigstate_mask(status_text: &str, field: &str) -> u64 {
+    let line = status_text
+        .lines()
+        .find(|l| l.starts_with(field))
+        .unwrap_or_else(|| panic!("{} line missing in status text: {}", field, status_text));
+    u64::from_str_radix(line.split(':').nth(1).unwrap_or("").trim(), 16)
+        .unwrap_or_else(|e| panic!("{} mask is not hex: {:?} ({})", field, line, e))
+}
+
+/// Poll `pred` with a wall-clock budget (5 s is plenty for fork/exec + pipe
+/// pump even under CI load).
+fn sigstate_wait_for(pred: impl Fn() -> bool, budget: Duration, what: &str) {
+    let deadline = std::time::Instant::now() + budget;
+    while !pred() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for: {}",
+            what
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// T8: the child's own signal bitmap must show SIGTERM neither blocked nor
+/// ignored — the spawner virtualizes the signal state instead of leaking the
+/// library host's (pre-fix: blocked-everything) state into the child. The
+/// child reads ITS OWN /proc/self/status (`grep ^Sig`) and returns the lines
+/// via stdout, so the observed bitmap is the post-exec child's, not ours.
+#[test]
+fn spawn_sigstate_child_bitmap_is_clean_default() {
+    let mut ctx = setup_sigstate_ctx();
+    let setup = sigstate_eval_str(
+        &mut ctx,
+        r#"
+        var chunks = [];
+        globalThis.__sigChild = require('child_process').spawn('grep', ['^Sig', '/proc/self/status']);
+        globalThis.__sigPid = globalThis.__sigChild.pid;
+        globalThis.__sigDone = false;
+        globalThis.__sigOut = '';
+        globalThis.__sigChild.stdout.on('data', function(d) {
+            chunks.push(String.fromCharCode.apply(null, new Uint8Array(d)));
+        });
+        globalThis.__sigChild.on('close', function(code) {
+            globalThis.__sigOut = chunks.join('');
+            globalThis.__sigCode = code;
+            globalThis.__sigDone = true;
+        });
+        'setup-ok'
+        "#,
+    );
+    assert_eq!(setup, "setup-ok", "spawn eval must succeed");
+
+    // Deadline-driven wait: each eval runs a budgeted drain, so the pipe
+    // pump delivers 'data'/'close' between rounds (10 s for fork/exec +
+    // pump under CI load).
+    let done_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut done = false;
+    while std::time::Instant::now() < done_deadline {
+        SIGSTATE_HOOK_BUDGET.with(|b| b.set(50));
+        if sigstate_eval_str(&mut ctx, "globalThis.__sigDone === true ? 'y' : 'n'") == "y" {
+            done = true;
+            break;
+        }
+    }
+    assert!(
+        done,
+        "grep child lifecycle never completed; stdout so far: {:?}",
+        sigstate_eval_str(&mut ctx, "globalThis.__sigOut || ''")
+    );
+
+    let out = sigstate_eval_str(&mut ctx, "globalThis.__sigOut");
+    let code = sigstate_eval_str(&mut ctx, "String(globalThis.__sigCode)");
+    assert_eq!(
+        code, "0",
+        "grep must exit 0 (matched its own Sig lines); child stdout: {:?}",
+        out
+    );
+    for field in ["SigBlk", "SigIgn", "SigCgt"] {
+        assert!(
+            out.lines().any(|l| l.starts_with(field)),
+            "child stdout must contain {} (proves the child read its own /proc/self/status): {:?}",
+            field,
+            out
+        );
+    }
+
+    // The assertion itself (issue #42): SIGTERM is neither blocked nor ignored
+    // in the child.
+    for field in ["SigBlk", "SigIgn"] {
+        let mask = sigstate_mask(&out, field);
+        eprintln!("child {field} = {mask:016x}");
+        assert_eq!(
+            mask & SIGSTATE_SIGTERM_BIT,
+            0,
+            "child {} = {:016x} must not contain SIGTERM (bit 0x4000); full child Sig lines: {:?}",
+            field,
+            mask,
+            out
+        );
+    }
+}
+
+/// T9: SIGTERM must actually terminate a spawned `sleep` child within 500 ms
+/// — the exact pre-fix counterexample probe (`kill(pid, SIGTERM)` returned 0
+/// while the child survived; T5's drop sweep only worked via the SIGKILL
+/// escalation after 2.07 s).
+#[test]
+fn spawn_sigstate_sigterm_terminates_child_within_500ms() {
+    let mut ctx = setup_sigstate_ctx();
+    ctx.eval(
+        "globalThis.__sleepChild = require('child_process').spawn('sleep', ['5']);",
+        "<sigstate-test>",
+    )
+    .expect("spawn sleep must eval");
+    let pid = sigstate_eval_number(&mut ctx, "globalThis.__sleepChild.pid") as i32;
+    assert!(pid > 0, "spawn must produce a pid");
+
+    sigstate_wait_for(
+        || matches!(proc_state(pid), Some('R') | Some('S')),
+        Duration::from_secs(5),
+        "sleep child to come up alive",
+    );
+
+    let killed = unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert_eq!(killed, 0, "kill(pid, SIGTERM) must be deliverable");
+
+    // Dead AND reaped (/proc entry gone — a zombie is a leak, same bar as T5)
+    // within 500 ms.
+    let kill_at = std::time::Instant::now();
+    loop {
+        if proc_state(pid).is_none() {
+            break;
+        }
+        assert!(
+            kill_at.elapsed() < Duration::from_millis(500),
+            "child survived SIGTERM for {} ms (blocked-mask regression); /proc state = {:?}",
+            kill_at.elapsed().as_millis(),
+            proc_state(pid)
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    eprintln!(
+        "SIGTERM -> reaped in {} ms",
+        kill_at.elapsed().as_millis()
+    );
+}
+
+/// T10: the library must never touch the host's own signal state (用户裁决
+/// 2026-09-17: the child gets a clean state instead of the host inheriting
+/// risk) — a full spawn→SIGTERM→reap cycle leaves this process's SigBlk/SigIgn
+/// byte-identical.
+#[test]
+fn spawn_sigstate_host_signal_state_untouched() {
+    let host_sig_lines = || -> String {
+        std::fs::read_to_string("/proc/self/status")
+            .expect("read host /proc/self/status")
+            .lines()
+            .filter(|l| l.starts_with("SigBlk") || l.starts_with("SigIgn"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let before = host_sig_lines();
+
+    {
+        let mut ctx = setup_sigstate_ctx();
+        ctx.eval(
+            "globalThis.__t10Child = require('child_process').spawn('sleep', ['5']);",
+            "<sigstate-test>",
+        )
+        .expect("spawn sleep must eval");
+        let pid = sigstate_eval_number(&mut ctx, "globalThis.__t10Child.pid") as i32;
+        assert!(pid > 0, "spawn must produce a pid");
+
+        sigstate_wait_for(
+            || matches!(proc_state(pid), Some('R') | Some('S')),
+            Duration::from_secs(5),
+            "sleep child to come up alive",
+        );
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        sigstate_wait_for(
+            || proc_state(pid).is_none(),
+            Duration::from_secs(5),
+            "child to die and be reaped",
+        );
+        drop(ctx);
+    }
+
+    let after = host_sig_lines();
+    assert_eq!(
+        before, after,
+        "host SigBlk/SigIgn must be byte-identical across a full spawn cycle"
     );
 }

@@ -5018,15 +5018,32 @@ pub mod spawn_ffi {
                 flags |= 0x80; // POSIX_SPAWN_SETSID on Linux
             }
 
-            // Reset all signals to default in child.
+            // Signal-state virtualization (user ruling 2026-09-17, issue
+            // #42): the child must start from the clean default signal state
+            // of a standard process — it must NOT inherit the library host's
+            // blocked/ignored signals (execve only resets caught handlers).
+            // Declared entirely via posix_spawnattr: POSIX_SPAWN_SETSIGDEF
+            // resets every settable signal to SIG_DFL (the kernel keeps
+            // SIGKILL/SIGSTOP uncatchable) and POSIX_SPAWN_SETSIGMASK
+            // installs an empty mask; the parent (library host) signal state
+            // is never touched. libuv's uv_spawn mirrors this semantics.
             let mut sigdefault: libc::sigset_t = core::mem::zeroed();
-            libc::sigemptyset(&mut sigdefault);
-            libc::posix_spawnattr_setsigdefault(&mut attr, &sigdefault);
+            libc::sigfillset(&mut sigdefault);
+            let rc = libc::posix_spawnattr_setsigdefault(&mut attr, &sigdefault);
+            if rc != 0 {
+                libc::posix_spawnattr_destroy(&mut attr);
+                libc::posix_spawn_file_actions_destroy(&mut fa);
+                return rc as isize;
+            }
 
-            // Unblock all signals in child.
             let mut sigmask: libc::sigset_t = core::mem::zeroed();
-            libc::sigfillset(&mut sigmask);
-            libc::posix_spawnattr_setsigmask(&mut attr, &sigmask);
+            libc::sigemptyset(&mut sigmask);
+            let rc = libc::posix_spawnattr_setsigmask(&mut attr, &sigmask);
+            if rc != 0 {
+                libc::posix_spawnattr_destroy(&mut attr);
+                libc::posix_spawn_file_actions_destroy(&mut fa);
+                return rc as isize;
+            }
 
             libc::posix_spawnattr_setflags(&mut attr, flags);
 
