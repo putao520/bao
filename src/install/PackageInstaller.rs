@@ -1,3 +1,4 @@
+use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 
 use bun_collections::{ArrayHashMap, DynamicBitSet, StringHashMap};
@@ -680,7 +681,8 @@ impl<'a> PackageInstaller<'a> {
     }
 
     pub(crate) fn link_remaining_bins(&mut self, log_level: Options::LogLevel) {
-        let mut depth_buf: lockfile::tree::DepthBuf = [0u32; lockfile::tree::MAX_DEPTH];
+        let mut depth_buf: lockfile::tree::DepthBuf =
+            [const { MaybeUninit::new(0u32) }; lockfile::tree::MAX_DEPTH];
         let mut node_modules_rel_path_buf = bun_paths::path_buffer_pool::get();
         node_modules_rel_path_buf[..b"node_modules".len()].copy_from_slice(b"node_modules");
 

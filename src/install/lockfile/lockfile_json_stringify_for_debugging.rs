@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 use crate::lockfile::package::PackageColumns as _;
 use bun_core::fmt as bun_fmt;
 use bun_semver::ExternalString;
@@ -245,7 +247,7 @@ where
         let dependencies = this.buffers.dependencies.as_slice();
         let hoisted_deps = this.buffers.hoisted_dependencies.as_slice();
         let resolutions = this.buffers.resolutions.as_slice();
-        let mut depth_buf: DepthBuf = [0; MAX_DEPTH];
+        let mut depth_buf: DepthBuf = [const { MaybeUninit::new(0) }; MAX_DEPTH];
         let mut path_buf = bun_paths::path_buffer_pool::get();
         path_buf[..b"node_modules".len()].copy_from_slice(b"node_modules");
 

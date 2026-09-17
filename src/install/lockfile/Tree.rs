@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 use bun_alloc::AllocError;
 use bun_collections::{ArrayHashMap, DynamicBitSet, MultiArrayList};
 use bun_core::Output;
@@ -68,21 +70,17 @@ impl Tree {
 // max number of node_modules folders
 pub(crate) const MAX_DEPTH: usize = (MAX_PATH_BYTES / b"node_modules".len()) + 1;
 
-pub(crate) type DepthBuf = [Id; MAX_DEPTH];
+pub(crate) type DepthBuf = [MaybeUninit<Id>; MAX_DEPTH];
 
 /// Zig `var depth_buf: Tree.DepthBuf = undefined;` — write-only scratch buffer
-/// for [`relative_path_and_depth`]. Every slot is written before it is read
-/// (index 0 unconditionally, indices `1..depth_buf_len` in the parent-walk
-/// loop), so leaving the ~1.4 KB array uninitialised matches the spec and
-/// avoids a `memset` per tree in the `--frozen-lockfile` no-change path.
-/// Same shape/contract as [`bun_core::PathBuffer::uninit`].
+/// for [`relative_path_and_depth`]. Callers treat this as write-before-read
+/// scratch: index 0 is written unconditionally and indices `1..=depth_buf_len`
+/// are written by the parent-walk loop before any read, so leaving the ~1.4 KB
+/// array uninitialised matches the spec and avoids a `memset` per tree in the
+/// `--frozen-lockfile` no-change path.
 #[inline]
-#[allow(invalid_value, clippy::uninit_assumed_init)]
 pub(crate) fn depth_buf_uninit() -> DepthBuf {
-    // SAFETY: `DepthBuf` is `[u32; N]`; every bit pattern is a valid `u32`.
-    // Callers treat this as a write-only scratch buffer — no element is read
-    // before being assigned by `relative_path_and_depth`.
-    unsafe { core::mem::MaybeUninit::uninit().assume_init() }
+    [const { MaybeUninit::uninit() }; MAX_DEPTH]
 }
 
 impl Tree {
@@ -349,7 +347,7 @@ pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: u8>(
         bun_core::Global::crash();
     };
 
-    depth_buf[0] = 0;
+    depth_buf[0].write(0);
 
     if tree.id > 0 {
         let buf = string_buf;
@@ -360,7 +358,7 @@ pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: u8>(
                 path_buf[path_written] = 0;
                 return (ZStr::from_buf(path_buf, path_written), 0);
             }
-            depth_buf[depth_buf_len] = parent_id;
+            depth_buf[depth_buf_len].write(parent_id);
             parent_id = trees[parent_id as usize].parent;
             depth_buf_len += 1;
         }
@@ -385,7 +383,9 @@ pub(crate) fn relative_path_and_depth<'b, const PATH_STYLE: u8>(
                 path_written += 1;
             }
 
-            let id = depth_buf[depth_buf_len];
+            // SAFETY: the parent walk above wrote `depth_buf[1..=depth]` and
+            // `1 <= depth_buf_len <= depth`.
+            let id = unsafe { depth_buf[depth_buf_len].assume_init() };
             let name = trees[id as usize].folder_name(dependencies, buf);
             if !folder_name_is_safe(name) {
                 Output::err_generic(

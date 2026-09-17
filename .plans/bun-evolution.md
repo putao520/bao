@@ -358,9 +358,23 @@ Residuals (documented):
 - An OffscreenCanvas transferred cross-webview via structured clone keeps its CREATION-time webview identity (the noise config travels with the canvas, matching pixel content drawn under that profile) — edge semantic, documented here.
 - `fetch()` thread-local profile face + webviewless handler — unchanged from ⑥'s residual list.
 
+### 2026-09-17 / PathBuffer sweep residual closure — `depth_buf_uninit()` UB PORT(f8f6bd0f 漏网点)
+
+**Trigger**: interactive session audit found ledger §9 stale (queued the already-landed f8f6bd0f sweep as next); re-audit of that sweep surfaced one missed site. **Baseline**: bao master `dc532b47`.
+
+**Defect**: `src/install/lockfile/Tree.rs` `depth_buf_uninit()` still returned `DepthBuf = [Id; MAX_DEPTH]` built with `MaybeUninit::uninit().assume_init()` under `#[allow(invalid_value, clippy::uninit_assumed_init)]` — the same UB class the upstream `e8541037c4` sweep eradicates (an integer requires initialized memory at construction, regardless of later writes). The 09-08 absorption `f8f6bd0f` swept the `PathBuffer` face (69 files) but missed this site; tree-wide re-audit of all remaining `assume_init` hits confirmed every other one is a legal form (`new_zeroed` / libc FFI out-param / allocator internals) — this was the sole UB residual.
+
+**Fix (PORT, zero new design — upstream shape verbatim)**: `DepthBuf = [MaybeUninit<Id>; MAX_DEPTH]`; `depth_buf_uninit()` → `[const { MaybeUninit::uninit() }; MAX_DEPTH]` (lint attr + UB body deleted); consumer sites `.write(0)` / `.write(parent_id)` / read-back `unsafe { depth_buf[depth_buf_len].assume_init() }` with upstream SAFETY comment (read indices `1..=depth`, all covered by the parent walk). Files: `Tree.rs` +14/−14, `PackageInstaller.rs` +3/−1 (`[const { MaybeUninit::new(0u32) }; N]` type-follow), `lockfile_json_stringify_for_debugging.rs` +3/−1 (same); `lockfile.rs` zero-change (whole-buffer pass-through, type follows). Known bao-only divergence preserved untouched: the pre-`if tree.id > 0` `depth_buf[0].write(0)` line has no read site (upstream lacks the line) — mechanical adaptation only, zero behavior delta.
+
+**Evidence (V = main session, independent re-run; E self-report not trusted per acceptance protocol)**: `command grep "invalid_value|uninit_assumed_init" src/install/lockfile/Tree.rs` → 0 hits; `cargo check -p bun_install --jobs 4` RC=0; `cargo nt -p bun_install --cargo-profile test-ci` 2/2 passed (baseline == post, zero new failures — test surface is the 2 package_install tests); clippy: no uninit-class diagnostics (pre-existing `bun_uws_sys` build-script map_or noise untouched by this wave, not ours). Inline-const array syntax accepted (rust-version 1.89).
+
+**BCE check**: single-site residual of an already-swept class; tree-wide `assume_init` audit above is the horizontal sweep — residual count now 0 for the uninit-integer-constructor class in `src/`.
+
 ## 9. Next single action
 
-**R53-A fully landed (net face ⑥ + canvas face ⑦). Next single action from §8: the e8541037c4 PathBuffer pool sweep (177 call sites).** The R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
+**Correction 2026-09-17 (stale §9, same failure class as the 09-07 `init_env_aliases` stale): the e8541037c4 PathBuffer pool sweep was ALREADY LANDED in `f8f6bd0f` (2026-09-08, 69 files, 360+/338-).** The 09-11 §9 update that queued it as next was written without checking master history. Residual closure of that sweep landed 2026-09-17 (this wave): `depth_buf_uninit()` in `src/install/lockfile/Tree.rs` — the one `MaybeUninit::uninit().assume_init()` UB constructor the sweep missed (`DepthBuf` bare `[Id; N]` + lint-suppression `#[allow]`), PORTed to the upstream `[MaybeUninit<Id>; N]` shape (see §8 entry for evidence).
+
+**Next single action: B1 — Runtime/thread ownership, first slice.** B0's completion bar (census + one complete highest-risk transposition slice) is met by R53-A (net ⑥ + canvas ⑦) plus candidates #1/#3 retired/landed. Candidate selection for the B1 first slice, from the 2026-09-10 B0 refresh RUNTIME-LOCALIZE rows (18 prior + 3 new), to be adjudicated at consumption from §8 evidence: `THREAD_WAKEUP_BRIDGE` (`fetch_async.rs:405`) / `BAO_SETTINGS_RUNNER` (`timers.rs:373`) — the vendor-seam installer cluster row was consumed by R53-A. R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
 
 ## 10. Definition of Done
 
