@@ -149,6 +149,7 @@ mod realworld_http_service_tests;
 mod require_deep_tests;
 mod require_system_deep_tests;
 mod require_timers_tests;
+mod resolver_root_isolation_tests;
 mod runtime_api_boundary_tests;
 mod runtime_deep_tests;
 mod runtime_resource_cleanup_tests;

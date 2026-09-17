@@ -79,6 +79,9 @@ pub struct BaoRuntime {
     // B1 resource-cleanup token. Copy, no drop logic of its own — declared
     // last; field drop order is unaffected (u64 drops are no-ops).
     token: u64,
+    // B1 census row 27: the resolver root this runtime installed on its
+    // thread (interned, process-lifetime). Copy, no drop logic of its own.
+    resolver_root: &'static [u8],
 }
 
 impl ::std::ops::Drop for BaoRuntime {
@@ -90,6 +93,11 @@ impl ::std::ops::Drop for BaoRuntime {
         // socket fds) is closed while the process is fully alive, and the
         // engine teardown sequence is byte-for-byte unchanged.
         cleanup_runtime_resources(self.token);
+        // B1 census row 27: retire this runtime's resolver-root claim.
+        // clear-if-same inside bun_core: a parasitic (older) runtime dropping
+        // after a newer one re-seeded the overlay must not erase the newer
+        // root — same shape as the CURRENT_RUNTIME_TOKEN clear below.
+        bun_core::clear_current_top_level_dir(self.resolver_root);
         CURRENT_RUNTIME_TOKEN.with(|t| {
             // Clear only if THIS runtime is still the latest one on the
             // thread: a parasitic BaoRuntime::new() (shared JSContext)
@@ -133,13 +141,20 @@ impl BaoRuntime {
         // it. A parasitic runtime (shared JSContext) legitimately overwrites
         // the slot — newest runtime owns the current-registration window.
         CURRENT_RUNTIME_TOKEN.with(|t| t.set(Some(token)));
+        // B1 census row 27: publish this runtime's resolver root only after
+        // engine init succeeded (a failed new() must leave no stale overlay
+        // behind, mirroring the token publish above). Every read of the
+        // top-level dir on this thread — resolve_path's relative* joins,
+        // Path::init_top_level_dir, dotenv's node/ccache lookup — follows
+        // this overlay until the runtime drops.
+        let resolver_root = crate::resolver_bridge::install_runtime_root();
         ctx.set_global_setup(globals::install_all);
         // Drain the event loop first; once it is done (natural end or
         // process.exit()), dispatch process 'exit' listeners inside the live
         // realm. Node semantics: registration order, exit code argument,
         // exitCode set by a listener is respected by the CLI main loop.
         ctx.set_post_eval_hook(crate::bun_api::post_eval_drain_then_exit);
-        ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard, token })
+        ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard, token, resolver_root })
     }
 
     pub fn eval(

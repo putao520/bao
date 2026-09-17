@@ -1,5 +1,6 @@
 #![allow(non_upper_case_globals, non_snake_case)]
 
+use core::cell::Cell;
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,7 +41,43 @@ pub fn set_top_level_dir(dir: &'static [u8]) {
 /// Top-level directory recorded at startup (defaults to `"."`).
 #[inline]
 pub fn top_level_dir() -> &'static [u8] {
+    if let Some(d) = CURRENT_TOP_LEVEL_DIR.with(Cell::get) {
+        return d;
+    }
     *TOP_LEVEL_DIR.read()
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Per-runtime resolver root overlay (BUN-EVOLUTION B1 census row 27). A
+// `BaoRuntime` installed on this thread re-seeds the overlay with its own
+// cwd at construction, so a second runtime created in a different directory
+// resolves against its own root instead of the first one's. Reads prefer the
+// overlay and fall back to the process-global above; `None` keeps the
+// CLI/bundler/non-runtime semantics byte-for-byte.
+// ──────────────────────────────────────────────────────────────────────────
+
+thread_local! {
+    static CURRENT_TOP_LEVEL_DIR: Cell<Option<&'static [u8]>> = const { Cell::new(None) };
+}
+
+/// Publish this runtime's resolver root (interned `'static` slice). One call
+/// per runtime construction, after engine init succeeds.
+#[inline]
+pub fn set_current_top_level_dir(dir: &'static [u8]) {
+    CURRENT_TOP_LEVEL_DIR.with(|c| c.set(Some(dir)));
+}
+
+/// Retire the overlay value `dir` — but only if it is still the live one. A
+/// newer runtime's `set_current_top_level_dir` must survive an older
+/// runtime's drop (parasitic-runtime shape), mirroring the
+/// `CURRENT_RUNTIME_TOKEN` clear-if-same discipline.
+#[inline]
+pub fn clear_current_top_level_dir(dir: &'static [u8]) {
+    CURRENT_TOP_LEVEL_DIR.with(|c| {
+        if c.get() == Some(dir) {
+            c.set(None);
+        }
+    });
 }
 
 /// Set by `bun_crash_handler::init()` once it has installed its segfault
@@ -843,3 +880,36 @@ pub(crate) extern "C" fn Bun__onExit() {
 }
 
 // ported from: src/bun_core/Global.zig
+
+#[cfg(test)]
+mod tests {
+    // nextest runs each test in its own process, so the process-global
+    // TOP_LEVEL_DIR below is still at its `b"."` default for this test.
+    fn leaked(path: &[u8]) -> &'static [u8] {
+        Box::leak(path.to_vec().into_boxed_slice())
+    }
+
+    #[test]
+    fn top_level_dir_overlay_read_order_and_clear_if_same() {
+        let a = leaked(b"/tmp/overlay-root-a");
+        let b = leaked(b"/tmp/overlay-root-b");
+
+        // No overlay → process-global path (zero-delta fallback contract).
+        assert_eq!(super::top_level_dir(), b".");
+
+        super::set_current_top_level_dir(a);
+        assert_eq!(super::top_level_dir(), a);
+
+        // A newer runtime's install overwrites the overlay.
+        super::set_current_top_level_dir(b);
+        assert_eq!(super::top_level_dir(), b);
+
+        // The older runtime's drop must not erase the newer overlay.
+        super::clear_current_top_level_dir(a);
+        assert_eq!(super::top_level_dir(), b);
+
+        // Only the live value's own clear retires the overlay.
+        super::clear_current_top_level_dir(b);
+        assert_eq!(super::top_level_dir(), b".");
+    }
+}
