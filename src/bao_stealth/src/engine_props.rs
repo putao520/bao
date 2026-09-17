@@ -45,8 +45,17 @@ use crate::StealthProfile;
 
 /// Per-Realm profile data: a clone of StealthProfile captured at registration time.
 /// Stored as Arc for cheap alias sharing between Page Realm and Node Realm.
+///
+/// The flat fields feed the engine-layer JS hook codegen (`build_hooks_js`).
+/// `full` is the untouched registration-time profile — the wire-face carrier
+/// (TLS JA3/JA4 + HTTP/2 settings, consumed by the fetch egress via
+/// `profile_for_global`) that the flat projection deliberately does not model.
 #[derive(Clone)]
 struct RealmProfile {
+    /// Full registration-time profile: the wire-face authority for this Realm
+    /// (R53-A fetch keyed resolution — bao_runtime fetch_api reads this via
+    /// `profile_for_global` instead of the process-thread-local).
+    full: StealthProfile,
     webdriver: bool,
     ua: String,
     platform: String,
@@ -117,6 +126,7 @@ struct RealmProfile {
 impl RealmProfile {
     fn from_profile(p: &StealthProfile) -> Self {
         RealmProfile {
+            full: p.clone(),
             webdriver: false,
             ua: p.navigator.user_agent.clone(),
             platform: p.navigator.platform.clone(),
@@ -348,6 +358,27 @@ fn realm_profiles() -> &'static DashMap<usize, ::std::sync::Arc<RealmProfile>> {
 pub fn set_profile_for_global(global_addr: usize, profile: &StealthProfile) {
     let rp = ::std::sync::Arc::new(RealmProfile::from_profile(profile));
     realm_profiles().insert(global_addr, rp);
+}
+
+/// Read the full StealthProfile registered for a Realm global address.
+///
+/// R53-A fetch-face lookup: the keyed entry is the AUTHORITATIVE wire-face
+/// profile for that Realm (TLS JA3/JA4 + HTTP/2 settings), so egress
+/// resolution inside a page Realm resolves to THAT page's profile even when
+/// several pages share one ScriptThread. Returns `None` when no keyed entry
+/// exists (caller falls back to its own thread-local storage — same contract
+/// as the engine getter callbacks, `current_realm_profile`).
+///
+/// `global_addr` is the address of a `*mut JSObject` global (Page Realm
+/// Window global, aliased Node Realm global, or Worker global — aliases
+/// resolve to the same `RealmProfile` Arc, so a Node Realm alias carries the
+/// registering page's full profile). Mirrors the `set_profile_for_global`
+/// keyed shape.
+// @trace REQ-STL-001 [req:REQ-STL-001]
+pub fn profile_for_global(global_addr: usize) -> Option<StealthProfile> {
+    realm_profiles()
+        .get(&global_addr)
+        .map(|rp| rp.full.clone())
 }
 
 /// Declare that `alias_global_addr` belongs to the same page as `page_global_addr`.

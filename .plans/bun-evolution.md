@@ -406,17 +406,17 @@ Residuals (documented):
 
 **Correction 2026-09-17 (stale §9, same failure class as the 09-07 `init_env_aliases` stale): the e8541037c4 PathBuffer pool sweep was ALREADY LANDED in `f8f6bd0f` (2026-09-08, 69 files, 360+/338-).** The 09-11 §9 update that queued it as next was written without checking master history. Residual closure of that sweep landed 2026-09-17 (this wave): `depth_buf_uninit()` in `src/install/lockfile/Tree.rs` — the one `MaybeUninit::uninit().assume_init()` UB constructor the sweep missed (`DepthBuf` bare `[Id; N]` + lint-suppression `#[allow]`), PORTed to the upstream `[MaybeUninit<Id>; N]` shape (see §8 entry for evidence).
 
-**Next single action: #42 CLOSED same-day (3384d1ca)** — root cause deeper than hypothesized: the SETSIGDEF/SETSIGMASK flags were already declared (35989e1d/dc8e8142) but the two signal sets were INVERTED (sigdefault=sigemptyset reset nothing; sigmask=sigfillset blocked everything — SIGTERM pended forever). Swapped to sigfillset/sigemptyset + fail-closed setters; child verified clean-default (SigBlk=0/SigIgn=0), SIGTERM terminates ~5ms, host state byte-identical (user ruling: a library never touches its host's signals). BCE sweep: sole call sites, zero same-shape residuals.
+**Next single action: QUEUE EMPTY (2026-09-18 closeout, user ruling "全部处理掉").**
 
-**B1 residual dispositions (2026-09-17 closeout)**:
-- `CP_STDIN_FDS` + `CpCleanup` dead code: CLOSED (`ef6554f3`) — stdin write-ends swept at three JS-thread points (death observation via __cp_poll_exit exit_info funnel / sweep arm / runtime-drop thread-local drain); CpCleanup removed with disposition=replacement.
-- weak row 30 (engine hooks): CLOSED by E9 — `UNCAUGHT_HOOK`/`FLUSH_HOOK` were already bare fn pointers; only the equality enforce was missing (E3 pattern: fn_addr_eq same→idempotent, different→debug_assert fail-closed).
-- row 27 (`TOP_LEVEL_DIR`): **upgraded from weak to a real B1 slice** — it is overwrite-style `RwLock<&'static [u8]>` (last-writer-wins), so under multiple runtimes runtime A's resolver reads runtime B's root. Real transposition requires per-runtime resolver-root plumbing through the resolver call chain — scope discipline keeps it out of this (already-deep) wave; scheduled as its own slice with its own wave-end verification.
-- row 29 (argv/streams): split — `argv()` is documented-accept (process-owned by contract, matching Node); STDOUT/STDERR `RacyCell` streams are a **user-ruling point** (does the embedder need a per-runtime output sink? 0A product-capability gate, same class as row 21). Ask at next interaction.
+- row 27 (`TOP_LEVEL_DIR`): CLOSED (`d812dca3`) — per-runtime resolver root via a thread-local overlay over the process-global (single read point `bun_core::top_level_dir()` follows for every consumer; install_runtime_root seeds after engine-init success; drop clears if-same). Two census-missed auto-following consumers recorded (compile_target.rs:224, GlobWalker.rs:1370).
+- R53-A fetch face (`TL_STEALTH_PROFILE`): CLOSED — fetch egress resolves keyed-per-Realm first (`engine_props::profile_for_global`, new `full` wire-face field on RealmProfile), thread-local demoted to the identity-less fallback (CLI/engine/test realms byte-for-byte). Cross-page fetch fingerprint contamination on shared ScriptThreads eradicated.
+- R53-A webviewless handler: documented-accept (vendor contract note) — webview-LESS requests carry no page identity (nothing to key BY); sole embedder installs one structurally-PassThrough handler so last-writer-wins is unobservable; revisit if a non-PassThrough handler ever appears.
+- row 29 (argv/streams): documented-accept (bun_core output.rs contract) — process-owned output state by Node convention; a per-runtime output sink is a NEW product capability needing an explicit PRD ruling if ever wanted.
+- #42 signal sets: CLOSED same-day (3384d1ca, see §8); CP_STDIN_FDS/CpCleanup CLOSED (ef6554f3); weak row 30 CLOSED (3e2d5a6f); rows 22/24/25 CLOSED (ruling A, §8 B1 slice-2 entry).
 
-Rows 22/24/25 CLOSED (ruling A, §8 B1 slice-2 entry).
+**Standing next (phase-level, not queued items)**: B0/B1 DoD gap review at the next daily-ops round (B2 IPC-to-channels phase gating; remaining §8 documented residuals all carry explicit accept/revisit contracts). Rows 17/19/21 remain blocked on their recorded upstream/product-semantics gates.
 
-R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
+Earlier 2026-09-17/18 wave index: #42 spawn signal fix → B1 slice-2 resource sweeps (rows 22/24/25 + stdin) → publish closures (bun_install 0.1.17; bun_runtime 0.2.0 + 8 crates) → row 27 resolver root → fetch keyed resolution.
 
 ## 10. Definition of Done
 

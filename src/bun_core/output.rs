@@ -263,6 +263,16 @@ thread_local! {
 
 // These are not threadlocal so we avoid opening stdout/stderr for every thread
 // Guarded by STDOUT_STREAM_SET (write-once at startup before threads).
+//
+// Contract (B1 census row 29 — documented-accept): the stream targets are
+// process-owned output state, deliberately NOT per-runtime. Every BaoRuntime
+// writes to the host process's stdout/stderr (the Node/embedded-runtime
+// convention: `console.log` goes to fd 1/2 of the embedding process). A
+// per-runtime output sink would be a NEW product capability (embedder-captured
+// runtime output) with no user request behind it — if that capability is ever
+// wanted it needs an explicit PRD ruling, not a silent architectural addition.
+// The sibling process-owned surface `argv()` (below) carries the same
+// contract: owned by the process, matching Node's semantics exactly.
 static STDERR_STREAM: crate::RacyCell<StreamType> = crate::RacyCell::new(StreamType::ZEROED);
 static STDOUT_STREAM: crate::RacyCell<StreamType> = crate::RacyCell::new(StreamType::ZEROED);
 static STDOUT_STREAM_SET: AtomicBool = AtomicBool::new(false);

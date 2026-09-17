@@ -31,7 +31,14 @@ thread_local! {
     static TL_STEALTH_PROFILE: ::std::cell::RefCell<Option<bao_stealth::StealthProfile>> = const { ::std::cell::RefCell::new(None) };
 }
 
-/// Store the current page's stealth profile so fetch() can apply TLS/HTTP2 fingerprints.
+/// Store the thread-local FALLBACK stealth profile (see
+/// `current_fetch_profile` for the keyed-per-Realm read contract).
+///
+/// R53-A: written by the page install path (`runtime_bridge` keyed+TLS dual
+/// write — the REALM_PROFILES keyed entry is the authoritative per-Realm
+/// face, this thread-local is the identity-less fallback bucket kept for
+/// realms without a keyed registration: CLI/engine mode, unit test
+/// JsContexts). `None` clears the fallback (stealth-free page installs).
 pub fn set_fetch_stealth_profile(profile: Option<bao_stealth::StealthProfile>) {
     TL_STEALTH_PROFILE.with(|p| *p.borrow_mut() = profile);
 }
@@ -41,12 +48,49 @@ pub fn is_fetch_stealth_profile_set() -> bool {
     TL_STEALTH_PROFILE.with(|p| p.borrow().is_some())
 }
 
-/// Clone the current thread's stealth profile. Single source shared by every
-/// page egress path (fetch, WebSocket wss://) so all TLS handshakes from one
-/// page present the identical JA3/JA4 fingerprint (REQ-STL-001 fingerprint
-/// consistency).
+/// Clone the current thread's stealth profile. Fallback source for egress
+/// paths that cannot resolve a keyed Realm entry (see `current_fetch_profile`).
+///
+/// R53-A: this thread-local is NO LONGER the fetch read point's first source.
+/// It is written per page install (`runtime_bridge::install_all_native` keeps
+/// the keyed+thread-local dual write — the keyed REALM_PROFILES entry is the
+/// authoritative per-Realm face, the thread-local here is the identity-less
+/// fallback bucket). With several pages sharing one ScriptThread the
+/// thread-local holds the LAST-installed page's profile, so callers must
+/// resolve keyed first to avoid cross-page contamination.
 pub fn get_fetch_stealth_profile() -> Option<bao_stealth::StealthProfile> {
     TL_STEALTH_PROFILE.with(|p| p.borrow().clone())
+}
+
+/// Resolve the stealth profile for THIS fetch() egress.
+///
+/// R53-A keyed-per-Realm resolution (mirrors the engine getter callbacks'
+/// `current_realm_profile` ordering — keyed authoritative, thread-local
+/// fallback):
+///
+/// 1. The calling Realm's current global (`JS::CurrentGlobalOrNull`) keys the
+///    engine_props REALM_PROFILES store (`profile_for_global`). A hit is the
+///    AUTHORITATIVE profile: two pages sharing one ScriptThread each resolve
+///    their own profile even though the install path's thread-local write is
+///    last-install-wins (the pre-R53-A fetch contamination: page A's fetch
+///    rode page B's TLS/HTTP2 fingerprint).
+/// 2. Keyed miss / no current global (Node engine contexts, CLI mode, unit
+///    test JsContexts — realms never registered by a page install) falls back
+///    to the thread-local (`get_fetch_stealth_profile`), which keeps the
+///    pre-existing behaviour byte-for-byte for those callers.
+pub fn current_fetch_profile(cx: *mut JSContext) -> Option<bao_stealth::StealthProfile> {
+    if !cx.is_null() {
+        // SAFETY: cx is the live JSContext fetch_fn is executing on (the
+        // JSNative entry hands it to us); CurrentGlobalOrNull only reads the
+        // context's realm stack.
+        let global = unsafe { JS::CurrentGlobalOrNull(cx) };
+        if !global.is_null() {
+            if let Some(p) = bao_stealth::engine_props::profile_for_global(global as usize) {
+                return Some(p);
+            }
+        }
+    }
+    get_fetch_stealth_profile()
 }
 
 /// Idempotent: install Firefox default profile if none has been set on this thread.
@@ -487,8 +531,7 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return true;
     }
 
-    let profile: Option<bao_stealth::StealthProfile> =
-        TL_STEALTH_PROFILE.with(|p| p.borrow().clone());
+    let profile: Option<bao_stealth::StealthProfile> = current_fetch_profile(cx);
 
     if let Some(sv) = signal_active {
         // Live signal: wire the cancellation channel (flag → AsyncHTTP

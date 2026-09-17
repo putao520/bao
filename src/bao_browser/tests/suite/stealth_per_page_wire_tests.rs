@@ -782,3 +782,241 @@ fn sw_egress_rides_host_page_profile_under_divergence_live() {
     capture_sw.stop();
     eprintln!("[sw-egress] === ② GREEN: SW egress rides the host page profile under divergence ===");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ③ fetch() egress rides the CALLING page's profile under divergence
+//    (R53-A fetch-face keyed-per-Realm resolution)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Dispatch a page-realm `fetch('https://…')` probe (window.fetch is the
+/// bao_runtime fetch stack: `fetch_api::fetch_fn` resolves the profile,
+/// `fetch_async` drives the bun HTTPThread with the stealth SSLConfig — the
+/// ClientHello is already on the wire when the handshake fails).
+fn dispatch_fetch(page: &bao_browser::PageHandle, port: u16, path: &str) {
+    let js = format!(
+        "(function() {{ window.__fetchState = 'pending'; \
+           fetch('https://127.0.0.1:{port}/{path}') \
+             .then(function(r) {{ window.__fetchState = 'ok:' + r.status; }}, \
+                   function(e) {{ window.__fetchState = 'err:' + e; }}); }})()"
+    );
+    let _ = page.evaluate_js_web(&js);
+}
+
+/// @trace REQ-STL-001 [criterion:REQ-STL-001] [level:integration] per-page
+/// stealth wire profile isolation on the fetch() face (R53-A fetch keyed
+/// resolution, live wire capture)
+///
+/// ONE runtime, TWO pages (Firefox installed FIRST, Chrome SECOND — both
+/// share one servo ScriptThread). Each page dispatches window.fetch to its
+/// own capture server. The contract holds iff:
+///   1. page F's fetch ClientHello carries the FIREFOX supported-groups
+///      anchor ("8-29-23-24-25" — P-521 present),
+///   2. page C's carries the CHROME anchor ("6-29-23-24"),
+///   3. the two JA3 strings differ.
+/// Before the keyed fetch resolution the profile came from the
+/// LAST-INSTALL-WINS thread-local (`TL_STEALTH_PROFILE`): page F (installed
+/// first) presented page C's Chrome fingerprint — that is the RED this test
+/// pins (T14 control: both pages' JA3 identical / page F wrong anchor).
+#[test]
+fn stealth_per_page_fetch_profiles_live() {
+    if !common::run_isolated("stealth_per_page_wire_tests::stealth_per_page_fetch_profiles_live") {
+        return;
+    }
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+    bun_core::Output::init_test();
+
+    let capture_f = CaptureServer::spawn();
+    let capture_c = CaptureServer::spawn();
+
+    let runtime = BaoRuntime::new(BaoConfig::default())
+        .expect("gated live test: BaoRuntime::new must succeed");
+
+    // Page F FIRST — its fetch must not ride page C's later install.
+    let page_f = runtime
+        .create_page(&PageConfig {
+            url: Some("about:blank".into()),
+            stealth_profile: Some(StealthProfile::firefox_default()),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page F must succeed");
+    pump(&page_f, 300);
+
+    let page_c = runtime
+        .create_page(&PageConfig {
+            url: Some("about:blank".into()),
+            stealth_profile: Some(StealthProfile::chrome_default()),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page C must succeed");
+    pump(&page_c, 300);
+
+    let firefox = StealthProfile::firefox_default();
+    let chrome = StealthProfile::chrome_default();
+    let ff_curves = expected_curves_field(&firefox);
+    let ch_curves = expected_curves_field(&chrome);
+    assert_ne!(
+        ff_curves, ch_curves,
+        "test precondition: Firefox/Chrome profiles must diverge on the wire \
+         (supported groups)"
+    );
+
+    dispatch_fetch(&page_f, capture_f.port, "fetch_probe_f");
+    let hello_f = await_hello(&page_f, &capture_f, "page F fetch (Firefox profile)");
+    eprintln!(
+        "[fetch-per-page] page F fetch ja3={} curves={}",
+        hello_f.ja3_string(),
+        hello_f.curves_field()
+    );
+
+    dispatch_fetch(&page_c, capture_c.port, "fetch_probe_c");
+    let hello_c = await_hello(&page_c, &capture_c, "page C fetch (Chrome profile)");
+    eprintln!(
+        "[fetch-per-page] page C fetch ja3={} curves={}",
+        hello_c.ja3_string(),
+        hello_c.curves_field()
+    );
+
+    // THE fetch-face assertions (R53-A): each page's fetch rides ITS OWN
+    // profile, not the last-installed page's thread-local leftover.
+    assert_eq!(
+        hello_f.curves_field(),
+        ff_curves,
+        "③ R53-A FETCH VIOLATION: page F (installed FIRST, Firefox profile) \
+         fetch must present the Firefox supported groups ({ff_curves}), got \
+         {} — the last-install-wins thread-local served page C's Chrome \
+         profile to page F's egress",
+        hello_f.curves_field()
+    );
+    assert_eq!(
+        hello_c.curves_field(),
+        ch_curves,
+        "③ R53-A FETCH VIOLATION: page C (installed LAST, Chrome profile) \
+         fetch must present the Chrome supported groups ({ch_curves}), got {}",
+        hello_c.curves_field()
+    );
+    assert_ne!(
+        hello_f.ja3_string(),
+        hello_c.ja3_string(),
+        "③ R53-A FETCH VIOLATION: two divergent-profile pages' fetches must \
+         present different JA3 fingerprints — identical JA3 means one \
+         thread-local profile served both pages"
+    );
+    let h2_h1: Vec<Vec<u8>> = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    assert_eq!(hello_f.alpn_protocols(), h2_h1, "③ page F fetch ALPN must be h2,http/1.1");
+    assert_eq!(
+        hello_c.alpn_protocols(),
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        "③ page C fetch ALPN must be h2,http/1.1"
+    );
+
+    capture_f.stop();
+    capture_c.stop();
+    eprintln!("[fetch-per-page] === ③ GREEN: fetch egress rides the calling page profile ===");
+}
+
+/// Keyed fetch-face contract pin (no servo needed — mirrors the
+/// compartment_isolation_tests scenario-3 simulation idiom: two "pages"
+/// registered on one logical thread, distinct globals, distinct profiles).
+///
+/// `profile_for_global` is the fetch read point's authoritative source
+/// (fetch_api::current_fetch_profile), so it must hand back the FULL
+/// registration-time profile — including the TLS/HTTP2 wire face the flat
+/// RealmProfile projection does not model:
+///   1. each keyed global resolves to ITS profile's wire anchor (the Firefox
+///      P-521 groups vs the Chrome list),
+///   2. a Node-Realm-style alias resolves to the registering page's full
+///      wire profile,
+///   3. an unregistered global resolves to None (the caller's TLS fallback
+///      contract),
+///   4. the resolved profile is wire-equivalent to the registered one
+///      (cipher suites + curves + sigalgs + ALPN round-trip).
+#[test]
+fn fetch_profile_keyed_getter_resolves_wire_face() {
+    // Process-global store: nextest gives every test its own process, but
+    // start clean regardless (direct re-runs, libtest harnesses).
+    bao_stealth::engine_props::clear_all_realm_profiles();
+
+    let firefox = StealthProfile::firefox_default();
+    let chrome = StealthProfile::chrome_default();
+    let page_a_global = 0x0005_AAAA_0000usize;
+    let page_b_global = 0x0005_BBBB_0000usize;
+    let node_realm_global = 0x0005_C0DE_0000usize;
+
+    bao_stealth::engine_props::set_profile_for_global(page_a_global, &firefox);
+    bao_stealth::engine_props::set_profile_for_global(page_b_global, &chrome);
+
+    // ① keyed hit: each global resolves to its own FULL profile.
+    let got_a = bao_stealth::engine_props::profile_for_global(page_a_global)
+        .expect("keyed page A must resolve its registered profile");
+    let got_b = bao_stealth::engine_props::profile_for_global(page_b_global)
+        .expect("keyed page B must resolve its registered profile");
+    assert_eq!(
+        got_a.tls.supported_groups, firefox.tls.supported_groups,
+        "page A keyed resolution must carry the Firefox TLS wire face"
+    );
+    assert_eq!(
+        got_b.tls.supported_groups, chrome.tls.supported_groups,
+        "page B keyed resolution must carry the Chrome TLS wire face"
+    );
+    assert_ne!(
+        got_a.tls.supported_groups, got_b.tls.supported_groups,
+        "the two pages' keyed wire faces must diverge (Firefox keeps P-521)"
+    );
+    assert_eq!(
+        got_a.http2.header_table_size, firefox.http2.header_table_size,
+        "keyed resolution must carry the HTTP/2 face, not just TLS"
+    );
+
+    // ② alias: the Node Realm global rides the registering page's profile.
+    bao_stealth::engine_props::register_global_alias(page_a_global, node_realm_global);
+    let got_alias = bao_stealth::engine_props::profile_for_global(node_realm_global)
+        .expect("aliased Node Realm global must resolve the page profile");
+    assert_eq!(
+        got_alias.tls.supported_groups, firefox.tls.supported_groups,
+        "Node Realm alias must carry the registering page's FULL wire profile"
+    );
+
+    // ③ miss: unregistered global → None (caller falls back to its TLS).
+    assert!(
+        bao_stealth::engine_props::profile_for_global(0x0005_DEAD_0000).is_none(),
+        "unregistered global must resolve None — the fetch read point's \
+         TLS fallback contract"
+    );
+
+    // ④ wire round-trip: the resolved profile yields the same JA3 wire
+    // inputs as the registered one (cipher suites / curves / sigalgs).
+    let expected_curves: Vec<u16> = firefox
+        .tls
+        .supported_groups
+        .iter()
+        .copied()
+        .filter(|id| !(0x0100..=0x010D).contains(id))
+        .collect();
+    assert_eq!(
+        got_a.tls.supported_groups.iter().copied().filter(|id| !(0x0100..=0x010D).contains(id))
+            .collect::<Vec<u16>>(),
+        expected_curves,
+        "keyed resolution wire round-trip: supported groups (FFDHE-filtered) \
+         must equal the registered profile's"
+    );
+    assert_eq!(
+        got_a.tls.cipher_suites, firefox.tls.cipher_suites,
+        "keyed resolution wire round-trip: cipher suites must equal the \
+         registered profile's"
+    );
+    assert_eq!(
+        got_a.tls.signature_algorithms, firefox.tls.signature_algorithms,
+        "keyed resolution wire round-trip: signature algorithms must equal \
+         the registered profile's"
+    );
+    assert_eq!(
+        got_a.tls.alpn_protocols, firefox.tls.alpn_protocols,
+        "keyed resolution wire round-trip: ALPN must equal the registered \
+         profile's"
+    );
+
+    bao_stealth::engine_props::clear_all_realm_profiles();
+}

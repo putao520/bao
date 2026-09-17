@@ -50,6 +50,15 @@ pub enum BaoWebviewlessResourceVerdict {
 pub type BaoWebviewlessResourceHandler =
     std::sync::Arc<dyn Fn(&WebResourceRequest) -> BaoWebviewlessResourceVerdict + Send + Sync>;
 
+// Contract (B1/R53-A residual — documented-accept): process-wide single
+// slot, deliberately NOT keyed. The handler exists for webview-LESS fetches
+// (SW/worker realms, `target_webview_id == None`) — requests that by
+// definition carry no page identity, so there is no key to key BY. The sole
+// embedder (bao_browser) installs one handler per `BaoRuntime::new` and the
+// verdict is structurally `PassThrough` (no embedder round-trip), so
+// last-writer-wins across runtimes is unobservable today. If a future
+// embedder ever installs a NON-PassThrough handler, revisit this slot's
+// ownership (per-runtime registration or an explicit generation token).
 static BAO_WEBVIEWLESS_RESOURCE_HANDLER: parking_lot::RwLock<Option<BaoWebviewlessResourceHandler>> =
     parking_lot::RwLock::new(None);
 
