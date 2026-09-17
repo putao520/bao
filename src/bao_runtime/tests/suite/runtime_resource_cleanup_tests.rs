@@ -24,6 +24,17 @@
 //   T4: two runtimes each spawn a worker; dropping B joins only B's worker
 //       (A's worker thread stays alive and still accepts postMessage);
 //       dropping A then joins A's worker too.
+//
+// B1 slice 2 段三(same ruling): BaoRuntime::drop must also kill + reap every
+// child_process child it spawned (no zombie: /proc/<pid> disappears entirely),
+// take back its stdout/stderr pipe read-end fds, and drop its same-pid IPC
+// channel (parent socketpair end closed) — without touching children owned by
+// other live runtimes.
+//   T5: spawn `sleep 300` → alive → drop → reaped (/proc gone, kill(0) ESRCH),
+//       pipe read ends closed, cp-poll thread gone.
+//   T6: two runtimes each spawn a child; dropping B reaps only B's child
+//       (A's child + its cp-poll thread survive); dropping A reaps A's too.
+//   T7: an IPC-stdio child's parent socketpair end is closed by the sweep.
 
 use std::net::UdpSocket;
 use std::time::Duration;
@@ -339,5 +350,225 @@ fn runtime_drop_is_per_token_other_runtimes_workers_untouched() {
     wait_until(
         || !worker_thread_alive(&wa),
         "A's worker thread to exit when A drops",
+    );
+}
+
+// ── B1 slice 2 段三: CP_ASYNC_STATES child drop sweep (row 25) ─────────────
+
+use std::collections::BTreeMap;
+
+/// `/proc/<pid>/stat` state char (`R`/`S`/...; `Z` = zombie), `None` once the
+/// pid is gone — a REAPED child disappears from /proc entirely, so `None`
+/// proves dead-AND-reaped (a zombie would still show up as `Some('Z')`).
+fn proc_state(pid: i32) -> Option<char> {
+    let stat = ::std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    // comm may contain spaces/parens — everything after the last ')' is
+    // fixed-layout: " S ppid ..." with the state char first.
+    stat.rsplit_once(')')?.1.trim().chars().next()
+}
+
+/// fd → `/proc/self/fd/<fd>` link target for every open fd whose link target
+/// starts with `prefix` ("pipe:" / "socket:").
+fn fd_targets(prefix: &str) -> BTreeMap<i32, String> {
+    let mut out = BTreeMap::new();
+    if let Ok(entries) = ::std::fs::read_dir("/proc/self/fd") {
+        for entry in entries.flatten() {
+            let fd: i32 = match entry.file_name().to_string_lossy().parse() {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if let Ok(target) = ::std::fs::read_link(entry.path()) {
+                let t = target.to_string_lossy().into_owned();
+                if t.starts_with(prefix) {
+                    out.insert(fd, t);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Spawn `sleep 300` inside `rt` through the real user path
+/// (`require('child_process').spawn`), wait until its cp-poll thread is
+/// observable, and return `(pid, the pipe fds the spawn added)` — matched by
+/// link target (`pipe:[inode]`), not fd number, so fd reuse cannot fool it.
+/// `pipes_before` must be snapshotted before the spawn eval.
+fn spawn_sleeper(
+    rt: &mut bun_runtime::BaoRuntime,
+    slot: &str,
+    pipes_before: &BTreeMap<i32, String>,
+) -> (i32, BTreeMap<i32, String>) {
+    rt.eval(
+        &format!(
+            "globalThis.{slot} = require('child_process').spawn('sleep', ['300']);"
+        ),
+        "<runtime-cleanup-test>",
+    )
+    .expect("spawn sleep 300 must succeed");
+    let pid = eval_number(rt, &format!("globalThis.{slot}.pid")) as i32;
+    assert!(pid > 0, "spawn must produce a pid, got {}", pid);
+    // `worker_thread_alive` is name-generic — the async child's pump thread is
+    // named `cp-poll-<pid>` (node_child_process::register_async_child).
+    wait_until(
+        || worker_thread_alive(&format!("cp-poll-{}", pid)),
+        &format!("cp-poll-{} thread alive after spawn", pid),
+    );
+    let new_pipes: BTreeMap<i32, String> = fd_targets("pipe:")
+        .into_iter()
+        .filter(|(fd, target)| pipes_before.get(fd) != Some(target))
+        .collect();
+    (pid, new_pipes)
+}
+
+/// Warm the child_process module install so a surrounding pipe-fd diff
+/// captures only the spawn's own fds.
+fn warm_child_process(rt: &mut bun_runtime::BaoRuntime) {
+    rt.eval("require('child_process');", "<runtime-cleanup-test>")
+        .expect("require child_process must succeed");
+}
+
+/// T5: a child spawned inside a runtime is killed, reaped and swept when the
+/// runtime drops — no zombie (`/proc/<pid>` gone entirely), no leaked
+/// stdout/stderr pipe read ends, no surviving cp-poll thread.
+#[test]
+fn runtime_drop_kills_and_reaps_owned_children() {
+    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    warm_child_process(&mut rt);
+    let pipes_before = fd_targets("pipe:");
+    let (pid, child_pipes) = spawn_sleeper(&mut rt, "__cpT5", &pipes_before);
+
+    // Alive: the child runs (not a zombie) and its pipes are ours. The JS
+    // wrapper pipes stdin too, so the spawn adds three pipe fds: the stdin
+    // write end (held by CP_STDIN_FDS — per-call-site ownership, outside this
+    // slice's state-fd sweep) plus the stdout/stderr READ ends the sweep must
+    // take back.
+    wait_until(
+        || matches!(proc_state(pid), Some('R') | Some('S')),
+        "spawned child alive (not zombie) while the runtime lives",
+    );
+    assert_eq!(
+        child_pipes.len(),
+        3,
+        "spawn must add stdin-write + stdout-read + stderr-read pipe fds, got {:?}",
+        child_pipes
+    );
+    let stdin_fd = eval_number(&mut rt, "globalThis.__cpT5._stdinFd") as i32;
+    let read_ends: Vec<String> = child_pipes
+        .iter()
+        .filter(|(fd, _)| **fd != stdin_fd)
+        .map(|(_, target)| target.clone())
+        .collect();
+    assert_eq!(
+        read_ends.len(),
+        2,
+        "stdout/stderr read ends must be distinct from the stdin write end"
+    );
+
+    // Drop: the runtime-owned child must be terminated, reaped and swept
+    // (用户裁决 2026-09-17 A).
+    drop(rt);
+    wait_until(
+        || proc_state(pid).is_none(),
+        "child reaped after runtime drop (/proc/<pid> gone — no zombie residue)",
+    );
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "kill(pid, 0) must report the reaped child gone (ESRCH)"
+    );
+    let pipes_after = fd_targets("pipe:");
+    for target in &read_ends {
+        assert!(
+            !pipes_after.values().any(|t| t == target),
+            "pipe {} must be closed after runtime drop",
+            target
+        );
+    }
+    wait_until(
+        || !worker_thread_alive(&format!("cp-poll-{}", pid)),
+        "cp-poll thread to exit after the sweep",
+    );
+}
+
+/// T6: per-token isolation — dropping one runtime must not terminate another
+/// live runtime's children; the survivor and its cp-poll thread keep running.
+#[test]
+fn runtime_drop_is_per_token_other_runtimes_children_untouched() {
+    let mut rt_a = bun_runtime::BaoRuntime::new().expect("runtime A");
+    warm_child_process(&mut rt_a);
+    let pipes_a = fd_targets("pipe:");
+    let (pid_a, _) = spawn_sleeper(&mut rt_a, "__cpT6a", &pipes_a);
+
+    // Second runtime on this thread parasitizes the live JSContext — the
+    // same multi-runtime shape the token slot must keep isolated.
+    let mut rt_b = bun_runtime::BaoRuntime::new().expect("runtime B");
+    warm_child_process(&mut rt_b);
+    let pipes_b = fd_targets("pipe:");
+    let (pid_b, _) = spawn_sleeper(&mut rt_b, "__cpT6b", &pipes_b);
+    assert_ne!(pid_a, pid_b, "the two children must be distinct processes");
+
+    // Drop B: ONLY B's child may be terminated.
+    drop(rt_b);
+    wait_until(
+        || proc_state(pid_b).is_none(),
+        "B's child reaped when B drops",
+    );
+    assert!(
+        matches!(proc_state(pid_a), Some('R') | Some('S')),
+        "A's child must survive B's drop (per-token isolation)"
+    );
+    assert!(
+        worker_thread_alive(&format!("cp-poll-{}", pid_a)),
+        "A's cp-poll thread must still run after B's drop"
+    );
+
+    // Drop A: its child is terminated too.
+    drop(rt_a);
+    wait_until(
+        || proc_state(pid_a).is_none(),
+        "A's child reaped when A drops",
+    );
+}
+
+/// T7: the parent-side IPC channel (`stdio: [..., 'ipc']`) is created by the
+/// same spawn as the child and dies with it — the drop sweep closes its
+/// socketpair end (keyed by the same pid; no separate owner stamp).
+#[test]
+fn runtime_drop_closes_child_ipc_channels() {
+    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    warm_child_process(&mut rt);
+    let sockets_before = fd_targets("socket:");
+    rt.eval(
+        "globalThis.__cpT7 = require('child_process').spawn('sleep', ['300'], \
+         { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });",
+        "<runtime-cleanup-test>",
+    )
+    .expect("spawn with ipc stdio must succeed");
+    let pid = eval_number(&mut rt, "globalThis.__cpT7.pid") as i32;
+    assert!(pid > 0, "ipc spawn must produce a pid, got {}", pid);
+    // The parent end of the IPC socketpair: an unnamed unix socket fd that
+    // appeared with the spawn (exactly one — the spawn creates one pair).
+    let new_sockets: Vec<String> = fd_targets("socket:")
+        .into_iter()
+        .filter(|(fd, target)| sockets_before.get(fd) != Some(target))
+        .map(|(_, target)| target)
+        .collect();
+    assert_eq!(
+        new_sockets.len(),
+        1,
+        "an ipc spawn must add exactly one parent-side socketpair fd, got {:?}",
+        new_sockets
+    );
+
+    drop(rt);
+    wait_until(
+        || proc_state(pid).is_none(),
+        "ipc child reaped after runtime drop",
+    );
+    let sockets_after = fd_targets("socket:");
+    assert!(
+        !sockets_after.values().any(|t| t == &new_sockets[0]),
+        "ipc socketpair end {} must be closed after runtime drop",
+        new_sockets[0]
     );
 }

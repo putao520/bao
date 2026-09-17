@@ -18,11 +18,12 @@ use crate::require;
 // ── B1 runtime resource cleanup (BUN-EVOLUTION B1, 用户裁决 2026-09-17 A) ──
 //
 // Every runtime-owned process resource (UDP sockets in node_dgram's
-// UDP_REGISTRY and Workers in node_worker_threads' WORKER_REGISTRY today;
-// the child_process registry in a later slice) is stamped
+// UDP_REGISTRY, Workers in node_worker_threads' WORKER_REGISTRY, and spawned
+// children in node_child_process' CP_ASYNC_STATES) is stamped
 // with the creating BaoRuntime's monotonic token. When the runtime drops,
 // `cleanup_runtime_resources(token)` terminates every resource it owns —
-// "drop 时未 close 资源必须 close,防泄漏" (unreaped fd + port → EMFILE).
+// "drop 时未 close 资源必须 close,防泄漏" (unreaped fd + port → EMFILE;
+// unwaited child → zombie).
 //
 // Token 0 is the sentinel for resources created OUTSIDE any BaoRuntime
 // (process-shared): registration points stamp
@@ -48,15 +49,18 @@ pub(crate) fn current_runtime_token() -> ::std::option::Option<u64> {
 
 /// Terminate every runtime-owned resource registered under `token`.
 ///
-/// Per-domain cleanup is wired here slice by slice (dgram's UDP registry and
-/// worker_threads' worker registry today; the child_process registry in a
-/// later slice).
+/// Per-domain cleanup is wired here slice by slice (dgram's UDP registry,
+/// worker_threads' worker registry and child_process' child registry).
 pub(crate) fn cleanup_runtime_resources(token: u64) {
     crate::node_dgram::cleanup_for_token(token);
     // worker_threads registry: signal + bounded-join every worker this
     // runtime created — a leaked worker thread pins its own JSContext and
     // stack for the life of the process.
     crate::node_worker_threads::cleanup_for_token(token);
+    // child_process registry: SIGTERM + bounded-reap every child this runtime
+    // spawned and take back its pipe fds + IPC socketpair ends — a child
+    // nobody waits zombifies forever and its fds leak.
+    crate::node_child_process::cleanup_for_token(token);
 }
 
 pub struct BaoRuntime {

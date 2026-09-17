@@ -46,6 +46,13 @@ struct AsyncChildState {
     pid: i32,
     stdout_fd: c_int, // -1 if not piped
     stderr_fd: c_int, // -1 if not piped
+    /// B1 (用户裁决 2026-09-17 A): creating BaoRuntime's cleanup token,
+    /// stamped at spawn-registration via
+    /// `crate::runtime::current_runtime_token()`. `0` = created outside any
+    /// runtime = process-shared, exempt from the drop-time sweep. See
+    /// `cleanup_for_token`. Read-only after registration — no lock protocol
+    /// change for the polling thread.
+    owner: u64,
     #[allow(dead_code)]
     stdin_fd: c_int, // -1 if not piped
     stdout_eof: bool,
@@ -244,16 +251,22 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
         }
     }
 
-    // Close pipe fds that we own.
-    let s = state.lock().unwrap();
-    if s.stdout_fd >= 0 {
-        unsafe {
-            libc::close(s.stdout_fd);
-        }
-    }
-    if s.stderr_fd >= 0 {
-        unsafe {
-            libc::close(s.stderr_fd);
+    // Close pipe fds that we own — take-then-close under the state lock so a
+    // concurrent runtime-drop sweep (`cleanup_for_token`) can never close the
+    // same fd number twice (a recycled number closed twice hits a foreign
+    // resource). The sweep uses the identical protocol.
+    let taken = {
+        let mut s = state.lock().unwrap();
+        (
+            ::std::mem::replace(&mut s.stdout_fd, -1),
+            ::std::mem::replace(&mut s.stderr_fd, -1),
+        )
+    };
+    for fd in [taken.0, taken.1] {
+        if fd >= 0 {
+            unsafe {
+                libc::close(fd);
+            }
         }
     }
 }
@@ -273,6 +286,9 @@ pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int,
         stdout_fd,
         stderr_fd,
         stdin_fd,
+        // Stamp the creating runtime's token (0 = process-shared when no
+        // BaoRuntime is alive on this thread); see AsyncChildState::owner.
+        owner: crate::runtime::current_runtime_token().unwrap_or(0),
         stdout_eof: stdout_fd < 0,
         stderr_eof: stderr_fd < 0,
         child_exited: false,
@@ -334,6 +350,189 @@ pub(crate) fn peek_output(pid: i32, stdout: bool) -> Option<Vec<u8>> {
                 }
             })
         })
+}
+
+// ── Runtime-drop sweep (B1, 用户裁决 2026-09-17 A — "drop 时未 close 资源必须 close")
+// ───────────────────────────────────────────────────────────────────────────
+
+/// SIGTERM→reap window before the sweep escalates to SIGKILL.
+const CP_REAP_TERM_WINDOW: ::std::time::Duration = ::std::time::Duration::from_secs(2);
+/// SIGKILL→reap window; past it the child is treated as unkillable (D state)
+/// and its registry entry is KEPT — never swept on a guess.
+const CP_REAP_KILL_WINDOW: ::std::time::Duration = ::std::time::Duration::from_secs(1);
+
+/// Outcome of the bounded reap in [`cleanup_for_token`].
+enum CpReap {
+    /// This sweep won the waitpid — the poll thread's bookkeeping
+    /// (`child_exited` + `reaped`) was mirrored into the state, because its
+    /// own waitpid would now return ECHILD forever and it would otherwise
+    /// spin waiting for an exit it can never observe.
+    Reaped,
+    /// The poll thread (or another waiter) already reaped it — bookkeeping
+    /// already present in the state.
+    AlreadyReaped,
+    /// Still alive after both SIGTERM and SIGKILL windows.
+    Unkillable,
+}
+
+/// One `waitpid(WNOHANG)` probe. `None` = still alive (or a transient probe
+/// error — retry within the window); `Some` = terminal outcome.
+fn cp_try_reap(pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
+    let mut wstatus: c_int = 0;
+    let ret = unsafe { libc::waitpid(pid, &mut wstatus, libc::WNOHANG) };
+    if ret == 0 {
+        return None; // still alive
+    }
+    if ret == pid {
+        if let Ok(mut s) = state.lock() {
+            if !s.child_exited {
+                let exit_code = if libc::WIFEXITED(wstatus) {
+                    libc::WEXITSTATUS(wstatus)
+                } else {
+                    -1
+                };
+                let signal = if libc::WIFSIGNALED(wstatus) {
+                    libc::WTERMSIG(wstatus)
+                } else {
+                    0
+                };
+                s.child_exited = true;
+                s.reaped = Some((exit_code, signal));
+            }
+            cp_try_publish(&mut s);
+        }
+        return Some(CpReap::Reaped);
+    }
+    // ret < 0
+    let errno = unsafe { *libc::__errno_location() };
+    if errno == libc::ECHILD {
+        // Already reaped elsewhere — the poll thread's own waitpid won it.
+        return Some(CpReap::AlreadyReaped);
+    }
+    None // EINTR or unexpected — probe again within the window
+}
+
+/// Take (swap to -1) and close a state's stdout/stderr read-end fds.
+///
+/// Take-then-close under the state lock is the fd-ownership protocol shared
+/// with `pipe_poll_thread`'s exit path: whichever party swaps a field owns
+/// that close; the other observes -1 and can never close a recycled fd
+/// number (a double `close` hits whatever reused the number).
+fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
+    let taken = match state.lock() {
+        Ok(mut s) => (
+            ::std::mem::replace(&mut s.stdout_fd, -1),
+            ::std::mem::replace(&mut s.stderr_fd, -1),
+        ),
+        // Poisoned state = a poll thread panicked holding the lock; fd
+        // ownership is unknowable, so refuse to guess (never double-close).
+        Err(_) => return,
+    };
+    for fd in [taken.0, taken.1] {
+        if fd >= 0 {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+    }
+}
+
+/// Terminate every child process owned by the runtime `token`.
+///
+/// Contract (B1 slice 2 段三, 用户裁决 2026-09-17 A): after a runtime drops,
+/// its children would otherwise zombie forever (nobody waits them), their
+/// stdout/stderr pipe fds would leak, and the `CP_IPC_CHANNELS` entry would
+/// pin the parent socketpair end — the child writing to a dead runtime's
+/// pipe hits EPIPE/blocking.
+///
+/// Per child stamped `owner == token`:
+/// 1. `SIGTERM` (the same default the JS `child.kill()` path sends; ESRCH =
+///    already dead is ignored),
+/// 2. bounded `waitpid(WNOHANG)` reap — [`CP_REAP_TERM_WINDOW`], then a
+///    SIGKILL escalation with [`CP_REAP_KILL_WINDOW`]; a child that survives
+///    both (D state) is reported loudly and its entry is KEPT (sweeping it
+///    would break double-reap/double-kill semantics; its poll thread keeps
+///    owning the fds and the exit observation),
+/// 3. the pipe read-end fds are taken and closed via the take-then-close
+///    protocol shared with the poll thread,
+/// 4. the registry entry is removed and the same-pid `CP_IPC_CHANNELS` entry
+///    is dropped — the IPC channel is created by the same spawn and dies with
+///    the child, so dropping the `Arc` closes the parent socketpair end (no
+///    separate owner stamp needed).
+///
+/// `owner == 0` (created outside any BaoRuntime) is exempt; per-token
+/// isolation: only `token`'s children are touched.
+///
+/// Returns the number of children swept (reaped + entry removed); unkillable
+/// children are not counted. Called from
+/// `crate::runtime::cleanup_runtime_resources` on `BaoRuntime::drop`.
+pub(crate) fn cleanup_for_token(token: u64) -> usize {
+    if token == 0 {
+        // Process-shared sentinel can never own a child; refuse to sweep
+        // (defensive: cleanup_runtime_resources only ever passes token >= 1).
+        return 0;
+    }
+    // Collect this token's children under a minimal registry lock; no
+    // re-registration can race the sweep — the JS thread, the only spawner,
+    // is the caller inside Drop.
+    let owned: Vec<(i32, Arc<Mutex<AsyncChildState>>)> = match CP_ASYNC_STATES.lock() {
+        Ok(registry) => registry
+            .iter()
+            .filter(|(_, state)| state.lock().map(|s| s.owner == token).unwrap_or(false))
+            .map(|(pid, state)| (*pid, Arc::clone(state)))
+            .collect(),
+        Err(_) => return 0, // poisoned registry — nothing safe to sweep
+    };
+
+    let mut swept = 0usize;
+    for (pid, state) in owned {
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        let mut sig = libc::SIGTERM;
+        let mut deadline = ::std::time::Instant::now() + CP_REAP_TERM_WINDOW;
+        let outcome = loop {
+            if let Some(reap) = cp_try_reap(pid, &state) {
+                break reap;
+            }
+            if ::std::time::Instant::now() >= deadline {
+                if sig == libc::SIGTERM {
+                    // TERM window exhausted — escalate to SIGKILL and grant
+                    // one more bounded window.
+                    sig = libc::SIGKILL;
+                    unsafe {
+                        libc::kill(pid, sig);
+                    }
+                    deadline = ::std::time::Instant::now() + CP_REAP_KILL_WINDOW;
+                    continue;
+                }
+                break CpReap::Unkillable;
+            }
+            ::std::thread::sleep(::std::time::Duration::from_millis(10));
+        };
+        match outcome {
+            CpReap::Reaped | CpReap::AlreadyReaped => {
+                cp_take_and_close_pipe_fds(&state);
+                // Same-spawn IPC channel dies with the child.
+                if let Ok(mut ipc) = CP_IPC_CHANNELS.lock() {
+                    ipc.remove(&pid);
+                }
+                if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+                    registry.remove(&pid);
+                }
+                swept += 1;
+            }
+            CpReap::Unkillable => {
+                // Loud, honest residual — keep the entry so no phantom sweep
+                // can double-kill, and the poll thread keeps its fds.
+                eprintln!(
+                    "[bao] runtime-drop sweep: child {} (token {}) survived SIGTERM+SIGKILL — registry entry kept",
+                    pid, token
+                );
+            }
+        }
+    }
+    swept
 }
 
 // ─── Module install ────────────────────────────────────────────────────────
@@ -3661,6 +3860,9 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 stdout_fd: stdout_pipe[0],
                 stderr_fd: stderr_pipe[0],
                 stdin_fd: stdin_pipe[1],
+                // Same owner stamp as register_async_child (this fork site
+                // builds its state inline); see AsyncChildState::owner.
+                owner: crate::runtime::current_runtime_token().unwrap_or(0),
                 stdout_eof: false,
                 stderr_eof: false,
                 child_exited: false,
