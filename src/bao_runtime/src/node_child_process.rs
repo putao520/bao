@@ -72,17 +72,10 @@ struct AsyncChildState {
     exit_info: Option<(i32, i32)>,
 }
 
-/// RAII cleanup for shared child process state.
-pub struct CpCleanup;
-
-impl Drop for CpCleanup {
-    fn drop(&mut self) {
-        if let Ok(mut states) = CP_ASYNC_STATES.lock() {
-            states.clear();
-        }
-        CP_STDIN_FDS.with(|m| m.borrow_mut().clear());
-    }
-}
+// CpCleanup (RAII全清 CP_ASYNC_STATES + CP_STDIN_FDS) 已删除:全树零实例化的
+// 死代码,其全清能力由 `close_stdin_fds_for_current_thread()`(runtime drop 统一
+// 清扫)与 `cleanup_for_token`(per-token sweep)取代 — B1 残留收编,
+// 用户裁决 2026-09-17 A。
 
 /// Pipes are drained when every piped end hit EOF; unpiped slots (fd < 0)
 /// count as drained immediately.
@@ -278,8 +271,9 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 ///
 /// fd ownership: `stdout_fd`/`stderr_fd` (parent-side read ends) transfer to
 /// the pump thread, which closes them at EOF. Pass `-1` for unpiped slots.
-/// `stdin_fd` is NOT owned by the pump (parent keeps the write end;
-/// `CP_STDIN_FDS` is managed per call site).
+/// `stdin_fd` is NOT owned by the pump (parent keeps the write end in
+/// `CP_STDIN_FDS`, removed + closed at JS-observed exit / runtime sweep /
+/// runtime drop).
 pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int, stdin_fd: c_int) -> bool {
     let async_state = Arc::new(Mutex::new(AsyncChildState {
         pid,
@@ -454,7 +448,8 @@ fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
 ///    would break double-reap/double-kill semantics; its poll thread keeps
 ///    owning the fds and the exit observation),
 /// 3. the pipe read-end fds are taken and closed via the take-then-close
-///    protocol shared with the poll thread,
+///    protocol shared with the poll thread, and the same-spawn stdin write
+///    end is taken out of `CP_STDIN_FDS` and closed the same way,
 /// 4. the registry entry is removed and the same-pid `CP_IPC_CHANNELS` entry
 ///    is dropped — the IPC channel is created by the same spawn and dies with
 ///    the child, so dropping the `Arc` closes the parent socketpair end (no
@@ -513,6 +508,10 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
         match outcome {
             CpReap::Reaped | CpReap::AlreadyReaped => {
                 cp_take_and_close_pipe_fds(&state);
+                // stdin write end dies with the child too — the JS poll chain
+                // may never have observed the exit before this sweep ran (Drop
+                // is the last consumer), so the same take-then-close applies.
+                take_and_close_stdin_fd(pid);
                 // Same-spawn IPC channel dies with the child.
                 if let Ok(mut ipc) = CP_IPC_CHANNELS.lock() {
                     ipc.remove(&pid);
@@ -1905,6 +1904,48 @@ thread_local! {
     static CP_STDIN_FDS: RefCell<HashMap<i32, c_int>> = RefCell::new(HashMap::new());
 }
 
+/// Take (remove) the stdin write-end fd registered for `pid` and close it.
+///
+/// Take-then-close — the fd-ownership protocol shared with
+/// `cp_take_and_close_pipe_fds` / `__cp_stdin_close`: the party that removes
+/// the map entry owns that close, so a double call observes `None` and can
+/// never close a recycled fd number. Idempotent by construction.
+///
+/// Must run on the JS thread: `CP_STDIN_FDS` is a thread_local and spawn only
+/// ever happens there, so the thread-local IS the owner boundary (the poll
+/// thread never touches this map).
+pub(crate) fn take_and_close_stdin_fd(pid: i32) {
+    let fd = CP_STDIN_FDS
+        .with(|m| m.borrow_mut().remove(&pid))
+        .unwrap_or(-1);
+    if fd >= 0 {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
+/// Drain every stdin write-end fd registered on this thread and close them.
+///
+/// The runtime-drop backstop called from `cleanup_runtime_resources`: the
+/// per-child paths (`__cp_stdin_close`, the exit-observation hook in
+/// `cp_poll_exit`, the `cleanup_for_token` sweep) cover pids whose death JS
+/// observed or that this runtime owned — anything left in the thread-local
+/// (exits no consumer ever polled, process-shared token-0 spawns) is closed
+/// here. Thread-local = owner boundary under the single-JS-thread model:
+/// spawn only happens on the JS thread, so this thread's map belongs to the
+/// runtime being dropped; closing a still-live child's stdin write end is
+/// just the EOF the child would have seen from `stdin.end()`.
+pub(crate) fn close_stdin_fds_for_current_thread() {
+    let fds: Vec<c_int> =
+        CP_STDIN_FDS.with(|m| m.borrow_mut().drain().map(|(_, fd)| fd).collect());
+    for fd in fds {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
 // ─── IPC channel registry ──────────────────────────────────────────────────
 //
 // Parent-side registry of IPC channels created when `stdio: [..., 'ipc']` or
@@ -2027,6 +2068,16 @@ unsafe extern "C" fn cp_poll_exit(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             let mut s = state.lock().unwrap();
             s.exit_info.take()
         });
+
+    // JS-thread death observation: the terminal status was just consumed
+    // here (child exited AND pipes drained — the publish invariant), so the
+    // stdin write end has no remaining purpose; Node destroys a child's
+    // stdin on exit and a post-exit write could only ever hit EPIPE. Take-
+    // then-close now instead of leaking the fd until the runtime-drop sweep
+    // (idempotent if JS already ended/destroyed the stdin stream).
+    if exit_info.is_some() {
+        take_and_close_stdin_fd(pid);
+    }
 
     match exit_info {
         Some((code, signal)) => {

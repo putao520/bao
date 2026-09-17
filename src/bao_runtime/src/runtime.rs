@@ -61,6 +61,14 @@ pub(crate) fn cleanup_runtime_resources(token: u64) {
     // spawned and take back its pipe fds + IPC socketpair ends — a child
     // nobody waits zombifies forever and its fds leak.
     crate::node_child_process::cleanup_for_token(token);
+    // child_process stdin write ends: the sweep above closed this runtime's
+    // swept children's write ends; the thread-local drain below closes
+    // whatever is left registered on this thread (exits no JS consumer ever
+    // polled). Thread-local = owner boundary under the single-JS-thread model
+    // — spawn only happens on the JS thread, so this thread's map belongs to
+    // the runtime being dropped; closing a still-live child's stdin write end
+    // is the same EOF the child would see from stdin.end().
+    crate::node_child_process::close_stdin_fds_for_current_thread();
 }
 
 pub struct BaoRuntime {

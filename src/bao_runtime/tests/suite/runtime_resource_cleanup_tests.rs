@@ -36,6 +36,15 @@
 //       (A's child + its cp-poll thread survive); dropping A reaps A's too.
 //   T7: an IPC-stdio child's parent socketpair end is closed by the sweep.
 //
+// B1 残留收编(same ruling): the child's stdin write end (CP_STDIN_FDS,
+// thread-local = owner boundary) is closed at the earliest of the JS poll
+// chain consuming the published exit and the runtime-drop sweep — previously
+// zero per-pid removal existed (the only full-clear, CpCleanup, was never
+// instantiated dead code).
+//   T11: JS-observed death (`__cp_poll_exit` consuming exit) closes the
+//        write end immediately — runtime still alive.
+//   T12: a child alive at runtime drop has its write end closed by the sweep.
+//
 // ── issue #42: spawn signal-state virtualization (用户裁决 2026-09-17) ─────
 //
 // posix_spawn_bun must start every child from the clean default signal state
@@ -462,9 +471,9 @@ fn runtime_drop_kills_and_reaps_owned_children() {
 
     // Alive: the child runs (not a zombie) and its pipes are ours. The JS
     // wrapper pipes stdin too, so the spawn adds three pipe fds: the stdin
-    // write end (held by CP_STDIN_FDS — per-call-site ownership, outside this
-    // slice's state-fd sweep) plus the stdout/stderr READ ends the sweep must
-    // take back.
+    // write end (held by CP_STDIN_FDS; the same drop sweep now takes it back
+    // too — T12 asserts that end specifically) plus the stdout/stderr READ
+    // ends this test's sweep assertions cover.
     wait_until(
         || matches!(proc_state(pid), Some('R') | Some('S')),
         "spawned child alive (not zombie) while the runtime lives",
@@ -841,5 +850,157 @@ fn spawn_sigstate_host_signal_state_untouched() {
     assert_eq!(
         before, after,
         "host SigBlk/SigIgn must be byte-identical across a full spawn cycle"
+    );
+}
+
+// ── B1 残留收编: CP_STDIN_FDS stdin 写端 fd 生命周期(用户裁决 2026-09-17)──
+//
+// The stdin write end lives in the JS thread's CP_STDIN_FDS map (thread-local
+// = owner boundary: spawn only happens on the JS thread). It must be closed
+// at the earliest of: (a) the JS poll chain consuming the child's published
+// exit, (b) the runtime-drop sweep. Before this slice NOTHING removed the
+// entry — a dead (or runtime-less) child's write end leaked until process
+// exit, and the only full-clear path (CpCleanup) was never instantiated.
+
+/// T11: the moment the JS poll chain consumes the published exit
+/// (`__cp_poll_exit`), the child's stdin write end is already closed — while
+/// the runtime is still alive, so this cannot be a drop-sweep effect.
+/// `child.kill()` is proven to only send a signal (cp_kill_child never
+/// touches CP_STDIN_FDS), so the close can only come from the new
+/// exit-observation hook. Uses the budgeted-drain harness: the ChildProcess
+/// poll chain re-arms `setTimeout(0)` for the child's whole life, which an
+/// unbounded drain would never exhaust.
+#[test]
+fn child_exit_observation_closes_stdin_write_fd() {
+    let mut ctx = setup_sigstate_ctx();
+    let setup = sigstate_eval_str(
+        &mut ctx,
+        r#"
+        globalThis.__cpT11 = require('child_process').spawn('sleep', ['300']);
+        globalThis.__cpT11SawExit = false;
+        globalThis.__cpT11.stdout.on('data', function() {});
+        globalThis.__cpT11.stderr.on('data', function() {});
+        globalThis.__cpT11.on('exit', function() { globalThis.__cpT11SawExit = true; });
+        'setup-ok'
+        "#,
+    );
+    assert_eq!(setup, "setup-ok", "spawn + poll-chain listeners must succeed");
+    let pid = sigstate_eval_number(&mut ctx, "globalThis.__cpT11.pid") as i32;
+    assert!(pid > 0, "spawn must produce a pid, got {}", pid);
+    let stdin_fd = sigstate_eval_number(&mut ctx, "globalThis.__cpT11._stdinFd") as i32;
+    assert!(stdin_fd >= 0, "piped spawn must expose a stdin write fd");
+
+    sigstate_wait_for(
+        || matches!(proc_state(pid), Some('R') | Some('S')),
+        Duration::from_secs(5),
+        "sleep child to come up alive",
+    );
+    // Alive: the write end is a real open pipe.
+    let target = fd_link_target(stdin_fd)
+        .unwrap_or_else(|| panic!("/proc/self/fd/{} (stdin write end) must exist while the child lives", stdin_fd));
+    assert!(
+        target.starts_with("pipe:"),
+        "stdin write end fd {} should be a pipe, link target = {}",
+        stdin_fd,
+        target
+    );
+
+    // SIGTERM through the real JS path, then pump the poll chain (each eval
+    // runs a budgeted drain, delivering poll ticks between rounds) until the
+    // 'exit' flag proves the published status was consumed.
+    assert_eq!(
+        sigstate_eval_str(&mut ctx, "globalThis.__cpT11.kill('SIGTERM') ? 'killed' : 'not-killed'"),
+        "killed",
+        "child.kill('SIGTERM') must be deliverable"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if sigstate_eval_str(&mut ctx, "globalThis.__cpT11SawExit ? 'y' : 'n'") == "y" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "poll chain never consumed the child's exit; stdin fd {} still {:?}",
+            stdin_fd,
+            fd_link_target(stdin_fd)
+        );
+        SIGSTATE_HOOK_BUDGET.with(|b| b.set(50));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Death is real AND reaped (the publish invariant requires reap).
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "kill(pid, 0) must report the child gone (reaped) once exit was observed"
+    );
+    // THE assertion: the write end is closed BEFORE any runtime drop — the
+    // exit-observation hook took it (idempotent take-then-close: even if JS
+    // had called stdin.end() first, only one close can happen).
+    let after = fd_link_target(stdin_fd);
+    assert!(
+        after.is_none() || after.as_deref() != Some(target.as_str()),
+        "stdin write end fd {} must be closed when JS observes the child's exit (still {:?})",
+        stdin_fd,
+        after
+    );
+    // Behavioral echo of the same removal: a post-death stdin.write is a
+    // clean `false` (map entry gone), not a write into a dead pipe.
+    assert_eq!(
+        sigstate_eval_number(&mut ctx, "globalThis.__cpT11.stdin.write('x') ? 1 : 0"),
+        0.0,
+        "stdin.write after exit observation must report failure (write end removed)"
+    );
+}
+
+/// T12: a child that is still ALIVE at runtime drop has its piped stdin
+/// write end closed by the drop sweep. No listeners are attached, so the JS
+/// poll chain never runs and nothing observes the death before `Drop` — the
+/// sweep is the last consumer and must take the write end itself.
+#[test]
+fn runtime_drop_closes_piped_stdin_write_end_of_live_children() {
+    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    warm_child_process(&mut rt);
+    rt.eval(
+        "globalThis.__cpT12 = require('child_process').spawn('sleep', ['300']);",
+        "<runtime-cleanup-test>",
+    )
+    .expect("spawn sleep 300 must succeed");
+    let pid = eval_number(&mut rt, "globalThis.__cpT12.pid") as i32;
+    assert!(pid > 0, "spawn must produce a pid, got {}", pid);
+    let stdin_fd = eval_number(&mut rt, "globalThis.__cpT12._stdinFd") as i32;
+    assert!(stdin_fd >= 0, "piped spawn must expose a stdin write fd");
+    wait_until(
+        || worker_thread_alive(&format!("cp-poll-{}", pid)),
+        &format!("cp-poll-{} thread alive after spawn", pid),
+    );
+
+    // Alive at drop: the write end is a real open pipe.
+    let target = fd_link_target(stdin_fd)
+        .unwrap_or_else(|| panic!("/proc/self/fd/{} (stdin write end) must exist while the runtime lives", stdin_fd));
+    assert!(
+        target.starts_with("pipe:"),
+        "stdin write end fd {} should be a pipe, link target = {}",
+        stdin_fd,
+        target
+    );
+    assert!(
+        matches!(proc_state(pid), Some('R') | Some('S')),
+        "child must still be alive at drop time (state = {:?})",
+        proc_state(pid)
+    );
+
+    // Drop: the sweep kills + reaps the child and takes back the write end.
+    drop(rt);
+    wait_until(
+        || proc_state(pid).is_none(),
+        "child reaped after runtime drop (/proc/<pid> gone — no zombie residue)",
+    );
+    let after = fd_link_target(stdin_fd);
+    assert!(
+        after.is_none() || after.as_deref() != Some(target.as_str()),
+        "stdin write end fd {} must be closed after runtime drop (still {:?})",
+        stdin_fd,
+        after
     );
 }
