@@ -1816,3 +1816,5 @@ watcher 同类限制，已文档化）。
 
 **回滚点**：单 commit revert（cli.rs + runtime.rs + lib.rs + interrupt_bridge.rs 新模块 +
 suite 测试注册 + Cargo.toml dev-dep + 本账本节）。
+
+**下一候选(2026-09-17 补记,未排程,待下轮 daily-ops 裁决)**:S4 #27 Debugger 原生面——「换原生」各面已裁归 #11 CDP 波消费(需新判据);#30 余项(patch supersession 自动对照、cap ledger last_audited 联动)锚定 mozjs 前移后的升级波首跑;XDR encode 绑定增补(`EncodeStencil` bindgen 缺口,vendor patch 清单项)维持独立排程。S0-S3 全部消费完毕(S0 census+#23、S1 #24+#25、S2 #29、S3 #26+#28 CLOSED)。
