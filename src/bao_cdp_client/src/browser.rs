@@ -37,6 +37,20 @@ use std::sync::Arc;
 // No bridge installed → `connect("memory://…")` keeps the legacy lazy shape
 // (route-only, commands later fail with ConnectionClosed) so URL-parsing
 // unit tests and explicit `connect_with_bridge` users are unaffected.
+/// Process-global in-memory CDP bridge slot (B1 census row 18 — the
+/// generation-token contract is the enforced precedent for the R51/R52
+/// first-writer-wins family).
+///
+/// Contract (last-writer-wins by design, generation-checked teardown):
+/// - the process serves **one** `memory://` CDP bridge at a time: a newer
+///   runtime's `set_process_memory_bridge` replaces the slot and its token
+///   becomes the live generation;
+/// - `clear_process_memory_bridge(token)` removes the bridge **only if the
+///   token still matches** — an older runtime's Drop must NOT clear a newer
+///   runtime's bridge (that is the "skips clearing" note in the census: it
+///   is the correct guarded skip, not a leak);
+/// - multi-runtime `memory://` connects therefore always land on the newest
+///   runtime's bridge — a documented single-slot limitation, not a race.
 static PROCESS_MEMORY_BRIDGE: std::sync::Mutex<Option<(usize, Arc<dyn InMemoryBridge>)>> =
     std::sync::Mutex::new(None);
 

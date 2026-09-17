@@ -489,6 +489,20 @@ struct DriverHandle {
     cmds: Mutex<Vec<DriverCmd>>,
 }
 
+/// Process-global TLS driver thread (B1 census row 23 — documented-accept).
+///
+/// Contract (infrastructure-thread, same family as the HTTPThread and the
+/// bun_dns resolver thread):
+/// - the driver is a **process-level infrastructure asset**: one poll()
+///   thread serving every runtime's TLS servers/connections, with **no
+///   per-runtime state** — entries (`AddListener`/`AddClientConn`) are owned
+///   by their JS objects' lifecycles and removed explicitly
+///   (`RemoveServer`/socket close), not by runtime drop;
+/// - multi-runtime sharing is the designed shape (identical to sharing the
+///   HTTPThread), so first/only-init via `OnceLock` is not a collision but
+///   the intended bootstrap;
+/// - `DRIVER_INIT` serializes bootstrap so "not yet initialized" stays
+///   distinguishable from "init failed".
 static DRIVER: OnceLock<DriverHandle> = OnceLock::new();
 /// Serializes driver bootstrap across concurrent listen() calls (the
 /// OnceLock alone cannot distinguish "not yet initialized" from "init
