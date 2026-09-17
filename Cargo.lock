@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3446,7 +3446,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
