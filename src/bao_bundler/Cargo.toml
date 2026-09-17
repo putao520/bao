@@ -1,7 +1,8 @@
 [package]
 name = "bao_bundler"
+# 0.1.17 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0 breaking wave).
 # 0.1.1 (2026-08-19): no_mangle __force_link_entry single-owner (6f515eab); non-closure, lead-approved.
-version = "0.1.16"
+version = "0.1.17"
 description = "SpiderMonkey CYCLEBREAK bridge for bun_bundler — provides SM-backed link-time symbols and dispatch interfaces"
 edition.workspace = true
 license.workspace = true

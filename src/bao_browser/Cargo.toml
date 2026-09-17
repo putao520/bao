@@ -10,7 +10,10 @@ name = "bao-browser"
 # (c45aee6f): Phase 2 drives a pending navigation's load to completion
 # (nav_seq-gated), so the verbatim README path1 snippet works as
 # documented; servo =0.5.0 pins unchanged.
-version = "0.1.20"
+# 0.1.21 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0
+# breaking wave); same-wave sibling bumps beneath (bun_core/bao_engine/
+# bao_stealth/bao_cdp_client).
+version = "0.1.21"
 edition = "2021"
 description.workspace = true
 license.workspace = true

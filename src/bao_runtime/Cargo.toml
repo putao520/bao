@@ -1,10 +1,14 @@
 [package]
 name = "bun_runtime"
+# 0.2.0 (2026-09-17): BREAKING — BaoSettingsRunner Box<dyn Fn> → fn pointer
+# (58a395f3) + BaoRuntime::drop now fully terminates owned resources (B1
+# runtime-ownership sweeps: runtime token/UDP/worker/child_process registry
+# drop sweeps + CP_STDIN_FDS, 6dd02605/53059d6d/15c913d7/ef6554f3).
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. runtime fix batch: atob/btoa binary fidelity, async_hooks promise identity, spawn watch, SC bridge + WHATWG URL parity, premature loop exit fetch teardown.
 # 0.1.2 (2026-08-19): stable-channel fix — http_client body handoff via
 # bun_core::vec::chan_vec_to_std (Bytes::From needs the std Vec).
-version = "0.1.21"
+version = "0.2.0"
 description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true

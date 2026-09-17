@@ -212,7 +212,9 @@ bun_zstd = { path = "src/zstd", version = "0.1.0" }
 bun_options_types = { path = "src/options_types", version = "0.1.0" }
 bun_bunfig = { path = "src/bunfig", version = "0.1.0" }
 bun_output = { path = "src/output", version = "0.1.0" }
-bun_runtime = { path = "src/bao_runtime", version = "0.1.0" }
+# 0.2 下限(2026-09-17 发布波):bun_runtime 0.2.0 breaking;5 个 .workspace 消费者
+# (bao_browser/bao_cli/bao_engine/bao_bundler/bao_stealth)req 随此继承。
+bun_runtime = { path = "src/bao_runtime", version = "0.2" }
 bao_workflow_host = { path = "src/bao_workflow_host", version = "0.1.0" }
 bun_which = { path = "src/which", version = "0.1.0" }
 bun_transpiler = { path = "src/transpiler", version = "0.1.0" }

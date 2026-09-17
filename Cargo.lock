@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "bao_bundler"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "bao_engine",
  "bun_alloc",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp_client"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "bao_cdp",
  "bao_engine",
@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3446,7 +3446,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.1.21"
+version = "0.2.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
