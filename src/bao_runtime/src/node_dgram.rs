@@ -14,14 +14,43 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
-// UDP socket registry: fd -> UdpSocket
+// UDP socket registry: fd -> (owner runtime token, UdpSocket)
+//
+// Owner stamping (B1, 用户裁决 2026-09-17 A): sockets bound while a
+// BaoRuntime is alive on this thread are stamped with that runtime's token
+// (`crate::runtime::current_runtime_token()`) and are terminated — fd closed,
+// registry entry removed — by `cleanup_for_token` when the runtime drops.
+// `owner == 0` = created outside any runtime = process-shared, exempt from
+// sweep. Per-token isolation: a runtime only ever reaps its own entries.
 static UDP_REGISTRY: ::std::sync::OnceLock<
-    ::std::sync::Mutex<::std::collections::HashMap<i32, ::std::net::UdpSocket>>,
+    ::std::sync::Mutex<::std::collections::HashMap<i32, (u64, ::std::net::UdpSocket)>>,
 > = ::std::sync::OnceLock::new();
 
-fn registry() -> &'static ::std::sync::Mutex<::std::collections::HashMap<i32, ::std::net::UdpSocket>>
+fn registry(
+) -> &'static ::std::sync::Mutex<::std::collections::HashMap<i32, (u64, ::std::net::UdpSocket)>>
 {
     UDP_REGISTRY.get_or_init(|| ::std::sync::Mutex::new(::std::collections::HashMap::new()))
+}
+
+/// Close and remove every UDP socket owned by the runtime `token`.
+///
+/// Contract (B1, 用户裁决 2026-09-17 A — "drop 时未 close 资源必须 close"):
+/// - Entries whose owner == `token` are removed from the registry and their
+///   `UdpSocket` dropped, which closes the fd. This is the same close path
+///   the JS `socket.close()` → `__dgram_close` → registry-remove → drop
+///   sequence uses; UDP is connectionless, so remove+drop IS the graceful
+///   close (there is no separate shutdown state to run first).
+/// - `owner == 0` entries (created outside any BaoRuntime) are exempt.
+/// - Per-token isolation: only `token`'s entries are touched — sockets
+///   registered by other live runtimes stay open and usable.
+///
+/// Returns the number of sockets terminated. Called from
+/// `crate::runtime::cleanup_runtime_resources` on `BaoRuntime::drop`.
+pub(crate) fn cleanup_for_token(token: u64) -> usize {
+    let mut reg = registry().lock().unwrap();
+    let before = reg.len();
+    reg.retain(|_, (owner, _)| *owner != token);
+    before - reg.len()
 }
 
 // ── Native __dgram_bind ──
@@ -54,7 +83,10 @@ unsafe extern "C" fn dgram_bind(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
                     .parse()
                     .unwrap()
             });
-            registry().lock().unwrap().insert(fd, sock);
+            // Stamp the creating runtime's token (0 = process-shared when no
+            // BaoRuntime is alive on this thread); see UDP_REGISTRY doc.
+            let owner = crate::runtime::current_runtime_token().unwrap_or(0);
+            registry().lock().unwrap().insert(fd, (owner, sock));
             let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(cx_ref) let ret = w2::JS_NewPlainObject(&mut cx_ref));
             unsafe {
@@ -135,7 +167,7 @@ unsafe extern "C" fn dgram_send_buf(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => {
+        Some((_owner, sock)) => {
             let target = format!("{}:{}", addr_str, port);
             match sock.send_to(&buf, &target) {
                 Ok(n) => {
@@ -173,7 +205,7 @@ unsafe extern "C" fn dgram_recv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => {
+        Some((_owner, sock)) => {
             let mut buf = vec![0u8; buf_size];
             match sock.recv_from(&mut buf) {
                 Ok((len, addr)) => {
@@ -272,7 +304,7 @@ unsafe extern "C" fn dgram_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let target = format!("{}:{}", addr_str, port);
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => match sock.connect(&target) {
+        Some((_owner, sock)) => match sock.connect(&target) {
             Ok(()) => {
                 *vp = Int32Value(1);
                 true
@@ -299,7 +331,7 @@ unsafe extern "C" fn dgram_disconnect(_cx: *mut JSContext, argc: u32, vp: *mut J
     }
     let fd = (*args.get(0).ptr).to_int32();
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) {
+    if let Some((_owner, sock)) = reg.get(&fd) {
         // disconnect by connecting to 0.0.0.0:0
         let _ = sock.connect("0.0.0.0:0");
     }
@@ -330,7 +362,7 @@ unsafe extern "C" fn dgram_set_broadcast(_cx: *mut JSContext, argc: u32, vp: *mu
     let fd = (*args.get(0).ptr).to_int32();
     let on = (*args.get(1).ptr).to_int32() != 0;
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) {
+    if let Some((_owner, sock)) = reg.get(&fd) {
         let _ = sock.set_broadcast(on);
     }
     *vp = Int32Value(1);
@@ -347,7 +379,7 @@ unsafe extern "C" fn dgram_set_ttl(_cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let fd = (*args.get(0).ptr).to_int32();
     let ttl = (*args.get(1).ptr).to_int32();
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) {
+    if let Some((_owner, sock)) = reg.get(&fd) {
         let _ = sock.set_ttl(ttl as u32);
     }
     *vp = Int32Value(1);
@@ -368,7 +400,7 @@ unsafe extern "C" fn dgram_set_multicast_ttl(
     let fd = (*args.get(0).ptr).to_int32();
     let ttl = (*args.get(1).ptr).to_int32();
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) {
+    if let Some((_owner, sock)) = reg.get(&fd) {
         let _ = sock.set_multicast_ttl_v4(ttl as u32);
     }
     *vp = Int32Value(1);
@@ -389,7 +421,7 @@ unsafe extern "C" fn dgram_set_multicast_loopback(
     let fd = (*args.get(0).ptr).to_int32();
     let on = (*args.get(1).ptr).to_int32() != 0;
     let reg = registry().lock().unwrap();
-    if let Some(sock) = reg.get(&fd) {
+    if let Some((_owner, sock)) = reg.get(&fd) {
         let _ = sock.set_multicast_loop_v4(on);
     }
     *vp = Int32Value(1);
@@ -412,7 +444,7 @@ unsafe extern "C" fn dgram_add_membership(cx: *mut JSContext, argc: u32, vp: *mu
     };
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => match maddr.parse::<::std::net::Ipv4Addr>() {
+        Some((_owner, sock)) => match maddr.parse::<::std::net::Ipv4Addr>() {
             Ok(ip) if ip.is_multicast() => match iface.parse::<::std::net::Ipv4Addr>() {
                 Ok(iface_ip) => {
                     let _ = sock.join_multicast_v4(&ip, &iface_ip);
@@ -452,7 +484,7 @@ unsafe extern "C" fn dgram_drop_membership(cx: *mut JSContext, argc: u32, vp: *m
     };
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => match maddr.parse::<::std::net::Ipv4Addr>() {
+        Some((_owner, sock)) => match maddr.parse::<::std::net::Ipv4Addr>() {
             Ok(ip) if ip.is_multicast() => match iface.parse::<::std::net::Ipv4Addr>() {
                 Ok(iface_ip) => {
                     let _ = sock.leave_multicast_v4(&ip, &iface_ip);
@@ -486,7 +518,7 @@ unsafe extern "C" fn dgram_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let fd = (*args.get(0).ptr).to_int32();
     let reg = registry().lock().unwrap();
     match reg.get(&fd) {
-        Some(sock) => match sock.local_addr() {
+        Some((_owner, sock)) => match sock.local_addr() {
             Ok(addr) => {
                 drop(reg);
                 let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));

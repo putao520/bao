@@ -15,15 +15,82 @@ use mozjs::rooted;
 use crate::globals;
 use crate::require;
 
+// ── B1 runtime resource cleanup (BUN-EVOLUTION B1, 用户裁决 2026-09-17 A) ──
+//
+// Every runtime-owned process resource (UDP sockets in node_dgram's
+// UDP_REGISTRY today; worker/child registries in later slices) is stamped
+// with the creating BaoRuntime's monotonic token. When the runtime drops,
+// `cleanup_runtime_resources(token)` terminates every resource it owns —
+// "drop 时未 close 资源必须 close,防泄漏" (unreaped fd + port → EMFILE).
+//
+// Token 0 is the sentinel for resources created OUTSIDE any BaoRuntime
+// (process-shared): registration points stamp
+// `current_runtime_token().unwrap_or(0)` and cleanup never touches them.
+static NEXT_RUNTIME_TOKEN: ::std::sync::atomic::AtomicU64 =
+    ::std::sync::atomic::AtomicU64::new(1);
+
+::std::thread_local! {
+    /// Token of the BaoRuntime most recently created on this thread; `None`
+    /// when no runtime is alive here (or the live one already dropped).
+    static CURRENT_RUNTIME_TOKEN: ::std::cell::Cell<::std::option::Option<u64>> =
+        ::std::cell::Cell::new(None);
+}
+
+/// Token of the runtime executing on the current thread, if any.
+///
+/// `Some(token)` = registrations made here are runtime-owned and are
+/// terminated when that runtime drops; `None` → stamp 0 = process-shared,
+/// never swept.
+pub(crate) fn current_runtime_token() -> ::std::option::Option<u64> {
+    CURRENT_RUNTIME_TOKEN.with(|t| t.get())
+}
+
+/// Terminate every runtime-owned resource registered under `token`.
+///
+/// Per-domain cleanup is wired here slice by slice (dgram's UDP registry
+/// today; worker_threads / child_process registries in later slices).
+pub(crate) fn cleanup_runtime_resources(token: u64) {
+    crate::node_dgram::cleanup_for_token(token);
+}
+
 pub struct BaoRuntime {
     ctx: JsContext,
     // Declared after ctx so it drops last: guard drop triggers
     // JS_DestroyContext + JS_ShutDown after all JS execution is done.
     _guard: Option<SmRuntimeGuard>,
+    // B1 resource-cleanup token. Copy, no drop logic of its own — declared
+    // last; field drop order is unaffected (u64 drops are no-ops).
+    token: u64,
+}
+
+impl ::std::ops::Drop for BaoRuntime {
+    fn drop(&mut self) {
+        // `Drop::drop` runs BEFORE the struct's fields are dropped (fields go
+        // in declaration order: ctx, then _guard last). The contract noted on
+        // `_guard` above still holds — JS_DestroyContext + JS_ShutDown still
+        // happen after this body — so every runtime-owned resource (UDP
+        // socket fds) is closed while the process is fully alive, and the
+        // engine teardown sequence is byte-for-byte unchanged.
+        cleanup_runtime_resources(self.token);
+        CURRENT_RUNTIME_TOKEN.with(|t| {
+            // Clear only if THIS runtime is still the latest one on the
+            // thread: a parasitic BaoRuntime::new() (shared JSContext)
+            // overwrote the slot with its own token, and this older runtime's
+            // drop must not erase it.
+            if t.get() == Some(self.token) {
+                t.set(None);
+            }
+        });
+    }
 }
 
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
+        // B1: claim this runtime's monotonic resource-cleanup token up front
+        // (0 is the "no runtime" sentinel, so tokens start at 1); publish it
+        // to the thread-local only AFTER engine init succeeds so a failed
+        // new() leaves no stale CURRENT_RUNTIME_TOKEN behind.
+        let token = NEXT_RUNTIME_TOKEN.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
         // BAO_* → BUN_* env aliasing is resolved at the env read layer
         // (`bun_core::getenv_z` / `getenv_z_any_case`): a `BUN_<SUFFIX>` lookup
         // that misses falls back to `BAO_<SUFFIX>` (explicit BUN_ wins). The
@@ -43,13 +110,18 @@ impl BaoRuntime {
         crate::resolver_bridge::install();
         crate::bun_api::init_process_start();
         let (mut ctx, guard) = JsContext::init_runtime()?;
+        // Publish the token before any lazy registration path (global_setup /
+        // require installs fire on the first eval) can stamp a resource with
+        // it. A parasitic runtime (shared JSContext) legitimately overwrites
+        // the slot — newest runtime owns the current-registration window.
+        CURRENT_RUNTIME_TOKEN.with(|t| t.set(Some(token)));
         ctx.set_global_setup(globals::install_all);
         // Drain the event loop first; once it is done (natural end or
         // process.exit()), dispatch process 'exit' listeners inside the live
         // realm. Node semantics: registration order, exit code argument,
         // exitCode set by a listener is respected by the CLI main loop.
         ctx.set_post_eval_hook(crate::bun_api::post_eval_drain_then_exit);
-        ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard })
+        ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard, token })
     }
 
     pub fn eval(
