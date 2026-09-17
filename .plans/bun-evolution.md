@@ -408,7 +408,13 @@ Residuals (documented):
 
 **Next single action: #42 CLOSED same-day (3384d1ca)** — root cause deeper than hypothesized: the SETSIGDEF/SETSIGMASK flags were already declared (35989e1d/dc8e8142) but the two signal sets were INVERTED (sigdefault=sigemptyset reset nothing; sigmask=sigfillset blocked everything — SIGTERM pended forever). Swapped to sigfillset/sigemptyset + fail-closed setters; child verified clean-default (SigBlk=0/SigIgn=0), SIGTERM terminates ~5ms, host state byte-identical (user ruling: a library never touches its host's signals). BCE sweep: sole call sites, zero same-shape residuals.
 
-**Next up (B1 residuals, priority order)**: `CP_STDIN_FDS` thread-local stdin write-ends (same-family row), `CpCleanup` dead-code removal, weak rows 27/29/30 under the settled ownership shape. Rows 22/24/25 CLOSED (ruling A, §8 B1 slice-2 entry).
+**B1 residual dispositions (2026-09-17 closeout)**:
+- `CP_STDIN_FDS` + `CpCleanup` dead code: CLOSED (`ef6554f3`) — stdin write-ends swept at three JS-thread points (death observation via __cp_poll_exit exit_info funnel / sweep arm / runtime-drop thread-local drain); CpCleanup removed with disposition=replacement.
+- weak row 30 (engine hooks): CLOSED by E9 — `UNCAUGHT_HOOK`/`FLUSH_HOOK` were already bare fn pointers; only the equality enforce was missing (E3 pattern: fn_addr_eq same→idempotent, different→debug_assert fail-closed).
+- row 27 (`TOP_LEVEL_DIR`): **upgraded from weak to a real B1 slice** — it is overwrite-style `RwLock<&'static [u8]>` (last-writer-wins), so under multiple runtimes runtime A's resolver reads runtime B's root. Real transposition requires per-runtime resolver-root plumbing through the resolver call chain — scope discipline keeps it out of this (already-deep) wave; scheduled as its own slice with its own wave-end verification.
+- row 29 (argv/streams): split — `argv()` is documented-accept (process-owned by contract, matching Node); STDOUT/STDERR `RacyCell` streams are a **user-ruling point** (does the embedder need a per-runtime output sink? 0A product-capability gate, same class as row 21). Ask at next interaction.
+
+Rows 22/24/25 CLOSED (ruling A, §8 B1 slice-2 entry).
 
 R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
 

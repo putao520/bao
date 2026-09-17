@@ -36,9 +36,52 @@ static FLUSH_HOOK: OnceLock<FlushRejectionsHook> = OnceLock::new();
 
 /// Register the runtime's exception router. Idempotent (first registration
 /// wins — every bao_runtime context installs the same functions).
+///
+/// Contract (first-writer-wins by design):
+/// - the first registration installs (release semantics unchanged);
+/// - re-registration with the **same** fn pointers is an idempotent no-op
+///   (the documented multi-context shape: every `bao_runtime` context
+///   installs the same zero-capture router, the first one serves the whole
+///   process);
+/// - re-registration with a **different** fn pointer means the callers
+///   genuinely diverged — surfaced fail-closed under `debug_assertions`;
+///   the first writer stays installed, so release keeps plain
+///   first-writer-wins.
 pub fn set_uncaught_hooks(uncaught: UncaughtExceptionHook, flush: FlushRejectionsHook) {
-    let _ = UNCAUGHT_HOOK.set(uncaught);
-    let _ = FLUSH_HOOK.set(flush);
+    if let Err(incoming) = UNCAUGHT_HOOK.set(uncaught) {
+        // `OnceLock::set` returns the REJECTED value in `Err` (the cell keeps
+        // its first writer), so `incoming` is the late registration.
+        let diverged = match UNCAUGHT_HOOK.get() {
+            ::std::option::Option::Some(installed) => {
+                !::std::ptr::fn_addr_eq(*installed, incoming)
+            }
+            // set() only fails when a value is installed; defensive default.
+            ::std::option::Option::None => true,
+        };
+        debug_assert!(
+            !diverged,
+            "UNCAUGHT_HOOK re-registration diverged: contract expects every \
+             bao_runtime context to install the SAME zero-capture exception \
+             router (first-writer-wins by design); a differing fn pointer is \
+             real semantic drift, not an idempotent re-register"
+        );
+    }
+    if let Err(incoming) = FLUSH_HOOK.set(flush) {
+        let diverged = match FLUSH_HOOK.get() {
+            ::std::option::Option::Some(installed) => {
+                !::std::ptr::fn_addr_eq(*installed, incoming)
+            }
+            // set() only fails when a value is installed; defensive default.
+            ::std::option::Option::None => true,
+        };
+        debug_assert!(
+            !diverged,
+            "FLUSH_HOOK re-registration diverged: contract expects every \
+             bao_runtime context to install the SAME zero-capture rejection \
+             flusher (first-writer-wins by design); a differing fn pointer \
+             is real semantic drift, not an idempotent re-register"
+        );
+    }
 }
 
 thread_local! {
