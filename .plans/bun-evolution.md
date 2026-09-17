@@ -406,7 +406,9 @@ Residuals (documented):
 
 **Correction 2026-09-17 (stale §9, same failure class as the 09-07 `init_env_aliases` stale): the e8541037c4 PathBuffer pool sweep was ALREADY LANDED in `f8f6bd0f` (2026-09-08, 69 files, 360+/338-).** The 09-11 §9 update that queued it as next was written without checking master history. Residual closure of that sweep landed 2026-09-17 (this wave): `depth_buf_uninit()` in `src/install/lockfile/Tree.rs` — the one `MaybeUninit::uninit().assume_init()` UB constructor the sweep missed (`DepthBuf` bare `[Id; N]` + lint-suppression `#[allow]`), PORTed to the upstream `[MaybeUninit<Id>; N]` shape (see §8 entry for evidence).
 
-**Next single action: spawn_sys signal-reset slice — make SIGTERM actually terminate spawned children on Linux** (pre-existing product defect surfaced by the B1 slice-2 sweep; affects JS `child.kill()` and forces the sweep's SIGKILL escalation path). Then the B1 residuals in priority order: `CP_STDIN_FDS` thread-local stdin write-ends (same-family row), weak rows 27/29/30 under the settled ownership shape, `CpCleanup` dead-code removal. Rows 22/24/25 are CLOSED (2026-09-17, ruling A; see §8 B1 slice-2 entry).
+**Next single action: #42 CLOSED same-day (3384d1ca)** — root cause deeper than hypothesized: the SETSIGDEF/SETSIGMASK flags were already declared (35989e1d/dc8e8142) but the two signal sets were INVERTED (sigdefault=sigemptyset reset nothing; sigmask=sigfillset blocked everything — SIGTERM pended forever). Swapped to sigfillset/sigemptyset + fail-closed setters; child verified clean-default (SigBlk=0/SigIgn=0), SIGTERM terminates ~5ms, host state byte-identical (user ruling: a library never touches its host's signals). BCE sweep: sole call sites, zero same-shape residuals.
+
+**Next up (B1 residuals, priority order)**: `CP_STDIN_FDS` thread-local stdin write-ends (same-family row), `CpCleanup` dead-code removal, weak rows 27/29/30 under the settled ownership shape. Rows 22/24/25 CLOSED (ruling A, §8 B1 slice-2 entry).
 
 R53-A follow-up candidates (fetch() thread-local profile face `TL_STEALTH_PROFILE`, webviewless handler keying) remain documented residuals, not scheduled.
 
