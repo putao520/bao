@@ -5,6 +5,11 @@
 // (fd closed + port released), without touching sockets owned by other live
 // runtimes (per-token isolation).
 //
+// B1 slice 2 段二(same ruling): BaoRuntime::drop must also terminate every
+// worker_threads Worker the runtime owns (OS thread joined — a leaked worker
+// thread pins its own JSContext + stack for the life of the process),
+// without touching workers owned by other live runtimes.
+//
 // Assertions are fully behavioral — the token/registry internals are
 // pub(crate), invisible to this harness:
 //   T1: while the runtime is alive the fd is a real socket and its port is
@@ -14,6 +19,11 @@
 //       JsContext::init_runtime) each bind a socket; dropping B closes only
 //       B's socket (A's port stays occupied, A's fd stays open, A can still
 //       send/receive); dropping A then closes A's socket too.
+//   T3: two workers spawned inside one runtime are alive while it lives and
+//       their OS threads are gone after `drop`.
+//   T4: two runtimes each spawn a worker; dropping B joins only B's worker
+//       (A's worker thread stays alive and still accepts postMessage);
+//       dropping A then joins A's worker too.
 
 use std::net::UdpSocket;
 use std::time::Duration;
@@ -193,4 +203,141 @@ fn runtime_drop_is_per_token_other_runtimes_sockets_untouched() {
         a_after
     );
     UdpSocket::bind(("127.0.0.1", port_a)).expect("A's port must be released after A drops");
+}
+
+// ── B1 slice 2 段二: WORKER_REGISTRY drop sweep (row 24) ──────────────────
+
+fn eval_string(rt: &mut bun_runtime::BaoRuntime, src: &str) -> String {
+    match rt.eval(src, "<runtime-cleanup-test>").expect("eval must succeed") {
+        bao_engine::value::JsValue::String(s) => s,
+        _ => panic!("eval returned a non-string: {}", src),
+    }
+}
+
+/// Write a worker script to a unique temp file, return its path.
+fn write_worker_file(tag: &str, body: &str) -> String {
+    let path = ::std::env::temp_dir().join(format!(
+        "bao-worker-cleanup-{}-{}.js",
+        tag,
+        ::std::process::id()
+    ));
+    ::std::fs::write(&path, body).expect("write worker file");
+    path.to_string_lossy().into_owned()
+}
+
+/// Whether an OS thread named exactly `name` is alive in this process
+/// (Linux `/proc/self/task/<tid>/comm`; worker threads are named
+/// `bao-worker-<threadId>` at spawn).
+fn worker_thread_alive(name: &str) -> bool {
+    let tasks = match ::std::fs::read_dir("/proc/self/task") {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    tasks.flatten().any(|entry| {
+        ::std::fs::read_to_string(entry.path().join("comm"))
+            .map(|n| n.trim_end() == name)
+            .unwrap_or(false)
+    })
+}
+
+/// Poll `pred` until it holds (workers are spawned asynchronously, so both
+/// the appearance and the disappearance of their threads are asynchronous).
+fn wait_until(pred: impl Fn() -> bool, what: &str) {
+    let deadline = ::std::time::Instant::now() + ::std::time::Duration::from_secs(10);
+    while ::std::time::Instant::now() < deadline {
+        if pred() {
+            return;
+        }
+        ::std::thread::sleep(::std::time::Duration::from_millis(20));
+    }
+    panic!("timed out waiting for: {}", what);
+}
+
+/// Spawn an idle worker inside `rt` via the real user path
+/// (`require('worker_threads')` + `new Worker`), wait until its OS thread is
+/// observable, and return the thread's name. The idle script keeps the
+/// worker in its message receive loop — nothing for the drop sweep to race.
+fn spawn_idle_worker(rt: &mut bun_runtime::BaoRuntime, slot: &str, tag: &str) -> String {
+    let worker_path = write_worker_file(tag, "self.onmessage = function() {};");
+    let tid = eval_string(
+        rt,
+        &format!(
+            r#"
+(function() {{
+  var wt = require('worker_threads');
+  globalThis.{slot} = new wt.Worker({worker_path:?});
+  return String(globalThis.{slot}.threadId);
+}})()
+"#
+        ),
+    );
+    let thread_name = format!("bao-worker-{}", tid);
+    wait_until(
+        || worker_thread_alive(&thread_name),
+        &format!("worker thread {} alive after spawn", thread_name),
+    );
+    thread_name
+}
+
+/// T3: workers spawned inside a runtime are terminated (their OS threads
+/// exit) when the runtime drops — a leaked worker thread would pin its own
+/// JSContext + stack for the life of the process.
+#[test]
+fn runtime_drop_joins_owned_worker_threads() {
+    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let w1 = spawn_idle_worker(&mut rt, "__wT3a", "t3a");
+    let w2 = spawn_idle_worker(&mut rt, "__wT3b", "t3b");
+    assert_ne!(w1, w2, "the two workers must be distinct OS threads");
+
+    drop(rt);
+    // Idle workers observe Terminate on their next recv — the bounded join
+    // in cleanup_for_token returns well within the 5s deadline.
+    wait_until(
+        || !worker_thread_alive(&w1) && !worker_thread_alive(&w2),
+        "both worker threads to exit after runtime drop",
+    );
+}
+
+/// T4: per-token isolation — dropping one runtime must not terminate another
+/// live runtime's workers, and the survivor keeps working.
+#[test]
+fn runtime_drop_is_per_token_other_runtimes_workers_untouched() {
+    let mut rt_a = bun_runtime::BaoRuntime::new().expect("runtime A");
+    let wa = spawn_idle_worker(&mut rt_a, "__wT4a", "t4a");
+    // Second runtime on this thread parasitizes the live JSContext — the
+    // same multi-runtime shape the token slot must keep isolated.
+    let mut rt_b = bun_runtime::BaoRuntime::new().expect("runtime B");
+    let wb = spawn_idle_worker(&mut rt_b, "__wT4b", "t4b");
+    assert_ne!(wa, wb);
+
+    // Drop B: ONLY B's worker may be terminated.
+    drop(rt_b);
+    wait_until(
+        || !worker_thread_alive(&wb),
+        "B's worker thread to exit when B drops",
+    );
+    assert!(
+        worker_thread_alive(&wa),
+        "A's worker thread must survive B's drop (per-token isolation)"
+    );
+
+    // A is still fully functional: its surviving worker accepts messages
+    // through the unchanged JS API surface.
+    rt_a
+        .eval(
+            "globalThis.__wT4a.postMessage('still-alive');",
+            "<runtime-cleanup-test>",
+        )
+        .expect("postMessage into A's surviving worker must succeed");
+    assert!(
+        worker_thread_alive(&wa),
+        "A's worker thread must still be alive after postMessage"
+    );
+
+    // Drop A: its worker is terminated too.
+    drop(rt_a);
+    wait_until(
+        || !worker_thread_alive(&wa),
+        "A's worker thread to exit when A drops",
+    );
 }

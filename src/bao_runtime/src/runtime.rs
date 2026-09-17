@@ -18,7 +18,8 @@ use crate::require;
 // ── B1 runtime resource cleanup (BUN-EVOLUTION B1, 用户裁决 2026-09-17 A) ──
 //
 // Every runtime-owned process resource (UDP sockets in node_dgram's
-// UDP_REGISTRY today; worker/child registries in later slices) is stamped
+// UDP_REGISTRY and Workers in node_worker_threads' WORKER_REGISTRY today;
+// the child_process registry in a later slice) is stamped
 // with the creating BaoRuntime's monotonic token. When the runtime drops,
 // `cleanup_runtime_resources(token)` terminates every resource it owns —
 // "drop 时未 close 资源必须 close,防泄漏" (unreaped fd + port → EMFILE).
@@ -47,10 +48,15 @@ pub(crate) fn current_runtime_token() -> ::std::option::Option<u64> {
 
 /// Terminate every runtime-owned resource registered under `token`.
 ///
-/// Per-domain cleanup is wired here slice by slice (dgram's UDP registry
-/// today; worker_threads / child_process registries in later slices).
+/// Per-domain cleanup is wired here slice by slice (dgram's UDP registry and
+/// worker_threads' worker registry today; the child_process registry in a
+/// later slice).
 pub(crate) fn cleanup_runtime_resources(token: u64) {
     crate::node_dgram::cleanup_for_token(token);
+    // worker_threads registry: signal + bounded-join every worker this
+    // runtime created — a leaked worker thread pins its own JSContext and
+    // stack for the life of the process.
+    crate::node_worker_threads::cleanup_for_token(token);
 }
 
 pub struct BaoRuntime {

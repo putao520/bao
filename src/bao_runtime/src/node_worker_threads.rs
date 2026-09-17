@@ -56,6 +56,88 @@ struct WorkerHandle {
     /// `worker_try_recv` (the main-side receive primitive). Mutex-wrapped:
     /// mpsc::Receiver is !Sync but the registry is a process-global static.
     main_rx: Option<::std::sync::Mutex<Receiver<WorkerToMainMessage>>>,
+    /// B1 (用户裁决 2026-09-17 A): creating BaoRuntime's cleanup token,
+    /// stamped at registration via `crate::runtime::current_runtime_token()`.
+    /// `0` = created outside any runtime = process-shared, exempt from the
+    /// drop-time sweep. See `cleanup_for_token`.
+    owner: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Runtime-drop sweep (B1, 用户裁决 2026-09-17 A — "drop 时未 close 资源必须 close")
+// ---------------------------------------------------------------------------
+
+/// Upper bound for joining one worker thread during drop-time cleanup.
+///
+/// A worker stuck in a synchronous JS task observes its `Terminate` signal
+/// only when the task yields; the unbounded `join()` the JS `terminate()`
+/// path uses would hang `BaoRuntime::drop` forever there. Cleanup therefore
+/// polls `JoinHandle::is_finished` for at most this long and detaches (drops
+/// the JoinHandle) on timeout — the signal still fires once the task yields,
+/// the exit is simply no longer observed.
+const CLEANUP_JOIN_TIMEOUT: ::std::time::Duration = ::std::time::Duration::from_secs(5);
+
+/// Join a worker thread, giving up after [`CLEANUP_JOIN_TIMEOUT`].
+/// Returns `true` when the thread was observed to exit (joined), `false`
+/// when it was detached past the deadline.
+fn join_worker_bounded(thread: &mut Option<::std::thread::JoinHandle<()>>) -> bool {
+    let Some(join) = thread.as_ref() else {
+        // Already joined/taken (e.g. a prior terminate) — nothing to wait for.
+        return true;
+    };
+    let deadline = ::std::time::Instant::now() + CLEANUP_JOIN_TIMEOUT;
+    while !join.is_finished() {
+        if ::std::time::Instant::now() >= deadline {
+            return false;
+        }
+        ::std::thread::sleep(::std::time::Duration::from_millis(10));
+    }
+    if let Some(join) = thread.take() {
+        let _ = join.join();
+    }
+    true
+}
+
+/// Terminate every worker owned by the runtime `token`.
+///
+/// Contract (B1 slice 2 段二, 用户裁决 2026-09-17 A):
+/// - Each entry stamped `owner == token` is removed from the registry and its
+///   worker is terminated through the SAME path the JS
+///   `Worker.prototype.terminate()` uses: send `WorkerMessage::Terminate`
+///   (the worker's message loop breaks on it) and join the OS thread. Unlike
+///   the JS path the join is bounded ([`CLEANUP_JOIN_TIMEOUT`]) so a worker
+///   stuck in a synchronous JS task detaches instead of hanging
+///   `BaoRuntime::drop`.
+/// - Entries are removed BEFORE terminating: no DashMap shard guard is held
+///   across a thread join, and a racing JS `terminate()` on the same worker
+///   becomes a benign no-op on the missing key.
+/// - `owner == 0` (created outside any BaoRuntime) is exempt; per-token
+///   isolation: only `token`'s workers are touched — other live runtimes'
+///   workers keep running.
+///
+/// Returns the number of workers swept (registry entries removed). Called
+/// from `crate::runtime::cleanup_runtime_resources` on `BaoRuntime::drop`.
+pub(crate) fn cleanup_for_token(token: u64) -> usize {
+    if token == 0 {
+        // Process-shared sentinel can never own a worker; refuse to sweep
+        // (defensive: cleanup_runtime_resources only ever passes token >= 1).
+        return 0;
+    }
+    let ids: Vec<u32> = worker_registry()
+        .iter()
+        .filter(|entry| entry.value().owner == token)
+        .map(|entry| *entry.key())
+        .collect();
+    let mut swept = 0usize;
+    for id in ids {
+        let Some((_, mut handle)) = worker_registry().remove(&id) else {
+            continue;
+        };
+        let _ = handle.sender.send(WorkerMessage::Terminate);
+        let _ = join_worker_bounded(&mut handle.thread);
+        swept += 1;
+    }
+    swept
 }
 
 // ---------------------------------------------------------------------------
@@ -907,6 +989,10 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
             sender: main_to_worker_tx,
             thread: Some(join_handle),
             main_rx: Some(::std::sync::Mutex::new(worker_to_main_rx)),
+            // B1: stamp the creating runtime's cleanup token (0 = shared when
+            // no BaoRuntime is alive on this thread); swept by
+            // `cleanup_for_token` on that runtime's drop.
+            owner: crate::runtime::current_runtime_token().unwrap_or(0),
         },
     );
 
