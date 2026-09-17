@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-webvtt"
-version.workspace = true
+version = "0.5.3"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -21,4 +21,4 @@ markup5ever = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
-bao-servo-webvtt = { path = ".", version = "=0.5.2", features = ["test-util"] }
+bao-servo-webvtt = { path = ".", version = "=0.5.3", features = ["test-util"] }

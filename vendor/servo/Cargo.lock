@@ -832,7 +832,7 @@ dependencies = [
 
 [[package]]
 name = "bao-mozjs"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "bao-mozjs-sys",
  "bindgen",
@@ -857,7 +857,7 @@ version = "140.14.0-0"
 
 [[package]]
 name = "bao-mozjs-sys"
-version = "140.14.0-0"
+version = "140.14.0-1"
 dependencies = [
  "bao-mozjs-src-intl",
  "bao-mozjs-src-js",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout-api"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-metrics"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -1918,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-webgpu"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "bao-mozjs",
  "bao-servo-base",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webvtt"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "bao-servo-webvtt",
  "html5ever",
@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "bao_boringssl_bridge"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bao_crypto",
  "bun_boringssl",
@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "bao_native_stubs"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bao_uloop",
  "bun_boringssl_sys",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2650,7 +2650,7 @@ dependencies = [
 
 [[package]]
 name = "bao_uloop"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bun_dns",
  "bun_sys",
@@ -3084,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "bun_brotli"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "brotli",
  "bun_core",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3217,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3243,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -3334,7 +3334,7 @@ dependencies = [
 
 [[package]]
 name = "bun_event_loop"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bun_collections",
  "bun_core",
@@ -3387,7 +3387,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "bao_boringssl_bridge",
  "bstr",
@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "bun_io"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_parser"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3511,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_printer"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "bstr",
  "bumpalo",
@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3768,7 +3768,7 @@ dependencies = [
 
 [[package]]
 name = "bun_router"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3865,7 +3865,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3891,7 +3891,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -3976,7 +3976,7 @@ dependencies = [
 
 [[package]]
 name = "bun_transpiler"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bun_bundler",
  "swc_common",
@@ -4003,7 +4003,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "bstr",
  "bun_base64",
@@ -4020,7 +4020,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws_sys"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4084,7 +4084,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zlib"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
