@@ -1401,7 +1401,8 @@ impl<'a> PackageInstaller<'a> {
                 } else {
                     // transitive folder dependencies are relative to their parent. they are not hoisted
                     if folder.len() >= self.folder_path_buf.len()
-                        || bin::bin_target_escapes_package_dir(folder)
+                        || (bin::bin_target_escapes_package_dir(folder)
+                            && !self.lockfile().is_trusted_folder_dependency(dependency_id))
                     {
                         if log_level != Options::LogLevel::Silent {
                             Output::pretty_errorln(format_args!(

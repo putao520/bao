@@ -60,6 +60,25 @@ impl OverrideMap {
         }
     }
 
+    /// Plain rules only: a scoped rule does not make every edge of this name
+    /// root-authored (trust checks in PackageManagerEnqueue.rs /
+    /// PackageInstaller.rs).
+    /// upstream bun #32452 (302d15da2e); carrier of b64b63069c's
+    /// `is_trusted_folder_dependency` override arm.
+    pub(crate) fn contains_name(
+        &self,
+        name_hash: PackageNameHash,
+        name: &[u8],
+        buf: &[u8],
+    ) -> bool {
+        if self.map.count() == 0 {
+            return false;
+        }
+        self.map
+            .get(&name_hash)
+            .is_some_and(|dep| dep.name.slice(buf) == name)
+    }
+
     /// PORT NOTE: Zig also passed `*Lockfile new`, but it was unused —
     /// the new-side buffer lives inside `new_builder`. Dropped to avoid the alias.
     /// `pm` is generic over `NpmAliasRegistry` (was `&mut PackageManager`) so a
