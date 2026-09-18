@@ -185,6 +185,7 @@ mod wave_b_final_tests;
 mod web_api_deep_tests;
 mod web_api_tests;
 mod web_socket_async_tests;
+mod yarn_tarball_name_tests;
 mod zlib_deep_tests;
 mod zlib_silent_tests;
 mod zz_probe_scratch_tests;
