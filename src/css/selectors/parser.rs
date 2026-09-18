@@ -1291,29 +1291,29 @@ impl<'a> SelectorParser<'a> {
             19 => match name {
                 b"view-transition-old" => {
                     return Ok(PseudoElement::ViewTransitionOld {
-                        part_name: ViewTransitionPartName::parse(self, input)?,
+                        part: ViewTransitionPartSelector::parse(self, input)?,
                     });
                 }
                 b"view-transition-new" => {
                     return Ok(PseudoElement::ViewTransitionNew {
-                        part_name: ViewTransitionPartName::parse(self, input)?,
+                        part: ViewTransitionPartSelector::parse(self, input)?,
                     });
                 }
                 _ => {}
             },
             21 if name == b"view-transition-group" => {
                 return Ok(PseudoElement::ViewTransitionGroup {
-                    part_name: ViewTransitionPartName::parse(self, input)?,
+                    part: ViewTransitionPartSelector::parse(self, input)?,
                 });
             }
             26 if name == b"view-transition-image-pair" => {
                 return Ok(PseudoElement::ViewTransitionImagePair {
-                    part_name: ViewTransitionPartName::parse(self, input)?,
+                    part: ViewTransitionPartSelector::parse(self, input)?,
                 });
             }
             30 if name == b"view-transition-group-children" => {
                 return Ok(PseudoElement::ViewTransitionGroupChildren {
-                    part_name: ViewTransitionPartName::parse(self, input)?,
+                    part: ViewTransitionPartSelector::parse(self, input)?,
                 });
             }
             _ => {}
@@ -3097,28 +3097,28 @@ pub enum PseudoElement {
     ViewTransition,
     /// The [::view-transition-group()](https://w3c.github.io/csswg-drafts/css-view-transitions-1/#view-transition-group-pt-name-selector) functional pseudo element.
     ViewTransitionGroup {
-        /// A part name selector.
-        part_name: ViewTransitionPartName,
+        /// A part selector.
+        part: ViewTransitionPartSelector,
     },
     /// The [::view-transition-image-pair()](https://w3c.github.io/csswg-drafts/css-view-transitions-1/#view-transition-image-pair-pt-name-selector) functional pseudo element.
     ViewTransitionImagePair {
-        /// A part name selector.
-        part_name: ViewTransitionPartName,
+        /// A part selector.
+        part: ViewTransitionPartSelector,
     },
     /// The [::view-transition-old()](https://w3c.github.io/csswg-drafts/css-view-transitions-1/#view-transition-old-pt-name-selector) functional pseudo element.
     ViewTransitionOld {
-        /// A part name selector.
-        part_name: ViewTransitionPartName,
+        /// A part selector.
+        part: ViewTransitionPartSelector,
     },
     /// The [::view-transition-new()](https://w3c.github.io/csswg-drafts/css-view-transitions-1/#view-transition-new-pt-name-selector) functional pseudo element.
     ViewTransitionNew {
-        /// A part name selector.
-        part_name: ViewTransitionPartName,
+        /// A part selector.
+        part: ViewTransitionPartSelector,
     },
     /// The [::view-transition-group-children()](https://drafts.csswg.org/css-view-transitions-2/#::view-transition-group-children) functional pseudo element.
     ViewTransitionGroupChildren {
-        /// A part name selector.
-        part_name: ViewTransitionPartName,
+        /// A part selector.
+        part: ViewTransitionPartSelector,
     },
     /// An unknown pseudo element.
     Custom {
@@ -4298,8 +4298,6 @@ pub enum ViewTransitionPartName {
     All,
     /// <custom-ident>
     Name(CustomIdent),
-    /// .<custom-ident>
-    Class(<impl_::Selectors as SelectorImpl>::LocalIdentifier),
 }
 
 impl ViewTransitionPartName {
@@ -4315,35 +4313,12 @@ impl ViewTransitionPartName {
         match self {
             Self::All => dest.write_str("*"),
             Self::Name(name) => write_ci(name, dest),
-            Self::Class(class) => {
-                dest.write_char(b'.')?;
-                dest.write_ident_or_ref(*class, dest.css_module.is_some())
-            }
         }
     }
 
-    pub fn parse(
-        parser: &mut SelectorParser<'_>,
-        input: &mut CssParser,
-    ) -> CResult<ViewTransitionPartName> {
+    pub fn parse(input: &mut CssParser) -> CResult<ViewTransitionPartName> {
         if input.try_parse(|i| i.expect_delim(b'*')).is_ok() {
             return Ok(Self::All);
-        }
-
-        // Try to parse a class selector (.<custom-ident>)
-        let loc = input.position();
-        if input.try_parse(|i| i.expect_delim(b'.')).is_ok() {
-            let location = input.current_source_location();
-            let ident = input.expect_ident_cloned()?;
-            if crate::values::ident::is_reserved_custom_ident(ident) {
-                return Err(location.new_unexpected_token_error(Token::Ident(ident)));
-            }
-            return Ok(Self::Class(parser.new_local_identifier(
-                input,
-                css::CssRefTag::CLASS,
-                ident,
-                loc,
-            )));
         }
 
         Ok(Self::Name(CustomIdent::parse(input)?))
@@ -4353,7 +4328,6 @@ impl ViewTransitionPartName {
         match (self, rhs) {
             (Self::All, Self::All) => true,
             (Self::Name(a), Self::Name(b)) => a.eql(b),
-            (Self::Class(a), Self::Class(b)) => a.eql(b),
             _ => false,
         }
     }
@@ -4365,15 +4339,104 @@ impl ViewTransitionPartName {
                 hasher.update(&1u32.to_ne_bytes());
                 n.hash(hasher);
             }
-            Self::Class(n) => {
-                hasher.update(&2u32.to_ne_bytes());
-                n.hash(hasher);
-            }
         }
     }
 
     pub fn deep_clone(&self) -> Self {
         self.clone()
+    }
+}
+
+/// A [view transition part selector](https://w3c.github.io/csswg-drafts/css-view-transitions-2/#typedef-pt-name-and-class-selector)
+/// (upstream bun 08a234063c, #42764).
+#[derive(Clone)]
+pub struct ViewTransitionPartSelector {
+    /// The view transition part name.
+    pub name: Option<ViewTransitionPartName>,
+    /// The view transition classes, each written as `.<custom-ident>`.
+    pub classes: Box<[<impl_::Selectors as SelectorImpl>::LocalIdentifier]>,
+}
+
+impl ViewTransitionPartSelector {
+    pub fn to_css(&self, dest: &mut Printer) -> Result<(), PrintErr> {
+        if let Some(name) = &self.name {
+            name.to_css(dest)?;
+        }
+        for class in self.classes.iter() {
+            dest.write_char(b'.')?;
+            dest.write_ident_or_ref(*class, dest.css_module.is_some())?;
+        }
+        Ok(())
+    }
+
+    pub fn parse(
+        parser: &mut SelectorParser<'_>,
+        input: &mut CssParser,
+    ) -> CResult<ViewTransitionPartSelector> {
+        input.skip_whitespace();
+        let name = input.try_parse(ViewTransitionPartName::parse);
+
+        // White space is not allowed between the name and a class, or inside the classes.
+        let mut classes = Vec::new();
+        loop {
+            let start = input.state();
+            let loc = input.position();
+            let is_dot = matches!(
+                input.next_including_whitespace(),
+                Ok(Token::Delim(d)) if *d == u32::from(b'.')
+            );
+            if !is_dot {
+                input.reset(&start);
+                break;
+            }
+            let location = input.current_source_location();
+            let class = match input.next_including_whitespace()?.clone() {
+                Token::Ident(class) => class,
+                t => {
+                    let e = SelectorParseErrorKind::ClassNeedsIdent(t);
+                    return Err(location.new_custom_error(e.into_default_parser_error()));
+                }
+            };
+            if crate::values::ident::is_reserved_custom_ident(class) {
+                return Err(location.new_unexpected_token_error(Token::Ident(class)));
+            }
+            classes.push(parser.new_local_identifier(input, css::CssRefTag::CLASS, class, loc));
+        }
+
+        let name = match name {
+            Ok(name) => Some(name),
+            Err(e) if classes.is_empty() => return Err(e),
+            Err(_) => None,
+        };
+        Ok(ViewTransitionPartSelector {
+            name,
+            classes: classes.into_boxed_slice(),
+        })
+    }
+
+    pub fn eql(&self, rhs: &Self) -> bool {
+        let names_eql = match (&self.name, &rhs.name) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.eql(b),
+            _ => false,
+        };
+        names_eql
+            && self.classes.len() == rhs.classes.len()
+            && self
+                .classes
+                .iter()
+                .zip(rhs.classes.iter())
+                .all(|(a, b)| a.eql(b))
+    }
+
+    pub(crate) fn hash(&self, hasher: &mut Wyhash) {
+        if let Some(name) = &self.name {
+            name.hash(hasher);
+        }
+        for class in self.classes.iter() {
+            hasher.update(&2u32.to_ne_bytes());
+            class.hash(hasher);
+        }
     }
 }
 
@@ -4447,8 +4510,8 @@ mod view_transition_group_children_tests {
             })
             .expect("a pseudo element component");
 
-        let part_name = if let PseudoElement::ViewTransitionGroupChildren { part_name } = pe {
-            part_name
+        let part = if let PseudoElement::ViewTransitionGroupChildren { part } = pe {
+            part
         } else {
             panic!(
                 "expected ViewTransitionGroupChildren, got a different pseudo element in {source:?}"
@@ -4479,7 +4542,7 @@ mod view_transition_group_children_tests {
             let mut out = Vec::new();
             {
                 let mut printer = Printer::new_buffered(&arena, &mut out, None, None, &symbols);
-                part_name
+                part
                     .to_css(&mut printer)
                     .map_err(|_| "print part name failed")
                     .unwrap();
@@ -4527,6 +4590,97 @@ mod view_transition_group_children_tests {
         assert_eq!(printed, "::view-transition-group-children(*)");
         assert!(is_vt);
         assert!(accepts_only_child, ":only-child must be accepted after the pseudo-element");
+    }
+
+    // ─── Upstream bun 08a234063c (#42764): <pt-name-and-class-selector> ───
+
+    #[test]
+    fn name_with_classes_parses_and_round_trips() {
+        let (printed, part, is_vt, _) =
+            parse_pseudo_element(b"::view-transition-group-children(foo.bar.baz)");
+        assert_eq!(printed, "::view-transition-group-children(foo.bar.baz)");
+        assert_eq!(part, "foo.bar.baz");
+        assert!(is_vt);
+    }
+
+    #[test]
+    fn star_with_class_chain_parses_and_round_trips() {
+        let (printed, part, _, _) = parse_pseudo_element(b"::view-transition-group-children(*.class.class)");
+        assert_eq!(printed, "::view-transition-group-children(*.class.class)");
+        assert_eq!(part, "*.class.class");
+    }
+
+    #[test]
+    fn classes_alone_parse_and_round_trip() {
+        let (printed, part, _, _) =
+            parse_pseudo_element(b"::view-transition-group-children(.foo.bar)");
+        assert_eq!(printed, "::view-transition-group-children(.foo.bar)");
+        assert_eq!(part, ".foo.bar");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_stripped() {
+        // Whitespace around the argument goes away; whitespace between the
+        // name and a class, or inside the classes, is an error (below).
+        let (printed, part, _, _) =
+            parse_pseudo_element(b"::view-transition-group-children(  foo.bar  )");
+        assert_eq!(printed, "::view-transition-group-children(foo.bar)");
+        assert_eq!(part, "foo.bar");
+    }
+
+    #[test]
+    fn whitespace_inside_the_selector_is_rejected() {
+        for source in [
+            &b"::view-transition-group-children(*. cls)"[..],
+            b"::view-transition-group-children(. cls)",
+            b"::view-transition-group-children(foo .bar)",
+            b"::view-transition-group-children(.foo .bar)",
+            b"::view-transition-group-children(*.cls. c)",
+        ] {
+            let arena = Bump::new();
+            let mut input = css::ParserInput::new(source, &arena);
+            let mut parser = CssParser::new(&mut input, None, Default::default(), None);
+            let options = ParserOptions::default(None);
+            assert!(
+                SelectorList::parse_with_options(&mut parser, &options).is_err(),
+                "{source:?} must not parse: white space is not allowed between the name and a class, or inside the classes"
+            );
+        }
+    }
+
+    #[test]
+    fn dotted_reserved_word_is_rejected() {
+        // `inherit` is a reserved <custom-ident>: `.inherit` is not a class.
+        for source in [
+            &b"::view-transition-group-children(foo.inherit)"[..],
+            b"::view-transition-group-children(inherit.foo)",
+        ] {
+            let arena = Bump::new();
+            let mut input = css::ParserInput::new(source, &arena);
+            let mut parser = CssParser::new(&mut input, None, Default::default(), None);
+            let options = ParserOptions::default(None);
+            assert!(
+                SelectorList::parse_with_options(&mut parser, &options).is_err(),
+                "{source:?} must not parse: reserved custom ident in the part selector"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_ident_after_dot_is_rejected() {
+        for source in [
+            &b"::view-transition-group-children(*.*)"[..],
+            b"::view-transition-group-children(*.cls.foo.*)",
+        ] {
+            let arena = Bump::new();
+            let mut input = css::ParserInput::new(source, &arena);
+            let mut parser = CssParser::new(&mut input, None, Default::default(), None);
+            let options = ParserOptions::default(None);
+            assert!(
+                SelectorList::parse_with_options(&mut parser, &options).is_err(),
+                "{source:?} must not parse: a class needs an identifier"
+            );
+        }
     }
 }
 
