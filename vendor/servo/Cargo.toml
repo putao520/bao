@@ -360,7 +360,7 @@ pixels = { package = "bao-servo-pixels", version = "=0.5.5", path = "components/
 profile = { package = "bao-servo-profile", version = "=0.5.5", path = "components/profile" }
 profile_traits = { package = "bao-servo-profile-traits", version = "=0.5.5", path = "components/shared/profile" }
 script = { package = "bao-servo-script", version = "=0.5.13", path = "components/script" }
-script_bindings = { package = "bao-servo-script-bindings", version = "=0.5.8", path = "components/script_bindings" }
+script_bindings = { package = "bao-servo-script-bindings", version = "=0.5.9", path = "components/script_bindings" }
 script_traits = { package = "bao-servo-script-traits", version = "=0.5.6", path = "components/shared/script" }
 servo = { version = "=0.5.11", path = "components/servo", default-features = false, package = "bao-servo" }
 servo-allocator = { version = "=0.5.2", path = "components/allocator", package = "bao-servo-allocator" }
