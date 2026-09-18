@@ -2147,8 +2147,11 @@ impl PackageManifest {
                             }
                             JSON::ExprData::EString(_) => {
                                 if let Some(str_) = bin.expr.as_string(&bump) {
-                                    string_builder.count(str_);
-                                    break 'bin;
+                                    // The build pass reads `directories.bin` when `bin` is empty.
+                                    if !str_.is_empty() {
+                                        string_builder.count(str_);
+                                        break 'bin;
+                                    }
                                 }
                             }
                             _ => {}

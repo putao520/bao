@@ -88,6 +88,7 @@ mod lockb_name_hash_tests;
 mod lockfile_parse_tests;
 mod minimal_event_loop_tests;
 mod misc_domain_fix_tests;
+mod npm_manifest_parse_regress_tests;
 mod module_eval_error_tests;
 mod module_timer_keepalive_tests;
 mod net_connect_options_e2e_tests;
