@@ -2066,18 +2066,19 @@ impl PackageManifest {
                 let sliced_version = SlicedString::init(version_name, version_name);
                 let parsed_version = Semver::Version::parse(sliced_version);
 
-                if cfg!(debug_assertions) {
-                    debug_assert!(parsed_version.valid);
-                }
                 if !parsed_version.valid {
-                    log.add_error_fmt(
-                        Some(&source),
-                        prop.value.as_ref().expect("infallible: prop has value").loc,
-                        format_args!(
-                            "Failed to parse dependency {}",
-                            bstr::BStr::new(version_name)
-                        ),
-                    );
+                    // Not an error: an error fails the install. npm skips such a key in silence.
+                    if PackageManager::verbose_install() {
+                        log.add_warning_fmt(
+                            Some(&source),
+                            prop.value.as_ref().expect("infallible: prop has value").loc,
+                            format_args!(
+                                "Skipping version {} of {}: not a valid semver version",
+                                bun_fmt::quote(version_name),
+                                bun_fmt::quote(expected_name),
+                            ),
+                        );
+                    }
                     continue;
                 }
 
@@ -2423,8 +2424,8 @@ impl PackageManifest {
                 let mut sliced_version = SlicedString::init(version_name, version_name);
                 let mut parsed_version = Semver::Version::parse(sliced_version);
 
-                if cfg!(debug_assertions) {
-                    debug_assert!(parsed_version.valid);
+                if !parsed_version.valid {
+                    continue;
                 }
                 // We only need to copy the version tags if it contains pre and/or build
                 if parsed_version.version.tag.has_build() || parsed_version.version.tag.has_pre() {
@@ -2438,9 +2439,6 @@ impl PackageManifest {
                                 || parsed_version.version.tag.has_pre()
                         );
                     }
-                }
-                if !parsed_version.valid {
-                    continue;
                 }
 
                 bundled_deps_set.map.clear_retaining_capacity();
@@ -2858,35 +2856,21 @@ impl PackageManifest {
                         let mut i: usize = 0;
 
                         for item in items {
-                            let name_str = match item
+                            let Some(name_str) = item
                                 .key
                                 .as_ref()
                                 .expect("infallible: prop has key")
                                 .as_string(&bump)
-                            {
-                                Some(s) => s,
-                                None => {
-                                    if cfg!(debug_assertions) {
-                                        unreachable!("non-value Expr from JSON parser")
-                                    } else {
-                                        continue;
-                                    }
-                                }
+                            else {
+                                continue;
                             };
-                            let version_str = match item
+                            let Some(version_str) = item
                                 .value
                                 .as_ref()
                                 .expect("infallible: prop has value")
                                 .as_string(&bump)
-                            {
-                                Some(s) => s,
-                                None => {
-                                    if cfg!(debug_assertions) {
-                                        unreachable!("non-value Expr from JSON parser")
-                                    } else {
-                                        continue;
-                                    }
-                                }
+                            else {
+                                continue;
                             };
 
                             all_extern_strings[names_base + i] =
@@ -3093,7 +3077,7 @@ impl PackageManifest {
                             0 => package_version.dependencies = map,
                             1 => package_version.optional_dependencies = map,
                             2 => package_version.peer_dependencies = map,
-                            _ => unreachable!("non-value Expr from JSON parser"),
+                            _ => unreachable!("DEPENDENCY_GROUPS has 3 entries"),
                         }
 
                         // TODO(port): debug-assertions block (Zig lines 2478-2522) elided —
@@ -3322,11 +3306,12 @@ impl PackageManifest {
                             // Sanity check:
                             // When reading the versions, we iterate through the
                             // list backwards to choose the highest matching
-                            // version
+                            // version. Two keys can name one version ("1.0.0" and
+                            // "01.0.0"), so neighbours can be equal.
                             let first = semver_versions_[0];
                             let second = semver_versions_[1];
                             let order = second.order(first, string_bytes, string_bytes);
-                            debug_assert!(order == core::cmp::Ordering::Greater);
+                            debug_assert!(order != core::cmp::Ordering::Less);
                         }
                     }
                 }

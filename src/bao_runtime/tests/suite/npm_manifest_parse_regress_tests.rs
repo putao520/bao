@@ -110,3 +110,119 @@ mod bin_empty_string_directories {
         assert_eq!(stored.slice(&manifest.string_buf), b"./cli.js");
     }
 }
+
+/// Upstream bun 8ce165a1e8 "install: stop asserting on registry manifest
+/// contents in debug builds (#43035)" — debug-only checks on remote data
+/// aborted `bun install` on debug builds where the release path next to each
+/// check already handles the case. Assertions from
+/// test/cli/install/bun-install.test.ts ("unexpected shape" tests), running
+/// here on a debug-assertions build (cargo test dev profile) so each removed
+/// `debug_assert!` / `unreachable!` is exercised:
+///
+/// - a non-string dependency value (null) is skipped, not
+///   `unreachable!("non-value Expr from JSON parser")`;
+/// - a `versions` key that is not a version ("not-a-version") is skipped
+///   with at most a verbose warning, not `debug_assert!(parsed_version.valid)`
+///   nor a hard log error that fails the install;
+/// - equal-version neighbours ("1.0.0" and "01.0.0") sort without
+///   `debug_assert!(order == Ordering::Greater)`.
+mod unexpected_manifest_shapes {
+    use super::*;
+
+    #[test]
+    fn non_string_dependency_value_is_skipped() {
+        let packument = r#"{
+            "name": "evil",
+            "versions": {
+                "1.0.0": {
+                    "name": "evil",
+                    "version": "1.0.0",
+                    "dependencies": { "good": null, "ok": "1.0.1" },
+                    "dist": { "tarball": "http://127.0.0.1/reg/evil/-/evil-1.0.0.tgz" }
+                }
+            },
+            "dist-tags": { "latest": "1.0.0" }
+        }"#;
+        let manifest = parse_packument(packument);
+        assert_eq!(manifest.package_versions.len(), 1);
+        let version = &manifest.package_versions[0];
+        let names: Vec<&[u8]> = version
+            .dependencies
+            .name
+            .get(&manifest.external_strings)
+            .iter()
+            .map(|s| s.slice(&manifest.string_buf))
+            .collect();
+        assert_eq!(
+            names,
+            vec![b"ok".as_slice()],
+            "the null dependency value is skipped; the string one is kept"
+        );
+    }
+
+    #[test]
+    fn non_version_versions_key_is_skipped_silently() {
+        let packument = r#"{
+            "name": "evil",
+            "versions": {
+                "not-a-version": { "name": "evil" },
+                "1.0.0": {
+                    "name": "evil",
+                    "version": "1.0.0",
+                    "dist": { "tarball": "http://127.0.0.1/reg/evil/-/evil-1.0.0.tgz" }
+                }
+            },
+            "dist-tags": { "latest": "1.0.0" }
+        }"#;
+        // Pre-fix: debug_assert!(parsed_version.valid) aborted here; the
+        // error-log form also failed installs on release. Post-fix the key
+        // is skipped (npm parity: npm skips such keys in silence).
+        let manifest = parse_packument(packument);
+        assert_eq!(
+            manifest.package_versions.len(),
+            1,
+            "only the valid 1.0.0 version is kept"
+        );
+    }
+
+    #[test]
+    fn equal_neighbour_versions_do_not_assert_on_sort_order() {
+        let packument = r#"{
+            "name": "evil",
+            "versions": {
+                "1.0.0": {
+                    "name": "evil",
+                    "version": "1.0.0",
+                    "dist": { "tarball": "http://127.0.0.1/reg/evil/-/evil-1.0.0.tgz" }
+                },
+                "01.0.0": {
+                    "name": "evil",
+                    "version": "1.0.0",
+                    "dist": { "tarball": "http://127.0.0.1/reg/evil/-/evil-1.0.0.tgz" }
+                }
+            },
+            "dist-tags": { "latest": "1.0.0" }
+        }"#;
+        // Two keys can name one version; neighbours can compare Equal, which
+        // the old `debug_assert!(order == Ordering::Greater)` rejected.
+        let manifest = parse_packument(packument);
+        assert!(!manifest.package_versions.is_empty());
+    }
+
+    #[test]
+    fn missing_tarball_url_parses_at_manifest_level() {
+        // Upstream: `"dist": {}` (and friends) used to abort via
+        // `tarball_url is empty for package evil@1.0.0` debug panic in
+        // Package::from_npm; the manifest parse itself must accept the
+        // shape (the default-URL fallback is from_npm's release path).
+        let packument = r#"{
+            "name": "evil",
+            "versions": {
+                "1.0.0": { "name": "evil", "version": "1.0.0", "dist": {} }
+            },
+            "dist-tags": { "latest": "1.0.0" }
+        }"#;
+        let manifest = parse_packument(packument);
+        assert_eq!(manifest.package_versions.len(), 1);
+    }
+}
