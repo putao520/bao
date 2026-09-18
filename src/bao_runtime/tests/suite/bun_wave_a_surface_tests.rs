@@ -534,3 +534,128 @@ fn test_bun_wave_a_surface_all() {
         "partial version canonicalizes via max(): 1.2 → 1.2.MAX outranks 1.2.3"
     );
 }
+
+/// One masked RFC 6455 client frame (FIN + `opcode`, 7-bit length, mask).
+fn ws_client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let mask = [0x11u8, 0x22, 0x33, 0x44];
+    let mut out = Vec::with_capacity(2 + 4 + payload.len());
+    out.push(0x80 | opcode);
+    out.push(0x80 | payload.len() as u8);
+    out.extend_from_slice(&mask);
+    for (i, b) in payload.iter().enumerate() {
+        out.push(b ^ mask[i % 4]);
+    }
+    out
+}
+
+/// Upstream bun 663508d6d6 (#43153): WebSocket frames that arrive in the
+/// SAME TCP read as the upgrade request must reach the WebSocket, not vanish
+/// when the HTTP parser stops at the request head. Before the fix the 101 was
+/// sent and the rest of the read was dropped: the early text frame never hit
+/// `message`, the early ping never got its pong, and a later read's frames
+/// desynced the parser.
+#[test]
+fn test_ws_frames_in_same_read_as_upgrade_are_delivered() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+    ctx.set_post_eval_hook(bounded_drain_hook);
+
+    let setup = eval_str(
+        &mut ctx,
+        r#"
+        globalThis.__early_seen = [];
+        globalThis.__srv_e = Bun.serve({
+            port: 19390,
+            fetch: function(req) { return new Response('plain'); },
+            websocket: {
+                open: function(ws) { ws.send('opened'); },
+                message: function(ws, msg) {
+                    globalThis.__early_seen.push(String(msg));
+                    ws.send('echo:' + msg);
+                },
+                close: function(ws) {},
+            },
+        });
+        'up'
+    "#,
+    );
+    assert_eq!(setup, "up", "early-frames serve must start");
+    assert!(
+        wait_until(&mut ctx, "globalThis.__srv_e.port === 19390 ? 'y' : 'n'", 30),
+        "early-frames serve must report its port"
+    );
+
+    // ONE write: the upgrade request, a masked text frame ("early") and a
+    // masked ping ("p") — TCP puts all three in the same read.
+    let mut s = TcpStream::connect(("127.0.0.1", 19390)).expect("connect early-frames serve");
+    s.set_read_timeout(Some(std::time::Duration::from_millis(50))).ok();
+    let key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let req = format!(
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:19390\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        key
+    );
+    let mut one_read = req.into_bytes();
+    one_read.extend_from_slice(&ws_client_frame(0x1, b"early"));
+    one_read.extend_from_slice(&ws_client_frame(0x9, b"p"));
+    s.write_all(&one_read).unwrap();
+
+    // Read the handshake + everything the server sends back. Done when the
+    // echo of the early frame AND a pong (opcode 0x8a) are on the wire.
+    let seen = tick_read_until(
+        &mut ctx,
+        &mut s,
+        |b| {
+            let has_echo = b.windows(10).any(|w| w == b"echo:early");
+            let has_pong = b.iter().any(|&byte| byte == 0x8a);
+            has_echo && has_pong
+        },
+        300,
+    );
+    let split_at = seen
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n".as_slice())
+        .map(|i| i + 4)
+        .unwrap_or(seen.len());
+    let handshake = String::from_utf8_lossy(&seen[..split_at]).into_owned();
+    assert!(
+        handshake.starts_with("HTTP/1.1 101"),
+        "upgrade must still complete the 101 handshake, got:\n{}",
+        handshake
+    );
+    let post = &seen[split_at..];
+    assert!(
+        post.windows(10).any(|w| w == b"echo:early"),
+        "the early text frame must reach the message handler (same read as the upgrade), got: {:?}",
+        String::from_utf8_lossy(post)
+    );
+    assert!(
+        post.iter().any(|&byte| byte == 0x8a),
+        "the early ping must get its auto-pong (uWS answers pings), got: {:?}",
+        post
+    );
+
+    // The connection stays a working WebSocket after the early dispatch.
+    s.write_all(&ws_client_frame(0x1, b"later")).unwrap();
+    let rest = tick_read_until(
+        &mut ctx,
+        &mut s,
+        |b| b.windows(10).any(|w| w == b"echo:later"),
+        300,
+    );
+    assert!(
+        rest.windows(10).any(|w| w == b"echo:later"),
+        "a frame in a later read must still be delivered after the early dispatch, got: {:?}",
+        String::from_utf8_lossy(&rest)
+    );
+    let seen_json = eval_str(
+        &mut ctx,
+        "JSON.stringify(globalThis.__early_seen)",
+    );
+    assert_eq!(
+        seen_json, r#"["early","later"]"#,
+        "the server must have seen exactly the early and later messages, in order"
+    );
+    eval_ok(&mut ctx, "globalThis.__srv_e.stop(); 'stopped'");
+}

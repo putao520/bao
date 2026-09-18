@@ -80,6 +80,10 @@ namespace uWS
         unsigned int errorStatusCodeOrConsumedBytes = 0;
         void* returnedData = nullptr;
     public:
+        /* consumedBytes() of a success that leaves none of the read to the caller,
+         * whatever the length of the read (upstream bun 663508d6d6, #43153). */
+        static constexpr unsigned int WHOLE_READ = UINT_MAX;
+
         static HttpParserResult error(unsigned int errorStatusCode, HttpParserError error) {
             return HttpParserResult{.parserError = error, .errorStatusCodeOrConsumedBytes = errorStatusCode, .returnedData = nullptr};
         }
@@ -989,10 +993,14 @@ namespace uWS
             /* Same verdict that selects chunked framing below, so the handler's
              * has-body decision cannot disagree with how the body is consumed. */
             req->hasTransferEncoding = transferEncoding.has;
+            /* Read before the handler runs: an upgrade destroys this parser
+             * (upstream bun 663508d6d6, #43153). */
+            const bool hasBody = transferEncoding.has || (contentLengthStringLen && remainingStreamingBytes);
             void *returnedUser = requestHandler(user, req);
             if (returnedUser != user) {
-                /* We are upgraded to WebSocket or otherwise broken */
-                return HttpParserResult::success(consumedTotal, returnedUser);
+                /* We are upgraded to WebSocket or otherwise broken. What follows the head
+                 * is the caller's, unless it is the body that this request declared. */
+                return HttpParserResult::success(hasBody ? HttpParserResult::WHOLE_READ : consumedTotal, returnedUser);
             }
 
             /* The rules at play here according to RFC 9112 for requests are essentially:
@@ -1072,6 +1080,13 @@ public:
     bool sawConnectionClose = false;
 
     HttpParserResult consumePostPadded(uint64_t maxHeaderSize, bool& isConnectRequest, bool requireHostHeader, bool useStrictMethodValidation, bool isNodeHttp, char *data, unsigned int length, void *user, MoveOnlyFunction<void *(void *, HttpRequest *)> &&requestHandler, MoveOnlyFunction<void *(void *, std::string_view, bool)> &&dataHandler) {
+        /* When requestHandler returns something other than user (it upgraded or closed
+         * the socket), parsing stops and consumedBytes() of the result is the offset in
+         * data from which the bytes are the caller's. That is the end of the request's
+         * head, or WHOLE_READ when the request declared a body: the body is not parsed
+         * and is not the caller's. The handler may have destroyed this parser
+         * (upstream bun 663508d6d6, #43153). */
+        char *const readStart = data;
         /* This resets BloomFilter by construction, but later we also reset it again.
         * Optimize this to skip resetting twice (req could be made global) */
         HttpRequest req;
@@ -1128,6 +1143,12 @@ public:
             HttpParserResult consumed = fenceAndConsumePostPadded<true>(maxHeaderSize, isConnectRequest, requireHostHeader, useStrictMethodValidation, isNodeHttp, fallback.data(), (unsigned int) fallback.length(), user, &req, requestHandler, dataHandler);
             /* Return data will be different than user if we are upgraded to WebSocket or have an error */
             if (consumed.returnedData != user) {
+                /* The count is in fallback bytes, and the first `had` of them came from
+                 * earlier reads. The head ends past them: those reads did not complete it
+                 * (upstream bun 663508d6d6, #43153). */
+                if (!consumed.isError() && consumed.errorStatusCodeOrConsumedBytes != HttpParserResult::WHOLE_READ) {
+                    consumed.errorStatusCodeOrConsumedBytes -= had;
+                }
                 return consumed;
             }
             /* safe to call consumed.consumedBytes() because consumed.returnedData == user */
@@ -1191,6 +1212,11 @@ public:
         HttpParserResult consumed = fenceAndConsumePostPadded<false>(maxHeaderSize, isConnectRequest, requireHostHeader, useStrictMethodValidation, isNodeHttp, data, length, user, &req, requestHandler, dataHandler);
         /* Return data will be different than user if we are upgraded to WebSocket or have an error */
         if (consumed.returnedData != user) {
+            /* A body or a fallback head ahead of this request moved data forward
+             * (upstream bun 663508d6d6, #43153). */
+            if (!consumed.isError() && consumed.errorStatusCodeOrConsumedBytes != HttpParserResult::WHOLE_READ) {
+                consumed.errorStatusCodeOrConsumedBytes += (unsigned int) (data - readStart);
+            }
             return consumed;
         }
         /* safe to call consumed.consumedBytes() because consumed.returnedData == user */

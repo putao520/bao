@@ -270,9 +270,6 @@ private:
         struct us_socket_t *prevParsingSocket = httpContext->parsingSocket;
         httpContext->parsingSocket = s;
 
-        // clients need to know the cursor after http parse, not servers!
-        // how far did we read then? we need to know to continue with websocket parsing data? or?
-
         /* The return value is entirely up to us to interpret. The HttpParser cares only for whether the returned value is DIFFERENT from passed user */
 
         auto result = httpResponseData->consumePostPadded(httpContextData->maxHeaderSize, httpResponseData->isConnectRequest, httpContextData->flags.requireHostHeader,httpContextData->flags.useStrictMethodValidation, httpContextData->flags.isNodeHttp, data, (unsigned int) length, s, [httpContextData](void *s, HttpRequest *httpRequest) -> void * {
@@ -500,6 +497,20 @@ private:
 
             /* Reset upgradedWebSocket before we return */
             httpContextData->upgradedWebSocket = nullptr;
+
+            /* Frames that a client sent without waiting for the 101 (RFC 6455 4.1) follow the
+             * request head in this read, and the HTTP parser stopped there. Give them to the
+             * WebSocket now, as the loop would have for a read of its own. The parser counts a
+             * body that the request declared as consumed, so that is never taken for frames.
+             * Not when upgradedWebSocket names another connection (upgrade() adopts in place,
+             * so ours is s): the field is per context, and a microtask of this dispatch, or an
+             * earlier upgrade from a request body handler, can set it
+             * (upstream bun 663508d6d6, #43153). */
+            unsigned int consumed = result.consumedBytes();
+            if (consumed < (unsigned int) length && (us_socket_t *) asyncSocket == s
+                && !us_socket_is_closed(s) && !us_socket_is_shut_down(s)) {
+                return us_dispatch_data(s, data + consumed, (int) ((unsigned int) length - consumed));
+            }
 
             /* Return the new upgraded websocket */
             return (us_socket_t *) asyncSocket;
