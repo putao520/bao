@@ -3477,6 +3477,7 @@ dependencies = [
  "bun_http_types",
  "bun_install",
  "bun_io",
+ "bun_libarchive",
  "bun_lsquic_sys",
  "bun_opaque",
  "bun_parsers",

@@ -83,6 +83,7 @@ mod http_te_parity_tests;
 mod inspect_conformance;
 mod js_engine_boundary_tests;
 mod keyobject_export_tests;
+mod libarchive_tar_mode_tests;
 mod lockb_name_hash_tests;
 mod lockfile_parse_tests;
 mod minimal_event_loop_tests;
