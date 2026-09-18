@@ -104,6 +104,8 @@ impl ClientContext {
     }
 
     /// Find or open a connection to `hostname:port` and queue `client` on it.
+    /// `false` leaves `client` on no session, for the caller to fail
+    /// (upstream bun b27413b4a9, #42900).
     pub fn connect(&mut self, client: &mut HTTPClient, hostname: &[u8], port: u16) -> bool {
         let reject = client.flags.reject_unauthorized;
         for &s in self.sessions.iter() {
@@ -177,6 +179,14 @@ impl ClientContext {
                     bstr::BStr::new(hostname),
                     port,
                 );
+                // `fail_session` fails what is queued, and that dispatch frees
+                // the `AsyncHTTP` the caller still holds. Queue nothing
+                // (upstream bun b27413b4a9, #42900): the enqueue just above is
+                // the session's only entry, so detaching leaves `fail_session`
+                // nothing to fail and the caller stays the one failure path.
+                if let Some(stream) = client.h3 {
+                    session_mut(session).detach(stream.as_ptr());
+                }
                 self.unregister(session_mut(session));
                 PendingConnect::fail_session(session, bun_core::err!(ConnectionRefused));
                 return false;
