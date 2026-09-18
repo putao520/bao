@@ -2256,10 +2256,10 @@ pub fn parse_into_binary_lockfile(
                 .e_array()
                 .expect("infallible: variant checked")
                 .items;
-            if (pkg_info.len_u32() as usize) < 3 {
+            // Index 2 for an npm resolution (after the registry string), index 1 otherwise.
+            let Some(maybe_info_obj) = pkg_info.slice().iter().find(|item| item.is_object()) else {
                 continue;
-            }
-            let maybe_info_obj = pkg_info.at(2);
+            };
             let Some(bundled_expr) = maybe_info_obj.get(b"bundled") else {
                 continue;
             };

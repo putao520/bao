@@ -103,3 +103,98 @@ mod workspaces_without_packages {
         ));
     }
 }
+
+/// Upstream bun 64669ab07c "install: keep a bundled file: dependency bundled
+/// when installing from bun.lock (#42884)" — the bundle-root pre-scan used to
+/// read the info object at index 2 of every package entry, which is right
+/// only for an npm resolution (`[res, registry, {info}, integrity]`); a
+/// `file:`, git, tarball or workspace resolution has no registry string, so
+/// its info object is at index 1 and the `"bundled": true` marker was never
+/// seen. The installer then installed the bundled dependency a second time
+/// (landing as self-referencing `package.json -> package.json` symlinks).
+/// Regression assertions re-expressed from
+/// test/cli/install/bun-install-registry.test.ts `bundledDependencies` block
+/// (registry fixtures are not absorbed).
+mod bundled_file_prescan {
+    use bun_install::parse_text_lockfile_for_tests as parse_lock;
+
+    /// `file:` resolution entries carry the info object at index 1; their
+    /// `"bundled": true` marker must mark the parent's edge BUNDLED.
+    #[test]
+    fn file_resolution_bundled_marker_is_seen_at_index_1() {
+        let lockfile = parse_lock(
+            r#"{
+                "lockfileVersion": 1,
+                "workspaces": { "": { "name": "z" } },
+                "packages": {
+                    "bundled-file": ["bundled-file@1.0.0", "", { "dependencies": { "bundled-file-dep": "file:vendor/bundled-file-dep" } }, ""],
+                    "bundled-file/bundled-file-dep": ["bundled-file-dep@file:vendor/bundled-file-dep", { "bundled": true }]
+                }
+            }"#,
+        )
+        .expect("lockfile parses");
+
+        // "bundled-file" is package id 1 (root=0, insertion order of "packages").
+        let parent = lockfile.packages.get(1);
+        let name = parent.name.slice(lockfile.buffers.string_bytes.as_slice());
+        assert_eq!(name, b"bundled-file");
+        let deps = parent.dependencies.get(&lockfile.buffers.dependencies);
+        assert_eq!(deps.len(), 1);
+        assert!(
+            deps[0].behavior.is_bundled(),
+            "file: entry's bundled marker at index 1 must mark the parent edge BUNDLED"
+        );
+    }
+
+    /// npm resolutions keep the info object at index 2; their bundled marker
+    /// must keep working (the old hardcoded index was right for these).
+    #[test]
+    fn npm_resolution_bundled_marker_still_seen_at_index_2() {
+        let lockfile = parse_lock(
+            r#"{
+                "lockfileVersion": 1,
+                "workspaces": { "": { "name": "z" } },
+                "packages": {
+                    "ships-bundled": ["ships-bundled@1.0.0", "", { "dependencies": { "inner": "1.0.0" } }, ""],
+                    "ships-bundled/inner": ["inner@1.0.0", "", { "bundled": true }, ""]
+                }
+            }"#,
+        )
+        .expect("lockfile parses");
+
+        let parent = lockfile.packages.get(1);
+        let name = parent.name.slice(lockfile.buffers.string_bytes.as_slice());
+        assert_eq!(name, b"ships-bundled");
+        let deps = parent.dependencies.get(&lockfile.buffers.dependencies);
+        assert_eq!(deps.len(), 1);
+        assert!(
+            deps[0].behavior.is_bundled(),
+            "npm entry's bundled marker at index 2 must keep marking the edge BUNDLED"
+        );
+    }
+
+    /// Without the marker the edge must NOT be bundled (a `file:` dependency
+    /// that is not bundled is installed/linked normally).
+    #[test]
+    fn file_resolution_without_marker_is_not_bundled() {
+        let lockfile = parse_lock(
+            r#"{
+                "lockfileVersion": 1,
+                "workspaces": { "": { "name": "z" } },
+                "packages": {
+                    "bundled-file": ["bundled-file@1.0.0", "", { "dependencies": { "bundled-file-dep": "file:vendor/bundled-file-dep" } }, ""],
+                    "bundled-file/bundled-file-dep": ["bundled-file-dep@file:vendor/bundled-file-dep", {}]
+                }
+            }"#,
+        )
+        .expect("lockfile parses");
+
+        let parent = lockfile.packages.get(1);
+        let deps = parent.dependencies.get(&lockfile.buffers.dependencies);
+        assert_eq!(deps.len(), 1);
+        assert!(
+            !deps[0].behavior.is_bundled(),
+            "no bundled marker => edge stays installable"
+        );
+    }
+}
