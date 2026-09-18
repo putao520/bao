@@ -266,6 +266,13 @@ impl Behavior {
             || (features.workspaces && self.is_workspace())
     }
 
+    /// False when the installers filter the dependency, and with it everything below.
+    /// upstream bun 8eaad800c7 (#43122)
+    #[inline]
+    pub fn is_placed(self, features: Features) -> bool {
+        !self.is_bundled() && self.is_enabled(features)
+    }
+
     pub fn cmp(self, rhs: Self) -> core::cmp::Ordering {
         use core::cmp::Ordering::*;
         if self == rhs {

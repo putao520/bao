@@ -688,7 +688,7 @@ impl Lockfile {
 
         let dep = &self.buffers.dependencies[dep_id as usize];
 
-        dep.behavior.is_bundled() || !dep.behavior.is_enabled(features)
+        !dep.behavior.is_placed(features)
     }
 
     /// This conditionally clones the lockfile with root packages marked as non-resolved
@@ -2265,6 +2265,30 @@ impl Lockfile {
         self.exact_pinned[i] = true;
     }
 
+    /// See `Scratch::unplaced_subtree`.
+    /// upstream bun 8eaad800c7 (#43122)
+    pub fn mark_unplaced_subtree(&mut self, dependencies: DependencySlice) {
+        let range = bun_collections::bit_set::Range {
+            start: dependencies.begin() as usize,
+            end: dependencies.end() as usize,
+        };
+        let unplaced_subtree = &mut self.scratch.unplaced_subtree;
+        if unplaced_subtree.bit_length() < range.end {
+            bun_core::handle_oom(unplaced_subtree.resize(range.end, false));
+        }
+        unplaced_subtree.set_range_value(range, true);
+    }
+
+    /// upstream bun 8eaad800c7 (#43122)
+    /// PORT NOTE: bao's managed `DynamicBitSet` lacks upstream's
+    /// `is_set_allow_out_of_bound`; bound-check by hand (padding bits are
+    /// zeroed, so a capacity bound is equivalent).
+    #[inline]
+    pub fn is_in_unplaced_subtree(&self, id: DependencyID) -> bool {
+        let bits = &self.scratch.unplaced_subtree;
+        (id as usize) < bits.bit_length() && bits.is_set(id as usize)
+    }
+
     pub fn get_package_id(
         &self,
         name_hash: u64,
@@ -2620,6 +2644,9 @@ impl Lockfile {
 pub struct Scratch {
     pub duplicate_checker_map: DuplicateCheckerMap,
     pub dependency_list_queue: DependencyQueue,
+    /// `bit[dependency_id]`: this resolve reached it below a dependency that the installers filter.
+    /// upstream bun 8eaad800c7 (#43122)
+    pub(crate) unplaced_subtree: DynamicBitSet,
 }
 
 pub(crate) type DuplicateCheckerMap =
@@ -2631,6 +2658,9 @@ impl Scratch {
         Scratch {
             dependency_list_queue: DependencyQueue::init(),
             duplicate_checker_map: DuplicateCheckerMap::default(),
+            // PORT NOTE: bao's DynamicBitSet has no Default (upstream's does);
+            // an empty 0-length set is the same state.
+            unplaced_subtree: bun_core::handle_oom(DynamicBitSet::init_empty(0)),
         }
     }
 }

@@ -74,6 +74,10 @@ pub struct Options {
 
     pub lockfile_only: bool,
 
+    /// Set by `init_with_runtime`: no install phase, so only a resolve downloads a package.
+    /// upstream bun 8eaad800c7 (#43122)
+    pub runtime_auto_install: bool,
+
     // `bun pm version` command options
     pub git_tag_version: bool,
     pub allow_same_version: bool,
@@ -157,6 +161,7 @@ impl Default for Options {
             ca_file_name: b"",
             save_text_lockfile: None,
             lockfile_only: false,
+            runtime_auto_install: false,
             git_tag_version: true,
             allow_same_version: false,
             preid: b"",

@@ -332,3 +332,70 @@ mod trusted_folder_dependency {
         assert!(!Tag::Symlink.is_local_package());
     }
 }
+
+/// Upstream bun 8eaad800c7 "install: do not download tarballs that the
+/// installers never place (#43122)" — a fresh resolve downloaded the tarball
+/// of every registry package it resolved, including packages the installers
+/// filter out (bundled dependencies, other-platform packages, groups turned
+/// off by --production/--omit). The fix records the dependencies below a
+/// filtered dependency in `Lockfile.scratch.unplaced_subtree` and skips the
+/// resolve-phase tarball task for them (`Behavior::is_placed` is the test
+/// `Tree.rs` already made, now shared). Assertions re-expressed from
+/// test/cli/install/bun-install-registry.test.ts (23 new e2e cases; the
+/// Rust surface here pins the gate algebra and the subtree bitset).
+mod unplaced_tarball_prefetch {
+    use bun_install::Behavior;
+    use bun_install::Features;
+    use bun_install::parse_text_lockfile_for_tests as parse_lock;
+
+    #[test]
+    fn is_placed_is_bundled_or_unenabled() {
+        let prod = Behavior::PROD;
+        let bundled = Behavior::BUNDLED;
+        let dev = Behavior::DEV;
+        let features_all = Features {
+            optional_dependencies: true,
+            dev_dependencies: true,
+            peer_dependencies: true,
+            workspaces: true,
+            ..Default::default()
+        };
+        let features_prod_only = Features {
+            optional_dependencies: false,
+            dev_dependencies: false,
+            peer_dependencies: false,
+            workspaces: false,
+            ..Default::default()
+        };
+        // placed: enabled and not bundled
+        assert!(prod.is_placed(features_all));
+        assert!(dev.is_placed(features_all));
+        // bundled => never placed (the installers skip it and everything below)
+        assert!(!bundled.is_placed(features_all));
+        assert!(!(prod | bundled).is_placed(features_all));
+        // filtered group => not placed (this is what --production turns off)
+        assert!(!dev.is_placed(features_prod_only));
+    }
+
+    #[test]
+    fn unplaced_subtree_bits_follow_dependency_ranges() {
+        let lockfile = parse_lock(
+            r#"{ "lockfileVersion": 1, "workspaces": { "": { "name": "z", "dependencies": { "a": "1.0.0", "b": "1.0.0" } } },
+                "packages": { "a": ["a@1.0.0", "", {}, ""], "b": ["b@1.0.0", "", {}, ""] } }"#,
+        )
+        .unwrap();
+        let root_deps = lockfile.packages.get(0).dependencies;
+
+        // nothing marked initially
+        assert!(!lockfile.is_in_unplaced_subtree(root_deps.off));
+        assert!(!lockfile.is_in_unplaced_subtree(root_deps.off + 1));
+
+        // mark the root's whole dependency range as below a filtered dependency
+        let mut lockfile = lockfile;
+        lockfile.mark_unplaced_subtree(root_deps);
+        assert!(lockfile.is_in_unplaced_subtree(root_deps.off));
+        assert!(lockfile.is_in_unplaced_subtree(root_deps.off + root_deps.len - 1));
+        // out-of-range ids read as not-marked
+        assert!(!lockfile.is_in_unplaced_subtree(1 << 20));
+    }
+}
