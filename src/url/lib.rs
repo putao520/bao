@@ -300,6 +300,16 @@ pub use whatwg::{
     file_url_from_string, href_from_string, join, origin_from_slice, path_from_file_url,
 };
 
+/// Where the authority ends, which is where the search for the `@` of the userinfo stops.
+/// Upstream bun 08e4ccbc90 (#42881).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AuthorityEnd {
+    /// `/`, `?`, `#`, and a `\` in a special scheme. For a string that something else reads too.
+    LikeNewURL,
+    /// `/`, `?` or `#`, so a `\` stays userinfo. Only for a string this parser alone reads.
+    SlashQueryOrHash,
+}
+
 // PORT NOTE: URL is a pure view struct — every field is a slice into `href` (or a
 // literal default). Zig expresses this with `[]const u8` fields borrowing the
 // caller-provided `base`.
@@ -321,6 +331,8 @@ pub struct URL<'a> {
     pub search_params: Option<QueryStringMap>,
     pub username: &'a [u8],
     pub port_was_automatically_set: bool,
+    /// The rule `parse` used, so `href_without_userinfo` cuts the same bytes.
+    pub(crate) authority_end: AuthorityEnd,
 }
 
 impl<'a> Default for URL<'a> {
@@ -340,6 +352,7 @@ impl<'a> Default for URL<'a> {
             search_params: None,
             username: b"",
             port_was_automatically_set: false,
+            authority_end: AuthorityEnd::LikeNewURL,
         }
     }
 }
@@ -434,6 +447,7 @@ impl<'a> URL<'a> {
             search_params: self.search_params,
             username: d(self.username),
             port_was_automatically_set: self.port_was_automatically_set,
+            authority_end: self.authority_end,
         }
     }
 
@@ -527,6 +541,45 @@ impl<'a> URL<'a> {
     #[inline]
     pub fn is_http(&self) -> bool {
         self.protocol == b"http"
+    }
+
+    /// The schemes WHATWG calls special: a `\` ends the authority of these, as a `/` does.
+    /// Upstream bun 08e4ccbc90 (#42881). `bun_core::immutable` (this file's
+    /// `strings`) has no `eql_any_case_insensitive_ascii`; the spelled-out
+    /// `any` over the same six literals is that helper verbatim.
+    fn has_special_scheme(&self) -> bool {
+        const SPECIAL_SCHEMES: [&[u8]; 6] = [b"http", b"https", b"ws", b"wss", b"ftp", b"file"];
+        SPECIAL_SCHEMES
+            .iter()
+            .any(|scheme| strings::eql_case_insensitive_ascii(self.protocol, scheme, true))
+    }
+
+    /// Upstream bun 08e4ccbc90 (#42881).
+    fn backslash_ends_authority(&self, end: AuthorityEnd) -> bool {
+        end == AuthorityEnd::LikeNewURL && self.has_special_scheme()
+    }
+
+    /// The one definition of where an authority ends, for the userinfo, the host and the port.
+    /// Upstream bun 08e4ccbc90 (#42881).
+    fn ends_authority(byte: u8, backslash_ends_it: bool) -> bool {
+        matches!(byte, b'/' | b'?' | b'#') || (backslash_ends_it && byte == b'\\')
+    }
+
+    /// The last `@` of the authority of `after_scheme`, the text after `scheme://`.
+    /// Upstream bun 08e4ccbc90 (#42881).
+    pub fn userinfo_end(&self, after_scheme: &[u8], end: AuthorityEnd) -> Option<usize> {
+        let backslash_ends_it = self.backslash_ends_authority(end);
+        let mut last_at = None;
+        // One pass over the authority, which is short.
+        for (i, &byte) in after_scheme.iter().enumerate() {
+            if Self::ends_authority(byte, backslash_ends_it) {
+                break;
+            }
+            if byte == b'@' {
+                last_at = Some(i);
+            }
+        }
+        last_at
     }
 
     /// PORT NOTE(upstream d95bc353ee): `input` is
@@ -654,15 +707,13 @@ impl<'a> URL<'a> {
         if self.username.is_empty() && self.password.is_empty() {
             return Cow::Borrowed(self.href);
         }
-        // The userinfo ends at the last `@` of the authority, as `parse` reads it.
         let Some(authority) = strings::index_of(self.href, b"://").map(|i| i + 3) else {
             return Cow::Borrowed(self.href);
         };
         let rest = &self.href[authority..];
-        let end = strings::index_of_any(rest, b"/?#")
-            .map(|i| i as usize)
-            .unwrap_or(rest.len());
-        let Some(at) = strings::last_index_of_char(&rest[..end], b'@') else {
+        // The userinfo ends at the last `@` of the authority, as `parse` read it
+        // (upstream bun 08e4ccbc90, #42881: same rule, same bytes).
+        let Some(at) = self.userinfo_end(rest, self.authority_end) else {
             return Cow::Borrowed(self.href);
         };
         let mut out = Vec::with_capacity(self.href.len() - at - 1);
@@ -801,12 +852,26 @@ impl<'a> URL<'a> {
         }
     }
 
+    /// Reads the authority as `new URL()` reads it. See [`URL::parse_single_reader`] for the other rule.
+    /// Upstream bun 08e4ccbc90 (#42881).
     pub fn parse(base: &'a [u8]) -> URL<'a> {
+        Self::parse_with(base, AuthorityEnd::LikeNewURL)
+    }
+
+    /// `parse` for a string this parser alone reads, where a `\` before the `@` is userinfo.
+    /// Upstream bun 08e4ccbc90 (#42881).
+    pub fn parse_single_reader(base: &'a [u8]) -> URL<'a> {
+        Self::parse_with(base, AuthorityEnd::SlashQueryOrHash)
+    }
+
+    /// Upstream bun 08e4ccbc90 (#42881).
+    fn parse_with(base: &'a [u8], authority_end: AuthorityEnd) -> URL<'a> {
         if base.is_empty() {
             return URL::default();
         }
         let mut url = URL {
             href: base,
+            authority_end,
             ..Default::default()
         };
         // PORT NOTE: Zig uses u31; Rust has no u31 — using u32 (values never approach 2^31).
@@ -837,17 +902,7 @@ impl<'a> URL<'a> {
                     // what precedes the last `@` of the authority.
                     if offset > 0 {
                         let rest = &base[offset as usize..];
-                        // One pass over the authority, which is short: the last
-                        // `@` before the first `/`, `?` or `#` ends the userinfo.
-                        let mut last_at = None;
-                        for (i, &byte) in rest.iter().enumerate() {
-                            match byte {
-                                b'@' => last_at = Some(i),
-                                b'/' | b'?' | b'#' => break,
-                                _ => {}
-                            }
-                        }
-                        if let Some(at) = last_at {
+                        if let Some(at) = url.userinfo_end(rest, authority_end) {
                             let userinfo = &rest[..at];
                             // `split_once_char` (upstream bun_core) inlined:
                             // split at the first `:`; no colon means the whole
@@ -968,7 +1023,16 @@ impl<'a> URL<'a> {
                 b':' => {
                     if i + 3 <= str.len() && str[i + 1] == b'/' && str[i + 2] == b'/' {
                         self.protocol = &str[0..i];
-                        return Some(u32::try_from(i + 3).expect("int cast"));
+                        // RFC 3986 §3.1: only behind `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`
+                        // is there an authority (upstream bun 08e4ccbc90, #42881).
+                        let is_scheme = self.protocol.first().is_some_and(u8::is_ascii_alphabetic)
+                            && self.protocol.iter().all(|byte| {
+                                matches!(
+                                    byte,
+                                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'+' | b'-' | b'.'
+                                )
+                            });
+                        return is_scheme.then(|| u32::try_from(i + 3).expect("int cast"));
                     }
                 }
                 _ => {}
@@ -1011,6 +1075,9 @@ impl<'a> URL<'a> {
 
     pub fn parse_host(&mut self, str: &'a [u8]) -> Option<u32> {
         let mut i: u32 = 0;
+        // Upstream bun 08e4ccbc90 (#42881): the authority ends by the one rule
+        // `ends_authority` spells, also for the host scan.
+        let backslash_ends_it = self.backslash_ends_authority(self.authority_end);
 
         // reset it
         self.host = b"";
@@ -1034,12 +1101,8 @@ impl<'a> URL<'a> {
                 } else {
                     colon_i
                 };
-                match str[i as usize] {
-                    // alright, we found the slash or "?"
-                    b'?' | b'/' => {
-                        break;
-                    }
-                    _ => {}
+                if Self::ends_authority(str[i as usize], backslash_ends_it) {
+                    break;
                 }
                 i += 1;
             }
@@ -1068,12 +1131,8 @@ impl<'a> URL<'a> {
                     colon_i
                 };
 
-                match str[i as usize] {
-                    // alright, we found the slash or "?"
-                    b'?' | b'/' => {
-                        break;
-                    }
-                    _ => {}
+                if Self::ends_authority(str[i as usize], backslash_ends_it) {
+                    break;
                 }
                 i += 1;
             }
@@ -2080,5 +2139,85 @@ mod fragment_query_tests {
         assert_eq!(url.path, b"/path");
         assert_eq!(url.search, b"?q=1");
         assert_eq!(url.hash, b"#frag?x=2");
+    }
+}
+
+/// Upstream bun 08e4ccbc90 (#42881): the authority ends where `new URL()`
+/// ends it — `/`, `?`, `#`, and a `\` in a special scheme; a proxy is the
+/// one single-reader exception; no host is read behind a second scheme.
+#[cfg(test)]
+mod authority_end_tests {
+    use super::{AuthorityEnd, URL};
+
+    #[test]
+    fn the_authority_ends_where_new_url_ends_it() {
+        let url = URL::parse(br"http://u:p@first.example:8080\x@second.example/path");
+        assert_eq!((url.username, url.password), (&b"u"[..], &b"p"[..]));
+        assert_eq!(
+            (url.hostname, url.port),
+            (&b"first.example"[..], &b"8080"[..])
+        );
+
+        let url = URL::parse(b"HTTPS://u:p@first.example:8443#@second.example/");
+        assert_eq!((url.username, url.password), (&b"u"[..], &b"p"[..]));
+        assert_eq!(
+            (url.hostname, url.port),
+            (&b"first.example"[..], &b"8443"[..])
+        );
+
+        // In a scheme that is not special, a `\` is part of the userinfo, as for `new URL()`.
+        let url = URL::parse(br"socks5://u:p@first.example\x@second.example/");
+        assert_eq!(
+            (url.username, url.password),
+            (&b"u"[..], &br"p@first.example\x"[..])
+        );
+        assert_eq!(url.hostname, b"second.example");
+    }
+
+    #[test]
+    fn a_proxy_keeps_a_domain_login() {
+        let proxy = URL::parse_single_reader(br"http://DOMAIN\user:pass@proxy.example:8080");
+        assert_eq!(
+            (proxy.username, proxy.password),
+            (&br"DOMAIN\user"[..], &b"pass"[..])
+        );
+        assert_eq!(
+            (proxy.hostname, proxy.port),
+            (&b"proxy.example"[..], &b"8080"[..])
+        );
+        assert_eq!(
+            &*proxy.href_without_userinfo(),
+            b"http://proxy.example:8080"
+        );
+    }
+
+    #[test]
+    fn no_host_is_read_behind_a_second_scheme() {
+        let url = URL::parse(b"http:first.example://second.example/");
+        assert_eq!(url.protocol, b"http:first.example");
+        assert_eq!(url.hostname, b"http");
+
+        let url = URL::parse(b"blob:http://second.example/id");
+        assert_eq!(url.protocol, b"blob:http");
+        assert_eq!(url.hostname, b"blob");
+
+        let url = URL::parse(b"1http://second.example/");
+        assert_eq!(url.protocol, b"1http");
+        assert_eq!(url.hostname, b"1http");
+
+        let url = URL::parse(b"localhost:3000/api");
+        assert_eq!(url.protocol, b"");
+        assert_eq!((url.hostname, url.port), (&b"localhost"[..], &b"3000"[..]));
+
+        // The rule the proxy reading turns off: same string, a `\` no longer ends
+        // the authority, so the last `@` wins and the userinfo splits at its
+        // first `:`.
+        let url = URL::parse_single_reader(br"http://u:p@first.example:8080\x@second.example/");
+        assert_eq!(
+            (url.username, url.password),
+            (&b"u"[..], &br"p@first.example:8080\x"[..])
+        );
+        assert_eq!(url.hostname, b"second.example");
+        assert_eq!(url.authority_end, AuthorityEnd::SlashQueryOrHash);
     }
 }

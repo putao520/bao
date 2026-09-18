@@ -210,7 +210,9 @@ fn make_client<'a>(
         result_callback: noop_callback(),
         if_modified_since: b"",
         request_content_len_buf: [0u8; b"-4294967295".len()],
-        http_proxy,
+        // The client dials and authenticates a proxy from this one parse, whoever
+        // made the URL (upstream bun 08e4ccbc90, #42881).
+        http_proxy: http_proxy.map(|proxy| URL::parse_single_reader(proxy.href)),
         proxy_headers,
         proxy_authorization: None,
         proxy_tunnel: None,
@@ -578,7 +580,10 @@ impl<'a> AsyncHTTP<'a> {
             this.client.flags.pool_bypass = crate::PoolBypass::NotThisHop;
         }
 
-        if let Some(proxy) = &this.http_proxy {
+        // The client re-parsed the proxy with `parse_single_reader` in
+        // `make_client` (upstream bun 08e4ccbc90, #42881); the credentials come
+        // from that same one parse, so the dial and the auth always agree.
+        if let Some(proxy) = &this.client.http_proxy {
             if let Some(auth) = basic_authorization(proxy) {
                 this.client.proxy_authorization = Some(auth);
             }

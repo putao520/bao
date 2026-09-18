@@ -365,7 +365,9 @@ impl<'a> Loader<'a> {
             unsafe { core::slice::from_raw_parts(s.as_ptr(), s.len()) }
         };
 
-        let proxy = URL::parse(extend(self.proxy_env_for_scheme(url.is_http())?));
+        // `http://DOMAIN\user:pass@proxy:8080` is a domain login, as curl reads it
+        // (upstream bun 08e4ccbc90, #42881).
+        let proxy = URL::parse_single_reader(extend(self.proxy_env_for_scheme(url.is_http())?));
         if self.is_no_proxy(url.hostname, url.get_port_auto()) {
             return None;
         }
@@ -407,7 +409,9 @@ impl<'a> Loader<'a> {
         let value = self
             .get_lower_then_upper(b"all_proxy", b"ALL_PROXY")
             .filter(|p| !Self::is_emptyish(p))?;
-        let url = URL::parse(value);
+        // Upstream bun 08e4ccbc90 (#42881): a proxy value is read by the client
+        // alone, so a `\` before the `@` stays userinfo.
+        let url = URL::parse_single_reader(value);
         (url.protocol.is_empty() || url.has_http_like_protocol()).then_some(value)
     }
 

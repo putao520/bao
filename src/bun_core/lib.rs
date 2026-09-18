@@ -1894,13 +1894,19 @@ pub(crate) mod strings_impl {
         debug_assert!(!b.is_empty());
         debug_assert!(!a.is_empty());
 
+        // Miri has no shim for either libc call, and `bun_url`'s unit tests reach this
+        // (upstream bun 08e4ccbc90, #42881).
+        #[cfg(miri)]
+        {
+            a.eq_ignore_ascii_case(&b[..a.len()])
+        }
         // SAFETY: a.len() <= b.len() here; strncasecmp reads at most a.len() bytes from each.
-        #[cfg(not(windows))]
+        #[cfg(all(not(miri), not(windows)))]
         unsafe {
             libc::strncasecmp(a.as_ptr().cast(), b.as_ptr().cast(), a.len()) == 0
         }
         // Windows MSVC libc has no `strncasecmp`; `_strnicmp` is the equivalent.
-        #[cfg(windows)]
+        #[cfg(all(not(miri), windows))]
         unsafe {
             unsafe extern "C" {
                 fn _strnicmp(
