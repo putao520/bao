@@ -16,12 +16,15 @@ use bun_http::signals::Store;
 use bun_http::{AsyncHTTP, FetchRedirect, HTTPClientResult, HTTPClientResultCallback, Method,
                async_http};
 
-/// One delivery reduced to the status/fail shape the h2 suites assert on.
+/// One delivery reduced to the status/fail shape the h2 suites assert on,
+/// plus the response header pairs of the delivery that carried metadata
+/// (upstream bun b8c4a9b629 regression surface).
 #[derive(Debug)]
 pub(crate) struct Delivery {
     pub(crate) status: Option<u32>,
     pub(crate) fail: Option<bun_core::Error>,
     pub(crate) has_more: bool,
+    pub(crate) headers: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 pub(crate) struct Recorder {
@@ -54,6 +57,18 @@ pub(crate) fn recorder_callback(
     let status = result.metadata.as_ref().map(|m| m.response.status_code);
     let fail = result.fail.clone();
     let has_more = result.has_more;
+    let headers = result
+        .metadata
+        .as_ref()
+        .map(|m| {
+            m.response
+                .headers
+                .list
+                .iter()
+                .map(|h| (h.name().to_vec(), h.value().to_vec()))
+                .collect()
+        })
+        .unwrap_or_default();
 
     if !has_more {
         reclaim_terminal_delivery(async_http);
@@ -63,6 +78,7 @@ pub(crate) fn recorder_callback(
         status,
         fail,
         has_more,
+        headers,
     });
 }
 
