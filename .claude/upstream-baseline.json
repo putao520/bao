@@ -1,24 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-09-18",
-  "updated_by": "daily-ops-2026-09-18-wave",
+  "updated_at": "2026-09-19",
+  "updated_by": "daily-ops-2026-09-19-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "fd8422ce47",
-      "baseline_date": "2026-09-18",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..fd8422ce47 全判定(triage 09-08..09-18);09-18 波吸收 12 项落地+81b7f41e5f 闭环(watcher/ast/css/quic.c×2/uws×3/fetch B-hunk/TLS CVE×2/certdata NSS 3.128),FetchSession 新 API 面排除(须 PRD/SPEC 立法)"
+      "baseline": "367d939d9a",
+      "baseline_date": "2026-09-19",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..367d939d9a 全判定(triage 09-08..09-19);09-19 波吸收 13 项落地(install 六连+libarchive/yarn/npm-alias/css view-transition/uws WS-early-frames 双树/url authority/h2-h3 strip/h3 retry),SEMANTIC-PORT backlog 10(09-18 8+09-19 fetch framing 大件与 node:net GC retention);HTMLRewriter/SSLWrapper/GC-controller N-A-HOST 证伪;FetchSession 新 API 面排除(须 PRD/SPEC 立法)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "0f4d68e09",
-      "baseline_date": "2026-09-18",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..0f4d68e09 全判定(triage 09-08..09-18);09-18 波吸收 9 项落地(BufferSource 四文件/caret/test_util/Animation.timeline/webgl 链×3(C14 锚存活)/auto_root(worker drain 锚存活)/UniqueId);03f9dd18a gamepad stop=promise 基座未吸收"
+      "baseline": "b820a9679",
+      "baseline_date": "2026-09-19",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..b820a9679 全判定(triage 09-08..09-19);09-19 波吸收 6 项落地(ByteLengthQueuingStrategy root/InputEventsHandled/FileReader safe/webxr cast_unit/Document.dir/FontData shrink+from_vec shim);deferred 6(selection images=layout 布局漂移族/PaintTimingMixin 大件/ClipboardItem+SW cache promise 基座沿袭 463b9e444/user-select 大项/moz-progress-bar=stylo#434 前置缺);rustls TlsSecurityInfo N-A-HOST(boringssl 栈零承载)"
     }
-  },
-  "pending_wave": {
-    "phase": "verifying"
   }
 }
