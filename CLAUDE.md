@@ -233,6 +233,8 @@ make bce-check
 | 6 | BaoCollectRuntimeStats | `mozjs-sys/mozjs/jsglue.cpp` + `mozjs/src/glue2_wrappers.in.rs`(SM-EVOLUTION #27 裁决 6,a51a81ef) | `BAORuntimeStatsPOD`(7×usize)+ `JS::RuntimeStats` C++ 子类构造(no-op extra hooks)+三段 ServoSizes rollup(runtime+zone+realm,单段会低估);漏重放=loud 链接断,引擎 Memory 计量面(soak 探针)依赖 |
 | 7 | EncodeStencil XDR 绑定 + TranscodeBuffer shim(REQ-ENG-012,#26 stage1,2026-09-21) | `mozjs-sys/build.rs`(blacklist 移除 `JS::EncodeStencil`)+ `mozjs-sys/src/jsglue.cpp`(Create/Destroy/Begin/Length 四 shim)+ `mozjs/src/jsapi2_wrappers.in.rs`(`wrappers2::EncodeStencil`,镜像 DecodeStencil)+ `mozjs/src/glue2_wrappers.in.rs`(4 wrap;零参 CreateTranscodeBuffer 手写——wrap! 宏零参不可用)+ smoke `mozjs/tests/stencil_xdr.rs` | XDR persistent cache encode 半边:上游 blacklist 动机=`TranscodeBuffer&`(mozilla::Vector<uint8_t>)bindgen 降级为 `u8` 无构造面;bindgen 保留真 C++ link_name 故 ABI 正确,buffer 经 jsglue shim 以 opaque 句柄持有(同 SetBuildId 先例)。**EMBEDDER CONTRACT:encode 前必须 `JS::SetProcessBuildIdOp` 装 op,否则 VersionCheck→GetScriptTranscodingBuildId 空函数指针 SIGSEGV(StencilXdr.cpp:1373;上游 issue 候选)**;上游同步 5 文件逐个重放 |
 
+**编译宇宙归一(2026-09-21,用户裁决"不允许一直存在 2 个")**:vendor/mozjs workspace 根三件套(`Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml`)已删除,5 crate(mozjs-sys/mozjs/src-js/src-intl/src-python)以成员身份并入主 workspace(主根 members 显式列出 + exclude 移除 `vendor/mozjs`;mozjs-sys/mozjs 两 manifest 的 `*.workspace = true` 已内联为与原 vendor 根同值字面量)。单一 lockfile、单一工具链钉(主根 nightly-2026-07-20)、单一 SM 构建面;**SM153 等后续版本导入禁止复活 vendor workspace 根**——新版本 crate 直接以成员路径进主根 members。26G 双宇宙事故废料 vendor/mozjs/target/ 一并清除。
+
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
 #### servo 定制文件清单(30 个条目,上游同步时逐个重放)

@@ -2,9 +2,12 @@
 # BAO PATCH (W0b publish fork): package renamed mozjs_sys -> bao-mozjs-sys for
 # crates.io release; lib name stays `mozjs_sys` so downstream `use mozjs_sys::`
 # keeps resolving. Dependents reach it via `package = "bao-mozjs-sys"` rename.
+# BAO PATCH (2026-09-21 build-face unification): the vendor/mozjs workspace
+# root is absorbed into the bao workspace — every `*.workspace = true` below is
+# an inlined literal, byte-identical to the former vendor workspace root.
 name = "bao-mozjs-sys"
 description = "System crate for the Mozilla SpiderMonkey JavaScript engine."
-repository.workspace = true
+repository = "https://github.com/servo/mozjs/"
 # 140.13.0-5 (2026-08-20): DWARF line-tables downgrade ships in-package
 # (15a4a699): build.rs now pins MOZ_DEBUG_FLAGS="-gdwarf-4 -g1" so the
 # mozjs C++ builds with DWARF4 line-tables without any user env/makefile.
@@ -18,7 +21,7 @@ repository.workspace = true
 version = "140.14.0-1"
 authors = ["Mozilla", "The Servo Project Developers"]
 links = "mozjs"
-license.workspace = true
+license = "MPL-2.0"
 exclude = [
   "__pycache__",
   "/etc/",
@@ -28,7 +31,7 @@ exclude = [
   # /mozjs/config/tests 不可排——config/moz.build 无条件声明其 python.toml
   # (moz.build FILES 机制,非构建目标门;#40 dry-run oracle 实证)。
 ]
-edition.workspace = true
+edition = "2021"
 
 [lib]
 name = "mozjs_sys"
@@ -53,7 +56,7 @@ crown = []
 oom_with_hook = []
 
 [dependencies]
-libc.workspace = true
+libc = "0.2"
 encoding_c = "0.9.8"
 encoding_c_mem = "0.2.6"
 # BAO PATCH (#42 split): source-slice satellites. Their build scripts export
@@ -84,8 +87,10 @@ libz-sys = { version = "1.1.19", default-features = false, features = [
 ], optional = true }
 
 [build-dependencies]
-bindgen.workspace = true
-cc.workspace = true
+bindgen = { version = "0.72.1", default-features = false, features = [
+    "runtime",
+] }
+cc = "1"
 walkdir = "2"
 flate2 = "1"
 tar = "0.4"

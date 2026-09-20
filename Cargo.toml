@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/mozjs", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "examples"]
+exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -84,6 +84,16 @@ members = [
     # Performance baseline harness (issue #19 Phase A); pure addition — no
     # product member changes. Shares the workspace lockfile/target cache.
     "bench/harness",
+    # ── mozjs build-face unification (2026-09-21, user ruling: one universe
+    # only): the former vendor/mozjs workspace root is absorbed — these five
+    # crates are now members of THIS workspace. Single lockfile, single
+    # toolchain pin, single SM build face. Do NOT revive a vendor workspace
+    # root here (incl. on future SM version imports).
+    "vendor/mozjs/mozjs-sys",
+    "vendor/mozjs/mozjs",
+    "vendor/mozjs/src-js",
+    "vendor/mozjs/src-intl",
+    "vendor/mozjs/src-python",
 ]
 
 [workspace.package]
