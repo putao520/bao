@@ -53,18 +53,21 @@ pub struct JSGlobalObject(pub(crate) *mut RawJSContext);
 /// consumed 2026-09-10 under the REQ-STL identity-consistency defect fix).
 ///
 /// When armed, every Node-semantics realm created via
-/// [`node_realm_options`] runs its Date local-time computations in UTC+0
-/// (SpiderMonkey `RealmCreationOptions::forceUTC_`). Engine semantics =
-/// Firefox RFP shape: SM maps the flag to the real IANA zone
-/// Atlantic/Reykjavik (UTC+0, real DST history), not a bare +0000 offset.
+/// [`node_realm_options`] runs its Date local-time computations in UTC+0.
+/// SM140 rode `RealmCreationOptions::forceUTC_`; SM 153 removed that flag —
+/// the same engine semantics (Firefox RFP shape: the real IANA zone
+/// Atlantic/Reykjavik, UTC+0 with real DST history, not a bare +0000
+/// offset) now ride `RealmBehaviors::setTimeZoneOverride` (the webdriver-bidi
+/// setTimezoneOverride emulation face), applied in [`node_realm_options`]
+/// via the jsglue.cpp `BaoSetRealmTimeZoneOverride` shim.
 ///
-/// `forceUTC_` is a CREATION-time-only per-realm option (no post-creation
+/// The override is a CREATION-time-only per-realm selection (no post-creation
 /// setter exists), so this flag must be armed BEFORE the realm is created —
 /// bao_browser arms it from `StealthProfile::timezone` at page creation,
 /// before the pipeline's realms exist. The flag mirrors servo's
-/// process-global realm-creation switch (`set_force_utc_realms`) that covers
-/// the DOM realms; last write wins process-wide — engine-level sink
-/// granularity, the same class as the servo realm-creation global.
+/// process-global realm-creation switch that covers the DOM realms; last
+/// write wins process-wide — engine-level sink granularity, the same class
+/// as the servo realm-creation global.
 static NODE_FORCE_UTC: ::std::sync::atomic::AtomicBool =
     ::std::sync::atomic::AtomicBool::new(false);
 
@@ -83,10 +86,17 @@ pub fn node_realm_options() -> mozjs::rust::RealmOptions {
     let mut options = mozjs::rust::RealmOptions::default();
     options.creationOptions_.sharedMemoryAndAtomics_ = true;
     // Engine-native identity policy (SM-EVOLUTION #28): mirror the page
-    // realm's forceUTC timezone so Node-realm Date surfaces (values that
+    // realm's forced-UTC timezone so Node-realm Date surfaces (values that
     // cross back into the page through the Bun API surface) cannot leak the
     // host timezone while the profile forces UTC.
-    options.creationOptions_.forceUTC_ = node_force_utc();
+    // SM153 migration: forceUTC_ removed; the engine's own forceUTC zone
+    // (Atlantic/Reykjavik) rides RealmBehaviors::setTimeZoneOverride — same
+    // IANA zone the SM140 flag mapped to (behavior parity, not a bare +0000).
+    if node_force_utc() {
+        let tz = ::std::ffi::CString::new("Atlantic/Reykjavik")
+            .expect("valid IANA zone literal");
+        unsafe { mozjs_sys::glue::BaoSetRealmTimeZoneOverride(&mut *options, tz.as_ptr()) };
+    }
     options
 }
 

@@ -24,6 +24,8 @@
 #include "js/Principals.h"
 #include "js/Promise.h"
 #include "js/Proxy.h"
+#include "js/Realm.h"
+#include "js/RealmOptions.h"
 #include "js/RegExp.h"
 #include "js/ScalarType.h"
 #include "js/StructuredClone.h"
@@ -860,6 +862,18 @@ const uint8_t* TranscodeBufferBegin(const JS::TranscodeBuffer* buffer) {
 
 size_t TranscodeBufferLength(const JS::TranscodeBuffer* buffer) {
   return buffer->length();
+}
+
+// BAO PATCH (SM153 moduleloading migration): RealmCreationOptions::forceUTC_
+// was removed in SM 153; the replacement face is
+// RealmBehaviors::setTimeZoneOverride (js/public/RealmOptions.h, the
+// webdriver-bidi setTimezoneOverride emulation). The setter is a C++ method
+// (bindgen strips methods) and RealmBehaviors::timeZoneOverride_ is a
+// RefPtr<TimeZoneString> that cannot be constructed safely from Rust, so the
+// write goes through this C++ shim. Bao pins "UTC" to preserve the SM140
+// forceUTC behavior-parity contract (stealth profiles pin realm Date to UTC).
+void BaoSetRealmTimeZoneOverride(JS::RealmOptions* options, const char* tz) {
+  options->behaviors().setTimeZoneOverride(tz);
 }
 
 void RUST_SET_JITINFO(JSFunction* func, const JSJitInfo* info) {

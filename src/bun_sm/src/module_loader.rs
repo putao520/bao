@@ -12,8 +12,8 @@ use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{
-    CompileModule1, GetPromiseState, IsPromiseObject, JS_GetRuntime, ModuleEvaluate, ModuleLink,
-    ThrowOnModuleEvaluationFailure,
+    CompileModule1, GetPromiseState, IsPromiseObject, JS_GetModulePrivate, JS_GetRuntime,
+    JS_GetScriptPrivate, ModuleEvaluate, ModuleLink, ThrowOnModuleEvaluationFailure,
 };
 use mozjs::rust::{
     CompileOptionsWrapper, Runtime, SIMPLE_GLOBAL_CLASS, transform_str_to_source_text,
@@ -315,9 +315,14 @@ impl ModuleLoader {
     pub fn init(runtime: &Runtime) {
         let rt = runtime.rt();
         unsafe {
-            SetModuleResolveHook(rt, Some(host_resolve_imported_module));
+            // SM153 moduleloading: the SM140 three-hook face (Resolve for
+            // static imports + DynamicImport for `import()`) collapsed into
+            // the spec HostLoadImportedModule hook — the payload routes
+            // completion (GraphLoadingStateRecordObject = static graph,
+            // PromiseObject = dynamic import()), and the ENGINE performs
+            // link+evaluate+resolve via ContinueDynamicImport.
+            SetModuleLoadHook(rt, Some(host_load_imported_module));
             SetModuleMetadataHook(rt, Some(host_populate_import_meta));
-            SetModuleDynamicImportHook(rt, Some(host_dynamic_import));
         }
     }
 
@@ -326,9 +331,14 @@ impl ModuleLoader {
     pub fn init_thread_local(cx: &mozjs::context::JSContext) {
         let rt = unsafe { JS_GetRuntime(cx) };
         unsafe {
-            SetModuleResolveHook(rt, Some(host_resolve_imported_module));
+            // SM153 moduleloading: the SM140 three-hook face (Resolve for
+            // static imports + DynamicImport for `import()`) collapsed into
+            // the spec HostLoadImportedModule hook — the payload routes
+            // completion (GraphLoadingStateRecordObject = static graph,
+            // PromiseObject = dynamic import()), and the ENGINE performs
+            // link+evaluate+resolve via ContinueDynamicImport.
+            SetModuleLoadHook(rt, Some(host_load_imported_module));
             SetModuleMetadataHook(rt, Some(host_populate_import_meta));
-            SetModuleDynamicImportHook(rt, Some(host_dynamic_import));
         }
     }
 
@@ -845,7 +855,78 @@ impl ModuleLoader {
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn host_resolve_imported_module(
+/// SM153 moduleloading face: the single HostLoadImportedModule hook.
+///
+/// SM 153 collapsed the SM140 three-hook face (ModuleResolveHook for static
+/// imports + ModuleDynamicImportHook for `import()`) into this one hook
+/// (js/public/Modules.h `ModuleLoadHook`). bao's loader still resolves
+/// synchronously (builtin synthetic ESM / data: URL / file path — the exact
+/// SM140 logic), then hands the module to `FinishLoadingImportedModule`,
+/// whose `payload` argument routes completion:
+///   - GraphLoadingStateRecordObject → ContinueModuleLoading (static graph)
+///   - PromiseObject → ContinueDynamicImport (dynamic `import()`): the
+///     ENGINE performs link + evaluate + promise resolution.
+/// `usePromise=true` preserves the SM140 job-based chaining (TLA-aware),
+/// drained by bao's existing RunJobs points — behavior parity with the
+/// removed SM140 flow where this file drove ModuleLink / ModuleEvaluate /
+/// FinishDynamicModuleImport by hand (the BUG-ENG-365 machinery is now
+/// engine-owned; re-evaluation safety included).
+/// The referrer's private value (the file:// URL / `builtin:` / `data-url:`
+/// key this loader sets via set_module_private) drives relative-specifier
+/// base_dir derivation, exactly like SM140's `referencing_private` param.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn host_load_imported_module(
+    raw_cx: *mut JSContext,
+    referrer: Handle<*mut JSScript>,
+    module_request: Handle<*mut JSObject>,
+    _host_defined: Handle<Value>,
+    payload: Handle<Value>,
+    _line_number: u32,
+    _column: ColumnNumberOneOrigin,
+) -> bool {
+    rooted!(in(raw_cx) let mut referencing_private = UndefinedValue());
+    JS_GetScriptPrivate(referrer.get(), referencing_private.handle_mut().into());
+
+    let module =
+        load_module_record_sync(raw_cx, referencing_private.handle().into(), module_request);
+    if module.is_null() {
+        // Engine contract (js::HostLoadImportedModule): false + pending
+        // exception routes the error through the payload — promise rejection
+        // for dynamic import(), graph-loading failure for static imports.
+        // Preserve the SM140 bao wording when the loader set no exception.
+        if !JS_IsExceptionPending(raw_cx) {
+            let specifier = GetModuleRequestSpecifier(raw_cx, module_request);
+            let msg = if !specifier.is_null() {
+                let s = mozjs::conversions::jsstr_to_string(
+                    &mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)),
+                    NonNull::new(specifier).expect("null-checked specifier"),
+                );
+                format!("Cannot find module '{}'", s)
+            } else {
+                "Module load error".to_string()
+            };
+            let mut cx_s =
+                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+            let c_msg = CString::new(msg)
+                .unwrap_or_else(|_| CString::new("Cannot load module").unwrap());
+            mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+        }
+        return false;
+    }
+
+    rooted!(in(raw_cx) let module_root = module);
+    mozjs_sys::jsapi::JS::FinishLoadingImportedModule(
+        raw_cx,
+        referrer,
+        module_request,
+        payload,
+        module_root.handle().into(),
+        true,
+    )
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn load_module_record_sync(
     raw_cx: *mut JSContext,
     referencing_private: Handle<Value>,
     module_request: Handle<*mut JSObject>,
@@ -1764,9 +1845,15 @@ for (var __i = 0; __i < __cjs_keys.length; __i++) {{
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn host_populate_import_meta(
     raw_cx: *mut JSContext,
-    private_value: Handle<Value>,
+    module_record: Handle<*mut JSObject>,
     meta_object: Handle<*mut JSObject>,
 ) -> bool {
+    // SM153: the hook receives the module record; the private value this
+    // loader sets via set_module_private (file:// URL / builtin: / data-url:)
+    // is fetched from it (SM140 passed the private value directly).
+    rooted!(in(raw_cx) let mut private_root = UndefinedValue());
+    JS_GetModulePrivate(module_record.get(), private_root.handle_mut().into());
+    let private_value = private_root.handle();
     unsafe {
         // @trace REQ-ENG-006 [entity:JSContext] — Bun's import.meta extensions.
         // Bun exposes dir/path/file/main on import.meta (in addition to url).
@@ -1945,334 +2032,6 @@ unsafe extern "C" fn host_populate_import_meta(
     }
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn host_dynamic_import(
-    raw_cx: *mut JSContext,
-    referencing_private: Handle<Value>,
-    module_request: Handle<*mut JSObject>,
-    promise: Handle<*mut JSObject>,
-) -> bool {
-    let specifier = unsafe { GetModuleRequestSpecifier(raw_cx, module_request) };
-    if specifier.is_null() {
-        return false;
-    }
-    let specifier_str = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)),
-        NonNull::new(specifier).expect("null-checked specifier"),
-    );
-
-    // Built-in module shortcut: synthetic ESM modules backing Node.js builtins.
-    //
-    // The synthetic ESM source (see `builtin_esm_source`) declares named
-    // exports plus `export default _m`, so the resulting module namespace
-    // contains both named bindings AND a `default` key. This matches Node.js
-    // ESM-CJS interop: `import zlib from "zlib"` and `import { gzipSync } from
-    // "zlib"` both work, and `await import("zlib")` returns a namespace whose
-    // `"default" in mod` is true (per stubs.test.js contract).
-    //
-    // Path:
-    //   1. Find/build the synthetic module (cache key `builtin:{stripped}`).
-    //   2. ModuleLink + ModuleEvaluate + drain job queue.
-    //   3. FinishDynamicModuleImport — SM resolves the user-facing promise with
-    //      the *module namespace* (which carries the `default` property).
-    let builtin_modules = [
-        "fs",
-        "path",
-        "crypto",
-        "os",
-        "url",
-        "events",
-        "net",
-        "http",
-        "https",
-        "child_process",
-        "util",
-        "assert",
-        "stream",
-        "zlib",
-        "dns",
-        "querystring",
-        "buffer",
-        "string_decoder",
-        "timers",
-        "readline",
-        "perf_hooks",
-        "tls",
-        "bun:test",
-        "harness",
-        "test",
-        // Stubbed builtins (registered by bao_runtime::node_stubs).
-        "async_hooks",
-        "cluster",
-        "console",
-        "constants",
-        "dgram",
-        "diagnostics_channel",
-        "domain",
-        "http2",
-        "inspector",
-        "punycode",
-        "repl",
-        "trace_events",
-        "v8",
-        "worker_threads",
-        "sys",
-        "vm",
-        "tty",
-        "module",
-        "process",
-        "_http_agent",
-        "_http_client",
-        "_http_common",
-        "_http_incoming",
-        "_http_outgoing",
-        "_http_server",
-        "_stream_duplex",
-        "_stream_passthrough",
-        "_stream_readable",
-        "_stream_transform",
-        "_stream_wrap",
-        "_stream_writable",
-        "_tls_common",
-        "_tls_wrap",
-        "assert/strict",
-        "dns/promises",
-        "fs/promises",
-        "path/posix",
-        "path/win32",
-        "readline/promises",
-        "stream/consumers",
-        "stream/promises",
-        "stream/web",
-        "util/types",
-        "inspector/promises",
-        "timers/promises",
-    ];
-    let stripped = specifier_str
-        .strip_prefix("node:")
-        .unwrap_or(&specifier_str);
-    if builtin_modules.contains(&stripped) {
-        return unsafe {
-            dynamic_import_builtin(
-                raw_cx,
-                stripped,
-                referencing_private,
-                module_request,
-                promise,
-            )
-        };
-    }
-
-    // @trace REQ-ENG-005 — data: URL ESM modules.
-    //
-    // WHATWG-fetch-style `data:text/javascript,...` and
-    // `data:text/javascript;base64,...` URLs are loadable ESM sources
-    // (string-module.test.js). They never hit the filesystem. Decode the
-    // payload (URL-decode for inline, base64-decode for the ;base64 form)
-    // and feed the bytes straight to JS::CompileModule1.
-    //
-    // string-module.test.js asserts that a malformed base64 payload throws
-    // `Base64DecodeError`. We surface that via SM's pending-exception
-    // mechanism and return false so the failure is observable.
-    if specifier_str.starts_with("data:") {
-        match parse_data_url(&specifier_str) {
-            ::std::result::Result::Ok(payload) => {
-                return unsafe {
-                    dynamic_import_data_url(
-                        raw_cx,
-                        &specifier_str,
-                        &payload,
-                        referencing_private,
-                        module_request,
-                        promise,
-                    )
-                };
-            }
-            ::std::result::Result::Err(err) => {
-                // Malformed data URL: throw + reject so both sync-throw and
-                // await-based consumers observe the error.
-                let c_msg = CString::new(err.as_str())
-                    .unwrap_or_else(|_| CString::new("Module load error").unwrap());
-                {
-                    let mut cx_s =
-                        unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)) };
-                    mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
-                }
-                let _ = unsafe { reject_dynamic_promise(raw_cx, promise, &err) };
-                return false;
-            }
-        }
-    }
-
-    // BUG-ENG-365: derive base_dir from referencing module's private URL.
-    let base_dir = unsafe { base_dir_from_private_cx(raw_cx, referencing_private) }
-        .or_else(|| CURRENT_DIR.with(|d| d.borrow().clone()));
-    let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
-
-    let ::std::option::Option::Some(path) = resolved else {
-        return unsafe {
-            reject_dynamic_promise(
-                raw_cx,
-                promise,
-                &format!("Cannot find module '{}'", specifier_str),
-            )
-        };
-    };
-
-    let canonical = path.canonicalize().unwrap_or(path.clone());
-    let cache_key = canonical.to_string_lossy().into_owned();
-
-    // BUG-ENG-365: For file modules we MUST use FinishDynamicModuleImport
-    // per SM Module API spec. This drives the SM-side state machine and
-    // resolves the user-facing promise with the module namespace.
-    let content = match fs::read_to_string(&path) {
-        ::std::result::Result::Ok(c) => c,
-        ::std::result::Result::Err(e) => {
-            return unsafe {
-                reject_dynamic_promise(
-                    raw_cx,
-                    promise,
-                    &format!("Cannot read module '{}': {}", specifier_str, e),
-                )
-            };
-        }
-    };
-
-    // CJS target — wrap as ESM for interop; otherwise transpile TS/JSX.
-    let effective_source = if is_cjs_module(&canonical, &content) {
-        cjs_compat_wrapper_source(&canonical, &content)
-    } else if needs_transpile(&path) {
-        strip_typescript(&content, &path)
-    } else {
-        content
-    };
-
-    unsafe {
-        let c_filename = CString::new(canonical.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| CString::new("<module>").unwrap());
-        let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
-        if opts.is_null() {
-            return unsafe {
-                reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed")
-            };
-        }
-        let mut src = transform_str_to_source_text(&effective_source);
-        let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-        libc::free(opts as *mut _);
-        if module.is_null() {
-            return unsafe {
-                reject_dynamic_promise(raw_cx, promise, "Internal: module compilation failed")
-            };
-        }
-
-        // BUG-ENG-365: SetModulePrivate before linking.
-        let priv_url = path_to_file_url(&canonical);
-        set_module_private(raw_cx, module, &priv_url);
-
-        module_cache_insert(raw_cx, &cache_key, module);
-
-        rooted!(in(raw_cx) let module_root = module);
-        if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_root.handle().into()) {
-            // Link failed — complete via FinishDynamicModuleImport with null eval promise.
-            rooted!(in(raw_cx) let null_root = ::std::ptr::null_mut::<JSObject>());
-            return unsafe {
-                mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
-                    raw_cx,
-                    null_root.handle().into(),
-                    referencing_private,
-                    module_request,
-                    promise,
-                )
-            };
-        }
-
-        let mut eval_rval = UndefinedValue();
-        let eval_h = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut eval_rval,
-        };
-        let eval_ok =
-            mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h);
-
-        // Drain microtasks so synchronous module bodies complete.
-        mozjs_sys::jsapi::js::RunJobs(raw_cx);
-
-        // ModuleEvaluate returns the evaluation promise (object) on success,
-        // or undefined/false on failure. Per SM spec we pass this evaluation
-        // promise to FinishDynamicModuleImport.
-        let evaluation_promise = if eval_ok && eval_rval.is_object() {
-            eval_rval.to_object()
-        } else {
-            ::std::ptr::null_mut::<JSObject>()
-        };
-        rooted!(in(raw_cx) let eval_promise_root = evaluation_promise);
-
-        // BUG-ENG-365: spec-mandated completion path.
-        mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
-            raw_cx,
-            eval_promise_root.handle().into(),
-            referencing_private,
-            module_request,
-            promise,
-        )
-    }
-}
-
-/// Resolve the user-facing dynamic import promise directly with a JS value.
-/// Used for built-in modules that have no SM module record.
-///
-/// # Safety
-/// Caller must hold a valid `cx`.
-unsafe fn resolve_dynamic_promise_with_value(
-    raw_cx: *mut JSContext,
-    promise: Handle<*mut JSObject>,
-    val: Value,
-) -> bool {
-    // BCE-20260619-012: val may contain GC-managed pointer; must be rooted.
-    let wrapped_cx =
-        unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx)) };
-    rooted!(&in(wrapped_cx) let val_root = val);
-    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise, val_root.handle().into()) }
-}
-
-/// Reject the user-facing dynamic import promise with an Error object
-/// carrying `msg`.
-///
-/// # Safety
-/// Caller must hold a valid `cx`.
-unsafe fn reject_dynamic_promise(
-    raw_cx: *mut JSContext,
-    promise: Handle<*mut JSObject>,
-    msg: &str,
-) -> bool {
-    let Ok(c_msg) = CString::new(msg) else {
-        return false;
-    };
-    let err_obj = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(raw_cx) };
-    if !err_obj.is_null() {
-        rooted!(in(raw_cx) let err_root = err_obj);
-        let err_msg = unsafe { JS_NewStringCopyZ(raw_cx, c_msg.as_ptr()) };
-        if !err_msg.is_null() {
-            let msg_val = unsafe { mozjs::jsval::StringValue(&*err_msg) };
-            rooted!(in(raw_cx) let msg_h = msg_val);
-            unsafe {
-                JS_SetProperty(
-                    raw_cx,
-                    err_root.handle().into(),
-                    c"message".as_ptr(),
-                    msg_h.handle().into(),
-                )
-            };
-        }
-        let err_val = mozjs::jsval::ObjectValue(err_obj);
-        // BCE-20260619-012: ObjectValue contains GC-managed object; must be rooted.
-        rooted!(in(raw_cx) let err_root_val = err_val);
-        unsafe {
-            mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise, err_root_val.handle().into())
-        };
-    }
-    true
-}
-
 /// @trace REQ-ENG-005 [algorithm:data_url] — parse a `data:` URL into its
 /// decoded ESM source string.
 ///
@@ -2424,270 +2183,6 @@ fn base64_decode(s: &str) -> ::std::result::Result<Vec<u8>, ()> {
         out.push((b1 << 4) | (b2 >> 2));
     }
     ::std::result::Result::Ok(out)
-}
-
-/// Drive a dynamic `import()` of a `data:` URL to completion. Same module
-/// lifecycle as a file module: CompileModule1 → ModuleLink → ModuleEvaluate
-/// → FinishDynamicModuleImport.
-///
-/// # Safety
-/// Caller must hold a valid `raw_cx` and valid handles.
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn dynamic_import_data_url(
-    raw_cx: *mut JSContext,
-    specifier_str: &str,
-    payload: &str,
-    referencing_private: Handle<Value>,
-    module_request: Handle<*mut JSObject>,
-    promise: Handle<*mut JSObject>,
-) -> bool {
-    let cache_key = format!("data-url:{}", specifier_str);
-    if let ::std::option::Option::Some(existing) = module_cache_get(raw_cx, &cache_key)
-        && !existing.is_null()
-    {
-        // Already loaded — resolve immediately via the synthetic path.
-        let mod_val = mozjs::jsval::ObjectValue(existing);
-        return unsafe { resolve_dynamic_promise_with_value(raw_cx, promise, mod_val) };
-    }
-
-    let Ok(c_filename) = CString::new(specifier_str.to_string()) else {
-        return unsafe { reject_dynamic_promise(raw_cx, promise, "Invalid data URL filename") };
-    };
-    let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
-    if opts.is_null() {
-        return unsafe {
-            reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed")
-        };
-    }
-    let mut src = transform_str_to_source_text(payload);
-    let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-    libc::free(opts as *mut _);
-    if module.is_null() {
-        return unsafe {
-            reject_dynamic_promise(raw_cx, promise, "Failed to compile data URL module")
-        };
-    }
-
-    set_module_private(raw_cx, module, specifier_str);
-    module_cache_insert(raw_cx, &cache_key, module);
-
-    rooted!(in(raw_cx) let module_root = module);
-    if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_root.handle().into()) {
-        rooted!(in(raw_cx) let null_root = ::std::ptr::null_mut::<JSObject>());
-        return unsafe {
-            mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
-                raw_cx,
-                null_root.handle().into(),
-                referencing_private,
-                module_request,
-                promise,
-            )
-        };
-    }
-
-    let mut eval_rval = UndefinedValue();
-    let eval_h = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut eval_rval,
-    };
-    let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h);
-    mozjs_sys::jsapi::js::RunJobs(raw_cx);
-
-    let evaluation_promise = if eval_ok && eval_rval.is_object() {
-        eval_rval.to_object()
-    } else {
-        ::std::ptr::null_mut::<JSObject>()
-    };
-    rooted!(in(raw_cx) let eval_promise_root = evaluation_promise);
-
-    mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
-        raw_cx,
-        eval_promise_root.handle().into(),
-        referencing_private,
-        module_request,
-        promise,
-    )
-}
-
-/// Drive a dynamic `import()` of a builtin module to completion.
-///
-/// Builds (or reuses) the synthetic ESM module for `stripped`, links and
-/// evaluates it, then calls `FinishDynamicModuleImport`. SM's internal
-/// `FinishDynamicModuleImport` resolves the user-facing promise with the
-/// module namespace object — which carries the `default` property (and the
-/// named bindings), so `await import("zlib")` returns an object satisfying
-/// `"default" in mod` and exposing `mod.gzipSync` etc.
-///
-/// This mirrors the static-import path in `host_resolve_imported_module`
-/// (same cache key, same synthetic source), keeping the two flows consistent.
-///
-/// # Safety
-/// Caller must hold a valid `raw_cx` and valid handles.
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn dynamic_import_builtin(
-    raw_cx: *mut JSContext,
-    stripped: &str,
-    referencing_private: Handle<Value>,
-    module_request: Handle<*mut JSObject>,
-    promise: Handle<*mut JSObject>,
-) -> bool {
-    // Step 1: locate or build the synthetic module.
-    let cache_key = format!("builtin:{}", stripped);
-    let mut module = ::std::ptr::null_mut::<JSObject>();
-    let mut already_evaluated = false;
-    if let Some(existing) = module_cache_get(raw_cx, &cache_key)
-        && !existing.is_null()
-    {
-        module = existing;
-        // SM module objects remember their status. Once a module is in the
-        // Evaluated state, re-running ModuleLink/ModuleEvaluate is illegal and
-        // can crash SM. Track this so we skip the link/evaluate step below and
-        // drive FinishDynamicModuleImport straight from the existing namespace.
-        // We approximate "already evaluated" with the cache presence — the only
-        // way a module enters MODULE_CACHE is via this function (after
-        // successful evaluation) or via host_resolve_imported_module (which
-        // also evaluates). Either way, the module is at least Linked.
-        already_evaluated = true;
-    }
-    if module.is_null() {
-        // Build the synthetic ESM source. `bun:test` and `harness` have
-        // hand-written sources in the resolve hook; everything else uses
-        // `builtin_esm_source` (which always emits `export default _m`).
-        let esm_src: ::std::borrow::Cow<'static, str> = match stripped {
-            // node:test — same gated CJS bridge as the static-import path
-            // (see NODE_TEST_ESM_BRIDGE). The previous generic fallback only
-            // exposed `default`, so `const { test } = await import("node:test")`
-            // linked to a missing export.
-            "test" => ::std::borrow::Cow::Borrowed(NODE_TEST_ESM_BRIDGE),
-            "bun:test" => ::std::borrow::Cow::Borrowed(
-                r#"var _m = require("bun:test");
-export var describe = _m.describe;
-export var test = _m.test;
-export var it = _m.it;
-export var expect = _m.expect;
-export var beforeEach = _m.beforeEach;
-export var afterEach = _m.afterEach;
-export var beforeAll = _m.beforeAll;
-export var afterAll = _m.afterAll;
-export var jest = _m.jest;
-export var skip = _m.skip;
-export var todo = _m.todo;
-export var fail = _m.fail;
-export var gc = _m.gc;
-export var printConsole = _m.printConsole;
-export var setDefaultTimeout = _m.setDefaultTimeout;
-export default _m;
-"#,
-            ),
-            "harness" => ::std::borrow::Cow::Borrowed(
-                r#"var _m = require("harness");
-export var gc = _m.gc;
-export var bunExe = _m.bunExe;
-export var bunEnv = _m.bunEnv;
-export var isWindows = _m.isWindows;
-export var isLinux = _m.isLinux;
-export var isMac = _m.isMac;
-export var isASAN = _m.isASAN;
-export var isDebug = _m.isDebug;
-export var isMinified = _m.isMinified;
-export var withoutAggressiveGC = _m.withoutAggressiveGC;
-export var expectOOM = _m.expectOOM;
-export var BunEnvironment = _m.BunEnvironment;
-export default _m;
-"#,
-            ),
-            _ => ::std::borrow::Cow::Borrowed(builtin_esm_source(stripped)),
-        };
-
-        let c_filename = CString::new(format!("<builtin:{}>", stripped))
-            .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
-        let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
-        if opts.is_null() {
-            return unsafe {
-                reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed")
-            };
-        }
-        let mut src = transform_str_to_source_text(&esm_src);
-        let compiled = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-        libc::free(opts as *mut _);
-        if compiled.is_null() {
-            return unsafe {
-                reject_dynamic_promise(
-                    raw_cx,
-                    promise,
-                    "Internal: builtin module compilation failed",
-                )
-            };
-        }
-        let priv_url = format!("builtin:{}", stripped);
-        unsafe { set_module_private(raw_cx, compiled, &priv_url) };
-        module_cache_insert(raw_cx, &cache_key, compiled);
-        module = compiled;
-    }
-
-    // Step 2: link + evaluate (only if the module hasn't been linked/eval'd
-    // before). Re-entering ModuleLink/ModuleEvaluate on an evaluated module
-    // is illegal in SM and crashes the host process.
-    rooted!(in(raw_cx) let module_root = module);
-    if !already_evaluated {
-        if !unsafe { mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_root.handle().into()) } {
-            // BCE-20260619-012: null_obj must be rooted before creating Handle
-            rooted!(in(raw_cx) let null_root = ::std::ptr::null_mut::<JSObject>());
-            return unsafe {
-                mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
-                    raw_cx,
-                    null_root.handle().into(),
-                    referencing_private,
-                    module_request,
-                    promise,
-                )
-            };
-        }
-
-        let mut eval_rval = UndefinedValue();
-        let eval_h = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut eval_rval,
-        };
-        let eval_ok = unsafe {
-            mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h)
-        };
-        unsafe { mozjs_sys::jsapi::js::RunJobs(raw_cx) };
-
-        // Capture the evaluation promise for FinishDynamicModuleImport. When
-        // ModuleEvaluate succeeds synchronously the return is undefined (not a
-        // promise) — that's still a success state.
-        let evaluation_promise: *mut JSObject = if eval_ok && eval_rval.is_object() {
-            eval_rval.to_object()
-        } else {
-            ::std::ptr::null_mut::<JSObject>()
-        };
-        rooted!(in(raw_cx) let eval_promise_root = evaluation_promise);
-        return unsafe {
-            mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
-                raw_cx,
-                eval_promise_root.handle().into(),
-                referencing_private,
-                module_request,
-                promise,
-            )
-        };
-    }
-
-    // Step 3 (already-evaluated path): the module was already linked and
-    // evaluated. Calling ModuleLink/ModuleEvaluate again would crash SM. We
-    // fetch the module namespace directly and resolve the user-facing
-    // promise with it. The namespace object exposes the same shape (named
-    // exports + `default`) that FinishDynamicModuleImport would resolve to.
-    let ns =
-        unsafe { mozjs_sys::jsapi::JS::GetModuleNamespace(raw_cx, module_root.handle().into()) };
-    if ns.is_null() {
-        return unsafe {
-            reject_dynamic_promise(raw_cx, promise, "Internal: failed to get module namespace")
-        };
-    }
-    let ns_val = mozjs::jsval::ObjectValue(ns);
-    unsafe { resolve_dynamic_promise_with_value(raw_cx, promise, ns_val) }
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {

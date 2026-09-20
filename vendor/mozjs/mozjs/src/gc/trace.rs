@@ -57,6 +57,17 @@ impl RootedTraceableSet {
         });
     }
 
+    /// Drop every rooted traceable on this thread. Bao's
+    /// `shutdown_thread_sm` calls this before destroying the JSContext so
+    /// C++ TLS teardown cannot trace stale pointers into a freed GC heap.
+    /// (SM153 wrapper refresh dropped this method; restored for parity with
+    /// the SM140 face bao's shutdown path was built against.)
+    pub unsafe fn clear() {
+        ROOTED_TRACEABLES.with(|traceables| {
+            traceables.borrow_mut().set.clear();
+        });
+    }
+
     pub(crate) unsafe fn trace(&self, trc: *mut JSTracer) {
         for traceable in &self.set {
             (**traceable).trace(trc);

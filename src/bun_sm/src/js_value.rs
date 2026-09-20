@@ -246,7 +246,7 @@ impl JSValue {
             });
         }
         let nn = ::std::ptr::NonNull::new(js_str).unwrap();
-        Ok(unsafe { mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), nn) })
+        Ok(unsafe { mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)), nn) })
     }
 
     /// Convert to a JSObject pointer using SpiderMonkey's ToObject.
@@ -296,7 +296,8 @@ impl JSValue {
         let mut wrapped_cx =
             mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let val_root = js_val);
-        unsafe { mozjs::rust::ToNumber(cx, val_root.handle().into()) }.map_err(|()| {
+        // SM153: rust wrappers take the &mut JSContext wrapper (JSContextify form).
+        unsafe { mozjs::rust::ToNumber(&mut wrapped_cx, val_root.handle().into()) }.map_err(|()| {
             crate::error::JsError {
                 message: "ToNumber failed".into(),
                 filename: String::new(),

@@ -40,6 +40,11 @@ wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes,
 // memory metering — JS::CollectRuntimeStats behind the jsglue.cpp subclass
 // (Rust cannot construct RuntimeStats: pure-virtual hooks + js::Vector members).
 wrap!(glue: pub fn BaoCollectRuntimeStats(cx: &mut JSContext, servoSizes: *mut ServoSizes, out: *mut glue::BaoRuntimeStatsPOD) -> bool);
+// BAO PATCH (SM153 moduleloading migration): RealmCreationOptions::forceUTC_
+// is gone in 153 — the behavior-parity face is RealmBehaviors::setTimeZoneOverride
+// (C++ method, bindgen strips methods; RefPtr<TimeZoneString> unsafe from Rust),
+// so the write routes through this jsglue.cpp shim. Bao pins "UTC".
+wrap!(glue: pub fn BaoSetRealmTimeZoneOverride(options: *mut RealmOptions, tz: *const ::std::os::raw::c_char));
 wrap!(glue: pub fn JS_DequeueNextMicroTask(cx: &JSContext, task: MutableHandle<GenericMicroTask>));
 wrap!(glue: pub fn JS_GetPromiseResult(promise: HandleObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));

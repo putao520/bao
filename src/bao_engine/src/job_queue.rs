@@ -106,14 +106,19 @@ pub struct JobQueue;
 
 impl JobQueue {
     pub fn init(cx: &mozjs::context::JSContext) -> bool {
+        // SM153: promise reaction jobs enqueue into the engine-owned regular
+        // microtask queue (no enqueuePromiseJob trap); runJobs drains both
+        // that queue and bao's stored jobs. The interrupt-queue traps must be
+        // real functions now — RustJobQueue's destructor and SavedQueue
+        // bookkeeping call them unconditionally.
         let traps = JobQueueTraps {
             getHostDefinedData: Some(get_host_defined_data),
-            enqueuePromiseJob: Some(enqueue_job),
+            getHostDefinedGlobal: Some(get_host_defined_global),
             runJobs: Some(run_jobs),
-            empty: Some(is_empty),
-            pushNewInterruptQueue: None,
-            popInterruptQueue: None,
-            dropInterruptQueues: None,
+            traceNonGCThingMicroTask: Some(trace_non_gc_thing_microtask),
+            pushNewInterruptQueue: Some(push_new_interrupt_queue),
+            popInterruptQueue: Some(pop_interrupt_queue),
+            dropInterruptQueues: Some(drop_interrupt_queues),
         };
 
         let queue = unsafe { CreateJobQueue(&traps, ptr::null(), ptr::null_mut()) };
@@ -190,14 +195,92 @@ unsafe extern "C" fn enqueue_job(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
+    // SM153: fixpoint-drain BOTH sources — the engine's regular microtask
+    // queue (promise reactions, engine jobs) and bao's stored jobs — running
+    // one kind can enqueue more of the other. Ordering parity with SM140:
+    // jobs run FIFO per source, interleaved to fixpoint, then the rejection
+    // flush fires on a clean stack.
     loop {
+        let mut progress = false;
+
+        // (a) engine regular microtasks — promise reactions etc.
+        while JS::HasRegularMicroTasks(cx) {
+            progress = true;
+            rooted!(in(cx) let task = JS::DequeueNextRegularMicroTask(cx));
+            let task_val: Value = task.handle().get();
+            let job = JS::ToMaybeWrappedJSMicroTask(&task_val);
+            if job.is_null() {
+                continue;
+            }
+            let global = JS::GetExecutionGlobalFromJSMicroTask(job);
+            if global.is_null() {
+                continue;
+            }
+            let mut wrapped_cx =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            let mut realm = AutoRealm::new(
+                &mut wrapped_cx,
+                ::std::ptr::NonNull::new_unchecked(global),
+            );
+            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+            rooted!(&in(realm_cx) let job_root = job);
+            unsafe {
+                if !JS::RunJSMicroTask(cx, job_root.handle().into())
+                    && JS_IsExceptionPending(cx)
+                {
+                    // A job threw. Capture the pending exception, clear it,
+                    // and hand it to the runtime's uncaught-exception router
+                    // (same contract as bao's stored-job throws below).
+                    let mut exn = UndefinedValue();
+                    JS_GetPendingException(
+                        cx,
+                        MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &mut exn,
+                        },
+                    );
+                    JS_ClearPendingException(cx);
+                    rooted!(&in(realm_cx) let reason_root = exn);
+                    if !exn.is_undefined() {
+                        if let Some(&hook) = UNCAUGHT_HOOK.get() {
+                            hook(cx, exn);
+                        }
+                    }
+                }
+            }
+        }
+
+        // (b) one of bao's own stored jobs (queueMicrotask closures kept as
+        // global properties).
+        if run_one_bao_job(cx) {
+            progress = true;
+        }
+
+        if !progress {
+            break;
+        }
+    }
+
+    // Job queue drained — dispatch unhandled promise rejections recorded by
+    // the runtime's rejection tracker. Runs after every drain (all pump
+    // paths funnel through this trap), on a clean JS stack.
+    if let Some(&hook) = FLUSH_HOOK.get() {
+        // SAFETY: cx is live (trap contract).
+        unsafe { hook(cx) };
+    }
+}
+
+/// Run a single job from bao's stored-job queue. Returns true when a job ran.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn run_one_bao_job(cx: *mut JSContext) -> bool {
+    {
         let job_entry = JOB_IDS.with(|q| q.borrow_mut().pop_front());
         let Some((id, global)) = job_entry else {
-            break;
+            return false;
         };
 
         if global.is_null() {
-            continue;
+            return true;
         }
 
         // `run_jobs` is invoked from js::RunJobs which may fire outside any
@@ -235,12 +318,12 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
                 },
             ) {
                 JS_ClearPendingException(cx);
-                continue;
+                return true;
             }
         }
 
         if !job_val.is_object() {
-            continue;
+            return true;
         }
 
         let mut rval = UndefinedValue();
@@ -290,28 +373,68 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
         unsafe {
             JS_DeleteProperty1(cx, global_root.handle().into(), prop.as_ptr());
         }
-    }
 
-    // Job queue drained — dispatch unhandled promise rejections recorded by
-    // the runtime's rejection tracker. Runs after every drain (all pump
-    // paths funnel through this trap), on a clean JS stack.
-    if let Some(&hook) = FLUSH_HOOK.get() {
-        // SAFETY: cx is live (trap contract).
-        unsafe { hook(cx) };
+        true
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn get_host_defined_data(
-    _queue: *const c_void,
     _cx: *mut JSContext,
-    data: MutableHandle<*mut JSObject>,
+    incumbent_global: MutableHandle<*mut JSObject>,
+    optional_host_defined_data: MutableHandle<*mut JSObject>,
 ) -> bool {
-    data.set(ptr::null_mut());
+    incumbent_global.set(ptr::null_mut());
+    optional_host_defined_data.set(ptr::null_mut());
     true
 }
 
+/// SM153 new trap: the host-defined global for the current execution.
+/// bao mirrors its stored-job global semantics: the realm's own global.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn is_empty(_queue: *const c_void) -> bool {
-    JOB_IDS.with(|q| q.borrow().is_empty())
+unsafe extern "C" fn get_host_defined_global(
+    cx: *mut JSContext,
+    data: MutableHandle<*mut JSObject>,
+) -> bool {
+    data.set(unsafe { CurrentGlobalOrNull(cx) });
+    true
+}
+
+/// SM153 new trap: GC tracing for non-GC-thing microtask values. bao's
+/// microtask values are all GC-things (JS objects/closures), so there is
+/// nothing non-GC to trace — the SM140 face had no counterpart at all.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn trace_non_gc_thing_microtask(
+    _trc: *mut JSTracer,
+    _value_ptr: *mut Value,
+) {
+}
+
+// ── Debugger interrupt-queue stack (SM153 requires real traps) ──────────────
+//
+// SM140 let bao leave these traps as None; 153's RustJobQueue destructor and
+// SavedQueue bookkeeping call them unconditionally. bao runs no debugger
+// interrupt queues, so the stack hands out unique well-formed tokens and
+// keeps the pop-matches-push contract the C++ SavedQueue asserts.
+thread_local! {
+    static INTERRUPT_QUEUES: ::std::cell::RefCell<Vec<*const c_void>> =
+        const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
+}
+static INTERRUPT_TOKEN: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(1);
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn push_new_interrupt_queue(_a: *mut c_void) -> *const c_void {
+    let token = INTERRUPT_TOKEN.fetch_add(1, Ordering::Relaxed) as *const c_void;
+    INTERRUPT_QUEUES.with(|q| q.borrow_mut().push(token));
+    token
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn pop_interrupt_queue(_a: *mut c_void) -> *const c_void {
+    INTERRUPT_QUEUES.with(|q| q.borrow_mut().pop()).unwrap_or(ptr::null())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn drop_interrupt_queues(_a: *mut c_void) {
+    INTERRUPT_QUEUES.with(|q| q.borrow_mut().clear());
 }
