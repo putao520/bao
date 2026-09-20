@@ -506,3 +506,7 @@ ev4 实现轮:C1=5a2d85bc(70 servo manifest 内联,1727/1727 ERR=0;首轮误扫 
 ### 2026-09-21 / ev4 实现轮闭合 + 第五宇宙续派(boringssl,全仓最后一枚)
 
 ev4 C1/C2/C4 终态:5a2d85bc(70 manifest 内联 1727 点 ERR=0 幂等)/a4a3b942(删 servo 根+14749 行 lock+toolchain;worktree 门主锁零 diff+--frozen RC=0+A5 断言族过)/77cd78ef(CLAUDE.md 拓扑+daily-ops remap+publish-verify offline 解析实证)。**③编译腿配对对照归责**:pre-C1 与 post-C2 同 worktree 同命令同 unit 同指纹失败(build.rs:373 GenericMicroTask)→其 series 编译面零 delta,缺陷归 em1 在途。一次过程违规自纠(C1 首提扫入 em1 31 暂存文件→soft-reset 重做,最终恰 70 文件,零再犯)。**第五宇宙续派已发**(boringssl/rust,6 bssl-* 成员+lock;用户"全部立即归一"原文覆盖,无需新裁)——A5 全绿=全仓单宇宙终态达成。
+
+### 2026-09-21 / 归一终态清点(005ee01f 增补后)
+
+ev4 增补:ipc lock git rm(1191 行)。C 裁定+房扫:①**crown 豁免**(vendor/servo/support/crown 自辖 lilter 宇宙,上游明言 not part of workspace,非 bao 构建面,删=徒增 vendor diff;波门§③ 加白名单行)②**mozjs 7 陈旧 lock C 直清**(全 untracked/ignored 零 git 影响:mozjs-sys×2+mozjs×1+extracted-crates×4)。终态:vendor 下 [workspace] 根仅剩 boringssl(ev4 在途最后一枚)+crown(豁免)。ev4 series:5a2d85bc→a4a3b942→77cd78ef→005ee01f。
