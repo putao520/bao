@@ -334,6 +334,15 @@ wrap!(jsapi: pub fn CompileModuleScriptToStencil1(cx: &mut JSContext, options: *
 wrap!(jsapi: pub fn InstantiateGlobalStencil(cx: &JSContext, options: *const InstantiateOptions, stencil: *mut Stencil, storage: *mut InstantiationStorage) -> *mut JSScript);
 wrap!(jsapi: pub fn InstantiateModuleStencil(cx: &JSContext, options: *const InstantiateOptions, stencil: *mut Stencil, storage: *mut InstantiationStorage) -> *mut JSObject);
 wrap!(jsapi: pub fn DecodeStencil(cx: &JSContext, options: *const ReadOnlyDecodeOptions, range: *const TranscodeRange, stencilOut: *mut *mut Stencil) -> TranscodeResult);
+// BAO PATCH (REQ-ENG-012, SM-EVOLUTION #26 XDR persistent cache): mirror of
+// DecodeStencil above; un-blacklisted in mozjs-sys build.rs. `buffer` must be a
+// live C++-owned TranscodeBuffer from glue's CreateTranscodeBuffer — bindgen
+// degrades the mozilla::Vector type to `u8`, so the pointer is opaque here and
+// its object may only be created/destroyed/read via the jsglue.cpp shims.
+// EMBEDDER CONTRACT: a process BuildIdOp must be installed first
+// (jsapi::SetProcessBuildIdOp) — EncodeStencil's version check invokes it
+// unconditionally and SM calls a NULL fn pointer (SIGSEGV) otherwise.
+wrap!(jsapi: pub fn EncodeStencil(cx: &JSContext, stencil: *mut Stencil, buffer: *mut TranscodeBuffer) -> TranscodeResult);
 wrap!(jsapi: pub fn StartCollectingDelazifications(cx: &JSContext, script: Handle<*mut JSScript>, stencil: *mut Stencil, alreadyStarted: *mut bool) -> bool);
 wrap!(jsapi: pub fn StartCollectingDelazifications1(cx: &JSContext, module: Handle<*mut JSObject>, stencil: *mut Stencil, alreadyStarted: *mut bool) -> bool);
 wrap!(jsapi: pub fn FinishCollectingDelazifications(cx: &mut JSContext, script: Handle<*mut JSScript>, buffer: *mut TranscodeBuffer) -> bool);

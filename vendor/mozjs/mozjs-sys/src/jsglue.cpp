@@ -828,6 +828,25 @@ bool SetBuildId(JS::BuildIdCharVector* buildId, const char* chars, size_t len) {
   return buildId->append(chars, len);
 }
 
+// BAO PATCH (REQ-ENG-012, SM-EVOLUTION #26 XDR persistent cache): owning-handle
+// shims for JS::TranscodeBuffer (mozilla::Vector<uint8_t>). bindgen degrades the
+// template to `pub type Vector = u8`, so Rust can neither construct nor destroy
+// the buffer object that JS::EncodeStencil's `TranscodeBuffer&` parameter
+// references — the object must be created and freed here, same pattern as
+// SetBuildId / CreateRootedIdVector above. The pointer is opaque on the Rust
+// side; every access goes through these shims.
+JS::TranscodeBuffer* CreateTranscodeBuffer() { return new JS::TranscodeBuffer(); }
+
+void DestroyTranscodeBuffer(JS::TranscodeBuffer* buffer) { delete buffer; }
+
+const uint8_t* TranscodeBufferBegin(const JS::TranscodeBuffer* buffer) {
+  return buffer->begin();
+}
+
+size_t TranscodeBufferLength(const JS::TranscodeBuffer* buffer) {
+  return buffer->length();
+}
+
 void RUST_SET_JITINFO(JSFunction* func, const JSJitInfo* info) {
   SET_JITINFO(func, info);
 }

@@ -1083,7 +1083,14 @@ impl BuildTarget {
                 "JS::DecodeMultiStencilsOffThread",
                 "JS::DecodeStencilOffThread",
                 "JS::DescribeScriptedCaller",
-                "JS::EncodeStencil",
+                // BAO PATCH (REQ-ENG-012, SM-EVOLUTION #26 XDR persistent cache):
+                // upstream blacklists JS::EncodeStencil because its
+                // `JS::TranscodeBuffer&` param binds to a degraded alias
+                // (`mozilla::Vector` → `pub type Vector = u8`). The binding is
+                // still ABI-correct (bindgen keeps the true C++ link_name; the
+                // buffer object is produced by the jsglue.cpp
+                // CreateTranscodeBuffer shims), so un-blacklist and mirror
+                // JS::DecodeStencil in jsapi2_wrappers.in.rs.
                 "JS::FinishDecodeMultiStencilsOffThread",
                 "JS::FinishIncrementalEncoding",
                 "JS::FromPropertyDescriptor",

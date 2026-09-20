@@ -23,6 +23,18 @@ wrap!(glue: pub fn UnwrapObjectDynamic(obj: *mut JSObject, cx: &mut JSContext, s
 wrap!(glue: pub fn CreateRootedIdVector(cx: &mut JSContext) -> *mut PersistentRootedIdVector);
 wrap!(glue: pub fn AppendToIdVector(v: MutableHandleIdVector, id: HandleId) -> bool);
 wrap!(glue: pub fn CreateRootedObjectVector(aCx: &mut JSContext) -> *mut PersistentRootedObjectVector);
+// BAO PATCH (REQ-ENG-012, SM-EVOLUTION #26 XDR persistent cache): owning-handle
+// shims for JS::TranscodeBuffer (see jsglue.cpp) — the object behind the opaque
+// pointer that wrappers2::EncodeStencil consumes.
+// CreateTranscodeBuffer is zero-arg and cannot go through wrap! (its final
+// match arm only accepts the leading-`,` accumulator shape of ≥1 args).
+#[inline]
+pub unsafe fn CreateTranscodeBuffer() -> *mut TranscodeBuffer {
+    glue::CreateTranscodeBuffer()
+}
+wrap!(glue: pub fn DestroyTranscodeBuffer(buffer: *mut TranscodeBuffer));
+wrap!(glue: pub fn TranscodeBufferBegin(buffer: *const TranscodeBuffer) -> *const u8);
+wrap!(glue: pub fn TranscodeBufferLength(buffer: *const TranscodeBuffer) -> usize);
 wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
 // BAO patch (SM-EVOLUTION #27 verdict-6, consumed by #19 soak): engine-native
 // memory metering — JS::CollectRuntimeStats behind the jsglue.cpp subclass

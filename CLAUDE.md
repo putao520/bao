@@ -219,7 +219,7 @@ make bce-check
 
 如果 SIGSEGV 复现,第一步 `nm libmozjs_sys-*.rlib | grep MutexImplD1` 查 rlib 是否包含旧代码。
 
-#### mozjs fork BAO patch 清单(6 项,0.22.0 全部在位——升级波 6b259cc2 二进制级实证;第 6 项 2026-09-10 增)
+#### mozjs fork BAO patch 清单(7 项,0.22.0 全部在位——升级波 6b259cc2 二进制级实证;第 6 项 2026-09-10 增;第 7 项 2026-09-21 增)
 
 上游同步 mozjs 时必须逐项重放(参照 git 历史 `git show <old>:vendor/mozjs/...`):
 
@@ -231,6 +231,7 @@ make bce-check
 | 4 | BaselineFrame NULL activation guard | `mozjs-sys/mozjs/js/src/jit/BaselineFrame.cpp`(BCE-20260621-002) | OSR 入口 `cx->activation()`/`prev()` NULL 检查,bail 回 interpreter |
 | 5 | JS_NewEmulatesUndefinedFunction | `mozjs-sys/mozjs/js/src/jsapi.cpp` + `js/src/jsapi.h` + `mozjs/src/jsapi2_wrappers.in.rs` | callable NativeObject 且 `typeof` 为 "undefined"(镜像 Bun `Buffer.transcode` stub)。**注意:jsapi.h 声明必须在 `namespace JS` 外(全局作用域),否则 bindgen 生成 `JS::` 前缀 mangled link_name 与 cpp 全局定义不匹配 → 链接失败** |
 | 6 | BaoCollectRuntimeStats | `mozjs-sys/mozjs/jsglue.cpp` + `mozjs/src/glue2_wrappers.in.rs`(SM-EVOLUTION #27 裁决 6,a51a81ef) | `BAORuntimeStatsPOD`(7×usize)+ `JS::RuntimeStats` C++ 子类构造(no-op extra hooks)+三段 ServoSizes rollup(runtime+zone+realm,单段会低估);漏重放=loud 链接断,引擎 Memory 计量面(soak 探针)依赖 |
+| 7 | EncodeStencil XDR 绑定 + TranscodeBuffer shim(REQ-ENG-012,#26 stage1,2026-09-21) | `mozjs-sys/build.rs`(blacklist 移除 `JS::EncodeStencil`)+ `mozjs-sys/src/jsglue.cpp`(Create/Destroy/Begin/Length 四 shim)+ `mozjs/src/jsapi2_wrappers.in.rs`(`wrappers2::EncodeStencil`,镜像 DecodeStencil)+ `mozjs/src/glue2_wrappers.in.rs`(4 wrap;零参 CreateTranscodeBuffer 手写——wrap! 宏零参不可用)+ smoke `mozjs/tests/stencil_xdr.rs` | XDR persistent cache encode 半边:上游 blacklist 动机=`TranscodeBuffer&`(mozilla::Vector<uint8_t>)bindgen 降级为 `u8` 无构造面;bindgen 保留真 C++ link_name 故 ABI 正确,buffer 经 jsglue shim 以 opaque 句柄持有(同 SetBuildId 先例)。**EMBEDDER CONTRACT:encode 前必须 `JS::SetProcessBuildIdOp` 装 op,否则 VersionCheck→GetScriptTranscodingBuildId 空函数指针 SIGSEGV(StencilXdr.cpp:1373;上游 issue 候选)**;上游同步 5 文件逐个重放 |
 
 另:`mozjs-sys/build.rs` 有 2 个 BAO patch(`should_build_from_source() -> true` 硬编码、`fix_stale_archive_objects()` make 增量 stale .o 修复)。
 
