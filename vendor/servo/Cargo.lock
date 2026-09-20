@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout-api"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "aes",
  "aes-gcm",
