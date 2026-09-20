@@ -283,3 +283,152 @@ fn in_memory_transport_event_order_preserved_fifo() {
         assert_eq!(ev.params["index"], expected);
     }
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// command_timeout honest contract — slow commands return bounded Timeout
+// errors instead of hanging on the synchronous bridge dispatch.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Bridge whose dispatch blocks longer than any test timeout.
+struct SlowBridge {
+    delay: Duration,
+}
+
+impl InMemoryBridge for SlowBridge {
+    fn dispatch_command(
+        &self,
+        _method: &str,
+        _params: Value,
+        _session_id: Option<&str>,
+    ) -> InMemoryBridgeResponse {
+        std::thread::sleep(self.delay);
+        InMemoryBridgeResponse::Ok(json!({"slow": true}))
+    }
+}
+
+/// Bridge whose first dispatch is slow, subsequent ones instant — lets a test
+/// observe the timed-out command's late completion AND keep using the
+/// transport afterwards.
+struct FirstSlowBridge {
+    first_delay: Duration,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl InMemoryBridge for FirstSlowBridge {
+    fn dispatch_command(
+        &self,
+        _method: &str,
+        _params: Value,
+        _session_id: Option<&str>,
+    ) -> InMemoryBridgeResponse {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == 0 {
+            std::thread::sleep(self.first_delay);
+        }
+        InMemoryBridgeResponse::Ok(json!({"call": n + 1}))
+    }
+}
+
+/// Bridge that panics inside dispatch — the transport must re-raise the panic
+/// on the caller thread (same observable behavior as an in-place dispatch).
+struct PanickingBridge;
+
+impl InMemoryBridge for PanickingBridge {
+    fn dispatch_command(
+        &self,
+        _method: &str,
+        _params: Value,
+        _session_id: Option<&str>,
+    ) -> InMemoryBridgeResponse {
+        panic!("bridge exploded");
+    }
+}
+
+#[test]
+fn in_memory_transport_slow_command_times_out_with_timeout_error() {
+    // Arrange — bridge needs 30s, timeout is 50ms.
+    let bridge = Arc::new(SlowBridge {
+        delay: Duration::from_secs(30),
+    });
+    let mut t = InMemoryTransport::new(bridge);
+    t.set_command_timeout(Duration::from_millis(50));
+    // Act
+    let start = std::time::Instant::now();
+    let err = t.send_command("Page.navigate", json!({}), None).unwrap_err();
+    let elapsed = start.elapsed();
+    // Assert — bounded Timeout error, not a hang and not a bridge response.
+    assert!(
+        matches!(err, bao_cdp_client::CdpError::Timeout(_)),
+        "got: {:?}",
+        err
+    );
+    assert!(elapsed < Duration::from_secs(5), "elapsed: {:?}", elapsed);
+    assert!(elapsed >= Duration::from_millis(40), "elapsed: {:?}", elapsed);
+}
+
+#[test]
+fn in_memory_transport_timeout_error_names_method_and_duration() {
+    // Arrange
+    let bridge = Arc::new(SlowBridge {
+        delay: Duration::from_secs(30),
+    });
+    let mut t = InMemoryTransport::new(bridge);
+    t.set_command_timeout(Duration::from_millis(50));
+    // Act
+    let err = t
+        .send_command("Runtime.evaluate", json!({}), None)
+        .unwrap_err();
+    // Assert
+    let s = err.to_string();
+    assert!(s.contains("Runtime.evaluate"), "got: {}", s);
+    assert!(s.contains("timeout"), "got: {}", s);
+    assert!(s.contains("50ms"), "got: {}", s);
+}
+
+#[test]
+fn in_memory_transport_fast_command_unaffected_by_timeout_wiring() {
+    // Arrange — generous timeout, instant bridge: the bounded path must stay
+    // a synchronous request/response for fast commands.
+    let bridge = Arc::new(EchoMethodBridge);
+    let mut t = InMemoryTransport::new(bridge);
+    t.set_command_timeout(Duration::from_secs(5));
+    // Act
+    let r = t
+        .send_command("Page.navigate", json!({"url": "about:blank"}), Some("S1"))
+        .unwrap();
+    // Assert
+    assert_eq!(r["result"], "Page.navigate");
+}
+
+#[test]
+fn in_memory_transport_usable_after_timeout_late_response_not_misrouted() {
+    // Arrange — first dispatch outlives the timeout, the next one is instant.
+    let bridge = Arc::new(FirstSlowBridge {
+        first_delay: Duration::from_millis(250),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut t = InMemoryTransport::new(bridge);
+    t.set_command_timeout(Duration::from_millis(50));
+    // Act — first command times out...
+    let err = t.send_command("A", json!({}), None).unwrap_err();
+    assert!(
+        matches!(err, bao_cdp_client::CdpError::Timeout(_)),
+        "got: {:?}",
+        err
+    );
+    // ...wait out the detached worker so its late response has landed (and
+    // been dropped), then prove the transport still dispatches normally.
+    std::thread::sleep(Duration::from_millis(300));
+    let r = t.send_command("B", json!({}), None).unwrap();
+    // Assert — second command got ITS OWN response (call #2), not the late
+    // response of the timed-out first command (call #1).
+    assert_eq!(r["call"], 2);
+}
+
+#[test]
+#[should_panic(expected = "bridge exploded")]
+fn in_memory_transport_bridge_panic_propagates_to_caller() {
+    let bridge = Arc::new(PanickingBridge);
+    let mut t = InMemoryTransport::new(bridge);
+    let _ = t.send_command("X", json!({}), None);
+}

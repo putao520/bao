@@ -14,7 +14,9 @@
 //!
 //! ## 同步语义
 //!
-//! `send_command` 阻塞等待响应(`recv_timeout` 避免无限阻塞)。
+//! `send_command` 把 bridge 派发放到一次性 worker 线程执行,调用线程以
+//! `recv_timeout(command_timeout)` 有界等待:超时返回 `CdpError::Timeout`
+//! 并 detach worker(迟到响应被丢弃),不无限阻塞。
 //! `recv_event` 阻塞等待事件(同样 `recv_timeout`,超时返回 `Ok(None)`)。
 //!
 //! @trace REQ-BAO-API-002 [interface:Transport]
@@ -99,6 +101,8 @@ pub struct InMemoryTransport {
     /// servo 事件 translate 后未发出的 CdpEvent 暂存(一对多场景)。
     pending_cdp_events: std::collections::VecDeque<CdpEvent>,
     closed: bool,
+    /// 命令等待上界:`send_command` 对 bridge 派发的有界等待,超时返回
+    /// [`CdpError::Timeout`](crate::error::CdpError::Timeout)。
     command_timeout: Duration,
     event_timeout: Duration,
 }
@@ -174,6 +178,56 @@ impl InMemoryTransport {
     pub fn is_closed(&self) -> bool {
         self.closed
     }
+
+    /// 执行一次有界 bridge 派发(等待上界 = `command_timeout`)。
+    ///
+    /// [`InMemoryBridge::dispatch_command`] 是无上界的同步调用(真实 servo
+    /// bridge 内部阻塞在其 channel 往返上),超时只能落在等待侧:派发放到
+    /// 一次性 worker 线程执行,调用线程 `recv_timeout` 强制 deadline。
+    /// 超时即 detach worker——迟到响应 send 进已 drop 的 receiver 被丢弃,
+    /// 不再改道(有界等待契约)。worker panic 时 join 取回 payload 并在本线程
+    /// 重新抛出,调用方观测到的 panic 与就地派发一致;worker 无法创建时返回
+    /// 显式 `TransportError`,不静默降级为无界派发。
+    fn bounded_dispatch(
+        &self,
+        method: &str,
+        params: Value,
+        session_id: Option<&str>,
+    ) -> Result<Value> {
+        let (tx, rx) = mpsc::channel();
+        let bridge = Arc::clone(&self.bridge);
+        let worker_method = method.to_string();
+        let session_id = session_id.map(|s| s.to_string());
+        let worker = std::thread::Builder::new()
+            .name("bao-cdp-inmem-dispatch".into())
+            .spawn(move || {
+                let response =
+                    bridge.dispatch_command(&worker_method, params, session_id.as_deref());
+                // receiver 可能已被超时的调用方 drop——迟到响应就此丢弃。
+                let _ = tx.send(response);
+            })
+            .map_err(|e| {
+                CdpError::TransportError(format!("failed to spawn in-memory dispatch worker: {e}"))
+            })?;
+        let timeout = self.command_timeout;
+        match rx.recv_timeout(timeout) {
+            Ok(InMemoryBridgeResponse::Ok(v)) => Ok(v),
+            Ok(InMemoryBridgeResponse::Err(msg)) => Err(CdpError::ProtocolError(msg)),
+            Err(RecvTimeoutError::Timeout) => Err(CdpError::Timeout(format!(
+                "command {} timed out after {:?}",
+                method, timeout
+            ))),
+            Err(RecvTimeoutError::Disconnected) => {
+                // sender 只活在 worker 内;未响应即断开 ⇒ worker panic。
+                match worker.join() {
+                    Ok(()) => Err(CdpError::TransportError(
+                        "in-memory bridge worker exited without a response".into(),
+                    )),
+                    Err(payload) => std::panic::resume_unwind(payload),
+                }
+            }
+        }
+    }
 }
 
 impl Transport for InMemoryTransport {
@@ -190,12 +244,9 @@ impl Transport for InMemoryTransport {
         if self.closed {
             return Err(CdpError::ConnectionClosed);
         }
-        // Bridge 调用是同步阻塞的(servo ScriptThread 通过 channel 转发)。
-        // command_timeout 在 TASK-3 真实 servo bridge 实现内体现;此处直接调用。
-        match self.bridge.dispatch_command(method, params, session_id) {
-            InMemoryBridgeResponse::Ok(v) => Ok(v),
-            InMemoryBridgeResponse::Err(msg) => Err(CdpError::ProtocolError(msg)),
-        }
+        // Bridge 派发是同步阻塞调用(servo ScriptThread 通过 channel 转发),
+        // 由 bounded_dispatch 以 command_timeout 有界等待。
+        self.bounded_dispatch(method, params, session_id)
     }
 
     fn recv_event(&mut self) -> Result<Option<CdpEvent>> {
