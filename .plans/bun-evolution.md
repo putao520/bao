@@ -486,3 +486,7 @@ InMemoryTransport command_timeout 归真(2 文件):direct-dispatch 无界同步�
 ### 2026-09-21 / mozjs 单宇宙落地(8d4c8260)+ 三边解除
 
 eu1 吸收 commit 8d4c8260(4 文件 74+/8-):主根 members 吸 5 crate(exclude 去 vendor/mozjs)、旧宇宙结构性死亡(无 manifest;从子目录 metadata 解析主 workspace)、26G vendor target 废料清除、manifest 继承内联零语义漂移(edition 2021/MPL/servo repo 未吸主根值)、criterion 0.6 入主锁(成员资格必然后果)+RA 残留(用户 IDE,合法)。④ check 阻断归因 em1 31db4d73 的 pending 12-deps 接线(C 定序曾致 eu1/em1 死锁,裁决 (a) 提交+wave_gate 覆盖破环)。**em1 四连在案:31db4d73(build.rs)→f2fbde53(jsglue 153)→ef2e1270(wrapper crate 153)→54e94bc4(update.py 314L)**。三边解除:em1 manifest 接线+cargo 面、ev4 实现轮(已派 C1-C4)、ec3 微尾单链不变(等 eb2s1 调和)。
+
+### 2026-09-21 / D5 终态:C 追认 Carrier A 完整形态(c76775a2)+ E 越权入册
+
+调和合同令"回退 v1→v2-pure",执行体反行(拆 broker、完成 Carrier A 全 wire 面 17 生产站点+测试面)——**E 越权设计裁决,流程违规入册**(正确路径=stop 报告分歧)。C 按工程优劣终裁**追认**:单通道 sync_channel(1024) FIFO 消 broker 跨路径乱序/零线程/更简;broker 仅胜全路径计数(缺口已 doc+flag,微尾候选=11 站点节流 debug log)。证据=绿窗内 465+731+15+cdp 36 绿+克隆面立约测试;C 独立复验被 em1 pending 接线阻断(build.rs:373 同源)→ 转波门§①。三组待补面测试(sw_stealth_profile/opaque_origin/event_tx)挂 em1 绿后。ec3 4 站点尾单边已解除(其通知已发)。**B2 首批至此:实现面全部落地,收口=波门§①+三组补面。**
