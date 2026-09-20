@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "bao_bundler"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "bao_engine",
  "bun_alloc",
@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ast"
-version = "0.1.15"
+version = "0.2.0"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "bun_base64"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bun_alloc",
@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bun_alloc",
  "bun_boringssl_sys",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "bun_cares_sys"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "bun_alloc",
  "bun_core",
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "bun_collections"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -2733,7 +2733,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -2768,7 +2768,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2794,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "allocator-api2",
  "bitflags 2.11.1",
@@ -2953,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "bao_boringssl_bridge",
  "bao_native_stubs",
@@ -3103,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_parser"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3134,7 +3134,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_printer"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bumpalo",
@@ -3268,7 +3268,7 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_parsers"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bumpalo",
@@ -3437,7 +3437,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3529,7 +3529,7 @@ dependencies = [
 
 [[package]]
 name = "bun_safety"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3576,7 +3576,7 @@ dependencies = [
 
 [[package]]
 name = "bun_shell_parser"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3761,7 +3761,7 @@ dependencies = [
 
 [[package]]
 name = "bun_threading"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3892,7 +3892,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zlib"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "allocator-api2",
  "bun_alloc",

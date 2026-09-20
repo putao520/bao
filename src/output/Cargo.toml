@@ -14,4 +14,4 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
-bun_core = { path = "../bun_core", version = "0.1.0" }
+bun_core = { path = "../bun_core", version = "0.2.0" }

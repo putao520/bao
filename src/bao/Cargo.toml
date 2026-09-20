@@ -35,7 +35,7 @@ default = []
 # 全部同波 sibling 下限 = 本波新版本。
 bao-browser = { path = "../bao_browser", version = "^0.1.21" }
 bao_engine = { path = "../bao_engine", version = "^0.1.18" }
-bun_runtime = { path = "../bao_runtime", version = "^0.2" }
+bun_runtime = { path = "../bao_runtime", version = "^0.3" }
 bao_cdp = { path = "../bao_cdp", version = "0.1.0" }
 bao_cdp_client = { path = "../bao_cdp_client", version = "^0.1.16" }
 bao_stealth = { path = "../bao_stealth", version = "^0.1.17" }

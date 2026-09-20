@@ -48,7 +48,7 @@ bun_event_loop.workspace = true
 bun_glob.workspace = true
 # sibling 精确下限(用户裁决 2026-09-02):0.1.18 消费 bun_http 0.1.16 的
 # proxy_connect_response(09-18 波 B1);workspace 定义共用,故 inline 收紧。
-bun_http = { path = "../http", version = "0.1.16" }
+bun_http = { path = "../http", version = "0.2.0" }
 # sibling 精确下限(用户裁决 2026-09-02):0.1.19 消费 bun_install_types 0.1.13 的
 # Behavior::is_placed(09-19 波,unplaced tarball 8eaad800c7);workspace 定义共用,故 inline 收紧。
 bun_install_types = { path = "../install_types", version = "0.1.13" }

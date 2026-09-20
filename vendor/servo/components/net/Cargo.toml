@@ -33,9 +33,9 @@ bun_boringssl_sys = { path = "../../../../src/boringssl_sys", version = "0.1.0" 
 # Bao fusion (U2 page-network unification): the page-network fetch driver on
 # bun's HTTPThread (single epoll thread + stealth TLS) — the only path (the
 # hyper escape hatch was removed with BAO_PAGE_NET_BUN).
-bun_core = { path = "../../../../src/bun_core", version = "0.1.0" }
-bun_http = { path = "../../../../src/http", version = "0.1.0" }
-bun_threading = { path = "../../../../src/threading", version = "0.1.0" }
+bun_core = { path = "../../../../src/bun_core", version = "0.2.0" }
+bun_http = { path = "../../../../src/http", version = "0.2.0" }
+bun_threading = { path = "../../../../src/threading", version = "0.2.0" }
 bun_url = { path = "../../../../src/url", version = "0.1.0" }
 async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
 async-recursion = { workspace = true }
