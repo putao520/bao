@@ -482,3 +482,7 @@ InMemoryTransport command_timeout 归真(2 文件):direct-dispatch 无界同步�
 **V 基线差额**:console 族实测 9 站点(5 ServoEvent::Console+4 ConsoleMessage::Event),ec3 按 census 5 做了,余 4 已派微尾单(eb2s1 调和落地后)。
 
 **mozjs 线进展(em1 三连)**:c0aa4b61(SM153 树落地 26/26 patch clean)→ 569e709b(上游 patch 集 153 时代切换,er0 对账表应用)→ 31db4d73(build.rs+makefile 153 形态+BAO 偏差重放)。eu1 吸收 commit 未现(em1 cargo 面与 ev4 实现轮的关键路径边)。
+
+### 2026-09-21 / mozjs 单宇宙落地(8d4c8260)+ 三边解除
+
+eu1 吸收 commit 8d4c8260(4 文件 74+/8-):主根 members 吸 5 crate(exclude 去 vendor/mozjs)、旧宇宙结构性死亡(无 manifest;从子目录 metadata 解析主 workspace)、26G vendor target 废料清除、manifest 继承内联零语义漂移(edition 2021/MPL/servo repo 未吸主根值)、criterion 0.6 入主锁(成员资格必然后果)+RA 残留(用户 IDE,合法)。④ check 阻断归因 em1 31db4d73 的 pending 12-deps 接线(C 定序曾致 eu1/em1 死锁,裁决 (a) 提交+wave_gate 覆盖破环)。**em1 四连在案:31db4d73(build.rs)→f2fbde53(jsglue 153)→ef2e1270(wrapper crate 153)→54e94bc4(update.py 314L)**。三边解除:em1 manifest 接线+cargo 面、ev4 实现轮(已派 C1-C4)、ec3 微尾单链不变(等 eb2s1 调和)。
