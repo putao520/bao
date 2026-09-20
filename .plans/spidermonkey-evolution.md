@@ -1895,3 +1895,7 @@ EncodeStencil XDR 绑定落地(5 文件 ~40 行净增,全 vendor/mozjs):根因=b
 **10-commit 串全落**,cargo 面达成:**stencil_xdr smoke 绿(C 独立复跑 1/1 RC=0——REQ-ENG-012 XDR 面在 153 存活)**。实构建揪出 4 个 dry-run 不可见缺陷并根治:①bao-0001 语义重锚(153 initForOsr void 化无 bail 通道→脚本入口 pc 兜底形态,roundtrip 字节验证)②bindgen+libclang23 吐不出 MicroTask 块(与上游预构建产物对照定案,显式加 header 修)③链接器剪 no_mangle-only glue rlib(5 个被剪 18 undefined——extern-crate 保边)④NonNull 限定。绿面:bao_engine context.rs:897/bun_runtime 106-face/bao_workflow_host/bao-mozjs 全绿。
 
 **遗留面(已续派 em1)**:bun_sm moduleloading 迁移(15 错 4 类,语义级):FinishLoadingDynamicImportedModule 新签名/SetModuleLoadHook 重实现/动态导入 hook 无等价需设计/forceUTC_ 删除需行为平机制——合同判据=行为平,不可达即 STOP 转用户裁决。
+
+### 案 A 形态终裁修正(2026-09-21,em1 实证)
+
+registry 形态否决(当下):crates.io mozjs_* 实测 max=**153.0.0**(er0"12 件全在"属实但版本对齐缺口漏检)——registry 喂 153.3.0 源=跨版本组合(icu_collator rust 面内容差+icudt77l→78l 实测)。**维持 in-tree path deps(=153.3.0 tarball 同源提取,上游 314L 原代码)**;registry=发布终态,触发器=上游发布 153.3.x era(届时 12 行机械切换);publish 波 registry 前置(bao 自发布或等上游)记为发布波裁决点。extracted-crates 体量纠正:12M/200 文件(前记 26G 有误)。P4 第 4 行语义更新入 CLAUDE.md。
