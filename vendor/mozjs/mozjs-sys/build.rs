@@ -104,12 +104,6 @@ fn main() {
         // TODO: use this and remove `no-rust-unicode-bidi.patch`
         // cbindgen_bidi(&build_dir);
         build_spidermonkey(&build_dir);
-        // Bao patch: Fix mozjs incremental build bug. After `make` recompiles
-        // patched .o files (e.g., Mutex_posix.cpp, BaselineFrame.cpp), the
-        // archive `libjs_static.a` may still hold stale .o entries. Replace
-        // any stale entries with the fresh standalone .o files before the
-        // subsequent cc::Build steps pull symbols from the archive.
-        fix_stale_archive_objects(&build_dir);
         build(&build_dir, BuildTarget::JSApi);
         build_bindings(&build_dir, BuildTarget::JSApi);
         build(&build_dir, BuildTarget::JSGlue);
@@ -293,47 +287,6 @@ fn mirror_dir(from: &Path, to: &Path) {
     }
 }
 
-
-/// Bao patch: Fix mozjs incremental build bug.
-///
-/// Scans `libjs_static.a` for .o entries that also exist as standalone files
-/// in the build tree. If a standalone .o is newer than the archived copy,
-/// replaces the stale entry using `ar -d` + `ar -q`. This matters because
-/// `make` recompiles patched .cpp files (EBUSY, BCE-20260621-002, etc.) into
-/// standalone .o files but does NOT repack the archive, leaving stale object
-/// code that causes SIGSEGV at process exit (e.g., unpatched
-/// `MutexImpl::~MutexImpl` calling MOZ_CRASH on EBUSY).
-fn fix_stale_archive_objects(build_dir: &Path) {
-    let archive = build_dir.join("js/src/build/libjs_static.a");
-    if !archive.exists() {
-        return;
-    }
-    let list_output = match Command::new("ar").arg("t").arg(&archive).output() {
-        Ok(o) => o,
-        Err(_) => return,
-    };
-    if !list_output.status.success() {
-        return;
-    }
-    let entries = String::from_utf8_lossy(&list_output.stdout);
-    for entry in entries.lines() {
-        let entry = entry.trim();
-        if !entry.ends_with(".o") {
-            continue;
-        }
-        let standalone = build_dir.join("js/src/build").join(entry);
-        if !standalone.exists() {
-            continue;
-        }
-        let _ = Command::new("ar").arg("d").arg(&archive).arg(entry).output();
-        let _ = Command::new("ar")
-            .arg("q")
-            .arg(&archive)
-            .arg(&standalone)
-            .output();
-    }
-}
-
 fn build_spidermonkey(build_dir: &Path) {
     let target = env::var("TARGET").unwrap();
     let make;
@@ -416,6 +369,25 @@ fn build_spidermonkey(build_dir: &Path) {
         }
     }
 
+    let include = env::var("DEP_NORMALIZER_GLUE_INCLUDE")
+        .expect("DEP_NORMALIZER_GLUE_INCLUDE should be set by normalizer_glue");
+    write!(cppflags, "-I{} ", include.replace("\\", "/")).unwrap();
+
+    if cfg!(feature = "intl") {
+        let include = env::var("DEP_UNICODE_BIDI_FFI_INCLUDE")
+            .expect("DEP_UNICODE_BIDI_FFI_INCLUDE should be set by unicode_bidi_ffi");
+        write!(cppflags, "-I{} ", include.replace("\\", "/")).unwrap();
+        let include = env::var("DEP_PROPERTIES_GLUE_INCLUDE")
+            .expect("DEP_PROPERTIES_GLUE_INCLUDE should be set by properties_glue");
+        write!(cppflags, "-I{} ", include.replace("\\", "/")).unwrap();
+        let include = env::var("DEP_COLLATOR_GLUE_INCLUDE")
+            .expect("DEP_COLLATOR_GLUE_INCLUDE should be set by collator_glue");
+        write!(cppflags, "-I{} ", include.replace("\\", "/")).unwrap();
+        let include = env::var("DEP_LOCALE_GLUE_INCLUDE")
+            .expect("DEP_LOCALE_GLUE_INCLUDE should be set by locale_glue");
+        write!(cppflags, "-I{} ", include.replace("\\", "/")).unwrap();
+    }
+
     cppflags.push(get_cc_rs_env_os("CPPFLAGS").unwrap_or_default());
     cmd.env("CPPFLAGS", cppflags);
 
@@ -491,6 +463,7 @@ fn build_spidermonkey(build_dir: &Path) {
 
     if target.contains("windows") {
         let mut make_static = cc::Build::new();
+        make_static.prefer_clang_cl_over_msvc(true);
         make_static.out_dir(join_path(build_dir, "js/src/build"));
         fs::read_to_string(join_path(build_dir, "js/src/build/js_static_lib.list"))
             .unwrap()
@@ -710,6 +683,8 @@ fn link_bindgen_static_lib_binaries(build_dir: &Path) {
     println!("cargo:rustc-link-lib=static=jsglue");
 }
 
+/// Check env variable conditions to decide if we need to link pre-built archive first.
+/// And then return bool value to notify if we need to build from source instead.
 /// Always build from local source. Bao carries local mozjs with EBUSY patch
 /// and other fixes — the pre-built GitHub archive does not include them.
 fn should_build_from_source() -> bool {
@@ -727,6 +702,8 @@ fn minimum_rust_target() -> RustTarget {
 fn get_common_cc(build_dir: &Path, target: BuildTarget) -> cc::Build {
     let mut builder = cc::Build::new();
 
+    builder.prefer_clang_cl_over_msvc(true);
+
     let target_triple = env::var("TARGET").unwrap();
 
     // Must be set before any `get_compiler()` call.
@@ -734,7 +711,7 @@ fn get_common_cc(build_dir: &Path, target: BuildTarget) -> cc::Build {
 
     if target_triple.contains("windows") {
         builder
-            .std("c++17")
+            .std("c++20")
             .flag_if_supported("-Zi")
             .flag_if_supported("-GR-")
             .define("WIN32", None)
@@ -744,7 +721,7 @@ fn get_common_cc(build_dir: &Path, target: BuildTarget) -> cc::Build {
             .define("_CRT_USE_BUILTIN_OFFSETOF", None);
     } else {
         builder
-            .std("gnu++17")
+            .std("gnu++20")
             .pic(true)
             .flag_if_supported("-fno-rtti")
             .flag_if_supported("-fno-sized-deallocation")
@@ -1080,19 +1057,20 @@ impl BuildTarget {
             BuildTarget::JSApi => &[
                 "JS::CopyAsyncStack",
                 "JS::CreateError",
-                "JS::DecodeMultiStencilsOffThread",
-                "JS::DecodeStencilOffThread",
                 "JS::DescribeScriptedCaller",
+                "JS::DequeueNextMicroTask",
                 // BAO PATCH (REQ-ENG-012, SM-EVOLUTION #26 XDR persistent cache):
                 // upstream blacklists JS::EncodeStencil because its
                 // `JS::TranscodeBuffer&` param binds to a degraded alias
-                // (`mozilla::Vector` → `pub type Vector = u8`). The binding is
+                // (`mozilla::Vector` -> `pub type Vector = u8`). The binding is
                 // still ABI-correct (bindgen keeps the true C++ link_name; the
                 // buffer object is produced by the jsglue.cpp
                 // CreateTranscodeBuffer shims), so un-blacklist and mirror
                 // JS::DecodeStencil in jsapi2_wrappers.in.rs.
-                "JS::FinishDecodeMultiStencilsOffThread",
-                "JS::FinishIncrementalEncoding",
+                // The four SM-140 off-thread/incremental stencil APIs
+                // (DecodeMultiStencilsOffThread/DecodeStencilOffThread/
+                //  FinishDecodeMultiStencilsOffThread/FinishIncrementalEncoding)
+                // no longer exist in SM 153.3.0 — blacklist entries removed.
                 "JS::FromPropertyDescriptor",
                 "JS::GetExceptionCause",
                 "JS::GetModulePrivate",
@@ -1158,6 +1136,7 @@ impl BuildTarget {
                 "JS::PersistentRooted.*",
                 "JS::detail::CallArgsBase.*",
                 "js::detail::UniqueSelector.*",
+                "std::unique_ptr",
                 "mozilla::BufferList",
                 "mozilla::Maybe.*",
                 "mozilla::UniquePtr.*",

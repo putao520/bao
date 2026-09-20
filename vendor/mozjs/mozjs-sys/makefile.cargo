@@ -11,7 +11,7 @@ CONFIGURE_FLAGS := \
 	--disable-shared-js \
 	--build-backends=RecursiveMake
 
-# Enable Explicit Resource Management (`using` / `await using` bindings,
+# BAO: Enable Explicit Resource Management (`using` / `await using` bindings,
 # DisposableStack, AsyncDisposableStack). Default gated behind nightly; turn
 # it on explicitly so `await using proc = ...` (buffer.test.js,
 # buffer-copy-fill-detach.test.ts) parses without `unexpected token` errors.
@@ -31,11 +31,19 @@ endif
 
 ifneq (,$(CARGO_FEATURE_DEBUGMOZJS))
 	CONFIGURE_FLAGS += --enable-debug --enable-gczeal
-	ifneq (,$(findstring -wasi,$(TARGET)))
-		# wasm-opt chokes on -O0 builds.
-		CONFIGURE_FLAGS += --enable-optimize=-O1
+
+	# Respect cargo's OPT_LEVEL instead of unconditionally forcing -O0.
+	# This allows building SM with debug assertions and optimisations
+	DEBUGMOZJS_OPT_LEVEL := $(or $(OPT_LEVEL),0)
+	ifeq (0,$(DEBUGMOZJS_OPT_LEVEL))
+		ifneq (,$(findstring -wasi,$(TARGET)))
+			# wasm-opt chokes on -O0 builds, so floor wasi to -O1.
+			CONFIGURE_FLAGS += --enable-optimize=-O1
+		else
+			CONFIGURE_FLAGS += --disable-optimize
+		endif
 	else
-		CONFIGURE_FLAGS += --disable-optimize
+		CONFIGURE_FLAGS += --enable-optimize=-O$(DEBUGMOZJS_OPT_LEVEL)
 	endif
 endif
 
