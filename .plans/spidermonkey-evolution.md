@@ -1885,3 +1885,7 @@ EncodeStencil XDR 绑定落地(5 文件 ~40 行净增,全 vendor/mozjs):根因=b
 **stage2 输入(挂 #26)**:缓存键候选 `GetScriptTranscodingBuildId`/`GetOptimizedEncodingBuildId`(同 Vector 降级病同 shim 可治,BuildId.h:77/:58);EMBEDDER CONTRACT=encode 前必装 SetProcessBuildIdOp(否则 StencilXdr.cpp:1373 空函数指针 SIGSEGV,gdb 实证)。
 
 **上游 issue(禁自修)**:草稿 /tmp/issue-servo-mozjs.md(140.14+153.3 双版本同缺陷实证+fail-closed 建议修法)——**提交被 fine-grained PAT 仓库范围阻断**(servo/mozjs 出域),待用户扩 PAT 或手工提交。wrap! 宏零参缺陷(bao 侧)记录在案,下次新增零参 glue 绑定时绕行。
+
+### extracted-crates 裁定(2026-09-21,案 A 采纳;er0 案卷 /tmp/ev4-crates-dossier.md)
+
+**probe REPEAT-RISK① 实测推翻**:"8 crate vs 自研卫星同题两解"不成立——**互补两层**:①我方三卫星(src-js/src-intl/src-python)=SM 主树切片,上游无发布物(tarball 形态),10MiB 裁决继续自发布;②上游 153 新 Rust 依赖面(实测 **12 件**非 8:5 glue+7 patched-icu/iter,crates.io API 逐件实查存在,newest=153.0.0)我方零存在。**裁定案 A**:mozjs-sys 消费上游 `mozjs_*="=153.0.0"`(feature 门照抄;五 glue 经 DEP_*_GLUE_INCLUDE links 元数据流供头,registry 形态等价;patch 面与 glue 来源解耦);案 B(自抽自发布)否决——违"上游只用最新"+平行真源。动作已入 em1 合同(12 deps 行[eu1 边后]+build.rs DEP_* 段[:220-235 形态]+filters 取 153 版)。
