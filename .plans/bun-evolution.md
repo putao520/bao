@@ -502,3 +502,7 @@ eu1 吸收 commit 8d4c8260(4 文件 74+/8-):主根 members 吸 5 crate(exclude �
 ### 2026-09-21 / ev4 C1/C2/C4 落地 + 第五宇宙发现(vendor/boringssl/rust)
 
 ev4 实现轮:C1=5a2d85bc(70 servo manifest 内联,1727/1727 ERR=0;首轮误扫 em1 暂存 31 文件已 soft-reset 重做,pathspec 纪律自纠)、C2=a4a3b942(删 servo 根/lock/toolchain;worktree 门:--frozen RC=0+主锁零 diff+断言全过)、C4=77cd78ef(CLAUDE.md 拓扑+daily-ops remap+publish-verify offline 解析实证 799 pkgs RC=0)。共享树编译门被 em1 在途态阻塞(mozjs 0.24.0 vs 主根 ^0.22 未翻,归属 em1 波);definitive parity 门在 worktree@a4a3b942 跑(30-70min)。**A5-2 断言抓到第五宇宙:vendor/boringssl/rust [workspace] 根(bssl-crypto/bssl-macros/...)**——同类待归一(C 已证实拓扑),ev4 终报后以同构脚本(--tree 适配)续派。
+
+### 2026-09-21 / ev4 实现轮闭合 + 第五宇宙续派(boringssl,全仓最后一枚)
+
+ev4 C1/C2/C4 终态:5a2d85bc(70 manifest 内联 1727 点 ERR=0 幂等)/a4a3b942(删 servo 根+14749 行 lock+toolchain;worktree 门主锁零 diff+--frozen RC=0+A5 断言族过)/77cd78ef(CLAUDE.md 拓扑+daily-ops remap+publish-verify offline 解析实证)。**③编译腿配对对照归责**:pre-C1 与 post-C2 同 worktree 同命令同 unit 同指纹失败(build.rs:373 GenericMicroTask)→其 series 编译面零 delta,缺陷归 em1 在途。一次过程违规自纠(C1 首提扫入 em1 31 暂存文件→soft-reset 重做,最终恰 70 文件,零再犯)。**第五宇宙续派已发**(boringssl/rust,6 bssl-* 成员+lock;用户"全部立即归一"原文覆盖,无需新裁)——A5 全绿=全仓单宇宙终态达成。
