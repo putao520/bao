@@ -125,6 +125,10 @@ unsafe fn instantiate_and_execute(
         hideScriptFromDebugger: false,
         deferDebugMetadata: false,
         eagerDelazificationStrategy_: jsapi::DelazificationOption::OnDemandOnly,
+        // SM153.3: new TransitiveCompileOptions field (bindgen-regenerated);
+        // mirrors the C++ default (CompileOptions.h:303 eagerBaselineStrategy_
+        // = EagerBaselineOption::None).
+        eagerBaselineStrategy_: jsapi::EagerBaselineOption::None,
     };
 
     let mut realm = AutoRealm::new_from_handle(cx, glob);

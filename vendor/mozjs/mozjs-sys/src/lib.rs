@@ -12,6 +12,21 @@ extern crate encoding_c;
 extern crate encoding_c_mem;
 #[cfg(feature = "intl")]
 extern crate icu_capi;
+// BAO DELTA (SM153): the extracted rust-glue crates exist to supply
+// #[no_mangle] C symbols consumed by libjs_static.a (SM C++ intl glue).
+// rustc prunes upstream rlibs that no Rust code references, which dropped
+// them from the final link (undefined mozilla_*_glue_* / js_normalize /
+// locale_text_direction_of). Explicit extern-crate edges retain them —
+// same mechanism as the encoding_c/icu_capi lines above.
+#[cfg(feature = "intl")]
+extern crate mozjs_unicode_bidi_ffi;
+extern crate mozjs_normalizer_glue;
+#[cfg(feature = "intl")]
+extern crate mozjs_properties_glue;
+#[cfg(feature = "intl")]
+extern crate mozjs_collator_glue;
+#[cfg(feature = "intl")]
+extern crate mozjs_locale_glue;
 #[cfg(feature = "libz-rs")]
 extern crate libz_rs_sys;
 #[cfg(feature = "libz-sys")]
@@ -69,3 +84,5 @@ mod oom_hook {
         set_alloc_error_hook(hook);
     }
 }
+
+// force-rebuild probe
