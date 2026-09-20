@@ -12,4 +12,4 @@ cc = "1"
 
 [dependencies]
 # lsquic depends on BoringSSL for TLS. lshpack is now compiled inline.
-bun_boringssl_sys = { path = "../boringssl_sys", version = "0.1.0" }
+bun_boringssl_sys = { path = "../boringssl_sys", version = "^0.2.0" }

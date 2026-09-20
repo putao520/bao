@@ -11,6 +11,6 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
-bun_boringssl_sys = { path = "../boringssl_sys", version = "0.1.0" }
+bun_boringssl_sys = { path = "../boringssl_sys", version = "^0.2.0" }
 hex = "0.4"
 thiserror.workspace = true

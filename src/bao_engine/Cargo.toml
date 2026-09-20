@@ -1,6 +1,6 @@
 [package]
 name = "bao_engine"
-version = "0.1.20"
+version = "0.2.0"
 description = "SpiderMonkey engine wrapper for Bao runtime"
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository = "https://github.com/putao520/bao"
 
 [dependencies]
 # sibling 精确下限(用户裁决 2026-09-02):#27/#28 裁决面消费 bun_sm 0.1.16
-bun_sm = { path = "../bun_sm", version = "0.1.16" }
+bun_sm = { path = "../bun_sm", version = "^0.2.0" }
 bao_engine_macros = { path = "../bao_engine_macros", version = "0.1.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
@@ -17,15 +17,15 @@ log = "0.4"
 
 # Wave 73: SpiderMonkey Jsc arm dispatch adapters
 # Low-tier crates whose `link_interface!` Jsc/Js variant bao_engine implements.
-bun_event_loop = { path = "../event_loop", version = "0.1.0" }
-bun_io = { path = "../io", version = "0.1.0" }
-bun_spawn = { path = "../spawn", version = "0.1.0" }
-bun_crash_handler = { path = "../crash_handler", version = "0.2.0" }
+bun_event_loop = { path = "../event_loop", version = "^0.2.0" }
+bun_io = { path = "../io", version = "^0.2.0" }
+bun_spawn = { path = "../spawn", version = "^0.2.0" }
+bun_crash_handler = { path = "../crash_handler", version = "^0.2.0" }
 bun_core = { path = "../bun_core", version = "0.2.0" }
 # SM-EVOLUTION #26: fast cache-key hash for the per-JSContext stencil cache
 # (28 KB stealth blob must hash in ~µs, not the ~15 µs DefaultHasher pays).
 bun_wyhash = { path = "../wyhash", version = "0.1.0" }
-bun_uws = { path = "../uws", version = "0.1.0" }
+bun_uws = { path = "../uws", version = "^0.2.0" }
 bun_collections = { path = "../collections", version = "0.2.0" }
 # bun_ast / bun_bundler deferred to Wave 73-F (bun_bundler has unresolved lolhtml_sys)
 

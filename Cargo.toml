@@ -106,9 +106,9 @@ rust-version = "1.89"
 # as bao-mozjs / bao-mozjs-sys with lib names mozjs / mozjs_sys unchanged.
 mozjs = { path = "vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.22" }
 mozjs_sys = { path = "vendor/mozjs/mozjs-sys", package = "bao-mozjs-sys", version = "^140.14.0-0" }
-bao-core = { path = "src/bao", version = "0.0.1" }
+bao-core = { path = "src/bao", version = "0.2.0" }
 bao_crypto = { path = "src/bao_crypto", version = "0.1.0" }
-bao_boringssl_bridge = { path = "src/bao_boringssl_bridge", version = "0.1.0" }
+bao_boringssl_bridge = { path = "src/bao_boringssl_bridge", version = "0.2.0" }
 bao_native_stubs = { path = "src/bao_native_stubs", version = "0.1.0" }
 bao_uloop = { path = "src/bao_uloop", version = "0.1.0" }
 
@@ -152,88 +152,88 @@ lol_html = "3.0"
 
 # ─── Internal path deps ─────────────────────────────────────────────────────
 bun_opaque = { path = "src/opaque", version = "0.1.0" }
-bun_analytics = { path = "src/analytics", version = "0.1.0" }
-bun_api = { path = "src/api", version = "0.1.0" }
+bun_analytics = { path = "src/analytics", version = "0.2.0" }
+bun_api = { path = "src/api", version = "0.2.0" }
 bun_base64 = { path = "src/base64", version = "0.2.0" }
 bun_bundler = { path = "src/bundler", version = "0.2.0" }
 bun_collections = { path = "src/collections", version = "0.2.0" }
 bun_collections_macros = { path = "src/collections_macros", version = "0.1.0" }
 bun_css = { path = "src/css", version = "0.2.0" }
-bun_errno = { path = "src/errno", version = "0.1.0" }
-bun_glob = { path = "src/glob", version = "0.1.0" }
+bun_errno = { path = "src/errno", version = "0.2.0" }
+bun_glob = { path = "src/glob", version = "0.2.0" }
 bun_http = { path = "src/http", version = "0.2.0" }
-bun_install = { path = "src/install", version = "0.1.0" }
+bun_install = { path = "src/install", version = "0.2.0" }
 bun_parsers = { path = "src/parsers", version = "0.2.0" }
-bun_io = { path = "src/io", version = "0.1.0" }
-bun_libarchive = { path = "src/libarchive", version = "0.1.0" }
-bun_md = { path = "src/md", version = "0.1.0" }
-bun_paths = { path = "src/paths", version = "0.1.0" }
-bun_resolver = { path = "src/resolver", version = "0.1.0" }
+bun_io = { path = "src/io", version = "0.2.0" }
+bun_libarchive = { path = "src/libarchive", version = "0.2.0" }
+bun_md = { path = "src/md", version = "0.2.0" }
+bun_paths = { path = "src/paths", version = "0.2.0" }
+bun_resolver = { path = "src/resolver", version = "0.2.0" }
 bun_safety = { path = "src/safety", version = "0.2.0" }
-bun_semver = { path = "src/semver", version = "0.1.0" }
-bun_sourcemap = { path = "src/sourcemap", version = "0.1.0" }
-bun_sys = { path = "src/sys", version = "0.1.0" }
+bun_semver = { path = "src/semver", version = "0.2.0" }
+bun_sourcemap = { path = "src/sourcemap", version = "0.2.0" }
+bun_sys = { path = "src/sys", version = "0.2.0" }
 bun_threading = { path = "src/threading", version = "0.2.0" }
-bun_watcher = { path = "src/watcher", version = "0.1.0" }
-bun_clap = { path = "src/clap", version = "0.1.0" }
+bun_watcher = { path = "src/watcher", version = "0.2.0" }
+bun_clap = { path = "src/clap", version = "0.2.0" }
 bun_clap_macros = { path = "src/clap_macros", version = "0.1.0" }
 bun_crash_handler = { path = "src/crash_handler", version = "0.2.0" }
-bun_dns = { path = "src/dns", version = "0.1.0" }
-bun_dotenv = { path = "src/dotenv", version = "0.1.0" }
-bun_event_loop = { path = "src/event_loop", version = "0.1.0" }
-bun_exe_format = { path = "src/exe_format", version = "0.1.0" }
+bun_dns = { path = "src/dns", version = "0.2.0" }
+bun_dotenv = { path = "src/dotenv", version = "0.2.0" }
+bun_event_loop = { path = "src/event_loop", version = "0.2.0" }
+bun_exe_format = { path = "src/exe_format", version = "0.2.0" }
 bun_highway = { path = "src/highway", version = "0.1.0" }
-bun_http_types = { path = "src/http_types", version = "0.1.0" }
-bun_install_types = { path = "src/install_types", version = "0.1.0" }
+bun_http_types = { path = "src/http_types", version = "0.2.0" }
+bun_install_types = { path = "src/install_types", version = "0.2.0" }
 bun_js_parser = { path = "src/js_parser", version = "0.2.0" }
 bun_js_printer = { path = "src/js_printer", version = "0.2.0" }
 bun_ast = { path = "src/ast", version = "0.2.0" }
-bun_picohttp = { path = "src/picohttp", version = "0.1.0" }
-bun_s3_signing = { path = "src/s3_signing", version = "0.1.0" }
+bun_picohttp = { path = "src/picohttp", version = "0.2.0" }
+bun_s3_signing = { path = "src/s3_signing", version = "0.2.0" }
 bun_zlib = { path = "src/zlib", version = "0.2.0" }
-bun_platform = { path = "src/platform", version = "0.1.0" }
-bun_sha_hmac = { path = "src/sha_hmac", version = "0.1.0" }
+bun_platform = { path = "src/platform", version = "0.2.0" }
+bun_sha_hmac = { path = "src/sha_hmac", version = "0.2.0" }
 bun_dispatch = { path = "src/dispatch", version = "0.1.0" }
-bun_brotli = { path = "src/brotli", version = "0.1.0" }
-bun_perf = { path = "src/perf", version = "0.1.0" }
-bun_resolve_builtins = { path = "src/resolve_builtins", version = "0.1.0" }
-bun_url = { path = "src/url", version = "0.1.0" }
+bun_brotli = { path = "src/brotli", version = "0.2.0" }
+bun_perf = { path = "src/perf", version = "0.2.0" }
+bun_resolve_builtins = { path = "src/resolve_builtins", version = "0.2.0" }
+bun_url = { path = "src/url", version = "0.2.0" }
 bun_windows_sys = { path = "src/windows_sys", version = "0.1.0" }
-bun_ptr = { path = "src/ptr", version = "0.1.0" }
+bun_ptr = { path = "src/ptr", version = "0.2.0" }
 bun_alloc = { path = "src/bun_alloc", version = "0.2.0" }
-bun_standalone_graph = { path = "src/standalone_graph", version = "0.1.0" }
-bun_uws = { path = "src/uws", version = "0.1.0" }
+bun_standalone_graph = { path = "src/standalone_graph", version = "0.2.0" }
+bun_uws = { path = "src/uws", version = "0.2.0" }
 bun_wyhash = { path = "src/wyhash", version = "0.1.0" }
 bun_hash = { path = "src/hash", version = "0.1.0" }
 bun_core = { path = "src/bun_core", version = "0.2.0" }
 bun_core_macros = { path = "src/bun_core_macros", version = "0.1.0" }
 bun_output_tags = { path = "src/bun_output_tags", version = "0.1.0" }
-bun_router = { path = "src/router", version = "0.1.0" }
+bun_router = { path = "src/router", version = "0.2.0" }
 bun_shell_parser = { path = "src/shell_parser", version = "0.2.0" }
-bun_spawn = { path = "src/spawn", version = "0.1.0" }
-bun_zstd = { path = "src/zstd", version = "0.1.0" }
-bun_options_types = { path = "src/options_types", version = "0.1.0" }
-bun_bunfig = { path = "src/bunfig", version = "0.1.0" }
-bun_output = { path = "src/output", version = "0.1.0" }
+bun_spawn = { path = "src/spawn", version = "0.2.0" }
+bun_zstd = { path = "src/zstd", version = "0.2.0" }
+bun_options_types = { path = "src/options_types", version = "0.2.0" }
+bun_bunfig = { path = "src/bunfig", version = "0.2.0" }
+bun_output = { path = "src/output", version = "0.2.0" }
 # 0.3 下限(2026-09-20 #45 alloc 波):bun_runtime 0.3.0(依赖面进 bun_alloc/bun_core 0.2);
 # 5 个 .workspace 消费者(bao_browser/bao_cli/bao_engine/bao_bundler/bao_stealth)req 随此继承。
 # (bao_browser/bao_cli/bao_engine/bao_bundler/bao_stealth)req 随此继承。
 bun_runtime = { path = "src/bao_runtime", version = "0.3" }
-bao_workflow_host = { path = "src/bao_workflow_host", version = "0.1.0" }
-bun_which = { path = "src/which", version = "0.1.0" }
-bun_transpiler = { path = "src/transpiler", version = "0.1.0" }
+bao_workflow_host = { path = "src/bao_workflow_host", version = "0.2.0" }
+bun_which = { path = "src/which", version = "0.2.0" }
+bun_transpiler = { path = "src/transpiler", version = "0.2.0" }
 
 bun_jsc_macros = { path = "src/jsc_macros", version = "0.1.0" }
-bun_lolhtml_sys = { path = "src/lolhtml_sys", version = "0.1.0" }
+bun_lolhtml_sys = { path = "src/lolhtml_sys", version = "0.2.0" }
 bun_boringssl = { path = "src/boringssl", version = "0.2.0" }
-bun_boringssl_sys = { path = "src/boringssl_sys", version = "0.1.0" }
+bun_boringssl_sys = { path = "src/boringssl_sys", version = "0.2.0" }
 bun_lsquic_sys = { path = "src/lsquic_sys", version = "0.1.0" }
 bun_cares_sys = { path = "src/cares_sys", version = "0.2.0" }
-bun_libuv_sys = { path = "src/libuv_sys", version = "0.1.0" }
+bun_libuv_sys = { path = "src/libuv_sys", version = "0.2.0" }
 bun_simdutf_sys = { path = "src/simdutf_sys", version = "0.1.0" }
-bun_spawn_sys = { path = "src/spawn_sys", version = "0.1.0" }
+bun_spawn_sys = { path = "src/spawn_sys", version = "0.2.0" }
 bun_tcc_sys = { path = "src/tcc_sys", version = "0.1.0" }
-bun_uws_sys = { path = "src/uws_sys", version = "0.1.0" }
+bun_uws_sys = { path = "src/uws_sys", version = "0.2.0" }
 
 [profile.release]
 lto = "fat"

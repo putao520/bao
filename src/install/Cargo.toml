@@ -3,7 +3,7 @@ name = "bun_install"
 # 0.1.2 (2026-08-19): stable-channel fixes — WorkspaceMap dual-mode keys,
 # adopt_std_box key write, folder_resolver std-Vec read + adopt; +build.rs
 # channel probe (facade types need the bao_nightly cfg).
-version = "0.1.19"
+version = "0.2.0"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
@@ -48,17 +48,17 @@ bun_event_loop.workspace = true
 bun_glob.workspace = true
 # sibling 精确下限(用户裁决 2026-09-02):0.1.18 消费 bun_http 0.1.16 的
 # proxy_connect_response(09-18 波 B1);workspace 定义共用,故 inline 收紧。
-bun_http = { path = "../http", version = "0.2.0" }
+bun_http = { path = "../http", version = "^0.2.0" }
 # sibling 精确下限(用户裁决 2026-09-02):0.1.19 消费 bun_install_types 0.1.13 的
 # Behavior::is_placed(09-19 波,unplaced tarball 8eaad800c7);workspace 定义共用,故 inline 收紧。
-bun_install_types = { path = "../install_types", version = "0.1.13" }
+bun_install_types = { path = "../install_types", version = "^0.2.0" }
 bun_parsers.workspace = true
 bun_io.workspace = true
 bun_js_parser.workspace = true
 bun_js_printer.workspace = true
 # sibling 精确下限(用户裁决 2026-09-02):0.1.19 消费 bun_libarchive 0.1.12 的
 # directory_mode(09-19 波,tar 目录模式掩码 5c26a6cca5);workspace 定义共用,故 inline 收紧。
-bun_libarchive = { path = "../libarchive", version = "0.1.12" }
+bun_libarchive = { path = "../libarchive", version = "^0.2.0" }
 bun_ast.workspace = true
 bun_options_types.workspace = true
 bun_paths.workspace = true

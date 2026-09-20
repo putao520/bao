@@ -4,7 +4,7 @@ name = "bun_uws"
 # workspace inheritance so this patch release can ship alone. Removes the
 # duplicate BUN__warn__extra_ca_load_failed export (single owner bao_uloop);
 # strict consumer linkers (wild) died on the old duplicate.
-version = "0.1.16"
+version = "0.2.0"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
@@ -26,7 +26,7 @@ bun_boringssl.workspace = true
 bun_boringssl_sys.workspace = true
 bun_core.workspace = true
 # sibling 精确下限(用户裁决 2026-09-02):QueuedInput re-export 消费 bun_uws_sys 0.1.12
-bun_uws_sys = { path = "../uws_sys", version = "0.1.12" }
+bun_uws_sys = { path = "../uws_sys", version = "^0.2.0" }
 bun_ptr.workspace = true
 bun_jsc_macros.workspace = true
 # REQ-CDP-UWS-001: bun_uws now owns the RFC 6455 codec + handshake + masking

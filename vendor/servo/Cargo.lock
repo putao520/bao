@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "bao_boringssl_bridge"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "bao_crypto",
  "bun_boringssl",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3004,7 +3004,7 @@ dependencies = [
 
 [[package]]
 name = "bun_analytics"
-version = "0.1.10"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3074,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl_sys"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bun_core",
  "bun_opaque",
@@ -3084,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "bun_brotli"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "brotli",
  "bun_core",
@@ -3289,7 +3289,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dns"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bun_alloc",
  "bun_cares_sys",
@@ -3304,7 +3304,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dotenv"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_alloc",
@@ -3321,7 +3321,7 @@ dependencies = [
 
 [[package]]
 name = "bun_errno"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bun_core",
  "bun_libuv_sys",
@@ -3334,7 +3334,7 @@ dependencies = [
 
 [[package]]
 name = "bun_event_loop"
-version = "0.1.15"
+version = "0.2.0"
 dependencies = [
  "bun_collections",
  "bun_core",
@@ -3352,7 +3352,7 @@ dependencies = [
 
 [[package]]
 name = "bun_glob"
-version = "0.1.10"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http_types"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_alloc",
@@ -3440,7 +3440,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install_types"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "bun_io"
-version = "0.1.15"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3547,7 +3547,7 @@ dependencies = [
 
 [[package]]
 name = "bun_libuv_sys"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bun_core",
  "bun_windows_sys",
@@ -3559,7 +3559,7 @@ dependencies = [
 
 [[package]]
 name = "bun_lolhtml_sys"
-version = "0.1.10"
+version = "0.2.0"
 dependencies = [
  "bun_core",
  "lol_html",
@@ -3576,7 +3576,7 @@ dependencies = [
 
 [[package]]
 name = "bun_md"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "bun_alloc",
  "bun_collections",
@@ -3594,7 +3594,7 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_options_types"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_ast",
@@ -3617,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "bun_output"
-version = "0.1.10"
+version = "0.2.0"
 dependencies = [
  "bun_core",
 ]
@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "bun_paths"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3666,7 +3666,7 @@ dependencies = [
 
 [[package]]
 name = "bun_perf"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3683,7 +3683,7 @@ dependencies = [
 
 [[package]]
 name = "bun_picohttp"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_core",
@@ -3694,7 +3694,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ptr"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3707,7 +3707,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolve_builtins"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bun_ast",
  "bun_core",
@@ -3717,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3759,7 +3759,7 @@ dependencies = [
 
 [[package]]
 name = "bun_router"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3802,7 +3802,7 @@ dependencies = [
 
 [[package]]
 name = "bun_semver"
-version = "0.1.10"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3821,7 +3821,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sha_hmac"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "bun_boringssl",
  "bun_boringssl_sys",
@@ -3838,7 +3838,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3856,7 +3856,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3882,7 +3882,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn"
-version = "0.1.15"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -3905,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn_sys"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -3920,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sys"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3967,7 +3967,7 @@ dependencies = [
 
 [[package]]
 name = "bun_transpiler"
-version = "0.1.15"
+version = "0.2.0"
 dependencies = [
  "bun_bundler",
  "swc_common",
@@ -3981,7 +3981,7 @@ dependencies = [
 
 [[package]]
 name = "bun_url"
-version = "0.1.12"
+version = "0.2.0"
 dependencies = [
  "bun_alloc",
  "bun_collections",
@@ -3994,7 +3994,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws"
-version = "0.1.16"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_base64",
@@ -4011,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws_sys"
-version = "0.1.15"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4033,7 +4033,7 @@ dependencies = [
 
 [[package]]
 name = "bun_watcher"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4052,7 +4052,7 @@ dependencies = [
 
 [[package]]
 name = "bun_which"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "bstr",
  "bun_core",
@@ -4090,7 +4090,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zstd"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "bun_core",
  "strum 0.26.3",

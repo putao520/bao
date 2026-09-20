@@ -168,19 +168,44 @@ impl<T> SinglyLinkedList<T> {
     }
 
     /// Remove a node from the list. `node` must currently be in this list.
+    ///
+    /// # Panics
+    /// Panics if the list is empty, or if `node` is not in the list. This
+    /// mirrors upstream Zig (pool.zig:75-87): `list.first.?` unwraps null on
+    /// the empty list, and `current_elm.next.?` unwraps null when the walk
+    /// runs off the tail — `.?` panics in Debug *and* ReleaseSafe (Bun's
+    /// release mode), so the asserts here are unconditional, not
+    /// `debug_assert!` (a debug-only check would leave the release build
+    /// dereferencing null past the tail — the unsoundness this fixes).
     pub fn remove(&mut self, node: &Node<T>) {
         let node = std::ptr::from_ref(node).cast_mut();
         if self.first == node {
             self.first = Node::next_of(node);
         } else {
-            // SAFETY: self.first is non-null (else the `==` above would have
-            // matched the null `node`, which callers never pass)
+            // Upstream `list.first.?` (pool.zig:78): empty list ⇒ unwrap-null
+            // panic. The port previously dereferenced the null head unchecked
+            // (issue #46).
             let mut current_elm = self.first;
-            // SAFETY: walk live list nodes; Zig's `.?` would panic on null —
-            // mirror that with an unchecked deref.
+            assert!(
+                !current_elm.is_null(),
+                "SinglyLinkedList::remove: node not in list (list is empty)",
+            );
+            // SAFETY: `current_elm` is non-null (asserted above, then again on
+            // every `next` before it is followed), and every node visited is a
+            // live member of this list.
             unsafe {
-                while (*current_elm).next != node {
-                    current_elm = (*current_elm).next;
+                loop {
+                    let next = (*current_elm).next;
+                    if next == node {
+                        break;
+                    }
+                    // Upstream `current_elm.next.?` (pool.zig:81): the walk ran
+                    // off the tail without finding `node` ⇒ unwrap-null panic.
+                    assert!(
+                        !next.is_null(),
+                        "SinglyLinkedList::remove: node not found in list",
+                    );
+                    current_elm = next;
                 }
                 (*current_elm).next = (*node).next;
             }
