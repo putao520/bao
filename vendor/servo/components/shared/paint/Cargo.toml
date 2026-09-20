@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-paint-api"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "paint_api"
@@ -18,32 +18,32 @@ no-wgl = ["surfman/sm-angle-default"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-bitflags = { workspace = true }
-crossbeam-channel = { workspace = true }
-dpi = { workspace = true }
-embedder_traits = { workspace = true }
-euclid = { workspace = true }
-gleam = { workspace = true }
-glow = { workspace = true }
-image = { workspace = true }
-ipc-channel = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-parking_lot = { workspace = true }
-profile_traits = { workspace = true }
-raw-window-handle = { workspace = true }
-rustc-hash = { workspace = true }
-serde = { workspace = true }
-serde_bytes = { workspace = true }
-servo-base = { workspace = true }
-servo-geometry = { workspace = true }
-servo-tracing = { workspace = true }
-servo-url = { workspace = true }
-smallvec = { workspace = true }
-strum = { workspace = true }
-style = { workspace = true }
-stylo_traits = { workspace = true }
-surfman = { workspace = true, features = ["sm-x11"] }
-tracing = { workspace = true, optional = true }
-webrender_api = { workspace = true }
+bitflags = {version = "2.11"}
+crossbeam-channel = {version = "0.5"}
+dpi = {version = "0.1"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.6"}
+euclid = {version = "0.22"}
+gleam = {version = "0.15"}
+glow = {version = "0.17.0"}
+image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
+ipc-channel = {package = "bao-ipc-channel", path = "../../../../ipc-channel", version = "0.22.0"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+parking_lot = {version = "0.12", features = ["serde"]}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.6"}
+raw-window-handle = {version = "0.6"}
+rustc-hash = {version = "2.1.2"}
+serde = {version = "1.0.228"}
+serde_bytes = {version = "0.11"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-geometry = {package = "bao-servo-geometry", path = "../../geometry", version = "=0.5.5"}
+servo-tracing = {package = "bao-servo-tracing", path = "../../servo_tracing", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.6"}
+smallvec = {version = "1.15", features = ["serde", "union"]}
+strum = {version = "0.28", features = ["derive"]}
+style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.20.2"}
+stylo_traits = {version = "=0.20.0"}
+surfman = {version = "0.13.0", features = ["chains", "sm-x11"]}
+tracing = {version = "0.1.44", optional = true}
+webrender_api = {version = "0.70"}

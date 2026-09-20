@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-webvtt"
 version = "0.5.3"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 
 [lib]
@@ -16,9 +16,9 @@ name = "servo_webvtt"
 test-util = []
 
 [dependencies]
-html5ever = { workspace = true }
-markup5ever = { workspace = true }
-regex = { workspace = true }
+html5ever = {version = "0.39"}
+markup5ever = {version = "0.39"}
+regex = {version = "1.12"}
 
 [dev-dependencies]
 bao-servo-webvtt = { path = ".", version = "=0.5.3", features = ["test-util"] }

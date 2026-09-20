@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-fonts"
 version = "0.5.9"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "fonts"
@@ -24,75 +24,75 @@ bundled_freetype = ["freetype-sys/bundled"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-app_units = { workspace = true }
-atomic_refcell = { workspace = true }
-bitflags = { workspace = true }
-content-security-policy = { workspace = true }
-euclid = { workspace = true }
-font-types = { workspace = true }
-fonts_traits = { workspace = true }
-fontsan = { workspace = true }
+app_units = {version = "0.7"}
+atomic_refcell = {version = "0.1.14"}
+bitflags = {version = "2.11"}
+content-security-policy = {version = "=0.8.1", features = ["serde"]}
+euclid = {version = "0.22"}
+font-types = {version = "0.12"}
+fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = "=0.5.7"}
+fontsan = {version = "0.7", default-features = false, features = ["libz-sys", "wuff"]}
 # FIXME (#34517): macOS only needs this when building servo without `--features media-gstreamer`
-harfbuzz-sys = { workspace = true, default-features = false, features = ["bundled"] }
-icu_locid = { workspace = true }
-icu_properties = { workspace = true, features = ["compiled_data"] }
-itertools = { workspace = true }
-libc = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-memmap2 = { workspace = true }
-net_traits = { workspace = true }
-num-traits = { workspace = true }
-ohos-deviceinfo-sys = { workspace = true }
-paint_api = { workspace = true }
-parking_lot = { workspace = true }
-postcard = { workspace = true }
-profile_traits = { workspace = true }
-read-fonts = { workspace = true }
-rustc-hash = { workspace = true }
-serde = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-servo-tracing = { workspace = true }
-servo-url = { workspace = true }
-servo_arc = { workspace = true }
-skrifa = { workspace = true }
-smallvec = { workspace = true }
-style = { workspace = true }
-stylo_atoms = { workspace = true }
-tracing = { workspace = true, optional = true }
-unicode-properties = { workspace = true }
-unicode-script = { workspace = true }
-url = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
-webrender_api = { workspace = true }
+harfbuzz-sys = {version = "0.8", default-features = false, features = ["bundled"]}
+icu_locid = {version = "1.5.0"}
+icu_properties = {version = "1.5.0", features = ["compiled_data"]}
+itertools = {version = "0.15"}
+libc = {version = "0.2"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+memmap2 = {version = "0.9.10"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.7"}
+num-traits = {version = "0.2"}
+ohos-deviceinfo-sys = {version = "0.1.7"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.6"}
+parking_lot = {version = "0.12", features = ["serde"]}
+postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
+read-fonts = {version = "0.41.0"}
+rustc-hash = {version = "2.1.2"}
+serde = {version = "1.0.228"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.6"}
+servo_arc = {version = "=0.4.3"}
+skrifa = {version = "0.44.0"}
+smallvec = {version = "1.15", features = ["serde", "union"]}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
+stylo_atoms = {version = "=0.20.0"}
+tracing = {version = "0.1.44", optional = true}
+unicode-properties = {version = "0.1.4", features = ["emoji"]}
+unicode-script = {version = "0.5"}
+url = {version = "2.5"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
+webrender_api = {version = "0.70"}
 
 [target.'cfg(target_os = "macos")'.dependencies]
-byteorder = { workspace = true }
-harfbuzz-sys = { workspace = true, features = ["coretext"] }
-objc2 = { workspace = true }
-objc2-core-foundation = { workspace = true }
-objc2-core-graphics = { workspace = true }
-objc2-core-text = { workspace = true }
+byteorder = {version = "1.5"}
+harfbuzz-sys = {version = "0.8", default-features = false, features = ["coretext"]}
+objc2 = {version = "0.6.4"}
+objc2-core-foundation = {version = "0.3.2"}
+objc2-core-graphics = {version = "0.3.2"}
+objc2-core-text = {version = "0.3.2"}
 
 [target.'cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))'.dependencies]
-freetype-sys = { workspace = true }
+freetype-sys = {version = ">=0.20.1, <0.24"}
 # issue #43: 不启用 harfbuzz-sys "freetype" feature——死激活(servo shaper 零 hb_ft_* 消费),
 # 且 harfbuzz-sys 0.8 该 feature 强制 freetype-sys ^0.23,阻断 GPUI 链的 0.20.x 统一
-harfbuzz-sys = { workspace = true }
-servo-allocator = { workspace = true }
+harfbuzz-sys = {version = "0.8", default-features = false}
+servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
 
 [target.'cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))'.dependencies]
-fontconfig_sys = { workspace = true }
+fontconfig_sys = {package = "yeslogic-fontconfig-sys", version = "6"}
 
 [target.'cfg(target_os = "android")'.dependencies]
-xml = { workspace = true }
+xml = {version = "1.1"}
 
 [target.'cfg(target_os = "windows")'.dependencies]
-dwrote = { workspace = true }
-harfbuzz-sys = { workspace = true, features = ["directwrite"] }
-winapi = { workspace = true }
+dwrote = {version = "0.11.5"}
+harfbuzz-sys = {version = "0.8", default-features = false, features = ["directwrite"]}
+winapi = {version = "0.3"}
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ohos_mock)'] }

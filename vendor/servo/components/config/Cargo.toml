@@ -1,22 +1,22 @@
 [package]
 name = "bao-servo-config"
-version.workspace = true
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+version = "0.5.2"
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_config"
 path = "lib.rs"
 
 [dependencies]
-num_enum = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-servo-config-macro = { workspace = true }
-strum = { workspace = true }
-stylo_static_prefs = { workspace = true }
+num_enum = {version = "0.7"}
+serde = {version = "1.0.228", features = ["derive"]}
+serde_json = {version = "1.0"}
+servo-config-macro = {package = "bao-servo-config-macro", path = "macro", version = "=0.5.2"}
+strum = {version = "0.28", features = ["derive"]}
+stylo_static_prefs = {version = "=0.20.0"}

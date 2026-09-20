@@ -1,25 +1,25 @@
 [package]
 name = "bao-servo-webgpu-traits"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "webgpu_traits"
 path = "lib.rs"
 
 [dependencies]
-arrayvec = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-pixels = { workspace = true }
-serde = { workspace = true }
-servo-base = { workspace = true }
-webrender_api = { workspace = true }
-wgpu-core = { workspace = true, features = ["serde", "wgsl"] }
-wgpu-types = { workspace = true }
+arrayvec = {version = "0.7"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+pixels = {package = "bao-servo-pixels", path = "../../pixels", version = "=0.5.6"}
+serde = {version = "1.0.228"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+webrender_api = {version = "0.70"}
+wgpu-core = {version = "30", features = ["serde", "wgsl"]}
+wgpu-types = {version = "30"}

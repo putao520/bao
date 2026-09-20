@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-storage"
 version = "0.5.7"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 autotests = false # Inhibit lookup for tests/*.rs without [[test]] sections
 
 [lib]
@@ -15,29 +15,29 @@ name = "storage"
 path = "lib.rs"
 
 [dependencies]
-libc = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-net_traits = { workspace = true }
-postcard = { workspace = true }
-profile_traits = { workspace = true }
-rusqlite = { workspace = true }
-rustc-hash = { workspace = true }
-sea-query = { workspace = true }
-sea-query-rusqlite = { workspace = true }
-serde = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-servo-url = { workspace = true }
-storage_traits = { workspace = true }
-tempfile = { workspace = true }
-uuid = { workspace = true }
+libc = {version = "0.2"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.7"}
+postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
+rusqlite = {version = "0.38", features = ["bundled"]}
+rustc-hash = {version = "2.1.2"}
+sea-query = {version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"]}
+sea-query-rusqlite = {version = "0.8.0"}
+serde = {version = "1.0.228"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.6"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.6"}
+tempfile = {version = "3"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
 
 [dev-dependencies]
-profile = { workspace = true }
-servo-default-resources = { workspace = true }
-url = { workspace = true }
+profile = {package = "bao-servo-profile", path = "../profile", version = "=0.5.6"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.6"}
+url = {version = "2.5"}
 
 [[test]]
 name = "main"

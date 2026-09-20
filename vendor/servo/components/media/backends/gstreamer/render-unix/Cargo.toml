@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-media-gstreamer-render-unix"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [features]
 gl-egl = ["gstreamer-gl-egl"]
@@ -19,12 +19,12 @@ name = "servo_media_gstreamer_render_unix"
 path = "lib.rs"
 
 [dependencies]
-glib = { workspace = true }
-gstreamer = { workspace = true }
-gstreamer-gl = { workspace = true }
-gstreamer-gl-egl = { workspace = true, optional = true }
-gstreamer-gl-wayland = { workspace = true, optional = true }
-gstreamer-gl-x11 = { workspace = true, optional = true }
-gstreamer-video = { workspace = true }
-servo-media-gstreamer-render = { workspace = true }
-servo-media-player = { workspace = true }
+glib = {version = "0.22"}
+gstreamer = {version = "0.25", features = ["v1_18"]}
+gstreamer-gl = {version = "0.25"}
+gstreamer-gl-egl = {version = "0.25", optional = true}
+gstreamer-gl-wayland = {version = "0.25", optional = true}
+gstreamer-gl-x11 = {version = "0.25", optional = true}
+gstreamer-video = {version = "0.25"}
+servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "../render", version = "=0.5.6"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.6"}

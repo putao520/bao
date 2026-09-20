@@ -1,33 +1,33 @@
 [package]
 name = "bao-servo-profile"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "profile"
 path = "lib.rs"
 
 [dependencies]
-log = { workspace = true }
-profile_traits = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-servo-allocator = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-time = { workspace = true }
+log = {version = "0.4.32"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
+serde = {version = "1.0.228"}
+serde_json = {version = "1.0"}
+servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 
 [target.'cfg(target_os = "macos")'.dependencies]
-mach2 = { workspace = true }
+mach2 = {version = "0.6"}
 
 [target.'cfg(target_os = "linux")'.dependencies]
-regex = { workspace = true }
+regex = {version = "1.12"}
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-libc = { workspace = true }
+libc = {version = "0.2"}

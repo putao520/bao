@@ -1,31 +1,31 @@
 [package]
 name = "bao-servo-bluetooth"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_bluetooth"
 path = "lib.rs"
 
 [dependencies]
-bitflags = { workspace = true }
-blurmock = { workspace = true, optional = true }
-btleplug = { workspace = true, optional = true }
-embedder_traits = { workspace = true }
-futures = { workspace = true, features = ["executor"] }
-log = { workspace = true }
-rand = { workspace = true }
-servo-base = { workspace = true }
-servo-bluetooth-traits = { workspace = true }
-servo-config = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync", "time"], optional = true }
-uuid = { workspace = true }
+bitflags = {version = "2.11"}
+blurmock = {version = "0.1.2", optional = true}
+btleplug = {version = "0.12", optional = true}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.6"}
+futures = {version = "0.3", default-features = false, features = ["executor"]}
+log = {version = "0.4.32"}
+rand = {version = "0.10"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+tokio = {version = "1", features = ["rt", "sync", "time"], optional = true}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
 
 [features]
 default = ["bluetooth-test"]

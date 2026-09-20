@@ -1,43 +1,43 @@
 [package]
 name = "bao-servo-layout-api"
 version = "0.5.10"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "layout_api"
 path = "lib.rs"
 
 [dependencies]
-app_units = { workspace = true }
-atomic_refcell = { workspace = true }
-bitflags = { workspace = true }
-embedder_traits = { workspace = true }
-euclid = { workspace = true }
-fonts = { workspace = true }
-html5ever = { workspace = true }
-libc = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-net_traits = { workspace = true }
-paint_api = { workspace = true }
-parking_lot = { workspace = true }
-pixels = { workspace = true }
-profile_traits = { workspace = true }
-rustc-hash = { workspace = true }
-script_traits = { workspace = true }
-uuid = { workspace = true }
-selectors = { workspace = true }
-serde = { workspace = true }
-background_hang_monitor_api = { workspace = true  }
-servo-base = { workspace = true }
-servo-url = { workspace = true }
-servo_arc = { workspace = true }
-style = { workspace = true }
-stylo_traits = { workspace = true }
-webrender_api = { workspace = true }
+app_units = {version = "0.7"}
+atomic_refcell = {version = "0.1.14"}
+bitflags = {version = "2.11"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.6"}
+euclid = {version = "0.22"}
+fonts = {package = "bao-servo-fonts", path = "../../fonts", version = "=0.5.9"}
+html5ever = {version = "0.39"}
+libc = {version = "0.2"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+net_traits = {package = "bao-servo-net-traits", path = "../net", version = "=0.5.7"}
+paint_api = {package = "bao-servo-paint-api", path = "../paint", version = "=0.5.6"}
+parking_lot = {version = "0.12", features = ["serde"]}
+pixels = {package = "bao-servo-pixels", path = "../../pixels", version = "=0.5.6"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.6"}
+rustc-hash = {version = "2.1.2"}
+script_traits = {package = "bao-servo-script-traits", path = "../script", version = "=0.5.8"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
+selectors = {version = "=0.40.0"}
+serde = {version = "1.0.228"}
+background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../background_hang_monitor", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.6"}
+servo_arc = {version = "=0.4.3"}
+style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.20.2"}
+stylo_traits = {version = "=0.20.0"}
+webrender_api = {version = "0.70"}

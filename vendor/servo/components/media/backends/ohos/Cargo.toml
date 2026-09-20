@@ -1,34 +1,34 @@
 [package]
 name = "bao-servo-media-ohos"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_media_ohos"
 path = "lib.rs"
 
 [dependencies]
-crossbeam-channel = { workspace = true }
-libc = { workspace = true }
-log = { workspace = true }
-mime = { workspace = true }
-ohos-media-sys = { workspace = true, features = ["api-21"] }
-ohos-sys-opaque-types = { workspace = true }
-ohos-window-sys = { workspace = true, features = ["api-13"] }
-servo-base = { workspace = true }
-servo-media = { workspace = true }
-servo-media-audio = { workspace = true }
-servo-media-player = { workspace = true }
-servo-media-streams = { workspace = true }
-servo-media-traits = { workspace = true }
-servo-media-webrtc = { workspace = true }
-yuv = { workspace = true }
+crossbeam-channel = {version = "0.5"}
+libc = {version = "0.2"}
+log = {version = "0.4.32"}
+mime = {version = "0.3.13"}
+ohos-media-sys = {version = "0.1.1", features = ["api-21"]}
+ohos-sys-opaque-types = {version = "0.1.7"}
+ohos-window-sys = {version = "0.1.7", features = ["api-13"]}
+servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.6"}
+servo-media = {package = "bao-servo-media", path = "../../servo-media", version = "=0.5.6"}
+servo-media-audio = {package = "bao-servo-media-audio", path = "../../audio", version = "=0.5.6"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../player", version = "=0.5.6"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../../streams", version = "=0.5.5"}
+servo-media-traits = {package = "bao-servo-media-traits", path = "../../traits", version = "=0.5.5"}
+servo-media-webrtc = {package = "bao-servo-media-webrtc", path = "../../webrtc", version = "=0.5.5"}
+yuv = {version = "0.8.14", features = ["rayon"]}
 
 [build-dependencies]
-serde_json = { workspace = true }
+serde_json = {version = "1.0"}

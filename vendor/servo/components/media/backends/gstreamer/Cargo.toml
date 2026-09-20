@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-media-gstreamer"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_media_gstreamer"
@@ -19,34 +19,32 @@ wayland = ["servo-media-gstreamer-render-unix/gl-wayland"]
 v1_28 = ["gstreamer/v1_28"]
 
 [dependencies]
-byte-slice-cast = { workspace = true }
-glib = { workspace = true }
-glib-sys = { workspace = true }
-gstreamer = { workspace = true }
-gstreamer-app = { workspace = true }
-gstreamer-audio = { workspace = true }
-gstreamer-base = { workspace = true }
-gstreamer-play = { workspace = true }
-gstreamer-sdp = { workspace = true }
-gstreamer-sys = { workspace = true }
-gstreamer-video = { workspace = true }
-gstreamer-webrtc = { workspace = true }
-log = { workspace = true }
-mime = { workspace = true }
-servo-base = { workspace = true }
-servo-media = { workspace = true }
-servo-media-audio = { workspace = true }
-servo-media-gstreamer-render = { workspace = true }
-servo-media-player = { workspace = true }
-servo-media-streams = { workspace = true }
-servo-media-traits = { workspace = true }
-servo-media-webrtc = { workspace = true }
-url = { workspace = true }
+byte-slice-cast = {version = "1.2.3"}
+glib = {version = "0.22"}
+glib-sys = {version = "0.22"}
+gstreamer = {version = "0.25", features = ["v1_18"]}
+gstreamer-app = {version = "0.25"}
+gstreamer-audio = {version = "0.25"}
+gstreamer-base = {version = "0.25"}
+gstreamer-play = {version = "0.25"}
+gstreamer-sdp = {version = "0.25"}
+gstreamer-sys = {version = "0.25"}
+gstreamer-video = {version = "0.25"}
+gstreamer-webrtc = {version = "0.25", features = ["v1_18"]}
+log = {version = "0.4.32"}
+mime = {version = "0.3.13"}
+servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.6"}
+servo-media = {package = "bao-servo-media", path = "../../servo-media", version = "=0.5.6"}
+servo-media-audio = {package = "bao-servo-media-audio", path = "../../audio", version = "=0.5.6"}
+servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "render", version = "=0.5.6"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../player", version = "=0.5.6"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../../streams", version = "=0.5.5"}
+servo-media-traits = {package = "bao-servo-media-traits", path = "../../traits", version = "=0.5.5"}
+servo-media-webrtc = {package = "bao-servo-media-webrtc", path = "../../webrtc", version = "=0.5.5"}
+url = {version = "2.5"}
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
-servo-media-gstreamer-render-unix = { workspace = true, features = [
-    "gl-egl",
-] }
+servo-media-gstreamer-render-unix = {package = "bao-servo-media-gstreamer-render-unix", path = "render-unix", version = "=0.5.6", features = ["gl-egl"]}
 
 [target.'cfg(target_os = "android")'.dependencies]
-servo-media-gstreamer-render-android = { workspace = true }
+servo-media-gstreamer-render-android = {package = "bao-servo-media-gstreamer-render-android", path = "render-android", version = "=0.5.6"}

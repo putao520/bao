@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-background-hang-monitor"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_background_hang_monitor"
@@ -16,24 +16,24 @@ test = false
 doctest = false
 
 [dependencies]
-backtrace = { workspace = true }
-crossbeam-channel = { workspace = true }
-libc = { workspace = true }
-log = { workspace = true }
-rustc-demangle = { workspace = true, optional = true }
-rustc-hash = { workspace = true }
-serde_json = { workspace = true }
-background_hang_monitor_api = { workspace = true  }
-servo-base = { workspace = true }
+backtrace = {version = "0.3"}
+crossbeam-channel = {version = "0.5"}
+libc = {version = "0.2"}
+log = {version = "0.4.32"}
+rustc-demangle = {version = "0.1", optional = true}
+rustc-hash = {version = "2.1.2"}
+serde_json = {version = "1.0"}
+background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
 
 [target.'cfg(target_os = "macos")'.dependencies]
-mach2 = { workspace = true, optional = true }
+mach2 = {version = "0.6", optional = true}
 
 [target.'cfg(all(target_os = "linux", not(any(target_arch = "arm", target_arch = "aarch64", target_env = "ohos", target_env = "musl"))))'.dependencies]
-nix = { workspace = true, features = ["signal"], optional = true }
+nix = {version = "0.30", features = ["signal"], optional = true}
 
 [target.'cfg(target_os = "android")'.dependencies]
-nix = { workspace = true, features = ["signal"], optional = true }
+nix = {version = "0.30", features = ["signal"], optional = true}
 
 [features]
 sampler = ["mach2", "nix", "rustc-demangle"]

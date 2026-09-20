@@ -2,52 +2,52 @@
 name = "bao-servo-malloc-size-of"
 license = "MIT OR Apache-2.0"
 version = "0.5.6"
-authors.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_malloc_size_of"
 path = "lib.rs"
 
 [dependencies]
-app_units = { workspace = true }
-atomic_refcell = { workspace = true }
-content-security-policy = { workspace = true }
-crossbeam-channel = { workspace = true }
-data-url = { workspace = true }
-encoding_rs = { workspace = true }
-euclid = { workspace = true }
-http = { workspace = true }
-icu_locid = { workspace = true }
-indexmap = { workspace = true }
-ipc-channel = { workspace = true }
-keyboard-types = { workspace = true }
-markup5ever = { workspace = true }
-mime = { workspace = true }
-once_cell = { workspace = true }
-parking_lot = { workspace = true }
-resvg = { workspace = true }
-servo-allocator = { workspace = true }
-servo_arc = { workspace = true }
-smallvec = { workspace = true }
-string_cache = { workspace = true }
-style = { workspace = true }
-stylo_dom = { workspace = true }
-stylo_malloc_size_of = { workspace = true }
-taffy = { workspace = true }
-tendril = { workspace = true }
-time = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
-unicode-bidi = { workspace = true }
-unicode-script = { workspace = true }
-url = { workspace = true }
-urlpattern = { workspace = true }
-uuid = { workspace = true }
-vello_cpu = { workspace = true }
-webrender = { workspace = true }
-webrender_api = { workspace = true }
-wr_malloc_size_of = { workspace = true }
+app_units = {version = "0.7"}
+atomic_refcell = {version = "0.1.14"}
+content-security-policy = {version = "=0.8.1", features = ["serde"]}
+crossbeam-channel = {version = "0.5"}
+data-url = {version = "0.3"}
+encoding_rs = {version = "0.8", features = ["serde"]}
+euclid = {version = "0.22"}
+http = {version = "1.4"}
+icu_locid = {version = "1.5.0"}
+indexmap = {version = "2.14.0", features = ["std"]}
+ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
+keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
+markup5ever = {version = "0.39"}
+mime = {version = "0.3.13"}
+once_cell = {version = "1.21.4"}
+parking_lot = {version = "0.12", features = ["serde"]}
+resvg = {version = "0.48.1"}
+servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
+servo_arc = {version = "=0.4.3"}
+smallvec = {version = "1.15", features = ["serde", "union"]}
+string_cache = {version = "0.9"}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
+stylo_dom = {version = "=0.20.0"}
+stylo_malloc_size_of = {version = "=0.20.0"}
+taffy = {version = "0.13.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"]}
+tendril = {version = "0.5", features = ["encoding_rs"]}
+time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
+tokio = {version = "1", features = ["sync"]}
+unicode-bidi = {version = "0.3.18"}
+unicode-script = {version = "0.5"}
+url = {version = "2.5"}
+urlpattern = {version = "0.3"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
+vello_cpu = {version = "0.2.0", features = ["multithreading"]}
+webrender = {version = "0.70", features = ["serde"]}
+webrender_api = {version = "0.70"}
+wr_malloc_size_of = {version = "0.2.2"}

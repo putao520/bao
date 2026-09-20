@@ -1,14 +1,14 @@
 [package]
 name = "servoshell"
 build = "build.rs"
-version.workspace = true
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
-publish.workspace = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+version = "0.5.2"
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
+publish = false
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servoshell"
@@ -29,10 +29,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(llvm_pgo)
 # must unconditionally add these dependencies. See https://github.com/rust-lang/cargo/issues/4932
 [build-dependencies]
 # macOS only
-cc = { workspace = true }
+cc = {version = "1.2"}
 
 [target.'cfg(windows)'.build-dependencies]
-winresource = { workspace = true }
+winresource = {version = "0.1"}
 
 [package.metadata.winresource]
 FileDescription = "ServoShell"
@@ -62,87 +62,79 @@ webgpu = ["servo/webgpu"]
 webxr = ["servo/webxr"]
 
 [dependencies]
-accesskit = { workspace = true }
-bpaf = { workspace = true, features = ["derive"] }
-cfg-if = { workspace = true }
-crossbeam-channel = { workspace = true }
-dpi = { workspace = true }
-euclid = { workspace = true }
-hitrace = { workspace = true, optional = true }
-image = { workspace = true }
-keyboard-types = { workspace = true }
-libc = { workspace = true }
-log = { workspace = true }
-mime_guess = { workspace = true }
-raw-window-handle = { workspace = true }
+accesskit = {version = "0.24.0", features = ["serde"]}
+bpaf = {version = "0.9.26", features = ["derive"]}
+cfg-if = {version = "1.0.4"}
+crossbeam-channel = {version = "0.5"}
+dpi = {version = "0.1"}
+euclid = {version = "0.22"}
+hitrace = {version = "0.2.0", features = ["api-19", "tracing-rs"], optional = true}
+image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
+keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
+libc = {version = "0.2"}
+log = {version = "0.4.32"}
+mime_guess = {version = "2.0.5"}
+raw-window-handle = {version = "0.6"}
 bun_boringssl = { path = "../../../../src/boringssl" }
-servo = { workspace = true, features = ["background_hang_monitor", "bluetooth", "testbinding"], default-features = false }
-tokio = { workspace = true }
-tracing = { workspace = true, optional = true }
-tracing-perfetto = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true, features = ["env-filter"] }
-url = { workspace = true }
-webdriver_server = { workspace = true }
+servo = {package = "bao-servo", path = "../../components/servo", version = "=0.5.15", default-features = false, features = ["background_hang_monitor", "bluetooth", "testbinding"]}
+tokio = {version = "1"}
+tracing = {version = "0.1.44", optional = true}
+tracing-perfetto = {version = "0.1.5", optional = true}
+tracing-subscriber = {version = "0.3.23", features = ["env-filter"], optional = true}
+url = {version = "2.5"}
+webdriver_server = {package = "bao-servo-webdriver-server", path = "../../components/webdriver_server", version = "=0.5.5"}
 
 [target.'cfg(target_os = "android")'.dependencies]
-android_logger = { workspace = true }
-jni = { workspace = true }
+android_logger = {version = "0.15"}
+jni = {version = "0.22"}
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-backtrace = { workspace = true }
+backtrace = {version = "0.3"}
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-env_filter = { workspace = true }
-euclid = { workspace = true }
-hilog = { workspace = true }
+env_filter = {version = "0.1.4"}
+euclid = {version = "0.22"}
+hilog = {version = "0.2.2"}
 # force inprocess until we add multi-process support for ohos
-ipc-channel = { workspace = true, features = ["force-inprocess"] }
-napi-derive-ohos = { workspace = true }
-napi-ohos = { workspace = true }
-ohos-abilitykit-sys = { workspace = true, features = ["api-14"] }
-ohos-deviceinfo = { workspace = true }
-ohos-ime = { workspace = true }
-ohos-ime-sys = { workspace = true }
-ohos-vsync = { workspace = true }
-ohos-window-manager-sys = { workspace = true, features = ["api-14"] }
-xcomponent-sys = { workspace = true, features = ["api-14", "keyboard-types"] }
+ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0", features = ["force-inprocess"]}
+napi-derive-ohos = {version = "1.2.0"}
+napi-ohos = {version = "1.2.0"}
+ohos-abilitykit-sys = {version = "0.1.6", features = ["api-14"]}
+ohos-deviceinfo = {version = "0.1.0"}
+ohos-ime = {version = "0.4.2"}
+ohos-ime-sys = {version = "0.2.4"}
+ohos-vsync = {version = "0.1.3"}
+ohos-window-manager-sys = {version = "0.1", features = ["api-14"]}
+xcomponent-sys = {version = "0.3.6", features = ["api-14", "keyboard-types"]}
 
 [target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
-nix = { workspace = true, features = ["fs"] }
-serde_json = { workspace = true }
-servo-base = { workspace = true }
-surfman = { workspace = true, features = ["sm-angle-default"] }
+nix = {version = "0.30", features = ["fs"]}
+serde_json = {version = "1.0"}
+servo-base = {package = "bao-servo-base", path = "../../components/shared/base", version = "=0.5.6"}
+surfman = {version = "0.13.0", features = ["chains", "sm-angle-default"]}
 
 [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
-dirs = { workspace = true }
-egui = { workspace = true }
-egui-file-dialog = { workspace = true }
-egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"] }
-egui_glow = { workspace = true, features = ["winit"] }
-gilrs = { workspace = true }
-glow = { workspace = true }
-headers = { workspace = true }
-serde_json = { workspace = true }
+dirs = {version = "6.0"}
+egui = {version = "0.34.3"}
+egui-file-dialog = {version = "0.13.0"}
+egui-winit = {version = "0.34.3", default-features = false, features = ["accesskit", "clipboard", "wayland"]}
+egui_glow = {version = "0.34.3", features = ["winit"]}
+gilrs = {version = "0.11.1"}
+glow = {version = "0.17.0"}
+headers = {version = "0.4"}
+serde_json = {version = "1.0"}
 # For optional feature servo-allocator/use-system-allocator and servo-allocator/allocation-tracking
-servo-allocator = { workspace = true }
-surfman = { workspace = true, features = ["sm-raw-window-handle-06", "sm-x11"] }
-winit = { workspace = true }
+servo-allocator = {package = "bao-servo-allocator", path = "../../components/allocator", version = "=0.5.2"}
+surfman = {version = "0.13.0", features = ["chains", "sm-raw-window-handle-06", "sm-x11"]}
+winit = {version = "0.30.13"}
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
-signal-hook-registry = { workspace = true }
+signal-hook-registry = {version = "1.4.8"}
 
 [target.'cfg(target_os = "windows")'.dependencies]
-servo = { workspace = true, features = ["no-wgl"] }
-windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_Console"] }
+servo = {package = "bao-servo", path = "../../components/servo", version = "=0.5.15", default-features = false, features = ["no-wgl"]}
+windows-sys = {version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_System_Console"]}
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { workspace = true, features = [
-    "std",
-    "NSColorSpace",
-    "NSResponder",
-    "NSView",
-    "NSWindow",
-] }
-objc2-foundation = { workspace = true, features = [
-    "std",
-] }
+objc2-app-kit = {version = "0.3.2", default-features = false, features = ["std", "NSColorSpace", "NSResponder", "NSView", "NSWindow"]}
+objc2-foundation = {version = "0.3.1", default-features = false, features = ["std"]}

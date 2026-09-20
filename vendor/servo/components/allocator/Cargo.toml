@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-allocator"
-version.workspace = true
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+version = "0.5.2"
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_allocator"
@@ -25,17 +25,17 @@ allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
 use-jemalloc = ["dep:tikv-jemalloc-sys", "dep:tikv-jemallocator"]
 
 [dependencies]
-backtrace = { workspace = true, optional = true }
-log = { workspace = true, optional = true }
-rustc-hash = { workspace = true, optional = true }
+backtrace = {version = "0.3", optional = true}
+log = {version = "0.4.32", optional = true}
+rustc-hash = {version = "2.1.2", optional = true}
 
 [target.'cfg(not(any(windows, target_env = "ohos")))'.dependencies]
-libc = { workspace = true }
-tikv-jemalloc-sys = { workspace = true, optional = true, features = ["stats"] }
-tikv-jemallocator = { workspace = true, optional = true }
+libc = {version = "0.2"}
+tikv-jemalloc-sys = {version = "0.6.1", features = ["stats"], optional = true}
+tikv-jemallocator = {version = "0.6.1", optional = true}
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
+windows-sys = {version = "0.61", features = ["Win32_System_Memory"]}
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-libc = { workspace = true }
+libc = {version = "0.2"}

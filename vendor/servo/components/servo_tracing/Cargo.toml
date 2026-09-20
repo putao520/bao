@@ -1,18 +1,18 @@
 [package]
 name = "bao-servo-tracing"
-edition.workspace = true
-version.workspace = true
-authors.workspace = true
-license.workspace = true
+edition = "2024"
+version = "0.5.2"
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [dependencies]
-proc-macro2 = { workspace = true }
-quote = { workspace = true }
-syn = { workspace = true, features = ["full"] }
+proc-macro2 = {version = "1"}
+quote = {version = "1"}
+syn = {version = "2", default-features = false, features = ["clone-impls", "derive", "parsing", "printing", "proc-macro", "full"]}
 
 [lib]
 name = "servo_tracing"
@@ -21,4 +21,4 @@ proc-macro = true
 doctest = false
 
 [dev-dependencies]
-prettyplease = { workspace = true }
+prettyplease = {version = "0.2.32"}

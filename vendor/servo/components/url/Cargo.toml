@@ -6,13 +6,13 @@
 # override publish).
 name = "bao-servo-url"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_url"
@@ -21,10 +21,10 @@ test = false
 doctest = false
 
 [dependencies]
-encoding_rs = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-servo_arc = { workspace = true }
-url = { workspace = true, features = ["serde"] }
-uuid = { workspace = true, features = ["serde"] }
+encoding_rs = {version = "0.8", features = ["serde"]}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+serde = {version = "1.0.228", features = ["derive"]}
+servo_arc = {version = "=0.4.3"}
+url = {version = "2.5", features = ["serde"]}
+uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}

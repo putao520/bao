@@ -1,24 +1,24 @@
 [package]
 name = "bao-servo-metrics"
 version = "0.5.8"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "metrics"
 path = "lib.rs"
 
 [dependencies]
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-paint_api = { workspace = true }
-profile_traits = { workspace = true }
-script_traits = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-servo-url = { workspace = true }
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.6"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.6"}

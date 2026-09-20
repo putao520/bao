@@ -1,41 +1,41 @@
 [package]
 name = "bao-servo-webdriver-server"
 version = "0.5.5"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "webdriver_server"
 path = "lib.rs"
 
 [dependencies]
-base64 = { workspace = true }
-bytes = { workspace = true }
-cookie = { workspace = true }
-crossbeam-channel = { workspace = true }
-embedder_traits = { workspace = true }
-euclid = { workspace = true }
-http = { workspace = true }
-http02 = { workspace = true }
-image = { workspace = true }
-keyboard-types = { workspace = true }
-log = { workspace = true }
-rustc-hash = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-servo-geometry = { workspace = true }
-servo-url = { workspace = true }
-stylo_traits = { workspace = true }
-time = { workspace = true }
-tokio = { workspace = true }
-url = { workspace = true }
-uuid = { workspace = true }
-warp = { workspace = true, features = ["server"] }
-webdriver = { workspace = true }
+base64 = {version = "0.23.0"}
+bytes = {version = "1.0"}
+cookie = {package = "cookie", version = "0.18"}
+crossbeam-channel = {version = "0.5"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.6"}
+euclid = {version = "0.22"}
+http = {version = "1.4"}
+http02 = {package = "http", version = "0.2"}
+image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
+keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
+log = {version = "0.4.32"}
+rustc-hash = {version = "2.1.2"}
+serde = {version = "1.0.228"}
+serde_json = {version = "1.0"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.5"}
+servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.6"}
+stylo_traits = {version = "=0.20.0"}
+time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
+tokio = {version = "1"}
+url = {version = "2.5"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
+warp = {version = "0.4.2", features = ["server"]}
+webdriver = {version = "0.53.0", default-features = false}

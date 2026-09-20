@@ -1,23 +1,23 @@
 [package]
 name = "bao-servo-storage-traits"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "storage_traits"
 path = "lib.rs"
 
 [dependencies]
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-profile_traits = { workspace = true }
-serde = { workspace = true }
-servo-base = { workspace = true }
-servo-url = { workspace = true }
-uuid = { workspace = true, features = ["serde"] }
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.6"}
+serde = {version = "1.0.228"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.6"}
+uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}

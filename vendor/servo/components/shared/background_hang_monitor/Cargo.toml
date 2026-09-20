@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-background-hang-monitor-api"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "background_hang_monitor_api"
@@ -16,5 +16,5 @@ test = false
 doctest = false
 
 [dependencies]
-serde = { workspace = true }
-servo-base = { workspace = true }
+serde = {version = "1.0.228"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}

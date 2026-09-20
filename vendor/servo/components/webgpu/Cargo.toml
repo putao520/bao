@@ -1,38 +1,38 @@
 [package]
 name = "bao-servo-webgpu"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "webgpu"
 path = "lib.rs"
 
 [dependencies]
-arrayvec = { workspace = true, features = ["serde"] }
-euclid = { workspace = true }
-log = { workspace = true }
-paint_api = { workspace = true }
-pixels = { workspace = true }
-rustc-hash = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-webgpu_traits = { workspace = true }
-webrender_api = { workspace = true }
-wgpu-core = { workspace = true, features = ["serde", "wgsl"] }
-wgpu-types = { workspace = true }
+arrayvec = {version = "0.7", features = ["serde"]}
+euclid = {version = "0.22"}
+log = {version = "0.4.32"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.6"}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.6"}
+rustc-hash = {version = "2.1.2"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.6"}
+webrender_api = {version = "0.70"}
+wgpu-core = {version = "30", features = ["serde", "wgsl"]}
+wgpu-types = {version = "30"}
 
 # We want the wgpu-core Metal backend on macOS and iOS.
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
-wgpu-core = { workspace = true, features = ["metal"] }
+wgpu-core = {version = "30", features = ["metal"]}
 
 [target.'cfg(any(windows, all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies]
-wgpu-core = { workspace = true, features = ["gles", "vulkan"] }
+wgpu-core = {version = "30", features = ["gles", "vulkan"]}
 
 [target.'cfg(windows)'.dependencies]
-wgpu-core = { workspace = true, features = ["dx12", "vulkan"] }
+wgpu-core = {version = "30", features = ["dx12", "vulkan"]}

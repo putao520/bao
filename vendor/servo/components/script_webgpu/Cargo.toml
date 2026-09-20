@@ -2,13 +2,13 @@
 name = "bao-servo-script-webgpu"
 build = "build.rs"
 version = "0.5.11"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "script_webgpu"
@@ -18,18 +18,18 @@ path = "lib.rs"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
 
 [dependencies]
-servo-constellation-traits = { workspace = true, features = ["webgpu"] }
-deny_public_fields = { workspace = true }
-dom_struct = { workspace = true }
-indexmap = { workspace = true }
-js = { workspace = true }
-jstraceable_derive = { workspace = true }
-log = { workspace = true }
-script_bindings = { workspace = true, features = ["webgpu"] }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-num-traits = { workspace = true }
-servo-base = { workspace = true }
-webgpu_traits = { workspace = true }
-wgpu-core = { workspace = true }
-wgpu-types = { workspace = true }
+servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.8", features = ["webgpu"]}
+deny_public_fields = {package = "bao-servo-deny-public-fields", path = "../deny_public_fields", version = "=0.5.2"}
+dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version = "=0.5.2"}
+indexmap = {version = "2.14.0", features = ["std"]}
+js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.22", default-features = false, features = ["intl", "libz-sys"]}
+jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = "=0.5.2"}
+log = {version = "0.4.32"}
+script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.11", features = ["webgpu"]}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+num-traits = {version = "0.2"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.6"}
+wgpu-core = {version = "30"}
+wgpu-types = {version = "30"}

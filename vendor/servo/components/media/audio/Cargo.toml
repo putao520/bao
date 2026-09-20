@@ -1,33 +1,33 @@
 [package]
 name = "bao-servo-media-audio"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_media_audio"
 path = "lib.rs"
 
 [dependencies]
-byte-slice-cast = { workspace = true }
-euclid = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-num-complex = { workspace = true }
-num-traits = { workspace = true }
-petgraph = { workspace = true, features = ["stable_graph"] }
-rustc-hash = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-servo-base = { workspace = true }
-servo-media-derive = { workspace = true }
-servo-media-player = { workspace = true }
-servo-media-streams = { workspace = true }
-servo-media-traits = { workspace = true }
-smallvec = { workspace = true }
-speexdsp-resampler = { workspace = true }
+byte-slice-cast = {version = "1.2.3"}
+euclid = {version = "0.22"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+num-complex = {version = "0.4.6"}
+num-traits = {version = "0.2"}
+petgraph = {version = "0.8.3", features = ["stable_graph"]}
+rustc-hash = {version = "2.1.2"}
+serde = {version = "1.0.228", features = ["derive"]}
+servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.6"}
+servo-media-derive = {package = "bao-servo-media-derive", path = "../servo-media-derive", version = "=0.5.2"}
+servo-media-player = {package = "bao-servo-media-player", path = "../player", version = "=0.5.6"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.5"}
+servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = "=0.5.5"}
+smallvec = {version = "1.15", features = ["serde", "union"]}
+speexdsp-resampler = {version = "0.1.0"}

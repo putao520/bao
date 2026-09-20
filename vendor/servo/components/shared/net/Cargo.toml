@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-net-traits"
 version = "0.5.7"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "net_traits"
@@ -24,41 +24,41 @@ test-util = []
 # don't cover (E0004), and this crate re-exports `csp::Destination` as public
 # API (request.rs) — a drifting resolution extends the break to every
 # downstream match over that re-export.
-content-security-policy = { workspace = true }
-cookie = { workspace = true }
-crossbeam-channel = { workspace = true }
-data-url = { workspace = true }
-embedder_traits = { workspace = true }
-headers = { workspace = true }
-http = { workspace = true }
-hyper-util = { workspace = true }
-hyper_serde = { workspace = true }
-ipc-channel = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-mime = { workspace = true }
-num-traits = { workspace = true }
-paint_api = { workspace = true }
-parking_lot = { workspace = true }
-percent-encoding = { workspace = true }
-pixels = { workspace = true }
-profile_traits = { workspace = true }
-rand = { workspace = true }
-resvg = { workspace = true }
-rustc-hash = { workspace = true }
-rustls-pki-types = { workspace = true }
-serde = { workspace = true }
-serde_bytes = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-servo-url = { workspace = true }
-servo_arc = { workspace = true }
-sys-locale = { workspace = true }
-tokio = { workspace = true }
-url = { workspace = true }
-uuid = { workspace = true }
-webrender_api = { workspace = true }
+content-security-policy = {version = "=0.8.1", features = ["serde"]}
+cookie = {package = "cookie", version = "0.18"}
+crossbeam-channel = {version = "0.5"}
+data-url = {version = "0.3"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.6"}
+headers = {version = "0.4"}
+http = {version = "1.4"}
+hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "http2", "tokio"]}
+hyper_serde = {package = "bao-servo-hyper-serde", path = "../../hyper_serde", version = "=0.5.2"}
+ipc-channel = {package = "bao-ipc-channel", path = "../../../../ipc-channel", version = "0.22.0"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+mime = {version = "0.3.13"}
+num-traits = {version = "0.2"}
+paint_api = {package = "bao-servo-paint-api", path = "../paint", version = "=0.5.6"}
+parking_lot = {version = "0.12", features = ["serde"]}
+percent-encoding = {version = "2.3"}
+pixels = {package = "bao-servo-pixels", path = "../../pixels", version = "=0.5.6"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.6"}
+rand = {version = "0.10"}
+resvg = {version = "0.48.1"}
+rustc-hash = {version = "2.1.2"}
+rustls-pki-types = {version = "1.14"}
+serde = {version = "1.0.228"}
+serde_bytes = {version = "0.11"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.6"}
+servo_arc = {version = "=0.4.3"}
+sys-locale = {version = "0.3"}
+tokio = {version = "1"}
+url = {version = "2.5"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
+webrender_api = {version = "0.70"}
 
 [dev-dependencies]
-servo-default-resources = { workspace = true }
+servo-default-resources = {package = "bao-servo-default-resources", path = "../../default-resources", version = "=0.5.6"}

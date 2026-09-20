@@ -1,22 +1,22 @@
 [package]
 name = "bao-servo-media-player"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_media_player"
 path = "lib.rs"
 
 [dependencies]
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-servo-base = { workspace = true }
-servo-media-streams = { workspace = true }
-servo-media-traits = { workspace = true }
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+serde = {version = "1.0.228", features = ["derive"]}
+servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.6"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.5"}
+servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = "=0.5.5"}

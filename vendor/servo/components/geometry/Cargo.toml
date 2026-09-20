@@ -1,22 +1,22 @@
 [package]
 name = "bao-servo-geometry"
 version = "0.5.5"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_geometry"
 path = "lib.rs"
 
 [dependencies]
-app_units = { workspace = true }
-euclid = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-webrender = { workspace = true }
-webrender_api = { workspace = true }
+app_units = {version = "0.7"}
+euclid = {version = "0.22"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+webrender = {version = "0.70", features = ["serde"]}
+webrender_api = {version = "0.70"}

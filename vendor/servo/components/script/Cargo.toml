@@ -2,13 +2,13 @@
 name = "bao-servo-script"
 build = "build.rs"
 version = "0.5.16"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "script"
@@ -42,148 +42,148 @@ webxr = ["gamepad", "webxr-api", "script_bindings/webxr"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
 
 [dependencies]
-aes = { workspace = true }
-aes-gcm = { workspace = true }
-aes-kw = { workspace = true }
-app_units = { workspace = true }
-argon2 = { workspace = true }
-arrayvec = { workspace = true }
-atomic_refcell = { workspace = true }
-aws-lc-rs = { workspace = true }
-backtrace = { workspace = true }
-base64 = { workspace = true }
-base64ct = { workspace = true }
-bitflags = { workspace = true }
-brotli = { workspace = true, optional = true }
-buf-read-ext = { workspace = true }
-cbc = { workspace = true }
-chacha20poly1305 = { workspace = true }
-chardetng = { workspace = true }
-chrono = { workspace = true }
-content-security-policy = { workspace = true }
-cookie = { workspace = true }
-crossbeam-channel = { workspace = true }
-crypto-bigint = { workspace = true }
-cshake = { workspace = true }
-cssparser = { workspace = true }
-ctr = { workspace = true }
-ctutils = { workspace = true }
-data-url = { workspace = true }
-deny_public_fields = { workspace = true }
-devtools_traits = { workspace = true }
-dom_struct = { workspace = true }
-ecdsa = { workspace = true }
-ed25519-dalek = { workspace = true }
-ed448-goldilocks = { workspace = true }
-elliptic-curve = { workspace = true }
-embedder_traits = { workspace = true }
-encoding_rs = { workspace = true }
-euclid = { workspace = true }
-flate2 = { workspace = true }
-fonts = { workspace = true }
-fonts_traits = { workspace = true }
-glow = { workspace = true }
-headers = { workspace = true }
-hkdf = { workspace = true }
-html5ever = { workspace = true }
-http = { workspace = true }
-httparse = { workspace = true }
-hyper_serde = { workspace = true }
-icu_locid = { workspace = true }
-indexmap = { workspace = true }
-ipc-channel = { workspace = true }
-itertools = { workspace = true }
-js = { workspace = true }
-jstraceable_derive = { workspace = true }
-k12 = { workspace = true }
-keyboard-types = { workspace = true }
-keccak = { workspace = true }
-layout_api = { workspace = true }
-libc = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-markup5ever = { workspace = true }
-media = { workspace = true }
-metrics = { workspace = true }
-mime = { workspace = true }
-mime_guess = { workspace = true }
-ml-dsa = { workspace = true }
-ml-kem = { workspace = true }
-net_traits = { workspace = true }
-nom-rfc8288 = { workspace = true }
-num-traits = { workspace = true }
-num_cpus = { workspace = true }
-ocb3 = { workspace = true }
-p256 = { workspace = true }
-p384 = { workspace = true }
-p521 = { workspace = true }
-paint_api = { workspace = true }
-parking_lot = { workspace = true }
-percent-encoding = { workspace = true }
-phf = { workspace = true }
-pixels = { workspace = true }
-pkcs8 = { workspace = true }
-postcard = { workspace = true }
-profile_traits = { workspace = true }
-rand = { workspace = true }
-regex = { workspace = true }
-resvg = { workspace = true }
-rsa = { workspace = true }
-rustc-hash = { workspace = true }
-script_bindings = { workspace = true }
-script_webgpu = { workspace = true, optional = true }
-script_traits = { workspace = true }
-selectors = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["preserve_order"] }
-background_hang_monitor_api = { workspace = true  }
-servo-base = { workspace = true }
-servo-bluetooth-traits = { workspace = true, optional = true }
-servo-canvas-traits = { workspace = true }
-servo-config = { workspace = true }
-servo-constellation-traits = { workspace = true }
-servo-geometry = { workspace = true }
-servo-media = { workspace = true }
-servo-tracing = { workspace = true }
-servo-url = { workspace = true }
-servo-webvtt = { workspace = true }
-servo_arc = { workspace = true }
-sha1 = { workspace = true }
-sha2 = { workspace = true }
-sha3 = { workspace = true }
-smallvec = { workspace = true }
-sponge-cursor = { workspace = true }
-storage_traits = { workspace = true }
-strum = { workspace = true }
-style = { workspace = true }
-stylo_atoms = { workspace = true }
-stylo_dom = { workspace = true }
-stylo_malloc_size_of = { workspace = true }
-stylo_traits = { workspace = true }
-swapper = { workspace = true }
-tempfile = { workspace = true }
-tendril = { workspace = true }
-time = { workspace = true }
-timers = { workspace = true }
-tracing = { workspace = true, optional = true }
-unicode-bidi = { workspace = true }
-unicode-script = { workspace = true }
-url = { workspace = true }
-urlpattern = { workspace = true }
-uuid = { workspace = true, features = ["serde"] }
-web_atoms = { workspace = true }
-webdriver = { workspace = true }
-webgpu_traits = { workspace = true, optional = true }
-webrender_api = { workspace = true }
-webxr-api = { workspace = true, optional = true }
-wgpu-core = { workspace = true, optional = true }
-wgpu-types = { workspace = true, optional = true }
-x25519-dalek = { workspace = true }
-x448 = { workspace = true }
-xml5ever = { workspace = true }
-xpath = { workspace = true }
-zeroize = { workspace = true, features = ["zeroize_derive"] }
+aes = {version = "0.9", features = ["zeroize"]}
+aes-gcm = {version = "0.11", features = ["hazmat", "zeroize"]}
+aes-kw = {version = "0.3", features = ["zeroize"]}
+app_units = {version = "0.7"}
+argon2 = {version = "=0.6.0-rc.8", features = ["alloc"]}
+arrayvec = {version = "0.7"}
+atomic_refcell = {version = "0.1.14"}
+aws-lc-rs = {version = "1.17", default-features = false, features = ["aws-lc-sys"]}
+backtrace = {version = "0.3"}
+base64 = {version = "0.23.0"}
+base64ct = {version = "1.8", features = ["alloc"]}
+bitflags = {version = "2.11"}
+brotli = {version = "8.0.3", optional = true}
+buf-read-ext = {version = "0.4"}
+cbc = {version = "0.2", features = ["alloc", "zeroize"]}
+chacha20poly1305 = {version = "0.11", features = ["rand_core", "zeroize"]}
+chardetng = {version = "0.1"}
+chrono = {version = "0.4", features = ["serde"]}
+content-security-policy = {version = "=0.8.1", features = ["serde"]}
+cookie = {package = "cookie", version = "0.18"}
+crossbeam-channel = {version = "0.5"}
+crypto-bigint = {version = "0.7"}
+cshake = {version = "0.2"}
+cssparser = {version = "0.37", features = ["serde"]}
+ctr = {version = "0.10", features = ["zeroize"]}
+ctutils = {version = "0.4"}
+data-url = {version = "0.3"}
+deny_public_fields = {package = "bao-servo-deny-public-fields", path = "../deny_public_fields", version = "=0.5.2"}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.6"}
+dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version = "=0.5.2"}
+ecdsa = {version = "0.17"}
+ed25519-dalek = {version = "3.0", features = ["alloc", "pkcs8", "rand_core", "zeroize"]}
+ed448-goldilocks = {version = "=0.14.0-pre.15"}
+elliptic-curve = {version = "0.14", features = ["pkcs8"]}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.6"}
+encoding_rs = {version = "0.8", features = ["serde"]}
+euclid = {version = "0.22"}
+flate2 = {version = "1.1"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.9"}
+fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = "=0.5.7"}
+glow = {version = "0.17.0"}
+headers = {version = "0.4"}
+hkdf = {version = "0.13"}
+html5ever = {version = "0.39"}
+http = {version = "1.4"}
+httparse = {version = "1.9"}
+hyper_serde = {package = "bao-servo-hyper-serde", path = "../hyper_serde", version = "=0.5.2"}
+icu_locid = {version = "1.5.0"}
+indexmap = {version = "2.14.0", features = ["std"]}
+ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
+itertools = {version = "0.15"}
+js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.22", default-features = false, features = ["intl", "libz-sys"]}
+jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = "=0.5.2"}
+k12 = {version = "0.5"}
+keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
+keccak = {version = "0.2"}
+layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.10"}
+libc = {version = "0.2"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+markup5ever = {version = "0.39"}
+media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.6"}
+metrics = {package = "bao-servo-metrics", path = "../metrics", version = "=0.5.8"}
+mime = {version = "0.3.13"}
+mime_guess = {version = "2.0.5"}
+ml-dsa = {version = "0.1", features = ["zeroize"]}
+ml-kem = {version = "0.3", features = ["getrandom", "pkcs8", "zeroize"]}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.7"}
+nom-rfc8288 = {version = "0.4.0"}
+num-traits = {version = "0.2"}
+num_cpus = {version = "1.17.0"}
+ocb3 = {version = "=0.2.0-rc.3", features = ["zeroize"]}
+p256 = {version = "0.14", features = ["ecdh"]}
+p384 = {version = "0.14", features = ["ecdh"]}
+p521 = {version = "0.14", features = ["ecdh"]}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.6"}
+parking_lot = {version = "0.12", features = ["serde"]}
+percent-encoding = {version = "2.3"}
+phf = {version = "0.13"}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.6"}
+pkcs8 = {version = "0.11"}
+postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
+rand = {version = "0.10"}
+regex = {version = "1.12"}
+resvg = {version = "0.48.1"}
+rsa = {version = "=0.10.0-rc.18"}
+rustc-hash = {version = "2.1.2"}
+script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.11"}
+script_webgpu = {package = "bao-servo-script-webgpu", path = "../script_webgpu", version = "=0.5.11", optional = true}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
+selectors = {version = "=0.40.0"}
+serde = {version = "1.0.228", features = ["derive"]}
+serde_json = {version = "1.0", features = ["preserve_order"]}
+background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.6", optional = true}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.7"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.8"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.5"}
+servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = "=0.5.6"}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.6"}
+servo-webvtt = {package = "bao-servo-webvtt", path = "../webvtt", version = "=0.5.3"}
+servo_arc = {version = "=0.4.3"}
+sha1 = {version = "0.11"}
+sha2 = {version = "0.11"}
+sha3 = {version = "0.12"}
+smallvec = {version = "1.15", features = ["serde", "union"]}
+sponge-cursor = {version = "0.1"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.6"}
+strum = {version = "0.28", features = ["derive"]}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
+stylo_atoms = {version = "=0.20.0"}
+stylo_dom = {version = "=0.20.0"}
+stylo_malloc_size_of = {version = "=0.20.0"}
+stylo_traits = {version = "=0.20.0"}
+swapper = {version = "0.1"}
+tempfile = {version = "3"}
+tendril = {version = "0.5", features = ["encoding_rs"]}
+time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
+timers = {package = "bao-servo-timers", path = "../timers", version = "=0.5.5"}
+tracing = {version = "0.1.44", optional = true}
+unicode-bidi = {version = "0.3.18"}
+unicode-script = {version = "0.5"}
+url = {version = "2.5"}
+urlpattern = {version = "0.3"}
+uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}
+web_atoms = {version = "0.2.6"}
+webdriver = {version = "0.53.0", default-features = false}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.6", optional = true}
+webrender_api = {version = "0.70"}
+webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.6", optional = true}
+wgpu-core = {version = "30", optional = true}
+wgpu-types = {version = "30", optional = true}
+x25519-dalek = {version = "3.0", features = ["getrandom", "static_secrets", "zeroize"]}
+x448 = {version = "=0.14.0-pre.12", features = ["static_secrets"]}
+xml5ever = {version = "0.39"}
+xpath = {package = "bao-servo-xpath", path = "../xpath", version = "=0.5.6"}
+zeroize = {version = "1.8", features = ["zeroize_derive"]}
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
-mozangle = { workspace = true }
+mozangle = {version = "0.6"}

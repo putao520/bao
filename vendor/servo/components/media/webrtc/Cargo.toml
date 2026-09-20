@@ -1,19 +1,19 @@
 [package]
 name = "bao-servo-media-webrtc"
 version = "0.5.5"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_media_webrtc"
 path = "lib.rs"
 
 [dependencies]
-log = { workspace = true }
-servo-media-streams = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
+log = {version = "0.4.32"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.5"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}

@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-net"
 version = "0.5.17"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 autotests = false # Inhibit lookup for tests/*.rs without [[test]] sections
 
 [lib]
@@ -37,79 +37,79 @@ bun_core = { path = "../../../../src/bun_core", version = "0.2.0" }
 bun_http = { path = "../../../../src/http", version = "^0.2.0" }
 bun_threading = { path = "../../../../src/threading", version = "^0.2.0" }
 bun_url = { path = "../../../../src/url", version = "^0.2.0" }
-async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
-async-recursion = { workspace = true }
-async-tungstenite = { workspace = true }
-base64 = { workspace = true }
-bytes = { workspace = true }
-chrono = { workspace = true }
+async-compression = {version = "0.4.12", default-features = false, features = ["brotli", "gzip", "tokio", "zlib", "zstd"]}
+async-recursion = {version = "1.1"}
+async-tungstenite = {version = "0.35", features = ["tokio-rustls-webpki-roots"]}
+base64 = {version = "0.23.0"}
+bytes = {version = "1.0"}
+chrono = {version = "0.4", features = ["serde"]}
 # Pinned exactly: 0.8.3 breaks this crate at compile time (match on Csp
 # directives — the `Text` arm was removed upstream), and the caret req let
 # consumers resolve past the repo lock. Released as 0.5.9 (e71 #10).
-content-security-policy = { workspace = true }
-cookie = { workspace = true }
-crossbeam-channel = { workspace = true }
-data-url = { workspace = true }
-devtools_traits = { workspace = true }
-embedder_traits = { workspace = true }
-fst = { workspace = true }
-fonts = { workspace = true }
-futures = { workspace = true }
-futures-core = { workspace = true }
-futures-util = { workspace = true }
-headers = { workspace = true }
-http = { workspace = true }
-http-body-util = { workspace = true }
-hyper = { workspace = true, features = ["http1", "http2"] }
-hyper-util = { workspace = true, features = ["http1"] }
-hyper_serde = { workspace = true }
-imsz = { workspace = true }
-ipc-channel = { workspace = true }
-itertools = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-mime = { workspace = true }
-mime_guess = { workspace = true }
-net_traits = { workspace = true }
-nom = { workspace = true }
-paint_api = { workspace = true }
-parking_lot = { workspace = true }
-pixels = { workspace = true }
-profile_traits = { workspace = true }
-postcard = { workspace = true }
-quick_cache = { workspace = true, features = ["ahash"] }
-rand = { workspace = true }
-regex = { workspace = true }
-resvg = { workspace = true }
-rustc-hash = { workspace = true }
-rustls = { workspace = true, features = ["aws-lc-rs"] }
-rustls-pki-types = { workspace = true }
-rustls-platform-verifier = { workspace = true }
-rusqlite = { workspace = true }
-serde = { workspace = true }
-servo-base = { workspace = true }
-servo-config = { workspace = true }
-servo-default-resources = { workspace = true, optional = true }
-servo-tracing = { workspace = true }
-servo-url = { workspace = true }
-servo_arc = { workspace = true }
-sea-query = { workspace = true }
-sea-query-rusqlite = { workspace = true }
-sha2 = { workspace = true }
-smallvec = { workspace = true }
-tempfile = { workspace = true }
-time = { workspace = true }
-tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
-tokio-rustls = { workspace = true }
-tokio-util = { workspace = true, features = ["codec", "io"] }
-tower = { workspace = true }
-tracing = { workspace = true, optional = true }
-tungstenite = { workspace = true }
-url = { workspace = true }
-uuid = { workspace = true }
-webpki-roots = { workspace = true }
-webrender_api = { workspace = true }
+content-security-policy = {version = "=0.8.1", features = ["serde"]}
+cookie = {package = "cookie", version = "0.18"}
+crossbeam-channel = {version = "0.5"}
+data-url = {version = "0.3"}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.6"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.6"}
+fst = {version = "0.4"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.9"}
+futures = {version = "0.3", default-features = false}
+futures-core = {version = "0.3", default-features = false}
+futures-util = {version = "0.3", default-features = false}
+headers = {version = "0.4"}
+http = {version = "1.4"}
+http-body-util = {version = "0.1"}
+hyper = {version = "1.10", features = ["http1", "http2"]}
+hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "http2", "tokio", "http1"]}
+hyper_serde = {package = "bao-servo-hyper-serde", path = "../hyper_serde", version = "=0.5.2"}
+imsz = {version = "0.4"}
+ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
+itertools = {version = "0.15"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+mime = {version = "0.3.13"}
+mime_guess = {version = "2.0.5"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.7"}
+nom = {version = "8.0.0"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.6"}
+parking_lot = {version = "0.12", features = ["serde"]}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.6"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
+postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
+quick_cache = {version = "0.6.18", default-features = false, features = ["ahash"]}
+rand = {version = "0.10"}
+regex = {version = "1.12"}
+resvg = {version = "0.48.1"}
+rustc-hash = {version = "2.1.2"}
+rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws-lc-rs"]}
+rustls-pki-types = {version = "1.14"}
+rustls-platform-verifier = {version = "0.7.0"}
+rusqlite = {version = "0.38", features = ["bundled"]}
+serde = {version = "1.0.228"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.6", optional = true}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.6"}
+servo_arc = {version = "=0.4.3"}
+sea-query = {version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"]}
+sea-query-rusqlite = {version = "0.8.0"}
+sha2 = {version = "0.11"}
+smallvec = {version = "1.15", features = ["serde", "union"]}
+tempfile = {version = "3"}
+time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
+tokio = {version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"]}
+tokio-rustls = {version = "0.26", default-features = false, features = ["logging"]}
+tokio-util = {version = "0.7.18", default-features = false, features = ["codec", "io"]}
+tower = {version = "0.5", default-features = false, features = ["util"]}
+tracing = {version = "0.1.44", optional = true}
+tungstenite = {version = "0.30"}
+url = {version = "2.5"}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
+webpki-roots = {version = "1.0"}
+webrender_api = {version = "0.70"}
 
 [dev-dependencies]
 # Link leg for the bun_bridge tests: the bun_http native seam (uws epoll
@@ -117,15 +117,15 @@ webrender_api = { workspace = true }
 # bun_http's own tests use (force_link called from the tests).
 bao_native_stubs = { path = "../../../../src/bao_native_stubs", version = "0.1.0" }
 bun_io = { path = "../../../../src/io", version = "^0.2.0" }
-flate2 = { workspace = true }
-fst = { workspace = true }
-hyper = { workspace = true, features = ["full"] }
-hyper-util = { workspace = true, features = ["server-graceful"] }
+flate2 = {version = "1.1"}
+fst = {version = "0.4"}
+hyper = {version = "1.10", features = ["full"]}
+hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "http2", "tokio", "server-graceful"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
 net = { package = "bao-servo-net", path = ".", version = "=0.5.17", features = ["test-util"] }
-rustls = { workspace = true, features = ["aws-lc-rs"] }
-servo-default-resources = { workspace = true }
+rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws-lc-rs"]}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.6"}
 
 [[test]]
 name = "main"

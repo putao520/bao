@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-base"
 version = "0.5.6"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_base"
@@ -16,27 +16,27 @@ test = true
 doctest = false
 
 [dependencies]
-accesskit = { workspace = true }
-crossbeam-channel = { workspace = true }
-ipc-channel = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-parking_lot = { workspace = true }
-rayon = { workspace = true }
-regex = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-servo-config = { workspace = true }
-time = { workspace = true }
-unicode-segmentation = { workspace = true }
-webrender_api = { workspace = true }
+accesskit = {version = "0.24.0", features = ["serde"]}
+crossbeam-channel = {version = "0.5"}
+ipc-channel = {package = "bao-ipc-channel", path = "../../../../ipc-channel", version = "0.22.0"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+parking_lot = {version = "0.12", features = ["serde"]}
+rayon = {version = "1"}
+regex = {version = "1.12"}
+serde = {version = "1.0.228"}
+serde_json = {version = "1.0"}
+servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.2"}
+time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
+unicode-segmentation = {version = "1.13.3"}
+webrender_api = {version = "0.70"}
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-mach2 = { workspace = true }
+mach2 = {version = "0.6"}
 
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))'.dependencies]
-libc = { workspace = true }
+libc = {version = "0.2"}
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Performance"] }
+windows-sys = {version = "0.61", features = ["Win32_System_Performance"]}

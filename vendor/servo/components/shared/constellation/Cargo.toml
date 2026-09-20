@@ -1,13 +1,13 @@
 [package]
 name = "bao-servo-constellation-traits"
 version = "0.5.8"
-authors.workspace = true
-license.workspace = true
-edition.workspace = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 publish = true
-rust-version.workspace = true
-repository.workspace = true
-description.workspace = true
+rust-version = "1.88.0"
+repository = "https://github.com/servo/servo"
+description = "A component of the servo web-engine."
 
 [lib]
 name = "servo_constellation_traits"
@@ -18,33 +18,33 @@ bluetooth = []
 webgpu = ["dep:webgpu_traits", "dep:wgpu-core"]
 
 [dependencies]
-base64 = { workspace = true }
-content-security-policy = { workspace = true }
-devtools_traits = { workspace = true }
-embedder_traits = { workspace = true }
-encoding_rs = { workspace = true }
-euclid = { workspace = true }
-fonts_traits = { workspace = true }
-http = { workspace = true }
-hyper_serde = { workspace = true }
-ipc-channel = { workspace = true }
-log = { workspace = true }
-malloc_size_of = { workspace = true }
-malloc_size_of_derive = { workspace = true }
-net_traits = { workspace = true }
-paint_api = { workspace = true }
-pixels = { workspace = true }
-profile_traits = { workspace = true }
-rustc-hash = { workspace = true }
-serde = { workspace = true }
-servo-base = { workspace = true }
-servo-canvas-traits = { workspace = true }
-servo-config = { workspace = true }
-servo-url = { workspace = true }
-storage_traits = { workspace = true }
-strum = { workspace = true }
-uuid = { workspace = true }
-webgpu_traits = { workspace = true, optional = true }
-webrender_api = { workspace = true }
-wgpu-core = { workspace = true, optional = true }
-zeroize = { workspace = true, features = ["zeroize_derive"] }
+base64 = {version = "0.23.0"}
+content-security-policy = {version = "=0.8.1", features = ["serde"]}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../devtools", version = "=0.5.6"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.6"}
+encoding_rs = {version = "0.8", features = ["serde"]}
+euclid = {version = "0.22"}
+fonts_traits = {package = "bao-servo-fonts-traits", path = "../fonts", version = "=0.5.7"}
+http = {version = "1.4"}
+hyper_serde = {package = "bao-servo-hyper-serde", path = "../../hyper_serde", version = "=0.5.2"}
+ipc-channel = {package = "bao-ipc-channel", path = "../../../../ipc-channel", version = "0.22.0"}
+log = {version = "0.4.32"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
+malloc_size_of_derive = {version = "0.1"}
+net_traits = {package = "bao-servo-net-traits", path = "../net", version = "=0.5.7"}
+paint_api = {package = "bao-servo-paint-api", path = "../paint", version = "=0.5.6"}
+pixels = {package = "bao-servo-pixels", path = "../../pixels", version = "=0.5.6"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.6"}
+rustc-hash = {version = "2.1.2"}
+serde = {version = "1.0.228"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../canvas", version = "=0.5.7"}
+servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.2"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.6"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../storage", version = "=0.5.6"}
+strum = {version = "0.28", features = ["derive"]}
+uuid = {version = "1.23.3", features = ["v4", "v5"]}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../webgpu", version = "=0.5.6", optional = true}
+webrender_api = {version = "0.70"}
+wgpu-core = {version = "30", optional = true}
+zeroize = {version = "1.8", features = ["zeroize_derive"]}
