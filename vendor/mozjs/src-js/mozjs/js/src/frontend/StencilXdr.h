@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -42,12 +40,8 @@ struct SharedDataContainer;
 template <typename DataT>
 struct CanCopyDataToDisk {
   // Check that the object is fully packed, to save disk space.
-#ifdef __cpp_lib_has_unique_object_representations
   static constexpr bool unique_repr =
       std::has_unique_object_representations<DataT>();
-#else
-  static constexpr bool unique_repr = true;
-#endif
 
   // Approximation which assumes that 32bits variant of the class would not
   // have pointers if the 64bits variant does not have pointer.
@@ -64,24 +58,33 @@ class StencilXDR {
  private:
   template <XDRMode mode>
   [[nodiscard]] static XDRResult codeSourceUnretrievableUncompressed(
-      XDRState<mode>* xdr, ScriptSource* ss, uint8_t sourceCharSize,
+      XDRState<mode>* xdr, ScriptSource* ss,
+      mozilla::Maybe<ScriptSource::DataReader>& reader,
+      mozilla::Maybe<ScriptSource::DataWriter>& writer, uint8_t sourceCharSize,
       uint32_t uncompressedLength);
 
   template <typename Unit,
             template <typename U, SourceRetrievable CanRetrieve> class Data,
             XDRMode mode>
-  static void codeSourceRetrievable(ScriptSource* ss);
+  static void codeSourceRetrievable(
+      mozilla::Maybe<ScriptSource::DataReader>& reader,
+      mozilla::Maybe<ScriptSource::DataWriter>& writer);
 
   template <typename Unit, XDRMode mode>
   [[nodiscard]] static XDRResult codeSourceUncompressedData(
-      XDRState<mode>* const xdr, ScriptSource* const ss);
+      XDRState<mode>* const xdr, ScriptSource* const ss,
+      mozilla::Maybe<ScriptSource::DataReader>& reader,
+      mozilla::Maybe<ScriptSource::DataWriter>& writer);
 
   template <typename Unit, XDRMode mode>
   [[nodiscard]] static XDRResult codeSourceCompressedData(
-      XDRState<mode>* const xdr, ScriptSource* const ss);
+      XDRState<mode>* const xdr, ScriptSource* const ss,
+      mozilla::Maybe<ScriptSource::DataReader>& reader,
+      mozilla::Maybe<ScriptSource::DataWriter>& writer);
 
   template <typename Unit, XDRMode mode>
-  static void codeSourceRetrievableData(ScriptSource* ss);
+  static void codeSourceRetrievableData(
+      mozilla::Maybe<ScriptSource::DataWriter>& writer);
 
   template <XDRMode mode>
   [[nodiscard]] static XDRResult codeSourceData(XDRState<mode>* const xdr,
@@ -215,6 +218,10 @@ class XDRStencilEncoder : public XDRState<XDR_ENCODE> {
 };
 
 JS::TranscodeResult EncodeStencil(JSContext* cx,
+                                  frontend::CompilationStencil* stencil,
+                                  JS::TranscodeBuffer& buffer);
+
+JS::TranscodeResult EncodeStencil(JS::FrontendContext* fc,
                                   frontend::CompilationStencil* stencil,
                                   JS::TranscodeBuffer& buffer);
 

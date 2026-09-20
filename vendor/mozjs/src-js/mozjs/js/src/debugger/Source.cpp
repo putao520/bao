@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -55,16 +53,7 @@ using mozilla::Nothing;
 using mozilla::Some;
 
 const JSClassOps DebuggerSource::classOps_ = {
-    nullptr,                          // addProperty
-    nullptr,                          // delProperty
-    nullptr,                          // enumerate
-    nullptr,                          // newEnumerate
-    nullptr,                          // resolve
-    nullptr,                          // mayResolve
-    nullptr,                          // finalize
-    nullptr,                          // call
-    nullptr,                          // construct
-    CallTraceMethod<DebuggerSource>,  // trace
+    .trace = CallTraceMethod<DebuggerSource>,
 };
 
 const JSClass DebuggerSource::class_ = {
@@ -209,28 +198,24 @@ class DebuggerSourceGetTextMatcher {
 
   ReturnType match(Handle<ScriptSourceObject*> sourceObject) {
     ScriptSource* ss = sourceObject->source();
-    bool hasSourceText;
-    if (!ScriptSource::loadSource(cx_, ss, &hasSourceText)) {
+
+    bool loaded = false;
+    Maybe<ScriptSource::DataReader> reader;
+    if (!ss->tryLoadSource(cx_, reader, &loaded)) {
       return nullptr;
     }
-    if (!hasSourceText) {
+
+    if (!loaded) {
       return NewStringCopyZ<CanGC>(cx_, "[no source]");
     }
 
-    // In case of DOM event handler like <div onclick="foo()" the JS code is
-    // wrapped into
-    //   function onclick() {foo()}
-    // We want to only return `foo()` here.
-    // But only for event handlers, for `new Function("foo()")`, we want to
-    // return:
-    //   function anonymous() {foo()}
-    if (ss->hasIntroductionType() &&
-        strcmp(ss->introductionType(), "eventHandler") == 0 &&
-        ss->isFunctionBody()) {
-      return ss->functionBodyString(cx_);
+    MOZ_ASSERT((*reader)->hasSourceText());
+
+    if (ss->shouldUnwrapEventHandlerBody()) {
+      return (*reader)->functionBodyString(cx_, ss);
     }
 
-    return ss->substring(cx_, 0, ss->length());
+    return (*reader)->substring(cx_, 0, (*reader)->length());
   }
 
   ReturnType match(Handle<WasmInstanceObject*> instanceObj) {
@@ -623,7 +608,9 @@ bool DebuggerSource::CallData::getSourceMapURL() {
 }
 
 template <typename Unit>
-static JSScript* ReparseSource(JSContext* cx, Handle<ScriptSourceObject*> sso) {
+static JSScript* ReparseSource(JSContext* cx, Handle<ScriptSourceObject*> sso,
+                               ScriptSource::DataReader& reader,
+                               bool asModule) {
   AutoRealm ar(cx, sso);
   ScriptSource* ss = sso->source();
 
@@ -634,15 +621,34 @@ static JSScript* ReparseSource(JSContext* cx, Handle<ScriptSourceObject*> sso) {
 
   UncompressedSourceCache::AutoHoldEntry holder;
 
-  ScriptSource::PinnedUnits<Unit> units(cx, ss, holder, 0, ss->length());
-  if (!units.get()) {
+  const Unit* units = reader->units<Unit>(cx, holder, 0, reader->length());
+  if (!units) {
     return nullptr;
   }
 
   JS::SourceText<Unit> srcBuf;
-  if (!srcBuf.init(cx, units.get(), ss->length(),
+  if (!srcBuf.init(cx, units, reader->length(),
                    JS::SourceOwnership::Borrowed)) {
     return nullptr;
+  }
+
+  if (asModule) {
+    if (options.lineno == 0) {
+      JS_ReportErrorASCII(cx, "Module cannot be reparsed with lineNumber == 0");
+      return nullptr;
+    }
+    if (!options.filename()) {
+      JS_ReportErrorASCII(cx, "Module cannot be reparsed without filename");
+      return nullptr;
+    }
+    options.setModule();
+
+    JSObject* module = JS::CompileModule(cx, options, srcBuf);
+    if (!module) {
+      return nullptr;
+    }
+
+    return module->as<ModuleObject>().script();
   }
 
   return JS::Compile(cx, options, srcBuf);
@@ -654,16 +660,20 @@ bool DebuggerSource::CallData::reparse() {
     return false;
   }
 
-  if (!sourceObject->source()->hasSourceText()) {
+  ScriptSource::DataReader reader(sourceObject->source());
+  if (!reader.hasSourceText()) {
     JS_ReportErrorASCII(cx, "Source object missing text");
     return false;
   }
 
+  bool asModule = ToBoolean(args.get(0));
+
   RootedScript script(cx);
-  if (sourceObject->source()->hasSourceType<mozilla::Utf8Unit>()) {
-    script = ReparseSource<mozilla::Utf8Unit>(cx, sourceObject);
+  if (reader->hasSourceType<mozilla::Utf8Unit>()) {
+    script =
+        ReparseSource<mozilla::Utf8Unit>(cx, sourceObject, reader, asModule);
   } else {
-    script = ReparseSource<char16_t>(cx, sourceObject);
+    script = ReparseSource<char16_t>(cx, sourceObject, reader, asModule);
   }
 
   if (!script) {
