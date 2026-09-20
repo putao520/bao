@@ -229,7 +229,7 @@ make bce-check
 
 如果 SIGSEGV 复现,第一步 `nm libmozjs_sys-*.rlib | grep MutexImplD1` 查 rlib 是否包含旧代码。
 
-#### mozjs fork BAO patch 清单(7 项,0.22.0 全部在位——升级波 6b259cc2 二进制级实证;第 6 项 2026-09-10 增;第 7 项 2026-09-21 增)
+#### mozjs fork BAO patch 清单(7 项,SM153 形态全部在位——2026-09-21 前移波 em1 系列重锚+实构建/smoke 实证;第 6 项 2026-09-10 增;第 7 项 2026-09-21 增;第 4 项同日 SM153 重锚)
 
 上游同步 mozjs 时必须逐项重放(参照 git 历史 `git show <old>:vendor/mozjs/...`):
 
@@ -322,7 +322,7 @@ make bce-check
 | Bun | `~/code/rust/bun/src/` | ~85 个纯 Rust crate(零修改复用);`jsc/` 是 JSC→SM 迁移目标;`runtime/` 是 Bun API 实现来源 |
 | Bun SPEC | `~/code/rust/bun/CLAUDE.md` | 构建命令、测试规范、crate 组织 |
 | Servo | `~/code/tools/servo/`(vendor 快照见 `vendor/servo/`,2026-08-13 上游 HEAD,10 个 Bao 定制文件见上文清单) | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
-| mozjs | `vendor/mozjs/`(0.22.0 / bao-mozjs-sys 140.14.0-0,servo/mozjs main eb36274 外科 23 文件移植;5 项 BAO patch 见上文清单) | SM FFI 绑定源码 |
+| mozjs | `vendor/mozjs/`(SM 153.3.0esr / bao-mozjs 0.24.0 / bao-mozjs-sys 153.3.0-0,2026-09-21 前移波 em1 系列;extracted-crates 12 件 in-tree 同源提取;7 项 BAO patch 见上文清单;单宇宙吸收后无独立 workspace——8d4c8260) | SM FFI 绑定源码 |
 | blitz | `~/code/rust/blitz/` | DioxusLabs 模块化浏览器参考架构 |
 
 Bun / Servo SPEC 测绘成果:`.spec/02-SYSTEM.html` §2(Bun Crate DAG)+ §3(Servo 36 组件分层)。
