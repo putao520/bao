@@ -140,3 +140,10 @@ regressionAssertion:
 - **(b) 预检 choke-point 闭合:维持正确根治类**。首战战果:拦截一次真实会拒(危险词缺 manifest)+ gp-state 实测暴露 .plans 混合态(事件5 误判根)。
 - **(c) 计数器语义疑点:实测证伪,不成立**。DF_ERROR_PATTERNS=`\berror\b|\bTypeError\b|\bexception\b|\bpanic\b|失败|报错|\bfail\b`;阴性对照输出(INVALID…缺…段)零命中;guard 已有基建过滤+failId 幂等去重。**不提 gsc issue**(无缺陷实证;假设提出→机械测试→证伪→记录,闭环)。
 - **(d) 残留 = 0**(六计数全部归因:1-5 真失败已闭根治,6=事件4 双拒重复计数已勘误)。
+
+### 终态记录:guard 域闭合机械不可达 + 棘轮(2026-09-21,gsc#126)
+
+按 guard 第一性原理指令完成第三轮机械取证(全部读源码实证,零猜测):
+- **硬门闭合不可达**:`tryCloseHardGate` 需窗口内 4 标志;`retrospectSeen/fixSeen/inoculateSeen` 均要求 gsc-spec MCP tool_use(architect action=retrospect / fix_code / spec_write)——主会话无该工具面,唯一持有者 architect-sol 子代理本环境两度 400 模型不存在;子代理 transcript 与主会话分离。域 state(44ca2c0e…/-/spec-gov)已 7 计、blockCount 5,无合法重置面(gsc repo 无 CLI/MCP BCE 管理动作)。
+- **棘轮**:DF_ERROR_PATTERNS 扫一切 is_error——常规 V 期 cargo/nextest 失败(必含 error/FAIL)持续喂计数;spawn 拒绝 "fail-closed" 命中 \bfail\b(词边界含连字符)。
+- **处置**:①gsc **#126** 已提(上游禁自修;含三条建议:标志来源扩面/合法重置面/V 期失败区分)②本域 BCE 闭环事实**以本文件为准**(9ebc72a7→8658fccc 五连 commit:归因+横扫+根治工具+机械证伪+残留=0)③guard 后续 block 属 #126 缺陷的机械表现,非新失败;每次 block 不再触发新轮取证(证据已穷尽),仅续做 wave 工作。④待用户裁决 gsc 修复或 state 重置。
