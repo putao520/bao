@@ -1889,3 +1889,9 @@ EncodeStencil XDR 绑定落地(5 文件 ~40 行净增,全 vendor/mozjs):根因=b
 ### extracted-crates 裁定(2026-09-21,案 A 采纳;er0 案卷 /tmp/ev4-crates-dossier.md)
 
 **probe REPEAT-RISK① 实测推翻**:"8 crate vs 自研卫星同题两解"不成立——**互补两层**:①我方三卫星(src-js/src-intl/src-python)=SM 主树切片,上游无发布物(tarball 形态),10MiB 裁决继续自发布;②上游 153 新 Rust 依赖面(实测 **12 件**非 8:5 glue+7 patched-icu/iter,crates.io API 逐件实查存在,newest=153.0.0)我方零存在。**裁定案 A**:mozjs-sys 消费上游 `mozjs_*="=153.0.0"`(feature 门照抄;五 glue 经 DEP_*_GLUE_INCLUDE links 元数据流供头,registry 形态等价;patch 面与 glue 来源解耦);案 B(自抽自发布)否决——违"上游只用最新"+平行真源。动作已入 em1 合同(12 deps 行[eu1 边后]+build.rs DEP_* 段[:220-235 形态]+filters 取 153 版)。
+
+### SM153 前移终报收口(2026-09-21,em1,V 过)
+
+**10-commit 串全落**,cargo 面达成:**stencil_xdr smoke 绿(C 独立复跑 1/1 RC=0——REQ-ENG-012 XDR 面在 153 存活)**。实构建揪出 4 个 dry-run 不可见缺陷并根治:①bao-0001 语义重锚(153 initForOsr void 化无 bail 通道→脚本入口 pc 兜底形态,roundtrip 字节验证)②bindgen+libclang23 吐不出 MicroTask 块(与上游预构建产物对照定案,显式加 header 修)③链接器剪 no_mangle-only glue rlib(5 个被剪 18 undefined——extern-crate 保边)④NonNull 限定。绿面:bao_engine context.rs:897/bun_runtime 106-face/bao_workflow_host/bao-mozjs 全绿。
+
+**遗留面(已续派 em1)**:bun_sm moduleloading 迁移(15 错 4 类,语义级):FinishLoadingDynamicImportedModule 新签名/SetModuleLoadHook 重实现/动态导入 hook 无等价需设计/forceUTC_ 删除需行为平机制——合同判据=行为平,不可达即 STOP 转用户裁决。
