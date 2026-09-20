@@ -1859,3 +1859,17 @@ suite 测试注册 + Cargo.toml dev-dep + 本账本节）。
 交付:`vendor/mozjs/mozjs-sys/etc/patches/bao-000{1,2}.patch`(P4/P5,-p1 SM 树相对,`bao-` 前缀排序自动落 0002-0045 后)。**验证:apply --check 双 rc=0(pristine+0044 基线)+ 重放字节全等(pristine+0044+bao-0001+bao-0002 → 三文件 md5 ≡ 在产 src-js 树)**。主波情报三条:P5 jsapi.cpp hunk 须在 0044 后(非 BAO hunk 已剥离,旧侧行号=post-0044 态);namespace-JS-out 陷阱固化进 0002 头部 CAUTION;P4 语义跨版本恒定(jsapi.cpp 恒 2332 行)。
 
 R1-prep 已续派 er0(SM153 资产物化 dry-run+双向对账表+迁移 API 核查,零工作树变更,/tmp/r1-prep/)。
+
+### R1-prep 完成(2026-09-21,er0,/tmp/r1-prep/dossier.md;V 独立复核通过)
+
+**资产**:SM153 = Release `mozjs-source-3b49a449…`(FIREFOX_153_3_0esr_RELEASE,2026-09-13),tarball 238MB 根 `mozjs-153.3.0/`,物化 /tmp/r1-prep/sm153 + 上游 24 patch 全文 + 6 crate 文件 + 工具链三件 + pristine scratch。**V 复核:bao-0001 与 bao-0002 对 153 pristine apply --check 双 rc=0(C 独立重跑,0002 连 0044 前置都不需要——比 er0 声明更强)。**
+
+**表 A(上游 patch 对账)**:11 同 / 5 漂移(0016/0029/0033/0036/0043,R2 取 153 版)/ 删 3(0031/0040/0041)/ 0032 重锚 / 0045 换血(cbindgen/icu 供头新义务)/ 新增 6(0046-0051)。**★0046-AddServoSizeOf 与 BAO P6 BaoCollectRuntimeStats 同面——R2 合流裁定,禁双源(新裁决点)。**
+
+**表 B(BAO 8 面对 153)**:P4/P5 零 re-base(rc=0);P1 锚存活需按新宏形态重推(TRY_CALL_PTHREADS,Mutex_posix.cpp:17-30/84-88);P2 存活移位(JSEngineError::AlreadyInitialized rust.rs:172/Err:207,上游无恢复路径);P3 Rust 锚消失、C++ 存活(CompileOptions.h:702)→ 重挂 wrapper;P6 重挂+0046 裁定;B1 重放;**B2 上游已无(0 hit,证实删除裁定)**。
+
+**迁移 API(行号)**:&mut JSContext 已在(rust.rs:1659/1763);unsafe_jsstr_to_string 未删已 deprecated,替代 `jsstr_to_string(&JSContext)`(conversions.rs:615)——106 处迁移目标;error_info_from_exception_stack_safe 在(rust.rs:1101)。
+
+**工具链**:get_mozjs.py 零变化(etc/COMMIT→3b49a449);update.py 88→314L 大改写(extract_rust_crate 轨);filters +4 排除 +icu_capi −Jinja2;**#803 要求新 clang/NDK——R1 实做前门:frog-build:ubuntu24 clang 版本核查**。R3 预锚:上游以 mozjs- 前缀发布 mozilla+patched icu crates,bao 可消费发布物免自抽(extracted-crates vs src-intl 裁定输入)。
+
+**归一联动(用户裁决 2026-09-21)**:R1 SM153 导入落进**单一编译宇宙**——eu1(mozjs 吸收主 workspace)在 exdr2 收口后重派;导入协议禁复活 vendor workspace 根。
