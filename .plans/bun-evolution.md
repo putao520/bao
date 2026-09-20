@@ -510,3 +510,9 @@ ev4 C1/C2/C4 终态:5a2d85bc(70 manifest 内联 1727 点 ERR=0 幂等)/a4a3b942(
 ### 2026-09-21 / 归一终态清点(005ee01f 增补后)
 
 ev4 增补:ipc lock git rm(1191 行)。C 裁定+房扫:①**crown 豁免**(vendor/servo/support/crown 自辖 lilter 宇宙,上游明言 not part of workspace,非 bao 构建面,删=徒增 vendor diff;波门§③ 加白名单行)②**mozjs 7 陈旧 lock C 直清**(全 untracked/ignored 零 git 影响:mozjs-sys×2+mozjs×1+extracted-crates×4)。终态:vendor 下 [workspace] 根仅剩 boringssl(ev4 在途最后一枚)+crown(豁免)。ev4 series:5a2d85bc→a4a3b942→77cd78ef→005ee01f。
+
+### 2026-09-21 / ★全仓单宇宙终态达成(用户裁决"全部立即归一"全量落地,C 亲验)
+
+第五宇宙 boringssl 归一(ev4):375abb6b(删根+3 lock,768 行;零消费考古——主锁无 bssl-*,全仓引用皆注释性标注,C 构建走 src/boringssl_sys/csrc 字节镜像,比 servo 更强的"无任何消费"情形)+a3e54e5c(CLAUDE.md 拓扑收笔)。**C 终态亲验四断言全过**:vendor [workspace] 根=0(crown 豁免外)/lock=0/target=0/主锁 --frozen RC=0。
+
+归一全弧(单日):mozjs 成员吸收(8d4c8260)→ servo Option A 内联删根(5a2d85bc/a4a3b942)→ stylo/ipc 清(005ee01f+C 房扫)→ boringssl 删根(375abb6b)→ 三轴钉死(workspace/工具链/target-dir 8dea33f7)→ 废料清除 ~132G+(68G 主遗迹+26G mozjs+64G vendor 三树+94M stylo 嵌套)。事故根因链(双全量 SM 编译)机械消灭。
