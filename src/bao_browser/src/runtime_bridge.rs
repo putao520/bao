@@ -112,8 +112,7 @@ impl EvaluateResult {
 // @trace REQ-BRW-003 [req:REQ-BRW-003] [criterion:C10]
 // C10 (NFR-THREAD-SAFETY): no cross-thread *mut JSObject dereference. Pointers
 // flow only WebViewId-keyed ⇒ same-ScriptThread access.
-static NODE_REALM_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, NodeRealmEntry>> =
-    OnceLock::new();
+static NODE_REALM_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, NodeRealmEntry>> = OnceLock::new();
 static PAGE_GLOBAL_BY_WEBVIEW: OnceLock<DashMap<servo::WebViewId, usize>> = OnceLock::new();
 
 /// Node Realm registry entry: the realm global's address plus the identity of
@@ -277,11 +276,9 @@ fn node_realm_belongs_to_current_context(
     cx_ptr: *mut std::ffi::c_void,
 ) -> bool {
     match node_realm_by_webview().get(&webview_id) {
-        Some(entry) => node_realm_entry_matches(
-            entry.value(),
-            std::thread::current().id(),
-            cx_ptr as usize,
-        ),
+        Some(entry) => {
+            node_realm_entry_matches(entry.value(), std::thread::current().id(), cx_ptr as usize)
+        }
         None => false,
     }
 }
@@ -401,11 +398,7 @@ unsafe fn refresh_dom_proxies_native(
     // swapped with the pipeline. Re-create it on the CURRENT context so the
     // registry never holds an address from a destroyed context.
     if !node_realm_belongs_to_current_context(webview_id, cx_ptr) {
-        create_node_realm_native(
-            webview_id,
-            cx_ptr,
-            new_page_global as *mut std::ffi::c_void,
-        );
+        create_node_realm_native(webview_id, cx_ptr, new_page_global as *mut std::ffi::c_void);
     }
 
     // Update the per-WebViewId page_global mapping. Lazy DOM getters will
@@ -648,8 +641,7 @@ pub fn evaluate_js_via_node_realm(
             // to the DESTROYED old ScriptThread/JSContext and must never be
             // dereferenced. Re-create the realm on the CURRENT context (the
             // callback carries the live page global) and evaluate against it.
-            if !node_global.is_null()
-                && !node_realm_belongs_to_current_context(webview_id, cx_ptr)
+            if !node_global.is_null() && !node_realm_belongs_to_current_context(webview_id, cx_ptr)
             {
                 unsafe { create_node_realm_native(webview_id, cx_ptr, page_global) };
                 node_global = get_node_realm_by_id(webview_id);
@@ -689,8 +681,7 @@ pub fn register_node_realm_debugger_install(webview_id: servo::WebViewId) {
             // Same stale-realm lifecycle as evaluate_js_via_node_realm's
             // callback (see the BCE note there) — the install must target
             // the global the paired evaluate will actually evaluate on.
-            if !node_global.is_null()
-                && !node_realm_belongs_to_current_context(webview_id, cx_ptr)
+            if !node_global.is_null() && !node_realm_belongs_to_current_context(webview_id, cx_ptr)
             {
                 unsafe { create_node_realm_native(webview_id, cx_ptr, page_global) };
                 node_global = get_node_realm_by_id(webview_id);
@@ -718,9 +709,8 @@ pub fn register_node_realm_debugger_install(webview_id: servo::WebViewId) {
 /// Failure is reported honestly as `Err` in the slot — never zero-filled.
 pub fn register_engine_memory_stats_collection(
     webview_id: servo::WebViewId,
-) -> std::sync::Arc<
-    std::sync::OnceLock<Result<bao_engine::memory_stats::EngineMemoryStats, String>>,
-> {
+) -> std::sync::Arc<std::sync::OnceLock<Result<bao_engine::memory_stats::EngineMemoryStats, String>>>
+{
     let slot: std::sync::Arc<
         std::sync::OnceLock<Result<bao_engine::memory_stats::EngineMemoryStats, String>>,
     > = std::sync::Arc::new(std::sync::OnceLock::new());
@@ -2846,9 +2836,23 @@ impl BridgeReceiver {
 pub struct BridgeChannel {
     tx: mpsc::Sender<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>)>,
     alive: Arc<AtomicBool>,
+    /// Bound [`BridgeChannel::send`] applies while waiting for the worker's
+    /// response. Defaults to [`BridgeChannel::DEFAULT_RESPONSE_TIMEOUT`].
+    response_timeout: Duration,
 }
 
 impl BridgeChannel {
+    /// Default bound on how long [`BridgeChannel::send`] waits for the worker
+    /// response before failing with an explicit timeout error.
+    ///
+    /// Criterion for 30s: joins the existing 30s bridge family — the CDP servo
+    /// bridge is constructed with `bridge_channel(Duration::from_secs(30))` in
+    /// `lib.rs`, and the service-worker mediator's bounded response wait is
+    /// 30s — long enough for page evaluate / screenshot round-trips through a
+    /// busy pump, short enough that a stalled pump cannot wedge the caller
+    /// indefinitely (fail-closed: an observable error, never a bare recv).
+    pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// Create a new bridge channel pair.
     ///
     /// Returns `(sender, receiver)` where commands flow sender → receiver and
@@ -2859,20 +2863,32 @@ impl BridgeChannel {
         let channel = BridgeChannel {
             tx,
             alive: alive.clone(),
+            response_timeout: Self::DEFAULT_RESPONSE_TIMEOUT,
         };
         let receiver = BridgeReceiver { rx, alive };
         (channel, receiver)
     }
 
     /// Send a command and block until the worker returns a response.
+    ///
+    /// The response wait is bounded by `response_timeout` (default
+    /// [`BridgeChannel::DEFAULT_RESPONSE_TIMEOUT`]): a stalled worker pump
+    /// surfaces as an explicit timeout error instead of hanging the caller
+    /// forever. The fast path (response arrives in time) and the
+    /// disconnected-responder error are unchanged.
     pub fn send(&self, cmd: BridgeCommand) -> Result<BridgeResponse, String> {
         let (resp_tx, resp_rx) = mpsc::channel();
         self.tx
             .send((cmd, Some(resp_tx)))
             .map_err(|_| "bridge closed".to_string())?;
-        resp_rx
-            .recv()
-            .map_err(|_| "response channel closed".to_string())
+        match resp_rx.recv_timeout(self.response_timeout) {
+            Ok(resp) => Ok(resp),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
+                "bridge response timed out after {:?} (worker pump stalled or not draining)",
+                self.response_timeout
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err("response channel closed".to_string()),
+        }
     }
 
     /// Send a command and wait at most `timeout` for a response.
@@ -3398,6 +3414,69 @@ mod tests {
             std::time::Duration::from_millis(1),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn bridge_channel_default_response_timeout_is_30s() {
+        // The default bound joins the existing 30s bridge family: the CDP
+        // servo bridge (`bridge_channel(Duration::from_secs(30))` in lib.rs)
+        // and the SW mediator bounded response wait.
+        assert_eq!(
+            super::BridgeChannel::DEFAULT_RESPONSE_TIMEOUT,
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn bridge_channel_send_bounded_when_pump_stalled() {
+        // Pump-stall scenario: the worker consumes the command but never
+        // responds. send() must fail with an explicit timeout error instead of
+        // hanging forever. The bound is tightened via the channel literal
+        // (same-file test, private field) to keep this test fast; production
+        // `new()` pins it to DEFAULT_RESPONSE_TIMEOUT (30s).
+        let (tx, rx) = std::sync::mpsc::channel();
+        let channel = super::BridgeChannel {
+            tx,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            response_timeout: std::time::Duration::from_millis(50),
+        };
+        let pump = std::thread::spawn(move || {
+            // Consume the command, then stall: hold the responder without
+            // replying well past the bound under test.
+            let (_cmd, responder) = rx.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            drop(responder);
+        });
+        let start = std::time::Instant::now();
+        let result = channel.send(super::BridgeCommand::GetTitle);
+        let elapsed = start.elapsed();
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("timed out"),
+            "expected explicit timeout error, got: {err}"
+        );
+        assert!(elapsed >= std::time::Duration::from_millis(50));
+        // Bounded: an order of magnitude below the 30s default — a bare
+        // recv() would never return at all in this scenario.
+        assert!(elapsed < std::time::Duration::from_secs(5));
+        pump.join().unwrap();
+    }
+
+    #[test]
+    fn bridge_channel_send_responder_dropped_error_preserved() {
+        // The worker consumes the command and drops the responder without
+        // replying: send() must keep the pre-existing "response channel
+        // closed" error (recv_timeout Disconnected arm).
+        let (channel, receiver) = super::BridgeChannel::new();
+        let pump = std::thread::spawn(move || {
+            while let Ok((_cmd, responder)) = receiver.recv() {
+                drop(responder);
+            }
+        });
+        let result = channel.send(super::BridgeCommand::GetTitle);
+        assert_eq!(result.unwrap_err(), "response channel closed");
+        drop(channel);
+        pump.join().unwrap();
     }
 
     #[test]
@@ -4372,9 +4451,9 @@ mod tests {
         );
         // The registration site must unconditionally remove+add on the live
         // cx (dedupe state = the runtime's blackRootTracers list).
-        let func_start = source.find("fn create_node_realm_native").expect(
-            "S2 findings ① REGRESSION: create_node_realm_native must exist",
-        );
+        let func_start = source
+            .find("fn create_node_realm_native")
+            .expect("S2 findings ① REGRESSION: create_node_realm_native must exist");
         let window = &source[func_start..(func_start + 8000).min(source.len())];
         let remove_at = window
             .find("JS_RemoveExtraGCRootsTracer")
@@ -4436,12 +4515,24 @@ mod tests {
         // Full match — the only combination that may count as "mine".
         assert!(super::node_realm_entry_matches(&entry, this_thread, 0xAAAA));
         // Same thread, different cx: earlier (dead) cx generation.
-        assert!(!super::node_realm_entry_matches(&entry, this_thread, 0xBBBB));
+        assert!(!super::node_realm_entry_matches(
+            &entry,
+            this_thread,
+            0xBBBB
+        ));
         // Cross-thread address collision (foreign thread's entry carrying
         // this cx's exact address) — the ABA the old cx-only checks missed.
-        assert!(!super::node_realm_entry_matches(&entry, foreign_thread, 0xAAAA));
+        assert!(!super::node_realm_entry_matches(
+            &entry,
+            foreign_thread,
+            0xAAAA
+        ));
         // Nothing matches on both factors being wrong.
-        assert!(!super::node_realm_entry_matches(&entry, foreign_thread, 0x1234));
+        assert!(!super::node_realm_entry_matches(
+            &entry,
+            foreign_thread,
+            0x1234
+        ));
     }
 
     /// S2 findings ①: the registration-time scrub keep-rule — foreign-thread
@@ -4478,9 +4569,17 @@ mod tests {
             live_cx
         ));
         // This thread's live-cx entry keeps its root.
-        assert!(super::entry_is_live_for_scrub(&mine_live, this_thread, live_cx));
+        assert!(super::entry_is_live_for_scrub(
+            &mine_live,
+            this_thread,
+            live_cx
+        ));
         // This thread's earlier-generation (dead cx) entry is dropped.
-        assert!(!super::entry_is_live_for_scrub(&mine_stale, this_thread, live_cx));
+        assert!(!super::entry_is_live_for_scrub(
+            &mine_stale,
+            this_thread,
+            live_cx
+        ));
     }
 
     /// REQ-SEC-002: lazy getter functions exist and have correct ABI.
