@@ -1818,3 +1818,36 @@ watcher 同类限制，已文档化）。
 suite 测试注册 + Cargo.toml dev-dep + 本账本节）。
 
 **下一候选(2026-09-17 补记,未排程,待下轮 daily-ops 裁决)**:S4 #27 Debugger 原生面——「换原生」各面已裁归 #11 CDP 波消费(需新判据);#30 余项(patch supersession 自动对照、cap ledger last_audited 联动)锚定 mozjs 前移后的升级波首跑;XDR encode 绑定增补(`EncodeStencil` bindgen 缺口,vendor patch 清单项)维持独立排程。S0-S3 全部消费完毕(S0 census+#23、S1 #24+#25、S2 #29、S3 #26+#28 CLOSED)。
+
+---
+
+## mozjs 跨版本升级波(2026-09-20 启动 · 7 轮预算长任务协议)
+
+**裁决**:立即启动(probe 五节判据:上游稳定 3+ 周、0.26.1 收敛尾、吸收债复利、-lts 回退锚在案;等待无收益)。Round0(patch 真源捕获)= 主波第一步,er0 执行中。回退锚:上游 140.14.0-0-lts 分支 + 本地 0.22.1/140.14.0-1。
+
+### E-MOZJSPROBE 结论(2026-09-20,只读双向差分,全 commit 级实证)
+
+**窗口**:vendor Rust 面基线 eb36274(08-21,pre-#801);C++ 源面基线 etc/COMMIT `ee9f2b2`(release 资产 tag,SM 140.14.0)。至 main `6170583a`(09-13)共 7 commit:#801(&mut JSContext)/#796(ohos/LLVM19)/#807(CI)/#803(**SM 140→153**,3000 文件+extracted-crates 8 crate+icu 2.1.2)/#802(删 deprecated,-breaking)/#811+#812(JobQueue draining)。版本 0.22.0→0.26.1 / 140.14.0-1→153.0.0-2。
+
+**逐 commit 三分类**:#801 INDEPENDENT 必吸+PATCH-CONFLICT(rust.rs=P2/P3 锚);#796 INDEPENDENT 可选;#807 零代码;#803 引擎本体 INDEPENDENT + PATCH-CONFLICT(P4 BaselineFrame*/P5 jsapi.*/B1 B2 build.rs)+ **REPEAT-RISK×2**(①extracted-crates vs BAO 自研 bao-mozjs-src-intl #42 切片卫星——同题两解,波内对照取优,**禁双轨**;②上游 cc::Build 直打包覆盖 B2 绕过补丁,吸收后删 B2);#802 必吸 breaking+**迁移债实锤:`unsafe_jsstr_to_string` 删除→bao 106 处/10+ 文件**(node_dns/node_https/node_url/bun_inspect_api/node_http/bun_api/node_events/globals/node_cluster/node_worker_threads;3 类机械样板:raw cx→&mut 包装/NonNull 传参/safe 形替换)+`error_info_from_exception_stack` 旧形→bao_engine/context.rs:897 一处(main:1071 safe 归宿);#811 REPEAT-RISK(jsglue RustJobQueue draining 重构 vs bao_engine/job_queue.rs 317 行自研队列——对照裁定,禁双源;servo d8671305 JSContext-owned 为消费侧参照)+PATCH-CONFLICT(P6 jsglue 邻区/P5 jsapi 邻区);#812 bugfix 随 #811。
+
+**反向冲突七项**(自研面被上游新版冲击):①P5/P6 自增 wrapper 条目须重挂 #802 后新模板体系并 diff 生成产物;②src-intl 切片对 SM153 树重裁或换轨 extracted-crates,W0b 发布面 patch(root Cargo.toml:104-107 dep-key 规则)扩展到新 crate 族;③job_queue.rs draining 语义裁定;④rust.rs 自增块对 #802 -230 重排做**语义锚**重放,P3 packed-struct 字段偏移 SAFETY 断言对 SM153 bindgen 输出复验;⑤B2 吸收后删除;⑥P2 PROCESS_ENGINE_OUTSTANDING/process_handle 与上游新 `ENGINE_STATE: Mutex<EngineState>`(含 InitFailed 臂,:156-211)合流——P2 风险 Low→**Low-Med**;⑦etc/COMMIT+get_mozjs.py 物化管线对 153 release tag 资产布局(内嵌 irregexp/patches 层)验证。
+
+**patch 重放风险表**:P1 EBUSY Low(SM153 换 TRY_CALL_PTHREADS 锚)/P2 Low-Med(InitFailed 合流)/P3 Low-Med(上游 setter 已删需重加+偏移复验)/P6 Medium(jsglue 邻区被 #811 重写)/B1 B2 Low(B2 疑可删);**P4/P5 High**(SM153 仍存活危险点——main:155 无守卫 activation 链——但锚文件跨大版本重构)。
+
+**Round0 前置判据(实锤)**:`vendor/mozjs/mozjs-sys/mozjs/js/` **零文件入 git**(git ls-files=0),etc/patches 无 BAO 自有条目 → P4/P5 C++ patch 真源不在版本库;三源捕获序:git 历史(`bb313dd1` vendoring 直改源码原始 commit,已验含 BaselineFrame 路径)> /var/cargo-builds 物化树 > crates.io .crate。
+
+### V 抽验(主会话独立复核,2026-09-21)
+
+`command grep -rn unsafe_jsstr_to_string src/ --include=*.rs | wc -l` = **106 精确命中**(probe 数字属实);`git ls-files vendor/mozjs/mozjs-sys/mozjs/js/` = **0**(未追踪证实);`git log --all -- '**/jit/BaselineFrame*'` = `bb313dd1`(2026-06 vendoring,含 BCE-002/004 直改)在历史——**源①可行,Round0 无阻断**。
+
+### 轮次规划(4-6 有效轮预估,并入 106 处机械迁移)
+
+- **R0**:P4/P5 真源捕获→committed `etc/patches/bao-000{1,2}.patch`(`git apply --check` 验证)(er0 在途)
+- **R1**:SM153 源导入(#803)+get_mozjs.py/COMMIT 对 153 tag 物化验证+8 patch 对账表(vendor 21 文件↔上游 25)
+- **R2**:patch 重放(P1-P6+B1/B2 逐项,P2 与 EngineState 合流、B2 吸收 cc::Build 后删、P5 wrapper 重挂新模板)+ #801/#802/#811/#812 连吸 + **106 处 unsafe_jsstr_to_string 机械迁移**(编译错误驱动)+ context.rs:897 safe 归宿
+- **R3**:bao_engine JobQueue 迁移裁定(#811 对照,禁双源)+ extracted-crates vs src-intl 换轨裁定 + W0b 发布面
+- **R4**:extracted crate bao- 改名发布 + servo 重钉 ^0.26
+- **R5-R6**:7 oracle 再证 + 全量 build/test + CLAUDE.md 版本漂移修正(实际 0.22.1/140.14.0-1 vs 文档 0.22.0/140.14.0-0;etc/COMMIT=ee9f2b2 是 release tag 非 main commit)+ patch 清单表更新(含 exdr2 的 EncodeStencil 条目)
+
+并行在途:exdr2(EncodeStencil 绑定,REQ-ENG-012,XDR encode bindgen 缺口——本账本 09-17 已预锚)。er0 出果即启 R1。
