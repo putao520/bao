@@ -112,3 +112,16 @@ regressionAssertion:
 - 根治双面:①operator memory 补头行裸形规则(复发防线)②gsc 侧 DX 缺陷提 GitHub ISSUE **putao520/gsc#125**(上游禁自修,§3)。
 - kb 指令说明:guard 要求 kb_build 浏览器 MCP 抓官方文档建域知识条目——本类失败为项目内文法非外部技术事实,SSOT 在本地(hook 源码+SPEC),web 文档不适用;且本会话无 kb_build 工具面,如实报告不伪造。
 - 残留 = 0(记忆正形 + issue 在途 + 本条目)。
+
+### 追记:事件 5 + 第一性原理归零(2026-09-21,guard 计数 5,裁定"增量补丁已无效")
+
+**事件 5**:`git add .plans/...` 被 gitignore 拒 → 误判"untracked by design 放弃提交"——实为历史 -f 入库的 **tracked** 文件(直接 commit 即可)。状态查询落在失败后,同根第五例。
+
+**归零裁定(guard 指令,第一性原理)**:五事件同根 = **验证时序倒置**——每次都是 SSOT/状态核验发生在行动失败之后(SPEC 在用户批评后、driver 自检在报错后、解析器源码在两轮盲试后、tracked 状态在 add 拒后)。逐事件记忆/issue/条款 = 对称性增量补丁,第 5 次复发实证无效。
+
+**根治 = 确定性预检前置于 choke point(权威源本体,不靠记忆)**:
+- `~/.local/bin/task-header-check`:动态 import gsc-spec 插件**最新版** validateTaskHeader 本体,派发前验 prompt。对照已过:阳性 VALID;阴性 1(事件 4 尾冒号形态)精确复现 gate 报错原文;阴性 2(缺块)逐块列出。**首次实战即拦截一次真实会拒**(本文件 consult 派发:危险词缺 manifest)。
+- `~/.local/bin/gp-state`:git 变更前 tracked/ignored/untracked 三态分类。实测即刻发现 `.plans/` 混合态(evolution.md=TRACKED / b0-census=IGNORED)——事件 5 误判从此机械不可能。
+- 记忆降级为背景知识;不变量从"记住文法"移到"工具强制"。
+
+**architect consult(asol-bce-root,gpt-6-astra 通道)**:五事件同根假设 + 预检方案闭合性审查在途;裁定到达后追记(a)同根成立性(b)未覆盖 choke point 横扫(c)残留判定。
