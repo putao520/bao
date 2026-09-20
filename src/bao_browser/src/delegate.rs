@@ -6,9 +6,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 
 use dpi::PhysicalSize;
 use servo::{
@@ -1623,10 +1623,7 @@ impl WorkerGlobalScopeState {
     /// the config type that transports the navigator fingerprint, criterion #12).
     ///
     /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
-    pub fn from_scope_config<C: ScopeNavigatorConfig>(
-        worker_url: String,
-        config: &C,
-    ) -> Self {
+    pub fn from_scope_config<C: ScopeNavigatorConfig>(worker_url: String, config: &C) -> Self {
         WorkerGlobalScopeState {
             location: WorkerLocation::from_url(&worker_url),
             navigator: WorkerNavigator::from_scope_config(config),
@@ -3155,7 +3152,7 @@ pub struct BaoWebViewState {
     /// Channel for forwarding structured ServoEvent to the EventSubscriber path (Path B).
     /// When set, events are also pushed here in addition to console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub event_tx: Option<Sender<ServoEvent>>,
+    pub event_tx: Option<SyncSender<ServoEvent>>,
     /// Active Workers spawned from this webview's page.
     /// Keyed by WorkerId for O(1) lookup. On page unload (new navigation
     /// after LoadStatus::Complete), all Workers are auto-terminated
@@ -3643,7 +3640,10 @@ impl BaoWebViewState {
                 WorkerMessageDirection::PageToWorker => "page→worker",
                 WorkerMessageDirection::WorkerToPage => "worker→page",
             };
-            let _ = tx.send(ServoEvent::Console {
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
+            let _ = tx.try_send(ServoEvent::Console {
                 target_id: "0".to_string(),
                 level: ConsoleLevel::Debug,
                 text: format!("[Worker] postMessage {}: {}", direction, event.worker_id.0),
@@ -3675,7 +3675,10 @@ impl BaoWebViewState {
                 ),
                 None => "metadata-only (servo handles clone)".to_string(),
             };
-            let _ = tx.send(ServoEvent::Console {
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
+            let _ = tx.try_send(ServoEvent::Console {
                 target_id: "0".to_string(),
                 level: ConsoleLevel::Debug,
                 text: format!(
@@ -3699,7 +3702,7 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:9]
     pub fn forward_worker_error_event(&self, event: WorkerErrorEvent) {
         if let Some(ref tx) = self.event_tx {
-            let _ = tx.send(ServoEvent::PageError {
+            let _ = tx.try_send(ServoEvent::PageError {
                 target_id: "0".to_string(),
                 text: format!("[Worker] {}: {}", event.worker_id.0, event.message),
                 url: Some(event.filename.clone()),
@@ -3893,7 +3896,10 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:SharedWorker] [entity:SharedWorkerGlobalScope] DF-WK-7
     pub fn forward_shared_worker_connect_event(&self, event: SharedWorkerConnectEvent) {
         if let Some(ref tx) = self.event_tx {
-            let _ = tx.send(ServoEvent::Console {
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
+            let _ = tx.try_send(ServoEvent::Console {
                 target_id: "0".to_string(),
                 level: ConsoleLevel::Debug,
                 text: format!(
@@ -4246,7 +4252,7 @@ pub struct BaoServoDelegate {
     /// Channel for forwarding structured ServoEvent to the EventSubscriber path (Path B).
     /// When set, console/url/load callbacks also push structured events here.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    event_tx: RefCell<Option<Sender<ServoEvent>>>,
+    event_tx: RefCell<Option<SyncSender<ServoEvent>>>,
     /// Global SharedWorker registry — keyed by (script_url, name).
     /// SharedWorkers span pages (DF-WK-7), so they must be tracked at the
     /// delegate level rather than per-page. When a page creates a SharedWorker,
@@ -4301,14 +4307,14 @@ impl BaoServoDelegate {
     /// Set the channel for forwarding structured ServoEvent to EventSubscriber (Path B).
     /// Called when CDP server starts alongside set_console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub fn set_event_tx(&self, tx: Sender<ServoEvent>) {
+    pub fn set_event_tx(&self, tx: SyncSender<ServoEvent>) {
         *self.event_tx.borrow_mut() = Some(tx);
     }
 
     /// Get a clone of the event sender, if one has been set.
     /// Used to propagate the channel to per-webview state.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub fn event_tx(&self) -> Option<Sender<ServoEvent>> {
+    pub fn event_tx(&self) -> Option<SyncSender<ServoEvent>> {
         self.event_tx.borrow().clone()
     }
 
@@ -4662,7 +4668,10 @@ impl ServoDelegate for BaoServoDelegate {
                 ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
                 ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
-            let _ = tx.send(ServoEvent::Console {
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
+            let _ = tx.try_send(ServoEvent::Console {
                 target_id: "0".to_string(),
                 level: servo_level,
                 text: message,
@@ -4721,7 +4730,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
         // console_log_tx (Path A) fallback for PageFrameNavigated.
         let event_tx = self.state.borrow().event_tx.clone();
         if let Some(ref tx) = event_tx {
-            let _ = tx.send(ServoEvent::FrameNavigated {
+            let _ = tx.try_send(ServoEvent::FrameNavigated {
                 target_id: "0".to_string(),
                 frame_id: "0".to_string(),
                 url: url_str,
@@ -4776,7 +4785,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 // so we use a lightweight log entry.
                 let event_tx = self.state.borrow().event_tx.clone();
                 if let Some(ref tx) = event_tx {
-                    let _ = tx.send(ServoEvent::FrameStartedLoading {
+                    let _ = tx.try_send(ServoEvent::FrameStartedLoading {
                         target_id: "0".to_string(),
                         frame_id: "0".to_string(),
                     });
@@ -4796,7 +4805,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 // console_log_tx (Path A) fallback for PageLoadEventFired.
                 let event_tx = self.state.borrow().event_tx.clone();
                 if let Some(ref tx) = event_tx {
-                    let _ = tx.send(ServoEvent::FrameStoppedLoading {
+                    let _ = tx.try_send(ServoEvent::FrameStoppedLoading {
                         target_id: "0".to_string(),
                         frame_id: "0".to_string(),
                     });
@@ -4867,7 +4876,10 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
                 ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
-            let _ = tx.send(ServoEvent::Console {
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
+            let _ = tx.try_send(ServoEvent::Console {
                 target_id: "0".to_string(),
                 level: servo_level,
                 text: message,
@@ -5233,7 +5245,7 @@ mod tests {
     fn test_servo_delegate_event_tx_set_and_get() {
         let delegate = BaoServoDelegate::new();
         assert!(delegate.event_tx().is_none());
-        let (tx, _rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         delegate.set_event_tx(tx);
         assert!(delegate.event_tx().is_some());
     }
@@ -5241,12 +5253,12 @@ mod tests {
     #[test]
     fn test_servo_delegate_event_tx_sends_console_event() {
         let delegate = BaoServoDelegate::new();
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         delegate.set_event_tx(tx);
 
         // When event_tx is set, show_console_message pushes ServoEvent::Console
         if let Some(ref tx) = delegate.event_tx() {
-            tx.send(ServoEvent::Console {
+            tx.try_send(ServoEvent::Console {
                 target_id: "0".to_string(),
                 level: ConsoleLevel::Info,
                 text: "hello".to_string(),
@@ -5275,12 +5287,12 @@ mod tests {
 
     #[test]
     fn test_webview_state_event_tx_propagation() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let mut state = BaoWebViewState::default();
         state.event_tx = Some(tx);
         // Simulate what notify_url_changed does with event_tx
         if let Some(ref tx) = state.event_tx {
-            tx.send(ServoEvent::FrameNavigated {
+            tx.try_send(ServoEvent::FrameNavigated {
                 target_id: "0".to_string(),
                 frame_id: "0".to_string(),
                 url: "https://example.com/".to_string(),
@@ -5330,7 +5342,7 @@ mod tests {
     fn test_notify_load_started_emits_frame_started_loading() {
         // When event_tx is set and LoadStatus::Started is received,
         // the delegate should emit ServoEvent::FrameStartedLoading.
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = Rc::new(RefCell::new(BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -5340,7 +5352,7 @@ mod tests {
 
         // Simulate what notify_load_status_changed does on LoadStatus::Started
         if let Some(ref tx) = state.borrow().event_tx {
-            tx.send(ServoEvent::FrameStartedLoading {
+            tx.try_send(ServoEvent::FrameStartedLoading {
                 target_id: "0".to_string(),
                 frame_id: "0".to_string(),
             })
@@ -5513,7 +5525,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_forward_worker_message_to_event_tx() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -5592,7 +5604,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_forward_worker_error_to_event_tx() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -5934,10 +5946,12 @@ mod tests {
         assert!(bao_stealth::engine_props::canvas_seed_for_test(fake_addr2).is_none());
         // All workers should be closing and terminated
         assert!(state.active_workers.iter().all(|g| g.handle().is_closing()));
-        assert!(state
-            .active_workers
-            .iter()
-            .all(|g| g.handle().is_terminated()));
+        assert!(
+            state
+                .active_workers
+                .iter()
+                .all(|g| g.handle().is_terminated())
+        );
     }
 
     #[test]
@@ -6355,7 +6369,7 @@ mod tests {
 
     #[test]
     fn test_forward_shared_worker_connect_event() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -6692,9 +6706,11 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's channel should be reaped, worker2's should remain
         assert_eq!(state.worker_channel_count(), 1);
-        assert!(state
-            .worker_channel(&WorkerId("worker2.js".to_string()))
-            .is_some());
+        assert!(
+            state
+                .worker_channel(&WorkerId("worker2.js".to_string()))
+                .is_some()
+        );
     }
 
     #[test]
@@ -6710,7 +6726,7 @@ mod tests {
 
     #[test]
     fn test_forward_worker_structured_message_with_payload() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -6737,7 +6753,7 @@ mod tests {
 
     #[test]
     fn test_forward_worker_structured_message_metadata_only() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -6758,7 +6774,7 @@ mod tests {
 
     #[test]
     fn test_drain_and_forward_worker_messages() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -7145,9 +7161,11 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's scope should be reaped, worker2's should remain
         assert_eq!(state.dedicated_worker_scope_count(), 1);
-        assert!(state
-            .dedicated_worker_scope(&WorkerId("worker2.js".to_string()))
-            .is_some());
+        assert!(
+            state
+                .dedicated_worker_scope(&WorkerId("worker2.js".to_string()))
+                .is_some()
+        );
     }
 
     #[test]
@@ -7440,16 +7458,20 @@ mod tests {
 
     #[test]
     fn test_worker_script_loader_validate_mime_type_valid() {
-        assert!(WorkerScriptLoader::validate_mime_type(
-            "text/javascript",
-            "https://example.com/worker.js"
-        )
-        .is_ok());
-        assert!(WorkerScriptLoader::validate_mime_type(
-            "application/javascript",
-            "https://example.com/worker.js"
-        )
-        .is_ok());
+        assert!(
+            WorkerScriptLoader::validate_mime_type(
+                "text/javascript",
+                "https://example.com/worker.js"
+            )
+            .is_ok()
+        );
+        assert!(
+            WorkerScriptLoader::validate_mime_type(
+                "application/javascript",
+                "https://example.com/worker.js"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -7564,9 +7586,11 @@ mod tests {
         state.reap_terminated_workers();
         // worker1's script load state should be reaped, worker2's should remain
         assert_eq!(state.worker_script_load_state_count(), 1);
-        assert!(state
-            .worker_script_load_state(&WorkerId("worker2.js".to_string()))
-            .is_some());
+        assert!(
+            state
+                .worker_script_load_state(&WorkerId("worker2.js".to_string()))
+                .is_some()
+        );
     }
 
     #[test]
@@ -7614,10 +7638,12 @@ mod tests {
 
         // Step 1: Worker created → Pending
         state.register_worker_script_load_state(worker_id.clone(), WorkerScriptLoadState::Pending);
-        assert!(state
-            .worker_script_load_state(&worker_id)
-            .unwrap()
-            .is_loading());
+        assert!(
+            state
+                .worker_script_load_state(&worker_id)
+                .unwrap()
+                .is_loading()
+        );
 
         // Step 2: Fetch started → Fetching
         state.update_worker_script_load_state(&worker_id, WorkerScriptLoadState::Fetching);
@@ -7637,10 +7663,12 @@ mod tests {
 
         // Step 6: Compilation succeeded → Ready
         state.update_worker_script_load_state(&worker_id, WorkerScriptLoadState::Ready);
-        assert!(state
-            .worker_script_load_state(&worker_id)
-            .unwrap()
-            .is_ready());
+        assert!(
+            state
+                .worker_script_load_state(&worker_id)
+                .unwrap()
+                .is_ready()
+        );
     }
 
     #[test]
@@ -7658,10 +7686,12 @@ mod tests {
                 url: "https://example.com/bad-worker.js".to_string(),
             }),
         );
-        assert!(state
-            .worker_script_load_state(&worker_id)
-            .unwrap()
-            .is_failed());
+        assert!(
+            state
+                .worker_script_load_state(&worker_id)
+                .unwrap()
+                .is_failed()
+        );
     }
 
     // ─── StealthProfile → WorkerScopeConfig conversion (REQ-BRW-004 criteria #12-17) ───
@@ -8119,7 +8149,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_drain_and_forward_shared_worker_messages() {
-        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
             ..Default::default()
@@ -8279,12 +8309,14 @@ mod tests {
             id.clone(),
             SharedWorkerGlobalScopeState::new(id.clone(), &config),
         );
-        assert!(state
-            .shared_worker_scope(&id)
-            .unwrap()
-            .navigator()
-            .user_agent
-            .is_empty());
+        assert!(
+            state
+                .shared_worker_scope(&id)
+                .unwrap()
+                .navigator()
+                .user_agent
+                .is_empty()
+        );
         let new_config = SharedWorkerScopeConfig {
             stealth_profile: None,
             user_agent: "Bao/1.0".to_string(),
@@ -8690,9 +8722,11 @@ mod tests {
         assert_eq!(found.unwrap().script_url, "sw.js");
 
         // Not found for URLs outside scope
-        assert!(delegate
-            .find_service_worker_for_url("/other/page")
-            .is_none());
+        assert!(
+            delegate
+                .find_service_worker_for_url("/other/page")
+                .is_none()
+        );
     }
 
     #[test]
