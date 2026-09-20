@@ -276,7 +276,9 @@ strum = { version = "0.28", features = ["derive"] }
 # does `use style::` (the fork's [lib] name). Key `style` + package bao-stylo
 # keeps `use style::` resolving both in-tree and after packaging rewrite
 # (lead ruling, shape A).
-style = { version = "=0.20.1", path = "../stylo", package = "bao-stylo" }
+# =0.20.2 (2026-09-20, #44 publish closure): first version whose style_derive
+# dep is the bao-stylo-derive fork instead of servo-held registry stylo_derive.
+style = { version = "=0.20.2", path = "../stylo", package = "bao-stylo" }
 stylo_atoms = { version = "=0.20.0" }
 stylo_dom = { version = "=0.20.0" }
 stylo_malloc_size_of = { version = "=0.20.0" }

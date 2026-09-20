@@ -25,7 +25,10 @@
 [package]
 edition = "2021"
 name = "bao-stylo"
-version = "0.20.1"
+# 0.20.2 = 0.20.1 + style_derive -> bao-stylo-derive fork swap (#44 publish
+# closure); 0.20.1 was the last version published against registry
+# stylo_derive and is retained there for the =0.20.1 pins.
+version = "0.20.2"
 authors = ["The Servo Project Developers"]
 build = "build.rs"
 links = "servo_style_crate"
@@ -224,8 +227,9 @@ version = "0.28"
 # in #[css(function)] ToCss derive output when serde_fmt is in the graph
 # (log "kv_unstable_serde" -> value-bag-serde1 -> serde_fmt, GPUI/egui stacks).
 # Dep key stays `style_derive` (lib code does `use style_derive::...`).
-# NOTE (publish): registry stylo_derive is servo-owned; publishing a bao-stylo
-# whose req is 0.20.1 requires publishing bao-stylo-derive 0.20.1 first.
+# NOTE (publish): registry stylo_derive is servo-owned; the registry side of
+# this swap shipped as bao-stylo-derive 0.20.1 (2026-09-20), republished
+# against by bao-stylo 0.20.2.
 version = "0.20.1"
 path = "bao-stylo-derive"
 package = "bao-stylo-derive"
