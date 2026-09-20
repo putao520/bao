@@ -4616,6 +4616,9 @@ impl ServoDelegate for BaoServoDelegate {
             || error_str.to_lowercase().contains("tls")
         {
             if let Some(ref tx) = *self.console_log_tx.borrow() {
+                // Lossy by design: fire-and-forget console observability — the
+                // send only fails once the consumer is dropped; never stall the
+                // servo script thread on CDP event delivery.
                 let _ = tx.send(ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
                     event_id: 0,
                     error_type: "net::ERR_CERT_AUTHORITY_INVALID".to_string(),
@@ -4649,6 +4652,9 @@ impl ServoDelegate for BaoServoDelegate {
         if message.starts_with("__BAO_EVT__") {
             if let Some(ref tx) = *self.console_log_tx.borrow() {
                 if let Some(ConsoleMessage::Event(evt)) = BaoEvent::from_console_text(&message) {
+                    // Lossy by design: fire-and-forget console observability — the
+                    // send only fails once the consumer is dropped; never stall the
+                    // servo script thread on CDP event delivery.
                     let _ = tx.send(ConsoleMessage::Event(evt));
                     return;
                 }
@@ -4687,6 +4693,9 @@ impl ServoDelegate for BaoServoDelegate {
                     text: message,
                 },
             };
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
             let _ = tx.send(msg);
         }
     }
@@ -4738,6 +4747,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
             });
         } else if let Some(ref tx) = self.state.borrow().console_log_tx {
             let loader_id = format!("{:016x}", url_str.len() as u64);
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
             let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
                 frame_id: "0".to_string(),
                 url: url_str,
@@ -4814,6 +4826,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs_f64();
+                    // Lossy by design: fire-and-forget console observability — the
+                    // send only fails once the consumer is dropped; never stall the
+                    // servo script thread on CDP event delivery.
                     let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired {
                         timestamp,
                     }));
@@ -4860,6 +4875,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
             let tx = self.state.borrow().console_log_tx.clone();
             if let Some(ref tx) = tx {
                 if let Some(ConsoleMessage::Event(evt)) = BaoEvent::from_console_text(&message) {
+                    // Lossy by design: fire-and-forget console observability — the
+                    // send only fails once the consumer is dropped; never stall the
+                    // servo script thread on CDP event delivery.
                     let _ = tx.send(ConsoleMessage::Event(evt));
                     return;
                 }
@@ -4895,6 +4913,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
                     text: message,
                 },
             };
+            // Lossy by design: fire-and-forget console observability — the
+            // send only fails once the consumer is dropped; never stall the
+            // servo script thread on CDP event delivery.
             let _ = tx.send(msg);
         }
     }
