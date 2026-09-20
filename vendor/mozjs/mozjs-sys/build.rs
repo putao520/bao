@@ -568,6 +568,28 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
         builder.clang_args(["-x", "c++"])
     };
 
+    if target == BuildTarget::JSApi {
+        // BAO DELTA (SM153): with libclang 23 the js/friend/MicroTask.h block
+        // (the `JS::GenericMicroTask` alias + the JS:: microtask functions) is
+        // not reached from the jsapi.cpp TU, but gluebindings.rs and the
+        // wrappers reference root::JS::GenericMicroTask. Upstream's own
+        // prebuilt jsapi.rs (libmozjs-x86_64-unknown-linux-gnu.tar.gz of
+        // mozjs-sys-v153.0.0-2) contains the identical block — parse the
+        // header explicitly so the emission matches upstream's output.
+        // (bindgen resolves .header() against the process CWD, not the clang
+        // -I paths, so the absolute dist path is required.)
+        builder = builder.header(
+            build_dir
+                .join("dist")
+                .join("include")
+                .join("js")
+                .join("friend")
+                .join("MicroTask.h")
+                .display()
+                .to_string(),
+        );
+    }
+
     let compiler = cc_rs_builder.get_compiler();
 
     // Setting CLANG_PATH to the absolute path (when using the default c++ compiler on macos),

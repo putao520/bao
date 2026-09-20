@@ -1,28 +1,12 @@
-BAO PATCH bao-0001 — BaselineFrame OSR NULL-activation guard (fork patch P4)
-Source: recovered verbatim from the patched vendor tree (vendor/mozjs/src-js/mozjs/js/src/jit/BaselineFrame.cpp).
-  Cross-verified byte-identical across: bao git tracked tree (clean vs HEAD), crates.io
-  bao-mozjs-src-js-140.14.0-0, and every materialized /var/cargo-builds/*/out/build/vsrc tree;
-  semantics identical to the 0.21.4-era tracked version (git bb313dd1, BCE-20260621-002).
-Upstream base: mozjs-140.14.0 — servo/mozjs release tag
-  mozjs-source-ee9f2b2aedc3c58347d66ca8d7b9f92ef1df3f53 (SpiderMonkey FIREFOX_140_14_0esr_RELEASE,
-  recorded in mozjs-sys/etc/COMMIT). No upstream patch (0002-0045) touches this file.
-Semantics (BCE-20260621-002): BaselineJIT OSR entry dereferences cx->activation()->prev() assuming a
-  live interpreter activation chain. Under bao (multi-page navigate + later evaluate driven through
-  servo's ScriptThread) cx->activation() can be NULL and prev() can be NULL/non-interpreter ->
-  deterministic SIGSEGV. Guard bails with false (caller falls back to the interpreter); behavior
-  unchanged when a real interpreter activation chain exists. Authorized mozjs source patch
-  (2026-06-21 user authorization, limited to BCE-20260621-002).
-Replay: paths are SM-tree-relative (-p1). Applied after 0002-0045 by etc/update.py sort order
-  (bao- prefix sorts last). Validate: git apply --check --directory=<SM tree> <this file>.
-
-diff --git a/js/src/jit/BaselineFrame.cpp b/js/src/jit/BaselineFrame.cpp
 --- a/js/src/jit/BaselineFrame.cpp
 +++ b/js/src/jit/BaselineFrame.cpp
-@@ -149,7 +149,28 @@
+@@ -152,9 +152,35 @@
    JSContext* cx =
        fp->script()->runtimeFromMainThread()->mainContextFromOwnThread();
  
 -  Activation* interpActivation = cx->activation()->prev();
+-  jsbytecode* pc = interpActivation->asInterpreter()->regs().pc;
+-  MOZ_ASSERT(fp->script()->containsPC(pc));
 +  // BAO PATCH (BCE-20260621-002): Guard against NULL `cx->activation()` and a
 +  // NULL or non-interpreter `prev()` activation. SpiderMonkey's BaselineJIT OSR
 +  // path assumes both `cx->activation()` is non-NULL and the previous
@@ -33,18 +17,25 @@ diff --git a/js/src/jit/BaselineFrame.cpp b/js/src/jit/BaselineFrame.cpp
 +  // JitActivation exists, its `prev()` can be NULL (no interpreter activation
 +  // on the stack). Dereferencing either SIGSEGVs deterministically (`Script#NN`
 +  // thread in `pagepool_chaos_memory_safety`).
-+  // Bail out cleanly (return false → caller falls back to the interpreter)
-+  // instead of crashing. This is conservative: when a real interpreter
-+  // activation chain exists, behavior is unchanged. Authorized mozjs upstream
-+  // patch (2026-06-21 user written authorization, limited to BCE-20260621-002).
-+  Activation* currentActivation = cx->activation();
-+  if (!currentActivation) {
-+    return false;
++  // SM153 re-anchor: initForOsr is `void` in 153 (the OSR trampoline has no
++  // bail channel back to the interpreter), so the 140-era `return false`
++  // bail-out no longer exists. The safety semantic is preserved by falling
++  // back to the script's entry pc: the frame is still fully initialized
++  // (RUNNING_IN_INTERPRETER + setInterpreterFields run exactly as in the
++  // normal path) and the NULL dereference that SIGSEGV'd under bao's
++  // multi-page workload is impossible. When a real interpreter activation
++  // chain exists, behavior is unchanged (interpreter pc is used, as before).
++  // Authorized mozjs upstream patch (2026-06-21 user written authorization,
++  // limited to BCE-20260621-002).
++  jsbytecode* pc = fp->script()->code();
++  if (Activation* currentActivation = cx->activation()) {
++    if (Activation* interpActivation = currentActivation->prev()) {
++      if (interpActivation->isInterpreter()) {
++        pc = interpActivation->asInterpreter()->regs().pc;
++        MOZ_ASSERT(fp->script()->containsPC(pc));
++      }
++    }
 +  }
-+  Activation* interpActivation = currentActivation->prev();
-+  if (!interpActivation || !interpActivation->isInterpreter()) {
-+    return false;
-+  }
-   jsbytecode* pc = interpActivation->asInterpreter()->regs().pc;
-   MOZ_ASSERT(fp->script()->containsPC(pc));
  
+   // We are doing OSR into the Baseline Interpreter. We can get the pc from the
+   // C++ interpreter's activation, we just have to skip the JitActivation.

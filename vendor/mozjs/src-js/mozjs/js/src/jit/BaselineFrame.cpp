@@ -162,20 +162,25 @@ void BaselineFrame::initForOsr(InterpreterFrame* fp, uint32_t numStackValues) {
   // JitActivation exists, its `prev()` can be NULL (no interpreter activation
   // on the stack). Dereferencing either SIGSEGVs deterministically (`Script#NN`
   // thread in `pagepool_chaos_memory_safety`).
-  // Bail out cleanly (return false → caller falls back to the interpreter)
-  // instead of crashing. This is conservative: when a real interpreter
-  // activation chain exists, behavior is unchanged. Authorized mozjs upstream
-  // patch (2026-06-21 user written authorization, limited to BCE-20260621-002).
-  Activation* currentActivation = cx->activation();
-  if (!currentActivation) {
-    return false;
+  // SM153 re-anchor: initForOsr is `void` in 153 (the OSR trampoline has no
+  // bail channel back to the interpreter), so the 140-era `return false`
+  // bail-out no longer exists. The safety semantic is preserved by falling
+  // back to the script's entry pc: the frame is still fully initialized
+  // (RUNNING_IN_INTERPRETER + setInterpreterFields run exactly as in the
+  // normal path) and the NULL dereference that SIGSEGV'd under bao's
+  // multi-page workload is impossible. When a real interpreter activation
+  // chain exists, behavior is unchanged (interpreter pc is used, as before).
+  // Authorized mozjs upstream patch (2026-06-21 user written authorization,
+  // limited to BCE-20260621-002).
+  jsbytecode* pc = fp->script()->code();
+  if (Activation* currentActivation = cx->activation()) {
+    if (Activation* interpActivation = currentActivation->prev()) {
+      if (interpActivation->isInterpreter()) {
+        pc = interpActivation->asInterpreter()->regs().pc;
+        MOZ_ASSERT(fp->script()->containsPC(pc));
+      }
+    }
   }
-  Activation* interpActivation = currentActivation->prev();
-  if (!interpActivation || !interpActivation->isInterpreter()) {
-    return false;
-  }
-  jsbytecode* pc = interpActivation->asInterpreter()->regs().pc;
-  MOZ_ASSERT(fp->script()->containsPC(pc));
 
   // We are doing OSR into the Baseline Interpreter. We can get the pc from the
   // C++ interpreter's activation, we just have to skip the JitActivation.
