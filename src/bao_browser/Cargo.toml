@@ -32,7 +32,7 @@ dashmap.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 base64 = "0.22"
 serde_json = "1"
-bao_cdp = { path = "../bao_cdp", version = "0.1.0" }
+bao_cdp = { path = "../bao_cdp", version = "0.2.0" }
 bao_cdp_client = { path = "../bao_cdp_client", version = "^0.2.0" }
 bao_stealth = { path = "../bao_stealth", version = "^0.2.0" }
 # sibling 精确下限(用户裁决 2026-09-02):memory_stats/realm_policy 等消费 bao_engine 0.1.16

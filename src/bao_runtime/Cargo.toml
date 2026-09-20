@@ -85,7 +85,7 @@ bun_glob = { path = "../glob", version = "^0.2.0" }
 bytes.workspace = true
 compact_str.workspace = true
 smallvec.workspace = true
-bao_uloop = { path = "../bao_uloop", version = "0.1.0" }
+bao_uloop = { path = "../bao_uloop", version = "0.2.0" }
 bun_sha_hmac = { path = "../sha_hmac", version = "^0.2.0" }
 # @trace REQ-BAO-API-010 [dep:bun_hash] — non-cryptographic hash (adler32, xxhash, cityhash, etc.)
 bun_hash = { path = "../hash", version = "0.1.0" }
@@ -122,8 +122,8 @@ regex = "1"
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "^0.2.0" }
-bao_uloop = { path = "../bao_uloop", version = "0.1.0" }
-bao_cdp = { path = "../bao_cdp", version = "0.1.0" }
+bao_uloop = { path = "../bao_uloop", version = "0.2.0" }
+bao_cdp = { path = "../bao_cdp", version = "0.2.0" }
 cdp-server = { path = "../cdp-server", version = "0.1.0" }
 # @trace REQ-CLI-001 [dep:bun_libarchive] — libarchive extraction regression
 # tests (upstream bun 5c26a6cca5 tar directory-mode masking). Dev-only: the
