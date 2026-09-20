@@ -1873,3 +1873,7 @@ R1-prep 已续派 er0(SM153 资产物化 dry-run+双向对账表+迁移 API 核�
 **工具链**:get_mozjs.py 零变化(etc/COMMIT→3b49a449);update.py 88→314L 大改写(extract_rust_crate 轨);filters +4 排除 +icu_capi −Jinja2;**#803 要求新 clang/NDK——R1 实做前门:frog-build:ubuntu24 clang 版本核查**。R3 预锚:上游以 mozjs- 前缀发布 mozilla+patched icu crates,bao 可消费发布物免自抽(extracted-crates vs src-intl 裁定输入)。
 
 **归一联动(用户裁决 2026-09-21)**:R1 SM153 导入落进**单一编译宇宙**——eu1(mozjs 吸收主 workspace)在 exdr2 收口后重派;导入协议禁复活 vendor workspace 根。
+
+### R1 工具链门结果+升级批准(2026-09-21,er0)
+
+**判定:farm 不够**——frog-build:ubuntu24 实测 clang 18.1.3(apt 浮动,ubuntu noble 上限 18.x)vs **SM153 硬门 ≥19.0**(toolchain.configure:1494-1499 FatalCheckError,非 warning)。NDK 缺失出域(android/ohos 腿已裁,#43 终裁;平台矩阵启用时再补)。升级已批执行:apt.llvm.org noble + clang-20/libclang-20-dev + alternatives,镜像钉版消浮动;一次成本=sccache 失效+frog-target 首轮全重编(预告)。证据可复算:ssh 16.18.0.1 docker run frog-build:ubuntu24 clang --version。
