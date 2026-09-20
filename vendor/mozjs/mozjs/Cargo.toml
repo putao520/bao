@@ -8,7 +8,7 @@
 name = "bao-mozjs"
 description = "Rust bindings to the Mozilla SpiderMonkey JavaScript engine."
 repository = "https://github.com/servo/mozjs/"
-version = "0.22.1"
+version = "0.24.0"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2021"
@@ -40,7 +40,7 @@ log = "0.4"
 # BAO PATCH (W0b): dep key stays `mozjs_sys` (code uses mozjs_sys::), package
 # renamed to bao-mozjs-sys; version+path dual-declared so `cargo package`
 # rewrites to the registry dep once bao-mozjs-sys is published.
-mozjs_sys = { version = "=140.14.0-1", path = "../mozjs-sys", package = "bao-mozjs-sys" }
+mozjs_sys = { version = "=153.3.0-0", path = "../mozjs-sys", package = "bao-mozjs-sys" }
 num-traits = "0.2"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

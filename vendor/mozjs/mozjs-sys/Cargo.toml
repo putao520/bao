@@ -18,7 +18,11 @@ repository = "https://github.com/servo/mozjs/"
 # BaoCollectRuntimeStats (jsglue.cpp, SM-EVOLUTION #27 裁决 6, a51a81ef
 # 2026-09-10) shipped in-tree under 140.14.0-0 after the 2026-08-22
 # registry upload; same-number content drift corrected by patch bump.
-version = "140.14.0-1"
+# 153.3.0-0 (2026-09-21): SM153 single-version forward port — source
+# mozjs-source-3b49a449 (FIREFOX_153_3_0esr_RELEASE), wrapper/tooling anchor
+# upstream 29ba7198 (#803); version lineage follows the SM (upstream:
+# mozjs-sys-v153.0.0-x tags; bao pins the newest 153 ESR = 153.3.0).
+version = "153.3.0-0"
 authors = ["Mozilla", "The Servo Project Developers"]
 links = "mozjs"
 license = "MPL-2.0"
@@ -51,7 +55,15 @@ jit = []
 jitspew = []
 libz-sys = ["dep:libz-sys"]
 libz-rs = ["dep:libz-rs-sys"]
-intl = ["dep:icu_capi"]
+# SM153: intl now also pulls the extracted rust-glue crates (cbindgen headers
+# flow into the SM build via DEP_*_GLUE_INCLUDE in build.rs; upstream 153 form).
+intl = [
+  "dep:icu_capi",
+  "dep:mozjs_unicode_bidi_ffi",
+  "dep:mozjs_properties_glue",
+  "dep:mozjs_collator_glue",
+  "dep:mozjs_locale_glue",
+]
 crown = []
 oom_with_hook = []
 
@@ -65,19 +77,29 @@ encoding_c_mem = "0.2.6"
 # virtual mozjs topsrcdir from the three roots + this crate's skeleton
 # (mozjs/{build,config*,mozglue,mfbt,nsprpub,...}). Version-pinned lockstep
 # with this crate (140.14.0-0 lineage) so `cargo package` rewrites cleanly.
-bao-mozjs-src-js = { path = "../src-js", version = "=140.14.0-0" }
-bao-mozjs-src-intl = { path = "../src-intl", version = "=140.14.0-0" }
-bao-mozjs-src-python = { path = "../src-python", version = "=140.14.0-0" }
-# unicode-bidi-ffi = { path = "./mozjs/intl/bidi/rust/unicode-bidi-ffi" }
-# keep in sync with intl/icu_capi/Cargo.toml
-icu_capi = { version = "=1.5.0", default-features = false, features = [
+bao-mozjs-src-js = { path = "../src-js", version = "=153.3.0-0" }
+bao-mozjs-src-intl = { path = "../src-intl", version = "=153.3.0-0" }
+bao-mozjs-src-python = { path = "../src-python", version = "=153.3.0-0" }
+# SM153 (upstream 29ba7198 form): the SM tree's rust glue crates are vendored
+# in-tree by upstream; the filters exclude them and update.py extracts them to
+# ../mozjs-extracted-crates (self-pinned to the SM milestone 153.3.0). The
+# glue crates' build.rs scripts emit cargo:include, surfaced here as
+# DEP_<links>_INCLUDE for the SM C++ build. normalizer_glue is non-optional
+# (build.rs requires DEP_NORMALIZER_GLUE_INCLUDE unconditionally, upstream).
+mozjs_unicode_bidi_ffi = { version = "=153.3.0", path = "../mozjs-extracted-crates/unicode_bidi_ffi", optional = true }
+mozjs_normalizer_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/normalizer_glue" }
+mozjs_properties_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/properties_glue", optional = true }
+mozjs_collator_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/collator_glue", optional = true }
+mozjs_locale_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/locale_glue", optional = true }
+# keep in sync with intl/icu_capi/Cargo.toml (upstream 153 pin: ICU4X 2.1.2)
+icu_capi = { version = "=2.1.2", default-features = false, features = [
+  "any_provider",
   "compiled_data",
-  "icu_calendar",
-  "icu_properties",
-  "icu_segmenter",
+  "segmenter",
+  "calendar",
 ], optional = true }
 
-libz-rs-sys = { version = "0.5.1", features = [
+libz-rs-sys = { version = "0.6", features = [
   "export-symbols",
 ], optional = true }
 # SM depends on them and we provide them using cargo
