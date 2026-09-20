@@ -1877,3 +1877,11 @@ R1-prep 已续派 er0(SM153 资产物化 dry-run+双向对账表+迁移 API 核�
 ### R1 工具链门结果+升级批准(2026-09-21,er0)
 
 **判定:farm 不够**——frog-build:ubuntu24 实测 clang 18.1.3(apt 浮动,ubuntu noble 上限 18.x)vs **SM153 硬门 ≥19.0**(toolchain.configure:1494-1499 FatalCheckError,非 warning)。NDK 缺失出域(android/ohos 腿已裁,#43 终裁;平台矩阵启用时再补)。升级已批执行:apt.llvm.org noble + clang-20/libclang-20-dev + alternatives,镜像钉版消浮动;一次成本=sccache 失效+frog-target 首轮全重编(预告)。证据可复算:ssh 16.18.0.1 docker run frog-build:ubuntu24 clang --version。
+
+### REQ-ENG-012 stage1 完成(2026-09-21,exdr2,commit 6f9c6a01)
+
+EncodeStencil XDR 绑定落地(5 文件 ~40 行净增,全 vendor/mozjs):根因=build.rs blacklist_fn 显式排除 `JS::EncodeStencil`(上游 bb313dd1 进场,动机=第三参 `TranscodeBuffer&`(mozilla::Vector<u8>)bindgen 降级为 u8 无构造面);解法=un-blacklist(保留真 C++ mangled link_name,ABI 正确)+ jsglue 四 shim(Create/Destroy/Begin/Length,buffer C++ 侧生死 Rust 持 opaque 句柄,SetBuildId 先例)。V:生成 jsapi.rs link_name 逐字节对齐实证 + smoke 独立复跑 1/1(真 parse→encode×2 字节确定性→独立堆副本 decode→双 fresh realm 实例化执行→完成值等价)。CLAUDE.md patch 清单第 7 项落盘(6→7 项)。
+
+**stage2 输入(挂 #26)**:缓存键候选 `GetScriptTranscodingBuildId`/`GetOptimizedEncodingBuildId`(同 Vector 降级病同 shim 可治,BuildId.h:77/:58);EMBEDDER CONTRACT=encode 前必装 SetProcessBuildIdOp(否则 StencilXdr.cpp:1373 空函数指针 SIGSEGV,gdb 实证)。
+
+**上游 issue(禁自修)**:草稿 /tmp/issue-servo-mozjs.md(140.14+153.3 双版本同缺陷实证+fail-closed 建议修法)——**提交被 fine-grained PAT 仓库范围阻断**(servo/mozjs 出域),待用户扩 PAT 或手工提交。wrap! 宏零参缺陷(bao 侧)记录在案,下次新增零参 glue 绑定时绕行。
