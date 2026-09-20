@@ -8,7 +8,7 @@ name = "bun_runtime"
 # so this patch release ships alone. runtime fix batch: atob/btoa binary fidelity, async_hooks promise identity, spawn watch, SC bridge + WHATWG URL parity, premature loop exit fetch teardown.
 # 0.1.2 (2026-08-19): stable-channel fix — http_client body handoff via
 # bun_core::vec::chan_vec_to_std (Bytes::From needs the std Vec).
-version = "0.2.4"
+version = "0.2.5"
 description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true
@@ -56,7 +56,7 @@ bun_spawn_sys = { path = "../spawn_sys", version = "0.1.0" }
 # @trace REQ-BAO-API-018 [dep:bun_shell_parser] — Shell lexer/parser/AST (replaces hand-written shell parsing)
 bun_shell_parser = { path = "../shell_parser", version = "0.1.0" }
 # @trace REQ-BAO-API-018 [dep:bun_alloc] — Arena allocator for bun_shell_parser Lexer/Parser
-bun_alloc = { path = "../bun_alloc", version = "0.1.0" }
+bun_alloc = { path = "../bun_alloc", version = "0.2.0" }
 bun_sys = { path = "../sys", version = "0.1.0" }
 bun_opaque = { path = "../opaque", version = "0.1.0" }
 bun_picohttp = { path = "../picohttp", version = "0.1.0" }

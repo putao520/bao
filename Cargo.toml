@@ -200,7 +200,7 @@ bun_resolve_builtins = { path = "src/resolve_builtins", version = "0.1.0" }
 bun_url = { path = "src/url", version = "0.1.0" }
 bun_windows_sys = { path = "src/windows_sys", version = "0.1.0" }
 bun_ptr = { path = "src/ptr", version = "0.1.0" }
-bun_alloc = { path = "src/bun_alloc", version = "0.1.0" }
+bun_alloc = { path = "src/bun_alloc", version = "0.2.0" }
 bun_standalone_graph = { path = "src/standalone_graph", version = "0.1.0" }
 bun_uws = { path = "src/uws", version = "0.1.0" }
 bun_wyhash = { path = "src/wyhash", version = "0.1.0" }

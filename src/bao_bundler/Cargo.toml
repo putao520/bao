@@ -2,7 +2,7 @@
 name = "bao_bundler"
 # 0.1.17 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0 breaking wave).
 # 0.1.1 (2026-08-19): no_mangle __force_link_entry single-owner (6f515eab); non-closure, lead-approved.
-version = "0.1.19"
+version = "0.1.20"
 description = "SpiderMonkey CYCLEBREAK bridge for bun_bundler — provides SM-backed link-time symbols and dispatch interfaces"
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ repository = "https://github.com/putao520/bao"
 # for the CYCLEBREAK symbols and dispatch interfaces.
 bun_bundler = { path = "../bundler", version = "0.1.11" }
 # Arena for the per-build Transpiler lifetime (Bun.build native driver).
-bun_alloc = { path = "../bun_alloc", version = "0.1.0" }
+bun_alloc = { path = "../bun_alloc", version = "0.2.0" }
 # Macro-seam CYCLEBREAK types (MacroContext / MacroRemapEntry) for macro_context.rs.
 bun_js_parser = { path = "../js_parser", version = "0.1.0" }
 # SWC-backed transpiler (the real bun_bundler transpiler pipeline). The
