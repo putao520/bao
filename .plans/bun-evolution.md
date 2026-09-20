@@ -466,3 +466,9 @@ EventSubscriber bounded 归真落地(footprint 单文件 event_translator.rs +27
 ### 2026-09-21 / B2 D3 闭合(06c76af6)
 
 InMemoryTransport command_timeout 归真(2 文件):direct-dispatch 无界同步调用→一次性 worker 线程(bao-cdp-inmem-dispatch)派发 + 调用线程 `recv_timeout(command_timeout)` 有界等待;超时→`CdpError::Timeout`(method+duration,镜像 ws.rs);迟到响应丢弃不改道后续命令;worker panic 经 join 取回在调用线程重抛(旧可观测语义保留);spawn 失败显式 TransportError 零静默降级;trait 公共面零变更。5 新测试(慢命令有界/错误消息/快命令零变化/超时后可用+不改道/panic 传播)。**验收在 worktree@HEAD 干净树(§10 律):1209/1209 全绿**(lib 463+suite 731+doctest 15;主树彼时被 em1/eu1 在途 vendor/mozjs 态所阻,归属如实标注)。nextest 本机缺失走文档化回退(plain --test-threads=1)。B2 首批:D5✅ D3✅ D2(ec3)在途。
+
+### 2026-09-21 / vendor 归一设计轮闭合(ev4,产物固化 .plans/ev4-unify/)
+
+**拓扑纠偏(实测)**:真正第二宇宙仅 vendor/servo(虚拟 [workspace] 根+1252-pkg tracked lock);stylo/ipc-channel/freetype-wrapper 三树零根零继承零 patch,早已是主锁内 path 包(bao-stylo 0.20.2/bao-ipc-channel 0.22.0/freetype 0.8.0 source=path),零 manifest 变换——此前"4 同类双宇宙"系未实测推断,3/4 误判,按存在性断言实测律纠正。
+
+**路线裁决 Option A(内联+删根+保 exclude)**:servo 组件保持非成员 path dep,单宇宙达成且**主锁零字节变化**(--frozen 机械可证);Option B(成员化)否决——铁证:bao-servo 在 servo 锁有 winit dev 边而主锁无 winit,成员化拉入 ~128 新包名+85 同名异版并行,重造 dev-surface 双编译。patch parity 完整(双侧各恰 1 条 freetype 同绝对目标)。**rehearsal 整树副本实测:70 manifest 重写/1727 继承点语义 ERR=0/注释保留/幂等**。工具链:servo rust-toolchain 1.95.0 冲突删,servo lock 删,两处 profile override 随根消亡。执行序 C1 内联→C2 删根(主锁零 diff 门)→C3 三树终态→C4 daily-ops remap(验证走主根 -p/publish 走组件目录 --manifest-path);**实现轮 DAG 边=eu1 落地**(同构脚本可复用于 mozjs --tree 小适配)。证据不足项 1:组件 publish-verify 解析 registry freetype,实现轮一次 dry-run 收口。
