@@ -462,3 +462,7 @@ B2 首批候选面全部在途(文件不相交 DAG,合同互相钉死所有权�
 ### 2026-09-21 / B2 D5 闭合(3df9b83b)
 
 EventSubscriber bounded 归真落地(footprint 单文件 event_translator.rs +275/-31):capacity 物理生效(默认 1024)、满容 drop-newest + dropped_count() 原子计数、饱和日志节流。**实现形态偏离合同字面(pending 计数器)→ 双通道 broker(入口无界 mpsc 收裸 sender 克隆 + 出口 sync_channel 物理有界 + broker 线程 try_send)**——C 验收接受,理由成立:裸 Receiver 交出后计数器无递减源,手写计数=1024 终身事件后阀门永久关闭(比现状更糟的全事件丢失,v1 首轮 stop 已证);std 权威维护容量覆盖全部 sender 面(含 bao_browser 裸克隆生产路径),零公共签名变更。语义边界如实入档:跨路径相对顺序不保证(单路径 FIFO 不变)、每实例一 broker 线程(退出条件完备三形态验证)、capacity=0 即到即判满。证据:5/5 新测试 C 独立复绿 + 全 crate lib 465/suite 731/doctest 15 绿(与他波在途共存)。D2/D3(ec2/ec3)在途,B2 首批候选面收口过半。
+
+### 2026-09-21 / B2 D3 闭合(06c76af6)
+
+InMemoryTransport command_timeout 归真(2 文件):direct-dispatch 无界同步调用→一次性 worker 线程(bao-cdp-inmem-dispatch)派发 + 调用线程 `recv_timeout(command_timeout)` 有界等待;超时→`CdpError::Timeout`(method+duration,镜像 ws.rs);迟到响应丢弃不改道后续命令;worker panic 经 join 取回在调用线程重抛(旧可观测语义保留);spawn 失败显式 TransportError 零静默降级;trait 公共面零变更。5 新测试(慢命令有界/错误消息/快命令零变化/超时后可用+不改道/panic 传播)。**验收在 worktree@HEAD 干净树(§10 律):1209/1209 全绿**(lib 463+suite 731+doctest 15;主树彼时被 em1/eu1 在途 vendor/mozjs 态所阻,归属如实标注)。nextest 本机缺失走文档化回退(plain --test-threads=1)。B2 首批:D5✅ D3✅ D2(ec3)在途。
