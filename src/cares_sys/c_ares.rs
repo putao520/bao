@@ -1009,15 +1009,38 @@ impl Channel {
     }
 }
 
+// c-ares allocator hooks — C-ABI shims over the default allocator
+// ([`bun_alloc::default_alloc`]). Injected as a set; c-ares routes every
+// internal allocation through exactly these three, so the pairing
+// (malloc/free/realloc over the same backend) must be kept.
+unsafe extern "C" fn ares_default_malloc(size: usize) -> *mut c_void {
+    bun_alloc::default_alloc::malloc(size)
+}
+
+/// # Safety
+/// c-ares only passes pointers it obtained from `ares_default_malloc`.
+unsafe extern "C" fn ares_default_free(ptr: *mut c_void) {
+    // SAFETY: pairing guarantee above.
+    unsafe { bun_alloc::default_alloc::free(ptr) }
+}
+
+/// # Safety
+/// c-ares only passes pointers it obtained from `ares_default_malloc`.
+unsafe extern "C" fn ares_default_realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
+    // SAFETY: pairing guarantee above.
+    unsafe { bun_alloc::default_alloc::realloc(ptr, size) }
+}
+
 fn library_init() {
     bun_core::run_once! {{
-        // SAFETY: c-ares FFI; mimalloc fn pointers have C ABI matching ares_library_init_mem's contract.
+        // SAFETY: c-ares FFI; the shim fn pointers have C ABI matching
+        // ares_library_init_mem's contract.
         let rc = unsafe {
             ares_library_init_mem(
                 ARES_LIB_INIT_ALL,
-                Some(bun_alloc::mimalloc::mi_malloc),
-                Some(bun_alloc::mimalloc::mi_free),
-                Some(bun_alloc::mimalloc::mi_realloc),
+                Some(ares_default_malloc),
+                Some(ares_default_free),
+                Some(ares_default_realloc),
             )
         };
         if rc != ARES_SUCCESS {

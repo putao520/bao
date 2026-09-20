@@ -221,12 +221,6 @@ pub type ZlibReaderState = State;
 pub type ZlibReaderArrayListState = State;
 pub type ZlibCompressorArrayListState = State;
 
-// Allocator thunks — preserved for API compatibility, no-op in pure Rust.
-#[allow(non_snake_case)]
-mod ZlibAllocator {
-    bun_alloc::c_thunks_for_zone!("zlib");
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // zlib version
 // ──────────────────────────────────────────────────────────────────────────

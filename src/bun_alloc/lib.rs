@@ -102,9 +102,6 @@ pub mod core_alloc {
 // Re-exports (thin — match Zig `pub const X = @import(...)` lines)
 // ──────────────────────────────────────────────────────────────────────────
 
-pub use bun_mimalloc_sys::mimalloc;
-pub mod c_thunks;
-
 // ── Allocator vtable (mirrors std.mem.Allocator) ──────────────────────────
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -339,30 +336,29 @@ impl<'a> FixedBufferAllocator<'a> {
 }
 
 // PORTING.md §Allocators: AST crates thread an `Arena`; non-AST use Vec/Box
-// (global mimalloc). `Arena` is now the real per-heap `MimallocArena` (matching
-// Zig's `bun.allocators.MimallocArena`) — unlike `bumpalo::Bump`, it supports
-// per-allocation free + realloc, so `ArenaVec` no longer leaks on grow.
-//
-// `bumpalo::Bump` is kept as `Bump` for genuinely bump-only scratch (parser
-// node stores that are never resized and where the no-op `deallocate` is the
-// point).
-pub use mimalloc_arena::MimallocArena;
-pub type Arena = MimallocArena;
+// (global heap). `Arena` is the std-backend arena ([`StdArena`], user verdict
+// 2026-09-20: remove all custom allocators) — like the former `MimallocArena`
+// it replaced (deleted 2026-09-20), it supports per-allocation free + realloc,
+// so `ArenaVec` does not leak on grow.
+pub use std_arena::StdArena;
+/// LIFECYCLE: `Drop` frees all live blocks — including `transfer_arena`-moved
+/// ones (no mimalloc page abdication). See the doc on `impl Drop for StdArena`.
+pub type Arena = StdArena;
 /// `bumpalo::Bump` — kept for genuinely bump-only scratch that's never resized.
 pub type Bump = bumpalo::Bump;
 mod baby_vec;
 pub use baby_vec::BabyVec;
 /// Arena-backed `Vec` with `u32` length/capacity — port of Zig's
-/// `BabyList(T)`. 24 B (vs 32 B for `Vec<T, &'a MimallocArena>`); the
+/// `BabyList(T)`. 24 B (vs 32 B for `Vec<T, &'a StdArena>`); the
 /// allocator handle is kept inline for lifetime checking. Growth/free route
-/// through `<&MimallocArena as Allocator>` (= `mi_heap_realloc_aligned` /
-/// `mi_free`); reclaimed on arena `reset`/`Drop`.
+/// through `<&StdArena as Allocator>` (relocate + free, per-allocation);
+/// reclaimed on arena `reset`/`Drop`.
 pub type ArenaVec<'a, T> = BabyVec<'a, T>;
-pub use mimalloc_arena::{ArenaString, ArenaVecExt};
+pub use std_arena::{ArenaString, ArenaVecExt};
 
 /// `bumpalo::collections::Vec::from_iter_in` parity for [`ArenaVec`].
 #[inline]
-pub fn vec_from_iter_in<'a, T, I>(iter: I, arena: &'a MimallocArena) -> ArenaVec<'a, T>
+pub fn vec_from_iter_in<'a, T, I>(iter: I, arena: &'a StdArena) -> ArenaVec<'a, T>
 where
     I: IntoIterator<Item = T>,
 {
@@ -380,18 +376,13 @@ where
 /// each `append(allocator, ..)` call site; the Rust port stores `&'a Arena` in
 /// the `Vec`, so the equivalent is swapping that field.
 ///
-/// Sound because `<&MimallocArena as Allocator>` is heap-agnostic on the
-/// existing buffer:
-/// - `deallocate` → `mi_free(ptr)`: looks up the owning heap from the pointer's
-///   page metadata; works from any thread on any heap's allocation.
-/// - `grow`/`shrink` → `mi_heap_realloc_aligned(dst, ptr, ..)`: returns `ptr`
-///   in-place if it fits (read-only `mi_usable_size`), else allocs on `dst`,
-///   `memcpy`s, then `mi_free(ptr)`.
-///
-/// The original arena is never `mi_heap_malloc`-ed from again via this `Vec`,
-/// so the [`MimallocArena`] single-thread-alloc contract is preserved.
+/// Sound because `<&StdArena as Allocator>` is arena-agnostic on the existing
+/// buffer: every payload is an independent libc allocation carrying its own
+/// prefix (owning-node pointer), so `deallocate`/`grow` through `dst` touch
+/// only that block's own record — no arena membership is consulted (see
+/// `StdArena`'s `free_payload`, the structural form of this contract).
 #[inline]
-pub fn transfer_arena<'a, T>(v: &mut ArenaVec<'a, T>, dst: &'a MimallocArena) {
+pub fn transfer_arena<'a, T>(v: &mut ArenaVec<'a, T>, dst: &'a StdArena) {
     v.set_allocator(dst);
 }
 
@@ -407,9 +398,6 @@ macro_rules! arena_format {
     }};
 }
 
-/// `bun.use_mimalloc` — false under ASAN, where the global allocator is `std::alloc::System`.
-pub const USE_MIMALLOC: bool = cfg!(not(bun_asan));
-
 // ── Allocator-vtable modules: per-module disposition (PORTING.md §Allocators) ──
 //
 // These modelled Zig's `std.mem.Allocator` vtable. With `#[global_allocator]`
@@ -417,16 +405,16 @@ pub const USE_MIMALLOC: bool = cfg!(not(bun_asan));
 // PORTING.md §Forbidden) so the .zig↔.rs diff pass has a real body to compare;
 // callers are migrated incrementally.
 //
-//   MimallocArena            → prefer `bun_alloc::Arena` (= bumpalo::Bump)
 //   NullableAllocator        → prefer `Option<&Arena>` or drop the param
 //   MaxHeapAllocator         → debug-only cap (single-allocation arena)
 //   BufferFallbackAllocator  → PORTING.md "StackFallbackAllocator → just use the heap"
 //   fallback                 → libc-malloc + zeroing wrapper (Zig std.heap.c_allocator)
 //   maybe_owned              → prefer `std::borrow::Cow` / `bun_ptr::Owned`
 //   heap_breakdown           → macOS malloc_zone_* per-tag heaps (debug builds)
-//   basic                    → `impl GlobalAlloc for Mimalloc` above is the canonical impl
+//   basic                    → the `C_ALLOCATOR`/`Z_ALLOCATOR` vtables in
+//                              `basic.rs` are the canonical faces
 //
-//   LinuxMemFdAllocator, MimallocArena (the vtable impl)
+//   LinuxMemFdAllocator (the vtable impl)
 //   import bun_core/sys/runtime/collections and so live in
 //   `bun_runtime::allocators`; callers import from
 //   there directly.
@@ -441,66 +429,44 @@ pub mod maybe_owned;
 pub mod nullable_allocator;
 pub mod stack_fallback;
 
-/// Raw alloc/free matching the `#[global_allocator]` (`mi_*` normally, libc under ASAN).
+/// Raw alloc/free against the default heap — plain libc, the sole backend
+/// since the mimalloc arm was removed. Callers stay zero-aware: signatures
+/// unchanged, and every allocation is freed through the same libc pair.
 pub mod default_alloc {
     use core::ffi::c_void;
 
     #[inline]
     pub fn malloc(size: usize) -> *mut c_void {
-        if cfg!(bun_asan) {
-            // SAFETY: `libc::malloc` has no input preconditions; null on failure.
-            unsafe { libc::malloc(size) }
-        } else {
-            crate::mimalloc::mi_malloc(size)
-        }
+        // SAFETY: `libc::malloc` has no input preconditions; null on failure.
+        unsafe { libc::malloc(size) }
     }
 
     #[inline]
     pub fn zalloc(size: usize) -> *mut c_void {
-        if cfg!(bun_asan) {
-            // SAFETY: `libc::calloc` has no input preconditions; null on failure.
-            unsafe { libc::calloc(1, size) }
-        } else {
-            crate::mimalloc::mi_zalloc(size)
-        }
+        // SAFETY: `libc::calloc` has no input preconditions; null on failure.
+        unsafe { libc::calloc(1, size) }
     }
 
     #[inline]
     pub fn calloc(count: usize, size: usize) -> *mut c_void {
-        if cfg!(bun_asan) {
-            // SAFETY: `libc::calloc` has no input preconditions; null on failure.
-            unsafe { libc::calloc(count, size) }
-        } else {
-            crate::mimalloc::mi_calloc(count, size)
-        }
+        // SAFETY: `libc::calloc` has no input preconditions; null on failure.
+        unsafe { libc::calloc(count, size) }
     }
 
     /// # Safety
     /// `ptr` must be null or a live allocation from the default allocator.
     #[inline]
     pub unsafe fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
-        if cfg!(bun_asan) {
-            // SAFETY: caller guarantees `ptr` is null or a live libc allocation
-            // (the default allocator under ASAN).
-            unsafe { libc::realloc(ptr, new_size) }
-        } else {
-            // SAFETY: caller guarantees `ptr` is null or a live mimalloc allocation.
-            unsafe { crate::mimalloc::mi_realloc(ptr, new_size) }
-        }
+        // SAFETY: caller guarantees `ptr` is null or a live libc allocation.
+        unsafe { libc::realloc(ptr, new_size) }
     }
 
     /// # Safety
     /// `ptr` must be null or a live allocation from the default allocator.
     #[inline]
     pub unsafe fn free(ptr: *mut c_void) {
-        if cfg!(bun_asan) {
-            // SAFETY: caller guarantees `ptr` is null or a live libc allocation
-            // (the default allocator under ASAN).
-            unsafe { libc::free(ptr) }
-        } else {
-            // SAFETY: caller guarantees `ptr` is null or a live mimalloc allocation.
-            unsafe { crate::mimalloc::mi_free(ptr) }
-        }
+        // SAFETY: caller guarantees `ptr` is null or a live libc allocation.
+        unsafe { libc::free(ptr) }
     }
 
     /// # Safety
@@ -510,31 +476,23 @@ pub mod default_alloc {
         if ptr.is_null() {
             return 0;
         }
-        // Under `bun_asan` the global allocator is `std::alloc::System`, so the
-        // size must come from libc, not mimalloc — and the symbol differs per
-        // OS (`malloc_usable_size` on Linux, `malloc_size` on macOS). `bun_asan`
-        // is only ever set on Linux or macOS, so the catch-all (non-asan, every
-        // `check-all` target including Windows) stays on mimalloc.
-        #[cfg(all(bun_asan, target_os = "linux"))]
-        return unsafe { libc::malloc_usable_size(ptr.cast_mut()) };
-        #[cfg(all(bun_asan, target_os = "macos"))]
+        // The size-query symbol differs per OS. libc covers every supported
+        // target: `malloc_size` (macOS), `_msize` (Windows), and
+        // `malloc_usable_size` (glibc/musl/Android/FreeBSD) elsewhere.
+        #[cfg(target_os = "macos")]
         return unsafe { libc::malloc_size(ptr) };
-        // SAFETY: caller guarantees `ptr` is a live mimalloc allocation (the
+        #[cfg(target_os = "windows")]
+        return unsafe { libc::_msize(ptr.cast_mut()) };
+        // SAFETY: caller guarantees `ptr` is a live libc allocation (the
         // non-null check above already handled null).
-        #[cfg(not(any(all(bun_asan, target_os = "linux"), all(bun_asan, target_os = "macos"))))]
-        return unsafe { crate::mimalloc::mi_usable_size(ptr) };
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        return unsafe { libc::malloc_usable_size(ptr.cast_mut()) };
     }
 
     // The aligned variants are `#[cfg]`-split (not `if cfg!()`) because the
-    // posix_memalign/malloc_usable_size symbols don't exist on Windows.
+    // posix_memalign symbol doesn't exist on Windows.
 
-    #[cfg(not(bun_asan))]
-    #[inline]
-    pub fn malloc_aligned(size: usize, align: usize) -> *mut c_void {
-        crate::mimalloc::mi_malloc_auto_align(size, align)
-    }
-
-    #[cfg(bun_asan)]
+    #[cfg(not(windows))]
     #[inline]
     pub fn malloc_aligned(size: usize, align: usize) -> *mut c_void {
         if align <= crate::MAX_ALIGN_T {
@@ -548,13 +506,7 @@ pub mod default_alloc {
         p
     }
 
-    #[cfg(not(bun_asan))]
-    #[inline]
-    pub fn zalloc_aligned(size: usize, align: usize) -> *mut c_void {
-        crate::mimalloc::mi_zalloc_auto_align(size, align)
-    }
-
-    #[cfg(bun_asan)]
+    #[cfg(not(windows))]
     #[inline]
     pub fn zalloc_aligned(size: usize, align: usize) -> *mut c_void {
         if align <= crate::MAX_ALIGN_T {
@@ -569,17 +521,7 @@ pub mod default_alloc {
 
     /// # Safety
     /// `ptr` must be null or a live allocation from the default allocator with the given `align`.
-    #[cfg(not(bun_asan))]
-    #[inline]
-    pub unsafe fn realloc_aligned(ptr: *mut c_void, new_size: usize, align: usize) -> *mut c_void {
-        // SAFETY: caller guarantees `ptr` is null or a live mimalloc allocation
-        // with alignment `align`.
-        unsafe { crate::mimalloc::mi_realloc_aligned(ptr, new_size, align) }
-    }
-
-    /// # Safety
-    /// `ptr` must be null or a live allocation from the default allocator with the given `align`.
-    #[cfg(bun_asan)]
+    #[cfg(not(windows))]
     #[inline]
     pub unsafe fn realloc_aligned(ptr: *mut c_void, new_size: usize, align: usize) -> *mut c_void {
         if align <= crate::MAX_ALIGN_T {
@@ -606,8 +548,9 @@ pub use maybe_owned::MaybeOwned;
 pub use nullable_allocator::NullableAllocator;
 pub use stack_fallback::{ArenaPtr, StackFallback};
 
-#[path = "MimallocArena.rs"]
-pub mod mimalloc_arena;
+/// The std-backend arena (`Arena`'s backend since the swap).
+#[path = "StdArena.rs"]
+pub mod std_arena;
 
 pub mod ast_alloc;
 pub use ast_alloc::{AstAlloc, AstBox, AstVec};
@@ -880,111 +823,12 @@ macro_rules! oom_from_alloc {
     )+ };
 }
 
-/// The mimalloc-backed `#[global_allocator]` payload.
-///
-/// Per PORTING.md "Prereq for every crate":
-/// `#[global_allocator] static ALLOC: bun_alloc::Mimalloc = bun_alloc::Mimalloc;`
-/// must be set at the binary root before any `Box`/`Rc`/`Arc`/`Vec` mapping is valid.
-///
-/// Mirrors `src/bun_alloc/basic.zig` `c_allocator` vtable, using mimalloc's
-/// `MI_MAX_ALIGN_SIZE` (16) fast-path: alignments ≤16 go through `mi_malloc`,
-/// larger through `mi_malloc_aligned`. `mi_free` handles both.
-pub struct Mimalloc;
-
-use mimalloc::MI_MAX_ALIGN_SIZE;
-
-// SAFETY: mimalloc's allocator contract matches GlobalAlloc's:
-//   - `mi_malloc`/`mi_malloc_aligned` return null on failure or a ptr to ≥size
-//     bytes aligned to ≥layout.align() (when align > MI_MAX_ALIGN_SIZE we use
-//     the explicit aligned variant).
-//   - `mi_free` accepts any ptr returned by either alloc fn (mimalloc tracks
-//     alignment internally via the page metadata).
-//   - `mi_zalloc*` zero-fills.
-//   - `mi_realloc_aligned` preserves min(old_size, new_size) bytes.
-unsafe impl core::alloc::GlobalAlloc for Mimalloc {
-    #[inline]
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        mimalloc::mi_malloc_auto_align(layout.size(), layout.align()).cast()
-    }
-
-    #[inline]
-    unsafe fn alloc_zeroed(&self, layout: core::alloc::Layout) -> *mut u8 {
-        mimalloc::mi_zalloc_auto_align(layout.size(), layout.align()).cast()
-    }
-
-    #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
-        // SAFETY: `GlobalAlloc::dealloc` contract — `ptr` was returned by one of
-        // the mimalloc alloc paths above; `mi_free` reads size/align from page metadata.
-        unsafe { mimalloc::mi_free(ptr.cast()) }
-    }
-
-    #[inline]
-    unsafe fn realloc(
-        &self,
-        ptr: *mut u8,
-        layout: core::alloc::Layout,
-        new_size: usize,
-    ) -> *mut u8 {
-        // SAFETY: `GlobalAlloc::realloc` contract — `ptr` is a live mimalloc
-        // allocation with `layout`; `mi_realloc*` preserves the `min(old, new)` prefix.
-        unsafe {
-            if layout.align() <= MI_MAX_ALIGN_SIZE {
-                mimalloc::mi_realloc(ptr.cast(), new_size)
-            } else {
-                mimalloc::mi_realloc_aligned(ptr.cast(), new_size, layout.align())
-            }
-        }
-        .cast()
-    }
-}
-
-/// `bun.default_allocator.realloc(slice, new_size)` — resize a mimalloc-owned
-/// byte allocation in place when possible, returning the (possibly moved) slice.
-///
-/// # Safety
-/// `slice` must be backed by a live allocation from the default (mimalloc)
-/// allocator with byte alignment ≤ `MI_MAX_ALIGN_SIZE`. After return, the old
-/// `slice` reference is invalidated; only the returned slice is valid.
-pub unsafe fn realloc_slice(
-    slice: &mut [u8],
-    new_size: usize,
-) -> core::result::Result<&mut [u8], AllocError> {
-    // SAFETY: caller guarantees `slice.as_mut_ptr()` is a mimalloc-owned block.
-    let new_ptr = unsafe { mimalloc::mi_realloc(slice.as_mut_ptr().cast(), new_size) };
-    if new_ptr.is_null() {
-        return Err(AllocError);
-    }
-    // SAFETY: `mi_realloc` returns at least `new_size` bytes, aligned per
-    // `MI_MAX_ALIGN_SIZE`, with the prefix preserved up to `min(old, new)`.
-    Ok(unsafe { core::slice::from_raw_parts_mut(new_ptr.cast::<u8>(), new_size) })
-}
-
-/// Raw-pointer variant of [`realloc_slice`] for callers that cannot soundly
-/// materialize a `&mut [u8]` over their buffer (e.g. it contains uninitialized
-/// or padding bytes). Returns the new base pointer; `min(old_size, new_size)`
-/// prefix bytes are preserved.
-///
-/// # Safety
-/// `ptr` must be a live allocation from the default (mimalloc) allocator with
-/// alignment ≤ `MI_MAX_ALIGN_SIZE`. After return, `ptr` is invalidated.
-pub unsafe fn realloc_raw(
-    ptr: *mut u8,
-    new_size: usize,
-) -> core::result::Result<*mut u8, AllocError> {
-    // SAFETY: caller guarantees `ptr` is a mimalloc-owned block.
-    let new_ptr = unsafe { mimalloc::mi_realloc(ptr.cast(), new_size) };
-    if new_ptr.is_null() {
-        return Err(AllocError);
-    }
-    Ok(new_ptr.cast::<u8>())
-}
-
-/// `mi_usable_size` — actual allocated size for a mimalloc-owned ptr.
+/// `bun.default_allocator.usableSize` — actual allocated size for a
+/// default-heap (libc) pointer. Null-safe (returns 0).
 #[inline]
 pub fn usable_size(ptr: *const u8) -> usize {
-    // SAFETY: `mi_usable_size` is null-safe (returns 0).
-    unsafe { mimalloc::mi_usable_size(ptr.cast()) }
+    // SAFETY: `default_alloc::usable_size` accepts null (returns 0).
+    unsafe { default_alloc::usable_size(ptr.cast()) }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1077,21 +921,27 @@ pub fn page_size() -> usize {
 // ── wtf (FastMalloc thread-cache release) ─────────────────────────────────
 // Source: src/jsc/WTF.zig `releaseFastMallocFreeMemoryForThisThread`.
 // MOVE_DOWN from bun_jsc so bun_threading (T2) can call it without a T6 dep.
-// Real owner: this crate via `mi_collect(false)` (bun_mimalloc_sys) — portable
-// Win/Mac/Linux. Empty NoopBlockers in bao_native_stubs / product_native_symbols
-// must not reappear (dual-def iron rule).
+// Real owner: this crate — under the libc default heap the body is glibc's
+// `malloc_trim(0)` (returns the top-of-heap free space to the OS); every other
+// target's libc reclaims internally, so the body is a no-op there. Empty
+// NoopBlockers in bao_native_stubs / product_native_symbols must not reappear
+// (dual-def iron rule).
 // @trace STUB-INVENTORY: WTF__releaseFastMallocFreeMemoryForThisThread RealImpl
 
-/// Release thread-local FastMalloc free memory (mimalloc thread cache).
+/// Release free default-heap memory back to the OS.
 ///
-/// ABI matches WebKit WTF / Bun Zig binding. Body calls `mi_collect(false)` so
-/// free pages return without a forced full-heap purge. Safe to call multiple
-/// times from any thread (mimalloc thread-local collect; no preconditions).
+/// ABI matches WebKit WTF / Bun Zig binding. Body is `malloc_trim(0)` on
+/// glibc and a no-op elsewhere (safe to call multiple times from any thread;
+/// no preconditions).
 #[unsafe(no_mangle)]
 pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {
-    // `mi_collect` is declared `safe fn` in bun_mimalloc_sys (no preconditions).
-    // force=false matches BundleThread / MimallocArena call sites and Zig WTF.
-    mimalloc::mi_collect(false);
+    // glibc-only symbol (libc gates it to linux/gnu); `0` trims the top of
+    // the heap only — free pages below it are already reusable by malloc.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim(0)` has no preconditions.
+    unsafe {
+        libc::malloc_trim(0)
+    };
 }
 
 pub mod wtf {
@@ -1115,12 +965,12 @@ mod wtf_release_tests {
     }
 
     #[test]
-    fn allocate_with_mi_malloc_then_collect_no_panic() {
-        // Exercise mimalloc path then release thread free memory twice.
-        let p: *mut c_void = mimalloc::mi_malloc(4096);
-        assert!(!p.is_null(), "mi_malloc(4096) must succeed");
-        // SAFETY: p was allocated by mi_malloc above.
-        unsafe { mimalloc::mi_free(p) };
+    fn allocate_with_default_alloc_then_release_no_panic() {
+        // Exercise the default-heap path then release free memory twice.
+        let p: *mut c_void = default_alloc::malloc(4096);
+        assert!(!p.is_null(), "malloc(4096) must succeed");
+        // SAFETY: p was allocated by default_alloc::malloc above.
+        unsafe { default_alloc::free(p) };
         WTF__releaseFastMallocFreeMemoryForThisThread();
         WTF__releaseFastMallocFreeMemoryForThisThread();
     }
@@ -2024,8 +1874,8 @@ pub fn bss_heap_init<T>(init_at: unsafe fn(*mut T)) -> NonNull<T> {
 /// `mmap(MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE)` arena: pages are not
 /// committed until first written to, so a 532 KiB `BSSStringList` backing
 /// buffer that only ever sees a handful of filenames touches one or two pages
-/// instead of all 130. On Windows this falls back to `mi_zalloc_aligned`
-/// (eager commit, but still all-zeros so callers may rely on that uniformly).
+/// instead of all 130. On Windows this falls back to an eager aligned libc
+/// allocation (zero-filled, so callers may rely on that uniformly).
 ///
 /// The mapping is **never freed** — these are Zig-port `.bss`-semantics
 /// singletons. Do not call from code paths that need to release the storage.
@@ -2055,10 +1905,18 @@ pub fn bss_lazy_bytes(size: usize, align: usize) -> NonNull<u8> {
         // Windows: `VirtualAlloc(MEM_RESERVE)`-only would require commit-on-touch
         // plumbing through a guard-page handler. The largest singleton is ~1.3 MiB
         // and Windows already faults `.bss` eagerly per-page on first write anyway,
-        // so the simpler eager allocation is kept. Use `mi_zalloc_aligned` (not
-        // `mi_malloc`) so callers can uniformly rely on all-zeros — `init_at`
-        // bodies skip writing zero-valued fields.
-        mimalloc::mi_zalloc_aligned(size, align).cast::<u8>()
+        // so the simpler eager allocation is kept. Route through `C_ALLOCATOR`
+        // (libc, Windows-aligned pair included) and zero explicitly so callers
+        // can uniformly rely on all-zeros — `init_at` bodies skip writing
+        // zero-valued fields.
+        let p = crate::fallback::C_ALLOCATOR
+            .raw_alloc(size, crate::Alignment::from_byte_units(align), 0)
+            .unwrap_or_else(|| core::ptr::null_mut());
+        if !p.is_null() {
+            // SAFETY: `p` is `size` writable bytes just returned above.
+            unsafe { core::ptr::write_bytes(p, 0, size) };
+        }
+        p
     };
     NonNull::new(ptr).expect("OOM")
 }
@@ -3132,16 +2990,17 @@ impl<const COUNT: usize, const ITEM_LENGTH: usize> BSSStringList<COUNT, ITEM_LEN
             this_ref.do_append(&crate::copy_lowercase(value, &mut scratch[..value.len()]))?
         } else {
             // Slow path: input >256 bytes (rare). Use a one-shot heap temp via
-            // mimalloc directly (PORTING.md forbids `Vec` in hot allocators).
-            let p = mimalloc::mi_malloc(value.len()).cast::<u8>();
+            // the default allocator directly (PORTING.md forbids `Vec` in hot
+            // allocators).
+            let p = default_alloc::malloc(value.len()).cast::<u8>();
             if p.is_null() {
                 return Err(AllocError);
             }
             // SAFETY: `p` is a fresh allocation of `value.len()` bytes; sole owner.
             let tmp = unsafe { core::slice::from_raw_parts_mut(p, value.len()) };
             let r = this_ref.do_append(&crate::copy_lowercase(value, tmp));
-            // SAFETY: `p` was allocated by `mi_malloc` above.
-            unsafe { mimalloc::mi_free(p.cast()) };
+            // SAFETY: `p` was allocated by `default_alloc::malloc` above.
+            unsafe { default_alloc::free(p.cast()) };
             r?
         };
         // SAFETY: see `append`.
@@ -3184,10 +3043,10 @@ impl<const COUNT: usize, const ITEM_LENGTH: usize> BSSStringList<COUNT, ITEM_LEN
             (out_ptr, out_len) = (dst.as_mut_ptr(), value_len - 1);
         } else {
             // Zig: `var value_buf = try self.allocator.alloc(u8, value_len);` — propagate OOM.
-            // Route through mimalloc directly (PORTING.md forbids `Box::leak`). BSSStringList
-            // never frees overflow allocations (matches Zig); the singleton lives for
-            // process lifetime.
-            let ptr = mimalloc::mi_malloc(value_len).cast::<u8>();
+            // Route through the default allocator directly (PORTING.md forbids
+            // `Box::leak`). BSSStringList never frees overflow allocations
+            // (matches Zig); the singleton lives for process lifetime.
+            let ptr = default_alloc::malloc(value_len).cast::<u8>();
             if ptr.is_null() {
                 return Err(AllocError);
             }
@@ -3602,10 +3461,10 @@ impl<
             unsafe { core::slice::from_raw_parts(dst.as_ptr(), dst.len()) }
         } else {
             // Zig: `slice = try self.map.allocator.dupe(u8, key);` — propagate OOM. Route
-            // through mimalloc directly (PORTING.md forbids `Box::leak`) so the
-            // size-agnostic `mi_free` below stays valid even after `trim_right` shortens
-            // the stored slice.
-            let ptr = mimalloc::mi_malloc(key.len().max(1)).cast::<u8>();
+            // through the default allocator directly (PORTING.md forbids `Box::leak`)
+            // so the size-agnostic `default_alloc::free` below stays valid even after
+            // `trim_right` shortens the stored slice.
+            let ptr = default_alloc::malloc(key.len().max(1)).cast::<u8>();
             if ptr.is_null() {
                 return Err(AllocError);
             }
@@ -3641,12 +3500,13 @@ impl<
             if self.key_list_overflow.len() > idx {
                 let existing_slice = self.key_list_overflow[idx];
                 if !self.is_key_statically_allocated(existing_slice) {
-                    // Zig: self.map.allocator.free(existing_slice). `mi_free` is
+                    // Zig: self.map.allocator.free(existing_slice). libc `free` is
                     // size-agnostic, so a trimmed (shorter) stored slice is fine.
-                    // SAFETY: existing_slice was `mi_malloc`'d by a prior put_key call
-                    // (the only non-static-buffer source above) and not yet freed.
+                    // SAFETY: existing_slice was `default_alloc::malloc`'d by a prior
+                    // put_key call (the only non-static-buffer source above) and not
+                    // yet freed.
                     unsafe {
-                        mimalloc::mi_free(
+                        default_alloc::free(
                             existing_slice
                                 .as_ptr()
                                 .cast_mut()

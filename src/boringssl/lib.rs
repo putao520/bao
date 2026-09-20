@@ -212,28 +212,31 @@ pub fn init_client() -> *mut boring::SSL {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn OPENSSL_memory_alloc(size: usize) -> *mut c_void {
-    bun_alloc::mimalloc::mi_malloc(size)
+    bun_alloc::default_alloc::malloc(size)
 }
 
 // BoringSSL always expects memory to be zero'd
 /// # Safety
 /// `ptr` must be non-null and have been returned by `OPENSSL_memory_alloc`
-/// (i.e. `mi_malloc`); BoringSSL guarantees both for this hook.
+/// (i.e. `default_alloc::malloc`); BoringSSL guarantees both for this hook.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn OPENSSL_memory_free(ptr: *mut c_void) {
     // SAFETY: BoringSSL guarantees ptr is non-null and was returned by
-    // OPENSSL_memory_alloc above (i.e. mi_malloc).
+    // OPENSSL_memory_alloc above (i.e. default_alloc::malloc).
     unsafe {
-        let len = bun_alloc::usable_size(ptr.cast());
+        let len = bun_alloc::default_alloc::usable_size(ptr);
         ptr::write_bytes(ptr.cast::<u8>(), 0, len);
-        bun_alloc::mimalloc::mi_free(ptr);
+        bun_alloc::default_alloc::free(ptr);
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn OPENSSL_memory_get_size(ptr: *const c_void) -> usize {
-    // ptr was returned by mi_malloc (or is null, which usable_size handles).
-    bun_alloc::usable_size(ptr.cast())
+    // ptr was returned by default_alloc::malloc (or is null, which
+    // usable_size handles).
+    // SAFETY: usable_size is null-safe; non-null ptrs come from the
+    // OPENSSL_memory_alloc pairing above.
+    unsafe { bun_alloc::default_alloc::usable_size(ptr) }
 }
 
 pub use bun_sys::posix::INET6_ADDRSTRLEN;

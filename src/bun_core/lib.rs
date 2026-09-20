@@ -416,7 +416,7 @@ pub fn adopt_std_vec(v: ::std::vec::Vec<u8>) -> ChanVec<u8> {
     let (ptr, len, cap) = (v.as_mut_ptr(), v.len(), v.capacity());
     // SAFETY: the std Vec (ManuallyDrop — its Drop never runs) uniquely
     // owned a Global allocation; api2's Global is the same underlying
-    // allocator (process-global mimalloc), so adopting the exact
+    // allocator (the process-global allocator), so adopting the exact
     // (ptr, len, cap) triple preserves every invariant — pointer move.
     unsafe { Api2Vec::from_raw_parts_in(ptr, len, cap, Api2Global) }
 }
@@ -3089,9 +3089,6 @@ pub mod strings {
     pub use crate::strings_impl::{index_of_any, index_of_any_t};
 }
 
-// `true` when mimalloc is the `#[global_allocator]`; `false` under ASAN where
-// `std::alloc::System` is installed instead. Mirrors `bun_alloc::USE_MIMALLOC`.
-pub const USE_MIMALLOC: bool = cfg!(not(bun_asan));
 pub mod debug_allocator_data {
     /// Only referenced from `debug_assert!` — dead in release builds.
     #[allow(dead_code)]
@@ -3579,7 +3576,7 @@ pub mod asan {
     //! through this module — it must NOT be a no-op stub or LSAN root-region
     //! registration (`VirtualMachine::rare_data`, `Listener.group`) silently
     //! does nothing and every malloc-backed `us_socket_t` reachable only via a
-    //! mimalloc page is reported as a leak.
+    //! page LSAN does not scan is reported as a leak.
     use core::ffi::c_void;
 
     #[cfg(bun_asan)]
@@ -3635,8 +3632,7 @@ pub mod asan {
     }
     /// Tell LSAN to scan `[ptr, ptr+size)` for live pointers during leak
     /// checking. Needed when a malloc-backed object is reachable only through
-    /// a pointer that itself lives inside a mimalloc page (which LSAN does not
-    /// scan).
+    /// a pointer that itself lives inside a region LSAN does not scan.
     #[inline]
     pub fn register_root_region(ptr: *const c_void, size: usize) {
         #[cfg(bun_asan)]

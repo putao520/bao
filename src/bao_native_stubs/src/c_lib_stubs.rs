@@ -7,7 +7,6 @@
 //! - `libbrotli.a` (bun_brotli_sys): Brotli compression
 //! - `libzstd.a` (bun_zstd): Zstandard compression
 //! - `liblshpack.a` (bun_lsquic_sys): HPACK header compression
-//! - `libmimalloc.a` (bun_mimalloc_sys): memory allocator
 //! - `libhighway.a` + `libhighway_strings.a` (bun_highway): SIMD string ops
 //!
 //! Loop symbols (`us_loop_run_bun_tick`, `us_wakeup_loop`, `uws_get_loop`)

@@ -30,7 +30,8 @@ use core::cell::{Cell, UnsafeCell};
 use core::mem::MaybeUninit;
 use core::ptr::{self, NonNull};
 
-use crate::{MimallocArena, alloc_result, mimalloc};
+use crate::{alloc_result, Alignment, Arena};
+use crate::fallback::C_ALLOCATOR;
 
 /// `std.heap.StackFallbackAllocator(N)` — bump-allocate from an inline
 /// `[u8; N]` stack buffer; spill to `fallback` when it doesn't fit.
@@ -43,7 +44,7 @@ use crate::{MimallocArena, alloc_result, mimalloc};
 /// `N` guidance: default to **1024** for "format a small string / build a
 /// short list" (modal Zig choice; well under the 8 KB Windows `__chkstk`
 /// threshold). **4096** for path-ish buffers. Cap at **16 KB** — anything
-/// larger should go straight to `MimallocArena`/`Global`.
+/// larger should go straight to `Arena`/`Global`.
 #[repr(C)] // keep `buf` at a fixed offset; `align_of::<Self>() == align_of::<A>().max(word)`
 pub struct StackFallback<const N: usize, A: Allocator = crate::core_alloc::Global> {
     /// Bump cursor into `buf`. `Cell` so `Allocator::allocate(&self)` can advance it.
@@ -177,8 +178,8 @@ impl<const N: usize> StackFallback<N, crate::core_alloc::Global> {
 
 // Implemented on `&Self` (NOT `Self`) so the buffer cannot be moved into an
 // owning container by value (`Box::new_in(x, sf)` would dangle). Mirrors
-// `unsafe impl Allocator for &MimallocArena` (MimallocArena.rs:652) and Zig's
-// `get()`-returns-borrowing-vtable shape.
+// `unsafe impl Allocator for &Arena` (the arena backends' handle impl) and
+// Zig's `get()`-returns-borrowing-vtable shape.
 //
 // SAFETY:
 // - `allocate`: returns either (a) a slice of `self.buf` aligned to
@@ -276,74 +277,78 @@ unsafe impl<const N: usize, A: Allocator> Allocator for &StackFallback<N, A> {
 
 // ── ArenaPtr ─────────────────────────────────────────────────────────────────
 //
-// `*const MimallocArena` as an [`Allocator`]. Exists so `StackFallback` can
-// borrow a caller-owned `MimallocArena` without a lifetime parameter:
+// `*const Arena` as an [`Allocator`]. Exists so `StackFallback` can
+// borrow a caller-owned arena without a lifetime parameter:
 // `ASTMemoryAllocator` is published into raw thread-locals and may outlive any
-// nameable `'a`, so `&'a MimallocArena` (which already implements `Allocator`)
+// nameable `'a`, so `&'a Arena` (which already implements `Allocator`)
 // cannot be used directly. The caller guarantees the pointee outlives every
 // allocation — same invariant the `ast_alloc` install/uninstall protocol
 // already requires.
 //
-// `arena == null` routes to global `mi_malloc`/`mi_free`, matching
-// [`crate::ast_alloc::AstAlloc`] when no AST scope is active.
+// `arena == null` routes to the raw default heap (`C_ALLOCATOR`, plain libc),
+// matching [`crate::ast_alloc::AstAlloc`] when no AST scope is active.
 
-/// Borrowed `*const MimallocArena` as an [`Allocator`]. See section doc above.
+/// Borrowed `*const Arena` as an [`Allocator`]. See section doc above.
 #[derive(Clone, Copy)]
 pub struct ArenaPtr {
-    arena: *const MimallocArena,
+    arena: *const Arena,
 }
 
 impl ArenaPtr {
-    /// Wrap a live `MimallocArena`. The caller guarantees `arena` is not moved,
+    /// Wrap a live arena. The caller guarantees `arena` is not moved,
     /// `reset()`, or dropped while any allocation made through this ref is
     /// live.
     #[inline]
-    pub const fn new(arena: *const MimallocArena) -> Self {
+    pub const fn new(arena: *const Arena) -> Self {
         Self { arena }
     }
-    /// Null arena → process-global `mi_malloc`/`mi_free`.
+    /// Null arena → process-global default heap (libc).
     #[inline]
     pub const fn global() -> Self {
         Self { arena: ptr::null() }
     }
     /// The wrapped arena pointer (null when global).
     #[inline]
-    pub fn arena(&self) -> *const MimallocArena {
+    pub fn arena(&self) -> *const Arena {
         self.arena
     }
     /// Rebind (e.g. to attach a borrowed arena to a previously-global ref).
     #[inline]
-    pub fn set_arena(&mut self, arena: *const MimallocArena) {
+    pub fn set_arena(&mut self, arena: *const Arena) {
         self.arena = arena;
     }
     /// Shared borrow of the wrapped arena, or `None` for the global path.
     ///
-    /// Single backref-deref site for the `arena: *const MimallocArena` field;
+    /// Single backref-deref site for the `arena: *const Arena` field;
     /// the [`Allocator`] impl below branches on the result instead of
     /// open-coding the null-check + raw-pointer deref at every method.
     #[inline]
-    fn arena_ref(&self) -> Option<&MimallocArena> {
+    fn arena_ref(&self) -> Option<&Arena> {
         // SAFETY: `arena` is either null (→ `None`) or, per [`ArenaPtr::new`]'s
-        // contract, a live `MimallocArena` that is not moved/reset/dropped
+        // contract, a live arena that is not moved/reset/dropped
         // while any allocation made through this ref is live — i.e. it
         // outlives `&self`. Backref invariant: pointee outlives holder.
         unsafe { self.arena.as_ref() }
     }
 }
 
-// SAFETY: when `arena` is non-null this forwards to `&MimallocArena: Allocator`
-// (whose contract is documented on that impl); when null it is the global
-// mimalloc path (`mi_malloc`/`mi_free`/`mi_realloc_aligned`), identical to
-// `BunAllocator` / `AstAlloc`'s null branch. The caller upholds the
-// non-dangling invariant on `arena` (see [`ArenaPtr::new`]).
+// SAFETY: when `arena` is non-null this forwards to `&Arena: Allocator`
+// (whose contract is documented on that impl); when null it is the raw
+// default-heap path (`C_ALLOCATOR` — plain libc with the Windows aligned
+// malloc/free pair), identical in spirit to `AstAlloc`'s null branch. The
+// caller upholds the non-dangling invariant on `arena` (see [`ArenaPtr::new`]).
 unsafe impl Allocator for ArenaPtr {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         match self.arena_ref() {
             Some(a) => a.allocate(layout),
             None => {
-                let p = mimalloc::mi_malloc_auto_align(layout.size(), layout.align());
-                alloc_result(p, layout.size())
+                let p = C_ALLOCATOR.raw_alloc(
+                    layout.size(),
+                    Alignment::from_byte_units(layout.align()),
+                    0,
+                );
+                alloc_result(p.unwrap_or_else(core::ptr::null_mut), layout.size())
             }
         }
     }
@@ -351,14 +356,18 @@ unsafe impl Allocator for ArenaPtr {
     #[inline]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // SAFETY: `ptr` was returned by this allocator's `allocate`/`grow`
-        // (caller contract). Both arms forward it to the matching mimalloc
-        // free path; `&MimallocArena::deallocate` is `mi_free` (heap-agnostic),
-        // so the `Some` arm is correct even if `ptr` was allocated under a
-        // different arena and later grown here.
+        // (caller contract). The `Some` arm forwards it to the arena's free
+        // path (arena-agnostic on this backend, so it is correct even if
+        // `ptr` was allocated under a different arena and later grown here);
+        // the `None` arm matches the `C_ALLOCATOR` allocation made above.
         unsafe {
             match self.arena_ref() {
                 Some(a) => a.deallocate(ptr, layout),
-                None => mimalloc::mi_free(ptr.as_ptr().cast()),
+                None => C_ALLOCATOR.raw_free(
+                    core::slice::from_raw_parts_mut(ptr.as_ptr(), 1),
+                    Alignment::from_byte_units(layout.align()),
+                    0,
+                ),
             }
         }
     }
@@ -370,15 +379,29 @@ unsafe impl Allocator for ArenaPtr {
         old: Layout,
         new: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        // SAFETY: `ptr` is a live mimalloc block returned by this allocator
-        // (caller contract); both arms forward it to the matching realloc.
+        // SAFETY: `ptr` is a live block returned by this allocator
+        // (caller contract). The `None` arm has no in-place resize on plain
+        // libc: allocate-new + copy prefix + free old, all through
+        // `C_ALLOCATOR` so the allocation/free pairing stays matched.
         unsafe {
             match self.arena_ref() {
                 Some(a) => a.grow(ptr, old, new),
-                None => alloc_result(
-                    mimalloc::mi_realloc_aligned(ptr.as_ptr().cast(), new.size(), new.align()),
-                    new.size(),
-                ),
+                None => {
+                    let newp = C_ALLOCATOR
+                        .raw_alloc(
+                            new.size(),
+                            Alignment::from_byte_units(new.align()),
+                            0,
+                        )
+                        .ok_or(AllocError)?;
+                    ptr::copy_nonoverlapping(ptr.as_ptr(), newp, old.size());
+                    C_ALLOCATOR.raw_free(
+                        core::slice::from_raw_parts_mut(ptr.as_ptr(), 1),
+                        Alignment::from_byte_units(old.align()),
+                        0,
+                    );
+                    alloc_result(newp, new.size())
+                }
             }
         }
     }

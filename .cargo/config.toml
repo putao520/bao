@@ -20,7 +20,7 @@
 # 清对应 crate 的 .fingerprint/<pkg>-* + build/<pkg>-* + deps/lib<pkg>-*(见 CLAUDE.md
 # mozjs 清理顺序);cc 系涉及 bao-mozjs-sys / bun_boringssl_sys / harfbuzz-sys /
 # freetype-sys / libsqlite3-sys / libz-sys / bun_uws_sys / bun_lsquic_sys /
-# bun_mimalloc_sys / ring / zstd-sys / stacker / psm / glslopt / rav1e / fontsan 等。
+# ring / zstd-sys / stacker / psm / glslopt / rav1e / fontsan 等。
 [env]
 CFLAGS = "-g1"
 CXXFLAGS = "-g1"

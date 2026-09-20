@@ -6,12 +6,12 @@
 //! [`bun_alloc::StdAllocator`] (the literal `{ptr, vtable}` struct) so the
 //! comparison semantics are identical — no fat-pointer transmutes.
 //!
-//! Higher-tier `is_instance` checks (`MimallocArena`, `LinuxMemFdAllocator`,
+//! Higher-tier `is_instance` checks (`LinuxMemFdAllocator`,
 //! `CachedBytecode`, `bundle_v2`, `heap_breakdown::Zone`, arena vtable)
 //! live in crates above `bun_safety` in the dep graph; they
 //! register their vtable addresses via [`crate::register_alloc_vtable`] at
-//! init (data moved down, no fn-ptr hook). `MimallocArena` is in `bun_alloc`
-//! (below us) so its `is_instance` is called directly.
+//! init (data moved down, no fn-ptr hook). The arena `is_instance` is in
+//! `bun_alloc` (below us) so it is called directly.
 
 use core::fmt;
 
@@ -27,7 +27,7 @@ fn has_ptr(alloc: StdAllocator) -> bool {
     // In-tier vtable-identity checks (`bun_alloc` is a direct dep).
     core::ptr::eq(alloc.vtable, basic::C_ALLOCATOR.vtable)
         || core::ptr::eq(alloc.vtable, basic::Z_ALLOCATOR.vtable)
-        || bun_alloc::MimallocArena::is_instance(&alloc)
+        || bun_alloc::Arena::is_instance(&alloc)
         || bun_alloc::String::is_wtf_allocator(alloc)
         // Higher-tier allocators (arena, LinuxMemFdAllocator, MaxHeapAllocator,
         // CachedBytecode, bundle_v2, heap_breakdown::Zone)
@@ -183,62 +183,6 @@ impl CheckedAllocator {
             crate::alloc::assert_eq(old_alloc, alloc);
         }
     }
-
-    /// Transfers ownership of the collection to a new allocator.
-    ///
-    /// This method is valid only if both the old allocator and new allocator are `MimallocArena`s.
-    /// This is okay because data allocated by one `MimallocArena` can always be freed by another
-    /// (this includes `resize` and `remap`).
-    ///
-    /// `new_allocator` should be one of the following:
-    ///
-    /// * `&MimallocArena`
-    /// * `&MimallocArena` (const)
-    /// * `MimallocArena::Borrowed`
-    ///
-    /// If you only have a `StdAllocator`, see `MimallocArena::Borrowed::downcast`.
-    #[inline]
-    pub fn transfer_ownership(&mut self, new_alloc: &impl AsMimallocArenaAllocator) {
-        let _ = new_alloc;
-        if !ENABLED {
-            return;
-        }
-        #[cfg(debug_assertions)]
-        {
-            let new_std = new_alloc.allocator();
-
-            // PORT NOTE: Zig uses `defer self.* = .init(new_std)`. A scopeguard
-            // would need a `&mut self` capture overlapping the reads below, so
-            // the assignment is hoisted to both early returns instead.
-            let Some(old_allocator) = self.allocator.get() else {
-                *self = Self::init(new_std);
-                return;
-            };
-            if crate::is_mimalloc_arena(old_allocator) {
-                *self = Self::init(new_std);
-                return;
-            }
-
-            #[cfg(debug_assertions)]
-            {
-                Output::err_generic("collection first used here:", ());
-                // bun_core::dump_stack_trace (T0 fallback — raw addrs).
-                crate::dump_stored_trace(&self.trace);
-            }
-            panic!(
-                "cannot transfer ownership from non-MimallocArena (old vtable is {:p})",
-                std::ptr::from_ref(old_allocator.vtable),
-            );
-        }
-    }
-}
-
-/// Zig's `transferOwnership` accepts `*MimallocArena | *const MimallocArena |
-/// MimallocArena.Borrowed` via `anytype` + comptime switch and calls
-/// `.allocator()` on the result. `MimallocArena` lives in `bun_runtime` (above
-/// this crate), so callers implement this trait there.
-pub trait AsMimallocArenaAllocator {
-    fn allocator(&self) -> StdAllocator;
 }
 
 pub const ENABLED: bool = cfg!(debug_assertions);

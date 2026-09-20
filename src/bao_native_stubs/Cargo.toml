@@ -22,8 +22,6 @@ bao_uloop = { path = "../bao_uloop", version = "0.1.0" }
 bun_lsquic_sys = { path = "../lsquic_sys", version = "0.1.0" }
 # Wave 74-B: compiled BoringSSL C++ library provides real TLS/crypto.
 bun_boringssl_sys = { path = "../boringssl_sys", version = "0.1.0" }
-# Wave 75: compiled mimalloc C library provides real mi_* allocator symbols.
-bun_mimalloc_sys = { path = "../mimalloc_sys", version = "0.1.0" }
 # Wave 75b: compiled highway SIMD library provides real highway_* string ops.
 bun_highway = { path = "../highway", version = "0.1.0" }
 # Wave 75c: compiled zstd C library provides real ZSTD_* compression symbols.

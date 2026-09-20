@@ -660,7 +660,7 @@ macro_rules! zstr {
 ///
 /// Thin re-export of [`bun_opaque::opaque_ffi!`] under the legacy name. The
 /// canonical macro lives in the zero-dep `bun_opaque` crate so tier-0 `*_sys`
-/// leaves (`mimalloc_sys`, `brotli_sys`, …) can reach it without pulling
+/// leaves (`brotli_sys`, …) can reach it without pulling
 /// `bun_core` into their build graph; this alias just keeps existing
 /// `bun_core::opaque_extern!(...)` callers compiling.
 #[macro_export]
@@ -3998,8 +3998,7 @@ pub mod base64 {
 /// copy. Returns a raw `*const c_char` because the SSLConfig FFI surface
 /// stores C-strings. Caller frees via [`free_sensitive`].
 ///
-/// Allocated via the default allocator (`bun_alloc::default_alloc` —
-/// mimalloc, or `std::alloc::System` under `cfg(bun_asan)`), so the
+/// Allocated via [`bun_alloc::default_alloc`] (libc malloc), so the
 /// allocation is visible to ASAN's interceptor and LeakSanitizer like every
 /// other heap allocation. Pairs with [`free_sensitive`], which frees through
 /// the same `default_alloc::free`.
@@ -4644,7 +4643,7 @@ pub fn exit_thread() -> ! {
 
 /// Zig: `bun.deleteAllPoolsForThreadExit()` — release thread-local pooled
 /// buffers (PathBuffer pool, ObjectPool, …) before the thread terminates so
-/// the backing storage is returned to mimalloc rather than leaked with the
+/// the backing storage is returned to the allocator rather than leaked with the
 /// TLS block.
 ///
 /// LAYERING: the actual pool registries live in higher-tier crates
@@ -5837,7 +5836,7 @@ pub mod form_data {
 
     /// `FormData.AsyncFormData` — heap-allocated, owns its `Encoding`.
     /// PORT NOTE: Zig stored `std.mem.Allocator param`; deleted (non-AST
-    /// crate, global mimalloc per §Allocators). `deinit` becomes `Drop` on the
+    /// crate, global allocator per §Allocators). `deinit` becomes `Drop` on the
     /// `Box`/`Box<[u8]>` fields — no explicit impl needed.
     #[derive(Debug)]
     pub struct AsyncFormData {

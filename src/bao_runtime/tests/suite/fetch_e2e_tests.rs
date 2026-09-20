@@ -157,7 +157,9 @@ fn test_sync_http_request_real_tcp_connection() {
 /// The sync test (test_sync_http_request_real_tcp_connection) validates
 /// the same TCP connect path without the lifecycle conflict.
 #[test]
-#[ignore = "mimalloc double-free at process exit: HTTPThread C++ loop lifecycle conflicts with test process atexit handler"]
+// Un-ignored 2026-09-20: the mimalloc exit-time double-free is gone — the
+// custom allocator was removed entirely (issue #45 wave: StdArena + libc
+// default_alloc). Verified green with a clean process exit before removal.
 fn test_async_fetch_real_tcp_connection_e2e() {
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();

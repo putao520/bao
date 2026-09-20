@@ -67,7 +67,7 @@ pub struct BundleThread<C: Node> {
 /// layout-agnostic. The concrete impl lives in T6 (`bun_bundler_jsc`).
 pub trait CompletionStruct: Node + Send + 'static {
     /// Zig: `completion.configureBundler(transpiler, arena)` — `arena`
-    /// is the per-build mimalloc heap that backs `transpiler`, so the two
+    /// is the per-build arena that backs `transpiler`, so the two
     /// share lifetime `'a` (option fields like `optimize_imports: &'a StringSet`
     /// borrow from `bump`).
     fn configure_bundler<'a>(
@@ -276,7 +276,7 @@ impl<C: CompletionStruct> BundleThread<C> {
             }
 
             if has_bundled {
-                bun_alloc::mimalloc::mi_collect(false);
+                bun_core::Global::trim_os_memory();
                 has_bundled = false;
             }
 

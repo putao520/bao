@@ -2,9 +2,9 @@
 //!
 //! Port target: `BabyList(T)` (collections/baby_list.zig) =
 //! `(ptr: [*]T, len: u32, cap: u32)` = 16 B. The Rust port stores the owning
-//! `&'a MimallocArena` inline (lifetime-checked allocator vs Zig passing the
+//! `&'a StdArena` inline (lifetime-checked allocator vs Zig passing the
 //! allocator at every `append(allocator, ..)` call site), so 24 B instead of
-//! 16. Still 8 B smaller than `Vec<T, &'a MimallocArena>` (32 B), which
+//! 16. Still 8 B smaller than `Vec<T, &'a StdArena>` (32 B), which
 //! matters for AST node lists embedded in `Part` / `BundledAst` columns.
 //!
 //! `len`/`cap` are stored as `u32` (`usize` on the public API for ergonomics).
@@ -16,23 +16,23 @@ use core::ops::{Deref, DerefMut, RangeBounds};
 use core::ptr::{self, NonNull};
 use core::{fmt, slice};
 
-use crate::MimallocArena;
+use crate::StdArena;
 
 /// Arena-backed `Vec` with `u32` length/capacity. See module doc.
 pub struct BabyVec<'a, T> {
     ptr: NonNull<T>,
     len: u32,
     cap: u32,
-    alloc: &'a MimallocArena,
+    alloc: &'a StdArena,
 }
 
 const _: () = assert!(size_of::<BabyVec<'static, u8>>() == 24);
 
-// SAFETY: same as `Vec<T, &MimallocArena>` — `Send`/`Sync` follow `T` and the
-// allocator handle (`&MimallocArena: Sync` is already declared upstream; the
+// SAFETY: same as `Vec<T, &StdArena>` — `Send`/`Sync` follow `T` and the
+// allocator handle (`&StdArena: Sync` is declared on the arena; the
 // raw `NonNull<T>` is the only auto-trait opt-out).
 unsafe impl<'a, T: Send> Send for BabyVec<'a, T> {}
-// SAFETY: `&MimallocArena: Sync` and the only auto-trait opt-out is the raw
+// SAFETY: `&StdArena: Sync` and the only auto-trait opt-out is the raw
 // `NonNull<T>`; with `T: Sync` the owned `[T]` is shareable across threads.
 unsafe impl<'a, T: Sync> Sync for BabyVec<'a, T> {}
 
@@ -40,7 +40,7 @@ impl<'a, T> BabyVec<'a, T> {
     const T_IS_ZST: bool = size_of::<T>() == 0;
 
     #[inline]
-    pub const fn new_in(alloc: &'a MimallocArena) -> Self {
+    pub const fn new_in(alloc: &'a StdArena) -> Self {
         BabyVec {
             ptr: NonNull::dangling(),
             len: 0,
@@ -50,7 +50,7 @@ impl<'a, T> BabyVec<'a, T> {
     }
 
     #[inline]
-    pub fn with_capacity_in(cap: usize, alloc: &'a MimallocArena) -> Self {
+    pub fn with_capacity_in(cap: usize, alloc: &'a StdArena) -> Self {
         let mut v = Self::new_in(alloc);
         if cap > 0 {
             v.grow_to(cap);
@@ -61,14 +61,14 @@ impl<'a, T> BabyVec<'a, T> {
     /// # Safety
     /// `(ptr, len, cap)` must describe a valid allocation owned by `alloc`
     /// (i.e. obtainable from a prior `BabyVec::into_raw_parts` or
-    /// `<&MimallocArena as Allocator>::allocate` with `Layout::array::<T>(cap)`),
+    /// `<&StdArena as Allocator>::allocate` with `Layout::array::<T>(cap)`),
     /// with `len <= cap` initialized elements.
     #[inline]
     pub unsafe fn from_raw_parts_in(
         ptr: *mut T,
         len: usize,
         cap: usize,
-        alloc: &'a MimallocArena,
+        alloc: &'a StdArena,
     ) -> Self {
         debug_assert!(len <= cap && cap <= u32::MAX as usize);
         BabyVec {
@@ -82,19 +82,19 @@ impl<'a, T> BabyVec<'a, T> {
     }
 
     #[inline]
-    pub fn into_raw_parts(self) -> (*mut T, usize, usize, &'a MimallocArena) {
+    pub fn into_raw_parts(self) -> (*mut T, usize, usize, &'a StdArena) {
         let me = ManuallyDrop::new(self);
         (me.ptr.as_ptr(), me.len as usize, me.cap as usize, me.alloc)
     }
 
     #[inline]
-    pub fn allocator(&self) -> &&'a MimallocArena {
+    pub fn allocator(&self) -> &&'a StdArena {
         &self.alloc
     }
 
     /// Re-tag the stored allocator handle. See [`crate::transfer_arena`].
     #[inline]
-    pub(crate) fn set_allocator(&mut self, alloc: &'a MimallocArena) {
+    pub(crate) fn set_allocator(&mut self, alloc: &'a StdArena) {
         self.alloc = alloc;
     }
 
@@ -464,7 +464,7 @@ pub struct IntoIter<'a, T> {
     idx: u32,
     len: u32,
     cap: u32,
-    alloc: &'a MimallocArena,
+    alloc: &'a StdArena,
 }
 
 impl<'a, T> Iterator for IntoIter<'a, T> {
@@ -520,5 +520,31 @@ impl<'a, T> AsRef<[T]> for BabyVec<'a, T> {
     #[inline]
     fn as_ref(&self) -> &[T] {
         self.as_slice()
+    }
+}
+
+
+// ── `ArenaVecExt` (crate-root trait) ──────────────────────────────────────
+//
+// The crate-root re-export is `std_arena::ArenaVecExt`; this impl restores the
+// `BabyVec` arm the mimalloc backend provided (shell_parser leaks parsed node
+// slices through `into_bump_slice[_mut]` and recovers the arena via `bump`).
+
+impl<'a, T> crate::std_arena::ArenaVecExt<'a, T> for BabyVec<'a, T> {
+    #[inline]
+    fn from_iter_in<I: IntoIterator<Item = T>>(iter: I, arena: &'a StdArena) -> Self {
+        crate::vec_from_iter_in(iter, arena)
+    }
+    #[inline]
+    fn into_bump_slice(self) -> &'a [T] {
+        &*self.leak()
+    }
+    #[inline]
+    fn into_bump_slice_mut(self) -> &'a mut [T] {
+        self.leak()
+    }
+    #[inline]
+    fn bump(&self) -> &'a StdArena {
+        *self.allocator()
     }
 }

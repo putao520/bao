@@ -13,9 +13,9 @@
 //! `ASTMemoryAllocator::push`/`Scope::enter` and friends), and makes
 //! `deallocate` a **no-op**. Everything allocated through a state is bulk-freed
 //! when its owner resets or releases it. When no state is installed the
-//! allocator falls back to global mimalloc (`mi_malloc`), matching the
-//! pre-Strategy-B behaviour for the bundler / `Stmt.Data.Store` block-store
-//! path.
+//! allocator falls back to the raw default heap (plain libc via
+//! `fallback::C_ALLOCATOR`), matching the pre-Strategy-B behaviour for the
+//! bundler / `Stmt.Data.Store` block-store path.
 //!
 //! `deallocate` being a no-op preserves the `Expr::Data::clone_in` invariant
 //! (`src/js_parser/ast/Expr.rs:2178`): payloads are `core::ptr::read`-copied
@@ -33,11 +33,12 @@ use core::cell::Cell;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
-use crate::{MimallocArena, mimalloc};
+use crate::{alloc_result, Arena};
+use crate::fallback::C_ALLOCATOR;
 
 // The parser builds thousands of tiny `AstVec`s; allocations `<= BUMP_MAX` are
 // carved from a 16 KB buffer stored inline in the state (mirroring Zig's
-// `StackFallbackAllocator`), so the small case never touches mimalloc. The
+// `StackFallbackAllocator`), so the small case never reaches the heap. The
 // cursor, the buffer, and the spill target live in one struct, so none of them
 // can outlive the others.
 
@@ -58,11 +59,11 @@ pub struct AstAllocState {
     bump_cursor: usize,
     /// Spill target for allocations the chunk can't serve. Set by the
     /// installing scope from its own arena ([`Self::set_spill_heap`]); the
-    /// installer guarantees the heap outlives the installed window. Null when
+    /// installer guarantees the arena outlives the installed window. Null when
     /// the installer has no arena — `owned_spill` is then created lazily.
-    spill: *mut mimalloc::Heap,
+    spill: *const Arena,
     /// Backing storage for `spill` when no borrowed target was provided.
-    owned_spill: Option<MimallocArena>,
+    owned_spill: Option<Arena>,
     /// Inline small-allocation buffer.
     bump_chunk: [MaybeUninit<u8>; BUMP_CHUNK],
 }
@@ -91,25 +92,24 @@ impl AstAllocState {
         self.owned_spill = None;
     }
 
-    /// Point spill allocations at `heap` (the installing scope's arena), which
+    /// Point spill allocations at `arena` (the installing scope's arena), which
     /// must outlive the installed window. Called on every install so an arena
     /// reset between installs is picked up.
     #[inline]
-    pub fn set_spill_heap(&mut self, heap: *mut mimalloc::Heap) {
+    pub fn set_spill_heap(&mut self, arena: *const Arena) {
         debug_assert!(
             self.owned_spill.is_none(),
             "AstAllocState: switching an owned spill heap to a borrowed one would strand its contents"
         );
-        self.spill = heap;
+        self.spill = arena;
     }
 
-    /// Carve `size` bytes at `align` (a power of two `<= MI_MAX_ALIGN_SIZE`)
+    /// Carve `size` bytes at `align` (a power of two)
     /// from the inline chunk. `None` when it doesn't fit — there is no refill;
     /// the caller falls through to the spill heap.
     #[inline]
     fn bump_alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
         debug_assert!(size != 0 && size <= BUMP_MAX && align.is_power_of_two());
-        debug_assert!(align <= mimalloc::MI_MAX_ALIGN_SIZE);
         debug_assert!(self.bump_cursor <= BUMP_CHUNK);
         // SAFETY: `bump_cursor <= BUMP_CHUNK` (invariant: only advanced below
         // after the bounds check), so `add` is at most one-past-the-end.
@@ -135,24 +135,28 @@ impl AstAllocState {
         }
     }
 
-    /// The state's spill `mi_heap_t`: the borrowed target installed by
-    /// [`Self::set_spill_heap`], or a lazily created owned heap when none was
-    /// provided.
+    /// The state's spill arena: the borrowed target installed by
+    /// [`Self::set_spill_heap`], or a lazily created owned arena when none was
+    /// provided. Allocation only ever takes `&Arena`, so the handle is a
+    /// `*const`.
     #[inline]
-    fn heap_ptr(&mut self) -> *mut mimalloc::Heap {
+    fn spill_handle(&mut self) -> *const Arena {
         if !self.spill.is_null() {
             return self.spill;
         }
-        let heap = self.owned_spill.insert(MimallocArena::new()).heap_ptr();
-        self.spill = heap;
-        heap
+        // The state lives in a `Box` inside the thread-local, so `owned_spill`'s
+        // address is stable for as long as this handle can be used (the same
+        // stability invariant the mi_heap handle relied on).
+        let owned = self.owned_spill.insert(Arena::new()) as *mut Arena;
+        self.spill = owned;
+        self.spill
     }
 }
 
 // ── Thread-local active state ────────────────────────────────────────────────
 
 /// The active [`AstAllocState`], or `None` when no AST scope is installed
-/// (allocations then fall back to global mimalloc).
+/// (allocations then fall back to the raw default heap).
 ///
 /// `#[thread_local]` (not `thread_local!`): read on every `AstAlloc`
 /// allocation, so it must stay a bare `__thread` slot. Stable (no
@@ -242,7 +246,7 @@ pub fn release_state(mut state: Box<AstAllocState>) {
 
 /// Replace the active allocation state, returning the previous occupant. The
 /// caller passes the previous occupant back when its scope exits; `None`
-/// detaches to the global-mimalloc fallback.
+/// detaches to the raw-default-heap fallback.
 #[inline]
 pub fn swap_state(state: Option<Box<AstAllocState>>) -> Option<Box<AstAllocState>> {
     #[cfg(bao_nightly)]
@@ -301,15 +305,15 @@ pub fn reset_active_state() {
 /// [`AstAllocState::set_spill_heap`] on the *installed* state. No-op when no
 /// state is installed.
 #[inline]
-pub fn set_active_spill_heap(heap: *mut mimalloc::Heap) {
+pub fn set_active_spill_heap(arena: *const Arena) {
     with_active_state(|state| {
         if let Some(state) = state {
-            state.set_spill_heap(heap);
+            state.set_spill_heap(arena);
         }
     });
 }
 
-/// RAII guard: for its lifetime, [`AstAlloc`] allocates on **global** mimalloc
+/// RAII guard: for its lifetime, [`AstAlloc`] allocates on the **default heap**
 /// instead of the active per-parse state. Use when constructing
 /// `AstVec`/`StoreRef` data that must outlive the current parse arena
 /// (e.g. `Expr::deep_clone` for `WorkspacePackageJSONCache`). Without this,
@@ -342,12 +346,12 @@ pub struct ScopedAstAlloc {
     prev: Option<Box<AstAllocState>>,
 }
 impl ScopedAstAlloc {
-    /// Install a state whose spill allocations land in `spill_heap`, which
+    /// Install a state whose spill allocations land in `spill_arena`, which
     /// must stay live (and not be reset) for the guard's entire lifetime.
     #[inline]
-    pub fn with_spill(spill_heap: *mut mimalloc::Heap) -> Self {
+    pub fn with_spill(spill_arena: *const Arena) -> Self {
         let mut state = acquire_state();
-        state.set_spill_heap(spill_heap);
+        state.set_spill_heap(spill_arena);
         Self {
             prev: swap_state(Some(state)),
         }
@@ -396,7 +400,7 @@ impl Drop for ScopedAstAlloc {
 }
 
 /// Zero-sized `Allocator` that routes to the active [`AstAllocState`] when one
-/// is installed, else to global mimalloc. `deallocate` is a no-op (the state's
+/// is installed, else to the raw default heap. `deallocate` is a no-op (the state's
 /// owner reclaims everything in bulk).
 ///
 /// Use as `Vec<T, AstAlloc>` (see [`AstVec`]). The ZST means the `Vec` stays
@@ -417,64 +421,58 @@ pub type AstBox<T> = alloc::boxed::Box<T, AstAlloc>;
 #[cfg(not(bao_nightly))]
 pub type AstBox<T> = crate::core_alloc::AllocBox<T, AstAlloc>;
 
-use crate::alloc_result;
-
 #[inline(always)]
 fn heap_alloc(layout: Layout) -> *mut u8 {
     with_active_state(|state| match state {
-        // Global fallback (no AST scope active). `mi_malloc` tolerates
-        // `size == 0` (unique non-null pointer), so no special-casing.
-        None => mimalloc::mi_malloc_auto_align(layout.size(), layout.align()).cast(),
+        // Global fallback (no AST scope active): the raw default heap. Plain
+        // libc `malloc` tolerates `size == 0` (unique non-null pointer), so no
+        // special-casing.
+        None => C_ALLOCATOR
+            .raw_alloc(
+                layout.size(),
+                crate::Alignment::from_byte_units(layout.align()),
+                0,
+            )
+            .unwrap_or_else(core::ptr::null_mut),
         Some(state) => {
-            // Small, normally-aligned requests: carve from the state's inline
-            // chunk so a burst of tiny `AstVec`s costs zero mallocs (and stays
-            // out of `_mi_malloc_generic`). Zero-size layouts and over-aligned
-            // ones (no AST list type needs `> MI_MAX_ALIGN_SIZE`) fall through
-            // to mimalloc, which handles both.
-            if layout.size() != 0
-                && layout.size() <= BUMP_MAX
-                && layout.align() <= mimalloc::MI_MAX_ALIGN_SIZE
-            {
+            // Small requests: carve from the state's inline chunk so a burst
+            // of tiny `AstVec`s costs zero mallocs. Zero-size layouts fall
+            // through (a `Layout` of size 0 is always validly served by the
+            // arena's `alloc_layout`).
+            if layout.size() != 0 && layout.size() <= BUMP_MAX {
                 if let Some(p) = state.bump_alloc(layout.size(), layout.align()) {
                     return p;
                 }
             }
-            // SAFETY: `heap_ptr` returns the live spill heap owned by `state`,
-            // which is owned by the thread-local for the duration of this call.
-            unsafe {
-                mimalloc::mi_heap_malloc_auto_align(state.heap_ptr(), layout.size(), layout.align())
-                    .cast()
-            }
+            // SAFETY: `spill_handle` returns the live spill arena owned by
+            // `state`, which the thread-local keeps alive for the duration of
+            // this call; allocation takes the arena by shared reference.
+            unsafe { &*state.spill_handle() }.alloc_layout(layout).as_ptr()
         }
     })
 }
 
 // SAFETY:
 // - `allocate`/`grow` return blocks carved from the active state's inline
-//   chunk, from `mi_heap_malloc[_aligned]` on its spill heap, or from global
-//   `mi_malloc[_aligned]` when no state is installed; all satisfy `layout`.
-//   State-owned blocks are bulk-freed when the owner resets/releases the
-//   state.
+//   chunk, from the state's spill arena, or from the raw default heap when no
+//   state is installed; all satisfy `layout`. State-owned blocks are bulk-freed
+//   when the owner resets/releases the state.
 // - `deallocate` is a no-op (permitted: the trait only requires that memory
 //   *may* be reclaimed). This preserves the `Expr::Data::clone_in` invariant
 //   (two `Vec` headers may alias one buffer; neither frees it). Under the
 //   global fallback the buffer leaks until process exit — the documented
 //   pre-Strategy-B status quo.
-// - `grow` tries `mi_expand` (extend the existing block in place — never moves
-//   it, so it stays in whatever heap owns it) *only when `old.size() > BUMP_MAX`*:
-//   a smaller block may be a bump-chunk interior pointer (see `heap_alloc`), on
-//   which `mi_expand` would corrupt the chunk's bookkeeping. A `> BUMP_MAX`
-//   block always came straight from `mi_[heap_]malloc[_aligned]`, so it is
-//   sound. Otherwise (and on `mi_expand` failure) `grow` allocates a fresh
-//   block + `memcpy` rather than `mi_realloc`: when no state is installed we
-//   cannot tell whether `ptr` is a global-fallback `mi_malloc` block head or a
-//   bump-chunk interior pointer from a since-exited AST scope on another
-//   thread (`BundleV2::clone_ast` does exactly this), so passing it to
-//   `mi_realloc` would be unsound. The old block is abandoned (same leak
-//   semantics as `deallocate` — and under a state it, like every other block,
-//   is reclaimed when the owner resets the state).
-// - `allocate_zeroed` is `mi_*zalloc` (skips the redundant `memset` mimalloc
-//   would otherwise need over already-zero OS pages); same lifetime as
+// - `grow` always allocates a fresh block + `memcpy` + abandons the old one.
+//   No in-place resize exists on this backend: a block smaller than `BUMP_MAX`
+//   may be a bump-chunk interior pointer (see `heap_alloc`), and even a larger
+//   block cannot be proven to be this state's spill-arena payload — a `Vec`
+//   clone can cross threads (`BundleV2::clone_ast` does exactly this), so the
+//   pointer may be a raw default-heap block from a since-exited scope, which
+//   must not be handed to any arena free path. The old block is abandoned
+//   (same leak semantics as `deallocate` — and under a state it, like every
+//   other block, is reclaimed when the owner resets the state).
+// - `allocate_zeroed` returns zero-filled memory (the spill arena's zeroed
+//   allocation, or an explicit zero fill on the raw heap); same lifetime as
 //   `allocate`.
 // - `AstAlloc` is a ZST: every instance is trivially "the same allocator", so
 //   the "pointers may be freed by any clone" requirement is satisfied.
@@ -492,18 +490,30 @@ unsafe impl Allocator for AstAlloc {
 
     #[inline]
     fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        // `mi_*zalloc` lets mimalloc skip the `memset` for blocks carved from
-        // freshly-`mmap`ed (already-zero) OS pages, which the default
-        // `allocate` + `ptr::write_bytes(0)` cannot. Never bump-carved (the
-        // chunk is uninitialised); same lifetime semantics as `heap_alloc`.
-        // Mirrors `MimallocArena::allocate_zeroed`.
+        // Zero-filled on both arms (the spill arena's zeroed allocation, or an
+        // explicit fill over the raw-heap block). Never bump-carved (the chunk
+        // is uninitialised); same lifetime semantics as `heap_alloc`.
         let p: *mut u8 = with_active_state(|state| match state {
-            None => mimalloc::mi_zalloc_auto_align(layout.size(), layout.align()).cast(),
-            // SAFETY: `heap_ptr` returns the live spill heap owned by the
+            None => {
+                let p = C_ALLOCATOR
+                    .raw_alloc(
+                        layout.size(),
+                        crate::Alignment::from_byte_units(layout.align()),
+                        0,
+                    )
+                    .unwrap_or_else(core::ptr::null_mut);
+                if !p.is_null() {
+                    // SAFETY: `p` is `layout.size()` writable bytes just
+                    // returned above.
+                    unsafe { core::ptr::write_bytes(p, 0, layout.size()) };
+                }
+                p
+            }
+            // SAFETY: `spill_handle` returns the live spill arena owned by the
             // installed state; see `heap_alloc`.
-            Some(state) => unsafe {
-                mimalloc::mi_heap_zalloc_auto_align(state.heap_ptr(), layout.size(), layout.align())
-                    .cast()
+            Some(state) => match unsafe { &*state.spill_handle() }.allocate_zeroed(layout) {
+                Ok(p) => p.as_ptr().cast::<u8>(),
+                Err(_) => core::ptr::null_mut(),
             },
         });
         alloc_result(p, layout.size())
@@ -525,41 +535,9 @@ unsafe impl Allocator for AstAlloc {
         old: Layout,
         new: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        // Fast path: mimalloc rounds every allocation up to a size class, so the
-        // block behind `ptr` frequently already has room for `new.size()`.
-        // `mi_expand` reports that (and fixes up mimalloc's own padding
-        // bookkeeping) *without* moving the block — so it stays in whatever heap
-        // owns it and never thrashes the `heap → theap` TLS lookup. When it
-        // succeeds there is no allocation, no `memcpy`, and no abandoned block,
-        // matching `MimallocArena`'s `resize_in_place` (Zig's arena `remap` is
-        // `mi_expand`-then-`mi_realloc`).
-        //
-        // Gated on:
-        //  - `old.size() > BUMP_MAX`: smaller blocks may be bump-chunk interior
-        //    pointers (see `heap_alloc`), and `mi_expand` on those would treat
-        //    the *whole chunk* as the block — corrupting its bookkeeping. A
-        //    `> BUMP_MAX` block always came straight from
-        //    `mi_[heap_]malloc[_aligned]`, so this is the only safe slice to
-        //    use it.
-        //  - `new.align() <= old.align()`: the block was aligned for `old`,
-        //    `mi_expand` cannot raise that, and for `Vec<T>` (the only `AstVec`
-        //    shape) the alignment never changes across grows.
-        if old.size() > BUMP_MAX && new.align() <= old.align() {
-            // SAFETY: `ptr` is a live block from this allocator (the `grow`
-            // contract) and — given `old.size() > BUMP_MAX` — a real mimalloc
-            // block head, the precondition `mi_expand` requires. It returns
-            // `ptr` unchanged on success or null when the block cannot hold
-            // `new.size()`.
-            if let Some(p) = NonNull::new(unsafe {
-                mimalloc::mi_expand(ptr.as_ptr().cast(), new.size()).cast::<u8>()
-            }) {
-                return Ok(NonNull::slice_from_raw_parts(p, new.size()));
-            }
-        }
-        // Slow path: allocate-new (possibly bump-carved) + copy + abandon-old.
-        // Not `mi_realloc`: `ptr` may be a bump-chunk interior pointer or a
-        // block from another scope's heap (see SAFETY above); the old block is
-        // reclaimed when its owning state is reset.
+        // Always the relocate path (see the SAFETY block above: no in-place
+        // resize exists on this backend, and a live pointer cannot be proven
+        // to belong to this state's spill arena).
         let p = NonNull::new(heap_alloc(new)).ok_or(AllocError)?;
         // SAFETY: `p` is a fresh `new.size()`-byte block disjoint from `ptr`;
         // `old.size()` bytes at `ptr` are initialized per the `grow` contract;

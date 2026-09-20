@@ -370,12 +370,6 @@ impl Source {
     // TODO(port): in-place init — `out` is the pre-allocated thread_local slot; PORTING.md
     // says keep `&mut MaybeUninit<Self>` (or reshape to `-> Self`) for out-param ctors.
     pub fn init(out: &mut Source, stream: StreamType, err_stream: StreamType) {
-        // TODO(port): bun_alloc::USE_MIMALLOC + mimalloc::Option::ShowErrors
-        // are gated in bun_alloc; re-enable once bun_alloc/basic.rs is un-gated.
-
-        if cfg!(debug_assertions) && bun_alloc::USE_MIMALLOC && !SOURCE_SET.get() {
-            bun_alloc::mimalloc::mi_option_set(bun_alloc::mimalloc::Option::show_errors, 1);
-        }
         SOURCE_SET.set(true);
 
         out.raw_stream = stream;

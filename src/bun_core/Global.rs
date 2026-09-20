@@ -10,7 +10,6 @@ use crate::env; // @import("./env.zig")
 use crate::env::version_string;
 use crate::output as Output; // @import("./output.zig")
 
-use crate::USE_MIMALLOC;
 #[cfg(debug_assertions)]
 use crate::debug_allocator_data;
 // MOVE_DOWN: bun_core::ZStr → bun_core (move-in pass).
@@ -807,11 +806,18 @@ pub struct AllocatorConfiguration {
     pub long_running: bool,
 }
 
+/// Release free allocator memory back to the OS.
+///
+/// Replaces Zig's `mimallocCleanup(force)`: with libc as the sole allocator
+/// there is no arena to collect, so this is a plain `malloc_trim(0)` hint —
+/// a no-op on targets without `malloc_trim` (musl/macOS/Windows), where the
+/// allocator already returns freed memory to the OS on its own.
 #[inline]
-pub fn mimalloc_cleanup(force: bool) {
-    if USE_MIMALLOC {
-        // `mi_collect` is declared `safe fn` in `bun_mimalloc_sys` (no preconditions).
-        bun_alloc::mimalloc::mi_collect(force);
+pub fn trim_os_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` has no preconditions; `0` trims all arenas.
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 // Versions are now handled by build-generated header (bun_dependency_versions.h)

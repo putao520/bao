@@ -229,7 +229,6 @@ bun_boringssl_sys = { path = "src/boringssl_sys", version = "0.1.0" }
 bun_lsquic_sys = { path = "src/lsquic_sys", version = "0.1.0" }
 bun_cares_sys = { path = "src/cares_sys", version = "0.1.0" }
 bun_libuv_sys = { path = "src/libuv_sys", version = "0.1.0" }
-bun_mimalloc_sys = { path = "src/mimalloc_sys", version = "0.1.0" }
 bun_simdutf_sys = { path = "src/simdutf_sys", version = "0.1.0" }
 bun_spawn_sys = { path = "src/spawn_sys", version = "0.1.0" }
 bun_tcc_sys = { path = "src/tcc_sys", version = "0.1.0" }

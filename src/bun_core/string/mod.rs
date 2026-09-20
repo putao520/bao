@@ -427,7 +427,8 @@ impl String {
     }
 
     /// `bun.String.createExternalGloballyAllocated(.latin1, bytes)` — takes
-    /// ownership of a globally-allocated (mimalloc-backed) Latin-1 buffer and
+    /// ownership of a globally-allocated (default-allocator-backed) Latin-1
+    /// buffer and
     /// wraps it in a WTF::ExternalStringImpl. On allocation failure, frees the
     /// bytes and returns `String::DEAD`.
     pub fn create_external_globally_allocated_latin1(bytes: Vec<u8>) -> Self {
@@ -438,14 +439,15 @@ impl String {
             return Self::DEAD;
         }
         // Do NOT call `into_boxed_slice()` — when `len < capacity` it issues a
-        // shrink_to_fit realloc. mimalloc's `mi_free` only needs the original
-        // base pointer (capacity is recovered from the heap), so leaking the
+        // shrink_to_fit realloc. The default allocator's `free` only needs the
+        // original base pointer (the block size is recovered from the
+        // allocation itself), so leaking the
         // spare capacity to the ExternalStringImpl finalizer is correct and
         // matches Zig's `allocator.alloc(u8, n)` → `to[0..wrote]` pattern.
         let mut bytes = core::mem::ManuallyDrop::new(bytes);
         let (ptr, len) = (bytes.as_mut_ptr(), bytes.len());
         // SAFETY: ownership transferred to WTF::ExternalStringImpl, which frees
-        // via mimalloc (the global allocator).
+        // via the default allocator.
         unsafe { BunString__createExternalGloballyAllocatedLatin1(ptr, len) }
     }
 
@@ -925,7 +927,7 @@ impl String {
     }
 
     /// `bun.String.isGlobal` (string.zig:63) — true iff this is a `ZigString`
-    /// whose pointer is tagged as globally-allocated (mimalloc heap).
+    /// whose pointer is tagged as globally-allocated (default-allocator heap).
     #[inline]
     pub fn is_global(&self) -> bool {
         self.0.tag == Tag::ZigString && self.as_zig().is_globally_allocated()
@@ -1401,11 +1403,12 @@ impl ZigString {
     /// `ZigString.dupeForJS` — duplicates `utf8` into a globally-allocated
     /// buffer suitable for handing to JSC. Widens to UTF-16 if `utf8` contains
     /// any non-ASCII byte; otherwise leaves as 8-bit. Marks the result global
-    /// so JSC frees it via mimalloc.
+    /// so the foreign owner frees it via the default allocator.
     pub fn dupe_for_js(utf8: &[u8]) -> Result<ZigString, strings::ToUTF16Error> {
         if let Some(utf16) = strings::to_utf16_alloc(utf8, false, false)? {
             // Ownership transferred to JSC: `mark_global()` tags the buffer so
-            // `Zig::toString*` adopts it into a WTF string and `mi_free`s it on
+            // `Zig::toString*` adopts it into a WTF string and frees it via the
+            // default allocator on
             // string death. `heap::release` is the hand-off-to-foreign-owner
             // spelling (Zig `ZigString.dupeForJS` never frees `utf16` locally).
             let leaked: &'static mut [u16] = crate::heap::release(utf16.into_boxed_slice());
@@ -1414,7 +1417,8 @@ impl ZigString {
             out.mark_utf16();
             Ok(out)
         } else {
-            // Same hand-off: JSC owns the bytes, freed via `mi_free` on string death.
+            // Same hand-off: JSC owns the bytes, freed via the default
+            // allocator on string death.
             let duped: &'static mut [u8] = crate::heap::release(Box::<[u8]>::from(utf8));
             let mut out = ZigString::init(duped);
             out.mark_global();
@@ -1443,7 +1447,7 @@ impl ZigString {
 
     /// `ZigString.from16` — globally-allocated memory only (ZigString.zig:547).
     /// Marks UTF-16 + global; caller must ensure the buffer was allocated by
-    /// `bun.default_allocator` (mimalloc) since `deinitGlobal` will free it.
+    /// `bun.default_allocator` since `deinitGlobal` will free it.
     #[inline]
     pub fn from16(ptr: *const u16, len: usize) -> Self {
         let mut z = Self::from_tagged_ptr(ptr.cast(), len);
@@ -1906,8 +1910,8 @@ impl ZigString {
     /// (ZigString.zig:693). Unlike `to_slice`, this never borrows the source
     /// bytes, so the result outlives a GC'd `JSString` that produced `self`.
     ///
-    /// PORT NOTE: Zig returned `OOM!Slice`; with mimalloc as the global
-    /// allocator OOM aborts the process, so this is infallible.
+    /// PORT NOTE: Zig returned `OOM!Slice`; here OOM aborts the process
+    /// (allocation failure is fatal), so this is infallible.
     pub fn to_slice_clone(&self) -> ZigStringSlice {
         if self.len == 0 {
             return ZigStringSlice::EMPTY;
@@ -1944,7 +1948,7 @@ impl ZigString {
 pub enum ZigStringSlice {
     /// Borrowed; never freed (`fromUTF8NeverFree`).
     Static(*const u8, usize),
-    /// Heap-owned; Drop frees via global mimalloc.
+    /// Heap-owned; Drop frees via the default allocator.
     Owned(Vec<u8>),
     /// Backed by a WTFStringImpl ref; Drop derefs it. Stored as raw ptr to
     /// avoid wtf-module cycle; `wtf::to_latin1_slice` constructs this.
@@ -2212,7 +2216,7 @@ impl ZigStringSlice {
         let Self::Owned(v) = self else { return None };
         let mut v = core::mem::ManuallyDrop::new(core::mem::take(v));
         *self = Self::default();
-        // Shrink so the foreign `mi_free(ptr)` releases exactly this block.
+        // Shrink so the foreign `free(ptr)` releases exactly this block.
         v.shrink_to_fit();
         Some((v.as_ptr(), v.len()))
     }

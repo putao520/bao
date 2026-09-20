@@ -104,7 +104,7 @@ pub struct Ast<'a> {
 // `parts`/`symbols`/`import_records` are now `ArenaVec`s and need an allocator,
 // so `Default` no longer applies; use `Ast::empty_in(arena)`.
 impl<'a> Ast<'a> {
-    pub fn empty_in(arena: &'a bun_alloc::MimallocArena) -> Self {
+    pub fn empty_in(arena: &'a bun_alloc::Arena) -> Self {
         Self {
             approximate_newline_count: 0,
             has_lazy_export: false,
@@ -169,7 +169,7 @@ pub type TsEnumsMap =
     ArrayHashMap<Ref, StringHashMap<InlinedEnumValue, AstAlloc>, AutoContext, AstAlloc>;
 
 impl<'a> Ast<'a> {
-    pub fn from_parts(parts: Box<[Part]>, arena: &'a bun_alloc::MimallocArena) -> Ast<'a> {
+    pub fn from_parts(parts: Box<[Part]>, arena: &'a bun_alloc::Arena) -> Ast<'a> {
         let mut p = PartList::with_capacity_in(parts.len(), arena);
         p.extend(parts.into_vec());
         Ast {

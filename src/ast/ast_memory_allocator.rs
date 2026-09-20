@@ -361,7 +361,6 @@ impl ASTMemoryAllocator {
         let arena: *const Arena = self.arena_raw();
         stmt::data::Store::set_memory_allocator(std::ptr::from_mut::<Self>(self));
         expr::data::Store::set_memory_allocator(std::ptr::from_mut::<Self>(self));
-        let spill = self.arena().heap_ptr();
         if !self.ast_pushed {
             // Capture the outer override only on the first (un-popped) push so
             // a re-arming `push()` doesn't clobber the saved outer value.
@@ -372,15 +371,15 @@ impl ASTMemoryAllocator {
                 .take()
                 .unwrap_or_else(ast_alloc::acquire_state);
             // `AstVec` spill allocations share this allocator's arena.
-            state.set_spill_heap(spill);
+            state.set_spill_heap(arena);
             self.previous_ast_state = ast_alloc::swap_state(Some(state));
             self.ast_pushed = true;
         } else {
             // Re-arming push (no intervening `pop()`, e.g. `MiniStore`):
             // re-publish the override and re-point the spill at the (possibly
-            // recycled) arena heap.
+            // recycled) arena.
             crate::set_data_store_override(arena);
-            ast_alloc::set_active_spill_heap(spill);
+            ast_alloc::set_active_spill_heap(arena);
         }
     }
 
@@ -480,7 +479,7 @@ impl<'a> Scope<'a> {
                 let arena: *const Arena = r.arena_raw();
                 // Install this allocator's `AstAlloc` state; spill shares its arena.
                 let mut state = r.ast_state.take().unwrap_or_else(ast_alloc::acquire_state);
-                state.set_spill_heap(r.arena().heap_ptr());
+                state.set_spill_heap(r.arena_raw());
                 self.previous_ast_state = ast_alloc::swap_state(Some(state));
                 r.ast_pushed = true;
                 (std::ptr::from_mut::<ASTMemoryAllocator>(*r), arena)

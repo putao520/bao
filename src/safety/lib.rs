@@ -15,7 +15,7 @@ pub mod thread_id;
 // Allocator-identity registry (storage moved DOWN — data, not fn-ptrs).
 //
 // Low-tier `bun_safety` cannot name higher-tier allocator types
-// (`MimallocArena`, `LinuxMemFdAllocator`, `MaxHeapAllocator`,
+// (`LinuxMemFdAllocator`, `MaxHeapAllocator`,
 // `CachedBytecode`, `bundle_v2`, `heap_breakdown::Zone`)
 // directly. Instead of an erased fn-ptr hook, those crates push their
 // `&'static AllocatorVTable` addresses here at init; `alloc::has_ptr` then
@@ -72,14 +72,6 @@ pub(crate) fn known_alloc_vtable(alloc: bun_alloc::StdAllocator) -> bool {
     KNOWN_ALLOC_VTABLES[..n]
         .iter()
         .any(|s| s.load(Ordering::Relaxed) == needle)
-}
-
-/// `MimallocArena.isInstance` — `bun_alloc` is below us, so call it directly
-/// (no registry needed for this one).
-#[cfg(debug_assertions)]
-#[inline]
-pub(crate) fn is_mimalloc_arena(alloc: bun_alloc::StdAllocator) -> bool {
-    bun_alloc::MimallocArena::is_instance(&alloc)
 }
 
 /// Dump a captured trace via the T0 fallback (raw addresses / std::backtrace).

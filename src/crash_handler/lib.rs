@@ -481,7 +481,7 @@ mod draft {
     // D101: `core::fmt::Write` intentionally NOT in scope here — `bun_io::Write`
     // (via `super::Write`) supplies `write_fmt` for `BoundedArray<u8,N>`; importing
     // both makes `write!` ambiguous (E0034).
-    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use bun_base64::VLQ;
     use bun_collections::BoundedArray;
@@ -2055,12 +2055,6 @@ mod draft {
         fn gnu_get_libc_version() -> *const c_char;
     }
 
-    // Only populated after JSC::VM::tryCreate. C++ writes this as a plain
-    // `size_t`; `AtomicUsize` has the same size/alignment as `usize` so the
-    // symbol layout is unchanged, and the Rust side reads it race-free.
-    #[unsafe(no_mangle)]
-    pub(crate) static Bun__reported_memory_size: AtomicUsize = AtomicUsize::new(0);
-
     pub fn print_metadata(writer: &mut impl Write) -> Result<(), bun_core::Error> {
         #[cfg(debug_assertions)]
         {
@@ -2206,55 +2200,6 @@ mod draft {
             write!(writer, "\n{}", bun_analytics::features::formatter()).map_err(fmt_err)?;
         }
         writer.write_all(b"\n")?;
-
-        if bun_core::USE_MIMALLOC {
-            let mut elapsed_msecs: usize = 0;
-            let mut user_msecs: usize = 0;
-            let mut system_msecs: usize = 0;
-            let mut current_rss: usize = 0;
-            let mut peak_rss: usize = 0;
-            let mut current_commit: usize = 0;
-            let mut peak_commit: usize = 0;
-            let mut page_faults: usize = 0;
-            // SAFETY: all out-pointers are valid
-            unsafe {
-                bun_alloc::mimalloc::mi_process_info(
-                    &raw mut elapsed_msecs,
-                    &raw mut user_msecs,
-                    &raw mut system_msecs,
-                    &raw mut current_rss,
-                    &raw mut peak_rss,
-                    &raw mut current_commit,
-                    &raw mut peak_commit,
-                    &raw mut page_faults,
-                );
-            }
-            writeln!(
-                writer,
-                "Elapsed: {}ms | User: {}ms | Sys: {}ms",
-                elapsed_msecs, user_msecs, system_msecs
-            )
-            .map_err(fmt_err)?;
-
-            // TODO(port): {B:<3.2} byte-size formatting — bun_fmt::bytes() doesn't take width/prec yet
-            write!(
-                writer,
-                "RSS: {} | Peak: {} | Commit: {} | Faults: {}",
-                bun_fmt::bytes(current_rss),
-                bun_fmt::bytes(peak_rss),
-                bun_fmt::bytes(current_commit),
-                page_faults,
-            )
-            .map_err(fmt_err)?;
-
-            // SAFETY: read-only access to exported global
-            let reported = Bun__reported_memory_size.load(Ordering::Relaxed);
-            if reported > 0 {
-                write!(writer, " | Machine: {}", bun_fmt::bytes(reported)).map_err(fmt_err)?;
-            }
-
-            writer.write_all(b"\n")?;
-        }
 
         if enable_ansi_colors_stderr() {
             writer.write_all(&Output::pretty_fmt::<true>("<r>"))?;

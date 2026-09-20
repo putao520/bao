@@ -57,11 +57,7 @@ impl HPACK {
     pub fn init(max_capacity: u32) -> *mut HPACK {
         // `lshpack_wrapper_init` is `safe fn`: its only precondition is non-null
         // alloc/free callbacks, which the bare (non-Option) fn-ptr types enforce.
-        let ptr = lshpack_wrapper_init(
-            bun_alloc::mimalloc::mi_malloc,
-            bun_alloc::mimalloc::mi_free,
-            max_capacity as usize,
-        );
+        let ptr = lshpack_wrapper_init(lshpack_default_malloc, lshpack_default_free, max_capacity as usize);
         if ptr.is_null() {
             bun_core::out_of_memory();
         }
@@ -165,9 +161,10 @@ impl HPACK {
 /// Owning handle for an `HPACK` instance returned by [`HPACK::init`].
 ///
 /// `HPACK::init` allocates via the C wrapper (`lshpack_wrapper_init`, which
-/// `mi_malloc`s the struct and `lshpack_{enc,dec}_init`s its internals). The
+/// `default_alloc::malloc`s the struct and `lshpack_{enc,dec}_init`s its
+/// internals). The
 /// matching teardown is `lshpack_wrapper_deinit`, which runs the lshpack
-/// cleanup hooks before freeing — **not** a bare `mi_free`. Wrapping the raw
+/// cleanup hooks before freeing — **not** a bare `default_alloc::free`. Wrapping the raw
 /// pointer in `Box<HPACK>` (and letting `Box`'s `Drop` free it) therefore
 /// leaks the encoder/decoder's internal allocations. Use this handle instead.
 pub struct HpackHandle(core::ptr::NonNull<HPACK>);
@@ -217,12 +214,26 @@ unsafe impl Send for HpackHandle {}
 // Non-Option fn pointers: the C ABI repr is identical to `Option<fn>`, but the
 // type guarantees non-null, which is the only precondition `lshpack_wrapper_init`
 // has — letting it be declared `safe fn` below.
-// `alloc` has no caller precondition (mi_malloc is total over usize), so its
-// pointer type is safe; `free` retains a caller contract because `mi_free`
-// requires "ptr is mimalloc-owned or null" — discharged by the C wrapper,
-// not by Rust's type system.
+// `alloc` has no caller precondition (default_alloc::malloc is total over
+// usize), so its pointer type is safe; `free` retains a caller contract
+// because `default_alloc::free` requires "ptr is default-allocator-owned or
+// null" — discharged by the C wrapper, not by Rust's type system.
 type LshpackWrapperAlloc = extern "C" fn(size: usize) -> *mut c_void;
 type LshpackWrapperFree = unsafe extern "C" fn(ptr: *mut c_void);
+
+// C-ABI shims over the default allocator: lshpack stores these pointers and
+// calls them for the encoder/decoder's internal allocations, so the
+// malloc/free pair must stay on one backend.
+extern "C" fn lshpack_default_malloc(size: usize) -> *mut c_void {
+    bun_alloc::default_alloc::malloc(size)
+}
+
+/// # Safety
+/// lshpack only passes pointers it obtained from `lshpack_default_malloc`.
+unsafe extern "C" fn lshpack_default_free(ptr: *mut c_void) {
+    // SAFETY: pairing guarantee above.
+    unsafe { bun_alloc::default_alloc::free(ptr) }
+}
 
 // TODO(port): move to bun_http_sys
 unsafe extern "C" {
@@ -237,7 +248,8 @@ unsafe extern "C" {
     // Only precondition is a valid non-null `*HPACK`; `&mut HPACK` (ABI-identical
     // thin pointer) discharges it at the type level, so this is `safe fn`.
     safe fn lshpack_wrapper_dec_set_max_capacity(self_: &mut HPACK, max_capacity: c_uint);
-    // Frees `self_` (lshpack_{enc,dec}_cleanup + mi_free) — ownership transfer,
+    // Frees `self_` (lshpack_{enc,dec}_cleanup + default_alloc::free) —
+    // ownership transfer,
     // so this keeps its raw-pointer signature and caller-side safety obligation.
     fn lshpack_wrapper_deinit(self_: *mut HPACK);
     // `self_`/`output` are tightened to references (ABI-identical thin ptrs) so

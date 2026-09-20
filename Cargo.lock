@@ -2180,7 +2180,6 @@ dependencies = [
  "bun_highway",
  "bun_io",
  "bun_lsquic_sys",
- "bun_mimalloc_sys",
  "bun_spawn",
  "bun_sys",
  "bun_zstd",
@@ -2478,7 +2477,6 @@ dependencies = [
  "allocator-api2",
  "bstr",
  "bumpalo",
- "bun_mimalloc_sys",
  "bun_opaque",
  "bun_wyhash",
  "libc",
@@ -3228,15 +3226,6 @@ dependencies = [
  "bun_url",
  "pulldown-cmark",
  "scopeguard",
-]
-
-[[package]]
-name = "bun_mimalloc_sys"
-version = "0.1.1"
-dependencies = [
- "bun_opaque",
- "cc",
- "phf 0.11.3",
 ]
 
 [[package]]

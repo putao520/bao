@@ -744,13 +744,6 @@ pub const DEFAULT_THREAD_STACK_SIZE: u32 = {
     }
 };
 
-// NOTE: a `prewarm_mimalloc_numa()` helper was tried here to call
-// `_mi_os_numa_node_count()` once on the spawning thread so workers don't race
-// the `/sys/devices/system/node/node%u` slow path, but mimalloc is built as
-// `-x c++` (see scripts/build/deps/mimalloc.ts `lang: "cxx"`) so that internal
-// symbol is C++-mangled (`_Z22_mi_os_numa_node_countv`) and not reachable via
-// `extern "C"`. Left for a follow-up that adds an `extern "C"` shim.
-
 impl ThreadPool {
     /// Warm the thread pool up to the given number of threads.
     /// https://www.youtube.com/watch?v=ys3qcbO5KWw
@@ -1167,14 +1160,6 @@ impl Thread {
 
     /// Thread entry point which runs a worker for the ThreadPool
     fn run(thread_pool: bun_ptr::BackRef<ThreadPool>) {
-        // No args, no preconditions; marks this OS thread as a mimalloc
-        // threadpool worker so deferred frees are processed eagerly. `safe fn`
-        // (Rust 2024) discharges the link-time proof so no `unsafe` block.
-        unsafe extern "C" {
-            safe fn mi_thread_set_in_threadpool();
-        }
-        mi_thread_set_in_threadpool();
-
         {
             let mut counter_buf = [0u8; 100];
             let int = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -1241,8 +1226,8 @@ impl Thread {
                     // `wait()` observes `Shutdown` before we loop back to
                     // `drain_idle_events`. Run them once on the way out so the
                     // worker thread tears down its own `Worker`/`WorkerData`
-                    // (whose `ThreadLocalArena` is mimalloc thread-local and
-                    // must be freed here, not from the bundler thread).
+                    // (whose `ThreadLocalArena` is thread-affine and must be
+                    // freed here, not from the bundler thread).
                     // SAFETY: self_ptr is our own stack-local Thread.
                     unsafe { (*self_ptr).drain_idle_events() };
                     return;
@@ -1445,7 +1430,7 @@ impl Event {
             };
             if Futex::wait(&self.state, Self::WAITING, timeout_ns).is_err() {
                 has_shrunk_memory = true;
-                bun_core::Global::mimalloc_cleanup(false);
+                bun_core::Global::trim_os_memory();
                 bun_alloc::wtf::release_fast_malloc_free_memory_for_this_thread();
             }
             state = self.state.load(Ordering::Relaxed);

@@ -21,7 +21,7 @@
 //! - `bun_crash_handler` — __bun_crash_handler_out_of_memory
 //! - `bun_alloc` — WTF__releaseFastMallocFreeMemoryForThisThread
 //! - `bun_core::util` — WTF__numberOfProcessorCores
-//! - compiled C libraries: mimalloc (bun_mimalloc_sys), highway (bun_highway),
+//! - compiled C libraries: highway (bun_highway),
 //!   zstd (pure Rust via bun_zstd), brotli (pure Rust), lsquic/lshpack
 //!   (bun_lsquic_sys), BoringSSL (bun_boringssl_sys), uSockets (bun_uws_sys)
 //!
@@ -46,9 +46,6 @@ pub fn force_link() {
     // and TLS C→Rust hooks. Without this, the linker strips them and any code
     // path that touches `bun_event_loop::MiniEventLoop` fails to link.
     bao_uloop::force_link();
-
-    // Compiled mimalloc C library (libmimalloc.a).
-    bun_mimalloc_sys::force_link();
 
     // Compiled highway SIMD library (libhighway.a + libhighway_strings.a).
     bun_highway::force_link();
