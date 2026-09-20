@@ -1851,3 +1851,11 @@ suite 测试注册 + Cargo.toml dev-dep + 本账本节）。
 - **R5-R6**:7 oracle 再证 + 全量 build/test + CLAUDE.md 版本漂移修正(实际 0.22.1/140.14.0-1 vs 文档 0.22.0/140.14.0-0;etc/COMMIT=ee9f2b2 是 release tag 非 main commit)+ patch 清单表更新(含 exdr2 的 EncodeStencil 条目)
 
 并行在途:exdr2(EncodeStencil 绑定,REQ-ENG-012,XDR encode bindgen 缺口——本账本 09-17 已预锚)。er0 出果即启 R1。
+
+### R0 完成(2026-09-21,b9c47230 + 8658fccc 收口)
+
+**probe「零追踪」前提被推翻**:probe 查的是 W2 拆分前旧路径 `vendor/mozjs/mozjs-sys/mozjs/js/`(确零追踪);真身 `vendor/mozjs/src-js/mozjs/js/src/`(2207 文件)全程 git 追踪。四源全活:git 现树(决定性)/ /var/cargo-builds 物化树(md5 全等)/ crates.io bao-mozjs-src-js-140.14.0-0(字节一致)/ .in.rs Rust 侧。上游干净基线 = servo/mozjs Release `mozjs-source-ee9f2b2…` mozjs.tar.xz(根=mozjs-140.14.0/,FIREFOX_140_14_0esr_RELEASE;etc/COMMIT 的 ee9f2b2 是 mozilla release 标记,vendor servo 基底是 eb36274)。
+
+交付:`vendor/mozjs/mozjs-sys/etc/patches/bao-000{1,2}.patch`(P4/P5,-p1 SM 树相对,`bao-` 前缀排序自动落 0002-0045 后)。**验证:apply --check 双 rc=0(pristine+0044 基线)+ 重放字节全等(pristine+0044+bao-0001+bao-0002 → 三文件 md5 ≡ 在产 src-js 树)**。主波情报三条:P5 jsapi.cpp hunk 须在 0044 后(非 BAO hunk 已剥离,旧侧行号=post-0044 态);namespace-JS-out 陷阱固化进 0002 头部 CAUTION;P4 语义跨版本恒定(jsapi.cpp 恒 2332 行)。
+
+R1-prep 已续派 er0(SM153 资产物化 dry-run+双向对账表+迁移 API 核查,零工作树变更,/tmp/r1-prep/)。
