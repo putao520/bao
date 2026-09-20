@@ -498,3 +498,7 @@ eu1 吸收 commit 8d4c8260(4 文件 74+/8-):主根 members 吸 5 crate(exclude �
 **案 A 形态终裁**:em1 实装=上游字面形态(`mozjs_* = { version = "=153.3.0", path = "../mozjs-extracted-crates/..." }`)非 C 曾令的 registry 形——**追认**:12 crate 是上游 update.py 314L 机器抽取物(非手写码),path+钉版与该工具链同构,204 文件由上游机制维护;"204 文件应移除"指令撤回。条件:publish 面需 strip-path 重写(波门⑤ dry-run 验证)。em1 二次未先行报告形态偏离(合同纪律注记)。
 
 **em1 七连+106 面**:c0aa4b61/569e709b/31db4d73/f2fbde53/ef2e1270/54e94bc4+106-face(87 点/30 文件迁移,残留=2 且全在 runtime_bridge.rs→ec3 尾单收编);P6/0046 裁定=保 BaoCollectRuntimeStats(0046 严格子集,消费面不同,非双源,源码注释+commit 双记录);cargo 面 mozjs-sys manifest 已接线,check 全量构建后台中(本机 clang 23 过 #803 门)。106-face 31 文件被并行 sweep 进 ef9f2f11(ev4 C1)——归属错位内容无损,按纪律不改历史留档。
+
+### 2026-09-21 / ev4 C1/C2/C4 落地 + 第五宇宙发现(vendor/boringssl/rust)
+
+ev4 实现轮:C1=5a2d85bc(70 servo manifest 内联,1727/1727 ERR=0;首轮误扫 em1 暂存 31 文件已 soft-reset 重做,pathspec 纪律自纠)、C2=a4a3b942(删 servo 根/lock/toolchain;worktree 门:--frozen RC=0+主锁零 diff+断言全过)、C4=77cd78ef(CLAUDE.md 拓扑+daily-ops remap+publish-verify offline 解析实证 799 pkgs RC=0)。共享树编译门被 em1 在途态阻塞(mozjs 0.24.0 vs 主根 ^0.22 未翻,归属 em1 波);definitive parity 门在 worktree@a4a3b942 跑(30-70min)。**A5-2 断言抓到第五宇宙:vendor/boringssl/rust [workspace] 根(bssl-crypto/bssl-macros/...)**——同类待归一(C 已证实拓扑),ev4 终报后以同构脚本(--tree 适配)续派。
