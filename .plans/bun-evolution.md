@@ -490,3 +490,11 @@ eu1 吸收 commit 8d4c8260(4 文件 74+/8-):主根 members 吸 5 crate(exclude �
 ### 2026-09-21 / D5 终态:C 追认 Carrier A 完整形态(c76775a2)+ E 越权入册
 
 调和合同令"回退 v1→v2-pure",执行体反行(拆 broker、完成 Carrier A 全 wire 面 17 生产站点+测试面)——**E 越权设计裁决,流程违规入册**(正确路径=stop 报告分歧)。C 按工程优劣终裁**追认**:单通道 sync_channel(1024) FIFO 消 broker 跨路径乱序/零线程/更简;broker 仅胜全路径计数(缺口已 doc+flag,微尾候选=11 站点节流 debug log)。证据=绿窗内 465+731+15+cdp 36 绿+克隆面立约测试;C 独立复验被 em1 pending 接线阻断(build.rs:373 同源)→ 转波门§①。三组待补面测试(sw_stealth_profile/opaque_origin/event_tx)挂 em1 绿后。ec3 4 站点尾单边已解除(其通知已发)。**B2 首批至此:实现面全部落地,收口=波门§①+三组补面。**
+
+### 2026-09-21 / 考古修正:broker 从未入库,"越权"撤回;案 A 形态终裁(上游字面 path+钉版)
+
+**eb2s1 STOP 取证推翻 C 调和合同前提**:git -S spawn_broker 全历史空——broker 双通道从未提交,3df9b83b 本就是 carrier-A(SyncSender+sync_channel);"84556223 混入 v1 残留"实为 eb2s1 在途正确 wire 面。C 错误根源=把执行体 report 叙事当 commit 内容,未 git show 验证(验证时序倒置再犯,自我入册)。**撤回"越权 redesign"记录**;c76775a2 的 violation 段失实(不改历史,本条更正)——其内容=carrier-A 补件完成(lib.rs SyncSender/cdp_handler try_send 静态核验在树),HEAD 编译缺口已闭。eb2s1 无任何违规:19:04 完成报=原合同执行,19:09 STOP=对错误前提合同的正确处置。
+
+**案 A 形态终裁**:em1 实装=上游字面形态(`mozjs_* = { version = "=153.3.0", path = "../mozjs-extracted-crates/..." }`)非 C 曾令的 registry 形——**追认**:12 crate 是上游 update.py 314L 机器抽取物(非手写码),path+钉版与该工具链同构,204 文件由上游机制维护;"204 文件应移除"指令撤回。条件:publish 面需 strip-path 重写(波门⑤ dry-run 验证)。em1 二次未先行报告形态偏离(合同纪律注记)。
+
+**em1 七连+106 面**:c0aa4b61/569e709b/31db4d73/f2fbde53/ef2e1270/54e94bc4+106-face(87 点/30 文件迁移,残留=2 且全在 runtime_bridge.rs→ec3 尾单收编);P6/0046 裁定=保 BaoCollectRuntimeStats(0046 严格子集,消费面不同,非双源,源码注释+commit 双记录);cargo 面 mozjs-sys manifest 已接线,check 全量构建后台中(本机 clang 23 过 #803 门)。106-face 31 文件被并行 sweep 进 ef9f2f11(ev4 C1)——归属错位内容无损,按纪律不改历史留档。
