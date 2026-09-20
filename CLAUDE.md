@@ -195,7 +195,7 @@ make bce-check
 - **验证 remap**:一律主根 `cargo check|cargo nt -p bao-servo-*`(`-p` 匹配全图包,含非成员)。禁 `cd vendor/servo`(根已删)。从主根首次对某 servo crate 跑 test 会按需解析其 dev-deps 并一次性增长主锁,跑后 `git diff Cargo.lock` 审计。
 - **发布 remap**:servo lockstep 线走组件目录 `cargo publish --manifest-path vendor/servo/components/<c>/Cargo.toml`(manifest 自含;publish-verify 解析 registry freetype 0.8.0——2026-09-21 解析级实证,编译 parity 依 E17 符号对照)。
 - 历史记录:本文档 2026-09-21 前的「双 workspace patch 链 / 双侧 lock」叙述为当时机制描述,现行为单侧主根 patch。
-- 已知域外残留:`vendor/boringssl/rust/` 是第五个 `[workspace]` 宇宙(6 个 bssl-* 成员 + 自带 lock),不在 2026-09-21 四仓裁决内,未触碰,待用户裁决。
+- `vendor/boringssl/rust/` 第五宇宙已灭(`375abb6b`):根 manifest 仅 members+resolver 3 零继承面,无需内联直接删根;考古实证 **bssl-\* rust crate 全仓零消费**(主锁无任何 bssl-\* 包;源码引用全为注释性出处标注;C 构建走 `src/boringssl_sys/csrc` 字节级镜像 + cc crate,CMakeLists.txt 系上游脚手架 bao 从不调用),删根零解析影响。六个 bssl-\* manifest 留作上游 rust bindings 源记录。
 
 ### 测试运行纪律(集成测试已收敛为单 harness suite)
 
