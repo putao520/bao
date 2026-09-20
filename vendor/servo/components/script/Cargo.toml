@@ -93,7 +93,7 @@ icu_locid = {version = "1.5.0"}
 indexmap = {version = "2.14.0", features = ["std"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 itertools = {version = "0.15"}
-js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.22", default-features = false, features = ["intl", "libz-sys"]}
+js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.24", default-features = false, features = ["intl", "libz-sys"]}
 jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = "=0.5.2"}
 k12 = {version = "0.5"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}

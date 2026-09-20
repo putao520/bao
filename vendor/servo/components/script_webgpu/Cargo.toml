@@ -22,7 +22,7 @@ servo-constellation-traits = {package = "bao-servo-constellation-traits", path =
 deny_public_fields = {package = "bao-servo-deny-public-fields", path = "../deny_public_fields", version = "=0.5.2"}
 dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version = "=0.5.2"}
 indexmap = {version = "2.14.0", features = ["std"]}
-js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.22", default-features = false, features = ["intl", "libz-sys"]}
+js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.24", default-features = false, features = ["intl", "libz-sys"]}
 jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = "=0.5.2"}
 log = {version = "0.4.32"}
 script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.11", features = ["webgpu"]}

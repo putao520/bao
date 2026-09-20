@@ -28,7 +28,7 @@ dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version 
 encoding_rs = {version = "0.8", features = ["serde"]}
 html5ever = {version = "0.39"}
 indexmap = {version = "2.14.0", features = ["std"]}
-js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.22", default-features = false, features = ["intl", "libz-sys"]}
+js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.24", default-features = false, features = ["intl", "libz-sys"]}
 jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = "=0.5.2"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
 libc = {version = "0.2"}
