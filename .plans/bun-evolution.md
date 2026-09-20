@@ -458,3 +458,7 @@ B2 首批候选面全部在途(文件不相交 DAG,合同互相钉死所有权�
 - 派发纪律事件:spawn-gate 两拒(头行尾冒号)→ BCE-20260920-001 事件4(BUG-KNOWLEDGE)+ gsc#125 + 确定性预检工具 ~/.local/bin/task-header-check(权威解析器本体)/gp-state(git 三态)。
 
 并行情线(非 B2):er0 mozjs Round0 已闭合(b9c47230,四源活+重放字节全等;R1-prep 对账在途)、exdr2 EncodeStencil 绑定(REQ-ENG-012,16d793e5 立法)。
+
+### 2026-09-21 / B2 D5 闭合(3df9b83b)
+
+EventSubscriber bounded 归真落地(footprint 单文件 event_translator.rs +275/-31):capacity 物理生效(默认 1024)、满容 drop-newest + dropped_count() 原子计数、饱和日志节流。**实现形态偏离合同字面(pending 计数器)→ 双通道 broker(入口无界 mpsc 收裸 sender 克隆 + 出口 sync_channel 物理有界 + broker 线程 try_send)**——C 验收接受,理由成立:裸 Receiver 交出后计数器无递减源,手写计数=1024 终身事件后阀门永久关闭(比现状更糟的全事件丢失,v1 首轮 stop 已证);std 权威维护容量覆盖全部 sender 面(含 bao_browser 裸克隆生产路径),零公共签名变更。语义边界如实入档:跨路径相对顺序不保证(单路径 FIFO 不变)、每实例一 broker 线程(退出条件完备三形态验证)、capacity=0 即到即判满。证据:5/5 新测试 C 独立复绿 + 全 crate lib 465/suite 731/doctest 15 绿(与他波在途共存)。D2/D3(ec2/ec3)在途,B2 首批候选面收口过半。
