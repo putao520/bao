@@ -516,3 +516,7 @@ ev4 增补:ipc lock git rm(1191 行)。C 裁定+房扫:①**crown 豁免**(vendo
 第五宇宙 boringssl 归一(ev4):375abb6b(删根+3 lock,768 行;零消费考古——主锁无 bssl-*,全仓引用皆注释性标注,C 构建走 src/boringssl_sys/csrc 字节镜像,比 servo 更强的"无任何消费"情形)+a3e54e5c(CLAUDE.md 拓扑收笔)。**C 终态亲验四断言全过**:vendor [workspace] 根=0(crown 豁免外)/lock=0/target=0/主锁 --frozen RC=0。
 
 归一全弧(单日):mozjs 成员吸收(8d4c8260)→ servo Option A 内联删根(5a2d85bc/a4a3b942)→ stylo/ipc 清(005ee01f+C 房扫)→ boringssl 删根(375abb6b)→ 三轴钉死(workspace/工具链/target-dir 8dea33f7)→ 废料清除 ~132G+(68G 主遗迹+26G mozjs+64G vendor 三树+94M stylo 嵌套)。事故根因链(双全量 SM 编译)机械消灭。
+
+### 2026-09-21 / B2 首批全量收口(console 族 12/12)
+
+微尾链闭:499bf323(2 迁移,全树 unsafe_jsstr_to_string=0,106-face 收口)+8c9bd65f(7 注释,console 族 12/12:ServoEvent 5+ConsoleMessage::Event 7,+21/-0 纯注释)。D5(c76775a2)/D3(06c76af6)/D2(d4eb7db1)三片+console 文档化全落。B2 收口余项=eb2s1 三组补面(em1 绿窗)入波门§①;期间揪出并移交:maybe_wrap_object servo bindings 4 错(em1 wrapper 域)。
