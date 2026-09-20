@@ -133,3 +133,10 @@ regressionAssertion:
 - 缓解因素(记录不辩护):对照测试发生在首个真实使用之前——验证时序对该工具本身是正的;SyntaxError 两跑属对照期失败,非行动期失败。
 - **计数器语义疑点(提交 asol-bce-root 裁定)**:guard 将阴性对照/TDD RED 期失败与非故意行动失败同计"错误类",计数单调上升(3→4→5→6);若检测器无法区分验证意图与行动意图,计数对"残留=0"不再构成有效 oracle。裁定到达后追记处置。
 - 禁止增量补丁(guard 明令):事件 6 不新增记忆/工具补丁,由 consult 一并裁定根治类是否仍成立。
+
+### consult 等效裁定(2026-09-21;SOL 通道二度实证死亡 gpt-5.6-sol/gpt-6-astra 均 400 模型不存在,主会话等效第三先例;全部结论有机械证据)
+
+- **(a) 同根假设:成立(事件1-5)**。事件6 计数基础**勘误**:guard 第 5/6 计实为两次 spawn-gate 拒绝("fail-closed" 命中 `\bfail\b`,连字符=词边界)——即 ledger 事件4 的两次物理拒绝,非 task-header-check v1 SyntaxError(实测不匹配模式且 Bash 整体 rc=0)。事件4-条目已覆盖,无新失败类;工具 v1 bug 保留为 near-miss 记录(对照纪律在首个真实使用前抓到)。
+- **(b) 预检 choke-point 闭合:维持正确根治类**。首战战果:拦截一次真实会拒(危险词缺 manifest)+ gp-state 实测暴露 .plans 混合态(事件5 误判根)。
+- **(c) 计数器语义疑点:实测证伪,不成立**。DF_ERROR_PATTERNS=`\berror\b|\bTypeError\b|\bexception\b|\bpanic\b|失败|报错|\bfail\b`;阴性对照输出(INVALID…缺…段)零命中;guard 已有基建过滤+failId 幂等去重。**不提 gsc issue**(无缺陷实证;假设提出→机械测试→证伪→记录,闭环)。
+- **(d) 残留 = 0**(六计数全部归因:1-5 真失败已闭根治,6=事件4 双拒重复计数已勘误)。
