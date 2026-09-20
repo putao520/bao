@@ -2039,6 +2039,21 @@
           .spec/*.html 必须返回 0 行。归因: BCE-20260621-001。
         </div>
       <p data-xref-type="req" data-xref-id="REQ-ENG-010">关联实体: <a data-xref-type="entity" data-xref-id="FetchTasklet" href="04-DATA-MODEL#FetchTasklet">FetchTasklet</a>, <a data-xref-type="entity" data-xref-id="FetchResolveTask" href="04-DATA-MODEL#FetchResolveTask">FetchResolveTask</a>, <a data-xref-type="entity" data-xref-id="FetchOutcome" href="04-DATA-MODEL#FetchOutcome">FetchOutcome</a></p><p>关联状态机: <a data-xref-type="sm" data-xref-id="FetchTaskletLifecycle" href="03-PROCESS#artifact-state-machine">FetchTaskletLifecycle</a></p></section>
+      <div data-groundedin="ISSUE-26-STENCIL-XDR" id="req-eng-012" data-req="REQ-ENG-012" data-req-status="specified" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoStencilXdrCache" data-req-api="">
+        <h3>REQ-ENG-012: Stencil XDR 持久化缓存</h3>
+        <p>已编译 Stencil 经 XDR <code>EncodeStencil</code> 编码落盘(按源 hash + 编译选项寻址),进程重启后 <code>DecodeStencil</code> 直接实例化——消除跨进程冷启动重复编译。in-memory 层(bao_engine StencilCache,16 条 LRU)语义不变,XDR 为其持久化前置层。</p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-012">groundedIn: issue #26 用户立法("Build Stencil/XDR/off-thread compile script cache";off-thread 面已裁关闭) + #26 bench 证据(编译占比 79.6%、缓存命中 4.9×、breakeven 0.9 realm)</p>
+        <div data-criteria="">
+          <strong>验收标准：</strong>
+          <ol>
+            <li id="encode-decode-往返等价" data-criterion="encode→decode 往返等价:同源同编译选项,decode 实例化脚本执行结果与直接编译逐字节一致" data-criterion-id="REQ-ENG-012-C1">encode→decode 往返等价:同源同编译选项,decode 实例化的脚本执行结果与直接编译逐字节一致</li>
+            <li id="冷启动-decode-收益" data-criterion="重启后首 eval 走 decode 路径,时间对照直接编译(bench A2 形态)可测降低" data-criterion-id="REQ-ENG-012-C2">冷启动收益:重启后首 eval 走 decode 路径,时间对照直接编译可测降低</li>
+            <li id="损坏-fail-closed" data-criterion="截断/篡改的缓存解码失败回退直接编译,不 panic 不静默错缓存,失败可观测" data-criterion-id="REQ-ENG-012-C3">缓存损坏 fail-closed:解码失败回退直接编译,不 panic 不静默错缓存</li>
+            <li id="原子写盘" data-criterion="缓存写入临时文件+rename,中断不留半写缓存被误读" data-criterion-id="REQ-ENG-012-C4">缓存写入原子性:临时文件+rename,中断不留半写缓存</li>
+          </ol>
+        </div>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-012">关联实体: <a data-xref-type="entity" data-xref-id="BaoStencilXdrCache" href="04-DATA-MODEL#BaoStencilXdrCache">BaoStencilXdrCache</a></p>
+      </div>
       <div data-groundedin="PRD-REQ-BUILTIN-DATA" id="req-eng-011" data-req="REQ-ENG-011" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="VmSandboxContext" data-req-api="">
         <h3>REQ-ENG-011: node:vm Sandbox 语义实现</h3>
         <p data-req-description="">
