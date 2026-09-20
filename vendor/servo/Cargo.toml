@@ -113,7 +113,8 @@ euclid = "0.22"
 flate2 = "1.1"
 fontconfig_sys = { package = "yeslogic-fontconfig-sys", version = "6" }
 fontsan = { version = "0.7", default-features = false, features = ["libz-sys", "wuff"] }
-freetype-sys = "0.23"
+# issue #43 GPUI 同二进制解锁:允许 0.20.x–0.23.x 双版本(servo 全部 FT_* 符号在 0.20.1/0.23.0 均存在,bundled freetype2 同为 2.13.2)
+freetype-sys = ">=0.20.1, <0.24"
 fst = "0.4"
 futures = { version = "0.3", default-features = false }
 futures-core = { version = "0.3", default-features = false }
@@ -463,3 +464,11 @@ debug = true
 lto = "thin"
 codegen-units = 1
 
+
+# BAO PATCH (issue #43 GPUI 同二进制): same [patch.crates-io] freetype entry as
+# the bao root workspace. Patches are per-workspace and this workspace resolves
+# wr_glyph_rasterizer <- webrender <- freetype (wrapper) chain in its own
+# lock; without this entry the servo-side resolution keeps the registry 0.8.0
+# (pinned ^0.23) and the two locks diverge.
+[patch.crates-io]
+freetype = { path = "../freetype-wrapper" }

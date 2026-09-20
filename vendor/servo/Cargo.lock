@@ -882,6 +882,7 @@ dependencies = [
  "accesskit_consumer",
  "arboard",
  "bao-ipc-channel",
+ "bao-servo",
  "bao-servo-background-hang-monitor",
  "bao-servo-base",
  "bao-servo-bluetooth",
@@ -1802,6 +1803,7 @@ dependencies = [
  "bao-servo-fonts",
  "bao-servo-hyper-serde",
  "bao-servo-malloc-size-of",
+ "bao-servo-net",
  "bao-servo-net-traits",
  "bao-servo-paint-api",
  "bao-servo-pixels",
@@ -5964,8 +5966,6 @@ dependencies = [
 [[package]]
 name = "freetype"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db318d6e5b1c90dd29eb4256666b3eeb5f38caf0a68f12d13d2d0793a50d0c77"
 dependencies = [
  "freetype-sys",
  "libc",
@@ -6807,7 +6807,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b13f1cead31867a0d5b5e8905c262bc02b77701b8cd45ef402988f33745f9b7c"
 dependencies = [
  "cc",
- "freetype-sys",
  "objc2-core-graphics",
  "objc2-core-text",
  "pkg-config",

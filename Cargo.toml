@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/mozjs", "vendor/ipc-channel", "vendor/stylo", "examples"]
+exclude = ["vendor/servo", "vendor/mozjs", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -419,3 +419,16 @@ map_identity = "allow"
 # so a renamed fork cannot be served through [patch]. The path+package wiring
 # in the servo workspace preserves the original BCE-20260627-009 vendoring
 # semantics (per-instance RouterProxy, ipc_router.rs).
+
+
+# BAO PATCH (issue #43 GPUI 同二进制): vendored `freetype` wrapper (servo
+# rust-freetype 0.8.0, code unchanged, freetype-sys req widened to
+# >=0.20.1, <0.24) so the wr_glyph_rasterizer <- webrender <- servo chain and
+# the GPUI chain can share ONE freetype-sys in the final binary. Name must
+# stay `freetype` — [patch] replacements keep the ORIGINAL package name (cf.
+# W0b note above; a `package =` rename key inside [patch] is silently
+# ignored). The servo workspace (vendor/servo) declares the same patch in its
+# own root manifest — patches are per-workspace and both workspaces resolve
+# this chain (dual lock).
+[patch.crates-io]
+freetype = { path = "vendor/freetype-wrapper" }

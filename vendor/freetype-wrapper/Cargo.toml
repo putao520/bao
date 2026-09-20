@@ -1,0 +1,33 @@
+# BAO PATCH (issue #43 GPUI 同二进制): vendored `freetype` wrapper 0.8.0.
+# Source = registry freetype 0.8.0 (servo/rust-freetype), code UNCHANGED —
+# symbol comparison against freetype-sys 0.20.1/0.23.0 (both bundle freetype2
+# 2.13.2) shows the wrapper carries its own bindgen dump + extern "C" blocks
+# and has ZERO Rust-level `freetype_sys::` references, so widening the sys req
+# is the entire delta. Package name stays `freetype` because [patch.crates-io]
+# replacements must keep the ORIGINAL package name (cf. W0b ipc-channel note
+# in the root Cargo.toml) and the consumer chain is
+# wr_glyph_rasterizer 0.70 ("0.8") <- webrender 0.70 <- servo fonts.
+# Upstream sync: re-copy src/ from the new registry release and re-run the
+# symbol comparison; only the freetype-sys req below should ever drift.
+[package]
+name = "freetype"
+version = "0.8.0"
+authors = ["The Servo Project Developers"]
+description = "Bindings for FreeType used by Servo."
+documentation = "https://docs.rs/freetype"
+repository = "https://github.com/servo/rust-freetype"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "freetype"
+crate-type = ["rlib"]
+
+[dependencies]
+# issue #43: allow 0.20.x-0.23.x (GPUI chain needs 0.20.1; servo chain may
+# resolve either — all wrapper native symbols exist in both bundled
+# freetype2 2.13.2 builds).
+freetype-sys = { version = ">=0.20.1, <0.24", optional = true }
+libc = "0.2"
+
+[features]
+default = ["freetype-sys"]

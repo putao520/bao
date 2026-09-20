@@ -78,7 +78,9 @@ objc2-core-text = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))'.dependencies]
 freetype-sys = { workspace = true }
-harfbuzz-sys = { workspace = true, features = ["freetype"] }
+# issue #43: 不启用 harfbuzz-sys "freetype" feature——死激活(servo shaper 零 hb_ft_* 消费),
+# 且 harfbuzz-sys 0.8 该 feature 强制 freetype-sys ^0.23,阻断 GPUI 链的 0.20.x 统一
+harfbuzz-sys = { workspace = true }
 servo-allocator = { workspace = true }
 
 [target.'cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))'.dependencies]
@@ -86,10 +88,6 @@ fontconfig_sys = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 xml = { workspace = true }
-
-[target.'cfg(any(target_os = "android",target_env = "ohos"))'.dependencies]
-# Always bundle freetype on android and openharmony
-freetype-sys = { workspace = true, features = ["bundled"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 dwrote = { workspace = true }
