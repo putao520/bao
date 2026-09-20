@@ -18,7 +18,7 @@
 //!   servo ScriptThread
 //!       ↓ (servo delegate callback)
 //!   EventSubscriber::on_*  (本模块)
-//!       ↓ mpsc::Sender<ServoEvent>
+//!       ↓ bounded mpsc(drop-on-full,容量 1024)
 //!   InMemoryTransport::recv_event  (translate 转换)
 //!       ↓ CdpEvent
 //!   CDP Client
@@ -26,9 +26,9 @@
 //!
 //! ## 线程模型(DEC-CDP-002)
 //!
-//! servo ScriptThread `!Send`,但 `mpsc::Sender` `Send`,可跨线程 push。
-//! EventSubscriber 持有 `Sender<ServoEvent>`,被 servo delegate 在 servo 线程
-//! 调用 `on_console_message` 等方法时,直接 push 到 channel。
+//! servo ScriptThread `!Send`,但 `mpsc::SyncSender` 可克隆、可跨线程投递。
+//! EventSubscriber 持有 `SyncSender<ServoEvent>`,被 servo delegate 在 servo
+//! 线程调用 `on_console_message` 等方法时,`try_send` 到物理有界 channel。
 //! InMemoryTransport 在 client 线程 `recv_event`,translate 后返回。
 //!
 //! @trace REQ-BAO-API-003 [level:library]
@@ -41,7 +41,8 @@
 //! @trace REQ-BAO-API-003 [event:TimelineMarker]
 
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -674,8 +675,12 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// §4 EventSubscriber — servo delegate → mpsc::Sender<ServoEvent>
+// §4 EventSubscriber — servo delegate → bounded channel(drop-on-full)
 // ---------------------------------------------------------------------------
+
+/// 饱和 warn 节流间隔:首次饱和 warn 之后,每累计丢弃该数量的事件再 warn
+/// 一次(防刷屏;饱和日志永远携带累计丢弃数)。
+const SATURATION_WARN_INTERVAL: usize = 1024;
 
 /// 事件订阅者 — servo delegate 在 servo 线程调用 on_* 方法,push 事件到 channel。
 ///
@@ -694,59 +699,125 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
 ///     bao_cdp_client::bridge::ServoEvent::Console { ref text, .. } if text == "hello"));
 /// ```
 ///
+/// # 有界契约(bounded · drop-on-full)
+///
+/// 底层是 `mpsc::sync_channel` **物理有界** channel:`new()` 以容量 1024 构造
+/// `with_capacity`,至多缓冲 `capacity` 个未消费事件。满容后投递一律
+/// **drop-newest**(丢弃本次新事件,已缓冲事件原样保留),永不阻塞 servo
+/// ScriptThread;消费方排空后自动恢复投递。两条 sender 面共享同一物理容量:
+///
+/// - `on_*` 回调:`try_send` 满容即丢弃,累计 [`EventSubscriber::dropped_count`]
+///   并记饱和 warn(首次 + 每 `SATURATION_WARN_INTERVAL` 条节流);
+/// - [`EventSubscriber::sender`] 派生的 `SyncSender` 克隆(外部直推面,如
+///   bao_browser delegate):与 on_* 共享同一有界缓冲,**同样受限**——满容时
+///   `try_send` 同步返回 `TrySendError::Full`,丢弃决策归调用方。
+///
 /// # 关闭语义
 ///
-/// 当 `EventSubscriber` drop 时,`Sender` 被丢弃,接收端 `recv` 会收到
-/// `RecvTimeoutError::Disconnected`。
+/// 当 `EventSubscriber` 与其全部 `sender()` 克隆都 drop 时,channel 断开,
+/// 接收端 `recv` 收到 `RecvTimeoutError::Disconnected`;接收端先行 drop 时,
+/// 后续投递在 `try_send` 处观察到 `TrySendError::Disconnected`。
 ///
 /// # 线程安全
 ///
-/// `mpsc::Sender` 是 `Send + Sync`,可被 servo delegate 在 servo 线程持有。
-/// 但注意 `EventSubscriber` 不 `Clone`(避免多 sender 混淆事件源);
-/// 如需多 sender,显式调 [`EventSubscriber::sender`] 拿到 `Sender<ServoEvent>`。
+/// `mpsc::SyncSender` 可克隆、可跨线程投递,可被 servo delegate 在 servo
+/// 线程持有。`EventSubscriber` 不 `Clone`(避免多 sender 混淆事件源);
+/// 如需多 sender,显式调 [`EventSubscriber::sender`] 拿到
+/// `SyncSender<ServoEvent>`。
 ///
 /// @trace REQ-BAO-API-003 [level:library]
 pub struct EventSubscriber {
-    bridge_tx: Sender<ServoEvent>,
+    /// 物理有界 channel 的 sender(on_* push 与 `sender()` 克隆同源)。
+    egress_tx: SyncSender<ServoEvent>,
+    /// 容量,用于饱和日志与 Debug 输出(容量真源在 channel 本身)。
+    egress_capacity: usize,
+    /// 因满容被丢弃(drop-newest)的事件累计数(on_* push 面)。
+    dropped: AtomicUsize,
+    /// 饱和首次 warn 闩(此后按 `SATURATION_WARN_INTERVAL` 节流)。
+    satur_warned: AtomicBool,
 }
 
 impl EventSubscriber {
     /// 构造 EventSubscriber 与对应的 Receiver。
     ///
-    /// `bounded(1024)`:channel 缓冲 1024 个事件。servo 端 push 时若 channel
-    /// 满,事件被丢弃(避免阻塞 servo ScriptThread)并记录日志。
+    /// `bounded(1024)`:channel 物理缓冲 1024 个事件。servo 端 push 时若
+    /// channel 满,新事件被丢弃(drop-newest,避免阻塞 servo ScriptThread),
+    /// 累计 [`EventSubscriber::dropped_count`] 并记录日志。
     ///
     /// @trace REQ-BAO-API-003 [level:library]
     pub fn new() -> (Self, Receiver<ServoEvent>) {
         Self::with_capacity(1024)
     }
 
-    /// 指定 channel 容量构造。
+    /// 指定容量构造。
+    ///
+    /// `capacity` 为 channel 的物理容量(至多缓冲 `capacity` 个未消费事件),
+    /// 满容后投递 drop-newest。`capacity == 0` 表示零缓冲,事件即到即判满
+    /// (仅当接收方正阻塞 recv 时才投递成功)。
     ///
     /// @trace REQ-BAO-API-003 [level:library]
     pub fn with_capacity(capacity: usize) -> (Self, Receiver<ServoEvent>) {
-        // 注:mpsc::channel 是无界 channel。bounded 语义靠 try_send 检查
-        // 内部 pending 数实现(此处简化为无界,生产中可改 crossbeam 或
-        // 手动容量监控)。capacity 参数保留作为未来 bounded 升级钩子。
-        let _ = capacity;
-        let (tx, rx) = mpsc::channel::<ServoEvent>();
-        (EventSubscriber { bridge_tx: tx }, rx)
+        let (egress_tx, egress_rx) = mpsc::sync_channel::<ServoEvent>(capacity);
+        (
+            EventSubscriber {
+                egress_tx,
+                egress_capacity: capacity,
+                dropped: AtomicUsize::new(0),
+                satur_warned: AtomicBool::new(false),
+            },
+            egress_rx,
+        )
     }
 
     /// 获取底层 sender(供复杂场景使用,如多 sender 模式)。
     ///
+    /// `SyncSender` 克隆与 `on_*` push 共享同一物理有界缓冲,**同样受限**:
+    /// 满容时 `try_send` 返回 `TrySendError::Full`(丢弃决策归调用方,不计入
+    /// [`EventSubscriber::dropped_count`]);接收端已 drop 时返回 `Disconnected`。
+    ///
     /// @trace REQ-BAO-API-003 [level:library]
-    pub fn sender(&self) -> Sender<ServoEvent> {
-        self.bridge_tx.clone()
+    pub fn sender(&self) -> SyncSender<ServoEvent> {
+        self.egress_tx.clone()
     }
 
-    /// 内部 push 工具:channel 满或断开时静默忽略,记录 log::warn。
-    fn push(&self, event: ServoEvent) {
-        if self.bridge_tx.send(event).is_err() {
+    /// 因 channel 满容被丢弃(drop-newest)的事件累计数。
+    ///
+    /// 观测用途:消费方停滞/过慢时此值增长;只增不减,回落不表示恢复。
+    /// 计数域为 `on_*` push 面;`sender()` 派生的 `SyncSender` 克隆的满容
+    /// 丢弃以 `TrySendError::Full` 同步返回给调用方,不进本计数。
+    ///
+    /// @trace REQ-BAO-API-003 [level:library]
+    pub fn dropped_count(&self) -> usize {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// 记录一次满容丢弃并按节流策略输出饱和日志。
+    fn record_drop(&self) {
+        let dropped_total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        if !self.satur_warned.swap(true, Ordering::Relaxed) {
             log::warn!(
-                "EventSubscriber: receiver dropped, servo event lost (target_id={})",
-                ""
+                "EventSubscriber: event channel saturated (capacity={}), dropping newest events; dropped={} total",
+                self.egress_capacity, dropped_total
             );
+        } else if dropped_total % SATURATION_WARN_INTERVAL == 0 {
+            log::warn!(
+                "EventSubscriber: event channel still saturated, dropped={} total (capacity={})",
+                dropped_total, self.egress_capacity
+            );
+        }
+    }
+
+    /// 内部 push 工具:on_* 回调的投递出口。
+    ///
+    /// `try_send` 物理有界 channel:满容 → drop-newest(累计 `dropped` + 饱和
+    /// 日志);接收端已 drop → 记 log::warn。永不阻塞调用线程(servo ScriptThread)。
+    fn push(&self, event: ServoEvent) {
+        match self.egress_tx.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => self.record_drop(),
+            Err(TrySendError::Disconnected(_)) => {
+                log::warn!("EventSubscriber: receiver dropped, servo event lost");
+            }
         }
     }
 
@@ -1019,8 +1090,9 @@ impl EventSubscriber {
 
 impl Default for EventSubscriber {
     fn default() -> Self {
-        // Default 创建 subscriber 并丢弃 receiver(channel 永远不会满,
-        // 适用于不关心事件的场景)。生产代码请用 `EventSubscriber::new()`。
+        // Default 创建 subscriber 并丢弃 receiver(不关心事件的场景):
+        // 接收端不存在,后续 push 走 "receiver dropped" warn 路径——
+        // 不 panic、不阻塞。生产代码请用 `EventSubscriber::new()`。
         let (sub, _rx) = Self::new();
         sub
     }
@@ -1029,7 +1101,12 @@ impl Default for EventSubscriber {
 impl std::fmt::Debug for EventSubscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventSubscriber")
-            .field("channel", &"mpsc::sync_channel")
+            .field(
+                "channel",
+                &"mpsc::sync_channel (bounded, drop-newest at capacity)",
+            )
+            .field("capacity", &self.egress_capacity)
+            .field("dropped", &self.dropped.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
 }
@@ -1751,17 +1828,107 @@ mod tests {
     }
 
     #[test]
-    fn event_subscriber_capacity_unbounded_pushes_all() {
-        // with_capacity 当前实现为无界 channel,可无限制 push。
+    fn event_subscriber_capacity_full_drops_newest_and_counts() {
+        // bounded 契约(默认 1024):满容后 push 的新事件被丢弃(drop-newest,
+        // 已缓冲事件原样保留),不断开、不阻塞;dropped 计数可观测;排空自愈。
         let (sub, rx) = EventSubscriber::new();
         for i in 0..1024 {
             sub.on_frame_started_loading("T", format!("F{}", i));
         }
-        let mut count = 0;
-        while rx.try_recv().is_ok() {
-            count += 1;
+        assert_eq!(sub.dropped_count(), 0);
+
+        // 满容后再 push:新事件被丢弃(不挤掉旧事件),dropped 计数逐次 +1
+        sub.on_frame_started_loading("T", "F1024");
+        sub.on_frame_started_loading("T", "F1025");
+        assert_eq!(sub.dropped_count(), 2);
+
+        // 不断开不阻塞:receiver 仍可取回恰好 1024 个事件,且为最早入队的
+        // F0..F1023(F1024/F1025 被 drop-newest 丢弃)
+        let mut frame_ids = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                ServoEvent::FrameStartedLoading { frame_id, .. } => frame_ids.push(frame_id),
+                other => panic!("unexpected event: {other:?}"),
+            }
         }
-        assert_eq!(count, 1024);
+        assert_eq!(frame_ids.len(), 1024);
+        assert_eq!(frame_ids.first().map(String::as_str), Some("F0"));
+        assert_eq!(frame_ids.last().map(String::as_str), Some("F1023"));
+
+        // 排空即恢复容量:后续 push 正常投递(阀门自愈,不永久关闭)
+        sub.on_frame_started_loading("T", "after-drain");
+        match rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("channel still connected after saturation")
+        {
+            ServoEvent::FrameStartedLoading { frame_id, .. } => {
+                assert_eq!(frame_id, "after-drain");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_subscriber_with_capacity_small_bounds_in_flight() {
+        // bounded 契约在小容量下同样成立:capacity=8,第 9..11 个 push 全部
+        // drop-newest,dropped 计数 +3,已缓冲 8 个原样保留。
+        let (sub, rx) = EventSubscriber::with_capacity(8);
+        for i in 0..8 {
+            sub.on_frame_started_loading("T", format!("F{}", i));
+        }
+        for _ in 0..3 {
+            sub.on_frame_started_loading("T", "overflow");
+        }
+        assert_eq!(sub.dropped_count(), 3);
+        let mut received = 0;
+        while rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, 8);
+    }
+
+    #[test]
+    fn event_subscriber_raw_sender_clones_bounded() {
+        // 裸 sender() 克隆(外部直推面,bao_browser delegate 形态)与 on_*
+        // 共享同一物理有界缓冲,同样受限:第 9 个 try_send 满容返回 Full,
+        // 已缓冲 8 个原样保留,排空后恢复投递(载体 A 立约点)。
+        let (sub, rx) = EventSubscriber::with_capacity(8);
+        let tx = sub.sender();
+        for i in 0..8 {
+            tx.try_send(ServoEvent::FrameStartedLoading {
+                target_id: "T".into(),
+                frame_id: format!("F{}", i),
+            })
+            .expect("delivery within capacity");
+        }
+        // 满容:第 9 个同步返回 Full(不阻塞、不断开)
+        let err = tx
+            .try_send(ServoEvent::FrameStartedLoading {
+                target_id: "T".into(),
+                frame_id: "overflow".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, TrySendError::Full(_)));
+        assert_eq!(sub.dropped_count(), 0); // 克隆面的丢弃不进 push 面计数
+
+        let mut received = 0;
+        while rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, 8);
+
+        // 排空自愈:克隆面恢复投递
+        tx.try_send(ServoEvent::FrameStartedLoading {
+            target_id: "T".into(),
+            frame_id: "after-drain".into(),
+        })
+        .expect("delivery after drain");
+        match rx.try_recv().expect("drained channel still connected") {
+            ServoEvent::FrameStartedLoading { frame_id, .. } => {
+                assert_eq!(frame_id, "after-drain");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]
