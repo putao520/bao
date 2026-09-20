@@ -1899,3 +1899,7 @@ EncodeStencil XDR 绑定落地(5 文件 ~40 行净增,全 vendor/mozjs):根因=b
 ### 案 A 形态终裁修正(2026-09-21,em1 实证)
 
 registry 形态否决(当下):crates.io mozjs_* 实测 max=**153.0.0**(er0"12 件全在"属实但版本对齐缺口漏检)——registry 喂 153.3.0 源=跨版本组合(icu_collator rust 面内容差+icudt77l→78l 实测)。**维持 in-tree path deps(=153.3.0 tarball 同源提取,上游 314L 原代码)**;registry=发布终态,触发器=上游发布 153.3.x era(届时 12 行机械切换);publish 波 registry 前置(bao 自发布或等上游)记为发布波裁决点。extracted-crates 体量纠正:12M/200 文件(前记 26G 有误)。P4 第 4 行语义更新入 CLAUDE.md。
+
+### bun_sm moduleloading 落地(b5b3fa96)+ JobQueue 线内联收口(2026-09-21)
+
+四类迁移全落(spec HostLoadImportedModule 统一面:FinishLoadingImportedModule payload 路由静图/动 promise 保 TLA 语义;ResolveHook→LoadHook 原样外包;动态导入无等价项→LoadHook 承载+引擎 ContinueDynamicImport,**删 ~28KB SM140 机器**;forceUTC_→setTimeZoneOverride(Atlantic/Reykjavik=引擎真映射,jsglue 新 shim BaoSetRealmTimeZoneOverride))。**#811/#812 JobQueue 迁移同 commit 内联完成**(153.3 traps 双源定点排空+interrupt token 栈)。bun_sm check 0 错(15/15 清),smoke 绿。**末枚(裁定已发)**:realm 时间精度——SetTimeResolutionUsec 全删,裁=全 realm clamp 平价(RTPCallback+两处 token 接线;per-realm 门控=行为变更禁自行接受);runtime_bridge.rs 所有权转移 em1。落即全树 build+波门§①②。
