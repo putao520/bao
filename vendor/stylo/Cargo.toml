@@ -217,8 +217,18 @@ version = "0.28"
 version = "0.28"
 
 [dependencies.style_derive]
-version = "0.20.0"
-package = "stylo_derive"
+# BAO PATCH (issue #44): forked in-tree as bao-stylo-derive (delta = 3 pinned
+# `Ok::<(), ::std::fmt::Error>(())` tails in to_css.rs; see the fork's
+# Cargo.toml). Fixes E0282/E0283 `fmt::Error: From<_>` ambiguity (core
+# reflexive impl vs serde_fmt's `impl From<serde_fmt::Error> for fmt::Error`)
+# in #[css(function)] ToCss derive output when serde_fmt is in the graph
+# (log "kv_unstable_serde" -> value-bag-serde1 -> serde_fmt, GPUI/egui stacks).
+# Dep key stays `style_derive` (lib code does `use style_derive::...`).
+# NOTE (publish): registry stylo_derive is servo-owned; publishing a bao-stylo
+# whose req is 0.20.1 requires publishing bao-stylo-derive 0.20.1 first.
+version = "0.20.1"
+path = "bao-stylo-derive"
+package = "bao-stylo-derive"
 
 [dependencies.style_traits]
 version = "0.20.0"

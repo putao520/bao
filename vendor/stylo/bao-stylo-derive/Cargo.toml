@@ -1,0 +1,55 @@
+# BAO PATCH (issue #44): bao fork of registry stylo_derive 0.20.0.
+# Base = registry stylo_derive 0.20.0 (byte-identical to servo/stylo main's
+# style_derive at fetch time 2026-09-20; upstream has no fix for this yet).
+#
+# Delta vs upstream (upstream sync: re-copy all files, then re-apply):
+#   - to_css.rs: 3 generated bare `Ok(())` tails pinned to
+#     `Ok::<(), ::std::fmt::Error>(())`. The #[css(function)] template wraps the
+#     derive_variant_fields_expr block with a trailing `?` (`#expr?;`), which
+#     leaves the block's error type as an inference variable constrained only by
+#     `std::fmt::Error: From<?E>`. With core's reflexive `impl<T> From<T> for T`
+#     as the sole candidate inference picks ?E = fmt::Error and compiles; when
+#     serde_fmt is in the graph (log "kv_unstable_serde" -> value-bag-serde1 ->
+#     serde_fmt, pulled in by GPUI/egui stacks) its
+#     `impl From<serde_fmt::Error> for std::fmt::Error` becomes a second
+#     candidate and every `#[css(function)]` ToCss derive site fails with
+#     E0282/E0283. Pinning the tail removes the inference variable; identical
+#     semantics with and without serde_fmt.
+# [lib] name stays `stylo_derive` — bao-stylo consumes this via dep key
+# `style_derive` (`use style_derive::...`), independent of the lib name.
+[package]
+edition = "2021"
+name = "bao-stylo-derive"
+version = "0.20.1"
+authors = ["The Servo Project Developers"]
+description = "Derive crate for Stylo CSS engine (bao fork of stylo_derive)"
+license = "MPL-2.0"
+repository = "https://github.com/servo/stylo"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+name = "stylo_derive"
+path = "lib.rs"
+proc-macro = true
+
+[dependencies.darling]
+version = "0.20"
+default-features = false
+
+[dependencies.proc-macro2]
+version = "1"
+
+[dependencies.quote]
+version = "1"
+
+[dependencies.syn]
+version = "2"
+default-features = false
+features = ["clone-impls", "derive", "parsing"]
+
+[dependencies.synstructure]
+version = "0.13"
