@@ -1987,6 +1987,7 @@ dependencies = [
  "app_units",
  "arrayvec",
  "atomic_refcell",
+ "bao-stylo-derive",
  "bitflags 2.11.1",
  "byteorder",
  "cssparser 0.37.0",
@@ -2020,7 +2021,6 @@ dependencies = [
  "strum 0.28.0",
  "strum_macros 0.28.0",
  "stylo_atoms",
- "stylo_derive",
  "stylo_dom",
  "stylo_malloc_size_of",
  "stylo_static_prefs",
@@ -2033,6 +2033,17 @@ dependencies = [
  "void",
  "walkdir",
  "web_atoms",
+]
+
+[[package]]
+name = "bao-stylo-derive"
+version = "0.20.1"
+dependencies = [
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
 ]
 
 [[package]]
@@ -2705,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "bun_collections"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -9786,19 +9797,6 @@ checksum = "d448de89b7d18169a160ca258d2ee63efe79bd6cb20360654101835e9b80e386"
 dependencies = [
  "string_cache",
  "string_cache_codegen",
-]
-
-[[package]]
-name = "stylo_derive"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cfdbf36a2d2db4fc75db0bfc1abd16e90971c360f00773cbd2501a5175dbec7"
-dependencies = [
- "darling 0.20.11",
- "proc-macro2",
- "quote",
- "syn",
- "synstructure",
 ]
 
 [[package]]

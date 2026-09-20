@@ -4,7 +4,10 @@ name = "bun_collections"
 # so this patch release ships alone. SoA derive(SoaRow) retires reflection + api2 dual-mode; new dep bun_collections_macros.
 # 0.1.2 (2026-08-19): VecExtCtor shim (three Vec imprints) + ByteVecExt
 # unified body + SpareBytesVec usage — W1 265cf0d3 companion.
-version = "0.2.0"
+# 0.2.1 (2026-09-20): #46 SinglyLinkedList::remove unconditional asserts
+# (mirrors bun pool.zig:75-87; tests cdc5e40e) + bun_ptr req tightened to
+# ^0.2 (early-publish carried ^0.1, split TypeList identity vs consumers).
+version = "0.2.1"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
