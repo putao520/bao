@@ -3,7 +3,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue,
@@ -2549,7 +2549,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let encoding = if argc >= 2 {
             let enc_val = *args.get(1).ptr;
             if enc_val.is_string() {
-                unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(enc_val.to_string()))
+                jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(enc_val.to_string()))
             } else {
                 String::new()
             }
@@ -3156,7 +3156,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 },
             );
             let is_legacy_buffer_blob = type_val.is_string()
-                && unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(type_val.to_string()))
+                && jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(type_val.to_string()))
                     == "Buffer";
 
             let mut length_val = UndefinedValue();
@@ -3183,8 +3183,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     (d.floor() as i64).max(0) as usize
                 }
             } else if length_val.is_string() {
-                let s = unsafe_jsstr_to_string(
-                    cx,
+                let s = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
                     ::std::ptr::NonNull::new_unchecked(length_val.to_string()),
                 );
                 match s.parse::<f64>() {
@@ -3244,7 +3243,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     }
                 } else if elem.is_string() {
                     let s =
-                        unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(elem.to_string()));
+                        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(elem.to_string()));
                     match s.trim().parse::<f64>() {
                         Ok(d) if d.is_finite() => {
                             let n = d.trunc() as i64;
@@ -3426,8 +3425,7 @@ unsafe extern "C" fn buffer_to_string(cx: *mut JSContext, argc: u32, vp: *mut JS
     // JS_GetProperty / JS_NewStringCopyZ allocations do not race with the raw
     // data pointer returned by the SM accessor.
     let encoding = if argc > 0 && (*args.get(0).ptr).is_string() {
-        unsafe_jsstr_to_string(
-            cx,
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
             ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()),
         )
     } else {
@@ -3643,7 +3641,7 @@ unsafe extern "C" fn buffer_alloc(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         if fill_val.is_int32() {
             fill_val.to_int32() as u8
         } else if fill_val.is_string() {
-            unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(fill_val.to_string()))
+            jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(fill_val.to_string()))
                 .chars()
                 .next()
                 .unwrap_or('\0') as u8
@@ -4081,7 +4079,7 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             return d.trunc() as i64;
         }
         if v.is_string() {
-            let s = unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(v.to_string()));
+            let s = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(v.to_string()));
             // Node.js uses ToInteger(string) — empty / non-numeric → 0,
             // "-5" → -5, "111" → 111, "-0" → 0 (but distinguishes -0 in
             // sign? JS Number("-0") is -0; trunc() yields 0).
@@ -4612,7 +4610,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
         rooted!(&in(cx_ref) let enc_root = enc_val);
         let enc_str_ptr = mozjs::rust::ToString(&mut cx_ref, enc_root.handle());
         if !enc_str_ptr.is_null() {
-            unsafe_jsstr_to_string(cx, NonNull::new_unchecked(enc_str_ptr)).to_lowercase()
+            jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(enc_str_ptr)).to_lowercase()
         } else {
             return false;
         }
@@ -4621,7 +4619,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
         rooted!(&in(cx_ref) let enc_root = enc_val);
         let enc_str_ptr = mozjs::rust::ToString(&mut cx_ref, enc_root.handle());
         if !enc_str_ptr.is_null() {
-            unsafe_jsstr_to_string(cx, NonNull::new_unchecked(enc_str_ptr)).to_lowercase()
+            jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(enc_str_ptr)).to_lowercase()
         } else {
             // ToString threw.
             return false;
@@ -4727,7 +4725,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
     }
     if search_val.is_string() {
         let js_str = search_val.to_string();
-        let needle_str = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(js_str));
+        let needle_str = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(js_str));
         // encoding was coerced above via ToString (which may detach).
         let needle: Vec<u8> = match encoding.as_str() {
             "utf8" | "utf-8" | "" => needle_str.bytes().collect(),
@@ -4858,13 +4856,13 @@ unsafe fn buffer_index_of_legacy(
         }
     } else if search_val.is_string() {
         let js_str = search_val.to_string();
-        let needle_str = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(js_str));
+        let needle_str = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(js_str));
         // @trace REQ-ENG-005 [api:Buffer.indexOf/lastIndexOf] — Node.js
         // honours the optional encoding argument (positional idx 2 for
         // indexOf, idx 2 for lastIndexOf): encode the needle string under
         // that encoding before scanning. Default is utf8.
         let encoding = if argc >= 3 && (*args.get(2).ptr).is_string() {
-            unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(2).ptr).to_string()))
+            jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(2).ptr).to_string()))
                 .to_lowercase()
         } else {
             "utf8".to_string()
@@ -4964,7 +4962,7 @@ unsafe extern "C" fn buffer_is_encoding(_cx: *mut JSContext, argc: u32, vp: *mut
         args.rval().set(mozjs::jsval::BooleanValue(false));
         return true;
     }
-    let enc_str = unsafe_jsstr_to_string(_cx, ::std::ptr::NonNull::new_unchecked(enc_val.to_string()));
+    let enc_str = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx)), ::std::ptr::NonNull::new_unchecked(enc_val.to_string()));
     let is_valid = valid.iter().any(|&v| v == enc_str.to_lowercase());
     args.rval().set(mozjs::jsval::BooleanValue(is_valid));
     true
@@ -4992,8 +4990,7 @@ unsafe extern "C" fn buffer_byte_length(cx: *mut JSContext, argc: u32, vp: *mut 
     // surrogate pair), base64/base64url is the decoded length. Default
     // encoding is utf8.
     let encoding = if argc >= 2 && (*args.get(1).ptr).is_string() {
-        unsafe_jsstr_to_string(
-            cx,
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
             ::std::ptr::NonNull::new_unchecked((*args.get(1).ptr).to_string()),
         )
         .to_lowercase()
@@ -5402,7 +5399,7 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
 
     let algo_val = *args.get(0).ptr;
     let algo = if algo_val.is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked(algo_val.to_string())).to_lowercase()
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(algo_val.to_string())).to_lowercase()
     } else {
         "sha-256".to_string()
     };
@@ -5446,7 +5443,7 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
         }
         v
     } else if data_val.is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked(data_val.to_string())).into_bytes()
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(data_val.to_string())).into_bytes()
     } else {
         Vec::new()
     };

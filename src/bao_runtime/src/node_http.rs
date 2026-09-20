@@ -1447,8 +1447,7 @@ unsafe extern "C" fn res_write_head(
                                     continue;
                                 }
                                 let key_str = jsid.to_string();
-                                let key = mozjs::conversions::unsafe_jsstr_to_string(
-                                    cx,
+                                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
                                     NonNull::new_unchecked(key_str),
                                 );
                                 let mut hv = UndefinedValue();

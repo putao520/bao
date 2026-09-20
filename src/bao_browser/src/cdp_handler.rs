@@ -602,7 +602,7 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
             resource_type,
             webview_id,
         } => {
-            let _ = event_tx.send(ServoEvent::NetworkRequest {
+            let _ = event_tx.try_send(ServoEvent::NetworkRequest {
                 // Attribution: the webview that issued the request when the
                 // net layer knows it (delivery is broadcast-gated by session
                 // domain enablement, not by this field).
@@ -625,7 +625,7 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
             mime_type,
             webview_id,
         } => {
-            let _ = event_tx.send(ServoEvent::NetworkResponse {
+            let _ = event_tx.try_send(ServoEvent::NetworkResponse {
                 target_id: webview_id.unwrap_or_else(|| "0".to_string()),
                 request_id,
                 url,

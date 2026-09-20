@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
@@ -1621,7 +1621,7 @@ unsafe extern "C" fn url_search_params_constructor(
                             continue;
                         }
                         let key_str = jsid.to_string();
-                        let key = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+                        let key = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(key_str));
                         let c_key = ZBox::from_bytes(&*key.as_bytes());
                         let mut v_val = UndefinedValue();
                         JS_GetProperty(

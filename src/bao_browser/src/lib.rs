@@ -594,7 +594,7 @@ impl BaoRuntime {
     /// per-webview delegate, which reads `state.event_tx`, so the channel
     /// must live on each state, not only the runtime-level delegate.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub fn set_event_channel(&self, tx: std::sync::mpsc::Sender<ServoEvent>) {
+    pub fn set_event_channel(&self, tx: std::sync::mpsc::SyncSender<ServoEvent>) {
         self.delegate.set_event_tx(tx.clone());
         let stats = self.page_pool.stats();
         for id in 1..=(stats.active + stats.idle) {

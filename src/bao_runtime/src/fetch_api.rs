@@ -21,7 +21,7 @@ use ::std::sync::atomic::AtomicBool;
 
 use bun_core::ZBox;
 
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
@@ -1945,7 +1945,7 @@ unsafe fn parse_headers_init(cx: *mut JSContext, headers_val: JSVal) -> Vec<(Str
                     continue;
                 }
                 let key =
-                    unsafe_jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(key_str_ptr));
+                    jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(key_str_ptr));
                 let c_key = ZBox::from_bytes(key.as_bytes());
                 let mut v_val = UndefinedValue();
                 JS_GetProperty(

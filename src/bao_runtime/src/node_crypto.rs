@@ -8,7 +8,7 @@ use bun_core::ZBox;
 use bun_sha_hmac;
 use bun_sha_hmac::hmac::EVP_MAX_MD_SIZE;
 use core::ptr;
-use mozjs::conversions::unsafe_jsstr_to_string;
+
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::realm::AutoRealm;

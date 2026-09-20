@@ -1625,8 +1625,7 @@ unsafe fn h2_write_headers_obj(
             continue;
         }
         let key_str = jsid.to_string();
-        let key = mozjs::conversions::unsafe_jsstr_to_string(
-            cx,
+        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
             NonNull::new_unchecked(key_str),
         );
         if key.starts_with(':') {
@@ -2628,8 +2627,7 @@ unsafe extern "C" fn h2_res_write_head(cx: *mut JSContext, argc: u32, vp: *mut J
                             continue;
                         }
                         let key_str = jsid.to_string();
-                        let key = mozjs::conversions::unsafe_jsstr_to_string(
-                            cx,
+                        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
                             NonNull::new_unchecked(key_str),
                         );
                         arg_keys.push(key);
@@ -2655,8 +2653,7 @@ unsafe extern "C" fn h2_res_write_head(cx: *mut JSContext, argc: u32, vp: *mut J
                                 continue;
                             }
                             let key_str = jsid.to_string();
-                            let key = mozjs::conversions::unsafe_jsstr_to_string(
-                                cx,
+                            let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
                                 NonNull::new_unchecked(key_str),
                             );
                             if key.starts_with(':') || arg_keys.contains(&key) {
@@ -2848,8 +2845,7 @@ unsafe extern "C" fn h2_res_get_headers(cx: *mut JSContext, _argc: u32, vp: *mut
                     continue;
                 }
                 let key_str = jsid.to_string();
-                let key = mozjs::conversions::unsafe_jsstr_to_string(
-                    cx,
+                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
                     NonNull::new_unchecked(key_str),
                 );
                 let c_key = ZBox::from_bytes(key.as_bytes());

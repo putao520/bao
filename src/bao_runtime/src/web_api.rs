@@ -15,7 +15,7 @@ use bun_core::ZBox;
 // both the plain ws:// (via WebSocketClient) and the wss:// (TLS-driven) path.
 use bun_uws::ws_codec::apply_mask;
 
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
@@ -746,7 +746,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             // Browser parity: send() while CONNECTING/CLOSED throws
             // InvalidStateError (never silently drops the message).
             Some(e) if e.client.is_some() => {
-                let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
+                let s = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(msg_val.to_string()));
                 e.client.as_mut().unwrap().send_text(&s)
             }
             Some(e) if e.connect_slot.is_some() => {
@@ -825,7 +825,7 @@ unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *m
         JS_ReportErrorUTF8(cx, c"WebSocket URL must be a string".as_ptr());
         return false;
     }
-    let url = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(url_val.to_string()));
+    let url = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(url_val.to_string()));
 
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let ws_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
@@ -1507,8 +1507,7 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         args.rval().set(UndefinedValue());
         return true;
     }
-    let s = unsafe_jsstr_to_string(
-        cx,
+    let s = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
         ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()),
     );
     // HTML spec forgivable-base64 decode preamble (mirrors servo
@@ -1582,8 +1581,7 @@ unsafe extern "C" fn btoa_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     // base64_btoa: throw InvalidCharacterError on any code point > U+00FF;
     // otherwise each code point encodes as ONE octet. `chars()` iterates
     // code points (== code units for the ≤0xFF domain we keep here).
-    let s = unsafe_jsstr_to_string(
-        cx,
+    let s = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
         ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()),
     );
     if s.chars().any(|c| c > '\u{FF}') {

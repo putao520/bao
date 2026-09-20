@@ -28,7 +28,7 @@
 use ::std::cell::RefCell;
 use ::std::ptr::{self, NonNull};
 
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::RootedTraceableBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -910,7 +910,7 @@ fn collect_sandbox_properties(
         if key_str_ptr.is_null() {
             continue;
         }
-        let key = unsafe { unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr)) };
+        let key = unsafe { jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr)) };
 
         // Get the property value by id using the raw JS_GetPropertyById
         // (takes *mut JSContext + raw Handle types from mozjs_sys).
@@ -1020,7 +1020,7 @@ unsafe fn capture_global_baseline(
             continue;
         }
         let key = unsafe {
-            unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr))
+            jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr))
         };
         keys.push(key);
     }
@@ -1095,7 +1095,7 @@ unsafe fn copy_global_writes_to_sandbox(
             continue;
         }
         let key =
-            unsafe { unsafe_jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr)) };
+            unsafe { jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)), NonNull::new_unchecked(key_str_ptr)) };
         if baseline.iter().any(|b| b == &key) {
             continue;
         }

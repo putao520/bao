@@ -19,7 +19,7 @@ use ::std::sync::mpsc::{self, Receiver, Sender};
 use ::std::sync::OnceLock;
 
 use dashmap::DashMap;
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::{
     CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData,
 };
@@ -878,8 +878,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let filename = unsafe_jsstr_to_string(
-        wrapped_cx.raw_cx(),
+    let filename = jsstr_to_string(wrapped_cx,
         NonNull::new_unchecked(filename_val.to_string()),
     );
 

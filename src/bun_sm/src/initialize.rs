@@ -36,7 +36,7 @@ pub unsafe fn eval_and_print(cx: *mut JSContext, source: &str, filename: &str) {
             let js_str = unsafe { mozjs::rust::ToString(&mut wrapped_cx, rval_root.handle().into()) };
             if !js_str.is_null() {
                 let rust_str = unsafe {
-                    mozjs::conversions::unsafe_jsstr_to_string(cx, NonNull::new_unchecked(js_str))
+                    mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(js_str))
                 };
                 println!("{}", rust_str);
             }

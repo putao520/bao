@@ -893,9 +893,9 @@ impl JsContext {
 #[allow(unsafe_op_in_unsafe_fn)]
 fn extract_exception(cx: &mut mozjs::context::JSContext) -> JsError {
     rooted!(&in(cx) let mut exn = UndefinedValue());
-    if let Some(info) = unsafe {
-        mozjs::rust::error_info_from_exception_stack(cx.raw_cx_no_gc(), exn.handle_mut().into())
-    } {
+    if let Some(info) =
+        mozjs::rust::error_info_from_exception_stack_safe(cx, exn.handle_mut().into())
+    {
         JsError {
             message: info.message,
             filename: info.filename,

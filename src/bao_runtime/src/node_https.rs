@@ -2,7 +2,7 @@
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
 
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, StringValue, UndefinedValue};
 use mozjs::rooted;
@@ -107,19 +107,19 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, argc);
 
     let url = if argc > 0 && (*args.get(0).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(0).ptr).to_string()))
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(0).ptr).to_string()))
     } else {
         String::new()
     };
 
     let method = if argc > 1 && (*args.get(1).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
         "GET".to_string()
     };
 
     let headers_json = if argc > 2 && (*args.get(2).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(2).ptr).to_string()))
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(2).ptr).to_string()))
     } else {
         "{}".to_string()
     };
@@ -133,7 +133,7 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         if v.is_undefined() || v.is_null() {
             None
         } else if v.is_string() {
-            let s = unsafe_jsstr_to_string(cx, NonNull::new_unchecked(v.to_string()));
+            let s = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked(v.to_string()));
             (!s.is_empty()).then(|| s.into_bytes())
         } else if v.is_object() {
             match crate::node_buffer::collect_byte_view(cx, v) {
@@ -165,7 +165,7 @@ unsafe extern "C" fn https_request(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     // FetchTlsInit the undici-subset `init.tls` uses — private CA anchoring
     // and verification opt-out are Node https semantics, not fetch's.
     let tls_opts_json = if argc > 4 && (*args.get(4).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(4).ptr).to_string()))
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(4).ptr).to_string()))
     } else {
         String::new()
     };

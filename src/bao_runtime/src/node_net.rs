@@ -10,7 +10,7 @@ use ::std::collections::HashMap;
 use ::std::ptr::{self, NonNull};
 use bun_core::ZBox;
 
-use mozjs::conversions::unsafe_jsstr_to_string;
+use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
     BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue,
@@ -883,7 +883,7 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         0
     };
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
         "0.0.0.0".to_string()
     };
@@ -994,7 +994,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
         "127.0.0.1".to_string()
     };
@@ -1134,7 +1134,7 @@ unsafe extern "C" fn net_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     // argument (the silent no-op class) — echo servers writing the received
     // ArrayBuffer back transmitted nothing.
     let data: Vec<u8> = if (*args.get(1).ptr).is_string() {
-        unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
+        jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(1).ptr).to_string()))
             .into_bytes()
     } else {
         match crate::node_buffer::collect_byte_view(cx, *args.get(1).ptr) {
@@ -1462,7 +1462,7 @@ unsafe extern "C" fn net_is_ipv6(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return true;
     }
 
-    let input = unsafe_jsstr_to_string(cx, NonNull::new_unchecked((*args.get(0).ptr).to_string()));
+    let input = jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), NonNull::new_unchecked((*args.get(0).ptr).to_string()));
     let result = input.contains(':');
     args.rval().set(BooleanValue(result));
     true

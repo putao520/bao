@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::transport::CdpEvent;
 
@@ -797,12 +797,14 @@ impl EventSubscriber {
         if !self.satur_warned.swap(true, Ordering::Relaxed) {
             log::warn!(
                 "EventSubscriber: event channel saturated (capacity={}), dropping newest events; dropped={} total",
-                self.egress_capacity, dropped_total
+                self.egress_capacity,
+                dropped_total
             );
         } else if dropped_total % SATURATION_WARN_INTERVAL == 0 {
             log::warn!(
                 "EventSubscriber: event channel still saturated, dropped={} total (capacity={})",
-                dropped_total, self.egress_capacity
+                dropped_total,
+                self.egress_capacity
             );
         }
     }

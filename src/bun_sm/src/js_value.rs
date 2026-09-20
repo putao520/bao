@@ -246,7 +246,7 @@ impl JSValue {
             });
         }
         let nn = ::std::ptr::NonNull::new(js_str).unwrap();
-        Ok(unsafe { mozjs::conversions::unsafe_jsstr_to_string(cx, nn) })
+        Ok(unsafe { mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), nn) })
     }
 
     /// Convert to a JSObject pointer using SpiderMonkey's ToObject.

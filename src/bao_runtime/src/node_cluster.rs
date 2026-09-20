@@ -854,8 +854,7 @@ unsafe extern "C" fn cluster_fork(
                     continue;
                 }
                 let key_ptr = jsid.to_string();
-                let key = mozjs::conversions::unsafe_jsstr_to_string(
-                    cx,
+                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
                     ::std::ptr::NonNull::new_unchecked(key_ptr),
                 );
                 let c_key = bun_core::ZBox::from_bytes(key.as_bytes());
