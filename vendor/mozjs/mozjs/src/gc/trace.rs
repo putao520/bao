@@ -57,20 +57,6 @@ impl RootedTraceableSet {
         });
     }
 
-    /// Clear all rooted traceables on this thread.
-    /// Called during SpiderMonkey shutdown to prevent stale pointers
-    /// from being traced after JS_DestroyContext.
-    /// BAO PATCH (BCE-20260621-005): during multi-page teardown under servo,
-    /// rooted traceables may outlive the JSContext (e.g. libtest thread-pool
-    /// threads tearing down TLS) and would be traced during C++ TLS teardown
-    /// after JS_DestroyContext, causing SIGSEGV (js::gc::HeaderWord::get on
-    /// freed GC heap). Caller: `bao_engine::context::shutdown`.
-    pub unsafe fn clear() {
-        ROOTED_TRACEABLES.with(|traceables| {
-            traceables.borrow_mut().set.clear();
-        });
-    }
-
     pub(crate) unsafe fn trace(&self, trc: *mut JSTracer) {
         for traceable in &self.set {
             (**traceable).trace(trc);

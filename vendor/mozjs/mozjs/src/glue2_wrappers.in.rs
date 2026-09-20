@@ -40,9 +40,9 @@ wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes,
 // memory metering — JS::CollectRuntimeStats behind the jsglue.cpp subclass
 // (Rust cannot construct RuntimeStats: pure-virtual hooks + js::Vector members).
 wrap!(glue: pub fn BaoCollectRuntimeStats(cx: &mut JSContext, servoSizes: *mut ServoSizes, out: *mut glue::BaoRuntimeStatsPOD) -> bool);
+wrap!(glue: pub fn JS_DequeueNextMicroTask(cx: &JSContext, task: MutableHandle<GenericMicroTask>));
 wrap!(glue: pub fn JS_GetPromiseResult(promise: HandleObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));
-wrap!(glue: pub fn JS_MaybeGetScriptPrivate(obj: *mut JSObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetModulePrivate(module: *mut JSObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetScriptedCallerPrivate(cx: &mut JSContext, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetNaNValue(cx: &mut JSContext, dest: *mut Value));
@@ -50,7 +50,7 @@ wrap!(glue: pub fn JS_GetPositiveInfinityValue(cx: &mut JSContext, dest: *mut Va
 wrap!(glue: pub fn JS_GetEmptyStringValue(cx: &mut JSContext, dest: *mut Value));
 wrap!(glue: pub fn JS_GetRegExpFlags(cx: &mut JSContext, obj: HandleObject, flags: *mut RegExpFlags));
 wrap!(glue: pub fn EncodeStringToUTF8(cx: &mut JSContext, str_: HandleString, cb: EncodedStringCallback));
-wrap!(glue: pub fn SetUpEventLoopDispatch(cx: &mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut ::std::os::raw::c_void));
+wrap!(glue: pub fn SetUpEventLoopDispatch(cx: &mut JSContext, callback: RustDispatchToEventLoopCallback, startedCallback: AsyncTaskStartedCallback, finishedCallback: AsyncTaskFinishedCallback, closure: *mut ::std::os::raw::c_void));
 wrap!(glue: pub fn DispatchableRun(cx: &mut JSContext, ptr: *mut DispatchablePointer, mb: Dispatchable_MaybeShuttingDown));
 wrap!(glue: pub fn DescribeScriptedCaller(cx: &JSContext, buffer: *mut ::std::os::raw::c_char, buflen: usize, line: *mut u32, col: *mut u32) -> bool);
 wrap!(glue: pub fn PendingExceptionStackInfo(cx: &mut JSContext, callback: StringCallback, message_target: *mut ::std::os::raw::c_void, filename_target: *mut ::std::os::raw::c_void, line: *mut u32, col: *mut u32, dest: MutableHandleValue) -> bool);

@@ -2,13 +2,16 @@
 # BAO PATCH (W0b publish fork): package renamed mozjs -> bao-mozjs for crates.io
 # release; lib name stays `mozjs` so downstream `use mozjs::` keeps resolving.
 # Dependents reach it via `package = "bao-mozjs"` rename.
+# BAO PATCH (2026-09-21 build-face unification): the vendor/mozjs workspace
+# root is absorbed into the bao workspace — every `*.workspace = true` below is
+# an inlined literal, byte-identical to the former vendor workspace root.
 name = "bao-mozjs"
 description = "Rust bindings to the Mozilla SpiderMonkey JavaScript engine."
-repository.workspace = true
+repository = "https://github.com/servo/mozjs/"
 version = "0.22.1"
 authors = ["The Servo Project Developers"]
-license.workspace = true
-edition.workspace = true
+license = "MPL-2.0"
+edition = "2021"
 
 [lib]
 # BAO PATCH (W0b): explicit lib name required after package rename to
@@ -31,7 +34,7 @@ crown = ["mozjs_sys/crown"]
 
 [dependencies]
 encoding_rs = "0.8.35"
-libc.workspace = true
+libc = "0.2"
 log = "0.4"
 # When doing non-version changes also update ../mozjs-sys/etc/sm-security-bump.py
 # BAO PATCH (W0b): dep key stays `mozjs_sys` (code uses mozjs_sys::), package
@@ -49,8 +52,10 @@ criterion = { version = "0.6", default-features = false, features = [
 criterion = "0.6"
 
 [build-dependencies]
-cc.workspace = true
-bindgen.workspace = true
+cc = "1"
+bindgen = { version = "0.72.1", default-features = false, features = [
+    "runtime",
+] }
 
 
 [[bench]]
