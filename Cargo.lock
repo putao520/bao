@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
