@@ -1903,3 +1903,13 @@ registry 形态否决(当下):crates.io mozjs_* 实测 max=**153.0.0**(er0"12 �
 ### bun_sm moduleloading 落地(b5b3fa96)+ JobQueue 线内联收口(2026-09-21)
 
 四类迁移全落(spec HostLoadImportedModule 统一面:FinishLoadingImportedModule payload 路由静图/动 promise 保 TLA 语义;ResolveHook→LoadHook 原样外包;动态导入无等价项→LoadHook 承载+引擎 ContinueDynamicImport,**删 ~28KB SM140 机器**;forceUTC_→setTimeZoneOverride(Atlantic/Reykjavik=引擎真映射,jsglue 新 shim BaoSetRealmTimeZoneOverride))。**#811/#812 JobQueue 迁移同 commit 内联完成**(153.3 traps 双源定点排空+interrupt token 栈)。bun_sm check 0 错(15/15 清),smoke 绿。**末枚(裁定已发)**:realm 时间精度——SetTimeResolutionUsec 全删,裁=全 realm clamp 平价(RTPCallback+两处 token 接线;per-realm 门控=行为变更禁自行接受);runtime_bridge.rs 所有权转移 em1。落即全树 build+波门§①②。
+
+### 收波+发布序列(用户裁决 2026-09-21"全部做完最后要验收,通过验收后记得发布")
+
+序列:em1 末枚(realm clamp 平价)→ 全树 build 绿 → eb2s1 三组补面(自动)→ **波门§①-§⑤ 齐绿=验收** → **发布闭包**。
+
+发布波骨架(预立,门绿即发):
+1. **extracted-crates 12 件自发布**(bao-mozjs-sys 的 path deps 是发布阻断;crates.io mozjs_* 名属 servo 不可代发;上游 153.3.x 未发):**bao- fork 改名发布**(W3 stylo 先例+bao-fork-rename-rule:package=bao-mozjs-unicode-bidi-ffi 等,dep key 保 mozjs_* 原名→DEP_*_GLUE_INCLUDE links 流不变),version=153.3.0 系
+2. mozjs 族:bao-mozjs 0.24.0/bao-mozjs-sys 153.3.0-0(deps 指 bao- 发布物)/三卫星 153.3.0-0
+3. 消费链 topo 序:bun_sm → bao_engine → bun_runtime(106-face)→ bao_workflow_host → bao_browser(D2/carrier-A)→ bao_cdp_client(D5/D3)→ 其余受 req 波及 crate
+4. face-transition 纪律全适用(breaking=minor bump 非_patch_;strip-publish-restore 舞步;发布前逐 crate 新鲜复核)
