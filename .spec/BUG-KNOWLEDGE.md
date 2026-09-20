@@ -75,3 +75,30 @@ regressionAssertion:
 2. 确定性批量任务不应动用 six-node-dev 多 epoch loop
 3. id-registry 必须在每次 spec_write 后自动 rebuild,避免漂移
 4. method-path 形式 id 应在 spec_write 入口被 schema 拒绝
+
+---
+
+## BCE-20260920-001 — 派工契约核验缺失类(3 次错误类累积闭合)
+
+**日期**: 2026-09-20(会话内累积)/ 归因闭合 2026-09-21
+**触发**: bce-domain-guard Stop-hook 计数 3 次错误类失败
+
+### 三事件
+
+1. **派工 SPEC 违反**(用户抓:"不看SPEC不看PRD,纯把上游加到我们项目里?")—— 连续派工十余个 E 合同零 SPEC REQ ID,把 issue/上游能力当立法源。表面=合同模板无 SPEC 字段;设计=派工流把 issue 账本当 SPEC;范式=**立法源混同(issue 标题 ≠ SPEC REQ)**。修正:E 合同模板强制 `SPEC:` 行(REQ ID / 内部工程细节裁据+核验证据 / SPEC 未覆盖→STOP 先立法),已沉淀 spec-check-before-dispatch 记忆 + REQ-ENG-012 补立法(16d793e5)。
+2. **E26 发布 driver abort #1**(strip 函数复制 manifest 尾部)—— 表面=读写边界错;设计=strip 后无产物完整性自检;范式=**自动化 driver 无后置校验**。
+3. **E26 发布 driver abort #2**(strip_restore 漏 return → rc 吞 → 误报 FAIL)—— 表面=rc 传播断链;设计=同上;范式=同 #2(同类,driver 状态机无自检)。
+
+### 横扫(grep 实证,2026-09-21)
+
+- **派工面**: 在途三合同(er0/eb2s1-v2/exdr2)SPEC 行全部在位(transcript 抽验);修正后派工形态保持。
+- **driver 面**: E26 脚本为 /tmp 临时件未入库;`tools/` 无 publish/strip driver;committed 工具面零同类 rc 吞/无自检形态。纪律沉淀于 operator memory(face-transition-publish-discipline.md)。
+
+### 残留 = 0
+
+复发防线:① E 合同 SPEC 行(spawn-gate 已强制)② 发布波 manifest 完整性自检条款入 face-transition 纪律 ③ 本条目入正式载体。
+
+### 关联文件
+
+- `.spec/10-REQUIREMENTS.html` (REQ-ENG-012 补立法)
+- `src/bao_cdp_client/src/bridge/event_translator.rs` (D5 契约漂移,eb2s1-v2 在途)
