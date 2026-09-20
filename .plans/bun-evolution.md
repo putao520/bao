@@ -448,3 +448,13 @@ Earlier 2026-09-17/18 wave index: #42 spawn signal fix → B1 slice-2 resource s
 **Key finding — the real B2 surface is CONTRACT DRIFT, not missing transport** (CHANNEL-TRANSPOSE was already adjudicated 0 at B0): D5 EventSubscriber doc promises bounded(1024) drop-on-full + logged, implementation drops the capacity parameter (`let _ = capacity`) and sends unbounded, a test LOCKS the unbounded behavior — three-way contradiction; slow consumer (run_with_bridge pump stall) = unbounded memory growth. First slice dispatched: implement honest bounded (implementation follows the already-legislated doc; drop-newest + dropped counter + first-warn; unbounded-locking test rewritten to lock the bounded contract).
 
 **Gap table highlights beyond D5**: page BridgeChannel::send() bare recv() without timeout (public API hang hazard); InMemoryTransport command_timeout set-but-dead (trait promise no-op'd on direct dispatch — honest-contract slice candidate 2); console fire-and-forget `let _ = tx.send` five sites lossy-by-design but undocumented (candidate 3). Adjudicated documented-accept: worker JS-terminate unbounded join (Node semantics), wake pipes (non-transport). socketpair public face (ipc_channel.rs:174, Node fd-3 JSON+SCM_RIGHTS wire) EXEMPT from B2 — PUBLIC-PROCESS-SEMANTICS, four-point argument on record, ownership already closed by B1 slice-2.
+
+### 2026-09-21 / B2 first-slice set — full concurrent dispatch(D5+D2+D3 全面开工)
+
+B2 首批候选面全部在途(文件不相交 DAG,合同互相钉死所有权边界):
+- **D5 EventSubscriber bounded**(eb2s1-v2,Carrier A):sync_channel(1024)+try_send,SyncSender 扩散 bao_browser wire face ~13 站点(lib.rs set_event_channel:597/delegate event_tx/cdp_handler:605/628),dropped counter,改写锁 unbounded 的旧测试。首版 STOP(std mpsc 无 len() 探针+生产面裸 Sender 克隆绕过 push)后重派。
+- **D3 InMemoryTransport command_timeout**(ec2):trait 已承诺、direct-dispatch set-but-dead 的契约归真;禁改公共签名;慢命令测试证有界。
+- **D2 BridgeChannel::send bare-recv 有界化**(ec3):公共 embedder 面泵失速=无限挂起→显式超时错误(fail-closed);console `let _ = tx.send` 五站点 lossy-by-design doc 化。与 eb2s1 所有权文件互斥。
+- 派发纪律事件:spawn-gate 两拒(头行尾冒号)→ BCE-20260920-001 事件4(BUG-KNOWLEDGE)+ gsc#125 + 确定性预检工具 ~/.local/bin/task-header-check(权威解析器本体)/gp-state(git 三态)。
+
+并行情线(非 B2):er0 mozjs Round0 已闭合(b9c47230,四源活+重放字节全等;R1-prep 对账在途)、exdr2 EncodeStencil 绑定(REQ-ENG-012,16d793e5 立法)。
