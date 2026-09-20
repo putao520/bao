@@ -353,7 +353,7 @@ layout_api = { package = "bao-servo-layout-api", version = "=0.5.9", path = "com
 malloc_size_of = { package = "bao-servo-malloc-size-of", version = "=0.5.5", path = "components/malloc_size_of" }
 media = { package = "bao-servo-media-thread", version = "=0.5.5", path = "components/media/media-thread" }
 metrics = { package = "bao-servo-metrics", version = "=0.5.7", path = "components/metrics" }
-net = { package = "bao-servo-net", version = "=0.5.15", path = "components/net" }
+net = { package = "bao-servo-net", version = "=0.5.16", path = "components/net" }
 net_traits = { package = "bao-servo-net-traits", version = "=0.5.6", path = "components/shared/net" }
 paint = { package = "bao-servo-paint", version = "=0.5.7", path = "components/paint" }
 paint_api = { package = "bao-servo-paint-api", version = "=0.5.5", path = "components/shared/paint" }
@@ -363,7 +363,7 @@ profile_traits = { package = "bao-servo-profile-traits", version = "=0.5.5", pat
 script = { package = "bao-servo-script", version = "=0.5.15", path = "components/script" }
 script_bindings = { package = "bao-servo-script-bindings", version = "=0.5.10", path = "components/script_bindings" }
 script_traits = { package = "bao-servo-script-traits", version = "=0.5.7", path = "components/shared/script" }
-servo = { version = "=0.5.13", path = "components/servo", default-features = false, package = "bao-servo" }
+servo = { version = "=0.5.14", path = "components/servo", default-features = false, package = "bao-servo" }
 servo-allocator = { version = "=0.5.2", path = "components/allocator", package = "bao-servo-allocator" }
 servo-background-hang-monitor = { version = "=0.5.5", path = "components/background_hang_monitor", package = "bao-servo-background-hang-monitor" }
 background_hang_monitor_api = { version = "=0.5.5", path = "components/shared/background_hang_monitor", package = "bao-servo-background-hang-monitor-api" }

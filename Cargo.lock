@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "async-compression",
  "async-recursion",
