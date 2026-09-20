@@ -708,3 +708,146 @@ impl ObjectPoolType for bun_core::MutableString {
 }
 
 // ported from: src/collections/pool.zig
+
+#[cfg(test)]
+mod tests {
+    //! Issue #46: `SinglyLinkedList::remove` dereferenced null (UB) when the
+    //! list was empty or `node` was not in the list. Upstream Zig
+    //! (pool.zig:75-87) panics on both paths via `.?` unwraps, which are active
+    //! in Debug *and* ReleaseSafe; the port must panic too.
+
+    use super::*;
+
+    /// Heap node with initialized `data`. Freed by [`SinglyLinkedList`]'s own
+    /// teardown (`heap::take` is `Box::from_raw` — same allocator) or by
+    /// [`free_node`] when the node never enters a list.
+    fn boxed_node(v: u32) -> *mut Node<u32> {
+        Box::into_raw(Box::new(Node {
+            next: ptr::null_mut(),
+            data: MaybeUninit::new(v),
+        }))
+    }
+
+    /// SAFETY: `node` came from [`boxed_node`] and is not owned by any list.
+    unsafe fn free_node(node: *mut Node<u32>) {
+        // SAFETY: caller contract — node came from `boxed_node`.
+        unsafe { drop(Box::from_raw(node)) };
+    }
+
+    /// Build `[v1, v2, ..]` (head → tail) plus the raw node pointers, in the
+    /// same order (`nodes[i]` holds `vs[i]`; `nodes[0]` is the head).
+    fn list_of(vs: &[u32]) -> (SinglyLinkedList<u32>, Vec<*mut Node<u32>>) {
+        let mut list = SinglyLinkedList::default();
+        let mut nodes = Vec::with_capacity(vs.len());
+        for v in vs.iter().rev() {
+            let n = boxed_node(*v);
+            // SAFETY: `n` points at a node just allocated by `boxed_node`.
+            unsafe { list.prepend(&mut *n) };
+            nodes.push(n);
+        }
+        // Prepending walks `vs` back-to-front, so flip to head→tail order.
+        nodes.reverse();
+        (list, nodes)
+    }
+
+    /// SAFETY: every node in `list` came from [`boxed_node`].
+    unsafe fn values(list: &SinglyLinkedList<u32>) -> Vec<u32> {
+        let mut values = Vec::new();
+        let mut it = list.first;
+        while !it.is_null() {
+            // SAFETY: `it` is non-null (checked above) and `data` is initialized.
+            values.push(unsafe { *(*it).data.assume_init_ref() });
+            it = unsafe { (*it).next };
+        }
+        values
+    }
+
+    /// SAFETY: every node in `list` came from [`boxed_node`].
+    unsafe fn drain(list: &mut SinglyLinkedList<u32>) -> Vec<u32> {
+        let mut values = Vec::new();
+        while let Some(node) = list.pop_first() {
+            // SAFETY: node was just popped (exclusively owned); `data` initialized.
+            values.push(unsafe { *(*node).data.assume_init_ref() });
+            unsafe { free_node(node) };
+        }
+        values
+    }
+
+    #[test]
+    fn remove_head_middle_tail() {
+        let (mut list, nodes) = list_of(&[1, 2, 3]);
+        let (a, b, c) = (nodes[0], nodes[1], nodes[2]);
+
+        // SAFETY: all nodes are live and initialized.
+        unsafe {
+            list.remove(&*a); // head
+            assert_eq!(values(&list), vec![2, 3]);
+            list.remove(&*b); // middle
+            assert_eq!(values(&list), vec![3]);
+            list.remove(&*c); // tail
+            assert_eq!(values(&list), Vec::<u32>::new());
+        }
+        assert_eq!(list.len(), 0);
+        assert!(list.first.is_null());
+
+        // SAFETY: list is empty; nothing left to free in it.
+        unsafe { assert!(drain(&mut list).is_empty()) };
+        for n in nodes {
+            // SAFETY: removed nodes are no longer owned by the list.
+            unsafe { free_node(n) };
+        }
+    }
+
+    #[test]
+    fn remove_single_element_empties_list() {
+        let (mut list, nodes) = list_of(&[7]);
+        // SAFETY: node is live and initialized.
+        unsafe { list.remove(&*nodes[0]) };
+        assert_eq!(list.len(), 0);
+        assert!(list.first.is_null());
+        // SAFETY: nodes are live and initialized.
+        unsafe { assert!(drain(&mut list).is_empty()) };
+        // SAFETY: removed node is no longer owned by the list.
+        unsafe { free_node(nodes[0]) };
+    }
+
+    /// Issue #46: empty list used to dereference the null head.
+    #[test]
+    #[should_panic(expected = "list is empty")]
+    fn remove_on_empty_list_panics() {
+        let mut list = SinglyLinkedList::<u32>::default();
+        let stranger = boxed_node(0);
+        // Must panic, not dereference `self.first == null`.
+        list.remove(unsafe { &*stranger });
+    }
+
+    /// Issue #46: node absent from the list used to walk past the tail and
+    /// dereference the null terminator.
+    #[test]
+    #[should_panic(expected = "node not found in list")]
+    fn remove_node_not_in_list_panics() {
+        let (mut list, _nodes) = list_of(&[1, 2]);
+        let stranger = boxed_node(9);
+        // Must panic, not dereference the tail's null `next`.
+        list.remove(unsafe { &*stranger });
+        // `_nodes` free via the list's `Drop` during unwind.
+    }
+
+    /// A panicking `remove` must leave the list intact (unwind runs the
+    /// list's `Drop`, which must free every surviving node exactly once).
+    #[test]
+    fn failed_remove_leaves_list_intact() {
+        let (mut list, _nodes) = list_of(&[1, 2, 3]);
+        let stranger = boxed_node(9);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list.remove(unsafe { &*stranger });
+        }));
+        assert!(result.is_err());
+        // SAFETY: all nodes are live and initialized. `drain` frees each node
+        // exactly once — the list still owned them (the panic was caught, so
+        // no unwind drop ran), and `nodes` holds the same pointers.
+        unsafe { assert_eq!(drain(&mut list), vec![1, 2, 3]) };
+        // SAFETY: never entered any list.
+        unsafe { free_node(stranger) };
+    }
+}
