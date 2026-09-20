@@ -187,6 +187,16 @@ cargo test --test-threads=1
 make bce-check
 ```
 
+### cargo 宇宙拓扑(2026-09-21 归一后,用户裁决「全部立即归一」)
+
+单一宇宙:全仓唯一 `[workspace]` 根 / `Cargo.lock` / `[patch.crates-io]`(freetype 1 条,主根)/ `rust-toolchain.toml`(nightly pin)。vendor 四仓形态:
+
+- `vendor/servo` 组件 = 主 workspace **非成员 path dep**(70 manifest 已内联全部 workspace 继承,5a2d85bc;`[workspace]` 虚拟根/Cargo.lock/rust-toolchain.toml 已删,a4a3b942;主根 exclude 保留 `vendor/servo` 作防再成员化护栏)。`vendor/mozjs` 同构(eu1 8d4c8260);`vendor/stylo` / `vendor/ipc-channel` / `vendor/freetype-wrapper` 本就是自洽单 crate。
+- **验证 remap**:一律主根 `cargo check|cargo nt -p bao-servo-*`(`-p` 匹配全图包,含非成员)。禁 `cd vendor/servo`(根已删)。从主根首次对某 servo crate 跑 test 会按需解析其 dev-deps 并一次性增长主锁,跑后 `git diff Cargo.lock` 审计。
+- **发布 remap**:servo lockstep 线走组件目录 `cargo publish --manifest-path vendor/servo/components/<c>/Cargo.toml`(manifest 自含;publish-verify 解析 registry freetype 0.8.0——2026-09-21 解析级实证,编译 parity 依 E17 符号对照)。
+- 历史记录:本文档 2026-09-21 前的「双 workspace patch 链 / 双侧 lock」叙述为当时机制描述,现行为单侧主根 patch。
+- 已知域外残留:`vendor/boringssl/rust/` 是第五个 `[workspace]` 宇宙(6 个 bssl-* 成员 + 自带 lock),不在 2026-09-21 四仓裁决内,未触碰,待用户裁决。
+
 ### 测试运行纪律(集成测试已收敛为单 harness suite)
 
 7 个重引擎 crate(`bao_runtime` / `bao_browser` / `bao_stealth` / `cdp-server` / `bao_engine` / `bao_cdp` / `bao_cdp_client`)的集成测试已结构性收敛:原 `tests/` 顶层每个 `.rs` 都是独立 auto-discovered target(每个全引擎链接,332 个测试二进制、267 个 ≥500M、合计 225G),现全部并入各自 `tests/suite/` 单 harness target(`tests/suite/main.rs` 为聚合根,子目录不被 auto-discover)。**运行时隔离由 cargo-nextest 保证**——每个 `#[test]` 独立进程运行,合并二进制不改变测试隔离语义(这是本结构的成立前提)。

@@ -41,6 +41,7 @@ BCE 清单锚点 = 项目 CLAUDE.md「servo 定制文件清单(11 个)」。**�
 
 - **清单真源**:项目 CLAUDE.md「servo 定制文件清单(11 个)」+「mozjs fork BAO patch 清单(5 项)」;上游同步时先 `command grep -rln "BCE-\|BAO " vendor/servo/components/` 重建清单
 - **重放纪律**:upstream 基底 + patch 精确重放(patch 锚点与完整记录在 git log 各 stage commit message,`git show <old>:vendor/servo/...` 取旧版对照);上游版与 Bao 补丁版冲突时**Bao 补丁语义恒胜**(如 handle.rs 的 JSEngineSetup 幂等 init,禁用上游裸版)
+- **验证/publish remap(2026-09-21 ev4 归一后)**:vendor/servo `[workspace]` 根/Cargo.lock/rust-toolchain.toml 已删——禁 `cd vendor/servo` 跑 cargo;验证一律主根 `cargo check|cargo nt -p bao-servo-*`;servo crate 发布走组件目录 `cargo publish --manifest-path vendor/servo/components/<c>/Cargo.toml`(自含 manifest);主根首次 test 某 servo crate 会按需解析其 dev-deps 增长主锁,跑后 `git diff Cargo.lock` 审计
 - **派工合同/陷阱库/收口协议**:全部继承 upstream-absorb skill §3/§4/§5(派工模板、并发零重叠、波末单 commit、基线 bump 同 commit、发布闭包)
 - **失败语义**:差异过大/语义不明 → stop 报告不猜;中途态保留禁自动 reset;pending 次日重试 ≤1,再失败 escalate(SKILL.md §4 不变)
 

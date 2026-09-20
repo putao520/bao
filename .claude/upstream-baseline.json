@@ -15,7 +15,7 @@
       "local_path": "/home/putao/code/tools/servo",
       "baseline": "b820a9679",
       "baseline_date": "2026-09-19",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..b820a9679 全判定(triage 09-08..09-19);09-19 波吸收 6 项落地(ByteLengthQueuingStrategy root/InputEventsHandled/FileReader safe/webxr cast_unit/Document.dir/FontData shrink+from_vec shim);deferred 6(selection images=layout 布局漂移族/PaintTimingMixin 大件/ClipboardItem+SW cache promise 基座沿袭 463b9e444/user-select 大项/moz-progress-bar=stylo#434 前置缺);rustls TlsSecurityInfo N-A-HOST(boringssl 栈零承载)"
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..b820a9679 全判定(triage 09-08..09-19);09-19 波吸收 6 项落地(ByteLengthQueuingStrategy root/InputEventsHandled/FileReader safe/webxr cast_unit/Document.dir/FontData shrink+from_vec shim);deferred 6(selection images=layout 布局漂移族/PaintTimingMixin 大件/ClipboardItem+SW cache promise 基座沿袭 463b9e444/user-select 大项/moz-progress-bar=stylo#434 前置缺);rustls TlsSecurityInfo N-A-HOST(boringssl 栈零承载);2026-09-21 ev4 归一:vendor/servo [workspace] 根/Cargo.lock/rust-toolchain.toml 已删(70 manifest 继承内联,commit 5a2d85bc+a4a3b942)——验证一律主根 cargo check|nt -p bao-servo-*(禁 cd vendor/servo),servo crate 发布走组件目录 --manifest-path"
     }
   }
 }
