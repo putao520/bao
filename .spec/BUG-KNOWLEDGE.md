@@ -102,3 +102,13 @@ regressionAssertion:
 
 - `.spec/10-REQUIREMENTS.html` (REQ-ENG-012 补立法)
 - `src/bao_cdp_client/src/bridge/event_translator.rs` (D5 契约漂移,eb2s1-v2 在途)
+
+### 追记:事件 4(2026-09-21,guard 计数 4)
+
+**spawn-gate TASK-HEADER 文法双拒**(ec2/ec3 派发:头行写成 `## TASK-HEADER:`,尾冒号破坏 `HEADER_LINE_RE` 的 `$` 锚;第二轮加 `## ` 前缀仍留冒号=盲试,两轮后才读 hooks/lib/task-header.mjs 源码取证)。违反硬门⑥"同一错误≥2 次即查证,不硬试"。
+
+- 归因:表面=头行尾冒号;设计=gate 报错文案("补齐 ## TASK-HEADER")未给逐字正形,自然续写冒号必触礁;范式=**复发类记忆不完整**——08-24 已沉淀文法记忆但未钉死"头行裸形禁尾冒号",27 天后同形复发。
+- 横扫:全树无其他 grammar 面(本类唯一入口=spawn 派发);修正后 ec2/ec3 一次通过(实证)。
+- 根治双面:①operator memory 补头行裸形规则(复发防线)②gsc 侧 DX 缺陷提 GitHub ISSUE **putao520/gsc#125**(上游禁自修,§3)。
+- kb 指令说明:guard 要求 kb_build 浏览器 MCP 抓官方文档建域知识条目——本类失败为项目内文法非外部技术事实,SSOT 在本地(hook 源码+SPEC),web 文档不适用;且本会话无 kb_build 工具面,如实报告不伪造。
+- 残留 = 0(记忆正形 + issue 在途 + 本条目)。
