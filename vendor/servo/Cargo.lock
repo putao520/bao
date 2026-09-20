@@ -876,13 +876,12 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
  "arboard",
  "bao-ipc-channel",
- "bao-servo",
  "bao-servo-background-hang-monitor",
  "bao-servo-base",
  "bao-servo-bluetooth",
@@ -970,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-background-hang-monitor"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "backtrace",
  "bao-servo-background-hang-monitor-api",
@@ -987,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-background-hang-monitor-api"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "serde",
@@ -995,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-base"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -1019,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-bluetooth"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-bluetooth-traits",
@@ -1037,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-bluetooth-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1047,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -1076,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas-traits"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "bao-servo-base",
  "bao-servo-fonts-traits",
@@ -1120,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1167,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation-traits"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1203,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-default-resources"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-embedder-traits",
 ]
@@ -1219,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1248,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1274,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-embedder-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1307,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1366,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts-traits"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1390,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-geometry"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "app_units",
  "bao-servo-malloc-size-of",
@@ -1428,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1489,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout-api"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1522,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-malloc-size-of"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1565,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media-audio",
@@ -1577,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-audio"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1600,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-auto"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-servo-media-dummy",
  "bao-servo-media-gstreamer",
@@ -1617,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-dummy"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1630,7 +1629,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1661,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-media-player",
  "gstreamer",
@@ -1669,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-android"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1682,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-unix"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1697,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-ohos"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1719,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-player"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1731,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-streams"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1740,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-thread"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1758,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-traits"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1766,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-webrtc"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-servo-media-streams",
  "log",
@@ -1775,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-metrics"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -1789,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -1877,7 +1876,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1919,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -1958,7 +1957,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint-api"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1993,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-pixels"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -2008,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-profile"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -2025,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-profile-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-allocator",
@@ -2041,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2190,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
@@ -2234,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -2271,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-webgpu"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "bao-mozjs",
  "bao-servo-base",
@@ -2292,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2319,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -2332,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-timers"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-servo-malloc-size-of",
  "crossbeam-channel",
@@ -2351,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-url"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-malloc-size-of",
  "encoding_rs",
@@ -2364,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-wakelock"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-embedder-traits",
  "serde",
@@ -2372,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webdriver-server"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2403,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgl"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -2428,7 +2427,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgpu"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "arrayvec",
  "bao-servo-base",
@@ -2446,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgpu-traits"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "arrayvec",
  "bao-servo-base",
@@ -2471,7 +2470,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webxr"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-base",
  "bao-servo-profile-traits",
@@ -2489,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webxr-api"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -2504,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-xpath"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "bao-servo-malloc-size-of",
  "log",
