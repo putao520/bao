@@ -1,3 +1,11 @@
+[build]
+# 单一编译宇宙·三轴之三:target 目录确定性(2026-09-21 用户裁决归一)。
+# 根因:CARGO_TARGET_DIR 仅经 env 注入且跨 shell 不一致——无 env 的 agent shell 落到
+# 仓库默认 target/(遗迹),2026-09-21 实测重冒 68G/38 个 mozjs 构建目录,并在遗迹里
+# 触发第三份全量 SM 编译。本键使任何 cwd/任何 shell 的构建确定性落共享目录;
+# farm compose 的 CARGO_TARGET_DIR env 优先于本键,农场布局不受影响。
+target-dir = "/var/cargo-builds/3c/6184ceb77072ba"
+
 # C/C++ 编译产物调试信息降级:line-tables-only(保留符号表与 file:line,消灭全量 DWARF)。
 # C++ 注入共两条链,压制点不同(均实测验证;g++/clang 语义:最后一个级别 flag 赢):
 #   1. cc crate 系(boringssl/harfbuzz/sqlite/uws/lsquic 等):cc 1.2.62 注入
