@@ -472,3 +472,13 @@ InMemoryTransport command_timeout 归真(2 文件):direct-dispatch 无界同步�
 **拓扑纠偏(实测)**:真正第二宇宙仅 vendor/servo(虚拟 [workspace] 根+1252-pkg tracked lock);stylo/ipc-channel/freetype-wrapper 三树零根零继承零 patch,早已是主锁内 path 包(bao-stylo 0.20.2/bao-ipc-channel 0.22.0/freetype 0.8.0 source=path),零 manifest 变换——此前"4 同类双宇宙"系未实测推断,3/4 误判,按存在性断言实测律纠正。
 
 **路线裁决 Option A(内联+删根+保 exclude)**:servo 组件保持非成员 path dep,单宇宙达成且**主锁零字节变化**(--frozen 机械可证);Option B(成员化)否决——铁证:bao-servo 在 servo 锁有 winit dev 边而主锁无 winit,成员化拉入 ~128 新包名+85 同名异版并行,重造 dev-surface 双编译。patch parity 完整(双侧各恰 1 条 freetype 同绝对目标)。**rehearsal 整树副本实测:70 manifest 重写/1727 继承点语义 ERR=0/注释保留/幂等**。工具链:servo rust-toolchain 1.95.0 冲突删,servo lock 删,两处 profile override 随根消亡。执行序 C1 内联→C2 删根(主锁零 diff 门)→C3 三树终态→C4 daily-ops remap(验证走主根 -p/publish 走组件目录 --manifest-path);**实现轮 DAG 边=eu1 落地**(同构脚本可复用于 mozjs --tree 小适配)。证据不足项 1:组件 publish-verify 解析 registry freetype,实现轮一次 dry-run 收口。
+
+### 2026-09-21 / B2 D2 落地 + 两起共树事故(处置在途)
+
+**D2 核心**(d4eb7db1):BridgeChannel::send 裸 recv→recv_timeout(DEFAULT_RESPONSE_TIMEOUT=30s,判据=lib.rs:784 既有 30s 家族+C19 mediator 同族);快路径/断连错误串逐字保留;超时显式可观测。3 新测 14/14 绿(bounded_when_pump_stalled 50ms 界内+elapsed<5s+泵持 responder 不回)。**console 五站点 lossy 注释**(84556223)。**B2 首批 D5✅/D3✅/D2✅(core)**——收口待调和。
+
+**事故 A(84556223 污染)**:ec3 整文件 staging 扫入 eb2s1-**v1** Carrier-A 残留(delegate.rs Sender→SyncSender+try_send 111/77 行,v1 stop 后遗留工作树)——与已裁定 v2 broker(3df9b83b,bao_browser 零改动为设计前提)**双源并存**。调和合同已派 eb2s1(v1 残留回退 v2-pure,保留 ec3 5 注释,盘点含 lib.rs/cdp_handler 可能残留)。
+**事故 B(reset 竞速)**:ec3 reset --mixed HEAD~1 撤掉他人 3e4a0acd——已 commit-tree 恢复 3523bb24(保真核讫)。教训入册:共树提交前 hunk 级复核;并行窗口 reset 必钉 hash。
+**V 基线差额**:console 族实测 9 站点(5 ServoEvent::Console+4 ConsoleMessage::Event),ec3 按 census 5 做了,余 4 已派微尾单(eb2s1 调和落地后)。
+
+**mozjs 线进展(em1 三连)**:c0aa4b61(SM153 树落地 26/26 patch clean)→ 569e709b(上游 patch 集 153 时代切换,er0 对账表应用)→ 31db4d73(build.rs+makefile 153 形态+BAO 偏差重放)。eu1 吸收 commit 未现(em1 cargo 面与 ev4 实现轮的关键路径边)。
