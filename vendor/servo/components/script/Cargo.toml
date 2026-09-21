@@ -132,7 +132,7 @@ resvg = {version = "0.48.1"}
 rsa = {version = "=0.10.0-rc.18"}
 rustc-hash = {version = "2.1.2"}
 script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.12"}
-script_webgpu = {package = "bao-servo-script-webgpu", path = "../script_webgpu", version = "=0.5.11", optional = true}
+script_webgpu = {package = "bao-servo-script-webgpu", path = "../script_webgpu", version = "=0.5.12", optional = true}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
 selectors = {version = "=0.40.0"}
 serde = {version = "1.0.228", features = ["derive"]}
