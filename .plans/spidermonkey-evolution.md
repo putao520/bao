@@ -1921,3 +1921,7 @@ registry 形态否决(当下):crates.io mozjs_* 实测 max=**153.0.0**(er0"12 �
 ### realm 时间精度平价落地(de741bbd)+ servo 消费面末班合同
 
 clamp 回调(SM153 RTPCallback 面,µs floor 网格无 jitter,arm/disarm 原子周期平价)+双 token 接线(node=context.rs stamp 方向修正;page=新 jsglue shim 绕 incomplete-type)+两 shim。**深层缺陷根治**:SM153 ModuleLink 拒 status=New——直连 Compile→Link 站点须先 JS::LoadRequestedModules(moduleloading 面隐藏半边)。bun_sm 14/14(5 败转绿)+新 clamp 回归测试绿;engine/runtime/browser/bun_sm check 全绿。**全树最后残红已派**:bao-servo-script 29 错 14 站点+bindings 4 错(servo 自有 hooks/JobQueueTraps/principals/error bool 面;bao_engine 模式可复用)——落即全树 build→补面→五门→发布。
+
+### em1→em2 交接(上下文耗尽,2026-09-21 深夜)
+
+em1 五小时弧线交付 SM153 前移全线(树/patch/build/jsglue/wrapper/update.py/106-face/req/106-face/moduleloading/JobQueue/realm clamp/ModuleLink 深修/bindings 4 错/servo 机械面七类)后上下文耗尽,交接报完整:script 余 32 错(尾部导入/残留引用 3-4 迭代+error.rs×4 POD shim+ModuleType 臂×2+模块深水面三 hook→LoadHook+动态续延,草图与 PR #47489 参照在案)。em2 已派(树态续作);落即全树 build→收波链。em1 転 idle,不再派新。
