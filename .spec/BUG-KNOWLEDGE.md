@@ -147,3 +147,9 @@ regressionAssertion:
 - **硬门闭合不可达**:`tryCloseHardGate` 需窗口内 4 标志;`retrospectSeen/fixSeen/inoculateSeen` 均要求 gsc-spec MCP tool_use(architect action=retrospect / fix_code / spec_write)——主会话无该工具面,唯一持有者 architect-sol 子代理本环境两度 400 模型不存在;子代理 transcript 与主会话分离。域 state(44ca2c0e…/-/spec-gov)已 7 计、blockCount 5,无合法重置面(gsc repo 无 CLI/MCP BCE 管理动作)。
 - **棘轮**:DF_ERROR_PATTERNS 扫一切 is_error——常规 V 期 cargo/nextest 失败(必含 error/FAIL)持续喂计数;spawn 拒绝 "fail-closed" 命中 \bfail\b(词边界含连字符)。
 - **处置**:①gsc **#126** 已提(上游禁自修;含三条建议:标志来源扩面/合法重置面/V 期失败区分)②本域 BCE 闭环事实**以本文件为准**(9ebc72a7→8658fccc 五连 commit:归因+横扫+根治工具+机械证伪+残留=0)③guard 后续 block 属 #126 缺陷的机械表现,非新失败;每次 block 不再触发新轮取证(证据已穷尽),仅续做 wave 工作。④待用户裁决 gsc 修复或 state 重置。
+
+## BCE — bao_engine 域 2 计闭环(2026-09-22,W3 bindgen 面)
+
+**归因**:两计=mozjs-sys msvc 交叉 check 的 bindgen panic(cargo RC=101 ×2,/tmp/v-w3*.log)。根因经 C 12 轮 bisect 定案:Linux 宿主 libclang 23 对 cl-driver 方言旗标面的 TU 创建组合性硬死(bindgen context.rs:562);**GNU 拼写面实测可用**(M11:rc=0 产 4.3MB 绑定)。
+**横扫**:类面=依赖 libclang 的解析面(build.rs bindgen 三面:JSApi/JSGlue/extracted glue)——解方(GNU 面+confdefs 先序)对三面同治,已交 s1a 统一落地(单写者);教训入册(ledger 81b45597):libclang 面旗标按 libclang 方言,禁按编译器 driver 方言(cl)透传。
+**残留**:0(s1a 落地 commit 即终态;C 侧证据链齐)。
