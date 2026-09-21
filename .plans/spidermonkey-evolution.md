@@ -1937,3 +1937,7 @@ em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 �
 ### ★★验收全绿(2026-09-21,波门+补面)
 
 **波门五节全 PASS**:§① B2(cdp_client 全 suite+browser scoped)/§② mozjs(checks+smoke+engine 377/0)/§③ 单宇宙(全深度断言)/§④ parity(153 基线 apply-check+7 行清单)/§⑤ publish(package 零网络)。nextest 缺失走文档化降级(WARN 非 FAIL)。**补面三组 RC=0**(sw_stealth_profile/opaque_origin_startup/lib event_tx——eb2s1 后台证据)。过程揪出并根治:测试面 153 迁移盲区(check 不编 test 目标,01f9d259)+OnceLock 跨测试污染(T2 自违规,2f9a0655 裁 A+结构延伸追认:契约测试迁 lib #[cfg(test)] 隔离进程)。**发布闭包已点火**(s6-release,案卷 topo 序 12 级)。
+
+### ★★★波终态(2026-09-21,daily-20260921 tag)
+
+**发布闭包 34/34**(s6,C 独立 V 抽验断点尾三版 runtime 0.4.0/browser 0.3.0/core 0.3.0 全在):12 extracted(bao- 改名首发)+mozjs 族(sys/卫星 153.3.0-0,mozjs 0.24.0)+src 链(0.3/0.4 面)+closure ×10(links 冲突强制:cdp/stealth/servo 族 8)。消费端冒烟:cargo add bao-core@0.3.0 全图 4161 节点 resolve RC=0,单实例断言全过,零 SM140 残影。strip-publish-restore ×5;HEAD=origin=6ceeddf2。tag **daily-20260921** 已推。**#47 关单**(§12A:波门 5/5 GREEN 引用+153.3.0-0 版本证据);#26 stage1 评论挂 stage2 在案。
