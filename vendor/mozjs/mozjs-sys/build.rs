@@ -560,29 +560,31 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
     let mut cc_rs_builder = get_common_cc(build_dir, target);
     cc_rs_builder.define("RUST_BINDGEN", None);
     let is_msvc = cc_rs_builder.get_compiler().is_like_msvc();
-    if is_msvc {
-        cc_rs_builder.flag("--driver-mode=cl");
-    }
 
-    // BAO DELTA (win-cross, #18): on MSVC the TU file is NOT registered via
-    // `.header()` — bindgen emits `.header()` files as `-include <file>` clang
-    // args, and libclang's TU creation dies with ASTReadError on that spelling
-    // for this target (raw-libclang probe: `-include` → ec=4 / TU NULL in
-    // every driver-mode combination; the cl spelling `-FI` → ec=0). It is
-    // registered with the `-FI` spelling at the END of the clang args instead
-    // (see the compiler-args loop below — forced-include order is significant:
-    // jsapi.cpp must see the js-confdefs.h defines). Non-MSVC targets keep
-    // upstream's `.header()` flow byte-for-byte.
+    // BAO DELTA (win-cross, M11/#18): on MSVC the TU file is NOT registered
+    // via `.header()` (bindgen would demote it to a `-include` clang arg from
+    // the cl-face arg set, which Linux-host libclang 23 hard-fails on — see
+    // the GNU face built at the compiler-args loop below). MicroTask.h is
+    // registered further down as the sole `.header()` (TU source). Non-MSVC
+    // targets keep upstream's `.header()` flow byte-for-byte.
     let mut builder = bindgen::builder().rust_target(minimum_rust_target());
-    if !is_msvc {
-        builder = builder.header(target.path());
-    } else {
+    if is_msvc {
         // win-cross, #18: `generate()`'s detect_include_paths() probes the HOST
         // clang and silently appends its C++ search list as `-isystem` pairs
         // (post-echo mutation) — host headers must not leak into a
-        // windows-target TU; the env contract's explicit -imsvc set is the
-        // only include surface.
+        // windows-target TU; the GNU face below carries the explicit SDK
+        // include surface instead.
         builder = builder.detect_include_paths(false);
+    }
+    // win-cross, M11/#18: `.header()` demotes every header except the last to
+    // a `-include <file>` clang arg. On MSVC+JSApi the demoted jsapi.cpp
+    // spelling was the ASTReadError face under the old cl flag set, so
+    // jsapi.cpp is registered as a raw `-include` inside the GNU face below
+    // and MicroTask.h (registered further down) is the sole `.header()`.
+    // JSGlue keeps the single-header upstream flow on every target — its one
+    // `.header()` IS the TU source, nothing is demoted.
+    if !is_msvc || target == BuildTarget::JSGlue {
+        builder = builder.header(target.path());
     }
     // Translate every enum with the "rustified enum" strategy. We should
     // investigate switching to the "constified module" strategy, which has
@@ -632,36 +634,78 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
         }
     }
 
-    for arg in compiler.args() {
-        // BAO DELTA (win-cross, #18): GNU-spelling debug flags (`-g1` etc.,
-        // injected globally by the repo `.cargo/config.toml` [env] CFLAGS
-        // debug-info diet) are benign "unknown-argument" warnings for the
-        // clang-cl *compiler* driver but hard errors for libclang's TU
-        // parsing under `--driver-mode=cl` (bindgen 0.72.1 ir/context.rs:562
-        // "libclang error"). Strip them from the bindgen arg set on MSVC;
-        // cl-mode debug info is already carried by `-Z7` above.
-        if is_msvc {
-            if let Some(s) = arg.to_str() {
-                if s.len() > 1 && s.starts_with("-g") && s[2..].chars().all(|c| c.is_ascii_digit())
-                {
-                    continue;
+    if is_msvc {
+        // BAO DELTA (win-cross, M11/#18): the cc-rs arg set for this target is
+        // cl-spelled (-nologo/-MD/-Z7/-Brepro/-FI/-imsvc, --driver-mode=cl),
+        // and Linux-host libclang 23 hard-fails TU creation on that face
+        // (ir/context.rs:562 — bisected flag-by-flag: the combination is
+        // fatal, no single flag is). The GNU-spelled face over the identical
+        // TU parses clean (M11: rc=0, 4.3 MB of bindings), so the cc args are
+        // NOT propagated and everything the TU needs is rebuilt here in GNU
+        // spelling. Order is significant: js-confdefs.h must be force-
+        // included BEFORE the TU file (XP_WIN arriving late trips
+        // UniquePtrExtensions' "Unsupported OS?" guard).
+        let mut gnu: Vec<String> = vec![
+            "-std=gnu++20".into(),
+            format!("--target={}", env::var("TARGET").unwrap()),
+            "-fms-compatibility".into(),
+            "-fms-extensions".into(),
+            "-DWIN32".into(),
+            "-D_CRT_USE_BUILTIN_OFFSETOF".into(),
+            "-DSTATIC_JS_API".into(),
+            "-DRUST_BINDGEN".into(),
+            "-DXP_WIN=1".into(),
+            "-DXP_WIN32=1".into(),
+        ];
+        if env::var_os("CARGO_FEATURE_DEBUGMOZJS").is_some() {
+            gnu.extend([
+                "-DJS_GC_ZEAL".into(),
+                "-DDEBUG".into(),
+                "-DJS_DEBUG".into(),
+            ]);
+        }
+        // SDK include surface: the win-cross env contract exports the
+        // MSVC-standard INCLUDE list (semicolon-separated); promote each entry
+        // to -isystem. A missing INCLUDE fails loudly at parse time — the SDK
+        // surface cannot be guessed.
+        match env::var("INCLUDE") {
+            Ok(include) => {
+                for path in include.split(';') {
+                    let path = path.trim();
+                    if !path.is_empty() {
+                        gnu.push("-isystem".into());
+                        gnu.push(path.into());
+                    }
                 }
             }
+            Err(_) => println!(
+                "cargo:warning=bao-mozjs-sys: INCLUDE not set — the MSVC \
+                 bindgen face has no SDK include surface (win-cross env \
+                 contract unmet; source scripts/win-cross-env.sh)"
+            ),
         }
-        builder = builder.clang_arg(
-            arg.to_str()
-                .expect("Non UTF-8 compiler flag in cc::Build args"),
-        );
-    }
-
-    // BAO DELTA (win-cross, #18): register the MSVC TU file LAST, after the
-    // js-confdefs.h forced include — a forced include only sees configure
-    // defines from flags that precede it, and jsapi.cpp needs them. Probed
-    // with a raw-libclang parse over this exact arg set: `-FI` after the
-    // confdefs include parses the full TU clean (ec=0); `.header()`'s
-    // `-include` spelling ASTReadErrors for this target wherever it sits.
-    if is_msvc {
-        builder = builder.clang_args([include_file_flag(true), target.path()]);
+        for path in target.include_paths(build_dir) {
+            gnu.push("-I".into());
+            gnu.push(path);
+        }
+        // Forced includes: configure defines BEFORE the TU file. Only JSApi
+        // needs its TU file force-included (its source is MicroTask.h);
+        // JSGlue's source IS the TU file — force-including it again would
+        // redefine every entity in it.
+        gnu.push("-include".into());
+        gnu.push(js_config_path(build_dir));
+        if target == BuildTarget::JSApi {
+            gnu.push("-include".into());
+            gnu.push(target.path().into());
+        }
+        builder = builder.clang_args(gnu);
+    } else {
+        for arg in compiler.args() {
+            builder = builder.clang_arg(
+                arg.to_str()
+                    .expect("Non UTF-8 compiler flag in cc::Build args"),
+            );
+        }
     }
 
     if env::var("TARGET").unwrap().contains("wasi") {
