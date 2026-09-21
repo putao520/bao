@@ -43,8 +43,21 @@ pub extern "C" fn bun_restore_stdio() {
 #[unsafe(no_mangle)]
 pub extern "C" fn on_before_reload_process_linux() {
     // SAFETY: `sync()` only flushes filesystem buffers; no preconditions.
+    #[cfg(not(windows))]
     unsafe {
         libc::sync();
+    }
+    // Windows has no process-global fs-buffer sync: `sync(2)` has no Win32
+    // equivalent (`FlushFileBuffers` is per-handle and this best-effort seam
+    // carries no handles). The closest CRT primitive — flushing every open
+    // stream — stands in for the best-effort contract; the kernel write-back
+    // portion is deferred to the NT cache manager by platform design.
+    #[cfg(windows)]
+    {
+        unsafe extern "C" {
+            safe fn _flushall() -> c_int;
+        }
+        let _ = _flushall();
     }
 }
 
@@ -77,9 +90,26 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
         let size = libc::pthread_get_stacksize_np(th);
         (origin.wrapping_sub(size)) as *mut c_void
     }
+    // Windows: `GetCurrentThreadStackLimits` (kernel32, Win8+) hands back the
+    // calling thread's stack region [low, high]; the low limit is the same
+    // down-growing "end" the pthread paths return. The API has no failure
+    // mode (void return, always writes both outs), so the marker fallback
+    // below has no Windows arm.
+    #[cfg(windows)]
+    {
+        // Local extern so bun_core stays leaf (no windows-sys dep); kernel32
+        // is in every Rust windows target's default link set.
+        unsafe extern "system" {
+            safe fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
+        }
+        let mut low: usize = 0;
+        let mut high: usize = 0;
+        GetCurrentThreadStackLimits(&mut low, &mut high);
+        low as *mut c_void
+    }
     // Linux (glibc): pthread_attr path; `stack_addr` is already the low
     // bound on down-growing stacks — do NOT add `stack_size` (the origin).
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     unsafe {
         let mut attr: libc::pthread_attr_t = core::mem::zeroed();
         if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) == 0 {
@@ -145,7 +175,14 @@ pub extern "C" fn is_executable_file(path: *const c_char) -> bool {
         if libc::stat(path, &mut st) != 0 {
             return false;
         }
-        (st.st_mode & libc::S_IXUSR) != 0
+        // Windows has no mode bits; MSVCRT `_stat` sets `S_IEXEC` from the
+        // file extension — the platform's own executable predicate — so the
+        // query is semantics-equal to the POSIX owner-bit check.
+        #[cfg(windows)]
+        let exec_bit = libc::S_IEXEC as u32;
+        #[cfg(not(windows))]
+        let exec_bit = libc::S_IXUSR as u32;
+        ((st.st_mode as u32) & exec_bit) != 0
     }
 }
 

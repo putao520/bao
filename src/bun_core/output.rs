@@ -694,7 +694,11 @@ pub mod stdio {
 
     // `bun_initialize_process` / `bun_restore_stdio` RealImpl lives in
     // `crate::native_seam` (named owner; one-shot stdio fixup + TTY restore).
-    use crate::native_seam::{bun_initialize_process, bun_restore_stdio};
+    // `restore()` routes Windows through `windows_stdio` (see below), so the
+    // seam import is non-Windows only.
+    #[cfg(not(windows))]
+    use crate::native_seam::bun_restore_stdio;
+    use crate::native_seam::bun_initialize_process;
 
     // TODO(port): move to bun_core_sys
     unsafe extern "C" {
