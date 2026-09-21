@@ -5,12 +5,34 @@
 //   - ~70 C files from src/liblsquic/
 //   - lsqpack.c compiled inline (lsquic feeds it a non-FILE* logger context)
 //   - Links against BoringSSL + lshpack + zlib
+//
+// Windows arm (W2.5, issue #18; upstream lsquic.ts `cfg.windows` branches):
+//   - includes += wincompat (lsquic) + lsqpack/wincompat + lshpack
+//     compat/windows — the vendored header shims (sys/queue.h, vc_compat.h,
+//     sys/uio.h) that upstream adds for win32
+//   - defines += WIN32 / WIN32_LEAN_AND_MEAN
+//   - compiler defaults to clang-cl (the shape upstream exercises; CC_<triple>
+//     env overrides win, same probe discipline as bun_libuv_sys/build.rs)
+//   - links: ws2_32 replaces pthread/m per lsquic's own CMakeLists.txt
+//     (`IF (NOT MSVC) ... pthread m ELSE ... ws2_32`); no `-z`.
+//     zlib: upstream compiles zlib-ng into every build, but this compile set
+//     references no zlib symbols — the only zlib.h includes are under
+//     `#if LOG_PACKET_CHECKSUM` (0) or in files outside the IETF-only source
+//     array (crt_compress/handshake/crypto). Cross-probe evidence: 72/72 TUs
+//     compile and the llvm-nm undefined table of the archived lsquic.lib has
+//     zero deflate*/inflate* entries — so no zlib supply (and no libz-rs-sys
+//     dep) is needed on any platform for this crate's compile face; the
+//     non-windows `-z` line is kept byte-identical to before anyway.
 
 use std::env;
 use std::path::PathBuf;
 
 fn main() {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    // The platform matrix keys on TARGET (CARGO_CFG_*), never the host: a
+    // linux host cross-building x86_64-pc-windows-msvc must still compile the
+    // C with the windows arm. Same discipline as bun_libuv_sys/build.rs.
+    let is_windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     // W0a/W0b publish incorporation: all C sources are vendored in-package
     // under csrc/ (byte-identical copies of vendor/lsquic include + liblsquic
     // trees, the lsqpack/lshpack compile set incl. deps/xxhash and generated
@@ -31,9 +53,9 @@ fn main() {
     // Env-first per-target probe: cc-rs honors .compiler() before its own
     // CC_<target> env chain (cc 1.2.x get_base_compiler early-return), so
     // hardcoding clang silently bypasses per-target cross toolchains (issue
-    // #10 musl wave). clang is only the no-cross-env fallback — host builds
-    // unchanged (see env_cc below).
-    lshpack_build.compiler(env_cc("CC").unwrap_or_else(|| "clang".into()));
+    // #10 musl wave). clang / clang-cl are only the no-cross-env fallbacks —
+    // host builds unchanged (see env_cc below).
+    lshpack_build.compiler(env_cc("CC").unwrap_or_else(|| fallback_cc(is_windows)));
     lshpack_build.opt_level(2);
     lshpack_build
         .flag("-DLS_HPACK_USE_LARGE_TABLES=1")
@@ -42,6 +64,11 @@ fn main() {
     lshpack_build.include(&csrc_dir); // vendored sys/queue.h first (musl, p3.5)
     lshpack_build.include(&lshpack_dir);
     lshpack_build.include(lshpack_dir.join("deps/xxhash"));
+    if is_windows {
+        // upstream lshpack.ts `cfg.windows` includes: ["compat/windows"]
+        // (sys/uio.h shim; sys/queue.h is already served first by csrc/sys).
+        lshpack_build.include(lshpack_dir.join("compat/windows"));
+    }
     lshpack_build.file(lshpack_dir.join("lshpack.c"));
     lshpack_build.file(lshpack_dir.join("deps/xxhash/xxhash.c"));
     lshpack_build.file(crate_dir.join("src/lshpack_wrapper.c"));
@@ -120,12 +147,14 @@ fn main() {
     ];
 
     let mut build = cc::Build::new();
-    // Env-first per-target probe (see the lshpack note above); clang is only
-    // the no-cross-env fallback.
-    build.compiler(env_cc("CC").unwrap_or_else(|| "clang".into()));
+    // Env-first per-target probe (see the lshpack note above); clang / clang-cl
+    // are only the no-cross-env fallbacks.
+    build.compiler(env_cc("CC").unwrap_or_else(|| fallback_cc(is_windows)));
     build.opt_level(1);
     // lsquic emits many -Wsign-compare and -Wunused; upstream builds with -Werror
-    // disabled. Suppress all warnings (treat as third-party lib).
+    // disabled. Suppress all warnings (treat as third-party lib). Upstream
+    // feeds the same -w to its windows (clang-cl) build (lsquic.ts / lshpack.ts
+    // cflags), so the flag is unconditional.
     build.flag("-w");
 
     // Defines (mirrors Bun's lsquic.ts)
@@ -142,10 +171,17 @@ fn main() {
         .define("LSQUIC_CONN_STATS", Some("0"))
         .define("LSQUIC_QIR", Some("0"))
         .define("LSQUIC_WEBTRANSPORT_SERVER_SUPPORT", Some("0"));
+    if is_windows {
+        // upstream lsquic.ts `cfg.windows` defines.
+        build
+            .define("WIN32", Some("1"))
+            .define("WIN32_LEAN_AND_MEAN", Some("1"));
+    }
 
     // Include paths. csrc/ comes first so `#include <sys/queue.h>` resolves
     // to the vendored BSD queue.h (csrc/sys/queue.h) before any system path —
-    // musl has no sys/queue.h (issue #10 musl wave, p3.5).
+    // musl has no sys/queue.h (issue #10 musl wave, p3.5), and windows gets
+    // the same resolution ahead of the wincompat shims.
     build
         .include(&csrc_dir)
         .include(lsquic_dir.join("include"))
@@ -155,6 +191,15 @@ fn main() {
         .include(lshpack_dir.join("deps").join("xxhash"))
         .include(&lsqpack_dir)
         .include(lsqpack_dir.join("deps").join("xxhash"));
+    if is_windows {
+        // upstream lsquic.ts `cfg.windows` includes: lsquic wincompat +
+        // lsqpack wincompat (vc_compat.h / sys/queue.h header shims) and
+        // lshpack compat/windows (sys/uio.h shim).
+        build
+            .include(lsquic_dir.join("wincompat"))
+            .include(lsqpack_dir.join("wincompat"))
+            .include(lshpack_dir.join("compat/windows"));
+    }
 
     // Add lsquic C sources
     for src in &lsquic_sources {
@@ -174,16 +219,39 @@ fn main() {
     build.compile("lsquic");
 
     // ── Link dependencies ─────────────────────────────────────────────────
-    // lsquic depends on zlib (system lib). BoringSSL and lshpack are
-    // propagated via Cargo dependencies (bun_boringssl_sys, bun_lsquic_sys).
-    println!("cargo:rustc-link-lib=z");
+    // Non-windows: lsquic depends on zlib (system lib). BoringSSL and lshpack
+    // are propagated via Cargo dependencies (bun_boringssl_sys, this crate).
+    //
+    // Windows: ws2_32 per lsquic's own CMakeLists.txt (see header note); no
+    // `-z` — the compile set references no zlib symbols (probe evidence in
+    // the header note), so there is nothing for a zlib supply to resolve.
+    if is_windows {
+        println!("cargo:rustc-link-lib=ws2_32");
+    } else {
+        println!("cargo:rustc-link-lib=z");
+    }
 
     // ── Rebuild hints ─────────────────────────────────────────────────────
     println!("cargo:rerun-if-changed={}", lsquic_src.join("lsquic_engine.c").display());
     println!("cargo:rerun-if-changed={}", lsqpack_dir.join("lsqpack.c").display());
     println!("cargo:rerun-if-changed={}", lshpack_dir.join("lshpack.c").display());
     println!("cargo:rerun-if-changed={}", crate_dir.join("src/lshpack_wrapper.c").display());
+    println!("cargo:rerun-if-changed={}", lsquic_dir.join("wincompat").display());
+    println!("cargo:rerun-if-changed={}", lsqpack_dir.join("wincompat").display());
+    println!("cargo:rerun-if-changed={}", lshpack_dir.join("compat/windows").display());
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+// No-cross-env compiler fallback for the build faces: clang-cl is the shape
+// upstream exercises on windows (bun builds its windows C with clang-cl; the
+// libuv probe produced a real COFF uv.lib through exactly this default), and
+// clang stays the historical posix fallback.
+fn fallback_cc(is_windows: bool) -> std::ffi::OsString {
+    if is_windows {
+        "clang-cl".into()
+    } else {
+        "clang".into()
+    }
 }
 
 // cc-rs-compatible per-target compiler probe, mirroring cc's own resolution
