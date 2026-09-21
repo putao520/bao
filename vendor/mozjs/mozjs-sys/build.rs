@@ -450,16 +450,26 @@ fn build_spidermonkey(build_dir: &Path) {
         .env("SRC_DIR", &vsrc_dir)
         .env("NO_RUST_PANIC_HOOK", "1")
         .output()
-        .expect(&format!("Failed to run `{:?}`", make));
+        .unwrap_or_else(|e| panic!("Failed to run `{:?}`: {e}", make));
+    // #47: a bare `assert!(result.status.success())` used to swallow the command,
+    // exit status and both streams, making downstream CI failures (e.g. a missing
+    // llvm-objdump inside make) needlessly expensive to locate.
     if !result.status.success() {
-        println!(
-            "stderr output:\n{}",
-            String::from_utf8(result.stderr).unwrap()
+        let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+        println!("stderr output:\n{stderr}");
+        println!("build output:\n{stdout}");
+        panic!(
+            "`{:?} -R -f {}` failed with {}\n\
+             --- stdout (last 20 lines) ---\n{}\n\
+             --- stderr (last 20 lines) ---\n{}",
+            make,
+            cargo_manifest_dir.join("makefile.cargo").display(),
+            result.status,
+            tail_lines(&stdout, 20),
+            tail_lines(&stderr, 20),
         );
-        let stdout = String::from_utf8(result.stdout).unwrap();
-        println!("build output:\n{}", stdout,);
     }
-    assert!(result.status.success());
 
     if target.contains("windows") {
         let mut make_static = cc::Build::new();
@@ -493,6 +503,14 @@ fn cbindgen_bidi(build_dir: &Path) {
       .write_to_file(root_to_bidi(build_dir).join("unicode_bidi_ffi_generated.h"));
 }
 */
+
+/// #47: last `max` lines of a captured stream, for panic messages that must be
+/// self-contained without dumping multi-megabyte build logs.
+fn tail_lines(s: &str, max: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines.len().saturating_sub(max);
+    lines[start..].join("\n")
+}
 
 fn is_buggy_make_version() -> bool {
     if let Ok(output) = Command::new("gmake")
@@ -1261,10 +1279,16 @@ mod archive {
                 if !target.contains("apple") {
                     strip.arg("--strip-debug");
                 };
+                // #47: streams are inherited here (.status(), not .output()), so the
+                // panic can only carry the command and exit status; the tool's own
+                // output is already visible on the parent's stderr.
                 let status = strip
                     .arg(join_path(build_dir, "js/src/build/libjs_static.a"))
-                    .status()?;
-                assert!(status.success());
+                    .status()
+                    .unwrap_or_else(|e| panic!("Failed to run `{strip:?}`: {e}"));
+                if !status.success() {
+                    panic!("`{strip:?}` failed with {status}");
+                }
             }
 
             // This is the static library of spidermonkey.
@@ -1410,14 +1434,28 @@ mod archive {
             attestation_duration.as_millis()
         );
 
-        if let Err(output) = attestation_cmd.output() {
-            println!("cargo:warning=Failed to verify the artifact downloaded from CI: {output:?}");
+        // #47: a non-zero `gh attestation verify` exit used to fall through this
+        // Err-only check and silently pass verification (fail-open, contradicting
+        // AttestationType::Strict). Treat spawn errors and non-zero exits alike.
+        let verification = attestation_cmd.output();
+        let failure = match verification {
+            Err(e) => Some(format!("failed to run `gh attestation verify`: {e}")),
+            Ok(output) if !output.status.success() => Some(format!(
+                "`gh attestation verify` failed with {}\n\
+                 --- stderr (last 20 lines) ---\n{}",
+                output.status,
+                tail_lines(&String::from_utf8_lossy(&output.stderr), 20),
+            )),
+            Ok(_) => None,
+        };
+        if let Some(reason) = failure {
+            println!("cargo:warning=Failed to verify the artifact downloaded from CI: {reason}");
             // Remove the file so the build-script will redownload next time.
             let _ = fs::remove_file(&archive_path).inspect_err(|e| {
                 println!("cargo:warning=Failed to delete archive: {e}");
             });
             match kind {
-                AttestationType::Strict => panic!("Artifact verification failed!"),
+                AttestationType::Strict => panic!("Artifact verification failed! {reason}"),
                 AttestationType::Lenient => {
                     return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
                 }
@@ -1436,7 +1474,7 @@ mod archive {
         if !archive_path.exists() {
             eprintln!("Trying to download prebuilt mozjs static library from Github Releases");
             let curl_start = Instant::now();
-            if !Command::new("curl")
+            let mut curl = Command::new("curl")
                 .arg("-L")
                 .arg("-f")
                 .arg("-s")
@@ -1445,11 +1483,16 @@ mod archive {
                 .arg(format!(
                     "{base}/download/mozjs-sys-v{version}/{}",
                     archive()
-                ))
-                .status()?
-                .success()
-            {
-                return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+                ));
+            // #47: carry the command and exit status instead of an opaque NotFound.
+            let status = curl
+                .status()
+                .unwrap_or_else(|e| panic!("Failed to run `{curl:?}`: {e}"));
+            if !status.success() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("curl download failed with {status}: `{curl:?}`"),
+                ));
             }
             eprintln!(
                 "Successfully downloaded mozjs archive in {} ms",
