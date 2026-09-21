@@ -1999,3 +1999,7 @@ O_CLOEXEC→O_NOINHERIT 每平台旗标+bun_sys 死 import 清;libuv_sys 经 env
 ### W0 farm 双路由分层完成(er0,0f426af+5d20e75,2026-09-21)
 
 mingw(gcc-mingw-w64 钉版)+xwin 0.10.0(sha256 双钉,--accept-license 显式;farm-xwin 卷:splat 630M 真件在位,§8 分层=MSVC 内容全在卷零混装)+双 rustup target 入共享工具链卷;首建揭出 apt.llvm.org 拆包缺件(clang-cl wrapper/lld)→lld-20+符号链修复;四件套实测(clang-cl 20.1.8/lld-link/mingw-gcc 13/xwin);正本双 commit,服务器 diff 清零。**Windows 波 W 面盘点:W0 farm✅+host✅(.200 docker)/W1 链✅至 uws 门/W1.5 env✅/W2✅/W2.5✅/W4 供给✅+臂 2/3(等 em3)/W5✅(同门)。唯一关键路径=em3 usockets 吸收。**
+
+### er0 W1.5 增补:farm 卷收敛脚本契约+链接冒烟绿(d9f5b9f)
+
+farm-xwin 卷布局收敛到 /opt/bao-win-cross 契约形(wsroot 组装+无空格别名+shims 固化);波折如实:首组装 DNS 丢包被无 pipefail 掩蔽→完整性实检抓出→显式 rc 重跑(教训:下载管道必 pipefail);**容器内冒烟:clang-cl COMPILE_OK+lld-link LINK_OK(smoke.exe)=SDK include+LIB 双层完整,farm 具备交叉编译+链接双能力(W7 面就绪)**。固化链:镜像工具→卷 wsroot→仓库脚本 source 即全套。
