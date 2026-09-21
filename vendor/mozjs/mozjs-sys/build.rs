@@ -555,18 +555,6 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
     config &= !CodegenConfig::DESTRUCTORS;
     config &= !CodegenConfig::METHODS;
 
-    let builder = bindgen::builder()
-        .rust_target(minimum_rust_target())
-        .header(target.path())
-        // Translate every enum with the "rustified enum" strategy. We should
-        // investigate switching to the "constified module" strategy, which has
-        // similar ergonomics but avoids some potential Rust UB footguns.
-        .rustified_enum(".*")
-        .derive_partialeq(true)
-        .size_t_is_usize(true)
-        .enable_cxx_namespaces()
-        .with_codegen_config(config);
-
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
 
     let mut cc_rs_builder = get_common_cc(build_dir, target);
@@ -576,15 +564,41 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
         cc_rs_builder.flag("--driver-mode=cl");
     }
 
-    // `.cpp(true)` from cc_rs_builder will not propagate to bindgen clang-args,
-    // so we need to set it explicitly here.
-    let mut builder = if is_msvc {
-        // /TP is the equivalent of `-x c++` for msvc, but it causes `libclang` to error out.
-        // <https://learn.microsoft.com/en-us/cpp/build/reference/tc-tp-tc-tp-specify-source-file-type?view=msvc-170>
-        builder
+    // BAO DELTA (win-cross, #18): on MSVC the TU file is NOT registered via
+    // `.header()` — bindgen emits `.header()` files as `-include <file>` clang
+    // args, and libclang's TU creation dies with ASTReadError on that spelling
+    // for this target (raw-libclang probe: `-include` → ec=4 / TU NULL in
+    // every driver-mode combination; the cl spelling `-FI` → ec=0). It is
+    // registered with the `-FI` spelling at the END of the clang args instead
+    // (see the compiler-args loop below — forced-include order is significant:
+    // jsapi.cpp must see the js-confdefs.h defines). Non-MSVC targets keep
+    // upstream's `.header()` flow byte-for-byte.
+    let mut builder = bindgen::builder().rust_target(minimum_rust_target());
+    if !is_msvc {
+        builder = builder.header(target.path());
     } else {
-        builder.clang_args(["-x", "c++"])
-    };
+        // win-cross, #18: `generate()`'s detect_include_paths() probes the HOST
+        // clang and silently appends its C++ search list as `-isystem` pairs
+        // (post-echo mutation) — host headers must not leak into a
+        // windows-target TU; the env contract's explicit -imsvc set is the
+        // only include surface.
+        builder = builder.detect_include_paths(false);
+    }
+    // Translate every enum with the "rustified enum" strategy. We should
+    // investigate switching to the "constified module" strategy, which has
+    // similar ergonomics but avoids some potential Rust UB footguns.
+    // `.cpp(true)` from cc_rs_builder will not propagate to bindgen clang-args,
+    // so we set the language explicitly here. Upstream avoided `/TP` on MSVC
+    // because it "errors libclang"; GNU-spelling `-x c++` is accepted by
+    // clang-cl and forces C++ parsing (without any language flag libclang
+    // parsed the header as C — `namespace` → unknown type name).
+    let mut builder = builder
+        .rustified_enum(".*")
+        .derive_partialeq(true)
+        .size_t_is_usize(true)
+        .enable_cxx_namespaces()
+        .with_codegen_config(config)
+        .clang_args(["-x", "c++"]);
 
     if target == BuildTarget::JSApi {
         // BAO DELTA (SM153): with libclang 23 the js/friend/MicroTask.h block
@@ -619,10 +633,35 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
     }
 
     for arg in compiler.args() {
+        // BAO DELTA (win-cross, #18): GNU-spelling debug flags (`-g1` etc.,
+        // injected globally by the repo `.cargo/config.toml` [env] CFLAGS
+        // debug-info diet) are benign "unknown-argument" warnings for the
+        // clang-cl *compiler* driver but hard errors for libclang's TU
+        // parsing under `--driver-mode=cl` (bindgen 0.72.1 ir/context.rs:562
+        // "libclang error"). Strip them from the bindgen arg set on MSVC;
+        // cl-mode debug info is already carried by `-Z7` above.
+        if is_msvc {
+            if let Some(s) = arg.to_str() {
+                if s.len() > 1 && s.starts_with("-g") && s[2..].chars().all(|c| c.is_ascii_digit())
+                {
+                    continue;
+                }
+            }
+        }
         builder = builder.clang_arg(
             arg.to_str()
                 .expect("Non UTF-8 compiler flag in cc::Build args"),
         );
+    }
+
+    // BAO DELTA (win-cross, #18): register the MSVC TU file LAST, after the
+    // js-confdefs.h forced include — a forced include only sees configure
+    // defines from flags that precede it, and jsapi.cpp needs them. Probed
+    // with a raw-libclang parse over this exact arg set: `-FI` after the
+    // confdefs include parses the full TU clean (ec=0); `.header()`'s
+    // `-include` spelling ASTReadErrors for this target wherever it sits.
+    if is_msvc {
+        builder = builder.clang_args([include_file_flag(true), target.path()]);
     }
 
     if env::var("TARGET").unwrap().contains("wasi") {
