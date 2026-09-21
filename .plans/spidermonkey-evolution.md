@@ -1967,3 +1967,7 @@ ew4(9595dbae):libuv C 符号供给——vendor 真 fork 头(1.51.1-dev rev 验�
 ### ★ew1 终报:路由 A 判决,SM153 交叉三层绿(2026-09-21,/tmp+.plans/win-probe-DOSSIER.md)
 
 **headline**:Linux→x86_64-pc-windows-msvc 的 configure/全量 C++(655 obj)/js_static.lib(342MB)三层全实测绿——140 时代"configure 不可能"判死;winreg 门 env 100% 绕过零 patch;配方=xwin winsysroot+clang-cl/lld-link shims+**cross 必须 --enable-libz-rs**(host zlib 泄漏防线)。验证口径 L1-L4(链接绿=支持;Wine smoke=stretch 非承诺)。**DAG 执行中**:W1 alloc(s1a 在途)/W2 boringssl win64(em2 已派)/合同 2/3 臂解锁(ew4 已派,用 /tmp/win-probe 实测 sysroot)/W0 farm(er0 在途);W3 mozjs cargo face+W6 fonts/servo 挂 W1;W7 全链=W1-W6 齐后。#37 判定修订与 platform-support §2 修订挂文档合同。配方已沉淀(windows-cross-probe-recipe 记忆)。
+
+### ewe host 设计案卷(2026-09-21,/tmp+.plans/win-host-CASE.md)
+
+五节:①环境规格(bootstrap.ps1=§8 Windows 等价形:rust nightly 钉/MSVC Build Tools 含 ATL/Python 3.11/moztools 4.0 钉版 zip/GStreamer 1.22.8 **必需**(media-gstreamer feature)/LLVM 建议 21.1.8)②mozjs host 门(find_moztools tier-1/2 供给;硬约束:makefile.cargo bash 语法钉 msys2 sh 禁裸 make;should_build_from_source 恒真)③农场集成(C:\build-farm\bao 布局;git fetch+reset 同步走 16.18.0.1 bare 镜像免凭据扩散;bao-win-remote-build 五段镜像 frog)④分工矩阵(**校正:ew1 终判推翻 mozjs-需-host 旧据,交叉可承载全树待 W3 证实;host=运行时验证+备胎**——校正令已发 ewe)⑤落地序 W0-W5。风险显式(boringssl win asm 旗标/GStreamer pkg-config/UCRT servicing)。
