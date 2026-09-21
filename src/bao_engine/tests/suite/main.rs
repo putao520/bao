@@ -17,7 +17,6 @@ mod console_routing_tests;
 mod debugger_native_tests;
 mod dispatch_sm_tests;
 mod engine_core_tests;
-mod engine_hook_contract_tests;
 mod error_handling_tests;
 mod es_advanced_features_tests;
 mod execution_control_tests;

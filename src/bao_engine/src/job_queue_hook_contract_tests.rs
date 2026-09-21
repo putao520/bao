@@ -10,16 +10,23 @@
 // re-registration with a DIFFERENT fn pointer is real semantic drift and
 // fails closed under `debug_assertions`.
 //
-// nextest runs each test in its own process, so every test starts with an
-// empty OnceLock. Each test still establishes its own baseline first, so the
-// file is also order-safe under plain `cargo test --test-threads=1`.
+// PLACEMENT (root-cause fix, see commit note): these tests live in the LIB
+// `#[cfg(test)]` target, NOT in `tests/suite/`. The suite binary hosts
+// real-router registrations (every `globals::install_all` path calls
+// `uncaught::install` → `set_uncaught_hooks` with the production pair), so
+// synthetic fixture fns installed here would structurally poison — and be
+// poisoned by — the real pair in the same process: the registry holds exactly
+// one pair and the contract fails closed on ANY differing pointer. The lib
+// target is a separate process in which nothing registers the real pair,
+// so the B1 convention (all tests share ONE baseline fn pair) is genuinely
+// order-safe here under plain `cargo test --test-threads=1`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mozjs::jsapi::JSContext;
 use mozjs::jsval::JSVal;
 
-use bao_engine::job_queue::set_uncaught_hooks;
+use crate::job_queue::set_uncaught_hooks;
 
 // Distinct side effects per fn so identical-code folding can never merge a
 // pair — fn-pointer inequality is load-bearing for the divergence tests.
@@ -62,10 +69,18 @@ fn hook_contract_uncaught_hook_same_pointer_reregistration_is_idempotent() {
 fn hook_contract_flush_hook_same_pointer_reregistration_is_idempotent() {
     // Same shape, second hook: re-registering with the same FLUSH fn (and
     // the same already-installed UNCAUGHT fn) stays an idempotent no-op.
-    set_uncaught_hooks(uncaught_router_b, flusher_b);
-    set_uncaught_hooks(uncaught_router_b, flusher_b);
-    assert_eq!(FLUSH_TOUCH_B.load(Ordering::Relaxed), 0);
-    assert_eq!(UNCAUGHT_TOUCH_B.load(Ordering::Relaxed), 0);
+    //
+    // Order-safety note (root-cause fix): the baseline MUST reuse the same
+    // fn pair the other tests install (`uncaught_router_a` / `flusher_a`, the
+    // B1 R51/R52 family convention). A private baseline pair here (the former
+    // `uncaught_router_b` / `flusher_b`) genuinely diverges against the
+    // first-writer pair installed by an earlier test in this shared process,
+    // tripping the setter's fail-closed debug_assert — the very drift the
+    // contract exists to catch.
+    set_uncaught_hooks(uncaught_router_a, flusher_a);
+    set_uncaught_hooks(uncaught_router_a, flusher_a);
+    assert_eq!(FLUSH_TOUCH_A.load(Ordering::Relaxed), 0);
+    assert_eq!(UNCAUGHT_TOUCH_A.load(Ordering::Relaxed), 0);
 }
 
 // ── divergent-pointer fail-closed (debug_assertions only) ─────────────────

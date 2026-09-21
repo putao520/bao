@@ -92,6 +92,13 @@ pub use bun_sm::module_loader::{
 pub mod context;
 pub mod execution_control;
 pub mod job_queue;
+// First-writer-wins contract tests for the job-queue embedder hooks.
+// Deliberately in the lib #[cfg(test)] target (NOT tests/suite/): the suite
+// binary hosts real-router registrations via globals::install_all, and the
+// process-global hook registries cannot hold both the synthetic fixture pair
+// and the production pair in one process under the fail-closed contract.
+#[cfg(test)]
+mod job_queue_hook_contract_tests;
 pub mod memory_stats;
 // @trace REQ-STL-007 [entity:StealthProfile] — engine-native realm identity
 // policy sinks: locale (JS_SetDefaultLocale) / Date time precision
