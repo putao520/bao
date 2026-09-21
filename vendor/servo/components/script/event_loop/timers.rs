@@ -13,8 +13,8 @@ use deny_public_fields::DenyPublicFields;
 use js::context::JSContext;
 use js::jsapi::Heap;
 use js::jsval::{JSVal, UndefinedValue};
+use js::rust::HandleValue;
 use js::rust::wrappers2::JS_GetScriptedCallerPrivate;
-use js::rust::{HandleValue, IntoHandle};
 use net_traits::request::ParserMetadata;
 use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
@@ -840,8 +840,8 @@ impl JsTimerTask {
         //
         // Since we choose proactively prevent execution (see 4.1 above), we must only
         // reschedule repeating timers when they were not canceled as part of step 4.2.
-        if self.is_interval == IsInterval::Interval &&
-            timers.active_timers.borrow().contains_key(&self.handle)
+        if self.is_interval == IsInterval::Interval
+            && timers.active_timers.borrow().contains_key(&self.handle)
         {
             timers.initialize_and_schedule(global, self);
         }
@@ -923,10 +923,10 @@ fn active_script_fetch_info(cx: &mut JSContext, global: &GlobalScope) -> Initiat
     rooted!(&in(cx) let mut value = UndefinedValue());
     unsafe { JS_GetScriptedCallerPrivate(cx, value.handle_mut()) };
 
-    let reference_private = value.handle().into_handle();
+    let reference_private = value.handle();
 
     // Step 7. Let initiating script be the active script.
-    let initiating_script = unsafe { module_script_from_reference_private(&reference_private) };
+    let initiating_script = unsafe { module_script_from_reference_private(reference_private) };
 
     let (fetch_options, base_url) = match initiating_script {
         // Step 9.6.7. If initiating script is not null, then:
