@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-layout"
-version = "0.5.14"
+version = "0.5.15"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -49,7 +49,7 @@ pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.6"}
 profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
 rayon = {version = "1"}
 rustc-hash = {version = "2.1.2"}
-script = {package = "bao-servo-script", path = "../script", version = "=0.5.16"}
+script = {package = "bao-servo-script", path = "../script", version = "=0.5.17"}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
 selectors = {version = "=0.40.0"}
 serde = {version = "1.0.228"}

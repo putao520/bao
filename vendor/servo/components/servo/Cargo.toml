@@ -111,7 +111,7 @@ http = {version = "1.4"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
-layout = {package = "bao-servo-layout", path = "../layout", version = "=0.5.14"}
+layout = {package = "bao-servo-layout", path = "../layout", version = "=0.5.15"}
 layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.10"}
 log = {version = "0.4.32"}
 media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.6"}
@@ -124,7 +124,7 @@ parking_lot = {version = "0.12", features = ["serde"]}
 profile = {package = "bao-servo-profile", path = "../profile", version = "=0.5.6"}
 profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
 rustc-hash = {version = "2.1.2"}
-script = {package = "bao-servo-script", path = "../script", version = "=0.5.16"}
+script = {package = "bao-servo-script", path = "../script", version = "=0.5.17"}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
 serde = {version = "1.0.228"}
 servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = "=0.5.6"}
@@ -192,7 +192,7 @@ net = {package = "bao-servo-net", path = "../net", version = "=0.5.18", features
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
-bao-servo = { path = ".", version = "=0.5.15", features = ["testbinding", "tracing"] }
+bao-servo = { path = ".", version = "=0.5.16", features = ["testbinding", "tracing"] }
 tracing = {version = "0.1.44"}
 winit = {version = "0.30.13"}
 
