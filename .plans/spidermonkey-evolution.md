@@ -2031,3 +2031,7 @@ W2 累计 14 crate 面解锁(watcher/sm/engine 旗舰面绿;runtime 仅被 libff
 ### W2 断点 3 闭:libffi fork(acb25b92,ew4)
 
 [patch.crates-io] 同名 vendor fork(freetype-wrapper 先例;改名键在 [patch] 内静默忽略=已验陷阱规避);四点修法:CARGO_CFG_TARGET_ENV 运行时分派(原 HOST cfg bug)/EP 接 env 契约弃真 MSVC/.asm 落 OUT_DIR(源树污染根治)/**GAS win64.S 变体**(MASM 硬阻断实证:llvm-ml 解析不了 extern near/.seh;win64.S 同 ABI)。libffi-sys+libffi msvc RC=0;linux 回归绿;issue 草稿 /tmp(待发 tov/libffi-rs)。归属如实:bun_runtime 全量 msvc 未跑(闭包含 mozjs 大构建=W2 面)。环境注:/tmp/win-probe 被外部清空,/opt/bao-win-cross 为耐久真源。**断点计:libffi✅/addrinfo(ec2 在途)/media 门控+shim(s1a 在途)**。
+
+### W2 断点 4+shim 闭:media 门控+b368b6d7(s1a,2026-09-22)
+
+media-gstreamer 移 target(not(windows)) 依赖——msvc 树 glib/gst **0 命中**(12 crate 门解除),linux 树 62 命中零 diff。shim.exe 根因=include 路径差一层(build.rs 已有 0-byte 占位供给语义)→路径修正+bun_install msvc RC=0;真 PE 产出=W7 域(rust.ts no-CRT 配方已文档化)。顺带:windows 死 import×2+MaxPathExceeded 错误转换。**断点计:media✅/shim✅/libffi(ew4 升 4.2.2 在途)/addrinfo(ec2 在途)**——余二闭即 W2 workspace 全绿。
