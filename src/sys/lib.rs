@@ -3627,7 +3627,6 @@ mod windows_impl {
     use super::windows as w;
     use super::windows::libuv as uv;
     use super::*;
-    use bun_paths::WPathBuffer;
 
     // ── libuv-backed (sys_uv.zig) ────────────────────────────────────────
     pub fn open(path: &ZStr, flags: i32, mode: Mode) -> Maybe<Fd> {
