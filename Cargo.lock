@@ -3369,6 +3369,7 @@ dependencies = [
  "bun_core",
  "bun_windows_sys",
  "bun_wyhash",
+ "cc",
  "libc",
  "phf 0.11.3",
  "strum 0.26.3",

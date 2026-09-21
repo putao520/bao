@@ -6,9 +6,16 @@ description.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+# The build script compiles the vendored oven-sh/libuv fork into a static
+# `uv` library for windows targets; the links key reserves the libuv symbol
+# set so no second provider can be linked alongside it.
+links = "uv"
 
 [lib]
 path = "lib.rs"
+
+[build-dependencies]
+cc = "1"
 
 [lints]
 workspace = true
