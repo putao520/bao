@@ -35,6 +35,18 @@ pub unsafe fn CreateTranscodeBuffer() -> *mut TranscodeBuffer {
 wrap!(glue: pub fn DestroyTranscodeBuffer(buffer: *mut TranscodeBuffer));
 wrap!(glue: pub fn TranscodeBufferBegin(buffer: *const TranscodeBuffer) -> *const u8);
 wrap!(glue: pub fn TranscodeBufferLength(buffer: *const TranscodeBuffer) -> usize);
+// BAO PATCH (REQ-ENG-012 stage2): owning-handle shims for JS::BuildIdCharVector
+// (see jsglue.cpp) — the buffer behind wrappers2::GetScriptTranscodingBuildId,
+// the XDR version/staleness tag the persistent cache keys on.
+// CreateBuildIdCharVector is zero-arg and cannot go through wrap!.
+#[inline]
+pub unsafe fn CreateBuildIdCharVector() -> *mut BuildIdCharVector {
+    glue::CreateBuildIdCharVector()
+}
+wrap!(glue: pub fn DestroyBuildIdCharVector(vector: *mut BuildIdCharVector));
+wrap!(glue: pub fn BuildIdCharVectorBegin(vector: *const BuildIdCharVector) -> *const u8);
+wrap!(glue: pub fn BuildIdCharVectorLength(vector: *const BuildIdCharVector) -> usize);
+wrap!(glue: pub fn SetBuildId(buildId: *mut BuildIdCharVector, chars: *const ::std::os::raw::c_char, len: usize) -> bool);
 wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
 // BAO patch (SM-EVOLUTION #27 verdict-6, consumed by #19 soak): engine-native
 // memory metering — JS::CollectRuntimeStats behind the jsglue.cpp subclass

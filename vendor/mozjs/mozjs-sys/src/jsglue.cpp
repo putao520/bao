@@ -864,6 +864,25 @@ size_t TranscodeBufferLength(const JS::TranscodeBuffer* buffer) {
   return buffer->length();
 }
 
+// BAO PATCH (REQ-ENG-012 stage2): owning-handle shims for JS::BuildIdCharVector
+// (mozilla::Vector<char, 0, js::SystemAllocPolicy>) — same bindgen degradation
+// story as TranscodeBuffer above. Feeds JS::GetScriptTranscodingBuildId (the
+// XDR version/staleness tag the persistent cache keys on); writing goes through
+// the existing SetBuildId helper below.
+JS::BuildIdCharVector* CreateBuildIdCharVector() {
+  return new JS::BuildIdCharVector();
+}
+
+void DestroyBuildIdCharVector(JS::BuildIdCharVector* vector) { delete vector; }
+
+const uint8_t* BuildIdCharVectorBegin(const JS::BuildIdCharVector* vector) {
+  return reinterpret_cast<const uint8_t*>(vector->begin());
+}
+
+size_t BuildIdCharVectorLength(const JS::BuildIdCharVector* vector) {
+  return vector->length();
+}
+
 // BAO PATCH (SM153 moduleloading migration): RealmCreationOptions::forceUTC_
 // was removed in SM 153; the replacement face is
 // RealmBehaviors::setTimeZoneOverride (js/public/RealmOptions.h, the

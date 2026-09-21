@@ -111,6 +111,12 @@ pub mod realm_policy;
 // experimental surface, not a stable API commitment)
 pub mod stencil_cache;
 
+// @trace REQ-ENG-012 [entity:BaoStencilXdrCache] — persistent Stencil XDR
+// cache: EncodeStencil→disk→DecodeStencil across process restarts, the
+// persistence front layer of `stencil_cache` (SM-EVOLUTION #26; internal
+// experimental surface, not a stable API commitment)
+pub mod xdr_cache;
+
 // @trace REQ-STL-007 [entity:StealthProfile] — Node-semantics realm
 // forceUTC arming (creation-time flag consumed by node_realm_options)
 pub use bun_sm::global_object::{node_force_utc, set_node_force_utc};

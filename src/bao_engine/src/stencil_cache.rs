@@ -73,6 +73,7 @@ use std::cell::RefCell;
 use std::ffi::CStr;
 use std::ptr;
 
+use crate::xdr_cache;
 use mozjs::jsapi;
 use mozjs::panic::maybe_resume_unwind;
 use mozjs::realm::AutoRealm;
@@ -184,7 +185,7 @@ thread_local! {
     static CACHE: RefCell<StencilCache> = RefCell::new(StencilCache::new());
 }
 
-fn hash_key(source: &str, filename: &CStr, line: u32) -> u64 {
+pub(crate) fn hash_key(source: &str, filename: &CStr, line: u32) -> u64 {
     // Wyhash (workspace `bun_wyhash`, Bun's port): ~0.1 ns/byte, so hashing
     // the 28 KB stealth blob costs ~3 µs vs ~15-19 µs for std's SipHash —
     // the residual overhead of a cache hit is dominated by this hash. The
@@ -255,30 +256,57 @@ pub fn evaluate_script_cached(
             s
         }
         None => {
-            let mut realm = AutoRealm::new_from_handle(cx, glob);
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-
-            let options = CompileOptionsWrapper::new(realm_cx, filename.to_owned(), line);
-            let mut source = transform_str_to_source_text(script);
-            let addrefed = unsafe {
-                wrappers2::CompileGlobalScriptToStencil(realm_cx, options.ptr, &mut source)
-            };
-            let raw = addrefed.mRawPtr;
-            if raw.is_null() {
-                // Compile error: pending exception set — same contract as
-                // Evaluate2 failing. Do not pollute the cache.
-                maybe_resume_unwind();
-                return Err(());
-            }
-            unsafe { jsapi::StencilAddRef(raw) }; // frame ref (cache keeps the addrefed one)
-            CACHE.with(|c| {
-                let mut cache = c.borrow_mut();
-                if cache.owner_cx != raw_cx {
-                    cache.reset(raw_cx);
+            // REQ-ENG-012: persistent XDR layer — disk lookup first (this
+            // module is the front layer of this cache). A valid entry decodes
+            // instead of recompiling (C2); any absence/corruption/staleness is
+            // a counted miss falling through to the plain compile (C3).
+            let disk_hit = unsafe { xdr_cache::load(raw_cx, script, filename, line) };
+            match disk_hit {
+                Some(decoded) => {
+                    // Same ownership shape as a fresh compile: the load
+                    // reference becomes the cache entry's, the extra ref is
+                    // the frame ref released after execution.
+                    unsafe { jsapi::StencilAddRef(decoded) };
+                    CACHE.with(|c| {
+                        let mut cache = c.borrow_mut();
+                        if cache.owner_cx != raw_cx {
+                            cache.reset(raw_cx);
+                        }
+                        cache.insert(key, script, filename, line, decoded);
+                    });
+                    decoded
                 }
-                cache.insert(key, script, filename, line, raw);
-            });
-            raw
+                None => {
+                    let mut realm = AutoRealm::new_from_handle(cx, glob);
+                    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+                    let options =
+                        CompileOptionsWrapper::new(realm_cx, filename.to_owned(), line);
+                    let mut source = transform_str_to_source_text(script);
+                    let addrefed = unsafe {
+                        wrappers2::CompileGlobalScriptToStencil(realm_cx, options.ptr, &mut source)
+                    };
+                    let raw = addrefed.mRawPtr;
+                    if raw.is_null() {
+                        // Compile error: pending exception set — same contract as
+                        // Evaluate2 failing. Do not pollute the cache.
+                        maybe_resume_unwind();
+                        return Err(());
+                    }
+                    // Persist for the next process (atomic C4 write inside;
+                    // every failure path is counted + skipped, never fatal).
+                    unsafe { xdr_cache::store(raw_cx, raw, script, filename, line) };
+                    unsafe { jsapi::StencilAddRef(raw) }; // frame ref (cache keeps the addrefed one)
+                    CACHE.with(|c| {
+                        let mut cache = c.borrow_mut();
+                        if cache.owner_cx != raw_cx {
+                            cache.reset(raw_cx);
+                        }
+                        cache.insert(key, script, filename, line, raw);
+                    });
+                    raw
+                }
+            }
         }
     };
 

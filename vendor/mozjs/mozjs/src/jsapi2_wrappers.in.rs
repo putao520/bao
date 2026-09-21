@@ -345,6 +345,11 @@ wrap!(jsapi: pub fn DecodeStencil(cx: &JSContext, options: *const ReadOnlyDecode
 // (jsapi::SetProcessBuildIdOp) — EncodeStencil's version check invokes it
 // unconditionally and SM calls a NULL fn pointer (SIGSEGV) otherwise.
 wrap!(jsapi: pub fn EncodeStencil(cx: &JSContext, stencil: *mut Stencil, buffer: *mut TranscodeBuffer) -> TranscodeResult);
+// BAO PATCH (REQ-ENG-012 stage2): XDR version/staleness tag — un-blacklisted in
+// mozjs-sys build.rs. `buildId` is an opaque BuildIdCharVector from glue's
+// CreateBuildIdCharVector (bindgen degrades the Vector type to `u8`).
+wrap!(jsapi: pub fn GetScriptTranscodingBuildId(buildId: *mut BuildIdCharVector) -> bool);
+wrap!(jsapi: pub fn GetOptimizedEncodingBuildId(buildId: *mut BuildIdCharVector) -> bool);
 wrap!(jsapi: pub fn StartCollectingDelazifications(cx: &JSContext, script: Handle<*mut JSScript>, stencil: *mut Stencil, result: *mut CollectDelazificationsResult) -> bool);
 wrap!(jsapi: pub fn StartCollectingDelazifications1(cx: &JSContext, module: Handle<*mut JSObject>, stencil: *mut Stencil, result: *mut CollectDelazificationsResult) -> bool);
 wrap!(jsapi: pub fn FinishCollectingDelazifications(cx: &mut JSContext, script: Handle<*mut JSScript>, stencilOut: *mut *mut Stencil) -> bool);
