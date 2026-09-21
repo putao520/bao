@@ -19,6 +19,13 @@ bun_sys = { path = "../sys", version = "^0.2.0" }
 bun_dns = { path = "../dns", version = "^0.2.0" }
 libc = "0.2"
 
+# Windows arm of the Bun__addrinfo_* seam: the ADDRINFOA socket-type mirror +
+# AF_*/SOCK_*/IPPROTO_* consts (the resolution itself is GetAddrInfoW, declared
+# locally in addrinfo.rs). Target-gated: linux/macos dep graph unchanged.
+# bun_windows_sys is a tier-0 no_std leaf — satisfies the tier-0 rule above.
+[target.'cfg(target_os = "windows")'.dependencies]
+bun_windows_sys = { path = "../windows_sys", version = "0.1.0" }
+
 [dev-dependencies]
 bao_native_stubs = { path = "../bao_native_stubs", version = "0.1.0" }
 # Test-only: referencing force_link propagates liblsquic.a's native link

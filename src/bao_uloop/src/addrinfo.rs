@@ -49,6 +49,30 @@
 //! dedupe bumps refs per extra handout. When refs reaches 0 the request box
 //! is freed — this happens either in `freeRequest` or in `complete`,
 //! whichever releases the last reference.
+//!
+//! # Windows arm (GetAddrInfoW pipeline) — ABI 对照
+//!
+//! The seam contract is byte-identical on both platforms; only the resolution
+//! backend and the C-layout namespace differ. Per-item map:
+//!
+//! | item | POSIX | Windows | parity note |
+//! |---|---|---|---|
+//! | `Bun__addrinfo_get/set/cancel/freeRequest/getRequestResult/registerQuic(2)` | shared cache + worker + refcount machinery | **identical machinery** (all platform-independent in this file) | return values / callback timing / refcount rules unchanged |
+//! | resolver backend | `getaddrinfo` (blocking, on the worker thread) | `GetAddrInfoW` (blocking, same worker thread) | sync call on our own worker both sides — no async-cancel surface exists at this layer, so there is no cancellation-semantics divergence |
+//! | name encoding | UTF-8 bytes | UTF-16 = widening of the same UTF-8 bytes | ws2_32's ANSI `getaddrinfo` export would decode non-ASCII via the codepage; the W API keeps byte-faithful behavior for IDN names |
+//! | `hints` | `AF_UNSPEC` + `SOCK_STREAM` + `AI_ADDRCONFIG` | same flags (winsock values; `AI_ADDRCONFIG` is 0x400 on windows vs glibc's 0x20 — each namespace is self-consistent) | semantic parity: only families with a configured adapter |
+//! | ADDRCONFIG retry | once without `AI_ADDRCONFIG` on `EAI_NONAME` | once without `AI_ADDRCONFIG` on `WSANO_DATA` (11004) — ws2tcpip.h `#define EAI_NONAME WSANO_DATA` | same trigger, per-platform error namespace (`EAI_*` vs WSA codes; `GetAddrInfoW` returns the WSA code directly) |
+//! | error channel to C | `EAI_*` code in `addrinfo_result.error` | WSA code in the same field | C interprets the code per its own platform's namespace (same split as upstream bun's posix/windows backends) |
+//! | result layout | glibc/musl `struct addrinfo` (`socklen_t ai_addrlen`, `ai_addr` before `ai_canonname`) | winsock `ADDRINFOA` (`size_t ai_addrlen`, `ai_canonname` before `ai_addr`) | **layouts differ** — `addrinfo` is cfg-aliased per platform so `addrinfo_result_entry` always matches the C TU's definition (C gets the type from winsock headers on windows) |
+//! | `ai_canonname` | nulled by `link_chain` | nulled identically | no `ADDRINFOW`-wide canonname ever escapes (freeing-side safe: we copy addresses into our own entries and `FreeAddrInfoW` the chain immediately) |
+//! | chain release | `freeaddrinfo` | `FreeAddrInfoW` | 1:1 |
+//! | cache (bun_dns) + TTL cap | shared | shared, byte-identical path (`resolve_worker` → `dns_cache::insert`) | `IpAddr` values are platform-neutral |
+//!
+//! Upstream reference: bun's windows DNS face (`src/runtime/dns_jsc/dns.rs`
+//! `lib_uv_backend`) also resolves via the winsock wide pipeline (through
+//! libuv's `uv_getaddrinfo`); here the same wide API is called directly on
+//! this module's own worker, which is what keeps the seam's threaded
+//! get/handout/cancel contract unchanged.
 
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -62,6 +86,85 @@ use bun_dns::cache::{self as dns_cache, IpAddr};
 use core::ffi::c_char;
 use core::ffi::c_int;
 use core::ffi::c_void;
+
+// ───────── platform socket-type namespace ────────────────────────────────
+//
+// POSIX: libc (glibc/musl `struct addrinfo`, socklen_t addrlen). Windows: the
+// ADDRINFOA mirror in `bun_windows_sys::ws2_32` — there C's `struct addrinfo`
+// comes from winsock (winsock2.h/ws2tcpip.h), whose ADDRINFOA puts
+// `ai_addrlen: size_t` before `ai_canonname`/`ai_addr`, so the C-facing
+// `addrinfo_result_entry` layout must be the winsock shape on that target.
+// The mirror's field names deliberately match the POSIX names, which keeps
+// every producer/consumer below cfg-blind. See the ABI 对照 table in the
+// module docs for the per-platform semantic map.
+#[cfg(not(windows))]
+use libc::{
+    addrinfo, sockaddr_in, sockaddr_in6, sockaddr_storage, AI_ADDRCONFIG, AF_INET, AF_INET6,
+    AF_UNSPEC, EAI_NONAME, IPPROTO_TCP, SOCK_STREAM,
+};
+#[cfg(not(windows))]
+use libc::{sa_family_t, socklen_t};
+#[cfg(windows)]
+use bun_windows_sys::ws2_32::{
+    addrinfo, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6, AF_UNSPEC,
+    IPPROTO_TCP, SOCK_STREAM,
+};
+
+/// `ai_addrlen` field type: `socklen_t` (u32) in the POSIX addrinfo, `size_t`
+/// in winsock's ADDRINFOA.
+#[cfg(windows)]
+#[allow(non_camel_case_types)] // mirrors the C type name
+type socklen_t = usize;
+/// `sa_family` field type: u16 on both (libc's `sa_family_t` does not exist
+/// for windows targets; winsock's ADDRESS_FAMILY is u16).
+#[cfg(windows)]
+#[allow(non_camel_case_types)] // mirrors the C type name
+type sa_family_t = u16;
+
+/// Windows resolution backend: `GetAddrInfoW`/`FreeAddrInfoW` (ws2_32).
+///
+/// The W variants are the byte-faithful windows counterparts of POSIX
+/// `getaddrinfo`/`freeaddrinfo`: ws2_32 also exports an ANSI `getaddrinfo`,
+/// but that one decodes non-ASCII hostnames through the ANSI codepage, while
+/// our C callers hand over UTF-8 bytes (URL host) — the wide API fed the
+/// UTF-16 widening of those bytes keeps POSIX-facing semantics for IDN names.
+#[cfg(windows)]
+mod win_dns {
+    use core::ffi::c_int;
+
+    /// `ADDRINFOW` (`ws2tcpip.h`): `GetAddrInfoW`'s node type. Layout is
+    /// identical to the ADDRINFOA mirror (`addrinfo` in this file's scope);
+    /// only `ai_canonname` differs (`PWSTR` there). We never read canonname —
+    /// the POSIX arm nulls it in `link_chain` too — so the returned chain is
+    /// traversed through the A-layout alias.
+    pub type ADDRINFOW = super::addrinfo;
+
+    /// `AI_ADDRCONFIG` (`ws2tcpip.h`). Same semantic as POSIX's (resolve only
+    /// families the local configuration can use); a different numeric value
+    /// than glibc's — each platform uses its own constant namespace.
+    pub const AI_ADDRCONFIG: c_int = 0x400;
+    /// windows' `EAI_NONAME`: ws2tcpip.h does `#define EAI_NONAME WSANO_DATA`
+    /// (11004). `GetAddrInfoW` returns the WSA code directly (not via
+    /// WSAGetLastError), so this is the retry trigger's window counterpart.
+    pub const EAI_NONAME: c_int = 11004;
+
+    #[link(name = "ws2_32")]
+    unsafe extern "system" {
+        /// 0 on success; otherwise the WSA error code. Node/service are
+        /// NUL-terminated UTF-16; service NULL mirrors the POSIX arm.
+        pub unsafe fn GetAddrInfoW(
+            pwNodeName: *const u16,
+            pwServiceName: *const u16,
+            pHints: *const ADDRINFOW,
+            ppResult: *mut *mut ADDRINFOW,
+        ) -> c_int;
+        /// Frees a chain returned by `GetAddrInfoW`.
+        pub unsafe fn FreeAddrInfoW(pAddrInfo: *mut ADDRINFOW);
+    }
+}
+
+#[cfg(windows)]
+use win_dns::{AI_ADDRCONFIG, EAI_NONAME};
 
 /// Numeric-literal fast path for the connect seam (absorbed oven-sh/bun
 /// 4af1842c8c, C `try_parse_ip`): fills `out` with `host`:`port` when `host`
@@ -77,7 +180,7 @@ use core::ffi::c_void;
 pub unsafe extern "C" fn Bun__parseIpAddress(
     host: *const c_char,
     port: u16,
-    out: *mut libc::sockaddr_storage,
+    out: *mut sockaddr_storage,
 ) -> c_int {
     if host.is_null() || out.is_null() {
         return 0;
@@ -108,15 +211,15 @@ pub unsafe extern "C" fn Bun__parseIpAddress(
     match ip {
         std::net::IpAddr::V4(octets) => {
             // SAFETY: sockaddr_storage is at least sockaddr_in-sized and aligned.
-            let sin = unsafe { &mut *out.cast::<libc::sockaddr_in>() };
-            sin.sin_family = libc::AF_INET as libc::sa_family_t;
+            let sin = unsafe { &mut *out.cast::<sockaddr_in>() };
+            sin.sin_family = AF_INET as sa_family_t;
             sin.sin_port = port.to_be();
             sin.sin_addr.s_addr = u32::from_ne_bytes(octets.octets());
         }
         std::net::IpAddr::V6(octets) => {
             // SAFETY: sockaddr_storage is at least sockaddr_in6-sized and aligned.
-            let sin6 = unsafe { &mut *out.cast::<libc::sockaddr_in6>() };
-            sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            let sin6 = unsafe { &mut *out.cast::<sockaddr_in6>() };
+            sin6.sin6_family = AF_INET6 as sa_family_t;
             sin6.sin6_port = port.to_be();
             sin6.sin6_addr.s6_addr = octets.octets();
             sin6.sin6_scope_id = scope_id;
@@ -132,8 +235,8 @@ pub unsafe extern "C" fn Bun__parseIpAddress(
 
 #[repr(C)]
 struct AddrInfoResultEntry {
-    info: libc::addrinfo,
-    storage: libc::sockaddr_storage,
+    info: addrinfo,
+    storage: sockaddr_storage,
 }
 
 #[repr(C)]
@@ -438,46 +541,99 @@ fn resolve_worker(worker_req: RequestPtr, key: Box<str>) {
 /// raw address list (for the shared cache), and a getaddrinfo error code
 /// (0 = success; EAI_* otherwise).
 fn resolve_getaddrinfo(host: &CStr, port: u16) -> (Vec<AddrInfoResultEntry>, Vec<IpAddr>, c_int) {
-    let mut hints: libc::addrinfo = unsafe { core::mem::zeroed() };
-    hints.ai_family = libc::AF_UNSPEC;
-    hints.ai_socktype = libc::SOCK_STREAM;
-    hints.ai_flags = libc::AI_ADDRCONFIG;
+    let mut hints: addrinfo = unsafe { core::mem::zeroed() };
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
 
-    let mut result: *mut libc::addrinfo = core::ptr::null_mut();
+    // POSIX: `getaddrinfo(host, service=NULL)` over the NUL-terminated UTF-8
+    // bytes. Windows: `GetAddrInfoW` over the UTF-16 widening of those bytes
+    // (see win_dns docs for why the W entry point, not ws2_32's ANSI export).
+    #[cfg(windows)]
+    let host_w: Vec<u16> = {
+        let mut w: Vec<u16> = String::from_utf8_lossy(host.to_bytes()).encode_utf16().collect();
+        w.push(0);
+        w
+    };
+    #[cfg(windows)]
+    let host_arg = host_w.as_ptr();
+    #[cfg(not(windows))]
+    let host_arg = host.as_ptr();
+
+    let mut result: *mut addrinfo = core::ptr::null_mut();
     // SAFETY: host is NUL-terminated; hints/result are valid pointers.
     let mut rc =
-        unsafe { libc::getaddrinfo(host.as_ptr(), core::ptr::null(), &hints, &mut result) };
+        unsafe { getaddrinfo(host_arg, core::ptr::null(), &hints, &mut result) };
 
     // Upstream retries once without AI_ADDRCONFIG on EAI_NONAME (an
     // IPv6-only box can make ADDRCONFIG suppress the only usable family).
-    if rc == libc::EAI_NONAME {
-        hints.ai_flags &= !libc::AI_ADDRCONFIG;
+    // Windows: the same trigger — GetAddrInfoW reports the WSA code directly,
+    // and `EAI_NONAME` is `WSANO_DATA` (11004) there.
+    if rc == EAI_NONAME {
+        hints.ai_flags &= !AI_ADDRCONFIG;
         // SAFETY: same as above.
-        rc = unsafe { libc::getaddrinfo(host.as_ptr(), core::ptr::null(), &hints, &mut result) };
+        rc = unsafe { getaddrinfo(host_arg, core::ptr::null(), &hints, &mut result) };
     }
 
     if rc != 0 || result.is_null() {
         if !result.is_null() {
-            // SAFETY: result was allocated by getaddrinfo.
-            unsafe { libc::freeaddrinfo(result) };
+            // SAFETY: result was allocated by getaddrinfo/GetAddrInfoW.
+            unsafe { freeaddrinfo(result) };
         }
         return (Vec::new(), Vec::new(), rc);
     }
 
-    // SAFETY: result is a live chain allocated by getaddrinfo.
+    // SAFETY: result is a live chain allocated by getaddrinfo/GetAddrInfoW.
     let (mut entries, mut addrs) = unsafe { collect_entries(result, port) };
     // SAFETY: done with the chain.
-    unsafe { libc::freeaddrinfo(result) };
+    unsafe { freeaddrinfo(result) };
     interleave_families(&mut entries, &mut addrs);
     link_chain(&mut entries);
     (entries, addrs, 0)
+}
+
+/// `freeaddrinfo`/`FreeAddrInfoW` — release a chain returned by the
+/// platform's resolve call.
+#[cfg(not(windows))]
+unsafe fn freeaddrinfo(res: *mut addrinfo) {
+    // SAFETY: `res` is a live getaddrinfo chain per the caller.
+    unsafe { libc::freeaddrinfo(res) };
+}
+#[cfg(windows)]
+unsafe fn freeaddrinfo(res: *mut addrinfo) {
+    // SAFETY: `res` is a live GetAddrInfoW chain per the caller.
+    unsafe { win_dns::FreeAddrInfoW(res) };
+}
+
+/// The platform resolve call: POSIX `getaddrinfo` / windows `GetAddrInfoW`.
+///
+/// SAFETY: `host_arg` is the platform-native NUL-terminated name
+/// (`*const c_char` / `*const u16`); hints/result are valid pointers.
+#[cfg(not(windows))]
+unsafe fn getaddrinfo(
+    host_arg: *const c_char,
+    service: *const c_char,
+    hints: &addrinfo,
+    result: &mut *mut addrinfo,
+) -> c_int {
+    libc::getaddrinfo(host_arg, service, hints, result)
+}
+#[cfg(windows)]
+unsafe fn getaddrinfo(
+    host_arg: *const u16,
+    service: *const u16,
+    hints: &addrinfo,
+    result: &mut *mut addrinfo,
+) -> c_int {
+    // SAFETY: host_arg/service are NUL-terminated UTF-16; hints/result valid.
+    unsafe { win_dns::GetAddrInfoW(host_arg, service, hints, result) }
 }
 
 /// Copy a getaddrinfo chain into C-layout entries + raw cache addrs.
 ///
 /// SAFETY: `head` must be a live getaddrinfo result chain.
 unsafe fn collect_entries(
-    head: *mut libc::addrinfo,
+    head: *mut addrinfo,
     port: u16,
 ) -> (Vec<AddrInfoResultEntry>, Vec<IpAddr>) {
     let mut entries: Vec<AddrInfoResultEntry> = Vec::new();
@@ -511,37 +667,37 @@ unsafe fn collect_entries(
 /// SAFETY: `ai.ai_addr` must be non-null and valid for `ai.ai_addrlen`, and
 /// `ai.ai_family` must accurately describe it.
 unsafe fn copy_sockaddr(
-    ai: &libc::addrinfo,
+    ai: &addrinfo,
     entry: &mut AddrInfoResultEntry,
     port: u16,
 ) -> Option<IpAddr> {
     match ai.ai_family {
-        libc::AF_INET => {
+        AF_INET => {
             // SAFETY: family-checked; sockaddr_in fits sockaddr_storage.
-            let src = unsafe { &*(ai.ai_addr as *const libc::sockaddr_in) };
+            let src = unsafe { &*(ai.ai_addr as *const sockaddr_in) };
             // SAFETY: storage is zeroed and at least sockaddr_in-sized.
-            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<libc::sockaddr_in>()) };
-            dst.sin_family = libc::AF_INET as libc::sa_family_t;
+            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<sockaddr_in>()) };
+            dst.sin_family = AF_INET as sa_family_t;
             dst.sin_port = port.to_be();
             dst.sin_addr = src.sin_addr;
-            entry.info.ai_family = libc::AF_INET;
-            entry.info.ai_addrlen = core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            entry.info.ai_family = AF_INET;
+            entry.info.ai_addrlen = core::mem::size_of::<sockaddr_in>() as socklen_t;
             // ai_addr is NOT set here: this entry is a stack local that gets
             // moved into the Vec by value — a self-pointer assigned now would
             // dangle with the frame. link_chain re-points it at the entry's
             // own storage inside the final Vec (see its BCE note).
             Some(IpAddr::V4(src.sin_addr.s_addr.to_ne_bytes()))
         }
-        libc::AF_INET6 => {
+        AF_INET6 => {
             // SAFETY: family-checked; sockaddr_in6 fits sockaddr_storage.
-            let src = unsafe { &*(ai.ai_addr as *const libc::sockaddr_in6) };
+            let src = unsafe { &*(ai.ai_addr as *const sockaddr_in6) };
             // SAFETY: storage is zeroed and at least sockaddr_in6-sized.
-            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<libc::sockaddr_in6>()) };
-            dst.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<sockaddr_in6>()) };
+            dst.sin6_family = AF_INET6 as sa_family_t;
             dst.sin6_port = port.to_be();
             dst.sin6_addr = src.sin6_addr;
-            entry.info.ai_family = libc::AF_INET6;
-            entry.info.ai_addrlen = core::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+            entry.info.ai_family = AF_INET6;
+            entry.info.ai_addrlen = core::mem::size_of::<sockaddr_in6>() as socklen_t;
             // ai_addr intentionally not set — see the AF_INET arm's note.
             Some(IpAddr::V6(src.sin6_addr.s6_addr))
         }
@@ -554,7 +710,7 @@ unsafe fn copy_sockaddr(
 /// opens family-balanced candidate sockets).
 fn interleave_families(entries: &mut [AddrInfoResultEntry], addrs: &mut [IpAddr]) {
     debug_assert_eq!(entries.len(), addrs.len());
-    let mut want = libc::AF_INET6;
+    let mut want = AF_INET6;
     for idx in 0..entries.len() {
         if entries[idx].info.ai_family == want {
             want = other_family(want);
@@ -572,10 +728,10 @@ fn interleave_families(entries: &mut [AddrInfoResultEntry], addrs: &mut [IpAddr]
 }
 
 fn other_family(f: c_int) -> c_int {
-    if f == libc::AF_INET6 {
-        libc::AF_INET
+    if f == AF_INET6 {
+        AF_INET
     } else {
-        libc::AF_INET6
+        AF_INET6
     }
 }
 
@@ -707,25 +863,25 @@ fn entry_from_ip(ip: &IpAddr, port: u16) -> AddrInfoResultEntry {
     match ip {
         IpAddr::V4(octets) => {
             // SAFETY: storage is zeroed and at least sockaddr_in-sized.
-            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<libc::sockaddr_in>()) };
-            dst.sin_family = libc::AF_INET as libc::sa_family_t;
+            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<sockaddr_in>()) };
+            dst.sin_family = AF_INET as sa_family_t;
             dst.sin_port = port.to_be();
             dst.sin_addr.s_addr = u32::from_ne_bytes(*octets);
-            entry.info.ai_family = libc::AF_INET;
-            entry.info.ai_socktype = libc::SOCK_STREAM;
-            entry.info.ai_protocol = libc::IPPROTO_TCP;
-            entry.info.ai_addrlen = core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            entry.info.ai_family = AF_INET;
+            entry.info.ai_socktype = SOCK_STREAM;
+            entry.info.ai_protocol = IPPROTO_TCP;
+            entry.info.ai_addrlen = core::mem::size_of::<sockaddr_in>() as socklen_t;
         }
         IpAddr::V6(octets) => {
             // SAFETY: storage is zeroed and at least sockaddr_in6-sized.
-            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<libc::sockaddr_in6>()) };
-            dst.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            let dst = unsafe { &mut *((&raw mut entry.storage).cast::<sockaddr_in6>()) };
+            dst.sin6_family = AF_INET6 as sa_family_t;
             dst.sin6_port = port.to_be();
             dst.sin6_addr.s6_addr = *octets;
-            entry.info.ai_family = libc::AF_INET6;
-            entry.info.ai_socktype = libc::SOCK_STREAM;
-            entry.info.ai_protocol = libc::IPPROTO_TCP;
-            entry.info.ai_addrlen = core::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+            entry.info.ai_family = AF_INET6;
+            entry.info.ai_socktype = SOCK_STREAM;
+            entry.info.ai_protocol = IPPROTO_TCP;
+            entry.info.ai_addrlen = core::mem::size_of::<sockaddr_in6>() as socklen_t;
         }
     }
     // ai_addr intentionally not set here (stack-local entry moved by value):
@@ -763,7 +919,7 @@ mod tests {
         // SAFETY: entries points at entries_buf[0] (chain of one).
         let entry = unsafe { &*result.entries };
         assert!(entry.info.ai_next.is_null());
-        assert_eq!(entry.info.ai_family, libc::AF_INET);
+        assert_eq!(entry.info.ai_family, AF_INET);
         // BCE (hostname-connect hang) regression lock: ai_addr must point at
         // THIS entry's storage inside the request-owned Vec — not at a dead
         // producer stack frame. Pointer identity, plus the content it yields.
@@ -772,7 +928,7 @@ mod tests {
             (&raw const entry.storage).cast::<u8>()
         ));
         // SAFETY: ai_addr points at entry.storage (identity-checked above).
-        let sa = unsafe { &*(entry.info.ai_addr as *const libc::sockaddr_in) };
+        let sa = unsafe { &*(entry.info.ai_addr as *const sockaddr_in) };
         assert_eq!(sa.sin_addr.s_addr, u32::from_ne_bytes([127, 0, 0, 1]));
         assert_eq!(sa.sin_port, 8080u16.to_be());
         // SAFETY: release the handout (single ref → freed).
@@ -801,11 +957,11 @@ mod tests {
         }
         // Content survives through the published pointers: v4 first.
         // SAFETY: identity-checked above; family-checked here.
-        let sa4 = unsafe { &*(entries[0].info.ai_addr as *const libc::sockaddr_in) };
+        let sa4 = unsafe { &*(entries[0].info.ai_addr as *const sockaddr_in) };
         assert_eq!(sa4.sin_addr.s_addr, u32::from_ne_bytes([10, 0, 0, 1]));
         assert_eq!(sa4.sin_port, 80u16.to_be());
         // SAFETY: same for the v6 entry.
-        let sa6 = unsafe { &*(entries[1].info.ai_addr as *const libc::sockaddr_in6) };
+        let sa6 = unsafe { &*(entries[1].info.ai_addr as *const sockaddr_in6) };
         assert_eq!(sa6.sin6_addr.s6_addr, [0x20; 16]);
         assert_eq!(sa6.sin6_port, 443u16.to_be());
     }
@@ -840,7 +996,7 @@ mod tests {
         assert_eq!(req, req2);
         // Simulate worker completion (releases worker+map refs) and drop the
         // map entry just like resolve_worker does.
-        let notify = complete(req, Vec::new(), libc::EAI_NONAME);
+        let notify = complete(req, Vec::new(), EAI_NONAME);
         assert!(notify.is_empty());
         inflight().lock().unwrap().remove(&key);
         // SAFETY: two handouts out → two frees (refs 3 + 1 dedupe - 2
@@ -881,7 +1037,7 @@ mod tests {
         // SAFETY: release handout; then simulate worker completion (frees:
         // 3 refs - 1 handout free - 2 worker/map = 0).
         unsafe { Bun__addrinfo_freeRequest(req as *mut c_void, 0) };
-        let notify = complete(req, Vec::new(), libc::EAI_NONAME);
+        let notify = complete(req, Vec::new(), EAI_NONAME);
         assert!(notify.is_empty());
         inflight().lock().unwrap().remove(&key);
     }
@@ -942,14 +1098,14 @@ mod tests {
             IpAddr::V6([0x20; 16]),
         ];
         interleave_families(&mut entries, &mut addrs);
-        assert_eq!(entries[0].info.ai_family, libc::AF_INET6);
-        assert_eq!(entries[1].info.ai_family, libc::AF_INET);
-        assert_eq!(entries[2].info.ai_family, libc::AF_INET);
+        assert_eq!(entries[0].info.ai_family, AF_INET6);
+        assert_eq!(entries[1].info.ai_family, AF_INET);
+        assert_eq!(entries[2].info.ai_family, AF_INET);
         assert!(matches!(addrs[0], IpAddr::V6(_)));
         link_chain(&mut entries);
         // SAFETY: chain links point inside the vec.
         unsafe {
-            let next1 = (&raw mut entries[1].info) as *mut libc::addrinfo;
+            let next1 = (&raw mut entries[1].info) as *mut addrinfo;
             assert_eq!(entries[0].info.ai_next, next1);
             assert!(entries[2].info.ai_next.is_null());
         }
