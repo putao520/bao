@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bao_engine",
  "bun_uws",
