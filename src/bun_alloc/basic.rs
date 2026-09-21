@@ -12,7 +12,43 @@ use crate::{Alignment, AllocatorVTable, StdAllocator};
 
 pub(crate) fn default_allocator_free(_: *mut c_void, buf: &mut [u8], _: Alignment, _: usize) {
     // SAFETY: Allocator vtable invariant — `buf` was allocated by the default allocator.
+    #[cfg(windows)]
+    // On Windows every default-allocator vtable block comes from the
+    // `default_alloc` aligned trio (`_aligned_malloc`), so it must be freed
+    // with the CRT's paired `_aligned_free` — plain `free` on such a block
+    // (which expects the base pointer) is UB.
+    unsafe { libc::aligned_free(buf.as_mut_ptr().cast()) }
+    #[cfg(not(windows))]
     unsafe { default_alloc::free(buf.as_mut_ptr().cast()) }
+}
+
+/// Usable size of a block produced by the `default_alloc` aligned trio.
+///
+/// On Windows the trio allocates through `_aligned_malloc`, whose blocks can
+/// only be size-queried with `_aligned_msize` — passing one to `_msize` is
+/// UB — and that CRT fn requires the exact alignment (and offset) the block
+/// was allocated with, so the same pointer-size round-up as
+/// `default_alloc::malloc_aligned` is applied here. libc does not declare
+/// `_aligned_msize`; this local CRT extern adds no dependency.
+#[cfg(windows)]
+unsafe fn aligned_usable_size(ptr: *mut c_void, align: usize) -> usize {
+    unsafe extern "C" {
+        fn _aligned_msize(memblock: *mut c_void, alignment: usize, offset: usize) -> usize;
+    }
+    if ptr.is_null() {
+        return 0;
+    }
+    let align = align.max(core::mem::size_of::<*mut c_void>());
+    // SAFETY: caller contract — `ptr` is a live trio block allocated with `align`.
+    unsafe { _aligned_msize(ptr, align, 0) }
+}
+
+/// Unix trio blocks come from plain `malloc`/`posix_memalign`, both
+/// size-agnostic under `default_alloc::usable_size`; the alignment is unused.
+#[cfg(not(windows))]
+unsafe fn aligned_usable_size(ptr: *mut c_void, _align: usize) -> usize {
+    // SAFETY: caller contract — `ptr` is a non-null default-allocator block.
+    unsafe { default_alloc::usable_size(ptr) }
 }
 
 pub(crate) struct DefaultAllocator;
@@ -25,7 +61,7 @@ impl DefaultAllocator {
         {
             if !ptr.is_null() {
                 // SAFETY: ptr is non-null and was just returned by the default allocator
-                let usable = unsafe { default_alloc::usable_size(ptr) };
+                let usable = unsafe { aligned_usable_size(ptr, alignment.to_byte_units()) };
                 if usable < len && !ptr.is_null() {
                     panic!(
                         "default allocator: allocated size is too small: {} < {}",
@@ -106,7 +142,7 @@ impl ZAllocator {
         {
             if !ptr.is_null() {
                 // SAFETY: ptr is non-null and was just returned by the default allocator
-                let usable = unsafe { default_alloc::usable_size(ptr) };
+                let usable = unsafe { aligned_usable_size(ptr, alignment.to_byte_units()) };
                 if usable < len {
                     panic!(
                         "default allocator: allocated size is too small: {} < {}",
@@ -119,9 +155,9 @@ impl ZAllocator {
         ptr.cast::<u8>()
     }
 
-    fn aligned_alloc_size(ptr: *mut u8) -> usize {
+    fn aligned_alloc_size(ptr: *mut u8, align: usize) -> usize {
         // SAFETY: ptr was allocated by the default allocator
-        unsafe { default_alloc::usable_size(ptr.cast()) }
+        unsafe { aligned_usable_size(ptr.cast(), align) }
     }
 
     fn alloc_with_z_allocator(
@@ -136,7 +172,7 @@ impl ZAllocator {
     fn resize_with_z_allocator(
         _: *mut c_void,
         buf: &mut [u8],
-        _: Alignment,
+        alignment: Alignment,
         new_len: usize,
         _: usize,
     ) -> bool {
@@ -144,7 +180,7 @@ impl ZAllocator {
             return true;
         }
 
-        let full_len = Self::aligned_alloc_size(buf.as_mut_ptr());
+        let full_len = Self::aligned_alloc_size(buf.as_mut_ptr(), alignment.to_byte_units());
         if new_len <= full_len {
             return true;
         }

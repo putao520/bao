@@ -540,6 +540,45 @@ pub mod default_alloc {
         }
         new_ptr
     }
+
+    // Windows: the CRT `_aligned_*` family. Unlike unix there is no
+    // over-aligned allocation that plain `free` accepts, so the trio routes
+    // EVERY block through `_aligned_malloc` — one block kind, paired
+    // throughout by `basic.rs`'s windows arms (`_aligned_free` /
+    // `_aligned_msize`). Callers stay zero-aware: same signatures, the same
+    // null-on-failure error surface, and the requested alignment honored
+    // (rounded up to the pointer size, the CRT's documented floor).
+    #[cfg(windows)]
+    #[inline]
+    pub fn malloc_aligned(size: usize, align: usize) -> *mut c_void {
+        let align = align.max(core::mem::size_of::<*mut c_void>());
+        // SAFETY: `_aligned_malloc` has no input preconditions; null on failure.
+        unsafe { libc::aligned_malloc(size, align) }
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    pub fn zalloc_aligned(size: usize, align: usize) -> *mut c_void {
+        let p = malloc_aligned(size, align);
+        if !p.is_null() {
+            // SAFETY: `p` is a fresh `_aligned_malloc` block of `size` bytes.
+            unsafe { core::ptr::write_bytes(p.cast::<u8>(), 0, size) };
+        }
+        p
+    }
+
+    /// # Safety
+    /// `ptr` must be null or a live allocation from the default allocator with the given `align`.
+    #[cfg(windows)]
+    #[inline]
+    pub unsafe fn realloc_aligned(ptr: *mut c_void, new_size: usize, align: usize) -> *mut c_void {
+        let align = align.max(core::mem::size_of::<*mut c_void>());
+        // SAFETY: caller guarantees `ptr` is null or a live `_aligned_malloc`
+        // block; `_aligned_realloc` preserves the `min(old, new)` prefix and
+        // leaves the original block untouched when it fails (null return) —
+        // the same contract as the unix arm.
+        unsafe { libc::aligned_realloc(ptr, new_size, align) }
+    }
 }
 
 pub use buffer_fallback_allocator::BufferFallbackAllocator;
