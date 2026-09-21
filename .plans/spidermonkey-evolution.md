@@ -1959,3 +1959,7 @@ em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 �
 ### Windows host 批准(用户裁决 2026-09-21"可以给 WINDOWS HOST,继续")
 
 最大边界(mozjs 需 win host)解除,全构建路径开。farm 实测:KVM 硬件在/96G 闲/虚拟化栈未装/无 ISO——VM 路线差两步(装栈可做+**ISO/许可证待用户**)。ewe-win-host-design 已派(host 无关设计五节:环境规格钉版/mozjs host 门全链/农场节点集成/交叉-vs-host 分工矩阵/分阶段落地序)。七线并行:ew1/er0/ew4/exdr2/eb2s1/ewe 设计+host 来源问询(用户 AFK 待复:farm VM vs 现成机 vs 云)。
+
+### Windows 波推进:ew4 合同 1/3 落地+bun_alloc 臂派修(2026-09-21)
+
+ew4(9595dbae):libuv C 符号供给——vendor 真 fork 头(1.51.1-dev rev 验证)+2 patch 重放+build.rs 仅 windows 激活(37 .c 与上游数组逐一核对,linux 零发射,links=uv)+flags 翻译表(clang-cl 全接受);linux 双绿;windows 面两外部位等待(SDK 头=xwin/农场接合;bun_alloc msvc 臂=全 cargo 图阻断)。#34 状态评论已发未关(残面:消费臂解锁=合同 2/3)。**s1a 已派修 bun_alloc 3×E0425**(今晨 #45 波遗留,修完=msvc 面 cargo 图解锁首枚)。两处过期文档真源待后续合同(uws_sys 门消息文本/platform-support §2§4)。
