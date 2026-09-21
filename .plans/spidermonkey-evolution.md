@@ -1987,3 +1987,7 @@ ew4(9595dbae):libuv C 符号供给——vendor 真 fork 头(1.51.1-dev rev 验�
 ### ew4 合同 2/3 交付+usockets 吸收波立项(d3b51836,2026-09-21)
 
 uws_sys windows 臂结构性落地(LIBUS_USE_LIBUV 真编译路径,uv.h 直连 libuv_sys vendor 零 skew,zlib/libdeflate win 供给)+bao_uloop compile_error! 解除(windows FilePoll→bun_io::windows_event_loop 上游形);linux 回归绿;platform-support 三行+kqueue 死引用顺更;#34#35 状态评论已发(关单归 C)。**cargo windows 绿 stop**:路线 B(3 文件最小换)实测死路;路线 A 需 usockets@4af 全吸收(拖 openssl.c 2188 行分叉+TLS 签名演化,触 linux 生产 TLS 面)。**裁定:吸收立项**——em3 已派(上游基底+bao patch 三值对账+TLS 签名迁移+linux TLS 回归硬门+windows 验收=ew4 门零改动过)。附带:win-cross-env.sh(ew1 在产)/uv.h 旧镜像登记 FFI 和解合同域。
+
+### W1.5 env 契约产品化(03c1f671,2026-09-21)
+
+wsroot=/opt/bao-win-cross(634M 全断言过+无空格 symlink);`scripts/win-cross-env.sh`(偏离 tools/ 声明采纳:scripts/=仓库惯例[clang-musl 先例]);端到端:lsquic/boringssl/libuv 三 C 层 msvc check RC=0;bun_alloc 已在树确认=Layer-0 消。s1a 链式续进(crash_handler/zlib→下游+声明线回归探针条件成立);em3 路径修正已达。
