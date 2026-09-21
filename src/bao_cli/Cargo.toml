@@ -9,7 +9,7 @@ license.workspace = true
 bun_runtime.workspace = true
 bun_core.workspace = true
 bao-browser = { path = "../bao_browser", version = "^0.3.0" }
-bao_stealth = { path = "../bao_stealth", version = "^0.2.0" }
+bao_stealth = { path = "../bao_stealth", version = "^0.3.0" }
 bao_bundler = { path = "../bao_bundler", version = "^0.2.0" }
 bun_ast = { path = "../ast", version = "^0.2.0" }
 bun_options_types = { path = "../options_types", version = "^0.2.0" }
