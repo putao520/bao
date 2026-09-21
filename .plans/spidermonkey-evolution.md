@@ -2039,3 +2039,7 @@ media-gstreamer 移 target(not(windows)) 依赖——msvc 树 glib/gst **0 命�
 ### W2 断点 3 终态:libffi 5.2 升级弃 fork(4e2f7209,ew4,2026-09-22)
 
 升 libffi 5.2.0+sys 4.2.2(上游同根修法四点全已修=纯消费,逐点对照表在案);fork 整树删除零残差。API 唯一真破缺(middle::Arg 'argument 生命周期)→FfiNullPtr 'static 载体。**CFLAGS_<triple> 通道裁定追认**(-Wno-incompatible-pointer-types 治上游 dlmalloc clang-cl 指针严格性;零 fork,上游 bun 全局 flags 同姿态;fork 层备选在案)。env 契约部分固化 .cargo/config.toml [env](CC/CXX/AR/CFLAGS_<triple>,与 musl per-target 同形;INCLUDE/LIB 留操作方)。linux 绿+真 E2E 6/0。**W2 断点计:media✅/shim✅/libffi✅——仅余 addrinfo(ec2 在途)**。
+
+### W2 断点 4/4 闭:addrinfo(955d680c,ec2,2026-09-22)
+
+GetAddrInfoW 管线:平台 addrinfo 布局别名(windows=ADDRINFOA 镜像,producer/consumer cfg-blind)+W-API 直接喂 WSA 码(11004=EAI_NONAME 映射)+UTF-16 加宽(弃 ANSI 导出的 codepage 路径,IDN 字节忠实);58 错清零,msvc 绿(耐久根 /opt/bao-win-cross);linux 6/6+回归绿;ABI 对照表入模块文档。**附带发现(回归修复已派 em3)**:5cf54648 吸收丢 us_poll_ext 定义→bao_uloop linux 测试链接断(ec2 pure-HEAD 复现实证)。**W2 四断点全闭——workspace msvc 全绿门在跑**(后台)。
