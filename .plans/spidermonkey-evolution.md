@@ -1947,3 +1947,7 @@ em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 �
 **裁决原文**:「全量并行突进同时增加对WINDOWS交叉编译的支持与验证」。立项=用户书面裁决+#18 Platform/Build 板(REQ-DEPLOY 域,musl p3.5 先例)。
 
 **并行四线**:①ew1-win-probe(探测:153 configure winreg 门复核[#37 波 140 时代实证 configure 层不可能]→路由案 xwin-msvc/mingw-gnu/win-host→破口清单→验证口径)②er0(farm 双路由分层:mingw-w64 apt+xwin SDK 独立卷 farm-xwin+双 rustup target,clang-20 已带 clang-cl/lld-link)③exdr2(REQ-ENG-012 stage2:XDR 持久缓存本体,C1-C4 框架)④eb2s1(观测缺口微单:11 站点 Full 节流日志)。修复线挂探测 DAG 边。
+
+### 用户情报修正(Windows 阻断根因):libuv 供给路径移植未完
+
+用户原话:"上游 libuv 供应路径没移植完,我们需要自己维护并移植完**或者看看最新版上游做完了没**"。盘面实证:src/libuv_sys 在树(FFI 起步)+bao_uloop 纯 epoll 形(零 cfg(windows) 实证)——uv 消费面 Windows 分支缺失=首要根因,mozjs configure winreg 门为并行阻断之一。新增 ew3-uv-gap 线(fetch 上游 origin/main 核最新完成度+我方逐功能缺口+搬运/自维护归属);ew1 增补该情报(破口清单必含 uv 层)。
