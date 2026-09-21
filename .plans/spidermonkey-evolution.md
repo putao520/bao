@@ -1975,3 +1975,7 @@ ew4(9595dbae):libuv C 符号供给——vendor 真 fork 头(1.51.1-dev rev 验�
 ### ew1 增补:#34 供给侧实证闭合+新破口 lsquic(2026-09-21)
 
 **uv.lib 独立复现**:cargo check --target msvc+xwin 七段 INCLUDE+AR=llvm-lib → 2,093,250B/**685 个 uv_* 符号**——用户根因"libuv 供给未完"的供给侧已毕(ew4 9595dbae 与本探针互证);残余=消费侧(uws 开闸+链接,ew4 2/3 在途)。预测序回执:uws/uloop=PASS-by-design;mimalloc 门已随 #45 亡(真缺口=bun_alloc);声明线全 BLOCKED-BY bun_alloc(W1 后回归探针)。**新破口:bun_lsquic_sys msvc exit(1)**(QUIC/H3 C 层)→ W2.5 已派 ec2(上游配方先查;无配方=vendor-vs-砍面报 C 裁)。**W1.5**(xwin env 契约固化 farm,双 lib 依赖)已增补 er0。DAG 改版入案卷(§③A 新增)。
+
+### ewe 案卷 v2 终态(实靶+ew1 校准,231 行)
+
+§3 实靶 .200(SSH 唯一控制面,SMB 备选大产物;**授权=W0 阻塞前置**——用户授权公钥前 host 面不可开跑);§4 矩阵双态(交叉承载全构建[条件性];host=运行时验证真机+备胎,**Supported 实证链=交叉构建证明+真机运行证明缺一不可**);§5 W0 授权→W1 交叉收敛(合流 ew1,含 bcm/bun_alloc 破口)→W2 交叉全构建门→W3 真机运行验证→W4 host 备胎(并行)→W5 收口;§6 风险+4 行(xwin 钉版双口径裁主钉=ew1 实测 0.10)。
