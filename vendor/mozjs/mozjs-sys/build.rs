@@ -506,7 +506,7 @@ fn cbindgen_bidi(build_dir: &Path) {
 
 /// #47: last `max` lines of a captured stream, for panic messages that must be
 /// self-contained without dumping multi-megabyte build logs.
-fn tail_lines(s: &str, max: usize) -> String {
+pub(crate) fn tail_lines(s: &str, max: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let start = lines.len().saturating_sub(max);
     lines[start..].join("\n")
@@ -1444,7 +1444,7 @@ mod archive {
                 "`gh attestation verify` failed with {}\n\
                  --- stderr (last 20 lines) ---\n{}",
                 output.status,
-                tail_lines(&String::from_utf8_lossy(&output.stderr), 20),
+                crate::tail_lines(&String::from_utf8_lossy(&output.stderr), 20),
             )),
             Ok(_) => None,
         };
@@ -1474,8 +1474,8 @@ mod archive {
         if !archive_path.exists() {
             eprintln!("Trying to download prebuilt mozjs static library from Github Releases");
             let curl_start = Instant::now();
-            let mut curl = Command::new("curl")
-                .arg("-L")
+            let mut curl = Command::new("curl");
+            curl.arg("-L")
                 .arg("-f")
                 .arg("-s")
                 .arg("-o")
