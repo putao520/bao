@@ -275,12 +275,18 @@ impl SocketGroup {
         }
     }
 
+    /// Adopt a raw fd as a socket in this group. `options` carries the
+    /// `LIBUS_SOCKET_*` option bits (absorbed oven-sh/bun 4af1842c8c grew the
+    /// parameter; `LIBUS_SOCKET_OPEN_PAUSED` registers the adopted socket
+    /// paused — plain-TCP only, ignored with ssl_ctx); `ipc` selects the
+    /// SCM_RIGHTS fd-passing path.
     pub fn from_fd(
         &mut self,
         kind: SocketKind,
         ssl_ctx: Option<*mut SslCtx>,
         socket_ext_size: c_int,
         fd: LIBUS_SOCKET_DESCRIPTOR,
+        options: c_int,
         ipc: bool,
     ) -> *mut us_socket_t {
         // SAFETY: forwarding to C.
@@ -291,6 +297,7 @@ impl SocketGroup {
                 ssl_ctx.unwrap_or(ptr::null_mut()),
                 socket_ext_size,
                 fd,
+                options,
                 ipc as c_int,
             )
         }
@@ -376,6 +383,7 @@ unsafe extern "C" {
         ssl_ctx: *mut SslCtx,
         socket_ext_size: c_int,
         fd: LIBUS_SOCKET_DESCRIPTOR,
+        options: c_int,
         ipc: c_int,
     ) -> *mut us_socket_t;
     fn us_socket_pair(

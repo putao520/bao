@@ -1314,6 +1314,7 @@ mod ipc_recvmsg_tests {
             ssl_ctx: *mut c_void,
             socket_ext_size: c_int,
             fd: c_int,
+            options: c_int,
             ipc: c_int,
         ) -> *mut us_socket_t;
     }
@@ -1416,6 +1417,10 @@ mod ipc_recvmsg_tests {
         group.init(loop_, Some(&VTABLE), ptr::null_mut());
 
         // Adopt sv[0] as an IPC socket (is_ipc → loop.c recvmsg path).
+        // Absorbed oven-sh/bun 4af1842c8c: from_fd grew the `options` slot
+        // before `ipc` — leaving it out slid `1` into options (an unknown
+        // flag bit) and fed the ipc discriminator register garbage, so the
+        // recvmsg path never armed and on_fd never fired.
         let sock = unsafe {
             us_socket_from_fd(
                 group,
@@ -1423,7 +1428,8 @@ mod ipc_recvmsg_tests {
                 ptr::null_mut(),
                 0,
                 sv[0],
-                1,
+                0, // options: no LIBUS_SOCKET_* bits
+                1, // ipc
             )
         };
         assert!(!sock.is_null(), "us_socket_from_fd failed");

@@ -338,9 +338,6 @@ unsafe extern "C" {
     /// Provided by libusockets.a.
     pub unsafe fn us_internal_poll_set_type(p: *mut BaoPoll, poll_type: c_int);
 
-    /// Return a pointer to the trailing extension bytes. Provided by libusockets.a.
-    pub unsafe fn us_poll_ext(p: *mut BaoPoll) -> *mut c_void;
-
     /// Register a poll into the epoll set with the given events.
     /// Provided by libusockets.a.
     pub unsafe fn us_poll_start(p: *mut BaoPoll, loop_: *mut Loop, events: c_int);
@@ -369,6 +366,19 @@ unsafe extern "C" {
     /// Read from the poll's fd (eventfd/timerfd) to re-arm level-triggered.
     /// Provided by libusockets.a.
     pub unsafe fn us_internal_accept_poll_event(p: *mut BaoPoll) -> usize;
+}
+
+/// Return a pointer to the trailing extension bytes.
+///
+/// Local again (the 74-C.2 shape): upstream dropped `us_poll_ext` from the C
+/// face entirely in oven-sh/bun 4af1842c8c — zero callers left in their tree,
+/// so neither the declaration nor a linkable definition survives the absorbed
+/// csrc, and the extern above broke `cargo test -p bao_uloop` at link. The
+/// accessor never depended on C state anyway: BaoPoll is this crate's own
+/// 16-byte header and the ext slot is the allocation's trailing bytes.
+#[inline]
+pub unsafe fn us_poll_ext(p: *mut BaoPoll) -> *mut c_void {
+    unsafe { p.add(1) as *mut c_void }
 }
 
 // ──────────────── dispatch entry point ────────────────

@@ -647,12 +647,17 @@ impl<const IS_SSL: bool> NewSocketHandler<IS_SSL> {
     }
 
     /// Wrap an already-open fd. Ext stores `*mut This`; the socket is linked
-    /// into `g` with kind `k`. Port of `NewSocketHandler.fromFd`.
+    /// into `g` with kind `k`. Port of `NewSocketHandler.fromFd`. `options`
+    /// carries the `LIBUS_SOCKET_*` bits for the adopted socket (absorbed
+    /// oven-sh/bun 4af1842c8c grew the parameter; `LIBUS_SOCKET_OPEN_PAUSED`
+    /// registers it paused — plain-TCP only); `is_ipc` selects the
+    /// SCM_RIGHTS fd-passing path.
     pub fn from_fd<This>(
         g: &mut SocketGroup,
         k: SocketKind,
         handle: Fd,
         this: *mut This,
+        options: c_int,
         is_ipc: bool,
     ) -> Option<Self> {
         // Zig `?*This` is null-niche optimized (8 bytes); the dispatch
@@ -664,6 +669,7 @@ impl<const IS_SSL: bool> NewSocketHandler<IS_SSL> {
             None,
             ext_size,
             handle.native() as LIBUS_SOCKET_DESCRIPTOR,
+            options,
             is_ipc,
         );
         if raw.is_null() {
