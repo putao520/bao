@@ -1925,3 +1925,7 @@ clamp 回调(SM153 RTPCallback 面,µs floor 网格无 jitter,arm/disarm 原子�
 ### em1→em2 交接(上下文耗尽,2026-09-21 深夜)
 
 em1 五小时弧线交付 SM153 前移全线(树/patch/build/jsglue/wrapper/update.py/106-face/req/106-face/moduleloading/JobQueue/realm clamp/ModuleLink 深修/bindings 4 错/servo 机械面七类)后上下文耗尽,交接报完整:script 余 32 错(尾部导入/残留引用 3-4 迭代+error.rs×4 POD shim+ModuleType 臂×2+模块深水面三 hook→LoadHook+动态续延,草图与 PR #47489 参照在案)。em2 已派(树态续作);落即全树 build→收波链。em1 転 idle,不再派新。
+
+### #47 收口(d4dbb39b,波内并入)
+
+build.rs 子进程错误传播根治:4 硬化(make 全形 cmd+status+stdout/stderr 尾 20 行/strip cmd+status/attestation verify——顺修 gh 非零静默通过的 fail-open(Strict 名不副实)/curl)+3 软探针保留(可用性探测带回退,失败=合法路径);assert 2→0 实证;tail_lines 自包含。类型/运行验证挂波末实构建(build.rs 指纹失效会触发 make 全周期,避免与 em2 迭代互扰)。**#47 关单评论待发布后带证据执行(§12A:引用波门+发布版本)**。
