@@ -1929,3 +1929,7 @@ em1 五小时弧线交付 SM153 前移全线(树/patch/build/jsglue/wrapper/upda
 ### #47 收口(d4dbb39b,波内并入)
 
 build.rs 子进程错误传播根治:4 硬化(make 全形 cmd+status+stdout/stderr 尾 20 行/strip cmd+status/attestation verify——顺修 gh 非零静默通过的 fail-open(Strict 名不副实)/curl)+3 软探针保留(可用性探测带回退,失败=合法路径);assert 2→0 实证;tail_lines 自包含。类型/运行验证挂波末实构建(build.rs 指纹失效会触发 make 全周期,避免与 em2 迭代互扰)。**#47 关单评论待发布后带证据执行(§12A:引用波门+发布版本)**。
+
+### ★全树绿 + 收波链点火(2026-09-21)
+
+em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 文件),script 32 错→0,**cargo check --workspace rc=0(476 crate 零 err)**;深水面上游 PR #47489 全量形态移植(自创循环被替换);零新增文件;error.rs 走 fork 自带 borrowed_error_report(零新 shim)。CLAUDE.md servo 清单 31 条目落(346dd857)。收波链执行中:eb2s1 三组补面(绿窗宣告即跑)+波门§②(后台)/§① 排队——3/5 已绿。全绿→发布闭包(预案零阻断,topo 双修正版)。
