@@ -2035,3 +2035,7 @@ W2 累计 14 crate 面解锁(watcher/sm/engine 旗舰面绿;runtime 仅被 libff
 ### W2 断点 4+shim 闭:media 门控+b368b6d7(s1a,2026-09-22)
 
 media-gstreamer 移 target(not(windows)) 依赖——msvc 树 glib/gst **0 命中**(12 crate 门解除),linux 树 62 命中零 diff。shim.exe 根因=include 路径差一层(build.rs 已有 0-byte 占位供给语义)→路径修正+bun_install msvc RC=0;真 PE 产出=W7 域(rust.ts no-CRT 配方已文档化)。顺带:windows 死 import×2+MaxPathExceeded 错误转换。**断点计:media✅/shim✅/libffi(ew4 升 4.2.2 在途)/addrinfo(ec2 在途)**——余二闭即 W2 workspace 全绿。
+
+### W2 断点 3 终态:libffi 5.2 升级弃 fork(4e2f7209,ew4,2026-09-22)
+
+升 libffi 5.2.0+sys 4.2.2(上游同根修法四点全已修=纯消费,逐点对照表在案);fork 整树删除零残差。API 唯一真破缺(middle::Arg 'argument 生命周期)→FfiNullPtr 'static 载体。**CFLAGS_<triple> 通道裁定追认**(-Wno-incompatible-pointer-types 治上游 dlmalloc clang-cl 指针严格性;零 fork,上游 bun 全局 flags 同姿态;fork 层备选在案)。env 契约部分固化 .cargo/config.toml [env](CC/CXX/AR/CFLAGS_<triple>,与 musl per-target 同形;INCLUDE/LIB 留操作方)。linux 绿+真 E2E 6/0。**W2 断点计:media✅/shim✅/libffi✅——仅余 addrinfo(ec2 在途)**。
