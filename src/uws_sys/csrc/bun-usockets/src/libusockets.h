@@ -16,20 +16,63 @@
  */
 // clang-format off
 #pragma once
+
+/* <stdint.h> pulls in glibc's <features.h>, which locks the feature-test
+ * macros for the rest of the TU. bsd.h needs _GNU_SOURCE for mmsghdr/accept4
+ * but is included after us, so set it here before any system header (including
+ * whatever mimalloc.h transitively pulls in). */
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
+#if defined(__SANITIZE_ADDRESS__)
+#define LIBUS_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define LIBUS_ASAN 1
+#endif
+#endif
+
+/* BAO PORT (absorb oven-sh/bun 4af1842c8c): upstream maps us_* onto its
+ * mimalloc fork here. Bao retired the mimalloc face (bun_alloc 0.2.0, #45 —
+ * the Rust allocator backend replaced it), so the mappings stay on libc like
+ * the pre-absorb base did. All usockets allocations are freed inside this
+ * tree, so the cross-boundary story is unchanged. Do NOT resolve these from
+ * a system <mimalloc.h> — that couples the build to host headers with no
+ * library behind them (observed: /usr/include/mimalloc.h, mi_* undefined at
+ * link). */
+#if !defined(LIBUS_ASAN)
 #ifndef us_calloc
 #define us_calloc calloc
 #endif
-
 #ifndef us_malloc
 #define us_malloc malloc
 #endif
-
 #ifndef us_realloc
 #define us_realloc realloc
 #endif
-
 #ifndef us_free
 #define us_free free
+#endif
+#ifndef us_strdup
+#define us_strdup strdup
+#endif
+#else
+#ifndef us_calloc
+#define us_calloc calloc
+#endif
+#ifndef us_malloc
+#define us_malloc malloc
+#endif
+#ifndef us_realloc
+#define us_realloc realloc
+#endif
+#ifndef us_free
+#define us_free free
+#endif
+#ifndef us_strdup
+#define us_strdup strdup
+#endif
 #endif
 
 #ifndef LIBUSOCKETS_H
@@ -93,13 +136,6 @@
 #define LIBUS_SOCKET_DESCRIPTOR int
 #endif
 
-/* <stdint.h> pulls in glibc's <features.h>, which locks the feature-test
- * macros for the rest of the TU. bsd.h needs _GNU_SOURCE for mmsghdr/accept4
- * but is included after us, so set it here before any system header. */
-#if !defined(_WIN32) && !defined(_GNU_SOURCE)
-#define _GNU_SOURCE
-#endif
-
 #include "stddef.h"
 #include <stdint.h>
 
@@ -126,6 +162,11 @@ enum {
      * Safe for HTTP/TLS where the client always sends first; do not use for protocols where
      * the server sends the first bytes. */
     LIBUS_LISTEN_DEFER_ACCEPT = 64,
+    /* Enable IP_RECVERR on a UDP socket so ICMP errors land on the error
+     * queue for on_recv_error to drain. Off by default: on a shared
+     * unconnected socket it also makes the next send fail for a datagram
+     * bound to a different, live peer. */
+    LIBUS_UDP_LINUX_RECVERR = 128,
     /* A socket adopted by us_socket_from_fd, or accepted by a listener created with this option,
      * is registered as if us_socket_pause had been called on it, so no extra poll change is needed
      * per connection (node:net's pauseOnConnect; cluster adopts every connection this way). Not
@@ -152,12 +193,6 @@ struct us_udp_packet_buffer_t;
 struct ssl_ctx_st;
 struct ssl_st;
 
-
-struct us_cert_string_t {
-    const char* str;
-    size_t len;
-};
-
 /* Public interface for UDP sockets */
 
 /* Peeks data and length of UDP payload */
@@ -173,9 +208,6 @@ int us_udp_socket_bound_port(struct us_udp_socket_t *s);
 
 /* Peeks peer addr (sockaddr) of received packet */
 char *us_udp_packet_buffer_peer(struct us_udp_packet_buffer_t *buf, int index);
-
-/* Peeks ECN of received packet */
-// int us_udp_packet_buffer_ecn(struct us_udp_packet_buffer_t *buf, int index);
 
 /* Receives a set of packets into specified packet buffer */
 int us_udp_socket_receive(struct us_udp_socket_t *s, struct us_udp_packet_buffer_t *buf);
@@ -194,11 +226,25 @@ struct us_udp_packet_buffer_t *us_create_udp_packet_buffer();
 
 //struct us_udp_socket_t *us_create_udp_socket(us_loop_r loop, void (*data_cb)(struct us_udp_socket_t *, struct us_udp_packet_buffer_t *, int), void (*drain_cb)(struct us_udp_socket_t *), char *host, unsigned short port);
 
-struct us_udp_socket_t *us_create_udp_socket(us_loop_r loop, void (*data_cb)(struct us_udp_socket_t *, void *, int), void (*drain_cb)(struct us_udp_socket_t *), void (*close_cb)(struct us_udp_socket_t *), void (*recv_error_cb)(struct us_udp_socket_t *, int), const char *host, unsigned short port, int flags, int *err, void *user);
+struct us_udp_socket_t *us_create_udp_socket(us_loop_r loop, void (*data_cb)(struct us_udp_socket_t *, void *, int), void (*drain_cb)(struct us_udp_socket_t *), void (*close_cb)(struct us_udp_socket_t *), void (*recv_error_cb)(struct us_udp_socket_t *, int, int), const char *host, unsigned short port, int flags, int *err, void *user);
+
 
 void us_udp_socket_close(struct us_udp_socket_t *s);
 
 int us_udp_socket_set_broadcast(struct us_udp_socket_t *s, int enabled);
+
+/* SO_RCVBUF / SO_SNDBUF for a UDP socket. size == 0 reads the current value,
+ * non-zero sets it. Returns 0 and writes the resulting value to *out, or the
+ * failing setsockopt/getsockopt result (error in errno / WSAGetLastError). */
+int us_udp_socket_buffer_size(struct us_udp_socket_t *s, int is_recv, int size, int *out);
+
+/* Underlying socket descriptor of a UDP socket. */
+LIBUS_SOCKET_DESCRIPTOR us_udp_socket_fd(struct us_udp_socket_t *s);
+
+/* Adopts an already created (and usually already bound) UDP socket descriptor
+ * instead of creating a new one. The fd is made non-blocking and the standard
+ * receive-path options are applied. Returns null with *err set on failure. */
+struct us_udp_socket_t *us_create_udp_socket_from_fd(us_loop_r loop, void (*data_cb)(struct us_udp_socket_t *, void *, int), void (*drain_cb)(struct us_udp_socket_t *), void (*close_cb)(struct us_udp_socket_t *), void (*recv_error_cb)(struct us_udp_socket_t *, int, int), LIBUS_SOCKET_DESCRIPTOR fd, int shared, int *err, void *user);
 
 /* This one is ugly, should be ext! not user */
 void *us_udp_socket_user(struct us_udp_socket_t *s);
@@ -206,7 +252,9 @@ void *us_udp_socket_user(struct us_udp_socket_t *s);
 /* Binds the UDP socket to an interface and port */
 int us_udp_socket_bind(struct us_udp_socket_t *s, const char *hostname, unsigned int port);
 
-/* Public interfaces for timers */
+/* Public interfaces for timers. libuv (Windows) only — epoll/kqueue schedules
+ * on bun.JSC.EventLoopTimer, no file descriptor or syscall. */
+#ifdef _WIN32
 
 /* Create a new high precision, low performance timer. May fail and return null */
 struct us_timer_t *us_create_timer(us_loop_r loop, int fallthrough, unsigned int ext_size);
@@ -223,6 +271,8 @@ void us_timer_set(struct us_timer_t *timer, void (*cb)(struct us_timer_t *t), in
 
 /* Returns the loop for this timer */
 struct us_loop_t *us_timer_loop(struct us_timer_t *t);
+
+#endif
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Socket groups & dispatch
@@ -325,7 +375,12 @@ struct us_socket_t *us_socket_adopt(us_socket_r s, us_socket_group_r group,
  * sni may be NULL. */
 struct us_socket_t *us_socket_adopt_tls(us_socket_r s, us_socket_group_r group,
     unsigned char kind, struct ssl_ctx_st *ssl_ctx, const char *sni,
+    int is_client, int request_cert, int reject_unauthorized,
     int old_ext_size, int ext_size) __attribute__((nonnull(1, 2, 4)));
+/* Feed bytes that were already read off the wire (e.g. a ClientHello consumed
+ * by the plain-TCP layer before the socket was adopted into TLS) through the
+ * same decrypt path as bytes arriving from the kernel. */
+struct us_socket_t *us_socket_tls_feed(us_socket_r s, const char *data, int length) __attribute__((nonnull(1)));
 /* Send ClientHello after adopt_tls. Separate so the caller can repoint the
  * ext slot before any dispatch can fire. */
 void us_socket_start_tls_handshake(us_socket_r s) nonnull_fn_decl;
@@ -342,6 +397,10 @@ struct us_listen_socket_t *us_socket_group_listen_unix(us_socket_group_r group,
     unsigned char kind, struct ssl_ctx_st *ssl_ctx,
     const char *path, size_t pathlen, int options, int socket_ext_size, int *error)
     __attribute__((nonnull(1, 4, 8)));  /* ssl_ctx nullable */
+struct us_listen_socket_t *us_socket_group_listen_fd(us_socket_group_r group,
+    unsigned char kind, struct ssl_ctx_st *ssl_ctx,
+    LIBUS_SOCKET_DESCRIPTOR fd, int backlog, int options, int socket_ext_size, int *error)
+    __attribute__((nonnull(1, 8)));  /* ssl_ctx nullable */
 void us_listen_socket_close(struct us_listen_socket_t *ls) nonnull_fn_decl;
 
 /* SNI: tree hangs off the listen socket. ssl_ctx is up_ref'd; user is opaque
@@ -353,18 +412,48 @@ void us_listen_socket_remove_server_name(struct us_listen_socket_t *ls,
     const char *hostname_pattern) nonnull_fn_decl;
 void *us_listen_socket_find_server_name_userdata(struct us_listen_socket_t *ls,
     const char *hostname_pattern) nonnull_fn_decl;
+/* Returns an owned reference; the caller must release it. */
+struct ssl_ctx_st *us_listen_socket_find_server_name_ctx(struct us_listen_socket_t *ls,
+    const char *hostname_pattern) nonnull_fn_decl;
+/* Parses a PKCS#12 blob into malloc'd PEM key/cert/ca strings (caller frees);
+ * returns 0 with a static *err_reason tag on failure. */
+int us_ssl_parse_pkcs12(const char *data, size_t len, const char *pass,
+    char **out_key, size_t *out_key_len, char **out_cert, size_t *out_cert_len,
+    char **out_ca, size_t *out_ca_len, const char **err_reason);
 void us_listen_socket_on_server_name(struct us_listen_socket_t *ls,
-    void (*cb)(struct us_listen_socket_t *, const char *hostname)) nonnull_fn_decl;
+    struct ssl_ctx_st *(*cb)(struct us_listen_socket_t *, const char *hostname, int *abort_handshake, struct us_socket_t *socket)) nonnull_fn_decl;
+/* Resume a handshake suspended by an async SNICallback (the dynamic resolver
+ * set abort_handshake = 2). `ctx` may be NULL (use the default context); the
+ * call consumes the reference. `error` != 0 aborts the handshake. Safe to call
+ * after the socket closed (no-op). */
+void us_socket_sni_resolve(us_socket_r s, struct ssl_ctx_st *ctx, int error);
 void *us_socket_server_name_userdata(us_socket_r s);
+/* Records a per-serverName entry's client-certificate policy on its SSL_CTX
+ * so the SNI switch adds it to the connection's inherited one, and gives the
+ * context its own session-id context so sessions from other contexts are not
+ * resumed under it. Contexts without one keep the server-level policy. */
+void us_ssl_ctx_set_sni_policy(struct ssl_ctx_st *ctx, int request_cert,
+    int reject_unauthorized);
+/* 1 iff the SNI-selected context for this connection demands closing on a
+ * client-certificate verification error. */
+int us_socket_server_name_reject_unauthorized(us_socket_r s);
+int us_ssl_ctx_reject_unauthorized(struct ssl_ctx_st *ctx);
+/* Socket-level SNI resolver, for a server-side socket adopted into TLS with no
+ * listen socket behind it. Same contract as the listener resolver: an owned
+ * SSL_CTX ref or NULL; *abort_handshake 1 = drop silently, 2 = suspend. */
+typedef struct ssl_ctx_st *(*us_socket_server_name_cb)(struct us_socket_t *socket,
+    const char *hostname, int *abort_handshake);
+void us_socket_on_server_name(us_socket_r s, us_socket_server_name_cb cb);
 
 /* ── Connect ──────────────────────────────────────────────────────────────
  * Returns either us_socket_t* (fast path, *is_connecting=1) or
  * us_connecting_socket_t* (DNS / happy-eyeballs in flight, *is_connecting=0).
  * ssl_ctx may be NULL for plain TCP. */
 void *us_socket_group_connect(us_socket_group_r group, unsigned char kind,
-    struct ssl_ctx_st *ssl_ctx, const char *host, int port, int options,
+    struct ssl_ctx_st *ssl_ctx, const char *host, int port,
+    const char *local_host, int local_port, int options,
     int socket_ext_size, int *is_connecting)
-    __attribute__((nonnull(1, 4, 8)));  /* ssl_ctx nullable */
+    __attribute__((nonnull(1, 4, 10)));  /* ssl_ctx, local_host nullable */
 struct us_socket_t *us_socket_group_connect_unix(us_socket_group_r group,
     unsigned char kind, struct ssl_ctx_st *ssl_ctx,
     const char *server_path, size_t pathlen, int options, int socket_ext_size)
@@ -380,12 +469,20 @@ void us_connecting_socket_shutdown_read(struct us_connecting_socket_t *c) nonnul
 int us_connecting_socket_is_shut_down(struct us_connecting_socket_t *c) nonnull_fn_decl;
 int us_connecting_socket_is_closed(struct us_connecting_socket_t *c) nonnull_fn_decl;
 int us_connecting_socket_get_error(struct us_connecting_socket_t *c) nonnull_fn_decl;
+/* Raw getaddrinfo(3) return code when the name lookup itself failed; 0 for a
+ * connect failure past name resolution. Nonzero means us_connecting_socket_get_error
+ * returns the same getaddrinfo code, not an errno (the two namespaces overlap). */
+int us_connecting_socket_get_dns_error(struct us_connecting_socket_t *c) nonnull_fn_decl;
 void *us_connecting_socket_get_native_handle(struct us_connecting_socket_t *c) nonnull_fn_decl;
-struct us_loop_t *us_connecting_socket_get_loop(struct us_connecting_socket_t *c) nonnull_fn_decl;
 struct us_socket_group_t *us_connecting_socket_group(struct us_connecting_socket_t *c) nonnull_fn_decl;
 unsigned char us_connecting_socket_kind(struct us_connecting_socket_t *c) nonnull_fn_decl;
 
 struct us_bun_verify_error_t us_socket_verify_error(struct us_socket_t *s);
+
+/* SNI hostname the peer sent in its ClientHello (server-side TLS sockets), or
+ * NULL when the socket is not TLS or no SNI extension was sent. The returned
+ * pointer is owned by the SSL object and only valid while the socket lives. */
+const char *us_socket_sni_servername(struct us_socket_t *s);
 
 /* ── SSL_CTX construction ─────────────────────────────────────────────────
  * The expensive bit (cert/key/CA parse, cipher list, DH params) is decoupled
@@ -407,10 +504,25 @@ struct us_bun_socket_context_options_t {
     const char * const *ca;
     unsigned int ca_count;
     unsigned int secure_options;
+    // Minimum/maximum TLS protocol version (TLS1_VERSION..TLS1_3_VERSION); 0 = unset/default.
+    int ssl_min_version;
+    int ssl_max_version;
     int reject_unauthorized;
     int request_cert;
     unsigned int client_renegotiation_limit;
     unsigned int client_renegotiation_window;
+    /* Session timeout in seconds applied via SSL_CTX_set_timeout; 0 = library default. */
+    int session_timeout;
+    /* PEM-encoded CRLs added to the context's X509_STORE (enables CRL checking). */
+    const char * const *crl;
+    unsigned int crl_count;
+    /* Sets X509_V_FLAG_PARTIAL_CHAIN on the context's certificate store. */
+    int allow_partial_trust_chain;
+    /* Colon-separated signature algorithm list applied via
+     * SSL_CTX_set1_sigalgs_list. */
+    const char *sigalgs;
+    /* Colon-separated named-group list applied via SSL_CTX_set1_groups_list. */
+    const char *ecdh_curve;
 };
 
 enum create_bun_socket_error_t {
@@ -419,6 +531,8 @@ enum create_bun_socket_error_t {
     CREATE_BUN_SOCKET_ERROR_INVALID_CA_FILE,
     CREATE_BUN_SOCKET_ERROR_INVALID_CA,
     CREATE_BUN_SOCKET_ERROR_INVALID_CIPHERS,
+    CREATE_BUN_SOCKET_ERROR_INVALID_CRL,
+    CREATE_BUN_SOCKET_ERROR_INVALID_ECDH_CURVE,
 };
 
 /* Build an SSL_CTX from options. Returns the BoringSSL SSL_CTX*; caller owns
@@ -440,7 +554,33 @@ struct ssl_ctx_st *us_ssl_ctx_from_options(
  * (uWS App.h) that don't pull in BoringSSL headers. */
 void us_internal_ssl_ctx_up_ref(struct ssl_ctx_st *ssl_ctx);
 void us_internal_ssl_ctx_unref(struct ssl_ctx_st *ssl_ctx);
+/* Install an ALPN selector that prefers "h2", then "http/1.1" (when
+ * allow_http1). Used by uWS when an App has an HTTP/2 context attached. */
+void us_ssl_ctx_enable_http2_alpn(struct ssl_ctx_st *ssl_ctx, int allow_http1);
+/* 1 iff the completed handshake on `s` negotiated ALPN "h2". */
+int us_socket_alpn_is_h2(us_socket_r s);
 long us_ssl_ctx_live_count(void);
+/* Appends the certificates in the PEM `content` to `ctx`'s trust store;
+ * returns 0 when nothing could be added. */
+int us_ssl_ctx_add_ca_cert(struct ssl_ctx_st *ctx, const char *content);
+/* TLS-over-duplex / named-pipe SSL owners (no us_socket_t): opt an SSL into
+ * the parked new-session/keylog queues, then drain them with the pop calls
+ * after each SSL_read/SSL_do_handshake stack unwinds. Pop returns the entry
+ * length (0 = queue empty); entries are capped at 64 KB (sessions) and
+ * 4 KB+1 (keylog lines). */
+void us_ssl_enable_pending_events(struct ssl_st *ssl);
+int us_ssl_pop_pending_session(struct ssl_st *ssl, unsigned char *out, int out_cap);
+int us_ssl_pop_pending_keylog(struct ssl_st *ssl, unsigned char *out, int out_cap);
+/* The resumable session most recently delivered via the new-session callback,
+ * or NULL if none. Borrowed; valid until the next NewSessionTicket or SSL_free. */
+struct ssl_session_st *us_ssl_get_new_session(struct ssl_st *ssl);
+/* Per-SSL session sink: each resumable session reaching the new-session
+ * callback is SSL_SESSION_up_ref'd and handed to on_new_session (which takes
+ * ownership of that reference). on_free(owner) runs once on SSL_free. */
+void us_ssl_set_session_sink(struct ssl_st *ssl, void *owner,
+                             void (*on_new_session)(void *, struct ssl_session_st *),
+                             void (*on_free)(void *));
+void *us_ssl_get_session_sink_owner(struct ssl_st *ssl);
 
 /* Public interfaces for loops */
 
@@ -488,9 +628,6 @@ void us_poll_stop(us_poll_r p, struct us_loop_t *loop) nonnull_fn_decl;
 /* Return what events we are polling for */
 int us_poll_events(us_poll_r p) nonnull_fn_decl;
 
-/* Returns the user data extension of this poll */
-void *us_poll_ext(us_poll_r p) nonnull_fn_decl;
-
 /* Get associated socket descriptor from a poll */
 LIBUS_SOCKET_DESCRIPTOR us_poll_fd(us_poll_r p) nonnull_fn_decl;
 
@@ -508,7 +645,25 @@ void *us_socket_get_native_handle(us_socket_r s) nonnull_fn_decl;
 int us_socket_write(us_socket_r s, const char *nonnull_arg data, int length) nonnull_fn_decl;
 int us_socket_write2(us_socket_r s, const char *header, int header_length, const char *payload, int payload_length) nonnull_fn_decl;
 /* Bypass TLS — write raw bytes to the fd even if `s->ssl` is set. */
+/* Layout-compatible with struct iovec on POSIX; used by the vectored raw
+ * write below so headers and payload slices reach the kernel in one syscall
+ * without an intermediate copy. */
+struct us_iovec_t {
+    void *iov_base;
+    size_t iov_len;
+};
+
+/* Vectored variant of us_socket_raw_write: same closed/shutdown gating and
+ * partial-write poll handling, one writev for all chunks (sequential sends
+ * on platforms without writev). Returns total bytes written. */
+int us_socket_raw_writev(us_socket_r s, const struct us_iovec_t *iov, int count) nonnull_fn_decl;
+
 int us_socket_raw_write(us_socket_r s, const char *data, int length);
+/* Like us_socket_write, but additionally reports a fatal (non-would-block)
+ * send error through *fatal_write_error so opted-in callers can fail the
+ * write instead of retrying forever. TLS sockets fall back to
+ * us_socket_write (their errors propagate through the SSL layer). */
+int us_socket_write_check_error(us_socket_r s, const char *data, int length, int *fatal_write_error);
 
 void us_socket_timeout(us_socket_r s, unsigned int seconds) nonnull_fn_decl;
 void us_socket_long_timeout(us_socket_r s, unsigned int minutes) nonnull_fn_decl;
@@ -526,7 +681,6 @@ void us_socket_shutdown(us_socket_r s) nonnull_fn_decl;
 void us_socket_shutdown_read(us_socket_r s) nonnull_fn_decl;
 int us_socket_is_shut_down(us_socket_r s) nonnull_fn_decl;
 int us_socket_is_closed(us_socket_r s) nonnull_fn_decl;
-int us_socket_is_tls(us_socket_r s) nonnull_fn_decl;
 
 /* Return codes of us_socket_queued_input. */
 #define LIBUS_QUEUED_INPUT_NONE 0  /* a read would block: nothing is queued */
@@ -542,6 +696,11 @@ int us_socket_queued_input(us_socket_r s) nonnull_fn_decl;
 
 int us_socket_is_ssl_handshake_finished(us_socket_r s) nonnull_fn_decl;
 int us_socket_ssl_handshake_callback_has_fired(us_socket_r s) nonnull_fn_decl;
+/* TLS ciphertext bytes already sealed for this socket and reported as
+ * written by us_socket_write(), still waiting on a writable event to reach
+ * the kernel (the loop-wide spill slot owned by this socket). 0 for
+ * plain-TCP sockets and for TLS sockets with nothing spilled. */
+unsigned int us_socket_ssl_spill_pending(us_socket_r s) nonnull_fn_decl;
 
 struct us_socket_t *us_socket_close(us_socket_r s, int code, void *reason) __attribute__((nonnull(1)));
 
@@ -566,19 +725,32 @@ LIBUS_SOCKET_DESCRIPTOR us_socket_get_fd(us_socket_r s) nonnull_fn_decl;
 
 /* Bun extras */
 struct us_socket_t *us_socket_pair(us_socket_group_r group, unsigned char kind, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR *fds) nonnull_fn_decl;
-struct us_socket_t *us_socket_from_fd(us_socket_group_r group, unsigned char kind, struct ssl_ctx_st *ssl_ctx, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR fd, int ipc)
+struct us_socket_t *us_socket_from_fd(us_socket_group_r group, unsigned char kind, struct ssl_ctx_st *ssl_ctx, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR fd, int options, int ipc)
     __attribute__((nonnull(1)));  /* ssl_ctx nullable */
 struct us_socket_t *us_socket_open(struct us_socket_t *s, int is_client, char *ip, int ip_length);
-int us_raw_root_certs(struct us_cert_string_t **out);
+/* The bundled Mozilla root certificates, DER-encoded, in static memory. Returns the count. */
+size_t us_bundled_root_certs_der(const uint8_t *const **out_certs, const size_t **out_lens);
 unsigned int us_get_remote_address_info(char *buf, us_socket_r s, const char **dest, int *port, int *is_ipv6);
 unsigned int us_get_local_address_info(char *buf, us_socket_r s, const char **dest, int *port, int *is_ipv6);
 int us_socket_get_error(us_socket_r s);
+/* A writable event's write made zero progress: does that prove the peer is
+ * gone? On epoll/kqueue a writable event implies real send-buffer space, so
+ * no progress means the send itself failed (EPIPE/ECONNRESET folded to 0) and
+ * the answer is always yes. The libuv backend's completion model can deliver
+ * a writable completion for space the same loop iteration already refilled,
+ * making a stall there routine backpressure, so it asks the kernel
+ * (SO_ERROR, then a zero-byte send probe). */
+int us_socket_stalled_write_means_peer_gone(us_socket_r s);
 
 void us_socket_ref(us_socket_r s);
 void us_socket_unref(us_socket_r s);
 
 void us_socket_nodelay(us_socket_r s, int enabled);
 int us_socket_keepalive(us_socket_r s, int enabled, unsigned int delay);
+/* IP type-of-service (IPv4 IP_TOS / IPv6 IPV6_TCLASS). set returns 0 or a
+ * negative platform errno; get returns the value (>= 0) or a negative errno. */
+int us_socket_set_tos(us_socket_r s, int tos);
+int us_socket_get_tos(us_socket_r s);
 void us_socket_resume(us_socket_r s);
 void us_socket_pause(us_socket_r s);
 

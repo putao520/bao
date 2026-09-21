@@ -25,6 +25,17 @@
 //    removed.
 //  
 #include "libusockets.h"
+/* BAO PORT (absorb oven-sh/bun 4af1842c8c): upstream's libusockets.h dropped
+ * the `us_cert_string_t` definition (only a pointer-typed declaration
+ * remains); this header still defines the array by value, so pin the
+ * complete type here. */
+#ifndef US_CERT_STRING_T_COMPLETE
+#define US_CERT_STRING_T_COMPLETE
+struct us_cert_string_t {
+    const char* str;
+    size_t len;
+};
+#endif
 static struct us_cert_string_t root_certs[] = {
 
 /* COMODO ECC Certification Authority */
