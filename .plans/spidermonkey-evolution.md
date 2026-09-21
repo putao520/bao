@@ -1963,3 +1963,7 @@ em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 �
 ### Windows 波推进:ew4 合同 1/3 落地+bun_alloc 臂派修(2026-09-21)
 
 ew4(9595dbae):libuv C 符号供给——vendor 真 fork 头(1.51.1-dev rev 验证)+2 patch 重放+build.rs 仅 windows 激活(37 .c 与上游数组逐一核对,linux 零发射,links=uv)+flags 翻译表(clang-cl 全接受);linux 双绿;windows 面两外部位等待(SDK 头=xwin/农场接合;bun_alloc msvc 臂=全 cargo 图阻断)。#34 状态评论已发未关(残面:消费臂解锁=合同 2/3)。**s1a 已派修 bun_alloc 3×E0425**(今晨 #45 波遗留,修完=msvc 面 cargo 图解锁首枚)。两处过期文档真源待后续合同(uws_sys 门消息文本/platform-support §2§4)。
+
+### ★ew1 终报:路由 A 判决,SM153 交叉三层绿(2026-09-21,/tmp+.plans/win-probe-DOSSIER.md)
+
+**headline**:Linux→x86_64-pc-windows-msvc 的 configure/全量 C++(655 obj)/js_static.lib(342MB)三层全实测绿——140 时代"configure 不可能"判死;winreg 门 env 100% 绕过零 patch;配方=xwin winsysroot+clang-cl/lld-link shims+**cross 必须 --enable-libz-rs**(host zlib 泄漏防线)。验证口径 L1-L4(链接绿=支持;Wine smoke=stretch 非承诺)。**DAG 执行中**:W1 alloc(s1a 在途)/W2 boringssl win64(em2 已派)/合同 2/3 臂解锁(ew4 已派,用 /tmp/win-probe 实测 sysroot)/W0 farm(er0 在途);W3 mozjs cargo face+W6 fonts/servo 挂 W1;W7 全链=W1-W6 齐后。#37 判定修订与 platform-support §2 修订挂文档合同。配方已沉淀(windows-cross-probe-recipe 记忆)。
