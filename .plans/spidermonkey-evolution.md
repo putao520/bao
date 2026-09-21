@@ -2047,3 +2047,7 @@ GetAddrInfoW 管线:平台 addrinfo 布局别名(windows=ADDRINFOA 镜像,produc
 ### W2 门首跑:尾层暴露+三组并行派工(2026-09-22)
 
 **C/依赖门全闭后首曝 bun_runtime 自身 POSIX 面:474 错**(child_process 91/fs 68/dns 56/constants 45/os 31/tls 30/tty 27/ipc+udp+api 各 23+尾)——libc socket 族/std::os::unix/E0308,预期层(C 门挡着从未编到)。env 脚本与 config 旗标对齐先行(178c34ea:两通道 -Wno-incompatible 一致)。**三组并行**:s1a(child_process/ipc/tty)/ec2(dns/constants/os——addrinfo 模板作者)/ew4(tls/udp/api/fs/尾);统一纪律=上游 bun windows 分支为真源+行为平+对照注记。三组闭=W2 门绿。
+
+### em3 回归修复闭(659a8d55):us_poll_ext 上游已删→本地实现+第二断点
+
+上游对账:4af **整体删除**该 C ABI→BaoPoll 本地 16 字节头+ext 槽尾字节实现(零 C 状态);**第二断点顺修**:us_socket_from_fd 4af 增 options 槽(7 参),6 参 extern 把 ipc=1 滑进 options→SCM_RIGHTS 不布防→全链迁移。52/52 绿(含原链接遮蔽测试);windows 门保持绿。**漏检根因两条入册**:①机械比对域缺口(297-extern 只扫 uws_sys,bao_uloop 自持 extern 不在域)②验收门特征缺口(check≠链接解析)——**纪律修正:凡触碰 csrc 的吸收波,验收必含全部树内 extern 持有 crate 的 cargo test --no-run(链接面验收)**。
