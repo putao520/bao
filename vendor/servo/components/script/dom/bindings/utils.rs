@@ -101,6 +101,8 @@ unsafe extern "C" fn instance_class_is_error(clasp: *const js::jsapi::JSClass) -
 pub(crate) const DOM_CALLBACKS: DOMCallbacks = DOMCallbacks {
     instanceClassMatchesProto: Some(instance_class_has_proto_at_depth),
     instanceClassIsError: Some(instance_class_is_error),
+    // SM153: new hook (exception-info extraction); unused by servo's DOM error face.
+    extractExceptionInfo: None,
 };
 
 /// Eagerly define all relevant WebIDL interface constructors on the

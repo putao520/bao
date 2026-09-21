@@ -80,7 +80,7 @@ use std::time::Instant;
 use bao_engine::context::JsContext;
 use bao_engine::stencil_cache;
 use bao_engine::value::JsValue;
-use mozjs::jsapi::{self, DelazificationOption, InstantiateOptions};
+use mozjs::jsapi::{self, DelazificationOption, EagerBaselineOption, InstantiateOptions};
 use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
@@ -123,6 +123,9 @@ fn default_instantiate_options() -> InstantiateOptions {
         hideScriptFromDebugger: false,
         deferDebugMetadata: false,
         eagerDelazificationStrategy_: DelazificationOption::OnDemandOnly,
+        // SM153: new field; C++ default is EagerBaselineOption::None
+        // (js/public/CompileOptions.h:303).
+        eagerBaselineStrategy_: EagerBaselineOption::None,
     }
 }
 

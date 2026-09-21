@@ -781,7 +781,7 @@ where
 {
     let res = unsafe {
         TypedArray::<T, *mut JSObject>::create(
-            cx.raw_cx(),
+            cx,
             CreateWith::Slice(data),
             dest.reborrow(),
         )
@@ -804,7 +804,7 @@ where
 {
     let res = unsafe {
         TypedArray::<T, *mut JSObject>::create(
-            cx.raw_cx(),
+            cx,
             CreateWith::Length(len),
             dest.reborrow(),
         )

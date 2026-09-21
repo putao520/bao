@@ -98,7 +98,10 @@ impl PagePool {
         let page = {
             // #40 phase breadcrumb: the webview build itself is async, but
             // keep the span named — a wedge here pins it precisely.
-            crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_WEBVIEW_NEW, id as u64);
+            crate::phase_watch::enter_phase(
+                crate::phase_watch::phase::CREATE_WEBVIEW_NEW,
+                id as u64,
+            );
             let p = PageHandle::new(
                 Rc::clone(&self.servo),
                 Rc::clone(&self.servo_delegate),
@@ -106,7 +109,10 @@ impl PagePool {
                 self.default_viewport,
                 id,
             );
-            crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_WAIT_READY, id as u64);
+            crate::phase_watch::enter_phase(
+                crate::phase_watch::phase::CREATE_WAIT_READY,
+                id as u64,
+            );
             p?
         };
 

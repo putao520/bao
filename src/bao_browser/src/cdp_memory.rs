@@ -44,7 +44,9 @@ pub struct MemoryCdpBridge {
 impl MemoryCdpBridge {
     /// Create the bridge pair: the sender side for the client registry, and
     /// the receiver the runtime must drain (`BaoRuntime::run` does).
-    pub fn new(default_target: impl Into<String>) -> (Arc<Self>, bao_cdp::servo_bridge::BridgeReceiver) {
+    pub fn new(
+        default_target: impl Into<String>,
+    ) -> (Arc<Self>, bao_cdp::servo_bridge::BridgeReceiver) {
         let (sender, receiver) = bridge_channel(UNDRAINED_TIMEOUT);
         (
             Arc::new(Self {

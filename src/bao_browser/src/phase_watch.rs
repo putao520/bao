@@ -124,7 +124,11 @@ impl Drop for PhaseGuard {
     fn drop(&mut self) {
         restore_phase(std::mem::replace(
             &mut self.0,
-            PhaseSnapshot { id: PHASE_IDLE, page: 0, since_ms: 0 },
+            PhaseSnapshot {
+                id: PHASE_IDLE,
+                page: 0,
+                since_ms: 0,
+            },
         ));
     }
 }
@@ -181,9 +185,7 @@ pub fn spawn_watchdog() {
                         continue;
                     }
                     let elapsed = now_ms().saturating_sub(since);
-                    if elapsed > phase_budget().as_millis() as u64
-                        && state.alerted_gen != gen
-                    {
+                    if elapsed > phase_budget().as_millis() as u64 && state.alerted_gen != gen {
                         state.alerted_gen = gen;
                         // The routing forensics dump: which phase, which
                         // page, how long, and what every thread in the
@@ -233,7 +235,12 @@ fn dump_thread_states() {
             .and_then(|s| {
                 // Third field of /proc stat; comm may contain spaces so
                 // parse after the last ')'.
-                s.rsplit(')').next()?.trim().split(' ').next().map(String::from)
+                s.rsplit(')')
+                    .next()?
+                    .trim()
+                    .split(' ')
+                    .next()
+                    .map(String::from)
             })
             .unwrap_or_default();
         lines.push(format!(

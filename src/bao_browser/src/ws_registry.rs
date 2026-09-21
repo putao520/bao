@@ -328,12 +328,8 @@ impl RegistryDispatch for BaoWsRegistry {
         };
 
         // Real command face: bao_cdp's servo-bridge-backed domain dispatch.
-        let response = bao_cdp::handle_command(
-            msg.clone(),
-            &target_id,
-            &msg.params,
-            Some(&self.bridge),
-        );
+        let response =
+            bao_cdp::handle_command(msg.clone(), &target_id, &msg.params, Some(&self.bridge));
         let result = match (response.result, response.error) {
             (Some(result), _) => Ok(result),
             (None, Some(err)) => Err(err),
@@ -528,35 +524,34 @@ mod tests {
                 .push((method.to_string(), params));
         }
         fn send_session_event(&self, session_id: &str, method: &str, params: Value) {
-            self.session_events
-                .lock()
-                .unwrap()
-                .push((session_id.to_string(), method.to_string(), params));
+            self.session_events.lock().unwrap().push((
+                session_id.to_string(),
+                method.to_string(),
+                params,
+            ));
         }
     }
 
     fn page_responder(rx: bao_cdp::servo_bridge::BridgeReceiver) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            loop {
-                let handled = rx.try_process(|cmd| match cmd {
-                    BridgeCommand::ListTargets => BridgeResponse {
-                        result: Ok(json!([
-                            { "id": "1", "title": "Page 1", "url": "about:blank" }
-                        ])),
-                    },
-                    BridgeCommand::Navigate { .. } => BridgeResponse {
-                        result: Ok(json!({ "frameId": "1", "loaderId": "loader-1" })),
-                    },
-                    BridgeCommand::EvaluateJs { expression, .. } => BridgeResponse {
-                        result: Ok(json!({ "result": { "type": "string", "value": expression } })),
-                    },
-                    _ => BridgeResponse {
-                        result: Ok(json!({})),
-                    },
-                });
-                if !handled {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+        std::thread::spawn(move || loop {
+            let handled = rx.try_process(|cmd| match cmd {
+                BridgeCommand::ListTargets => BridgeResponse {
+                    result: Ok(json!([
+                        { "id": "1", "title": "Page 1", "url": "about:blank" }
+                    ])),
+                },
+                BridgeCommand::Navigate { .. } => BridgeResponse {
+                    result: Ok(json!({ "frameId": "1", "loaderId": "loader-1" })),
+                },
+                BridgeCommand::EvaluateJs { expression, .. } => BridgeResponse {
+                    result: Ok(json!({ "result": { "type": "string", "value": expression } })),
+                },
+                _ => BridgeResponse {
+                    result: Ok(json!({})),
+                },
+            });
+            if !handled {
+                std::thread::sleep(Duration::from_millis(1));
             }
         })
     }
@@ -649,7 +644,11 @@ mod tests {
         // the responder answers every Navigate with frameId "1".
         let nav = reg
             .dispatch_message(
-                &msg("Page.navigate", json!({"url": "about:blank"}), Some(sid.clone())),
+                &msg(
+                    "Page.navigate",
+                    json!({"url": "about:blank"}),
+                    Some(sid.clone()),
+                ),
                 BROWSER_TARGET,
                 &sender,
             )
@@ -665,7 +664,11 @@ mod tests {
         let sender = NopSender;
         let err = reg
             .dispatch_message(
-                &msg("Page.navigate", json!({"url": "about:blank"}), Some("nope".into())),
+                &msg(
+                    "Page.navigate",
+                    json!({"url": "about:blank"}),
+                    Some("nope".into()),
+                ),
                 BROWSER_TARGET,
                 &sender,
             )
@@ -706,7 +709,11 @@ mod tests {
         .unwrap()
         .unwrap();
         let err = reg
-            .dispatch_message(&msg("Page.enable", json!({}), Some(sid)), BROWSER_TARGET, &sender)
+            .dispatch_message(
+                &msg("Page.enable", json!({}), Some(sid)),
+                BROWSER_TARGET,
+                &sender,
+            )
             .unwrap()
             .unwrap_err();
         assert_eq!(err.code, -32001);
@@ -769,7 +776,11 @@ mod tests {
         let sender = CapturingSender::new();
 
         reg.dispatch_message(
-            &msg("Target.setAutoAttach", json!({"autoAttach": true, "flatten": true}), None),
+            &msg(
+                "Target.setAutoAttach",
+                json!({"autoAttach": true, "flatten": true}),
+                None,
+            ),
             BROWSER_TARGET,
             &*sender,
         )
@@ -860,7 +871,11 @@ mod tests {
         let sid = attach["sessionId"].as_str().unwrap().to_string();
 
         reg.dispatch_message(
-            &msg("Page.navigate", json!({"url": "https://example.com"}), Some(sid.clone())),
+            &msg(
+                "Page.navigate",
+                json!({"url": "https://example.com"}),
+                Some(sid.clone()),
+            ),
             BROWSER_TARGET,
             &*sender,
         )

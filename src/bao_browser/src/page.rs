@@ -162,7 +162,8 @@ impl PageInner {
     pub fn collect_engine_memory_stats(
         &self,
     ) -> Result<bao_engine::memory_stats::EngineMemoryStats, BrowserError> {
-        let slot = crate::runtime_bridge::register_engine_memory_stats_collection(self.webview.id());
+        let slot =
+            crate::runtime_bridge::register_engine_memory_stats_collection(self.webview.id());
         self.drain_callbacks()?;
         // The drain guarantees the callback ran (servo drains the queue
         // before executing the drain eval); an unset slot means the queue
@@ -629,8 +630,7 @@ impl PageInner {
                     (Some(a), Some(b)) => a != b,
                     _ => false,
                 };
-                let held_long_enough =
-                    complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
+                let held_long_enough = complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
                 if url_moved || held_long_enough {
                     self.touch();
                     return Ok(());
@@ -1149,8 +1149,8 @@ impl PageHandle {
                                 (Some(a), Some(b)) => a != b,
                                 _ => false,
                             };
-                            let held_long_enough = complete_since
-                                .is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
+                            let held_long_enough =
+                                complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
                             if url_moved || held_long_enough {
                                 break;
                             }
@@ -1544,7 +1544,12 @@ impl PageHandle {
             // BUG-ENG-366: drop the per-Realm stealth profiles so the next
             // page reusing the same global address does not inherit a stale
             // fingerprint. @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
-            for addr in [pg as usize, ng as usize, cached_pg as usize, cached_ng as usize] {
+            for addr in [
+                pg as usize,
+                ng as usize,
+                cached_pg as usize,
+                cached_ng as usize,
+            ] {
                 if addr != 0 {
                     bao_stealth::engine_props::remove_profile_for_global(addr);
                 }

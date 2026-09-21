@@ -269,9 +269,9 @@ fn process_a_keyframes_argument(
     rooted!(&in(cx) let iterable = ObjectValue(keyframes));
     let mut keyframes = Vec::new();
     let result = for_of(
-        unsafe { cx.raw_cx() },
+        cx,
         iterable.handle(),
-        |iterator_element| {
+        |cx: &mut JSContext, iterator_element| {
             // Step 5.3.4 Let nextItem be IteratorValue(next).
             // Step 5.3.5 Check the completion record of nextItem.
             // Note: This happens inside the "for_of" call.
