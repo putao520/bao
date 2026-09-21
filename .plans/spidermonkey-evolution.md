@@ -2011,3 +2011,7 @@ farm-xwin 卷布局收敛到 /opt/bao-win-cross 契约形(wsroot 组装+无空�
 ### ★.200 compose 测试环境建成(er0,2026-09-22)
 
 ~/build-farm/bao-win:Dockerfile(farm 正本 msvc 裁剪:llvm-20 全符号面+rustup 含 msvc target)+compose 双 bind 卷(win-cross=/opt/bao-win-cross,src=契约脚本);wsroot 634M 自 .205 rsync(勘误:um/x64 实为 952 .lib,此前 0 计数系漏版本段路径);**根治:.200 docker CLI 因 DD 残留(~/.docker desktop 上下文)全体崩→隔离 dd-stale.bak+净 config 复活**;容器冒烟:env ready(7 INCLUDE/4 LIB)+COMPILE_OK+LINK_OK(rust msvc target+clang-cl 20.1.8)。ops 册已追加环境节。**用户点名的"SSH 到 WINDOWS 的 compose 做环境去测试"就绪**——候 W3/W7 产物即真机冒烟。
+
+### ★W8 交叉测试运行器建成(er0,2026-09-22)
+
+.200 ~/build-farm/bao-win/bin/win-test-runner.sh:exe 列表→NTFS 放置→interop 执行(timeout 180s)→libtest 解析→汇总;**双证防假绿**(rc==0 且 test result: ok 才 PASS,双向实证:故意败判 FAIL/真过判 PASS)。**关键配方入册**:交叉测试 exe=静态 CRT(+crt-static 零 DLL)+rust-lld+三段 /LIBPATH(vc14+um+ucrt);libtest 输出跨平台同形;--exact 需全路径名;interop=WSL 特性故 runner 必 WSL 侧(容器编译+WSL 执行编排);WSL-fs binfmt 直执行亦实证可用。**Windows 验证基建至此完备:编译三面(env/farm/.200 容器)+测试一面(runner)。候 W3/W7 产物即 T1 单测波开跑。**
