@@ -2023,3 +2023,7 @@ farm-xwin 卷布局收敛到 /opt/bao-win-cross 契约形(wsroot 组装+无空�
 ### ★★W3 绿(b1c45895,C 独立 V 过,2026-09-22)
 
 M11 GNU 面落地:msvc 臂弃 compiler.args 传播,构造 -x c++/-std=gnu++20/-fms-compatibility/-fms-extensions+confdefs 先序 -include+TU -include(JSApi;JSGlue 偏差 2 项如实:TU=自身免双包含/保留 .header 单头形)+SDK 七段自 env INCLUDE 解析 fail-loud。**判定:bao-mozjs-sys msvc check RC=0(101→0)**;linux 回归 RC=0 非流逐字节保持;C 独立 bao-mozjs RC=0(21.8s)。层 1/2(2837d978:语言旗标+-FI 顺序敏感)+层 3(M11 GNU 面)三段合围。W2 链进令已发(engine→sm→runtime→workspace)。
+
+### W2 链终态:4 结构断点+裁决 v1 核心先通(s1a 67a15c84,2026-09-22)
+
+W2 累计 14 crate 面解锁(watcher/sm/engine 旗舰面绿;runtime 仅被 libffi 挡)。全 workspace keep-going 实测:仅剩 2 Rust 面+12 C 域脚本失败。**四断点裁决(v1 核心先通,用户 AFK 按判据,回来可推翻)**:①media-gstreamer 按目标条件 feature(windows v1 去启;glib/gst 12 crate 栈独立后续波)②addrinfo.rs Windows 实现(GetAddrInfoW,ec2 已派)③libffi-sys 上游 bug(HOST cfg 分派错误)bao fork 根治+issue 草稿(ew4 已派)④shim.exe 工件构建时生成(s1a 已派)。三合同并发。
