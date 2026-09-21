@@ -1995,3 +1995,7 @@ wsroot=/opt/bao-win-cross(634M 全断言过+无空格 symlink);`scripts/win-cros
 ### s1a 链式完成:bun_sys 解锁,全图收敛单点(656e9a77)
 
 O_CLOEXEC→O_NOINHERIT 每平台旗标+bun_sys 死 import 清;libuv_sys 经 env 脚本确认绿;声明线探针:libuv_sys/sys 绿,io/event_loop/zlib/crash_handler 四 crate 均恰剩 uws build script 一错(传递性)。**Windows 全图收敛单点=usockets 吸收(em3 在途)**——其过则四 crate 连锁解封。msvc 已解锁:alloc/core/safety/paths/collections/sys/libuv_sys。
+
+### W0 farm 双路由分层完成(er0,0f426af+5d20e75,2026-09-21)
+
+mingw(gcc-mingw-w64 钉版)+xwin 0.10.0(sha256 双钉,--accept-license 显式;farm-xwin 卷:splat 630M 真件在位,§8 分层=MSVC 内容全在卷零混装)+双 rustup target 入共享工具链卷;首建揭出 apt.llvm.org 拆包缺件(clang-cl wrapper/lld)→lld-20+符号链修复;四件套实测(clang-cl 20.1.8/lld-link/mingw-gcc 13/xwin);正本双 commit,服务器 diff 清零。**Windows 波 W 面盘点:W0 farm✅+host✅(.200 docker)/W1 链✅至 uws 门/W1.5 env✅/W2✅/W2.5✅/W4 供给✅+臂 2/3(等 em3)/W5✅(同门)。唯一关键路径=em3 usockets 吸收。**
