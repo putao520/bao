@@ -153,3 +153,6 @@ bao_bundler = { path = "../bao_bundler", version = "^0.2.0" }
 # process isolation comes from cargo-nextest (one process per #[test]); use
 # `cargo nextest run -p bun_runtime -E 'test(buffer_conformance)'` to scope a
 # run. No per-file [[test]] targets are declared anymore.
+
+[target.'cfg(windows)'.dependencies]
+bun_windows_sys.workspace = true

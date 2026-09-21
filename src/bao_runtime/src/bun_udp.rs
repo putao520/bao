@@ -26,6 +26,15 @@ use bun_uws_sys::udp::PacketBuffer;
 use bun_uws_sys::udp::Socket as UdpSocket;
 
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
+// Platform socket-type namespace: the winsock mirrors in
+// bun_windows_sys::ws2_32 carry POSIX field names and identical layouts
+// (size/align-asserted), so every producer/consumer below is cfg-blind.
+#[cfg(unix)]
+use libc::{in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6};
+#[cfg(windows)]
+use bun_windows_sys::ws2_32::{
+    in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6,
+};
 
 // ──────────────────── ID counter ────────────────────
 
@@ -145,7 +154,7 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
 /// Build a libc sockaddr_storage from host:port.
 /// Returns the address length, or 0 on parse failure.
 /// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
-fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -> usize {
+fn build_sockaddr(host: &str, port: u16, storage: &mut sockaddr_storage) -> usize {
     let addr: ::std::net::SocketAddr = match host.parse() {
         Ok(a) => a,
         Err(_) => match format!("{}:{}", host, port).parse() {
@@ -155,10 +164,10 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
     };
     match addr {
         ::std::net::SocketAddr::V4(v4) => {
-            let sa = libc::sockaddr_in {
-                sin_family: libc::AF_INET as u16,
+            let sa = sockaddr_in {
+                sin_family: AF_INET as u16,
                 sin_port: port.to_be(),
-                sin_addr: libc::in_addr {
+                sin_addr: in_addr {
                     s_addr: u32::from(*v4.ip()).to_be(),
                 },
                 sin_zero: [0; 8],
@@ -166,24 +175,24 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
             let sa_bytes = unsafe {
                 ::std::slice::from_raw_parts(
                     ::std::ptr::from_ref(&sa).cast::<u8>(),
-                    ::std::mem::size_of::<libc::sockaddr_in>(),
+                    ::std::mem::size_of::<sockaddr_in>(),
                 )
             };
             let storage_bytes = unsafe {
                 ::std::slice::from_raw_parts_mut(
                     storage as *mut _ as *mut u8,
-                    ::std::mem::size_of::<libc::sockaddr_storage>(),
+                    ::std::mem::size_of::<sockaddr_storage>(),
                 )
             };
             storage_bytes[..sa_bytes.len()].copy_from_slice(sa_bytes);
             sa_bytes.len()
         }
         ::std::net::SocketAddr::V6(v6) => {
-            let sa = libc::sockaddr_in6 {
-                sin6_family: libc::AF_INET6 as u16,
+            let sa = sockaddr_in6 {
+                sin6_family: AF_INET6 as u16,
                 sin6_port: port.to_be(),
                 sin6_flowinfo: 0,
-                sin6_addr: libc::in6_addr {
+                sin6_addr: in6_addr {
                     s6_addr: v6.ip().octets(),
                 },
                 sin6_scope_id: 0,
@@ -191,13 +200,13 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
             let sa_bytes = unsafe {
                 ::std::slice::from_raw_parts(
                     ::std::ptr::from_ref(&sa).cast::<u8>(),
-                    ::std::mem::size_of::<libc::sockaddr_in6>(),
+                    ::std::mem::size_of::<sockaddr_in6>(),
                 )
             };
             let storage_bytes = unsafe {
                 ::std::slice::from_raw_parts_mut(
                     storage as *mut _ as *mut u8,
-                    ::std::mem::size_of::<libc::sockaddr_storage>(),
+                    ::std::mem::size_of::<sockaddr_storage>(),
                 )
             };
             storage_bytes[..sa_bytes.len()].copy_from_slice(sa_bytes);
@@ -257,15 +266,15 @@ unsafe fn reject_udp_promise(cx: *mut JSContext, promise: *mut JSObject, msg: &s
 /// Extract a sockaddr_storage from a peer pointer (from PacketBuffer::get_peer).
 /// Returns (hostname_string, port) or None on failure.
 /// @trace REQ-BAO-API-017 [api:Bun.udpSocket]
-unsafe fn parse_peer_addr(peer: &libc::sockaddr_storage) -> Option<(String, u16)> {
+unsafe fn parse_peer_addr(peer: &sockaddr_storage) -> Option<(String, u16)> {
     let family = peer.ss_family as i32;
-    if family == libc::AF_INET {
-        let peer4 = peer as *const _ as *const libc::sockaddr_in;
+    if family == AF_INET {
+        let peer4 = peer as *const _ as *const sockaddr_in;
         let port = u16::from_be((*peer4).sin_port);
         let ip = ::std::net::Ipv4Addr::from(u32::from_be((*peer4).sin_addr.s_addr));
         Some((format!("{}", ip), port))
-    } else if family == libc::AF_INET6 {
-        let peer6 = peer as *const _ as *const libc::sockaddr_in6;
+    } else if family == AF_INET6 {
+        let peer6 = peer as *const _ as *const sockaddr_in6;
         let port = u16::from_be((*peer6).sin6_port);
         let ip = ::std::net::Ipv6Addr::from((*peer6).sin6_addr.s6_addr);
         Some((format!("{}", ip), port))
@@ -697,7 +706,7 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         };
 
         // Build sockaddr for target address (only for unconnected)
-        let mut addr_storage: libc::sockaddr_storage = unsafe { ::std::mem::zeroed() };
+        let mut addr_storage: sockaddr_storage = unsafe { ::std::mem::zeroed() };
         let addr_ptr: *const ::std::ffi::c_void = if is_connected {
             ::std::ptr::null()
         } else {
@@ -778,7 +787,7 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         // Collect payloads, lengths, addresses
         let mut payloads: Vec<*const u8> = Vec::with_capacity(arr_len);
         let mut lengths: Vec<usize> = Vec::with_capacity(arr_len);
-        let mut addrs: Vec<libc::sockaddr_storage> = Vec::with_capacity(arr_len);
+        let mut addrs: Vec<sockaddr_storage> = Vec::with_capacity(arr_len);
         let mut addr_ptrs: Vec<*const ::std::ffi::c_void> = Vec::with_capacity(arr_len);
 
         let stride = if is_connected { 1 } else { 3 };
@@ -847,7 +856,7 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
                     "127.0.0.1".to_string()
                 };
 
-                let mut storage: libc::sockaddr_storage = ::std::mem::zeroed();
+                let mut storage: sockaddr_storage = ::std::mem::zeroed();
                 let alen = build_sockaddr(&pkt_addr, pkt_port, &mut storage);
                 if alen == 0 {
                     addr_ptrs.push(::std::ptr::null());
@@ -1226,7 +1235,7 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             return true;
         }
 
-        let mut iface_storage: libc::sockaddr_storage = ::std::mem::zeroed();
+        let mut iface_storage: sockaddr_storage = ::std::mem::zeroed();
         if argc > 0 && (*args.get(0).ptr).is_string() {
             let addr_str = crate::js_to_rust_string(cx, *args.get(0).ptr);
             let alen = build_sockaddr(&addr_str, 0, &mut iface_storage);
@@ -1277,7 +1286,7 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         }
 
         // Parse address
-        let mut addr_storage: libc::sockaddr_storage = ::std::mem::zeroed();
+        let mut addr_storage: sockaddr_storage = ::std::mem::zeroed();
         if argc > 0 && (*args.get(0).ptr).is_string() {
             let addr_str = crate::js_to_rust_string(cx, *args.get(0).ptr);
             let alen = build_sockaddr(&addr_str, 0, &mut addr_storage);
@@ -1291,8 +1300,8 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         }
 
         // Optional interface
-        let mut iface_storage: libc::sockaddr_storage = ::std::mem::zeroed();
-        let iface_opt: Option<&libc::sockaddr_storage> =
+        let mut iface_storage: sockaddr_storage = ::std::mem::zeroed();
+        let iface_opt: Option<&sockaddr_storage> =
             if argc > 1 && (*args.get(1).ptr).is_string() {
                 let iface_str = crate::js_to_rust_string(cx, *args.get(1).ptr);
                 let ilen = build_sockaddr(&iface_str, 0, &mut iface_storage);

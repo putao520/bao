@@ -39,6 +39,20 @@ pub const FALSE: BOOL = 0;
 pub const TRUE: BOOL = 1;
 pub const INVALID_HANDLE_VALUE: HANDLE = usize::MAX as isize as HANDLE;
 
+/// `GetStdHandle` `nStdHandle` selectors (`processenv.h`): STD_INPUT_HANDLE
+/// = (DWORD)-10, STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12.
+pub const STD_INPUT_HANDLE: DWORD = 0xFFFF_FFF6;
+pub const STD_OUTPUT_HANDLE: DWORD = 0xFFFF_FFF5;
+pub const STD_ERROR_HANDLE: DWORD = 0xFFFF_FFF4;
+
+/// `SetConsoleMode`/`GetConsoleMode` flags (`wincon.h`).
+pub const ENABLE_PROCESSED_INPUT: DWORD = 0x0001;
+pub const ENABLE_LINE_INPUT: DWORD = 0x0002;
+pub const ENABLE_ECHO_INPUT: DWORD = 0x0004;
+pub const ENABLE_PROCESSED_OUTPUT: DWORD = 0x0001;
+pub const ENABLE_WRAP_AT_EOL_OUTPUT: DWORD = 0x0002;
+pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct COORD {
@@ -347,6 +361,14 @@ pub const PIPE_ACCESS_DUPLEX: DWORD = 0x0000_0003;
 pub const PIPE_TYPE_BYTE: DWORD = 0x0000_0000;
 pub const PIPE_READMODE_BYTE: DWORD = 0x0000_0000;
 pub const PIPE_WAIT: DWORD = 0x0000_0000;
+
+// `CreateNamedPipeW`/`ConnectNamedPipe` result & error codes (`winerror.h`).
+pub const ERROR_PIPE_CONNECTED: DWORD = 539;
+pub const ERROR_PIPE_BUSY: DWORD = 231;
+pub const ERROR_BROKEN_PIPE: DWORD = 109;
+pub const ERROR_NO_DATA: DWORD = 232;
+pub const ERROR_MORE_DATA: DWORD = 234;
+pub const FILE_FLAG_FIRST_PIPE_INSTANCE: DWORD = 0x0008_0000;
 
 /// `CreateSymbolicLinkW` dwFlags (`winbase.h`).
 pub const SYMBOLIC_LINK_FLAG_DIRECTORY: DWORD = 0x1;
@@ -710,6 +732,14 @@ pub mod kernel32 {
             nDefaultTimeOut: DWORD,
             lpSecurityAttributes: *mut c_void,
         ) -> HANDLE;
+        /// `ConnectNamedPipe` (`namedpipeapi.h`) — server side: wait for a
+        /// client to connect. Returns 0 on failure; with an async-less sync
+        /// handle, `GetLastError()` == `ERROR_PIPE_CONNECTED` means the client
+        /// already connected (success).
+        pub fn ConnectNamedPipe(hNamedPipe: HANDLE, lpOverlapped: *mut c_void) -> BOOL;
+        /// `DisconnectNamedPipe` (`namedpipeapi.h`) — server side: sever the
+        /// client end without closing the server handle.
+        pub fn DisconnectNamedPipe(hNamedPipe: HANDLE) -> BOOL;
         /// `AddVectoredExceptionHandler` (`errhandlingapi.h`).
         pub fn AddVectoredExceptionHandler(
             First: u32,
@@ -1048,6 +1078,8 @@ pub mod ws2_32 {
         /// `WSAPoll` (`winsock2.h`). Returns count of ready fds, 0 on timeout,
         /// or `SOCKET_ERROR` (-1) on failure (`WSAGetLastError` for the code).
         pub fn WSAPoll(fdArray: *mut WSAPOLLFD, fds: u32, timeout: c_int) -> c_int;
+    /// `ioctlsocket` (`winsock2.h`) — non-blocking toggle via `FIONBIO`.
+    pub fn ioctlsocket(s: usize, cmd: i32, argp: *mut u32) -> c_int;
     }
 
     /// `WSAPOLLFD` (`winsock2.h`). `fd` is a `SOCKET` (= `UINT_PTR`).
@@ -1061,6 +1093,16 @@ pub mod ws2_32 {
     pub const SOCKET_ERROR: c_int = -1;
     /// `POLLWRNORM` (`winsock2.h`) — `std.posix.POLL.WRNORM` on Windows.
     pub const POLLWRNORM: i16 = 0x0010;
+    // poll-compat flags (winsock2.h values — note POLLIN/POLLERR/HUP/NVAL
+    // differ numerically from POSIX; consumers must go through these consts).
+    pub const POLLIN: i16 = 0x0300; // POLLRDNORM | POLLRDBAND
+    pub const POLLOUT: i16 = 0x0010; // == POLLWRNORM
+    pub const POLLERR: i16 = 0x0001;
+    pub const POLLHUP: i16 = 0x0002;
+    pub const POLLNVAL: i16 = 0x4000;
+    pub const POLLRDHUP: i16 = 0x2000;
+    /// `FIONBIO` (`winsock2.h`): 0x8004667E.
+    pub const FIONBIO: i32 = -2147195266i32;
 }
 pub use ws2_32::WSAGetLastError;
 

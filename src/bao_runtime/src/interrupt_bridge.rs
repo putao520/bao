@@ -47,17 +47,45 @@
 //! `#[doc(hidden)]` — NOT a stable public API commitment (SM-EVOLUTION #24
 //! S1 CLI wiring; one bridge per process, CLI lifecycle only).
 
+/// # Windows arm (SetConsoleCtrlHandler)
+///
+/// The POSIX arm uses a self-pipe because `cancel()` is not
+/// async-signal-safe. Windows has no signal handlers to be safe in:
+/// `SetConsoleCtrlHandler` handlers run on a dedicated thread in **normal
+/// context**, so the handler performs the armed-`cancel()` / eaten-mark
+/// decision directly — no pipe, no watcher thread, same `Shared` machinery
+/// and the same swallow-then-re-raise guarantee (removing the handler and
+/// re-issuing `GenerateConsoleCtrlEvent` hands the event to the default
+/// disposition, which terminates the process — the Ctrl-C the user
+/// expected). This mirrors upstream bun's windows CTRL_C face
+/// (oven-sh/bun 9dd73746c7 " CTRL_C_EVENT returned to the script").
+#[cfg(windows)]
+mod win {
+    pub const CTRL_C_EVENT: u32 = 0;
+    pub type Handler = unsafe extern "system" fn(::std::ffi::c_uint) -> i32;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn SetConsoleCtrlHandler(handlerroutine: Option<Handler>, add: i32) -> i32;
+        pub safe fn GenerateConsoleCtrlEvent(dwctrlevent: u32, dwprocessgroupid: u32) -> i32;
+    }
+}
+
+#[cfg(not(windows))]
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+#[cfg(not(windows))]
+use std::sync::atomic::AtomicI32;
+#[cfg(not(windows))]
 use std::thread::JoinHandle;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use bao_engine::execution_control::ExecutionControl;
 
 /// Write end of the self-pipe, published for the signal handler.
 /// -1 = no bridge installed. Relaxed load in the handler is sufficient: a
 /// torn/stale read at worst misses one byte (the pipe is torn down only when
-/// no handler can fire anymore).
+/// no handler can fire anymore). POSIX arm only.
+#[cfg(not(windows))]
 static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// One bridge per process (CLI lifecycle). Fail-closed on double install.
@@ -71,7 +99,8 @@ struct Shared {
     eaten_unhandled: AtomicBool,
 }
 
-/// The entire signal context: one async-signal-safe `write(2)`.
+/// The entire signal context: one async-signal-safe `write(2)`. POSIX arm.
+#[cfg(not(windows))]
 extern "C" fn bridge_sigint_handler(_sig: libc::c_int) {
     let fd = PIPE_WRITE_FD.load(Ordering::Relaxed);
     if fd >= 0 {
@@ -88,6 +117,7 @@ extern "C" fn bridge_sigint_handler(_sig: libc::c_int) {
 
 /// Watcher thread body: pipe byte → `cancel()` on the armed control, or mark
 /// the SIGINT unhandled. Owns `read_fd` and closes it on exit (every path).
+#[cfg(not(windows))]
 fn watcher_loop(read_fd: RawFd, shared: &Shared) {
     let mut byte = [0u8; 1];
     loop {
@@ -122,9 +152,35 @@ fn watcher_loop(read_fd: RawFd, shared: &Shared) {
     }
 }
 
+/// Windows arm body: runs in normal thread context (console handler
+/// thread), so the armed decision is made inline — cancel when a control is
+/// armed, otherwise record the event for Drop's re-issue.
+#[cfg(windows)]
+extern "system" fn bridge_ctrl_handler(ctrl_type: ::std::ffi::c_uint) -> i32 {
+    if ctrl_type != win::CTRL_C_EVENT {
+        return 0; // not ours — fall through to other handlers / default
+    }
+    if let Some(shared) = SHARED.get() {
+        let guard = shared.control.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().is_some() {
+            guard.as_ref().unwrap().cancel();
+        } else {
+            drop(guard);
+            shared.eaten_unhandled.store(true, Ordering::Release);
+        }
+        return 1; // handled
+    }
+    0
+}
+
+#[cfg(windows)]
+static SHARED: ::std::sync::OnceLock<Arc<Shared>> = ::std::sync::OnceLock::new();
+
 /// SIGINT interception bridge. `install()` → `arm(&control)` before the
 /// controlled entry → `disarm()` after it returns → `Drop` (or scope exit)
 /// uninstalls the handler and re-raises any swallowed-but-unhandled SIGINT.
+/// POSIX arm: pipe + watcher thread + saved sigaction for Drop restore.
+#[cfg(not(windows))]
 pub struct InterruptBridge {
     shared: Arc<Shared>,
     watcher: Option<JoinHandle<()>>,
@@ -132,10 +188,18 @@ pub struct InterruptBridge {
     prev_action: libc::sigaction,
 }
 
+/// Windows arm: console ctrl handler only — no pipe/watcher (the handler
+/// runs in normal context and decides inline).
+#[cfg(windows)]
+pub struct InterruptBridge {
+    shared: Arc<Shared>,
+}
+
 #[doc(hidden)]
 impl InterruptBridge {
     /// Install the SIGINT handler + self-pipe + watcher thread. At most one
     /// bridge per process (panics otherwise — CLI lifecycle is singleton).
+    #[cfg(not(windows))]
     pub fn install() -> Self {
         assert!(
             !BRIDGE_ACTIVE.swap(true, Ordering::AcqRel),
@@ -191,6 +255,34 @@ impl InterruptBridge {
         }
     }
 
+    /// Windows install: register the console ctrl handler. At most one
+    /// bridge per process (panics otherwise — CLI lifecycle is singleton).
+    #[cfg(windows)]
+    pub fn install() -> Self {
+        assert!(
+            !BRIDGE_ACTIVE.swap(true, Ordering::AcqRel),
+            "InterruptBridge: at most one bridge per process"
+        );
+        let shared = Arc::new(Shared {
+            control: Mutex::new(None),
+            eaten_unhandled: AtomicBool::new(false),
+        });
+        // Handler registered before the Shared is published: the handler
+        // only reads SHARED, and SetConsoleCtrlHandler can fire the moment
+        // it succeeds, so publish first would leave a window where a Ctrl-C
+        // sees no Shared and is dropped on the floor. Publishing before
+        // registration means the handler may observe an empty control (None)
+        // — an eaten-unhandled event Drop re-raises, never a lost cancel.
+        let shared_clone = shared.clone();
+        let _ = SHARED.set(shared_clone);
+        assert_ne!(
+            unsafe { win::SetConsoleCtrlHandler(Some(bridge_ctrl_handler), 1) },
+            0,
+            "InterruptBridge: SetConsoleCtrlHandler failed"
+        );
+        InterruptBridge { shared }
+    }
+
     /// Arm: from now on, SIGINT cancels `control` (the in-flight controlled
     /// entry consumes the signal; see the module doc).
     pub fn arm(&self, control: &ExecutionControl) {
@@ -204,6 +296,7 @@ impl InterruptBridge {
     }
 }
 
+#[cfg(not(windows))]
 impl Drop for InterruptBridge {
     fn drop(&mut self) {
         // 1. Restore the previous SIGINT disposition FIRST — after this no
@@ -233,6 +326,27 @@ impl Drop for InterruptBridge {
             // SAFETY: raise(2) targets the calling process.
             unsafe {
                 libc::raise(libc::SIGINT);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for InterruptBridge {
+    fn drop(&mut self) {
+        // 1. Remove our handler FIRST — after this new events fall to the
+        //    other handlers / default disposition, never to us.
+        unsafe {
+            win::SetConsoleCtrlHandler(Some(bridge_ctrl_handler), 0);
+        }
+        BRIDGE_ACTIVE.store(false, Ordering::Release);
+        // 2. Faithful default: re-issue a Ctrl-C we intercepted but could
+        //    not deliver to an armed control. With our handler removed, the
+        //    event hits the default disposition — the process dies by
+        //    Ctrl-C exactly as it would have without the bridge.
+        if self.shared.eaten_unhandled.load(Ordering::Acquire) {
+            unsafe {
+                win::GenerateConsoleCtrlEvent(win::CTRL_C_EVENT, 0);
             }
         }
     }

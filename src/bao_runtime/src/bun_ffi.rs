@@ -237,11 +237,83 @@ unsafe extern "C" fn ffi_callback_dispatch(
 }
 
 /// FfiLibrary wraps a dlopen handle.
+///
+/// Windows arm: `LoadLibraryW`/`GetProcAddress`/`FreeLibrary` carry the same
+/// three operations (open / symbol / close) — the upstream bun FFI face
+/// resolves native libraries through the wide loader there too
+/// (src/bun.js/module_loader uses the W loader for byte-faithful non-ASCII
+/// paths). `RTLD_NOW|RTLD_LOCAL` has no flag mapping: LoadLibraryW resolves
+/// symbols eagerly and keeps the handle namespace private to the process by
+/// default.
 pub struct FfiLibrary {
     handle: *mut ::std::ffi::c_void,
 }
 
+/// Win32 loader externs for the windows arm (declared locally — the rest of
+/// the workspace consumes them from `bun_sys::windows`/`bun_windows_sys`, but
+/// bun_ffi only needs these three and stays tier-clean otherwise).
+#[cfg(windows)]
+mod loader {
+    use ::std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn GetLastError() -> u32;
+        pub safe fn LoadLibraryW(lplibfilename: *const u16) -> *mut c_void;
+        pub safe fn FreeLibrary(hlibmodule: *mut c_void) -> i32;
+        pub safe fn GetProcAddress(hmodule: *mut c_void, lpprocname: *const u8) -> *mut c_void;
+        pub safe fn FormatMessageW(
+            dwflags: u32,
+            lpsource: *const c_void,
+            dwmessageid: u32,
+            dwlanguageid: u32,
+            lpbuffer: *mut u16,
+            nsize: u32,
+            arguments: *mut i8,
+        ) -> u32;
+    }
+    pub const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x0000_1000;
+    pub const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 0x0000_0200;
+}
+
+/// Last-error text via FormatMessageW (the dlerror() equivalent on windows).
+#[cfg(windows)]
+fn last_error_message() -> String {
+    use loader::{FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS};
+    let code = unsafe { loader::GetLastError() };
+    let mut buf = [0u16; 512];
+    let n = unsafe {
+        loader::FormatMessageW(
+            FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            ::std::ptr::null(),
+            code,
+            0,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            ::std::ptr::null_mut(),
+        )
+    };
+    if n == 0 {
+        return format!("loader error {code}");
+    }
+    String::from_utf16_lossy(&buf[..n as usize]).trim_end().to_string()
+}
+
 impl FfiLibrary {
+    #[cfg(windows)]
+    pub fn dlopen(path: &str) -> Result<Self, String> {
+        use ::std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = ::std::ffi::OsStr::new(path)
+            .encode_wide()
+            .chain(::std::iter::once(0))
+            .collect();
+        let handle = unsafe { loader::LoadLibraryW(wide.as_ptr()) };
+        if handle.is_null() {
+            return Err(last_error_message());
+        }
+        Ok(Self { handle })
+    }
+
+    #[cfg(not(windows))]
     pub fn dlopen(path: &str) -> Result<Self, String> {
         let c_path = ZBox::from_bytes(path.as_bytes());
         let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
@@ -261,6 +333,17 @@ impl FfiLibrary {
         Ok(Self { handle })
     }
 
+    #[cfg(windows)]
+    pub fn close(&mut self) -> Result<(), String> {
+        if self.handle.is_null() {
+            return Err("Library already closed".into());
+        }
+        unsafe { loader::FreeLibrary(self.handle) };
+        self.handle = ::std::ptr::null_mut();
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
     pub fn close(&mut self) -> Result<(), String> {
         if self.handle.is_null() {
             return Err("Library already closed".into());
@@ -274,6 +357,24 @@ impl FfiLibrary {
         self.handle.is_null()
     }
 
+    #[cfg(windows)]
+    pub fn symbol(&self, name: &str) -> Result<*mut ::std::ffi::c_void, String> {
+        if self.handle.is_null() {
+            return Err("Library is closed".into());
+        }
+        // GetProcAddress takes the narrow ANSI name; symbol names in the
+        // dlopen contract are ASCII identifiers, so a byte copy is the
+        // faithful form (no lossy widening involved).
+        let mut c_name = name.as_bytes().to_vec();
+        c_name.push(0);
+        let sym = unsafe { loader::GetProcAddress(self.handle, c_name.as_ptr()) };
+        if sym.is_null() {
+            return Err(last_error_message());
+        }
+        Ok(sym)
+    }
+
+    #[cfg(not(windows))]
     pub fn symbol(&self, name: &str) -> Result<*mut ::std::ffi::c_void, String> {
         if self.handle.is_null() {
             return Err("Library is closed".into());
@@ -298,9 +399,17 @@ impl FfiLibrary {
 impl Drop for FfiLibrary {
     fn drop(&mut self) {
         if !self.handle.is_null() {
+            // POSIX: dlclose. Windows: FreeLibrary — same release contract
+            // (refcounted loader handle, both are idempotent after nulling).
+            #[cfg(not(windows))]
             unsafe {
                 libc::dlclose(self.handle);
             }
+            #[cfg(windows)]
+            unsafe {
+                loader::FreeLibrary(self.handle);
+            }
+            self.handle = ::std::ptr::null_mut();
         }
     }
 }

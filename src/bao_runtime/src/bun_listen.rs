@@ -30,6 +30,15 @@ use bun_uws_sys::udp::Socket as UdpSocket;
 use bun_uws_sys::{CloseCode, ConnectResult, Loop, SocketKind, us_socket_t};
 
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
+// Platform socket-type namespace: the winsock mirrors in
+// bun_windows_sys::ws2_32 carry POSIX field names and identical layouts
+// (size/align-asserted), so every producer/consumer below is cfg-blind.
+#[cfg(unix)]
+use libc::{in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6};
+#[cfg(windows)]
+use bun_windows_sys::ws2_32::{
+    in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6,
+};
 
 // ──────────────────── ID counters ────────────────────
 
@@ -1987,7 +1996,7 @@ unsafe extern "C" fn bun_udp_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         };
 
         // Build sockaddr for target address
-        let mut addr_storage: libc::sockaddr_storage = unsafe { ::std::mem::zeroed() };
+        let mut addr_storage: sockaddr_storage = unsafe { ::std::mem::zeroed() };
         let addr_len = build_sockaddr(&target_addr, target_port, &mut addr_storage);
 
         if addr_len == 0 {
@@ -3322,7 +3331,7 @@ unsafe fn write_response_object(
 }
 
 /// Build a sockaddr_storage from host:port. Returns 0 on failure.
-fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -> usize {
+fn build_sockaddr(host: &str, port: u16, storage: &mut sockaddr_storage) -> usize {
     let addr: ::std::net::SocketAddr = match host.parse() {
         Ok(a) => a,
         Err(_) => match format!("{}:{}", host, port).parse() {
@@ -3332,10 +3341,10 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
     };
     match addr {
         ::std::net::SocketAddr::V4(v4) => {
-            let sa = libc::sockaddr_in {
-                sin_family: libc::AF_INET as u16,
+            let sa = sockaddr_in {
+                sin_family: AF_INET as u16,
                 sin_port: port.to_be(),
-                sin_addr: libc::in_addr {
+                sin_addr: in_addr {
                     s_addr: u32::from(*v4.ip()).to_be(),
                 },
                 sin_zero: [0; 8],
@@ -3343,24 +3352,24 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
             let sa_bytes = unsafe {
                 ::std::slice::from_raw_parts(
                     ::std::ptr::from_ref(&sa).cast::<u8>(),
-                    ::std::mem::size_of::<libc::sockaddr_in>(),
+                    ::std::mem::size_of::<sockaddr_in>(),
                 )
             };
             let storage_bytes = unsafe {
                 ::std::slice::from_raw_parts_mut(
                     storage as *mut _ as *mut u8,
-                    ::std::mem::size_of::<libc::sockaddr_storage>(),
+                    ::std::mem::size_of::<sockaddr_storage>(),
                 )
             };
             storage_bytes[..sa_bytes.len()].copy_from_slice(sa_bytes);
             sa_bytes.len()
         }
         ::std::net::SocketAddr::V6(v6) => {
-            let sa = libc::sockaddr_in6 {
-                sin6_family: libc::AF_INET6 as u16,
+            let sa = sockaddr_in6 {
+                sin6_family: AF_INET6 as u16,
                 sin6_port: port.to_be(),
                 sin6_flowinfo: 0,
-                sin6_addr: libc::in6_addr {
+                sin6_addr: in6_addr {
                     s6_addr: v6.ip().octets(),
                 },
                 sin6_scope_id: 0,
@@ -3368,13 +3377,13 @@ fn build_sockaddr(host: &str, port: u16, storage: &mut libc::sockaddr_storage) -
             let sa_bytes = unsafe {
                 ::std::slice::from_raw_parts(
                     ::std::ptr::from_ref(&sa).cast::<u8>(),
-                    ::std::mem::size_of::<libc::sockaddr_in6>(),
+                    ::std::mem::size_of::<sockaddr_in6>(),
                 )
             };
             let storage_bytes = unsafe {
                 ::std::slice::from_raw_parts_mut(
                     storage as *mut _ as *mut u8,
-                    ::std::mem::size_of::<libc::sockaddr_storage>(),
+                    ::std::mem::size_of::<sockaddr_storage>(),
                 )
             };
             storage_bytes[..sa_bytes.len()].copy_from_slice(sa_bytes);

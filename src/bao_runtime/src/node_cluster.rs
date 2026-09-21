@@ -1247,6 +1247,10 @@ unsafe extern "C" fn cluster_worker_send(
                             .map_err(|e| format!("channel lock poisoned: {}", e))
                             .and_then(|mut chan| {
                                 if let Some(fd) = fd_opt {
+                                    // windows RawFd = HANDLE (isize) — the JS
+                                    // slot carries the truncated numeric form.
+                                    #[cfg(windows)]
+                                    let fd = fd as isize;
                                     chan.send_handle(&json_str, fd)
                                         .map_err(|e| format!("send_handle: {}", e))
                                 } else {
@@ -1329,6 +1333,23 @@ unsafe extern "C" fn cluster_worker_disconnect(
 // __cp_ipc_send / __cp_ipc_recv reach it — powering process.send() and
 // process.on('message') on the worker side.
 
+/// Windows arm: the worker bootstrap wraps the primary-inherited IPC
+/// channel, which on posix is an fd-3 AF_UNIX socket. The windows IPC face
+/// (named pipes) lives with ipc_channel (child_process domain) — until that
+/// lands, fail closed at the JS boundary instead of pretending the fd
+/// inheritance exists.
+#[cfg(windows)]
+unsafe extern "C" fn cluster_worker_boot(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    JS_ReportErrorUTF8(
+        cx,
+        c"cluster worker bootstrap is not supported on this platform (windows IPC face pending)".as_ptr(),
+    );
+    args.rval().set(BooleanValue(false));
+    true
+}
+
+#[cfg(unix)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cluster_worker_boot(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1433,6 +1454,41 @@ unsafe extern "C" fn cluster_ipc_send(cx: *mut JSContext, argc: u32, vp: *mut JS
 
 // ─── Native: __cluster_worker_kill(pid, signal) ────────────────────────────
 
+/// Windows arm: no signals — every directed worker signal (SIGTERM/SIGKILL/
+/// others) maps to TerminateProcess, the upstream node semantics on windows.
+#[cfg(windows)]
+unsafe extern "C" fn cluster_worker_kill(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    use bun_sys::windows::OpenProcess;
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn TerminateProcess(hprocess: *mut ::std::ffi::c_void, uexitcode: u32) -> i32;
+        pub safe fn CloseHandle(hobject: *mut ::std::ffi::c_void) -> i32;
+    }
+    let args = CallArgs::from_vp(vp, argc);
+    let pid = if argc > 0 && (*args.get(0).ptr).is_int32() {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        0
+    };
+    if pid <= 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    // SAFETY: pid comes from the worker registry (numeric); the returned
+    // handle is closed immediately after the terminate attempt.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+    let ok = !handle.is_null();
+    if ok {
+        unsafe { TerminateProcess(handle, 1) };
+        // SAFETY: handle was just opened by our OpenProcess — sole owner.
+        unsafe { CloseHandle(handle) };
+    }
+    args.rval().set(BooleanValue(ok));
+    true
+}
+
+#[cfg(unix)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn cluster_worker_kill(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);

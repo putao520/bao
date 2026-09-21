@@ -26,14 +26,41 @@ use bun_uws_sys::{CloseCode, ListenSocket, Loop, SocketGroup, SocketKind, us_soc
 
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
 use crate::require::cache_builtin;
+// Platform socket-type namespace: the winsock mirrors in
+// bun_windows_sys::ws2_32 carry POSIX field names and identical layouts
+// (size/align-asserted), so every producer/consumer below is cfg-blind.
+#[cfg(unix)]
+use libc::{in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6};
+#[cfg(windows)]
+use bun_windows_sys::ws2_32::{
+    in6_addr, in_addr, sockaddr_in, sockaddr_in6, sockaddr_storage, AF_INET, AF_INET6,
+};
+// winsock's addrlen parameters are `int` (POSIX socklen_t = u32); the alias
+// keeps every signature/arith site cfg-blind.
+#[cfg(unix)]
+use socklen_t;
+#[cfg(windows)]
+type socklen_t = i32;
 
 // Direct FFI declaration for inet_ntop (not exported by libc crate on all platforms).
+// unix: libc ships inet_ntop; windows: ws2_32 exports the same name (Vista+).
+#[cfg(unix)]
 unsafe extern "C" {
     fn inet_ntop(
         af: ::std::ffi::c_int,
         src: *const ::std::ffi::c_void,
         dst: *mut ::std::ffi::c_char,
-        size: libc::socklen_t,
+        size: socklen_t,
+    ) -> *const ::std::ffi::c_char;
+}
+#[cfg(windows)]
+#[link(name = "ws2_32")]
+unsafe extern "system" {
+    fn inet_ntop(
+        af: ::std::ffi::c_int,
+        src: *const ::std::ffi::c_void,
+        dst: *mut ::std::ffi::c_char,
+        size: socklen_t,
     ) -> *const ::std::ffi::c_char;
 }
 
@@ -1258,36 +1285,36 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let port = unsafe { (*listen_ptr).get_local_port() };
 
     // Get local address via libc::getsockname as fallback
-    let mut addr: libc::sockaddr_storage = unsafe { ::std::mem::zeroed() };
-    let mut addr_len: libc::socklen_t =
-        ::std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    let mut addr: sockaddr_storage = unsafe { ::std::mem::zeroed() };
+    let mut addr_len: socklen_t =
+        ::std::mem::size_of::<sockaddr_storage>() as socklen_t;
     let fd = unsafe { (*listen_ptr).fd() };
 
     let (address_str, family_str, resolved_port) = if unsafe {
         libc::getsockname(
-            fd.native(),
+            fd.native() as _,
             &mut addr as *mut _ as *mut libc::sockaddr,
             &mut addr_len,
         )
     } == 0
     {
-        let actual_port = if addr.ss_family as i32 == libc::AF_INET6 {
-            let addr_in6 = &addr as *const _ as *const libc::sockaddr_in6;
+        let actual_port = if addr.ss_family as i32 == AF_INET6 {
+            let addr_in6 = &addr as *const _ as *const sockaddr_in6;
             unsafe { u16::from_be((*addr_in6).sin6_port) as i32 }
         } else {
-            let addr_in = &addr as *const _ as *const libc::sockaddr_in;
+            let addr_in = &addr as *const _ as *const sockaddr_in;
             unsafe { u16::from_be((*addr_in).sin_port) as i32 }
         };
-        if addr.ss_family as i32 == libc::AF_INET6 {
+        if addr.ss_family as i32 == AF_INET6 {
             // IPv6
-            let addr_in6 = &addr as *const _ as *const libc::sockaddr_in6;
+            let addr_in6 = &addr as *const _ as *const sockaddr_in6;
             let mut buf = [0u8; 64];
             let ok = unsafe {
                 inet_ntop(
-                    libc::AF_INET6,
+                    AF_INET6,
                     &(*addr_in6).sin6_addr as *const _ as *const ::std::ffi::c_void,
                     buf.as_mut_ptr() as *mut ::std::ffi::c_char,
-                    buf.len() as libc::socklen_t,
+                    buf.len() as socklen_t,
                 )
             };
             let addr_str = if ok.is_null() {
@@ -1300,14 +1327,14 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             (addr_str, "IPv6", actual_port)
         } else {
             // IPv4
-            let addr_in = &addr as *const _ as *const libc::sockaddr_in;
+            let addr_in = &addr as *const _ as *const sockaddr_in;
             let mut buf = [0u8; 32];
             let ok = unsafe {
                 inet_ntop(
-                    libc::AF_INET,
+                    AF_INET,
                     &(*addr_in).sin_addr as *const _ as *const ::std::ffi::c_void,
                     buf.as_mut_ptr() as *mut ::std::ffi::c_char,
-                    buf.len() as libc::socklen_t,
+                    buf.len() as socklen_t,
                 )
             };
             let addr_str = if ok.is_null() {

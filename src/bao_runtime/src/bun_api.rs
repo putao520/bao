@@ -1289,6 +1289,12 @@ unsafe fn populate_process_object(
         );
     }
     {
+        // windows: no portable parent-pid query — 0 = none (node parity for
+        // orphaned processes); residual: TOOLHELP snapshot if a real ppid is
+        // ever product-required.
+        #[cfg(windows)]
+        let ppid: i32 = 0;
+        #[cfg(not(windows))]
         let ppid = libc::getppid();
         let ppid_val = Int32Value(ppid as i32);
         rooted!(&in(cx) let p = ppid_val);
@@ -2018,28 +2024,46 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             // thread (drain-before-publish): output of any size is captured
             // without a 64KB pipe-buffer deadlock, and the exit info is
             // published only after both pipes hit EOF.
+            // posix: raw fds drive the pump thread (register_async_child).
+            // windows: the async pump face is the child_process domain's
+            // windows arm (handles, not fds) — until it lands, the pipes stay
+            // owned by the Child (pushed to SPAWNED_PROCS below for the
+            // process lifetime) and the child registers exit-only. REGISTERED
+            // GAP: piped output is not drained on windows yet; a child that
+            // fills its pipe blocks (visible, not silent corruption) — the
+            // pump faces land with the child_process windows wave.
+            #[cfg(unix)]
             use ::std::os::fd::AsRawFd;
+            #[cfg(unix)]
             let stdout_pipe = child.stdout.take();
+            #[cfg(unix)]
             let stderr_pipe = child.stderr.take();
-            let stdout_fd = stdout_pipe
-                .as_ref()
-                .map(|s| s.as_raw_fd())
-                .unwrap_or(-1);
-            let stderr_fd = stderr_pipe
-                .as_ref()
-                .map(|s| s.as_raw_fd())
-                .unwrap_or(-1);
+            #[cfg(unix)]
+            let stdout_fd = stdout_pipe.as_ref().map(|s| s.as_raw_fd()).unwrap_or(-1);
+            #[cfg(unix)]
+            let stderr_fd = stderr_pipe.as_ref().map(|s| s.as_raw_fd()).unwrap_or(-1);
+            #[cfg(windows)]
+            let stdout_fd: i32 = -1;
+            #[cfg(windows)]
+            let stderr_fd: i32 = -1;
             let piped_out = stdout_fd >= 0;
             let piped_err = stderr_fd >= 0;
             // ChildStdout/ChildStderr close their fd on drop; ownership
             // transfers to the pump thread (which closes at EOF) — forget
             // the wrappers so the fds stay open.
+            #[cfg(unix)]
             if let Some(s) = stdout_pipe {
                 ::std::mem::forget(s);
             }
+            #[cfg(unix)]
             if let Some(s) = stderr_pipe {
                 ::std::mem::forget(s);
             }
+            #[cfg(windows)]
+            let (stdout_pipe, stderr_pipe): (
+                Option<::std::process::ChildStdout>,
+                Option<::std::process::ChildStderr>,
+            ) = (None, None); // pipes stay owned by the Child (process lifetime)
             if !crate::node_child_process::register_async_child(pid, stdout_fd, stderr_fd, -1) {
                 // Pump thread failed to start (fail-closed): without it the
                 // pipes never drain — the child would block on a full pipe
@@ -2055,7 +2079,11 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                         libc::close(stderr_fd);
                     }
                 }
-                let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+                #[cfg(windows)]
+                let _killed = plat::kill(pid, plat::SIGKILL);
+                #[cfg(not(windows))]
+                let _killed = unsafe { libc::kill(pid, libc::SIGKILL) } == 0;
+                let _ = _killed;
                 JS_ReportErrorUTF8(
                     cx,
                     c"Bun.spawn(): failed to start the output pump thread".as_ptr(),
@@ -2484,13 +2512,43 @@ unsafe extern "C" fn subproc_kill(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         } else if v.is_string() {
             let name = crate::js_to_rust_string(cx, v).to_uppercase();
             match name.as_str() {
-                "SIGHUP" => libc::SIGHUP as i32,
+                "SIGHUP" => {
+                    #[cfg(windows)]
+                    let sig = plat::SIGHUP;
+                    #[cfg(not(windows))]
+                    let sig = libc::SIGHUP as i32;
+                    sig
+                }
                 "SIGINT" => libc::SIGINT as i32,
-                "SIGQUIT" => libc::SIGQUIT as i32,
+                "SIGQUIT" => {
+                    #[cfg(windows)]
+                    let sig = plat::SIGQUIT;
+                    #[cfg(not(windows))]
+                    let sig = libc::SIGQUIT as i32;
+                    sig
+                }
                 "SIGABRT" => libc::SIGABRT as i32,
-                "SIGKILL" => libc::SIGKILL as i32,
-                "SIGUSR1" => libc::SIGUSR1 as i32,
-                "SIGUSR2" => libc::SIGUSR2 as i32,
+                "SIGKILL" => {
+                    #[cfg(windows)]
+                    let sig = plat::SIGKILL;
+                    #[cfg(not(windows))]
+                    let sig = libc::SIGKILL as i32;
+                    sig
+                }
+                "SIGUSR1" => {
+                    #[cfg(windows)]
+                    let sig = plat::SIGUSR1;
+                    #[cfg(not(windows))]
+                    let sig = libc::SIGUSR1 as i32;
+                    sig
+                }
+                "SIGUSR2" => {
+                    #[cfg(windows)]
+                    let sig = plat::SIGUSR2;
+                    #[cfg(not(windows))]
+                    let sig = libc::SIGUSR2 as i32;
+                    sig
+                }
                 "SIGTERM" => libc::SIGTERM as i32,
                 _ => {
                     let msg = format!("Bun.spawn kill(): unknown signal name");
@@ -2508,6 +2566,9 @@ unsafe extern "C" fn subproc_kill(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 
     // SAFETY: pid > 0 and sig came from libc constants or a caller-supplied
     // i32 — the kernel validates both operands.
+    #[cfg(windows)]
+    let sent = plat::kill(pid, sig);
+    #[cfg(not(windows))]
     let sent = unsafe { libc::kill(pid, sig) } == 0;
     if sent {
         let this = args.thisv();
@@ -6152,6 +6213,9 @@ fn read_fd_all(fd: i32) -> ::std::result::Result<Vec<u8>, ::std::io::Error> {
     let mut buf = vec![0u8; 64 * 1024];
     let mut off: i64 = 0;
     loop {
+        #[cfg(windows)]
+        let n = plat::pread(fd, buf.as_mut_ptr() as *mut _, buf.len(), off);
+        #[cfg(not(windows))]
         let n = unsafe { libc::pread(fd, buf.as_mut_ptr() as *mut _, buf.len(), off) };
         if n < 0 {
             let err = ::std::io::Error::last_os_error();
@@ -6173,7 +6237,7 @@ fn read_fd_sequential(fd: i32) -> ::std::result::Result<Vec<u8>, ::std::io::Erro
     let mut out: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len() as _) };
         if n < 0 {
             return Err(::std::io::Error::last_os_error());
         }
@@ -6189,6 +6253,16 @@ fn pread_range(fd: i32, start: usize, len: usize) -> ::std::result::Result<Vec<u
     let mut out = vec![0u8; len];
     let mut filled = 0usize;
     while filled < len {
+        #[cfg(windows)]
+        let n = unsafe {
+            plat::pread(
+                fd,
+                out.as_mut_ptr().add(filled) as *mut _,
+                len - filled,
+                start as i64 + filled as i64,
+            )
+        };
+        #[cfg(not(windows))]
         let n = unsafe {
             libc::pread(
                 fd,
@@ -6213,6 +6287,9 @@ fn pread_range(fd: i32, start: usize, len: usize) -> ::std::result::Result<Vec<u
 /// the rest of the file is never touched).
 fn read_path_range(path: &str, start: usize, len: usize) -> ::std::result::Result<Vec<u8>, ::std::io::Error> {
     let c_path = ZBox::from_bytes(path.as_bytes());
+    #[cfg(windows)]
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | plat::O_NOINHERIT) };
+    #[cfg(not(windows))]
     let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
     if fd < 0 {
         return Err(::std::io::Error::last_os_error());
@@ -7552,6 +7629,9 @@ unsafe extern "C" fn process_kill(_cx: *mut JSContext, _argc: u32, vp: *mut JSVa
             }
         }
     }
+    #[cfg(windows)]
+    let _ = plat::kill(pid, sig_num);
+    #[cfg(not(windows))]
     let _ = libc::kill(pid, sig_num);
     args.rval().set(BooleanValue(true));
     true
@@ -7560,7 +7640,13 @@ unsafe extern "C" fn process_kill(_cx: *mut JSContext, _argc: u32, vp: *mut JSVa
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn process_umask(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
+    #[cfg(windows)]
+    let old = plat::umask(0o022);
+    #[cfg(not(windows))]
     let old = unsafe { libc::umask(0o022) };
+    #[cfg(windows)]
+    plat::umask(old);
+    #[cfg(not(windows))]
     unsafe { libc::umask(old) };
     args.rval().set(Int32Value(old as i32));
     true
@@ -7632,6 +7718,67 @@ unsafe extern "C" fn bun_exit(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     true
 }
 
+// ── per-platform process/fs primitives (cfg-blind face) ────────────────────
+// Windows twins for the POSIX-only libc calls in this module. Signal-number
+// consts that the windows CRT lacks carry their canonical POSIX values (the
+// numbers are stable POSIX ABI); directed delivery maps to TerminateProcess
+// (upstream node semantics on windows).
+#[cfg(windows)]
+mod plat {
+    use ::std::ffi::c_void;
+    pub const SIGHUP: i32 = 1;
+    pub const SIGQUIT: i32 = 3;
+    pub const SIGKILL: i32 = 9;
+    pub const SIGUSR1: i32 = 10;
+    pub const SIGUSR2: i32 = 12;
+    /// windows CRT `_O_NOINHERIT` — the O_CLOEXEC equivalent for CRT open().
+    pub const O_NOINHERIT: i32 = 0x0080;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn OpenProcess(dwdesiredaccess: u32, binherithandle: i32, dwprocessid: u32) -> *mut c_void;
+        pub safe fn TerminateProcess(hprocess: *mut c_void, uexitcode: u32) -> i32;
+        pub safe fn CloseHandle(hobject: *mut c_void) -> i32;
+    }
+    const PROCESS_TERMINATE: u32 = 0x0001;
+
+    pub fn kill(pid: i32, sig: i32) -> bool {
+        // No signal delivery on windows: every directed signal terminates.
+        let _ = sig;
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: pid is caller-supplied numeric; the handle is opened and
+        // closed within this call.
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+        if handle.is_null() {
+            return false;
+        }
+        let ok = unsafe { TerminateProcess(handle, 1) } != 0;
+        unsafe { CloseHandle(handle) };
+        ok
+    }
+
+    /// CRT `_pread` (UCRT) — the pread(2) equivalent.
+    pub fn pread(fd: i32, buf: *mut c_void, count: usize, offset: i64) -> isize {
+        #[link(name = "ucrt")]
+        unsafe extern "C" {
+            fn _pread(fd: i32, buf: *mut c_void, count: u32, offset: i64) -> isize;
+        }
+        unsafe { _pread(fd, buf, count as u32, offset) }
+    }
+
+    /// CRT `_umask` — mode masking differs (write bits only), matching the
+    /// upstream windows behavior.
+    pub fn umask(mode: u32) -> u32 {
+        #[link(name = "ucrt")]
+        unsafe extern "C" {
+            fn _umask(newmode: i32) -> i32;
+        }
+        (unsafe { _umask(mode as i32) }) as u32
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn bun_sleep_sync(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -7654,6 +7801,14 @@ unsafe extern "C" fn bun_sleep_sync(_cx: *mut JSContext, argc: u32, vp: *mut JSV
 // dependency.
 static BAO_PROCESS_START_NS: ::std::sync::OnceLock<Option<u64>> = ::std::sync::OnceLock::new();
 
+#[cfg(windows)]
+fn process_start_ns_since_boot() -> Option<u64> {
+    // /proc is absent on windows — the caller falls back to the
+    // first-call-anchored monotonic arm (existing documented degradation).
+    None
+}
+
+#[cfg(unix)]
 fn process_start_ns_since_boot() -> Option<u64> {
     let stat = ::std::fs::read_to_string("/proc/self/stat").ok()?;
     // Field 22 (starttime) sits after the last ')' (comm may contain spaces).
@@ -7668,6 +7823,12 @@ fn process_start_ns_since_boot() -> Option<u64> {
     Some(ticks * 1_000_000_000 / hz)
 }
 
+#[cfg(windows)]
+fn boottime_now_ns() -> Option<u64> {
+    None
+}
+
+#[cfg(unix)]
 fn boottime_now_ns() -> Option<u64> {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // CLOCK_BOOTTIME matches the /proc starttime reference frame.

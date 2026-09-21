@@ -2,7 +2,12 @@
 use ::std::cell::{Cell, RefCell};
 use ::std::collections::HashMap;
 use ::std::net::{TcpListener, TcpStream, ToSocketAddrs};
+// Platform raw-handle trait: posix fd vs windows SOCKET — the driver below
+// stores handles through the `drv::Raw` alias, so call sites stay cfg-blind.
+#[cfg(unix)]
 use ::std::os::fd::AsRawFd;
+#[cfg(windows)]
+use ::std::os::windows::io::AsRawSocket;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use ::std::sync::{Arc, Mutex, OnceLock};
@@ -482,10 +487,146 @@ enum DriverCmd {
     RemoveServer(u64),
 }
 
+// ── driver platform shim (cfg-blind face over posix poll / winsock WSAPoll) ──
+//
+// Upstream bun's windows TLS face rides the winsock event machinery; the
+// winsock twins keep the SAME wait semantics per fd class:
+//   poll(pollfd[], timeout)        ↔ WSAPoll(WSAPOLLFD[], timeout)
+//   POLLIN/POLLOUT/POLLERR/HUP/NVAL ↔ identical bit values in winsock
+//   pipe()+fcntl(O_NONBLOCK) wake   ↔ loopback TCP socket pair + FIONBIO
+//   read/write/close on the wake fd ↔ recv/send/closesocket
+#[cfg(windows)]
+mod drv {
+    use ::std::os::windows::io::AsRawSocket;
+    use bun_windows_sys::ws2_32::{
+        closesocket, ioctlsocket, recv, send, FIONBIO, SOCKET_ERROR, WSAPOLLFD, WSAPoll,
+    };
+    pub type Raw = usize;
+    pub type PollFd = WSAPOLLFD;
+    pub const POLLIN: i16 = ::bun_windows_sys::ws2_32::POLLIN;
+    pub const POLLOUT: i16 = ::bun_windows_sys::ws2_32::POLLOUT;
+    pub const POLLERR: i16 = ::bun_windows_sys::ws2_32::POLLERR;
+    pub const POLLHUP: i16 = ::bun_windows_sys::ws2_32::POLLHUP;
+    pub const POLLNVAL: i16 = ::bun_windows_sys::ws2_32::POLLNVAL;
+
+    pub fn raw_of_stream(s: &::std::net::TcpStream) -> Raw { s.as_raw_socket() as Raw }
+    pub fn raw_of_listener(l: &::std::net::TcpListener) -> Raw { l.as_raw_socket() as Raw }
+
+    pub fn make_wake_pair() -> Option<(Raw, Raw)> {
+        // Loopback TCP pair stands in for the posix wake pipe: the write end
+        // wakes the driver's poll; the read end is non-blocking for draining.
+        let listener = ::std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+        let write = ::std::net::TcpStream::connect(
+            listener.local_addr().ok()?,
+        )
+        .ok()?;
+        let (read, _) = listener.accept().ok()?;
+        let mut mode: u32 = 1; // FIONBIO
+        unsafe {
+            if ioctlsocket(read.as_raw_socket() as Raw, FIONBIO, &mut mode) == SOCKET_ERROR {
+                return None;
+            }
+        }
+        Some((read.as_raw_socket() as Raw, write.as_raw_socket() as Raw))
+    }
+
+    pub fn wake_write(fd: Raw, byte: &[u8]) {
+        unsafe { send(fd, byte.as_ptr().cast(), byte.len() as i32, 0) };
+    }
+
+    /// Drain pending wake bytes; non-blocking (FIONBIO read end).
+    pub fn drain(fd: Raw, buf: &mut [u8]) -> isize {
+        let n = unsafe { recv(fd, buf.as_mut_ptr().cast(), buf.len() as i32, 0) };
+        if n == -1 { 0 } else { n as isize }
+    }
+
+    pub fn wait(fds: *mut PollFd, n: usize, timeout: i32) -> i32 {
+        unsafe { WSAPoll(fds, n as u32, timeout) }
+    }
+
+    pub fn close_raw(fd: Raw) {
+        unsafe { closesocket(fd) };
+    }
+
+    pub fn read_raw(fd: Raw, buf: &mut [u8]) -> isize {
+        let n = unsafe { recv(fd, buf.as_mut_ptr().cast(), buf.len() as i32, 0) };
+        if n == -1 { -1 } else { n as isize }
+    }
+
+    pub fn write_raw(fd: Raw, buf: &[u8]) -> isize {
+        let n = unsafe { send(fd, buf.as_ptr().cast(), buf.len() as i32, 0) };
+        if n == -1 { -1 } else { n as isize }
+    }
+}
+
+#[cfg(unix)]
+mod drv {
+    pub type Raw = i32;
+    pub type PollFd = libc::pollfd;
+    pub const POLLIN: i16 = libc::POLLIN as i16;
+    pub const POLLOUT: i16 = libc::POLLOUT as i16;
+    pub const POLLERR: i16 = libc::POLLERR as i16;
+    pub const POLLHUP: i16 = libc::POLLHUP as i16;
+    pub const POLLNVAL: i16 = libc::POLLNVAL as i16;
+
+    pub fn raw_of_stream(s: &::std::net::TcpStream) -> Raw { s.as_raw_fd() }
+    pub fn raw_of_listener(l: &::std::net::TcpListener) -> Raw { l.as_raw_fd() }
+
+    pub fn make_wake_pair() -> Option<(Raw, Raw)> {
+        let mut fds = [-1i32; 2];
+        // SAFETY: fds is a valid 2-int out-buffer for pipe(2).
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // The wake-drain loop reads until EAGAIN — the READ end must be
+        // non-blocking or the drain would block (and deadlock the driver)
+        // once the pipe empties.
+        // SAFETY: fds[0] is a live pipe read end; F_SETFL only adds flags.
+        unsafe {
+            let flags = libc::fcntl(fds[0], libc::F_GETFL);
+            if flags < 0 || libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+                return None;
+            }
+        }
+        Some((fds[0], fds[1]))
+    }
+
+    pub fn wake_write(fd: Raw, byte: &[u8]) {
+        // SAFETY: wake_fd is a live pipe write end (owned by the OnceLock).
+        unsafe {
+            let _ = libc::write(fd, byte.as_ptr().cast::<core::ffi::c_void>(), 1);
+        }
+    }
+
+    pub fn drain(fd: Raw, buf: &mut [u8]) -> isize {
+        unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }
+    }
+
+    pub fn wait(fds: *mut PollFd, n: usize, timeout: i32) -> i32 {
+        // SAFETY: fds is a valid pollfd array for the duration of the call.
+        unsafe { libc::poll(fds, n as libc::nfds_t, timeout) }
+    }
+
+    pub fn close_raw(fd: Raw) {
+        unsafe { libc::close(fd) };
+    }
+
+    pub fn read_raw(fd: Raw, buf: &mut [u8]) -> isize {
+        unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }
+    }
+
+    pub fn write_raw(fd: Raw, buf: &[u8]) -> isize {
+        unsafe { libc::write(fd, buf.as_ptr().cast::<core::ffi::c_void>(), buf.len()) }
+    }
+}
+
 struct DriverHandle {
-    /// Write end of the wake pipe; a byte written here breaks the driver's
-    /// poll() so it picks up commands / queued writes promptly.
-    wake_fd: i32,
+    /// Write end of the wake pipe (posix) / wake socket (windows); a byte
+    /// written here breaks the driver's poll() so it picks up commands /
+    /// queued writes promptly.
+    wake_fd: drv::Raw,
     cmds: Mutex<Vec<DriverCmd>>,
 }
 
@@ -542,10 +683,7 @@ thread_local! {
 fn tls_driver_wake() {
     if let Some(h) = DRIVER.get() {
         let byte = [1u8];
-        // SAFETY: wake_fd is a live pipe write end (owned by the OnceLock).
-        unsafe {
-            let _ = libc::write(h.wake_fd, byte.as_ptr().cast::<core::ffi::c_void>(), 1);
-        }
+        drv::wake_write(h.wake_fd, &byte);
     }
 }
 
@@ -569,45 +707,27 @@ fn tls_driver_acquire() -> Option<&'static DriverHandle> {
     if let Some(h) = DRIVER.get() {
         return Some(h);
     }
-    let mut fds = [-1i32; 2];
-    // SAFETY: fds is a valid 2-int out-buffer for pipe(2).
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+    let Some((wake_read, wake_write)) = drv::make_wake_pair() else {
         return None;
-    }
-    // The wake-drain loop reads until EAGAIN — the READ end must be
-    // non-blocking or the drain would block (and deadlock the driver) once
-    // the pipe empties. The write end stays blocking (a 64K pipe buffer
-    // never fills with 1-byte wakes).
-    // SAFETY: fds[0] is a live pipe read end; F_SETFL only adds flags.
-    unsafe {
-        let flags = libc::fcntl(fds[0], libc::F_GETFL);
-        if flags < 0
-            || libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK) < 0
-        {
-            libc::close(fds[0]);
-            libc::close(fds[1]);
-            return None;
-        }
-    }
+    };
     let handle = DriverHandle {
-        wake_fd: fds[1],
+        wake_fd: wake_write,
         cmds: Mutex::new(Vec::new()),
     };
-    // SAFETY: fds[0] is the read end; the driver thread owns it exclusively.
+    // SAFETY: wake_read is the read end; the driver thread owns it
+    // exclusively.
     let spawned = ::std::thread::Builder::new()
         .name("bao-tls-driver".into())
-        .spawn(move || tls_driver_main(fds[0]));
+        .spawn(move || tls_driver_main(wake_read));
     match spawned {
         Ok(_) => {
             let _ = DRIVER.set(handle);
             DRIVER.get()
         }
         Err(_) => {
-            // SAFETY: both fds were just created by pipe(2) and are unused.
-            unsafe {
-                libc::close(fds[0]);
-                libc::close(fds[1]);
-            }
+            // SAFETY: both ends were just created and are unused.
+            drv::close_raw(wake_read);
+            drv::close_raw(wake_write);
             None
         }
     }
@@ -789,7 +909,7 @@ fn tls_sni_ctx_for(
 
 // ─── driver main loop ───────────────────────────────────────────────────
 
-fn tls_driver_main(wake_read_fd: i32) {
+fn tls_driver_main(wake_read_fd: drv::Raw) {
     let mut servers: HashMap<u64, DriverServer> = HashMap::new();
     let mut conns: HashMap<u64, DriverConn> = HashMap::new();
     let mut remove_queue: Vec<u64> = Vec::new();
@@ -887,18 +1007,18 @@ fn tls_driver_main(wake_read_fd: i32) {
             Listener(u64),
             Conn(u64),
         }
-        let mut fds: Vec<libc::pollfd> = Vec::with_capacity(2 + servers.len() + conns.len());
+        let mut fds: Vec<drv::PollFd> = Vec::with_capacity(2 + servers.len() + conns.len());
         let mut targets: Vec<Target> = Vec::with_capacity(fds.capacity());
-        fds.push(libc::pollfd {
+        fds.push(drv::PollFd {
             fd: wake_read_fd,
-            events: libc::POLLIN,
+            events: drv::POLLIN,
             revents: 0,
         });
         targets.push(Target::Wake);
         for ds in servers.values() {
-            fds.push(libc::pollfd {
-                fd: ds.listener.as_raw_fd(),
-                events: libc::POLLIN,
+            fds.push(drv::PollFd {
+                fd: drv::raw_of_listener(&ds.listener),
+                events: drv::POLLIN,
                 revents: 0,
             });
             targets.push(Target::Listener(ds.server_id));
@@ -906,14 +1026,14 @@ fn tls_driver_main(wake_read_fd: i32) {
         for conn in conns.values() {
             let mut events = 0;
             if !conn.parked_for_sni && !conn.finishing {
-                events |= libc::POLLIN;
+                events |= drv::POLLIN;
             }
             if !conn.out_buf.is_empty() {
-                events |= libc::POLLOUT;
+                events |= drv::POLLOUT;
             }
             if events != 0 {
-                fds.push(libc::pollfd {
-                    fd: conn.stream.as_raw_fd(),
+                fds.push(drv::PollFd {
+                    fd: drv::raw_of_stream(&conn.stream),
                     events,
                     revents: 0,
                 });
@@ -942,18 +1062,16 @@ fn tls_driver_main(wake_read_fd: i32) {
         }
 
         // ── 4. poll ─────────────────────────────────────────────────────
-        // SAFETY: fds is a valid pollfd array for the duration of the call.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
+        let ready = drv::wait(fds.as_mut_ptr(), fds.len(), timeout_ms);
 
         // ── 5. dispatch wake + commands first (writes/SNI may unblock
         //       conns regardless of socket readiness) ────────────────────
         if ready > 0 {
             if fds[0].revents != 0 {
                 let mut buf = [0u8; 64];
-                // SAFETY: drain the wake pipe (non-blocking is not set; the
-                // pipe only ever holds a few bytes, and writers never block
-                // on a 64-byte drain of a 64K pipe buffer).
-                while unsafe { libc::read(wake_read_fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+                // Drain the wake pipe/socket (read end is non-blocking; the
+                // loop runs until it reports would-block/empty).
+                while drv::drain(wake_read_fd, &mut buf) > 0 {}
             }
         }
 
@@ -967,7 +1085,7 @@ fn tls_driver_main(wake_read_fd: i32) {
                 match &targets[i] {
                     Target::Wake => {}
                     Target::Listener(server_id) => {
-                        if revents & libc::POLLIN != 0 {
+                        if revents & drv::POLLIN != 0 {
                             tls_driver_accept(*server_id, &mut servers, &mut conns);
                         }
                     }
@@ -978,11 +1096,11 @@ fn tls_driver_main(wake_read_fd: i32) {
                         }
                         {
                             let conn = conns.get_mut(&conn_id).unwrap();
-                            if revents & libc::POLLOUT != 0 {
+                            if revents & drv::POLLOUT != 0 {
                                 tls_conn_flush_out(conn);
                             }
                         }
-                        if revents & libc::POLLIN != 0 {
+                        if revents & drv::POLLIN != 0 {
                             let conn = conns.get_mut(&conn_id).unwrap();
                             if !tls_conn_read_and_drive(conn) {
                                 if let Some(mut conn) = conns.remove(&conn_id) {
@@ -991,7 +1109,7 @@ fn tls_driver_main(wake_read_fd: i32) {
                                 continue;
                             }
                         }
-                        if revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                        if revents & (drv::POLLERR | drv::POLLHUP | drv::POLLNVAL) != 0 {
                             // Error/hangup: drain any still-unread data,
                             // then tear the connection down.
                             let conn = conns.get_mut(&conn_id).unwrap();
@@ -1146,13 +1264,7 @@ fn tls_conn_read_and_drive(conn: &mut DriverConn) -> bool {
     let mut buf = [0u8; 16 * 1024];
     loop {
         // SAFETY: buf is a valid read buffer.
-        let n = unsafe {
-            libc::read(
-                conn.stream.as_raw_fd(),
-                buf.as_mut_ptr().cast::<core::ffi::c_void>(),
-                buf.len(),
-            )
-        };
+        let n = drv::read_raw(drv::raw_of_stream(&conn.stream), &mut buf);
         if n > 0 {
             conn.tls.feed(&buf[..n as usize]);
             continue;
@@ -1301,13 +1413,7 @@ fn tls_conn_flush_pending_writes(conn: &mut DriverConn) {
 fn tls_conn_flush_out(conn: &mut DriverConn) {
     while !conn.out_buf.is_empty() {
         // SAFETY: out_buf is a valid write buffer for the duration of the call.
-        let n = unsafe {
-            libc::write(
-                conn.stream.as_raw_fd(),
-                conn.out_buf.as_ptr().cast::<core::ffi::c_void>(),
-                conn.out_buf.len(),
-            )
-        };
+        let n = drv::write_raw(drv::raw_of_stream(&conn.stream), &conn.out_buf);
         if n > 0 {
             conn.out_buf.drain(..n as usize);
             continue;

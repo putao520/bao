@@ -77,7 +77,10 @@ unsafe extern "C" fn dgram_bind(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     match ::std::net::UdpSocket::bind(&bind_addr) {
         Ok(sock) => {
             let _ = sock.set_nonblocking(true);
+            #[cfg(unix)]
             let fd = sock.as_raw_fd();
+            #[cfg(windows)]
+            let fd = sock.as_raw_socket() as i32;
             let local = sock.local_addr().unwrap_or_else(|_| {
                 "::std::net::SocketAddr::from(([0,0,0,0], 0))"
                     .parse()
@@ -118,7 +121,12 @@ unsafe extern "C" fn dgram_bind(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     }
 }
 
+// Windows SOCKET (UINT_PTR) rides the same i32 slot for the JS surface —
+// real socket handles are small; the C send path takes the same value.
+#[cfg(unix)]
 use ::std::os::unix::io::AsRawFd;
+#[cfg(windows)]
+use ::std::os::windows::io::AsRawSocket;
 
 // ── Native __dgram_send_buf ──
 #[allow(unsafe_op_in_unsafe_fn)]
