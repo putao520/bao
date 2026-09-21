@@ -1955,3 +1955,7 @@ em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 �
 ### ew3 案卷结论:上游做完了(声明侧),bao 缺 C 供给(2026-09-21,/tmp+.plans/uv-gap-CASE.md)
 
 上游 origin/main=4af1842c8c:src/ 零 .zig,libuv 供给路径声明侧全 Rust(libuv_sys 3132L/108 extern+open_handles 228L);Windows x64/arm64 官方支持;C 侧=真 libuv fork @8023581113(1.51.0,37 .c)+2 win patch。**bao 已吸收声明链(125 cfg(windows) 文件,同版本镜像),真缺=C 符号供给零**(libuv_sys 纯声明;bun_uws_sys build.rs:101 exit(1)=#34;bao_uloop compile_error!=#35;mimalloc MSVC=#33)。路线三合同(C 侧零手写):①ew4 已派(vendor+cc 编译关 #34)②臂解锁③FFI 再同步(276→108 漂移,bao 独有 168=上游已删)。**最大边界**:mozjs configure 拒 Linux host(140 实证,ew1 复核 153 中)——Windows 全构建可能需 Windows host。文档漂移:platform-support.md 提 bao_uloop kqueue.rs 但树无此文件(mac 口径另波核实)。
+
+### Windows host 批准(用户裁决 2026-09-21"可以给 WINDOWS HOST,继续")
+
+最大边界(mozjs 需 win host)解除,全构建路径开。farm 实测:KVM 硬件在/96G 闲/虚拟化栈未装/无 ISO——VM 路线差两步(装栈可做+**ISO/许可证待用户**)。ewe-win-host-design 已派(host 无关设计五节:环境规格钉版/mozjs host 门全链/农场节点集成/交叉-vs-host 分工矩阵/分阶段落地序)。七线并行:ew1/er0/ew4/exdr2/eb2s1/ewe 设计+host 来源问询(用户 AFK 待复:farm VM vs 现成机 vs 云)。
