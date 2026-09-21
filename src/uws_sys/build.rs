@@ -55,12 +55,12 @@ fn main() {
     //
     // windows note: eventing/libuv.c pulls <uv.h> via internal/eventing/
     // libuv.h, and so does libuwsockets.cpp (it includes internal/internal.h
-    // directly). The libuv public include face is vendored under
-    // bun-usockets/src/deps/libuv/include (uv 1.51.0, the _WIN32 closure of
-    // uv.h; byte-identical mirror in packages/bun-usockets) and wired into
-    // both builds below — headers only, no libuv sources: every uv_* symbol
-    // is supplied at link time by bun_libuv_sys (cfg(windows) dependency of
-    // this crate), whose #[repr(C)] mirrors target the same 1.51.0.
+    // directly). The <uv.h> face wired into both builds below is the real
+    // header tree of the libuv supply (src/libuv_sys/vendor/libuv — oven-sh/
+    // libuv `bun` @8023581113, uv 1.51.1-dev): bun_libuv_sys compiles those
+    // exact sources into the static `uv` library that supplies every uv_*
+    // symbol at link time, so the compile-time face and the linked objects
+    // are the same tree by construction.
     let target_os = env::var("CARGO_CFG_TARGET_OS")
         .expect("CARGO_CFG_TARGET_OS must be set by cargo for build scripts");
 
@@ -82,37 +82,17 @@ fn main() {
                 usockets_src.join("crypto/root_certs_linux.cpp"),
             ),
             "windows" => {
-                // Fail-closed (issue #34): the windows eventing backend is
-                // LIBUS_USE_LIBUV — eventing/libuv.c and libuwsockets.cpp are
-                // compiled against libuv's uv_* API, but this workspace
-                // vendors only the <uv.h> include face
-                // (csrc/bun-usockets/src/deps/libuv/include) and compiles no
-                // libuv object code anywhere. bun_libuv_sys — the
-                // cfg(windows) dependency this crate's manifest points at for
-                // the supply — is a pure FFI declaration crate: it compiles
-                // no C and supplies no uv_* symbols. Upstream Bun satisfies
-                // uv_* from its C++/CMake build; that supply path has not
-                // been ported to Bao, so a windows build would end in
-                // undefined uv_* symbols at link time. Refuse before any C
-                // is compiled instead of surfacing an opaque linker error.
-                // Closing the supply (vendor libuv or port the CMake path) is
-                // a separate wave — issue #34; platform matrix:
-                // docs/platform-support.md.
-                eprintln!(
-                    "error: bun_uws_sys is not buildable for windows targets (fail-closed; issue #34)
-
-The windows eventing backend (LIBUS_USE_LIBUV) compiles eventing/libuv.c and
-libuwsockets.cpp against libuv's uv_* API, but only the <uv.h> include face is
-vendored (csrc/bun-usockets/src/deps/libuv/include) and no libuv object code is
-compiled anywhere in this workspace: bun_libuv_sys (the cfg(windows) dependency
-nominally supplying the symbols) is a pure FFI declaration crate. The upstream
-Bun uv_* supply path (C++/CMake) has not been ported, so linking would fail with
-undefined uv_* symbols.
-
-To close the gap: vendor libuv or port the CMake supply path (issue #34).
-Platform support matrix: docs/platform-support.md"
-                );
-                std::process::exit(1);
+                // LIBUS_USE_LIBUV (issue #34 closed): eventing/libuv.c drives
+                // the loop over the libuv supply compiled by bun_libuv_sys
+                // (vendor/libuv at oven-sh/libuv `bun` @8023581113 with the
+                // two upstream win-poll patches). The windows socket shape
+                // stays the libusockets.h default (SOCKET / INVALID_SOCKET) —
+                // see the platform-matrix note above.
+                (
+                    "LIBUS_USE_LIBUV",
+                    usockets_src.join("eventing").join("libuv.c"),
+                    usockets_src.join("crypto").join("root_certs_windows.cpp"),
+                )
             }
             other => panic!("unsupported target OS for bun_uws_sys: {other}"),
         };
@@ -121,10 +101,63 @@ Platform support matrix: docs/platform-support.md"
     // windows: <uv.h> include face consumed by eventing/libuv.c (C build) and
     // by libuwsockets.cpp via internal/internal.h → internal/eventing/libuv.h
     // (C++ build). See the platform-matrix note above for provenance.
-    let libuv_include = usockets_src.join("deps").join("libuv").join("include");
+    // Windows <uv.h> face: the real headers of the vendored libuv supply
+    // (../libuv_sys/vendor/libuv — the same tree bun_libuv_sys's build script
+    // compiles, so the header face and the uv_* objects cannot skew). The old
+    // condensed 1.51.0 mirror under csrc/bun-usockets/src/deps/libuv/include
+    // is no longer consumed (kept on disk for the FFI-face contract to retire).
+    // The path resolves inside the workspace; fail loudly when absent rather
+    // than guessing — exporting it via links metadata from bun_libuv_sys is
+    // the standalone-published-crate form and rides the publish wave.
+    let libuv_include = crate_dir
+        .join("..")
+        .join("libuv_sys")
+        .join("vendor")
+        .join("libuv")
+        .join("include");
     let is_windows = target_os == "windows";
+    if is_windows && !libuv_include.join("uv.h").exists() {
+        panic!(
+            "bun_uws_sys windows arm: libuv include face not found at {} — \
+             build within the bao workspace (the face is vendored in \
+             src/libuv_sys/vendor/libuv)",
+            libuv_include.display()
+        );
+    }
+    // clang-cl is the only windows shape exercised upstream (bun builds its
+    // windows C/C++ with clang-cl) and the flags below are clang-cl literals;
+    // CC/CXX env overrides still win for cross hosts.
+    let (default_cc, default_cxx) = if is_windows {
+        ("clang-cl", "clang-cl")
+    } else {
+        ("clang", "clang++")
+    };
 
     // ── C compilation: uSockets core ──────────────────────────────────────
+    // Fail-closed, narrowed to the true remaining face (issue #34 follow-up):
+    // the LIBUS_USE_LIBUV eventing backend above only compiles against the
+    // oven-sh/bun 4af1842c8c usockets tree (the pre-absorb mirror's
+    // eventing/libuv.c still defines `void us_poll_change`, which the synced
+    // tree's own header rejects). The absorb is its own wave — it drags the
+    // whole crypto/TLS surface (us_socket_adopt_tls grew
+    // is_client/request_cert/reject_unauthorized; SNI resume callbacks went
+    // 2→4-arg) and must land with the linux TLS test discipline, not as a
+    // side effect of this arm. Until it lands, refuse here with the
+    // actionable gap instead of an opaque C compile error.
+    if is_windows {
+        let libuv_backend = usockets_src.join("eventing").join("libuv.c");
+        let backend = std::fs::read_to_string(&libuv_backend).unwrap_or_default();
+        if backend.contains("void us_poll_change") {
+            panic!(
+                "bun_uws_sys windows arm: the vendored usockets eventing/libuv.c \
+                 predates the windows backend rewrite (oven-sh/bun 4af1842c8c) and \
+                 cannot compile against its own header — absorb the usockets tree \
+                 (incl. the crypto/TLS signature evolution: us_socket_adopt_tls, \
+                 4-arg SNI resume) first, then this arm compiles as written \
+                 (issue #34, platform matrix: docs/platform-support.md)"
+            );
+        }
+    }
     let mut c_build = cc::Build::new();
 
     // Use clang: the uSockets C sources use __attribute__((always_inline))
@@ -134,7 +167,7 @@ Platform support matrix: docs/platform-support.md"
     // .compiler() before its own env chain (cc 1.2.x get_base_compiler
     // early-return), so probe the env here — clang is only the no-cross-env
     // fallback (host builds unchanged).
-    c_build.compiler(env_cc("CC").unwrap_or_else(|| "clang".into()));
+    c_build.compiler(env_cc("CC").unwrap_or_else(|| default_cc.into()));
 
     // Compiler flags
     c_build
@@ -152,7 +185,9 @@ Platform support matrix: docs/platform-support.md"
     // GCC compat: __has_feature is Clang-only. Define it as 0 via a wrapper
     // flag. We use a separate .h file to define it as a function-like macro.
     let wrapper_h = crate_dir.join("src").join("_gcc_compat.h");
-    if wrapper_h.exists() {
+    // posix/GCC only: the wrapper defines __has_feature as 0, which would
+    // break the clang-cl build (clang-cl has real __has_feature).
+    if !is_windows && wrapper_h.exists() {
         c_build.flag(format!("-include{}", wrapper_h.display()));
     }
 
@@ -179,6 +214,14 @@ Platform support matrix: docs/platform-support.md"
         .include(&lshpack_dir);          // for #include "lshpack.h" (quic.c → lsxpack)
     if is_windows {
         c_build.include(&libuv_include); // for #include <uv.h> (eventing/libuv.c)
+        // winsock's setsockopt(int*) call sites are upstream-suppressed
+        // (oven-sh/bun scripts/build/flags.ts carries
+        // -Wno-incompatible-pointer-types globally for C); WIN32_LEAN_AND_MEAN
+        // keeps windows.h from pulling wincrypt (it macro-poisons the
+        // BoringSSL X509_* names some faces would otherwise collide with).
+        c_build
+            .flag("-Wno-incompatible-pointer-types")
+            .define("WIN32_LEAN_AND_MEAN", None);
     }
 
     // C source files (uSockets core — platform-independent)
@@ -189,15 +232,31 @@ Platform support matrix: docs/platform-support.md"
         "socket.c",
         "udp.c",
         "quic.c",
+        // upstream compiles the fault-injection TU unconditionally; the whole
+        // body self-guards on LIBUS_SOCKET_FAULT_INJECTION (off here).
+        "fault_inject.c",
     ];
 
     for src in &core_sources {
+        // quic.c: excluded on windows until the lsquic/boringssl mirror
+        // alignment lands (the pre-absorb pairing above compiles against the
+        // vendored faces; the 4af rewrite does not). loop.c's unguarded
+        // us_quic_* references keep any real gap a link-stage failure, not a
+        // silent one.
+        if is_windows && *src == "quic.c" {
+            continue;
+        }
         let path = usockets_src.join(src);
-        if path.exists() {
-            c_build.file(&path);
-        } else {
+        // fault_inject.c arrives with the usockets absorb; it is a no-op TU
+        // unless LIBUS_SOCKET_FAULT_INJECTION is armed, so a tree without it
+        // simply has nothing to compile here.
+        if !path.exists() {
+            if *src == "fault_inject.c" {
+                continue;
+            }
             panic!("uSockets source file not found: {:?}", path);
         }
+        c_build.file(&path);
     }
 
     // Platform-specific eventing backend (epoll / kqueue halves both live in
@@ -226,7 +285,7 @@ Platform support matrix: docs/platform-support.md"
         let mut tls_cpp = cc::Build::new();
         // Env-first per-target probe (see the C build note above); clang++ is
         // only the no-cross-env fallback.
-        tls_cpp.compiler(env_cc("CXX").unwrap_or_else(|| "clang++".into()));
+        tls_cpp.compiler(env_cc("CXX").unwrap_or_else(|| default_cxx.into()));
         tls_cpp.cpp(true);
         tls_cpp.opt_level(1);
         tls_cpp
@@ -254,11 +313,16 @@ Platform support matrix: docs/platform-support.md"
     let mut cpp_build = cc::Build::new();
     // Env-first per-target probe (see the C build note above); clang++ is
     // only the no-cross-env fallback.
-    cpp_build.compiler(env_cc("CXX").unwrap_or_else(|| "clang++".into()));
+    cpp_build.compiler(env_cc("CXX").unwrap_or_else(|| default_cxx.into()));
     cpp_build.cpp(true);
     cpp_build.opt_level(1);
+    if is_windows {
+        // MSVC driver form; clang-cl does not apply the GNU -std= spelling.
+        cpp_build.flag("/std:c++20");
+    } else {
+        cpp_build.flag("-std=c++20");
+    }
     cpp_build
-        .flag("-std=c++20")
         .flag("-DBUN_DEBUG=1")
         .flag(format!("-D{}=1", eventing_macro))
         .flag("-DLIBUS_MAX_READY_POLLS=1024")
@@ -275,7 +339,7 @@ Platform support matrix: docs/platform-support.md"
     }
 
     // GCC compat wrapper
-    if wrapper_h.exists() {
+    if !is_windows && wrapper_h.exists() {
         cpp_build.flag(format!("-include{}", wrapper_h.display()));
     }
 
@@ -302,18 +366,71 @@ Platform support matrix: docs/platform-support.md"
     if is_windows {
         // internal/internal.h → internal/eventing/libuv.h → <uv.h>
         cpp_build.include(&libuv_include);
+        // PerMessageDeflate.h includes <zlib.h> and <libdeflate.h>: the zlib
+        // face is the vendored libz-rs-sys ABI header pair (same bytes as
+        // lsquic_sys's — the symbol supply rides lsquic_sys's windows
+        // libz-rs-sys dependency at final link), and libdeflate is vendored
+        // + compiled below (upstream bun pins ebiggers/libdeflate
+        // @92e6a0db).
+        cpp_build
+            .include(csrc_dir.join("deps").join("zlib"))
+            .include(csrc_dir.join("deps").join("libdeflate"));
     }
 
     cpp_build.file(crate_dir.join("libuwsockets.cpp"));
     cpp_build.compile("uwsockets");
 
     // ── Link dependencies ─────────────────────────────────────────────────
-    // pthread is needed for bsd.c (pthread_atfork in some code paths)
-    println!("cargo:rustc-link-lib=pthread");
-    // zlib for HTTP content-encoding (gzip/deflate) in libuwsockets.cpp
-    println!("cargo:rustc-link-lib=z");
-    // libdeflate for fast compression/decompression in libuwsockets.cpp
-    println!("cargo:rustc-link-lib=deflate");
+    if is_windows {
+        // libuv's windows system libraries (vendor/libuv CMakeLists.txt
+        // `uv_libraries`, MSVC arm) — consumed transitively by the
+        // LIBUS_USE_LIBUV eventing backend. zlib symbols resolve from
+        // lsquic_sys's windows libz-rs-sys dependency; libdeflate from the
+        // vendored static lib compiled below. No pthread on windows.
+        for lib in [
+            "ws2_32",
+            "psapi",
+            "user32",
+            "advapi32",
+            "iphlpapi",
+            "userenv",
+            "dbghelp",
+            "ole32",
+        ] {
+            println!("cargo:rustc-link-lib={lib}");
+        }
+        // Vendored libdeflate (upstream bun pin ebiggers/libdeflate
+        // @92e6a0db — the 11 direct sources of its `libdeflate.ts`). Same
+        // effective link name as the posix system lib (`-ldeflate`).
+        let libdeflate_dir = csrc_dir.join("deps").join("libdeflate");
+        let mut ld = cc::Build::new();
+        ld.compiler(env_cc("CC").unwrap_or_else(|| default_cc.into()))
+            .opt_level(1)
+            .include(&libdeflate_dir);
+        for src in [
+            "lib/utils.c",
+            "lib/arm/cpu_features.c",
+            "lib/x86/cpu_features.c",
+            "lib/deflate_compress.c",
+            "lib/deflate_decompress.c",
+            "lib/adler32.c",
+            "lib/zlib_compress.c",
+            "lib/zlib_decompress.c",
+            "lib/crc32.c",
+            "lib/gzip_compress.c",
+            "lib/gzip_decompress.c",
+        ] {
+            ld.file(libdeflate_dir.join(src));
+        }
+        ld.compile("deflate");
+    } else {
+        // pthread is needed for bsd.c (pthread_atfork in some code paths)
+        println!("cargo:rustc-link-lib=pthread");
+        // zlib for HTTP content-encoding (gzip/deflate) in libuwsockets.cpp
+        println!("cargo:rustc-link-lib=z");
+        // libdeflate for fast compression/decompression in libuwsockets.cpp
+        println!("cargo:rustc-link-lib=deflate");
+    }
 
     // SPEC (CLAUDE.md L13): libuwsockets.a (C++ wrapper) depends on libusockets.a
     // (C core). For static archives, the linker resolves undefined symbols only
@@ -347,9 +464,17 @@ Platform support matrix: docs/platform-support.md"
     println!("cargo:rerun-if-changed={}", usockets_src.join("internal/internal.h").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("libusockets.h").display());
     if is_windows {
-        // Vendored libuv include face (windows-only consumer: eventing/libuv.c
-        // and the C++ wrapper TU). Directory path → cargo watches recursively.
+        // libuv supply headers (windows-only consumer: eventing/libuv.c and
+        // the C++ wrapper TU). Directory path → cargo watches recursively.
         println!("cargo:rerun-if-changed={}", libuv_include.display());
+        println!(
+            "cargo:rerun-if-changed={}",
+            csrc_dir.join("deps").join("zlib").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            csrc_dir.join("deps").join("libdeflate").display()
+        );
     }
 
     // ── Rebuild hints: C++ wrapper TU ─────────────────────────────────────

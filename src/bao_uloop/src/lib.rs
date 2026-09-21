@@ -35,19 +35,25 @@
 // BUG-353 fix: loop entry points now extern "C" from C/C++ libs.
 // Internal helpers retained for poll.rs (FilePoll graft).
 //
-// issue #35: the event-loop backend exists only on Linux (epoll, 74-C.1) and
-// macOS (kqueue, 74-C.8). Windows/IOCP is NOT implemented. The former
-// crate-level `#![cfg(any(linux, macos))]` silently compiled this crate to an
-// EMPTY shell on every other target — consumers linked successfully and only
-// discovered the missing loop at runtime. Fail loudly instead (issue #35,
-// support matrix: docs/platform-support.md).
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-compile_error!(
-    "bao_uloop: unsupported platform (Unsupported) — only Linux (epoll) and \
-     macOS (kqueue) have an event-loop backend; the Windows/IOCP backend is \
-     not implemented (issue #35, matrix: docs/platform-support.md)"
-);
-
+// issue #35: the event-loop backend per platform:
+//   - Linux (epoll, 74-C.1) / macOS (kqueue, 74-C.8): the C libusockets
+//     epoll_kqueue.c eventing backend; `poll` is the Rust FilePoll graft
+//     sharing the backend's epoll/kqueue fd.
+//   - Windows: the C libusockets LIBUS_USE_LIBUV eventing backend (uws_sys's
+//     windows arm compiles eventing/libuv.c against the vendored libuv supply
+//     in bun_libuv_sys). The loop ABI this crate declares below is
+//     platform-neutral — the same extern "C" imports resolve from the C
+//     archives on every target — so the Rust face here compiles unchanged;
+//     what differs is FilePoll: the epoll/kqueue graft does not exist on
+//     Windows (uv_poll territory), and the absorbed upstream WindowsLoop /
+//     io::windows_event_loop face (`bun_io::windows_event_loop::{Loop,
+//     FilePoll}` over libuv) is the FilePoll provider there, matching
+//     upstream's shape. The former crate-level `compile_error!` (in place
+//     since the BUG-353 fix, where a silent empty shell had shipped) is
+//     lifted now that the windows loop face resolves end-to-end; the link
+//     stage still fails loudly if the C supply is absent (issue #35,
+//     support matrix: docs/platform-support.md).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod poll;
 
 use core::ffi::{c_char, c_int, c_uint, c_void};
@@ -501,6 +507,9 @@ pub extern "C" fn bun_ssl_ctx_cache_on_free(
 #[inline(never)]
 pub fn force_link() {
     // Loop + poll ABI: now extern "C" from C/C++ libs — no force needed.
+    // The FilePoll graft is posix-only (windows FilePoll is
+    // bun_io::windows_event_loop over libuv — see the platform note above).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     poll::force_link_poll();
 
     // Dispatch stubs (still local #[no_mangle])
