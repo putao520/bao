@@ -4,8 +4,6 @@ use core::fmt;
 use bun_core::fmt::s;
 use bun_core::{Output, fmt as bun_fmt};
 use bun_core::{StringOrTinyString, ZStr};
-#[cfg(windows)]
-use bun_paths::WPathBuffer;
 use bun_paths::strings;
 use bun_paths::{self as path, PathBuffer};
 use bun_semver::{self as Semver, Version};

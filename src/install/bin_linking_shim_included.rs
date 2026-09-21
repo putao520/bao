@@ -131,8 +131,14 @@ mod host {
     // here. It is only ever consumed from `#[cfg(windows)]` code paths
     // (`bin::Linker::create_windows_shim`), so on non-Windows hosts there is no
     // artifact to embed and the data is never read.
+    //
+    // BAO DELTA (win-cross, #18): the artifact slot lives one directory below
+    // this file (`windows-shim/bun_shim_impl.exe` — where the shim build step
+    // copies the PE and this crate's build.rs provisions the 0-byte
+    // placeholder); this file sits in `src/install/`, so the include path
+    // carries the `windows-shim/` prefix.
     #[cfg(windows)]
-    pub const EMBEDDED_EXECUTABLE_DATA: &[u8] = include_bytes!("bun_shim_impl.exe");
+    pub const EMBEDDED_EXECUTABLE_DATA: &[u8] = include_bytes!("windows-shim/bun_shim_impl.exe");
     #[cfg(not(windows))]
     pub const EMBEDDED_EXECUTABLE_DATA: &[u8] = &[];
 

@@ -369,6 +369,11 @@ pub use path::{
     AbsPath, AutoAbsPath, AutoRelPath, Path, PathUnit, RelPath, options as path_options,
 };
 
+// win-cross, #18: `?`-propagate path-builder failures (the sole variant is
+// `MaxPathExceeded`) into higher-tier `bun_core::Error` results — the MSVC
+// patchPackage arm was the first caller needing this conversion.
+bun_core::named_error_set!(path_options::Error);
+
 /// Duck-typing surface for the `anytype` `buf` parameter on Zig path-builder
 /// helpers (`appendStorePath`, `appendGlobalStoreEntryPath`, etc. in
 /// `isolated_install/Installer.zig`). Zig accepted any `bun.Path(...)`

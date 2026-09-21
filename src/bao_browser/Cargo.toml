@@ -24,7 +24,7 @@ readme = "README.md"
 name = "bao_browser"
 
 [dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.16", default-features = false, features = ["baked-in-resources", "media-gstreamer"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.16", default-features = false, features = ["baked-in-resources"] }
 servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url", version = "=0.5.6" }
 dpi = "0.1"
 url = "2"
@@ -47,6 +47,12 @@ serde = "1"
 cookie = { package = "cookie", version = "0.18" }
 log = "0.4"
 euclid = "0.22"
+
+# win-cross, #18 (media 门控裁决): glib/gstreamer 是 pkg-config 系统库,无 MSVC
+# 交叉构建路径 — windows target 不启用 servo 的 media-gstreamer 后端(baked-in-
+# resources 保持全 target);media 面=独立后续波。非 windows 维持 gstreamer 媒体栈。
+[target.'cfg(not(windows))'.dependencies]
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.16", features = ["media-gstreamer"] }
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
