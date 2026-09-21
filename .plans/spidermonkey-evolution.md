@@ -2043,3 +2043,7 @@ media-gstreamer 移 target(not(windows)) 依赖——msvc 树 glib/gst **0 命�
 ### W2 断点 4/4 闭:addrinfo(955d680c,ec2,2026-09-22)
 
 GetAddrInfoW 管线:平台 addrinfo 布局别名(windows=ADDRINFOA 镜像,producer/consumer cfg-blind)+W-API 直接喂 WSA 码(11004=EAI_NONAME 映射)+UTF-16 加宽(弃 ANSI 导出的 codepage 路径,IDN 字节忠实);58 错清零,msvc 绿(耐久根 /opt/bao-win-cross);linux 6/6+回归绿;ABI 对照表入模块文档。**附带发现(回归修复已派 em3)**:5cf54648 吸收丢 us_poll_ext 定义→bao_uloop linux 测试链接断(ec2 pure-HEAD 复现实证)。**W2 四断点全闭——workspace msvc 全绿门在跑**(后台)。
+
+### W2 门首跑:尾层暴露+三组并行派工(2026-09-22)
+
+**C/依赖门全闭后首曝 bun_runtime 自身 POSIX 面:474 错**(child_process 91/fs 68/dns 56/constants 45/os 31/tls 30/tty 27/ipc+udp+api 各 23+尾)——libc socket 族/std::os::unix/E0308,预期层(C 门挡着从未编到)。env 脚本与 config 旗标对齐先行(178c34ea:两通道 -Wno-incompatible 一致)。**三组并行**:s1a(child_process/ipc/tty)/ec2(dns/constants/os——addrinfo 模板作者)/ew4(tls/udp/api/fs/尾);统一纪律=上游 bun windows 分支为真源+行为平+对照注记。三组闭=W2 门绿。
