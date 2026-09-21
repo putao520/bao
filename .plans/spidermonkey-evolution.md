@@ -1991,3 +1991,7 @@ uws_sys windows 臂结构性落地(LIBUS_USE_LIBUV 真编译路径,uv.h 直连 l
 ### W1.5 env 契约产品化(03c1f671,2026-09-21)
 
 wsroot=/opt/bao-win-cross(634M 全断言过+无空格 symlink);`scripts/win-cross-env.sh`(偏离 tools/ 声明采纳:scripts/=仓库惯例[clang-musl 先例]);端到端:lsquic/boringssl/libuv 三 C 层 msvc check RC=0;bun_alloc 已在树确认=Layer-0 消。s1a 链式续进(crash_handler/zlib→下游+声明线回归探针条件成立);em3 路径修正已达。
+
+### s1a 链式完成:bun_sys 解锁,全图收敛单点(656e9a77)
+
+O_CLOEXEC→O_NOINHERIT 每平台旗标+bun_sys 死 import 清;libuv_sys 经 env 脚本确认绿;声明线探针:libuv_sys/sys 绿,io/event_loop/zlib/crash_handler 四 crate 均恰剩 uws build script 一错(传递性)。**Windows 全图收敛单点=usockets 吸收(em3 在途)**——其过则四 crate 连锁解封。msvc 已解锁:alloc/core/safety/paths/collections/sys/libuv_sys。
