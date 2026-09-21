@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",

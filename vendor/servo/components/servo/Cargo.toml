@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo"
-version = "0.5.15"
+version = "0.5.16"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -99,7 +99,7 @@ accesskit = {version = "0.24.0", features = ["serde"]}
 bitflags = {version = "2.11"}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
-devtools = {package = "bao-servo-devtools", path = "../devtools", version = "=0.5.16"}
+devtools = {package = "bao-servo-devtools", path = "../devtools", version = "=0.5.17"}
 devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.6"}
 dpi = {version = "0.1"}
 embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.6"}
@@ -116,7 +116,7 @@ layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", versi
 log = {version = "0.4.32"}
 media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.6"}
 mozangle = {version = "0.6"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.17"}
+net = {package = "bao-servo-net", path = "../net", version = "=0.5.18"}
 net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.7"}
 paint = {package = "bao-servo-paint", path = "../paint", version = "=0.5.8"}
 paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.6"}
@@ -135,7 +135,7 @@ servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/ca
 # Bao vendor dep: canvas noise (REQ-STL-003) re-exported via set_canvas_noise_seed
 servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = "=0.5.9"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
-servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = "=0.5.16"}
+servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = "=0.5.17"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.8"}
 servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.5"}
 servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = "=0.5.6"}
@@ -188,7 +188,7 @@ http = {version = "1.4"}
 http-body-util = {version = "0.1"}
 hyper = {version = "1.10"}
 itertools = {version = "0.15"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.17", features = ["test-util"]}
+net = {package = "bao-servo-net", path = "../net", version = "=0.5.18", features = ["test-util"]}
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.

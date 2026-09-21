@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net"
-version = "0.5.17"
+version = "0.5.18"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -25,7 +25,7 @@ tracing = ["dep:tracing"]
 # bao_stealth: shared IANA→OpenSSL cipher/group/sigalg name mapping (single
 # source of truth — local mapping copies in connector.rs are forbidden).
 bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge", version = "^0.2.0" }
-bao_stealth = { path = "../../../../src/bao_stealth", version = "^0.2.0" }
+bao_stealth = { path = "../../../../src/bao_stealth", version = "^0.3.0" }
 # Shared per-host DNS cache (Bao fusion: usockets + node:dns + the WS loader
 # resolve through one cache). Low-tier, std-only surface.
 bun_dns = { path = "../../../../src/dns", version = "^0.2.0" }
@@ -123,7 +123,7 @@ hyper = {version = "1.10", features = ["full"]}
 hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "http2", "tokio", "server-graceful"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
-net = { package = "bao-servo-net", path = ".", version = "=0.5.17", features = ["test-util"] }
+net = { package = "bao-servo-net", path = ".", version = "=0.5.18", features = ["test-util"] }
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws-lc-rs"]}
 servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.6"}
 

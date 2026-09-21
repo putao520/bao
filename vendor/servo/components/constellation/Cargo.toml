@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-constellation"
-version = "0.5.16"
+version = "0.5.17"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -40,7 +40,7 @@ keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
 layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.10"}
 log = {version = "0.4.32"}
 media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.6"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.17"}
+net = {package = "bao-servo-net", path = "../net", version = "=0.5.18"}
 net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.7"}
 paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.6"}
 parking_lot = {version = "0.12", features = ["serde"]}
