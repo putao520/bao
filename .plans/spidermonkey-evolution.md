@@ -2027,3 +2027,7 @@ M11 GNU 面落地:msvc 臂弃 compiler.args 传播,构造 -x c++/-std=gnu++20/-f
 ### W2 链终态:4 结构断点+裁决 v1 核心先通(s1a 67a15c84,2026-09-22)
 
 W2 累计 14 crate 面解锁(watcher/sm/engine 旗舰面绿;runtime 仅被 libffi 挡)。全 workspace keep-going 实测:仅剩 2 Rust 面+12 C 域脚本失败。**四断点裁决(v1 核心先通,用户 AFK 按判据,回来可推翻)**:①media-gstreamer 按目标条件 feature(windows v1 去启;glib/gst 12 crate 栈独立后续波)②addrinfo.rs Windows 实现(GetAddrInfoW,ec2 已派)③libffi-sys 上游 bug(HOST cfg 分派错误)bao fork 根治+issue 草稿(ew4 已派)④shim.exe 工件构建时生成(s1a 已派)。三合同并发。
+
+### W2 断点 3 闭:libffi fork(acb25b92,ew4)
+
+[patch.crates-io] 同名 vendor fork(freetype-wrapper 先例;改名键在 [patch] 内静默忽略=已验陷阱规避);四点修法:CARGO_CFG_TARGET_ENV 运行时分派(原 HOST cfg bug)/EP 接 env 契约弃真 MSVC/.asm 落 OUT_DIR(源树污染根治)/**GAS win64.S 变体**(MASM 硬阻断实证:llvm-ml 解析不了 extern near/.seh;win64.S 同 ABI)。libffi-sys+libffi msvc RC=0;linux 回归绿;issue 草稿 /tmp(待发 tov/libffi-rs)。归属如实:bun_runtime 全量 msvc 未跑(闭包含 mozjs 大构建=W2 面)。环境注:/tmp/win-probe 被外部清空,/opt/bao-win-cross 为耐久真源。**断点计:libffi✅/addrinfo(ec2 在途)/media 门控+shim(s1a 在途)**。
