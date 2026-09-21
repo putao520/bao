@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bao_engine = { path = "../bao_engine", version = "^0.2.0" }
+bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 # REQ-CDP-UWS-001: RFC 6455 codec/handshake/client/server now owned by bun_uws.
 # Removed: bao_cdp::{ws, ws_codec, ws_handshake} self-written modules (-930 LOC).
 # Removed deps: bun_base64 / bun_sha_hmac / bao_boringssl_bridge / bun_boringssl_sys

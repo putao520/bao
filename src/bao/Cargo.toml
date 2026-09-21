@@ -8,7 +8,7 @@ name = "bao-core"
 # ^0.1.16 / bao_stealth ^0.1.17.
 # 0.0.2 (2026-08-19): README facade docs refresh (6a29ca8e/9574254e) +
 # full 0.1.1 dep-tree convergence beneath.
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 description = "Bao unified library — SpiderMonkey + servo + Node/Bun API + CDP + Stealth (always-on full stack)"
@@ -33,11 +33,11 @@ default = []
 [dependencies]
 # sibling 精确下限(用户裁决 2026-09-02):同波同版下限 — re-export 整栈,
 # 全部同波 sibling 下限 = 本波新版本。
-bao-browser = { path = "../bao_browser", version = "^0.2.0" }
-bao_engine = { path = "../bao_engine", version = "^0.2.0" }
-bun_runtime = { path = "../bao_runtime", version = "^0.3" }
+bao-browser = { path = "../bao_browser", version = "^0.3.0" }
+bao_engine = { path = "../bao_engine", version = "^0.3.0" }
+bun_runtime = { path = "../bao_runtime", version = "^0.4" }
 bao_cdp = { path = "../bao_cdp", version = "0.2.0" }
-bao_cdp_client = { path = "../bao_cdp_client", version = "^0.2.0" }
+bao_cdp_client = { path = "../bao_cdp_client", version = "^0.3.0" }
 bao_stealth = { path = "../bao_stealth", version = "^0.2.0" }
 bao_uloop = { path = "../bao_uloop", version = "0.2.0" }
 

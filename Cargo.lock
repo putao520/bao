@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -545,6 +545,124 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao-mozjs-collator-glue"
+version = "153.3.0"
+dependencies = [
+ "arraystring",
+ "arrayvec",
+ "bao-mozjs-icu-collator",
+ "cbindgen",
+ "icu_locale_core",
+ "tinystr 0.8.3",
+ "writeable 0.6.3",
+]
+
+[[package]]
+name = "bao-mozjs-icu-collator"
+version = "153.3.0"
+dependencies = [
+ "arraystring",
+ "atoi",
+ "bao-mozjs-icu-collator-data",
+ "bao-mozjs-icu-collections",
+ "bao-mozjs-icu-normalizer",
+ "bao-mozjs-utf16-iter",
+ "bao-mozjs-utf8-iter",
+ "criterion 0.5.1",
+ "databake",
+ "displaydoc",
+ "icu_locale",
+ "icu_locale_core",
+ "icu_normalizer_data",
+ "icu_properties 2.1.2",
+ "icu_provider 2.2.0",
+ "serde",
+ "smallvec",
+ "tinystr 0.8.3",
+ "zerovec 0.11.6",
+]
+
+[[package]]
+name = "bao-mozjs-icu-collator-data"
+version = "153.3.0"
+
+[[package]]
+name = "bao-mozjs-icu-collections"
+version = "153.3.0"
+dependencies = [
+ "criterion 0.5.1",
+ "databake",
+ "displaydoc",
+ "iai",
+ "icu_casemap",
+ "postcard",
+ "potential_utf",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+ "yoke 0.8.2",
+ "zerofrom",
+ "zerovec 0.11.6",
+]
+
+[[package]]
+name = "bao-mozjs-icu-normalizer"
+version = "153.3.0"
+dependencies = [
+ "arraystring",
+ "arrayvec",
+ "atoi",
+ "bao-mozjs-icu-collections",
+ "bao-mozjs-icu-normalizer-data",
+ "bao-mozjs-utf16-iter",
+ "bao-mozjs-utf8-iter",
+ "criterion 0.5.1",
+ "databake",
+ "detone",
+ "displaydoc",
+ "harfbuzz-traits",
+ "icu_properties 2.1.2",
+ "icu_provider 2.2.0",
+ "serde",
+ "smallvec",
+ "write16",
+ "zerovec 0.11.6",
+]
+
+[[package]]
+name = "bao-mozjs-icu-normalizer-data"
+version = "153.3.0"
+
+[[package]]
+name = "bao-mozjs-locale-glue"
+version = "153.3.0"
+dependencies = [
+ "cbindgen",
+ "icu_locale",
+]
+
+[[package]]
+name = "bao-mozjs-normalizer-glue"
+version = "153.3.0"
+dependencies = [
+ "bao-mozjs-icu-normalizer",
+ "cbindgen",
+ "encoding_rs",
+ "smallvec",
+ "write16",
+]
+
+[[package]]
+name = "bao-mozjs-properties-glue"
+version = "153.3.0"
+dependencies = [
+ "bao-mozjs-icu-collections",
+ "cbindgen",
+ "icu_casemap",
+ "icu_properties 2.1.2",
+]
+
+[[package]]
 name = "bao-mozjs-src-intl"
 version = "153.3.0-0"
 
@@ -560,9 +678,14 @@ version = "153.3.0-0"
 name = "bao-mozjs-sys"
 version = "153.3.0-0"
 dependencies = [
+ "bao-mozjs-collator-glue",
+ "bao-mozjs-locale-glue",
+ "bao-mozjs-normalizer-glue",
+ "bao-mozjs-properties-glue",
  "bao-mozjs-src-intl",
  "bao-mozjs-src-js",
  "bao-mozjs-src-python",
+ "bao-mozjs-unicode-bidi-ffi",
  "bindgen",
  "cc",
  "encoding_c",
@@ -572,13 +695,31 @@ dependencies = [
  "libc",
  "libz-rs-sys",
  "libz-sys",
- "mozjs_collator_glue",
- "mozjs_locale_glue",
- "mozjs_normalizer_glue",
- "mozjs_properties_glue",
- "mozjs_unicode_bidi_ffi",
  "tar",
  "walkdir",
+]
+
+[[package]]
+name = "bao-mozjs-unicode-bidi-ffi"
+version = "153.3.0"
+dependencies = [
+ "cbindgen",
+ "icu_properties 2.1.2",
+ "unicode-bidi",
+]
+
+[[package]]
+name = "bao-mozjs-utf16-iter"
+version = "153.3.0"
+dependencies = [
+ "bao-mozjs-icu-collections",
+]
+
+[[package]]
+name = "bao-mozjs-utf8-iter"
+version = "153.3.0"
+dependencies = [
+ "bao-mozjs-icu-collections",
 ]
 
 [[package]]
@@ -2129,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp_client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bao_cdp",
  "bao_engine",
@@ -2168,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2253,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "bao_workflow_host"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3473,7 +3614,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3635,7 +3776,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -7880,147 +8021,6 @@ dependencies = [
  "bindgen",
  "cc",
  "walkdir",
-]
-
-[[package]]
-name = "mozjs_collator_glue"
-version = "153.3.0"
-dependencies = [
- "arraystring",
- "arrayvec",
- "cbindgen",
- "icu_locale_core",
- "mozjs_icu_collator",
- "tinystr 0.8.3",
- "writeable 0.6.3",
-]
-
-[[package]]
-name = "mozjs_icu_collator"
-version = "153.3.0"
-dependencies = [
- "arraystring",
- "atoi",
- "criterion 0.5.1",
- "databake",
- "displaydoc",
- "icu_locale",
- "icu_locale_core",
- "icu_normalizer_data",
- "icu_properties 2.1.2",
- "icu_provider 2.2.0",
- "mozjs_icu_collator_data",
- "mozjs_icu_collections",
- "mozjs_icu_normalizer",
- "mozjs_utf16_iter",
- "mozjs_utf8_iter",
- "serde",
- "smallvec",
- "tinystr 0.8.3",
- "zerovec 0.11.6",
-]
-
-[[package]]
-name = "mozjs_icu_collator_data"
-version = "153.3.0"
-
-[[package]]
-name = "mozjs_icu_collections"
-version = "153.3.0"
-dependencies = [
- "criterion 0.5.1",
- "databake",
- "displaydoc",
- "iai",
- "icu_casemap",
- "postcard",
- "potential_utf",
- "serde",
- "serde_json",
- "toml 0.8.23",
- "yoke 0.8.2",
- "zerofrom",
- "zerovec 0.11.6",
-]
-
-[[package]]
-name = "mozjs_icu_normalizer"
-version = "153.3.0"
-dependencies = [
- "arraystring",
- "arrayvec",
- "atoi",
- "criterion 0.5.1",
- "databake",
- "detone",
- "displaydoc",
- "harfbuzz-traits",
- "icu_properties 2.1.2",
- "icu_provider 2.2.0",
- "mozjs_icu_collections",
- "mozjs_icu_normalizer_data",
- "mozjs_utf16_iter",
- "mozjs_utf8_iter",
- "serde",
- "smallvec",
- "write16",
- "zerovec 0.11.6",
-]
-
-[[package]]
-name = "mozjs_icu_normalizer_data"
-version = "153.3.0"
-
-[[package]]
-name = "mozjs_locale_glue"
-version = "153.3.0"
-dependencies = [
- "cbindgen",
- "icu_locale",
-]
-
-[[package]]
-name = "mozjs_normalizer_glue"
-version = "153.3.0"
-dependencies = [
- "cbindgen",
- "encoding_rs",
- "mozjs_icu_normalizer",
- "smallvec",
- "write16",
-]
-
-[[package]]
-name = "mozjs_properties_glue"
-version = "153.3.0"
-dependencies = [
- "cbindgen",
- "icu_casemap",
- "icu_properties 2.1.2",
- "mozjs_icu_collections",
-]
-
-[[package]]
-name = "mozjs_unicode_bidi_ffi"
-version = "153.3.0"
-dependencies = [
- "cbindgen",
- "icu_properties 2.1.2",
- "unicode-bidi",
-]
-
-[[package]]
-name = "mozjs_utf16_iter"
-version = "153.3.0"
-dependencies = [
- "mozjs_icu_collections",
-]
-
-[[package]]
-name = "mozjs_utf8_iter"
-version = "153.3.0"
-dependencies = [
- "mozjs_icu_collections",
 ]
 
 [[package]]

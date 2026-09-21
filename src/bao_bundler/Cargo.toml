@@ -21,7 +21,7 @@ bun_js_parser = { path = "../js_parser", version = "^0.2.0" }
 # Transpiler; `bun_transpiler::transpile_ts` is the JSC-free SWC strip path
 # usable from the Bao layer without a live JSContext.
 bun_transpiler = { path = "../transpiler", version = "^0.2.0" }
-bao_engine = { path = "../bao_engine", version = "^0.2.0" }
+bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 bun_runtime.workspace = true
 bun_core = { path = "../bun_core", version = "0.2.0" }
 bun_event_loop = { path = "../event_loop", version = "^0.2.0" }

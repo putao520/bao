@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.83"
-name = "mozjs_icu_normalizer_data"
+name = "bao-mozjs-icu-normalizer-data"
 version = "153.3.0"
 authors = ["The ICU4X Project Developers"]
 build = "build.rs"

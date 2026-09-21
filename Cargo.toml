@@ -228,7 +228,7 @@ bun_output = { path = "src/output", version = "0.2.0" }
 # 0.3 下限(2026-09-20 #45 alloc 波):bun_runtime 0.3.0(依赖面进 bun_alloc/bun_core 0.2);
 # 5 个 .workspace 消费者(bao_browser/bao_cli/bao_engine/bao_bundler/bao_stealth)req 随此继承。
 # (bao_browser/bao_cli/bao_engine/bao_bundler/bao_stealth)req 随此继承。
-bun_runtime = { path = "src/bao_runtime", version = "0.3" }
+bun_runtime = { path = "src/bao_runtime", version = "^0.4" }
 bao_workflow_host = { path = "src/bao_workflow_host", version = "0.2.0" }
 bun_which = { path = "src/which", version = "0.2.0" }
 bun_transpiler = { path = "src/transpiler", version = "0.2.0" }

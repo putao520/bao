@@ -86,11 +86,11 @@ bao-mozjs-src-python = { path = "../src-python", version = "=153.3.0-0" }
 # glue crates' build.rs scripts emit cargo:include, surfaced here as
 # DEP_<links>_INCLUDE for the SM C++ build. normalizer_glue is non-optional
 # (build.rs requires DEP_NORMALIZER_GLUE_INCLUDE unconditionally, upstream).
-mozjs_unicode_bidi_ffi = { version = "=153.3.0", path = "../mozjs-extracted-crates/unicode_bidi_ffi", optional = true }
-mozjs_normalizer_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/normalizer_glue" }
-mozjs_properties_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/properties_glue", optional = true }
-mozjs_collator_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/collator_glue", optional = true }
-mozjs_locale_glue = { version = "=153.3.0", path = "../mozjs-extracted-crates/locale_glue", optional = true }
+mozjs_unicode_bidi_ffi = { package = "bao-mozjs-unicode-bidi-ffi", version = "=153.3.0", path = "../mozjs-extracted-crates/unicode_bidi_ffi", optional = true }
+mozjs_normalizer_glue = { package = "bao-mozjs-normalizer-glue", version = "=153.3.0", path = "../mozjs-extracted-crates/normalizer_glue" }
+mozjs_properties_glue = { package = "bao-mozjs-properties-glue", version = "=153.3.0", path = "../mozjs-extracted-crates/properties_glue", optional = true }
+mozjs_collator_glue = { package = "bao-mozjs-collator-glue", version = "=153.3.0", path = "../mozjs-extracted-crates/collator_glue", optional = true }
+mozjs_locale_glue = { package = "bao-mozjs-locale-glue", version = "=153.3.0", path = "../mozjs-extracted-crates/locale_glue", optional = true }
 # keep in sync with intl/icu_capi/Cargo.toml (upstream 153 pin: ICU4X 2.1.2)
 icu_capi = { version = "=2.1.2", default-features = false, features = [
   "any_provider",

@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.83"
-name = "mozjs_icu_collections"
+name = "bao-mozjs-icu-collections"
 version = "153.3.0"
 authors = ["The ICU4X Project Developers"]
 build = false

@@ -1,6 +1,6 @@
 [package]
 name = "bao_engine"
-version = "0.2.0"
+version = "0.3.0"
 description = "SpiderMonkey engine wrapper for Bao runtime"
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository = "https://github.com/putao520/bao"
 
 [dependencies]
 # sibling 精确下限(用户裁决 2026-09-02):#27/#28 裁决面消费 bun_sm 0.1.16
-bun_sm = { path = "../bun_sm", version = "^0.2.0" }
+bun_sm = { path = "../bun_sm", version = "^0.3.0" }
 bao_engine_macros = { path = "../bao_engine_macros", version = "0.1.0" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
