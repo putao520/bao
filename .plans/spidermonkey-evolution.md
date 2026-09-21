@@ -2015,3 +2015,7 @@ farm-xwin 卷布局收敛到 /opt/bao-win-cross 契约形(wsroot 组装+无空�
 ### ★W8 交叉测试运行器建成(er0,2026-09-22)
 
 .200 ~/build-farm/bao-win/bin/win-test-runner.sh:exe 列表→NTFS 放置→interop 执行(timeout 180s)→libtest 解析→汇总;**双证防假绿**(rc==0 且 test result: ok 才 PASS,双向实证:故意败判 FAIL/真过判 PASS)。**关键配方入册**:交叉测试 exe=静态 CRT(+crt-static 零 DLL)+rust-lld+三段 /LIBPATH(vc14+um+ucrt);libtest 输出跨平台同形;--exact 需全路径名;interop=WSL 特性故 runner 必 WSL 侧(容器编译+WSL 执行编排);WSL-fs binfmt 直执行亦实证可用。**Windows 验证基建至此完备:编译三面(env/farm/.200 容器)+测试一面(runner)。候 W3/W7 产物即 T1 单测波开跑。**
+
+### ★W3 根因破案(C 亲测 12 轮 bisect,2026-09-22)
+
+**libclang 23(Linux 宿主)对 cl-driver 旗标面 TU 创建组合性硬死**(bindgen context.rs:562;单剔除 cl 旗标/-D/driver-mode/-FI/confdefs/-imsvc 均不救);**GNU 拼写面(bindgen 解析无需 cl 语义)实测完全可用**:M11 配方 rc=0 产 4.3MB 绑定(-x c++ -std=gnu++20 -fms-compatibility/-fms-extensions + confdefs 先序 -include + TU -include + XP_WIN 显式 + js 双 -I + SDK 五段 -isystem)。顺序敏感:confdefs 必须先于 TU(XP_WIN 迟到=Unsupported OS 崩)。解方已交 s1a 落 build.rs(msvc 臂弃 compiler.args 传播,构造 GNU 面;其 -FI 中间方案被取代);C 停止碰此文件避双写。教训:依赖 libclang 的面,旗标拼写按 libclang 方言(GNU)而非编译器 driver 方言(cl)。
