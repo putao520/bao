@@ -1917,3 +1917,7 @@ registry 形态否决(当下):crates.io mozjs_* 实测 max=**153.0.0**(er0"12 �
 ### 发布预备案卷(er0,/tmp+/.plans/publish-prep-20260921.md)
 
 61 commits 聚类:breaking=bao-mozjs 族(SM153 代际)+bun_sm/bao_engine/bun_runtime/bao-browser(mozjs req 泄漏)/bao_cdp_client;internal=workflow_host/servo 族(零版本漂移)/boringssl。版本面:bao-mozjs 0.24.0(已预跳)/sys+三卫星 153.3.0-0/bun_sm+engine=0.3.0/runtime=0.4.0/browser+cdp_client=0.3.0/workflow_host=0.2.1/bao-core 伞 0.3.0。**topo 双修正(实测边)**:workflow_host 先于 bun_runtime、bao_cdp_client 先于 bao-browser;序=12 extracted(bao- 改名,key 保 mozjs_* 供 DEP_*)→3 卫星→sys→mozjs→bun_sm→engine→workflow_host→runtime→cdp_client→browser→伞→closure 扩集。**阻断面=零**:token 在位、12 bao-mozjs-* 名全 FREE(逐 API 实查)、same-name 被 servo 占(改名=唯一自主路径)。执行要点:改名舞步+cbindgen build-dep registry 可解析+closure 机械扫(58-crate loop 先例)。
+
+### realm 时间精度平价落地(de741bbd)+ servo 消费面末班合同
+
+clamp 回调(SM153 RTPCallback 面,µs floor 网格无 jitter,arm/disarm 原子周期平价)+双 token 接线(node=context.rs stamp 方向修正;page=新 jsglue shim 绕 incomplete-type)+两 shim。**深层缺陷根治**:SM153 ModuleLink 拒 status=New——直连 Compile→Link 站点须先 JS::LoadRequestedModules(moduleloading 面隐藏半边)。bun_sm 14/14(5 败转绿)+新 clamp 回归测试绿;engine/runtime/browser/bun_sm check 全绿。**全树最后残红已派**:bao-servo-script 29 错 14 站点+bindings 4 错(servo 自有 hooks/JobQueueTraps/principals/error bool 面;bao_engine 模式可复用)——落即全树 build→补面→五门→发布。
