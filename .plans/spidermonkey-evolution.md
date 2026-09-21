@@ -2003,3 +2003,7 @@ mingw(gcc-mingw-w64 钉版)+xwin 0.10.0(sha256 双钉,--accept-license 显式;fa
 ### er0 W1.5 增补:farm 卷收敛脚本契约+链接冒烟绿(d9f5b9f)
 
 farm-xwin 卷布局收敛到 /opt/bao-win-cross 契约形(wsroot 组装+无空格别名+shims 固化);波折如实:首组装 DNS 丢包被无 pipefail 掩蔽→完整性实检抓出→显式 rc 重跑(教训:下载管道必 pipefail);**容器内冒烟:clang-cl COMPILE_OK+lld-link LINK_OK(smoke.exe)=SDK include+LIB 双层完整,farm 具备交叉编译+链接双能力(W7 面就绪)**。固化链:镜像工具→卷 wsroot→仓库脚本 source 即全套。
+
+### ★em3 usockets 吸收波全绿:uws 门开,全图解锁(5cf54648/fc34baa8/4396a20e,2026-09-21)
+
+基底 bun@0ba403277a 逐 hunk 对 4af:全部 bao cherry-pick 被上游逐字包含/超越,**真冲突=0**(仅 4 小 patch 重放:Bun__panic 链接钉/us_cert_string_t 类型钉/分配器回 libc[mimalloc 退役连带堵暗雷]/lazy-cert eager+IGNORE_EXPIRED shim);保留 quic.c(lsquic 锁)与 root_certs 五文件(boringssl 锁)延后立案。签名迁移全清单(adopt_tls 7→10/SNI 2→4/group_connect 源绑定[**真野指针崩溃修复 context.c:612**]/297 extern 机械比对零漂移)。**三门**:linux check(uws+6 下游)RC=0/linux TLS 硬门全绿(SNI 6/6 C 复验)/windows ew4 收窄门 RC=0(C 复验 0.54s)。#34#35 证据评论已补(两案 09-08 已关,非本波关)。遗留登记:quic.c 4af 增量+lazy-cert+真机 link/E2E(#18)。**s1a 门开令已发**(四 crate 连锁解封推进)。
