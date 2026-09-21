@@ -1941,3 +1941,9 @@ em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 �
 ### ★★★波终态(2026-09-21,daily-20260921 tag)
 
 **发布闭包 34/34**(s6,C 独立 V 抽验断点尾三版 runtime 0.4.0/browser 0.3.0/core 0.3.0 全在):12 extracted(bao- 改名首发)+mozjs 族(sys/卫星 153.3.0-0,mozjs 0.24.0)+src 链(0.3/0.4 面)+closure ×10(links 冲突强制:cdp/stealth/servo 族 8)。消费端冒烟:cargo add bao-core@0.3.0 全图 4161 节点 resolve RC=0,单实例断言全过,零 SM140 残影。strip-publish-restore ×5;HEAD=origin=6ceeddf2。tag **daily-20260921** 已推。**#47 关单**(§12A:波门 5/5 GREEN 引用+153.3.0-0 版本证据);#26 stage1 评论挂 stage2 在案。
+
+## 新波:Windows 交叉编译 + 全量并行(用户裁决 2026-09-21 收波后)
+
+**裁决原文**:「全量并行突进同时增加对WINDOWS交叉编译的支持与验证」。立项=用户书面裁决+#18 Platform/Build 板(REQ-DEPLOY 域,musl p3.5 先例)。
+
+**并行四线**:①ew1-win-probe(探测:153 configure winreg 门复核[#37 波 140 时代实证 configure 层不可能]→路由案 xwin-msvc/mingw-gnu/win-host→破口清单→验证口径)②er0(farm 双路由分层:mingw-w64 apt+xwin SDK 独立卷 farm-xwin+双 rustup target,clang-20 已带 clang-cl/lld-link)③exdr2(REQ-ENG-012 stage2:XDR 持久缓存本体,C1-C4 框架)④eb2s1(观测缺口微单:11 站点 Full 节流日志)。修复线挂探测 DAG 边。
