@@ -1,1 +1,1 @@
-{"date":"2026-09-20","started_at":"2026-09-20T16:16:09Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":2,"note":"zero-hang 60min — entry condition 2/3"}
+{"date":"2026-09-21","started_at":"2026-09-21T16:15:20Z","duration_mins":60,"verdict":"failed","zero_hang":false,"counts_toward_entry":true,"streak_after":0,"note":"run.sh rc=2 (see /home/putao/code/rust/bao/bench/results/2026-09-21-a9bf54b6/soak.run-1.log); streak reset 2→0"}

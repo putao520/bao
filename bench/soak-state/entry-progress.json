@@ -1,10 +1,10 @@
 {
   "purpose": "72h soak entry condition (ledger .plans/spidermonkey-evolution.md 2026-09-10 soak 节): 60min 连续 ≥3 次零挂死 + 棘轮线性/平台已分辨",
   "target_streak": 3,
-  "streak": 2,
+  "streak": 0,
   "window_start_utc": "2026-09-10",
-  "last_update": "2026-09-20",
-  "last_run": "2026-09-20 run (completed)",
+  "last_update": "2026-09-21",
+  "last_run": "2026-09-21 run (failed)",
   "ladder": {
     "1_rca": "closed — BCE-20260910-003 (a4a6738c, GL composite removed from embedder spin loops)",
     "2_60min_nightly_timer": "landed — bao-soak.timer, OnCalendar 00:07 local (6h ahead of daily-ops 06:07), TimeoutStartSec=90min",
