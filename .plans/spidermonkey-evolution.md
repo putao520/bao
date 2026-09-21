@@ -1951,3 +1951,7 @@ em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 �
 ### 用户情报修正(Windows 阻断根因):libuv 供给路径移植未完
 
 用户原话:"上游 libuv 供应路径没移植完,我们需要自己维护并移植完**或者看看最新版上游做完了没**"。盘面实证:src/libuv_sys 在树(FFI 起步)+bao_uloop 纯 epoll 形(零 cfg(windows) 实证)——uv 消费面 Windows 分支缺失=首要根因,mozjs configure winreg 门为并行阻断之一。新增 ew3-uv-gap 线(fetch 上游 origin/main 核最新完成度+我方逐功能缺口+搬运/自维护归属);ew1 增补该情报(破口清单必含 uv 层)。
+
+### ew3 案卷结论:上游做完了(声明侧),bao 缺 C 供给(2026-09-21,/tmp+.plans/uv-gap-CASE.md)
+
+上游 origin/main=4af1842c8c:src/ 零 .zig,libuv 供给路径声明侧全 Rust(libuv_sys 3132L/108 extern+open_handles 228L);Windows x64/arm64 官方支持;C 侧=真 libuv fork @8023581113(1.51.0,37 .c)+2 win patch。**bao 已吸收声明链(125 cfg(windows) 文件,同版本镜像),真缺=C 符号供给零**(libuv_sys 纯声明;bun_uws_sys build.rs:101 exit(1)=#34;bao_uloop compile_error!=#35;mimalloc MSVC=#33)。路线三合同(C 侧零手写):①ew4 已派(vendor+cc 编译关 #34)②臂解锁③FFI 再同步(276→108 漂移,bao 独有 168=上游已删)。**最大边界**:mozjs configure 拒 Linux host(140 实证,ew1 复核 153 中)——Windows 全构建可能需 Windows host。文档漂移:platform-support.md 提 bao_uloop kqueue.rs 但树无此文件(mac 口径另波核实)。
