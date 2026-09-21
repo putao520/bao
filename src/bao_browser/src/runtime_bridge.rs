@@ -1731,6 +1731,14 @@ unsafe fn install_all_native(
         // pages keep servo-native surfaces (zero Bao wrappers).
     }
 
+    // SM153 time-precision parity: the Date clamp callback (installed
+    // process-sticky by set_time_resolution_usec on the FIRST stealthed page)
+    // only fires for realms carrying an RTPCallerTypeToken — stamp this
+    // page's realm unconditionally (stealthed AND stealth-free: the callback
+    // is process-sticky, so pages created after an arming still execute Date
+    // under it). Token-agnostic value; bao's callback applies one grid.
+    unsafe { bao_engine::realm_policy::set_realm_rtp_token_global(raw_global) };
+
     // Create a proper JSContext wrapper and root the global for Web API installation
     let cx_nn = match NonNull::new(raw_cx) {
         Some(nn) => nn,

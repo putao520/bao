@@ -859,6 +859,39 @@ fn is_esm_module(path: &Path, content: &str) -> bool {
 /// # Safety
 /// Caller must hold a valid `cx`.
 #[allow(unsafe_op_in_unsafe_fn)]
+/// SM153: ModuleLink rejects status New — the New->Unlinked transition only
+/// happens inside the engine's graph loading, so a directly-compiled module
+/// must run JS::LoadRequestedModules (sync callbacks) before linking. bao's
+/// ModuleLoadHook resolves synchronously, so the resolved callback fires
+/// inline; a rejected load propagates the error as the pending exception.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn load_resolved_cb(_cx: *mut JSContext, _host_defined: Handle<Value>) -> bool {
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn load_rejected_cb(
+    cx: *mut JSContext,
+    _host_defined: Handle<Value>,
+    error: Handle<Value>,
+) -> bool {
+    JS_SetPendingException(cx, error, JS::ExceptionStackBehavior::Capture);
+    false
+}
+
+/// SM153: run the engine graph-loading pass for a directly-compiled module.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn load_requested_modules_sync(cx: *mut JSContext, module: Handle<*mut JSObject>) -> bool {
+    rooted!(in(cx) let host_defined = UndefinedValue());
+    JS::LoadRequestedModules(
+        cx,
+        module,
+        host_defined.handle().into(),
+        Some(load_resolved_cb),
+        Some(load_rejected_cb),
+    )
+}
+
 unsafe fn load_esm_module(cx: *mut JSContext, source: &str, path: &Path) -> Option<*mut JSObject> {
     use mozjs::glue::NewCompileOptions;
     use mozjs::rust::transform_str_to_source_text;
@@ -892,7 +925,14 @@ unsafe fn load_esm_module(cx: *mut JSContext, source: &str, path: &Path) -> Opti
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let module_root = module);
 
-    // ModuleLink drives the host_resolve_imported_module hook for sub-imports.
+    // SM153: graph-load first (New -> Unlinked transition), then link.
+    // Sub-imports resolve through the ModuleLoadHook (synchronous).
+    if !load_requested_modules_sync(cx, module_root.handle().into()) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+
+    // ModuleLink drives the ModuleLoadHook-loaded graph linking.
     if !mozjs_sys::jsapi::JS::ModuleLink(cx, module_root.handle().into()) {
         JS_ClearPendingException(cx);
         return None;

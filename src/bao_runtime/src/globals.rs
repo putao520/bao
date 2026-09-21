@@ -2830,7 +2830,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     }
                 } else {
                     rooted!(&in(cx_ref) let v_root = v);
-                    match mozjs::rust::ToNumber(cx, v_root.handle()) {
+                    match mozjs::rust::ToNumber(&mut cx_ref, v_root.handle()) {
                         Ok(d) => {
                             if d.is_nan() {
                                 0
@@ -2897,7 +2897,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     // Non-number length: ToNumber coercion. Strings/objects
                     // parse via JS semantics.
                     rooted!(&in(cx_ref) let v_root = v);
-                    match mozjs::rust::ToNumber(cx, v_root.handle()) {
+                    match mozjs::rust::ToNumber(&mut cx_ref, v_root.handle()) {
                         Ok(d) => {
                             if d.is_nan() {
                                 0
@@ -4262,7 +4262,8 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // Step 1: ToNumber(targetStart). Default 0. Triggers user valueOf.
     let tgt_start_raw = if argc > 1 && !(*args.get(1).ptr).is_undefined() {
         let h = mozjs::rust::HandleValue::from_marked_location(args.get(1).ptr);
-        match unsafe { mozjs::rust::ToNumber(cx, h) } {
+        let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+        match unsafe { mozjs::rust::ToNumber(&mut cx_s, h) } {
             Ok(n) => n,
             Err(()) => return false,
         }
@@ -4283,7 +4284,8 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // Step 2: ToNumber(sourceStart). Default 0.
     let src_start_raw = if argc > 2 && !(*args.get(2).ptr).is_undefined() {
         let h = mozjs::rust::HandleValue::from_marked_location(args.get(2).ptr);
-        match unsafe { mozjs::rust::ToNumber(cx, h) } {
+        let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+        match unsafe { mozjs::rust::ToNumber(&mut cx_s, h) } {
             Ok(n) => n,
             Err(()) => return false,
         }
@@ -4309,7 +4311,8 @@ unsafe extern "C" fn buffer_copy(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // Step 3: ToNumber(sourceEnd). Default = pre-coercion src_len.
     let src_end_raw = if argc > 3 && !(*args.get(3).ptr).is_undefined() {
         let h = mozjs::rust::HandleValue::from_marked_location(args.get(3).ptr);
-        match unsafe { mozjs::rust::ToNumber(cx, h) } {
+        let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+        match unsafe { mozjs::rust::ToNumber(&mut cx_s, h) } {
             Ok(n) => n,
             Err(()) => return false,
         }
@@ -4571,7 +4574,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let byte_offset: i64 = if argc >= 2 && !encoding_arg_at_pos1 {
         let off_val = *args.get(1).ptr;
         rooted!(&in(cx_ref) let off_root = off_val);
-        match mozjs::rust::ToInt32(cx, off_root.handle()) {
+        match mozjs::rust::ToInt32(&mut cx_ref, off_root.handle()) {
             Ok(v) => v as i64,
             Err(_) => {
                 // Coercion threw — propagate.
@@ -4676,7 +4679,7 @@ unsafe extern "C" fn buffer_index_of(cx: *mut JSContext, argc: u32, vp: *mut JSV
         // Plain object with valueOf: try ToNumber. Buffer / Uint8Array is
         // excluded — those are handled as a byte needle below.
         rooted!(&in(cx_ref) let search_root = search_val);
-        match mozjs::rust::ToNumber(cx, search_root.handle()) {
+        match mozjs::rust::ToNumber(&mut cx_ref, search_root.handle()) {
             Ok(n) => Some(n),
             Err(_) => return false,
         }

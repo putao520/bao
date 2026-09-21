@@ -403,7 +403,7 @@ unsafe fn js_own_keys(
             if key_ptr.is_null() {
                 continue;
             }
-            mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+            mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)),
                 ::std::ptr::NonNull::new_unchecked(key_ptr),
             )
         } else if jsid.is_int() {

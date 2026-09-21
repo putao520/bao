@@ -1945,7 +1945,7 @@ unsafe fn parse_headers_init(cx: *mut JSContext, headers_val: JSVal) -> Vec<(Str
                     continue;
                 }
                 let key =
-                    jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(key_str_ptr));
+                    jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)), ::std::ptr::NonNull::new_unchecked(key_str_ptr));
                 let c_key = ZBox::from_bytes(key.as_bytes());
                 let mut v_val = UndefinedValue();
                 JS_GetProperty(

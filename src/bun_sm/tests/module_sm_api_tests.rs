@@ -506,3 +506,54 @@ fn test_js_string_literal_escapes() {
     // Control char < 0x20
     assert_eq!(render("\u{1}"), "\"\\u0001\"");
 }
+
+// ===========================================================================
+// SM153 time-precision parity: RTPCallerTypeToken + clamp callback
+// ===========================================================================
+
+#[test]
+fn test_sm153_time_precision_clamp_and_rtp_token() {
+    // The SM153 face: JS::SetReduceMicrosecondTimePrecisionCallback +
+    // per-realm RTPCallerTypeToken (stamped by node_realm_options via the
+    // jsglue shim). A Date.now() read on a token-stamped realm must route
+    // through bao's grid callback — 100ms grid => value is a multiple of
+    // 100 (SM140 SetTimeResolutionUsec behavior parity).
+    bao_engine::realm_policy::set_time_resolution_usec(100_000);
+    let mut ctx = JsContext::for_test().expect("JsContext");
+
+    let a: f64 = eval_string(&mut ctx, "Date.now()", "clamp-a.js")
+        .parse()
+        .expect("numeric Date.now()");
+    let b: f64 = eval_string(&mut ctx, "Date.now()", "clamp-b.js")
+        .parse()
+        .expect("numeric Date.now()");
+
+    assert!(a > 0.0 && b > 0.0, "sanity: positive epoch ms");
+    assert_eq!(
+        a % 100.0,
+        0.0,
+        "Date.now() not clamped to the 100ms grid: {a}"
+    );
+    assert_eq!(
+        b % 100.0,
+        0.0,
+        "Date.now() not clamped to the 100ms grid: {b}"
+    );
+
+    // Disarm (0 = pass-through): the process-sticky callback must now return
+    // values unclamped — consecutive reads within one 100ms window may
+    // differ, which the clamped path could never produce.
+    bao_engine::realm_policy::set_time_resolution_usec(0);
+    let c: f64 = eval_string(&mut ctx, "Date.now()", "noclamp.js")
+        .parse()
+        .expect("numeric Date.now()");
+    let d: f64 = eval_string(&mut ctx, "Date.now()", "noclamp2.js")
+        .parse()
+        .expect("numeric Date.now()");
+    assert_ne!(
+        c % 100.0,
+        0.0,
+        "pass-through after disarm produced a grid-aligned read: {c}"
+    );
+    let _ = d;
+}

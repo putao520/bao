@@ -97,6 +97,9 @@ pub fn node_realm_options() -> mozjs::rust::RealmOptions {
             .expect("valid IANA zone literal");
         unsafe { mozjs_sys::glue::BaoSetRealmTimeZoneOverride(&mut *options, tz.as_ptr()) };
     }
+    // SM153 time-precision parity: the RTP caller-type token is stamped by
+    // the CALLER (bao_engine context.rs) — bun_sm cannot depend on bao_engine
+    // (the crate edge runs the other way: bao_engine -> bun_sm).
     options
 }
 

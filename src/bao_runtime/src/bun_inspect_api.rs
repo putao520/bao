@@ -905,7 +905,7 @@ unsafe fn render_own_keyed_entries(
         if key_ptr.is_null() {
             continue;
         }
-        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+        let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)),
             ::std::ptr::NonNull::new_unchecked(key_ptr),
         );
         let key_z = bun_core::ZBox::from_bytes(key.as_bytes());

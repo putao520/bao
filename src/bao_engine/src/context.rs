@@ -832,7 +832,12 @@ impl JsContext {
         }
         // Node-semantics realm: SharedArrayBuffer/Atomics standard classes on
         // (see bun_sm::global_object::node_realm_options).
-        let options = bun_sm::node_realm_options();
+        let mut options = bun_sm::node_realm_options();
+        // SM153 time-precision parity: realms must carry an RTPCallerTypeToken
+        // for the Date clamp callback to fire (Date.cpp NowAsMillis
+        // dereferences the token Maybe once the callback is installed).
+        // Token-agnostic value — the callback applies one process grid.
+        crate::realm_policy::set_realm_rtp_token_options(&mut options);
         rooted!(&in(cx) let global = unsafe {
             JS_NewGlobalObject(
                 cx,

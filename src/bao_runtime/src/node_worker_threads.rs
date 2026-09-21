@@ -878,7 +878,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
     }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let filename = jsstr_to_string(wrapped_cx,
+    let filename = jsstr_to_string(&wrapped_cx,
         NonNull::new_unchecked(filename_val.to_string()),
     );
 

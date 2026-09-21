@@ -876,6 +876,33 @@ void BaoSetRealmTimeZoneOverride(JS::RealmOptions* options, const char* tz) {
   options->behaviors().setTimeZoneOverride(tz);
 }
 
+// BAO PATCH (SM153 time-precision parity): JS::SetReduceMicrosecondTimePrecisionCallback
+// callbacks fire only for realms carrying an RTPCallerTypeToken
+// (builtin/Date.cpp NowAsMillis dereferences realm->behaviors().
+// reduceTimerPrecisionCallerType() unconditionally once the callback is set —
+// a token-less realm is a debug-assert hazard and gates the clamp off).
+// RealmBehaviors::setReduceTimerPrecisionCallerType is a C++ method storing
+// into mozilla::Maybe<RTPCallerTypeToken> (bindgen-hostile), so embedding
+// sites set the token through these shims — at realm-options build time and
+// post-creation from the realm's global.
+void BaoSetRealmOptionsReduceTimerPrecisionCallerType(JS::RealmOptions* options,
+                                                      uint8_t value) {
+  options->behaviors().setReduceTimerPrecisionCallerType(
+      JS::RTPCallerTypeToken{value});
+}
+
+void BaoSetRealmReduceTimerPrecisionCallerType(JSObject* global,
+                                               uint8_t value) {
+  // js/Realm.h only forward-declares JS::Realm (the complete class with
+  // behaviors() lives in the internal vm/Realm.h), so the write routes
+  // through the public JS::SetRealmReduceTimerPrecisionCallerType API.
+  JS::Realm* realm = JS::GetObjectRealmOrNull(global);
+  if (realm) {
+    JS::SetRealmReduceTimerPrecisionCallerType(
+        realm, JS::RTPCallerTypeToken{value});
+  }
+}
+
 void RUST_SET_JITINFO(JSFunction* func, const JSJitInfo* info) {
   SET_JITINFO(func, info);
 }

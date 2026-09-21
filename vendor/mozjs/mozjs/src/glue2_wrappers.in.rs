@@ -45,6 +45,11 @@ wrap!(glue: pub fn BaoCollectRuntimeStats(cx: &mut JSContext, servoSizes: *mut S
 // (C++ method, bindgen strips methods; RefPtr<TimeZoneString> unsafe from Rust),
 // so the write routes through this jsglue.cpp shim. Bao pins "UTC".
 wrap!(glue: pub fn BaoSetRealmTimeZoneOverride(options: *mut RealmOptions, tz: *const ::std::os::raw::c_char));
+// BAO PATCH (SM153 time-precision parity): RTPCallerTypeToken wiring —
+// see the jsglue.cpp shims. Token value is engine-opaque (bao's callback is
+// token-agnostic); the wire only needs the Maybe filled.
+wrap!(glue: pub fn BaoSetRealmOptionsReduceTimerPrecisionCallerType(options: *mut RealmOptions, value: u8));
+wrap!(glue: pub fn BaoSetRealmReduceTimerPrecisionCallerType(global: *mut JSObject, value: u8));
 wrap!(glue: pub fn JS_DequeueNextMicroTask(cx: &JSContext, task: MutableHandle<GenericMicroTask>));
 wrap!(glue: pub fn JS_GetPromiseResult(promise: HandleObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));

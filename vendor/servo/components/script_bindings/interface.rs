@@ -178,7 +178,21 @@ pub(crate) unsafe fn create_global_object<D: DomTypes>(
     options.creationOptions_.traceGlobal_ = Some(trace);
     options.creationOptions_.sharedMemoryAndAtomics_ = false;
     // BAO PATCH (SM-EVOLUTION #28): engine-native timezone identity.
-    options.creationOptions_.forceUTC_ = force_utc_realms();
+    // SM153: forceUTC_ removed — the same engine semantics (the IANA zone
+    // Atlantic/Reykjavik, real UTC+0 with real DST history) ride
+    // RealmBehaviors::setTimeZoneOverride via the jsglue shim. Plus the
+    // SM153 time-precision parity RTP token (callback is token-agnostic;
+    // the Maybe must be non-empty for Date reads to take the clamped path).
+    if force_utc_realms() {
+        js::glue::BaoSetRealmTimeZoneOverride(
+            std::ptr::from_mut(&mut *options),
+            c"Atlantic/Reykjavik".as_ptr(),
+        );
+    }
+    js::glue::BaoSetRealmOptionsReduceTimerPrecisionCallerType(
+        std::ptr::from_mut(&mut *options),
+        0,
+    );
     if use_system_compartment {
         options.creationOptions_.compSpec_ = CompartmentSpecifier::NewCompartmentAndZone;
         options.creationOptions_.__bindgen_anon_1.comp_ = std::ptr::null_mut();
@@ -442,7 +456,7 @@ pub(crate) fn define_guarded_methods<D: DomTypes>(
     for guard in methods {
         if let Some(specs) = guard.expose::<D>(cx, obj, global) {
             unsafe {
-                define_methods(cx.raw_cx(), obj, specs).unwrap();
+                define_methods(cx, obj, specs).unwrap();
             }
         }
     }
@@ -458,7 +472,7 @@ pub(crate) fn define_guarded_properties<D: DomTypes>(
     for guard in properties {
         if let Some(specs) = guard.expose::<D>(cx, obj, global) {
             unsafe {
-                define_properties(cx.raw_cx(), obj, specs).unwrap();
+                define_properties(cx, obj, specs).unwrap();
             }
         }
     }
@@ -755,7 +769,7 @@ pub fn get_desired_proto(
             }
         }
 
-        maybe_wrap_object(cx.raw_cx(), desired_proto);
+        maybe_wrap_object(cx, desired_proto);
         Ok(())
     }
 }

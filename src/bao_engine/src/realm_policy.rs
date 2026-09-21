@@ -47,10 +47,16 @@
 // so CLI/Node runs and stealth-free pages keep upstream host-derived
 // behavior byte-for-byte.
 
+use ::std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use mozjs::jsapi::{
     JSContext as RawJSContext, JS_GetRuntime, JS_ResetDefaultLocale, JS_SetDefaultLocale,
-    SetTimeResolutionUsec,
 };
+// SM153 time-precision parity: SetTimeResolutionUsec was removed from SM
+// 153.3 entirely; the replacement face is the embedder-supplied precision
+// callback (js/public/Date.h) plus a per-realm RTPCallerTypeToken.
+use mozjs::jsapi::JS::SetReduceMicrosecondTimePrecisionCallback;
+use mozjs::jsapi::JS::RTPCallerTypeToken;
+use mozjs::jsval::JSVal;
 
 /// Set the JSRuntime default locale — the engine-native `Intl.*` identity.
 ///
@@ -91,5 +97,64 @@ pub unsafe fn reset_default_locale(raw_cx: *mut RawJSContext) {
 /// exist for the resolution itself; per-realm gating is only the
 /// `clampAndJitterTime_` behaviors flag, kept at its C++ default `true`).
 pub fn set_time_resolution_usec(resolution_us: u32) {
-    unsafe { SetTimeResolutionUsec(resolution_us, false) };
+    TIME_RESOLUTION_US.store(resolution_us, Ordering::Relaxed);
+    // Install once, process-sticky (SM has no uninstall): resolution updates
+    // ride the atomic the callback reads, so re-arming/disarming (0) keeps
+    // working through the same callback — SM140 parity for the runtime_bridge
+    // arm/disarm cycle.
+    if !TIME_CALLBACK_INSTALLED.swap(true, Ordering::AcqRel) {
+        unsafe {
+            SetReduceMicrosecondTimePrecisionCallback(Some(reduce_time_precision_cb));
+        }
+    }
+}
+
+static TIME_RESOLUTION_US: AtomicU32 = AtomicU32::new(0);
+static TIME_CALLBACK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// SM153 precision callback. SM hands us MICROSECONDS (builtin/Date.cpp
+/// NowAsMillis passes `PRMJ_Now()` and divides by PRMJ_USEC_PER_MSEC after
+/// the call), so the SM140 grid semantics translate directly: floor to the
+/// resolution_us grid, no jitter (Chrome desktop shape), 0 = pass-through.
+/// Token-agnostic by design: bao clamps every realm on one process grid, so
+/// the caller type plays no role in the reduction.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn reduce_time_precision_cb(
+    time_us: f64,
+    _token: RTPCallerTypeToken,
+    _cx: *mut RawJSContext,
+) -> f64 {
+    let grid_us = TIME_RESOLUTION_US.load(Ordering::Relaxed) as f64;
+    if !(grid_us > 0.0) || !time_us.is_finite() {
+        return time_us;
+    }
+    (time_us / grid_us).floor() * grid_us
+}
+
+/// Engine-opaque caller-type value. The engine only forwards the token to
+/// the callback (which ignores it); the Maybe must simply be non-empty so
+/// Date reads take the clamped path without asserting in debug builds.
+pub const RTP_TOKEN_VALUE: u8 = 0;
+
+/// SM153: stamp the RTP caller-type token into realm OPTIONS at creation
+/// time (node realms / any caller building `RealmOptions`).
+pub fn set_realm_rtp_token_options(options: &mut mozjs::rust::RealmOptions) {
+    unsafe {
+        mozjs_sys::glue::BaoSetRealmOptionsReduceTimerPrecisionCallerType(
+            std::ptr::from_mut(&mut **options),
+            RTP_TOKEN_VALUE,
+        );
+    }
+}
+
+/// SM153: stamp the token into an already-created realm via its global
+/// (page realms — the servo script-thread embedder callback path).
+///
+/// # Safety
+/// `raw_global` must be a live global object of the caller's thread.
+pub unsafe fn set_realm_rtp_token_global(raw_global: *mut mozjs::jsapi::JSObject) {
+    mozjs_sys::glue::BaoSetRealmReduceTimerPrecisionCallerType(
+        raw_global,
+        RTP_TOKEN_VALUE,
+    );
 }

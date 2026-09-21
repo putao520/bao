@@ -198,7 +198,7 @@ unsafe fn read_opts_into(cx: *mut JSContext, oh: Handle<*mut JSObject>, cfg: &mu
                 if key_ptr.is_null() {
                     continue;
                 }
-                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)),
+                let key = mozjs::conversions::jsstr_to_string(&mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)),
                     ::std::ptr::NonNull::new_unchecked(key_ptr),
                 );
                 let c_key = ZBox::from_bytes(key.as_bytes());
