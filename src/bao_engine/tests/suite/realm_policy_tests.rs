@@ -6,22 +6,26 @@
 // 2026-09-10 census found Rust-reachable. The wiring wave (verdict consumed
 // 2026-09-10) added the third dimension:
 //
-//   1. Timezone: `RealmCreationOptions::forceUTC_` is a pub bindgen field
-//      (creation-time only, per-realm). Engine semantics = Firefox RFP shape:
-//      all Date local methods run in UTC+0 (SM maps it to the real IANA zone
-//      Atlantic/Reykjavik internally). Proven by evaluating Date expressions
-//      inside a realm created with the flag flipped — deterministic offset 0
-//      at both a January and a July instant regardless of host TZ.
+//   1. Timezone: SM140 rode the removed `RealmCreationOptions::forceUTC_`
+//      creation flag; SM153 parity rides `RealmBehaviors::setTimeZoneOverride`
+//      (the real IANA zone Atlantic/Reykjavik, UTC+0 with real DST history,
+//      not a bare +0000 offset) applied at creation time through the
+//      `bun_sm::set_node_force_utc` / `node_realm_options` sink. Proven by
+//      evaluating Date expressions inside a realm created with the sink armed
+//      — deterministic offset 0 at both a January and a July instant
+//      regardless of host TZ.
 //
-//   2. Time precision: `JS::SetTimeResolutionUsec(resolution, jitter)` is
-//      already bound (jsapi SetTimeResolutionUsec) and gates `Date.now()` /
-//      `new Date().getTime()` clamping per `RealmBehaviors::clampAndJitterTime_`
-//      (C++ default true; mozjs glue preserves it). Proven by clamping to a
-//      1-second grid with jitter off and observing millisecond multiples of
-//      1000, then restoring resolution 0 (no clamping) and observing raw
-//      wall-clock values again. The combo test additionally proves forceUTC
-//      and an arbitrary (non-default) precision grid compose in one realm —
-//      the exact per-page override configuration bao_browser wires.
+//   2. Time precision: `JS::SetTimeResolutionUsec` was removed in SM 153.3;
+//      the parity face is the embedder precision callback
+//      (`JS::SetReduceMicrosecondTimePrecisionCallback`, installed once by
+//      `bao_engine::realm_policy::set_time_resolution_usec`) gated per-realm
+//      by the RTP caller-type token stamped via
+//      `set_realm_rtp_token_options`. Proven by clamping to a 1-second grid
+//      and observing millisecond multiples of 1000, then restoring grid 0
+//      (no clamping) and observing raw wall-clock values again. The combo
+//      test additionally proves forceUTC and an arbitrary (non-default)
+//      precision grid compose in one realm — the exact per-page override
+//      configuration bao_browser wires.
 //
 //   3. Locale: `JS_SetDefaultLocale` / `JS_ResetDefaultLocale` landed with
 //      the LocaleSensitive.h bindgen include (the exact 1-line gap the
@@ -31,30 +35,40 @@
 //      environment (LANG/LC_* → ICU default, the pre-fix zh-CN leak path),
 //      owns the identity. The override is reset afterwards.
 //
-// Engine policy tests are process-global where noted: SetTimeResolutionUsec
+// Engine policy tests are process-global where noted: the precision sink
 // writes a process-wide static, so the clamp is restored BEFORE any assertion
 // can fail (plain `cargo test` runs the whole suite in one process; nextest
 // isolates per test anyway).
 
 use bao_engine::context::JsContext;
 use mozjs::jsapi::OnNewGlobalHookOption;
-use mozjs::jsapi::SetTimeResolutionUsec;
 use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::JS_NewGlobalObject;
 use mozjs::rust::{CompileOptionsWrapper, SIMPLE_GLOBAL_CLASS, evaluate_script};
 
-/// Evaluate `source` in a fresh realm created with `forceUTC_ = true` and
-/// return the script result as a bool (scripts used with this helper always
-/// end in a `===` comparison, so the result is a real boolean).
+/// Evaluate `source` in a fresh realm created with the SM153 forceUTC parity
+/// shim armed (Atlantic/Reykjavik timezone override; SM140 rode the removed
+/// `forceUTC_` creation flag) and return the script result as a bool (scripts
+/// used with this helper always end in a `===` comparison, so the result is a
+/// real boolean).
 fn eval_bool_in_force_utc_realm(
     cx: &mut mozjs::context::JSContext,
     source: &str,
     filename: &str,
 ) -> bool {
+    // Creation-time-only selection: arm the node_realm_options timezone sink,
+    // build the options, disarm immediately — the override is baked into the
+    // options here, and the process-wide flag must not leak into other realm
+    // creations.
+    bao_engine::set_node_force_utc(true);
     let mut options = bun_sm::node_realm_options();
-    options.creationOptions_.forceUTC_ = true;
+    bao_engine::set_node_force_utc(false);
+    // SM153 time-precision parity: the Date clamp callback only fires for
+    // realms carrying the RTP caller-type token — stamp it here (context.rs
+    // does the same for its own node realms).
+    bao_engine::realm_policy::set_realm_rtp_token_options(&mut options);
 
     rooted!(&in(cx) let global = unsafe {
         JS_NewGlobalObject(
@@ -148,7 +162,10 @@ fn test_force_utc_realm_dates_run_in_utc(ctx: &mut JsContext) {
 fn test_time_resolution_clamp_and_restore(ctx: &mut JsContext) {
     // Clamp Date.now() to a 1-second grid, jitter OFF (jitter randomizes the
     // sub-grid midpoint and would make the multiple-of assertion flaky).
-    unsafe { SetTimeResolutionUsec(1_000_000, false) };
+    // SM153: SetTimeResolutionUsec is gone; the engine's RTP-callback sink
+    // carries the same grid (one process grid, no jitter — Chrome desktop
+    // shape), token-stamped realms only.
+    bao_engine::realm_policy::set_time_resolution_usec(1_000_000);
 
     let clamped = ctx
         .eval("Date.now()", "time_resolution_clamped.js")
@@ -156,7 +173,7 @@ fn test_time_resolution_clamp_and_restore(ctx: &mut JsContext) {
 
     // Restore BEFORE asserting: a failed assertion below must not leak the
     // process-wide clamp into later tests when they share one process.
-    unsafe { SetTimeResolutionUsec(0, false) };
+    bao_engine::realm_policy::set_time_resolution_usec(0);
 
     let clamped = clamped
         .as_number()
@@ -193,7 +210,7 @@ fn test_force_utc_with_time_resolution_combo(ctx: &mut JsContext) {
 
     // 100ms grid (neither the 100µs profile default nor the 1s clamp-test
     // grid) — proves the two dimensions are independent knobs.
-    unsafe { SetTimeResolutionUsec(100_000, false) };
+    bao_engine::realm_policy::set_time_resolution_usec(100_000);
 
     let combo = eval_bool_in_force_utc_realm(
         &mut cx,
@@ -206,7 +223,7 @@ fn test_force_utc_with_time_resolution_combo(ctx: &mut JsContext) {
     );
 
     // Restore BEFORE asserting (process-wide static).
-    unsafe { SetTimeResolutionUsec(0, false) };
+    bao_engine::realm_policy::set_time_resolution_usec(0);
 
     assert!(
         combo,
