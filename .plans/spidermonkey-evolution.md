@@ -1979,3 +1979,7 @@ ew4(9595dbae):libuv C 符号供给——vendor 真 fork 头(1.51.1-dev rev 验�
 ### ewe 案卷 v2 终态(实靶+ew1 校准,231 行)
 
 §3 实靶 .200(SSH 唯一控制面,SMB 备选大产物;**授权=W0 阻塞前置**——用户授权公钥前 host 面不可开跑);§4 矩阵双态(交叉承载全构建[条件性];host=运行时验证真机+备胎,**Supported 实证链=交叉构建证明+真机运行证明缺一不可**);§5 W0 授权→W1 交叉收敛(合流 ew1,含 bcm/bun_alloc 破口)→W2 交叉全构建门→W3 真机运行验证→W4 host 备胎(并行)→W5 收口;§6 风险+4 行(xwin 钉版双口径裁主钉=ew1 实测 0.10)。
+
+### Windows 波:W1 链进+W2+W2.5 三收(2026-09-21)
+
+**s1a 6866e835**:bun_core 三 windows 臂(GetCurrentThreadStackLimits/_flushall[证伪注记]/S_IEXEC)+import cfg;msvc RC=0,linux 52/52;**自由解锁 bun_safety/paths/collections**;移交下一堵点=libuv C build script 需 SDK sysroot(并纠晨间误读:build script 在依赖后跑,C 面此前未触)。**em2 c3a5800f(W2)**:boringssl 双面 build.rs(msvc=clang-cl+MSVC 原文 flag+NOMINMAX 实证;asm 走显式 nasm win64 非默认 ml64);**asm 零再生**(win64n 产物 W0b publish 已在树,对上游 cmake 清单全中);win64 boringssl.lib 6.68MB COFF 实证,linux 零 diff。**ec2 b54d6e97(W2.5)**:lsquic 上游配方存在(lsquic.ts cfg.windows)→windows 臂+5 vendor shim;msvc 绿(lsquic.lib 4.8MB/572 符号);**证据否决 zlib 供给**(IETF-only 集零 zlib 引用,探针 72 TU 实证,已加的 dep 撤回)。**ew1 续派**:env 契约产品化(wsroot 稳定位+source 脚本+端到端)——C 三层(libuv/boringssl/lsquic)供给全闭环,cargo 面等 env 产品化后链式再进。
