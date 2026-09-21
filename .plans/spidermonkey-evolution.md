@@ -2007,3 +2007,7 @@ farm-xwin 卷布局收敛到 /opt/bao-win-cross 契约形(wsroot 组装+无空�
 ### ★em3 usockets 吸收波全绿:uws 门开,全图解锁(5cf54648/fc34baa8/4396a20e,2026-09-21)
 
 基底 bun@0ba403277a 逐 hunk 对 4af:全部 bao cherry-pick 被上游逐字包含/超越,**真冲突=0**(仅 4 小 patch 重放:Bun__panic 链接钉/us_cert_string_t 类型钉/分配器回 libc[mimalloc 退役连带堵暗雷]/lazy-cert eager+IGNORE_EXPIRED shim);保留 quic.c(lsquic 锁)与 root_certs 五文件(boringssl 锁)延后立案。签名迁移全清单(adopt_tls 7→10/SNI 2→4/group_connect 源绑定[**真野指针崩溃修复 context.c:612**]/297 extern 机械比对零漂移)。**三门**:linux check(uws+6 下游)RC=0/linux TLS 硬门全绿(SNI 6/6 C 复验)/windows ew4 收窄门 RC=0(C 复验 0.54s)。#34#35 证据评论已补(两案 09-08 已关,非本波关)。遗留登记:quic.c 4af 增量+lazy-cert+真机 link/E2E(#18)。**s1a 门开令已发**(四 crate 连锁解封推进)。
+
+### ★.200 compose 测试环境建成(er0,2026-09-22)
+
+~/build-farm/bao-win:Dockerfile(farm 正本 msvc 裁剪:llvm-20 全符号面+rustup 含 msvc target)+compose 双 bind 卷(win-cross=/opt/bao-win-cross,src=契约脚本);wsroot 634M 自 .205 rsync(勘误:um/x64 实为 952 .lib,此前 0 计数系漏版本段路径);**根治:.200 docker CLI 因 DD 残留(~/.docker desktop 上下文)全体崩→隔离 dd-stale.bak+净 config 复活**;容器冒烟:env ready(7 INCLUDE/4 LIB)+COMPILE_OK+LINK_OK(rust msvc target+clang-cl 20.1.8)。ops 册已追加环境节。**用户点名的"SSH 到 WINDOWS 的 compose 做环境去测试"就绪**——候 W3/W7 产物即真机冒烟。
