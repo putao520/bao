@@ -137,13 +137,11 @@ fn main() {
     // Fail-closed, narrowed to the true remaining face (issue #34 follow-up):
     // the LIBUS_USE_LIBUV eventing backend above only compiles against the
     // oven-sh/bun 4af1842c8c usockets tree (the pre-absorb mirror's
-    // eventing/libuv.c still defines `void us_poll_change`, which the synced
-    // tree's own header rejects). The absorb is its own wave — it drags the
-    // whole crypto/TLS surface (us_socket_adopt_tls grew
-    // is_client/request_cert/reject_unauthorized; SNI resume callbacks went
-    // 2→4-arg) and must land with the linux TLS test discipline, not as a
-    // side effect of this arm. Until it lands, refuse here with the
-    // actionable gap instead of an opaque C compile error.
+    // eventing/libuv.c still defined `void us_poll_change`, which the synced
+    // tree's own header rejects). The absorb HAS landed (csrc replay
+    // reconciliation + crypto/TLS signature migration); the gate below stays
+    // as a tripwire so a future partial revert of the tree fails here with
+    // the actionable gap instead of an opaque C compile error.
     if is_windows {
         let libuv_backend = usockets_src.join("eventing").join("libuv.c");
         let backend = std::fs::read_to_string(&libuv_backend).unwrap_or_default();
@@ -151,10 +149,10 @@ fn main() {
             panic!(
                 "bun_uws_sys windows arm: the vendored usockets eventing/libuv.c \
                  predates the windows backend rewrite (oven-sh/bun 4af1842c8c) and \
-                 cannot compile against its own header — absorb the usockets tree \
-                 (incl. the crypto/TLS signature evolution: us_socket_adopt_tls, \
-                 4-arg SNI resume) first, then this arm compiles as written \
-                 (issue #34, platform matrix: docs/platform-support.md)"
+                 cannot compile against its own header — the usockets tree was \
+                 absorbed (incl. the crypto/TLS signature evolution: \
+                 us_socket_adopt_tls, 4-arg SNI resume); this refusal means the \
+                 tree was partially reverted (issue #34, docs/platform-support.md)"
             );
         }
     }
@@ -288,15 +286,38 @@ fn main() {
         tls_cpp.compiler(env_cc("CXX").unwrap_or_else(|| default_cxx.into()));
         tls_cpp.cpp(true);
         tls_cpp.opt_level(1);
+        // clang-cl silently IGNORES the GNU spellings (-std=c++17,
+        // -fno-exceptions, -fno-rtti) and falls back to C++14, where the
+        // absorbed 4af sni_tree.cpp (std::string_view) does not compile —
+        // pass the MSVC-driver forms on windows like the wrapper TU does.
+        if is_windows {
+            tls_cpp
+                .flag("/std:c++17")
+                .flag("/GX-") // -fno-exceptions
+                .flag("/GR-") // -fno-rtti
+                // Same wincrypt guard as the wrapper TU below: internal.h pulls
+                // <uv.h> → windows.h on windows, and without LEAN_AND_MEAN its
+                // wincrypt section macro-poisons the BoringSSL X509_* names
+                // (observed: `typedef redefinition X509_name_st vs const CHAR *`).
+                .define("WIN32_LEAN_AND_MEAN", None)
+                .define("NOMINMAX", None);
+        } else {
+            tls_cpp
+                .flag("-std=c++17")
+                .flag("-fno-exceptions")
+                .flag("-fno-rtti");
+        }
         tls_cpp
-            .flag("-std=c++17")
-            .flag("-fno-exceptions")
-            .flag("-fno-rtti")
             .flag("-DBORINGSSL_IMPLEMENTATION=1")
             .include(boringssl_dir.join("include"))
             .include(&usockets_dir)
             .include(&usockets_src)
             .include(usockets_src.join("internal"));
+        // windows: internal.h → internal/eventing/libuv.h → <uv.h> (same face
+        // the C build and wrapper TU consume — the vendored libuv supply).
+        if is_windows {
+            tls_cpp.include(&libuv_include);
+        }
         tls_cpp.file(usockets_src.join("crypto/sni_tree.cpp"));
         tls_cpp.file(usockets_src.join("crypto/root_certs.cpp"));
         // Platform-specific system certificate loading (darwin dlopens the
@@ -361,11 +382,21 @@ fn main() {
         .include(&usockets_src)           // for #include "internal/internal.h"
         .include(usockets_src.join("internal"))
         .include(usockets_src.join("internal/networking"))
+        // Absorbed oven-sh/bun 4af1842c8c: bun-uws's App.h unconditionally
+        // includes Http2Context.h → <lshpack.h> → "lsxpack_header.h".
+        .include(csrc_dir.join("deps").join("lshpack"))
+        .include(csrc_dir.join("deps").join("lsqpack"))
         .include(&crate_dir)             // for #include "_libusockets.h"
         .include(crate_dir.join("src")); // for #include <wtf/Assertions.h>
     if is_windows {
         // internal/internal.h → internal/eventing/libuv.h → <uv.h>
         cpp_build.include(&libuv_include);
+        // Windows has no <sys/queue.h> / <sys/uio.h>: the vendored wincompat
+        // shims supply them for lshpack.h / lsxpack_header.h. POSIX keeps the
+        // system headers (the shims would shadow them).
+        cpp_build
+            .include(csrc_dir.join("deps").join("lshpack").join("compat").join("windows"))
+            .include(csrc_dir.join("deps").join("lsqpack").join("wincompat"));
         // PerMessageDeflate.h includes <zlib.h> and <libdeflate.h>: the zlib
         // face is the vendored libz-rs-sys ABI header pair (same bytes as
         // lsquic_sys's — the symbol supply rides lsquic_sys's windows
@@ -487,6 +518,17 @@ fn main() {
     println!("cargo:rerun-if-changed={}", crate_dir.join("libuwsockets.cpp").display());
     println!("cargo:rerun-if-changed={}", crate_dir.join("libuwsockets_h3.cpp").display());
     println!("cargo:rerun-if-changed={}", crate_dir.join("_libusockets.h").display());
+    // Absorbed 4af1842c8c: the C++ TU now pulls <lshpack.h>/<lsxpack_header.h>
+    // transitively via Http2Context.h — watch the whole vendored dirs (they
+    // carry the headers plus the windows compat shims).
+    println!(
+        "cargo:rerun-if-changed={}",
+        csrc_dir.join("deps").join("lshpack").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        csrc_dir.join("deps").join("lsqpack").display()
+    );
     if let Ok(entries) = std::fs::read_dir(&uws_src) {
         for entry in entries.flatten() {
             let path = entry.path();

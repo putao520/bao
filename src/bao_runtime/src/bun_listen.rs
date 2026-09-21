@@ -1274,7 +1274,7 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     let result = unsafe {
-        (*group_ptr).connect(socket_kind, None, (*host_cstr).as_cstr(), port as i32, 0, 0)
+        (*group_ptr).connect(socket_kind, None, (*host_cstr).as_cstr(), port as i32, None, 0, 0)
     };
 
     let socket_key = match result {

@@ -31,8 +31,13 @@ impl ConnectingSocket {
     /// Returns the owning `Loop`. Raw pointer because the loop is a shared
     /// singleton referenced by every group/socket/timer (Zig `*Loop` freely
     /// aliases); materializing `&mut Loop` here would be aliased UB.
+    /// Upstream dropped the direct `us_connecting_socket_get_loop` accessor in
+    /// the group refactor (oven-sh/bun 4af1842c8c); the loop now comes off the
+    /// connecting socket's group.
     pub fn r#loop(&mut self) -> *mut Loop {
-        us_connecting_socket_get_loop(self)
+        // The group is loop-owned and outlives this connecting socket;
+        // `us_socket_group_loop` is a pure field read (`safe fn` shim).
+        us_socket_group_loop(us_connecting_socket_group(self))
     }
 
     pub fn ext<T>(&mut self) -> &mut T {
@@ -96,7 +101,9 @@ unsafe extern "C" {
     pub(crate) safe fn us_connecting_socket_shutdown(s: &mut ConnectingSocket);
     pub(crate) safe fn us_connecting_socket_shutdown_read(s: &mut ConnectingSocket);
     pub(crate) safe fn us_connecting_socket_timeout(s: &mut ConnectingSocket, seconds: c_uint);
-    pub(crate) safe fn us_connecting_socket_get_loop(s: &mut ConnectingSocket) -> *mut Loop;
+    // Upstream dropped `us_connecting_socket_get_loop` in the group refactor
+    // (oven-sh/bun 4af1842c8c); the loop comes off the socket's group.
+    pub(crate) safe fn us_socket_group_loop(group: *mut SocketGroup) -> *mut Loop;
 }
 
 // ported from: src/uws_sys/ConnectingSocket.zig

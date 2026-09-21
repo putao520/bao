@@ -1021,6 +1021,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         None,
         (*host_cstr).as_cstr(),
         port,
+        None, // local_binding: no source-address bind (absorbed 4af param)
         0,
         0, // socket_ext_size
     );

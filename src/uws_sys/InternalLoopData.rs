@@ -1,6 +1,8 @@
 use core::ffi::{c_char, c_int, c_void};
 
-use crate::{ConnectingSocket, Loop, SocketGroup, Timer, udp, us_socket_t};
+use crate::{ConnectingSocket, Loop, SocketGroup, udp, us_socket_t};
+#[cfg(windows)]
+use crate::Timer;
 
 /// Layout placeholder for the `mutex` field of `us_internal_loop_data_t`.
 /// Must match `zig_mutex_t` in `packages/bun-usockets/src/internal/loop_data.h`
@@ -22,12 +24,23 @@ bun_opaque::opaque_ffi! {
 
 #[repr(C)]
 pub struct InternalLoopData {
+    /// libuv (windows) only: a fallthrough `us_timer_t`. POSIX folds the
+    /// sweep deadline into the poll timeout instead.
+    #[cfg(windows)]
     pub sweep_timer: *mut Timer,
+    /// POSIX: absolute monotonic ns of the next sweep, or -1 (absorbed
+    /// oven-sh/bun 4af1842c8c — no timerfd, no EVFILT_TIMER).
+    #[cfg(not(windows))]
+    pub sweep_next_tick_ns: i64,
     pub sweep_timer_count: i32,
     pub wakeup_async: *mut us_internal_async,
     pub head: *mut SocketGroup,
     pub quic_head: *mut c_void,
     pub quic_next_tick_us: i64,
+    /// `us_nq_driver_s *` — node:quic's loop driver list (always empty here:
+    /// the driver shim TU is not compiled, see `c_hooks::us_nq_loop_flush_if_pending`).
+    pub nq_head: *mut c_void,
+    #[cfg(windows)]
     pub quic_timer: *mut Timer,
     pub iterator: *mut SocketGroup,
     pub recv_buf: *mut u8,

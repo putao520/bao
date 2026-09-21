@@ -207,12 +207,19 @@ impl SocketGroup {
         }
     }
 
+    /// `local_binding` is the absorbed-from-upstream source-address pair
+    /// (oven-sh/bun 4af1842c8c): the host must be a literal IP, `None` binds
+    /// nothing (OS default). `us_socket_group_connect` grew it between bao's
+    /// pre-absorb base and 4af — leaving it out desyncs every later argument
+    /// (observed: `*has_dns_resolved` written through garbage on the fetch
+    /// TLS path).
     pub fn connect(
         &mut self,
         kind: SocketKind,
         ssl_ctx: Option<*mut SslCtx>,
         host: &core::ffi::CStr,
         port: c_int,
+        local_binding: Option<(&core::ffi::CStr, u16)>,
         options: c_int,
         socket_ext_size: c_int,
     ) -> ConnectResult {
@@ -229,6 +236,8 @@ impl SocketGroup {
                 ssl_ctx.unwrap_or(ptr::null_mut()),
                 host.as_ptr(),
                 port,
+                local_binding.map_or(ptr::null(), |(h, _)| h.as_ptr()),
+                local_binding.map_or(0, |(_, p)| c_int::from(p)),
                 options,
                 socket_ext_size,
                 &raw mut has_dns_resolved,
@@ -346,6 +355,8 @@ unsafe extern "C" {
         ssl_ctx: *mut SslCtx,
         host: *const c_char,
         port: c_int,
+        local_host: *const c_char,
+        local_port: c_int,
         options: c_int,
         socket_ext_size: c_int,
         is_connecting: *mut c_int,

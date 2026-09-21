@@ -522,22 +522,30 @@ extern "C"
       uwsApp->setMaxHTTPHeaderSize(max_header_size);
     }
   }
-  void uws_app_set_flags(int ssl, uws_app_t *app, bool require_host_header, bool use_strict_method_validation) {
+  /* BAO PORT (absorb oven-sh/bun 4af1842c8c): upstream grew setFlags with the
+   * lenient-http parser bits and httpAllowHalfOpen (the IsNodeHttp template
+   * split's runtime-shaped flags); the C ABI follows. */
+  void uws_app_set_flags(int ssl, uws_app_t *app, bool require_host_header, bool use_strict_method_validation, uint8_t lenient_http_flags, bool http_allow_half_open) {
     if (ssl) {
       uWS::SSLApp *uwsApp = (uWS::SSLApp *)app;
-      uwsApp->setFlags(require_host_header, use_strict_method_validation);
+      uwsApp->setFlags(require_host_header, use_strict_method_validation, lenient_http_flags, http_allow_half_open);
     } else {
       uWS::App *uwsApp = (uWS::App *)app;
-      uwsApp->setFlags(require_host_header, use_strict_method_validation);
+      uwsApp->setFlags(require_host_header, use_strict_method_validation, lenient_http_flags, http_allow_half_open);
     }
   }
+  /* BAO PORT: upstream replaced the runtime isNodeHttp bool with the
+   * one-way enableNodeHttpCompat() vtable switch (the installed vtable IS the
+   * mode). C ABI name kept — Rust callers are unchanged; false is a no-op
+   * because a fresh context already runs the Bun.serve instantiation. */
   void uws_app_set_is_node_http(int ssl, uws_app_t *app, bool is_node_http) {
+    if (!is_node_http) return;
     if (ssl) {
       uWS::SSLApp *uwsApp = (uWS::SSLApp *)app;
-      uwsApp->setIsNodeHttp(is_node_http);
+      uwsApp->enableNodeHttpCompat();
     } else {
       uWS::App *uwsApp = (uWS::App *)app;
-      uwsApp->setIsNodeHttp(is_node_http);
+      uwsApp->enableNodeHttpCompat();
     }
   }
 
@@ -1769,7 +1777,19 @@ __attribute__((callback (corker, ctx)))
   void us_socket_sendfile_needs_more(us_socket_r s) {
     if(us_socket_is_closed(s)) return;
     s->flags.last_write_failed = 1;
-    us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+    /* Same gate as us_internal_rearm_writable (socket.c, absorbed from
+     * oven-sh/bun 4af1842c8c): re-adding READABLE unconditionally would undo a
+     * pause mid-backpressure and re-surface a consumed EOF on a half-open
+     * socket. */
+    us_poll_change(&s->p, s->group->loop,
+                   LIBUS_SOCKET_WRITABLE | ((s->flags.is_paused || s->read_eof) ? 0 : LIBUS_SOCKET_READABLE));
+  }
+
+  /* BAO PORT (absorb 4af1842c8c): upstream dropped the C `us_socket_is_tls`
+   * accessor along the is_low_prio removal; the wrapper supplies the
+   * discriminator for the Rust face (bun_uws_sys::us_socket_t::is_tls). */
+  int us_socket_is_tls(us_socket_r s) {
+    return s->ssl != NULL;
   }
 
   LIBUS_SOCKET_DESCRIPTOR us_socket_get_fd(us_socket_r s) {
@@ -1823,7 +1843,8 @@ __attribute__((callback (corker, ctx)))
 
   // we need to manually call this at thread exit
   extern "C" void bun_clear_loop_at_thread_exit() {
-      uWS::Loop::clearLoopAtThreadExit();
+      /* BAO PORT (absorb 4af1842c8c): upstream renamed clearLoopAtThreadExit. */
+      uWS::Loop::freeLoopAtThreadExit();
   }
 
 #pragma clang attribute pop

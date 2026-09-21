@@ -425,6 +425,23 @@ pub unsafe extern "C" fn us_dispatch_ssl_raw_tap(
     s
 }
 
+// TLS key-log line + session-ticket delivery (absorbed oven-sh/bun 4af1842c8c:
+// openssl.c parks each NSS key-log line / new session ticket here). The
+// 4af socket vtable carries no slots for either — upstream routes them
+// directly into its runtime crate's TLSSocket handlers. Bao's product surface
+// has no `keylog`/`session` subscriber yet, so like `us_dispatch_ssl_raw_tap`
+// these are the terminal delivery points: wired, with nothing to fan out to.
+// When a subscriber lands, the fan-out belongs here, keyed off the socket's
+// `BunSocketTls` kind marker.
+
+/// TLS key-log line delivery (`SSL_CTX_set_keylog_callback` path).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_keylog(_s: *mut c_void, _data: *const u8, _len: c_int) {}
+
+/// New TLS session ticket delivery (`SSL_CTX_sess_set_new_cb` path).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_session(_s: *mut c_void, _data: *const u8, _len: c_int) {}
+
 // ──────────────── Bun__addrinfo_* (usockets DNS seam) ────────────────────
 // Real implementation (shared bun_dns cache + blocking getaddrinfo worker);
 // contract notes and reference-counting rules live in the module. Replaces

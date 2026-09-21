@@ -2693,6 +2693,20 @@ unsafe extern "C" fn http_request(
 // (http.get is JS-level in HTTP_CLIENT_JS: `get` = `request` + immediate
 // `.end()` — Node's documented auto-end contract for http.get.)
 
+/// Link export required by the absorbed uWS tree (oven-sh/bun 4af1842c8c):
+/// `HttpContext::onWritable<true>` calls this when a node:http connection
+/// whose reads were parked for flood prevention flushes its backpressure, so
+/// the parked pipelined requests replay before fresh reads resume
+/// (`HTTP_NODE_READS_PAUSED` gate in HttpContext.h).
+///
+/// Bao's node:http surface never parks reads — the parking half of the
+/// protocol (upstream's `onReadsPaused` out of JSNodeHTTPServerSocket) has no
+/// SpiderMonkey-surface counterpart here, so `HTTP_NODE_READS_PAUSED` is
+/// never set on bao sockets and this delivery point stays vacuous. The symbol
+/// is the wiring; the consumer lands with the flood-prevention surface.
+#[unsafe(no_mangle)]
+pub extern "C" fn Bun__NodeHTTP__onReadsResumable(_ssl: core::ffi::c_int, _socket: *mut core::ffi::c_void) {}
+
 // ── Unit tests for node_http pure Rust data/logic ──────────────────────
 // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
 

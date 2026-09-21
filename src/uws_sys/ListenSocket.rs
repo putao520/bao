@@ -112,7 +112,15 @@ impl ListenSocket {
         NonNull::new(p.cast::<T>())
     }
 
-    pub fn on_server_name(&mut self, cb: extern "C" fn(*mut ListenSocket, *const c_char)) {
+    /// Register the dynamic SNI resolver. `abort_handshake` gates the TLS
+    /// handshake: `*abort_handshake = 1` aborts it outright, `2` suspends it
+    /// until `us_socket_sni_resolve` resumes with the (possibly deferred)
+    /// `SSL_CTX`. Absorbed from oven-sh/bun 4af1842c8c (the callback grew the
+    /// abort gate + the socket argument for the async resume path).
+    pub fn on_server_name(
+        &mut self,
+        cb: extern "C" fn(*mut ListenSocket, *const c_char, *mut c_int, *mut c_void) -> *mut c_void,
+    ) {
         us_listen_socket_on_server_name(self, cb)
     }
 }
@@ -139,7 +147,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     safe fn us_listen_socket_on_server_name(
         ls: &mut ListenSocket,
-        cb: extern "C" fn(*mut ListenSocket, *const c_char),
+        cb: extern "C" fn(*mut ListenSocket, *const c_char, *mut c_int, *mut c_void) -> *mut c_void,
     );
 }
 

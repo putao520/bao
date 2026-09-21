@@ -63,6 +63,68 @@ use core::ffi::c_char;
 use core::ffi::c_int;
 use core::ffi::c_void;
 
+/// Numeric-literal fast path for the connect seam (absorbed oven-sh/bun
+/// 4af1842c8c, C `try_parse_ip`): fills `out` with `host`:`port` when `host`
+/// is an IP literal and returns 1; returns 0 when it is a name (or a scoped
+/// literal with a non-numeric zone), sending it to `getaddrinfo` instead —
+/// the one parse behind usockets' connect paths, so a literal never reaches
+/// the resolver.
+///
+/// # Safety
+/// `host` must be a NUL-terminated C string (or null); `out` must be
+/// writable `sockaddr_storage` storage (or null).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__parseIpAddress(
+    host: *const c_char,
+    port: u16,
+    out: *mut libc::sockaddr_storage,
+) -> c_int {
+    if host.is_null() || out.is_null() {
+        return 0;
+    }
+    // SAFETY: caller contract — `host` is a NUL-terminated C string.
+    let bytes = unsafe { CStr::from_ptr(host) }.to_bytes();
+    // RFC 6874 `%zone` suffix: keep it only when it is a numeric interface
+    // index we can put in `sin6_scope_id`; a name-form zone goes to
+    // `getaddrinfo`, which knows how to resolve it.
+    let (addr_bytes, zone) = match bytes.iter().position(|&b| b == b'%') {
+        Some(at) => (&bytes[..at], Some(&bytes[at + 1..])),
+        None => (bytes, None),
+    };
+    let ip = match core::str::from_utf8(addr_bytes).ok().and_then(|s| s.parse::<std::net::IpAddr>().ok()) {
+        Some(ip) => ip,
+        None => return 0,
+    };
+    let scope_id = match (ip, zone) {
+        (std::net::IpAddr::V6(_), Some(zone)) => match core::str::from_utf8(zone).unwrap_or("").parse::<u32>() {
+            Ok(idx) => idx,
+            Err(_) => return 0,
+        },
+        _ => 0,
+    };
+    // SAFETY: `out` is writable `sockaddr_storage` storage; zero it first so
+    // the unused tail of the chosen sockaddr is fully defined.
+    unsafe { core::ptr::write_bytes(out, 0, 1) };
+    match ip {
+        std::net::IpAddr::V4(octets) => {
+            // SAFETY: sockaddr_storage is at least sockaddr_in-sized and aligned.
+            let sin = unsafe { &mut *out.cast::<libc::sockaddr_in>() };
+            sin.sin_family = libc::AF_INET as libc::sa_family_t;
+            sin.sin_port = port.to_be();
+            sin.sin_addr.s_addr = u32::from_ne_bytes(octets.octets());
+        }
+        std::net::IpAddr::V6(octets) => {
+            // SAFETY: sockaddr_storage is at least sockaddr_in6-sized and aligned.
+            let sin6 = unsafe { &mut *out.cast::<libc::sockaddr_in6>() };
+            sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            sin6.sin6_port = port.to_be();
+            sin6.sin6_addr.s6_addr = octets.octets();
+            sin6.sin6_scope_id = scope_id;
+        }
+    }
+    1
+}
+
 // ─────────────── C-layout result types (internal/internal.h) ───────────────
 //
 // `struct addrinfo_result_entry { struct addrinfo info; struct sockaddr_storage _storage; }`
