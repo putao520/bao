@@ -1933,3 +1933,7 @@ build.rs 子进程错误传播根治:4 硬化(make 全形 cmd+status+stdout/stde
 ### ★全树绿 + 收波链点火(2026-09-21)
 
 em2 终报:两 commit(d5d82b6d engine 面 15 文件/bc675a71 module loading 3 文件),script 32 错→0,**cargo check --workspace rc=0(476 crate 零 err)**;深水面上游 PR #47489 全量形态移植(自创循环被替换);零新增文件;error.rs 走 fork 自带 borrowed_error_report(零新 shim)。CLAUDE.md servo 清单 31 条目落(346dd857)。收波链执行中:eb2s1 三组补面(绿窗宣告即跑)+波门§②(后台)/§① 排队——3/5 已绿。全绿→发布闭包(预案零阻断,topo 双修正版)。
+
+### ★★验收全绿(2026-09-21,波门+补面)
+
+**波门五节全 PASS**:§① B2(cdp_client 全 suite+browser scoped)/§② mozjs(checks+smoke+engine 377/0)/§③ 单宇宙(全深度断言)/§④ parity(153 基线 apply-check+7 行清单)/§⑤ publish(package 零网络)。nextest 缺失走文档化降级(WARN 非 FAIL)。**补面三组 RC=0**(sw_stealth_profile/opaque_origin_startup/lib event_tx——eb2s1 后台证据)。过程揪出并根治:测试面 153 迁移盲区(check 不编 test 目标,01f9d259)+OnceLock 跨测试污染(T2 自违规,2f9a0655 裁 A+结构延伸追认:契约测试迁 lib #[cfg(test)] 隔离进程)。**发布闭包已点火**(s6-release,案卷 topo 序 12 级)。
