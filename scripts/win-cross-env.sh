@@ -149,8 +149,8 @@ done
 export PATH="$BAO_WIN_CROSS_ROOT/shim-bin:$PATH"
 export WINSYSROOT="$WSROOT"
 export INCLUDE LIB
-export CFLAGS_x86_64_pc_windows_msvc="$_win_cross_cflags"
-export CXXFLAGS_x86_64_pc_windows_msvc="$_win_cross_cflags"
+export CFLAGS_x86_64_pc_windows_msvc="$_win_cross_cflags -Wno-incompatible-pointer-types"
+export CXXFLAGS_x86_64_pc_windows_msvc="$_win_cross_cflags -Wno-incompatible-pointer-types"
 export CC_x86_64_pc_windows_msvc="$(command -v clang-cl)"
 export CXX_x86_64_pc_windows_msvc="$(command -v clang-cl)"
 export AR_x86_64_pc_windows_msvc="$BAO_WIN_CROSS_ROOT/shim-bin/llvm-lib"
