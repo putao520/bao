@@ -1971,3 +1971,7 @@ ew4(9595dbae):libuv C 符号供给——vendor 真 fork 头(1.51.1-dev rev 验�
 ### ewe host 设计案卷(2026-09-21,/tmp+.plans/win-host-CASE.md)
 
 五节:①环境规格(bootstrap.ps1=§8 Windows 等价形:rust nightly 钉/MSVC Build Tools 含 ATL/Python 3.11/moztools 4.0 钉版 zip/GStreamer 1.22.8 **必需**(media-gstreamer feature)/LLVM 建议 21.1.8)②mozjs host 门(find_moztools tier-1/2 供给;硬约束:makefile.cargo bash 语法钉 msys2 sh 禁裸 make;should_build_from_source 恒真)③农场集成(C:\build-farm\bao 布局;git fetch+reset 同步走 16.18.0.1 bare 镜像免凭据扩散;bao-win-remote-build 五段镜像 frog)④分工矩阵(**校正:ew1 终判推翻 mozjs-需-host 旧据,交叉可承载全树待 W3 证实;host=运行时验证+备胎**——校正令已发 ewe)⑤落地序 W0-W5。风险显式(boringssl win asm 旗标/GStreamer pkg-config/UCRT servicing)。
+
+### ew1 增补:#34 供给侧实证闭合+新破口 lsquic(2026-09-21)
+
+**uv.lib 独立复现**:cargo check --target msvc+xwin 七段 INCLUDE+AR=llvm-lib → 2,093,250B/**685 个 uv_* 符号**——用户根因"libuv 供给未完"的供给侧已毕(ew4 9595dbae 与本探针互证);残余=消费侧(uws 开闸+链接,ew4 2/3 在途)。预测序回执:uws/uloop=PASS-by-design;mimalloc 门已随 #45 亡(真缺口=bun_alloc);声明线全 BLOCKED-BY bun_alloc(W1 后回归探针)。**新破口:bun_lsquic_sys msvc exit(1)**(QUIC/H3 C 层)→ W2.5 已派 ec2(上游配方先查;无配方=vendor-vs-砍面报 C 裁)。**W1.5**(xwin env 契约固化 farm,双 lib 依赖)已增补 er0。DAG 改版入案卷(§③A 新增)。
