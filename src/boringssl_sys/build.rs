@@ -19,26 +19,61 @@ fn main() {
         );
     }
 
+    // Target flavor: the msvc family selects the clang-cl compiler face, the
+    // win64n (NASM) perlasm outputs, and the upstream WIN32 define set; every
+    // non-msvc target keeps the historical GNU face byte-for-byte.
+    let is_msvc = env::var("TARGET")
+        .map(|t| t.ends_with("-windows-msvc"))
+        .unwrap_or(false);
+
     let mut build = cc::Build::new();
     // cc-rs honors an explicit .compiler() before consulting CC/CXX_<target>
     // env (cc 1.2.x get_base_compiler early-returns), so a hardcoded compiler
     // silently bypasses per-target cross toolchains: the musl PoC (issue #10)
     // exited 0 while every archive carried the host clang producer. Probe the
-    // cc-compatible env chain first (see env_cc below); clang++ is only the
-    // fallback, so host builds with no cross env keep the historical
+    // cc-compatible env chain first (see env_cc below); the fallback is
+    // clang-cl for msvc targets (cl-compatible driver; GNU-style flags are
+    // ignored by clang-cl, so the flag face below must stay MSVC-shaped) and
+    // clang++ otherwise, so host builds with no cross env keep the historical
     // toolchain unchanged.
-    build.compiler(env_cc("CXX").unwrap_or_else(|| "clang++".into()));
+    build.compiler(env_cc("CXX").unwrap_or_else(|| {
+        if is_msvc {
+            "clang-cl".into()
+        } else {
+            "clang++".into()
+        }
+    }));
     build.opt_level(2);
 
-    // C++ standard and code generation flags
-    build
-        .flag("-std=c++17")
-        .flag("-fno-exceptions")
-        .flag("-fno-rtti")
-        .flag("-fno-strict-aliasing")
-        .flag("-fno-common")
-        .flag("-fvisibility=hidden")
-        .flag("-Wa,--noexecstack");
+    // C++ standard and code generation flags. Two faces, keyed on the target
+    // ABI (a CXX env override for an msvc target is expected to speak the
+    // clang-cl face — that is the established cross convention):
+    //
+    // - msvc: the upstream MSVC branch verbatim (vendor CMakeLists.txt:
+    //   `-utf-8 -Zc:__cplusplus` plus the WIN32 define block). NOTE clang-cl
+    //    ignores GNU-style flags (`-std=`, `-f...` warn "unknown argument"),
+    //    so exceptions/RTTI are governed by /std-EH defaults and
+    //    _HAS_EXCEPTIONS=0 exactly as upstream does for cl.exe.
+    // - otherwise: the historical GNU face, unchanged.
+    if is_msvc {
+        build
+            .flag("/std:c++17")
+            .flag("-utf-8")
+            .flag("/Zc:__cplusplus");
+        build.define("_HAS_EXCEPTIONS", Some("0"));
+        build.define("WIN32_LEAN_AND_MEAN", Some("1"));
+        build.define("NOMINMAX", Some("1"));
+        build.define("_CRT_SECURE_NO_WARNINGS", Some("1"));
+    } else {
+        build
+            .flag("-std=c++17")
+            .flag("-fno-exceptions")
+            .flag("-fno-rtti")
+            .flag("-fno-strict-aliasing")
+            .flag("-fno-common")
+            .flag("-fvisibility=hidden")
+            .flag("-Wa,--noexecstack");
+    }
 
     // Defines
     build.define("BORINGSSL_IMPLEMENTATION", Some("1"));
@@ -371,36 +406,108 @@ fn main() {
         build.file(bssl_dir.join(src));
     }
 
-    // ── ASM (Linux x86_64 only) ──────────────────────────────────────────
-    const ASM_SRCS: &[&str] = &[
-        "gen/bcm/aes-gcm-avx2-x86_64-linux.S",
-        "gen/bcm/aes-gcm-avx512-x86_64-linux.S",
-        "gen/bcm/aesni-gcm-x86_64-linux.S",
-        "gen/bcm/aesni-x86_64-linux.S",
-        "gen/bcm/ghash-ssse3-x86_64-linux.S",
-        "gen/bcm/ghash-x86_64-linux.S",
-        "gen/bcm/p256-x86_64-asm-linux.S",
-        "gen/bcm/p256_beeu-x86_64-asm-linux.S",
-        "gen/bcm/rdrand-x86_64-linux.S",
-        "gen/bcm/rsaz-avx2-linux.S",
-        "gen/bcm/sha1-x86_64-linux.S",
-        "gen/bcm/sha256-x86_64-linux.S",
-        "gen/bcm/sha512-x86_64-linux.S",
-        "gen/bcm/vpaes-x86_64-linux.S",
-        "gen/bcm/x86_64-mont-linux.S",
-        "gen/bcm/x86_64-mont5-linux.S",
-        "third_party/fiat/asm/fiat_p256_adx_mul.S",
-        "third_party/fiat/asm/fiat_p256_adx_sqr.S",
-        "gen/crypto/aes128gcmsiv-x86_64-linux.S",
-        "gen/crypto/chacha-x86_64-linux.S",
-        "gen/crypto/chacha20_poly1305_x86_64-linux.S",
-        "gen/crypto/md5-x86_64-linux.S",
-        "third_party/fiat/asm/fiat_curve25519_adx_mul.S",
-        "third_party/fiat/asm/fiat_curve25519_adx_square.S",
-    ];
+    // ── ASM ───────────────────────────────────────────────────────────────
+    // Two perlasm flavors, split on the target ABI exactly like upstream's
+    // generated sources.cmake: GAS `.S` outputs for ELF/Mach-O targets, and
+    // win64n (NASM) `.asm` outputs for the msvc family (assembled by cc-rs
+    // via nasm). Both artifact sets are already vendored in-tree under
+    // csrc/boringssl/gen (upstream-generated, byte-identical to
+    // vendor/boringssl). The fiat ADX `.S` files self-exclude under MSVC
+    // (`#if ... defined(__ELF__) || defined(__APPLE__)`) and upstream
+    // substitutes pure-C fiat on Windows (curve25519_64_msvc.h), so they are
+    // GNU-face-only here too.
+    if is_msvc {
+        const ASM_SRCS_WIN: &[&str] = &[
+            // upstream BCM_SOURCES_NASM, x86_64 subset
+            "gen/bcm/aes-gcm-avx2-x86_64-win.asm",
+            "gen/bcm/aes-gcm-avx512-x86_64-win.asm",
+            "gen/bcm/aesni-gcm-x86_64-win.asm",
+            "gen/bcm/aesni-x86_64-win.asm",
+            "gen/bcm/ghash-ssse3-x86_64-win.asm",
+            "gen/bcm/ghash-x86_64-win.asm",
+            "gen/bcm/p256-x86_64-asm-win.asm",
+            "gen/bcm/p256_beeu-x86_64-asm-win.asm",
+            "gen/bcm/rdrand-x86_64-win.asm",
+            "gen/bcm/rsaz-avx2-win.asm",
+            "gen/bcm/sha1-x86_64-win.asm",
+            "gen/bcm/sha256-x86_64-win.asm",
+            "gen/bcm/sha512-x86_64-win.asm",
+            "gen/bcm/vpaes-x86_64-win.asm",
+            "gen/bcm/x86_64-mont-win.asm",
+            "gen/bcm/x86_64-mont5-win.asm",
+            // upstream CRYPTO_SOURCES_NASM, x86_64 subset
+            "gen/crypto/aes128gcmsiv-x86_64-win.asm",
+            "gen/crypto/chacha-x86_64-win.asm",
+            "gen/crypto/chacha20_poly1305_x86_64-win.asm",
+            "gen/crypto/md5-x86_64-win.asm",
+        ];
+        // cc-rs routes `.asm` through MASM (ml64.exe) on msvc targets, but the
+        // upstream Windows face assembles these perlasm win64n outputs with
+        // NASM (CMake ASM_NASM). Assemble here with nasm -f win64 and feed the
+        // objects via .object(); fail closed when nasm is unavailable rather
+        // than silently archiving an incomplete library.
+        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap_or_else(|_| {
+            panic!("OUT_DIR not set; boringssl_sys must be built via cargo")
+        }));
+        let nasm = env::var_os("NASM")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "nasm".into());
+        for src in ASM_SRCS_WIN {
+            let asm_path = bssl_dir.join(src);
+            let obj_path = out_dir.join(format!(
+                "{}.obj",
+                src.replace(['/', '-'], "_")
+            ));
+            let status = std::process::Command::new(&nasm)
+                .arg("-f")
+                .arg("win64")
+                .arg(&asm_path)
+                .arg("-o")
+                .arg(&obj_path)
+                .status()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "failed to run nasm ({nasm:?}) for {src}: {e}. The msvc \
+                         face assembles upstream win64n outputs with NASM — \
+                         install nasm or point NASM at it."
+                    )
+                });
+            if !status.success() {
+                panic!("nasm failed for {src} (exit {status})");
+            }
+            build.object(&obj_path);
+        }
+    } else {
+        const ASM_SRCS: &[&str] = &[
+            "gen/bcm/aes-gcm-avx2-x86_64-linux.S",
+            "gen/bcm/aes-gcm-avx512-x86_64-linux.S",
+            "gen/bcm/aesni-gcm-x86_64-linux.S",
+            "gen/bcm/aesni-x86_64-linux.S",
+            "gen/bcm/ghash-ssse3-x86_64-linux.S",
+            "gen/bcm/ghash-x86_64-linux.S",
+            "gen/bcm/p256-x86_64-asm-linux.S",
+            "gen/bcm/p256_beeu-x86_64-asm-linux.S",
+            "gen/bcm/rdrand-x86_64-linux.S",
+            "gen/bcm/rsaz-avx2-linux.S",
+            "gen/bcm/sha1-x86_64-linux.S",
+            "gen/bcm/sha256-x86_64-linux.S",
+            "gen/bcm/sha512-x86_64-linux.S",
+            "gen/bcm/vpaes-x86_64-linux.S",
+            "gen/bcm/x86_64-mont-linux.S",
+            "gen/bcm/x86_64-mont5-linux.S",
+            "third_party/fiat/asm/fiat_p256_adx_mul.S",
+            "third_party/fiat/asm/fiat_p256_adx_sqr.S",
+            "gen/crypto/aes128gcmsiv-x86_64-linux.S",
+            "gen/crypto/chacha-x86_64-linux.S",
+            "gen/crypto/chacha20_poly1305_x86_64-linux.S",
+            "gen/crypto/md5-x86_64-linux.S",
+            "third_party/fiat/asm/fiat_curve25519_adx_mul.S",
+            "third_party/fiat/asm/fiat_curve25519_adx_square.S",
+        ];
 
-    for src in ASM_SRCS {
-        build.file(bssl_dir.join(src));
+        for src in ASM_SRCS {
+            build.file(bssl_dir.join(src));
+        }
     }
 
     build.compile("boringssl");
