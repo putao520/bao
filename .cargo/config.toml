@@ -44,6 +44,17 @@ CXXFLAGS = "-g1"
 CC_x86_64_unknown_linux_musl = "/home/putao/code/rust/bao/scripts/clang-musl.sh"
 CXX_x86_64_unknown_linux_musl = "/home/putao/code/rust/bao/scripts/clang-musl++.sh"
 AR_x86_64_unknown_linux_musl = "/home/putao/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-ar"
+# ── windows-msvc 交叉契约(issue #18;libffi-sys 4.2.2 / libuv / uws 同一契约)──
+# 工具链:clang-cl(linux host 无 cl.exe/ml64;llvm-lib 替 msvc lib.exe 归档)。
+# SDK 头/库(INCLUDE/LIB)是机器面(xwin splat / farm 卷),由操作方 env 提供,
+# 不入本文件。CFLAGS_<triple> 覆盖全局 CFLAGS(cc-rs 取第一个命中),故 -g1 降级
+# 必须随行;`-Wno-incompatible-pointer-types` 为上游 bun 全局同款
+# (scripts/build/flags.ts)——clang-cl 对 int*/volatile long*(dlmalloc 的
+# InterlockedExchange)按 C 标准报错,cl.exe 同型不报。
+CC_x86_64_pc_windows_msvc = "clang-cl"
+CXX_x86_64_pc_windows_msvc = "clang-cl"
+AR_x86_64_pc_windows_msvc = "llvm-lib-23"
+CFLAGS_x86_64_pc_windows_msvc = "-g1 -Wno-incompatible-pointer-types"
 
 [target.x86_64-unknown-linux-musl]
 # C++ aware linker(静态 libstdc++ 由该工具链自带 sysroot 提供)

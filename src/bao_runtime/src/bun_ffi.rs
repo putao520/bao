@@ -676,6 +676,15 @@ enum FfiArgSlot {
     NullPtr,
 }
 
+/// `libffi::middle::arg` borrows its value (5.x `Arg<'argument>`), so the
+/// NULL-pointer argument needs a value that outlives every call — a `static`
+/// (raw pointers are not `Sync`, hence the transparent carrier; the value is
+/// never written and is always null).
+#[repr(transparent)]
+struct FfiNullPtr(*const ::std::os::raw::c_char);
+unsafe impl Sync for FfiNullPtr {}
+static FFI_NULL_PTR: FfiNullPtr = FfiNullPtr(::std::ptr::null());
+
 impl FfiArgSlot {
     fn arg(&self) -> libffi::middle::Arg {
         use libffi::middle::arg;
@@ -691,10 +700,9 @@ impl FfiArgSlot {
             FfiArgSlot::F32(v) => arg(v),
             FfiArgSlot::F64(v) => arg(v),
             FfiArgSlot::Ptr(v) => arg(v),
-            FfiArgSlot::NullPtr => {
-                let n: *const ::std::os::raw::c_char = ::std::ptr::null();
-                arg(&n)
-            }
+            // libffi 5.x `Arg` borrows its value ('argument lifetime); the
+            // null pointer comes from a `static` so the Arg is 'static.
+            FfiArgSlot::NullPtr => arg(&FFI_NULL_PTR.0),
         }
     }
 }

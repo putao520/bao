@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "vendor/libffi-sys", "examples"]
+exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -442,10 +442,3 @@ map_identity = "allow"
 # this chain (dual lock).
 [patch.crates-io]
 freetype = { path = "vendor/freetype-wrapper" }
-# BAO PATCH (#18 msvc 交叉解锁): vendored libffi-sys 2.3.0 fork — target-env
-# dispatch (host #[cfg] 在 build script 里恒取 host → 交叉恒走 autoconf "OS msvc
-# not recognized") + asm 预处理接 env CC/clang-cl(弃 cc::windows_registry 真
-# MSVC 依赖)+ .asm 落 OUT_DIR(原相对路径污染/竞态共享源码树)。同包名 fork —
-# [patch] 保持原名,消费面零改动;根因属上游(fork 自修 + upstream issue),
-# delta 全部 BAO FORK 标记,见 vendor/libffi-sys/BAO-FORK.md。
-libffi-sys = { path = "vendor/libffi-sys" }
