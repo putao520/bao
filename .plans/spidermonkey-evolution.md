@@ -2019,3 +2019,7 @@ farm-xwin 卷布局收敛到 /opt/bao-win-cross 契约形(wsroot 组装+无空�
 ### ★W3 根因破案(C 亲测 12 轮 bisect,2026-09-22)
 
 **libclang 23(Linux 宿主)对 cl-driver 旗标面 TU 创建组合性硬死**(bindgen context.rs:562;单剔除 cl 旗标/-D/driver-mode/-FI/confdefs/-imsvc 均不救);**GNU 拼写面(bindgen 解析无需 cl 语义)实测完全可用**:M11 配方 rc=0 产 4.3MB 绑定(-x c++ -std=gnu++20 -fms-compatibility/-fms-extensions + confdefs 先序 -include + TU -include + XP_WIN 显式 + js 双 -I + SDK 五段 -isystem)。顺序敏感:confdefs 必须先于 TU(XP_WIN 迟到=Unsupported OS 崩)。解方已交 s1a 落 build.rs(msvc 臂弃 compiler.args 传播,构造 GNU 面;其 -FI 中间方案被取代);C 停止碰此文件避双写。教训:依赖 libclang 的面,旗标拼写按 libclang 方言(GNU)而非编译器 driver 方言(cl)。
+
+### ★★W3 绿(b1c45895,C 独立 V 过,2026-09-22)
+
+M11 GNU 面落地:msvc 臂弃 compiler.args 传播,构造 -x c++/-std=gnu++20/-fms-compatibility/-fms-extensions+confdefs 先序 -include+TU -include(JSApi;JSGlue 偏差 2 项如实:TU=自身免双包含/保留 .header 单头形)+SDK 七段自 env INCLUDE 解析 fail-loud。**判定:bao-mozjs-sys msvc check RC=0(101→0)**;linux 回归 RC=0 非流逐字节保持;C 独立 bao-mozjs RC=0(21.8s)。层 1/2(2837d978:语言旗标+-FI 顺序敏感)+层 3(M11 GNU 面)三段合围。W2 链进令已发(engine→sm→runtime→workspace)。
