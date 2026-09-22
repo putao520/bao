@@ -2142,3 +2142,7 @@ NamedPipe 15(s1a:bao_runtime socket.rs,状态/流控/写/lifecycle/ssl-never-TLS
 验收:bao.exe console.log/error/warn+smoke 绿;console_routing 2/2、console_output 3/3 真机绿。
 
 **残余(下一聚焦,已精确定位)**:触 console/fetch natives 的测试在 JsContext teardown 崩——`destroyRuntime → GC → JS::RootingContext::traceStackRoots` AV(悬垂栈根;suiteA abort_signal 与 suiteB host_fn 同栈同判;es_advanced 等不触 natives 的 JsContext 测试 teardown 无恙=natives 路径留死根)。TLA TDZ(module_sm)与 c2 性能比断言(环境敏感)仍开放。
+
+### ★W8 深修③:sret 第三实例=teardown AV 与 TLA TDZ 同源(0f1bc667,2026-09-22)
+
+双 E 并行独立取证收敛同一根因:`JS::DequeueNextRegularMicroTask` **按值返回 `JS::Value`**(用户构造子→MSVC sret,bindgen 寄存器声明)→ 每次 dequeue 双腐蚀:①写出队值穿 `*RCX==*cx==RootingContext::stackRoots_[0]`(精确栈根链头);②死栈地址当 Value 入 task root。下一次 GC 走污染链→traceStackRoots AV(teardown 崩);reaction job 被静默丢弃→TLA 模块 async 体永不 resume(V TDZ)。**console natives 全无罪**(E1 bisect 电池 tdf_00~16 实证);该家族随 SM153 前移(em1)落地,晚于 W8 首轮横扫故漏网。修=同 mangled symbol sret 形态重声明(msvc 臂)/Itanium 保持原声明;同族 `DequeueNextDebuggerMicroTask`/`PeekNextMicroTask` 零调用点未动(未来接线须同修)。连带修 0d2840f4 引入的 `Fd::to_bits/from_bits` posix 编译回归(FdBacking 跟随 u64/i32)。**真机终验**:bao_engine suite **391/391**、module_sm **15/15**(TLA 愈)、tdf 电池 17/17、stealth 1379+314、core 52、bao.exe 冒烟绿——**真机累计 2151 测绿**;bun_runtime suite 崩已愈,剩余阻断=该 suite 自带 exit(0)-in-test 设计(杀 harness,独立治理项);另有 test_bun_api_all Bun.env.PATH 断言(既有,env 读取域)与 bun_sm/bun_runtime lib-test duplicate-symbol(既有,lib-test 目标从未在任何平台绿)开放。
