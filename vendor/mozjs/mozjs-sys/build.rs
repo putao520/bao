@@ -273,7 +273,22 @@ fn mirror_entry(from: &Path, to: &Path) {
 /// hardlinked when possible (same filesystem), copied otherwise.
 fn mirror_dir(from: &Path, to: &Path) {
     fs::create_dir_all(to).expect("mirror_dir create_dir_all failed");
-    for entry in fs::read_dir(from).expect("mirror_dir read_dir failed") {
+    for entry in fs::read_dir(from).unwrap_or_else(|e| {
+        // BAO DELTA (win-cross, #18 hotfix): the satellite ROOT exported via
+        // `cargo:root=` is the *exporting checkout's* CARGO_MANIFEST_DIR. With
+        // a shared target dir, building this crate from any other checkout
+        // (worktree/bisect tree) overwrites that path; after that checkout is
+        // removed the stale root lands here as NotFound. Self-heal recipe:
+        //   cargo clean -p bao-mozjs-src-js -p bao-mozjs-src-intl \
+        //     -p bao-mozjs-src-python -p bao-mozjs-sys
+        panic!(
+            "mirror_dir read_dir({}) failed: {e} — stale satellite root from \
+             another checkout sharing this target dir; run `cargo clean -p \
+             bao-mozjs-src-js -p bao-mozjs-src-intl -p bao-mozjs-src-python \
+             -p bao-mozjs-sys` and rebuild",
+            from.display()
+        )
+    }) {
         let entry = entry.unwrap().path();
         let dest = to.join(entry.file_name().unwrap());
         if entry.is_dir() {
