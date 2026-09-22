@@ -190,7 +190,22 @@ pub extern "C" fn is_executable_file(path: *const c_char) -> bool {
 // Pure-Rust mirror of c-ares' `ares_inet_pton` (spec: immutable.zig:1984).
 // Defined here (not linked from libcares.a) so targets that do not chain the
 // c-ares archive still resolve the seam.
+//
+// windows: the c-ares archive EXISTS (bun_cares_sys compiles the vendored
+// c-ares into cares.lib) — a no_mangle mirror here would be a duplicate
+// symbol at the final link, so the seam name resolves to the real c-ares
+// export through a wrapper instead (same safe face for every caller).
+#[cfg(windows)]
+pub fn ares_inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int {
+    unsafe extern "C" {
+        #[link_name = "ares_inet_pton"]
+        fn c_ares_inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int;
+    }
+    // SAFETY: pure C address parser, no preconditions.
+    unsafe { c_ares_inet_pton(af, src, dst) }
+}
 
+#[cfg(not(windows))]
 #[unsafe(no_mangle)]
 pub extern "C" fn ares_inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int {
     if src.is_null() || dst.is_null() {

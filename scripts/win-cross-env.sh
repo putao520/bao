@@ -130,6 +130,13 @@ WIN_CROSS_LIB_DIRS=(
     "$_vc/atlmfc/lib/x64"
     "$_sdklib/um/x64"
     "$_sdklib/ucrt/x64"
+    # casefix: Linux lld-link opens import libs CASE-SENSITIVELY; the xwin
+    # splat ships three casing variants per lib but not every spelling crates
+    # request. This directory holds symlinks for the requested spellings that
+    # the splat lacks (first entry: `Dbghelp.lib` — a crate link directive
+    # spells it D-capital-only while the splat has dbghelp.lib/DbgHelp.Lib/
+    # DBGHELP.lib). Extend here whenever the link reports a case-only miss.
+    "$WSROOT/casefix"
 )
 
 INCLUDE=""
