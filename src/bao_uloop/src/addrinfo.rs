@@ -616,7 +616,8 @@ unsafe fn getaddrinfo(
     hints: &addrinfo,
     result: &mut *mut addrinfo,
 ) -> c_int {
-    libc::getaddrinfo(host_arg, service, hints, result)
+    // SAFETY: host_arg/service NUL-terminated, hints/result valid per caller.
+    unsafe { libc::getaddrinfo(host_arg, service, hints, result) }
 }
 #[cfg(windows)]
 unsafe fn getaddrinfo(
