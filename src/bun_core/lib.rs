@@ -3932,7 +3932,7 @@ mod test_output_sink {
     fn qw_fd(qw: &QuietWriter) -> Fd {
         // SAFETY: see qw_set_fd — reading the first word of a live reference.
         let raw = unsafe { *core::ptr::from_ref(qw).cast::<*mut ()>() };
-        Fd::from_bits(raw as usize as u64)
+        Fd::from_bits(raw as usize as _)
     }
 
     /// Windows test-sink arm: resolve an fd-relative path against the process

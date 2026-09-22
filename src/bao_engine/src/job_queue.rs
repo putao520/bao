@@ -102,6 +102,51 @@ fn job_prop_name(id: usize) -> CString {
     CString::new(format!("__job_{}", id)).unwrap_or_default()
 }
 
+/// ABI-safe [`JS::DequeueNextRegularMicroTask`] — root cause of the W8 深修②
+/// teardown AV (`destroyRuntime → GC → RootingContext::traceStackRoots`,
+/// dangling exact stack root on every promise-job context, Windows-only).
+///
+/// The C++ API returns `JS::Value` **by value**. `JS::Value` has
+/// user-provided constructors, so under the MSVC x64 ABI (clang-cl follows
+/// ms_abi) it is returned through a **hidden sret slot**: the callee expects
+/// `(RCX = Value* slot, RDX = cx)`. The bindgen declaration reads as
+/// `fn(cx) -> Value`, so Rust passes `cx` in RCX and interprets RAX as the
+/// value. Net effect of every call:
+///   1. the callee writes the dequeued value through `*RCX == *cx` —
+///      `cx + 0` is `RootingContext::stackRoots_[0]`, so the first exact
+///      stack-root list head is clobbered with GC-value bits;
+///   2. Rust "reads" the value as the sret slot pointer (a dead stack
+///      address), and that garbage sits in the `task` root for the drain
+///      iteration.
+/// The next GC walks the corrupted `stackRoots_` list → AV in
+/// `traceStackRoots`. This is the W8 sret class (509761cc:
+/// `already_AddRefed<Stencil>` / `JS::PropertyKey`); this family landed with
+/// SM153 前移 after that sweep, so it was missed there.
+///
+/// Fix: re-declare the SAME mangled symbol with the ABI-correct sret shape
+/// and route through it. Itanium returns 8-byte trivially-copyable
+/// aggregates in RAX, so the plain bindgen declaration stays correct on
+/// non-msvc targets — hence the cfg split. (`DequeueNextDebuggerMicroTask` /
+/// `PeekNextMicroTask` share the by-value shape but have zero call sites in
+/// the bao tree today; they stay on the plain declaration.)
+#[cfg(target_env = "msvc")]
+unsafe fn dequeue_next_regular_micro_task_abi_safe(cx: *mut JSContext) -> Value {
+    unsafe extern "C" {
+        #[link_name = "\u{1}?DequeueNextRegularMicroTask@JS@@YA?AVValue@1@PEAUJSContext@@@Z"]
+        fn dequeue_next_regular_micro_task_sret(slot: *mut Value, cx: *mut JSContext);
+    }
+    let mut slot: Value = ::std::mem::zeroed();
+    unsafe {
+        dequeue_next_regular_micro_task_sret(&mut slot, cx);
+    }
+    slot
+}
+
+#[cfg(not(target_env = "msvc"))]
+unsafe fn dequeue_next_regular_micro_task_abi_safe(cx: *mut JSContext) -> Value {
+    unsafe { JS::DequeueNextRegularMicroTask(cx) }
+}
+
 pub struct JobQueue;
 
 impl JobQueue {
@@ -206,7 +251,7 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
         // (a) engine regular microtasks — promise reactions etc.
         while JS::HasRegularMicroTasks(cx) {
             progress = true;
-            rooted!(in(cx) let task = JS::DequeueNextRegularMicroTask(cx));
+            rooted!(in(cx) let task = dequeue_next_regular_micro_task_abi_safe(cx));
             let task_val: Value = task.handle().get();
             let job = JS::ToMaybeWrappedJSMicroTask(&task_val);
             if job.is_null() {

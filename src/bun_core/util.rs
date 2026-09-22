@@ -978,13 +978,15 @@ impl Fd {
     /// Slot-storers (QuietWriter's opaque slot 0) MUST store this form, not
     /// `.native()`: `.native()` resolves a Uv-kind fd to its HANDLE at store
     /// time, freezing CRT-level `dup2` redirections out of the writer.
+    /// The backing width follows `FdBacking` (u64 windows / i32 posix) —
+    /// slots are usize-wide either way.
     #[inline]
-    pub const fn to_bits(self) -> u64 {
+    pub const fn to_bits(self) -> FdBacking {
         self.0
     }
     /// Inverse of [`Fd::to_bits`].
     #[inline]
-    pub const fn from_bits(v: u64) -> Fd {
+    pub const fn from_bits(v: FdBacking) -> Fd {
         Fd(v)
     }
     /// libuv fd (== posix fd on non-windows; uv-tagged on windows).
