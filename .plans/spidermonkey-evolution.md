@@ -2078,3 +2078,7 @@ b1c45895 无辜(git show 零交集,失败先于其存在);真因=satellite `carg
 ### ★child_process 闭(285089dd,ec3)——W2 全部 474 理论清零,终门复跑中
 
 八类全清(同步桥):waitpid 孪生/PeekNamedPipe+10ms 节流/cp_signal_pid(TerminateProcess,仅 KILL/TERM/INT 投递=Node parity)/伪信号表 21 名/WindowsOptions×8(**关键差异:loop_ 接 EventLoopHandle::js_current()**——default() 零值触发非空断言,from_any 无 manager)/pid 取 process_/IPC=s1a 面+UV_INHERIT_FD fd-3。crate msvc REAL_EXIT=0 全零;linux 23/23;真机注记(fd-3 _open_osfhandle round-trip)保留。bun_api 波及最小更新(exit-only 注册,GAP 注释刷新)。**W2 终门(background)跑中——绿即 W7**。
+
+### ★★★W2 终门 GREEN(C 亲跑,2026-09-22)
+
+`cargo check --workspace --target x86_64-pc-windows-msvc` **RC=0 零错误**——全 bao workspace(476 crate 含 mozjs/servo/全部 runtime 模块)msvc 类型面全通。**编译面 type-check 完结。W7 链接面(bao.exe)已发车**(cargo build -p bao_bin --target msvc,后台)→ 绿即 scp .200 真机测试(W8 runner+T1/T2)。用户裁决的 Windows 大计划:编译✅(check 级)→链接(在途)→真机测试(就绪)。
