@@ -361,3 +361,67 @@ bun_event_loop::link_impl_JsEventLoop! {
         },
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// W7 layer-3: `spawn_sync` event-loop face — the `__bun_spawn_sync_*` family.
+//
+// `bun_event_loop::SpawnSyncEventLoop` declares the family as `extern "Rust"`
+// (link-time resolved; upstream bodies live in `bun_jsc`). Bao's SpiderMonkey
+// owner provides them here, on BOTH targets: neither side had a provider (the
+// declarations were orphaned until the spawn_sync wiring consumes them).
+//
+// Bao shape (js_current form — same as the child_process windows wiring):
+// spawnSync binds to the per-thread `BaoEventLoop` singleton instead of
+// heap-creating an isolated jsc::EventLoop, so:
+//  - `destroy_event_loop` is an ownership no-op by design: the singleton is
+//    thread_local and intentionally leaked on thread exit (see the
+//    BaoEventLoop lifetime notes) — freeing it here would break every later
+//    dispatch on the thread;
+//  - `vm_swap_suppress_microtask_drain` maintains REAL per-thread state,
+//    consumed by the microtask checkpoint face via
+//    [`spawn_sync_microtask_drain_suppressed`].
+// ──────────────────────────────────────────────────────────────────────────
+
+thread_local! {
+    /// spawnSync sets this for its tick scope so the microtask checkpoint
+    /// holds the drain while the isolated spawn_sync loop runs.
+    static SPAWN_SYNC_SUPPRESS_MICROTASK_DRAIN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `bun_event_loop::SpawnSyncEventLoop` destroy face. `el` is the erased
+/// per-thread `BaoEventLoop` (js_current form) — thread_local-owned,
+/// intentionally leaked on thread exit; there is nothing to reclaim and
+/// freeing the singleton would strand every later dispatch on the thread.
+/// Ownership no-op by design (NOT a silencing stub: the singleton leak is
+/// BaoEventLoop's documented lifetime model).
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_spawn_sync_destroy_event_loop(el: *mut ()) {
+    // Validation only (debug): the pointer must be the live thread singleton,
+    // never a foreign allocation. Only checked when non-null so a degenerate
+    // call does not materialize the singleton as a side effect.
+    debug_assert!(el.is_null() || el == BaoEventLoop::current() as *const BaoEventLoop as *mut ());
+}
+
+/// Swap the thread's spawnSync microtask-drain suppression, returning the
+/// previous value (drives `SuppressMicrotaskDrain`'s RAII in
+/// `SpawnSyncEventLoop`). The `vm` operand is the erased per-thread VM —
+/// Bao's model is one VM per JS thread, so the suppression state is
+/// thread-scoped (equivalent keying).
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_spawn_sync_vm_swap_suppress_microtask_drain(
+    _vm: *mut (),
+    v: bool,
+) -> bool {
+    SPAWN_SYNC_SUPPRESS_MICROTASK_DRAIN.with(|flag| {
+        let prev = flag.get();
+        flag.set(v);
+        prev
+    })
+}
+
+/// Read face for the microtask checkpoint: `true` while a spawnSync scope is
+/// suppressing the microtask drain on this thread (the spawn_sync wiring
+/// consumes this to hold the drain while its isolated loop ticks).
+pub fn spawn_sync_microtask_drain_suppressed() -> bool {
+    SPAWN_SYNC_SUPPRESS_MICROTASK_DRAIN.with(Cell::get)
+}
