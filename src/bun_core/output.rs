@@ -228,6 +228,12 @@ pub fn init_test() {
     if SOURCE_SET.get() {
         return;
     }
+    // Windows: `Fd::stdout()` reads the process-lifetime cached stdio that
+    // only `stdio::init()` populates — test binaries skip the CLI bring-up,
+    // so populate it here (idempotent, set-once cells) or every sink write
+    // goes out over `Fd::INVALID`-shaped garbage.
+    #[cfg(windows)]
+    crate::output::windows_stdio::init();
     let stdout = File::from(Fd::stdout());
     let stderr = File::from(Fd::stderr());
     Source::set_init(stdout, stderr);
@@ -604,7 +610,42 @@ pub mod windows_stdio {
         }
     }
 
+    /// UCRT invalid-parameter handler. The default path is `_invoke_watson`
+    /// — a silent fastfail that kills the process (observed as exit code 9
+    /// from `_get_osfhandle` on a garbage fd). libuv's own windows code
+    /// documents the intended release-CRT contract ("validate and return
+    /// INVALID_HANDLE_VALUE / set errno"); a returning handler restores
+    /// exactly that: the CRT call sites fall back to their documented error
+    /// returns, which our quiet/error-mapping layers already handle.
+    unsafe extern "C" fn bao_invalid_parameter_handler(
+        _expr: *const u16,
+        _fn: *const u16,
+        _file: *const u16,
+        _line: u32,
+        _p: usize,
+    ) {
+        // SAFETY: `crate::ffi::errno_location` is the crate's existing errno
+        // accessor (link_name `_errno` on windows); storing EINVAL is the
+        // documented way for a handler to shape the caller's error return.
+        unsafe {
+            *crate::ffi::errno_ptr() = libc::EINVAL;
+        }
+    }
+    unsafe extern "C" {
+        fn _set_invalid_parameter_handler(
+            handler: ::std::option::Option<
+                unsafe extern "C" fn(*const u16, *const u16, *const u16, u32, usize),
+            >,
+        ) -> ::std::option::Option<unsafe extern "C" fn(*const u16, *const u16, *const u16, u32, usize)>;
+    }
+
     pub fn init() {
+        // SAFETY: installing our benign handler; the previous one is
+        // process-default (Watson) and intentionally replaced.
+        unsafe {
+            let _ = _set_invalid_parameter_handler(Some(bao_invalid_parameter_handler));
+        }
+
         w::libuv::uv_disable_stdio_inheritance();
 
         let stdin = w::GetStdHandle(w::STD_INPUT_HANDLE).unwrap_or(w::INVALID_HANDLE_VALUE);
@@ -615,18 +656,27 @@ pub mod windows_stdio {
         use crate::fd as fd_internals;
         let invalid = w::INVALID_HANDLE_VALUE;
         // Single-threaded startup; these statics are write-once caches.
-        let _ = fd_internals::WINDOWS_CACHED_STDERR.set(if stderr != invalid {
-            Fd::from_system(stderr)
+        // ZIG PARITY (#18 windows): stdio must be CRT-fd-backed (uv kind) —
+        // upstream writes through `_get_osfhandle(1/2)`, which follows CRT
+        // `dup2` redirections (tests, embedders). Caching raw GetStdHandle
+        // values here froze the console handles at startup and broke every
+        // fd-level redirect; the GetStdHandle probe above stays only to
+        // detect absence (no stdio at all) for the INVALID fallback.
+        let have_out = stdout != invalid;
+        let have_err = stderr != invalid;
+        let have_in = stdin != invalid;
+        let _ = fd_internals::WINDOWS_CACHED_STDERR.set(if have_err {
+            Fd::from_uv(2)
         } else {
             Fd::INVALID
         });
-        let _ = fd_internals::WINDOWS_CACHED_STDOUT.set(if stdout != invalid {
-            Fd::from_system(stdout)
+        let _ = fd_internals::WINDOWS_CACHED_STDOUT.set(if have_out {
+            Fd::from_uv(1)
         } else {
             Fd::INVALID
         });
-        let _ = fd_internals::WINDOWS_CACHED_STDIN.set(if stdin != invalid {
-            Fd::from_system(stdin)
+        let _ = fd_internals::WINDOWS_CACHED_STDIN.set(if have_in {
+            Fd::from_uv(0)
         } else {
             Fd::INVALID
         });

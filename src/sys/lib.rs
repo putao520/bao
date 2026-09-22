@@ -9352,7 +9352,7 @@ fn qw_fd(qw: &bun_core::output::QuietWriter) -> Fd {
     // first word through a same-align pointer cast of a live `&QuietWriter`
     // is in-bounds and aligned.
     let raw = unsafe { *core::ptr::from_ref(qw).cast::<*mut ()>() };
-    Fd::from_native(raw as usize as _)
+    Fd::from_bits(raw as usize as u64)
 }
 #[inline]
 fn qw_set_fd(qw: &mut bun_core::output::QuietWriter, fd: Fd) {
@@ -9361,7 +9361,7 @@ fn qw_set_fd(qw: &mut bun_core::output::QuietWriter, fd: Fd) {
     // pointer cast of a live `&mut QuietWriter` is in-bounds, aligned, and
     // exclusively borrowed.
     unsafe {
-        *core::ptr::from_mut(qw).cast::<*mut ()>() = fd.native() as usize as *mut ();
+        *core::ptr::from_mut(qw).cast::<*mut ()>() = fd.to_bits() as usize as *mut ();
     }
 }
 

@@ -974,6 +974,19 @@ impl Fd {
     pub const fn from_native(v: FdBacking) -> Fd {
         Fd(v)
     }
+    /// Raw tagged-bit form of this `Fd` (round-trips via [`Fd::from_bits`]).
+    /// Slot-storers (QuietWriter's opaque slot 0) MUST store this form, not
+    /// `.native()`: `.native()` resolves a Uv-kind fd to its HANDLE at store
+    /// time, freezing CRT-level `dup2` redirections out of the writer.
+    #[inline]
+    pub const fn to_bits(self) -> u64 {
+        self.0
+    }
+    /// Inverse of [`Fd::to_bits`].
+    #[inline]
+    pub const fn from_bits(v: u64) -> Fd {
+        Fd(v)
+    }
     /// libuv fd (== posix fd on non-windows; uv-tagged on windows).
     #[inline]
     pub const fn from_uv(v: i32) -> Fd {

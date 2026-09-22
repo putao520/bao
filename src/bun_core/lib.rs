@@ -3925,14 +3925,14 @@ mod test_output_sink {
         // SAFETY: `QuietWriter` is `#[repr(C)] { _opaque: [*mut (); 4] }`;
         // writing the first word through a live `&mut` is in-bounds + aligned.
         unsafe {
-            *core::ptr::from_mut(qw).cast::<*mut ()>() = fd.native() as usize as *mut ();
+            *core::ptr::from_mut(qw).cast::<*mut ()>() = fd.to_bits() as usize as *mut ();
         }
     }
     #[inline]
     fn qw_fd(qw: &QuietWriter) -> Fd {
         // SAFETY: see qw_set_fd — reading the first word of a live reference.
         let raw = unsafe { *core::ptr::from_ref(qw).cast::<*mut ()>() };
-        Fd::from_native(raw as usize as _)
+        Fd::from_bits(raw as usize as u64)
     }
 
     /// Windows test-sink arm: resolve an fd-relative path against the process
