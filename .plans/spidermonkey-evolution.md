@@ -2086,3 +2086,7 @@ b1c45895 无辜(git show 零交集,失败先于其存在);真因=satellite `carg
 ### W7 链接差三 .lib(2026-09-22)
 
 lld-link 已钉(config [target] linker);全 rlib 编完,链接报:archive.lib/cares.lib(bun_libarchive/bun_cares_sys 的 out 零 .lib=build.rs 无 msvc 交叉产 lib 面,同 C 四先例模式)+Dbghelp.lib(SDK 大小写:请求 Dbghelp vs 文件 DbgHelp,Linux lld-link 大小写敏感;LIB env 已被读——kernel32 等过了)。终链合同已派 ew4(casefix symlink+两 C 臂+复链产 bao.exe)。
+
+### W7 第二层(ew4 5ce86a79+f82f620e):三 .lib 清+20 符号分类
+
+casefix 目录(Linux lld-link 大小写面,可持续吸收)+**libarchive 3.8.7/cares 全新 vendored DirectBuild**(两 C 库一次编译绿,unix 面不变)+bao_loop_tick windows 臂(us_loop_pump 改道)。链接推进到 20 未定义符号:A 类 17(BunString__* 等上游 jsc/bindings C++ 未 msvc 供给)/B 类 3(stdio/init)/C 类 1(shim _pread dllimport,s1a 已派)/D 类 1(stdio windows)。**A/B/D 续派 ew4(linux 侧定义定位+msvc 臂供给,bao.exe=硬判据)**。
