@@ -245,6 +245,16 @@ fn run_null_body_probes() -> (bool, String, String) {
 
 #[test]
 fn test_fetch_null_body_statuses() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("fetch_null_body_tests::test_fetch_null_body_statuses", test_fetch_null_body_statuses_body);
+}
+
+fn test_fetch_null_body_statuses_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
@@ -269,6 +279,16 @@ fn test_fetch_null_body_statuses() {
 /// the head+body arrive as one collected outcome.
 #[test]
 fn test_fetch_null_body_statuses_buffered_mode() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("fetch_null_body_tests::test_fetch_null_body_statuses_buffered_mode", test_fetch_null_body_statuses_buffered_mode_body);
+}
+
+fn test_fetch_null_body_statuses_buffered_mode_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();

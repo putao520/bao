@@ -29,6 +29,14 @@ fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
 
 #[test]
 fn test_child_process_vm_module_zlib_deep() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("child_process_vm_module_tests::test_child_process_vm_module_zlib_deep", test_child_process_vm_module_zlib_deep_body);
+}
+
+fn test_child_process_vm_module_zlib_deep_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");

@@ -27,9 +27,39 @@ libc = "0.2"
 log = "0.4"
 
 [dev-dependencies]
+# bun_bundler (pure Rust, BELOW bun_sm — cycle-free) owns the ret/arg type
+# aliases the lib-test seams in src/lib.rs spell their ABI with.
+bun_bundler = { path = "../bundler", version = "^0.2.0" }
+# bao_bundler: real CYCLEBREAK-face provider for the `module_sm_api_tests`
+# integration target (its anchor test references force_link_test_seams).
+# CONSTRAINT: the LIB-test unit must NEVER reference it — its normal closure
+# contains bun_sm itself, so a use from src/lib.rs puts a second bun_sm rlib
+# on the lib-test link line (lld-link/COFF duplicate-symbol). The lib-test
+# supplies its faces locally instead (src/lib.rs test_link_seams).
 bao_bundler = { path = "../bao_bundler", version = "^0.2.0" }
+# Test-linking anchor (dedicated provider, same leg as bun_http's test
+# targets): force_link drags in the bao_uloop loop/DNS/TLS-hook symbols and
+# the lsquic / boringssl / highway / zstd native archives that bun_sm's
+# lib-test closure (bun_uws → uws C++ archive) demands. It defines no
+# #[no_mangle] C-seam symbol itself (STUB-INVENTORY dual-def iron rule), so
+# co-linking with bun_sm's own dispatch bodies is dual-def-free.
+bao_native_stubs = { path = "../bao_native_stubs", version = "^0.1" }
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 bun_runtime = { path = "../bao_runtime", version = "^0.4" }
+# Type-alias sources for the lib-test seams (macro-context faces: bun_ast /
+# bun_js_parser; ProcessExit faces: bun_spawn; WindowsNamedPipe faces:
+# bun_uws_sys + bun_boringssl_sys — all below bun_sm, cycle-free).
+bun_ast = { path = "../ast", version = "^0.2.0" }
+bun_js_parser = { path = "../js_parser", version = "^0.2.0" }
+bun_spawn = { path = "../spawn", version = "^0.2.0" }
+bun_uws_sys = { path = "../uws_sys", version = "^0.2.0" }
+bun_boringssl_sys = { path = "../boringssl_sys", version = "^0.2.0" }
+# __bun_regex_* seam mirror (same engine version as the owner's bodies).
+regex = "1"
+# Owns __bun_resolver_init_package_manager (real package-manager init — not
+# mirrorable); the anchor test references it like
+# bun_runtime::force_link_bun_install does.
+bun_install = { path = "../install", version = "^0.2.0" }
 tempfile = "3"
 
 [lints.rust]

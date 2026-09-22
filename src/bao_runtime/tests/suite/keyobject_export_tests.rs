@@ -326,6 +326,9 @@ fn run_keyobject_matrix(
 }
 
 #[test]
+// Interop is defined against the host `openssl` CLI, which the Windows
+// test box does not provide (the suite's Linux CI does).
+#[cfg(unix)]
 fn test_rsa_keyobject_export_matrix_openssl_interop() {
     let dir = tmpdir("rsa");
     let key = dir.join("rsa_key.pem");
@@ -353,6 +356,8 @@ fn test_rsa_keyobject_export_matrix_openssl_interop() {
 }
 
 #[test]
+// Host-openssl interop — see the RSA twin above.
+#[cfg(unix)]
 fn test_ec_keyobject_export_matrix_openssl_interop() {
     let dir = tmpdir("ec");
     let key = dir.join("ec_key.pem");
@@ -438,6 +443,8 @@ fn test_secret_keyobject_real_shape() {
 /// through the KeyObject slot path; openssl re-parses the generated RSA/EC
 /// exports and verifies the RSA signature externally.
 #[test]
+// Export verification shells out to the host `openssl` (unix-only).
+#[cfg(unix)]
 fn test_generate_key_pair_sync_returns_keyobjects_with_real_export() {
     let mut ctx = make_ctx();
     let out = eval_string(
@@ -569,6 +576,9 @@ fn test_generate_key_pair_sync_returns_keyobjects_with_real_export() {
 }
 
 #[test]
+// Encrypted-PEM fixture generation shells out to the host `openssl`
+// (unix-only).
+#[cfg(unix)]
 fn test_invalid_key_shapes_fail_closed() {    // Garbage key material must throw, never produce a KeyObject.
     let mut ctx = make_ctx();
     let res = eval_string(

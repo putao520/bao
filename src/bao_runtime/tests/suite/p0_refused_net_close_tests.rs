@@ -204,6 +204,14 @@ fn fetch_https_refused_rejects_promptly() {
 
 #[test]
 fn net_connect_callback_fires_after_assignment_and_registration() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("p0_refused_net_close_tests::net_connect_callback_fires_after_assignment_and_registration", net_connect_callback_fires_after_assignment_and_registration_body);
+}
+
+fn net_connect_callback_fires_after_assignment_and_registration_body() {
+
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();

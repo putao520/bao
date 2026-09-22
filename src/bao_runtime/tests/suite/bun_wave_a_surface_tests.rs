@@ -169,6 +169,14 @@ fn ws_upgrade_and_frame(
 
 #[test]
 fn test_bun_wave_a_surface_all() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("bun_wave_a_surface_tests::test_bun_wave_a_surface_all", test_bun_wave_a_surface_all_body);
+}
+
+fn test_bun_wave_a_surface_all_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");

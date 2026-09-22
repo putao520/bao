@@ -127,6 +127,14 @@ fn fresh_ctx() -> JsContext {
 /// res.writeHead + res.end(Buffer). Byte-exact roundtrip both directions.
 #[test]
 fn test_h2_server_post_binary_roundtrip() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http2_server_e2e_tests::test_h2_server_post_binary_roundtrip", test_h2_server_post_binary_roundtrip_body);
+}
+
+fn test_h2_server_post_binary_roundtrip_body() {
+
     let mut ctx = fresh_ctx();
     let port = free_port();
 
@@ -206,6 +214,14 @@ fn test_h2_server_post_binary_roundtrip() {
 /// with a custom header surviving to the wire.
 #[test]
 fn test_h2_server_get_roundtrip() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http2_server_e2e_tests::test_h2_server_get_roundtrip", test_h2_server_get_roundtrip_body);
+}
+
+fn test_h2_server_get_roundtrip_body() {
+
     let mut ctx = fresh_ctx();
     let port = free_port();
 
@@ -249,6 +265,14 @@ fn test_h2_server_get_roundtrip() {
 /// mozalloc_abort. The server must stay alive for the next request.
 #[test]
 fn test_h2_server_unresponded_handler_gets_500() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http2_server_e2e_tests::test_h2_server_unresponded_handler_gets_500", test_h2_server_unresponded_handler_gets_500_body);
+}
+
+fn test_h2_server_unresponded_handler_gets_500_body() {
+
     let mut ctx = fresh_ctx();
     let port = free_port();
 
@@ -305,6 +329,14 @@ fn test_h2_server_unresponded_handler_gets_500() {
 /// 'listening' is emitted on the server.
 #[test]
 fn test_h2_server_listen_callback_fires() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http2_server_e2e_tests::test_h2_server_listen_callback_fires", test_h2_server_listen_callback_fires_body);
+}
+
+fn test_h2_server_listen_callback_fires_body() {
+
     let mut ctx = fresh_ctx();
     let port = free_port();
 
@@ -352,6 +384,14 @@ fn test_h2_server_listen_callback_fires() {
 /// requests — the finish/responder bookkeeping is per-request).
 #[test]
 fn test_h2_server_multiple_requests() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http2_server_e2e_tests::test_h2_server_multiple_requests", test_h2_server_multiple_requests_body);
+}
+
+fn test_h2_server_multiple_requests_body() {
+
     let mut ctx = fresh_ctx();
     let port = free_port();
 
@@ -400,6 +440,14 @@ fn test_h2_server_multiple_requests() {
 /// one response.
 #[test]
 fn test_h2_server_write_chunks_and_double_end() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http2_server_e2e_tests::test_h2_server_write_chunks_and_double_end", test_h2_server_write_chunks_and_double_end_body);
+}
+
+fn test_h2_server_write_chunks_and_double_end_body() {
+
     let mut ctx = fresh_ctx();
     let port = free_port();
 
@@ -445,6 +493,14 @@ fn test_h2_server_write_chunks_and_double_end() {
 /// working, and the server 'stream' event fires with (stream, headers).
 #[test]
 fn test_h2_server_session_surface_and_stream_event() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http2_server_e2e_tests::test_h2_server_session_surface_and_stream_event", test_h2_server_session_surface_and_stream_event_body);
+}
+
+fn test_h2_server_session_surface_and_stream_event_body() {
+
     let mut ctx = fresh_ctx();
     let port = free_port();
 

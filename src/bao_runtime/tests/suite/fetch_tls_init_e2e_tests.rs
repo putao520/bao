@@ -236,6 +236,16 @@ fn wait_aborted_record(records: &Records) -> Option<ConnRecord> {
 
 #[test]
 fn test_fetch_init_tls_e2e() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("fetch_tls_init_e2e_tests::test_fetch_init_tls_e2e", test_fetch_init_tls_e2e_body);
+}
+
+fn test_fetch_init_tls_e2e_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();

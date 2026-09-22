@@ -80,6 +80,14 @@ fn setup_ctx() -> JsContext {
 /// The decoded file must equal the source file byte-for-byte.
 #[test]
 fn net_socket_pipe_file_roundtrip_both_directions() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("net_socket_pipe_e2e_tests::net_socket_pipe_file_roundtrip_both_directions", net_socket_pipe_file_roundtrip_both_directions_body);
+}
+
+fn net_socket_pipe_file_roundtrip_both_directions_body() {
+
     let mut ctx = setup_ctx();
     let dir = std::env::temp_dir().join(format!("bao-net-pipe-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

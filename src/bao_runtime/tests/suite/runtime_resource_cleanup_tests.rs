@@ -121,6 +121,8 @@ fn fd_link_target(fd: i32) -> Option<String> {
 
 /// T1: a socket bound inside a runtime is released when the runtime drops.
 #[test]
+// fd identity is read via /proc/self/fd — Linux mechanic.
+#[cfg(unix)]
 fn runtime_drop_closes_dgram_sockets_fd_and_port_released() {
     let port = free_ephemeral_port();
     let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
@@ -159,6 +161,8 @@ fn runtime_drop_closes_dgram_sockets_fd_and_port_released() {
 /// T2: per-token isolation — dropping one runtime must not terminate another
 /// live runtime's sockets, and the survivor stays functional.
 #[test]
+// /proc/self/fd mechanic — see the dgram twin above.
+#[cfg(unix)]
 fn runtime_drop_is_per_token_other_runtimes_sockets_untouched() {
     let receiver = UdpSocket::bind("127.0.0.1:0").expect("receiver bind");
     receiver
@@ -527,6 +531,14 @@ fn runtime_drop_kills_and_reaps_owned_children() {
 /// live runtime's children; the survivor and its cp-poll thread keep running.
 #[test]
 fn runtime_drop_is_per_token_other_runtimes_children_untouched() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("runtime_resource_cleanup_tests::runtime_drop_is_per_token_other_runtimes_children_untouched", runtime_drop_is_per_token_other_runtimes_children_untouched_body);
+}
+
+fn runtime_drop_is_per_token_other_runtimes_children_untouched_body() {
+
     let mut rt_a = bun_runtime::BaoRuntime::new().expect("runtime A");
     warm_child_process(&mut rt_a);
     let pipes_a = fd_targets("pipe:");
@@ -690,6 +702,14 @@ fn sigstate_wait_for(pred: impl Fn() -> bool, budget: Duration, what: &str) {
 /// via stdout, so the observed bitmap is the post-exec child's, not ours.
 #[test]
 fn spawn_sigstate_child_bitmap_is_clean_default() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("runtime_resource_cleanup_tests::spawn_sigstate_child_bitmap_is_clean_default", spawn_sigstate_child_bitmap_is_clean_default_body);
+}
+
+fn spawn_sigstate_child_bitmap_is_clean_default_body() {
+
     let mut ctx = setup_sigstate_ctx();
     let setup = sigstate_eval_str(
         &mut ctx,
@@ -963,6 +983,14 @@ fn child_exit_observation_closes_stdin_write_fd() {
 /// sweep is the last consumer and must take the write end itself.
 #[test]
 fn runtime_drop_closes_piped_stdin_write_end_of_live_children() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("runtime_resource_cleanup_tests::runtime_drop_closes_piped_stdin_write_end_of_live_children", runtime_drop_closes_piped_stdin_write_end_of_live_children_body);
+}
+
+fn runtime_drop_closes_piped_stdin_write_end_of_live_children_body() {
+
     let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
     warm_child_process(&mut rt);
     rt.eval(

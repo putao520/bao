@@ -154,6 +154,14 @@ fn raw_roundtrip_full(ctx: &mut JsContext, port: u16, request: &[u8]) -> String 
 /// node:* dispatches.
 #[test]
 fn test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity", test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity_body);
+}
+
+fn test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
@@ -211,6 +219,14 @@ fn test_node_http2_dispatches_http10_transfer_encoding_llhttp_parity() {
 /// over-broad rejection that would also swallow legitimate 1.1 traffic).
 #[test]
 fn test_node_http2_accepts_http11_chunked_control() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http2_accepts_http11_chunked_control", test_node_http2_accepts_http11_chunked_control_body);
+}
+
+fn test_node_http2_accepts_http11_chunked_control_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
@@ -259,6 +275,14 @@ fn test_node_http2_accepts_http11_chunked_control() {
 /// dispatch test below cannot even address the server.
 #[test]
 fn test_node_http_listen_ephemeral_port() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http_listen_ephemeral_port", test_node_http_listen_ephemeral_port_body);
+}
+
+fn test_node_http_listen_ephemeral_port_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
@@ -301,6 +325,14 @@ fn test_node_http_listen_ephemeral_port() {
 /// uWS std::terminate).
 #[test]
 fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("http_te_parity_tests::test_node_http_dispatches_http10_transfer_encoding_llhttp_parity", test_node_http_dispatches_http10_transfer_encoding_llhttp_parity_body);
+}
+
+fn test_node_http_dispatches_http10_transfer_encoding_llhttp_parity_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");

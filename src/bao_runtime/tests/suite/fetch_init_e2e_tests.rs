@@ -136,6 +136,16 @@ fn extract_boundary(req: &str) -> String {
 
 #[test]
 fn test_fetch_init_face_batch1_wire() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("fetch_init_e2e_tests::test_fetch_init_face_batch1_wire", test_fetch_init_face_batch1_wire_body);
+}
+
+fn test_fetch_init_face_batch1_wire_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();

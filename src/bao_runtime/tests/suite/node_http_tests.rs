@@ -180,6 +180,14 @@ fn test_node_http_https_all() {
 /// write()+end() / write-after-end bodies on the raw socket.
 #[test]
 fn test_node_http_server_binary_bodies_wire_exact() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http_tests::test_node_http_server_binary_bodies_wire_exact", test_node_http_server_binary_bodies_wire_exact_body);
+}
+
+fn test_node_http_server_binary_bodies_wire_exact_body() {
+
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -244,6 +252,14 @@ fn test_node_http_server_binary_bodies_wire_exact() {
 /// (all 0-255), and setEncoding() switches delivery to decoded strings.
 #[test]
 fn test_node_http_client_data_chunks_buffer_byte_exact() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("node_http_tests::test_node_http_client_data_chunks_buffer_byte_exact", test_node_http_client_data_chunks_buffer_byte_exact_body);
+}
+
+fn test_node_http_client_data_chunks_buffer_byte_exact_body() {
+
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();

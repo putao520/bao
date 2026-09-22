@@ -2467,6 +2467,8 @@ mod tests {
     /// if it passes, the bug is in the JS-side wiring.
     /// SysV trampoline isolation: getpid (zero-arg, int ret) and atoi
     /// (one pointer arg, int ret) through bao_sysv_call.
+    // POSIX-only: dlopen("libc.so.6"/"libm.so.6") has no windows counterpart (module-not-found).
+    #[cfg(unix)]
     #[test]
     fn test_sysv_trampoline_libc() {
         let lib = FfiLibrary::dlopen("libc.so.6").unwrap();
@@ -2496,6 +2498,8 @@ mod tests {
         }
     }
 
+    // POSIX-only: dlopen("libc.so.6"/"libm.so.6") has no windows counterpart (module-not-found).
+    #[cfg(unix)]
     #[test]
     fn test_ffi_dlopen_libc() {
         let lib = FfiLibrary::dlopen("libc.so.6").unwrap();
@@ -2507,6 +2511,8 @@ mod tests {
         assert!(FfiLibrary::dlopen("/nonexistent.so").is_err());
     }
 
+    // POSIX-only: dlopen("libc.so.6"/"libm.so.6") has no windows counterpart (module-not-found).
+    #[cfg(unix)]
     #[test]
     fn test_ffi_close() {
         let mut lib = FfiLibrary::dlopen("libc.so.6").unwrap();
@@ -2514,6 +2520,8 @@ mod tests {
         assert!(lib.is_closed());
     }
 
+    // POSIX-only: dlopen("libc.so.6"/"libm.so.6") has no windows counterpart (module-not-found).
+    #[cfg(unix)]
     #[test]
     fn test_ffi_symbol() {
         let lib = FfiLibrary::dlopen("libc.so.6").unwrap();
@@ -2521,12 +2529,16 @@ mod tests {
         assert!(!sym.is_null());
     }
 
+    // POSIX-only: dlopen("libc.so.6"/"libm.so.6") has no windows counterpart (module-not-found).
+    #[cfg(unix)]
     #[test]
     fn test_ffi_symbol_nonexistent() {
         let lib = FfiLibrary::dlopen("libc.so.6").unwrap();
         assert!(lib.symbol("__nonexistent_symbol_xyz__").is_err());
     }
 
+    // POSIX-only: dlopen("libc.so.6"/"libm.so.6") has no windows counterpart (module-not-found).
+    #[cfg(unix)]
     #[test]
     fn test_ffi_close_twice_errors() {
         let mut lib = FfiLibrary::dlopen("libc.so.6").unwrap();

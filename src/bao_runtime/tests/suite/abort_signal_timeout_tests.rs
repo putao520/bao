@@ -167,6 +167,16 @@ fn pump_until_settled(ctx: &mut JsContext, poll_js: &str, timeout: Duration) -> 
 
 #[test]
 fn test_abort_signal_timeout_shape_and_fetch() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("abort_signal_timeout_tests::test_abort_signal_timeout_shape_and_fetch", test_abort_signal_timeout_shape_and_fetch_body);
+}
+
+fn test_abort_signal_timeout_shape_and_fetch_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();

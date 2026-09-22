@@ -14,6 +14,16 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 
 #[test]
 fn test_fetch_api_all() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("fetch_api_tests::test_fetch_api_all", test_fetch_api_all_body);
+}
+
+fn test_fetch_api_all_body() {
+
     bun_runtime::install_exit_handler();
     // Initialize Output — HTTPThread's process_events calls Output::flush()
     // which debug_asserts STDOUT_STREAM_SET is true. Without this, the

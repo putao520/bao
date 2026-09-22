@@ -64,13 +64,6 @@ fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
     // deadline only (raised to 30s), never as a blind duration.
     let cx_raw = ctx.raw_cx();
     for _ in 0..max_iters {
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        std::thread::sleep(Duration::from_millis(2));
         if eval_string(
             ctx,
             "(globalThis.__r && globalThis.__r.settled === true) || \
@@ -109,6 +102,18 @@ fn settled(ctx: &mut JsContext) -> bool {
 
 #[test]
 fn test_bun_build_e2e_all() {
+    // Deadline isolation (exit_isolation::dispatch_timeout): the minify
+    // scenario currently wedges the Windows event loop inside
+    // tick_without_idle (product defect, reported separately) — run the body
+    // in a bounded child so the wedge surfaces as a FAIL, not a run-wide
+    // hang.
+    crate::exit_isolation::dispatch_timeout(
+        "bun_build_e2e_tests::test_bun_build_e2e_all",
+        test_bun_build_e2e_all_body,
+    );
+}
+
+fn test_bun_build_e2e_all_body() {
     // Pool workers assert STDOUT_STREAM_SET at startup (fetch e2e parity).
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
@@ -383,6 +388,15 @@ fn run_await_text_scenario(ctx: &mut JsContext) {
 /// hash (13 chars).
 #[test]
 fn test_bun_build_hash_widen_on_collision() {
+    // Same wedge class as test_bun_build_e2e_all (Windows event loop inside
+    // tick_without_idle during Bun.build scenarios) — deadline isolation.
+    crate::exit_isolation::dispatch_timeout(
+        "bun_build_e2e_tests::test_bun_build_hash_widen_on_collision",
+        test_bun_build_hash_widen_on_collision_body,
+    );
+}
+
+fn test_bun_build_hash_widen_on_collision_body() {
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();

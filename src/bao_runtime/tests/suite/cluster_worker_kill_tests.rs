@@ -78,15 +78,38 @@ fn find_bao_binary() -> std::path::PathBuf {
         .and_then(|p| p.parent())
         .expect("workspace root")
         .join("target");
+    // BAO_TEST_BAO_BIN: explicit override for copied-binary environments
+    // (the suite exe runs from a test dir where the workspace target tree
+    // does not exist; Windows artifacts additionally carry the .exe suffix).
+    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
+        let p = std::path::PathBuf::from(&p);
+        if p.is_file() {
+            return p;
+        }
+    }
     for profile in ["debug", "release"] {
-        let candidate = target.join(profile).join("bao");
-        if candidate.exists() {
-            return candidate;
+        for name in ["bao", "bao.exe"] {
+            let candidate = target.join(profile).join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    // Copied-binary environment fallback: deployed next to this suite exe.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in ["bao", "bao.exe"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
         }
     }
     panic!(
         "bao binary not found under {} — build it with `cargo build -p bao_bin` \
-         (required as the cluster.fork worker executable)",
+         ( required as the cluster.fork worker executable; or point \
+         BAO_TEST_BAO_BIN at the binary under test)",
         target.display()
     );
 }

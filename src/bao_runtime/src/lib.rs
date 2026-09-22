@@ -273,14 +273,479 @@ fn force_link_native_c_libs() {
 #[used]
 static FORCE_NATIVE_C_LIBS: fn() = force_link_native_c_libs;
 
-// Higher-tier soft-link providers are dev-deps nothing else `use`s in the
-// lib-test target (GNU ld tolerates undefineds in test executables;
-// lld-link/COFF does not) — force them onto the link line.
+// The webcore faces (`__bun_stdio_blob_store_new` / `__bun_js_vm_get`) are
+// provided by this crate itself, so they are already in the lib-test
+// compilation unit — the anchor below only keeps them referenced.
+//
+// DO NOT reference `bao_bundler::force_link_test_seams()` here (5d3c1f8a
+// regression): `bao_bundler` is a dev-dep whose normal closure contains
+// `bun_runtime` itself, so using it puts a *second* copy of this crate's rlib
+// on the lib-test link line next to the test compilation unit → lld-link/COFF
+// duplicate-symbol on every `#[no_mangle]` body (`WindowsNamedPipe__*`,
+// `Bun__linux_trace_*`, `__bun_stdio_blob_store_new`, `__bun_js_vm_get`,
+// `bao_sysv_call`). The 18 `JSBundlerPlugin__*` / `DevServerHandle__Bake__*` /
+// `VmLoaderCtx__Runtime__*` faces are not referenced in this closure (their
+// referrer `bun_bundler` is not a dependency of this crate), so this link line
+// needs no supplier for them; the link itself is the resolver proof.
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod test_link_seams {
+    use core::ffi::c_void;
+
+    use bun_bundler::bundle_v2::JSBundlerPlugin;
+    use bun_core::String as BunString;
+
     #[test]
     fn link_higher_tier_seams() {
-        bao_bundler::force_link_test_seams();
         crate::webcore_faces::force_link_webcore_faces();
+    }
+
+    // ── CYCLEBREAK bundler faces (38) ────────────────────────────────────
+    // Root cause of the removed `bao_bundler` reference above: this crate's
+    // lib-test cannot link the higher-tier provider, so the faces its own
+    // dependency closure references (via bun_bundler, a dep of bun_install /
+    // bun_resolver) are supplied locally — every body mirrors its production
+    // owner 1:1 (all owners are themselves Phase-1 honest-degraded bodies);
+    // owner file named at each group. Same seam set as bun_sm's lib-test
+    // (src/bun_sm/src/lib.rs test_link_seams).
+
+    // ── JSBundlerPlugin faces (6) — owner: bao_bundler::js_bundler_plugin_seam
+    // (@trace REQ-ENG-006): the honest **no-plugins** answers (Bao registers
+    // no bundler plugins; every BundleV2 passes plugins: None).
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn JSBundlerPlugin__anyMatches(
+        _this: &JSBundlerPlugin,
+        _namespace: &mut BunString,
+        _path: &mut BunString,
+        _is_on_load: bool,
+    ) -> bool {
+        false
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn JSBundlerPlugin__matchOnLoad(
+        _this: &mut JSBundlerPlugin,
+        _namespace_string: &mut BunString,
+        _path: &mut BunString,
+        _context: *mut c_void,
+        _default_loader: u8,
+        _is_server_side: bool,
+    ) {
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn JSBundlerPlugin__matchOnResolve(
+        _this: &mut JSBundlerPlugin,
+        _namespace_string: &mut BunString,
+        _path: &mut BunString,
+        _importer: &mut BunString,
+        _context: *mut c_void,
+        _kind: u8,
+    ) {
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn JSBundlerPlugin__drainDeferred(_this: &mut JSBundlerPlugin, _rejected: bool) {
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn JSBundlerPlugin__hasOnBeforeParsePlugins(_this: &JSBundlerPlugin) -> i32 {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn JSBundlerPlugin__callOnBeforeParsePlugins(
+        _this: &JSBundlerPlugin,
+        _ctx: *mut c_void,
+        _namespace: &BunString,
+        _path: &BunString,
+        _args: *mut c_void,
+        _result: *mut c_void,
+        _should_continue_running: *mut i32,
+    ) -> i32 {
+        0
+    }
+
+    // ── VmLoaderCtx[Runtime] faces (12) — owner: bao_bundler::vm_loader
+    // `link_impl_VmLoaderCtx!` (BaoVmLoaderCtx, @trace REQ-ENG-005), Phase-1
+    // bodies mirrored 1:1. `link_noop_VmLoaderCtx!` cannot supply this
+    // interface (origin_host/… return `&'static [u8]`, no `Default`), so the
+    // bodies are spelled against the interface's own ret/arg aliases (exact
+    // ABI by construction). `blob_deinit` is not referenced by this closure.
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__origin_host(
+        __owner: *mut (),
+    ) -> bun_bundler::__VmLoaderCtx__origin_host__ret {
+        let _ = __owner;
+        b"localhost"
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__origin_path(
+        __owner: *mut (),
+    ) -> bun_bundler::__VmLoaderCtx__origin_path__ret {
+        let _ = __owner;
+        b"/"
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__main(
+        __owner: *mut (),
+    ) -> bun_bundler::__VmLoaderCtx__main__ret {
+        let _ = __owner;
+        b"<input>"
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__loaders(
+        __owner: *mut (),
+    ) -> bun_bundler::__VmLoaderCtx__loaders__ret {
+        let _ = __owner;
+        // Phase 1: null — the bundler uses its default loaders.
+        core::ptr::null()
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__read_dir_info_package_json(
+        __owner: *mut (),
+        __read_dir_info_package_json_dir:
+            bun_bundler::__VmLoaderCtx__read_dir_info_package_json__arg_dir<'_>,
+    ) -> bun_bundler::__VmLoaderCtx__read_dir_info_package_json__ret {
+        let _ = (__owner, __read_dir_info_package_json_dir);
+        // Phase 1: no resolver integration.
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__is_blob_url(
+        __owner: *mut (),
+        __is_blob_url_specifier: bun_bundler::__VmLoaderCtx__is_blob_url__arg_specifier<'_>,
+    ) -> bun_bundler::__VmLoaderCtx__is_blob_url__ret {
+        let _ = (__owner, __is_blob_url_specifier);
+        false
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__resolve_blob(
+        __owner: *mut (),
+        __resolve_blob_specifier: bun_bundler::__VmLoaderCtx__resolve_blob__arg_specifier<'_>,
+    ) -> bun_bundler::__VmLoaderCtx__resolve_blob__ret {
+        let _ = (__owner, __resolve_blob_specifier);
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__eval_source(
+        __owner: *mut (),
+    ) -> bun_bundler::__VmLoaderCtx__eval_source__ret {
+        let _ = __owner;
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__blob_loader(
+        __owner: *mut (),
+        __blob_loader_blob: bun_bundler::__VmLoaderCtx__blob_loader__arg_blob<'_>,
+    ) -> bun_bundler::__VmLoaderCtx__blob_loader__ret {
+        let _ = (__owner, __blob_loader_blob);
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__blob_file_name(
+        __owner: *mut (),
+        __blob_file_name_blob: bun_bundler::__VmLoaderCtx__blob_file_name__arg_blob<'_>,
+    ) -> bun_bundler::__VmLoaderCtx__blob_file_name__ret {
+        let _ = (__owner, __blob_file_name_blob);
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__blob_needs_read_file(
+        __owner: *mut (),
+        __blob_needs_read_file_blob: bun_bundler::__VmLoaderCtx__blob_needs_read_file__arg_blob<'_>,
+    ) -> bun_bundler::__VmLoaderCtx__blob_needs_read_file__ret {
+        let _ = (__owner, __blob_needs_read_file_blob);
+        false
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__VmLoaderCtx__Runtime__blob_shared_view(
+        __owner: *mut (),
+        __blob_shared_view_blob: bun_bundler::__VmLoaderCtx__blob_shared_view__arg_blob<'_>,
+    ) -> bun_bundler::__VmLoaderCtx__blob_shared_view__ret {
+        let _ = (__owner, __blob_shared_view_blob);
+        &[]
+    }
+
+    // ── DevServerHandle[Bake] faces (11) — owner: bao_bundler::dev_server
+    // `link_impl_DevServerHandle!` (BaoDevServer, @trace REQ-CLI-001): no
+    // bake dev server exists; no-op defaults + `Err(AllocError)` where the
+    // interface demands `Result` (which `link_noop_` cannot generate).
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__barrel_needed_exports(
+        __owner: *mut (),
+    ) -> bun_bundler::__DevServerHandle__barrel_needed_exports__ret {
+        let _ = __owner;
+        core::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__log_for_resolution_failures(
+        __owner: *mut (),
+        __log_for_resolution_failures_abs_path:
+            bun_bundler::__DevServerHandle__log_for_resolution_failures__arg_abs_path<'_>,
+        __log_for_resolution_failures_graph:
+            bun_bundler::__DevServerHandle__log_for_resolution_failures__arg_graph<'_>,
+    ) -> bun_bundler::__DevServerHandle__log_for_resolution_failures__ret {
+        let _ = (
+            __owner,
+            __log_for_resolution_failures_abs_path,
+            __log_for_resolution_failures_graph,
+        );
+        core::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__finalize_bundle(
+        __owner: *mut (),
+        __finalize_bundle_bv2: bun_bundler::__DevServerHandle__finalize_bundle__arg_bv2<'_>,
+        __finalize_bundle_result: bun_bundler::__DevServerHandle__finalize_bundle__arg_result<'_>,
+    ) -> bun_bundler::__DevServerHandle__finalize_bundle__ret {
+        let _ = (__owner, __finalize_bundle_bv2, __finalize_bundle_result);
+        Err(bun_core::Error::from(bun_core::AllocError))
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__handle_parse_task_failure(
+        __owner: *mut (),
+        __handle_parse_task_failure_err:
+            bun_bundler::__DevServerHandle__handle_parse_task_failure__arg_err<'_>,
+        __handle_parse_task_failure_graph:
+            bun_bundler::__DevServerHandle__handle_parse_task_failure__arg_graph<'_>,
+        __handle_parse_task_failure_abs_path:
+            bun_bundler::__DevServerHandle__handle_parse_task_failure__arg_abs_path<'_>,
+        __handle_parse_task_failure_log:
+            bun_bundler::__DevServerHandle__handle_parse_task_failure__arg_log<'_>,
+        __handle_parse_task_failure_bv2:
+            bun_bundler::__DevServerHandle__handle_parse_task_failure__arg_bv2<'_>,
+    ) -> bun_bundler::__DevServerHandle__handle_parse_task_failure__ret {
+        let _ = (
+            __owner,
+            __handle_parse_task_failure_err,
+            __handle_parse_task_failure_graph,
+            __handle_parse_task_failure_abs_path,
+            __handle_parse_task_failure_log,
+            __handle_parse_task_failure_bv2,
+        );
+        Err(bun_core::Error::from(bun_core::AllocError))
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__put_or_overwrite_asset(
+        __owner: *mut (),
+        __put_or_overwrite_asset_path:
+            bun_bundler::__DevServerHandle__put_or_overwrite_asset__arg_path<'_>,
+        __put_or_overwrite_asset_contents:
+            bun_bundler::__DevServerHandle__put_or_overwrite_asset__arg_contents<'_>,
+        __put_or_overwrite_asset_content_hash:
+            bun_bundler::__DevServerHandle__put_or_overwrite_asset__arg_content_hash<'_>,
+    ) -> bun_bundler::__DevServerHandle__put_or_overwrite_asset__ret {
+        let _ = (
+            __owner,
+            __put_or_overwrite_asset_path,
+            __put_or_overwrite_asset_contents,
+            __put_or_overwrite_asset_content_hash,
+        );
+        Err(bun_core::Error::from(bun_core::AllocError))
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__track_resolution_failure(
+        __owner: *mut (),
+        __track_resolution_failure_import_source:
+            bun_bundler::__DevServerHandle__track_resolution_failure__arg_import_source<'_>,
+        __track_resolution_failure_specifier:
+            bun_bundler::__DevServerHandle__track_resolution_failure__arg_specifier<'_>,
+        __track_resolution_failure_renderer:
+            bun_bundler::__DevServerHandle__track_resolution_failure__arg_renderer<'_>,
+        __track_resolution_failure_loader:
+            bun_bundler::__DevServerHandle__track_resolution_failure__arg_loader<'_>,
+    ) -> bun_bundler::__DevServerHandle__track_resolution_failure__ret {
+        let _ = (
+            __owner,
+            __track_resolution_failure_import_source,
+            __track_resolution_failure_specifier,
+            __track_resolution_failure_renderer,
+            __track_resolution_failure_loader,
+        );
+        Err(bun_core::Error::from(bun_core::AllocError))
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__is_file_cached(
+        __owner: *mut (),
+        __is_file_cached_abs_path: bun_bundler::__DevServerHandle__is_file_cached__arg_abs_path<'_>,
+        __is_file_cached_side: bun_bundler::__DevServerHandle__is_file_cached__arg_side<'_>,
+    ) -> bun_bundler::__DevServerHandle__is_file_cached__ret {
+        let _ = (__owner, __is_file_cached_abs_path, __is_file_cached_side);
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__asset_hash(
+        __owner: *mut (),
+        __asset_hash_abs_path: bun_bundler::__DevServerHandle__asset_hash__arg_abs_path<'_>,
+    ) -> bun_bundler::__DevServerHandle__asset_hash__ret {
+        let _ = (__owner, __asset_hash_abs_path);
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__current_bundle_start_data(
+        __owner: *mut (),
+    ) -> bun_bundler::__DevServerHandle__current_bundle_start_data__ret {
+        let _ = __owner;
+        core::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__register_barrel_with_deferrals(
+        __owner: *mut (),
+        __register_barrel_with_deferrals_path:
+            bun_bundler::__DevServerHandle__register_barrel_with_deferrals__arg_path<'_>,
+    ) -> bun_bundler::__DevServerHandle__register_barrel_with_deferrals__ret {
+        let _ = (__owner, __register_barrel_with_deferrals_path);
+        Err(bun_core::Error::from(bun_core::AllocError))
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__DevServerHandle__Bake__register_barrel_export(
+        __owner: *mut (),
+        __register_barrel_export_barrel_path:
+            bun_bundler::__DevServerHandle__register_barrel_export__arg_barrel_path<'_>,
+        __register_barrel_export_alias:
+            bun_bundler::__DevServerHandle__register_barrel_export__arg_alias<'_>,
+    ) -> bun_bundler::__DevServerHandle__register_barrel_export__ret {
+        let _ = (
+            __owner,
+            __register_barrel_export_barrel_path,
+            __register_barrel_export_alias,
+        );
+    }
+
+    // ── TranspilerCacheImpl[Jsc] faces (2) — owner:
+    // bao_bundler::transpiler_cache_seam (@trace REQ-ENG-006): the honest
+    // disabled semantics — get never reports a hit, put stores nothing.
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__TranspilerCacheImpl__Jsc__get(
+        __owner: *mut (),
+        __get_source: bun_ast::__TranspilerCacheImpl__get__arg_source<'_>,
+        __get_parser_options: bun_ast::__TranspilerCacheImpl__get__arg_parser_options<'_>,
+        __get_used_jsx: bool,
+    ) -> bool {
+        let _ = (
+            __owner,
+            __get_source,
+            __get_parser_options,
+            __get_used_jsx,
+        );
+        // No cache backend: never report a hit.
+        false
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe fn __bun_dispatch__TranspilerCacheImpl__Jsc__put(
+        __owner: *mut (),
+        __put_output_code: &[u8],
+        __put_sourcemap: &[u8],
+        __put_esm_record: &[u8],
+    ) {
+        // No cache backend: store nothing.
+        let _ = (
+            __owner,
+            __put_output_code,
+            __put_sourcemap,
+            __put_esm_record,
+        );
+    }
+
+    // ── macro-context faces (5) — owner: bao_bundler::macro_context: the
+    // honest **no-macro-state** semantics (no macro VM in Bao).
+
+    #[unsafe(no_mangle)]
+    pub extern "Rust" fn __bun_macro_context_init(
+        _transpiler: *mut c_void,
+    ) -> bun_js_parser::Macro::MacroContext {
+        bun_js_parser::Macro::MacroContext {
+            javascript_object: bun_js_parser::Macro::MacroJSCtx::ZERO,
+            data: core::ptr::null_mut(),
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "Rust" fn __bun_macro_context_deinit(data: *mut c_void) {
+        if data.is_null() {
+            return;
+        }
+        // A non-null `data` can only come from a different definer — never ours.
+        unreachable!("Bao macro bridge: deinit on a foreign MacroContext");
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "Rust" fn __bun_macro_context_call(
+        _ctx: &mut bun_js_parser::Macro::MacroContext,
+        _import_record_path: &[u8],
+        _source_dir: &[u8],
+        log: &mut bun_ast::Log,
+        _source: &bun_ast::Source,
+        _import_range: bun_ast::Range,
+        _caller: bun_ast::Expr,
+        _function_name: &[u8],
+    ) -> Result<bun_ast::Expr, bun_core::Error> {
+        log.add_error(
+            None,
+            bun_ast::Loc::EMPTY,
+            b"Macros are not supported in this Bao build",
+        );
+        Err(bun_core::err!("MacroNotSupported"))
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "Rust" fn __bun_macro_context_get_remap(
+        data: *mut c_void,
+        _path: &[u8],
+    ) -> Option<&'static bun_js_parser::Macro::MacroRemapEntry> {
+        if data.is_null() {
+            return None;
+        }
+        unreachable!("Bao macro bridge: remap lookup on a foreign MacroContext");
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "Rust" fn __bun_macro_collect_vm_garbage() {}
+
+    // ── bundler bytecode / HMR faces — owners: bao_bundler::bytecode /
+    // bao_bundler::hmr (@trace REQ-CLI-001), both Phase-1.
+
+    #[unsafe(no_mangle)]
+    extern "Rust" fn __bun_jsc_generate_cached_bytecode(
+        _format: bun_bundler::options_impl::Format,
+        _source: &[u8],
+        _source_provider_url: &bun_core::String,
+    ) -> Option<Box<[u8]>> {
+        // Phase 1: no SM bytecode cache. Return None so bundler emits source text.
+        None
+    }
+
+    #[unsafe(no_mangle)]
+    extern "Rust" fn __bun_jsc_enable_hot_module_reloading_for_bundler(
+        _bv2: core::ptr::NonNull<bun_bundler::BundleV2<'static>>,
+    ) {
+        // Phase 1: HMR not yet implemented for SM.
     }
 }

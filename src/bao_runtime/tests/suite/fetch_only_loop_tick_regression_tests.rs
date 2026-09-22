@@ -39,6 +39,15 @@ use std::time::{Duration, Instant};
 
 /// Locate the bao binary built in this workspace (debug preferred).
 fn find_bao_binary() -> PathBuf {
+    // BAO_TEST_BAO_BIN: explicit override for copied-binary environments
+    // (the suite exe can run from a test dir where the workspace target tree
+    // does not exist — e.g. the Windows test box).
+    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
+        let p = PathBuf::from(&p);
+        if p.is_file() {
+            return p;
+        }
+    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = manifest
         .parent()
@@ -46,8 +55,11 @@ fn find_bao_binary() -> PathBuf {
         .expect("workspace root")
         .join("target");
     for profile in ["debug", "release"] {
-        let candidate = target.join(profile).join("bao");
-        if candidate.exists() {
+        for name in ["bao", "bao.exe"] {
+            let candidate = target.join(profile).join(name);
+            if !candidate.exists() {
+                continue;
+            }
             // Staleness guard: the fetch-only tick chain lives in
             // fetch_async.rs (probe registration), node_http.rs (probe
             // consumption) and timers.rs (the has_http tick branch). A
@@ -69,7 +81,21 @@ fn find_bao_binary() -> PathBuf {
             return candidate;
         }
     }
-    panic!("bao binary not found under {:?} — build with `cargo build -p bao_bin`", target);
+    // Copied-binary environment fallback: deployed next to this suite exe.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in ["bao", "bao.exe"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    panic!(
+        "bao binary not found under {:?} — build with `cargo build -p bao_bin` (or point BAO_TEST_BAO_BIN at the binary under test)",
+        target
+    );
 }
 
 /// Bounded wait for the child, asserting it EXITS (the wedge's defining

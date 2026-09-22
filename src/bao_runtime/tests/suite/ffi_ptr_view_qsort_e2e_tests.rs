@@ -44,12 +44,23 @@ fn setup_ctx() -> JsContext {
 /// the ascending order including INT32_MIN/MAX spread.
 #[test]
 fn ffi_qsort_sorts_js_buffer_in_place_via_callback() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("ffi_ptr_view_qsort_e2e_tests::ffi_qsort_sorts_js_buffer_in_place_via_callback", ffi_qsort_sorts_js_buffer_in_place_via_callback_body);
+}
+
+fn ffi_qsort_sorts_js_buffer_in_place_via_callback_body() {
+
     let mut ctx = setup_ctx();
     let out = eval_string(
         &mut ctx,
         r#"
         var ffi = require('bun:ffi');
-        var lib = ffi.dlopen('libc.so.6', {
+        // Windows: msvcrt.dll carries qsort/memcpy/memcmp.
+        var CRT = (typeof process !== 'undefined' && (process.platform === 'win32' || process.platform === 'windows'))
+          ? 'msvcrt.dll' : 'libc.so.6';
+        var lib = ffi.dlopen(CRT, {
           qsort: { args: ['ptr', 'usize', 'usize', 'js_function'], returns: 'void' }
         });
 
@@ -136,12 +147,23 @@ fn ffi_qsort_sorts_js_buffer_in_place_via_callback() {
 /// the copy must be byte-exact through the views (binary bytes, not utf8).
 #[test]
 fn ffi_memcpy_two_view_ptrs_uint8array_and_arraybuffer() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("ffi_ptr_view_qsort_e2e_tests::ffi_memcpy_two_view_ptrs_uint8array_and_arraybuffer", ffi_memcpy_two_view_ptrs_uint8array_and_arraybuffer_body);
+}
+
+fn ffi_memcpy_two_view_ptrs_uint8array_and_arraybuffer_body() {
+
     let mut ctx = setup_ctx();
     let out = eval_string(
         &mut ctx,
         r#"
         var ffi = require('bun:ffi');
-        var lib = ffi.dlopen('libc.so.6', {
+        // Windows: msvcrt.dll carries qsort/memcpy/memcmp.
+        var CRT = (typeof process !== 'undefined' && (process.platform === 'win32' || process.platform === 'windows'))
+          ? 'msvcrt.dll' : 'libc.so.6';
+        var lib = ffi.dlopen(CRT, {
           memcpy: { args: ['ptr', 'ptr', 'usize'], returns: 'ptr' }
         });
         var payload = [0x00, 0x01, 0xfe, 0xff, 0x80, 0x7f, 0x41, 0x00, 0xc3, 0x9a];
@@ -172,12 +194,23 @@ fn ffi_memcpy_two_view_ptrs_uint8array_and_arraybuffer() {
 /// coverage lives in the memcmp leg below).
 #[test]
 fn ffi_ptr_arg_contract_rejects_non_view_object() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("ffi_ptr_view_qsort_e2e_tests::ffi_ptr_arg_contract_rejects_non_view_object", ffi_ptr_arg_contract_rejects_non_view_object_body);
+}
+
+fn ffi_ptr_arg_contract_rejects_non_view_object_body() {
+
     let mut ctx = setup_ctx();
     let out = eval_string(
         &mut ctx,
         r#"
         var ffi = require('bun:ffi');
-        var lib = ffi.dlopen('libc.so.6', {
+        // Windows: msvcrt.dll carries qsort/memcpy/memcmp.
+        var CRT = (typeof process !== 'undefined' && (process.platform === 'win32' || process.platform === 'windows'))
+          ? 'msvcrt.dll' : 'libc.so.6';
+        var lib = ffi.dlopen(CRT, {
           memcpy: { args: ['ptr', 'ptr', 'usize'], returns: 'ptr' }
         });
         var results = {};
@@ -225,12 +258,23 @@ fn ffi_ptr_arg_contract_rejects_non_view_object() {
 /// assert memcmp(view, view) equality signal and difference signal.
 #[test]
 fn ffi_memcmp_view_ptrs_ordering_signal() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("ffi_ptr_view_qsort_e2e_tests::ffi_memcmp_view_ptrs_ordering_signal", ffi_memcmp_view_ptrs_ordering_signal_body);
+}
+
+fn ffi_memcmp_view_ptrs_ordering_signal_body() {
+
     let mut ctx = setup_ctx();
     let out = eval_string(
         &mut ctx,
         r#"
         var ffi = require('bun:ffi');
-        var lib = ffi.dlopen('libc.so.6', {
+        // Windows: msvcrt.dll carries qsort/memcpy/memcmp.
+        var CRT = (typeof process !== 'undefined' && (process.platform === 'win32' || process.platform === 'windows'))
+          ? 'msvcrt.dll' : 'libc.so.6';
+        var lib = ffi.dlopen(CRT, {
           memcmp: { args: ['ptr', 'ptr', 'usize'], returns: 'i32' }
         });
         function buf3(x) {

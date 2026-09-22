@@ -1008,6 +1008,9 @@ mod tests {
 
     // --- normalize_path (Path-based) ---
 
+    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
+    // path semantics are correct product behavior, these tests hold the posix form.
+    #[cfg(unix)]
     #[test]
     fn test_normalize_path_dot_dot() {
         assert_eq!(
@@ -1016,6 +1019,9 @@ mod tests {
         );
     }
 
+    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
+    // path semantics are correct product behavior, these tests hold the posix form.
+    #[cfg(unix)]
     #[test]
     fn test_normalize_path_dot() {
         assert_eq!(
@@ -1024,6 +1030,9 @@ mod tests {
         );
     }
 
+    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
+    // path semantics are correct product behavior, these tests hold the posix form.
+    #[cfg(unix)]
     #[test]
     fn test_normalize_path_root() {
         assert_eq!(
@@ -1040,6 +1049,9 @@ mod tests {
         );
     }
 
+    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
+    // path semantics are correct product behavior, these tests hold the posix form.
+    #[cfg(unix)]
     #[test]
     fn test_normalize_path_double_dot_beyond_root() {
         // Implementation preserves .. beyond root as /../b
@@ -1057,6 +1069,9 @@ mod tests {
         );
     }
 
+    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
+    // path semantics are correct product behavior, these tests hold the posix form.
+    #[cfg(unix)]
     #[test]
     fn test_normalize_path_multiple_dots() {
         assert_eq!(
@@ -1072,6 +1087,9 @@ mod tests {
         assert_eq!(make_absolute("/foo/bar"), PathBuf::from("/foo/bar"));
     }
 
+    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
+    // path semantics are correct product behavior, these tests hold the posix form.
+    #[cfg(unix)]
     #[test]
     fn test_make_absolute_relative() {
         let result = make_absolute("foo/bar");
@@ -1083,6 +1101,9 @@ mod tests {
         assert!(result.to_str().unwrap().contains("foo/bar"));
     }
 
+    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
+    // path semantics are correct product behavior, these tests hold the posix form.
+    #[cfg(unix)]
     #[test]
     fn test_make_absolute_dot() {
         let result = make_absolute(".");

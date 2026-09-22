@@ -84,6 +84,14 @@ fn fresh_ctx() -> JsContext {
 /// used to SIGSEGV (empty stderr on success, empty stdout on failure).
 #[test]
 fn bun_dollar_template_array_and_escaping() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("bun_p0_face_tests::bun_dollar_template_array_and_escaping", bun_dollar_template_array_and_escaping_body);
+}
+
+fn bun_dollar_template_array_and_escaping_body() {
+
     let mut ctx = fresh_ctx();
 
     // Tagged template — canonical form; echo emits EMPTY stderr, the exact

@@ -73,6 +73,14 @@ fn drive_until(ctx: &mut JsContext, timeout: Duration, cond: impl Fn(&mut JsCont
 
 #[test]
 fn http_get_callback_form_real_roundtrip() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("p0_http_client_ws_tls_tests::http_get_callback_form_real_roundtrip", http_get_callback_form_real_roundtrip_body);
+}
+
+fn http_get_callback_form_real_roundtrip_body() {
+
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -123,6 +131,14 @@ fn http_get_callback_form_real_roundtrip() {
 
 #[test]
 fn http_request_clientrequest_face_fires_on_end() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("p0_http_client_ws_tls_tests::http_request_clientrequest_face_fires_on_end", http_request_clientrequest_face_fires_on_end_body);
+}
+
+fn http_request_clientrequest_face_fires_on_end_body() {
+
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();
@@ -179,6 +195,14 @@ fn http_request_clientrequest_face_fires_on_end() {
 
 #[test]
 fn node_http_ws_upgrade_answered_426_not_abort() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("p0_http_client_ws_tls_tests::node_http_ws_upgrade_answered_426_not_abort", node_http_ws_upgrade_answered_426_not_abort_body);
+}
+
+fn node_http_ws_upgrade_answered_426_not_abort_body() {
+
     bun_runtime::install_exit_handler();
     bun_core::output::init_test();
     bun_runtime::bun_api::init_process_start();

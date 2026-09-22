@@ -167,6 +167,16 @@ fn count_for(captured: &Captured, path: &str) -> usize {
 
 #[test]
 fn test_fetch_abort_signal_three_states() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("fetch_abort_e2e_tests::test_fetch_abort_signal_three_states", test_fetch_abort_signal_three_states_body);
+}
+
+fn test_fetch_abort_signal_three_states_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();

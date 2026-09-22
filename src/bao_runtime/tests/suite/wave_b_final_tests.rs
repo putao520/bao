@@ -247,15 +247,27 @@ fn test_sqlite_backup_returns_destination() {
 
 #[test]
 fn test_ffi_dlopen_symbols_face() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("wave_b_final_tests::test_ffi_dlopen_symbols_face", test_ffi_dlopen_symbols_face_body);
+}
+
+fn test_ffi_dlopen_symbols_face_body() {
+
     let mut ctx = setup_ctx();
     let out = eval_string(
         &mut ctx,
         r#"
         var { dlopen } = require('bun:ffi');
-        var lib = dlopen('/usr/lib/x86_64-linux-gnu/libc.so.6',
-                         { getpid: { args: [], returns: 'i32' } });
-        (typeof lib.symbols) + '|' + (lib.symbols.getpid === lib.getpid) + '|' +
-        (lib.symbols.getpid() === lib.getpid() && lib.getpid() > 0);
+        // Windows: msvcrt.dll exports _getpid (no POSIX getpid spelling).
+        var WIN = (typeof process !== 'undefined' && (process.platform === 'win32' || process.platform === 'windows'));
+        var CRT = WIN ? 'msvcrt.dll' : '/usr/lib/x86_64-linux-gnu/libc.so.6';
+        var PID = WIN ? '_getpid' : 'getpid';
+        var pidSym = function (n, d) { var o = {}; o[n] = d; return o; };
+        var lib = dlopen(CRT, pidSym(PID, { args: [], returns: 'i32' }));
+        (typeof lib.symbols) + '|' + (lib.symbols[PID] === lib[PID]) + '|' +
+        (lib.symbols[PID]() === lib[PID]() && lib[PID]() > 0);
     "#,
     );
     assert_eq!(out, "object|true|true", "symbols face must expose the same callables");
@@ -383,6 +395,14 @@ fn test_text_decoder_buffer_source() {
 
 #[test]
 fn test_ffi_callback_with_args_qsort_e2e() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("wave_b_final_tests::test_ffi_callback_with_args_qsort_e2e", test_ffi_callback_with_args_qsort_e2e_body);
+}
+
+fn test_ffi_callback_with_args_qsort_e2e_body() {
+
     let mut ctx = setup_ctx();
     // qsort(base, 2, 4, compar) over a REAL calloc'd region (glibc's merge
     // sort memcpy's from base, so the base must be mapped memory; freeing is
@@ -396,7 +416,10 @@ fn test_ffi_callback_with_args_qsort_e2e() {
         r#"
         var ffi = require('bun:ffi');
         var dlopen = ffi.dlopen, callback = ffi.callback, toBuffer = ffi.toBuffer;
-        var lib = dlopen('/usr/lib/x86_64-linux-gnu/libc.so.6', {
+        // Windows: same CRT surface lives in msvcrt.dll.
+        var CRT = (typeof process !== 'undefined' && (process.platform === 'win32' || process.platform === 'windows'))
+          ? 'msvcrt.dll' : '/usr/lib/x86_64-linux-gnu/libc.so.6';
+        var lib = dlopen(CRT, {
           calloc: { args: ['usize', 'usize'], returns: 'ptr' },
           qsort:  { args: ['ptr', 'usize', 'usize', 'js_function'], returns: 'void' }
         });

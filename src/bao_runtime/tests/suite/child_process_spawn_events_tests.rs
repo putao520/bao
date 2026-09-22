@@ -58,6 +58,14 @@ fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
 /// waitpid ran; /proc/<pid> disappearing proves the Z state never lingered).
 #[test]
 fn child_process_spawn_event_lifecycle() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("child_process_spawn_events_tests::child_process_spawn_event_lifecycle", child_process_spawn_event_lifecycle_body);
+}
+
+fn child_process_spawn_event_lifecycle_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
@@ -145,6 +153,14 @@ fn child_process_spawn_event_lifecycle() {
 /// exactly once; stderr 'data' reaches its stream; listener throw-isolation.
 #[test]
 fn child_process_spawn_once_stderr_and_throw_isolation() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("child_process_spawn_events_tests::child_process_spawn_once_stderr_and_throw_isolation", child_process_spawn_once_stderr_and_throw_isolation_body);
+}
+
+fn child_process_spawn_once_stderr_and_throw_isolation_body() {
+
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");

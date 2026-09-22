@@ -186,6 +186,14 @@ fn http_server_close_callback_throw_routed_and_close_event_still_fires() {
 
 #[test]
 fn http_upgrade_throw_routed_and_426_guard_fires() {
+    // Deadline isolation: this body crashes (AV/abort) on Windows —
+    // run it in a bounded child so the shared-process harness survives
+    // to report the failure (crash class).
+    crate::exit_isolation::dispatch_timeout("upstream_aeb1905d_port_tests::http_upgrade_throw_routed_and_426_guard_fires", http_upgrade_throw_routed_and_426_guard_fires_body);
+}
+
+fn http_upgrade_throw_routed_and_426_guard_fires_body() {
+
     use std::io::{Read, Write};
     use std::net::TcpStream;
 

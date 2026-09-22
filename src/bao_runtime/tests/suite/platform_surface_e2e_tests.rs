@@ -108,6 +108,16 @@ fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[test]
 fn test_platform_surface_e2e() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("platform_surface_e2e_tests::test_platform_surface_e2e", test_platform_surface_e2e_body);
+}
+
+fn test_platform_surface_e2e_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
@@ -436,21 +446,28 @@ fn test_platform_surface_e2e() {
         (function() {
             var ffi = require('bun:ffi');
             var out = [];
-            var libc = ffi.dlopen('libc.so.6', {
+            // Windows has no libc.so.6 — msvcrt.dll carries the same
+            // classic CRT surface; the strdup spelling there is _strdup
+            // (the descriptor table keys by the exported symbol name).
+            var WIN = (typeof process !== 'undefined' && (process.platform === 'win32' || process.platform === 'windows'));
+            var CRT = WIN ? 'msvcrt.dll' : 'libc.so.6';
+            var DUP = WIN ? '_strdup' : 'strdup';
+            var syms = {
                 atoi:   { args: [ffi.types.cstring], returns: ffi.types.i32 },
                 strlen: { args: [ffi.types.cstring], returns: ffi.types.usize },
-                strdup: { args: [ffi.types.cstring], returns: ffi.types.ptr },
-            });
+            };
+            syms[DUP] = { args: [ffi.types.cstring], returns: ffi.types.ptr };
+            var libc = ffi.dlopen(CRT, syms);
             out.push('atoi=' + libc.atoi('42'));
             out.push('strlen=' + libc.strlen('abc'));
-            var p = libc.strdup('hello-ffi');
+            var p = libc[DUP]('hello-ffi');
             out.push('dup-nonzero=' + (p > 0));
             var cs = new ffi.CString(p);
             out.push('cstring=' + cs.toString() + ',len=' + cs.length);
             var buf = ffi.toBuffer(p, 9);
             out.push('tobuffer=' + (buf[0] === 104 /* 'h' */) + ',' + (buf[8] === 105 /* 'i' */) + ',isbuf=' + (typeof buf.subarray === 'function'));
             // string-name type descriptors also accepted
-            var l2 = ffi.dlopen('libc.so.6', { abs: { args: ['i32'], returns: 'i32' } });
+            var l2 = ffi.dlopen(CRT, { abs: { args: ['i32'], returns: 'i32' } });
             out.push('abs=' + l2.abs(-7));
             // suffix table present (Bun parity)
             out.push('suffix=' + (ffi.suffix.so === '.so'));

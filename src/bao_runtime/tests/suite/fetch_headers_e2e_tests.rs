@@ -122,6 +122,16 @@ fn assert_contains(haystack: &str, needle: &str, ctx_msg: &str) {
 
 #[test]
 fn test_fetch_init_headers_reach_wire_all_forms() {
+    // Force-exit semantics preserved via self-re-exec isolation
+    // (exit_isolation.rs): the body's shutdown_for_exit +
+    // std::process::exit(0) is only legal in a process whose death IS
+    // the test's success exit — running it in-harness would kill the
+    // whole suite and park the shared HTTPThread for every later test.
+    crate::exit_isolation::dispatch("fetch_headers_e2e_tests::test_fetch_init_headers_reach_wire_all_forms", test_fetch_init_headers_reach_wire_all_forms_body);
+}
+
+fn test_fetch_init_headers_reach_wire_all_forms_body() {
+
     bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
