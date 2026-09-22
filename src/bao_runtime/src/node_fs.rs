@@ -2776,7 +2776,7 @@ unsafe extern "C" fn fs_chmod_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         fs::set_permissions(&path, fs::Permissions::from_mode(mode))
     };
     #[cfg(not(unix))]
-    let result = fs::set_permissions(&path, fs::Permissions::new());
+    let result = set_win_readonly(&path, mode as i32);
     match result {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
@@ -2962,6 +2962,8 @@ unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
     // options may be an object (position 1) or an encoding string; the
     // listener then sits at position 1 or 2 (Node: watch(filename[, options][, listener])).
     let mut persistent = true;
+    #[cfg(windows)]
+    let mut recursive = false;
     let mut listener_val = UndefinedValue();
     if _argc > 1 {
         let opt_val = *args.get(1).ptr;
@@ -2986,6 +2988,7 @@ unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
                     ptr: &mut recursive_v,
                 },
             );
+            #[cfg(not(windows))]
             if recursive_v.is_boolean() && recursive_v.to_boolean() {
                 JS_ReportErrorUTF8(
                     cx,
@@ -2993,6 +2996,9 @@ unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
                 );
                 return false;
             }
+            // windows: ReadDirectoryChangesW bWatchSubtree covers the whole
+            // subtree natively — recursive fs.watch takes the upstream
+            // windows semantics (FswDirWatch.recursive below).
             let mut persistent_v = UndefinedValue();
             JS_GetProperty(
                 cx,
@@ -3016,9 +3022,15 @@ unsafe extern "C" fn fs_watch(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
 
     let is_dir = Path::new(&path).metadata().map(|m| m.is_dir()).unwrap_or(false);
 
-    // Register a real inotify watch (kernel events — not polling).
+    // Register a real watch (kernel events — not polling).
+    #[cfg(not(windows))]
     let id = fsw_next_id();
+    #[cfg(windows)]
+    let id = fsw_next_id();
+    #[cfg(not(windows))]
     let wd = fsw_add_inotify_watch(&path);
+    #[cfg(windows)]
+    let wd = fsw_add_inotify_watch_ex(&path, recursive);
     match wd {
         ::std::result::Result::Ok(wd) => {
             fsw_register_watch(id, wd, path.clone(), is_dir, persistent);
@@ -3077,6 +3089,8 @@ unsafe extern "C" fn fs_watch_file(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
     // watchFile(filename[, options], listener): options at 1, listener at 1/2.
     let mut interval_ms: u64 = 5007; // Node default
     let mut persistent = true;
+    #[cfg(windows)]
+    let mut recursive = false;
     let mut listener_val = UndefinedValue();
     if _argc > 1 {
         let opt_val = *args.get(1).ptr;
@@ -3264,6 +3278,52 @@ unsafe extern "C" fn fs_unwatch_file(cx: *mut JSContext, _argc: u32, vp: *mut JS
 
 // ══════════════════════════════════════════════════════════════════════════
 // fs.watch / fs.watchFile backend (BCE: silent-fake eradication)
+
+/// windows chmod: node/libuv maps the mode's write bits to
+/// FILE_ATTRIBUTE_READONLY (every other permission bit has no storage there).
+#[cfg(windows)]
+fn set_win_readonly(path: &str, mode: i32) -> ::std::io::Result<()> {
+    use ::std::os::windows::ffi::OsStrExt;
+    const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn SetFileAttributesW(lpfilename: *const u16, dwfileattributes: u32) -> i32;
+    }
+    let wide: Vec<u16> = ::std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(::std::iter::once(0))
+        .collect();
+    let attrs = if mode & 0o222 == 0 {
+        FILE_ATTRIBUTE_READONLY
+    } else {
+        FILE_ATTRIBUTE_NORMAL
+    };
+    if unsafe { SetFileAttributesW(wide.as_ptr(), attrs) } != 0 {
+        Ok(())
+    } else {
+        Err(::std::io::Error::last_os_error())
+    }
+}
+
+// windows libc lacks the S_IF* family; carry the canonical POSIX values (the
+// windows stat face synthesizes these type bits onto st_mode).
+#[cfg(windows)]
+const S_IFMT: i32 = 0o170000;
+#[cfg(windows)]
+const S_IFREG: i32 = 0o100000;
+#[cfg(windows)]
+const S_IFDIR: i32 = 0o040000;
+#[cfg(windows)]
+const S_IFLNK: i32 = 0o120000;
+#[cfg(windows)]
+const S_IFCHR: i32 = 0o020000;
+#[cfg(windows)]
+const S_IFIFO: i32 = 0o010000;
+#[cfg(windows)]
+const S_IFBLK: i32 = 0o060000;
+#[cfg(windows)]
+const S_IFSOCK: i32 = 0o140000;
 //
 // Architecture (single-threaded JS model + one OS worker thread per JS thread):
 //   * fs.watch     → inotify (kernel events via bun_sys::linux — workspace
@@ -3281,6 +3341,99 @@ unsafe extern "C" fn fs_unwatch_file(cx: *mut JSContext, _argc: u32, vp: *mut JS
 //     process alive; persistent:false delivers events only while the loop is
 //     alive for other reasons).
 // ══════════════════════════════════════════════════════════════════════════
+
+/// Windows watch backend: ReadDirectoryChangesW over a per-directory handle
+/// with an OVERLAPPED read permanently pending; the worker drains completions
+/// (WaitForMultipleObjects on [wake event, dir events…] with the stat-poll
+/// deadline as timeout — bounded so late additions integrate fast). Event
+/// translation mirrors the inotify mapping: MODIFIED → "change",
+/// ADDED/REMOVED/RENAMED_* → "rename"; recursive watches use
+/// bWatchSubtree (native — node's recursive fs.watch works there).
+#[cfg(windows)]
+mod fsw_win {
+    use ::std::ffi::c_void;
+    pub type Handle = *mut c_void;
+    pub const FILE_LIST_DIRECTORY: u32 = 0x0001;
+    pub const FILE_SHARE_READ: u32 = 0x1;
+    pub const FILE_SHARE_WRITE: u32 = 0x2;
+    pub const FILE_SHARE_DELETE: u32 = 0x4;
+    pub const OPEN_EXISTING: u32 = 3;
+    pub const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    pub const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
+    pub const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x0000_0001;
+    pub const FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x0000_0002;
+    pub const FILE_NOTIFY_CHANGE_ATTRIBUTES: u32 = 0x0000_0004;
+    pub const FILE_NOTIFY_CHANGE_SIZE: u32 = 0x0000_0008;
+    pub const FILE_NOTIFY_CHANGE_LAST_WRITE: u32 = 0x0000_0010;
+    pub const FILE_ACTION_ADDED: u32 = 0x1;
+    pub const FILE_ACTION_REMOVED: u32 = 0x2;
+    pub const FILE_ACTION_MODIFIED: u32 = 0x3;
+    pub const FILE_ACTION_RENAMED_OLD_NAME: u32 = 0x4;
+    pub const FILE_ACTION_RENAMED_NEW_NAME: u32 = 0x5;
+    pub const INFINITE: u32 = 0xFFFF_FFFF;
+    pub const WAIT_OBJECT_0: u32 = 0;
+    pub const WAIT_TIMEOUT: u32 = 0x102;
+    pub const WAIT_FAILED: u32 = 0xFFFF_FFFF;
+
+    #[repr(C)]
+    pub struct Overlapped {
+        pub Internal: usize,
+        pub InternalHigh: usize,
+        pub Pointer: *mut c_void,
+        pub hEvent: Handle,
+    }
+    #[repr(C)]
+    pub struct FileNotifyInformation {
+        pub NextEntryOffset: u32,
+        pub Action: u32,
+        pub FileNameLength: u32,
+        pub FileName: [u16; 1],
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn CreateEventW(
+            lpeventattributes: *mut c_void,
+            bmanualreset: i32,
+            binitialstate: i32,
+            lpname: *const u16,
+        ) -> Handle;
+        pub safe fn SetEvent(hevent: Handle) -> i32;
+        pub safe fn CloseHandle(hobject: Handle) -> i32;
+        pub safe fn CreateFileW(
+            lpfilename: *const u16,
+            dwdesiredaccess: u32,
+            dwsharemode: u32,
+            lpsecurityattributes: *mut c_void,
+            dwcreationdisposition: u32,
+            dwflagsandattributes: u32,
+            htemplatefile: Handle,
+        ) -> Handle;
+        pub safe fn ReadDirectoryChangesW(
+            hdirectory: Handle,
+            lpbuffer: *mut c_void,
+            nbufferlength: u32,
+            bwatchsubtree: i32,
+            dwnotifyfilter: u32,
+            lpbytesreturned: *mut u32,
+            lpoverlapped: *mut Overlapped,
+            lpcompletionroutine: *mut c_void,
+        ) -> i32;
+        pub safe fn GetOverlappedResult(
+            hfile: Handle,
+            lpoverlapped: *const Overlapped,
+            lpnumberofbytestransferred: *mut u32,
+            bwait: i32,
+        ) -> i32;
+        pub safe fn CancelIo(hfile: Handle);
+        pub safe fn WaitForMultipleObjects(
+            ncount: u32,
+            lphandles: *const Handle,
+            bwaitall: i32,
+            dwmilliseconds: u32,
+        ) -> u32;
+    }
+}
 
 /// Plain-data event marshalled worker → JS thread. No JS types cross threads.
 enum PendingFsEvent {
@@ -3352,6 +3505,9 @@ struct FswPollEntry {
 
 thread_local! {
     static FSW_NEXT_ID: Cell<u64> = const { Cell::new(1) };
+    /// windows synthetic wd allocator (inotify has no wd there).
+    #[cfg(windows)]
+    static FSW_NEXT_WD: Cell<i32> = const { Cell::new(1) };
     static FSW_WATCHERS: RefCell<Vec<FswWatchEntry>> = const { RefCell::new(Vec::new()) };
     static FSW_POLLERS: RefCell<Vec<FswPollEntry>> = const { RefCell::new(Vec::new()) };
     /// Hub: worker thread + shared queues + inotify/wake fds. Materialized on
@@ -3359,6 +3515,8 @@ thread_local! {
     static FSW_HUB: RefCell<Option<FswHub>> = const { RefCell::new(None) };
 }
 
+/// posix hub: inotify fd + wake pipe write end.
+#[cfg(not(windows))]
 struct FswHub {
     shared: Arc<Mutex<FswShared>>,
     inotify_fd: i32,
@@ -3366,6 +3524,48 @@ struct FswHub {
     handle: Option<::std::thread::JoinHandle<()>>,
 }
 
+/// windows hub: per-dir watches + wake event + worker thread.
+#[cfg(windows)]
+struct FswHub {
+    shared: Arc<Mutex<FswShared>>,
+    /// one entry per fs.watch directory (ReadDirectoryChangesW state).
+    watches: Arc<Mutex<Vec<FswDirWatch>>>,
+    /// auto-reset event: shutdown signal + prompt command pickup.
+    wake_event: fsw_win::Handle,
+    handle: Option<::std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+struct FswDirWatch {
+    wd: i32,
+    path: PathBuf,
+    recursive: bool,
+    handle: fsw_win::Handle,
+    event: fsw_win::Handle,
+    overlapped: Box<fsw_win::Overlapped>,
+    buffer: Box<[u8; 64 * 1024]>,
+}
+
+// SAFETY: the raw pointers are owned machine-word HANDLEs plus the
+// exclusively-owned buffer/overlapped boxes — none reference thread-local
+// state, and the worker only ever touches entries through the table mutex.
+#[cfg(windows)]
+unsafe impl Send for FswDirWatch {}
+
+#[cfg(windows)]
+impl Drop for FswDirWatch {
+    fn drop(&mut self) {
+        // Cancel the pending overlapped read BEFORE closing the event/handle
+        // so no completion can write into the freed buffer.
+        unsafe {
+            fsw_win::CancelIo(self.handle);
+            fsw_win::CloseHandle(self.event);
+            fsw_win::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
 impl Drop for FswHub {
     fn drop(&mut self) {
         // Best-effort synchronous teardown: signal shutdown, join the worker
@@ -3386,6 +3586,23 @@ impl Drop for FswHub {
     }
 }
 
+#[cfg(windows)]
+impl Drop for FswHub {
+    fn drop(&mut self) {
+        // Signal shutdown (the auto-reset wake event makes the worker's wait
+        // return immediately), then join; watches drop via the table Arc.
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.commands.push_back(FswCommand::Shutdown);
+        }
+        unsafe { fsw_win::SetEvent(self.wake_event) };
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        unsafe { fsw_win::CloseHandle(self.wake_event) };
+    }
+}
+
+#[cfg(not(windows))]
 fn fsw_write_wake(fd: i32) {
     if fd < 0 {
         return;
@@ -3396,6 +3613,12 @@ fn fsw_write_wake(fd: i32) {
     unsafe {
         let _ = libc::write(fd, byte.as_ptr() as *const ::std::ffi::c_void, 1);
     }
+}
+
+/// windows: wake via the auto-reset event (no pipe exists).
+#[cfg(windows)]
+fn fsw_write_wake_event(event: fsw_win::Handle) {
+    unsafe { fsw_win::SetEvent(event) };
 }
 
 fn fsw_next_id() -> u64 {
@@ -3425,10 +3648,15 @@ fn fsw_stat_path(path: &str) -> ::std::option::Option<libc::stat> {
 }
 
 fn fsw_stat_changed(a: &libc::stat, b: &libc::stat) -> bool {
+    // windows CRT stat carries whole-second times only.
+    #[cfg(windows)]
+    let (a_nsec, b_nsec): (i32, i32) = (0, 0);
+    #[cfg(not(windows))]
+    let (a_nsec, b_nsec) = (a.st_mtime_nsec, b.st_mtime_nsec);
     // Node/libuv uv_fs_poll change predicate: size, mtime (ns), ino, mode.
     a.st_size != b.st_size
         || a.st_mtime != b.st_mtime
-        || a.st_mtime_nsec != b.st_mtime_nsec
+        || a_nsec != b_nsec
         || a.st_ino != b.st_ino
         || a.st_mode != b.st_mode
 }
@@ -3438,6 +3666,7 @@ fn fsw_canonicalize(path: &str) -> PathBuf {
 }
 
 /// Materialize the hub (worker thread + inotify fd + wake pipe) if absent.
+#[cfg(not(windows))]
 fn fsw_ensure_hub() -> bool {
     FSW_HUB.with(|h| {
         if h.borrow().is_some() {
@@ -3483,7 +3712,268 @@ fn fsw_ensure_hub() -> bool {
     })
 }
 
+/// windows hub bootstrap: wake event + worker thread. Watches register
+/// directly into the shared table (JS thread issues the directory reads).
+#[cfg(windows)]
+fn fsw_ensure_hub() -> bool {
+    FSW_HUB.with(|h| {
+        if h.borrow().is_some() {
+            return true;
+        }
+        let shared = Arc::new(Mutex::new(FswShared::new()));
+        let worker_shared = Arc::clone(&shared);
+        let watches = Arc::new(Mutex::new(Vec::new()));
+        let worker_watches = Arc::clone(&watches);
+        unsafe {
+            // auto-reset event: one SetEvent releases exactly one wait.
+            let wake_event = fsw_win::CreateEventW(
+                ::std::ptr::null_mut(),
+                0,
+                0,
+                ::std::ptr::null(),
+            );
+            if wake_event.is_null() {
+                return false;
+            }
+            let wake = SendHandle(wake_event);
+            let spawned = ::std::thread::Builder::new()
+                .name("bao-fswatch".to_string())
+                .stack_size(128 * 1024)
+                .spawn(move || {
+                    fsw_worker_main_windows(worker_shared, worker_watches, wake)
+                });
+            match spawned {
+                Ok(handle) => {
+                    *h.borrow_mut() = Some(FswHub {
+                        shared,
+                        watches,
+                        wake_event,
+                        handle: Some(handle),
+                    });
+                    true
+                }
+                Err(_) => {
+                    fsw_win::CloseHandle(wake_event);
+                    false
+                }
+            }
+        }
+    })
+}
+
+/// Worker thread (windows): wait on [wake, dir events…] with the stat-poll
+/// deadline as timeout; drain completed ReadDirectoryChangesW reads → queue;
+/// never touches JS.
+/// HANDLE is a process-wide machine word — safe to move across threads.
+#[cfg(windows)]
+struct SendHandle(fsw_win::Handle);
+#[cfg(windows)]
+unsafe impl Send for SendHandle {}
+
+#[cfg(windows)]
+fn fsw_worker_main_windows(
+    shared: Arc<Mutex<FswShared>>,
+    watches: Arc<Mutex<Vec<FswDirWatch>>>,
+    wake: SendHandle,
+) {
+    let wake_event = wake.0;
+    struct PollSpec {
+        id: u64,
+        path: PathBuf,
+        interval_ms: u64,
+        last: libc::stat,
+        next_due_ms: u128,
+    }
+    let mut polls: Vec<PollSpec> = Vec::new();
+
+    loop {
+        // Commands (poll adds/removals + shutdown) under a short lock.
+        {
+            let mut commands: VecDeque<FswCommand> = VecDeque::new();
+            let mut shutdown = false;
+            if let Ok(mut guard) = shared.lock() {
+                ::std::mem::swap(&mut commands, &mut guard.commands);
+                shutdown = commands.iter().any(|c| matches!(c, FswCommand::Shutdown));
+                if shutdown {
+                    guard.commands.clear();
+                }
+            }
+            if shutdown {
+                break;
+            }
+            for cmd in commands {
+                match cmd {
+                    FswCommand::AddPoll { id, path, interval_ms, baseline } => {
+                        polls.retain(|p| p.id != id);
+                        polls.push(PollSpec {
+                            id,
+                            path,
+                            interval_ms,
+                            last: baseline,
+                            next_due_ms: monotonic_ms().saturating_add(interval_ms as u128),
+                        });
+                    }
+                    FswCommand::RemovePoll { id } => polls.retain(|p| p.id != id),
+                    FswCommand::Shutdown => unreachable!("handled above"),
+                }
+            }
+        }
+
+        // Timeout: soonest poll deadline, bounded (≤250ms) so newly added
+        // directory watches join the wait set promptly.
+        let now = monotonic_ms();
+        let timeout_ms: i64 = polls
+            .iter()
+            .map(|p| p.next_due_ms.saturating_sub(now) as i64)
+            .min()
+            .map(|d| d.min(250))
+            .unwrap_or(250);
+        let timeout_i32: u32 = timeout_ms.clamp(0, i32::MAX as i64) as u32;
+
+        // Wait set: [wake, dir events…] (snapshot under the table lock).
+        let rc = {
+            let guard = watches.lock().unwrap_or_else(|e| e.into_inner());
+            let mut handles: Vec<fsw_win::Handle> = Vec::with_capacity(1 + guard.len());
+            handles.push(wake_event);
+            for w in guard.iter() {
+                handles.push(w.event);
+            }
+            // SAFETY: handles live in the table (guard held for the call).
+            unsafe {
+                fsw_win::WaitForMultipleObjects(
+                    handles.len() as u32,
+                    handles.as_ptr(),
+                    0,
+                    timeout_i32,
+                )
+            }
+        };
+
+        // Drain wake + completed directory reads → queue.
+        let _ = rc == fsw_win::WAIT_OBJECT_0 || rc == fsw_win::WAIT_TIMEOUT;
+        {
+            let mut guard = watches.lock().unwrap_or_else(|e| e.into_inner());
+            for w in guard.iter_mut() {
+                let mut transferred: u32 = 0;
+                // bWait = FALSE: only harvest an already-completed read.
+                let done = unsafe {
+                    fsw_win::GetOverlappedResult(
+                        w.handle,
+                        &*w.overlapped,
+                        &mut transferred,
+                        0,
+                    )
+                };
+                if done != 0 && transferred > 0 {
+                    // Parse the FILE_NOTIFY_INFORMATION chain → node events.
+                    let mut off: usize = 0;
+                    let buf: &[u8] = &w.buffer[..transferred as usize];
+                    while off + ::std::mem::size_of::<fsw_win::FileNotifyInformation>()
+                        <= buf.len()
+                    {
+                        // SAFETY: the kernel guarantees the aligned entry
+                        // chain inside a completed buffer.
+                        let info = unsafe {
+                            &*(buf[off..].as_ptr() as *const fsw_win::FileNotifyInformation)
+                        };
+                        let name_len =
+                            (info.FileNameLength as usize) / ::std::mem::size_of::<u16>();
+                        let name_ptr =
+                            (buf[off..].as_ptr() as *const u16)
+                                .wrapping_add(::std::mem::size_of::<fsw_win::FileNotifyInformation>()
+                                    / ::std::mem::size_of::<u16>());
+                        // SAFETY: name_ptr spans name_len UTF-16 code units of
+                        // the completed kernel buffer (kernel ABI guarantee).
+                        let name_slice =
+                            unsafe { ::std::slice::from_raw_parts(name_ptr, name_len) };
+                        let name =
+                            String::from_utf16_lossy(name_slice);
+                        let event_type = match info.Action {
+                            fsw_win::FILE_ACTION_MODIFIED => "change",
+                            _ => {
+                                // ADDED / REMOVED / RENAMED_* → rename (Node).
+                                "rename"
+                            }
+                        };
+                        if let Ok(mut qg) = shared.lock() {
+                            let ids: Vec<u64> =
+                                qg.wd_map.get(&w.wd).cloned().unwrap_or_default();
+                            for id in ids {
+                                qg.queue.push_back(PendingFsEvent::Inotify {
+                                    id,
+                                    event_type,
+                                    filename: Some(name.clone()),
+                                });
+                            }
+                        }
+                        if info.NextEntryOffset == 0 {
+                            break;
+                        }
+                        off += info.NextEntryOffset as usize;
+                    }
+                }
+                if done != 0 {
+                    // Re-issue the directory read for the next batch.
+                    use ::std::os::windows::ffi::OsStrExt;
+                    unsafe {
+                        let _wide: Vec<u16> = ::std::ffi::OsStr::new(&w.path)
+                            .encode_wide()
+                            .chain(::std::iter::once(0))
+                            .collect();
+                        fsw_win::ReadDirectoryChangesW(
+                            w.handle,
+                            (*w.buffer).as_mut_ptr().cast(),
+                            w.buffer.len() as u32,
+                            w.recursive as i32,
+                            fsw_win::FILE_NOTIFY_CHANGE_FILE_NAME
+                                | fsw_win::FILE_NOTIFY_CHANGE_DIR_NAME
+                                | fsw_win::FILE_NOTIFY_CHANGE_ATTRIBUTES
+                                | fsw_win::FILE_NOTIFY_CHANGE_SIZE
+                                | fsw_win::FILE_NOTIFY_CHANGE_LAST_WRITE,
+                            ::std::ptr::null_mut(),
+                            &mut *w.overlapped,
+                            ::std::ptr::null_mut(),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Due stat polls (same predicate as the posix arm).
+        let now = monotonic_ms();
+        let mut due: Vec<usize> = Vec::new();
+        for (i, p) in polls.iter().enumerate() {
+            if p.next_due_ms <= now {
+                due.push(i);
+            }
+        }
+        for i in due {
+            let Some(spec) = polls.get_mut(i) else { continue };
+            spec.next_due_ms = now + spec.interval_ms as u128;
+            let curr = match fsw_stat_path(&spec.path.to_string_lossy()) {
+                Some(st) => st,
+                None => fsw_zero_stat(),
+            };
+            if fsw_stat_changed(&spec.last, &curr) {
+                let prev = spec.last;
+                spec.last = curr;
+                if let Ok(mut guard) = shared.lock() {
+                    guard.queue.push_back(PendingFsEvent::StatChange {
+                        id: spec.id,
+                        prev,
+                        curr,
+                    });
+                }
+            } else {
+                spec.last = curr;
+            }
+        }
+    }
+    // Worker exit: the wake event is hub-owned; nothing to close here.
+}
+
 /// Worker thread: poll [inotify, wake] + stat-poll loop. Never touches JS.
+#[cfg(not(windows))]
 fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) {
     struct PollSpec {
         id: u64,
@@ -3669,6 +4159,107 @@ fn monotonic_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// windows arm: open the directory handle + issue the first overlapped
+/// ReadDirectoryChangesW + allocate the synthetic wd.
+#[cfg(windows)]
+fn fsw_add_inotify_watch(path: &str) -> ::std::result::Result<i32, ::std::io::Error> {
+    fsw_add_inotify_watch_ex(path, false)
+}
+
+#[cfg(windows)]
+fn fsw_add_inotify_watch_ex(
+    path: &str,
+    recursive: bool,
+) -> ::std::result::Result<i32, ::std::io::Error> {
+    use ::std::os::windows::ffi::OsStrExt;
+    if !fsw_ensure_hub() {
+        return ::std::result::Result::Err(::std::io::Error::other(
+            "fs.watch: failed to start the watcher thread",
+        ));
+    }
+    let wide: Vec<u16> = ::std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(::std::iter::once(0))
+        .collect();
+    // SAFETY: wide is NUL-terminated; the returned handle is owned by the
+    // FswDirWatch entry inserted below.
+    let handle = unsafe {
+        fsw_win::CreateFileW(
+            wide.as_ptr(),
+            fsw_win::FILE_LIST_DIRECTORY,
+            fsw_win::FILE_SHARE_READ | fsw_win::FILE_SHARE_WRITE | fsw_win::FILE_SHARE_DELETE,
+            ::std::ptr::null_mut(),
+            fsw_win::OPEN_EXISTING,
+            fsw_win::FILE_FLAG_BACKUP_SEMANTICS | fsw_win::FILE_FLAG_OVERLAPPED,
+            ::std::ptr::null_mut(),
+        )
+    };
+    if handle.is_null() || handle == ::bun_windows_sys::INVALID_HANDLE_VALUE {
+        return ::std::result::Result::Err(::std::io::Error::last_os_error());
+    }
+    let event = unsafe {
+        fsw_win::CreateEventW(::std::ptr::null_mut(), 0, 0, ::std::ptr::null())
+    };
+    if event.is_null() {
+        unsafe { fsw_win::CloseHandle(handle) };
+        return ::std::result::Result::Err(::std::io::Error::last_os_error());
+    }
+    let mut overlapped: Box<fsw_win::Overlapped> =
+        Box::new(unsafe { ::std::mem::zeroed() });
+    overlapped.hEvent = event;
+    let mut buffer: Box<[u8; 64 * 1024]> = Box::new([0u8; 64 * 1024]);
+
+    let wd = FSW_NEXT_WD.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v as i32
+    });
+
+    FSW_HUB.with(|h| {
+        if let Some(hub) = h.borrow().as_ref() {
+            // SAFETY: buffer/overlapped live in the table entry for the life
+            // of the watch (CancelIo runs before their Drop — see FswDirWatch).
+            let rc = unsafe {
+                fsw_win::ReadDirectoryChangesW(
+                    handle,
+                    (*buffer).as_mut_ptr().cast(),
+                    buffer.len() as u32,
+                    0,
+                    fsw_win::FILE_NOTIFY_CHANGE_FILE_NAME
+                        | fsw_win::FILE_NOTIFY_CHANGE_DIR_NAME
+                        | fsw_win::FILE_NOTIFY_CHANGE_ATTRIBUTES
+                        | fsw_win::FILE_NOTIFY_CHANGE_SIZE
+                        | fsw_win::FILE_NOTIFY_CHANGE_LAST_WRITE,
+                    ::std::ptr::null_mut(),
+                    &mut *overlapped,
+                    ::std::ptr::null_mut(),
+                )
+            };
+            if rc == 0 {
+                let e = ::std::io::Error::last_os_error();
+                unsafe {
+                    fsw_win::CloseHandle(event);
+                    fsw_win::CloseHandle(handle);
+                }
+                return ::std::result::Result::Err(e);
+            }
+            if let Ok(mut table) = hub.watches.lock() {
+                table.push(FswDirWatch {
+                    wd,
+                    path: PathBuf::from(path),
+                    recursive,
+                    handle,
+                    event,
+                    overlapped,
+                    buffer,
+                });
+            }
+        }
+        ::std::result::Result::Ok(wd)
+    })
+}
+
+#[cfg(not(windows))]
 fn fsw_add_inotify_watch(path: &str) -> ::std::result::Result<i32, ::std::io::Error> {
     if !fsw_ensure_hub() {
         return ::std::result::Result::Err(::std::io::Error::other(
@@ -3746,10 +4337,20 @@ fn fsw_register_poll(id: u64, path: String, interval_ms: u64, baseline: libc::st
     fsw_wake_worker();
 }
 
+#[cfg(not(windows))]
 fn fsw_wake_worker() {
     FSW_HUB.with(|h| {
         if let Some(hub) = h.borrow().as_ref() {
             fsw_write_wake(hub.wake_w);
+        }
+    });
+}
+
+#[cfg(windows)]
+fn fsw_wake_worker() {
+    FSW_HUB.with(|h| {
+        if let Some(hub) = h.borrow().as_ref() {
+            fsw_write_wake_event(hub.wake_event);
         }
     });
 }
@@ -3779,9 +4380,12 @@ unsafe fn fsw_close_entry(cx: *mut JSContext, id: u64) {
                         guard.wd_map.remove(&entry.wd);
                     }
                 }
+                #[cfg(not(windows))]
                 if last_on_wd {
                     unsafe { libc::inotify_rm_watch(hub.inotify_fd, entry.wd) };
                 }
+                // windows: dropping the FswDirWatch (table removal on last
+                // ref) runs CancelIo + closes handle/event — see Drop impl.
             }
         });
     }
@@ -4349,9 +4953,7 @@ unsafe extern "C" fn fs_chmod(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     .map(|_| FsAsyncResult::OkVoid)
             }
             #[cfg(not(unix))]
-            {
-                fs::set_permissions(&path, fs::Permissions::new()).map(|_| FsAsyncResult::OkVoid)
-            }
+            set_win_readonly(&path, mode as i32).map(|_| FsAsyncResult::OkVoid)
         });
         args.rval().set(UndefinedValue());
         return true;
@@ -4363,7 +4965,7 @@ unsafe extern "C" fn fs_chmod(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         fs::set_permissions(&path, fs::Permissions::from_mode(mode))
     };
     #[cfg(not(unix))]
-    let result = { fs::set_permissions(&path, fs::Permissions::new()) };
+    let result = set_win_readonly(&path, mode as i32);
     match result {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
@@ -5324,8 +5926,49 @@ fn mkdtemp_inner(prefix: &str) -> ::std::io::Result<String> {
             "prefix contains null byte",
         )
     })?;
-    let c_ptr = c_template.into_raw();
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut c_ptr = c_template.into_raw();
+    #[cfg(unix)]
     let result = unsafe { libc::mkdtemp(c_ptr) };
+    #[cfg(windows)]
+    // windows: CRT has no mkdtemp — create the directory at the templated
+    // path directly. The X…X tail is replaced with sub-second randomness +
+    // the pid; create_dir fails loudly on collision (retry ×8). Ownership:
+    // on success the template buffer is reclaimed and a fresh owned CString
+    // carries the created path; on failure null comes back and the outer
+    // null arm reclaims the template.
+    let result = {
+        let template_path = unsafe { ::std::ffi::CStr::from_ptr(c_ptr) }
+            .to_string_lossy()
+            .to_string();
+        let mut made: Option<String> = None;
+        for _ in 0..8 {
+            let tail = {
+                use ::std::time::{SystemTime, UNIX_EPOCH};
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or(0);
+                format!("{:06x}", nanos ^ (::std::process::id() << 8))
+            };
+            let candidate = template_path.replacen("XXXXXX", &tail, 1);
+            match ::std::fs::create_dir(&candidate) {
+                Ok(()) => {
+                    made = Some(candidate);
+                    break;
+                }
+                Err(e) if e.kind() == ::std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => break,
+            }
+        }
+        match made {
+            Some(dir) => unsafe {
+                let _ = ::std::ffi::CString::from_raw(c_ptr);
+                ::std::ffi::CString::new(dir).unwrap().into_raw()
+            },
+            None => ::std::ptr::null_mut(),
+        }
+    };
     if result.is_null() {
         let e = ::std::io::Error::last_os_error();
         unsafe {
@@ -6569,7 +7212,7 @@ unsafe extern "C" fn fs_promises_chmod(cx: *mut JSContext, argc: u32, vp: *mut J
         fs::set_permissions(&path, fs::Permissions::from_mode(mode))
     };
     #[cfg(not(unix))]
-    let result = fs::set_permissions(&path, fs::Permissions::new());
+    let result = set_win_readonly(&path, mode as i32);
     match result {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
@@ -8875,14 +9518,30 @@ unsafe fn create_stats_object(cx: *mut JSContext, meta: &bun_fs::PosixStat) -> *
     }
 
     // Determine file type from mode (S_IFMT bits)
+    #[cfg(windows)]
+    let mode_type = (meta.mode as u32) & (S_IFMT as u32);
+    #[cfg(not(windows))]
     let mode_type = (meta.mode as u32) & libc::S_IFMT;
-    let is_file = mode_type == libc::S_IFREG;
-    let is_dir = mode_type == libc::S_IFDIR;
-    let is_symlink = mode_type == libc::S_IFLNK;
-    let is_block_device = mode_type == libc::S_IFBLK;
-    let is_character_device = mode_type == libc::S_IFCHR;
-    let is_fifo = mode_type == libc::S_IFIFO;
-    let is_socket = mode_type == libc::S_IFSOCK;
+    #[cfg(windows)]
+    let (is_file, is_dir, is_symlink, is_block_device, is_character_device, is_fifo, is_socket) = (
+        mode_type == S_IFREG as u32,
+        mode_type == S_IFDIR as u32,
+        mode_type == S_IFLNK as u32,
+        mode_type == S_IFBLK as u32,
+        mode_type == S_IFCHR as u32,
+        mode_type == S_IFIFO as u32,
+        mode_type == S_IFSOCK as u32,
+    );
+    #[cfg(not(windows))]
+    let (is_file, is_dir, is_symlink, is_block_device, is_character_device, is_fifo, is_socket) = (
+        mode_type == libc::S_IFREG,
+        mode_type == libc::S_IFDIR,
+        mode_type == libc::S_IFLNK,
+        mode_type == libc::S_IFBLK,
+        mode_type == libc::S_IFCHR,
+        mode_type == libc::S_IFIFO,
+        mode_type == libc::S_IFSOCK,
+    );
 
     let atime_ms = meta.atim.sec as f64 * 1000.0 + meta.atim.nsec as f64 / 1_000_000.0;
     let mtime_ms = meta.mtim.sec as f64 * 1000.0 + meta.mtim.nsec as f64 / 1_000_000.0;
@@ -9299,18 +9958,48 @@ unsafe fn build_stats_object(cx: *mut JSContext, st: &libc::stat) -> *mut JSObje
         return stats.get();
     }
 
-    let mode_type = st.st_mode & libc::S_IFMT;
-    let is_file = mode_type == libc::S_IFREG;
-    let is_dir = mode_type == libc::S_IFDIR;
-    let is_symlink = mode_type == libc::S_IFLNK;
-    let is_block_device = mode_type == libc::S_IFBLK;
-    let is_character_device = mode_type == libc::S_IFCHR;
-    let is_fifo = mode_type == libc::S_IFIFO;
-    let is_socket = mode_type == libc::S_IFSOCK;
+    #[cfg(windows)]
+    let mode_type = (st.st_mode as u32) & (S_IFMT as u32);
+    #[cfg(not(windows))]
+    let mode_type = (st.st_mode as u32) & libc::S_IFMT;
+    #[cfg(windows)]
+    let is_file = mode_type == S_IFREG as u32;
+    #[cfg(not(windows))]
+    let is_file = mode_type == libc::S_IFREG as u32;
+    #[cfg(windows)]
+    let is_dir = mode_type == S_IFDIR as u32;
+    #[cfg(not(windows))]
+    let is_dir = mode_type == libc::S_IFDIR as u32;
+    #[cfg(windows)]
+    let is_symlink = mode_type == S_IFLNK as u32;
+    #[cfg(not(windows))]
+    let is_symlink = mode_type == libc::S_IFLNK as u32;
+    #[cfg(windows)]
+    let is_block_device = mode_type == S_IFBLK as u32;
+    #[cfg(not(windows))]
+    let is_block_device = mode_type == libc::S_IFBLK as u32;
+    #[cfg(windows)]
+    let is_character_device = mode_type == S_IFCHR as u32;
+    #[cfg(not(windows))]
+    let is_character_device = mode_type == libc::S_IFCHR as u32;
+    #[cfg(windows)]
+    let is_fifo = mode_type == S_IFIFO as u32;
+    #[cfg(not(windows))]
+    let is_fifo = mode_type == libc::S_IFIFO as u32;
+    #[cfg(windows)]
+    let is_socket = mode_type == S_IFSOCK as u32;
+    #[cfg(not(windows))]
+    let is_socket = mode_type == libc::S_IFSOCK as u32;
 
-    let atime_ms = st.st_atime as f64 * 1000.0 + st.st_atime_nsec as f64 / 1_000_000.0;
-    let mtime_ms = st.st_mtime as f64 * 1000.0 + st.st_mtime_nsec as f64 / 1_000_000.0;
-    let ctime_ms = st.st_ctime as f64 * 1000.0 + st.st_ctime_nsec as f64 / 1_000_000.0;
+    // windows CRT stat carries whole-second times (no nsec companions).
+    #[cfg(windows)]
+    let (atime_nsec, mtime_nsec, ctime_nsec): (i32, i32, i32) = (0, 0, 0);
+    #[cfg(not(windows))]
+    let (atime_nsec, mtime_nsec, ctime_nsec) =
+        (st.st_atime_nsec, st.st_mtime_nsec, st.st_ctime_nsec);
+    let atime_ms = st.st_atime as f64 * 1000.0 + atime_nsec as f64 / 1_000_000.0;
+    let mtime_ms = st.st_mtime as f64 * 1000.0 + mtime_nsec as f64 / 1_000_000.0;
+    let ctime_ms = st.st_ctime as f64 * 1000.0 + ctime_nsec as f64 / 1_000_000.0;
     let birthtime_ms = ctime_ms; // Linux fallback
 
     define_num_prop(cx, stats.get(), "size", st.st_size as f64);
@@ -9321,8 +10010,13 @@ unsafe fn build_stats_object(cx: *mut JSContext, st: &libc::stat) -> *mut JSObje
     define_num_prop(cx, stats.get(), "uid", st.st_uid as f64);
     define_num_prop(cx, stats.get(), "gid", st.st_gid as f64);
     define_num_prop(cx, stats.get(), "rdev", st.st_rdev as f64);
-    define_num_prop(cx, stats.get(), "blksize", st.st_blksize as f64);
-    define_num_prop(cx, stats.get(), "blocks", st.st_blocks as f64);
+    // windows CRT stat has no blksize/blocks — node reports 4096/0 there.
+    #[cfg(windows)]
+    let (blksize, blocks): (f64, f64) = (4096.0, 0.0);
+    #[cfg(not(windows))]
+    let (blksize, blocks) = (st.st_blksize as f64, st.st_blocks as f64);
+    define_num_prop(cx, stats.get(), "blksize", blksize);
+    define_num_prop(cx, stats.get(), "blocks", blocks);
     define_num_prop(cx, stats.get(), "atimeMs", atime_ms);
     define_num_prop(cx, stats.get(), "mtimeMs", mtime_ms);
     define_num_prop(cx, stats.get(), "ctimeMs", ctime_ms);
