@@ -2059,3 +2059,7 @@ GetAddrInfoW 管线:平台 addrinfo 布局别名(windows=ADDRINFOA 镜像,produc
 ### W2 尾·组 2 DONE(8a57baa7,2026-09-22)
 
 dns/constants/os 132→0(GetAddrInfoW 管线+EAI 全表 ws2tcpip 值/constants 上游"平台所定义"语义/GetAdaptersAddresses 前缀镜像等;三文件头部上游对照注记)。linux 面逐字节不变。**协调 A(热修已令 ew4)**:node_net.rs:41 `use socklen_t;` HEAD linux 断(E0432,pure 复现)。**协调 B**:msvc 面 mozjs 依赖墙 env 组合(/opt wsroot+WINSYSROOT 单源+HOST_CC/HOST_CXX+cl shim)实证配方待入 W2 门脚本。剩余:组 1b child_process(ec3,95)/组 3 尾(fs/tls/api 等,ew4)。
+
+### W2 尾·组 3 DONE(50973505+694f7140)+ 新热项(2026-09-22)
+
+组 3 归属 ~197 全清:tls(WSAPoll+loopback wake pair)/interrupt(SetConsoleCtrlHandler)/**FSWatcher ReadDirectoryChangesW 全量移植**(递归 watch windows 原生 bWatchSubtree>posix 臂)/api(伪信号+TerminateProcess)/udp/net/listen/cluster/dgram/ffi 全零。GAP 登记:spawn 管道泵+cluster boot 依赖组 1 register_async_child/IPC(组 1 收尾覆盖)。**新热项(已派 s1a)**:b1c45895 引入 mozjs-sys **linux 面**回归(build.rs:276 mirror_dir NotFound,C 实证 RC=101)——挡 linux 测试与 W2 全 crate 门。**W2 余量=child_process(ec3)+此热修**。
