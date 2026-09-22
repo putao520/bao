@@ -2051,3 +2051,7 @@ GetAddrInfoW 管线:平台 addrinfo 布局别名(windows=ADDRINFOA 镜像,produc
 ### em3 回归修复闭(659a8d55):us_poll_ext 上游已删→本地实现+第二断点
 
 上游对账:4af **整体删除**该 C ABI→BaoPoll 本地 16 字节头+ext 槽尾字节实现(零 C 状态);**第二断点顺修**:us_socket_from_fd 4af 增 options 槽(7 参),6 参 extern 把 ipc=1 滑进 options→SCM_RIGHTS 不布防→全链迁移。52/52 绿(含原链接遮蔽测试);windows 门保持绿。**漏检根因两条入册**:①机械比对域缺口(297-extern 只扫 uws_sys,bao_uloop 自持 extern 不在域)②验收门特征缺口(check≠链接解析)——**纪律修正:凡触碰 csrc 的吸收波,验收必含全部树内 extern 持有 crate 的 cargo test --no-run(链接面验收)**。
+
+### W2 尾·组间调度(2026-09-22)
+
+组 1(s1a 会话边界):ipc 23→0/tty 27→0 交付(718af5ca);child_process 95 错**架构裁定 (a) 同步桥**(linux 侧本非 libuv,(b)=windows-only 架构例外非对称双源;行为平判据 a 完整达成)→ ec3 接独立合同(交接包八类修法 verbatim,零未知缺口,~600 行)。组 3 中期:~197→~132(udp/listen/interrupt/ffi 近零;**FSWatcher 裁定 (a) 全量 ReadDirectoryChangesW 移植**——fs.watch=既有能力砍面即回退)。组 2(dns/constants/os)在途收敛。s1a 本会话 5 commit 战绩在案(W3 GNU 面/watcher/门控+shim/ipc+tty)。
