@@ -783,7 +783,6 @@ impl JsContext {
                 rval.handle_mut(),
                 compile_opts,
             );
-
             if result.is_err() {
                 return Err(extract_exception(realm_cx));
             }
@@ -861,7 +860,7 @@ impl JsContext {
             let realm_cx: &mut mozjs::context::JSContext = &mut realm;
             host_fn::install_console(realm_cx, global.handle());
             if let Some(setup) = global_setup {
-                unsafe { setup(realm_cx, global.handle()) };
+                    unsafe { setup(realm_cx, global.handle()) };
             }
         }
         let global_ptr = global.get();

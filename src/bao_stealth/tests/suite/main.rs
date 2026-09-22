@@ -44,3 +44,13 @@ mod tls_profile_deep_tests;
 mod webgl_audio_canvas_property_deep_tests;
 mod webgl_audio_http2_deep_tests;
 mod webgl_audio_screen_deep_tests;
+
+
+// Higher-tier soft-link providers are dev-deps nothing else `use`s in this
+// target (GNU ld tolerates undefineds in test executables; lld-link/COFF
+// does not) — force them onto the link line (bao_native_stubs precedent).
+#[test]
+fn link_higher_tier_seams() {
+    bao_bundler::force_link_test_seams();
+    bun_runtime::webcore_faces::force_link_webcore_faces();
+}

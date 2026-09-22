@@ -2336,6 +2336,7 @@ version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
+ "bao_bundler",
  "bao_engine_macros",
  "bao_native_stubs",
  "bun_collections",
@@ -2392,6 +2393,7 @@ version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
+ "bao_bundler",
  "bao_engine",
  "bun_core",
  "bun_runtime",
@@ -3810,6 +3812,7 @@ version = "0.3.0"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
+ "bao_bundler",
  "bao_engine",
  "bao_engine_macros",
  "bun_collections",

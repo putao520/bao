@@ -322,7 +322,12 @@ impl StdinSwap {
     fn new(input: &[u8]) -> Option<Self> {
         unsafe {
             let mut fds = [0i32; 2];
-            if libc::pipe(fds.as_mut_ptr()) != 0 {
+            #[cfg(unix)]
+            let piped = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            // windows libc: `pipe(fds, bufsize, mode)` — _O_BINARY avoids CRLF.
+            #[cfg(windows)]
+            let piped = unsafe { libc::pipe(fds.as_mut_ptr(), 4096, 0x8000) };
+            if piped != 0 {
                 return None;
             }
             let mut written = 0usize;
@@ -330,7 +335,7 @@ impl StdinSwap {
                 let n = libc::write(
                     fds[1],
                     input[written..].as_ptr() as *const libc::c_void,
-                    input.len() - written,
+                    (input.len() - written).try_into().unwrap(),
                 );
                 if n <= 0 {
                     libc::close(fds[0]);

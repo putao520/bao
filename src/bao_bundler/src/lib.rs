@@ -441,3 +441,12 @@ export { fetchData, API_URL };
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// Test-binary link anchor: references the CYCLEBREAK seam faces so
+/// lower-tier lib-test binaries (they link `bun_bundler` transitively but
+/// never call the plugin/bake paths) resolve the soft-link symbols. GNU ld
+/// tolerates undefined symbols in test executables; lld-link/COFF does not.
+pub fn force_link_test_seams() {
+    let anchor: unsafe extern "C" fn() = __force_link_entry_bao_bundler;
+    ::std::hint::black_box(anchor);
+}

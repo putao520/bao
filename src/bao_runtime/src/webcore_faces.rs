@@ -86,3 +86,14 @@ extern "Rust" fn __bun_js_vm_get() -> *mut () {
     Runtime::get()
         .map_or(::std::ptr::null_mut(), |runtime| runtime.as_ptr() as *mut ())
 }
+
+/// Test-binary link anchor: references the two soft-link faces so lower-tier
+/// lib-test binaries that consume them via `bun_event_loop` resolve them at
+/// link time. GNU ld tolerates undefined symbols in test executables;
+/// lld-link/COFF does not (twin pattern: `bao_bundler::force_link_test_seams`).
+pub fn force_link_webcore_faces() {
+    let vm_get: unsafe extern "Rust" fn() -> *mut () = __bun_js_vm_get;
+    let store_new: unsafe extern "Rust" fn(Fd, bool, Mode) -> *mut () =
+        __bun_stdio_blob_store_new;
+    ::std::hint::black_box((vm_get, store_new));
+}

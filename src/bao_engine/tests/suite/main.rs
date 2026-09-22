@@ -32,3 +32,13 @@ mod realm_policy_tests;
 mod resource_exhaustion_tests;
 mod value_boundary_tests;
 mod value_error_tests;
+
+
+// Higher-tier soft-link providers are dev-deps nothing else `use`s in this
+// target (GNU ld tolerates undefineds in test executables; lld-link/COFF
+// does not) — force them onto the link line (bao_native_stubs precedent).
+#[test]
+fn link_higher_tier_seams() {
+    bao_bundler::force_link_test_seams();
+    bun_runtime::webcore_faces::force_link_webcore_faces();
+}

@@ -1465,7 +1465,10 @@ pub(crate) fn spawn_cluster_worker(
             extra_fds: Box::new([PosixStdio::Ipc]),
             cwd: Box::new([]),
             detached: false,
+            #[cfg(not(windows))]
             windows: (),
+            #[cfg(windows)]
+            windows: Default::default(),
             argv0: None,
             stream: true,
             sync: false,
@@ -5438,7 +5441,10 @@ mod tests {
             envp: None,
             use_execve_on_macos: false,
             argv0: None,
+            #[cfg(not(windows))]
             windows: (),
+            #[cfg(windows)]
+            windows: Default::default(),
         };
 
         let result = match spawn_sync::spawn(&opts) {
@@ -5469,7 +5475,10 @@ mod tests {
             envp: None,
             use_execve_on_macos: false,
             argv0: None,
+            #[cfg(not(windows))]
             windows: (),
+            #[cfg(windows)]
+            windows: Default::default(),
         };
 
         let result = match spawn_sync::spawn(&opts) {
@@ -5499,7 +5508,10 @@ mod tests {
             envp: None,
             use_execve_on_macos: false,
             argv0: None,
+            #[cfg(not(windows))]
             windows: (),
+            #[cfg(windows)]
+            windows: Default::default(),
         };
 
         let result = match spawn_sync::spawn(&opts) {
@@ -5530,7 +5542,10 @@ mod tests {
             envp: None,
             use_execve_on_macos: false,
             argv0: None,
+            #[cfg(not(windows))]
             windows: (),
+            #[cfg(windows)]
+            windows: Default::default(),
         };
 
         let result = spawn_sync::spawn(&opts);
@@ -5570,7 +5585,10 @@ mod tests {
             envp: None,
             use_execve_on_macos: false,
             argv0: None,
+            #[cfg(not(windows))]
             windows: (),
+            #[cfg(windows)]
+            windows: Default::default(),
         };
 
         let result = match spawn_sync::spawn(&opts) {
@@ -5597,7 +5615,10 @@ mod tests {
             envp: None,
             use_execve_on_macos: false,
             argv0: None,
+            #[cfg(not(windows))]
             windows: (),
+            #[cfg(windows)]
+            windows: Default::default(),
         };
 
         let result = match spawn_sync::spawn(&opts) {

@@ -454,10 +454,18 @@ mod tests {
     /// cross-process contamination of the production default).
     fn fresh_test_dir(tag: &str) -> PathBuf {
         let n = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        // Windows path hygiene: libtest thread names carry `::` separators
+        // (code 123 InvalidFilename) — keep [A-Za-z0-9_-] only.
+        let thread: String = std::thread::current()
+            .name()
+            .unwrap_or("t")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
         let dir = std::env::temp_dir().join(format!(
             "bao-xdr-test-{}-{}-{tag}-{n}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("t")
+            thread
         ));
         let _ = std::fs::remove_dir_all(&dir);
         set_cache_dir_for_tests(dir.clone());
@@ -535,6 +543,11 @@ mod tests {
         let src = heavy_payload(1, 24);
 
         let first = make_jsvalue_fresh_realm(&src, "<xdr-c1>").unwrap();
+        let dbg = xdr_counters();
+        eprintln!(
+            "[c1dbg] dir={:?} exists={} stores={} failed={} disabled={} misses_absent={}",
+            dir, dir.exists(), dbg.stores, dbg.store_failed, dbg.disabled, dbg.miss_absent
+        );
         assert_eq!(entry_files(&dir).len(), 1, "store must persist one entry");
         let c = xdr_counters();
         assert_eq!(c.stores, 1, "exactly one store");

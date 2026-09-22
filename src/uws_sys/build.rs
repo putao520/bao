@@ -477,6 +477,14 @@ fn main() {
     // order (Cargo dedupes link libs in dep-graph order, so this becomes the
     // effective position).
     println!("cargo:rustc-link-lib=static=usockets");
+    // windows: root_certs_windows.cpp walks the system cert stores via
+    // crypt32 (CertOpenStore/CertEnumCertificatesInStore/...). The imports
+    // only materialize when that TU survives linking (debug /OPT:NOREF and
+    // test binaries), so declare the dependency unconditionally for the
+    // windows face.
+    if target_os == "windows" {
+        println!("cargo:rustc-link-lib=crypt32");
+    }
 
     // ── Rebuild hints ─────────────────────────────────────────────────────
     // Rebuild if any C source changes

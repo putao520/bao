@@ -462,6 +462,7 @@ fn warm_child_process(rt: &mut bun_runtime::BaoRuntime) {
 /// T5: a child spawned inside a runtime is killed, reaped and swept when the
 /// runtime drops — no zombie (`/proc/<pid>` gone entirely), no leaked
 /// stdout/stderr pipe read ends, no surviving cp-poll thread.
+#[cfg(unix)]
 #[test]
 fn runtime_drop_kills_and_reaps_owned_children() {
     let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
@@ -765,6 +766,7 @@ fn spawn_sigstate_child_bitmap_is_clean_default() {
 /// — the exact pre-fix counterexample probe (`kill(pid, SIGTERM)` returned 0
 /// while the child survived; T5's drop sweep only worked via the SIGKILL
 /// escalation after 2.07 s).
+#[cfg(unix)]
 #[test]
 fn spawn_sigstate_sigterm_terminates_child_within_500ms() {
     let mut ctx = setup_sigstate_ctx();
@@ -810,6 +812,7 @@ fn spawn_sigstate_sigterm_terminates_child_within_500ms() {
 /// 2026-09-17: the child gets a clean state instead of the host inheriting
 /// risk) — a full spawn→SIGTERM→reap cycle leaves this process's SigBlk/SigIgn
 /// byte-identical.
+#[cfg(unix)]
 #[test]
 fn spawn_sigstate_host_signal_state_untouched() {
     let host_sig_lines = || -> String {
@@ -870,6 +873,7 @@ fn spawn_sigstate_host_signal_state_untouched() {
 /// exit-observation hook. Uses the budgeted-drain harness: the ChildProcess
 /// poll chain re-arms `setTimeout(0)` for the child's whole life, which an
 /// unbounded drain would never exhaust.
+#[cfg(unix)]
 #[test]
 fn child_exit_observation_closes_stdin_write_fd() {
     let mut ctx = setup_sigstate_ctx();

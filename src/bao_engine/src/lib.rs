@@ -129,3 +129,17 @@ pub use bao_engine_macros::codegen_cached_accessors;
 // #[macro_export] macros from bun_sm (define_host_fn) are automatically
 // available when bao_engine depends on bun_sm — they live at the crate root.
 // No explicit `pub use` needed for #[macro_export] macros.
+
+// Higher-tier soft-link providers are dev-deps that nothing in this crate's
+// code path `use`s, so cargo never passes them to the linker — GNU ld
+// tolerates the undefined faces in test executables, lld-link/COFF does not.
+// This test forces them onto the lib-test link line (bao_native_stubs
+// force_link precedent in bao_engine's dispatch_sm_tests).
+#[cfg(test)]
+mod test_link_seams {
+    #[test]
+    fn link_higher_tier_seams() {
+        bao_bundler::force_link_test_seams();
+        bun_runtime::webcore_faces::force_link_webcore_faces();
+    }
+}

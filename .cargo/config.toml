@@ -60,6 +60,7 @@ CFLAGS_x86_64_pc_windows_msvc = "-g1 -Wno-incompatible-pointer-types"
 # 与 scripts/win-cross-env.sh 契约/farm 镜像同源)
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"
+rustflags = ["-C", "force-frame-pointers=yes", "-C", "link-arg=/OPT:NOREF"]
 
 [target.x86_64-unknown-linux-musl]
 # C++ aware linker(静态 libstdc++ 由该工具链自带 sysroot 提供)

@@ -888,6 +888,44 @@ impl ErrnoNames {
 
 /// Compile-time `<tag>` → ANSI rewrite (proc-macro). Re-exported at crate root
 /// so `$crate::pretty_fmt!` resolves from the wrapper macros in `output.rs`.
+
+// ── test-binary link seams (production providers are higher-tier crates
+//    dropped from the lib-test link scope; same pattern as ast/lib.rs) ─────
+
+// bun_errno owns the Sys arm; without the table the callers take their
+// documented fallback path (errno number formatting) — honest absent-table.
+#[cfg(test)]
+#[unsafe(no_mangle)]
+extern "Rust" fn __bun_dispatch__ErrnoNames__Sys__name(_errno: i32) -> Option<&'static str> {
+    None
+}
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+extern "Rust" fn __bun_dispatch__ErrnoNames__Sys__max_dense() -> u32 {
+    0
+}
+
+// libuv face: libuv's own windows implementation is exactly this UCRT wrap
+// (fd validation + INVALID_HANDLE_VALUE on bad index comes from the CRT).
+#[cfg(all(test, windows))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn uv_get_osfhandle(fd: libc::c_int) -> *mut core::ffi::c_void {
+    unsafe extern "C" {
+        fn _get_osfhandle(fd: libc::c_int) -> isize;
+    }
+    unsafe { _get_osfhandle(fd) as *mut core::ffi::c_void }
+}
+
+// OOM aborts the process either way — faithful test stub (same shape as the
+// ast/http test-binary seams).
+#[cfg(test)]
+#[unsafe(no_mangle)]
+extern "Rust" fn __bun_crash_handler_out_of_memory() -> ! {
+    eprintln!("bun: out of memory");
+    std::process::abort()
+}
+
 pub use bun_core_macros::{EnumTag, pretty_fmt};
 
 /// Stand-in for Zig's `@import("build_options")`. Values are written at
@@ -3760,7 +3798,27 @@ pub fn capture_stack_trace(begin: usize, addrs: &mut [usize]) -> usize {
 /// trace: a noisier trace beats an aborted process.
 #[inline(always)]
 pub fn return_address() -> usize {
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    // MSVC-ABI frames do not keep the SysV [rbp]/[rbp+8] chain: rbp is a
+    // locals base (often `lea rbp,[rsp+N]`) and the saved pc sits above the
+    // frame at a non-constant offset — probing it reads locals (empirically
+    // 0). The immediate caller's return address comes from the CFI capture
+    // instead: with skip 0, frame[1] is the return site of this
+    // (always-inlined) function's caller.
+    #[cfg(windows)]
+    {
+        let mut frames = [0usize; 4];
+        // SAFETY: `frames` is valid for 4 writes; hash ptr may be null.
+        let n = unsafe {
+            bun_windows_sys::ntdll::RtlCaptureStackBackTrace(
+                0,
+                frames.len() as u32,
+                frames.as_mut_ptr().cast::<*mut core::ffi::c_void>(),
+                core::ptr::null_mut(),
+            )
+        } as usize;
+        return if n >= 2 { frames[1] } else { 0 };
+    }
+    #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         /// Upper bound on a single frame's local-to-fp span. Real Rust
         /// frames are far smaller; the bound only needs to stay tight enough
@@ -3877,12 +3935,29 @@ mod test_output_sink {
         Fd::from_native(raw as usize as _)
     }
 
+    /// Windows test-sink arm: resolve an fd-relative path against the process
+    /// working directory when (and only when) the base is `Fd::cwd()`.
+    #[cfg(windows)]
+    fn fd_cwd_join(cwd: Fd, rel: &[u8]) -> Result<std::path::PathBuf, Error> {
+        if cwd.native() != Fd::cwd().native() {
+            return Err(Error::from_errno(libc::EBADF as _));
+        }
+        let rel = std::path::PathBuf::from(String::from_utf8_lossy(rel).into_owned());
+        Ok(std::env::current_dir()
+            .map_err(|_| Error::from_errno(libc::EACCES as _))?
+            .join(rel))
+    }
     /// Best-effort write-all loop ("quiet": errors swallowed → `false`).
     fn fd_write_all_quiet(fd: Fd, mut bytes: &[u8]) -> bool {
         while !bytes.is_empty() {
             // SAFETY: `bytes` describes a valid slice for the duration of the call.
             let rc = unsafe {
-                libc::write(fd.native(), bytes.as_ptr().cast(), bytes.len())
+                // len type differs per libc face (size_t unix / u32 windows)
+                libc::write(
+                    fd.native() as libc::c_int,
+                    bytes.as_ptr().cast(),
+                    bytes.len().try_into().unwrap(),
+                )
             };
             if rc <= 0 {
                 return false;
@@ -3963,10 +4038,26 @@ mod test_output_sink {
                 prefix.push(b'/');
             }
             prefix.extend_from_slice(comp);
+            #[cfg(unix)]
             let z = crate::ZBox::from_vec_with_nul(prefix.clone());
             // SAFETY: `z` is a NUL-terminated path owned for the call.
+            #[cfg(unix)]
             let rc = unsafe {
                 libc::mkdirat(cwd.native(), z.as_ptr().cast(), 0o755)
+            };
+            #[cfg(windows)]
+            // libc has no *at family on windows; the test base is always
+            // Fd::cwd() — resolve against the process working directory
+            // (any other base is an explicit error, never a silent fallback).
+            let rc = {
+                let abs = fd_cwd_join(cwd, &prefix)?;
+                match std::fs::create_dir(&abs) {
+                    Ok(()) => 0,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        libc::EEXIST as libc::c_int
+                    }
+                    Err(_) => libc::EACCES as libc::c_int,
+                }
             };
             if rc != 0 {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -3983,8 +4074,10 @@ mod test_output_sink {
             stderr() => output::File(Fd::stderr()),
             make_path(cwd, dir) => mkdir_recursive_at(cwd, dir),
             create_file(cwd, path) => {
+                #[cfg(unix)]
                 let z = crate::ZBox::from_vec_with_nul(path.to_vec());
                 // SAFETY: `z` is NUL-terminated; O_CREAT needs a mode argument.
+                #[cfg(unix)]
                 let rc = unsafe {
                     libc::openat(
                         cwd.native(),
@@ -3993,12 +4086,27 @@ mod test_output_sink {
                         0o664,
                     )
                 };
+                #[cfg(windows)]
+                let rc = {
+                    let abs = fd_cwd_join(cwd, &path)?;
+                    let abs_z = crate::ZBox::from_vec_with_nul(
+                        abs.to_string_lossy().as_bytes().to_vec(),
+                    );
+                    // SAFETY: `abs_z` is NUL-terminated; O_CREAT needs a mode argument.
+                    unsafe {
+                        libc::open(
+                            abs_z.as_ptr().cast(),
+                            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                            0o664,
+                        )
+                    }
+                };
                 if rc < 0 {
                     Err(Error::from_errno(
                         std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
                     ))
                 } else {
-                    Ok(Fd::from_native(rc))
+                    Ok(Fd::from_native(rc.try_into().unwrap()))
                 }
             },
             quiet_writer_from_fd(fd) => {
@@ -4034,7 +4142,11 @@ mod test_output_sink {
             read(fd, buf) => {
                 // SAFETY: `buf` describes a valid writable slice.
                 let rc = unsafe {
-                    libc::read(fd.native(), buf.as_mut_ptr().cast(), buf.len())
+                    libc::read(
+                        fd.native() as libc::c_int,
+                        buf.as_mut_ptr().cast(),
+                        buf.len().try_into().unwrap(),
+                    )
                 };
                 if rc < 0 {
                     Err(Error::from_errno(

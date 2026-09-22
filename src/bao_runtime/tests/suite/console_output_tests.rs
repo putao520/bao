@@ -46,19 +46,31 @@ impl Redirect {
     unsafe fn capture(both: bool) -> Redirect {
         let mut out_fds = [0i32; 2];
         let mut err_fds = [0i32; 2];
-        assert_eq!(libc::pipe(out_fds.as_mut_ptr()), 0, "pipe(stdout) failed");
+        #[cfg(unix)]
+        let pipe2 = |fds: *mut i32| unsafe { libc::pipe(fds) };
+        // windows libc: `pipe(fds, bufsize, mode)` — _O_BINARY avoids CRLF.
+        #[cfg(windows)]
+        let pipe2 = |fds: *mut i32| unsafe { libc::pipe(fds, 4096, 0x8000) };
+        assert_eq!(pipe2(out_fds.as_mut_ptr()), 0, "pipe(stdout) failed");
         let (err_r, err_w, save_err) = if both {
-            assert_eq!(libc::pipe(err_fds.as_mut_ptr()), 0, "pipe(stderr) failed");
+            assert_eq!(pipe2(err_fds.as_mut_ptr()), 0, "pipe(stderr) failed");
             let save = libc::dup(2);
             assert!(save >= 0, "dup(2) failed");
+            // MSVC `_dup2` returns 0 on success (POSIX returns the new fd).
+            #[cfg(unix)]
             assert_eq!(libc::dup2(err_fds[1], 2), 2, "dup2 stderr redirect failed");
+            #[cfg(windows)]
+            assert_eq!(libc::dup2(err_fds[1], 2), 0, "dup2 stderr redirect failed");
             (err_fds[0], err_fds[1], save)
         } else {
             (-1, -1, -1)
         };
         let save_out = libc::dup(1);
         assert!(save_out >= 0, "dup(1) failed");
+        #[cfg(unix)]
         assert_eq!(libc::dup2(out_fds[1], 1), 1, "dup2 stdout redirect failed");
+        #[cfg(windows)]
+        assert_eq!(libc::dup2(out_fds[1], 1), 0, "dup2 stdout redirect failed");
         Redirect {
             save_out,
             save_err,
@@ -95,7 +107,11 @@ unsafe fn drain_fd(fd: i32) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        let n = libc::read(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len());
+        let n = libc::read(
+            fd,
+            chunk.as_mut_ptr() as *mut libc::c_void,
+            chunk.len().try_into().unwrap(),
+        );
         if n <= 0 {
             break;
         }

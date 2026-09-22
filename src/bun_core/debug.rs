@@ -63,7 +63,8 @@ pub fn frame_address() -> usize {
 
 /// Reads memory from any address of the current process, tolerating unmapped
 /// or corrupt pages so a damaged stack can't fault the walker itself. Port of
-/// `std.debug.MemoryAccessor`.
+/// `std.debug.MemoryAccessor`. (Unix face — windows capture is CFI-based.)
+#[cfg(not(windows))]
 struct MemoryAccessor {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     mem: core::ffi::c_int, // -1 = uninit, -2 = unavailable, else /proc/<pid>/mem fd
@@ -71,6 +72,8 @@ struct MemoryAccessor {
     _mem: (),
 }
 
+#[cfg(not(windows))]
+#[cfg(not(windows))]
 impl MemoryAccessor {
     const INIT: Self = Self {
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -161,6 +164,7 @@ impl MemoryAccessor {
     }
 }
 
+#[cfg(not(windows))]
 impl Drop for MemoryAccessor {
     fn drop(&mut self) {
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -171,6 +175,8 @@ impl Drop for MemoryAccessor {
     }
 }
 
+#[cfg(not(windows))]
+#[cfg(not(windows))]
 fn is_valid_memory(address: usize) -> bool {
     let page_size = bun_alloc::page_size();
     let aligned_address = address & !(page_size - 1);
@@ -212,11 +218,15 @@ fn is_valid_memory(address: usize) -> bool {
 }
 
 /// Port of `std.debug.StackIterator`. Walks the frame-pointer chain.
+/// (Unix face: MSVC-ABI frames don't keep the SysV [rbp]/[rbp+8] chain —
+/// the windows capture path is RtlCaptureStackBackTrace.)
+#[cfg(not(windows))]
 pub struct StackIterator {
     pub fp: usize,
     ma: MemoryAccessor,
 }
 
+#[cfg(not(windows))]
 impl StackIterator {
     // Offset of the saved BP wrt the frame pointer.
     const FP_OFFSET: usize = if cfg!(any(target_arch = "riscv64", target_arch = "riscv32")) {
@@ -224,7 +234,10 @@ impl StackIterator {
     } else {
         0
     };
-    // Positive offset of the saved PC wrt the frame pointer.
+    // Positive offset of the saved PC wrt the frame pointer. (Unix face —
+    // the windows capture path is RtlCaptureStackBackTrace; see
+    // lib.rs return_address.)
+    #[cfg(not(windows))]
     const PC_OFFSET: usize = if cfg!(target_arch = "powerpc64") {
         2 * core::mem::size_of::<usize>()
     } else {
@@ -266,6 +279,7 @@ impl StackIterator {
     }
 }
 
+#[cfg(not(windows))]
 pub(crate) const PC_OFFSET: usize = StackIterator::PC_OFFSET;
 
 /// Capture the current thread's call stack.

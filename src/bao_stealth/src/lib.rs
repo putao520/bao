@@ -171,3 +171,17 @@ mod tests {
         assert_eq!(engine.behavior().seed(), engine.profile().behavior.seed());
     }
 }
+
+// Higher-tier soft-link providers are dev-deps that nothing in this crate's
+// code path `use`s, so cargo never passes them to the linker — GNU ld
+// tolerates the undefined faces in test executables, lld-link/COFF does not.
+// This test forces them onto the lib-test link line (bao_native_stubs
+// force_link precedent in bao_engine's dispatch_sm_tests).
+#[cfg(test)]
+mod test_link_seams {
+    #[test]
+    fn link_higher_tier_seams() {
+        bao_bundler::force_link_test_seams();
+        bun_runtime::webcore_faces::force_link_webcore_faces();
+    }
+}

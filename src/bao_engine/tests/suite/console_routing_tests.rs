@@ -27,13 +27,26 @@ impl Redirect {
     unsafe fn capture() -> Redirect {
         let mut out_fds = [0i32; 2];
         let mut err_fds = [0i32; 2];
-        assert_eq!(libc::pipe(out_fds.as_mut_ptr()), 0, "pipe(stdout) failed");
-        assert_eq!(libc::pipe(err_fds.as_mut_ptr()), 0, "pipe(stderr) failed");
+        #[cfg(unix)]
+        let pipe2 = |fds: *mut i32| unsafe { libc::pipe(fds) };
+        // windows libc: `pipe(fds, bufsize, mode)` — _O_BINARY keeps the
+        // captured bytes free of CRLF translation.
+        #[cfg(windows)]
+        let pipe2 = |fds: *mut i32| unsafe { libc::pipe(fds, 4096, 0x8000 /* _O_BINARY */) };
+        assert_eq!(pipe2(out_fds.as_mut_ptr()), 0, "pipe(stdout) failed");
+        assert_eq!(pipe2(err_fds.as_mut_ptr()), 0, "pipe(stderr) failed");
         let save_out = libc::dup(1);
         let save_err = libc::dup(2);
         assert!(save_out >= 0 && save_err >= 0, "dup failed");
+        // MSVC `_dup2` returns 0 on success (POSIX returns the new fd).
+        #[cfg(unix)]
         assert_eq!(libc::dup2(out_fds[1], 1), 1, "dup2 stdout redirect failed");
+        #[cfg(windows)]
+        assert_eq!(libc::dup2(out_fds[1], 1), 0, "dup2 stdout redirect failed");
+        #[cfg(unix)]
         assert_eq!(libc::dup2(err_fds[1], 2), 2, "dup2 stderr redirect failed");
+        #[cfg(windows)]
+        assert_eq!(libc::dup2(err_fds[1], 2), 0, "dup2 stderr redirect failed");
         Redirect {
             save_out,
             save_err,
@@ -58,12 +71,18 @@ impl Redirect {
     }
 }
 
+
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn drain_fd(fd: i32) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        let n = libc::read(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len());
+        let n = libc::read(
+            fd,
+            chunk.as_mut_ptr() as *mut libc::c_void,
+            chunk.len().try_into().unwrap(),
+        );
         if n <= 0 {
             break;
         }

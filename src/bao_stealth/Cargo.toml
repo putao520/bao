@@ -17,4 +17,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
+bao_bundler = { path = "../bao_bundler", version = "^0.2.0" }
 bun_runtime.workspace = true

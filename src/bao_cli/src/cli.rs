@@ -104,6 +104,7 @@ fn flush_js_output() {
 
 /// Process entry — parses argv and dispatches to the appropriate command handler.
 /// Returns `Err(exit_code)` on failure; callers should `std::process::exit(code)`.
+
 pub fn run() -> ::std::result::Result<(), i32> {
     // Process-owner output bring-up (same contract as `bun_bin` main): publish
     // the global stdout/stderr stream slots from the real stdio fds and hold a

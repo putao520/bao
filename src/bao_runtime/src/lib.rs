@@ -272,3 +272,15 @@ fn force_link_native_c_libs() {
 
 #[used]
 static FORCE_NATIVE_C_LIBS: fn() = force_link_native_c_libs;
+
+// Higher-tier soft-link providers are dev-deps nothing else `use`s in the
+// lib-test target (GNU ld tolerates undefineds in test executables;
+// lld-link/COFF does not) — force them onto the link line.
+#[cfg(test)]
+mod test_link_seams {
+    #[test]
+    fn link_higher_tier_seams() {
+        bao_bundler::force_link_test_seams();
+        crate::webcore_faces::force_link_webcore_faces();
+    }
+}

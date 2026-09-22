@@ -1,3 +1,6 @@
+// AF_UNIX socketpair + std::os::fd face — POSIX-mechanics test.
+#![cfg(unix)]
+
 // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:integration]
 // Upstream regression: bun 118fdd203a "child_process: report a failed child
 // stdin write with syscall write, as Node does (#40935)" (verified against
