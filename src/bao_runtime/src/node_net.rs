@@ -38,7 +38,7 @@ use bun_windows_sys::ws2_32::{
 // winsock's addrlen parameters are `int` (POSIX socklen_t = u32); the alias
 // keeps every signature/arith site cfg-blind.
 #[cfg(unix)]
-use socklen_t;
+use libc::socklen_t;
 #[cfg(windows)]
 type socklen_t = i32;
 

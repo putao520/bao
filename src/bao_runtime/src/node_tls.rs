@@ -561,6 +561,7 @@ mod drv {
 
 #[cfg(unix)]
 mod drv {
+    use ::std::os::fd::AsRawFd;
     pub type Raw = i32;
     pub type PollFd = libc::pollfd;
     pub const POLLIN: i16 = libc::POLLIN as i16;
