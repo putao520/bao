@@ -2806,18 +2806,28 @@ impl ANSIIterator {
 
     /// Returns the next slice of non-ANSI text, or null when done.
     pub fn next(&mut self) -> Option<&[u8]> {
-        if Bun__ANSI__next(self) {
-            if self.slice_ptr.is_null() {
-                return None;
+        let has = {
+            #[cfg(windows)]
+            {
+                bun_ansi_next(self)
             }
-            // SAFETY: slice_ptr/slice_len point into the input buffer per C++ contract.
-            return Some(unsafe { core::slice::from_raw_parts(self.slice_ptr, self.slice_len) });
+            #[cfg(not(windows))]
+            Bun__ANSI__next(self)
+        };
+        if !has {
+            return None;
         }
-        None
+        if self.slice_ptr.is_null() {
+            return None;
+        }
+        // SAFETY: slice_ptr/slice_len point into the input buffer per the
+        // backend contract (C++ consumeANSI / the Rust windows skipper).
+        Some(unsafe { core::slice::from_raw_parts(self.slice_ptr, self.slice_len) })
     }
 }
 
 // TODO(port): move to <area>_sys
+#[cfg(not(windows))]
 unsafe extern "C" {
     // `&mut ANSIIterator` is ABI-identical to the C++ `ANSIIterator*` (thin
     // non-null pointer to a `#[repr(C)]` POD struct); C++ reads `input`/
@@ -2825,6 +2835,68 @@ unsafe extern "C" {
     // `&mut` encodes the only pointer-validity precondition, so `safe fn`
     // discharges the link-time proof and callers need no `unsafe`.
     safe fn Bun__ANSI__next(it: &mut ANSIIterator) -> bool;
+}
+
+// windows arm (issue #18 W7): the ANSI escape skipper in Rust. The upstream
+// supplier is the C++ ANSI::consumeANSI (ANSIHelpers.h) — CSI (ESC [ …
+// final 0x40-0x7E), OSC (ESC ] … BEL/ST), the ST-terminated DCS/SOS/PM/APC
+// (ESC P/X/^/_) and two-byte Fe/Fs/Fp escapes. Semantics: skip every escape
+// from the cursor, then yield the next run of plain text (its byte span +
+// the resume cursor); false when the input is exhausted.
+#[cfg(windows)]
+pub(crate) fn bun_ansi_next(it: &mut ANSIIterator) -> bool {
+    // SAFETY: input/input_len describe the caller-owned buffer that outlives
+    // the iterator (the struct's contract).
+    let data: &[u8] =
+        unsafe { core::slice::from_raw_parts(it.input, it.input_len) };
+    let mut i = it.cursor;
+    // Skip any escape sequences at the cursor.
+    while i < data.len() && data[i] == 0x1B {
+        let Some(next1) = data.get(i + 1).copied() else {
+            i = data.len();
+            break;
+        };
+        match next1 {
+            b'[' => {
+                let mut j = i + 2;
+                while j < data.len() && !(0x40..=0x7E).contains(&data[j]) {
+                    j += 1;
+                }
+                i = (j + 1).min(data.len());
+            }
+            b']' | b'P' | b'X' | b'^' | b'_' => {
+                let mut j = i + 2;
+                while j < data.len() {
+                    if data[j] == 0x07 {
+                        j += 1;
+                        break;
+                    }
+                    if data[j] == 0x1B && data.get(j + 1) == Some(&b'\\') {
+                        j += 2;
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+            }
+            _ => i += 2,
+        }
+    }
+    if i >= data.len() {
+        it.cursor = i;
+        it.slice_ptr = core::ptr::null();
+        it.slice_len = 0;
+        return false;
+    }
+    // Yield the text run up to the next escape.
+    let start = i;
+    while i < data.len() && data[i] != 0x1B {
+        i += 1;
+    }
+    it.slice_ptr = unsafe { data.as_ptr().add(start) };
+    it.slice_len = i - start;
+    it.cursor = i;
+    true
 }
 
 // Transcoding allocators live in T0 `crate::strings` so collections can

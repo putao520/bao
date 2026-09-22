@@ -225,6 +225,25 @@ mod bunstring_ffi {
         let owned = unsafe { Vec::from_raw_parts(bytes, len, len) };
         String::create_external_globally_allocated_utf16(owned)
     }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__createExternal(
+        bytes: *const u8,
+        len: usize,
+        is_latin1: bool,
+        ctx: *mut core::ffi::c_void,
+        callback: Option<extern "C" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, usize)>,
+    ) -> String {
+        // SAFETY: bytes is a live span of `len` latin1/UTF-16 units per the
+        // isLatin1 selector (the upstream BunString.cpp contract).
+        let slice = unsafe { slice::from_raw_parts(bytes, len) };
+        // The C caller may pass a null finalizer (non-external fallback);
+        // the inherent face requires a concrete fn pointer.
+        extern "C" fn noop_finalizer(_: *mut core::ffi::c_void, _: *mut core::ffi::c_void, _: usize) {}
+        let cb: extern "C" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, usize) =
+            callback.unwrap_or(noop_finalizer);
+        String::create_external(slice, is_latin1, ctx, cb)
+    }
 }
 
 pub(crate) type ExternalStringImplFreeFunction<Ctx> =

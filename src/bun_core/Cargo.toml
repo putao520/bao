@@ -51,6 +51,8 @@ bun_wyhash.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+unicode-width = "0.2"
+unicode-segmentation = "1"
 bun_windows_sys.workspace = true
 
 # NOTE: no dev-dependencies. Any dev-dep cycling back to the bun_core rlib

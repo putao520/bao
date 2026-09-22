@@ -1380,6 +1380,9 @@ impl WTFStringImplStruct {
     /// Compute the hash() if necessary
     #[inline]
     pub fn ensure_hash(&self) {
+        #[cfg(windows)]
+        self.windows_ensure_hash();
+        #[cfg(not(windows))]
         Bun__WTFStringImpl__ensureHash(self);
     }
     #[inline]
@@ -1411,6 +1414,7 @@ unsafe extern "C" {
     pub safe fn Bun__WTFStringImpl__ref(this: &WTFStringImplStruct);
     pub fn Bun__WTFStringImpl__deref(this: *const WTFStringImplStruct);
     safe fn WTFStringImpl__isThreadSafe(this: &WTFStringImplStruct) -> bool;
+    #[cfg(not(windows))]
     safe fn Bun__WTFStringImpl__ensureHash(this: &WTFStringImplStruct);
     fn Bun__WTFStringImpl__hasPrefix(
         this: *const WTFStringImplStruct,
@@ -1418,6 +1422,53 @@ unsafe extern "C" {
         text_len: usize,
     ) -> bool;
 }
+
+// windows arm (issue #18 W7 second layer): compute the JSC StringImpl hash
+// in Rust (WebKit SuperFastHash over the characters — 16-bit units on the
+// UTF-16 path, bytes on the 8-bit path) and store it into m_hash_and_flags
+// with the existing low flag bits (notably the 8-bit-buffer marker) kept.
+#[cfg(windows)]
+impl WTFStringImplStruct {
+    pub(crate) fn windows_ensure_hash(&self) {
+        let flags = self.m_hash_and_flags.get();
+        let is_8bit = (flags & Self::S_HASH_FLAG_8BIT_BUFFER) != 0;
+        let len = self.m_length as usize;
+        // SAFETY: m_ptr points at `m_length` characters of the flagged
+        // storage width (the constructor contract for this struct).
+        let hash: u32 = if is_8bit {
+            let bytes = unsafe { core::slice::from_raw_parts(self.m_ptr.latin1, len) };
+            super_fast_hash(bytes.iter().map(|&b| b as u32))
+        } else {
+            let units = unsafe { core::slice::from_raw_parts(self.m_ptr.utf16, len) };
+            super_fast_hash(units.iter().map(|&u| u as u32))
+        };
+        self.m_hash_and_flags
+            .set((hash << 2) | (flags & 0b11));
+    }
+}
+
+/// WebKit `StringHasher::computeHash` (SuperFastHash, P. Hsieh) over the
+/// character units — WTF's canonical string hash algorithm.
+#[cfg(windows)]
+fn super_fast_hash<I: Iterator<Item = u32>>(units: I) -> u32 {
+    let mut hash: u32 = 0;
+    let mut it = units.peekable();
+    while let Some(unit) = it.next() {
+        hash = hash.wrapping_add(unit);
+        let tmp = (unit << 11) ^ hash;
+        hash = (hash << 16) ^ tmp;
+        hash = hash.wrapping_add(hash >> 11);
+    }
+    // WTF StringHasher::computeHash epilogue (the avalanche).
+    hash ^= hash << 3;
+    hash = hash.wrapping_add(hash >> 5);
+    hash ^= hash << 2;
+    hash = hash.wrapping_add(hash >> 17);
+    hash ^= hash << 25;
+    hash
+}
+
+
 
 /// Port of `bun.String.StringImplAllocator` (src/string/wtf.zig).
 ///
