@@ -4374,14 +4374,29 @@ pub fn is_watcher_child() -> bool {
     }
 }
 
+/// windows: mark the three std handles inheritable (the C++
+/// `windows_enable_stdio_inheritance` shim's observable behavior — the
+/// watcher-manager child inherits the console stdio).
+#[unsafe(no_mangle)]
+pub extern "C" fn windows_enable_stdio_inheritance() {
+    use ::bun_windows_sys::kernel32::{GetStdHandle, SetHandleInformation};
+    use ::bun_windows_sys::{
+        HANDLE_FLAG_INHERIT, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for selector in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        let handle = GetStdHandle(selector);
+        // INVALID_HANDLE_VALUE / null = no handle behind the slot — skip.
+        if !handle.is_null() && handle as usize != usize::MAX {
+            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        }
+    }
+}
+
 pub fn become_watcher_manager() -> ! {
     // this process will be the parent of the child process that actually runs the script
     let mut procinfo: PROCESS_INFORMATION = bun_core::ffi::zeroed();
-    unsafe extern "C" {
-        // safe: no args; C++ shim mutates process-global stdio inheritance
-        // flags — no preconditions.
-        safe fn windows_enable_stdio_inheritance();
-    }
+    // The C++ shim's windows behavior: mark the three std handles inheritable
+    // so the spawned watcher-manager child inherits them.
     windows_enable_stdio_inheritance();
     // SAFETY: null args allowed
     let job = unsafe { externs::CreateJobObjectA(ptr::null_mut(), ptr::null()) };
@@ -4647,8 +4662,6 @@ pub extern "C" fn Bun__LoadLibraryBunString(str_: &bun_core::String) -> *mut c_v
         kernel32::LoadLibraryExW(buf.as_ptr(), ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
     }
 }
-
-pub use bun_windows_sys::externs::windows_enable_stdio_inheritance;
 
 /// Extracted from standard library except this takes an open file descriptor
 ///
