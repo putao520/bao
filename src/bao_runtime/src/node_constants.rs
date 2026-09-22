@@ -2,6 +2,24 @@
 //
 // Node.js `constants` module — system constants (O_* flags, S_* permissions,
 // signals, errno, priority). Values are sourced from libc on Linux.
+//
+// # Windows arm (upstream parity: bun runtime/node/os/constants.zig)
+//
+// Upstream's recipe is "define what the platform defines, omit what it
+// doesn't" (its `?constant | null → skip` lookup). Mirrored here:
+// - signals: the windows set is libuv `uv/win.h` + the CRT (SIGHUP 1,
+//   SIGINT 2, SIGQUIT 3, SIGILL 4, SIGFPE 8, SIGKILL 9, SIGSEGV 11, SIGTERM
+//   15, SIGBREAK 21, SIGABRT 22, SIGWINCH 28) — the unix-only signals are
+//   simply absent, like upstream's omitted properties
+// - O_* flags with no windows semantics read 0, per libuv's UV_FS_O_* table
+//   (uv/win.h: O_NOCTTY/O_DIRECTORY/O_NOFOLLOW/O_NONBLOCK/O_SYMLINK = 0;
+//   O_DIRECT = 0x02000000 FILE_FLAG_NO_BUFFERING; O_DSYNC = 0x04000000 and
+//   O_SYNC = 0x08000000 FILE_FLAG_WRITE_THROUGH)
+// - S_* permission bits: POSIX mode-bit values on both platforms (JS-level
+//   convention; node's windows face and the node-fallbacks constants table
+//   keep 448/256/64/... there too)
+// - errno: windows CRT values from libc's windows module; ESTALE has no
+//   windows errno and is omitted
 
 use ::std::ptr::NonNull;
 use bun_core::ZBox;
@@ -12,6 +30,48 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
+
+/// Windows `S_*`/`O_*` constants (see the windows-arm note above for the
+/// evidence sources). POSIX builds take these from libc instead.
+#[cfg(windows)]
+mod win {
+    pub const S_IRWXU: u32 = 448;
+    pub const S_IRUSR: u32 = 256;
+    pub const S_IWUSR: u32 = 128;
+    pub const S_IXUSR: u32 = 64;
+    pub const S_IRWXG: u32 = 56;
+    pub const S_IRGRP: u32 = 32;
+    pub const S_IWGRP: u32 = 16;
+    pub const S_IXGRP: u32 = 8;
+    pub const S_IRWXO: u32 = 7;
+    pub const S_IROTH: u32 = 4;
+    pub const S_IWOTH: u32 = 2;
+    pub const S_IXOTH: u32 = 1;
+    pub const O_NOCTTY: i32 = 0; // uv/win.h UV_FS_O_NOCTTY
+    pub const O_DIRECTORY: i32 = 0; // uv/win.h UV_FS_O_DIRECTORY
+    pub const O_NOFOLLOW: i32 = 0; // uv/win.h UV_FS_O_NOFOLLOW
+    pub const O_NONBLOCK: i32 = 0; // uv/win.h UV_FS_O_NONBLOCK
+    pub const O_DIRECT: i32 = 0x0200_0000; // FILE_FLAG_NO_BUFFERING
+    pub const O_DSYNC: i32 = 0x0400_0000; // FILE_FLAG_WRITE_THROUGH
+    pub const O_SYNC: i32 = 0x0800_0000; // FILE_FLAG_WRITE_THROUGH
+}
+
+/// Windows signal numbers (libuv `uv/win.h` + CRT signal.h — the signal set
+/// node exposes on windows).
+#[cfg(windows)]
+mod win_signals {
+    pub const SIGHUP: i32 = 1;
+    pub const SIGINT: i32 = 2;
+    pub const SIGQUIT: i32 = 3;
+    pub const SIGILL: i32 = 4;
+    pub const SIGFPE: i32 = 8;
+    pub const SIGKILL: i32 = 9;
+    pub const SIGSEGV: i32 = 11;
+    pub const SIGTERM: i32 = 15;
+    pub const SIGBREAK: i32 = 21;
+    pub const SIGABRT: i32 = 22;
+    pub const SIGWINCH: i32 = 28;
+}
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let constants_obj = unsafe { w2::JS_NewPlainObject(cx) });
@@ -29,30 +89,90 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, fs_obj.get(), "O_RDWR", libc::O_RDWR as i32);
             define_int_prop(cx, fs_obj.get(), "O_CREAT", libc::O_CREAT as i32);
             define_int_prop(cx, fs_obj.get(), "O_EXCL", libc::O_EXCL as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_NOCTTY", libc::O_NOCTTY as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_NOCTTY", win::O_NOCTTY);
             define_int_prop(cx, fs_obj.get(), "O_TRUNC", libc::O_TRUNC as i32);
             define_int_prop(cx, fs_obj.get(), "O_APPEND", libc::O_APPEND as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_DIRECTORY", libc::O_DIRECTORY as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_DIRECTORY", win::O_DIRECTORY);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_NOFOLLOW", libc::O_NOFOLLOW as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_NOFOLLOW", win::O_NOFOLLOW);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_SYNC", libc::O_SYNC as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_SYNC", win::O_SYNC);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_DSYNC", libc::O_DSYNC as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_DSYNC", win::O_DSYNC);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_SYMLINK", libc::O_NOFOLLOW as i32); // No O_SYMLINK on Linux; use O_NOFOLLOW
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_SYMLINK", win::O_NOFOLLOW); // windows: no O_SYMLINK (uv UV_FS_O_SYMLINK = 0)
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_DIRECT", libc::O_DIRECT as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_DIRECT", win::O_DIRECT);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "O_NONBLOCK", libc::O_NONBLOCK as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "O_NONBLOCK", win::O_NONBLOCK);
 
             // S_* permissions
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IRWXU", libc::S_IRWXU as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IRWXU", win::S_IRWXU as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IRUSR", libc::S_IRUSR as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IRUSR", win::S_IRUSR as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IWUSR", libc::S_IWUSR as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IWUSR", win::S_IWUSR as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IXUSR", libc::S_IXUSR as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IXUSR", win::S_IXUSR as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IRWXG", libc::S_IRWXG as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IRWXG", win::S_IRWXG as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IRGRP", libc::S_IRGRP as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IRGRP", win::S_IRGRP as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IWGRP", libc::S_IWGRP as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IWGRP", win::S_IWGRP as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IXGRP", libc::S_IXGRP as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IXGRP", win::S_IXGRP as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IRWXO", libc::S_IRWXO as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IRWXO", win::S_IRWXO as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IROTH", libc::S_IROTH as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IROTH", win::S_IROTH as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IWOTH", libc::S_IWOTH as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IWOTH", win::S_IWOTH as i32);
+            #[cfg(not(windows))]
             define_int_prop(cx, fs_obj.get(), "S_IXOTH", libc::S_IXOTH as i32);
+            #[cfg(windows)]
+            define_int_prop(cx, fs_obj.get(), "S_IXOTH", win::S_IXOTH as i32);
 
             // Copy flags
             define_int_prop(cx, fs_obj.get(), "COPYFILE_EXCL", 1);
@@ -154,7 +274,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             define_int_prop(cx, os_obj.get(), "EROFS", libc::EROFS as i32);
             define_int_prop(cx, os_obj.get(), "ESPIPE", libc::ESPIPE as i32);
             define_int_prop(cx, os_obj.get(), "ESRCH", libc::ESRCH as i32);
-            define_int_prop(cx, os_obj.get(), "ESTALE", libc::ESTALE as i32);
+            #[cfg(not(windows))]
+            define_int_prop(cx, os_obj.get(), "ESTALE", libc::ESTALE as i32); // no windows errno; omitted like upstream
             define_int_prop(cx, os_obj.get(), "ETIME", libc::ETIME as i32);
             define_int_prop(cx, os_obj.get(), "ETIMEDOUT", libc::ETIMEDOUT as i32);
             define_int_prop(cx, os_obj.get(), "ETXTBSY", libc::ETXTBSY as i32);
@@ -172,36 +293,88 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             // signals sub-object
             rooted!(&in(cx) let signals_obj = w2::JS_NewPlainObject(cx));
             if !signals_obj.get().is_null() {
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGHUP", libc::SIGHUP as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGINT", libc::SIGINT as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGQUIT", libc::SIGQUIT as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGILL", libc::SIGILL as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGTRAP", libc::SIGTRAP as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGABRT", libc::SIGABRT as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGIOT", libc::SIGIOT as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGBUS", libc::SIGBUS as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGFPE", libc::SIGFPE as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGKILL", libc::SIGKILL as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGUSR1", libc::SIGUSR1 as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGSEGV", libc::SIGSEGV as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGUSR2", libc::SIGUSR2 as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGPIPE", libc::SIGPIPE as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGALRM", libc::SIGALRM as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGTERM", libc::SIGTERM as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGCHLD", libc::SIGCHLD as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGCONT", libc::SIGCONT as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGSTOP", libc::SIGSTOP as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGTSTP", libc::SIGTSTP as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGTTIN", libc::SIGTTIN as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGTTOU", libc::SIGTTOU as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGURG", libc::SIGURG as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGXCPU", libc::SIGXCPU as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGXFSZ", libc::SIGXFSZ as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGVTALRM", libc::SIGVTALRM as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGPROF", libc::SIGPROF as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGWINCH", libc::SIGWINCH as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGIO", libc::SIGIO as i32);
+                #[cfg(not(windows))]
                 define_int_prop(cx, signals_obj.get(), "SIGSYS", libc::SIGSYS as i32);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGHUP", win_signals::SIGHUP);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGINT", win_signals::SIGINT);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGQUIT", win_signals::SIGQUIT);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGILL", win_signals::SIGILL);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGFPE", win_signals::SIGFPE);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGKILL", win_signals::SIGKILL);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGSEGV", win_signals::SIGSEGV);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGTERM", win_signals::SIGTERM);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGBREAK", win_signals::SIGBREAK);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGABRT", win_signals::SIGABRT);
+                #[cfg(windows)]
+                define_int_prop(cx, signals_obj.get(), "SIGWINCH", win_signals::SIGWINCH);
 
                 rooted!(&in(cx) let sig_val = ObjectValue(signals_obj.get()));
                 JS_DefineProperty(

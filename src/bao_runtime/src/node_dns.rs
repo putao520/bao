@@ -1,15 +1,23 @@
 // @trace REQ-ENG-007 [entity:DNS] [code:bun_dns]
 // Hostname → IP resolution for the dns.lookup family goes through `bun_dns`
 // (Backend::Libc): we build a `GetAddrInfo` request with `Backend::Libc`, call
-// libc::getaddrinfo directly, and walk the result chain via
+// getaddrinfo directly, and walk the result chain via
 // `GetAddrInfoResult::from_addr_info`. This replaces the previous
 // `std::net::ToSocketAddrs` path (which also called libc getaddrinfo but
 // bypassed `bun_dns`'s typed addrinfo model) so the runtime shares one DNS
 // surface with bun_http / bun_install. `std::net::Ipv6Addr` is used only for
 // canonical IPv6 text rendering in render_address.
 //
-// Reverse DNS uses libc::getnameinfo (NI_NAMEREQD) for dns.reverse().
-// lookupService uses libc::getnameinfo (NI_NAMEREQD | NI_NUMERICSERV) for
+// Windows arm (W2.5, upstream parity — bun resolves windows DNS through the
+// winsock wide pipeline too): resolve = GetAddrInfoW / free = FreeAddrInfoW,
+// reverse+lookupService = GetNameInfoW (wide buffers), poll = WSAPoll, and
+// the EAI_*/NI_* namespaces take the windows SDK values (ws2tcpip.h maps
+// EAI_NONAME = WSAHOST_NOT_FOUND 11001, EAI_NODATA = EAI_NONAME, EAI_AGAIN =
+// WSATRY_AGAIN 11002, ...; ws2def.h NI_NAMEREQD = 0x04, NI_NUMERICSERV =
+// 0x08). EAI_SYSTEM/EAI_OVERFLOW have no windows define and their error-code
+// arms are posix-only. c-ares (dns.resolve*) is platform-neutral.
+// Reverse DNS uses getnameinfo (NI_NAMEREQD) for dns.reverse().
+// lookupService uses getnameinfo (NI_NAMEREQD | NI_NUMERICSERV) for
 // hostname + service name resolution.
 // Per-RR-type resolve methods (A/AAAA/CNAME/MX/NAPTR/NS/PTR/SOA/SRV/TXT) use
 // c-ares (bun_cares_sys) synchronous integration: Channel::init + ares_query
@@ -30,6 +38,120 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
+
+// ── platform net-namespace (same shape as bao_uloop's addrinfo arm) ──────
+//
+// `addrinfo`/`freeaddrinfo` already come cfg-dispatched from `bun_dns`. The
+// remaining winsock items don't exist in libc's windows module: types/consts
+// come from bun_windows_sys::ws2_32, and the resolve/poll/nameinfo entry
+// points are the windows wide counterparts declared here. Values are the
+// windows SDK's (cross-sysroot ws2tcpip.h/winsock2.h/ws2def.h):
+// EAI_NONAME = WSAHOST_NOT_FOUND (11001), EAI_NODATA = EAI_NONAME,
+// EAI_AGAIN = WSATRY_AGAIN (11002), EAI_FAIL = WSANO_RECOVERY (11003),
+// EAI_SERVICE = WSATYPE_NOT_FOUND (10109), EAI_SOCKTYPE = WSAESOCKTNOSUPPORT
+// (10044), EAI_FAMILY = WSAEAFNOSUPPORT (10047), EAI_BADFLAGS = WSAEINVAL
+// (10022), EAI_MEMORY = WSA_NOT_ENOUGH_MEMORY (10055); NI_NAMEREQD = 0x04,
+// NI_NUMERICSERV = 0x08 (ws2def.h); POLLIN = POLLRDNORM|POLLRDBAND = 0x0300,
+// POLLOUT = POLLWRNORM = 0x0010, POLLERR = 0x0001, POLLHUP = 0x0002.
+// EAI_SYSTEM/EAI_OVERFLOW have no windows define (GetAddrInfoW never returns
+// them) — their posix-only match arms are cfg'd to windows-free.
+#[cfg(not(windows))]
+use libc::{
+    EAI_AGAIN, EAI_BADFLAGS, EAI_FAIL, EAI_FAMILY, EAI_MEMORY, EAI_NODATA, EAI_NONAME,
+    EAI_OVERFLOW, EAI_SERVICE, EAI_SOCKTYPE, EAI_SYSTEM, AF_INET, AF_INET6, NI_NAMEREQD,
+    NI_NUMERICSERV, POLLERR, POLLHUP, POLLIN, POLLOUT, getaddrinfo, getnameinfo, in6_addr,
+    in_addr, nfds_t, poll, pollfd, sockaddr, sockaddr_in, sockaddr_in6, sockaddr_storage,
+    socklen_t,
+};
+#[cfg(windows)]
+mod sock {
+    use core::ffi::c_int;
+
+    pub use bun_windows_sys::ws2_32::{
+        AF_INET, AF_INET6, addrinfo, in6_addr, in_addr, sockaddr, sockaddr_in, sockaddr_in6,
+        sockaddr_storage,
+    };
+    /// `ai_addrlen`/getnameinfo length unit on windows is the signed int.
+    pub type socklen_t = i32;
+    /// winsock2.h `struct pollfd` (fd is a SOCKET = pointer-sized).
+    #[repr(C)]
+    pub struct pollfd {
+        pub fd: usize,
+        pub events: i16,
+        pub revents: i16,
+    }
+    pub type nfds_t = usize;
+    pub const POLLIN: i16 = 0x0300;
+    pub const POLLOUT: i16 = 0x0010;
+    pub const POLLERR: i16 = 0x0001;
+    pub const POLLHUP: i16 = 0x0002;
+    pub const NI_NAMEREQD: c_int = 0x04;
+    pub const NI_NUMERICSERV: c_int = 0x08;
+    pub const EAI_AGAIN: c_int = 11002;
+    pub const EAI_BADFLAGS: c_int = 10022;
+    pub const EAI_FAIL: c_int = 11003;
+    pub const EAI_FAMILY: c_int = 10047;
+    pub const EAI_MEMORY: c_int = 10055;
+    pub const EAI_NODATA: c_int = 11001;
+    pub const EAI_NONAME: c_int = 11001;
+    pub const EAI_SERVICE: c_int = 10109;
+    pub const EAI_SOCKTYPE: c_int = 10044;
+
+    #[link(name = "ws2_32")]
+    unsafe extern "system" {
+        /// 0 on success; otherwise the WSA error code. Wide name/service.
+        pub unsafe fn GetAddrInfoW(
+            pwNodeName: *const u16,
+            pwServiceName: *const u16,
+            pHints: *const addrinfo,
+            ppResult: *mut *mut addrinfo,
+        ) -> c_int;
+        /// Wide reverse lookup: node/service buffers are UTF-16.
+        pub unsafe fn GetNameInfoW(
+            pSa: *const sockaddr,
+            Salen: socklen_t,
+            pNodeBuffer: *mut u16,
+            NNodeBufferLen: c_int,
+            pServiceBuffer: *mut u16,
+            NServiceBufferLen: c_int,
+            Flags: c_int,
+        ) -> c_int;
+        pub unsafe fn WSAPoll(fdArray: *mut pollfd, fds: u32, timeout: c_int) -> c_int;
+    }
+
+    /// SAFETY: `host_w` NUL-terminated UTF-16; hints/result valid pointers.
+    pub unsafe fn getaddrinfo(
+        host_w: *const u16,
+        service: *const u16,
+        hints: *const addrinfo,
+        result: *mut *mut addrinfo,
+    ) -> c_int {
+        // SAFETY: declared ws2_32 entry point; args valid per caller.
+        unsafe { GetAddrInfoW(host_w, service, hints, result) }
+    }
+
+    /// SAFETY: `sa` valid for `sa_len`; output buffers valid per caller.
+    pub unsafe fn getnameinfo(
+        sa: *const sockaddr,
+        sa_len: socklen_t,
+        node: *mut u16,
+        node_len: c_int,
+        service: *mut u16,
+        service_len: c_int,
+        flags: c_int,
+    ) -> c_int {
+        // SAFETY: declared ws2_32 entry point; args valid per caller.
+        unsafe { GetNameInfoW(sa, sa_len, node, node_len, service, service_len, flags) }
+    }
+
+    /// SAFETY: `fds` valid for `nfds` elements.
+    pub unsafe fn poll(fds: *mut pollfd, nfds: nfds_t, timeout: c_int) -> c_int {
+        // SAFETY: declared ws2_32 entry point; args valid per caller.
+        unsafe { WSAPoll(fds, nfds as u32, timeout) }
+    }
+}
+#[cfg(windows)]
+use sock::*;
 
 // ── Synchronous c-ares per-RR-type resolver ──────────────────────────
 // @trace REQ-ENG-007 [api:dns.resolve*] [code:bun_cares_sys]
@@ -865,7 +987,7 @@ fn drive_cares_channel(channel: &mut cares::Channel, container: &SyncChannelCont
     };
 
     // Build poll array from ares_getsock output.
-    let mut poll_fds: Vec<libc::pollfd> = Vec::new();
+    let mut poll_fds: Vec<pollfd> = Vec::new();
     for i in 0..cares::ARES_GETSOCK_MAXNUM as usize {
         let fd = ares_socks[i];
         if fd == cares::ARES_SOCKET_BAD {
@@ -874,10 +996,10 @@ fn drive_cares_channel(channel: &mut cares::Channel, container: &SyncChannelCont
         let readable = cares::ares_getsock_readable(bitmask, i as ::std::ffi::c_int) != 0;
         let writable = cares::ares_getsock_writable(bitmask, i as ::std::ffi::c_int) != 0;
         if readable || writable {
-            poll_fds.push(libc::pollfd {
-                fd: fd as libc::c_int,
-                events: (if readable { libc::POLLIN } else { 0 })
-                    | (if writable { libc::POLLOUT } else { 0 }),
+            poll_fds.push(pollfd {
+                fd: fd as _,
+                events: (if readable { POLLIN } else { 0 })
+                    | (if writable { POLLOUT } else { 0 }),
                 revents: 0,
             });
         }
@@ -890,13 +1012,13 @@ fn drive_cares_channel(channel: &mut cares::Channel, container: &SyncChannelCont
     }
 
     // Poll with a short timeout (10ms) so we don't block too long.
-    let rc = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as libc::nfds_t, 10) };
+    let rc = unsafe { poll(poll_fds.as_mut_ptr(), poll_fds.len() as nfds_t, 10) };
     if rc >= 0 {
         // Process each fd that has events.
         for pfd in &poll_fds {
-            let readable = pfd.revents & libc::POLLIN != 0;
-            let writable = pfd.revents & libc::POLLOUT != 0;
-            let has_err = pfd.revents & (libc::POLLERR | libc::POLLHUP) != 0;
+            let readable = pfd.revents & POLLIN != 0;
+            let writable = pfd.revents & POLLOUT != 0;
+            let has_err = pfd.revents & (POLLERR | POLLHUP) != 0;
             if readable || writable || has_err {
                 // On error/hup, signal both readable and writable so c-ares
                 // can detect the socket failure.
@@ -972,19 +1094,39 @@ fn resolve_hostname_libc(
         },
     };
 
-    // libc::getaddrinfo wants a NUL-terminated hostname. A NUL byte in the
+    // getaddrinfo wants a NUL-terminated hostname. A NUL byte in the
     // input can never be a resolvable name — report it as EAI_NONAME (the
     // "name not known" class) rather than swallowing it.
-    let c_host = match CString::new(hostname) {
+    //
+    // POSIX: narrow bytes. Windows: GetAddrInfoW over the UTF-16 widening of
+    // the same bytes (the ANSI ws2_32 export would decode non-ASCII through
+    // the codepage — see bao_uloop::addrinfo's windows-arm note).
+    #[cfg(not(windows))]
+    let host_c = match CString::new(hostname) {
         Ok(c) => c,
-        Err(_) => return Err(libc::EAI_NONAME),
+        Err(_) => return Err(EAI_NONAME),
+    };
+    #[cfg(not(windows))]
+    let host_arg = host_c.as_ptr();
+    #[cfg(windows)]
+    let host_arg: Vec<u16> = {
+        if hostname.as_bytes().contains(&0) {
+            return Err(EAI_NONAME);
+        }
+        let mut w: Vec<u16> =
+            String::from_utf8_lossy(hostname.as_bytes()).encode_utf16().collect();
+        w.push(0);
+        w
     };
     let hints = req.options.to_libc();
 
     let mut result_head: *mut addrinfo = ::std::ptr::null_mut();
     let rc = unsafe {
-        libc::getaddrinfo(
-            c_host.as_ptr(),
+        getaddrinfo(
+            #[cfg(not(windows))]
+            host_arg,
+            #[cfg(windows)]
+            host_arg.as_ptr(),
             ::std::ptr::null(),
             hints
                 .as_ref()
@@ -1010,7 +1152,7 @@ fn resolve_hostname_libc(
         let ai = unsafe { &*cur };
         if let Some(res) = GetAddrInfoResult::from_addr_info(ai) {
             if let Some(s) = render_address(&res.address) {
-                let family = if res.address.family() == libc::AF_INET6 {
+                let family = if res.address.family() == AF_INET6 {
                     6
                 } else {
                     4
@@ -1040,17 +1182,19 @@ fn resolve_hostname_libc(
 /// https://github.com/nodejs/node/blob/v24.5.0/lib/internal/errors.js#L795-L823
 fn gai_error_to_dns_code(rc: i32) -> ::std::string::String {
     match rc {
-        libc::EAI_NONAME => "ENOTFOUND".to_string(),
-        libc::EAI_NODATA => "ENODATA".to_string(),
-        libc::EAI_AGAIN => "EAI_AGAIN".to_string(),
-        libc::EAI_MEMORY => "ENOMEM".to_string(),
-        libc::EAI_BADFLAGS => "EAI_BADFLAGS".to_string(),
-        libc::EAI_FAIL => "EAI_FAIL".to_string(),
-        libc::EAI_FAMILY => "EAI_FAMILY".to_string(),
-        libc::EAI_SERVICE => "EAI_SERVICE".to_string(),
-        libc::EAI_SOCKTYPE => "EAI_SOCKTYPE".to_string(),
-        libc::EAI_SYSTEM => "EAI_SYSTEM".to_string(),
-        libc::EAI_OVERFLOW => "EAI_OVERFLOW".to_string(),
+        EAI_NONAME => "ENOTFOUND".to_string(),
+        EAI_NODATA => "ENODATA".to_string(),
+        EAI_AGAIN => "EAI_AGAIN".to_string(),
+        EAI_MEMORY => "ENOMEM".to_string(),
+        EAI_BADFLAGS => "EAI_BADFLAGS".to_string(),
+        EAI_FAIL => "EAI_FAIL".to_string(),
+        EAI_FAMILY => "EAI_FAMILY".to_string(),
+        EAI_SERVICE => "EAI_SERVICE".to_string(),
+        EAI_SOCKTYPE => "EAI_SOCKTYPE".to_string(),
+        #[cfg(not(windows))]
+        EAI_SYSTEM => "EAI_SYSTEM".to_string(), // no windows EAI_SYSTEM
+        #[cfg(not(windows))]
+        EAI_OVERFLOW => "EAI_OVERFLOW".to_string(), // no windows EAI_OVERFLOW
         _ => format!("EAI_{}", rc),
     }
 }
@@ -1988,8 +2132,8 @@ fn ip_to_sockaddr(
     ip_str: &str,
 ) -> Option<(
     ::std::net::SocketAddr,
-    libc::sockaddr_storage,
-    libc::socklen_t,
+    sockaddr_storage,
+    socklen_t,
 )> {
     let ip: ::std::net::IpAddr = ip_str.parse().ok()?;
     let addr: ::std::net::SocketAddr = match ip {
@@ -2000,31 +2144,31 @@ fn ip_to_sockaddr(
             ::std::net::SocketAddrV6::new(v6, 0, 0, 0).into()
         }
     };
-    let mut sa: libc::sockaddr_storage = unsafe { ::std::mem::zeroed() };
+    let mut sa: sockaddr_storage = unsafe { ::std::mem::zeroed() };
     let len = match addr {
         ::std::net::SocketAddr::V4(v4) => {
             unsafe {
-                let sin = &mut sa as *mut _ as *mut libc::sockaddr_in;
-                (*sin).sin_family = libc::AF_INET as u16;
+                let sin = &mut sa as *mut _ as *mut sockaddr_in;
+                (*sin).sin_family = AF_INET as u16;
                 (*sin).sin_port = 0u16.to_be();
-                (*sin).sin_addr = libc::in_addr {
+                (*sin).sin_addr = in_addr {
                     s_addr: u32::from_ne_bytes(v4.ip().octets()),
                 };
             }
-            ::std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t
+            ::std::mem::size_of::<sockaddr_in>() as socklen_t
         }
         ::std::net::SocketAddr::V6(v6) => {
             unsafe {
-                let sin6 = &mut sa as *mut _ as *mut libc::sockaddr_in6;
-                (*sin6).sin6_family = libc::AF_INET6 as u16;
+                let sin6 = &mut sa as *mut _ as *mut sockaddr_in6;
+                (*sin6).sin6_family = AF_INET6 as u16;
                 (*sin6).sin6_port = 0u16.to_be();
                 (*sin6).sin6_flowinfo = v6.flowinfo().to_be();
-                (*sin6).sin6_addr = libc::in6_addr {
+                (*sin6).sin6_addr = in6_addr {
                     s6_addr: v6.ip().octets(),
                 };
                 (*sin6).sin6_scope_id = v6.scope_id();
             }
-            ::std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t
+            ::std::mem::size_of::<sockaddr_in6>() as socklen_t
         }
     };
     Some((addr, sa, len))
@@ -2054,20 +2198,24 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
     rooted!(&in(cx_wrap) let arr_root = arr_obj);
 
-    // Use libc::getnameinfo with NI_NAMEREQD for real reverse DNS lookup.
+    // Use getnameinfo with NI_NAMEREQD for real reverse DNS lookup.
     let Some((_addr, sa, sa_len)) = ip_to_sockaddr(&ip_str) else {
         return throw_resolve_error(cx, "getHostByAddr", "EINVAL", &ip_str);
     };
+    // POSIX: narrow (c_char) buffers. Windows: GetNameInfoW is wide (UTF-16).
+    #[cfg(not(windows))]
     let mut host_buf = [0i8; 1025];
+    #[cfg(windows)]
+    let mut host_buf = [0u16; 1025];
     let rc = unsafe {
-        libc::getnameinfo(
-            ::std::ptr::from_ref(&sa).cast::<libc::sockaddr>(),
+        getnameinfo(
+            ::std::ptr::from_ref(&sa).cast::<sockaddr>(),
             sa_len,
             host_buf.as_mut_ptr(),
-            host_buf.len() as libc::socklen_t,
+            host_buf.len() as socklen_t,
             ::std::ptr::null_mut(),
             0,
-            libc::NI_NAMEREQD,
+            NI_NAMEREQD,
         )
     };
     if rc != 0 {
@@ -2075,6 +2223,12 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return throw_resolve_error(cx, "getHostByAddr", &code, &ip_str);
     }
 
+    #[cfg(windows)]
+    let hostname = {
+        let len = host_buf.iter().position(|&c| c == 0).unwrap_or(host_buf.len());
+        String::from_utf16_lossy(&host_buf[..len])
+    };
+    #[cfg(not(windows))]
     let hostname = unsafe { ::std::ffi::CStr::from_ptr(host_buf.as_ptr()) }
         .to_string_lossy()
         .into_owned();
@@ -2169,55 +2323,75 @@ unsafe extern "C" fn dns_lookup_service(cx: *mut JSContext, argc: u32, vp: *mut 
         }
     };
 
-    let mut sa: libc::sockaddr_storage = unsafe { ::std::mem::zeroed() };
+    let mut sa: sockaddr_storage = unsafe { ::std::mem::zeroed() };
     let sa_len = match parsed {
         ::std::net::SocketAddr::V4(v4) => {
             unsafe {
-                let sin = &mut sa as *mut _ as *mut libc::sockaddr_in;
-                (*sin).sin_family = libc::AF_INET as u16;
+                let sin = &mut sa as *mut _ as *mut sockaddr_in;
+                (*sin).sin_family = AF_INET as u16;
                 (*sin).sin_port = v4.port().to_be();
-                (*sin).sin_addr = libc::in_addr {
+                (*sin).sin_addr = in_addr {
                     s_addr: u32::from_ne_bytes(v4.ip().octets()),
                 };
             }
-            ::std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t
+            ::std::mem::size_of::<sockaddr_in>() as socklen_t
         }
         ::std::net::SocketAddr::V6(v6) => {
             unsafe {
-                let sin6 = &mut sa as *mut _ as *mut libc::sockaddr_in6;
-                (*sin6).sin6_family = libc::AF_INET6 as u16;
+                let sin6 = &mut sa as *mut _ as *mut sockaddr_in6;
+                (*sin6).sin6_family = AF_INET6 as u16;
                 (*sin6).sin6_port = v6.port().to_be();
                 (*sin6).sin6_flowinfo = v6.flowinfo().to_be();
-                (*sin6).sin6_addr = libc::in6_addr {
+                (*sin6).sin6_addr = in6_addr {
                     s6_addr: v6.ip().octets(),
                 };
                 (*sin6).sin6_scope_id = v6.scope_id();
             }
-            ::std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t
+            ::std::mem::size_of::<sockaddr_in6>() as socklen_t
         }
     };
 
+    // POSIX: narrow (c_char) buffers. Windows: GetNameInfoW is wide (UTF-16).
+    #[cfg(not(windows))]
     let mut host_buf = [0i8; 1025];
+    #[cfg(windows)]
+    let mut host_buf = [0u16; 1025];
+    #[cfg(not(windows))]
     let mut serv_buf = [0i8; 32];
+    #[cfg(windows)]
+    let mut serv_buf = [0u16; 32];
     let rc = unsafe {
-        libc::getnameinfo(
-            ::std::ptr::from_ref(&sa).cast::<libc::sockaddr>(),
+        getnameinfo(
+            ::std::ptr::from_ref(&sa).cast::<sockaddr>(),
             sa_len,
             host_buf.as_mut_ptr(),
-            host_buf.len() as libc::socklen_t,
+            host_buf.len() as socklen_t,
             serv_buf.as_mut_ptr(),
-            serv_buf.len() as libc::socklen_t,
-            libc::NI_NAMEREQD | libc::NI_NUMERICSERV,
+            serv_buf.len() as socklen_t,
+            NI_NAMEREQD | NI_NUMERICSERV,
         )
     };
 
+    #[cfg(windows)]
+    let (hostname, service) = {
+        let hlen = host_buf.iter().position(|&c| c == 0).unwrap_or(host_buf.len());
+        let slen = serv_buf.iter().position(|&c| c == 0).unwrap_or(serv_buf.len());
+        (
+            String::from_utf16_lossy(&host_buf[..hlen]),
+            String::from_utf16_lossy(&serv_buf[..slen]),
+        )
+    };
+    #[cfg(not(windows))]
+    let (hostname, service) = (
+        unsafe { ::std::ffi::CStr::from_ptr(host_buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned(),
+        unsafe { ::std::ffi::CStr::from_ptr(serv_buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned(),
+    );
+
     if rc == 0 {
-        let hostname = unsafe { ::std::ffi::CStr::from_ptr(host_buf.as_ptr()) }
-            .to_string_lossy()
-            .into_owned();
-        let service = unsafe { ::std::ffi::CStr::from_ptr(serv_buf.as_ptr()) }
-            .to_string_lossy()
-            .into_owned();
         let c_host = ZBox::from_bytes(hostname.as_bytes());
         let js_host = JS_NewStringCopyZ(cx, c_host.as_ptr());
         if !js_host.is_null() {
