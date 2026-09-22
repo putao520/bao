@@ -4089,21 +4089,9 @@ pub fn edit_win32_binary_subsystem(
 pub mod rescle {
     use super::*;
 
-    // TODO(port): move to windows_sys
-    unsafe extern "C" {
-        #[allow(dead_code)]
-        fn rescle__setIcon(exe_path: *const u16, icon_path: *const u16) -> c_int;
-        #[allow(dead_code)]
-        fn rescle__setWindowsMetadata(
-            exe_path: *const u16,    // exe_path
-            icon_path: *const u16,   // icon_path (nullable)
-            title: *const u16,       // title (nullable)
-            publisher: *const u16,   // publisher (nullable)
-            version: *const u16,     // version (nullable)
-            description: *const u16, // description (nullable)
-            copyright: *const u16,   // copyright (nullable)
-        ) -> c_int;
-    }
+    // TODO(port): the C++ vendor rescle ResourceEditor — the faces below are
+    // the Rust implementation (issue #18 W8): Win32 Begin/Update/EndResource
+    // for the icon group and a VS_VERSIONINFO writer for the metadata fields.
 
     bun_core::named_error_set!(RescleError);
 
@@ -4144,7 +4132,7 @@ pub mod rescle {
     pub fn set_icon(exe_path: *const u16, icon: *const u16) -> Result<(), RescleError> {
         const _: () = assert!(cfg!(windows));
         // SAFETY: paths are NUL-terminated
-        let status = unsafe { rescle__setIcon(exe_path, icon) };
+        let status = unsafe { imp::set_icon(exe_path, icon) };
         match status {
             0 => Ok(()),
             _ => Err(RescleError::IconEditError),
@@ -4222,7 +4210,7 @@ pub mod rescle {
 
         // SAFETY: all pointers are NUL-terminated wide strings or null
         let status = unsafe {
-            rescle__setWindowsMetadata(
+            imp::set_windows_metadata(
                 exe_path,
                 icon_w.map_or(ptr::null(), |iw| iw.as_ptr()),
                 title_w.as_ref().map_or(ptr::null(), |tw| tw.as_ptr()),
@@ -4249,8 +4237,895 @@ pub mod rescle {
             _ => Err(RescleError::WindowsMetadataEditError.into()),
         }
     }
-}
 
+    /// The resource editor — Rust port of the vendored C++ `rescle`
+    /// ResourceEditor (upstream `src/jsc/bindings/windows/rescle.cpp`,
+    /// Electron's rcedit fork). Consumed by `bun build --compile` to stamp
+    /// the icon + version metadata onto the generated executable.
+    ///
+    /// Upstream semantics mirrored here:
+    /// - `Load`: `LoadLibraryExW` as a data file + resource enumeration over
+    ///   `RT_VERSION` id 1, parsing the existing version stamp per language so
+    ///   fields the caller does not name are preserved. No existing stamp → a
+    ///   default en-us (1033/1200) stamp with a signature-only
+    ///   `VS_FIXEDFILEINFO` (upstream `FillDefaultData`).
+    /// - Serialization is byte-exact with upstream `VersionStampValue`: all
+    ///   `wLength` fields are bytes, every key/value/child starts on a 4-byte
+    ///   boundary relative to the resource start, string `wValueLength` is in
+    ///   WORDS (binary in bytes), and the string-table key is the 8 lowercase
+    ///   hex digits of `lang << 16 | codepage`.
+    /// - Icons: the .ico container repacks into the pack(2) `GRPICONHEADER`
+    ///   byte-for-byte, quirks included (group id 0, images 1..=count).
+    /// - Commit: Begin/Update/EndUpdateResourceW — `RT_VERSION` id 1 per
+    ///   language first, then the icon group and its images (en-us).
+    ///
+    /// One deliberate normalization vs upstream: parsed string values have
+    /// their trailing NUL stripped, so re-stamping an already-stamped exe does
+    /// not grow an extra NUL per round trip (upstream appends to the stored
+    /// `wstring` that already holds one). Single-pass output is byte-identical.
+    mod imp {
+        use super::*;
+
+        const K_LANG_EN_US: u16 = 1033;
+        const K_CODEPAGE_EN_US: u16 = 1200;
+        const K_DEFAULT_ICON_BUNDLE: usize = 0;
+
+        const RT_VERSION: usize = 16;
+        const RT_GROUP_ICON: usize = 14;
+        const RT_ICON: usize = 3;
+
+        const DONT_RESOLVE_DLL_REFERENCES: u32 = 0x1;
+        const LOAD_LIBRARY_AS_DATAFILE: u32 = 0x2;
+
+        /// `VS_FIXEDFILEINFO` size in bytes (13 u32 fields).
+        const FIXED_FILE_INFO_SIZE: usize = 52;
+        const VFT_APP: u32 = 1;
+        const FIXED_SIGNATURE: u32 = 0xFEEF_04BD;
+
+        type HResInfo = *mut c_void;
+        type HGlobal = *mut c_void;
+
+        type EnumResNameProc =
+            Option<unsafe extern "system" fn(HANDLE, *const u16, *const u16, isize) -> BOOL>;
+        type EnumResLangProc = Option<
+            unsafe extern "system" fn(HANDLE, *const u16, *const u16, u16, isize) -> BOOL,
+        >;
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            // safe: by-value opaque args only; failure is a NULL/0 return.
+            safe fn BeginUpdateResourceW(
+                pFileName: LPCWSTR,
+                bDeleteExistingResources: BOOL,
+            ) -> HANDLE;
+            safe fn EndUpdateResourceW(hUpdate: HANDLE, fDiscard: BOOL) -> BOOL;
+            safe fn SizeofResource(hModule: HANDLE, hResInfo: HResInfo) -> u32;
+            safe fn EnumResourceNamesW(
+                hModule: HANDLE,
+                lpType: *const u16,
+                lpEnumFunc: EnumResNameProc,
+                lParam: isize,
+            ) -> BOOL;
+            safe fn EnumResourceLanguagesW(
+                hModule: HANDLE,
+                lpType: *const u16,
+                lpName: *const u16,
+                lpEnumFunc: EnumResLangProc,
+                lParam: isize,
+            ) -> BOOL;
+            safe fn FreeLibrary(hLibModule: HANDLE) -> BOOL;
+            // INTRESOURCE casts in pointer slots — documented at call sites.
+            fn UpdateResourceW(
+                hUpdate: HANDLE,
+                lpType: *const u16,
+                lpName: *const u16,
+                wLanguage: u16,
+                lpData: *const c_void,
+                cb: u32,
+            ) -> BOOL;
+            fn FindResourceExW(
+                hModule: HANDLE,
+                lpType: *const u16,
+                lpName: *const u16,
+                wLanguage: u16,
+            ) -> HResInfo;
+            fn LoadResource(hModule: HANDLE, hResInfo: HResInfo) -> HGlobal;
+            fn LockResource(hResData: HGlobal) -> *const c_void;
+        }
+
+        /// `MAKEINTRESOURCEW`
+        #[inline]
+        fn int_resource(id: usize) -> *const u16 {
+            id as *const u16
+        }
+
+        fn round4(n: usize) -> usize {
+            n.div_ceil(4) * 4
+        }
+
+        fn utf16(s: &str) -> Vec<u16> {
+            s.encode_utf16().collect()
+        }
+
+        fn eq_ascii_key(key: &[u16], expected: &str) -> bool {
+            key.len() == expected.len()
+                && key.iter().zip(expected.encode_utf16()).all(|(a, b)| *a == b)
+        }
+
+        /// Read a NUL-terminated UTF-16 string from raw memory (NUL excluded).
+        ///
+        /// # Safety
+        /// `ptr` must point to a NUL-terminated wide string.
+        unsafe fn wide_from(ptr: *const u16) -> Vec<u16> {
+            debug_assert!(!ptr.is_null());
+            let mut n = 0usize;
+            // SAFETY: NUL-terminated per the caller contract.
+            unsafe {
+                while *ptr.add(n) != 0 {
+                    n += 1;
+                }
+                core::slice::from_raw_parts(ptr, n).to_vec()
+            }
+        }
+
+        fn is_empty_wide(ptr: *const u16) -> bool {
+            // SAFETY: callers pass either null or a valid NUL-terminated string.
+            ptr.is_null() || unsafe { *ptr } == 0
+        }
+
+        fn read_file(path: *const u16) -> Option<Vec<u8>> {
+            // SAFETY: NUL-terminated wide path.
+            let path = unsafe { wide_from(path) };
+            use ::std::os::windows::ffi::OsStringExt;
+            ::std::fs::read(::std::ffi::OsString::from_wide(&path)).ok()
+        }
+
+        // ── version stamp model (upstream `VersionInfo`) ────────────────────
+
+        /// One string table of the version stamp: the 8-hex-digit key decoded,
+        /// plus its `String` children (UTF-16 units, NUL excluded).
+        #[derive(Clone)]
+        struct StringTable {
+            lang: u16,
+            code_page: u16,
+            strings: Vec<(Vec<u16>, Vec<u16>)>,
+        }
+
+        /// A parsed (or default) `VS_VERSIONINFO` stamp for one language.
+        #[derive(Clone)]
+        struct VersionInfo {
+            fixed: [u32; 13],
+            string_tables: Vec<StringTable>,
+            translations: Vec<(u16, u16)>,
+        }
+
+        impl VersionInfo {
+            fn default_stamp() -> Self {
+                let mut info = Self {
+                    fixed: [0; 13],
+                    string_tables: vec![StringTable {
+                        lang: K_LANG_EN_US,
+                        code_page: K_CODEPAGE_EN_US,
+                        strings: Vec::new(),
+                    }],
+                    translations: vec![(K_LANG_EN_US, K_CODEPAGE_EN_US)],
+                };
+                Self::fill_default_fixed(&mut info.fixed);
+                info
+            }
+
+            /// Upstream `FillDefaultData` fixed-info arm: signature-only
+            /// `VS_FIXEDFILEINFO` (`dwFileType = VFT_APP`, rest zero).
+            fn fill_default_fixed(fixed: &mut [u32; 13]) {
+                *fixed = [0; 13];
+                fixed[0] = FIXED_SIGNATURE;
+                fixed[9] = VFT_APP;
+            }
+
+            fn has_fixed_file_info(&self) -> bool {
+                self.fixed[0] == FIXED_SIGNATURE
+            }
+
+            /// Upstream `SetVersionString`: update the first table holding
+            /// `name`; if no table holds it, append to every table.
+            fn set_version_string(&mut self, name: &[u16], value: &[u16]) {
+                for table in &mut self.string_tables {
+                    if let Some(slot) = table.strings.iter_mut().find(|(k, _)| k == name) {
+                        slot.1.clear();
+                        slot.1.extend_from_slice(value);
+                        return;
+                    }
+                    table.strings.push((name.to_vec(), value.to_vec()));
+                }
+            }
+
+            /// Upstream `SetFileVersion` + `SetProductVersion`:
+            /// `dwFileVersionMS/LS` at [2]/[3], `dwProductVersionMS/LS` at
+            /// [4]/[5].
+            fn set_version_quad(&mut self, quad: [u16; 4]) {
+                let ms = ((quad[0] as u32) << 16) | quad[1] as u32;
+                let ls = ((quad[2] as u32) << 16) | quad[3] as u32;
+                self.fixed[2] = ms;
+                self.fixed[3] = ls;
+                self.fixed[4] = ms;
+                self.fixed[5] = ls;
+            }
+
+            /// Build the serialization tree (upstream `VersionInfo::Serialize`).
+            fn to_stamp_node(&self) -> StampNode {
+                let mut root = StampNode::new(0, "VS_VERSION_INFO");
+                if self.has_fixed_file_info() {
+                    root.value_length = FIXED_FILE_INFO_SIZE as u16;
+                    root.value = self
+                        .fixed
+                        .iter()
+                        .flat_map(|w| w.to_le_bytes())
+                        .collect();
+                }
+
+                let mut string_file_info = StampNode::new(1, "StringFileInfo");
+                for table in &self.string_tables {
+                    let key = format!(
+                        "{:08x}",
+                        ((table.lang as u32) << 16) | table.code_page as u32
+                    );
+                    let mut node = StampNode::new(1, &key);
+                    node.children = table
+                        .strings
+                        .iter()
+                        .map(|(name, value)| {
+                            let mut units = value.clone();
+                            units.push(0);
+                            let mut bytes = Vec::with_capacity(units.len() * 2);
+                            for unit in &units {
+                                bytes.extend_from_slice(&unit.to_le_bytes());
+                            }
+                            // String `wValueLength` is in WORDS.
+                            StampNode {
+                                value_length: units.len() as u16,
+                                value_type: 1,
+                                key: name.clone(),
+                                value: bytes,
+                                children: Vec::new(),
+                            }
+                        })
+                        .collect();
+                    string_file_info.children.push(node);
+                }
+                root.children.push(string_file_info);
+
+                let mut var_file_info = StampNode::new(1, "VarFileInfo");
+                let mut translation = StampNode::new(0, "Translation");
+                translation.value = self
+                    .translations
+                    .iter()
+                    .flat_map(|&(lang, code_page)| {
+                        (((code_page as u32) << 16) | lang as u32).to_le_bytes()
+                    })
+                    .collect();
+                translation.value_length = translation.value.len() as u16;
+                var_file_info.children.push(translation);
+                root.children.push(var_file_info);
+                root
+            }
+        }
+
+        // ── serializer (upstream anonymous-namespace `VersionStampValue`) ───
+
+        /// One version-resource node with byte-exact serialization.
+        struct StampNode {
+            /// `wValueLength` — bytes for binary values, WORDs for strings.
+            value_length: u16,
+            /// 0 = binary, 1 = text.
+            value_type: u16,
+            key: Vec<u16>,
+            value: Vec<u8>,
+            children: Vec<StampNode>,
+        }
+
+        impl StampNode {
+            fn new(value_type: u16, key: &str) -> Self {
+                Self {
+                    value_length: 0,
+                    value_type,
+                    key: key.encode_utf16().collect(),
+                    value: Vec::new(),
+                    children: Vec::new(),
+                }
+            }
+
+            /// Upstream `GetLength`: header + NUL-terminated key, rounded
+            /// before the value and before every child — never after the last
+            /// node.
+            fn byte_len(&self) -> usize {
+                let mut n = 6 + (self.key.len() + 1) * 2;
+                if !self.value.is_empty() {
+                    n = round4(n) + self.value.len();
+                }
+                for child in &self.children {
+                    n = round4(n) + child.byte_len();
+                }
+                n
+            }
+
+            fn serialize(&self, out: &mut Vec<u8>) {
+                out.extend_from_slice(&(self.byte_len() as u16).to_le_bytes());
+                out.extend_from_slice(&self.value_length.to_le_bytes());
+                out.extend_from_slice(&self.value_type.to_le_bytes());
+                for unit in &self.key {
+                    out.extend_from_slice(&unit.to_le_bytes());
+                }
+                out.extend_from_slice(&[0, 0]);
+                if !self.value.is_empty() {
+                    push_pad4(out);
+                    out.extend_from_slice(&self.value);
+                }
+                for child in &self.children {
+                    push_pad4(out);
+                    child.serialize(out);
+                }
+            }
+        }
+
+        fn push_pad4(out: &mut Vec<u8>) {
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+
+        // ── parser (upstream `DeserializeVersionInfo` family) ───────────────
+
+        /// Read NUL-terminated UTF-16 units from `data` starting at `off`.
+        fn wide_from_bytes(data: &[u8], off: usize) -> Vec<u16> {
+            let mut units = Vec::new();
+            let mut p = off;
+            while p + 2 <= data.len() {
+                let unit = u16::from_le_bytes([data[p], data[p + 1]]);
+                p += 2;
+                if unit == 0 {
+                    break;
+                }
+                units.push(unit);
+            }
+            units
+        }
+
+        /// Exactly `count` UTF-16 units at `off` (truncated at the buffer end).
+        fn units_at(data: &[u8], off: usize, count: usize) -> Vec<u16> {
+            (0..count)
+                .filter_map(|i| {
+                    let p = off + i * 2;
+                    if p + 2 <= data.len() {
+                        Some(u16::from_le_bytes([data[p], data[p + 1]]))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+
+        /// Children region of one version node (upstream `GetChildrenData`):
+        /// (absolute offset, byte length).
+        fn children_region(data: &[u8], entry: usize, entry_len: usize, key_units: usize) -> (usize, usize) {
+            let offset = entry + round4(6 + (key_units + 1) * 2);
+            let length = entry_len.saturating_sub(offset - entry);
+            (offset.min(data.len()), length)
+        }
+
+        /// Parse one serialized version resource
+        /// (upstream `DeserializeVersionInfo`). `None` only for a truncated
+        /// root.
+        fn parse_version_resource(data: &[u8]) -> Option<VersionInfo> {
+            if data.len() < 40 {
+                return None;
+            }
+            let w_length = u16::from_le_bytes([data[0], data[1]]) as usize;
+            let w_value_length = u16::from_le_bytes([data[2], data[3]]) as usize;
+            let value_offset = round4(6 + 16 * 2); // key "VS_VERSION_INFO" + NUL
+            let mut info = VersionInfo::default_stamp();
+            if w_value_length >= FIXED_FILE_INFO_SIZE {
+                for (i, word) in info.fixed.iter_mut().enumerate() {
+                    let p = value_offset + i * 4;
+                    if p + 4 > data.len() {
+                        return None;
+                    }
+                    *word = u32::from_le_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]);
+                }
+            }
+            if !info.has_fixed_file_info() {
+                // Upstream `FillDefaultData` resets a non-stamp fixed info.
+                VersionInfo::fill_default_fixed(&mut info.fixed);
+            }
+            let children_offset = round4(value_offset + w_value_length).min(data.len());
+            let children_len = w_length.saturating_sub(children_offset);
+            let children_end = (children_offset + children_len).min(data.len());
+            let mut p = children_offset;
+            while p + 6 <= children_end {
+                let entry_len = u16::from_le_bytes([data[p], data[p + 1]]) as usize;
+                if entry_len == 0 {
+                    break;
+                }
+                let key = wide_from_bytes(data, p + 6);
+                let (child_off, child_len) = children_region(data, p, entry_len, key.len());
+                if eq_ascii_key(&key, "StringFileInfo") {
+                    parse_string_file_info(data, child_off, child_len, &mut info.string_tables);
+                } else if eq_ascii_key(&key, "VarFileInfo") {
+                    parse_var_file_info(data, child_off, child_len, &mut info.translations);
+                }
+                p += round4(entry_len);
+            }
+            Some(info)
+        }
+
+        fn parse_string_file_info(
+            data: &[u8],
+            off: usize,
+            len: usize,
+            tables: &mut Vec<StringTable>,
+        ) {
+            let end = (off + len).min(data.len());
+            let mut p = off;
+            while p + 6 <= end {
+                let entry_len = u16::from_le_bytes([data[p], data[p + 1]]) as usize;
+                if entry_len == 0 {
+                    break;
+                }
+                let key = wide_from_bytes(data, p + 6);
+                // The table key is 8 hex digits of `lang << 16 | codepage`
+                // (upstream `wcstol`); a malformed key falls back to en-us.
+                let hex: String = key.iter().map(|&u| char::from_u32(u as u32).unwrap_or('?')).collect();
+                let decoded = if key.len() == 8 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    u32::from_str_radix(&hex, 16).ok()
+                } else {
+                    None
+                };
+                let (lang, code_page) = match decoded {
+                    Some(v) => ((v >> 16) as u16, v as u16),
+                    None => (K_LANG_EN_US, K_CODEPAGE_EN_US),
+                };
+                let mut table = StringTable { lang, code_page, strings: Vec::new() };
+                let (child_off, child_len) = children_region(data, p, entry_len, key.len());
+                let child_end = (child_off + child_len).min(data.len());
+                let mut q = child_off;
+                while q + 6 <= child_end {
+                    let str_len = u16::from_le_bytes([data[q], data[q + 1]]) as usize;
+                    if str_len == 0 {
+                        break;
+                    }
+                    let name = wide_from_bytes(data, q + 6);
+                    let w_value_length = u16::from_le_bytes([data[q + 2], data[q + 3]]) as usize;
+                    let (value_off, _) = children_region(data, q, str_len, name.len());
+                    // `wValueLength` is in WORDS for text values; the stored
+                    // value keeps the trailing NUL, which is stripped here
+                    // (see the module-level normalization note).
+                    let mut value = units_at(data, value_off, w_value_length);
+                    while value.last() == Some(&0) {
+                        value.pop();
+                    }
+                    table.strings.push((name, value));
+                    q += round4(str_len);
+                }
+                tables.push(table);
+                p += round4(entry_len);
+            }
+        }
+
+        fn parse_var_file_info(
+            data: &[u8],
+            off: usize,
+            len: usize,
+            translations: &mut Vec<(u16, u16)>,
+        ) {
+            let end = (off + len).min(data.len());
+            let mut p = off;
+            while p + 6 <= end {
+                let entry_len = u16::from_le_bytes([data[p], data[p + 1]]) as usize;
+                if entry_len == 0 {
+                    break;
+                }
+                let key = wide_from_bytes(data, p + 6);
+                if eq_ascii_key(&key, "Translation") {
+                    let (value_off, value_len) = children_region(data, p, entry_len, key.len());
+                    for i in 0..value_len / 4 {
+                        let q = value_off + i * 4;
+                        if q + 4 > data.len() {
+                            break;
+                        }
+                        let dword =
+                            u32::from_le_bytes([data[q], data[q + 1], data[q + 2], data[q + 3]]);
+                        translations.push((dword as u16, (dword >> 16) as u16));
+                    }
+                }
+                p += round4(entry_len);
+            }
+        }
+
+        // ── icons (upstream `ResourceUpdater::SetIcon`) ─────────────────────
+
+        /// One parsed .ico bundle: the per-image resources plus the pack(2)
+        /// `GRPICONHEADER` directory written to `RT_GROUP_ICON`.
+        struct IconBundle {
+            images: Vec<Vec<u8>>,
+            grp_header: Vec<u8>,
+        }
+
+        /// Parse the .ico container.
+        fn parse_ico(data: &[u8]) -> Option<IconBundle> {
+            if data.len() < 6 {
+                return None;
+            }
+            let reserved = u16::from_le_bytes([data[0], data[1]]);
+            let icon_type = u16::from_le_bytes([data[2], data[3]]);
+            let count = u16::from_le_bytes([data[4], data[5]]) as usize;
+            if reserved != 0 || icon_type != 1 || count == 0 {
+                return None;
+            }
+            if data.len() < 6 + count * 16 {
+                return None;
+            }
+
+            let mut bundle = IconBundle {
+                images: Vec::with_capacity(count),
+                grp_header: Vec::with_capacity(6 + count * 14),
+            };
+            // GRPICONHEADER: reserved=0, type=1, count.
+            bundle.grp_header.extend_from_slice(&0u16.to_le_bytes());
+            bundle.grp_header.extend_from_slice(&1u16.to_le_bytes());
+            bundle.grp_header.extend_from_slice(&(count as u16).to_le_bytes());
+            for i in 0..count {
+                let e = 6 + i * 16;
+                let bytes_in_res =
+                    u32::from_le_bytes([data[e + 8], data[e + 9], data[e + 10], data[e + 11]])
+                        as usize;
+                let image_offset = u32::from_le_bytes(
+                    [data[e + 12], data[e + 13], data[e + 14], data[e + 15]],
+                ) as usize;
+                let end = image_offset.checked_add(bytes_in_res)?;
+                if end > data.len() {
+                    return None;
+                }
+                bundle.images.push(data[image_offset..end].to_vec());
+
+                // pack(2) GRPICONENTRY — byte-exact with upstream SetIcon,
+                // quirks included: the plane is stored truncated to a byte,
+                // the next byte is zeroed, the icon's bitCount lands in the
+                // WORD the PE spec reads as wBitCount, and only the low word
+                // of bytesInRes is written.
+                bundle.grp_header.extend_from_slice(&data[e..e + 4]);
+                bundle.grp_header.push(data[e + 4]);
+                bundle.grp_header.push(0);
+                let bit_count = u16::from_le_bytes([data[e + 6], data[e + 7]]);
+                bundle.grp_header.extend_from_slice(&bit_count.to_le_bytes());
+                bundle.grp_header.extend_from_slice(&(bytes_in_res as u16).to_le_bytes());
+                bundle.grp_header.extend_from_slice(&0u16.to_le_bytes());
+                bundle.grp_header.extend_from_slice(&(i as u16 + 1).to_le_bytes());
+            }
+            Some(bundle)
+        }
+
+        // ── load + commit (upstream `Load` / `Commit`) ──────────────────────
+
+        /// Upstream `Load`: map the exe as a data file and parse its existing
+        /// `RT_VERSION` stamps per language.
+        ///
+        /// # Safety
+        /// `exe_path` must be a NUL-terminated wide path.
+        unsafe fn load_version_stamps(
+            exe_path: *const u16,
+        ) -> Option<(HANDLE, Vec<(u16, VersionInfo)>)> {
+            // SAFETY: NUL-terminated path; flags per upstream Load.
+            let module = unsafe {
+                kernel32::LoadLibraryExW(
+                    exe_path,
+                    ptr::null_mut(),
+                    DONT_RESOLVE_DLL_REFERENCES | LOAD_LIBRARY_AS_DATAFILE,
+                )
+            };
+            if module.is_null() {
+                return None;
+            }
+            let mut names: Vec<usize> = Vec::new();
+            EnumResourceNamesW(
+                module,
+                int_resource(RT_VERSION),
+                Some(on_version_name),
+                &mut names as *mut _ as isize,
+            );
+            let mut stamps: Vec<(u16, VersionInfo)> = Vec::new();
+            for name in names {
+                // `name` is an INTRESOURCE produced by the enumeration.
+                EnumResourceLanguagesW(
+                    module,
+                    int_resource(RT_VERSION),
+                    name as *const u16,
+                    Some(on_version_language),
+                    &mut stamps as *mut _ as isize,
+                );
+            }
+            Some((module, stamps))
+        }
+
+        /// # Safety
+        /// `lparam` must point to a live `Vec<usize>`.
+        unsafe extern "system" fn on_version_name(
+            _module: HANDLE,
+            _res_type: *const u16,
+            name: *const u16,
+            lparam: isize,
+        ) -> BOOL {
+            // SAFETY: contract above.
+            unsafe { (*(lparam as *mut Vec<usize>)).push(name as usize) };
+            1
+        }
+
+        /// # Safety
+        /// `lparam` must point to a live `Vec<(u16, VersionInfo)>`; `name` and
+        /// `res_type` must be INTRESOURCEs valid for `module`.
+        unsafe extern "system" fn on_version_language(
+            module: HANDLE,
+            res_type: *const u16,
+            name: *const u16,
+            lang: u16,
+            lparam: isize,
+        ) -> BOOL {
+            let stamps = unsafe { &mut *(lparam as *mut Vec<(u16, VersionInfo)>) };
+            // Upstream stops the enumeration when a version resource fails to
+            // load or parse.
+            let Some(info) = (unsafe { read_version_resource(module, res_type, name, lang) })
+            else {
+                return 0;
+            };
+            stamps.push((lang, info));
+            1
+        }
+
+        /// # Safety
+        /// `name`/`res_type` must be INTRESOURCEs valid for `module`.
+        unsafe fn read_version_resource(
+            module: HANDLE,
+            res_type: *const u16,
+            name: *const u16,
+            lang: u16,
+        ) -> Option<VersionInfo> {
+            // SAFETY: INTRESOURCE args per contract; every handle is checked.
+            unsafe {
+                let res = FindResourceExW(module, res_type, name, lang);
+                if res.is_null() {
+                    return None;
+                }
+                let size = SizeofResource(module, res);
+                if size == 0 {
+                    return None;
+                }
+                let global = LoadResource(module, res);
+                if global.is_null() {
+                    return None;
+                }
+                let data = LockResource(global);
+                if data.is_null() {
+                    return None;
+                }
+                parse_version_resource(core::slice::from_raw_parts(
+                    data.cast::<u8>(),
+                    size as usize,
+                ))
+            }
+        }
+
+        enum CommitError {
+            /// `BeginUpdateResourceW` failed.
+            Begin,
+            /// An `UpdateResourceW` / `EndUpdateResourceW` failed.
+            Write,
+        }
+
+        /// Upstream `Commit`: BeginUpdateResourceW → `RT_VERSION` id 1 per
+        /// language → icon group + images → EndUpdateResourceW. Failures
+        /// discard the transaction.
+        ///
+        /// # Safety
+        /// `exe_path` must be a NUL-terminated wide path.
+        unsafe fn commit_resources(
+            exe_path: *const u16,
+            stamps: &[(u16, VersionInfo)],
+            icon: Option<(&IconBundle, u16)>,
+        ) -> Result<(), CommitError> {
+            // SAFETY: NUL-terminated path; handle checked below.
+            let handle = BeginUpdateResourceW(exe_path, 0);
+            if handle.is_null() {
+                return Err(CommitError::Begin);
+            }
+            for (lang, info) in stamps {
+                let node = info.to_stamp_node();
+                let mut bytes = Vec::with_capacity(node.byte_len());
+                node.serialize(&mut bytes);
+                // SAFETY: `bytes` is live for the call; INTRESOURCE ids.
+                if unsafe {
+                    UpdateResourceW(
+                        handle,
+                        int_resource(RT_VERSION),
+                        int_resource(1),
+                        *lang,
+                        bytes.as_ptr().cast(),
+                        bytes.len() as u32,
+                    )
+                } == 0
+                {
+                    EndUpdateResourceW(handle, 1);
+                    return Err(CommitError::Write);
+                }
+            }
+            if let Some((icon, lang)) = icon {
+                // SAFETY: the icon buffers are live for these calls.
+                unsafe {
+                    if UpdateResourceW(
+                        handle,
+                        int_resource(RT_GROUP_ICON),
+                        int_resource(K_DEFAULT_ICON_BUNDLE),
+                        lang,
+                        icon.grp_header.as_ptr().cast(),
+                        icon.grp_header.len() as u32,
+                    ) == 0
+                    {
+                        EndUpdateResourceW(handle, 1);
+                        return Err(CommitError::Write);
+                    }
+                    for (i, image) in icon.images.iter().enumerate() {
+                        if UpdateResourceW(
+                            handle,
+                            int_resource(RT_ICON),
+                            int_resource(i + 1),
+                            lang,
+                            image.as_ptr().cast(),
+                            image.len() as u32,
+                        ) == 0
+                        {
+                            EndUpdateResourceW(handle, 1);
+                            return Err(CommitError::Write);
+                        }
+                    }
+                }
+            }
+            if EndUpdateResourceW(handle, 0) == 0 {
+                return Err(CommitError::Write);
+            }
+            Ok(())
+        }
+
+        // ── the two binding entry points (rescle-binding.cpp) ───────────────
+
+        /// `rescle__setIcon` — upstream status contract: Load −1, SetIcon −2,
+        /// Commit −3.
+        ///
+        /// # Safety
+        /// Both paths must be NUL-terminated wide strings.
+        pub(super) unsafe fn set_icon(exe_path: *const u16, icon_path: *const u16) -> c_int {
+            // SAFETY: NUL-terminated path.
+            let Some((module, stamps)) = (unsafe { load_version_stamps(exe_path) }) else {
+                return -1;
+            };
+            // Upstream frees the data-file mapping before opening the update.
+            FreeLibrary(module);
+            let Some(icon) = read_file(icon_path).as_deref().and_then(parse_ico) else {
+                return -2;
+            };
+            match unsafe { commit_resources(exe_path, &stamps, Some((&icon, K_LANG_EN_US))) } {
+                Ok(()) => 0,
+                Err(CommitError::Begin) => -1,
+                Err(CommitError::Write) => -3,
+            }
+        }
+
+        /// `rescle__setWindowsMetadata` — one load + one commit for all
+        /// metadata; the upstream per-field status contract is preserved
+        /// (Load −1, icon −2, version −11, commit −12; the per-field setter
+        /// codes −3..−10/−13 have no failure mode in Rust — setters only
+        /// allocate, which aborts).
+        ///
+        /// # Safety
+        /// All pointer args must be NUL-terminated wide strings or null.
+        pub(super) unsafe fn set_windows_metadata(
+            exe_path: *const u16,
+            icon_path: *const u16,
+            title: *const u16,
+            publisher: *const u16,
+            version: *const u16,
+            description: *const u16,
+            copyright: *const u16,
+        ) -> c_int {
+            let Some((module, mut stamps)) = (unsafe { load_version_stamps(exe_path) }) else {
+                return -1;
+            };
+            FreeLibrary(module);
+
+            let icon = if !is_empty_wide(icon_path) {
+                match read_file(icon_path).as_deref().and_then(parse_ico) {
+                    Some(icon) => Some(icon),
+                    None => return -2,
+                }
+            } else {
+                None
+            };
+
+            // langId = the first existing stamp, else the en-us default
+            // (upstream `versionStampMap_.empty() ? kLangEnUs : begin()->first`).
+            let lang = stamps.first().map_or(K_LANG_EN_US, |&(l, _)| l);
+            if !stamps.iter().any(|&(l, _)| l == lang) {
+                stamps.push((lang, VersionInfo::default_stamp()));
+            }
+            let info = &mut stamps.iter_mut().find(|item| item.0 == lang).unwrap().1;
+
+            if !is_empty_wide(title) {
+                // SAFETY: NUL-terminated wide string.
+                let value = unsafe { wide_from(title) };
+                info.set_version_string(&utf16("ProductName"), &value);
+            }
+            if !is_empty_wide(publisher) {
+                // SAFETY: NUL-terminated wide string.
+                let value = unsafe { wide_from(publisher) };
+                info.set_version_string(&utf16("CompanyName"), &value);
+            }
+            if !is_empty_wide(description) {
+                // SAFETY: NUL-terminated wide string.
+                let value = unsafe { wide_from(description) };
+                info.set_version_string(&utf16("FileDescription"), &value);
+            }
+            if !is_empty_wide(copyright) {
+                // SAFETY: NUL-terminated wide string.
+                let value = unsafe { wide_from(copyright) };
+                info.set_version_string(&utf16("LegalCopyright"), &value);
+            }
+            if !is_empty_wide(version) {
+                // SAFETY: NUL-terminated wide string.
+                let Some(quad) = (unsafe { parse_version_quad(version) }) else {
+                    return -11;
+                };
+                info.set_version_quad(quad);
+                let normalized = format!("{}.{}.{}.{}", quad[0], quad[1], quad[2], quad[3]);
+                let normalized = utf16(&normalized);
+                info.set_version_string(&utf16("FileVersion"), &normalized);
+                info.set_version_string(&utf16("ProductVersion"), &normalized);
+            }
+
+            // Upstream clears `OriginalFilename` so the compiled exe does not
+            // report "bun.exe" as its original name.
+            info.set_version_string(&utf16("OriginalFilename"), &[]);
+
+            match unsafe {
+                commit_resources(exe_path, &stamps, icon.as_ref().map(|i| (i, K_LANG_EN_US)))
+            } {
+                Ok(()) => 0,
+                Err(CommitError::Begin) => -1,
+                Err(CommitError::Write) => -12,
+            }
+        }
+
+        /// `swscanf_s(version, L"%hu.%hu.%hu.%hu", …)` — dotted quad, at least
+        /// one numeric component, components past the fourth ignored,
+        /// `%hu` truncation for oversized components.
+        ///
+        /// # Safety
+        /// `version` must be a NUL-terminated wide string.
+        unsafe fn parse_version_quad(version: *const u16) -> Option<[u16; 4]> {
+            // SAFETY: NUL-terminated wide string.
+            let units = unsafe { wide_from(version) };
+            let text: String = String::from_utf16_lossy(&units);
+            let mut quad = [0u16; 4];
+            let mut parsed = 0usize;
+            for part in text.split(|c: char| !c.is_ascii_digit()) {
+                if part.is_empty() {
+                    continue;
+                }
+                if parsed >= 4 {
+                    break;
+                }
+                quad[parsed] = part.parse::<u32>().ok()? as u16;
+                parsed += 1;
+            }
+            if parsed > 0 { Some(quad) } else { None }
+        }
+    }
+}
 pub use bun_windows_sys::externs::CloseHandle;
 pub use bun_windows_sys::externs::CreateDirectoryW;
 pub use bun_windows_sys::externs::CreateSymbolicLinkW;
