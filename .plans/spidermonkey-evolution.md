@@ -2082,3 +2082,7 @@ b1c45895 无辜(git show 零交集,失败先于其存在);真因=satellite `carg
 ### ★★★W2 终门 GREEN(C 亲跑,2026-09-22)
 
 `cargo check --workspace --target x86_64-pc-windows-msvc` **RC=0 零错误**——全 bao workspace(476 crate 含 mozjs/servo/全部 runtime 模块)msvc 类型面全通。**编译面 type-check 完结。W7 链接面(bao.exe)已发车**(cargo build -p bao_bin --target msvc,后台)→ 绿即 scp .200 真机测试(W8 runner+T1/T2)。用户裁决的 Windows 大计划:编译✅(check 级)→链接(在途)→真机测试(就绪)。
+
+### W7 链接差三 .lib(2026-09-22)
+
+lld-link 已钉(config [target] linker);全 rlib 编完,链接报:archive.lib/cares.lib(bun_libarchive/bun_cares_sys 的 out 零 .lib=build.rs 无 msvc 交叉产 lib 面,同 C 四先例模式)+Dbghelp.lib(SDK 大小写:请求 Dbghelp vs 文件 DbgHelp,Linux lld-link 大小写敏感;LIB env 已被读——kernel32 等过了)。终链合同已派 ew4(casefix symlink+两 C 臂+复链产 bao.exe)。
