@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use crate::config::PageConfig;
 use crate::delegate::{
     ServiceWorkerHandle, ServiceWorkerRegistrationId, ServiceWorkerRegistrationState,
+    send_servo_event,
 };
 use crate::error::BrowserError;
 use crate::page::PageHandle;
@@ -602,20 +603,23 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
             resource_type,
             webview_id,
         } => {
-            let _ = event_tx.try_send(ServoEvent::NetworkRequest {
-                // Attribution: the webview that issued the request when the
-                // net layer knows it (delivery is broadcast-gated by session
-                // domain enablement, not by this field).
-                target_id: webview_id.unwrap_or_else(|| "0".to_string()),
-                request_id,
-                url,
-                method,
-                headers: headers.into_iter().collect(),
-                post_data: None,
-                resource_type,
-                frame_id: "0".to_string(),
-            });
-        },
+            send_servo_event(
+                &event_tx,
+                ServoEvent::NetworkRequest {
+                    // Attribution: the webview that issued the request when the
+                    // net layer knows it (delivery is broadcast-gated by session
+                    // domain enablement, not by this field).
+                    target_id: webview_id.unwrap_or_else(|| "0".to_string()),
+                    request_id,
+                    url,
+                    method,
+                    headers: headers.into_iter().collect(),
+                    post_data: None,
+                    resource_type,
+                    frame_id: "0".to_string(),
+                },
+            );
+        }
         servo::BaoNetworkTapEvent::Response {
             request_id,
             url,
@@ -625,17 +629,20 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
             mime_type,
             webview_id,
         } => {
-            let _ = event_tx.try_send(ServoEvent::NetworkResponse {
-                target_id: webview_id.unwrap_or_else(|| "0".to_string()),
-                request_id,
-                url,
-                status,
-                status_text,
-                headers: headers.into_iter().collect(),
-                mime_type,
-                remote_ip: None,
-            });
-        },
+            send_servo_event(
+                &event_tx,
+                ServoEvent::NetworkResponse {
+                    target_id: webview_id.unwrap_or_else(|| "0".to_string()),
+                    request_id,
+                    url,
+                    status,
+                    status_text,
+                    headers: headers.into_iter().collect(),
+                    mime_type,
+                    remote_ip: None,
+                },
+            );
+        }
     });
     servo::set_network_event_tap(Some(tap));
     Ok(serde_json::json!({}))
@@ -928,10 +935,7 @@ fn cmd_performance_get_metrics(page: &PageHandle) -> Result<Value, String> {
 /// ServiceWorker.terminateWorker / ServiceWorker.stopWorker — terminate the
 /// page's controlling ServiceWorker when the registration id matches.
 /// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
-fn cmd_terminate_service_worker(
-    page: &PageHandle,
-    registration_id: &str,
-) -> Result<Value, String> {
+fn cmd_terminate_service_worker(page: &PageHandle, registration_id: &str) -> Result<Value, String> {
     let id = parse_sw_registration_id(registration_id)?;
     let state = page.webview_state();
     let mut st = state.borrow_mut();
@@ -953,10 +957,7 @@ fn cmd_terminate_service_worker(
 
 /// ServiceWorker.getRegistration — read the page's controlling ServiceWorker.
 /// @trace REQ-BRW-004 [entity:ServiceWorker] DF-WK-8
-fn cmd_sw_registration_info(
-    page: &PageHandle,
-    registration_id: &str,
-) -> Result<Value, String> {
+fn cmd_sw_registration_info(page: &PageHandle, registration_id: &str) -> Result<Value, String> {
     let id = parse_sw_registration_id(registration_id)?;
     let state = page.webview_state();
     let st = state.borrow();
@@ -1199,9 +1200,7 @@ fn cmd_debugger_enable(page: &PageHandle) -> Result<Value, String> {
     // instance; the page global is attached inside the setup). The setup
     // returns a status string ('ok' / 'already-active' / 'debugger-setup:
     // <reason>') — an explicit error, never a half-installed debugger.
-    let status = page
-        .evaluate_js(DEBUGGER_SETUP)
-        .map_err(to_browser_error)?;
+    let status = page.evaluate_js(DEBUGGER_SETUP).map_err(to_browser_error)?;
     if status != "ok" && status != "already-active" {
         return Err(format!("Debugger.enable failed: {status}"));
     }
@@ -1238,9 +1237,9 @@ fn cmd_debugger_set_breakpoint(
             "new RegExp({}).test(s.url)",
             serde_json::to_string(r).unwrap_or_default()
         ),
-        (None, None) => format!(
-            "s.startLine <= {sm_line} && {sm_line} <= s.startLine + s.lineCount - 1"
-        ),
+        (None, None) => {
+            format!("s.startLine <= {sm_line} && {sm_line} <= s.startLine + s.lineCount - 1")
+        }
     };
     let col = column.unwrap_or(0);
     let has_column = column.is_some();
@@ -1342,10 +1341,18 @@ fn cmd_debugger_interrupt(page: &PageHandle) -> Result<Value, String> {
 
 fn cmd_debugger_resume(page: &PageHandle, step_type: Option<&str>) -> Result<Value, String> {
     let js = match step_type {
-        Some("next") => "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; __bao_dbg_emit_paused(frame, 'step', []); }; return undefined; }; })()",
-        Some("step") => "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; __bao_dbg_emit_paused(frame, 'step', []); return undefined; }; return undefined; }; })()",
-        Some("finish") => "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; __bao_dbg_emit_paused(frame, 'step', []); }; return undefined; }; })()",
-        _ => "(function() { /* resume: clear step hooks */ if (__bao_dbg) { __bao_dbg.onEnterFrame = undefined; } })()",
+        Some("next") => {
+            "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; __bao_dbg_emit_paused(frame, 'step', []); }; return undefined; }; })()"
+        }
+        Some("step") => {
+            "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; __bao_dbg_emit_paused(frame, 'step', []); return undefined; }; return undefined; }; })()"
+        }
+        Some("finish") => {
+            "(function() { if (!__bao_dbg) throw new Error('Debugger.enable required'); __bao_dbg.onEnterFrame = function(frame) { __bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; __bao_dbg_emit_paused(frame, 'step', []); }; return undefined; }; })()"
+        }
+        _ => {
+            "(function() { /* resume: clear step hooks */ if (__bao_dbg) { __bao_dbg.onEnterFrame = undefined; } })()"
+        }
     };
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
@@ -1928,7 +1935,9 @@ fn cmd_runtime_call_function_on(
     // The wrapper always returns JSON.stringify({result/exceptionDetails}) —
     // an unparseable output is a real failure, never a silent {}.
     let parsed: Value = serde_json::from_str(&result).map_err(|e| {
-        format!("Runtime.callFunctionOn: page did not return the wrapper JSON: {e} (got: {result:.200})")
+        format!(
+            "Runtime.callFunctionOn: page did not return the wrapper JSON: {e} (got: {result:.200})"
+        )
     })?;
     if parsed.get("__baoAsync").and_then(|v| v.as_bool()) == Some(true) {
         return wait_bao_async_promise(page, rbv, &group_json);
@@ -1967,9 +1976,7 @@ fn wait_bao_async_promise(
             return Ok(parsed);
         }
         if std::time::Instant::now() >= deadline {
-            return Err(
-                "Runtime.callFunctionOn: awaitPromise did not settle within 20s".into(),
-            );
+            return Err("Runtime.callFunctionOn: awaitPromise did not settle within 20s".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -2341,7 +2348,7 @@ fn ok_empty() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use crate::delegate::{ServiceWorkerHandle, ServiceWorkerRegistrationState};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn json_type_null_returns_undefined() {

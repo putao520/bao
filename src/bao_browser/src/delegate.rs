@@ -7,8 +7,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 
 use dpi::PhysicalSize;
 use servo::{
@@ -19,6 +19,47 @@ use servo::{
 
 use bao_cdp::{BaoEvent, ConsoleMessage};
 use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
+
+// ─── ServoEvent clone-face 投递观测(REQ-CDP-006) ───────────────────
+//
+// `SyncSender` 裸克隆直推面(delegate/cdp_handler 站点)的满容丢弃在
+// `EventSubscriber::dropped_count()` 计数域之外(裸 sender 无计数器通道)。
+// 本节是站点侧观测补口:Full(drop-newest)累计计数 + 节流 debug 日志;
+// Disconnected(接收端已 drop)维持 lossy-by-design 静默。零语义影响——
+// 投递行为与 `let _ = tx.try_send(..)` 等价,仅多观测,永不阻塞调用线程。
+
+/// clone-face(SyncSender 直推面)满容丢弃累计数。观测用途,只增不减;
+/// 与 `EventSubscriber::dropped_count()`(on_* push 面)互不重叠。
+static CLONE_FACE_DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// 节流首投闩:首次丢弃记 debug,此后每 `CLONE_FACE_LOG_INTERVAL` 条一条。
+static CLONE_FACE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// 节流间隔(与 EventSubscriber 饱和日志的 1024 先例同形)。
+const CLONE_FACE_LOG_INTERVAL: usize = 1024;
+
+/// clone-face 满容丢弃累计数(观测用途)。
+pub(crate) fn clone_face_dropped_count() -> usize {
+    CLONE_FACE_DROPPED.load(Ordering::Relaxed)
+}
+
+/// 经 `SyncSender` 直推一个 ServoEvent:`try_send` 满容(drop-newest)时
+/// 累计计数并按节流记 debug 日志;接收端已 drop 时静默(lossy-by-design,
+/// 与既有 `let _ = tx.try_send(..)` 语义等价)。
+pub(crate) fn send_servo_event(tx: &SyncSender<ServoEvent>, event: ServoEvent) {
+    if let Err(TrySendError::Full(_)) = tx.try_send(event) {
+        let total = CLONE_FACE_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+        if !CLONE_FACE_LOGGED.swap(true, Ordering::Relaxed) {
+            log::debug!(
+                "servo event channel saturated, clone-face send dropped (drop-newest); dropped={total} total"
+            );
+        } else if total % CLONE_FACE_LOG_INTERVAL == 0 {
+            log::debug!(
+                "servo event channel still saturated, clone-face send dropped; dropped={total} total"
+            );
+        }
+    }
+}
 
 // ─── Worker Message Channel (REQ-BRW-004) ──────────────────────────
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope] [criterion:1..18]
@@ -3641,16 +3682,20 @@ impl BaoWebViewState {
                 WorkerMessageDirection::WorkerToPage => "worker→page",
             };
             // Lossy by design: fire-and-forget console observability — the
-            // send only fails once the consumer is dropped; never stall the
-            // servo script thread on CDP event delivery.
-            let _ = tx.try_send(ServoEvent::Console {
-                target_id: "0".to_string(),
-                level: ConsoleLevel::Debug,
-                text: format!("[Worker] postMessage {}: {}", direction, event.worker_id.0),
-                url: None,
-                line: None,
-                column: None,
-            });
+            // send never stalls the servo script thread: saturation drops
+            // (drop-newest) are counted and debug-logged (throttled) via
+            // send_servo_event; a dropped receiver just fails the send.
+            send_servo_event(
+                &tx,
+                ServoEvent::Console {
+                    target_id: "0".to_string(),
+                    level: ConsoleLevel::Debug,
+                    text: format!("[Worker] postMessage {}: {}", direction, event.worker_id.0),
+                    url: None,
+                    line: None,
+                    column: None,
+                },
+            );
         }
     }
 
@@ -3676,19 +3721,23 @@ impl BaoWebViewState {
                 None => "metadata-only (servo handles clone)".to_string(),
             };
             // Lossy by design: fire-and-forget console observability — the
-            // send only fails once the consumer is dropped; never stall the
-            // servo script thread on CDP event delivery.
-            let _ = tx.try_send(ServoEvent::Console {
-                target_id: "0".to_string(),
-                level: ConsoleLevel::Debug,
-                text: format!(
-                    "[Worker] postMessage #{} {}: {} [{}]",
-                    msg.message_id, direction, msg.worker_id.0, payload_info
-                ),
-                url: None,
-                line: None,
-                column: None,
-            });
+            // send never stalls the servo script thread: saturation drops
+            // (drop-newest) are counted and debug-logged (throttled) via
+            // send_servo_event; a dropped receiver just fails the send.
+            send_servo_event(
+                &tx,
+                ServoEvent::Console {
+                    target_id: "0".to_string(),
+                    level: ConsoleLevel::Debug,
+                    text: format!(
+                        "[Worker] postMessage #{} {}: {} [{}]",
+                        msg.message_id, direction, msg.worker_id.0, payload_info
+                    ),
+                    url: None,
+                    line: None,
+                    column: None,
+                },
+            );
         }
     }
 
@@ -3702,14 +3751,17 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:9]
     pub fn forward_worker_error_event(&self, event: WorkerErrorEvent) {
         if let Some(ref tx) = self.event_tx {
-            let _ = tx.try_send(ServoEvent::PageError {
-                target_id: "0".to_string(),
-                text: format!("[Worker] {}: {}", event.worker_id.0, event.message),
-                url: Some(event.filename.clone()),
-                line: Some(event.lineno),
-                column: Some(event.colno),
-                stack: None,
-            });
+            send_servo_event(
+                &tx,
+                ServoEvent::PageError {
+                    target_id: "0".to_string(),
+                    text: format!("[Worker] {}: {}", event.worker_id.0, event.message),
+                    url: Some(event.filename.clone()),
+                    line: Some(event.lineno),
+                    column: Some(event.colno),
+                    stack: None,
+                },
+            );
         }
     }
 
@@ -3897,25 +3949,29 @@ impl BaoWebViewState {
     pub fn forward_shared_worker_connect_event(&self, event: SharedWorkerConnectEvent) {
         if let Some(ref tx) = self.event_tx {
             // Lossy by design: fire-and-forget console observability — the
-            // send only fails once the consumer is dropped; never stall the
-            // servo script thread on CDP event delivery.
-            let _ = tx.try_send(ServoEvent::Console {
-                target_id: "0".to_string(),
-                level: ConsoleLevel::Debug,
-                text: format!(
-                    "[SharedWorker] connect: {} (name={}) from {}",
-                    event.shared_worker_id.script_url,
-                    if event.shared_worker_id.name.is_empty() {
-                        "<default>"
-                    } else {
-                        &event.shared_worker_id.name
-                    },
-                    event.page_url
-                ),
-                url: None,
-                line: None,
-                column: None,
-            });
+            // send never stalls the servo script thread: saturation drops
+            // (drop-newest) are counted and debug-logged (throttled) via
+            // send_servo_event; a dropped receiver just fails the send.
+            send_servo_event(
+                &tx,
+                ServoEvent::Console {
+                    target_id: "0".to_string(),
+                    level: ConsoleLevel::Debug,
+                    text: format!(
+                        "[SharedWorker] connect: {} (name={}) from {}",
+                        event.shared_worker_id.script_url,
+                        if event.shared_worker_id.name.is_empty() {
+                            "<default>"
+                        } else {
+                            &event.shared_worker_id.name
+                        },
+                        event.page_url
+                    ),
+                    url: None,
+                    line: None,
+                    column: None,
+                },
+            );
         }
     }
 
@@ -4675,16 +4731,20 @@ impl ServoDelegate for BaoServoDelegate {
                 ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
             // Lossy by design: fire-and-forget console observability — the
-            // send only fails once the consumer is dropped; never stall the
-            // servo script thread on CDP event delivery.
-            let _ = tx.try_send(ServoEvent::Console {
-                target_id: "0".to_string(),
-                level: servo_level,
-                text: message,
-                url: None,
-                line: None,
-                column: None,
-            });
+            // send never stalls the servo script thread: saturation drops
+            // (drop-newest) are counted and debug-logged (throttled) via
+            // send_servo_event; a dropped receiver just fails the send.
+            send_servo_event(
+                &tx,
+                ServoEvent::Console {
+                    target_id: "0".to_string(),
+                    level: servo_level,
+                    text: message,
+                    url: None,
+                    line: None,
+                    column: None,
+                },
+            );
         } else if let Some(ref tx) = *self.console_log_tx.borrow() {
             let msg = match BaoEvent::from_console_text(&message) {
                 Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
@@ -4739,12 +4799,15 @@ impl WebViewDelegate for BaoWebViewDelegate {
         // console_log_tx (Path A) fallback for PageFrameNavigated.
         let event_tx = self.state.borrow().event_tx.clone();
         if let Some(ref tx) = event_tx {
-            let _ = tx.try_send(ServoEvent::FrameNavigated {
-                target_id: "0".to_string(),
-                frame_id: "0".to_string(),
-                url: url_str,
-                name: None,
-            });
+            send_servo_event(
+                &tx,
+                ServoEvent::FrameNavigated {
+                    target_id: "0".to_string(),
+                    frame_id: "0".to_string(),
+                    url: url_str,
+                    name: None,
+                },
+            );
         } else if let Some(ref tx) = self.state.borrow().console_log_tx {
             let loader_id = format!("{:016x}", url_str.len() as u64);
             // Lossy by design: fire-and-forget console observability — the
@@ -4797,10 +4860,13 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 // so we use a lightweight log entry.
                 let event_tx = self.state.borrow().event_tx.clone();
                 if let Some(ref tx) = event_tx {
-                    let _ = tx.try_send(ServoEvent::FrameStartedLoading {
-                        target_id: "0".to_string(),
-                        frame_id: "0".to_string(),
-                    });
+                    send_servo_event(
+                        &tx,
+                        ServoEvent::FrameStartedLoading {
+                            target_id: "0".to_string(),
+                            frame_id: "0".to_string(),
+                        },
+                    );
                 }
             }
             LoadStatus::Complete => {
@@ -4817,10 +4883,13 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 // console_log_tx (Path A) fallback for PageLoadEventFired.
                 let event_tx = self.state.borrow().event_tx.clone();
                 if let Some(ref tx) = event_tx {
-                    let _ = tx.try_send(ServoEvent::FrameStoppedLoading {
-                        target_id: "0".to_string(),
-                        frame_id: "0".to_string(),
-                    });
+                    send_servo_event(
+                        &tx,
+                        ServoEvent::FrameStoppedLoading {
+                            target_id: "0".to_string(),
+                            frame_id: "0".to_string(),
+                        },
+                    );
                 } else if let Some(ref tx) = self.state.borrow().console_log_tx {
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -4895,16 +4964,20 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
             // Lossy by design: fire-and-forget console observability — the
-            // send only fails once the consumer is dropped; never stall the
-            // servo script thread on CDP event delivery.
-            let _ = tx.try_send(ServoEvent::Console {
-                target_id: "0".to_string(),
-                level: servo_level,
-                text: message,
-                url: None,
-                line: None,
-                column: None,
-            });
+            // send never stalls the servo script thread: saturation drops
+            // (drop-newest) are counted and debug-logged (throttled) via
+            // send_servo_event; a dropped receiver just fails the send.
+            send_servo_event(
+                &tx,
+                ServoEvent::Console {
+                    target_id: "0".to_string(),
+                    level: servo_level,
+                    text: message,
+                    url: None,
+                    line: None,
+                    column: None,
+                },
+            );
         } else if let Some(ref tx) = self.state.borrow().console_log_tx {
             let msg = match BaoEvent::from_console_text(&message) {
                 Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
@@ -5269,6 +5342,50 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         delegate.set_event_tx(tx);
         assert!(delegate.event_tx().is_some());
+    }
+
+    #[test]
+    fn test_event_tx_clone_face_full_observed_lossy() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1);
+        tx.try_send(ServoEvent::Console {
+            target_id: "0".to_string(),
+            level: ConsoleLevel::Info,
+            text: "fill".to_string(),
+            url: None,
+            line: None,
+            column: None,
+        })
+        .unwrap();
+        let before = clone_face_dropped_count();
+
+        // 满容:Full 被观测计数,事件 lossy 丢弃,不阻塞不 panic
+        send_servo_event(
+            &tx,
+            ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: ConsoleLevel::Info,
+                text: "overflow".to_string(),
+                url: None,
+                line: None,
+                column: None,
+            },
+        );
+        assert_eq!(clone_face_dropped_count(), before + 1);
+
+        // Disconnected:接收端已 drop,静默维持原状(lossy-by-design),不计数
+        drop(rx);
+        send_servo_event(
+            &tx,
+            ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: ConsoleLevel::Info,
+                text: "after-drop".to_string(),
+                url: None,
+                line: None,
+                column: None,
+            },
+        );
+        assert_eq!(clone_face_dropped_count(), before + 1);
     }
 
     #[test]
