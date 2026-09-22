@@ -2090,3 +2090,7 @@ lld-link 已钉(config [target] linker);全 rlib 编完,链接报:archive.lib/ca
 ### W7 第二层(ew4 5ce86a79+f82f620e):三 .lib 清+20 符号分类
 
 casefix 目录(Linux lld-link 大小写面,可持续吸收)+**libarchive 3.8.7/cares 全新 vendored DirectBuild**(两 C 库一次编译绿,unix 面不变)+bao_loop_tick windows 臂(us_loop_pump 改道)。链接推进到 20 未定义符号:A 类 17(BunString__* 等上游 jsc/bindings C++ 未 msvc 供给)/B 类 3(stdio/init)/C 类 1(shim _pread dllimport,s1a 已派)/D 类 1(stdio windows)。**A/B/D 续派 ew4(linux 侧定义定位+msvc 臂供给,bao.exe=硬判据)**。
+
+### W7 第二层 17/20+第三层分类派发(f8bcaa40,2026-09-22)
+
+BunString__×12(bun_core windows 臂全族)+getRSS(GetProcessMemoryInfo)+bun_is_stdio_null+clock_gettime_monotonic(Instant 锚)闭。第三层 20:**bun_core 8(ew4 续:visibleWidth 族[unicode_width 复用]/ANSI 迭代/ttySetMode/ensureHash/createExternal)**+quic 6(em3:quic.c 回归 windows 构建)+spawn_sync 2(ec3)+blob/vm 2(s1a,**纠偏:linux 能链必有供给者,先定位**)+_pread(s1a 已闭 22ae9f33)。四线并发,bao.exe=终判。
