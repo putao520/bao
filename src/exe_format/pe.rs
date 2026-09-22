@@ -1025,7 +1025,7 @@ pub mod standalone_pe {
     /// Upstream `Bun__getStandaloneModuleGraphPELength` — 0 when the running
     /// image has no `.bun` section.
     #[unsafe(no_mangle)]
-    pub extern "C" fn Bun__getStandaloneModuleGraphPELength() -> u64 {
+    pub unsafe extern "C" fn Bun__getStandaloneModuleGraphPELength() -> u64 {
         if !initialize_pe_section() {
             return 0;
         }
@@ -1041,7 +1041,7 @@ pub mod standalone_pe {
     /// Upstream `Bun__getStandaloneModuleGraphPEData` — null when the running
     /// image has no `.bun` section.
     #[unsafe(no_mangle)]
-    pub extern "C" fn Bun__getStandaloneModuleGraphPEData() -> *mut u8 {
+    pub unsafe extern "C" fn Bun__getStandaloneModuleGraphPEData() -> *mut u8 {
         if !initialize_pe_section() {
             return core::ptr::null_mut();
         }

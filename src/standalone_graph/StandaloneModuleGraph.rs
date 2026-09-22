@@ -306,7 +306,7 @@ mod macho {
 
 #[cfg(windows)]
 mod pe {
-    use bun_exe_format::pe::{
+    use bun_exe_format::pe::standalone_pe::{
         Bun__getStandaloneModuleGraphPEData, Bun__getStandaloneModuleGraphPELength,
     };
 
