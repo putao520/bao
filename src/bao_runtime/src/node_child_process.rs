@@ -20,11 +20,30 @@ use mozjs::jsval::{
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
+#[cfg(unix)]
 use bun_spawn::process::PosixStdio;
 use bun_spawn::sync::{self as spawn_sync, Stdio as SyncStdio};
+#[cfg(unix)]
 use bun_spawn::{
     Argv, Envp, Exited, PidT, PosixSpawnOptions, SpawnResultExt, Status, spawn_process,
 };
+// windows arm (#18, W2 group-1): the spawn face is the same `spawn_process`
+// dispatcher — on windows it lands in `spawn_process_windows` and returns
+// `WindowsSpawnResult` (pid lives behind `process_`, pipes are libuv pipes
+// read via PeekNamedPipe). Options/result type names differ per target, so
+// the unix names are shadowed by target aliases below and every platform-
+// divergent literal is cfg-split at its site.
+#[cfg(windows)]
+use bun_spawn::{
+    Argv, Envp, Exited, PidT, Process, SpawnResultExt, Status, WindowsOptions,
+    WindowsSpawnOptions, WindowsSpawnResult, spawn_process,
+};
+#[cfg(windows)]
+use bun_spawn::process::{WindowsStdio, WindowsStdioResult};
+#[cfg(windows)]
+use bun_windows_sys as w;
+#[cfg(windows)]
+use bun_windows_sys::kernel32::{PeekNamedPipe, ReadFile, WriteFile};
 use bun_sys::FdExt;
 
 use crate::require::cache_builtin;
@@ -44,8 +63,17 @@ static CP_ASYNC_STATES: LazyLock<Mutex<HashMap<i32, Arc<Mutex<AsyncChildState>>>
 /// Shared state between the polling thread and the JS thread for a single child process.
 struct AsyncChildState {
     pid: i32,
+    // Platform pipe ends for the JS-observed stdio (unix: parent-side read
+    // fd, -1 = not piped; windows: parent-side pipe HANDLE, null = not
+    // piped — libuv anonymous pipes, drained via PeekNamedPipe/ReadFile).
+    #[cfg(unix)]
     stdout_fd: c_int, // -1 if not piped
+    #[cfg(unix)]
     stderr_fd: c_int, // -1 if not piped
+    #[cfg(windows)]
+    stdout_handle: HANDLE, // null if not piped
+    #[cfg(windows)]
+    stderr_handle: HANDLE, // null if not piped
     /// B1 (用户裁决 2026-09-17 A): creating BaoRuntime's cleanup token,
     /// stamped at spawn-registration via
     /// `crate::runtime::current_runtime_token()`. `0` = created outside any
@@ -54,7 +82,18 @@ struct AsyncChildState {
     /// change for the polling thread.
     owner: u64,
     #[allow(dead_code)]
+    #[cfg(unix)]
     stdin_fd: c_int, // -1 if not piped
+    /// windows: parent-side stdin write end (null = not piped). Written via
+    /// WriteFile from `__cp_stdin_write`; ownership stays with the registry.
+    #[cfg(windows)]
+    stdin_handle: HANDLE,
+    /// windows only: the spawn face's `*mut Process` (intrusive refcount,
+    /// `WindowsSpawnResult.process_`). Exit observation on windows goes
+    /// through `Process::update_status_on_windows` + the `Status` read —
+    /// there is no waitpid to probe.
+    #[cfg(windows)]
+    process: Option<*mut Process>,
     stdout_eof: bool,
     stderr_eof: bool,
     child_exited: bool,
@@ -72,15 +111,30 @@ struct AsyncChildState {
     exit_info: Option<(i32, i32)>,
 }
 
+// SAFETY (windows): the raw pointers in AsyncChildState are kernel/process
+// handles with no thread affinity — a Win32 HANDLE is usable from any thread,
+// and the intrusive `*mut Process` is only dereferenced through the spawn
+// face's own methods (the same cross-thread contract ipc_channel's IpcStream
+// declares). The drain thread and the JS thread serialize through the state
+// Mutex.
+#[cfg(windows)]
+unsafe impl Send for AsyncChildState {}
+
 // CpCleanup (RAII全清 CP_ASYNC_STATES + CP_STDIN_FDS) 已删除:全树零实例化的
 // 死代码,其全清能力由 `close_stdin_fds_for_current_thread()`(runtime drop 统一
 // 清扫)与 `cleanup_for_token`(per-token sweep)取代 — B1 残留收编,
 // 用户裁决 2026-09-17 A。
 
-/// Pipes are drained when every piped end hit EOF; unpiped slots (fd < 0)
-/// count as drained immediately.
+/// Pipes are drained when every piped end hit EOF; unpiped slots (fd < 0 /
+/// null HANDLE) count as drained immediately.
+#[cfg(unix)]
 fn cp_pipes_drained(s: &AsyncChildState) -> bool {
     (s.stdout_eof || s.stdout_fd < 0) && (s.stderr_eof || s.stderr_fd < 0)
+}
+
+#[cfg(windows)]
+fn cp_pipes_drained(s: &AsyncChildState) -> bool {
+    (s.stdout_eof || s.stdout_handle.is_null()) && (s.stderr_eof || s.stderr_handle.is_null())
 }
 
 /// Publish the reaped status into `exit_info` — only once the pipes are
@@ -93,8 +147,225 @@ fn cp_try_publish(s: &mut AsyncChildState) {
     }
 }
 
+// ─── windows drain face (#18, W2 group-1 — ruled sync-bridge shape) ────────
+// libuv anonymous pipes have no poll(2): readiness is PeekNamedPipe (bytes
+// available) throttled by a 10ms Sleep, reads are ReadFile, and exit
+// observation is `Process::update_status_on_windows` + the `Status` read
+// (no waitpid on windows). The protocol (drain-before-publish, EOF flags,
+// take-then-close) mirrors the unix thread exactly.
+
+#[cfg(windows)]
+type HANDLE = bun_windows_sys::HANDLE;
+#[cfg(windows)]
+type DWORD = bun_windows_sys::DWORD;
+
+#[cfg(windows)]
+fn cp_pipe_peek(handle: HANDLE) -> ::std::io::Result<DWORD> {
+    let mut avail: DWORD = 0;
+    // SAFETY: HANDLE we own; out-param is a stack DWORD; null probes are legal.
+    let ok = unsafe {
+        PeekNamedPipe(
+            handle,
+            ::std::ptr::null_mut(),
+            0,
+            ::std::ptr::null_mut(),
+            &mut avail,
+            ::std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(::std::io::Error::last_os_error());
+    }
+    Ok(avail)
+}
+
+/// One ReadFile chunk. `Ok(0)` = EOF (ERROR_BROKEN_PIPE when the child's
+/// write end closed, mirroring the unix `read() == 0` arm).
+#[cfg(windows)]
+fn cp_pipe_read(handle: HANDLE, buf: &mut [u8]) -> ::std::io::Result<usize> {    let mut read: DWORD = 0;
+    // SAFETY: HANDLE we own; buffer/length describe the caller's slice.
+    let ok = unsafe {
+        ReadFile(
+            handle,
+            buf.as_mut_ptr(),
+            buf.len() as DWORD,
+            &mut read,
+            ::std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        let err = ::std::io::Error::last_os_error();
+        let code = err.raw_os_error().unwrap_or(0) as DWORD;
+        if code == w::ERROR_BROKEN_PIPE || code == w::ERROR_NO_DATA {
+            return Ok(0);
+        }
+        return Err(err);
+    }
+    Ok(read as usize)
+}
+
+/// Allocate a zeroed libuv pipe for a `WindowsStdio::Buffer` stdio slot —
+/// the spawn face `uv_pipe_init`s it on the wired loop, wires one end into
+/// the child, and hands the connected parent end back in WindowsSpawnResult
+/// as `WindowsStdioResult::Buffer` (the lifecycle_script_runner pattern).
+#[cfg(windows)]
+fn cp_new_uv_stdio_buffer() -> WindowsStdio {
+    // SAFETY: fresh zeroed uv_pipe_t-sized allocation; libuv's init writes
+    // the full handle before any use.
+    let pipe = unsafe {
+        bun_core::heap::into_raw(Box::new(bun_core::ffi::zeroed::<
+            bun_sys::windows::libuv::Pipe,
+        >()))
+    };
+    WindowsStdio::Buffer(pipe)
+}
+
+/// Parent stdio end out of the spawn result: the OS HANDLE behind a
+/// connected libuv pipe (Buffer), or null for inherit/ignore slots.
+#[cfg(windows)]
+fn cp_stdio_handle(stdio: WindowsStdioResult) -> HANDLE {
+    match stdio {
+        WindowsStdioResult::Buffer(pipe) => pipe.handle,
+        WindowsStdioResult::BufferFd(fd) => {
+            // SAFETY: Fd's native repr IS the HANDLE on windows; this reads
+            // it without taking ownership (registry owns the close).
+            let native = fd.native();
+            native as HANDLE
+        }
+        WindowsStdioResult::Unavailable => ::std::ptr::null_mut(),
+    }
+}
+
+#[cfg(windows)]
+fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
+    const DRAIN_CHUNK: usize = 4096;
+    let mut buf = vec![0u8; DRAIN_CHUNK];
+    loop {
+        let (stdout_handle, stderr_handle, child_exited, stdout_eof, stderr_eof) = {
+            let s = state.lock().unwrap();
+            (
+                s.stdout_handle,
+                s.stderr_handle,
+                s.child_exited,
+                s.stdout_eof,
+                s.stderr_eof,
+            )
+        };
+        let pipes_drained =
+            (stdout_eof || stdout_handle.is_null()) && (stderr_eof || stderr_handle.is_null());
+
+        // Exit detection EVERY iteration — the unix waitpid(WNOHANG) probe's
+        // twin. update_status_on_windows lifts an already-observed uv exit
+        // into the Process Status; we then read it and stash (exit_code,
+        // signal) exactly like the unix WIFEXITED/WTERMSIG arms.
+        {
+            let mut s = state.lock().unwrap();
+            if !s.child_exited {
+                if let Some(process) = s.process {
+                    // SAFETY: `process` is the live intrusive `*mut Process`
+                    // handed over by WindowsSpawnResult (sole parent-side
+                    // owner after the result dropped) and only touched
+                    // through the spawn face's own methods.
+                    unsafe { Process::update_status_on_windows(process) };
+                    // SAFETY: same liveness contract; the Status read mirrors
+                    // what the uv exit callback wrote.
+                    let status = unsafe { (*process).status.clone() };
+                    match status {
+                        Status::Exited(exited) => {
+                            s.child_exited = true;
+                            s.reaped = Some((exited.code as i32, exited.signal as i32));
+                        }
+                        Status::Signaled(sig) => {
+                            s.child_exited = true;
+                            s.reaped = Some((-1, sig as i32));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            cp_try_publish(&mut s);
+        }
+
+        if child_exited && pipes_drained {
+            break;
+        }
+
+        // Readiness via PeekNamedPipe; a failed peek (broken pipe) is routed
+        // through the read so the EOF arm records it.
+        let mut ready: Vec<(HANDLE, bool)> = Vec::new(); // (handle, is_stdout)
+        if !stdout_eof && !stdout_handle.is_null() {
+            let _ = cp_pipe_peek(stdout_handle);
+            ready.push((stdout_handle, true));
+        }
+        if !stderr_eof && !stderr_handle.is_null() {
+            let _ = cp_pipe_peek(stderr_handle);
+            ready.push((stderr_handle, false));
+        }
+
+        if ready.is_empty() {
+            if child_exited {
+                break;
+            }
+            ::std::thread::sleep(::std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        let mut made_progress = false;
+        for (handle, is_stdout) in ready {
+            match cp_pipe_read(handle, &mut buf) {
+                Ok(n) if n > 0 => {
+                    made_progress = true;
+                    let data = &buf[..n];
+                    let mut s = state.lock().unwrap();
+                    if is_stdout {
+                        s.stdout_data.extend_from_slice(data);
+                    } else {
+                        s.stderr_data.extend_from_slice(data);
+                    }
+                }
+                Ok(_) => {
+                    // EOF (broken pipe / zero-byte read).
+                    let mut s = state.lock().unwrap();
+                    if is_stdout {
+                        s.stdout_eof = true;
+                    } else {
+                        s.stderr_eof = true;
+                    }
+                    cp_try_publish(&mut s);
+                }
+                Err(_) => {
+                    // Transient error — treat like EAGAIN: retry next tick.
+                    let _ = made_progress;
+                }
+            }
+        }
+
+        if !made_progress {
+            ::std::thread::sleep(::std::time::Duration::from_millis(10));
+        }
+    }
+
+    // Take-then-close the handles — identical ownership protocol to the unix
+    // exit path (whoever swaps the field owns the close).
+    let taken = {
+        let mut s = state.lock().unwrap();
+        (
+            ::std::mem::replace(&mut s.stdout_handle, ::std::ptr::null_mut()),
+            ::std::mem::replace(&mut s.stderr_handle, ::std::ptr::null_mut()),
+        )
+    };
+    for handle in [taken.0, taken.1] {
+        if !handle.is_null() {
+            // SAFETY: HANDLE we own under the registry take-then-close
+            // protocol.
+            unsafe { w::CloseHandle(handle) };
+        }
+    }
+}
+
 /// Background polling thread: reads from stdout/stderr pipes into shared AsyncChildState.
 /// Uses Arc<Mutex<AsyncChildState>> for shared state with the JS thread.
+#[cfg(unix)]
 fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
     let mut buf = [0u8; 65536]; // 64 KiB read buffer
 
@@ -274,6 +545,7 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 /// `stdin_fd` is NOT owned by the pump (parent keeps the write end in
 /// `CP_STDIN_FDS`, removed + closed at JS-observed exit / runtime sweep /
 /// runtime drop).
+#[cfg(unix)]
 pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int, stdin_fd: c_int) -> bool {
     let async_state = Arc::new(Mutex::new(AsyncChildState {
         pid,
@@ -293,6 +565,69 @@ pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int,
     }));
     if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
         registry.insert(pid, Arc::clone(&async_state));
+    }
+    let state_clone = Arc::clone(&async_state);
+    match ::std::thread::Builder::new()
+        .name(format!("cp-poll-{}", pid))
+        .stack_size(128 * 1024)
+        .spawn(move || pipe_poll_thread(state_clone))
+    {
+        Ok(_) => true,
+        Err(e) => {
+            // Fail-closed visibility: the child's pipes will not drain — say so
+            // loudly instead of letting a 64KB pipe-buffer deadlock surface as
+            // a silent hang.
+            eprintln!(
+                "[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer",
+                pid, e
+            );
+            false
+        }
+    }
+}
+
+/// windows twin: HANDLE ends + the spawn face's `*mut Process` for exit
+/// observation (`Process::update_status_on_windows` — there is no waitpid).
+///
+/// Exit-only registration (all-null ends + `None` process — e.g. the
+/// Bun.spawn face at its registered drain gap): registers the state but does
+/// NOT spawn a poll thread (nothing to drain, no oracle to poll — a thread
+/// would spin forever). `poll_exit_info` stays `None`, matching the
+/// pre-windows-arm semantics until the Bun.spawn stdio rework lands.
+#[cfg(windows)]
+pub(crate) fn register_async_child(
+    pid: i32,
+    stdout_handle: HANDLE,
+    stderr_handle: HANDLE,
+    stdin_handle: HANDLE,
+    process: Option<*mut Process>,
+) -> bool {
+    let async_state = Arc::new(Mutex::new(AsyncChildState {
+        pid,
+        stdout_handle,
+        stderr_handle,
+        stdin_handle,
+        process,
+        owner: crate::runtime::current_runtime_token().unwrap_or(0),
+        stdout_eof: stdout_handle.is_null(),
+        stderr_eof: stderr_handle.is_null(),
+        child_exited: false,
+        stdout_data: Vec::new(),
+        stderr_data: Vec::new(),
+        reaped: None,
+        exit_info: None,
+    }));
+    if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+        registry.insert(pid, Arc::clone(&async_state));
+    }
+    // Exit-only registration: no drain face and no exit oracle — a poll
+    // thread would spin forever. See the fn doc.
+    if stdout_handle.is_null()
+        && stderr_handle.is_null()
+        && stdin_handle.is_null()
+        && process.is_none()
+    {
+        return true;
     }
     let state_clone = Arc::clone(&async_state);
     match ::std::thread::Builder::new()
@@ -355,6 +690,54 @@ const CP_REAP_TERM_WINDOW: ::std::time::Duration = ::std::time::Duration::from_s
 /// and its registry entry is KEPT — never swept on a guess.
 const CP_REAP_KILL_WINDOW: ::std::time::Duration = ::std::time::Duration::from_secs(1);
 
+// ─── platform signal face (kill/reap) ──────────────────────────────────────
+#[cfg(unix)]
+use libc::{SIGKILL as CP_SIGKILL, SIGTERM as CP_SIGTERM};
+#[cfg(windows)]
+use sig::{SIGKILL as CP_SIGKILL, SIGTERM as CP_SIGTERM};
+
+/// kill(2) face for the sweep + JS kill natives. unix: `libc::kill`.
+/// windows: OpenProcess + TerminateProcess — signal 0 is an existence probe,
+/// KILL/TERM/INT terminate the process with exit code 1 (TerminateProcess
+/// has no signal concept, so libuv reports the raw exit code and Node on
+/// windows surfaces exitCode=1/signalCode=null), every other signal is a
+/// no-op success (API parity — windows has nothing to deliver it with).
+/// Returns 0 on success, -1 on failure (kill(2) convention).
+#[cfg(unix)]
+fn cp_signal_pid(pid: i32, sig: i32) -> i32 {
+    unsafe { libc::kill(pid, sig) }
+}
+
+#[cfg(windows)]
+fn cp_signal_pid(pid: i32, sig: i32) -> i32 {
+    let access: DWORD = if sig == 0 {
+        w::PROCESS_QUERY_LIMITED_INFORMATION
+    } else {
+        w::PROCESS_TERMINATE
+    };
+    // SAFETY: pid comes from the JS caller; the handle is closed below.
+    let handle = unsafe { w::OpenProcess(access, 0, pid as DWORD) };
+    if handle.is_null() {
+        return -1; // ESRCH equivalent
+    }
+    let rc = if sig != 0 && matches!(sig, 2 | 9 | 15) {
+        // SAFETY: PROCESS_TERMINATE handle from OpenProcess above.
+        unsafe { w::TerminateProcess(handle, 1) }
+    } else {
+        // signal 0 probe, or an undeliverable signal — no-op success.
+        1
+    };
+    // SAFETY: handle we opened.
+    unsafe {
+        w::CloseHandle(handle);
+    }
+    if rc == 0 {
+        -1
+    } else {
+        0
+    }
+}
+
 /// Outcome of the bounded reap in [`cleanup_for_token`].
 enum CpReap {
     /// This sweep won the waitpid — the poll thread's bookkeeping
@@ -371,6 +754,7 @@ enum CpReap {
 
 /// One `waitpid(WNOHANG)` probe. `None` = still alive (or a transient probe
 /// error — retry within the window); `Some` = terminal outcome.
+#[cfg(unix)]
 fn cp_try_reap(pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
     let mut wstatus: c_int = 0;
     let ret = unsafe { libc::waitpid(pid, &mut wstatus, libc::WNOHANG) };
@@ -406,12 +790,48 @@ fn cp_try_reap(pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
     None // EINTR or unexpected — probe again within the window
 }
 
+/// windows twin: no waitpid — the spawn face's `Process` is the exit
+/// oracle. `update_status_on_windows` lifts an observed uv exit into
+/// `Status`; `Running` = still alive (retry within the window). The
+/// poll-thread bookkeeping mirror matches the unix arms.
+#[cfg(windows)]
+fn cp_try_reap(_pid: i32, state: &Mutex<AsyncChildState>) -> Option<CpReap> {
+    let mut s = state.lock().ok()?;
+    if let Some(process) = s.process {
+        // SAFETY: live intrusive `*mut Process` owned by the registry state;
+        // only touched through the spawn face's own methods.
+        unsafe { Process::update_status_on_windows(process) };
+        // SAFETY: same liveness contract as above.
+        let status = unsafe { (*process).status.clone() };
+        match status {
+            Status::Exited(_) | Status::Signaled(_) if s.child_exited => {
+                return Some(CpReap::AlreadyReaped);
+            }
+            Status::Exited(exited) => {
+                s.child_exited = true;
+                s.reaped = Some((exited.code as i32, exited.signal as i32));
+                cp_try_publish(&mut s);
+                return Some(CpReap::Reaped);
+            }
+            Status::Signaled(sig) => {
+                s.child_exited = true;
+                s.reaped = Some((-1, sig as i32));
+                cp_try_publish(&mut s);
+                return Some(CpReap::Reaped);
+            }
+            _ => return None, // Running / Err — probe again
+        }
+    }
+    None
+}
+
 /// Take (swap to -1) and close a state's stdout/stderr read-end fds.
 ///
 /// Take-then-close under the state lock is the fd-ownership protocol shared
 /// with `pipe_poll_thread`'s exit path: whichever party swaps a field owns
 /// that close; the other observes -1 and can never close a recycled fd
 /// number (a double `close` hits whatever reused the number).
+#[cfg(unix)]
 fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
     let taken = match state.lock() {
         Ok(mut s) => (
@@ -426,6 +846,28 @@ fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
         if fd >= 0 {
             unsafe {
                 libc::close(fd);
+            }
+        }
+    }
+}
+
+/// windows twin: take-then-close on HANDLEs (same ownership protocol).
+#[cfg(windows)]
+fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
+    let taken = match state.lock() {
+        Ok(mut s) => (
+            ::std::mem::replace(&mut s.stdout_handle, ::std::ptr::null_mut()),
+            ::std::mem::replace(&mut s.stderr_handle, ::std::ptr::null_mut()),
+        ),
+        // Poisoned state = a poll thread panicked holding the lock; handle
+        // ownership is unknowable, so refuse to guess (never double-close).
+        Err(_) => return,
+    };
+    for handle in [taken.0, taken.1] {
+        if !handle.is_null() {
+            // SAFETY: HANDLE we own under the take-then-close protocol.
+            unsafe {
+                w::CloseHandle(handle);
             }
         }
     }
@@ -481,23 +923,19 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
 
     let mut swept = 0usize;
     for (pid, state) in owned {
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-        let mut sig = libc::SIGTERM;
+        cp_signal_pid(pid, CP_SIGTERM);
+        let mut sig = CP_SIGTERM;
         let mut deadline = ::std::time::Instant::now() + CP_REAP_TERM_WINDOW;
         let outcome = loop {
             if let Some(reap) = cp_try_reap(pid, &state) {
                 break reap;
             }
             if ::std::time::Instant::now() >= deadline {
-                if sig == libc::SIGTERM {
+                if sig == CP_SIGTERM {
                     // TERM window exhausted — escalate to SIGKILL and grant
                     // one more bounded window.
-                    sig = libc::SIGKILL;
-                    unsafe {
-                        libc::kill(pid, sig);
-                    }
+                    sig = CP_SIGKILL;
+                    cp_signal_pid(pid, sig);
                     deadline = ::std::time::Instant::now() + CP_REAP_KILL_WINDOW;
                     continue;
                 }
@@ -929,6 +1367,14 @@ unsafe fn build_sync_opts_from_js(
             envp: None,
             use_execve_on_macos: false,
             argv0: None,
+            #[cfg(windows)]
+            windows: bun_spawn::WindowsOptions {
+                // JS-thread native — see cp_spawn_sync wiring note.
+                loop_: bun_event_loop::EventLoopHandle::js_current(),
+                // verbatim_arguments:false + hide_window:true (Node parity).
+                ..Default::default()
+            },
+            #[cfg(not(windows))]
             windows: (),
         })
     }
@@ -1010,6 +1456,7 @@ pub(crate) fn spawn_cluster_worker(
         }
         envp.push(::std::ptr::null());
 
+        #[cfg(unix)]
         let spawn_opts = PosixSpawnOptions {
             stdin: PosixStdio::Inherit,
             stdout: PosixStdio::Inherit,
@@ -1031,8 +1478,46 @@ pub(crate) fn spawn_cluster_worker(
             linux_pdeathsig: None,
         };
 
+        // windows arm (#18): named-pipe IPC carrier — the inheritable CLIENT
+        // end rides extra_fds as the child's fd-3 slot; the parent keeps the
+        // SERVER end. W3'(real-machine pending): fd-3 handle inheritance +
+        // the child-side _open_osfhandle round-trip (see cp_spawn notes).
+        #[cfg(windows)]
+        let (ipc_server, spawn_opts) = match crate::ipc_channel::create_ipc_pair() {
+            Ok((server, client)) => {
+                // SAFETY: create_ipc_pair hands back owned HANDLEs; the Fd
+                // wraps the client HANDLE for the inherit slot.
+                let client_fd = bun_sys::Fd::from_native(client.handle() as _);
+                let opts = WindowsSpawnOptions {
+                    stdin: WindowsStdio::Inherit,
+                    stdout: WindowsStdio::Inherit,
+                    stderr: WindowsStdio::Inherit,
+                    ipc: None,
+                    extra_fds: Box::new([WindowsStdio::Pipe(client_fd)]),
+                    cwd: Box::new([]),
+                    detached: false,
+                    windows: WindowsOptions {
+                        // JS-thread caller — see cp_spawn wiring notes.
+                        loop_: bun_event_loop::EventLoopHandle::js_current(),
+                        ..Default::default() // verbatim:false, hide_window:true
+                    },
+                    argv0: None,
+                    stream: true,
+                    use_execve_on_macos: false,
+                    can_block_entire_thread_to_reduce_cpu_usage_in_fast_path: false,
+                    new_process_group: false,
+                    pty_slave_fd: (),
+                    pseudoconsole: None,
+                    linux_pdeathsig: None,
+                };
+                (Some(server), opts)
+            }
+            Err(e) => return Err(format!("cluster.fork: ipc pipe failed: {}", e)),
+        };
+
         let spawn_result = spawn_process(&spawn_opts, c_args.as_ptr(), envp.as_ptr());
 
+        #[cfg(unix)]
         match spawn_result {
             Err(e) => Err(format!("cluster.fork: spawn failed: {:?}", e)),
             Ok(Err(sys_err)) => Err(format!("cluster.fork: system error: {:?}", sys_err)),
@@ -1075,6 +1560,39 @@ pub(crate) fn spawn_cluster_worker(
                 Ok(pid)
             }
         }
+
+        // windows twin — same shape, HANDLE-based: the parent keeps the
+        // named-pipe SERVER end; the Process pointer is the exit oracle.
+        #[cfg(windows)]
+        match spawn_result {
+            Err(e) => Err(format!("cluster.fork: spawn failed: {:?}", e)),
+            Ok(Err(sys_err)) => Err(format!("cluster.fork: system error: {:?}", sys_err)),
+            Ok(Ok(win_result)) => {
+                let pid = match win_result.process_ {
+                    // SAFETY: live intrusive `*mut Process` handed over by
+                    // the spawn face (sole parent-side owner).
+                    Some(p) => unsafe { (*p).pid },
+                    None => {
+                        return Err("cluster.fork: spawn produced no process handle".to_string())
+                    }
+                };
+                if let Some(server) = ipc_server {
+                    let channel = crate::ipc_channel::IpcChannel::new(server);
+                    if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
+                        registry.insert(pid, Arc::new(Mutex::new(channel)));
+                    }
+                }
+                // Exit-only tracking (stdio inherited — null pipe ends).
+                let _ = register_async_child(
+                    pid,
+                    ::std::ptr::null_mut(),
+                    ::std::ptr::null_mut(),
+                    ::std::ptr::null_mut(),
+                    win_result.process_,
+                );
+                Ok(pid)
+            }
+        }
     }
 }
 
@@ -1105,6 +1623,14 @@ fn shell_sync_opts(command: &str) -> spawn_sync::Options {
         envp: None,
         use_execve_on_macos: false,
         argv0: None,
+        #[cfg(windows)]
+        windows: bun_spawn::WindowsOptions {
+            // JS-thread native — see cp_spawn_sync wiring note.
+            loop_: bun_event_loop::EventLoopHandle::js_current(),
+            // verbatim_arguments:false + hide_window:true (Node parity).
+            ..Default::default()
+        },
+        #[cfg(not(windows))]
         windows: (),
     }
 }
@@ -1210,10 +1736,72 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     };
 
     // Create pipes for stdout/stderr/stdin as needed.
+    // unix: pipe(2) pairs. windows (#18): there is no pipe(2) — each piped
+    // stdio slot carries a fresh zeroed libuv pipe (`WindowsStdio::Buffer`);
+    // the spawn face uv_pipe_init's it on the wired loop and hands the
+    // connected parent end back in WindowsSpawnResult as
+    // WindowsStdioResult::Buffer.
+    #[cfg(unix)]
     let mut stdout_pipe: [c_int; 2] = [-1, -1];
+    #[cfg(unix)]
     let mut stderr_pipe: [c_int; 2] = [-1, -1];
+    #[cfg(unix)]
     let mut stdin_pipe: [c_int; 2] = [-1, -1];
 
+    #[cfg(windows)]
+    let mut stdin_stdio: WindowsStdio = if pipe_stdin {
+        cp_new_uv_stdio_buffer()
+    } else {
+        WindowsStdio::Inherit
+    };
+    #[cfg(windows)]
+    let mut stdout_stdio: WindowsStdio = if pipe_stdout {
+        cp_new_uv_stdio_buffer()
+    } else {
+        WindowsStdio::Inherit
+    };
+    #[cfg(windows)]
+    let mut stderr_stdio: WindowsStdio = if pipe_stderr {
+        cp_new_uv_stdio_buffer()
+    } else {
+        WindowsStdio::Inherit
+    };
+
+    // IPC carrier — windows: named-pipe pair (ipc_channel windows half).
+    // The CLIENT end is inheritable and rides extra_fds (UV_INHERIT_FD) as
+    // the child's fd-3 slot; the parent keeps the SERVER end for the
+    // IpcChannel.
+    //
+    // W3'(real-machine pending): fd-3 handle inheritance + the child-side
+    // _open_osfhandle round-trip are compile-face complete but UNVERIFIED
+    // without a real windows run.
+    #[cfg(windows)]
+    let (ipc_server, ipc_client_fd) = if wants_ipc {
+        match crate::ipc_channel::create_ipc_pair() {
+            Ok((server, client)) => {
+                // SAFETY: create_ipc_pair hands back owned HANDLEs; the Fd
+                // wraps the client HANDLE for the inherit slot.
+                let fd = bun_sys::Fd::from_native(client.handle() as _);
+                (Some(server), Some(fd))
+            }
+            Err(e) => {
+                // Stdio slots were allocated before the pair — reclaim them
+                // (deinit uv_close's any init'd pipe; these were never init'd
+                // yet, so this is the plain Box reclaim path).
+                stdin_stdio.deinit();
+                stdout_stdio.deinit();
+                stderr_stdio.deinit();
+                let msg = format!("spawn: failed to create ipc pipe: {}", e);
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                return false;
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    #[cfg(unix)]
     if pipe_stdout {
         if unsafe { libc::pipe(stdout_pipe.as_mut_ptr()) } != 0 {
             let msg = format!("spawn: failed to create stdout pipe: errno {}", unsafe {
@@ -1224,6 +1812,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             return false;
         }
     }
+    #[cfg(unix)]
     if pipe_stderr {
         if unsafe { libc::pipe(stderr_pipe.as_mut_ptr()) } != 0 {
             // Cleanup stdout pipe if already created.
@@ -1245,6 +1834,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             return false;
         }
     }
+    #[cfg(unix)]
     if pipe_stdin {
         if unsafe { libc::pipe(stdin_pipe.as_mut_ptr()) } != 0 {
             if stdout_pipe[0] >= 0 {
@@ -1284,12 +1874,14 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     // end via `posix_result.extra_pipes[0]` as `ExtraPipe::OwnedFd(parent_fd)`.
     // We then wrap that fd into an `IpcChannel` and register it for
     // `__cp_ipc_send` / `__cp_ipc_recv` lookups by pid.
+    #[cfg(unix)]
     let extra_fds: Box<[PosixStdio]> = if wants_ipc {
         Box::new([PosixStdio::Ipc])
     } else {
         Box::new([])
     };
 
+    #[cfg(unix)]
     let spawn_opts = PosixSpawnOptions {
         stdin: if pipe_stdin {
             PosixStdio::Pipe(bun_sys::Fd::from_native(stdin_pipe[0]))
@@ -1323,6 +1915,39 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         linux_pdeathsig: None,
     };
 
+    // windows arm (#18) — ruled sync-bridge shape: spawn-face libuv pipes +
+    // named-pipe IPC carrier. See the pipe-face notes above.
+    #[cfg(windows)]
+    #[cfg(windows)]
+    let mut spawn_opts = WindowsSpawnOptions {
+        stdin: stdin_stdio,
+        stdout: stdout_stdio,
+        stderr: stderr_stdio,
+        ipc: None,
+        extra_fds: match ipc_client_fd {
+            Some(fd) => Box::new([WindowsStdio::Pipe(fd)]),
+            None => Box::new([]),
+        },
+        cwd: cwd_bytes,
+        detached: false,
+        windows: WindowsOptions {
+            // JS-thread native — the current thread's JS event loop drives
+            // the libuv process face (the zeroed default would trip the
+            // spawn face's non-null assert).
+            loop_: bun_event_loop::EventLoopHandle::js_current(),
+            // verbatim_arguments:false + hide_window:true (Node parity).
+            ..Default::default()
+        },
+        argv0: None,
+        stream: true,
+        use_execve_on_macos: false,
+        can_block_entire_thread_to_reduce_cpu_usage_in_fast_path: false,
+        new_process_group: false,
+        pty_slave_fd: (),
+        pseudoconsole: None,
+        linux_pdeathsig: None,
+    };
+
     // Build argv C array.
     let mut string_builder = bun_core::StringBuilder::default();
     for arg in &argv {
@@ -1330,6 +1955,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     }
     if string_builder.allocate().is_err() {
         // Cleanup pipes.
+        #[cfg(unix)]
         for fd in [
             stdout_pipe[0],
             stdout_pipe[1],
@@ -1342,6 +1968,17 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                 unsafe {
                     libc::close(fd);
                 }
+            }
+        }
+        // windows: ownership moved into spawn_opts (spawn never ran) —
+        // deinit the option slots through it (uv_close any init'd pipe).
+        #[cfg(windows)]
+        {
+            spawn_opts.stdin.deinit();
+            spawn_opts.stdout.deinit();
+            spawn_opts.stderr.deinit();
+            if let Some(server) = ipc_server {
+                drop(server);
             }
         }
         JS_ReportErrorUTF8(cx, c"child_process.spawn: out of memory".as_ptr());
@@ -1371,19 +2008,24 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     // Close the child-side pipe fds (they're now dup'd into the child).
     // stdin: child uses read end (stdin_pipe[0]), so parent closes it.
     // stdout/stderr: child uses write end (pipe[1]), so parent closes those.
-    if stdin_pipe[0] >= 0 {
-        unsafe {
-            libc::close(stdin_pipe[0]);
+    // windows: the child ends are owned by the spawn face (libuv) — nothing
+    // to close parent-side here.
+    #[cfg(unix)]
+    {
+        if stdin_pipe[0] >= 0 {
+            unsafe {
+                libc::close(stdin_pipe[0]);
+            }
         }
-    }
-    if stdout_pipe[1] >= 0 {
-        unsafe {
-            libc::close(stdout_pipe[1]);
+        if stdout_pipe[1] >= 0 {
+            unsafe {
+                libc::close(stdout_pipe[1]);
+            }
         }
-    }
-    if stderr_pipe[1] >= 0 {
-        unsafe {
-            libc::close(stderr_pipe[1]);
+        if stderr_pipe[1] >= 0 {
+            unsafe {
+                libc::close(stderr_pipe[1]);
+            }
         }
     }
 
@@ -1392,19 +2034,32 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             // Cleanup parent-side pipe fds.
             // stdin: parent holds write end (stdin_pipe[1]).
             // stdout/stderr: parent holds read end (pipe[0]).
-            if stdin_pipe[1] >= 0 {
-                unsafe {
-                    libc::close(stdin_pipe[1]);
+            #[cfg(unix)]
+            {
+                if stdin_pipe[1] >= 0 {
+                    unsafe {
+                        libc::close(stdin_pipe[1]);
+                    }
+                }
+                if stdout_pipe[0] >= 0 {
+                    unsafe {
+                        libc::close(stdout_pipe[0]);
+                    }
+                }
+                if stderr_pipe[0] >= 0 {
+                    unsafe {
+                        libc::close(stderr_pipe[0]);
+                    }
                 }
             }
-            if stdout_pipe[0] >= 0 {
-                unsafe {
-                    libc::close(stdout_pipe[0]);
-                }
-            }
-            if stderr_pipe[0] >= 0 {
-                unsafe {
-                    libc::close(stderr_pipe[0]);
+            // windows: ownership never transferred — deinit the option slots.
+            #[cfg(windows)]
+            {
+                spawn_opts.stdin.deinit();
+                spawn_opts.stdout.deinit();
+                spawn_opts.stderr.deinit();
+                if let Some(server) = ipc_server {
+                    drop(server);
                 }
             }
             let msg = format!("spawn failed: {:?}", e);
@@ -1413,19 +2068,32 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             false
         }
         Ok(Err(sys_err)) => {
-            if stdin_pipe[1] >= 0 {
-                unsafe {
-                    libc::close(stdin_pipe[1]);
+            #[cfg(unix)]
+            {
+                if stdin_pipe[1] >= 0 {
+                    unsafe {
+                        libc::close(stdin_pipe[1]);
+                    }
+                }
+                if stdout_pipe[0] >= 0 {
+                    unsafe {
+                        libc::close(stdout_pipe[0]);
+                    }
+                }
+                if stderr_pipe[0] >= 0 {
+                    unsafe {
+                        libc::close(stderr_pipe[0]);
+                    }
                 }
             }
-            if stdout_pipe[0] >= 0 {
-                unsafe {
-                    libc::close(stdout_pipe[0]);
-                }
-            }
-            if stderr_pipe[0] >= 0 {
-                unsafe {
-                    libc::close(stderr_pipe[0]);
+            // windows: same deinit face (pipes may be half-wired).
+            #[cfg(windows)]
+            {
+                spawn_opts.stdin.deinit();
+                spawn_opts.stdout.deinit();
+                spawn_opts.stderr.deinit();
+                if let Some(server) = ipc_server {
+                    drop(server);
                 }
             }
             let msg = format!("spawn system error: {:?}", sys_err);
@@ -1434,71 +2102,119 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             false
         }
         Ok(Ok(mut posix_result)) => {
-            let pid = posix_result.pid;
+            // ── platform prologue: pid + stdio ends + IPC registration ──
+            #[cfg(unix)]
+            let pid = {
+                let pid = posix_result.pid;
 
-            // If an IPC channel was requested, extract the parent-side fd from
-            // extra_pipes BEFORE the PosixSpawnResult drops (its Drop closes
-            // OwnedFd entries). We then wrap the fd in an IpcChannel keyed by
-            // pid in CP_IPC_CHANNELS for __cp_ipc_send / __cp_ipc_recv.
-            //
-            // The child's fd-3 socketpair end was already dup'd by
-            // spawn_process_posix via PosixStdio::Ipc; the parent's end is in
-            // extra_pipes[0] as ExtraPipe::OwnedFd(parent_fd). We take ownership
-            // before the implicit drop closes it.
-            let parent_ipc_fd: Option<c_int> = if wants_ipc {
-                if let Some(first) = posix_result.extra_pipes.first() {
-                    use bun_spawn::ExtraPipe;
-                    match first {
-                        ExtraPipe::OwnedFd(fd) | ExtraPipe::UnownedFd(fd) => {
-                            // `.native()` returns the raw i32 fd on POSIX.
-                            let raw = (*fd).native();
-                            // Mark as Unavailable so the即将 PosixSpawnResult
-                            // Drop does NOT close the fd — the IpcChannel owns
-                            // it now. In-place overwrite preserves vec length.
-                            if matches!(first, ExtraPipe::OwnedFd(_)) {
-                                posix_result.extra_pipes[0] = ExtraPipe::Unavailable;
+                // If an IPC channel was requested, extract the parent-side fd from
+                // extra_pipes BEFORE the PosixSpawnResult drops (its Drop closes
+                // OwnedFd entries). We then wrap the fd in an IpcChannel keyed by
+                // pid in CP_IPC_CHANNELS for __cp_ipc_send / __cp_ipc_recv.
+                //
+                // The child's fd-3 socketpair end was already dup'd by
+                // spawn_process_posix via PosixStdio::Ipc; the parent's end is in
+                // extra_pipes[0] as ExtraPipe::OwnedFd(parent_fd). We take ownership
+                // before the implicit drop closes it.
+                let parent_ipc_fd: Option<c_int> = if wants_ipc {
+                    if let Some(first) = posix_result.extra_pipes.first() {
+                        use bun_spawn::ExtraPipe;
+                        match first {
+                            ExtraPipe::OwnedFd(fd) | ExtraPipe::UnownedFd(fd) => {
+                                // `.native()` returns the raw i32 fd on POSIX.
+                                let raw = (*fd).native();
+                                // Mark as Unavailable so the即将 PosixSpawnResult
+                                // Drop does NOT close the fd — the IpcChannel owns
+                                // it now. In-place overwrite preserves vec length.
+                                if matches!(first, ExtraPipe::OwnedFd(_)) {
+                                    posix_result.extra_pipes[0] = ExtraPipe::Unavailable;
+                                }
+                                Some(raw)
                             }
-                            Some(raw)
+                            _ => None,
                         }
-                        _ => None,
+                    } else {
+                        None
                     }
                 } else {
                     None
+                };
+
+                // Close the spawned stdio fds returned by spawn_process_posix.
+                // These are the parent-side socketpair/memfd fds, not our pipe fds.
+                // (When using Pipe(fd), spawn_process_posix does not create extra fds.)
+                drop(posix_result);
+
+                // Wrap the parent IPC fd in a UnixStream and register an IpcChannel.
+                // SAFETY: parent_ipc_fd is a valid open Unix-domain socket fd just
+                // returned from spawn_process_posix (PosixStdio::Ipc path). We take
+                // sole ownership here — the result's Drop was neutralised above.
+                if let Some(raw) = parent_ipc_fd {
+                    if raw >= 0 {
+                        let sock = unsafe {
+                            <::std::os::unix::net::UnixStream as ::std::os::unix::io::FromRawFd>::from_raw_fd(raw)
+                        };
+                        let channel = crate::ipc_channel::IpcChannel::new(sock);
+                        if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
+                            registry.insert(pid, ::std::sync::Arc::new(::std::sync::Mutex::new(channel)));
+                        }
+                    }
                 }
-            } else {
-                None
+                pid
             };
 
-            // Close the spawned stdio fds returned by spawn_process_posix.
-            // These are the parent-side socketpair/memfd fds, not our pipe fds.
-            // (When using Pipe(fd), spawn_process_posix does not create extra fds.)
-            drop(posix_result);
+            // windows arm (#18): pid lives behind the intrusive `*mut Process`;
+            // the parent stdio ends are the spawn face's connected libuv pipes
+            // (PeekNamedPipe/ReadFile drain face, WriteFile stdin face); IPC
+            // rides the named-pipe pair created pre-spawn (server = parent).
+            // W3'(real-machine pending): the child-side fd-3 handle round-trip.
+            #[cfg(windows)]
+            let pid = {
+                let pid = match posix_result.process_ {
+                    // SAFETY: live intrusive `*mut Process` handed over by the
+                    // spawn face (sole parent-side owner after the result
+                    // moves); only touched through its own methods.
+                    Some(p) => unsafe { (*p).pid },
+                    None => {
+                        let msg = "spawn: process handle missing".to_string();
+                        let c_msg = ZBox::from_bytes(msg.as_bytes());
+                        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                        return false;
+                    }
+                };
+                // Parent stdio ends (HANDLEs; null = inherit slot).
+                let stdout_handle = cp_stdio_handle(posix_result.stdout.take());
+                let stderr_handle = cp_stdio_handle(posix_result.stderr.take());
+                let stdin_handle = cp_stdio_handle(posix_result.stdin.take());
+                // The result's Drop reclaims any un-consumed Buffer pipes.
 
-            // Wrap the parent IPC fd in a UnixStream and register an IpcChannel.
-            // SAFETY: parent_ipc_fd is a valid open Unix-domain socket fd just
-            // returned from spawn_process_posix (PosixStdio::Ipc path). We take
-            // sole ownership here — the result's Drop was neutralised above.
-            if let Some(raw) = parent_ipc_fd {
-                if raw >= 0 {
-                    let sock = unsafe {
-                        <::std::os::unix::net::UnixStream as ::std::os::unix::io::FromRawFd>::from_raw_fd(raw)
-                    };
-                    let channel = crate::ipc_channel::IpcChannel::new(sock);
+                // IPC: the parent keeps the named-pipe SERVER end (the
+                // inheritable client rode extra_fds as the child's fd-3).
+                if let Some(server) = ipc_server {
+                    let channel = crate::ipc_channel::IpcChannel::new(server);
                     if let Ok(mut registry) = CP_IPC_CHANNELS.lock() {
                         registry.insert(pid, ::std::sync::Arc::new(::std::sync::Mutex::new(channel)));
                     }
                 }
-            }
 
-            // Set non-blocking on the parent-side read fds.
-            if stdout_pipe[0] >= 0 {
-                let _ = bun_sys::set_nonblocking(bun_sys::Fd::from_native(stdout_pipe[0]));
-            }
-            if stderr_pipe[0] >= 0 {
-                let _ = bun_sys::set_nonblocking(bun_sys::Fd::from_native(stderr_pipe[0]));
-            }
+                // No O_NONBLOCK face on windows — the drain is
+                // PeekNamedPipe+ReadFile (see pipe_poll_thread).
+                let _ = register_async_child(
+                    pid,
+                    stdout_handle,
+                    stderr_handle,
+                    stdin_handle,
+                    posix_result.process_,
+                );
+                // pid-keyed stdin face (HANDLE value type on windows).
+                CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_handle));
+                pid
+            };
 
             // Build the shared state and register it globally for __cp_drain / __cp_poll_exit.
+            // (windows: registered in the platform prologue above — the
+            // registry carries HANDLEs + the *mut Process exit oracle.)
+            #[cfg(unix)]
             let _ = register_async_child(
                 pid,
                 if pipe_stdout { stdout_pipe[0] } else { -1 },
@@ -1508,6 +2224,9 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 
             // Store stdin_fd on a thread-local map for __cp_stdin_write/__cp_stdin_close.
             // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
+            // (windows: the stdin HANDLE is registered in the platform
+            // prologue — same pid-keyed map, HANDLE value type.)
+            #[cfg(unix)]
             CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
 
             // Build the JS ChildProcess object.
@@ -1620,7 +2339,13 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             }
 
             // stdin_fd (stored for native __cp_stdin_write) — parent's write end
-            let stdin_fd_v = Int32Value(if pipe_stdin { stdin_pipe[1] } else { -1 });
+            // (windows: the native face is pid-keyed; the JS-visible fd number
+            // is a legacy shim detail — expose the unix sentinel).
+            #[cfg(unix)]
+            let stdin_fd_num = if pipe_stdin { stdin_pipe[1] } else { -1 };
+            #[cfg(windows)]
+            let stdin_fd_num: i32 = -1;
+            let stdin_fd_v = Int32Value(stdin_fd_num);
             rooted!(&in(cx_ref) let sfdv = stdin_fd_v);
             JS_DefineProperty(cx, child_h, c"_stdinFd".as_ptr(), sfdv.handle().into(), 0);
 
@@ -1900,8 +2625,16 @@ unsafe fn attach_null_property(
 
 // ─── Thread-local map for stdin fds ────────────────────────────────────────
 
+#[cfg(unix)]
 thread_local! {
     static CP_STDIN_FDS: RefCell<HashMap<i32, c_int>> = RefCell::new(HashMap::new());
+}
+
+/// windows: stdin write ends are libuv pipe HANDLEs (WriteFile face) — a
+/// CRT fd would be the wrong namespace for the spawn face's pipes.
+#[cfg(windows)]
+thread_local! {
+    static CP_STDIN_FDS: RefCell<HashMap<i32, HANDLE>> = RefCell::new(HashMap::new());
 }
 
 /// Take (remove) the stdin write-end fd registered for `pid` and close it.
@@ -1914,6 +2647,7 @@ thread_local! {
 /// Must run on the JS thread: `CP_STDIN_FDS` is a thread_local and spawn only
 /// ever happens there, so the thread-local IS the owner boundary (the poll
 /// thread never touches this map).
+#[cfg(unix)]
 pub(crate) fn take_and_close_stdin_fd(pid: i32) {
     let fd = CP_STDIN_FDS
         .with(|m| m.borrow_mut().remove(&pid))
@@ -1921,6 +2655,20 @@ pub(crate) fn take_and_close_stdin_fd(pid: i32) {
     if fd >= 0 {
         unsafe {
             libc::close(fd);
+        }
+    }
+}
+
+/// windows twin: HANDLE take-then-close.
+#[cfg(windows)]
+pub(crate) fn take_and_close_stdin_fd(pid: i32) {
+    let handle = CP_STDIN_FDS
+        .with(|m| m.borrow_mut().remove(&pid))
+        .unwrap_or(::std::ptr::null_mut());
+    if !handle.is_null() {
+        // SAFETY: HANDLE we own under the take-then-close protocol.
+        unsafe {
+            w::CloseHandle(handle);
         }
     }
 }
@@ -1936,12 +2684,28 @@ pub(crate) fn take_and_close_stdin_fd(pid: i32) {
 /// spawn only happens on the JS thread, so this thread's map belongs to the
 /// runtime being dropped; closing a still-live child's stdin write end is
 /// just the EOF the child would have seen from `stdin.end()`.
+#[cfg(unix)]
 pub(crate) fn close_stdin_fds_for_current_thread() {
     let fds: Vec<c_int> =
         CP_STDIN_FDS.with(|m| m.borrow_mut().drain().map(|(_, fd)| fd).collect());
     for fd in fds {
         unsafe {
             libc::close(fd);
+        }
+    }
+}
+
+/// windows twin: HANDLE drain-then-close.
+#[cfg(windows)]
+pub(crate) fn close_stdin_fds_for_current_thread() {
+    let handles: Vec<HANDLE> =
+        CP_STDIN_FDS.with(|m| m.borrow_mut().drain().map(|(_, fd)| fd).collect());
+    for handle in handles {
+        if !handle.is_null() {
+            // SAFETY: HANDLE we own under the thread-local owner boundary.
+            unsafe {
+                w::CloseHandle(handle);
+            }
         }
     }
 }
@@ -2142,10 +2906,21 @@ unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         return true;
     }
 
+    #[cfg(unix)]
     let stdin_fd = CP_STDIN_FDS
         .with(|m| m.borrow_mut().get(&pid).copied())
         .unwrap_or(-1);
+    #[cfg(unix)]
     if stdin_fd < 0 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    #[cfg(windows)]
+    let stdin_handle = CP_STDIN_FDS
+        .with(|m| m.borrow_mut().get(&pid).copied())
+        .unwrap_or(::std::ptr::null_mut());
+    #[cfg(windows)]
+    if stdin_handle.is_null() {
         args.rval().set(BooleanValue(false));
         return true;
     }
@@ -2179,12 +2954,31 @@ unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         return true;
     }
 
+    #[cfg(unix)]
     let written = unsafe {
         libc::write(
             stdin_fd,
             bytes.as_ptr() as *const ::std::ffi::c_void,
             bytes.len(),
         )
+    };
+    // windows: one WriteFile on the pipe HANDLE (synchronous — the unix arm
+    // is equally synchronous on the JS thread).
+    #[cfg(windows)]
+    let written: isize = unsafe {
+        let mut written: DWORD = 0;
+        let ok = WriteFile(
+            stdin_handle,
+            bytes.as_ptr(),
+            bytes.len() as DWORD,
+            &mut written,
+            ::std::ptr::null_mut(),
+        );
+        if ok == 0 {
+            -1
+        } else {
+            written as isize
+        }
     };
     args.rval().set(DoubleValue(written as f64));
     true
@@ -2206,24 +3000,74 @@ unsafe extern "C" fn cp_stdin_close(_cx: *mut JSContext, argc: u32, vp: *mut JSV
         return true;
     }
 
-    let stdin_fd = CP_STDIN_FDS
-        .with(|m| m.borrow_mut().remove(&pid))
-        .unwrap_or(-1);
-    if stdin_fd >= 0 {
-        unsafe {
-            libc::close(stdin_fd);
+    #[cfg(unix)]
+    {
+        let stdin_fd = CP_STDIN_FDS
+            .with(|m| m.borrow_mut().remove(&pid))
+            .unwrap_or(-1);
+        if stdin_fd >= 0 {
+            unsafe {
+                libc::close(stdin_fd);
+            }
+            args.rval().set(BooleanValue(true));
+        } else {
+            args.rval().set(BooleanValue(false));
         }
-        args.rval().set(BooleanValue(true));
-    } else {
-        args.rval().set(BooleanValue(false));
+        true
     }
-    true
+    #[cfg(windows)]
+    {
+        let stdin_handle = CP_STDIN_FDS
+            .with(|m| m.borrow_mut().remove(&pid))
+            .unwrap_or(::std::ptr::null_mut());
+        if !stdin_handle.is_null() {
+            // SAFETY: HANDLE we own under the take-then-close protocol.
+            unsafe {
+                w::CloseHandle(stdin_handle);
+            }
+            args.rval().set(BooleanValue(true));
+        } else {
+            args.rval().set(BooleanValue(false));
+        }
+        true
+    }
 }
 
 // ─── Native: __cp_kill_child(pid, signal) ──────────────────────────────────
 
 /// Signal-name → libc signal number for `child.kill(sig)`. Node's canonical
 /// form is the NAME string ("SIGKILL"); a raw number is also accepted.
+/// Node-on-windows pseudo-signal numerics — POSIX (Linux libc) values, the
+/// table Node itself documents for `process.kill()` on Windows. Windows has
+/// no signal concept: only KILL/TERM/INT (and 0 = existence probe) reach
+/// TerminateProcess/OpenProcess ([`cp_signal_pid`]); every other entry
+/// exists so `child.kill("SIGHUP")` parses instead of throwing.
+#[cfg(windows)]
+mod sig {
+    pub const SIGHUP: i32 = 1;
+    pub const SIGINT: i32 = 2;
+    pub const SIGQUIT: i32 = 3;
+    pub const SIGILL: i32 = 4;
+    pub const SIGTRAP: i32 = 5;
+    pub const SIGABRT: i32 = 6;
+    pub const SIGBUS: i32 = 7;
+    pub const SIGFPE: i32 = 8;
+    pub const SIGKILL: i32 = 9;
+    pub const SIGUSR1: i32 = 10;
+    pub const SIGSEGV: i32 = 11;
+    pub const SIGUSR2: i32 = 12;
+    pub const SIGPIPE: i32 = 13;
+    pub const SIGALRM: i32 = 14;
+    pub const SIGTERM: i32 = 15;
+    pub const SIGCHLD: i32 = 17;
+    pub const SIGCONT: i32 = 18;
+    pub const SIGSTOP: i32 = 19;
+    pub const SIGTSTP: i32 = 20;
+    pub const SIGTTIN: i32 = 21;
+    pub const SIGTTOU: i32 = 22;
+}
+
+#[cfg(unix)]
 fn signal_name_to_number(name: &str) -> ::std::option::Option<i32> {
     match name {
         "SIGHUP" => Some(libc::SIGHUP),
@@ -2247,6 +3091,35 @@ fn signal_name_to_number(name: &str) -> ::std::option::Option<i32> {
         "SIGTSTP" => Some(libc::SIGTSTP),
         "SIGTTIN" => Some(libc::SIGTTIN),
         "SIGTTOU" => Some(libc::SIGTTOU),
+        _ => ::std::option::Option::None,
+    }
+}
+
+/// windows twin — pseudo-signal table ([`sig`], POSIX numerics).
+#[cfg(windows)]
+fn signal_name_to_number(name: &str) -> ::std::option::Option<i32> {
+    match name {
+        "SIGHUP" => Some(sig::SIGHUP),
+        "SIGINT" => Some(sig::SIGINT),
+        "SIGQUIT" => Some(sig::SIGQUIT),
+        "SIGILL" => Some(sig::SIGILL),
+        "SIGTRAP" => Some(sig::SIGTRAP),
+        "SIGABRT" => Some(sig::SIGABRT),
+        "SIGBUS" => Some(sig::SIGBUS),
+        "SIGFPE" => Some(sig::SIGFPE),
+        "SIGKILL" => Some(sig::SIGKILL),
+        "SIGUSR1" => Some(sig::SIGUSR1),
+        "SIGSEGV" => Some(sig::SIGSEGV),
+        "SIGUSR2" => Some(sig::SIGUSR2),
+        "SIGPIPE" => Some(sig::SIGPIPE),
+        "SIGALRM" => Some(sig::SIGALRM),
+        "SIGTERM" => Some(sig::SIGTERM),
+        "SIGCHLD" => Some(sig::SIGCHLD),
+        "SIGCONT" => Some(sig::SIGCONT),
+        "SIGSTOP" => Some(sig::SIGSTOP),
+        "SIGTSTP" => Some(sig::SIGTSTP),
+        "SIGTTIN" => Some(sig::SIGTTIN),
+        "SIGTTOU" => Some(sig::SIGTTOU),
         _ => ::std::option::Option::None,
     }
 }
@@ -2307,13 +3180,13 @@ unsafe extern "C" fn child_kill(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
                 }
             }
         } else {
-            libc::SIGTERM as i32
+            CP_SIGTERM
         }
     } else {
-        libc::SIGTERM as i32
+        CP_SIGTERM
     };
 
-    let ret = unsafe { libc::kill(pid, signal) };
+    let ret = cp_signal_pid(pid, signal);
     args.rval().set(BooleanValue(ret == 0));
     true
 }
@@ -2329,7 +3202,7 @@ unsafe extern "C" fn cp_kill_child(_cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let signal = if argc > 1 {
         (*args.get(1).ptr).to_int32()
     } else {
-        libc::SIGTERM as i32
+        CP_SIGTERM
     };
 
     if pid == 0 {
@@ -2337,7 +3210,7 @@ unsafe extern "C" fn cp_kill_child(_cx: *mut JSContext, argc: u32, vp: *mut JSVa
         return true;
     }
 
-    let ret = unsafe { libc::kill(pid, signal) };
+    let ret = cp_signal_pid(pid, signal);
     args.rval().set(BooleanValue(ret == 0));
     true
 }
@@ -2413,7 +3286,12 @@ unsafe extern "C" fn cp_ipc_send(
                         .map_err(|e| format!("channel lock poisoned: {}", e))
                         .and_then(|mut chan| {
                             if let Some(fd) = fd_opt {
-                                chan.send_handle(&json_str, fd)
+                                // RawFd: i32 on unix, isize (HANDLE) on windows.
+                                #[cfg(unix)]
+                                let raw_fd = fd;
+                                #[cfg(windows)]
+                                let raw_fd = fd as isize;
+                                chan.send_handle(&json_str, raw_fd)
                                     .map_err(|e| format!("send_handle: {}", e))
                             } else {
                                 chan.send_json(&json_str)
@@ -2479,12 +3357,24 @@ unsafe extern "C" fn cp_ipc_recv(
                         let mut chan = chan_mtx
                             .lock()
                             .map_err(|_| "channel lock poisoned")?;
-                        let raw = chan.raw_fd();
-                        let _ = unsafe { set_nonblock(raw, true) };
+                        // unix: toggle O_NONBLOCK around the recv (would-block
+                        // surfaces as a None poll). windows: no O_NONBLOCK face
+                        // — recv_msg_chunk maps ERROR_NO_DATA to the same
+                        // would-block shape (see ipc_channel windows half).
+                        #[cfg(unix)]
+                        let res = {
+                            let raw = chan.raw_fd();
+                            let _ = unsafe { set_nonblock(raw, true) };
+                            let res = chan.recv_msg();
+                            let _ = unsafe { set_nonblock(raw, false) };
+                            res
+                        };
+                        #[cfg(windows)]
                         let res = chan.recv_msg();
-                        let _ = unsafe { set_nonblock(raw, false) };
                         match res {
-                            Ok((json, fd_opt)) => Ok(Some((json, fd_opt))),
+                            Ok((json, fd_opt)) => {
+                                Ok(Some((json, fd_opt.map(|fd| fd as c_int))))
+                            }
                             Err(e) if e.kind() == ::std::io::ErrorKind::WouldBlock => Ok(None),
                             Err(e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
                                 // Peer closed: signal via the closed sentinel below.
@@ -2592,6 +3482,11 @@ unsafe extern "C" fn cp_ipc_disconnect(
 /// # Safety
 /// Caller ensures `fd` is a valid open file descriptor.
 #[allow(unsafe_op_in_unsafe_fn)]
+/// O_NONBLOCK flip for the exec-face stdout/stderr raw fds. unix: fcntl
+/// F_GETFL/F_SETFL; windows: no-op — the drain face is PeekNamedPipe+ReadFile
+/// (a sync ReadFile after a PeekNamedPipe availability check never blocks on
+/// data), there is no O_NONBLOCK to set.
+#[cfg(unix)]
 unsafe fn set_nonblock(fd: c_int, on: bool) -> ::std::io::Result<()> {
     let cur = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if cur < 0 {
@@ -2605,6 +3500,11 @@ unsafe fn set_nonblock(fd: c_int, on: bool) -> ::std::io::Result<()> {
     if unsafe { libc::fcntl(fd, libc::F_SETFL, new) } < 0 {
         return Err(::std::io::Error::last_os_error());
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe fn set_nonblock(_fd: c_int, _on: bool) -> ::std::io::Result<()> {
     Ok(())
 }
 
@@ -3060,6 +3960,16 @@ unsafe extern "C" fn cp_exec_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         envp: None,
         use_execve_on_macos: false,
         argv0: None,
+        #[cfg(windows)]
+        windows: bun_spawn::WindowsOptions {
+            // JS-thread native — the current thread's JS event loop drives
+            // the windows sync-spawn pipe pump (the zeroed default would trip
+            // the spawn face's non-null assert).
+            loop_: bun_event_loop::EventLoopHandle::js_current(),
+            // verbatim_arguments:false + hide_window:true (Node parity).
+            ..Default::default()
+        },
+        #[cfg(not(windows))]
         windows: (),
     };
 
@@ -3232,6 +4142,16 @@ unsafe extern "C" fn cp_exec_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
         envp: None,
         use_execve_on_macos: false,
         argv0: None,
+        #[cfg(windows)]
+        windows: bun_spawn::WindowsOptions {
+            // JS-thread native — the current thread's JS event loop drives
+            // the windows sync-spawn pipe pump (the zeroed default would trip
+            // the spawn face's non-null assert).
+            loop_: bun_event_loop::EventLoopHandle::js_current(),
+            // verbatim_arguments:false + hide_window:true (Node parity).
+            ..Default::default()
+        },
+        #[cfg(not(windows))]
         windows: (),
     };
 
@@ -3451,6 +4371,16 @@ unsafe extern "C" fn cp_spawn_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         envp: None,
         use_execve_on_macos: false,
         argv0: None,
+        #[cfg(windows)]
+        windows: bun_spawn::WindowsOptions {
+            // JS-thread native — the current thread's JS event loop drives
+            // the windows sync-spawn pipe pump (the zeroed default would trip
+            // the spawn face's non-null assert).
+            loop_: bun_event_loop::EventLoopHandle::js_current(),
+            // verbatim_arguments:false + hide_window:true (Node parity).
+            ..Default::default()
+        },
+        #[cfg(not(windows))]
         windows: (),
     };
 
@@ -3765,14 +4695,30 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     ];
 
     // Create pipes for IPC (stdout/stderr pipe, stdin pipe).
+    // unix: pipe(2) pairs. windows (#18): spawn-face libuv pipes — see the
+    // cp_spawn pipe-face notes.
+    #[cfg(unix)]
     let mut stdout_pipe: [c_int; 2] = [-1, -1];
+    #[cfg(unix)]
     let mut stderr_pipe: [c_int; 2] = [-1, -1];
+    #[cfg(unix)]
     let mut stdin_pipe: [c_int; 2] = [-1, -1];
 
-    let _ = unsafe { libc::pipe(stdout_pipe.as_mut_ptr()) };
-    let _ = unsafe { libc::pipe(stderr_pipe.as_mut_ptr()) };
-    let _ = unsafe { libc::pipe(stdin_pipe.as_mut_ptr()) };
+    #[cfg(unix)]
+    {
+        let _ = unsafe { libc::pipe(stdout_pipe.as_mut_ptr()) };
+        let _ = unsafe { libc::pipe(stderr_pipe.as_mut_ptr()) };
+        let _ = unsafe { libc::pipe(stdin_pipe.as_mut_ptr()) };
+    }
 
+    #[cfg(windows)]
+    let mut stdin_stdio: WindowsStdio = cp_new_uv_stdio_buffer();
+    #[cfg(windows)]
+    let mut stdout_stdio: WindowsStdio = cp_new_uv_stdio_buffer();
+    #[cfg(windows)]
+    let mut stderr_stdio: WindowsStdio = cp_new_uv_stdio_buffer();
+
+    #[cfg(unix)]
     let spawn_opts = PosixSpawnOptions {
         stdin: if stdin_pipe[0] >= 0 {
             PosixStdio::Pipe(bun_sys::Fd::from_native(stdin_pipe[0]))
@@ -3806,12 +4752,38 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         linux_pdeathsig: None,
     };
 
+    // windows arm (#18) — see cp_spawn wiring notes (no IPC slot on fork).
+    #[cfg(windows)]
+    #[cfg(windows)]
+    let mut spawn_opts = WindowsSpawnOptions {
+        stdin: stdin_stdio,
+        stdout: stdout_stdio,
+        stderr: stderr_stdio,
+        ipc: None,
+        extra_fds: Box::new([]),
+        cwd: Box::new([]),
+        detached: false,
+        windows: WindowsOptions {
+            loop_: bun_event_loop::EventLoopHandle::js_current(),
+            ..Default::default() // verbatim_arguments:false, hide_window:true
+        },
+        argv0: None,
+        stream: true,
+        use_execve_on_macos: false,
+        can_block_entire_thread_to_reduce_cpu_usage_in_fast_path: false,
+        new_process_group: false,
+        pty_slave_fd: (),
+        pseudoconsole: None,
+        linux_pdeathsig: None,
+    };
+
     // Build argv C array.
     let mut string_builder = bun_core::StringBuilder::default();
     for arg in &argv {
         string_builder.count_z(arg);
     }
     if string_builder.allocate().is_err() {
+        #[cfg(unix)]
         for fd in [
             stdout_pipe[0],
             stdout_pipe[1],
@@ -3825,6 +4797,14 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                     libc::close(fd);
                 }
             }
+        }
+        // windows: ownership moved into spawn_opts (spawn never ran) —
+        // deinit the option slots through it.
+        #[cfg(windows)]
+        {
+            spawn_opts.stdin.deinit();
+            spawn_opts.stdout.deinit();
+            spawn_opts.stderr.deinit();
         }
         JS_ReportErrorUTF8(cx, c"child_process.fork: out of memory".as_ptr());
         return false;
@@ -3852,19 +4832,23 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     // Close child-side pipe fds.
     // stdin: child uses read end (stdin_pipe[0]), so parent closes it.
     // stdout/stderr: child uses write end (pipe[1]), so parent closes those.
-    if stdin_pipe[0] >= 0 {
-        unsafe {
-            libc::close(stdin_pipe[0]);
+    // windows: child ends are owned by the spawn face (libuv).
+    #[cfg(unix)]
+    {
+        if stdin_pipe[0] >= 0 {
+            unsafe {
+                libc::close(stdin_pipe[0]);
+            }
         }
-    }
-    if stdout_pipe[1] >= 0 {
-        unsafe {
-            libc::close(stdout_pipe[1]);
+        if stdout_pipe[1] >= 0 {
+            unsafe {
+                libc::close(stdout_pipe[1]);
+            }
         }
-    }
-    if stderr_pipe[1] >= 0 {
-        unsafe {
-            libc::close(stderr_pipe[1]);
+        if stderr_pipe[1] >= 0 {
+            unsafe {
+                libc::close(stderr_pipe[1]);
+            }
         }
     }
 
@@ -3876,12 +4860,19 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             // Cleanup parent-side pipe fds.
             // stdin: parent holds write end (stdin_pipe[1]).
             // stdout/stderr: parent holds read end (pipe[0]).
+            #[cfg(unix)]
             for fd in [stdin_pipe[1], stdout_pipe[0], stderr_pipe[0]] {
                 if fd >= 0 {
                     unsafe {
                         libc::close(fd);
                     }
                 }
+            }
+            #[cfg(windows)]
+            {
+                spawn_opts.stdin.deinit();
+                spawn_opts.stdout.deinit();
+                spawn_opts.stderr.deinit();
             }
             let msg = format!("fork failed: {:?}", e);
             let c_msg = ZBox::from_bytes(msg.as_bytes());
@@ -3889,6 +4880,7 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             false
         }
         Ok(Err(sys_err)) => {
+            #[cfg(unix)]
             for fd in [stdin_pipe[1], stdout_pipe[0], stderr_pipe[0]] {
                 if fd >= 0 {
                     unsafe {
@@ -3896,47 +4888,105 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                     }
                 }
             }
+            #[cfg(windows)]
+            {
+                spawn_opts.stdin.deinit();
+                spawn_opts.stdout.deinit();
+                spawn_opts.stderr.deinit();
+            }
             let msg = format!("fork system error: {:?}", sys_err);
             let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
         Ok(Ok(posix_result)) => {
-            let pid = posix_result.pid;
-            drop(posix_result);
+            #[cfg(unix)]
+            let pid = {
+                let pid = posix_result.pid;
+                drop(posix_result);
 
-            // Build shared state and register it globally for __cp_drain / __cp_poll_exit.
-            let async_state = Arc::new(Mutex::new(AsyncChildState {
-                pid,
-                stdout_fd: stdout_pipe[0],
-                stderr_fd: stderr_pipe[0],
-                stdin_fd: stdin_pipe[1],
-                // Same owner stamp as register_async_child (this fork site
-                // builds its state inline); see AsyncChildState::owner.
-                owner: crate::runtime::current_runtime_token().unwrap_or(0),
-                stdout_eof: false,
-                stderr_eof: false,
-                child_exited: false,
-                stdout_data: Vec::new(),
-                stderr_data: Vec::new(),
-                reaped: None,
-                exit_info: None,
-            }));
+                // Build shared state and register it globally for __cp_drain / __cp_poll_exit.
+                let async_state = Arc::new(Mutex::new(AsyncChildState {
+                    pid,
+                    stdout_fd: stdout_pipe[0],
+                    stderr_fd: stderr_pipe[0],
+                    stdin_fd: stdin_pipe[1],
+                    // Same owner stamp as register_async_child (this fork site
+                    // builds its state inline); see AsyncChildState::owner.
+                    owner: crate::runtime::current_runtime_token().unwrap_or(0),
+                    stdout_eof: false,
+                    stderr_eof: false,
+                    child_exited: false,
+                    stdout_data: Vec::new(),
+                    stderr_data: Vec::new(),
+                    reaped: None,
+                    exit_info: None,
+                }));
 
-            // Register in global registry so __cp_drain / __cp_poll_exit can find it.
-            if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
-                registry.insert(pid, Arc::clone(&async_state));
-            }
+                // Register in global registry so __cp_drain / __cp_poll_exit can find it.
+                if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+                    registry.insert(pid, Arc::clone(&async_state));
+                }
 
-            // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
-            CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
-            {
-                let state_clone = Arc::clone(&async_state);
-                let _ = ::std::thread::Builder::new()
-                    .name(format!("cp-fork-{}", pid))
-                    .stack_size(128 * 1024)
-                    .spawn(move || pipe_poll_thread(state_clone));
-            }
+                // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
+                CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
+                {
+                    let state_clone = Arc::clone(&async_state);
+                    let _ = ::std::thread::Builder::new()
+                        .name(format!("cp-fork-{}", pid))
+                        .stack_size(128 * 1024)
+                        .spawn(move || pipe_poll_thread(state_clone));
+                }
+                pid
+            };
+
+            // windows arm (#18): HANDLE ends + the Process exit oracle —
+            // same face as cp_spawn (state built inline, cp-fork-* thread).
+            #[cfg(windows)]
+            let pid = {
+                let mut posix_result = posix_result;
+                let pid = match posix_result.process_ {
+                    // SAFETY: live intrusive `*mut Process` handed over by
+                    // the spawn face (sole parent-side owner).
+                    Some(p) => unsafe { (*p).pid },
+                    None => {
+                        let msg = "fork: process handle missing".to_string();
+                        let c_msg = ZBox::from_bytes(msg.as_bytes());
+                        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                        return false;
+                    }
+                };
+                let stdout_handle = cp_stdio_handle(posix_result.stdout.take());
+                let stderr_handle = cp_stdio_handle(posix_result.stderr.take());
+                let stdin_handle = cp_stdio_handle(posix_result.stdin.take());
+                let async_state = Arc::new(Mutex::new(AsyncChildState {
+                    pid,
+                    stdout_handle,
+                    stderr_handle,
+                    stdin_handle,
+                    process: posix_result.process_,
+                    owner: crate::runtime::current_runtime_token().unwrap_or(0),
+                    stdout_eof: false,
+                    stderr_eof: false,
+                    child_exited: false,
+                    stdout_data: Vec::new(),
+                    stderr_data: Vec::new(),
+                    reaped: None,
+                    exit_info: None,
+                }));
+                if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+                    registry.insert(pid, Arc::clone(&async_state));
+                }
+                CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_handle));
+                {
+                    let state_clone = Arc::clone(&async_state);
+                    let _ = ::std::thread::Builder::new()
+                        .name(format!("cp-fork-{}", pid))
+                        .stack_size(128 * 1024)
+                        .spawn(move || pipe_poll_thread(state_clone));
+                }
+                pid
+            };
 
             rooted!(&in(cx_ref) let child_obj = w2::JS_NewPlainObject(cx_ref));
             if child_obj.get().is_null() {
@@ -3993,7 +5043,13 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 JSPROP_ENUMERATE as u32,
             );
 
-            let stdin_fd_v = Int32Value(stdin_pipe[1]);
+            // windows: pid-keyed native face; the JS-visible fd is a shim
+            // legacy detail (see cp_spawn note).
+            #[cfg(unix)]
+            let stdin_fd_num = stdin_pipe[1];
+            #[cfg(windows)]
+            let stdin_fd_num: i32 = -1;
+            let stdin_fd_v = Int32Value(stdin_fd_num);
             rooted!(&in(cx_ref) let sfdv = stdin_fd_v);
             JS_DefineProperty(cx, child_h, c"_stdinFd".as_ptr(), sfdv.handle().into(), 0);
 

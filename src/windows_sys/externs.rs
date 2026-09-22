@@ -287,6 +287,11 @@ pub const FILE_END: DWORD = 2;
 // `DuplicateHandle` options.
 pub const DUPLICATE_SAME_ACCESS: DWORD = 0x0000_0002;
 
+// `OpenProcess` dwDesiredAccess (`winnt.h`) — child_process kill face:
+// existence probe (signal 0) vs TerminateProcess delivery (KILL/TERM/INT).
+pub const PROCESS_TERMINATE: DWORD = 0x0001_0000;
+pub const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
+
 // `NtCreateFile` ShareAccess (`winnt.h`).
 pub const FILE_SHARE_READ: ULONG = 0x0000_0001;
 pub const FILE_SHARE_WRITE: ULONG = 0x0000_0002;
@@ -663,6 +668,17 @@ pub mod kernel32 {
             nNumberOfBytesToWrite: DWORD,
             lpNumberOfBytesWritten: *mut DWORD,
             lpOverlapped: *mut c_void,
+        ) -> BOOL;
+        /// `PeekNamedPipe` (`namedpipeapi.h`) — non-blocking readiness probe
+        /// for anonymous/named pipes (child_process drain on windows: there
+        /// is no poll(2) for pipe HANDLEs). Null out-params are legal.
+        pub fn PeekNamedPipe(
+            hNamedPipe: HANDLE,
+            lpBuffer: *mut u8,
+            nBufferSize: DWORD,
+            lpBytesRead: *mut DWORD,
+            lpTotalBytesAvail: *mut DWORD,
+            lpBytesLeftThisMessage: *mut DWORD,
         ) -> BOOL;
         pub fn LoadLibraryExW(lpLibFileName: LPCWSTR, hFile: HANDLE, dwFlags: DWORD) -> HMODULE;
         pub fn GetExitCodeProcess(hProcess: HANDLE, lpExitCode: *mut DWORD) -> BOOL;
@@ -1426,6 +1442,10 @@ unsafe extern "system" {
     ) -> HANDLE;
 
     pub fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
+
+    /// `TerminateProcess` (`processthreadsapi.h`) — the windows kill face:
+    /// exit codes only, no signal concept (Node's kill → exit code 1).
+    pub fn TerminateProcess(hProcess: HANDLE, uExitCode: UINT) -> BOOL;
 }
 
 unsafe extern "C" {

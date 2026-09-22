@@ -2064,7 +2064,22 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                 Option<::std::process::ChildStdout>,
                 Option<::std::process::ChildStderr>,
             ) = (None, None); // pipes stay owned by the Child (process lifetime)
-            if !crate::node_child_process::register_async_child(pid, stdout_fd, stderr_fd, -1) {
+            // windows arm (#18): exit-only registration — null pipe ends and
+            // no `*mut Process` oracle (std::process::Child, not the spawn
+            // face) ⇒ no poll thread. The registered drain gap above stands
+            // until the Bun.spawn windows stdio rework lands.
+            #[cfg(windows)]
+            let registered = crate::node_child_process::register_async_child(
+                pid,
+                ::std::ptr::null_mut(),
+                ::std::ptr::null_mut(),
+                ::std::ptr::null_mut(),
+                None,
+            );
+            #[cfg(unix)]
+            let registered =
+                crate::node_child_process::register_async_child(pid, stdout_fd, stderr_fd, -1);
+            if !registered {
                 // Pump thread failed to start (fail-closed): without it the
                 // pipes never drain — the child would block on a full pipe
                 // and 'close' would never fire. Kill it, close our fds, and
