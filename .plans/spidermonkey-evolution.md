@@ -2070,3 +2070,7 @@ node_net linux 断已修(cfg 双臂 socklen_t+node_tls AsRawFd 漏提交两件�
 
 ### addrinfo E0133 闭(a16f7ffd,双面绿,C 复验)
 余量=child_process(ec3)+mozjs linux mirror(s1a 热修)。
+
+### mozjs linux 热修闭(0ebbf2a1):兄弟 checkout 陷阱(根因深于预判)
+
+b1c45895 无辜(git show 零交集,失败先于其存在);真因=satellite `cargo:root=` 导出被共享 target 下兄弟 checkout 覆写(主树/b2s1-headwt/C 的 bisect 树三个历史 root 实证;树删→悬空)。修=四包 clean 重建+panic 自愈指引;双面 RC=0+xdr 6/6(单线程纪律)。机制入 operator memory(禁兄弟 checkout 构建此类 crate)。**余量=仅 ec3 child_process**。
