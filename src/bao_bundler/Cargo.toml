@@ -2,7 +2,10 @@
 name = "bao_bundler"
 # 0.1.17 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0 breaking wave).
 # 0.1.1 (2026-08-19): no_mangle __force_link_entry single-owner (6f515eab); non-closure, lead-approved.
-version = "0.2.0"
+# 0.2.1 (2026-09-23): registry floor repair — carry the already-present
+# bao_engine ^0.3.0 floor to crates.io (0.2.0 shipped stale ^0.2.0, which
+# breaks bun_sm's dev-dep verify graph with a mozjs links conflict).
+version = "0.2.1"
 description = "SpiderMonkey CYCLEBREAK bridge for bun_bundler — provides SM-backed link-time symbols and dispatch interfaces"
 edition.workspace = true
 license.workspace = true

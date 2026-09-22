@@ -1,9 +1,11 @@
 [package]
 name = "bun_sm"
+# 0.3.1 (2026-09-23): RTP token chokepoint fix (2b0d4a8b) — global_object.rs
+# registration stamp; no new API, consumers' req floors unchanged.
 # 0.1.18 (2026-09-17): dev-dep bun_runtime floor → ^0.2 (0.2.0 breaking wave).
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. spawn watch loop-alive + exit double-dispatch root fix.
-version = "0.3.0"
+version = "0.3.1"
 description = "SpiderMonkey-backed API compatibility layer replacing bun_jsc"
 edition.workspace = true
 license.workspace = true
@@ -36,7 +38,7 @@ bun_bundler = { path = "../bundler", version = "^0.2.0" }
 # contains bun_sm itself, so a use from src/lib.rs puts a second bun_sm rlib
 # on the lib-test link line (lld-link/COFF duplicate-symbol). The lib-test
 # supplies its faces locally instead (src/lib.rs test_link_seams).
-bao_bundler = { path = "../bao_bundler", version = "^0.2.0" }
+bao_bundler = { path = "../bao_bundler", version = "^0.2.1" }
 # Test-linking anchor (dedicated provider, same leg as bun_http's test
 # targets): force_link drags in the bao_uloop loop/DNS/TLS-hook symbols and
 # the lsquic / boringssl / highway / zstd native archives that bun_sm's
