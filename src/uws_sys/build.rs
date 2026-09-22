@@ -212,6 +212,9 @@ fn main() {
         .include(&lshpack_dir);          // for #include "lshpack.h" (quic.c → lsxpack)
     if is_windows {
         c_build.include(&libuv_include); // for #include <uv.h> (eventing/libuv.c)
+        // quic.c → lsquic.h: under WIN32 it includes <vc_compat.h> from the
+        // vendored wincompat shim dir (Windows.h/winsock2.h/ssize_t/iovec).
+        c_build.include(lsquic_dir.join("wincompat"));
         // winsock's setsockopt(int*) call sites are upstream-suppressed
         // (oven-sh/bun scripts/build/flags.ts carries
         // -Wno-incompatible-pointer-types globally for C); WIN32_LEAN_AND_MEAN
@@ -236,14 +239,11 @@ fn main() {
     ];
 
     for src in &core_sources {
-        // quic.c: excluded on windows until the lsquic/boringssl mirror
-        // alignment lands (the pre-absorb pairing above compiles against the
-        // vendored faces; the 4af rewrite does not). loop.c's unguarded
-        // us_quic_* references keep any real gap a link-stage failure, not a
-        // silent one.
-        if is_windows && *src == "quic.c" {
-            continue;
-        }
+        // quic.c compiles on every target: the bao-side tree already carries
+        // the windows gates (lsquic.h's WIN32 vc_compat gate + <ws2tcpip.h>
+        // arm) and the LIBUS_USE_LIBUV quic_timer arms, so the windows arm
+        // supplies us_quic_loop_process / us_quic_loop_flush_if_pending for
+        // the H3 link face instead of leaving them to a link error.
         let path = usockets_src.join(src);
         // fault_inject.c arrives with the usockets absorb; it is a no-op TU
         // unless LIBUS_SOCKET_FAULT_INJECTION is armed, so a tree without it
@@ -409,6 +409,10 @@ fn main() {
     }
 
     cpp_build.file(crate_dir.join("libuwsockets.cpp"));
+    // HTTP/3 C-ABI wrappers (uws_h3_*) — same 1:1 uWS surface shape as the
+    // H1 wrapper TU, kept file-level separable. Without it the uws_h3_*
+    // externs (res/listen-socket faces) are link-stage gaps on every target.
+    cpp_build.file(crate_dir.join("libuwsockets_h3.cpp"));
     cpp_build.compile("uwsockets");
 
     // ── Link dependencies ─────────────────────────────────────────────────
