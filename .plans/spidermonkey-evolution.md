@@ -2106,3 +2106,19 @@ quic.c 回归 windows C 面(撤 lsquic 锁时代跳过;bao 保留树门系本全
 ### W7 第二层终收+W8 立派(f8bcaa40+86db92c2,2026-09-22)
 
 17+1 闭(BunString__×12 Rust 实现/getRSS/stdio_null/clock/stdio_inheritance[SetStdHandle×3])。**关键实证:linux bao 二进制产出(RC=0)且同 20 符号 U=跨平台 deferred 面**(ELF 容忍 vs COFF 严,linux 面同样未吸收——非 windows 特有)。W8 终链已派 ew4:**Rust 优先实现裁定**(BunString__/ec3/s1a 三先例;禁整吞上游 C++;单点报批制)——spawn_sync 家族 5/SourceProvider 5/NamedPipe 3/rescle 2/blob/vm 2/系统 2。bao.exe=硬判据,顺带治 linux deferred。
+
+### W7 L3·bun_core 8 闭(317d350e+b7b7e892,2026-09-22)
+
+visibleWidth 族(unicode_width 复用)/ANSI 迭代/ttySetMode(树内 tty.rs windows 臂,SetConsoleMode)/ensureHash/createExternal + Bun__ramSize(GlobalMemoryStatusEx)/isThreadSafe 落地。webcore_faces 2(8baf6739):`__bun_stdio_blob_store_new`(StdioBlobStore #[repr(C)] intrusive refcount ctor=2 真实现)+`__bun_js_vm_get`(mozjs Runtime TLS accessor)。
+
+### W7 L3·rescle 真身(5ae38a51)
+
+src/sys/windows/mod.rs ~890 行 Rust ResourceEditor(字节级镜像上游 quirk),bun build --compile 元数据面;windows_enable_stdio_inheritance(86db92c2 已在前)。真机 VersionInfo smoke 记 W3' 注记。
+
+### W8 终链尾单双闭(s1a 2ce20635 + ew4 ab201b29,2026-09-22)
+
+NamedPipe 15(s1a:bao_runtime socket.rs,状态/流控/写/lifecycle/ssl-never-TLS 行为 parity)+四散点(ew4):ZigSourceProvider__getSourceSlice(src/sourcemap 空面,SM 下 JSC 路径恒不存在)/WTFStringImpl__isThreadSafe(bun_alloc,**顺带根治 windows_ensure_hash 位布局 bug:hash<<2 污染 kind 位 4/5 → hash<<8|flags&0xFF**)/PE-graph Data/Length(exe_format/pe.rs standalone_pe 模块:GetModuleHandleExW UNCHANGED_REFCOUNT→DOS/NT header walk→.bun section,原子缓存,直接移植上游 _WIN32 臂)。
+
+### W8 终链 E0432 修(C 直修,2026-09-22)
+
+`bun_standalone_graph` 按 Rust path import `bun_exe_format::pe::{Bun__...}` 而 windows 实现在 `pe::standalone_pe::` 子模块(not(windows) 才在 pe 根 extern)→ import 改指 standalone_pe::。净终链重跑(bao.exe 判定)。脏树合流注记:ew4 spawn_sync 家族续(bun_sm+bun_uws dep)/tty windows 臂/CDP clone-face 观测(REQ-CDP-006,独立工作流)/vendor/libffi-sys 目录删除(4e2f7209 残留,patch/exclude 已删但目录未 git rm)——链后按功能分笔提交。
