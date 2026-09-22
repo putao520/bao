@@ -3675,11 +3675,54 @@ pub(crate) extern "C" fn __wrap_gettid() -> libc::pid_t {
 /// `bun_runtime` (node:fs preallocation guard) and the binary root can
 /// call it without re-declaring the C ABI.
 pub fn get_total_memory_size() -> usize {
-    unsafe extern "C" {
-        // Pure FFI into Bun's C++ bindings; no arguments, no invariants.
-        safe fn Bun__ramSize() -> usize;
+    #[cfg(windows)]
+    {
+        // windows supply (issue #18 W8): GlobalMemoryStatusEx ullTotalPhys —
+        // the process-wide RAM budget face (the C++ shim's posix arm reads
+        // the same via sysconf(_SC_PHYS_PAGES)).
+        #[repr(C)]
+        struct MemoryStatusEx {
+            dw_length: u32,
+            dw_memory_load: u32,
+            ull_total_phys: u64,
+            ull_avail_phys: u64,
+            ull_total_pagefile: u64,
+            ull_avail_pagefile: u64,
+            ull_total_virtual: u64,
+            ull_avail_virtual: u64,
+            ull_avail_extended_virtual: u64,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GlobalMemoryStatusEx(lpbuffer: *mut MemoryStatusEx) -> i32;
+        }
+        let mut msex = MemoryStatusEx {
+            dw_length: 64,
+            dw_memory_load: 0,
+            ull_total_phys: 0,
+            ull_avail_phys: 0,
+            ull_total_pagefile: 0,
+            ull_avail_pagefile: 0,
+            ull_total_virtual: 0,
+            ull_avail_virtual: 0,
+            ull_avail_extended_virtual: 0,
+        };
+        // SAFETY: msex is a valid 64-byte MEMORYSTATUSEX with dwLength set.
+        if unsafe { GlobalMemoryStatusEx(&mut msex) } != 0 && msex.ull_total_phys > 0 {
+            return msex.ull_total_phys as usize;
+        }
+        // Fall through to the linked Bun__ramSize (posix paths) — unreachable
+        // on windows unless GlobalMemoryStatusEx fails.
+        0
     }
-    Bun__ramSize()
+    #[cfg(not(windows))]
+    {
+        unsafe extern "C" {
+            // Pure FFI into Bun's C++ bindings; no arguments, no invariants.
+            safe fn Bun__ramSize() -> usize;
+        }
+        Bun__ramSize()
+    }
 }
 
 /// Capture the current thread's call stack into `addrs`. `begin` is a
