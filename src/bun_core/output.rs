@@ -700,6 +700,14 @@ pub mod stdio {
     use crate::native_seam::bun_restore_stdio;
     use crate::native_seam::bun_initialize_process;
 
+    // windows: no C writer exists — a zeroed static (every slot = "not
+    // null") is the conservative default: writes to a NUL-redirected stdio
+    // land in the NUL device and vanish harmlessly.
+    #[cfg(windows)]
+    pub(crate) static bun_is_stdio_null: [AtomicI32; 3] =
+        [AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(0)];
+
+    #[cfg(not(windows))]
     // TODO(port): move to bun_core_sys
     unsafe extern "C" {
         // Written once by C at process startup before threads; Rust only reads.

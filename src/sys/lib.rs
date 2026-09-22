@@ -4908,16 +4908,44 @@ pub use bun_core::time;
 /// C++ `getRSS` shim (lives in `src/jsc/bindings/memory.cpp`).
 pub fn self_process_memory_usage() -> Option<usize> {
     // TODO(port): move to <area>_sys
+    #[cfg(not(windows))]
     unsafe extern "C" {
         // safe: out-param is `&mut usize` (non-null, valid for write); C++ side
         // only writes the slot and returns a status code — no other preconditions.
         safe fn getRSS(rss: &mut usize) -> ::core::ffi::c_int;
     }
-    let mut rss: usize = 0;
-    if getRSS(&mut rss) != 0 {
+    #[cfg(windows)]
+    {
+        // windows arm (issue #18 W7): GetProcessMemoryInfo WorkingSetSize —
+        // no C++ shim needed (psapi face, kernel32 process handle).
+        use ::bun_windows_sys::{GetCurrentProcess, PROCESS_MEMORY_COUNTERS};
+        use ::bun_windows_sys::kernel32::GetProcessMemoryInfo;
+        let mut pmc = PROCESS_MEMORY_COUNTERS {
+            cb: ::core::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            PageFaultCount: 0,
+            PeakWorkingSetSize: 0,
+            WorkingSetSize: 0,
+            QuotaPeakPagedPoolUsage: 0,
+            QuotaPagedPoolUsage: 0,
+            QuotaNonPagedPoolUsage: 0,
+            PagefileUsage: 0,
+            PeakPagefileUsage: 0,
+        };
+        // SAFETY: pmc is a valid out-buffer; GetCurrentProcess is a pseudo
+        // handle constant — no ownership.
+        if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) } != 0 {
+            return Some(pmc.WorkingSetSize as usize);
+        }
         return None;
     }
-    Some(rss)
+    #[cfg(not(windows))]
+    {
+        let mut rss: usize = 0;
+        if getRSS(&mut rss) != 0 {
+            return None;
+        }
+        Some(rss)
+    }
 }
 
 /// `bun.sys.PosixStat` — uv-shaped stat struct (`src/sys/PosixStat.zig`).

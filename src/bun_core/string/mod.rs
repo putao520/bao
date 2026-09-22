@@ -118,6 +118,115 @@ unsafe extern "C" {
 /// `void (*)(void*, void*, size_t)` — the third arg is `size_t`, **not**
 /// `unsigned`. A `u32` here would truncate on 64-bit and (worse) shift the
 /// stack/register layout for the callee on Win64 where `size_t` ≠ `unsigned`.
+
+// ── windows face (issue #18 W7 second layer) ────────────────────────────────
+// The BunString__* FFI family is the C++ `BunString.cpp` bridge in upstream
+// bun (JSC). Bao's SM architecture implements the same faces in Rust against
+// this module's own String machinery — no engine context is required (these
+// are pure value conversions over the tagged repr; SM-side interning does not
+// apply, so createAtom is an owned copy). The cfg keeps the posix face
+// (extern, satisfied by the C++ supply) byte-identical where it already
+// resolves; on windows these definitions close the link.
+#[cfg(windows)]
+mod bunstring_ffi {
+    use core::slice;
+    use super::String;
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__fromLatin1(bytes: *const u8, len: usize) -> String {
+        // Latin-1 → UTF-16 code-unit expansion (same code points).
+        let latin1 = unsafe { slice::from_raw_parts(bytes, len) };
+        let units: Vec<u16> = latin1.iter().map(|&b| b as u16).collect();
+        let (out, units_dst) = String::create_uninitialized_utf16(len);
+        units_dst.copy_from_slice(&units);
+        out
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__fromUTF16(bytes: *const u16, len: usize) -> String {
+        // SAFETY: caller provides a valid UTF-16 span of `len` units.
+        let (out, units) = String::create_uninitialized_utf16(len);
+        units.copy_from_slice(unsafe { slice::from_raw_parts(bytes, len) });
+        out
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__fromUTF16ToLatin1(bytes: *const u16, len: usize) -> String {
+        // Upstream name = "create from UTF-16 (storage may narrow)". The
+        // content is the UTF-16 span; storage width is an internal choice.
+        let (out, units_dst) = String::create_uninitialized_utf16(len);
+        units_dst.copy_from_slice(unsafe { slice::from_raw_parts(bytes, len) });
+        out
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn BunString__fromLatin1Unitialized(len: usize) -> String {
+        String::create_uninitialized_latin1(len).0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn BunString__fromUTF16Unitialized(len: usize) -> String {
+        String::create_uninitialized_utf16(len).0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn BunString__toWTFString(this: &mut String) {
+        this.to_wtf_string();
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn BunString__toThreadSafe(this: &mut String) {
+        this.to_thread_safe();
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__createAtom(bytes: *const u8, len: usize) -> String {
+        String::create_atom(unsafe { slice::from_raw_parts(bytes, len) })
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__tryCreateAtom(bytes: *const u8, len: usize) -> String {
+        String::create_atom_if_possible(unsafe { slice::from_raw_parts(bytes, len) })
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__createStaticExternal(
+        bytes: *const u8,
+        len: usize,
+        isLatin1: bool,
+    ) -> String {
+        String::create_static_external(unsafe { slice::from_raw_parts(bytes, len) }, isLatin1)
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__toInt32(this: &String) -> i64 {
+        // JSC toInt32 semantics: non-numeric → 0.
+        this.to_int32().map(i64::from).unwrap_or(0)
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__createExternalGloballyAllocatedLatin1(
+        bytes: *mut u8,
+        len: usize,
+    ) -> String {
+        // SAFETY: the caller hands over a globally-allocated `len`-byte
+        // buffer (ownership crosses — the external string owns it after).
+        let owned = unsafe { Vec::from_raw_parts(bytes, len, len) };
+        String::create_external_globally_allocated_latin1(owned)
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn BunString__createExternalGloballyAllocatedUTF16(
+        bytes: *mut u16,
+        len: usize,
+    ) -> String {
+        // SAFETY: ownership crosses (see the Latin1 twin); `len` is in
+        // UTF-16 code units.
+        let owned = unsafe { Vec::from_raw_parts(bytes, len, len) };
+        String::create_external_globally_allocated_utf16(owned)
+    }
+}
+
 pub(crate) type ExternalStringImplFreeFunction<Ctx> =
     extern "C" fn(ctx: Ctx, buffer: *mut core::ffi::c_void, len: usize);
 

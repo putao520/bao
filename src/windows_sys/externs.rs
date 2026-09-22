@@ -44,6 +44,8 @@ pub const INVALID_HANDLE_VALUE: HANDLE = usize::MAX as isize as HANDLE;
 pub const STD_INPUT_HANDLE: DWORD = 0xFFFF_FFF6;
 pub const STD_OUTPUT_HANDLE: DWORD = 0xFFFF_FFF5;
 pub const STD_ERROR_HANDLE: DWORD = 0xFFFF_FFF4;
+/// `SetStdHandle`/`SetHandleInformation` flag (`handlebase.h`).
+pub const HANDLE_FLAG_INHERIT: DWORD = 0x0000_0001;
 
 /// `SetConsoleMode`/`GetConsoleMode` flags (`wincon.h`).
 pub const ENABLE_PROCESSED_INPUT: DWORD = 0x0001;
@@ -339,6 +341,23 @@ pub const GENERIC_WRITE: ACCESS_MASK = 0x4000_0000;
 // File-specific access rights (`winnt.h`).
 pub const FILE_READ_DATA: ACCESS_MASK = 0x0001;
 pub const FILE_LIST_DIRECTORY: ACCESS_MASK = 0x0001;
+
+// ── psapi face (`psapi.h`) — process memory queries (issue #18 W7) ──────────
+/// `PROCESS_MEMORY_COUNTERS` (`psapi.h`) — `cb` must be set to
+/// `size_of::<Self>()` before `GetProcessMemoryInfo`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PROCESS_MEMORY_COUNTERS {
+    pub cb: DWORD,
+    pub PageFaultCount: DWORD,
+    pub PeakWorkingSetSize: usize,
+    pub WorkingSetSize: usize,
+    pub QuotaPeakPagedPoolUsage: usize,
+    pub QuotaPagedPoolUsage: usize,
+    pub QuotaNonPagedPoolUsage: usize,
+    pub PagefileUsage: usize,
+    pub PeakPagefileUsage: usize,
+}
 pub const FILE_ADD_FILE: ACCESS_MASK = 0x0002;
 pub const FILE_APPEND_DATA: ACCESS_MASK = 0x0004;
 pub const FILE_ADD_SUBDIRECTORY: ACCESS_MASK = 0x0004;
@@ -700,6 +719,13 @@ pub mod kernel32 {
             lpCurrentDirectory: LPCWSTR,
             lpStartupInfo: *mut STARTUPINFOW,
             lpProcessInformation: *mut PROCESS_INFORMATION,
+        ) -> BOOL;
+        /// `GetProcessMemoryInfo` (`psapi.h`, folded into kernel32 on modern
+        /// windows) — WorkingSetSize is the RSS face for memory reporting.
+        pub fn GetProcessMemoryInfo(
+            hprocess: HANDLE,
+            ppsmemcounters: *mut PROCESS_MEMORY_COUNTERS,
+            cb: DWORD,
         ) -> BOOL;
         /// `SetConsoleCtrlHandler` — install/uninstall a console ctrl handler.
         /// No pointer preconditions: the handler is an `Option<fn>` (null-safe)
@@ -1827,10 +1853,6 @@ unsafe extern "system" {
         fInfoLevelId: GET_FILEEX_INFO_LEVELS,
         lpFileInformation: LPVOID,
     ) -> BOOL;
-}
-
-unsafe extern "C" {
-    pub fn windows_enable_stdio_inheritance();
 }
 
 // ported from: src/windows_sys/externs.zig

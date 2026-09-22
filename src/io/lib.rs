@@ -547,15 +547,18 @@ bun_core::define_scoped_log!(log, io_loop); // hand-declared static above (tagna
 
 #[cfg(windows)]
 mod windows_ffi {
-    // Bun C++ shim over `QueryPerformanceCounter` (src/bun.js/bindings/
-    // c-bindings.cpp). Zig io.zig:314 declares it inline in `Loop`.
-    unsafe extern "C" {
-        // safe: out-params are `&mut i64` (non-null, valid for write); C++ side
-        // only writes the slots and returns a status code — no preconditions.
-        pub(super) safe fn clock_gettime_monotonic(
-            sec: &mut i64,
-            nsec: &mut i64,
-        ) -> core::ffi::c_int;
+    // The C++ shim was a `QueryPerformanceCounter` wrapper
+    // (src/bun.js/bindings/c-bindings.cpp); the windows arm here implements
+    // the same monotonic face with a process-lazy `Instant` anchor — deltas
+    // are what the Loop consumes, and `Instant` is QPC-backed on windows.
+    pub(super) fn clock_gettime_monotonic(sec: &mut i64, nsec: &mut i64) -> core::ffi::c_int {
+        use ::std::sync::OnceLock;
+        use ::std::time::Instant;
+        static ANCHOR: OnceLock<Instant> = OnceLock::new();
+        let elapsed = ANCHOR.get_or_init(Instant::now).elapsed();
+        *sec = elapsed.as_secs() as i64;
+        *nsec = elapsed.subsec_nanos() as i64;
+        0
     }
 }
 
