@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "accesskit",
  "arboard",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
@@ -2259,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "bao_bundler"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bao_engine",
  "bun_alloc",
@@ -3810,7 +3810,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
