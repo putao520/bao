@@ -2067,3 +2067,6 @@ dns/constants/os 132→0(GetAddrInfoW 管线+EAI 全表 ws2tcpip 值/constants �
 ### 热修落地+余量收敛(94c15f55,2026-09-22)
 
 node_net linux 断已修(cfg 双臂 socklen_t+node_tls AsRawFd 漏提交两件一并;成因=毯式替换改坏自插行+两 1 行修漏在树外——组 2 pure-HEAD 复现窗口即此)。linux 现存断点余二(均已有主):mozjs-sys mirror(s1a 热修在途)/addrinfo E0133(ec2 微修已派,edition-2024 unsafe 包裹)。FSWatcher 裁定确认=已先行完成。env 组合权威=scripts/win-cross-env.sh+/opt/bao-win-cross(ew4 全程实证)。
+
+### addrinfo E0133 闭(a16f7ffd,双面绿,C 复验)
+余量=child_process(ec3)+mozjs linux mirror(s1a 热修)。
