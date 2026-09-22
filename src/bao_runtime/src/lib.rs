@@ -89,6 +89,10 @@ pub mod node_url;
 pub mod node_util;
 pub mod node_util_types;
 pub mod node_vm;
+// win-cross, #18 (W7): real bodies behind `uws_sys`'s link-time-dispatch
+// handles (`WindowsNamedPipe__*` externs).
+#[cfg(windows)]
+pub mod socket;
 pub mod node_wasi;
 pub mod node_worker_threads;
 pub mod node_zlib;
