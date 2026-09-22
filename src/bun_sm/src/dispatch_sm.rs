@@ -425,3 +425,72 @@ pub extern "Rust" fn __bun_spawn_sync_vm_swap_suppress_microtask_drain(
 pub fn spawn_sync_microtask_drain_suppressed() -> bool {
     SPAWN_SYNC_SUPPRESS_MICROTASK_DRAIN.with(Cell::get)
 }
+
+
+// ── spawn_sync event-loop faces (issue #18 W8) ─────────────────────────────
+// The erased `*mut ()` is a heap `SpawnSyncEventLoopState` binding the VM to
+// its isolated uWS loop (the spawnSync wait-loop contract: each wait
+// iteration ticks the loop's tasks once; the VM's active event-loop handle
+// is swapped to the isolated loop for the duration and restored after).
+// The `vm_get/vm_set_event_loop_handle` slot is keyed by the erased VM
+// pointer (the handle is `Option<NonNull<Loop>>` erased to `*mut ()`).
+
+// `*mut ()` is not `Send`; the registry stores the pointer as `usize`
+// (same bits — the handle is only dereferenced by the owning thread).
+static SPAWN_SYNC_VM_EVENT_LOOP_HANDLES: ::std::sync::LazyLock<
+    ::std::sync::Mutex<::std::collections::HashMap<usize, usize>>,
+> = ::std::sync::LazyLock::new(|| ::std::sync::Mutex::new(::std::collections::HashMap::new()));
+
+pub(crate) struct SpawnSyncState {
+    pub vm: *mut (),
+    pub uws_loop: *mut bun_uws::Loop,
+}
+
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_spawn_sync_create_event_loop(
+    vm: *mut (),
+    uws_loop: *mut bun_uws::Loop,
+) -> *mut () {
+    Box::into_raw(Box::new(SpawnSyncState { vm, uws_loop })) as *mut ()
+}
+
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_spawn_sync_event_loop_set_vm(el: *mut (), vm: *mut ()) {
+    // SAFETY: el is the live heap state from create_event_loop.
+    let state = unsafe { &mut *(el as *mut SpawnSyncState) };
+    state.vm = vm;
+}
+
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_spawn_sync_event_loop_tick_tasks_only(el: *mut ()) {
+    // Drain the isolated loop's pending tasks once: a single non-blocking
+    // pump pass over the uWS loop (no I/O wait — the spawn-sync caller owns
+    // the wait/timeout cadence).
+    let state = unsafe { &*(el as *mut SpawnSyncState) };
+    // SAFETY: uws_loop is the live loop handle from us_create_loop.
+    unsafe {
+        us_loop_pump(state.uws_loop);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_spawn_sync_vm_get_event_loop_handle(vm: *mut ()) -> *mut () {
+    SPAWN_SYNC_VM_EVENT_LOOP_HANDLES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(vm as usize))
+        .copied()
+        .unwrap_or(0) as *mut ()
+}
+
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_spawn_sync_vm_set_event_loop_handle(vm: *mut (), h: *mut ()) {
+    SPAWN_SYNC_VM_EVENT_LOOP_HANDLES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(vm as usize, h as usize);
+}
+
+unsafe extern "Rust" {
+    fn us_loop_pump(loop_: *mut bun_uws::Loop);
+}

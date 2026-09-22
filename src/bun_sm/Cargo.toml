@@ -17,6 +17,7 @@ mozjs.workspace = true
 mozjs_sys.workspace = true
 bun_core = { path = "../bun_core", version = "0.2.0" }
 bun_event_loop = { path = "../event_loop", version = "^0.2.0" }
+bun_uws.workspace = true
 bun_io = { path = "../io", version = "^0.2.0" }
 bun_collections = { path = "../collections", version = "0.2.0" }
 bun_threading = { path = "../threading", version = "^0.2.0" }

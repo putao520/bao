@@ -3820,6 +3820,7 @@ dependencies = [
  "bun_sys",
  "bun_threading",
  "bun_transpiler",
+ "bun_uws",
  "libc",
  "log",
  "tempfile",
