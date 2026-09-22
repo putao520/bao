@@ -1979,6 +1979,16 @@ impl Document {
             .fetch_async_with_callback(load, request, callback);
     }
 
+    pub(crate) fn fetch_blocking<Listener: FetchResponseListener>(
+        &self,
+        load: LoadType,
+        request: RequestBuilder,
+        listener: Listener,
+    ) {
+        self.loader_mut().add_blocking_load(load);
+        self.fetch_background(request, listener);
+    }
+
     pub(crate) fn fetch_background<Listener: FetchResponseListener>(
         &self,
         request: RequestBuilder,

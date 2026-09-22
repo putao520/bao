@@ -132,7 +132,7 @@ impl DocumentLoader {
     }
 
     /// Add a load to the list of blocking loads.
-    fn add_blocking_load(&mut self, load: LoadType) {
+    pub(crate) fn add_blocking_load(&mut self, load: LoadType) {
         debug!(
             "Adding blocking load {:?} ({}).",
             load,

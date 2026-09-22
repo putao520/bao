@@ -1,20 +1,20 @@
 {
   "version": 1,
-  "updated_at": "2026-09-19",
-  "updated_by": "daily-ops-2026-09-19-wave",
+  "updated_at": "2026-09-23",
+  "updated_by": "daily-ops-2026-09-23-wave",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "367d939d9a",
-      "baseline_date": "2026-09-19",
+      "baseline": "87466cf1ff",
+      "baseline_date": "2026-09-23",
       "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..367d939d9a 全判定(triage 09-08..09-19);09-19 波吸收 13 项落地(install 六连+libarchive/yarn/npm-alias/css view-transition/uws WS-early-frames 双树/url authority/h2-h3 strip/h3 retry),SEMANTIC-PORT backlog 10(09-18 8+09-19 fetch framing 大件与 node:net GC retention);HTMLRewriter/SSLWrapper/GC-controller N-A-HOST 证伪;FetchSession 新 API 面排除(须 PRD/SPEC 立法)"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "b820a9679",
-      "baseline_date": "2026-09-19",
+      "baseline": "ea4aaa3f1",
+      "baseline_date": "2026-09-23",
       "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..b820a9679 全判定(triage 09-08..09-19);09-19 波吸收 6 项落地(ByteLengthQueuingStrategy root/InputEventsHandled/FileReader safe/webxr cast_unit/Document.dir/FontData shrink+from_vec shim);deferred 6(selection images=layout 布局漂移族/PaintTimingMixin 大件/ClipboardItem+SW cache promise 基座沿袭 463b9e444/user-select 大项/moz-progress-bar=stylo#434 前置缺);rustls TlsSecurityInfo N-A-HOST(boringssl 栈零承载);2026-09-21 ev4 归一:vendor/servo [workspace] 根/Cargo.lock/rust-toolchain.toml 已删(70 manifest 继承内联,commit 5a2d85bc+a4a3b942)——验证一律主根 cargo check|nt -p bao-servo-*(禁 cd vendor/servo),servo crate 发布走组件目录 --manifest-path"
     }
   }

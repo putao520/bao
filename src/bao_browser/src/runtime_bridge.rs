@@ -3951,6 +3951,32 @@ mod tests {
     // ── REQ-SEC-002/003: Runtime bridge security structural verification ──
     // @trace TEST-SEC-003 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
 
+    /// End offset of `install_all_native` in this file's source: the next
+    /// top-level item after `func_start` (first hit among the boundary
+    /// anchors — the following function's doc comment, the next top-level
+    /// `fn` declaration, or the `NODE_POLYFILLS` const). Fail-closed: panics
+    /// with diagnostics when no anchor hits, instead of falling back to a
+    /// fixed char window or the whole file.
+    fn install_all_native_end(source: &str, func_start: usize) -> usize {
+        const BOUNDARY_ANCHORS: [&str; 5] = [
+            "\nunsafe fn ",
+            "\nfn ",
+            "\n/// Inject Node",
+            "\n    /// Inject Node",
+            "const NODE_POLYFILLS",
+        ];
+        BOUNDARY_ANCHORS
+            .iter()
+            .filter_map(|anchor| source[func_start..].find(anchor).map(|i| func_start + i))
+            .min()
+            .unwrap_or_else(|| {
+                panic!(
+                    "install_all_native end boundary not found after offset {func_start} \
+                     (expected one of {BOUNDARY_ANCHORS:?})"
+                )
+            })
+    }
+
     /// Verify install_all_native calls install_web_apis (NOT install_all or install_node_apis).
     /// REQ-SEC-003: The bridge must NOT inject Node APIs on page global.
     #[test]
@@ -3959,8 +3985,13 @@ mod tests {
         let func_start = source
             .find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
-        // Extract just the function body — 5000 chars max to avoid test code.
-        let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
+        // Extract the WHOLE function — end boundary anchored at the next
+        // top-level item (first boundary hit), NOT a fixed char window:
+        // install_all_native outgrew the old 5000-char cap, so the tail
+        // markers (fetch/timers install) fell out of the window and the
+        // positive assertions went red against a truncated body.
+        let func_end = install_all_native_end(&source, func_start);
+        let func_body = &source[func_start..func_end];
 
         assert!(
             func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
@@ -4326,15 +4357,10 @@ mod tests {
         let func_body_start = source[func_start..]
             .find("{")
             .expect("function body start not found");
-        let search_limit = source[func_start + func_body_start..]
-            .find("const NODE_POLYFILLS")
-            .or_else(|| {
-                source[func_start + func_body_start..].find("/// Inject Node.js APIs as native")
-            })
-            .unwrap_or(5000)
-            .min(5000);
-        let func_body =
-            &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+        // Boundary-anchored window (was a 5000-char cap — install_all_native
+        // outgrew it; see runtime_bridge_calls_web_apis_not_install_all).
+        let func_end = install_all_native_end(&source, func_start);
+        let func_body = &source[func_start + func_body_start..func_end];
 
         assert!(
             func_body.contains("bun_runtime::fetch_api::install_fetch_global"),

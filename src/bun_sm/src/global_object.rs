@@ -97,9 +97,20 @@ pub fn node_realm_options() -> mozjs::rust::RealmOptions {
             .expect("valid IANA zone literal");
         unsafe { mozjs_sys::glue::BaoSetRealmTimeZoneOverride(&mut *options, tz.as_ptr()) };
     }
-    // SM153 time-precision parity: the RTP caller-type token is stamped by
-    // the CALLER (bao_engine context.rs) — bun_sm cannot depend on bao_engine
-    // (the crate edge runs the other way: bao_engine -> bun_sm).
+    // SM153 time-precision parity: node_realm_options is the single choke
+    // point every Node-semantics realm goes through (CLI eval, module loader,
+    // vm.createContext sandboxes, browser Node Realm) — stamp the RTP
+    // caller-type token HERE, via mozjs_sys glue directly (bun_sm cannot
+    // depend on bao_engine; same-file BaoSetRealmTimeZoneOverride precedent).
+    // Date.cpp NowAsMillis dereferences the realm's token Maybe once the
+    // clamp callback is installed, so a token-less realm MOZ_Crashes on its
+    // first Date read; value 0 mirrors bao_engine realm_policy::
+    // RTP_TOKEN_VALUE (token-agnostic — bao's callback applies one process
+    // grid to every realm). bao_engine context.rs re-stamps idempotently
+    // after this (same face as realm_policy, @trace REQ-ENG-001).
+    unsafe {
+        mozjs_sys::glue::BaoSetRealmOptionsReduceTimerPrecisionCallerType(&mut *options, 0)
+    };
     options
 }
 
