@@ -234,7 +234,10 @@ unsafe extern "C" fn tty_write_stream_ctor(cx: *mut JSContext, argc: u32, vp: *m
         JSPROP_ENUMERATE as u32,
     );
 
+    #[cfg(unix)]
     let is_tty = libc::isatty(fd) == 1;
+    #[cfg(windows)]
+    let is_tty = console_is_tty(fd);
 
     // isTTY
     rooted!(&in(cx_ref) let tv = BooleanValue(is_tty));
@@ -246,16 +249,28 @@ unsafe extern "C" fn tty_write_stream_ctor(cx: *mut JSContext, argc: u32, vp: *m
         JSPROP_ENUMERATE as u32,
     );
 
-    // columns / rows from ioctl TIOCGWINSZ
+    // columns / rows from ioctl TIOCGWINSZ (unix) / the visible console
+    // window extents (windows).
+    #[cfg(unix)]
     let mut ws: libc::winsize = libc::winsize {
         ws_row: 0,
         ws_col: 0,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    #[cfg(unix)]
     let has_size = is_tty && libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) == 0;
+    #[cfg(unix)]
+    let ws_col = ws.ws_col as i32;
+    #[cfg(unix)]
+    let ws_row = ws.ws_row as i32;
+    #[cfg(windows)]
+    let (has_size, ws_col, ws_row) = match (is_tty, console_window_size(fd)) {
+        (true, Some((cols, rows))) => (true, cols, rows),
+        _ => (false, 0, 0),
+    };
     if has_size {
-        rooted!(&in(cx_ref) let cols = Int32Value(ws.ws_col as i32));
+        rooted!(&in(cx_ref) let cols = Int32Value(ws_col));
         JS_DefineProperty(
             cx,
             obj.handle().into(),
@@ -263,7 +278,7 @@ unsafe extern "C" fn tty_write_stream_ctor(cx: *mut JSContext, argc: u32, vp: *m
             cols.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
-        rooted!(&in(cx_ref) let rows = Int32Value(ws.ws_row as i32));
+        rooted!(&in(cx_ref) let rows = Int32Value(ws_row));
         JS_DefineProperty(
             cx,
             obj.handle().into(),
@@ -381,23 +396,34 @@ unsafe extern "C" fn tty_set_raw_mode(cx: *mut JSContext, argc: u32, vp: *mut JS
         return false;
     }
 
-    let mut term: libc::termios = ::std::mem::zeroed();
-    if libc::tcgetattr(fd, &mut term) != 0 {
-        JS_ReportErrorUTF8(cx, c"setRawMode: tcgetattr failed".as_ptr());
-        return false;
+    #[cfg(unix)]
+    {
+        let mut term: libc::termios = ::std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut term) != 0 {
+            JS_ReportErrorUTF8(cx, c"setRawMode: tcgetattr failed".as_ptr());
+            return false;
+        }
+
+        if raw_flag {
+            libc::cfmakeraw(&mut term);
+        } else {
+            libc::cfmakeraw(&mut term);
+            term.c_iflag |= libc::ICRNL;
+            term.c_oflag |= libc::OPOST | libc::ONLCR;
+            term.c_lflag |= libc::ICANON | libc::ECHO | libc::ECHOE | libc::ECHOK | libc::ISIG;
+        }
+
+        if libc::tcsetattr(fd, libc::TCSANOW, &term) != 0 {
+            JS_ReportErrorUTF8(cx, c"setRawMode: tcsetattr failed".as_ptr());
+            return false;
+        }
     }
 
-    if raw_flag {
-        libc::cfmakeraw(&mut term);
-    } else {
-        libc::cfmakeraw(&mut term);
-        term.c_iflag |= libc::ICRNL;
-        term.c_oflag |= libc::OPOST | libc::ONLCR;
-        term.c_lflag |= libc::ICANON | libc::ECHO | libc::ECHOE | libc::ECHOK | libc::ISIG;
-    }
-
-    if libc::tcsetattr(fd, libc::TCSANOW, &term) != 0 {
-        JS_ReportErrorUTF8(cx, c"setRawMode: tcsetattr failed".as_ptr());
+    // windows: the console has no termios — Get/SetConsoleMode is the
+    // platform equivalent of the cfmakeraw/tcsetattr pair above.
+    #[cfg(windows)]
+    if !console_set_raw_mode(fd, raw_flag) {
+        JS_ReportErrorUTF8(cx, c"setRawMode: SetConsoleMode failed".as_ptr());
         return false;
     }
 
@@ -439,16 +465,24 @@ unsafe extern "C" fn tty_get_window_size(cx: *mut JSContext, _argc: u32, vp: *mu
         -1
     };
 
+    #[cfg(unix)]
     let mut ws: libc::winsize = libc::winsize {
         ws_row: 0,
         ws_col: 0,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    if fd >= 0 && libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) == 0 {
+    #[cfg(unix)]
+    let ws_col = ws.ws_col as i32;
+    #[cfg(unix)]
+    let ws_row = ws.ws_row as i32;
+    #[cfg(windows)]
+    let (ws_col, ws_row) = console_window_size(fd).unwrap_or((0, 0));
+    let has_size = fd >= 0 && ws_col > 0;
+    if has_size {
         rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, 2));
         if !arr.get().is_null() {
-            rooted!(&in(cx_ref) let cv = Int32Value(ws.ws_col as i32));
+            rooted!(&in(cx_ref) let cv = Int32Value(ws_col));
             JS_DefineElement(
                 cx,
                 arr.handle().into(),
@@ -456,7 +490,7 @@ unsafe extern "C" fn tty_get_window_size(cx: *mut JSContext, _argc: u32, vp: *mu
                 cv.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
-            rooted!(&in(cx_ref) let rv = Int32Value(ws.ws_row as i32));
+            rooted!(&in(cx_ref) let rv = Int32Value(ws_row));
             JS_DefineElement(
                 cx,
                 arr.handle().into(),
@@ -504,7 +538,7 @@ unsafe extern "C" fn tty_write_stream_write(cx: *mut JSContext, argc: u32, vp: *
             libc::write(
                 fd,
                 bytes.as_ptr() as *const ::std::os::raw::c_void,
-                bytes.len(),
+                bytes.len() as _,
             );
         }
     }
@@ -650,7 +684,7 @@ unsafe extern "C" fn tty_clear_line(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         1
     };
 
-    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
     args.rval().set(ObjectValue(this_obj.get()));
     true
 }
@@ -684,7 +718,7 @@ unsafe extern "C" fn tty_clear_screen_down(cx: *mut JSContext, _argc: u32, vp: *
         1
     };
 
-    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
     args.rval().set(ObjectValue(this_obj.get()));
     true
 }
@@ -729,7 +763,7 @@ unsafe extern "C" fn tty_cursor_to(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         1
     };
 
-    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
     args.rval().set(ObjectValue(this_obj.get()));
     true
 }
@@ -787,8 +821,78 @@ unsafe extern "C" fn tty_move_cursor(cx: *mut JSContext, argc: u32, vp: *mut JSV
         } else {
             1
         };
-        libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+        libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len() as _);
     }
     args.rval().set(ObjectValue(this_obj.get()));
     true
+}
+
+// ─── windows console helpers (win-cross, #18) ──────────────────────────────
+// CRT fd → console handle (0=stdin, 1=stdout, 2=stderr; other fds have no
+// console mapping and fall back to stdout — matching Node's windows tty,
+// which only ever attaches to the three standard streams).
+#[cfg(windows)]
+fn console_handle_for_fd(fd: core::ffi::c_int) -> bun_windows_sys::HANDLE {
+    let std_id = match fd {
+        0 => bun_windows_sys::STD_INPUT_HANDLE,
+        2 => bun_windows_sys::STD_ERROR_HANDLE,
+        _ => bun_windows_sys::STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: GetStdHandle has no preconditions (returns INVALID_HANDLE_VALUE
+    // for an unknown slot).
+    unsafe { bun_windows_sys::kernel32::GetStdHandle(std_id) }
+}
+
+/// windows `is_tty`: a console handle answers GetConsoleMode; files/pipes
+/// fail it.
+#[cfg(windows)]
+fn console_is_tty(fd: core::ffi::c_int) -> bool {
+    let h = console_handle_for_fd(fd);
+    let mut mode: bun_windows_sys::DWORD = 0;
+    // SAFETY: out-param is a stack DWORD; GetConsoleMode has no other
+    // preconditions.
+    unsafe { bun_windows_sys::kernel32::GetConsoleMode(h, &mut mode) != 0 }
+}
+
+/// windows winsize: the visible console window extents (Node parity:
+/// columns = Right-Left+1, rows = Bottom-Top+1).
+#[cfg(windows)]
+fn console_window_size(fd: core::ffi::c_int) -> Option<(i32, i32)> {
+    let h = console_handle_for_fd(fd);
+    let mut csbi: bun_windows_sys::CONSOLE_SCREEN_BUFFER_INFO =
+        unsafe { ::std::mem::zeroed() };
+    // SAFETY: out-param is a zeroed POD struct we own.
+    let ok = unsafe {
+        bun_windows_sys::kernel32::GetConsoleScreenBufferInfo(h, &mut csbi)
+    } != 0;
+    if !ok {
+        return None;
+    }
+    let cols = (csbi.srWindow.Right - csbi.srWindow.Left + 1) as i32;
+    let rows = (csbi.srWindow.Bottom - csbi.srWindow.Top + 1) as i32;
+    Some((cols, rows))
+}
+
+/// windows raw mode: clear the line/echo/processed input flags for raw,
+/// restore them for cooked (Node `setRawMode` windows semantics — the
+/// console has no termios; Get/SetConsoleMode is the platform equivalent).
+#[cfg(windows)]
+fn console_set_raw_mode(fd: core::ffi::c_int, raw: bool) -> bool {
+    const ENABLE_PROCESSED_INPUT: bun_windows_sys::DWORD = 0x0001;
+    const ENABLE_LINE_INPUT: bun_windows_sys::DWORD = 0x0002;
+    const ENABLE_ECHO_INPUT: bun_windows_sys::DWORD = 0x0004;
+    let h = console_handle_for_fd(fd);
+    let mut mode: bun_windows_sys::DWORD = 0;
+    // SAFETY: out-param is a stack DWORD.
+    if unsafe { bun_windows_sys::kernel32::GetConsoleMode(h, &mut mode) } == 0 {
+        return false;
+    }
+    let line_flags = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT;
+    if raw {
+        mode &= !line_flags;
+    } else {
+        mode |= line_flags;
+    }
+    // SAFETY: SetConsoleMode on a console handle we just queried.
+    unsafe { bun_windows_sys::kernel32::SetConsoleMode(h, mode) != 0 }
 }
