@@ -5277,10 +5277,14 @@ pub fn install_crypto_global(
         // native realms). Defined non-writable/non-enumerable/non-configurable,
         // the WebIDL [Symbol.toStringTag] shape, so the enumerable property
         // face (randomUUID/getRandomValues/subtle) is unchanged.
-        let tag_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
-            cx.raw_cx(),
-            mozjs_sys::jsapi::JS::SymbolCode::toStringTag,
-        );
+        // BAO (#18 Windows): raw-bits glue face — the PropertyKey return is
+        // sret-divergent under MSVC (see jsglue.cpp bao_GetWellKnownSymbolKeyRaw).
+        let tag_key = mozjs_sys::jsapi::JS::PropertyKey {
+            asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
+                cx.raw_cx(),
+                mozjs_sys::jsapi::JS::SymbolCode::toStringTag as u32,
+            ),
+        };
         let tag_str = JS_NewStringCopyZ(cx.raw_cx(), c"Crypto".as_ptr());
         if !tag_str.is_null() {
             rooted!(&in(cx) let tag_val = StringValue(&*tag_str));
@@ -5626,10 +5630,14 @@ unsafe extern "C" fn structured_clone_fn(cx: *mut JSContext, argc: u32, vp: *mut
                     let mut iter_val = UndefinedValue();
                     {
                         rooted!(&in(cx_ref) let t_obj = tval.to_object());
-                        let sym_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
-                            cx,
-                            mozjs_sys::jsapi::JS::SymbolCode::iterator,
-                        );
+                        // BAO (#18 Windows): raw-bits face — see
+                        // bao_GetWellKnownSymbolKeyRaw (PropertyKey sret divergence).
+                        let sym_key = mozjs_sys::jsapi::JS::PropertyKey {
+                            asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
+                                cx,
+                                mozjs_sys::jsapi::JS::SymbolCode::iterator as u32,
+                            ),
+                        };
                         JS_GetPropertyById(
                             cx,
                             t_obj.handle().into(),

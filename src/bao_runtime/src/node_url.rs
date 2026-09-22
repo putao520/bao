@@ -1126,10 +1126,12 @@ unsafe fn install_ctor_with_proto(
         }
 
         // Symbol.toStringTag → name ([object URL] / [object URLSearchParams]).
-        let tag_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
-            cx.raw_cx(),
-            mozjs_sys::jsapi::JS::SymbolCode::toStringTag,
-        );
+        let tag_key = mozjs_sys::jsapi::JS::PropertyKey {
+    asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
+        cx.raw_cx(),
+        mozjs_sys::jsapi::JS::SymbolCode::toStringTag as u32,
+    ),
+};
         let tag_str = qs_js_string_utf8(cx.raw_cx(), to_string_tag);
         if !tag_str.is_null() {
             rooted!(&in(cx_ref) let tag_val = StringValue(&*tag_str));
@@ -1145,10 +1147,12 @@ unsafe fn install_ctor_with_proto(
         // Asynchronous-iterable surfaces: Symbol.iterator → the entries
         // method (for..of over the object itself yields [k, v] pairs).
         if let Some(iter_fn) = iterable_fn {
-            let sym_iter_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
-                cx.raw_cx(),
-                mozjs_sys::jsapi::JS::SymbolCode::iterator,
-            );
+            let sym_iter_key = mozjs_sys::jsapi::JS::PropertyKey {
+    asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
+        cx.raw_cx(),
+        mozjs_sys::jsapi::JS::SymbolCode::iterator as u32,
+    ),
+};
             let iter_f = JS_NewFunction(cx.raw_cx(), Some(iter_fn), 0, 0, c"[Symbol.iterator]".as_ptr());
             if !iter_f.is_null() {
                 let iter_obj = JS_GetFunctionObject(iter_f);
@@ -2187,10 +2191,12 @@ unsafe fn sp_make_iterator(cx: *mut JSContext, snapshot: *mut JSObject) -> *mut 
             }
         }
         // Symbol.iterator → this (for..of support; sqlite iterator pattern).
-        let sym_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
-            cx,
-            mozjs_sys::jsapi::JS::SymbolCode::iterator,
-        );
+        let sym_key = mozjs_sys::jsapi::JS::PropertyKey {
+    asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
+        cx,
+        mozjs_sys::jsapi::JS::SymbolCode::iterator as u32,
+    ),
+};
         let self_fn = JS_NewFunction(cx, Some(sp_iter_self), 0, 0, c"[Symbol.iterator]".as_ptr());
         if !self_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(self_fn);

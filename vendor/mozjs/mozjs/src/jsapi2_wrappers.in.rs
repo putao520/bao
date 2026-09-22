@@ -98,7 +98,6 @@ wrap!(jsapi: pub fn UTF8CharsToNewLatin1CharsZ(cx: &mut JSContext, utf8: *const 
 wrap!(jsapi: pub fn EncodeNarrowToUtf8(cx: &mut JSContext, chars: *const ::std::os::raw::c_char) -> UniqueChars);
 wrap!(jsapi: pub fn EncodeUtf8ToNarrow(cx: &mut JSContext, chars: *const ::std::os::raw::c_char) -> UniqueChars);
 wrap!(jsapi: pub fn EncodeUtf8ToWide(cx: &JSContext, chars: *const ::std::os::raw::c_char) -> UniqueWideChars);
-wrap!(jsapi: pub fn GetWellKnownSymbolKey(cx: &JSContext, which: SymbolCode) -> PropertyKey);
 wrap!(jsapi: pub fn ToGetterId(cx: &mut JSContext, id: Handle<PropertyKey>, getterId: MutableHandle<PropertyKey>) -> bool);
 wrap!(jsapi: pub fn ToSetterId(cx: &mut JSContext, id: Handle<PropertyKey>, setterId: MutableHandle<PropertyKey>) -> bool);
 wrap!(jsapi: pub fn SetHostEnsureCanAddPrivateElementHook(cx: &JSContext, op: EnsureCanAddPrivateElementOp));
@@ -329,10 +328,6 @@ wrap!(jsapi: pub fn GetWarningReporter(cx: &JSContext) -> WarningReporter);
 wrap!(jsapi: pub fn SetWarningReporter(cx: &JSContext, reporter: WarningReporter) -> WarningReporter);
 wrap!(jsapi: pub fn IsWasmModuleObject(obj: HandleObject) -> bool);
 wrap!(jsapi: pub fn GetWasmModule(obj: HandleObject) -> RefPtr<WasmModule>);
-wrap!(jsapi: pub fn CompileGlobalScriptToStencil(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> already_AddRefed<Stencil>);
-wrap!(jsapi: pub fn CompileGlobalScriptToStencil1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<u16>) -> already_AddRefed<Stencil>);
-wrap!(jsapi: pub fn CompileModuleScriptToStencil(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> already_AddRefed<Stencil>);
-wrap!(jsapi: pub fn CompileModuleScriptToStencil1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<u16>) -> already_AddRefed<Stencil>);
 wrap!(jsapi: pub fn InstantiateGlobalStencil(cx: &JSContext, options: *const InstantiateOptions, stencil: *mut Stencil, storage: *mut InstantiationStorage) -> *mut JSScript);
 wrap!(jsapi: pub fn InstantiateModuleStencil(cx: &JSContext, options: *const InstantiateOptions, stencil: *mut Stencil, storage: *mut InstantiationStorage) -> *mut JSObject);
 wrap!(jsapi: pub fn DecodeStencil(cx: &JSContext, options: *const ReadOnlyDecodeOptions, range: *const TranscodeRange, stencilOut: *mut *mut Stencil) -> TranscodeResult);
@@ -692,3 +687,8 @@ wrap!(jsapi: pub fn JS_GetUCPropertyDescriptor(cx: &mut JSContext, obj: HandleOb
 wrap!(jsapi: pub fn CreateError(cx: &mut JSContext, type_: JSExnType, stack: HandleObject, fileName: HandleString, lineNumber: u32, columnNumber: u32, report: *mut JSErrorReport, message: HandleString, cause: HandleValue, rval: MutableHandleValue) -> bool);
 wrap!(jsapi: pub fn GetExceptionCause(exc: *mut JSObject, dest: MutableHandleValue));
 wrap!(jsapi: pub fn NewEnvironmentChain(cx: &mut JSContext, supportUnscopables: SupportUnscopables) -> *mut EnvironmentChain);
+// BAO (#18 Windows): the four already_AddRefed<Stencil> compile wrappers were
+// removed — already_AddRefed returns via hidden sret under MSVC (deleted copy
+// ctor = non-trivially-copyable) and diverges from the Rust register-return
+// declaration. Use wrappers2::bao_Compile{Global,Module}ScriptToStencil[1]
+// (jsglue raw-pointer trampolines, ABI-identical everywhere).

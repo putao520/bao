@@ -29,3 +29,7 @@ wrap!(glue: pub fn StackGCVectorValueLength(vec: Handle<StackGCVector<Value, Tem
 wrap!(glue: pub fn StackGCVectorStringLength(vec: Handle<StackGCVector<*mut JSString, TempAllocPolicy>>) -> u32);
 wrap!(glue: pub fn StackGCVectorValueAtIndex(vec: Handle<StackGCVector<Value, TempAllocPolicy>>, index: u32) -> *const Value);
 wrap!(glue: pub fn StackGCVectorStringAtIndex(vec: Handle<StackGCVector<*mut JSString, TempAllocPolicy>>, index: u32) -> *const *mut JSString);
+// BAO (#18 Windows): raw-bits face — PropertyKey returns via hidden sret
+// under MSVC (user default ctor = non-trivial for calls), diverging from the
+// Rust register-return declaration. See jsglue.cpp.
+wrap!(glue: pub fn bao_GetWellKnownSymbolKeyRaw(cx: *mut JSContext, which: u32) -> usize);

@@ -1853,10 +1853,12 @@ unsafe extern "C" fn statement_iterate(cx: *mut JSContext, argc: u32, vp: *mut J
         JSPROP_ENUMERATE as u32,
     );
     // Symbol.iterator → this (for..of support).
-    let sym_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+    let sym_key = mozjs_sys::jsapi::JS::PropertyKey {
+    asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
         cx,
-        mozjs_sys::jsapi::JS::SymbolCode::iterator,
-    );
+        mozjs_sys::jsapi::JS::SymbolCode::iterator as u32,
+    ),
+};
     let fn_js = JS_NewFunction(cx, Some(iterator_self), 0, 0, c"[Symbol.iterator]".as_ptr());
     if !fn_js.is_null() {
         let fn_obj = JS_GetFunctionObject(fn_js);

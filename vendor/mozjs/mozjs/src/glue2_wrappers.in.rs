@@ -83,3 +83,11 @@ wrap!(glue: pub fn StackGCVectorValueLength(vec: Handle<StackGCVector<Value, Tem
 wrap!(glue: pub fn StackGCVectorStringLength(vec: Handle<StackGCVector<*mut JSString, TempAllocPolicy>>) -> u32);
 wrap!(glue: pub fn StackGCVectorValueAtIndex(vec: Handle<StackGCVector<Value, TempAllocPolicy>>, index: u32) -> *const Value);
 wrap!(glue: pub fn StackGCVectorStringAtIndex(vec: Handle<StackGCVector<*mut JSString, TempAllocPolicy>>, index: u32) -> *const *mut JSString);
+
+// BAO (#18 Windows): raw-pointer stencil compile faces — see jsglue.cpp.
+// The upstream already_AddRefed returns are ABI-divergent under MSVC
+// (hidden sret) and are intentionally not wrapped.
+wrap!(glue: pub fn bao_CompileGlobalScriptToStencil(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut Stencil);
+wrap!(glue: pub fn bao_CompileGlobalScriptToStencil1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<u16>) -> *mut Stencil);
+wrap!(glue: pub fn bao_CompileModuleScriptToStencil(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut Stencil);
+wrap!(glue: pub fn bao_CompileModuleScriptToStencil1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<u16>) -> *mut Stencil);

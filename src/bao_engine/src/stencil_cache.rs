@@ -283,10 +283,15 @@ pub fn evaluate_script_cached(
                     let options =
                         CompileOptionsWrapper::new(realm_cx, filename.to_owned(), line);
                     let mut source = transform_str_to_source_text(script);
-                    let addrefed = unsafe {
-                        wrappers2::CompileGlobalScriptToStencil(realm_cx, options.ptr, &mut source)
+                    // BAO (#18 Windows): raw-pointer glue face — the
+                    // already_AddRefed return is sret-divergent under MSVC.
+                    let raw = unsafe {
+                        wrappers2::bao_CompileGlobalScriptToStencil(
+                            realm_cx,
+                            options.ptr,
+                            &mut source,
+                        )
                     };
-                    let raw = addrefed.mRawPtr;
                     if raw.is_null() {
                         // Compile error: pending exception set — same contract as
                         // Evaluate2 failing. Do not pollute the cache.

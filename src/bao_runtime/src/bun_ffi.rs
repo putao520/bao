@@ -2236,10 +2236,12 @@ unsafe extern "C" fn cstring_constructor(cx: *mut JSContext, argc: u32, vp: *mut
         (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
     );
     // String coercion (template literals, `${}`).
-    let sym_key = mozjs_sys::jsapi::JS::GetWellKnownSymbolKey(
+    let sym_key = mozjs_sys::jsapi::JS::PropertyKey {
+    asBits_: mozjs::glue::bao_GetWellKnownSymbolKeyRaw(
         cx,
-        mozjs_sys::jsapi::JS::SymbolCode::toPrimitive,
-    );
+        mozjs_sys::jsapi::JS::SymbolCode::toPrimitive as u32,
+    ),
+};
     let prim = JS_NewFunction(cx, Some(cstring_toprimitive), 1, 0, c"[toPrimitive]".as_ptr());
     if !prim.is_null() {
         let prim_obj = JS_GetFunctionObject(prim);

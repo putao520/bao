@@ -30,6 +30,7 @@
 #include "js/ScalarType.h"
 #include "js/StructuredClone.h"
 #include "js/Wrapper.h"
+#include "js/experimental/CompileScript.h"
 #include "js/experimental/JSStencil.h"
 #include "js/experimental/JitInfo.h"
 #include "js/experimental/TypedData.h"
@@ -1462,6 +1463,47 @@ const JS::Value* StackGCVectorValueAtIndex(
 JSString* const* StackGCVectorStringAtIndex(
     JS::Handle<JS::StackGCVector<JSString*>> vec, uint32_t index) {
   return vec.begin() + index;
+}
+
+
+// ── BAO patch (#18 Windows): raw-pointer stencil compile faces ────────────
+// already_AddRefed<T> deletes its copy constructor, which makes it
+// non-trivially-copyable: the MSVC ABI returns it through a hidden sret
+// slot while the Rust binding declares a register return. That disagreement
+// shifts every argument by one register and writes the "returned" struct
+// over the real first argument — on Windows this corrupted the JSContext
+// and crashed the first stencil compile (execute AV / strlen AV fallout).
+// Raw-pointer trampolines are ABI-identical on every target.
+// (#18 Windows, same class) JS::PropertyKey has a user-provided default
+// constructor: MSVC returns it via hidden sret, Itanium/Rust via register.
+// Raw-bits face, ABI-identical everywhere.
+JS_PUBLIC_API uintptr_t bao_GetWellKnownSymbolKeyRaw(JSContext* cx,
+                                                     uint32_t which) {
+  return JS::GetWellKnownSymbolKey(cx, JS::SymbolCode(which)).asRawBits();
+}
+
+JS_PUBLIC_API JS::Stencil* bao_CompileGlobalScriptToStencil(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<mozilla::Utf8Unit>& srcBuf) {
+  return JS::CompileGlobalScriptToStencil(cx, options, srcBuf).take();
+}
+
+JS_PUBLIC_API JS::Stencil* bao_CompileGlobalScriptToStencil1(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<char16_t>& srcBuf) {
+  return JS::CompileGlobalScriptToStencil(cx, options, srcBuf).take();
+}
+
+JS_PUBLIC_API JS::Stencil* bao_CompileModuleScriptToStencil(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<mozilla::Utf8Unit>& srcBuf) {
+  return JS::CompileModuleScriptToStencil(cx, options, srcBuf).take();
+}
+
+JS_PUBLIC_API JS::Stencil* bao_CompileModuleScriptToStencil1(
+    JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+    JS::SourceText<char16_t>& srcBuf) {
+  return JS::CompileModuleScriptToStencil(cx, options, srcBuf).take();
 }
 
 }  // extern "C"
