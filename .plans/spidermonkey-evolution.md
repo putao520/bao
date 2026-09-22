@@ -2102,3 +2102,7 @@ BunString__×12(bun_core windows 臂全族)+getRSS(GetProcessMemoryInfo)+bun_is_
 ### W7 第三层·quic 6 闭(em3 a43947fd)
 
 quic.c 回归 windows C 面(撤 lsquic 锁时代跳过;bao 保留树门系本全)+libuwsockets_h3.cpp 全平台入 C++ 面(**h3 四符号全平台从未编过=又一孤儿类**)。六符号逐 TU 实测发射(ew1 cross env 手动 clang-cl);linux 零回归+52/52+TLS spot 绿。共树阻断上报:bun_core 在途(ew4 10 符号工作态)——**终局唯一余量=ew4 的 bun_core 8+blob/vm 2**,其落即全图重链。
+
+### W7 第二层终收+W8 立派(f8bcaa40+86db92c2,2026-09-22)
+
+17+1 闭(BunString__×12 Rust 实现/getRSS/stdio_null/clock/stdio_inheritance[SetStdHandle×3])。**关键实证:linux bao 二进制产出(RC=0)且同 20 符号 U=跨平台 deferred 面**(ELF 容忍 vs COFF 严,linux 面同样未吸收——非 windows 特有)。W8 终链已派 ew4:**Rust 优先实现裁定**(BunString__/ec3/s1a 三先例;禁整吞上游 C++;单点报批制)——spawn_sync 家族 5/SourceProvider 5/NamedPipe 3/rescle 2/blob/vm 2/系统 2。bao.exe=硬判据,顺带治 linux deferred。
