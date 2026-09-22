@@ -2130,3 +2130,15 @@ NamedPipe 15(s1a:bao_runtime socket.rs,状态/流控/写/lifecycle/ssl-never-TLS
 ### ★W8 T1 真机测试面落地(5d3c1f8a,2026-09-22)
 
 交叉测试二进制首次在 .200 真机全量跑通(win-test-runner,--test-threads=1,rc+result 双证)。**绿 1779**:bao_stealth suite 1379/1379 + lib 314/314 + bun_core lib 52(+1 ignored)+ bao_engine lib 20/21 + bun_sm module 14/15。测试面 windows 臂全落:test-sink libc 面/链接 seam(uv_get_osfhandle=UCRT wrap 同 libuv 本体)/return_address 走 RtlCaptureStackBackTrace(MSVC 帧无 SysV [rbp+8] 链,实证 saved_pc=0)/xdr 测试目录线程名净化/console 重定向 pipe+dup2 返回值面/高层软链 provider dev-dep+force_link 锚(GNU ld 容忍未定义 vs COFF 拒绝;cargo 不链未 use 的 dev-dep)+ /OPT:NOREF 保 seam。**残余 4 项(如实开放)**:①bun_runtime suite 首测族挂起(fetch 形)②console 重定向 flush 在 output-sink vtable flush 内挂(bun_sys windows 写路径)③TLA 模块 TDZ(module_sm)④c2 性能比断言环境敏感(非正确性)。上游 issue 草稿:/tmp/issue-mozjs-msvc-sret.md(servo/mozjs ABI 类,交互会话待用户过目后提)。
+
+### W8 深修②:console/stdio 重定向类根治(0d2840f4,2026-09-22)
+
+上游核查:servo/mozjs 主线仍带 4 个 already_AddRefed wrapper(未修)→ 按 2026-09-22 用户裁决保留我们 fork 的 trampoline 修复,非本账号项目不提 issue(draft 作废)。sret 类消费面复扫=零残留。
+
+**三层根因+修**(.200 分段取证):
+1. 启动 stdio 缓存冻结裸 GetStdHandle 句柄→dup2 失明;改 CRT-fd(uv-kind)形态(native() 写入期解析,上游 bun 语义=经 CRT fd 写)。
+2. QuietWriter 槽位往返存 fd.native()(构造期解析句柄,冻结绑定)→ 改存 Fd tag 位型(to_bits/from_bits 新增),写入期解析,两对 qw(sys+core test 孪生)同改。
+3. UCRT 默认 invalid-parameter= Watson 静默 fastfail(exit 9,_get_osfhandle 垃圾 fd 实证)→ windows_stdio::init 装返回式 handler(errno=EINVAL,CRT 落回文档化错误返回);init_test 在 windows 先拉缓存 stdio。
+验收:bao.exe console.log/error/warn+smoke 绿;console_routing 2/2、console_output 3/3 真机绿。
+
+**残余(下一聚焦,已精确定位)**:触 console/fetch natives 的测试在 JsContext teardown 崩——`destroyRuntime → GC → JS::RootingContext::traceStackRoots` AV(悬垂栈根;suiteA abort_signal 与 suiteB host_fn 同栈同判;es_advanced 等不触 natives 的 JsContext 测试 teardown 无恙=natives 路径留死根)。TLA TDZ(module_sm)与 c2 性能比断言(环境敏感)仍开放。
