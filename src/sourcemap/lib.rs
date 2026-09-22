@@ -52,6 +52,7 @@ pub use internal_source_map::InternalSourceMap;
 bun_opaque::opaque_ffi! { pub struct BakeSourceProvider; }
 
 // TODO(port): move to <area>_sys
+#[cfg(not(windows))]
 unsafe extern "C" {
     // C++ accessor is read-only (`provider->source()`). Taking `*const` avoids
     // casting away const from the `&self` borrow below; any interior mutation
@@ -60,6 +61,19 @@ unsafe extern "C" {
     fn BakeSourceProvider__getSourceSlice(this: *const BakeSourceProvider) -> bun_core::String;
 }
 
+// windows face (issue #18 W8): the C++ bake session machinery is not linked
+// on the msvc face — a BakeSourceProvider object only exists under a live
+// bake build session, so the accessor's empty-result arm is the reachable
+// state (callers fall back per SourceProvider semantics).
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+extern "C" fn BakeSourceProvider__getSourceSlice(
+    _this: *const BakeSourceProvider,
+) -> bun_core::String {
+    bun_core::String::EMPTY
+}
+
+#[cfg(not(windows))]
 unsafe extern "Rust" {
     /// Link-time-resolved by `bun_runtime::jsc_hooks` (same pattern as
     /// `__bun_regex_*`). Spec sourcemap_jsc/source_provider.zig:20
@@ -73,12 +87,27 @@ unsafe extern "Rust" {
     static __BUN_BAKE_EXTERNAL_SOURCEMAP: fn(source_filename: &[u8]) -> Option<*const [u8]>;
 }
 
+// windows face (issue #18 W8): no bake session machinery on the msvc face —
+// the hook reports "not running under Bake" (the caller's documented
+// disk-read fallback).
+#[cfg(windows)]
+fn bake_external_sourcemap_none(_source_filename: &[u8]) -> Option<*const [u8]> {
+    None
+}
+
+#[cfg(windows)]
+static __BUN_BAKE_EXTERNAL_SOURCEMAP: fn(source_filename: &[u8]) -> Option<*const [u8]> =
+    bake_external_sourcemap_none;
+
 impl BakeSourceProvider {
     #[inline]
     pub fn get_source_slice(&self) -> bun_core::String {
+        #[cfg(not(windows))]
         // SAFETY: opaque FFI handle; address-only pass-through, callee does not
         // write Rust-visible memory.
         unsafe { BakeSourceProvider__getSourceSlice(self) }
+        #[cfg(windows)]
+        BakeSourceProvider__getSourceSlice(self)
     }
 
     pub fn to_source_content_ptr(&self) -> SourceContentPtr {
@@ -98,7 +127,10 @@ impl BakeSourceProvider {
         // slice borrows `PerThread.bundled_outputs`, which outlives this
         // `BakeSourceProvider` (the provider is created from a
         // `bundled_outputs` entry), so reborrowing as `&'self [u8]` is sound.
+        #[cfg(not(windows))]
         let slice = unsafe { __BUN_BAKE_EXTERNAL_SOURCEMAP }(source_filename)?;
+        #[cfg(windows)]
+        let slice = __BUN_BAKE_EXTERNAL_SOURCEMAP(source_filename)?;
         // SAFETY: per the hook contract above.
         Some(unsafe { &*slice })
     }
@@ -436,12 +468,30 @@ impl core::fmt::Display for DebugIDFormatter {
 bun_opaque::opaque_ffi! { pub struct SourceProviderMap; }
 
 // TODO(port): move to <area>_sys
+#[cfg(not(windows))]
 unsafe extern "C" {
     // `SourceProviderMap` is an UnsafeCell-backed opaque ZST (Rust holds zero
     // bytes of it), so `&SourceProviderMap` carries no `readonly`/`noalias` —
     // the foreign side owns all state behind the handle and may mutate it. The
     // only param is that handle reference, so this is a `safe fn`.
     safe fn ZigSourceProvider__getSourceSlice(this: &SourceProviderMap) -> bun_core::String;
+}
+
+// windows face (issue #18 终链尾单): the ZigSourceProvider is a JSC
+// SourceProvider subclass created by the C++ transpiler path that Bao's
+// SpiderMonkey runtime replaced — such an object cannot exist on the msvc
+// face. The only kind=Zig `SourceProviderMap` pointer this face forms is the
+// standalone module graph's `SerializedSourceMapLoaded` pun, which upstream
+// never passes through this accessor (`Mapping.getSourceCode` early-returns
+// through `sourceFileContents` for standalone graphs before touching the
+// provider). The empty-string arm is the reachable state; callers handle the
+// absent-source fallback.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+extern "C" fn ZigSourceProvider__getSourceSlice(
+    _this: &SourceProviderMap,
+) -> bun_core::String {
+    bun_core::String::EMPTY
 }
 
 impl SourceProviderMap {
@@ -482,6 +532,7 @@ pub struct DevServerSourceMapData {
 }
 
 // TODO(port): move to <area>_sys
+#[cfg(not(windows))]
 unsafe extern "C" {
     // Both C++ accessors are read-only (`provider->source()` /
     // `provider->sourceMapJSON()`). Taking `*const` avoids casting away
@@ -496,16 +547,45 @@ unsafe extern "C" {
     ) -> DevServerSourceMapData;
 }
 
+// windows face (issue #18 W8): the devserver session machinery is not linked
+// on the msvc face — a DevServerSourceProvider object only exists under a
+// live dev server, so the accessors' empty/zero-result arm is the reachable
+// state (callers handle the absent-source fallback).
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+extern "C" fn DevServerSourceProvider__getSourceSlice(
+    _this: *const DevServerSourceProvider,
+) -> bun_core::String {
+    bun_core::String::EMPTY
+}
+
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+extern "C" fn DevServerSourceProvider__getSourceMapJSON(
+    _this: *const DevServerSourceProvider,
+) -> DevServerSourceMapData {
+    DevServerSourceMapData {
+        ptr: ::core::ptr::null(),
+        length: 0,
+    }
+}
+
 impl DevServerSourceProvider {
     pub fn get_source_slice(&self) -> bun_core::String {
+        #[cfg(not(windows))]
         // SAFETY: opaque FFI handle; address-only pass-through, callee does not
         // write Rust-visible memory.
         unsafe { DevServerSourceProvider__getSourceSlice(self) }
+        #[cfg(windows)]
+        DevServerSourceProvider__getSourceSlice(self)
     }
     pub fn get_source_map_json_raw(&self) -> DevServerSourceMapData {
+        #[cfg(not(windows))]
         // SAFETY: opaque FFI handle; address-only pass-through, callee does not
         // write Rust-visible memory.
         unsafe { DevServerSourceProvider__getSourceMapJSON(self) }
+        #[cfg(windows)]
+        DevServerSourceProvider__getSourceMapJSON(self)
     }
 
     pub fn to_source_content_ptr(&self) -> SourceContentPtr {

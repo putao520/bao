@@ -1228,6 +1228,10 @@ impl WTFStringImplStruct {
     // These details must stay in sync with WTFStringImpl.h in WebKit!
     // ---------------------------------------------------------------------
     pub const S_HASH_FLAG_8BIT_BUFFER: u32 = 1 << 2;
+    /// WebKit `WTFStringImpl.h`: `s_flagStringKindCount = 4`, so the
+    /// string-kind bits sit at 4 (atom) and 5 (symbol).
+    pub const S_HASH_FLAG_STRING_KIND_IS_ATOM: u32 = 1 << 4;
+    pub const S_HASH_FLAG_STRING_KIND_IS_SYMBOL: u32 = 1 << 5;
     /// The bottom bit in the ref count indicates a static (immortal) string.
     pub const S_REF_COUNT_FLAG_IS_STATIC_STRING: u32 = 0x1;
     /// This allows us to ref / deref without disturbing the static string flag.
@@ -1375,7 +1379,14 @@ impl WTFStringImplStruct {
     }
     #[inline]
     pub fn is_thread_safe(&self) -> bool {
-        WTFStringImpl__isThreadSafe(self)
+        #[cfg(not(windows))]
+        {
+            WTFStringImpl__isThreadSafe(self)
+        }
+        #[cfg(windows)]
+        {
+            WTFStringImpl__isThreadSafe(self)
+        }
     }
     /// Compute the hash() if necessary
     #[inline]
@@ -1412,8 +1423,11 @@ unsafe extern "C" {
     pub fn Bun__WTFStringImpl__destroy(this: *const WTFStringImplStruct);
     // Kept for Zig callers (`src/string/wtf.zig`); Rust no longer calls these.
     pub safe fn Bun__WTFStringImpl__ref(this: &WTFStringImplStruct);
-    pub fn Bun__WTFStringImpl__deref(this: *const WTFStringImplStruct);
+    // windows resolves to the in-tree Rust face below; only the C++ link
+    // needs the declaration.
+    #[cfg(not(windows))]
     safe fn WTFStringImpl__isThreadSafe(this: &WTFStringImplStruct) -> bool;
+    pub fn Bun__WTFStringImpl__deref(this: *const WTFStringImplStruct);
     #[cfg(not(windows))]
     safe fn Bun__WTFStringImpl__ensureHash(this: &WTFStringImplStruct);
     fn Bun__WTFStringImpl__hasPrefix(
@@ -1421,6 +1435,21 @@ unsafe extern "C" {
         text_ptr: *const u8,
         text_len: usize,
     ) -> bool;
+}
+
+// windows arm (issue #18 终链尾单): `WTFStringImpl__isThreadSafe` (upstream
+// BunString.cpp) — a StringImpl may cross threads only if it is neither a
+// Symbol nor an Atom: symbol destruction and the AtomString destructor both
+// run on the string table that owns them, so those two kinds are excluded and
+// everything else is thread-safe.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+extern "C" fn WTFStringImpl__isThreadSafe(this: &WTFStringImplStruct) -> bool {
+    let kind = this.m_hash_and_flags.get()
+        & (WTFStringImplStruct::S_HASH_FLAG_STRING_KIND_IS_ATOM
+            | WTFStringImplStruct::S_HASH_FLAG_STRING_KIND_IS_SYMBOL);
+    kind != WTFStringImplStruct::S_HASH_FLAG_STRING_KIND_IS_ATOM
+        && kind != WTFStringImplStruct::S_HASH_FLAG_STRING_KIND_IS_SYMBOL
 }
 
 // windows arm (issue #18 W7 second layer): compute the JSC StringImpl hash
@@ -1442,8 +1471,12 @@ impl WTFStringImplStruct {
             let units = unsafe { core::slice::from_raw_parts(self.m_ptr.utf16, len) };
             super_fast_hash(units.iter().map(|&u| u as u32))
         };
+        // Layout per WebKit `WTFStringImpl.h` (bun's `src/string/wtf.zig`
+        // mirror): `s_flagCount = 8` — the low byte is flags, the hash fills
+        // the upper 24 bits (top hash bits intentionally dropped, matching
+        // C++ `hash << s_flagCount`).
         self.m_hash_and_flags
-            .set((hash << 2) | (flags & 0b11));
+            .set((hash << 8) | (flags & 0xFF));
     }
 }
 

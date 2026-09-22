@@ -884,9 +884,169 @@ impl PEFile {
 // (src/jsc/bindings/c-bindings.cpp). The C++ code uses Windows PE APIs to
 // directly access the .bun section from the current process memory without
 // loading the entire executable.
+//
+// windows (issue #18 终链尾单): the C++ bindings are not linked on the msvc
+// face, so the two accessors are provided in Rust below — a direct port of
+// the `_WIN32` arm of `initializePESection` (walk the running image's PE
+// headers for the `.bun` section written by `bun build --compile`).
+#[cfg(not(windows))]
 unsafe extern "C" {
     pub fn Bun__getStandaloneModuleGraphPELength() -> u64;
     pub fn Bun__getStandaloneModuleGraphPEData() -> *mut u8;
+}
+
+#[cfg(windows)]
+pub mod standalone_pe {
+    use core::ffi::c_void;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    type HModule = *mut c_void;
+
+    /// `GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT` (winbase.h) — the
+    /// `GetModuleHandleA(NULL)` equivalent must not bump the module refcount.
+    const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: u32 = 0x2;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        // safe: a null module name resolves the current executable image;
+        // failure is a 0 return, no UB.
+        safe fn GetModuleHandleExW(
+            dwFlags: u32,
+            lpModuleName: *const u16,
+            phModule: *mut HModule,
+        ) -> i32;
+    }
+
+    // winnt.h layout offsets, read directly off the mapped image (the C++
+    // casts the module base to IMAGE_DOS_HEADER / IMAGE_NT_HEADERS; the reads
+    // below touch the same bytes through explicit offsets).
+    const IMAGE_DOS_SIGNATURE: u16 = 0x5A4D; // 'MZ'
+    const OFF_E_LFANEW: usize = 0x3C;
+    const IMAGE_NT_SIGNATURE: u32 = 0x0000_4550; // "PE\0\0"
+    // IMAGE_FILE_HEADER (relative to the NT headers' file-header start, which
+    // follows the 4-byte NT signature): Machine(2) NumberOfSections(2)
+    // TimeDateStamp(4) PointerToSymbolTable(4) NumberOfSymbols(4)
+    // SizeOfOptionalHeader(2).
+    const OFF_NUMBER_OF_SECTIONS: usize = 4 + 2;
+    const OFF_SIZE_OF_OPTIONAL_HEADER: usize = 4 + 16;
+    const IMAGE_FILE_HEADER_SIZE: usize = 20;
+    // IMAGE_SECTION_HEADER: Name[8] Misc(4) VirtualAddress(4) ...
+    const IMAGE_SECTION_HEADER_SIZE: usize = 40;
+    const OFF_SECTION_VIRTUAL_ADDRESS: usize = 8 + 4;
+
+    /// `.bun` — upstream compares `strncmp(name, ".bun", 4)`.
+    const SECTION_NAME: [u8; 4] = *b".bun";
+
+    // Cached per-process: 0 = not yet initialized, 1 = initialized but the
+    // section is absent. Cached real pointers are always > 1. Upstream
+    // retries a failed lookup on every call, but the failure is permanent
+    // (the image layout is fixed for the process lifetime), so it is cached.
+    static PE_SECTION_SIZE_PTR: AtomicUsize = AtomicUsize::new(0);
+    static PE_SECTION_DATA_PTR: AtomicUsize = AtomicUsize::new(0);
+    const INIT_FAILED: usize = 1;
+
+    fn initialize_pe_section() -> bool {
+        if PE_SECTION_SIZE_PTR.load(Ordering::Relaxed) != 0 {
+            return true;
+        }
+        let Some((size_ptr, data_ptr)) = query_pe_section() else {
+            PE_SECTION_SIZE_PTR.store(INIT_FAILED, Ordering::Relaxed);
+            return false;
+        };
+        PE_SECTION_SIZE_PTR.store(size_ptr as usize, Ordering::Relaxed);
+        PE_SECTION_DATA_PTR.store(data_ptr as usize, Ordering::Relaxed);
+        true
+    }
+
+    /// Walk the running image's PE headers looking for the `.bun` section
+    /// (upstream `initializePESection`): DOS header → NT headers → section
+    /// table; the section payload is an 8-byte little-endian size header
+    /// followed by the standalone module graph blob.
+    fn query_pe_section() -> Option<(*mut u64, *mut u8)> {
+        let mut module: HModule = core::ptr::null_mut();
+        // null module name = the current executable's image.
+        if GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            core::ptr::null(),
+            &mut module,
+        ) == 0
+            || module.is_null()
+        {
+            return None;
+        }
+        // SAFETY: all reads stay inside the mapped image's headers — the DOS
+        // header, the NT headers at `e_lfanew`, and the section table that
+        // follows the optional header. Every field read is `read_unaligned`
+        // and each derived base is validated (signatures) before use; this is
+        // the C++ pointer-cast walk over the same memory.
+        unsafe {
+            let base: *mut u8 = module.cast::<u8>();
+            if core::ptr::read_unaligned(base.cast::<u16>()) != IMAGE_DOS_SIGNATURE {
+                return None;
+            }
+            let e_lfanew =
+                core::ptr::read_unaligned(base.add(OFF_E_LFANEW).cast::<u32>()) as usize;
+            let nt = base.add(e_lfanew);
+            if core::ptr::read_unaligned(nt.cast::<u32>()) != IMAGE_NT_SIGNATURE {
+                return None;
+            }
+            let number_of_sections =
+                core::ptr::read_unaligned(nt.add(OFF_NUMBER_OF_SECTIONS).cast::<u16>()) as usize;
+            let size_of_optional_header = core::ptr::read_unaligned(
+                nt.add(OFF_SIZE_OF_OPTIONAL_HEADER).cast::<u16>(),
+            ) as usize;
+            let first_section =
+                nt.add(4 + IMAGE_FILE_HEADER_SIZE + size_of_optional_header);
+            for i in 0..number_of_sections {
+                let section = first_section.add(i * IMAGE_SECTION_HEADER_SIZE);
+                let name: [u8; 4] = [
+                    *section.add(0),
+                    *section.add(1),
+                    *section.add(2),
+                    *section.add(3),
+                ];
+                if name != SECTION_NAME {
+                    continue;
+                }
+                let virtual_address = core::ptr::read_unaligned(
+                    section.add(OFF_SECTION_VIRTUAL_ADDRESS).cast::<u32>(),
+                ) as usize;
+                // The size header sits at the section's virtual address; the
+                // graph blob follows it (8 bytes in).
+                let section_data = base.add(virtual_address);
+                let size_ptr = section_data.cast::<u64>();
+                let data_ptr = section_data.add(core::mem::size_of::<u64>());
+                return Some((size_ptr, data_ptr));
+            }
+            None
+        }
+    }
+
+    /// Upstream `Bun__getStandaloneModuleGraphPELength` — 0 when the running
+    /// image has no `.bun` section.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn Bun__getStandaloneModuleGraphPELength() -> u64 {
+        if !initialize_pe_section() {
+            return 0;
+        }
+        let ptr = PE_SECTION_SIZE_PTR.load(Ordering::Relaxed) as *mut u64;
+        if ptr.is_null() {
+            return 0;
+        }
+        // SAFETY: the size header lives at the section VA in the mapped image
+        // for the process lifetime (written by `bun build --compile`).
+        unsafe { core::ptr::read_unaligned(ptr) }
+    }
+
+    /// Upstream `Bun__getStandaloneModuleGraphPEData` — null when the running
+    /// image has no `.bun` section.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn Bun__getStandaloneModuleGraphPEData() -> *mut u8 {
+        if !initialize_pe_section() {
+            return core::ptr::null_mut();
+        }
+        PE_SECTION_DATA_PTR.load(Ordering::Relaxed) as *mut u8
+    }
 }
 
 // ported from: src/exe_format/pe.zig
