@@ -2094,3 +2094,7 @@ casefix 目录(Linux lld-link 大小写面,可持续吸收)+**libarchive 3.8.7/c
 ### W7 第二层 17/20+第三层分类派发(f8bcaa40,2026-09-22)
 
 BunString__×12(bun_core windows 臂全族)+getRSS(GetProcessMemoryInfo)+bun_is_stdio_null+clock_gettime_monotonic(Instant 锚)闭。第三层 20:**bun_core 8(ew4 续:visibleWidth 族[unicode_width 复用]/ANSI 迭代/ttySetMode/ensureHash/createExternal)**+quic 6(em3:quic.c 回归 windows 构建)+spawn_sync 2(ec3)+blob/vm 2(s1a,**纠偏:linux 能链必有供给者,先定位**)+_pread(s1a 已闭 22ae9f33)。四线并发,bao.exe=终判。
+
+### W7 第三层·spawn_sync 2 闭(ec3 8a42fd50)
+
+前提修正实证:两符号=孤儿 extern(bun_jsc 时代家族,linux 链得过只因零消费者)→**双侧无条件供给**(灭 linux 潜在断链):destroy=js_current 单例文档化生命周期(泄漏即模型,非消音)+suppress=真 thread_local swap 状态(+pub 读面供 W7 微任务 checkpoint)。双面 build 绿+msvc 链接面双 T。归因注记:HEAD 级自破(windows_enable_stdio_inheritance)系 ew4 在途 WIP 已修未提交。**余量=ew4 10+em3 quic 6**。
