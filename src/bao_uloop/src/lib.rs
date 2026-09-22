@@ -162,9 +162,26 @@ pub unsafe extern "C" fn bao_loop_tick(loop_: *mut Loop, timeout: *const Timespe
     // in the process has always been C-owned. BCE-007-R3/R3-ext: callers
     // use tick_without_idle (zero timeout), so the C epoll_wait never
     // blocks indefinitely.
+    //
+    // windows: the LIBUS_USE_LIBUV eventing backend has no bun_tick entry
+    // (upstream's windows Loop drives iterations with us_loop_pump — a
+    // single non-blocking pump pass; the libuv loop owns the wait/timeout
+    // side). Route the tick there; the caller-owned Timespec is scheduling
+    // metadata the pump doesn't consume.
+    #[cfg(windows)]
+    unsafe extern "C" {
+        fn us_loop_pump(loop_: *mut Loop);
+    }
+    #[cfg(windows)]
+    {
+        let _ = timeout;
+        unsafe { us_loop_pump(loop_) };
+    }
+    #[cfg(not(windows))]
     unsafe extern "C" {
         fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
     }
+    #[cfg(not(windows))]
     unsafe { us_loop_run_bun_tick(loop_, timeout) };
 }
 
