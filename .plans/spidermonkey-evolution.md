@@ -2074,3 +2074,7 @@ node_net linux 断已修(cfg 双臂 socklen_t+node_tls AsRawFd 漏提交两件�
 ### mozjs linux 热修闭(0ebbf2a1):兄弟 checkout 陷阱(根因深于预判)
 
 b1c45895 无辜(git show 零交集,失败先于其存在);真因=satellite `cargo:root=` 导出被共享 target 下兄弟 checkout 覆写(主树/b2s1-headwt/C 的 bisect 树三个历史 root 实证;树删→悬空)。修=四包 clean 重建+panic 自愈指引;双面 RC=0+xdr 6/6(单线程纪律)。机制入 operator memory(禁兄弟 checkout 构建此类 crate)。**余量=仅 ec3 child_process**。
+
+### ★child_process 闭(285089dd,ec3)——W2 全部 474 理论清零,终门复跑中
+
+八类全清(同步桥):waitpid 孪生/PeekNamedPipe+10ms 节流/cp_signal_pid(TerminateProcess,仅 KILL/TERM/INT 投递=Node parity)/伪信号表 21 名/WindowsOptions×8(**关键差异:loop_ 接 EventLoopHandle::js_current()**——default() 零值触发非空断言,from_any 无 manager)/pid 取 process_/IPC=s1a 面+UV_INHERIT_FD fd-3。crate msvc REAL_EXIT=0 全零;linux 23/23;真机注记(fd-3 _open_osfhandle round-trip)保留。bun_api 波及最小更新(exit-only 注册,GAP 注释刷新)。**W2 终门(background)跑中——绿即 W7**。
