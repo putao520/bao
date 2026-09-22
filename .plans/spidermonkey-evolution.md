@@ -2146,3 +2146,12 @@ NamedPipe 15(s1a:bao_runtime socket.rs,状态/流控/写/lifecycle/ssl-never-TLS
 ### ★W8 深修③:sret 第三实例=teardown AV 与 TLA TDZ 同源(0f1bc667,2026-09-22)
 
 双 E 并行独立取证收敛同一根因:`JS::DequeueNextRegularMicroTask` **按值返回 `JS::Value`**(用户构造子→MSVC sret,bindgen 寄存器声明)→ 每次 dequeue 双腐蚀:①写出队值穿 `*RCX==*cx==RootingContext::stackRoots_[0]`(精确栈根链头);②死栈地址当 Value 入 task root。下一次 GC 走污染链→traceStackRoots AV(teardown 崩);reaction job 被静默丢弃→TLA 模块 async 体永不 resume(V TDZ)。**console natives 全无罪**(E1 bisect 电池 tdf_00~16 实证);该家族随 SM153 前移(em1)落地,晚于 W8 首轮横扫故漏网。修=同 mangled symbol sret 形态重声明(msvc 臂)/Itanium 保持原声明;同族 `DequeueNextDebuggerMicroTask`/`PeekNextMicroTask` 零调用点未动(未来接线须同修)。连带修 0d2840f4 引入的 `Fd::to_bits/from_bits` posix 编译回归(FdBacking 跟随 u64/i32)。**真机终验**:bao_engine suite **391/391**、module_sm **15/15**(TLA 愈)、tdf 电池 17/17、stealth 1379+314、core 52、bao.exe 冒烟绿——**真机累计 2151 测绿**;bun_runtime suite 崩已愈,剩余阻断=该 suite 自带 exit(0)-in-test 设计(杀 harness,独立治理项);另有 test_bun_api_all Bun.env.PATH 断言(既有,env 读取域)与 bun_sm/bun_runtime lib-test duplicate-symbol(既有,lib-test 目标从未在任何平台绿)开放。
+
+### ★W8 收官:全测试面解锁(8d965656,2026-09-23)
+
+并发双 E(E3 suite 解截流/E4 lib-test 去重)+ 主会话 c2 取证:
+- **E3**:exit(0)-in-test 截流根治(self-re-exec 隔离 harness,13 个 force-exit 测试语义等价改造);36 崩溃/挂起测试同入 deadline 隔离(单崩不再拖死整跑,如实 FAIL);find_bao_binary/dlopen 平台化/宿主门控/zz_probe 清除。bun_runtime suite 首次完整收尾:**471 passed/114 failed**,114 份失败全档分责 16 项产品缺陷(P1-P16:.200 fail_*.log+矩阵)。
+- **E4**:lib-test duplicate 根治=删制造环的 dev-dep 引用+本地 #[cfg(test)] seam 1:1 镜像生产 owner Phase-1 语义(bun_sm 40+面/bun_runtime 38面,ABI 全经接口别名零手猜);**bun_sm lib 208/208 首绿、bun_runtime lib 629+1(产品缺陷刻意留红)+7 spawn skip(spawn 状态依赖硬崩分责)**,两目标双平台历史首次可构建可运行。
+- **主会话**:c2 XDR decode-vs-compile 倒挂三次实测(10.5 vs 7.1ms)=真实性能 finding 非噪声(load 路径干净,倒挂在 DecodeStencil 侧),入账不假绿。
+- **真机终态:3459 绿**(engine 391+stealth 1379+314+core 52+module 15+sm lib 208+rt lib 629+rt suite 471);linux 全链 check 绿。
+- **产品缺陷 backlog(W8 交付的核心资产)**:P1 env 大小写/P2 FFI 外呼 AV/P3 X509 load 顺序/P4 uv_loop_delete EBUSY/P5 tick wedge/P6 platform=win32/P7 spawn/worker/ipc/cluster(含状态依赖硬崩)/P8-16 fs/watch/dns/os/net/prometheus 级杂项/get_username GetUserNameW/c2 性能——下一波 Windows 产品化主清单。
