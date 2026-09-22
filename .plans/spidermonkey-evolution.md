@@ -2063,3 +2063,7 @@ dns/constants/os 132→0(GetAddrInfoW 管线+EAI 全表 ws2tcpip 值/constants �
 ### W2 尾·组 3 DONE(50973505+694f7140)+ 新热项(2026-09-22)
 
 组 3 归属 ~197 全清:tls(WSAPoll+loopback wake pair)/interrupt(SetConsoleCtrlHandler)/**FSWatcher ReadDirectoryChangesW 全量移植**(递归 watch windows 原生 bWatchSubtree>posix 臂)/api(伪信号+TerminateProcess)/udp/net/listen/cluster/dgram/ffi 全零。GAP 登记:spawn 管道泵+cluster boot 依赖组 1 register_async_child/IPC(组 1 收尾覆盖)。**新热项(已派 s1a)**:b1c45895 引入 mozjs-sys **linux 面**回归(build.rs:276 mirror_dir NotFound,C 实证 RC=101)——挡 linux 测试与 W2 全 crate 门。**W2 余量=child_process(ec3)+此热修**。
+
+### 热修落地+余量收敛(94c15f55,2026-09-22)
+
+node_net linux 断已修(cfg 双臂 socklen_t+node_tls AsRawFd 漏提交两件一并;成因=毯式替换改坏自插行+两 1 行修漏在树外——组 2 pure-HEAD 复现窗口即此)。linux 现存断点余二(均已有主):mozjs-sys mirror(s1a 热修在途)/addrinfo E0133(ec2 微修已派,edition-2024 unsafe 包裹)。FSWatcher 裁定确认=已先行完成。env 组合权威=scripts/win-cross-env.sh+/opt/bao-win-cross(ew4 全程实证)。
