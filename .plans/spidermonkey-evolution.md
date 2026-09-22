@@ -2098,3 +2098,7 @@ BunString__×12(bun_core windows 臂全族)+getRSS(GetProcessMemoryInfo)+bun_is_
 ### W7 第三层·spawn_sync 2 闭(ec3 8a42fd50)
 
 前提修正实证:两符号=孤儿 extern(bun_jsc 时代家族,linux 链得过只因零消费者)→**双侧无条件供给**(灭 linux 潜在断链):destroy=js_current 单例文档化生命周期(泄漏即模型,非消音)+suppress=真 thread_local swap 状态(+pub 读面供 W7 微任务 checkpoint)。双面 build 绿+msvc 链接面双 T。归因注记:HEAD 级自破(windows_enable_stdio_inheritance)系 ew4 在途 WIP 已修未提交。**余量=ew4 10+em3 quic 6**。
+
+### W7 第三层·quic 6 闭(em3 a43947fd)
+
+quic.c 回归 windows C 面(撤 lsquic 锁时代跳过;bao 保留树门系本全)+libuwsockets_h3.cpp 全平台入 C++ 面(**h3 四符号全平台从未编过=又一孤儿类**)。六符号逐 TU 实测发射(ew1 cross env 手动 clang-cl);linux 零回归+52/52+TLS spot 绿。共树阻断上报:bun_core 在途(ew4 10 符号工作态)——**终局唯一余量=ew4 的 bun_core 8+blob/vm 2**,其落即全图重链。
