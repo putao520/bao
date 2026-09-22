@@ -7775,12 +7775,25 @@ mod plat {
     }
 
     /// CRT `_pread` (UCRT) — the pread(2) equivalent.
+    ///
+    /// BAO DELTA (win-cross, #18 hotfix): the pruned winsysroot UCRT libs
+    /// carry no `_pread` symbol (probe: `_read`/`_lseek`/`_write`/`_open`
+    /// whitelisted, `_pread` absent from both ucrt.lib and libucrt.lib), so
+    /// the offset read is spelled as `_lseek(fd, offset, SEEK_CUR)` +
+    /// `_read(fd, …)` — same bytes, same fd-position semantics.
     pub fn pread(fd: i32, buf: *mut c_void, count: usize, offset: i64) -> isize {
         #[link(name = "ucrt")]
         unsafe extern "C" {
-            fn _pread(fd: i32, buf: *mut c_void, count: u32, offset: i64) -> isize;
+            safe fn _lseek(fd: i32, offset: i64, origin: i32) -> i64;
+            safe fn _read(fd: i32, buf: *mut c_void, count: u32) -> i32;
         }
-        unsafe { _pread(fd, buf, count as u32, offset) }
+        const SEEK_CUR: i32 = 1;
+        unsafe {
+            if _lseek(fd, offset, SEEK_CUR) < 0 {
+                return -1;
+            }
+            _read(fd, buf, count as u32) as isize
+        }
     }
 
     /// CRT `_umask` — mode masking differs (write bits only), matching the
