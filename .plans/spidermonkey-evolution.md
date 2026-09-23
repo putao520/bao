@@ -2169,3 +2169,7 @@ NamedPipe 15(s1a:bao_runtime socket.rs,状态/流控/写/lifecycle/ssl-never-TLS
 ### W8 收尾追修:fs sync fd 家族真面+断言平台化(072cb36a,2026-09-23)
 
 openSync windows=恒假 fd 0 的静默 stub(open/close/ftruncate/read/write 五件套)→ UCRT 真面(win_fd 模块:_wopen/_close/_chsize/_read+_lseek 定位/_write,失败 throw_fs_error)。**bun_runtime lib 真机 630/630 全绿**(含此前留红 get_username 与 7 个 skip spawn)。ENAMETOOLONG 断言按 node-oracle 平台化(windows=ENOENT)。fs_upstream 6/6、fs_watch 7/7、require 12/12、lib node_child_process 16/0。事故与处置:.200 WSL sshd 半死闪断+重启后 binfmt WSLInterop 丢失(sudo 重注册恢复);suite 全量重跑被某测试挂死(rc=9 timeout,疑 cluster primary 泵饿死/E8 归档域)待机器稳定复跑。残余 backlog:bun_glob cwd/hidden、src/sys/fs.rs O_* 横扫、cluster primary 泵、bun_build parse-worker 堆腐蚀、h2 语义 ×2、c2 性能。
+
+### W8 BCE 追修:cluster primary 泵双缺陷+RunJobs 窗口悬案(54787d28,2026-09-24)
+
+**归因链(套件 realm 八层二分,每层独立仪器构建真机跑)**:suite 全量挂死三现象终归因=①WSL interop 不传 env(WSLENV 门)→BAO_TEST_BAO_BIN 未达→find_bao_binary 回退同目录**旧 bao.exe**(无 E9 修复)为 worker=process.send 缺+旧 spawn 面断言+isolation 级联(验证方法缺陷,已按配对纪律修正);②配对后暴露真缺陷:CLUSTER_JS Worker 构造器**从不设 this._pid**→pollWorkers 首卫恒跳过一切 worker(事件全饿死,worker watchdog exit 3 为唯一可见症状)——已修;③pollWorkers 双裸 catch 静默吞错(违禁类,致盲整场追查)——已改限流 console.error。**实测健康面**:native IPC 全链(fork→spawn→管道→boot 通知→recv)首个 eval 内 <100ms 送达(最小真进程复现+suite realm 同步探针双证)。**精确悬案(下一波入口)**:fork-eval 的 RunJobs 窗口内 primary 消息消失(recv 自 tick1=undefined 而 poll_exit 报 worker 活;29/200 泵达 JS 层全空)——入口=native fork 完成路径与 fork-eval 内 JobQueue drain 的交互。cluster 族现态:pump_loop/worker_kill/isprimary 4 绿+p0 e2e(事件驱动)红待悬案。REQ-ENG-46 承接收尾。
