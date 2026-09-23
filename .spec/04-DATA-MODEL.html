@@ -1113,6 +1113,19 @@ bao_stealth/
     },
     "status": "200"
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-status="200" data-schema=""><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section></main><section id="testing" data-tests-section=""><h2>测试用例</h2>
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-status="200" data-schema=""><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-entity="BaoStencilXdrCache" id="data-baostencilxdrcache"><h3>BaoStencilXdrCache </h3><table data-entity-table="BaoStencilXdrCache"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="integer" data-field="owner_cx"><td>owner_cx</td><td>integer</td><td>是</td><td></td><td>线程内 owner JSContext 指针(usize 擦除;cx 变更即 reset)。BaoStencilXdrCache=Stencil XDR 双层缓存(bao_engine stencil_cache+xdr_cache):in-memory=16 条 LRU(source hash+filename+line 寻址,StencilAddRef 引用);持久层=进程级 XDR 落盘(%TMP%/bao-stencil-xdr-v1,内容寻址 .xdr=MAGIC+build_id+filename+line+source+xdr blob,tmp+rename 原子写)。消除跨进程冷启动重复编译(#26 bench:编译占 warm-realm 注入 79.6%,命中 4.9×);失败语义:任何 miss/corrupt/stale 计数后回退直接编译,fail-open 到正确性不 fatal。</td></tr><tr data-required="true" data-type="json" data-field="lru_entries"><td>lru_entries</td><td>json</td><td>是</td><td></td><td>(key→stencil) LRU 容量 16,MISS 时 CompileGlobalScriptToStencil(bao_ sret-safe 面)填入;key=source hash+filename+line 的 u64</td></tr><tr data-required="false" data-type="json" data-field="counters"><td>counters</td><td>json</td><td>否</td><td></td><td>磁盘命中/各类 miss(stale/corrupt/decode_failed)/stores/store_failed 计数(XdrCounters 可观测面)</td></tr></table><script type="application/ld+json">{
+  "@type": "EntityRelations",
+  "entity": "BaoStencilXdrCache",
+  "relations": [
+    {
+      "target": "BaoRuntime",
+      "type": "belongs-to"
+    },
+    {
+      "target": "JSContext",
+      "type": "uses"
+    }
+  ]
+}</script></section></main><section id="testing" data-tests-section=""><h2>测试用例</h2>
 <div id="test-bao-api-003" data-test="TEST-BAO-API-003" data-req-ref="REQ-BAO-API-003" data-test-categories="unit"><h4>TEST-BAO-API-003: REQ-BAO-API-003 单元测试</h4><p>关联真实测试: src/bao_cdp_client/tests/event_translation.rs (servo 7 大事件类型 → CDP event 完整映射: Console/PageError/NetworkEvent/DomMutation/SourceInfo/FrameInfo/TimelineMarker) + src/bao_cdp_client/tests/event_coverage_full.rs</p></div></section></body>
 </html>
