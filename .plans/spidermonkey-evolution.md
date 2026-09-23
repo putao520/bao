@@ -2165,3 +2165,7 @@ NamedPipe 15(s1a:bao_runtime socket.rs,状态/流控/写/lifecycle/ssl-never-TLS
 - **E11(daily-ops)**:worktree dops-20260923 4 absorb commits(streams ERR_INVALID_STATE/fonts 16.16/Sec-Fetch/innerText alloc)+#47 验收过+需判 5 全收口;待验证毕合并。
 - **事故**:.200 WSL sshd 于波末拒连(ICMP 通/kex reset),真机终验与全量 battery 挂起待机器恢复;断连前全部修复已验。
 - **残余 backlog**:src/sys/fs.rs O_* 横扫(其他调用方同病)/openSync 假 fd 0/bun_glob_api/fs_rmdir_recursive/cluster primary 泵饿死(E8 drain 域)/bun_build parse-worker 堆腐蚀/h2 语义 ×2/c2 XDR decode 性能。
+
+### W8 收尾追修:fs sync fd 家族真面+断言平台化(072cb36a,2026-09-23)
+
+openSync windows=恒假 fd 0 的静默 stub(open/close/ftruncate/read/write 五件套)→ UCRT 真面(win_fd 模块:_wopen/_close/_chsize/_read+_lseek 定位/_write,失败 throw_fs_error)。**bun_runtime lib 真机 630/630 全绿**(含此前留红 get_username 与 7 个 skip spawn)。ENAMETOOLONG 断言按 node-oracle 平台化(windows=ENOENT)。fs_upstream 6/6、fs_watch 7/7、require 12/12、lib node_child_process 16/0。事故与处置:.200 WSL sshd 半死闪断+重启后 binfmt WSLInterop 丢失(sudo 重注册恢复);suite 全量重跑被某测试挂死(rc=9 timeout,疑 cluster primary 泵饿死/E8 归档域)待机器稳定复跑。残余 backlog:bun_glob cwd/hidden、src/sys/fs.rs O_* 横扫、cluster primary 泵、bun_build parse-worker 堆腐蚀、h2 语义 ×2、c2 性能。
