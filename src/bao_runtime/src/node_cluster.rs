@@ -1740,6 +1740,7 @@ const CLUSTER_JS: &str = r#"
     // forever. The pump function below is driven by the native
     // cluster_pump_all from the drain hook; its boolean return is the ONLY
     // loop-liveness contribution (true while any worker is registered).
+    var __pumpErrOnce = {};
     function pollWorkers() {
       var ids = Object.keys(cluster.workers);
       for (var i = 0; i < ids.length; i++) {
@@ -1752,11 +1753,24 @@ const CLUSTER_JS: &str = r#"
               dispatchMessage(w, m.json);
               m = cp.__cp_ipc_recv(w._pid);
             }
-          } catch (e) {}
+          } catch (e) {
+            // No silent swallowing (observable once per pid): a poll error
+            // that forever eats cluster events is exactly the
+            // primary-pump-starvation class this pump exists to prevent.
+            if (!__pumpErrOnce['recv' + w._pid]) {
+              __pumpErrOnce['recv' + w._pid] = 1;
+              try { console.error('cluster pump recv error', w._pid, String(e && e.message || e)); } catch (e2) {}
+            }
+          }
           try {
             var ex = cp.__cp_poll_exit(w._pid);
             if (ex) handleExit(w, ex[0], ex[1]);
-          } catch (e) {}
+          } catch (e) {
+            if (!__pumpErrOnce['exit' + w._pid]) {
+              __pumpErrOnce['exit' + w._pid] = 1;
+              try { console.error('cluster pump exit-poll error', w._pid, String(e && e.message || e)); } catch (e2) {}
+            }
+          }
         }
       }
       return Object.keys(cluster.workers).length > 0;
@@ -1769,6 +1783,12 @@ const CLUSTER_JS: &str = r#"
       var result = _originalFork ? _originalFork.call(cluster, env) : null;
       if (result && result.id) {
         var worker = new Worker(result.id, result.process || result);
+        // `_pid` is pollWorkers' IPC key (cp.__cp_ipc_recv/__cp_poll_exit) —
+        // the constructor never set it, so every pump pass skipped every
+        // worker (`if (!w._pid) continue`): online/message/exit events all
+        // starved while the pipes carried the data. Root cause of the
+        // primary-pump-starvation class (zero events, worker watchdog exit).
+        worker._pid = result.process && result.process.pid;
         worker._pid = result._pid || (result.process && result.process.pid) || 0;
         if (result.process) worker.process = result.process;
 
