@@ -312,11 +312,18 @@ var fs = require('fs');
 try { fs.watch(require('os').tmpdir(), { recursive: true }); return 'no-throw'; }
 catch (e) { return 'throw:' + String(e && e.message).slice(0, 60); } })()"#,
     );
+    // Platform contract: the registered limitation (recursive watch throws
+    // ERR_FEATURE_UNAVAILABLE_ON_PLATFORM) is the LINUX/inotify arm. Windows
+    // ReadDirectoryChangesW bWatchSubtree supports recursion natively —
+    // upstream Node/bun take the native semantics there (no throw).
+    #[cfg(unix)]
     assert!(
         recursive.starts_with("throw:"),
         "recursive:true must throw explicitly (registered limitation), got: {}",
         recursive
     );
+    #[cfg(windows)]
+    assert_eq!(recursive, "no-throw", "windows recursive watch is native (bWatchSubtree)");
     bun_runtime::shutdown_thread_sm();
 }
 

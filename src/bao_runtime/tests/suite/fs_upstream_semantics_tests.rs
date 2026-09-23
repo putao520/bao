@@ -188,7 +188,13 @@ fn promises_toolong_path_rejects_not_throws() {
 
     // > PATH_MAX on every supported platform (4096 Linux / 1024 macOS) and a
     // single component > NAME_MAX(255): no syscall can accept this path.
-    let too_long = format!("/tmp/{}", "a".repeat(5000));
+    // Derive from os.tmpdir() (windows: %TMP% — a literal "/tmp/..." would
+    // mis-resolve and report ENOENT instead of the path-length error).
+    let too_long = format!(
+        "{}/{}",
+        ::std::env::temp_dir().display(),
+        "a".repeat(5000)
+    );
 
     let out = eval_string(
         &mut ctx,

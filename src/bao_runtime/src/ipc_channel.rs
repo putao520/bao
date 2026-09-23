@@ -366,7 +366,7 @@ mod platform {
     use super::*;
     use bun_windows_sys as w;
     use bun_windows_sys::kernel32::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, ReadFile, WriteFile,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, ReadFile, WriteFile,
     };
     use ::std::ffi::c_void;
 
@@ -425,12 +425,47 @@ mod platform {
             Ok(())
         }
 
-        /// One blocking ReadFile: up to 4096 bytes. Returns `(Vec<u8>, None)`.
-        /// Empty Vec = peer closed (`ERROR_BROKEN_PIPE` / zero-byte read EOF).
-        /// `ERROR_NO_DATA` (non-blocking pipe, no data yet) maps to an empty
-        /// retry like the unix Interrupted path.
+        /// One pipe read: up to 4096 bytes. Returns `(Vec<u8>, None)` —
+        /// empty Vec = peer closed (`ERROR_BROKEN_PIPE` / zero-byte read EOF).
+        ///
+        /// WIN-IPC-POLL (E9, 2026-09-23): the pair is created blocking-mode
+        /// (`PIPE_WAIT`), where the old comment's `ERROR_NO_DATA` would-block
+        /// shape never fires — `ReadFile` with no pending bytes **parks the
+        /// JS thread** (cluster worker drain-hook livelock: pump recv blocks
+        /// forever, worker loop never drains, primary never sees exit —
+        /// 240s test timeout). `PeekNamedPipe` is the non-destructive
+        /// availability probe: zero bytes → `WouldBlock` (the poll retry
+        /// shape the callers already handle), broken pipe → EOF, bytes
+        /// pending → the ReadFile below completes immediately.
         pub fn recv_msg_chunk(&self) -> io::Result<(Vec<u8>, Option<RawFd>)> {
             const RECV_CHUNK: usize = 4096;
+            let mut avail: w::DWORD = 0;
+            // SAFETY: HANDLE we own; out-param is a stack DWORD; the bytes /
+            // bytes-read / leftover probes are all null (availability only).
+            let peeked = unsafe {
+                PeekNamedPipe(
+                    self.handle,
+                    ::std::ptr::null_mut(),
+                    0,
+                    ::std::ptr::null_mut(),
+                    &mut avail,
+                    ::std::ptr::null_mut(),
+                )
+            };
+            if peeked == 0 {
+                let err = io::Error::last_os_error();
+                let code = err.raw_os_error().unwrap_or(0) as w::DWORD;
+                if code == w::ERROR_BROKEN_PIPE || code == w::ERROR_NO_DATA {
+                    return Ok((Vec::new(), None));
+                }
+                return Err(err);
+            }
+            if avail == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "ipc: no bytes pending",
+                ));
+            }
             let mut buf = vec![0u8; RECV_CHUNK];
             let mut read: w::DWORD = 0;
             // SAFETY: synchronous ReadFile on a HANDLE we own; buffer/length

@@ -432,7 +432,11 @@ fn test_ffi_callback_with_args_qsort_e2e_body() {
           return 0;
         });
         lib.qsort(region, 2, 4, cb);
-        JSON.stringify(seen);
+        // Element-visit ORDER is unspecified by the C standard (glibc calls
+        // (first, second) → b-a=4; msvcrt legally calls (second, first) →
+        // b-a=-4). Assert the order-independent contract: two real pointer
+        // args exactly 4 bytes apart, readable via toBuffer.
+        JSON.stringify(seen.map(function(e) {{ return [e[0], Math.abs(e[1]), Math.abs(e[2])]; }}));
     "#,
     );
     assert_eq!(

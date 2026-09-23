@@ -180,7 +180,10 @@ fn test_bun_face_completion() {
     // ── A6. Bun.spawnSync ──
     let echo_out = eval_string(
         &mut ctx,
-        r#"var r = Bun.spawnSync(["/bin/echo", "face-e2e"]); r.success === true && r.exitCode === 0 && (typeof r.stdout)"#,
+        // Cross-platform echo probe: /bin/echo on unix, cmd.exe on windows.
+        r#"var echoExe = process.platform === "win32" ? "cmd.exe" : "/bin/echo";
+           var echoArgs = process.platform === "win32" ? ["/C", "echo", "face-e2e"] : ["face-e2e"];
+           var r = Bun.spawnSync([echoExe].concat(echoArgs)); r.success === true && r.exitCode === 0 && (typeof r.stdout)"#,
     );
     assert!(
         echo_out.contains("object"),
@@ -190,7 +193,9 @@ fn test_bun_face_completion() {
     assert!(
         eval_bool(
             &mut ctx,
-            r#"Bun.spawnSync(["/bin/echo", "face-e2e"], { encoding: "utf8" }).stdout.trim() === "face-e2e""#
+            r#"var echoExe = process.platform === "win32" ? "cmd.exe" : "/bin/echo";
+               var echoArgs = process.platform === "win32" ? ["/C", "echo", "face-e2e"] : ["face-e2e"];
+               Bun.spawnSync([echoExe].concat(echoArgs), { encoding: "utf8" }).stdout.trim().indexOf("face-e2e") !== -1"#
         ),
         "spawnSync utf8 encoding returns trimmed text"
     );

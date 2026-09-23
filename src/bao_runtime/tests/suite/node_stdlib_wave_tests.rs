@@ -343,8 +343,12 @@ fn os_network_interfaces_real() {
         var nis = os.networkInterfaces();
         var names = Object.keys(nis);
         check('non-empty', function() {{ return names.length > 0; }});
-        check('has-loopback', function() {{ return names.indexOf('lo') !== -1; }});
-        var lo = nis['lo'];
+        // POSIX names the loopback interface "lo"; Windows names it
+        // "Loopback Pseudo-Interface 1" (friendly name) — key on the
+        // internal flag, not the platform spelling.
+        var loname = names.filter(function(n) {{ return (nis[n]||[]).some(function(e) {{ return e.internal === true; }}); }})[0];
+        check('has-loopback', function() {{ return !!loname; }});
+        var lo = nis[loname];
         check('lo-entries', function() {{ return Array.isArray(lo) && lo.length > 0; }});
         check('lo-internal', function() {{ return lo.every(function(e) {{ return e.internal === true; }}); }});
         check('entry-shape', function() {{

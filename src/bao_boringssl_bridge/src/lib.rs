@@ -142,6 +142,28 @@ unsafe extern "C" {
 /// MBSTRING_ASC flag for X509_NAME_add_entry_by_txt (openssl/asn1.h).
 const MBSTRING_ASC: c_int = 0x1000 | 1;
 
+/// Drain the per-thread BoringSSL error queue into a compact ` (code: text; …)`
+/// suffix for diagnostics. Empty when the queue holds nothing.
+fn take_error_queue() -> String {
+    const MAX_ENTRIES: usize = 4;
+    let mut entries: Vec<String> = Vec::new();
+    while entries.len() < MAX_ENTRIES {
+        let packed = bun_boringssl::c::ERR_get_error();
+        if packed == 0 {
+            break;
+        }
+        let mut buf = [0 as c_char; 256];
+        unsafe { bun_boringssl::c::ERR_error_string_n(packed, buf.as_mut_ptr(), buf.len()) };
+        let text = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy() };
+        entries.push(format!("{packed:#010x}: {text}"));
+    }
+    if entries.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", entries.join("; "))
+    }
+}
+
 /// Generate a fresh RSA-2048 self-signed certificate for `cn`, valid from
 /// now for `days`, signed with SHA-256. Returns `(cert_pem, key_pem)` where
 /// the key is emitted as PKCS#8 PEM (parseable by `pem_parse_key` and
@@ -195,32 +217,58 @@ pub fn generate_self_signed_pem(cn: &str, days: c_long) -> Result<(String, Strin
         unsafe { EVP_PKEY_free(pkey) };
         return Err(TlsError::BoringSSL("X509_new failed"));
     }
-    let build_ok = unsafe {
-        X509_set_version(x509, 2) == 1 // v3
-            && ASN1_INTEGER_set(X509_get_serialNumber(x509), 1) == 1
-            && !X509_gmtime_adj(X509_getm_notBefore(x509), 0).is_null()
-            && !X509_gmtime_adj(X509_getm_notAfter(x509), days * 24 * 60 * 60).is_null()
-            && X509_NAME_add_entry_by_txt(
-                X509_get_subject_name(x509),
-                c"CN".as_ptr(),
-                MBSTRING_ASC,
-                cn.as_ptr(),
-                cn.len() as c_int,
-                -1,
-                0,
-            ) == 1
-            && X509_set_subject_name(x509, X509_get_subject_name(x509)) == 1
-            && X509_set_issuer_name(x509, X509_get_subject_name(x509)) == 1
-            && X509_set_pubkey(x509, pkey) == 1
-            && X509_sign(x509, pkey, EVP_sha256()) != 0
-    };
-    if !build_ok {
-        unsafe {
-            X509_free(x509);
-            EVP_PKEY_free(pkey);
-        }
-        return Err(TlsError::InvalidCertKey("self-signed cert build failed".to_string()));
+    // Each build step is guarded individually so a failure names the step and
+    // carries the drained BoringSSL error queue — "build failed" with no
+    // predicate is undiagnosable at the call site.
+    macro_rules! build_step {
+        ($step:literal, $ok:expr) => {{
+            bun_boringssl::c::ERR_clear_error();
+            if !unsafe { $ok } {
+                let queue = take_error_queue();
+                unsafe {
+                    X509_free(x509);
+                    EVP_PKEY_free(pkey);
+                }
+                return Err(TlsError::InvalidCertKey(format!(
+                    "self-signed cert build failed at {}{}",
+                    $step, queue
+                )));
+            }
+        }};
     }
+    build_step!("X509_set_version", X509_set_version(x509, 2) == 1); // v3
+    build_step!(
+        "ASN1_INTEGER_set(serial)",
+        ASN1_INTEGER_set(X509_get_serialNumber(x509), 1) == 1
+    );
+    build_step!("notBefore", !X509_gmtime_adj(X509_getm_notBefore(x509), 0).is_null());
+    build_step!(
+        "notAfter",
+        !X509_gmtime_adj(X509_getm_notAfter(x509), days * 24 * 60 * 60).is_null()
+    );
+    build_step!(
+        "X509_NAME_add_entry_by_txt(CN)",
+        X509_NAME_add_entry_by_txt(
+            X509_get_subject_name(x509),
+            c"CN".as_ptr(),
+            MBSTRING_ASC,
+            cn.as_ptr(),
+            cn.len() as c_int,
+            -1,
+            0,
+        ) == 1
+    );
+    build_step!(
+        "X509_set_subject_name",
+        X509_set_subject_name(x509, X509_get_subject_name(x509)) == 1
+    );
+    build_step!(
+        "X509_set_issuer_name",
+        X509_set_issuer_name(x509, X509_get_subject_name(x509)) == 1
+    );
+    build_step!("X509_set_pubkey", X509_set_pubkey(x509, pkey) == 1);
+    // X509_sign returns the signature length (non-zero), not a boolean.
+    build_step!("X509_sign", X509_sign(x509, pkey, EVP_sha256()) != 0);
 
     // ── serialize: cert PEM + PKCS#8 key PEM ─────────────────────────────
     let cert_pem = read_bio_pem(|bio| unsafe { PEM_write_bio_X509(bio, x509) });
@@ -241,9 +289,10 @@ pub fn generate_self_signed_pem(cn: &str, days: c_long) -> Result<(String, Strin
     }
     match (cert_pem, key_pem) {
         (Some(c), Some(k)) => Ok((c, k)),
-        _ => Err(TlsError::InvalidCertKey(
-            "self-signed PEM serialization failed".to_string(),
-        )),
+        _ => Err(TlsError::InvalidCertKey(format!(
+            "self-signed PEM serialization failed{}",
+            take_error_queue()
+        ))),
     }
 }
 

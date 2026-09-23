@@ -7749,11 +7749,30 @@ pub fn environ_ptr() -> *const *const c_char {
     }
     #[cfg(windows)]
     {
+        // WIN-SPAWN-HARD-CRASH (E9, 2026-09-23): an unset environ (lib-test
+        // binaries never run the `convert_env_to_wtf8` startup path, so
+        // `os::ENVIRON` stays `(null, 0)`) made `environ()` return `&[]`,
+        // and `&[].as_ptr()` is a *dangling non-null* pointer (Rust vends
+        // `align_of::<T>()` for empty slices, not null). Every FFI consumer
+        // walks this as a NULL-terminated `char**` — libuv's
+        // `make_program_env` inside `uv_spawn` dereferenced the wild
+        // pointer and the process died mid-spawn (rc=5, zero panic output,
+        // no `ok` line). Return null instead: the documented "inherit the
+        // parent environment" form for `uv_process_options_t.env` /
+        // `posix_spawn` envp, and byte-identical to what an uninitialized
+        // `std.os.environ` means on POSIX (libc `environ` is always valid
+        // there, so this arm is unreachable in production bao.exe, where
+        // the startup path has populated the block).
+        //
         // SAFETY: same as `environ()` above; NUL-terminated by construction
-        // (`convert_env_to_wtf8` pushes a trailing null pointer).
-        unsafe { bun_core::os::environ() }
-            .as_ptr()
-            .cast::<*const c_char>()
+        // when non-empty (`convert_env_to_wtf8` pushes a trailing null
+        // pointer).
+        let block = unsafe { bun_core::os::environ() };
+        if block.is_empty() {
+            core::ptr::null()
+        } else {
+            block.as_ptr().cast::<*const c_char>()
+        }
     }
 }
 

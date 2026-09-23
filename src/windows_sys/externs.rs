@@ -387,7 +387,14 @@ pub const PIPE_READMODE_BYTE: DWORD = 0x0000_0000;
 pub const PIPE_WAIT: DWORD = 0x0000_0000;
 
 // `CreateNamedPipeW`/`ConnectNamedPipe` result & error codes (`winerror.h`).
-pub const ERROR_PIPE_CONNECTED: DWORD = 539;
+// WIN-IPC-535 (E9, 2026-09-23): this was 539 — a typo with real effect. The
+// winerror.h value is 535 (0x217). `ConnectNamedPipe` on a server whose client
+// already connected (the always-raced shape in `ipc_channel::create_ipc_pair`,
+// where `CreateFileW` connects first) fails with GetLastError()==535, so the
+// stale constant made the documented success path surface as
+// "failed to create ipc pipe: os error 535" and killed every IPC/stdio="ipc"
+// spawn on Windows.
+pub const ERROR_PIPE_CONNECTED: DWORD = 535;
 pub const ERROR_PIPE_BUSY: DWORD = 231;
 pub const ERROR_BROKEN_PIPE: DWORD = 109;
 pub const ERROR_NO_DATA: DWORD = 232;

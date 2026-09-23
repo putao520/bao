@@ -1,3 +1,7 @@
+// POSIX program content throughout (/bin/sh, /bin/echo, `true`, `pwd`):
+// the windows product correctly resolves these to ENOENT — cover on unix.
+#![cfg(unix)]
+
 // @trace TEST-ENG-007-CHILD-PROCESS-DEEP [req:REQ-ENG-007] [level:integration]
 
 use bao_engine::context::JsContext;

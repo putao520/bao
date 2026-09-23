@@ -652,7 +652,27 @@ unsafe extern "C" fn require_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         Ok(c) => c,
         Err(_) => resolved.clone(),
     };
-    let cache_key = canonical.to_string_lossy().into_owned();
+    // Windows `canonicalize` returns the verbatim `\\?\C:\...` form, which
+    // never matches the caller's spelling — require.cache keys and
+    // `require.cache[specifier]` lookups must use the user-visible path
+    // (node's require.cache holds the resolved, non-verbatim filename).
+    // `\\?\UNC\server\share` collapses to the `\\server\share` form.
+    let cache_key = {
+        let s = canonical.to_string_lossy();
+        #[cfg(windows)]
+        {
+            let stripped = if let Some(rest) = s.strip_prefix(r#"\\?\UNC\"#) {
+                format!(r#"\\{}"#, rest)
+            } else if let Some(rest) = s.strip_prefix(r#"\\?\"#) {
+                rest.to_string()
+            } else {
+                s.into_owned()
+            };
+            stripped
+        }
+        #[cfg(not(windows))]
+        s.into_owned()
+    };
 
     // @trace REQ-ENG-006 [api:require.cache] — the JS-visible require.cache
     // (read off the executing require function object) is AUTHORITATIVE when

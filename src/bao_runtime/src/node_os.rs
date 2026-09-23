@@ -595,6 +595,10 @@ mod netif {
 
     pub const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24; // ipifcons.h
     pub const ERROR_BUFFER_OVERFLOW: i32 = 122; // winerror.h
+    // Win11 ws2_32-era GetAdaptersAnswers size probes also report the
+    // documented-in-practice ERROR_MORE_DATA (111) — accepting only 122
+    // made os.networkInterfaces() enumerate zero adapters there.
+    pub const ERROR_MORE_DATA: i32 = 111; // winerror.h
     pub const GAA_FLAGS: u32 = 0x0002 | 0x0004 | 0x0008 | 0x0010; // skip anycast/multicast/dns + include prefix
 
     #[repr(C)]
@@ -672,7 +676,7 @@ fn collect_adapters(ifaces: &mut Vec<(String, String, bool, Vec<IfaceEntry>)>) -
             ::std::ptr::null_mut(),
             &mut size,
         );
-        if !(rc == ERROR_BUFFER_OVERFLOW && size > 0) {
+        if !((rc == ERROR_BUFFER_OVERFLOW || rc == ERROR_MORE_DATA) && size > 0) {
             return false;
         }
         let mut buf = vec![0u8; size as usize];
@@ -960,6 +964,12 @@ unsafe extern "C" fn os_homedir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_tmpdir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
+    // POSIX: TMPDIR → TEMP → /tmp. Windows: GetTempPathW semantics (TMP →
+    // TEMP → USERPROFILE → Windows) — a POSIX-shaped TMPDIR leaking through
+    // interop (e.g. WSL parent exporting TMPDIR=/tmp) must not hijack the
+    // answer into a nonexistent POSIX path (breaks every tmpdir-derived
+    // file op with ENOENT).
+    #[cfg(not(windows))]
     let tmp = bun_core::getenv_z(bun_core::zstr!("TMPDIR"))
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .or_else(|| {
@@ -967,6 +977,19 @@ unsafe extern "C" fn os_tmpdir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -
                 .map(|s| String::from_utf8_lossy(s).into_owned())
         })
         .unwrap_or_else(|| "/tmp".to_string());
+    #[cfg(windows)]
+    let tmp = {
+        unsafe extern "C" {
+            fn GetTempPathW(n_buffer_length: u32, lp_buffer: *mut u16) -> u32;
+        }
+        let mut buf = [0u16; 1024];
+        let n = unsafe { GetTempPathW(buf.len() as u32, buf.as_mut_ptr()) };
+        if n == 0 || n as usize >= buf.len() {
+            String::from("C:\\Windows\\Temp")
+        } else {
+            String::from_utf16_lossy(&buf[..n as usize])
+        }
+    };
     return_string(cx, &tmp, &args);
     true
 }
@@ -1274,14 +1297,54 @@ pub(crate) mod libc_binding {
     // major.minor.build (RtlGetVersion — GetVersionExW is manifest-gated);
     // sysinfo = GlobalMemoryStatusEx + GetTickCount64; cpu model = cpuid
     // brand string; loadavg = [0,0,0] (no load concept on windows);
-    // username = %USERNAME% (GetUserNameW's flat name differs from the
-    // POSIX login name node exposes).
+    // username = GetUserNameW (node's uv_os_get_passwd source — the process
+    // env can be stripped, e.g. under WSL interop launches), %USERNAME% only
+    // as the fallback.
 
     #[cfg(windows)]
     pub fn get_username() -> String {
-        bun_core::getenv_z(bun_core::zstr!("USERNAME"))
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .unwrap_or_else(|| "unknown".to_string())
+        // SAFETY: two-call GetUserNameW pattern — first call with a
+        // full-size buffer (ULONGLONG-safe 257 chars, UNLEN+1), retry with
+        // the demanded size when ERROR_INSUFFICIENT_BUFFER reports more.
+        unsafe {
+            advapi32_get_username().unwrap_or_else(|| {
+                bun_core::getenv_z(bun_core::zstr!("USERNAME"))
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .unwrap_or_else(|| "unknown".to_string())
+            })
+        }
+    }
+
+    /// `GetUserNameW` (advapi32) — returns None when the API fails; the
+    /// caller falls back to the environment. Node parity: uv_os_get_passwd
+    /// reads the account name from the process token, not the environment.
+    #[cfg(windows)]
+    unsafe fn advapi32_get_username() -> Option<String> {
+        #[link(name = "advapi32")]
+        unsafe extern "system" {
+            pub safe fn GetUserNameW(lpbuffer: *mut u16, nsize: *mut u32) -> i32;
+        }
+        // First try a stack buffer (UNLEN = 256, +1 for the terminator).
+        let mut buf = [0u16; 257];
+        let mut size = buf.len() as u32;
+        if GetUserNameW(buf.as_mut_ptr(), &mut size) != 0 {
+            let len = size.saturating_sub(1) as usize; // strip the terminator
+            return Some(String::from_utf16_lossy(&buf[..len.min(buf.len())]));
+        }
+        // ERROR_INSUFFICIENT_BUFFER: size now holds the required char count.
+        let needed = size as usize;
+        if needed == 0 || needed > 4096 {
+            return None;
+        }
+        let mut heap = ::std::vec::Vec::<u16>::with_capacity(needed);
+        let mut size2 = needed as u32;
+        if GetUserNameW(heap.as_mut_ptr(), &mut size2) != 0 {
+            let len = size2.saturating_sub(1) as usize;
+            return Some(String::from_utf16_lossy(
+                &::std::slice::from_raw_parts(heap.as_ptr(), len),
+            ));
+        }
+        None
     }
 
     #[cfg(windows)]

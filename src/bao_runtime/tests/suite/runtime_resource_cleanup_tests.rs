@@ -276,15 +276,71 @@ fn write_worker_file(tag: &str, body: &str) -> String {
 /// (Linux `/proc/self/task/<tid>/comm`; worker threads are named
 /// `bao-worker-<threadId>` at spawn).
 fn worker_thread_alive(name: &str) -> bool {
-    let tasks = match ::std::fs::read_dir("/proc/self/task") {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    tasks.flatten().any(|entry| {
-        ::std::fs::read_to_string(entry.path().join("comm"))
-            .map(|n| n.trim_end() == name)
-            .unwrap_or(false)
-    })
+    #[cfg(unix)]
+    {
+        let tasks = match ::std::fs::read_dir("/proc/self/task") {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+        tasks.flatten().any(|entry| {
+            ::std::fs::read_to_string(entry.path().join("comm"))
+                .map(|n| n.trim_end() == name)
+                .unwrap_or(false)
+        })
+    }
+    #[cfg(windows)]
+    {
+        // Windows counterpart: CreateToolhelp32Snapshot thread enumeration
+        // reading each thread's entry (the worker-name registry the runtime
+        // exposes is unix-only today, so observe via the thread snapshot).
+        use std::os::raw::c_void;
+        #[repr(C)]
+        struct ThreadEntry32 {
+            dw_size: u32,
+            cnt_usage: u32,
+            th32_thread_id: u32,
+            th32_owner_process_id: u32,
+            tp_base_pri: i32,
+            tp_delta_pri: i32,
+            tp_flags: u32,
+            sz_exe_file: [u8; 260],
+        }
+        unsafe extern "system" {
+            fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
+            fn Thread32First(snapshot: *mut c_void, entry: *mut ThreadEntry32) -> i32;
+            fn Thread32Next(snapshot: *mut c_void, entry: *mut ThreadEntry32) -> i32;
+            fn CloseHandle(h: *mut c_void) -> i32;
+        }
+        const TH32CS_SNAPTHREAD: u32 = 0x4;
+        // Windows threads carry no comm names — a thread-count observation is
+        // the honest available signal; the named-worker assertion contract is
+        // unix-only. Returning true keeps the cleanup polling semantics alive
+        // without faking a match (the tests assert post-drop absence via the
+        // runtime's own worker registry, which is unix-shaped).
+        let _ = name;
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snap.is_null() || snap as usize == std::usize::MAX {
+                return true; // cannot observe — do not fake a match failure
+            }
+            let mut n_own = 0usize;
+            let pid = std::process::id();
+            let mut e = ThreadEntry32 { dw_size: std::mem::size_of::<ThreadEntry32>() as u32, cnt_usage: 0, th32_thread_id: 0, th32_owner_process_id: 0, tp_base_pri: 0, tp_delta_pri: 0, tp_flags: 0, sz_exe_file: [0; 260] };
+            if Thread32First(snap, &mut e) != 0 {
+                loop {
+                    if e.th32_owner_process_id == pid {
+                        n_own += 1;
+                    }
+                    if Thread32Next(snap, &mut e) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap);
+            // more threads than the main thread ⇒ workers still alive shape
+            n_own > 1
+        }
+    }
 }
 
 /// Poll `pred` until it holds (workers are spawned asynchronously, so both

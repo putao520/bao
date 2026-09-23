@@ -117,6 +117,27 @@ mod sock {
             Flags: c_int,
         ) -> c_int;
         pub unsafe fn WSAPoll(fdArray: *mut pollfd, fds: u32, timeout: c_int) -> c_int;
+        /// `WSAStartup` (winsock2.h): every ws2_32 call before it fails with
+        /// WSANOTINITIALISED (10093) — bao has no libuv C runtime to do it.
+        pub unsafe fn WSAStartup(wVersionRequested: u16, lpWSAData: *mut u8) -> c_int;
+    }
+
+    /// Winsock process init (MAKEWORD(2,2)); refcounted inside ws2_32, so a
+    /// single best-effort startup call per process is correct. Every ws2_32
+    /// entry point below funnels through this — without it dns.lookup dies
+    /// with WSANOTINITIALISED and returns the empty lookup shape.
+    fn ensure_winsock() {
+        use ::std::sync::Once;
+        static WSA_INIT: Once = Once::new();
+        WSA_INIT.call_once(|| {
+            let mut data = [0u8; 512]; // >= WSADATA (408 on x64)
+            // SAFETY: data out-buffer is WSADATA-sized; return ignored — a
+            // failed startup leaves the specific calls to surface their own
+            // errors (fail-closed at the call site, never a fake success).
+            unsafe {
+                let _ = WSAStartup(0x0202, data.as_mut_ptr());
+            }
+        });
     }
 
     /// SAFETY: `host_w` NUL-terminated UTF-16; hints/result valid pointers.
@@ -126,6 +147,7 @@ mod sock {
         hints: *const addrinfo,
         result: *mut *mut addrinfo,
     ) -> c_int {
+        ensure_winsock();
         // SAFETY: declared ws2_32 entry point; args valid per caller.
         unsafe { GetAddrInfoW(host_w, service, hints, result) }
     }
@@ -140,12 +162,14 @@ mod sock {
         service_len: c_int,
         flags: c_int,
     ) -> c_int {
+        ensure_winsock();
         // SAFETY: declared ws2_32 entry point; args valid per caller.
         unsafe { GetNameInfoW(sa, sa_len, node, node_len, service, service_len, flags) }
     }
 
     /// SAFETY: `fds` valid for `nfds` elements.
     pub unsafe fn poll(fds: *mut pollfd, nfds: nfds_t, timeout: c_int) -> c_int {
+        ensure_winsock();
         // SAFETY: declared ws2_32 entry point; args valid per caller.
         unsafe { WSAPoll(fds, nfds as u32, timeout) }
     }

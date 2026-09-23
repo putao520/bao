@@ -1333,19 +1333,91 @@ unsafe extern "C" fn cluster_worker_disconnect(
 // __cp_ipc_send / __cp_ipc_recv reach it — powering process.send() and
 // process.on('message') on the worker side.
 
-/// Windows arm: the worker bootstrap wraps the primary-inherited IPC
-/// channel, which on posix is an fd-3 AF_UNIX socket. The windows IPC face
-/// (named pipes) lives with ipc_channel (child_process domain) — until that
-/// lands, fail closed at the JS boundary instead of pretending the fd
-/// inheritance exists.
+/// Windows arm: recover the primary-inherited IPC pipe end from the libuv
+/// child-stdio buffer and register it as this worker's IPC channel.
+///
+/// WIN-CLUSTER-IPC (E9, 2026-09-23) — this used to be a fail-closed stub
+/// ("windows IPC face pending"), which left every `cluster.fork` worker with
+/// no `process.send` and the primary with no 'online'/'message'/'exit'
+/// events. The face is now wired:
+///   1. Primary: `spawn_cluster_worker` rides the client pipe end in
+///      `extra_fds[0]` (stdio index 3) via `WindowsStdio::Pipe` → libuv
+///      `UV_INHERIT_FD`.
+///   2. libuv passes the child stdio to us through the `STARTUPINFOW`
+///      reserved buffer (`lpReserved2`/`cbReserved2`) — duplicated,
+///      inheritable handle slots — which the child re-reads here via
+///      `GetStartupInfoW` + libuv's own `uv__stdio_verify`/`uv__stdio_handle`
+///      (same static lib, so the internal symbols resolve at link time).
+///   3. Slot `fd` (3 by `BAO_CLUSTER_IPC_FD`, matching the extra_fds index)
+///      wraps into an `IpcChannel` registered under this worker's own pid —
+///      the same registry the primary keys by the forked pid.
 #[cfg(windows)]
-unsafe extern "C" fn cluster_worker_boot(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn cluster_worker_boot(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    use bun_windows_sys as w;
+    use core::ffi::c_int;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn GetStartupInfoW(lpstartupinfo: *mut w::STARTUPINFOW);
+    }
+    // libuv internals (`src/win/process-stdio.c`, same static lib — resolved
+    // at link time, not public API).
+    unsafe extern "C" {
+        #[link_name = "uv__stdio_verify"]
+        fn uv_stdio_verify(buffer: *mut u8, size: u16) -> c_int;
+        #[link_name = "uv__stdio_handle"]
+        fn uv_stdio_handle(buffer: *mut u8, fd: c_int) -> w::HANDLE;
+    }
+
     let args = CallArgs::from_vp(vp, argc);
-    JS_ReportErrorUTF8(
-        cx,
-        c"cluster worker bootstrap is not supported on this platform (windows IPC face pending)".as_ptr(),
-    );
-    args.rval().set(BooleanValue(false));
+    // JS shim passes `parseInt(process.env.BAO_CLUSTER_IPC_FD || '3')` — the
+    // stdio-buffer slot index of the IPC pipe (extra_fds[0] → index 3).
+    let fd = if argc > 0 && (*args.get(0).ptr).is_int32() {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        3
+    };
+    if fd < 0 || fd > 255 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    // SAFETY: `si` is a fully writable STARTUPINFOW we own; `GetStartupInfoW`
+    // requires `cb` set to `size_of::<STARTUPINFOW>()`.
+    let mut si: w::STARTUPINFOW = unsafe { bun_core::ffi::zeroed_unchecked() };
+    si.cb = core::mem::size_of::<w::STARTUPINFOW>() as u32;
+    unsafe { GetStartupInfoW(&mut si) };
+    if si.lpReserved2.is_null() || si.cbReserved2 == 0 {
+        // Not spawned via libuv with a stdio buffer (interactive/dev run).
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    // SAFETY: `lpReserved2`/`cbReserved2` describe the inherited child-stdio
+    // buffer, owned by this process for its lifetime; `uv__stdio_verify`
+    // validates magic + count before any slot read.
+    let ok = unsafe { uv_stdio_verify(si.lpReserved2, si.cbReserved2) } != 0;
+    if !ok {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    // SAFETY: verified buffer above; slot `fd` was written by the primary's
+    // `uv__stdio_create` (stdio_count = 4 → slots 0..=3).
+    let handle = unsafe { uv_stdio_handle(si.lpReserved2, fd) };
+    if handle.is_null() || handle == w::INVALID_HANDLE_VALUE {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    // Wrap the inherited pipe end (client side — the primary holds the
+    // server) and register it under OUR pid, mirroring the posix arm's
+    // fd-3 socket registration.
+    let stream = crate::ipc_channel::IpcStream::from_handle(handle);
+    let channel = crate::ipc_channel::IpcChannel::new(stream);
+    let self_pid = ::std::process::id() as i32;
+    if let Ok(mut registry) = super::node_child_process::CP_IPC_CHANNELS.lock() {
+        registry.insert(self_pid, ::std::sync::Arc::new(::std::sync::Mutex::new(channel)));
+    }
+    args.rval().set(BooleanValue(true));
     true
 }
 

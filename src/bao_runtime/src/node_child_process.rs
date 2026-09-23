@@ -1488,9 +1488,22 @@ pub(crate) fn spawn_cluster_worker(
         #[cfg(windows)]
         let (ipc_server, spawn_opts) = match crate::ipc_channel::create_ipc_pair() {
             Ok((server, client)) => {
-                // SAFETY: create_ipc_pair hands back owned HANDLEs; the Fd
-                // wraps the client HANDLE for the inherit slot.
-                let client_fd = bun_sys::Fd::from_native(client.handle() as _);
+                // WIN-IPC-INHERIT-FD (E9, 2026-09-23): `WindowsStdio::Pipe`
+                // means "already-open uv file number" — `spawn_process_windows`
+                // projects it with `Fd::uv()`, which panics for raw-HANDLE
+                // (System-kind) fds. Convert the client HANDLE to a CRT
+                // fd (`_open_osfhandle`, same underlying handle) so the
+                // UV_INHERIT_FD slot carries a real uv_file; the handle is
+                // inheritable (`create_ipc_pair` sets bInheritHandle), so the
+                // child's fd-3 resolves to the named-pipe client end. The CRT
+                // fd is intentionally never closed parent-side (mirrors the
+                // previous raw-handle leak): the child owns the inherited
+                // copy and the parent keeps the server end only.
+                let client_fd = bun_sys::Fd::from_native(client.handle() as _)
+                    .make_libuv_owned()
+                    .map_err(|()| {
+                        "cluster.fork: ipc client handle -> crt fd failed".to_string()
+                    })?;
                 let opts = WindowsSpawnOptions {
                     stdin: WindowsStdio::Inherit,
                     stdout: WindowsStdio::Inherit,
@@ -1782,9 +1795,28 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let (ipc_server, ipc_client_fd) = if wants_ipc {
         match crate::ipc_channel::create_ipc_pair() {
             Ok((server, client)) => {
-                // SAFETY: create_ipc_pair hands back owned HANDLEs; the Fd
-                // wraps the client HANDLE for the inherit slot.
-                let fd = bun_sys::Fd::from_native(client.handle() as _);
+                // WIN-IPC-INHERIT-FD (E9, 2026-09-23): same conversion as the
+                // cluster.fork site — a raw-HANDLE Fd would panic in
+                // `Fd::uv()` when `spawn_process_windows` fills the
+                // UV_INHERIT_FD slot; `_open_osfhandle` yields the uv_file
+                // libuv expects. Never closed parent-side (see cluster.fork
+                // note).
+                let fd = match bun_sys::Fd::from_native(client.handle() as _).make_libuv_owned() {
+                    Ok(fd) => fd,
+                    Err(()) => {
+                        // Fail-closed, same shape as the pair-creation arm
+                        // below: reclaim the stdio slots, report to JS, abort
+                        // the spawn. Proceeding without the fd-3 slot would
+                        // strand the child with no NODE_CHANNEL_FD.
+                        stdin_stdio.deinit();
+                        stdout_stdio.deinit();
+                        stderr_stdio.deinit();
+                        let msg = "spawn: ipc client handle -> crt fd failed".to_string();
+                        let c_msg = ZBox::from_bytes(msg.as_bytes());
+                        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                        return false;
+                    }
+                };
                 (Some(server), Some(fd))
             }
             Err(e) => {
@@ -5426,6 +5458,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX program content (echo/sh) — windows product correctly returns ENOENT
     fn test_spawn_echo_hello() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -5459,6 +5492,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX program content (echo/sh) — windows product correctly returns ENOENT
     fn test_spawn_exit_code_nonzero() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -5492,6 +5526,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX program content (echo/sh) — windows product correctly returns ENOENT
     fn test_spawn_stderr_capture() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -5526,6 +5561,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX program content (echo/sh) — windows product correctly returns ENOENT
     fn test_spawn_nonexistent_command() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -5559,6 +5595,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX program content — windows product correctly returns ENOENT
     fn test_shell_sync_opts_spawn_echo() {
         let opts = shell_sync_opts("echo from_shell");
         let result = match spawn_sync::spawn(&opts) {
@@ -5573,6 +5610,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX program content — windows product correctly returns ENOENT
     fn test_spawn_cwd_option() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -5603,6 +5641,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX program content — windows product correctly returns ENOENT
     fn test_spawn_stdin_ignore() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,

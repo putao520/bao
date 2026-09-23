@@ -1,3 +1,7 @@
+// POSIX program content throughout (/bin/sh, /bin/echo, `true`, `pwd`):
+// the windows product correctly resolves these to ENOENT — cover on unix.
+#![cfg(unix)]
+
 // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:integration]
 // child_process.spawn EventEmitter surface. cp_spawn returns a plain data
 // object — `child.on` was undefined and the CP_JS ChildProcess wrapper was

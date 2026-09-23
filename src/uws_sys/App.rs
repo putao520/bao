@@ -105,6 +105,8 @@ impl<const SSL: bool> App<SSL> {
     }
 
     pub fn create(opts: &BunSocketContextOptions) -> Option<*mut Self> {
+        #[cfg(windows)]
+        seed_native_uws_loop();
         // SAFETY: FFI call; uws_create_app returns null on failure.
         let app = unsafe { c::uws_create_app(Self::SSL_FLAG, *opts) };
         if app.is_null() {
@@ -506,6 +508,47 @@ impl<const SSL: bool> ListenSocket<SSL> {
         // (a listen socket IS a us_socket_t); Zig does `.from(@ptrCast(this))`.
         crate::socket::NewSocketHandler::<SSL>::from(std::ptr::from_mut::<Self>(self).cast())
     }
+}
+
+/// Windows: hand the thread's libuv loop to uWS before any `uWS::App` is
+/// created on this thread.
+///
+/// Root cause (P4, `uv_loop_delete` fail-fast 0xC0000409 — uv-common.c:916
+/// `assert(err == 0)`): the C++ `uWS::Loop::get()` thread-local lazily creates
+/// its loop. When first entered WITHOUT a native loop (exactly what
+/// `App::create` → `HttpContext::create(Loop::get())` does, because the C++
+/// default is `nullptr`), `us_create_loop` allocates its own `uv_loop_new()`
+/// and marks it owned (`is_default = 0`, C++ `LoopCleaner::cleanMe = true`).
+/// At thread exit the LoopCleaner frees that loop: `us_loop_free` runs one
+/// `uv_run(NOWAIT)` (flushing only uWS's own prepare/check handles) and then
+/// `uv_loop_delete` — which hard-asserts `uv_loop_close() == 0`. Every socket
+/// the App opened on that loop (the `Bun.listen`/`http.createServer` listen
+/// handle among them) is still open at that point, so `uv_loop_close`
+/// returns `UV_EBUSY` and the process dies with 0xC0000409. Upstream Bun
+/// never reaches this state: its only loop entry (`uws.Loop.get()`,
+/// Loop.zig:223-224) always seeds the C++ thread-local with the thread's
+/// libuv loop (`uws_get_loop_with_native(bun.windows.libuv.Loop.get())`),
+/// so the App shares the borrowed loop (`is_default = 1`, `cleanMe = false`)
+/// and `us_loop_free` leaves the native loop alone. The Rust port's
+/// `WindowsLoop::get()` carries the same seeding, but nothing guaranteed it
+/// ran before the first App — this call restores the upstream invariant at
+/// the App chokepoint (idempotent: `uWS::Loop::get` returns the existing
+/// thread-local loop untouched if one was already created, seeded or not).
+#[cfg(windows)]
+fn seed_native_uws_loop() {
+    unsafe extern "C" {
+        /// Provided by libuwsockets.a (C++ `uWS::Loop::get`). Declared here
+        /// (not reused from `Loop::c`) because that module is private to
+        /// `Loop.rs`; same symbol, same contract.
+        fn uws_get_loop_with_native(native: *mut c_void) -> *mut crate::Loop;
+    }
+    // SAFETY: `uv::Loop::get()` is this thread's process-lifetime libuv loop
+    // (TLS slot, no destructor — see `bun_libuv_sys::Loop::get`); handing it
+    // to uWS borrows it for the thread lifetime. `uws_get_loop_with_native`
+    // is the documented thread-safe-shape accessor upstream calls on every
+    // loop entry; here it only initializes the C++ thread-local on first use
+    // and returns the existing wrapper otherwise.
+    unsafe { uws_get_loop_with_native(bun_libuv_sys::Loop::get().cast()) };
 }
 
 #[derive(strum::IntoStaticStr, Debug)]

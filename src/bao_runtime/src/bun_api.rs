@@ -710,7 +710,17 @@ unsafe fn populate_process_object(
     }
 
     // process.platform
-    let plat_cstr = ZBox::from_bytes(::std::env::consts::OS.as_bytes());
+    // Node/Bun parity: the JS-visible platform token is the Node-lineage
+    // name, not the Rust `env::consts::OS` token — windows→"win32",
+    // macos→"darwin". The ecosystem branches on `process.platform ===
+    // "win32"` (node_path's path.platform and bun_test's isWindows already
+    // carry the parity strings); this is the root of that same face.
+    let plat_js: &str = match ::std::env::consts::OS {
+        "windows" => "win32",
+        "macos" => "darwin",
+        other => other,
+    };
+    let plat_cstr = ZBox::from_bytes(plat_js.as_bytes());
     let platform_str = JS_NewStringCopyZ(cx.raw_cx(), plat_cstr.as_ptr());
     if !platform_str.is_null() {
         rooted!(&in(cx) let plat_val = StringValue(&*platform_str));
@@ -877,6 +887,29 @@ unsafe fn populate_process_object(
 
             // Proxy factory receives setEnv/delEnv as parameters — they are
             // NOT looked up from globalThis, eliminating the global surface leak.
+            //
+            // The snapshot keeps host casing (`Path` on windows) so
+            // enumeration matches the process env block. POSIX: plain
+            // case-sensitive passthrough (byte-identical to the historical
+            // handler). Windows: the env block is case-insensitive —
+            // GetEnvironmentVariableW resolves any casing of the same name,
+            // which is why Node/Bun return `Path`'s value for
+            // `process.env.PATH` (GetEnvironmentVariableW semantics, not a
+            // PATH special case). get/has/descriptor therefore resolve
+            // case-insensitively, and set/delete replace the case-unequal
+            // sibling so the JS target keeps one entry per variable, exactly
+            // like the OS block (case-insensitive lookup, case-preserving
+            // last write).
+            #[cfg(windows)]
+            let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv)=>{const t=__bao_envTarget;const find=(k)=>{const ks=typeof k==='string'?k:String(k);if(Object.prototype.hasOwnProperty.call(t,ks))return ks;const lk=ks.toLowerCase();const names=Object.keys(t);for(let i=0;i<names.length;i++){if(names[i].toLowerCase()===lk)return names[i]}return undefined};return new Proxy(t,{
+                set(t,k,v){const ex=find(k);if(ex!==undefined&&ex!==k)delete t[ex];t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
+                deleteProperty(t,k){const ex=find(k);if(ex!==undefined)delete t[ex];try{__bao_delEnv(String(k))}catch(e){}return true},
+                get(t,k){const ex=find(k);if(ex===undefined)return undefined;const v=t[ex];return typeof v==='string'?v:undefined},
+                has(t,k){return find(k)!==undefined},
+                ownKeys(t){return Object.keys(t)},
+                getOwnPropertyDescriptor(t,k){const ex=find(k);return ex!==undefined?{configurable:true,enumerable:true,value:t[ex]}:undefined}
+            })}"#;
+            #[cfg(not(windows))]
             let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv)=>new Proxy(__bao_envTarget,{
                 set(t,k,v){t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
                 deleteProperty(t,k){delete t[k];try{__bao_delEnv(String(k))}catch(e){}return true},
@@ -7829,11 +7862,50 @@ unsafe extern "C" fn bun_sleep_sync(_cx: *mut JSContext, argc: u32, vp: *mut JSV
 // dependency.
 static BAO_PROCESS_START_NS: ::std::sync::OnceLock<Option<u64>> = ::std::sync::OnceLock::new();
 
+// Pairing contract: `process_start_ns_since_boot()` and `boottime_now_ns()`
+// must share ONE time frame per platform — the caller's subtraction is only
+// meaningful within a pair. unix: both arms are ns-since-boot (/proc starttime
+// vs CLOCK_BOOTTIME). windows: both arms are ns-since-1601 (FILETIME × 100),
+// so the subtraction yields true elapsed-since-process-creation.
 #[cfg(windows)]
 fn process_start_ns_since_boot() -> Option<u64> {
-    // /proc is absent on windows — the caller falls back to the
-    // first-call-anchored monotonic arm (existing documented degradation).
-    None
+    // GetProcessTimes's lpCreationTime is the kernel's own record of when
+    // this process was created — the windows twin of the /proc starttime
+    // read, with no first-call anchoring (the old windows arm returned None
+    // and degraded to the ~0-at-first-call fallback, failing the >1ms
+    // process-start baseline).
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        // Plain unsafe decl matching node_os.rs's GetCurrentProcess signature —
+        // a `safe fn` re-decl would trip clashing_extern_declarations.
+        fn GetCurrentProcess() -> *mut ::std::ffi::c_void;
+        fn GetProcessTimes(
+            hprocess: *mut ::std::ffi::c_void,
+            lpcreationtime: *mut i64,
+            lpexittime: *mut i64,
+            lpkerneltime: *mut i64,
+            lpusertime: *mut i64,
+        ) -> i32;
+    }
+    let (mut creation, mut exit, mut kernel, mut user) = (0i64, 0i64, 0i64, 0i64);
+    // SAFETY: GetCurrentProcess returns the pseudo-handle (-1), valid for
+    // GetProcessTimes; the out-params are local stack slots.
+    if unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return None;
+    }
+    // FILETIME is 100ns ticks since 1601-01-01 (i64 bit-pattern fits u64 for
+    // any representable date); ×100 converts to ns in the same frame as
+    // boottime_now_ns below.
+    Some((creation as u64).saturating_mul(100))
 }
 
 #[cfg(unix)]
@@ -7853,7 +7925,16 @@ fn process_start_ns_since_boot() -> Option<u64> {
 
 #[cfg(windows)]
 fn boottime_now_ns() -> Option<u64> {
-    None
+    // Same FILETIME frame as process_start_ns_since_boot above; the precise
+    // variant (Win8+) keeps the subtraction free of 15.6ms timer quantum.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        safe fn GetSystemTimePreciseAsFileTime(lpsystemtimeasfiletime: *mut i64);
+    }
+    let mut now = 0i64;
+    // SAFETY: single out-param, local stack slot.
+    unsafe { GetSystemTimePreciseAsFileTime(&mut now) };
+    Some((now as u64).saturating_mul(100))
 }
 
 #[cfg(unix)]

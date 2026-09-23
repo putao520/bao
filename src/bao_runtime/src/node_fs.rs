@@ -2206,6 +2206,30 @@ unsafe fn return_string_content(
     true
 }
 
+// ── write-file primitives ───────────────────────────────────────────────────
+// bun_sys::fs::write / fs::OpenOptions pass MSVCRT `libc::O_*` flag values;
+// on Windows those collide with the Linux-shaped `bun.O` bits that
+// `uv::O::from_bun_o` bit-tests (libc::O_CREAT=0x100 matches no bun bit →
+// CREAT silently dropped; libc::O_NOINHERIT(0x80) reads as bun::EXCL), so
+// every create-write died with EINVAL ("os error 22") — the class already
+// documented at shell_parser/parse.rs:668. std::fs carries the platform-
+// correct semantics on every target, so the JS-facing write routes through
+// it until bun_sys::fs grows cfg-correct flag constants.
+fn fs_write_bytes(path: &str, bytes: &[u8]) -> ::std::io::Result<()> {
+    ::std::fs::write(path, bytes)
+}
+
+/// create+append open (appendFileSync face). `write_all` because append
+/// writes of large buffers may split across syscalls.
+fn fs_append_bytes(path: &str, bytes: &[u8]) -> ::std::io::Result<()> {
+    use ::std::io::Write;
+    let mut file = ::std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::io::Error) -> bool {
     // @trace REQ-ENG-007 — shared errno→code source (io_error_code); the
@@ -2301,15 +2325,15 @@ unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         let s = data_val.to_string();
         if !s.is_null() {
             let rust_str = crate::jsstr_to_rust_string(cx, s);
-            bun_fs::write(&path, rust_str.as_bytes())
+            fs_write_bytes(&path, rust_str.as_bytes())
         } else {
-            bun_fs::write(&path, &[] as &[u8])
+            fs_write_bytes(&path, &[] as &[u8])
         }
     } else if data_val.is_object() {
         let bytes = crate::node_crypto::extract_buffer_bytes(cx, data_val);
-        bun_fs::write(&path, &bytes)
+        fs_write_bytes(&path, &bytes)
     } else {
-        bun_fs::write(&path, &[] as &[u8])
+        fs_write_bytes(&path, &[] as &[u8])
     };
 
     match result {
@@ -2412,7 +2436,7 @@ unsafe extern "C" fn fs_write_stream_flush(cx: *mut JSContext, argc: u32, vp: *m
         }
     }
 
-    match bun_fs::write(&path, &total) {
+    match fs_write_bytes(&path, &total) {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
             true
@@ -2451,23 +2475,11 @@ unsafe extern "C" fn fs_append_file_sync(cx: *mut JSContext, argc: u32, vp: *mut
         Vec::new()
     };
 
-    match bun_fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        ::std::result::Result::Ok(file) => match file.write_all(&data) {
-            ::std::result::Result::Ok(()) => {
-                args.rval().set(UndefinedValue());
-                true
-            }
-            ::std::result::Result::Err(e) => throw_fs_error(
-                cx,
-                "appendFileSync",
-                &path,
-                &::std::io::Error::from_raw_os_error(e.errno as i32),
-            ),
-        },
+    match fs_append_bytes(&path, &data) {
+        ::std::result::Result::Ok(()) => {
+            args.rval().set(UndefinedValue());
+            true
+        }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "appendFileSync", &path, &e),
     }
 }
@@ -3538,8 +3550,15 @@ struct FswHub {
 #[cfg(windows)]
 struct FswDirWatch {
     wd: i32,
+    /// The DIRECTORY whose ReadDirectoryChangesW handle is open — the watched
+    /// path itself for directory watches, the parent directory for file
+    /// watches (ReadDirectoryChangesW needs a directory handle; the libuv/node
+    /// windows backend watches the parent and filters by the file's name).
     path: PathBuf,
     recursive: bool,
+    /// File watches only: enqueue events whose kernel name matches the
+    /// watched file's basename (windows paths are case-insensitive).
+    filter_name: Option<String>,
     handle: fsw_win::Handle,
     event: fsw_win::Handle,
     overlapped: Box<fsw_win::Overlapped>,
@@ -3866,11 +3885,15 @@ fn fsw_worker_main_windows(
                 };
                 if done != 0 && transferred > 0 {
                     // Parse the FILE_NOTIFY_INFORMATION chain → node events.
+                    // FileName sits at offsetof == 3×u32 (12); the Rust mirror
+                    // struct's size_of is 16 (repr(C) tail padding), so the
+                    // name offset must be computed from the field offsets —
+                    // advancing by size_of skipped two UTF-16 chars of every
+                    // name ("one.txt" → "e.txt").
+                    const NAME_OFFSET: usize = 3 * ::std::mem::size_of::<u32>();
                     let mut off: usize = 0;
                     let buf: &[u8] = &w.buffer[..transferred as usize];
-                    while off + ::std::mem::size_of::<fsw_win::FileNotifyInformation>()
-                        <= buf.len()
-                    {
+                    while off + NAME_OFFSET <= buf.len() {
                         // SAFETY: the kernel guarantees the aligned entry
                         // chain inside a completed buffer.
                         let info = unsafe {
@@ -3880,14 +3903,21 @@ fn fsw_worker_main_windows(
                             (info.FileNameLength as usize) / ::std::mem::size_of::<u16>();
                         let name_ptr =
                             (buf[off..].as_ptr() as *const u16)
-                                .wrapping_add(::std::mem::size_of::<fsw_win::FileNotifyInformation>()
-                                    / ::std::mem::size_of::<u16>());
+                                .wrapping_add(NAME_OFFSET / ::std::mem::size_of::<u16>());
                         // SAFETY: name_ptr spans name_len UTF-16 code units of
                         // the completed kernel buffer (kernel ABI guarantee).
                         let name_slice =
                             unsafe { ::std::slice::from_raw_parts(name_ptr, name_len) };
                         let name =
                             String::from_utf16_lossy(name_slice);
+                        // File watches (parent-dir backend) only deliver the
+                        // watched file's own events — every other sibling's
+                        // write would otherwise surface as this watcher's
+                        // event. Windows names are case-insensitive.
+                        let name_matches = match &w.filter_name {
+                            Some(f) => name.eq_ignore_ascii_case(f),
+                            None => true,
+                        };
                         let event_type = match info.Action {
                             fsw_win::FILE_ACTION_MODIFIED => "change",
                             _ => {
@@ -3895,15 +3925,17 @@ fn fsw_worker_main_windows(
                                 "rename"
                             }
                         };
-                        if let Ok(mut qg) = shared.lock() {
-                            let ids: Vec<u64> =
-                                qg.wd_map.get(&w.wd).cloned().unwrap_or_default();
-                            for id in ids {
-                                qg.queue.push_back(PendingFsEvent::Inotify {
-                                    id,
-                                    event_type,
-                                    filename: Some(name.clone()),
-                                });
+                        if name_matches {
+                            if let Ok(mut qg) = shared.lock() {
+                                let ids: Vec<u64> =
+                                    qg.wd_map.get(&w.wd).cloned().unwrap_or_default();
+                                for id in ids {
+                                    qg.queue.push_back(PendingFsEvent::Inotify {
+                                        id,
+                                        event_type,
+                                        filename: Some(name.clone()),
+                                    });
+                                }
                             }
                         }
                         if info.NextEntryOffset == 0 {
@@ -4177,7 +4209,31 @@ fn fsw_add_inotify_watch_ex(
             "fs.watch: failed to start the watcher thread",
         ));
     }
-    let wide: Vec<u16> = ::std::ffi::OsStr::new(path)
+    // ReadDirectoryChangesW requires a DIRECTORY handle; fs.watch(<file>) must
+    // not fail with ERROR_INVALID_PARAMETER (87). Node/libuv's windows backend
+    // watches the file's parent directory and matches event names against the
+    // watched file's basename — mirror that: a non-dir path opens its parent
+    // and installs a name filter.
+    let watch_path = Path::new(path);
+    let (dir_path, filter_name) = if watch_path.is_dir() {
+        (watch_path.to_path_buf(), None)
+    } else {
+        // fail-closed ENOENT for a missing file (same as opening it directly)
+        if !watch_path.exists() {
+            return ::std::result::Result::Err(::std::io::Error::from_raw_os_error(2)); // ENOENT
+        }
+        let parent = watch_path.parent().filter(|p| !p.as_os_str().is_empty());
+        let parent = match parent {
+            Some(p) => p.to_path_buf(),
+            None => PathBuf::from("."),
+        };
+        let name = watch_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        (parent, Some(name))
+    };
+    let wide: Vec<u16> = ::std::ffi::OsStr::new(&dir_path)
         .encode_wide()
         .chain(::std::iter::once(0))
         .collect();
@@ -4224,7 +4280,7 @@ fn fsw_add_inotify_watch_ex(
                     handle,
                     (*buffer).as_mut_ptr().cast(),
                     buffer.len() as u32,
-                    0,
+                    recursive as i32,
                     fsw_win::FILE_NOTIFY_CHANGE_FILE_NAME
                         | fsw_win::FILE_NOTIFY_CHANGE_DIR_NAME
                         | fsw_win::FILE_NOTIFY_CHANGE_ATTRIBUTES
@@ -4246,8 +4302,9 @@ fn fsw_add_inotify_watch_ex(
             if let Ok(mut table) = hub.watches.lock() {
                 table.push(FswDirWatch {
                     wd,
-                    path: PathBuf::from(path),
+                    path: dir_path,
                     recursive,
+                    filter_name,
                     handle,
                     event,
                     overlapped,
@@ -4707,18 +4764,25 @@ unsafe extern "C" fn fs_write_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     } else {
         UndefinedValue()
     };
+    // Buffer/TypedArray data must write its raw bytes here too — the sync
+    // face carried the extract_buffer_bytes branch but this async face
+    // silently wrote 0 bytes for Buffer input (BUG-351 class residual).
     let bytes = if data_val.is_string() {
         let s = data_val.to_string();
         if !s.is_null() {
             crate::jsstr_to_rust_string(cx, s).into_bytes()
+        } else if data_val.is_object() {
+            crate::node_crypto::extract_buffer_bytes(cx, data_val)
         } else {
             Vec::new()
         }
+    } else if data_val.is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, data_val)
     } else {
         Vec::new()
     };
 
-    match bun_fs::write(&path, &bytes) {
+    match fs_write_bytes(&path, &bytes) {
         ::std::result::Result::Ok(()) => {
             args.rval().set(UndefinedValue());
             true
@@ -6967,6 +7031,8 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
     } else {
         UndefinedValue()
     };
+    // Buffer/TypedArray input writes its raw bytes (BUG-351 class parity with
+    // the sync face — this promise face silently wrote 0 bytes before).
     let bytes = if data_val.is_string() {
         let s = data_val.to_string();
         if !s.is_null() {
@@ -6974,6 +7040,8 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
         } else {
             Vec::new()
         }
+    } else if data_val.is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, data_val)
     } else {
         Vec::new()
     };
@@ -6985,7 +7053,7 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
         args.rval().set(UndefinedValue());
         return false;
     }
-    match bun_fs::write(&path, &bytes) {
+    match fs_write_bytes(&path, &bytes) {
         ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
         ::std::result::Result::Err(e) => {
             reject_fs_error(cx, promise.get(), "writeFile", &path, &e)

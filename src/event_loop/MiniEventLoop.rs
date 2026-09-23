@@ -380,6 +380,27 @@ impl<'a> MiniEventLoop<'a> {
             // SAFETY: see `loop_ptr()` invariant.
             unsafe {
                 (*self.loop_ptr()).inc();
+                // P5 (windows): `Loop::tick` on the LIBUS_USE_LIBUV backend is
+                // `us_loop_run` — `uv_run(UV_RUN_ONCE)`, whose poll phase is an
+                // UNBOUNDED IOCP wait. The Mini drive loop (wait_for_parse,
+                // PackageManager::sleep_until) runs on a worker thread while
+                // other threads complete work and wake this loop via
+                // `uv_async_send`; parking the drive iteration inside that
+                // unbounded wait races those wakeups — the bun-build minify
+                // wedge (loop stuck inside the tick, tick-begin→tick-done
+                // never closes) and its heap-corruption crash face. POSIX got
+                // the non-blocking pump for exactly this class in BCE-007-R3,
+                // and the JS-thread dispatch face already drives with
+                // `us_loop_pump` — so pump one non-blocking iteration here
+                // too. The `inc()`/`dec()` pair keeps the loop's active
+                // accounting as `tick()` did (us_loop_pump re-fills
+                // `active_handles` itself for the duration of its uv_run).
+                // Genuine park sites (HTTPThread process_events, io request
+                // loop, spawn wait) still call `Loop::tick`/`run` directly —
+                // their blocking semantics are the design, not a defect.
+                #[cfg(windows)]
+                (*self.loop_ptr()).tick_without_idle();
+                #[cfg(not(windows))]
                 (*self.loop_ptr()).tick();
                 (*self.loop_ptr()).dec();
             }

@@ -563,10 +563,17 @@ unsafe fn js_prop_string(cx: *mut JSContext, obj: *mut JSObject, name: &str) -> 
 /// calls take this shuffle instead — and every TypeSpec IS a primitive, so no
 /// libffi classifier is needed.
 ///
+/// POSIX ONLY: this asm speaks the SysV ABI (args in rdi/rsi/rdx...). Under
+/// the Windows x64 (Microsoft) ABI an `extern "C"` caller delivers its first
+/// three arguments in rcx/rdx/r8 — reading them from rdi/rsi/rdx picks up
+/// stale register garbage and `call r10` jumps to an invalid address, i.e.
+/// every dlopen-bound call dies with 0xC0000005. Windows uses `bao_win64_call`
+/// below; this trampoline is compiled out there.
+///
 /// `fn_ptr` in %rdi, `ints` (6×u64) in %rsi, `sses` (8×f64) in %rdx. Unused
 /// slots are zero-initialized (harmless: callees ignore unclaimed registers).
 /// Returns (rax, xmm0) so callers pick the integer/SSE result per spec.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
 core::arch::global_asm!(
     ".globl bao_sysv_call",
     "bao_sysv_call:",
@@ -611,7 +618,7 @@ struct SysvRet {
     xmm0: f64,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
 unsafe fn sysv_call(
     fn_ptr: *mut c_void,
     ints: &mut [u64; 6],
@@ -625,6 +632,170 @@ unsafe fn sysv_call(
         ) -> SysvRet;
     }
     bao_sysv_call(fn_ptr, ints.as_mut_ptr(), sses.as_mut_ptr())
+}
+
+/// Microsoft x64 dynamic-call trampoline (the Windows counterpart of
+/// `bao_sysv_call`). Root cause of the win64 FFI AV (rc=5): the SysV
+/// trampoline above was compiled on Windows too, but the Microsoft x64 ABI
+/// passes an `extern "C"` call's first three arguments in rcx/rdx/r8 — the
+/// SysV asm read them from rdi/rsi/rdx (stale garbage) and `call`ed through
+/// it. This trampoline implements the native ABI instead.
+///
+/// Entry (Microsoft x64, `extern "C"`): rcx=out, rdx=fn, r8=vals, r9=kinds,
+/// [rsp+40]=count (5th argument sits at [rsp+32] at the call site; the return
+/// address push shifts it +8). Clobbers volatile registers only
+/// (rax/rcx/rdx/r8-r11/xmm0-5); rbx/rbp are saved/restored — rdi/rsi/xmm6-15
+/// (callee-saved on Windows, unlike SysV) are never touched.
+///
+/// `vals[i]` is the i-th POSITIONAL argument: the raw 8-byte value (integer,
+/// pointer, or f64/f32 bit pattern in the low 4 bytes). `kinds[i]`: 0 =
+/// integer/pointer, 1 = f64, 2 = f32. Slots 0..3 map to the register positions
+/// rcx/rdx/r8/r9 (+xmm0..3); slots 4.. are copied verbatim to the stack args
+/// area above the 32-byte shadow space. Float register args ALSO write their
+/// bits into the positional integer register — MSVC does this for variadic
+/// callers, and for non-variadic float params the integer register is ignored,
+/// so both shapes are served with no signature introspection.
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+core::arch::global_asm!(
+    ".globl bao_win64_call",
+    "bao_win64_call:",
+    // Prologue: rbp is the frame anchor so the epilogue never needs the frame
+    // size (the call clobbers every volatile register that could hold it).
+    "    push rbp",
+    "    push rbx",
+    "    mov  rbp, rsp",
+    "    mov  rbx, rcx",        // out
+    "    mov  r10, rdx",        // fn
+    "    mov  r11, r8",         // vals (r9 keeps kinds; count stays at [rbp+56])
+    // n_stack = saturating_sub(count, 4) — count at [rbp+56] (see doc above).
+    "    mov  rax, [rbp+56]",
+    "    sub  rax, 4",
+    "    jg 2f",
+    "    xor  eax, eax",
+    // Frame: 32-byte shadow + 8*n_stack, 16-aligned, +8 so that rsp is
+    // 16-aligned AT the call (rsp ≡ 8 mod 16 after the two pushes).
+    "2: lea  rdx, [rax*8 + 32]",
+    "    add  rdx, 15",
+    "    and  rdx, -16",
+    "    add  rdx, 8",
+    "    sub  rsp, rdx",
+    // Stack args: vals[4+k] → [rsp + 32 + 8*k] (verbatim 8-byte copies; a
+    // stack f32 rides in the low 4 bytes of its slot, upper half zero).
+    "    xor  ecx, ecx",
+    "3: cmp  rcx, rax",
+    "    jge 4f",
+    "    mov  rdx, [r11 + rcx*8 + 32]",
+    "    mov  [rsp + rcx*8 + 32], rdx",
+    "    inc  rcx",
+    "    jmp 3b",
+    // Register args, positions 0..3 → rcx/rdx/r8/r9 (+xmm0..3). kinds[0..2]
+    // read straight off r9 (the kinds pointer); position 3 reads its kind
+    // with a read-old-write-new self move (`mov r9d, [r9+12]`) right before
+    // r9 is consumed as an argument register — no scratch storage needed.
+    "4: cmp  qword ptr [rbp+56], 1",
+    "    jl 5f",
+    "    mov  ecx, [r9]",       // kinds[0] (r9 = kinds pointer)
+    "    cmp  ecx, 1",
+    "    je 6f",
+    "    cmp  ecx, 2",
+    "    je 7f",
+    "    mov  rcx, [r11]",
+    "    jmp 8f",
+    "6: mov  rcx, [r11]",       // f64 bits duplicated into the int reg
+    "    movsd xmm0, [r11]",
+    "    jmp 8f",
+    "7: mov  ecx, dword ptr [r11]", // f32 bits (zero-extended)
+    "    movss xmm0, dword ptr [r11]",
+    "    jmp 8f",
+    "5: xor  ecx, ecx",
+    "8: cmp  qword ptr [rbp+56], 2",
+    "    jl 9f",
+    "    mov  edx, [r9+4]",     // kinds[1]
+    "    cmp  edx, 1",
+    "    je 10f",
+    "    cmp  edx, 2",
+    "    je 11f",
+    "    mov  rdx, [r11+8]",
+    "    jmp 12f",
+    "10: mov  rdx, [r11+8]",
+    "    movsd xmm1, [r11+8]",
+    "    jmp 12f",
+    "11: mov  edx, dword ptr [r11+8]",
+    "    movss xmm1, dword ptr [r11+8]",
+    "    jmp 12f",
+    "9: xor  edx, edx",
+    "12: cmp  qword ptr [rbp+56], 3",
+    "    jl 13f",
+    "    mov  r8d, [r9+8]",     // kinds[2] — read via pre-clobber r9
+    "    cmp  r8d, 1",
+    "    je 14f",
+    "    cmp  r8d, 2",
+    "    je 15f",
+    "    mov  r8, [r11+16]",
+    "    jmp 16f",
+    "14: mov  r8, [r11+16]",
+    "    movsd xmm2, [r11+16]",
+    "    jmp 16f",
+    "15: mov  r8d, dword ptr [r11+16]",
+    "    movss xmm2, dword ptr [r11+16]",
+    "    jmp 16f",
+    "13: xor  r8d, r8d",
+    "16: cmp  qword ptr [rbp+56], 4",
+    "    jl 17f",
+    "    mov  r9d, [r9+12]",    // kinds[3] — read via pre-clobber r9
+    "    cmp  r9d, 1",
+    "    je 18f",
+    "    cmp  r9d, 2",
+    "    je 19f",
+    "    mov  r9, [r11+24]",
+    "    jmp 20f",
+    "18: mov  r9, [r11+24]",
+    "    movsd xmm3, [r11+24]",
+    "    jmp 20f",
+    "19: mov  r9d, dword ptr [r11+24]",
+    "    movss xmm3, dword ptr [r11+24]",
+    "    jmp 20f",
+    "17: xor  r9d, r9d",
+    "20: call r10",
+    "    mov  [rbx], rax",
+    "    movq [rbx+8], xmm0",
+    "    mov  rsp, rbp",
+    "    pop  rbx",
+    "    pop  rbp",
+    "    ret",
+);
+
+/// Win64 arm of the positional kind encoding (see `bao_win64_call`).
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+const FFI_WIN_KIND_INT: u32 = 0;
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+const FFI_WIN_KIND_F64: u32 = 1;
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+const FFI_WIN_KIND_F32: u32 = 2;
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+const FFI_WIN_MAX_ARGS: usize = 16;
+
+/// Invoke `fn_ptr` through the Microsoft x64 trampoline, collecting (rax,
+/// xmm0) into `out`. Same result shape as `sysv_call` so the result
+/// conversion below stays ABI-independent.
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+unsafe fn win64_call(
+    out: &mut SysvRet,
+    fn_ptr: *mut c_void,
+    vals: &[u64; FFI_WIN_MAX_ARGS],
+    kinds: &[u32; FFI_WIN_MAX_ARGS],
+    count: usize,
+) {
+    unsafe extern "C" {
+        fn bao_win64_call(
+            out: *mut SysvRet,
+            fn_ptr: *mut c_void,
+            vals: *const u64,
+            kinds: *const u32,
+            count: usize,
+        );
+    }
+    bao_win64_call(out, fn_ptr, vals.as_ptr(), kinds.as_ptr(), count)
 }
 
 /// A bound foreign function: arg/ret specs + the raw fn pointer. Boxed; the
@@ -813,6 +984,24 @@ impl FfiArgSlot {
             // null pointer comes from a `static` so the Arg is 'static.
             FfiArgSlot::NullPtr => arg(&FFI_NULL_PTR.0),
         }
+    }
+}
+
+/// Integral value of a non-float slot in its 8-byte register/stack form
+/// (sign-extended for the narrow signed shapes, zero-extended otherwise).
+fn slot_as_u64(slot: &FfiArgSlot) -> u64 {
+    match slot {
+        FfiArgSlot::U8(v) => *v as u64,
+        FfiArgSlot::I8(v) => *v as i64 as u64,
+        FfiArgSlot::U16(v) => *v as u64,
+        FfiArgSlot::I16(v) => *v as i64 as u64,
+        FfiArgSlot::U32(v) => *v as u64,
+        FfiArgSlot::I32(v) => *v as i64 as u64,
+        FfiArgSlot::U64(v) => *v,
+        FfiArgSlot::I64(v) => *v as u64,
+        FfiArgSlot::Ptr(v) => *v as u64,
+        FfiArgSlot::NullPtr => 0,
+        FfiArgSlot::F32(_) | FfiArgSlot::F64(_) => unreachable!("float slots carry their own kind"),
     }
 }
 
@@ -1060,55 +1249,73 @@ unsafe extern "C" fn ffi_fn_call(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             }
         }
     }
-    // Partition the slots into the two SysV register banks. Arguments pass in
-    // the order of their class (integer args fill rdi..r9 in declaration
-    // order, SSE args fill xmm0..7 independently) — exactly how the banks are
-    // built here. Register overflow (>6 int / >8 sse) is rejected up front:
-    // the trampoline covers register-passed primitives only.
-    let mut ints = [0u64; 6];
-    let mut sses = [0f64; 8];
-    let mut nint = 0usize;
-    let mut nsse = 0usize;
-    for slot in &slots {
-        match slot {
-            FfiArgSlot::F32(_) | FfiArgSlot::F64(_) => {
-                if nsse == 8 {
-                    report_ffi_error(cx, "ffi: more than 8 SSE arguments is not supported");
-                    return false;
+    // ── invoke through the platform trampoline ──
+    // SysV (Linux/BSD): partition into the two register-class banks (integer
+    // args fill rdi..r9 in declaration order, SSE args fill xmm0..7
+    // independently). Register overflow (>6 int / >8 sse) is rejected up
+    // front: the trampoline covers register-passed primitives only.
+    #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+    let ret = {
+        let mut ints = [0u64; 6];
+        let mut sses = [0f64; 8];
+        let mut nint = 0usize;
+        let mut nsse = 0usize;
+        for slot in &slots {
+            match slot {
+                FfiArgSlot::F32(_) | FfiArgSlot::F64(_) => {
+                    if nsse == 8 {
+                        report_ffi_error(cx, "ffi: more than 8 SSE arguments is not supported");
+                        return false;
+                    }
+                    let v = match slot {
+                        FfiArgSlot::F32(v) => *v as f64,
+                        FfiArgSlot::F64(v) => *v,
+                        _ => unreachable!(),
+                    };
+                    sses[nsse] = v;
+                    nsse += 1;
                 }
-                let v = match slot {
-                    FfiArgSlot::F32(v) => *v as f64,
-                    FfiArgSlot::F64(v) => *v,
-                    _ => unreachable!(),
-                };
-                sses[nsse] = v;
-                nsse += 1;
-            }
-            _ => {
-                if nint == 6 {
-                    report_ffi_error(cx, "ffi: more than 6 integer arguments is not supported");
-                    return false;
+                _ => {
+                    if nint == 6 {
+                        report_ffi_error(cx, "ffi: more than 6 integer arguments is not supported");
+                        return false;
+                    }
+                    ints[nint] = slot_as_u64(slot);
+                    nint += 1;
                 }
-                ints[nint] = match slot {
-                    FfiArgSlot::U8(v) => *v as u64,
-                    FfiArgSlot::I8(v) => *v as i64 as u64,
-                    FfiArgSlot::U16(v) => *v as u64,
-                    FfiArgSlot::I16(v) => *v as i64 as u64,
-                    FfiArgSlot::U32(v) => *v as u64,
-                    FfiArgSlot::I32(v) => *v as i64 as u64,
-                    FfiArgSlot::U64(v) => *v,
-                    FfiArgSlot::I64(v) => *v as u64,
-                    FfiArgSlot::Ptr(v) => *v as u64,
-                    FfiArgSlot::NullPtr => 0,
-                    _ => unreachable!(),
-                };
-                nint += 1;
             }
         }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    let ret = sysv_call(spec.fn_ptr, &mut ints, &mut sses);
+        sysv_call(spec.fn_ptr, &mut ints, &mut sses)
+    };
+    // Microsoft x64: POSITIONAL slots (each register position carries its own
+    // arg — the independent SysV class banks lose the positional information
+    // this ABI requires). Slots 0..3 map to rcx/rdx/r8/r9 (+xmm0..3), 4.. go
+    // on the stack above the shadow space inside the trampoline.
+    #[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+    let ret = {
+        if slots.len() > FFI_WIN_MAX_ARGS {
+            report_ffi_error(cx, "ffi: more than 16 arguments is not supported");
+            return false;
+        }
+        let mut vals = [0u64; FFI_WIN_MAX_ARGS];
+        let mut kinds = [FFI_WIN_KIND_INT; FFI_WIN_MAX_ARGS];
+        for (i, slot) in slots.iter().enumerate() {
+            match slot {
+                FfiArgSlot::F32(v) => {
+                    vals[i] = v.to_bits() as u64;
+                    kinds[i] = FFI_WIN_KIND_F32;
+                }
+                FfiArgSlot::F64(v) => {
+                    vals[i] = v.to_bits();
+                    kinds[i] = FFI_WIN_KIND_F64;
+                }
+                _ => vals[i] = slot_as_u64(slot),
+            }
+        }
+        let mut out = SysvRet { rax: 0, xmm0: 0.0 };
+        win64_call(&mut out, spec.fn_ptr, &vals, &kinds, slots.len());
+        out
+    };
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = (&mut ints, &mut sses);
