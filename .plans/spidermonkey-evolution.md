@@ -2155,3 +2155,13 @@ NamedPipe 15(s1a:bao_runtime socket.rs,状态/流控/写/lifecycle/ssl-never-TLS
 - **主会话**:c2 XDR decode-vs-compile 倒挂三次实测(10.5 vs 7.1ms)=真实性能 finding 非噪声(load 路径干净,倒挂在 DecodeStencil 侧),入账不假绿。
 - **真机终态:3459 绿**(engine 391+stealth 1379+314+core 52+module 15+sm lib 208+rt lib 629+rt suite 471);linux 全链 check 绿。
 - **产品缺陷 backlog(W8 交付的核心资产)**:P1 env 大小写/P2 FFI 外呼 AV/P3 X509 load 顺序/P4 uv_loop_delete EBUSY/P5 tick wedge/P6 platform=win32/P7 spawn/worker/ipc/cluster(含状态依赖硬崩)/P8-16 fs/watch/dns/os/net/prometheus 级杂项/get_username GetUserNameW/c2 性能——下一波 Windows 产品化主清单。
+
+### ★W8 产品化波:七域并发根治(b04cee87,2026-09-23)
+
+7 线域互斥并发(E5 env/E6 ffi/E7 X509/E8 loop/E9 spawn/E10 fs·dns·os)+E11 daily-ops worktree 隔离。真机已验(b04cee87 前逐项):
+- **E5**:env CI 全套/win32/nanoseconds 真值。**E6**:FFI 外呼 AV=SysV trampoline 误编 windows(rdi/rsi vs rcx/rdx/r8),新 win64 位置化 trampoline,9 探针全绿。**E7**:P3 证伪归档(load() 五 init 皆空函数;InvalidCertKey=旧链接组成伪影),9-step 自诊断落盘。**E8**:uws App 种入 native loop 不变量恢复(uv_loop_delete EBUSY 根治)+Mini tick 非阻塞 pump(wedge 根治)。**E9**:spawn 硬崩=environ_ptr 悬垂非空指针;535 常量笔误;IPC fd 转换/PeekNamedPipe 泵/cluster boot 落地,五项修复。**E10**:fs EINVAL=libc::O_* 位碰撞(CREAT 丢+EXCL 误加);watch 父目录监视+offsetof(12) 截断;WSAStartup Once(dns 10093);require verbatim 剥离;netif ERROR_MORE_DATA(111);GetUserNameW;真机 27/1。
+- **判别纪律**(node v24.12.0 oracle 同机对照):ENAMETOOLONG/recursive-throw/'lo' 键/qsort 序=测试期待未平台化(产品与上游逐字节一致),tests 已平台化收口(双平台断言/门控)。
+- **主会话追加**:os.tmpdir windows=GetTempPathW 语义(WSL 泄漏 TMPDIR 劫持根因)。
+- **E11(daily-ops)**:worktree dops-20260923 4 absorb commits(streams ERR_INVALID_STATE/fonts 16.16/Sec-Fetch/innerText alloc)+#47 验收过+需判 5 全收口;待验证毕合并。
+- **事故**:.200 WSL sshd 于波末拒连(ICMP 通/kex reset),真机终验与全量 battery 挂起待机器恢复;断连前全部修复已验。
+- **残余 backlog**:src/sys/fs.rs O_* 横扫(其他调用方同病)/openSync 假 fd 0/bun_glob_api/fs_rmdir_recursive/cluster primary 泵饿死(E8 drain 域)/bun_build parse-worker 堆腐蚀/h2 语义 ×2/c2 XDR decode 性能。
