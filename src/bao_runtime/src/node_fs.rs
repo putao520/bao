@@ -8115,6 +8115,29 @@ unsafe extern "C" fn fs_promises_statfs(cx: *mut JSContext, argc: u32, vp: *mut 
 // --- fd sync operations ---
 
 #[allow(unsafe_op_in_unsafe_fn)]
+
+// ── Windows sync fd face (UCRT) ─────────────────────────────────────────────
+// The POSIX sync family uses libc fds directly; the windows arms were silent
+// stubs (openSync returned a fake fd 0 — every later fd op silently "worked"
+// on stdin). The UCRT exports below give the same fd contract on windows:
+// _wopen takes a UTF-16 path; _chsize/_read/_write/_close operate on CRT fds.
+#[cfg(windows)]
+mod win_fd {
+    unsafe extern "C" {
+        pub fn _wopen(path: *const u16, oflag: i32, ...) -> i32;
+        pub fn _close(fd: i32) -> i32;
+        pub fn _chsize(fd: i32, size: i64) -> i32;
+        pub fn _read(fd: i32, buf: *mut core::ffi::c_void, count: u32) -> i32;
+        pub fn _write(fd: i32, buf: *const core::ffi::c_void, count: u32) -> i32;
+    }
+    pub fn open_w(path: &str, oflag: i32, mode: u32) -> i32 {
+        let mut w: Vec<u16> = path.encode_utf16().collect();
+        w.push(0);
+        // SAFETY: `w` is NUL-terminated; oflag/mode are the CRT contract.
+        unsafe { _wopen(w.as_ptr(), oflag, mode) }
+    }
+}
+
 unsafe extern "C" fn fs_open_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) {
@@ -8159,10 +8182,17 @@ unsafe extern "C" fn fs_open_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             throw_fs_error(cx, "openSync", &path, &::std::io::Error::last_os_error())
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        args.rval().set(mozjs::jsval::Int32Value(0));
-        true
+        // CRT fd via _wopen (parse_open_flags yields the libc::O_* bits,
+        // which are the CRT constants on windows).
+        let fd = win_fd::open_w(&path, flags, mode);
+        if fd >= 0 {
+            args.rval().set(mozjs::jsval::Int32Value(fd));
+            true
+        } else {
+            throw_fs_error(cx, "openSync", &path, &::std::io::Error::last_os_error())
+        }
     }
 }
 
@@ -8386,10 +8416,49 @@ unsafe extern "C" fn fs_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             )
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        args.rval().set(mozjs::jsval::Int32Value(0));
-        true
+        // SAFETY: rooted view — data pointer stays valid across the read
+        // (no JS runs); _read operates on the CRT fd.
+        let mut is_shared = false;
+        let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+            buf_obj.get(),
+            &mut is_shared,
+            ::std::ptr::null(),
+        );
+        if data_ptr.is_null() {
+            JS_ReportErrorUTF8(cx, c"readSync: cannot access buffer storage".as_ptr());
+            return false;
+        }
+        let dst = unsafe { data_ptr.add(offset) };
+        // Positional read on windows: seek-free via _lseek save/restore.
+        let bytes_read = if use_pread {
+            unsafe extern "C" {
+                fn _lseek(fd: i32, off: i64, origin: i32) -> i64;
+            }
+            const SEEK_SET: i32 = 0;
+            unsafe {
+                let saved = _lseek(fd, 0, 1 /* SEEK_CUR */);
+                _lseek(fd, position, SEEK_SET);
+                let n = win_fd::_read(fd, dst as *mut _, length as u32);
+                _lseek(fd, saved, SEEK_SET);
+                n
+            }
+        } else {
+            // SAFETY: plain CRT fd read.
+            unsafe { win_fd::_read(fd, dst as *mut _, length as u32) }
+        };
+        if bytes_read >= 0 {
+            args.rval().set(mozjs::jsval::Int32Value(bytes_read));
+            true
+        } else {
+            throw_fs_error(
+                cx,
+                "readSync",
+                &format!("fd:{}", fd),
+                &::std::io::Error::last_os_error(),
+            )
+        }
     }
 }
 
@@ -8439,10 +8508,23 @@ unsafe extern "C" fn fs_write_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             )
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        args.rval().set(UndefinedValue());
-        true
+        // SAFETY: plain CRT fd write (UCRT translates text modes per the
+        // fd's open flags).
+        let written =
+            unsafe { win_fd::_write(fd, bytes.as_ptr() as *const _, bytes.len() as u32) };
+        if written >= 0 {
+            args.rval().set(mozjs::jsval::DoubleValue(written as f64));
+            true
+        } else {
+            throw_fs_error(
+                cx,
+                "writeSync",
+                &format!("fd:{}", fd),
+                &::std::io::Error::last_os_error(),
+            )
+        }
     }
 }
 
@@ -8664,10 +8746,21 @@ unsafe extern "C" fn fs_ftruncate_sync(cx: *mut JSContext, argc: u32, vp: *mut J
             )
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        args.rval().set(UndefinedValue());
-        true
+        // SAFETY: plain CRT fd resize (bad fd → -1 + errno, never UB).
+        let rv = unsafe { win_fd::_chsize(fd, len as i64) };
+        if rv == 0 {
+            args.rval().set(UndefinedValue());
+            true
+        } else {
+            throw_fs_error(
+                cx,
+                "ftruncateSync",
+                &format!("fd:{}", fd),
+                &::std::io::Error::last_os_error(),
+            )
+        }
     }
 }
 

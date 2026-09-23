@@ -178,6 +178,24 @@ fn ftruncate_sync_undefined_len_is_zero() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+
+/// Node-family answer for an over-long path: ENAMETOOLONG on POSIX, ENOENT
+/// on windows (oracle: node v24 on windows answers ENOENT for both the
+/// literal "/tmp/..." form and a drive-lettered over-long path — the CRT
+/// rejects the path before the length check surfaces).
+fn acceptable_toolong_code(state: &str, key: &str) -> bool {
+    let hit = state.contains(&format!("\"{key}\":\"ENAMETOOLONG\""))
+        || state.contains(&format!("\"{key}\":\"ENOENT\""));
+    #[cfg(unix)]
+    {
+        hit && state.contains(&format!("\"{key}\":\"ENAMETOOLONG\""))
+    }
+    #[cfg(windows)]
+    {
+        hit
+    }
+}
+
 /// 83350172b9: fs.promises.stat(tooLong) REJECTS with code ENAMETOOLONG and
 /// err.path === input — never a synchronous throw. Also pins the interplay
 /// with 4c815c11a5: promises.truncate(tooLong, undefined) rejects the same
@@ -242,8 +260,8 @@ fn promises_toolong_path_rejects_not_throws() {
         state
     );
     assert!(
-        state.contains("\"statCode\":\"ENAMETOOLONG\""),
-        "rejection must carry code ENAMETOOLONG (state: {})",
+        acceptable_toolong_code(&state, "statCode"),
+        "rejection must carry the platform's over-long-path code (state: {})",
         state
     );
     assert!(
@@ -262,8 +280,8 @@ fn promises_toolong_path_rejects_not_throws() {
         state
     );
     assert!(
-        state.contains("\"truncCode\":\"ENAMETOOLONG\""),
-        "truncate rejection must carry code ENAMETOOLONG (state: {})",
+        acceptable_toolong_code(&state, "truncCode"),
+        "truncate rejection must carry the platform's over-long-path code (state: {})",
         state
     );
 }
@@ -309,8 +327,8 @@ fn callback_toolong_path_errors_callback_not_throw() {
         state
     );
     assert!(
-        state.contains("\"code\":\"ENAMETOOLONG\""),
-        "callback must receive code ENAMETOOLONG (state: {})",
+        acceptable_toolong_code(&state, "code"),
+        "callback must receive the platform's over-long-path code (state: {})",
         state
     );
 }
@@ -339,8 +357,16 @@ fn stat_sync_toolong_throws_with_code_and_path() {
             too_long
         ),
     );
+    // POSIX answers ENAMETOOLONG; windows (node oracle) answers ENOENT for
+    // an over-long path — the CRT rejects it before the length check.
+    #[cfg(unix)]
     assert_eq!(
         out, "ENAMETOOLONG|pathok",
         "statSync(tooLong) must throw code ENAMETOOLONG with err.path set"
+    );
+    #[cfg(windows)]
+    assert!(
+        (out == "ENAMETOOLONG|pathok" || out == "ENOENT|pathok") && out.ends_with("|pathok"),
+        "statSync(tooLong) must throw the platform over-long-path code with err.path set, got: {out}"
     );
 }
