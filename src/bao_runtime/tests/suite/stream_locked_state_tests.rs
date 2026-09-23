@@ -139,7 +139,7 @@ fn test_web_stream_locked_state_error_codes() {
     assert_eq!(setup, "scheduled", "locked-state probe scheduling failed");
     drive_event_loop(&mut ctx, 100);
 
-    let get = |k: &str| eval_string(&mut ctx, &format!("String(globalThis.__lockedProbe.{})\n", k));
+    let mut get = |k: &str| eval_string(&mut ctx, &format!("String(globalThis.__lockedProbe.{})\n", k));
 
     assert_eq!(
         get("cancel"),
