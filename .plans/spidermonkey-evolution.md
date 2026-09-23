@@ -2173,3 +2173,7 @@ openSync windows=恒假 fd 0 的静默 stub(open/close/ftruncate/read/write 五�
 ### W8 BCE 追修:cluster primary 泵双缺陷+RunJobs 窗口悬案(54787d28,2026-09-24)
 
 **归因链(套件 realm 八层二分,每层独立仪器构建真机跑)**:suite 全量挂死三现象终归因=①WSL interop 不传 env(WSLENV 门)→BAO_TEST_BAO_BIN 未达→find_bao_binary 回退同目录**旧 bao.exe**(无 E9 修复)为 worker=process.send 缺+旧 spawn 面断言+isolation 级联(验证方法缺陷,已按配对纪律修正);②配对后暴露真缺陷:CLUSTER_JS Worker 构造器**从不设 this._pid**→pollWorkers 首卫恒跳过一切 worker(事件全饿死,worker watchdog exit 3 为唯一可见症状)——已修;③pollWorkers 双裸 catch 静默吞错(违禁类,致盲整场追查)——已改限流 console.error。**实测健康面**:native IPC 全链(fork→spawn→管道→boot 通知→recv)首个 eval 内 <100ms 送达(最小真进程复现+suite realm 同步探针双证)。**精确悬案(下一波入口)**:fork-eval 的 RunJobs 窗口内 primary 消息消失(recv 自 tick1=undefined 而 poll_exit 报 worker 活;29/200 泵达 JS 层全空)——入口=native fork 完成路径与 fork-eval 内 JobQueue drain 的交互。cluster 族现态:pump_loop/worker_kill/isprimary 4 绿+p0 e2e(事件驱动)红待悬案。REQ-ENG-46 承接收尾。
+
+### 合并:daily-ops 吸收波并入主线(0d1b51e0,2026-09-24)
+
+dops-20260923(5 commits:4 absorb+1 fix)三步验证绿(bun_runtime suite 构建/servo net·script·layout·fonts check 0 错/stream_locked 回归 1/1)后 merge 入 master。#47 验收核对过零改动;5 项延迟分诊全判定(档存 worktree daily-ops 目录)。合并后树:bun_runtime linux check 绿+windows suite 构建绿;真机抽验 stream_locked 1/1、fs 族 25/25 绿。tls_sni 6 失败=node:tls JS 驱动面(open 残余,签名已由 E7 换签归档)。今日 master 累计 14 commits 待 push(用户裁决后)。残余开放清单不变:RunJobs 窗口悬案/bun_glob/bun_build parse-worker/h2×2/c2 性能/sys fs O_* 横扫/soak 三连败(今晚树净验证)。
