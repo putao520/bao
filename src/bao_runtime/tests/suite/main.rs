@@ -163,6 +163,7 @@ mod strdec_module_deep_tests;
 mod stream_buffer_assert_tests;
 mod stream_byte_pull_tests;
 mod stream_deep_tests;
+mod stream_locked_state_tests;
 mod stream_p0_fix_tests;
 mod timer_crypto_pump_starvation_tests;
 mod timers_deep_tests;

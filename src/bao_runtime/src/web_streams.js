@@ -71,6 +71,13 @@
 
   function _typeError(msg) { return new TypeError(msg); }
   function _rangeError(msg) { return new RangeError(msg); }
+  // Node parity (absorb bun 30787ebeab): each "stream is locked" invalid-state
+  // error carries code ERR_INVALID_STATE (Node v26 webstreams behavior).
+  function _invalidStateError(msg) {
+    var e = new TypeError(msg);
+    e.code = "ERR_INVALID_STATE";
+    return e;
+  }
 
   function _promiseInvokeOrNoop(obj, key, args) {
     try {
@@ -168,7 +175,7 @@
 
     ReadableStream.prototype.cancel = function(reason) {
       if (!_isReadableStream(this)) return Promise.reject(_typeError("this is not a ReadableStream"));
-      if (_isReadableStreamLocked(this)) return Promise.reject(_typeError("ReadableStream is locked"));
+      if (_isReadableStreamLocked(this)) return Promise.reject(_invalidStateError("Invalid state: ReadableStream is locked"));
       return _readableStreamCancel(this, reason);
     };
 
@@ -194,7 +201,8 @@
       var readable = transforms.readable;
       var writable = transforms.writable;
       if (!_isReadableStream(this)) throw _typeError("this is not a ReadableStream");
-      if (_isReadableStreamLocked(this)) throw _typeError("ReadableStream is locked");
+      if (_isReadableStreamLocked(this)) throw _invalidStateError("Invalid state: The ReadableStream is locked");
+      if (_isWritableStreamLocked(writable)) throw _invalidStateError("Invalid state: The WritableStream is locked");
       var preventClose = false, preventAbort = false, preventCancel = false, signal;
       if (options && _isObject(options)) {
         preventClose = !!options.preventClose;
@@ -210,7 +218,8 @@
 
     ReadableStream.prototype.pipeTo = function(destination, options) {
       if (!_isReadableStream(this)) return Promise.reject(_typeError("this is not a ReadableStream"));
-      if (_isReadableStreamLocked(this)) return Promise.reject(_typeError("ReadableStream is locked"));
+      if (_isReadableStreamLocked(this)) return Promise.reject(_invalidStateError("Invalid state: The ReadableStream is locked"));
+      if (_isWritableStreamLocked(destination)) return Promise.reject(_invalidStateError("Invalid state: The WritableStream is locked"));
       var preventClose = false, preventAbort = false, preventCancel = false, signal;
       if (options && _isObject(options)) {
         preventClose = !!options.preventClose;
