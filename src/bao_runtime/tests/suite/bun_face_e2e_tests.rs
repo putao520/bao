@@ -216,7 +216,9 @@ fn test_bun_face_completion() {
     assert!(
         eval_bool(
             &mut ctx,
-            r#"var cap = Bun.spawnSync(["/bin/sh", "-c", "echo 0123456789"], { maxBuffer: 5, encoding: "utf8" }); cap.stdout.length === 5"#
+            r#"var isWin2 = process.platform === "win32";
+               var cap = Bun.spawnSync(isWin2 ? ["cmd.exe", "/C", "echo 0123456789"] : ["/bin/sh", "-c", "echo 0123456789"], { maxBuffer: 5, encoding: "utf8" });
+               cap.stdout.length === 5"#
         ),
         "spawnSync maxBuffer truncates"
     );
