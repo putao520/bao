@@ -62,7 +62,7 @@ fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
     // flip `__r.settled`; the artifact.text() scenario fills `__r.text`)
     // and exit the moment either holds; the iteration cap stays as the
     // deadline only (raised to 30s), never as a blind duration.
-    let cx_raw = ctx.raw_cx();
+    let cx_raw = unsafe { ctx.raw_cx() };
     for _ in 0..max_iters {
         if eval_string(
             ctx,
@@ -72,6 +72,18 @@ fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
         {
             return;
         }
+        // DRIVE the loop, not just poll it (regression 8d965656: this loop
+        // was reduced to a bare poll — no RunJobs, no tick, no sleep — so
+        // the BuildTasklet completion never reached the promise and every
+        // scenario failed "promise must settle" while burning 15000 dense
+        // iterations of pure CPU).
+        unsafe {
+            mozjs_sys::jsapi::js::RunJobs(cx_raw);
+        }
+        timers::with_event_loop(|loop_| {
+            loop_.tick_without_idle(std::ptr::null_mut());
+        });
+        std::thread::sleep(Duration::from_millis(2));
     }
 }
 

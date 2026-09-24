@@ -1,0 +1,101 @@
+[00-control] begin
+[01-typeof] begin
+[00-control] eval -> Number(2.0)
+[00-control] gc ok
+[00-control] teardown ok
+[01-typeof] eval -> String("function")
+[01-typeof] gc ok
+[01-typeof] teardown ok
+[02-time] begin
+[03-timeEnd] begin
+[02-time] eval -> String("ok")
+[02-time] gc ok
+[02-time] teardown ok
+[03-timeEnd] eval -> String("ok")
+[03-timeEnd] gc ok
+[03-timeEnd] teardown ok
+[04-count] begin
+[05-log] begin
+[04-count] eval -> String("ok")
+[04-count] gc ok
+[04-count] teardown ok
+[05-log] eval -> String("ok")
+[05-log] gc ok
+[05-log] teardown ok
+[06-trace] begin
+[07-dir] begin
+[06-trace] eval -> String("ok")
+[06-trace] gc ok
+[06-trace] teardown ok
+[07-dir] eval -> String("ok")
+[07-dir] gc ok
+[07-dir] teardown ok
+[08-assert] begin
+[09-clear] begin
+[08-assert] eval -> String("ok")
+[08-assert] gc ok
+[08-assert] teardown ok
+[09-clear] eval -> String("ok")
+[09-clear] gc ok
+[09-clear] teardown ok
+[10-table] begin
+[11-forof] begin
+[10-table] eval -> String("ok")
+[10-table] gc ok
+[10-table] teardown ok
+[11-forof] eval -> Number(6.0)
+[11-forof] gc ok
+[11-forof] teardown ok
+[12-promise] begin
+[13-throw] begin
+[12-promise] eval -> String("object")
+[12-promise] gc ok
+[12-promise] teardown ok
+[13-throw] eval -> String("e")
+[13-throw] gc ok
+[13-throw] teardown ok
+[14-nested-eval] begin
+[15-all] begin
+[14-nested-eval] eval -> String("SyntaxError")
+[14-nested-eval] gc ok
+[14-nested-eval] teardown ok
+[15-all] step0 -> Number(2.0)
+[15-all] step0 gc ok
+[15-all] step1 -> String("function")
+[15-all] step1 gc ok
+[15-all] step2 -> String("ok")
+[15-all] step2 gc ok
+[15-all] step3 -> String("ok")
+[15-all] step3 gc ok
+[15-all] step4 -> String("ok")
+[15-all] step4 gc ok
+[15-all] step5 -> String("ok")
+[15-all] step5 gc ok
+[15-all] step6 -> String("ok")
+[15-all] step6 gc ok
+[15-all] step7 -> String("ok")
+[15-all] step7 gc ok
+[15-all] step8 -> String("ok")
+[15-all] step8 gc ok
+[15-all] step9 -> String("ok")
+[15-all] step9 gc ok
+[15-all] step10 -> Number(6.0)
+[15-all] step10 gc ok
+[15-all] step11 -> String("e")
+[15-all] step11 gc ok
+[15-all] teardown ok
+[16-log] begin
+[16-log] eval -> String("ok")
+[16-log] gc ok
+[16-log] teardown ok
+[16-repeat] round0 -> String("ok")
+[16-log] begin
+[16-log] eval -> String("ok")
+[16-log] gc ok
+[16-log] teardown ok
+[16-repeat] round1 -> String("ok")
+[16-log] begin
+[16-log] eval -> String("ok")
+[16-log] gc ok
+[16-log] teardown ok
+[16-repeat] round2 -> String("ok")

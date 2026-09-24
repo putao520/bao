@@ -1878,7 +1878,14 @@ unsafe extern "C" fn uws_h2_route_handler(
             &mut header_pairs as *mut Vec<(Vec<u8>, Vec<u8>)>,
         );
         for (name, value) in &header_pairs {
-            let c_k = ZBox::from_bytes(name);
+            // Node http2 semantics: incoming header names are lowercased
+            // (HTTP/2 wire requires lowercase; the HTTP/1.1 compat path sees
+            // the raw casing as sent — `Host:` arrives capitalized). The
+            // 4af-absorbed uWS iterator hands back the raw case, so
+            // lowercase here or `headers.host` reads undefined against a
+            // literal `Host:` request.
+            let lowered: Vec<u8> = name.iter().map(|b| b.to_ascii_lowercase()).collect();
+            let c_k = ZBox::from_bytes(&lowered);
             let c_v = ZBox::from_bytes(value);
             let js_v = JS_NewStringCopyZ(raw_cx, c_v.as_ptr());
             if !js_v.is_null() {

@@ -113,10 +113,28 @@ pub struct BunSocketContextOptions {
     pub ca: *const *const c_char,
     pub ca_count: u32,
     pub secure_options: u32,
+    // ── 4af-absorbed tail (libusockets.h us_bun_socket_context_options_t) ──
+    // This struct crosses the C ABI by value (us_ssl_ctx_from_options): the
+    // field order MUST mirror the header exactly. The 4af absorb added
+    // ssl_min/ssl_max_version between secure_options and reject_unauthorized
+    // and session_timeout/crl/crl_count/allow_partial_trust_chain/sigalgs/
+    // ecdh_curve after the reneg pair — the pre-absorb Rust shape silently
+    // misaligned every later field (reject_unauthorized read C's
+    // ssl_min_version slot; the C side read garbage for crl → ctx build
+    // NULL → FailedToOpenSocket on the proxy/TLS paths). Kept in exact
+    // header order; zeroed defaults are "unset" for every field.
+    pub ssl_min_version: i32,
+    pub ssl_max_version: i32,
     pub reject_unauthorized: i32,
     pub request_cert: i32,
     pub client_renegotiation_limit: u32,
     pub client_renegotiation_window: u32,
+    pub session_timeout: i32,
+    pub crl: *const *const c_char,
+    pub crl_count: u32,
+    pub allow_partial_trust_chain: i32,
+    pub sigalgs: *const c_char,
+    pub ecdh_curve: *const c_char,
 }
 
 impl Default for BunSocketContextOptions {
@@ -136,10 +154,18 @@ impl Default for BunSocketContextOptions {
             ca: ptr::null(),
             ca_count: 0,
             secure_options: 0,
+            ssl_min_version: 0,
+            ssl_max_version: 0,
             reject_unauthorized: 0,
             request_cert: 0,
             client_renegotiation_limit: 3,
             client_renegotiation_window: 600,
+            session_timeout: 0,
+            crl: ptr::null(),
+            crl_count: 0,
+            allow_partial_trust_chain: 0,
+            sigalgs: ptr::null(),
+            ecdh_curve: ptr::null(),
         }
     }
 }
