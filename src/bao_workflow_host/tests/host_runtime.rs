@@ -12,12 +12,11 @@
 //! `CreateJobQueue` + `SetJobQueue`, then `RunJobs` until async IIFEs settle.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::ffi::CString;
 use std::mem::ManuallyDrop;
 use std::os::raw::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bao_workflow_host::{
@@ -25,10 +24,7 @@ use bao_workflow_host::{
     js_to_rust_string, set_workflow_host_callbacks, take_workflow_host_callbacks,
 };
 use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
-use mozjs::jsapi::{
-    CurrentGlobalOrNull, HandleValueArray, JS_CallFunctionValue, JS_ClearPendingException,
-    JS_DefineProperty, JS_DeleteProperty1, JS_GetProperty, JSObject, OnNewGlobalHookOption,
-};
+use mozjs::jsapi::{JSObject, OnNewGlobalHookOption};
 use mozjs::jsapi::{Handle as RawHandle, MutableHandle as RawMutableHandle};
 use mozjs::jsval::{ObjectValue, UndefinedValue};
 use mozjs::realm::AutoRealm;
@@ -38,15 +34,8 @@ use mozjs::rust::{CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE
 
 // ── minimal SM job queue (embedding traps; mirrors bao_engine JobQueue shape) ──
 
-static JOB_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 thread_local! {
-    static JOB_IDS: RefCell<VecDeque<usize>> = const { RefCell::new(VecDeque::new()) };
     static QUEUE_PTR: RefCell<*mut mozjs::jsapi::JobQueue> = const { RefCell::new(ptr::null_mut()) };
-}
-
-fn job_prop_name(id: usize) -> CString {
-    CString::new(format!("__wf_test_job_{id}")).unwrap_or_default()
 }
 
 struct TestJobQueue;
@@ -54,11 +43,16 @@ struct TestJobQueue;
 impl TestJobQueue {
     /// Install internal promise job queue on this context (post-Runtime::new).
     fn init(cx: &mozjs::context::JSContext) -> Self {
+        // SM153 trap face (mirrors bao_engine::job_queue::JobQueue::init):
+        // enqueuePromiseJob/empty are gone — promise reaction jobs land in the
+        // engine-owned regular microtask queue, and runJobs must drain it;
+        // getHostDefinedGlobal and traceNonGCThingMicroTask are required (the
+        // destructor calls them unconditionally).
         let traps = JobQueueTraps {
             getHostDefinedData: Some(get_host_defined_data),
-            enqueuePromiseJob: Some(enqueue_job),
+            getHostDefinedGlobal: Some(get_host_defined_global),
             runJobs: Some(run_jobs_trap),
-            empty: Some(is_empty),
+            traceNonGCThingMicroTask: Some(trace_non_gc_thing_microtask),
             pushNewInterruptQueue: Some(push_new_interrupt_queue),
             popInterruptQueue: Some(pop_interrupt_queue),
             dropInterruptQueues: Some(drop_interrupt_queues),
@@ -93,103 +87,106 @@ impl Drop for TestJobQueue {
                 *p.borrow_mut() = ptr::null_mut();
             }
         });
-        JOB_IDS.with(|q| q.borrow_mut().clear());
     }
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn enqueue_job(
-    _queue: *const c_void,
+/// ABI-safe [`JS::DequeueNextRegularMicroTask`] on MSVC (same sret class as
+/// bao_engine::job_queue — see its doc for the full analysis; bindgen's
+/// by-value declaration mismatches the hidden sret slot under ms_abi).
+#[cfg(target_env = "msvc")]
+unsafe fn dequeue_next_regular_micro_task_abi_safe(
     cx: *mut mozjs::jsapi::JSContext,
-    _promise: RawHandle<*mut JSObject>,
-    job: RawHandle<*mut JSObject>,
-    _allocation_site: RawHandle<*mut JSObject>,
-    _host_defined_data: RawHandle<*mut JSObject>,
-) -> bool {
-    let job_obj = *job.ptr;
-    if job_obj.is_null() {
-        return true;
+) -> mozjs::jsval::JSVal {
+    unsafe extern "C" {
+        #[link_name = "\u{1}?DequeueNextRegularMicroTask@JS@@YA?AVValue@1@PEAUJSContext@@@Z"]
+        fn dequeue_next_regular_micro_task_sret(
+            slot: *mut mozjs::jsval::JSVal,
+            cx: *mut mozjs::jsapi::JSContext,
+        );
     }
-    let id = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let global = CurrentGlobalOrNull(cx);
-    if global.is_null() {
-        return true;
+    let mut slot: mozjs::jsval::JSVal = ::std::mem::zeroed();
+    unsafe {
+        dequeue_next_regular_micro_task_sret(&mut slot, cx);
     }
-    let prop = job_prop_name(id);
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(ptr::NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let job_root = ObjectValue(job_obj));
-    rooted!(&in(wrapped_cx) let global_root = global);
-    JS_DefineProperty(
-        cx,
-        global_root.handle().into(),
-        prop.as_ptr(),
-        job_root.handle().into(),
-        0,
-    );
-    JOB_IDS.with(|q| q.borrow_mut().push_back(id));
-    true
+    slot
+}
+
+#[cfg(not(target_env = "msvc"))]
+unsafe fn dequeue_next_regular_micro_task_abi_safe(
+    cx: *mut mozjs::jsapi::JSContext,
+) -> mozjs::jsval::JSVal {
+    unsafe { mozjs::jsapi::JS::DequeueNextRegularMicroTask(cx) }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn run_jobs_trap(_queue: *const c_void, cx: *mut mozjs::jsapi::JSContext) {
+    // SM153 (mirrors bao_engine::job_queue::run_jobs): promise reaction jobs
+    // enqueue into the engine-owned regular microtask queue — there is no
+    // enqueuePromiseJob trap anymore. Drain it to fixpoint: running one job
+    // can settle another promise and enqueue more.
     loop {
-        let Some(id) = JOB_IDS.with(|q| q.borrow_mut().pop_front()) else {
+        let mut progress = false;
+        while mozjs::jsapi::JS::HasRegularMicroTasks(cx) {
+            progress = true;
+            let mut wrapped_cx =
+                mozjs::context::JSContext::from_ptr(ptr::NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let task = dequeue_next_regular_micro_task_abi_safe(cx));
+            let task_val: mozjs::jsval::JSVal = task.handle().get();
+            let job = mozjs::jsapi::JS::ToMaybeWrappedJSMicroTask(&task_val);
+            if job.is_null() {
+                continue;
+            }
+            let global = mozjs::jsapi::JS::GetExecutionGlobalFromJSMicroTask(job);
+            if global.is_null() {
+                continue;
+            }
+            let mut realm = AutoRealm::new(
+                &mut wrapped_cx,
+                ptr::NonNull::new_unchecked(global),
+            );
+            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+            rooted!(&in(realm_cx) let job_root = job);
+            if !mozjs::jsapi::JS::RunJSMicroTask(cx, job_root.handle().into())
+                && mozjs::jsapi::JS_IsExceptionPending(cx)
+            {
+                // A throwing job must not poison the context for the rest of
+                // the drain (test harness: report surface is the JS layer).
+                mozjs::jsapi::JS_ClearPendingException(cx);
+            }
+        }
+        if !progress {
             break;
-        };
-        let global = CurrentGlobalOrNull(cx);
-        if global.is_null() {
-            break;
         }
-        let prop = job_prop_name(id);
-        let wrapped_cx = mozjs::context::JSContext::from_ptr(ptr::NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let global_root = global);
-        let mut job_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            global_root.handle().into(),
-            prop.as_ptr(),
-            RawMutableHandle {
-                _phantom_0: std::marker::PhantomData,
-                ptr: &mut job_val,
-            },
-        );
-        if !job_val.is_object() {
-            continue;
-        }
-        let mut rval = UndefinedValue();
-        rooted!(&in(wrapped_cx) let obj_root = global);
-        rooted!(&in(wrapped_cx) let fval_root = job_val);
-        let empty_args = HandleValueArray::empty();
-        let ok = JS_CallFunctionValue(
-            cx,
-            obj_root.handle().into(),
-            fval_root.handle().into(),
-            &empty_args,
-            RawMutableHandle {
-                _phantom_0: std::marker::PhantomData,
-                ptr: &mut rval,
-            },
-        );
-        if !ok {
-            JS_ClearPendingException(cx);
-        }
-        JS_DeleteProperty1(cx, global_root.handle().into(), prop.as_ptr());
     }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn get_host_defined_data(
-    _queue: *const c_void,
     _cx: *mut mozjs::jsapi::JSContext,
-    data: RawMutableHandle<*mut JSObject>,
+    incumbent_global: RawMutableHandle<*mut JSObject>,
+    optional_host_defined_data: RawMutableHandle<*mut JSObject>,
 ) -> bool {
-    data.set(ptr::null_mut());
+    incumbent_global.set(ptr::null_mut());
+    optional_host_defined_data.set(ptr::null_mut());
     true
 }
 
+// SM153 required trap (destructor calls it unconditionally).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn is_empty(_queue: *const c_void) -> bool {
-    JOB_IDS.with(|q| q.borrow().is_empty())
+unsafe extern "C" fn get_host_defined_global(
+    cx: *mut mozjs::jsapi::JSContext,
+    data: RawMutableHandle<*mut JSObject>,
+) -> bool {
+    data.set(unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx) });
+    true
+}
+
+// SM153 required trap (GC trace of non-GC-thing microtask values).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn trace_non_gc_thing_microtask(
+    _trc: *mut mozjs_sys::jsapi::JSTracer,
+    _value_ptr: *mut mozjs_sys::jsval::JSVal,
+) {
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
