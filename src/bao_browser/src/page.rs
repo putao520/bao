@@ -1971,7 +1971,16 @@ mod tests {
         let func_start = source
             .find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
-        let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
+        // Whole-function window (the next top-level item), not a fixed
+        // 5000-char slice — the function grew past that budget once
+        // (document-comment + R53-A/SM-EVOLUTION comment blocks pushed the
+        // Web-API install calls at the tail out of the window) and the
+        // assertion false-alarmed on a healthy body.
+        let func_end = source[func_start..]
+            .find("\npub fn ")
+            .or_else(|| source[func_start..].find("\nunsafe fn "))
+            .unwrap_or(source.len() - func_start);
+        let func_body = &source[func_start..func_start + func_end];
 
         assert!(
             func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
