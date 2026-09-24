@@ -2681,7 +2681,19 @@ unsafe extern "C" fn fs_rmdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     // file path). Same option parse + op selection as fs_rm_sync.
     let recursive = get_bool_option(cx, &args, 1, "recursive");
     let result = if recursive {
-        fs::remove_dir_all(&path)
+        fs::remove_dir_all(&path).map_err(|e| {
+            // node rmdirSync(missing, {recursive:true}) throws ENOENT (rm's
+            // force defaults false); std's remove_dir_all tolerates a
+            // missing root (rm -rf shape) and answers Ok — reshape the miss.
+            if e.kind() == ::std::io::ErrorKind::NotFound {
+                ::std::io::Error::new(
+                    ::std::io::ErrorKind::NotFound,
+                    "ENOENT: no such file or directory",
+                )
+            } else {
+                e
+            }
+        })
     } else {
         fs::remove_dir(&path).map_err(|e| {
             // node's rmdir contract is SHAPE-based, and the Windows errno

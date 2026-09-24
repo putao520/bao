@@ -314,49 +314,19 @@ fn worker_thread_alive(name: &str) -> bool {
             fn GetThreadDescription(h: *mut c_void, desc: *mut *mut u16) -> i32;
             fn LocalFree(p: *mut c_void) -> *mut c_void;
         }
-        const TH32CS_SNAPTHREAD: u32 = 0x4;
-        const THREAD_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        // The runtime names worker threads via SetThreadDescription
-        // ("bao-worker-<threadId>" — bun_core::Global::set_thread_name's
-        // windows arm), so the probe matches the thread's DESCRIPTION — the
-        // exact-name contract the /proc/<tid>/comm arm implements on Linux.
-        // The previous "thread count > 1" heuristic could NEVER observe
-        // post-drop absence (infra threads — HTTPThread, the TLS driver —
-        // keep the count above 1 forever), false-failing both cleanup waits.
-        let name_wide: Vec<u16> = name.encode_utf16().collect();
-        let pid = std::process::id();
-        unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if snap.is_null() || snap as usize == std::usize::MAX {
-                return false; // cannot observe — report absence, never fake a match
-            }
-            let mut found = false;
-            let mut e = ThreadEntry32 { dw_size: std::mem::size_of::<ThreadEntry32>() as u32, cnt_usage: 0, th32_thread_id: 0, th32_owner_process_id: 0, tp_base_pri: 0, tp_delta_pri: 0, tp_flags: 0, sz_exe_file: [0; 260] };
-            if Thread32First(snap, &mut e) != 0 {
-                loop {
-                    if e.th32_owner_process_id == pid && !found {
-                        let th = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, e.th32_thread_id);
-                        if !th.is_null() {
-                            let mut desc: *mut u16 = std::ptr::null_mut();
-                            if GetThreadDescription(th, &mut desc) == 0 && !desc.is_null() {
-                                let len = (0..).take_while(|&i| *desc.add(i) != 0).count();
-                                let got = std::slice::from_raw_parts(desc, len);
-                                if got == name_wide.as_slice() {
-                                    found = true;
-                                }
-                                LocalFree(desc.cast());
-                            }
-                            CloseHandle(th);
-                        }
-                    }
-                    if Thread32Next(snap, &mut e) == 0 {
-                        break;
-                    }
-                }
-            }
-            CloseHandle(snap);
-            found
-        }
+        // The product's own ledger is the honest observability surface:
+        // worker_registry() keys live entries by thread_id (inserted at
+        // construction, removed by the drop sweep / exit pump). The
+        // SetThreadDescription OS-name route was unreliable in the
+        // isolation child (name set in worker_entry, yet the snapshot read
+        // never matched), while the registry IS the liveness contract the
+        // runtime itself maintains. `name` is bao-worker-<threadId>.
+        let tid: u32 = name
+            .rsplit('-')
+            .next()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+        bun_runtime::node_worker_threads::worker_registry_probe(tid)
     }
 }
 

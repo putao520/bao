@@ -1397,6 +1397,13 @@ pub fn worker_try_recv(
 // Module install
 // ---------------------------------------------------------------------------
 
+/// Liveness probe for tests: true while a worker with `thread_id` is
+/// registered (the registry IS the runtime's own liveness contract —
+/// inserted at construction, removed by the drop sweep / exit pump).
+pub fn worker_registry_probe(thread_id: u32) -> bool {
+    worker_registry().contains_key(&thread_id)
+}
+
 pub fn install(cx: &mut mozjs::context::JSContext) {
     let raw_cx = unsafe { cx.raw_cx() };
 
