@@ -74,11 +74,17 @@ fn test_child_process_vm_module_zlib_deep_body() {
     assert!(cp.contains("fork"), "child_process should have fork");
 
     // spawn returns object with pid/wait/kill
+    // Windows: `echo` is a cmd.exe builtin, not an executable — node's
+    // spawn('echo') fails with ENOENT there too, so the probe shells through
+    // cmd.exe /C (the same face bun_face_e2e uses for spawnSync).
     let spawn_result = eval_string(
         &mut ctx,
         r#"
+        var isWin = process.platform === 'win32';
+        var echoExe = isWin ? 'cmd.exe' : 'echo';
+        var echoArgs = isWin ? ['/C', 'echo', 'hello'] : ['hello'];
         var cp = require('child_process');
-        var child = cp.spawn('echo', ['hello']);
+        var child = cp.spawn(echoExe, echoArgs);
         typeof child.pid === 'number' ? 'pid_ok' : 'pid_fail'
     "#,
     );
@@ -92,8 +98,11 @@ fn test_child_process_vm_module_zlib_deep_body() {
         eval_bool(
             &mut ctx,
             r#"
+        var isWin = process.platform === 'win32';
+        var echoExe = isWin ? 'cmd.exe' : 'echo';
+        var echoArgs = isWin ? ['/C', 'echo', 'test'] : ['test'];
         var cp = require('child_process');
-        var child = cp.spawn('echo', ['test']);
+        var child = cp.spawn(echoExe, echoArgs);
         typeof child.stdout === 'object' && child.stdout !== null &&
         typeof child.stderr === 'object' && child.stderr !== null
     "#
@@ -108,8 +117,11 @@ fn test_child_process_vm_module_zlib_deep_body() {
         eval_bool(
             &mut ctx,
             r#"
+        var isWin = process.platform === 'win32';
+        var echoExe = isWin ? 'cmd.exe' : 'echo';
+        var echoArgs = isWin ? ['/C', 'echo', 'test'] : ['test'];
         var cp = require('child_process');
-        var child = cp.spawn('echo', ['test']);
+        var child = cp.spawn(echoExe, echoArgs);
         typeof child.kill === 'function'
     "#
         ),
@@ -132,11 +144,16 @@ fn test_child_process_vm_module_zlib_deep_body() {
     );
 
     // execFileSync returns output
+    // Windows: node's execFileSync('echo', …) fails there (echo is a cmd.exe
+    // builtin, not a file) — shell through cmd.exe /C like node would via
+    // its cmd /c exec face.
     let exec_file_output = eval_string(
         &mut ctx,
         r#"
         var cp = require('child_process');
-        var out = cp.execFileSync('echo', ['file_test']);
+        var isWin = process.platform === 'win32';
+        var out = isWin ? cp.execFileSync('cmd.exe', ['/C', 'echo', 'file_test'])
+                        : cp.execFileSync('echo', ['file_test']);
         out.trim()
     "#,
     );

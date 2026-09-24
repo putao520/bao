@@ -39,6 +39,12 @@ use crate::require::cache_builtin;
 /// Next thread ID counter (monotonically increasing).
 static NEXT_THREAD_ID: AtomicU32 = AtomicU32::new(1);
 
+/// Per-realm pump registration counter — the gc_store root lives on the
+/// realm's global, so each realm's pump needs a distinct key (two realms on
+/// one thread share the thread-local pump list; identical keys would make
+/// realm A's teardown purge realm B's entry).
+static PUMP_SEQ: AtomicU32 = AtomicU32::new(1);
+
 /// Process-wide registry of live Workers, keyed by threadId.
 /// Stores the sender half so main-thread code can postMessage / terminate.
 static WORKER_REGISTRY: OnceLock<DashMap<u32, WorkerHandle>> = OnceLock::new();
@@ -511,11 +517,29 @@ fn worker_entry(
     main_sender: Sender<WorkerToMainMessage>,
     worker_data_bytes: Option<Vec<u8>>,
 ) {
+    // 0. Name THIS thread `bao-worker-<id>` at the OS level. The std
+    //    Builder::name set by the constructor is a best-effort hint that does
+    //    not reliably land in the Windows thread name (GetThreadDescription —
+    //    the surface the cleanup probes read); bun_core::Global::set_thread_name
+    //    writes the current thread explicitly on every platform (Linux
+    //    prctl(PR_SET_NAME) / Windows SetThreadDescription), making the
+    //    `bao-worker-<threadId>` name observable by both /proc/<tid>/comm and
+    //    the Windows thread snapshot. Must run before anything can block:
+    //    the name is part of the runtime-drop observability contract.
+    let name_buf = format!("bao-worker-{}\0", thread_id).into_bytes();
+    // SAFETY: buf ends with a NUL byte and outlives the call below.
+    let name = unsafe { bun_core::ZStr::from_raw(name_buf.as_ptr(), name_buf.len() - 1) };
+    bun_core::Global::set_thread_name(name);
+
     // 1. Obtain process-global JSEngine handle.
     let engine_handle = match bao_engine::context::ensure_engine_handle() {
         Ok(h) => h,
-        Err(_) => return,
+        Err(e) => {
+
+            return;
+        }
     };
+
 
     // 2. Create a new Runtime on this thread — gets its own JSContext.
     let _runtime = mozjs::rust::Runtime::new(engine_handle);
@@ -528,8 +552,12 @@ fn worker_entry(
     //    async dispatch can AutoRealm into it.
     let mut ctx = match unsafe { bao_engine::context::JsContext::from_servo_runtime() } {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+
+            return;
+        }
     };
+
     ctx.set_global_setup(worker_global_setup);
 
     let mut cx = ctx.cx();
@@ -537,12 +565,15 @@ fn worker_entry(
 
     // 4. Init JobQueue + ModuleLoader on this thread's JSContext.
     if !bao_engine::job_queue::JobQueue::init(&cx) {
+
         return;
     }
+
     bao_engine::module_loader::ModuleLoader::init_thread_local(&cx);
     bao_engine::module_loader::set_job_queue_drain(bao_engine::job_queue::JobQueue::drain);
 
     // 5. Read the worker script from disk.
+
     let source = match ::std::fs::read_to_string(&filename) {
         Ok(s) => s,
         Err(e) => {
@@ -633,6 +664,7 @@ fn worker_entry(
             return;
         }
         Err(e) => {
+
             let _ = main_sender.send(WorkerToMainMessage::Error(format!(
                 "Worker realm init failed: {}",
                 e.message
@@ -668,6 +700,16 @@ fn worker_entry(
         }
     }
 
+    // Store the main_sender in TLS BEFORE the eval: the initial script run
+    // is a legal postMessage window (node workers deliver messages posted
+    // during top-level evaluation), and __baoPostToMain reads this TLS —
+    // installed after the eval, every during-eval postMessage hit the
+    // None arm and was silently dropped (probe: marker file written by the
+    // script but the main thread never received the message).
+    WORKER_MAIN_SENDER.with(|s| {
+        *s.borrow_mut() = Some(main_sender);
+    });
+
     let eval_result = bao_engine::module_loader::ModuleLoader::eval_module_in_realm(
         &mut cx,
         &bootstrap,
@@ -677,21 +719,22 @@ fn worker_entry(
     );
 
     if let Err(e) = eval_result {
+
         let msg = format!(
             "Worker script error: {} ({}:{})",
             e.message, e.filename, e.line
         );
-        let _ = main_sender.send(WorkerToMainMessage::Error(msg));
+        WORKER_MAIN_SENDER.with(|s| {
+            if let Some(tx) = s.borrow().as_ref() {
+                let _ = tx.send(WorkerToMainMessage::Error(msg));
+            }
+        });
         return;
     }
 
+
     // 8. Drain the job queue (process any microtasks from the script).
     bao_engine::job_queue::JobQueue::drain(&mut cx);
-
-    // 9. Store the main_sender in TLS for __baoPostToMain to access.
-    WORKER_MAIN_SENDER.with(|s| {
-        *s.borrow_mut() = Some(main_sender);
-    });
 
     // 10. Message receive loop: wait for messages from main thread.
     loop {
@@ -743,6 +786,18 @@ unsafe fn worker_global_setup(
         global_val.handle().into(),
         (JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT) as u32,
     );
+
+    // Full Node face (node worker default is CJS + the whole builtin set):
+    // the worker global was born with only __baoPostToMain/self, so
+    // require(...) died at "require is not defined" and — after adding the
+    // bare require fn — at "Cannot find module 'fs'" (the builtin module
+    // registrations live in globals::install_node_apis, which the worker
+    // realm never ran). The Linux suite only ever exercised bare
+    // `self.onmessage` workers, which is why the gap was invisible there.
+    // install_node_apis is exactly what the main CLI realm gets (globals.rs
+    // install_all path) minus the web-API half — workers get console,
+    // process, Buffer, require, and every node builtin registration.
+    crate::globals::install_node_apis(cx, global);
 }
 
 /// Native function: __baoPostToMain(data) — called from worker JS to post a
@@ -1002,6 +1057,34 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
         args.rval().set(UndefinedValue());
         return true;
     }
+    // Link the constructor's prototype: the plain object's default proto is
+    // Object.prototype, so the EventEmitter face mounted on Worker.prototype
+    // (on/once/off/addListener/removeListener/emit) was unreachable from
+    // instances — `typeof w.on === 'undefined'` while postMessage (an own
+    // property) worked. Read `prototype` off the RUNNING CONSTRUCTOR
+    // (args.callee) and set it as this instance's prototype — subclassing
+    // (`class MyWorker extends Worker`) keeps working because JS_SetPrototype
+    // here only fills the default-construction path.
+    {
+        let callee: *mut JSObject = args.callee();
+        if !callee.is_null() {
+            ::mozjs::rooted!(&in(cx_ref) let callee_obj = callee);
+            let mut proto_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                callee_obj.handle().into(),
+                c"prototype".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut proto_val,
+                },
+            );
+            if proto_val.is_object() {
+                ::mozjs::rooted!(&in(cx_ref) let proto_obj = proto_val.to_object());
+                let _ = JS_SetPrototype(cx, worker_obj.handle().into(), proto_obj.handle().into());
+            }
+        }
+    }
 
     // Store threadId as a private property so host fns can read it.
     rooted!(&in(cx_ref) let tid_val = Int32Value(thread_id as i32));
@@ -1058,6 +1141,21 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
         c"threadId".as_ptr(),
         tid_enum.handle().into(),
         (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
+    );
+
+    // Root the Worker instance for the main-side event pump (worker_events
+    // pump below): the pump drains worker→main messages on the drain pass and
+    // emits 'message'/'error'/'exit' ON this object, so it must stay reachable
+    // even when user JS drops its reference mid-flight (Node keeps workers in
+    // its internal worker registry the same way). Same-thread only — the
+    // pump runs on the creating thread's JSContext; cross-thread traffic is
+    // serialized bytes on the mpsc channels, never JSObject pointers.
+
+    crate::gc_store::gc_store_insert_ns(
+        cx,
+        "worker-threads",
+        &format!("w{}", thread_id),
+        worker_obj.get(),
     );
 
     args.rval().set(ObjectValue(worker_obj.get()));
@@ -1202,6 +1300,15 @@ unsafe extern "C" fn worker_terminate(cx: *mut JSContext, _argc: u32, vp: *mut J
         }
     }
 
+    // Node semantics: terminate() is observed as an exit — 'exit' fires with
+    // code 1 (Node's terminate exit code; signal stays null). The event pump
+    // never sees this worker again (registry entry removed above), so the
+    // emission must happen here, synchronously after the join.
+    let this_obj = this_val.to_object();
+    emit_worker_event(cx, this_obj, "exit", &[Int32Value(1)]);
+    // The instance is dead: release the pump's root so the object can GC.
+    crate::gc_store::gc_store_remove_ns(cx, "worker-threads", &format!("w{}", thread_id));
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -1345,6 +1452,64 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     c"unref".as_ptr(),
                     Some(worker_noop),
                     0,
+                    JSPROP_ENUMERATE as u32,
+                );
+
+                // EventEmitter face (Node: worker_threads.Worker extends
+                // EventEmitter — on/once/off/addListener/removeListener/emit,
+                // with 'message'/'error'/'exit' as the live event set). The
+                // natives are node_events' own ee_* machine: listener state
+                // lives in the hidden \x00__ee_state prop of the INSTANCE the
+                // methods are invoked on, so prototype-mounting covers every
+                // Worker instance without per-construction wiring. The
+                // message/error/exit dispatch itself rides the main-side pump
+                // (worker_pump_native below).
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"on".as_ptr(),
+                    Some(crate::node_events::ee_on),
+                    2,
+                    JSPROP_ENUMERATE as u32,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"once".as_ptr(),
+                    Some(crate::node_events::ee_once),
+                    2,
+                    JSPROP_ENUMERATE as u32,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"off".as_ptr(),
+                    Some(crate::node_events::ee_off),
+                    2,
+                    JSPROP_ENUMERATE as u32,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"addListener".as_ptr(),
+                    Some(crate::node_events::ee_on),
+                    2,
+                    JSPROP_ENUMERATE as u32,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"removeListener".as_ptr(),
+                    Some(crate::node_events::ee_off),
+                    2,
+                    JSPROP_ENUMERATE as u32,
+                );
+                w2::JS_DefineFunction(
+                    cx,
+                    proto.handle(),
+                    c"emit".as_ptr(),
+                    Some(crate::node_events::ee_emit),
+                    1,
                     JSPROP_ENUMERATE as u32,
                 );
 
@@ -1809,4 +1974,240 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     cache_builtin(cx, "worker_threads", exports.get());
+
+    // ─── Main-side worker event pump ───────────────────────────────────────
+    //
+    // The worker→main channel (WorkerHandle.main_rx) is consumed by
+    // worker_try_recv; the pass that CALLS it is this native fn, registered
+    // into node_cluster's pump registry — the same drain_and_check-driven
+    // pass that already drives cluster IPC polling at a 10ms cadence. No JS
+    // timer and no timers.rs wiring: the pump pass exists, we join it.
+    // pins=false: worker events never contribute loop liveness (Node keeps
+    // the loop alive through the worker's live THREAD, which is process-level
+    // liveness this runtime does not model — matching the previous
+    // worker_try_recv-only behavior where nothing pinned either).
+    unsafe {
+        let raw_cx = cx.raw_cx();
+        let pump_fn = JS_NewFunction(
+            raw_cx,
+            Some(worker_pump_native),
+            0,
+            0,
+            c"__baoWorkerPump".as_ptr(),
+        );
+        if !pump_fn.is_null() {
+            let pump_obj = JS_GetFunctionObject(pump_fn);
+            if !pump_obj.is_null() {
+                let key = format!("wt-main-pump-{}", PUMP_SEQ.fetch_add(1, Ordering::Relaxed));
+                crate::node_cluster::register_pump_fn(raw_cx, &key, pump_obj, false);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main-side event pump (worker → main 'message' / 'error' / 'exit')
+// ---------------------------------------------------------------------------
+
+/// Emit one event on a Worker instance through its own `emit` method (the
+/// prototype-mounted ee_emit — same machine JS listeners registered through).
+/// A throwing listener is contained here (pending exception cleared): one bad
+/// handler must not kill the shared pump pass, mirroring cluster's
+/// try/catch-per-listener dispatch.
+unsafe fn emit_worker_event(cx: *mut JSContext, target: *mut JSObject, event: &str, args: &[JSVal]) {
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx = &mut wrapped_cx;
+    let c_event = CString::new(event).unwrap_or_default();
+    unsafe {
+        rooted!(&in(cx) let target_r = target);
+        // The pump pass fires from the timer drain where cx->realm_ may be
+        // NULL (outside any realm — the run_one_bao_job / call_cluster_pump
+        // class): enter the target's realm for the call.
+        let mut realm = AutoRealm::new_from_handle(cx, target_r.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        let raw_cx = realm_cx.raw_cx();
+        // ee_* contract: argv[0] is the EVENT NAME, payload follows. The
+        // first version passed only the payload — ee_emit read the event
+        // name from the data value and found no such listener.
+        let event_js = JS_NewStringCopyZ(raw_cx, c_event.as_ptr());
+        if event_js.is_null() {
+            return;
+        }
+        let mut argv: Vec<JSVal> = Vec::with_capacity(args.len() + 1);
+        argv.push(StringValue(&*event_js));
+        argv.extend_from_slice(args);
+        // The argv vec outlives the call on this stack frame; JSVals inside
+        // are already rooted values (event_js lives via its own reference
+        // kept below, payload JSVals come from rooted callers).
+        let call_args = HandleValueArray {
+            length_: argv.len(),
+            elements_: argv.as_ptr(),
+        };
+        let mut rval = UndefinedValue();
+        let ok = JS_CallFunctionName(
+            raw_cx,
+            target_r.handle().into(),
+            c"emit".as_ptr(),
+            &call_args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        );
+        // event_js must outlive the call — keep it referenced until here.
+        ::std::hint::black_box(&*event_js);
+        if !ok {
+            // A throwing listener must not kill the shared pump pass
+            // (try/catch-per-listener semantics, same as cluster dispatch).
+            JS_ClearPendingException(raw_cx);
+        }
+    }
+}
+
+/// Build a real `Error` object (Node's worker 'error' payloads are Errors)
+/// via the current global's Error constructor. `None` when the realm has no
+/// Error constructor — the caller then skips the event rather than dispatch a
+/// degraded payload.
+unsafe fn make_worker_error(cx: *mut JSContext, msg: &str) -> Option<JSVal> {
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx = &mut wrapped_cx;
+    let raw_cx = unsafe { cx.raw_cx() };
+    unsafe {
+        let global = CurrentGlobalOrNull(raw_cx);
+        if global.is_null() {
+            return None;
+        }
+        rooted!(&in(cx) let global_r = global);
+        let mut ctor = UndefinedValue();
+        JS_GetProperty(
+            raw_cx,
+            global_r.handle().into(),
+            c"Error".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ctor,
+            },
+        );
+        if !ctor.is_object() {
+            return None;
+        }
+        let c_msg = CString::new(msg.replace('\0', " ")).unwrap_or_default();
+        let msg_str = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+        if msg_str.is_null() {
+            return None;
+        }
+        // Root the value (not the raw string): the traced JSVal keeps the
+        // string alive through the constructor call below.
+        rooted!(&in(cx) let msg_val = StringValue(&*msg_str));
+        let arg_elems = [msg_val.get()];
+        let args = HandleValueArray {
+            length_: 1,
+            elements_: arg_elems.as_ptr(),
+        };
+        rooted!(&in(cx) let ctor_val = ObjectValue(ctor.to_object()));
+        let mut rval = UndefinedValue();
+        if !JS_CallFunctionValue(
+            raw_cx,
+            global_r.handle().into(),
+            ctor_val.handle().into(),
+            &args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        ) {
+            JS_ClearPendingException(raw_cx);
+            return None;
+        }
+        Some(rval)
+    }
+}
+
+/// The pump pass body: drain one worker's inbox and observe its thread exit.
+/// Runs on the main JS thread only (called through the cluster pump pass). A
+/// finished worker's inbox is drained COMPLETELY before its 'exit' fires —
+/// dropping the receiver with queued bytes would silently lose messages (the
+/// silent-fake class).
+unsafe fn pump_one_worker(cx: *mut JSContext, thread_id: u32) {
+    unsafe {
+        // Finished BEFORE draining: a finished worker must still deliver
+        // everything queued, then exit. (The registry guard is dropped before
+        // worker_try_recv re-enters it — DashMap forbids overlapping
+        // get/get_mut on one shard.)
+        let finished = worker_registry()
+            .get(&thread_id)
+            .map(|h| h.thread.as_ref().is_some_and(|j| j.is_finished()))
+            .unwrap_or(false);
+
+
+        let worker_obj =
+            crate::gc_store::gc_store_get_ns(cx, "worker-threads", &format!("w{}", thread_id));
+
+        let mut saw_error = false;
+        // Per-pass drain bound. Two structural reasons this cannot be an
+        // unbounded "until Empty" loop: (a) worker_try_recv's
+        // realm-not-initialized arm reports an error WITHOUT consuming a
+        // message — unbounded would spin forever on it; (b) a listener can
+        // postMessage back, feeding the inbox it is draining from. Leftover
+        // messages are picked up on the next 10ms pass — the receiver is not
+        // dropped, so nothing is lost.
+        const PUMP_DRAIN_BUDGET: usize = 128;
+        for _ in 0..PUMP_DRAIN_BUDGET {
+            let mut wrapped_cx =
+                mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let mut rval = UndefinedValue());
+            let inc = worker_try_recv(&mut wrapped_cx, thread_id, rval.handle_mut());
+
+            match inc {
+                WorkerIncoming::Data => {
+
+                    if let Some(obj) = worker_obj {
+                        let data = rval.get();
+                        emit_worker_event(cx, obj, "message", &[data]);
+
+                    }
+                }
+                WorkerIncoming::Error(msg) => {
+                    saw_error = true;
+                    if let Some(obj) = worker_obj {
+                        if let Some(err) = make_worker_error(cx, &msg) {
+                            emit_worker_event(cx, obj, "error", &[err]);
+                        }
+                    }
+                }
+                WorkerIncoming::Empty => break,
+            }
+        }
+
+        if finished {
+            // Node: a worker whose thread ended fires 'exit' with its exit
+            // code — 1 when an error was reported (uncaught-error death), 0
+            // otherwise. Drop the registry entry first so senders/terminate
+            // see a dead worker, then dispatch, then release the pump root
+            // (the handle drops with the entry: sender + finished JoinHandle).
+            let _ = worker_registry().remove(&thread_id);
+            if let Some(obj) = worker_obj {
+                let code = if saw_error { 1 } else { 0 };
+                emit_worker_event(cx, obj, "exit", &[Int32Value(code)]);
+            }
+            crate::gc_store::gc_store_remove_ns(cx, "worker-threads", &format!("w{}", thread_id));
+        }
+    }
+}
+
+/// Native pump body registered into node_cluster's pump pass. Never pins the
+/// loop (pins=false at registration).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn worker_pump_native(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    // Snapshot the ids first — no DashMap guard may be held across JS calls
+    // (a listener can spawn/terminate workers re-entering the registry).
+    let tids: Vec<u32> = worker_registry().iter().map(|e| *e.key()).collect();
+    for thread_id in tids {
+        pump_one_worker(cx, thread_id);
+    }
+    args.rval().set(BooleanValue(false));
+    true
 }

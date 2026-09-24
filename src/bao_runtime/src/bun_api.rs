@@ -1322,11 +1322,11 @@ unsafe fn populate_process_object(
         );
     }
     {
-        // windows: no portable parent-pid query — 0 = none (node parity for
-        // orphaned processes); residual: TOOLHELP snapshot if a real ppid is
-        // ever product-required.
+        // windows: the real parent pid via a Toolhelp32 process snapshot
+        // (walk PROCESSENTRY32W for our own pid; node does the same). 0
+        // only when the snapshot is unavailable — never a silent constant.
         #[cfg(windows)]
-        let ppid: i32 = 0;
+        let ppid: i32 = windows_parent_pid();
         #[cfg(not(windows))]
         let ppid = libc::getppid();
         let ppid_val = Int32Value(ppid as i32);
@@ -5346,6 +5346,46 @@ unsafe extern "C" fn bun_sleep(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+/// Windows (WINRED-D3): attach the drive a rooted or drive-qualified path
+/// resolves against (node path.win32.resolve semantics — the current drive,
+/// taken from `orig`'s own prefix when present, else the process cwd's).
+/// `normalize_path` output is '/'-rooted with any drive prefix dropped, so
+/// the re-attachment happens here, keeping the forward-slash shape.
+#[cfg(windows)]
+fn qualify_windows_drive(lex: ::std::path::PathBuf, orig: &::std::path::Path) -> ::std::path::PathBuf {
+    let orig_s = orig.to_string_lossy().into_owned();
+    let b = orig_s.as_bytes();
+    let drive_prefixed = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    let rooted = b.first() == Some(&b'/') || b.first() == Some(&b'\\');
+    if !drive_prefixed && !rooted {
+        // Relative origin — nothing to anchor to a drive.
+        return lex;
+    }
+    let drive = if drive_prefixed {
+        orig_s[..2].to_string()
+    } else {
+        match ::std::env::current_dir() {
+            Ok(cwd) => {
+                let c = cwd.to_string_lossy().into_owned();
+                let cb = c.as_bytes();
+                if cb.len() >= 2 && cb[0].is_ascii_alphabetic() && cb[1] == b':' {
+                    c[..2].to_string()
+                } else {
+                    // No drive-qualified cwd available — keep the rooted form.
+                    return lex;
+                }
+            }
+            Err(_) => return lex,
+        }
+    };
+    let mut s = lex.to_string_lossy().into_owned();
+    while s.starts_with('/') || s.starts_with('\\') {
+        s.remove(0);
+    }
+    ::std::path::PathBuf::from(format!("{}/{}", drive, s))
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
@@ -5370,9 +5410,36 @@ unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     let spec_path = ::std::path::Path::new(&specifier);
-    let resolved = if spec_path.is_absolute() {
+    // Windows (WINRED-D3): node's win32 rule counts a rooted-but-drive-less
+    // path ('/etc') — and any drive-prefixed path ('C:foo', 'C:/etc') — as
+    // absolute; std's Path::is_absolute demands a drive prefix and answered
+    // false, so '/etc' fell into the node_modules arm and threw
+    // "Cannot resolve". Mirrors the path.isAbsolute platform fix (node_path).
+    let specifier_is_absolute = {
+        let b = specifier.as_bytes();
+        #[cfg(windows)]
+        {
+            let rooted = b.first() == Some(&b'/') || b.first() == Some(&b'\\');
+            let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+            rooted || drive
+        }
+        #[cfg(not(windows))]
+        {
+            b.first() == Some(&b'/')
+        }
+    };
+    #[cfg(windows)]
+    let dot_rel = |spec: &str| {
+        spec.starts_with("./")
+            || spec.starts_with("../")
+            || spec.starts_with(".\\")
+            || spec.starts_with("..\\")
+    };
+    #[cfg(not(windows))]
+    let dot_rel = |spec: &str| spec.starts_with("./") || spec.starts_with("../");
+    let resolved = if specifier_is_absolute {
         spec_path.to_path_buf()
-    } else if specifier.starts_with("./") || specifier.starts_with("../") {
+    } else if dot_rel(&specifier) {
         let base = from.as_deref().unwrap_or(::std::path::Path::new("."));
         base.join(&specifier)
     } else {
@@ -5405,6 +5472,18 @@ unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // ('/tmp/./x.js') — upstream Bun.resolve normalizes them away
     // ('/tmp/x.js'). Reuses node_path's normalize_path (REQ-ENG-007).
     let lexical = crate::node_path::normalize_path(&resolved);
+    // Windows (WINRED-D3): node resolves a rooted or drive-qualified path
+    // against the CURRENT DRIVE (path.win32.resolve('/etc') → 'C:\etc').
+    // normalize_path is drive-blind (std's Disk prefix has no representation
+    // in its '/'-rooted output), so re-attach the drive after normalization.
+    #[cfg(windows)]
+    let lexical = {
+        let q = qualify_windows_drive(lexical, &resolved);
+        // Bun.resolve is '/'-shaped on every platform (the glob/posix face
+        // normalization this tree already applies elsewhere): the std lex
+        // path carries MAIN_SEPARATOR on win32.
+        ::std::path::PathBuf::from(q.to_string_lossy().replace('\\', "/"))
+    };
     let canonical = lexical.canonicalize().unwrap_or(lexical);
     let s = canonical.to_string_lossy().into_owned();
     let js_str = JS_NewStringCopyN(
@@ -5931,6 +6010,67 @@ unsafe extern "C" fn test_run(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+/// Real parent pid on Windows via a Toolhelp32 process snapshot
+/// (PROCESSENTRY32W, TH32CS_SNAPPROCESS). 0 only when snapshotting fails —
+/// the honest "unavailable", not a silent constant (node reports the actual
+/// parent through the same snapshot).
+#[cfg(windows)]
+fn windows_parent_pid() -> i32 {
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+    unsafe extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut core::ffi::c_void;
+        fn Process32FirstW(snapshot: *mut core::ffi::c_void, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: *mut core::ffi::c_void, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(h: *mut core::ffi::c_void) -> i32;
+    }
+    const TH32CS_SNAPPROCESS: u32 = 0x2;
+    let me = ::std::process::id();
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap.is_null() || snap as usize == ::std::usize::MAX {
+            return 0;
+        }
+        let mut e = ProcessEntry32W {
+            dw_size: ::std::mem::size_of::<ProcessEntry32W>() as u32,
+            cnt_usage: 0,
+            th32_process_id: 0,
+            th32_default_heap_id: 0,
+            th32_module_id: 0,
+            cnt_threads: 0,
+            th32_parent_process_id: 0,
+            pc_pri_class_base: 0,
+            dw_flags: 0,
+            sz_exe_file: [0; 260],
+        };
+        let mut ppid = 0i32;
+        if Process32FirstW(snap, &mut e) != 0 {
+            loop {
+                if e.th32_process_id == me {
+                    ppid = e.th32_parent_process_id as i32;
+                    break;
+                }
+                if Process32NextW(snap, &mut e) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+        ppid
+    }
+}
+
 unsafe extern "C" fn bun_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || args.get(0).ptr.is_null() {
@@ -6826,7 +6966,26 @@ unsafe extern "C" fn bun_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     }
     let fpath = crate::js_to_rust_string(cx, path_val);
     let content = crate::js_to_rust_string(cx, content_val);
-    match bun_sys::fs::write(fpath.as_str(), content.as_bytes()) {
+    // Windows (WINRED-D3): `bun_sys::fs::write` still passes raw MSVCRT
+    // `libc::O_*` values, but on Windows the open path decodes flags through
+    // `uv::O::from_bun_o`, which bit-tests the sys.zig-shaped `bun_sys::O`
+    // encoding (CREAT=0o100 there vs MSVCRT _O_CREAT=0x100) — the CREAT bit
+    // was silently dropped and every write to a not-yet-existing file failed
+    // ENOENT. Go through `bun_sys::O` directly: on unix these are the same
+    // libc values (zero behavior change), on Windows they round-trip
+    // correctly through from_bun_o.
+    let zpath = ZBox::from_bytes(fpath.as_bytes());
+    let write_result = bun_sys::File::open(
+        zpath.as_zstr(),
+        bun_sys::O::WRONLY | bun_sys::O::CREAT | bun_sys::O::TRUNC | bun_sys::O::CLOEXEC,
+        0o666 as bun_core::Mode,
+    )
+    .map_err(|e| ::std::io::Error::from_raw_os_error(e.errno as i32))
+    .and_then(|file| {
+        file.write_all(content.as_bytes())
+            .map_err(|e| ::std::io::Error::from_raw_os_error(e.errno as i32))
+    });
+    match write_result {
         Ok(()) => {
             let written = DoubleValue(content.len() as f64);
             args.rval().set(written);
@@ -7871,12 +8030,25 @@ mod plat {
             safe fn _lseek(fd: i32, offset: i64, origin: i32) -> i64;
             safe fn _read(fd: i32, buf: *mut c_void, count: u32) -> i32;
         }
+        const SEEK_SET: i32 = 0;
         const SEEK_CUR: i32 = 1;
+        // TRUE pread semantics (the old body seeked offset relative to the
+        // CURRENT cursor via SEEK_CUR and left it advanced): absolute from 0
+        // AND the fd cursor is never consumed — save, absolute-seek, read,
+        // restore. Without the restore every whole-file read after the first
+        // saw EOF and returned empty (Bun.file(fd).text() idempotency FAIL:
+        // fdText2 empty; same shape as node_fs.rs readSync's pread face).
         unsafe {
-            if _lseek(fd, offset, SEEK_CUR) < 0 {
+            let saved = _lseek(fd, 0, SEEK_CUR);
+            if saved < 0 {
                 return -1;
             }
-            _read(fd, buf, count as u32) as isize
+            if _lseek(fd, offset, SEEK_SET) < 0 {
+                return -1;
+            }
+            let n = _read(fd, buf, count as u32) as isize;
+            _lseek(fd, saved, SEEK_SET);
+            n
         }
     }
 

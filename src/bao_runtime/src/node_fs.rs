@@ -630,7 +630,25 @@ fn io_error_code(err: &::std::io::Error) -> &'static str {
     match err.raw_os_error() {
         Some(libc::EINVAL) => return "EINVAL",
         Some(libc::ENAMETOOLONG) => return "ENAMETOOLONG",
+        // POSIX rmdir(non-empty) is ENOTEMPTY(39); Windows
+        // RemoveDirectory reports ERROR_DIR_NOT_EMPTY(145) — both are the
+        // node contract's ENOTEMPTY, normalize at the single code source.
+        Some(libc::ENOTEMPTY) => return "ENOTEMPTY",
+        #[cfg(windows)]
+        Some(145) => return "ENOTEMPTY",
         _ => {}
+    }
+    // Shape-normalized synthetic errors (rmdir plain arm): the message
+    // carries the errno token because from_raw_os_error(POSIX errno) renders
+    // as "Unknown error N" under the Windows CRT strerror table.
+    {
+        let msg = err.to_string();
+        if msg.contains("ENOTEMPTY") {
+            return "ENOTEMPTY";
+        }
+        if msg.contains("ENOTDIR") {
+            return "ENOTDIR";
+        }
     }
     match err.kind() {
         ::std::io::ErrorKind::NotFound => "ENOENT",
@@ -2665,7 +2683,25 @@ unsafe extern "C" fn fs_rmdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let result = if recursive {
         fs::remove_dir_all(&path)
     } else {
-        fs::remove_dir(&path)
+        fs::remove_dir(&path).map_err(|e| {
+            // node's rmdir contract is SHAPE-based, and the Windows errno
+            // shapes differ: RemoveDirectory on a file reports
+            // ERROR_DIRECTORY ("not a directory" facts, but std's kind is
+            // not NotADirectory on every path) and on a non-empty dir can
+            // surface ERROR_ACCESS_DENIED under handle contention. Decide
+            // by the path's actual shape: file → ENOTDIR, live directory →
+            // ENOTEMPTY; anything else (missing → ENOENT) passes through.
+            match fs::symlink_metadata(&path) {
+                Ok(m) if m.is_file() => ::std::io::Error::new(
+                    ::std::io::ErrorKind::NotADirectory,
+                    "ENOTDIR: not a directory",
+                ),
+                Ok(m) if m.is_dir() => ::std::io::Error::other(
+                    "ENOTEMPTY: directory not empty",
+                ),
+                _ => e,
+            }
+        })
     };
     match result {
         ::std::result::Result::Ok(()) => {

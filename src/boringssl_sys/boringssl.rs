@@ -679,8 +679,15 @@ pub const SSL_OP_LEGACY_SERVER_CONNECT: u32 = 0;
 /// `#define RSA_PKCS1_OAEP_PADDING 4` (`openssl/rsa.h`).
 pub const RSA_PKCS1_OAEP_PADDING: c_int = 4;
 
-/// `point_conversion_form_t` — EC point serialization format.
-pub type point_conversion_form_t = u8;
+/// `point_conversion_form_t` — EC point serialization format. C ground
+/// truth (include/openssl/ec.h:29-47) is a plain C enum = `int` (4 bytes).
+/// Declared `u8` until 2026-09-25 — the THIRD width-class instance
+/// (BUG-FFI-WIN64-001 family): on Win64 the 3rd parameter rides r8 and an
+/// 8-bit register write leaves the upper 56 bits as garbage, so BoringSSL's
+/// switch on `form` never matched and EC_POINT_point2oct returned 0 (every
+/// createECDH keygen died at the size query; Linux survived on register
+/// luck). The alias is now the C enum's true width.
+pub type point_conversion_form_t = core::ffi::c_int;
 /// `POINT_CONVERSION_UNCOMPRESSED` — 0x04 prefix + full X + Y coordinates.
 pub const POINT_CONVERSION_UNCOMPRESSED: point_conversion_form_t = 4;
 

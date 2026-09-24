@@ -204,14 +204,18 @@ fn bun_resolve_relative_paths_byte_exact() {
         }
         // Relative './' against an explicit nonexistent target — the exact
         // v-surface repro (used to return '/tmp/./x.js' + 12 dirty bytes).
-        check("dot-rel", Bun.resolve("./x.js", "/tmp"), "/tmp/x.js");
+        // Windows (node win32 semantics): a rooted path resolves against the
+        // CURRENT DRIVE — path.win32.resolve('/etc') === 'C:\\etc' — so every
+        // expectation here is prefixed with the cwd's drive (posix keeps '').
+        var drv = process.platform === "win32" ? process.cwd().slice(0, 2) : "";
+        check("dot-rel", Bun.resolve("./x.js", "/tmp"), drv + "/tmp/x.js");
         // '..' is lexically resolved.
-        check("dotdot", Bun.resolve("./sub/../y.js", "/tmp/bun_rs_probe"), "/tmp/bun_rs_probe/y.js");
-        // Absolute passthrough.
-        check("abs", Bun.resolve("/etc"), "/etc");
+        check("dotdot", Bun.resolve("./sub/../y.js", "/tmp/bun_rs_probe"), drv + "/tmp/bun_rs_probe/y.js");
+        // Absolute passthrough (win: current drive + '/etc', no throw).
+        check("abs", Bun.resolve("/etc"), drv + "/etc");
         // Deep nesting.
         check("deep", Bun.resolve("./a/./b/../c.js", "/tmp/bun_rs_probe"),
-              "/tmp/bun_rs_probe/a/c.js");
+              drv + "/tmp/bun_rs_probe/a/c.js");
         results.join(";")
     "#,
     );

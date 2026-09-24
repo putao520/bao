@@ -105,6 +105,28 @@ unsafe extern "C" fn cluster_pump_register(
     true
 }
 
+/// Register an already-created JS pump function into the shared pump pass
+/// (cross-module registration face). node_worker_threads' main-side event
+/// pump joins the SAME drain_and_check-driven pass this way — no timers.rs
+/// wiring and no JS-timer chain (see the module-level BCE note: JS timers in
+/// this slot are the loop-pinning hang class this registry exists to avoid).
+/// `pins` semantics identical to `__cluster_pump_register`.
+pub(crate) fn register_pump_fn(
+    cx: *mut JSContext,
+    key: &str,
+    fn_obj: *mut JSObject,
+    pins: bool,
+) {
+    crate::gc_store::gc_store_insert_ns(cx, "cluster-pump", key, fn_obj);
+    CLUSTER_PUMPS.with(|p| {
+        p.borrow_mut().push(ClusterPumpEntry {
+            key: key.to_string(),
+            pins,
+            last_alive: pins,
+        });
+    });
+}
+
 /// Drive every registered cluster pump function on the JS thread. Called from
 /// `timers::drain_and_check` / `drain_one_pass`. Pump entries persist for the
 /// realm's lifetime (a primary pump that goes idle must still be present for
@@ -233,7 +255,7 @@ fn is_worker_env(worker_id: Option<&str>) -> bool {
 static EXEC_TIME_WORKER_ID: ::std::sync::OnceLock<Option<String>> = ::std::sync::OnceLock::new();
 
 /// Snapshot `BAO_CLUSTER_WORKER_ID` from the exec-time environment (pre-main).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 extern "C" fn snapshot_exec_worker_id() {
     let _ = EXEC_TIME_WORKER_ID.set(::std::env::var("BAO_CLUSTER_WORKER_ID").ok());
 }
@@ -246,12 +268,23 @@ extern "C" fn snapshot_exec_worker_id() {
 #[unsafe(link_section = ".init_array")]
 static CAPTURE_EXEC_WORKER_ID: extern "C" fn() = snapshot_exec_worker_id;
 
+/// Windows twin of the `.init_array` birth snapshot: `.CRT$XCU` is the MSVC
+/// CRT initializer section — the CRT walks it before `main` (the same
+/// semantic slot: user initializers land here ahead of any realm, JS engine
+/// or env bridge). The stored value is the function POINTER the CRT table
+/// calls. `#[used]` keeps the static alive through LLVM and the COFF link
+/// (rustc emits the /INCLUDE keep-alive for used statics on windows-msvc).
+#[cfg(target_os = "windows")]
+#[used]
+#[unsafe(link_section = ".CRT$XCU")]
+static CAPTURE_EXEC_WORKER_ID: extern "C" fn() = snapshot_exec_worker_id;
+
 /// Check if this process is a cluster worker (started with --cluster-worker env).
 fn is_cluster_worker() -> bool {
-    // Process-birth snapshot (Linux ctor). The direct std::env read is only
-    // a non-Linux fallback where no pre-main hook exists — identical value
-    // in a fresh process; the lazy-realm race class only exists in
-    // long-lived multi-realm hosts, which are Linux (PagePool/browser).
+    // Process-birth snapshot (Linux .init_array ctor / Windows .CRT$XCU
+    // ctor). The direct std::env read is only a fallback for platforms with
+    // no pre-main hook — identical value in a fresh process; the lazy-realm
+    // race class only exists in long-lived multi-realm hosts.
     let raw = EXEC_TIME_WORKER_ID
         .get()
         .cloned()
@@ -459,6 +492,23 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             c"SCHED_RR".as_ptr(),
             sched_rr.handle().into(),
             JSPROP_ENUMERATE as u32,
+        );
+
+        // __noSignals — kill-face platform fact for the JS shim: windows has
+        // no signal delivery, so __cluster_worker_kill carries a directed
+        // signal as TerminateProcess (observed by the exit poll as a plain
+        // exit code, never as a signal). The shim reconstructs Node's
+        // SIGTERM-shaped (code -1, signal) exit event ONLY for deaths this
+        // runtime's own kill caused — gated on this flag so the posix path
+        // (real WIFSIGNALED shapes from __cp_poll_exit) stays byte-identical.
+        let no_signals = cfg!(windows);
+        rooted!(&in(cx) let no_signals_val = BooleanValue(no_signals));
+        let _ = JS_DefineProperty(
+            raw_cx,
+            obj.handle().into(),
+            c"__noSignals".as_ptr(),
+            no_signals_val.handle().into(),
+            0,
         );
 
         // Worker-boot + kill natives (see cluster_worker_boot / _kill docs).
@@ -1550,12 +1600,20 @@ unsafe extern "C" fn cluster_worker_kill(_cx: *mut JSContext, argc: u32, vp: *mu
     // SAFETY: pid comes from the worker registry (numeric); the returned
     // handle is closed immediately after the terminate attempt.
     let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
-    let ok = !handle.is_null();
-    if ok {
-        unsafe { TerminateProcess(handle, 1) };
+    // The termination code is fixed at 1 (Node-on-windows reports the raw
+    // TerminateProcess code as exitCode with no signal; cp_signal_pid in
+    // node_child_process uses the same convention). ok must reflect the REAL
+    // terminate result, not just OpenProcess success — a kill that silently
+    // no-ops is the "kill never killed" class, and worker.kill() surfaces a
+    // false return once per pid.
+    let ok = if handle.is_null() {
+        false
+    } else {
+        let terminated = unsafe { TerminateProcess(handle, 1) } != 0;
         // SAFETY: handle was just opened by our OpenProcess — sole owner.
         unsafe { CloseHandle(handle) };
-    }
+        terminated
+    };
     args.rval().set(BooleanValue(ok));
     true
 }
@@ -1741,6 +1799,12 @@ const CLUSTER_JS: &str = r#"
     // cluster_pump_all from the drain hook; its boolean return is the ONLY
     // loop-liveness contribution (true while any worker is registered).
     var __pumpErrOnce = {};
+    // pid → last signal directed at it by worker.kill(). Windows only: the
+    // kill native has no signal delivery (TerminateProcess), so the exit poll
+    // observes a directed-kill death as a plain exit code — this record is
+    // how the death is reconstructed as Node's (code -1, signal) shape, and
+    // ONLY for deaths our own kill caused (a self-exit must stay a self-exit).
+    var __directedKill = {};
     function pollWorkers() {
       var ids = Object.keys(cluster.workers);
       for (var i = 0; i < ids.length; i++) {
@@ -1764,7 +1828,22 @@ const CLUSTER_JS: &str = r#"
           }
           try {
             var ex = cp.__cp_poll_exit(w._pid);
-            if (ex) handleExit(w, ex[0], ex[1]);
+            if (ex) {
+              // Windows kill-face semantics: __cluster_worker_kill terminates
+              // the process — the poll reports (terminationCode, 0). The
+              // native's fixed termination code is 1; the fingerprint check
+              // also accepts the directed signal number itself so a
+              // sig-passthrough termination code maps identically. Any other
+              // shape passes through untouched (the worker self-exited —
+              // reporting it as signal death would lie about the kill).
+              var directed = cluster.__noSignals ? __directedKill[w._pid] : 0;
+              if (directed && ex[1] === 0 && (ex[0] === 1 || ex[0] === directed)) {
+                delete __directedKill[w._pid];
+                handleExit(w, -1, directed);
+              } else {
+                handleExit(w, ex[0], ex[1]);
+              }
+            }
           } catch (e) {
             if (!__pumpErrOnce['exit' + w._pid]) {
               __pumpErrOnce['exit' + w._pid] = 1;
@@ -1818,8 +1897,19 @@ const CLUSTER_JS: &str = r#"
         // cluster.workers, and the primary's loop-liveness leak spun forever.
         worker.kill = function(signal) {
           var sig = typeof signal === 'number' ? signal : (SIG[String(signal).toUpperCase()] || 15);
+          var killOk = false;
           if (cluster.__cluster_worker_kill) {
-            try { cluster.__cluster_worker_kill(worker._pid, sig); } catch (e) {}
+            try { killOk = !!cluster.__cluster_worker_kill(worker._pid, sig); } catch (e) {}
+          }
+          // Windows: record the directed signal so the exit poll can
+          // reconstruct (code -1, signal) for the TerminateProcess death our
+          // kill caused (see pollWorkers).
+          if (cluster.__noSignals) __directedKill[worker._pid] = sig;
+          // No silent swallowing (once per pid): a failed kill would
+          // otherwise look identical to a wedged worker that ignores signals.
+          if (!killOk && !__pumpErrOnce['kill' + worker._pid]) {
+            __pumpErrOnce['kill' + worker._pid] = 1;
+            try { console.error('cluster worker.kill failed for pid', worker._pid); } catch (e2) {}
           }
           if (sig === 9) return;
           // Grace escalation: SIGTERM is deliverable now (worker boot resets
@@ -1829,7 +1919,13 @@ const CLUSTER_JS: &str = r#"
           var pid = worker._pid;
           setTimeout(function () {
             if (!worker.isDead && cluster.__cluster_worker_kill) {
-              try { cluster.__cluster_worker_kill(pid, 9); } catch (e) {}
+              var escOk = false;
+              try { escOk = !!cluster.__cluster_worker_kill(pid, 9); } catch (e) {}
+              if (cluster.__noSignals) __directedKill[pid] = 9;
+              if (!escOk && !__pumpErrOnce['kill' + pid]) {
+                __pumpErrOnce['kill' + pid] = 1;
+                try { console.error('cluster worker.kill escalation failed for pid', pid); } catch (e2) {}
+              }
             }
           }, 1000);
         };

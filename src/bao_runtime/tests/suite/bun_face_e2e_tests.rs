@@ -202,7 +202,14 @@ fn test_bun_face_completion() {
     assert!(
         eval_bool(
             &mut ctx,
-            r#"var tr = Bun.spawnSync(["/bin/sh", "-c", "cat; echo err >&2"], { stdin: "in-data", encoding: "utf8" }); tr.stdout.trim() === "in-data" && tr.stderr.trim() === "err""#
+            // Cross-platform stdin-injection + stderr-capture probe: /bin/sh
+            // `cat` on unix, cmd.exe `more` on windows (node shells the
+            // command out per platform; `echo err >&2` is valid in both).
+            r#"var isWin = process.platform === "win32";
+               var shExe = isWin ? "cmd.exe" : "/bin/sh";
+               var shArgs = isWin ? ["/C", "more & echo err >&2"] : ["-c", "cat; echo err >&2"];
+               var tr = Bun.spawnSync([shExe].concat(shArgs), { stdin: "in-data", encoding: "utf8" });
+               tr.stdout.trim() === "in-data" && tr.stderr.trim() === "err""#
         ),
         "spawnSync stdin string + stderr capture"
     );

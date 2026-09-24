@@ -37,6 +37,15 @@ fn write(dir: &std::path::Path, name: &str, contents: &str) -> String {
     p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Escape an OS path for embedding in a JS string literal (same contract as
+/// [`write`]: backslash doubled on Windows, quotes escaped). The outdir path
+/// flows through a JS single-quoted string — an unescaped `C:\Users\...` had
+/// every `\U`/`\A`/`\T` escape eaten, so the bundler received a mangled dir
+/// and the disk-bytes scenario pointed at a directory nothing was written to.
+fn js_path(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     match ctx.eval(source, "<test>") {
         Ok(JsValue::String(s)) => s,
@@ -328,7 +337,7 @@ fn test_bun_build_e2e_all_body() {
         &format!(
             r#"{{ entrypoints: ['{}'], outdir: '{}' }}"#,
             entry,
-            outdir.to_string_lossy()
+            js_path(&outdir)
         ),
     );
     assert!(settled(&mut ctx));
