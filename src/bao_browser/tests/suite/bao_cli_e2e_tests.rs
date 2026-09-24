@@ -31,39 +31,57 @@ const BAO_BIN: &str = "target/debug/bao";
 // ─── 辅助 — 定位 bao 二进制 ──────────────────────────────────────────────────
 
 fn bao_path() -> Option<PathBuf> {
-    // 1. 显式覆盖:CI / 分布式 buildlet 直接指向它产出的二进制
     if let Ok(override_path) = std::env::var("BAO_BIN") {
         let candidate = PathBuf::from(override_path);
         if candidate.is_file() {
             return Some(candidate);
         }
     }
-    // 2. CARGO_TARGET_DIR:build-dir 可能不在 workspace 内(如 /var/cargo-builds),
-    //    按 cargo build 的标准布局解析 <target>/debug/bao
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        let candidate = PathBuf::from(target_dir).join("debug").join("bao");
+    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
+        let candidate = PathBuf::from(p);
         if candidate.is_file() {
             return Some(candidate);
         }
     }
-    // 3. 测试 cwd 通常是 crate 根目录(bao_browser/),向上一级到 workspace 根
+    // Profile-agnostic probe (BCE sweep with the bao_runtime finders): this
+    // suite exe sits at $TARGET/<profile>/deps/ — the bao binary sits at
+    // $TARGET/<profile>/bao for EVERY cargo profile, so derive the sibling
+    // instead of hardcoding "debug" (test-ci runs never find a debug build).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
+            for name in ["bao", "bao.exe"] {
+                let candidate = profile_dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        for profile in ["test-ci", "debug", "release"] {
+            for name in ["bao", "bao.exe"] {
+                let candidate = PathBuf::from(&target_dir).join(profile).join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
     let mut here = std::env::current_dir().ok()?;
     for _ in 0..5 {
-        let candidate = here.join(BAO_BIN);
-        if candidate.is_file() {
-            return Some(candidate);
+        for profile in ["test-ci", "debug", "release"] {
+            for name in ["bao", "bao.exe"] {
+                let candidate = here.join("target").join(profile).join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
         }
         if !here.pop() {
             break;
         }
     }
-    // 兜底:直接信相对路径
-    let direct = PathBuf::from(BAO_BIN);
-    if direct.is_file() {
-        Some(direct)
-    } else {
-        None
-    }
+    None
 }
 
 fn run_bao(args: &[&str], stdin: Option<&str>) -> std::io::Result<std::process::Output> {

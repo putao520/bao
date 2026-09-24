@@ -112,6 +112,20 @@ fn find_bao_binary() -> std::path::PathBuf {
             return p;
         }
     }
+    // Profile-agnostic probe (BCE sweep with bao_cli_*_e2e): this suite exe
+    // sits at $TARGET/<profile>/deps/ — the bao binary sits at
+    // $TARGET/<profile>/bao for EVERY cargo profile (debug/release/test-ci/
+    // test-ci-dbg), so derive the sibling instead of guessing the profile.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
+            for name in ["bao", "bao.exe"] {
+                let candidate = profile_dir.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
     // Injected-target builds (CARGO_TARGET_DIR env, the farm/CI shape):
     // the workspace target dir is NOT under the manifest — probe the env
     // target first or every binary-seeking test fails with a false "not

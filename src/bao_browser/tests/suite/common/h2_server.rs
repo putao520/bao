@@ -66,7 +66,16 @@ struct ServerTlsIo {
 }
 
 impl ServerTlsIo {
-    fn handshake(tcp: &mut TcpStream, tls: &mut bao_boringssl_bridge::TlsConnection) -> std::io::Result<()> {
+    /// Returns the plaintext that piggybacked on the handshake-completing
+    /// record (the bao client coalesces its TLS Finished with the first h2
+    /// flight into one segment — `openssl.c` holds the flight for exactly
+    /// this). Dropping it left the server waiting forever for bytes SSL had
+    /// already consumed (the h2_fetch_node_stack hangs); same fix shape as
+    /// bun_http's fixture (`src/http/tests/common/mod.rs`).
+    fn handshake(
+        tcp: &mut TcpStream,
+        tls: &mut bao_boringssl_bridge::TlsConnection,
+    ) -> std::io::Result<Vec<u8>> {
         loop {
             let res = tls.process().map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
@@ -81,7 +90,11 @@ impl ServerTlsIo {
             if res.state == bao_boringssl_bridge::TlsState::Active ||
                 res.state == bao_boringssl_bridge::TlsState::PeerClosed
             {
-                return Ok(());
+                let mut piggybacked = Vec::new();
+                for chunk in res.plaintext {
+                    piggybacked.extend_from_slice(&chunk);
+                }
+                return Ok(piggybacked);
             }
             let mut buf = [0u8; 16_384];
             match tcp.read(&mut buf) {
@@ -304,9 +317,10 @@ impl H2Server {
                             let Ok(mut tls) = server.accept() else {
                                 continue;
                             };
-                            if ServerTlsIo::handshake(&mut tcp, &mut tls).is_err() {
+                            let Ok(piggybacked) = ServerTlsIo::handshake(&mut tcp, &mut tls)
+                            else {
                                 continue;
-                            }
+                            };
                             if tls.alpn_protocol() != Some(&b"h2"[..]) {
                                 non_h2_c.fetch_add(1, Ordering::SeqCst);
                                 continue;
@@ -322,7 +336,7 @@ impl H2Server {
                                 let mut io = ServerTlsIo {
                                     tcp,
                                     tls,
-                                    pending_plain: Vec::new(),
+                                    pending_plain: piggybacked,
                                     pending_off: 0,
                                 };
                                 serve_h2_connection(&mut io, &streams, &requests, &settings);

@@ -55,17 +55,45 @@ fn bao_path() -> Option<PathBuf> {
             return Some(candidate);
         }
     }
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        let candidate = PathBuf::from(target_dir).join("debug").join("bao");
+    if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
+        let candidate = PathBuf::from(p);
         if candidate.is_file() {
             return Some(candidate);
         }
     }
+    // Profile-agnostic probe (BCE sweep with the bao_runtime finders): this
+    // suite exe sits at $TARGET/<profile>/deps/ — the bao binary sits at
+    // $TARGET/<profile>/bao for EVERY cargo profile, so derive the sibling
+    // instead of hardcoding "debug" (test-ci runs never find a debug build).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
+            for name in ["bao", "bao.exe"] {
+                let candidate = profile_dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        for profile in ["test-ci", "debug", "release"] {
+            for name in ["bao", "bao.exe"] {
+                let candidate = PathBuf::from(&target_dir).join(profile).join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
     let mut here = std::env::current_dir().ok()?;
     for _ in 0..5 {
-        let candidate = here.join("target/debug/bao");
-        if candidate.is_file() {
-            return Some(candidate);
+        for profile in ["test-ci", "debug", "release"] {
+            for name in ["bao", "bao.exe"] {
+                let candidate = here.join("target").join(profile).join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
         }
         if !here.pop() {
             break;
