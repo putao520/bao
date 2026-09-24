@@ -130,7 +130,17 @@ unsafe extern "C" {
         field: *const c_char,
         ty: c_int,
         bytes: *const u8,
-        len: c_int,
+        // `ossl_ssize_t` (= ptrdiff_t, 64-bit) in x509.h:1447. Declared
+        // `c_int` until 2026-09-25: on Win64 the 5th argument lives in a
+        // STACK slot and the 32-bit store leaves the upper half as stack
+        // garbage — the callee read `garbage<<32 | 12` as ossl_ssize_t,
+        // CBS_init scanned past the CN literal unbounded, nchar blew past
+        // maxsize=64 → STRING_TOO_LONG. Flaky per call history (the garbage
+        // depends on prior stack use): every Windows fixture cert
+        // intermittently failed (tls_sni ×6 / proxy_tunnel / ws_tls ×2 /
+        // wss). Linux SysV passes arg 5 in r8 (zero-extending register
+        // write) — always clean, which is why the bug was Windows-only.
+        len: isize,
         loc: c_int,
         set: c_int,
     ) -> c_int;
@@ -253,7 +263,7 @@ pub fn generate_self_signed_pem(cn: &str, days: c_long) -> Result<(String, Strin
             c"CN".as_ptr(),
             MBSTRING_ASC,
             cn.as_ptr(),
-            cn.len() as c_int,
+            cn.len() as isize,
             -1,
             0,
         ) == 1
