@@ -3846,6 +3846,20 @@
             1
           ],
           "deleted": []
+        },
+        "FFI-WIN64": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
+        },
+        "WIN-SOCKOWN": {
+          "nextN": 2,
+          "allocated": [
+            1
+          ],
+          "deleted": []
         }
       }
     },
