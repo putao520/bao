@@ -264,7 +264,10 @@ fn test_glob_string_cwd_and_absolute_patterns() {
     );
 
     // B3. Absolute pattern string enumerates real paths (audit's literal
-    //     probe form: pattern itself absolute).
+    //     probe form: pattern itself absolute). Glob results are '/'-shaped
+    //     on every platform (node semantics — the engine normalizes); build
+    //     the expected from the forward-slash form of the temp path.
+    let tmp_fwd = tmp_abs.replace('\\', "/");
     assert_eq!(
         eval_string(
             &mut ctx,
@@ -273,7 +276,7 @@ fn test_glob_string_cwd_and_absolute_patterns() {
                 tmp_js
             )
         ),
-        format!(r#"["{}/a.js","{}/sub/c.js"]"#, tmp_js, tmp_js),
+        format!(r#"["{}/a.js","{}/sub/c.js"]"#, tmp_fwd, tmp_fwd),
         "absolute pattern must enumerate absolute paths"
     );
 

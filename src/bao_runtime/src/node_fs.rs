@@ -9094,7 +9094,19 @@ unsafe fn glob_collect(
     results: &mut Vec<String>,
 ) {
     type Walker = bun_glob::GlobWalker<bun_glob::walk::SyscallAccessor, false>;
-    let absolute = pattern.starts_with('/');
+    // Windows absolute patterns carry MAIN_SEPARATOR; the glob language
+    // treats '\' as an escape — normalize to '/' (lossless: Windows
+    // filenames cannot contain backslashes). Mirrors bun_glob_api.
+    #[cfg(windows)]
+    let pattern_owned;
+    #[cfg(windows)]
+    let pattern = if crate::bun_glob_api::glob_pattern_is_absolute(pattern) {
+        pattern_owned = pattern.replace('\\', "/");
+        &pattern_owned
+    } else {
+        pattern
+    };
+    let absolute = crate::bun_glob_api::glob_pattern_is_absolute(pattern);
     let mut walker = match Walker::init_with_cwd(
         pattern.as_bytes(),
         opts.start_dir.as_bytes(),
@@ -9353,6 +9365,7 @@ unsafe extern "C" fn fs_glob_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     for pat in &patterns {
         glob_collect(cx, pat, &opts, &mut results);
     }
+    normalize_glob_result_separators(&mut results);
     let mut wrapped_cx =
         mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -9379,6 +9392,21 @@ unsafe extern "C" fn fs_glob_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     true
 }
 
+/// Glob results are '/'-shaped on every platform (node fs.glob / Bun's
+/// GlobWalker semantics — the pattern language is posix-shaped, so matches
+/// report forward slashes even on win32). The engine's platform join emits
+/// MAIN_SEPARATOR on Windows; normalize at the emission boundary. Safe as a
+/// blanket replace: a Windows filename cannot contain a backslash, so every
+/// '\' in a result IS a separator.
+fn normalize_glob_result_separators(results: &mut [String]) {
+    #[cfg(windows)]
+    for r in results.iter_mut() {
+        *r = r.replace('\\', "/");
+    }
+    #[cfg(not(windows))]
+    let _ = results;
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn fs_glob(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -9396,6 +9424,7 @@ unsafe extern "C" fn fs_glob(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         for pat in &patterns {
             glob_collect(cx, pat, &opts, &mut prefiltered);
         }
+        normalize_glob_result_separators(&mut prefiltered);
         spawn_fs_async(cx, "glob", patterns.join(","), callback, None, move || {
             Ok(FsAsyncResult::OkDirnames(prefiltered))
         });

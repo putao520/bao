@@ -7536,6 +7536,73 @@ unsafe extern "C" fn process_uptime(_cx: *mut JSContext, _argc: u32, vp: *mut JS
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+/// Resident set size in bytes for THIS process.
+///
+/// POSIX: /proc/self/statm resident pages * page size. Windows: the same
+/// number is WorkingSetSize from GetProcessMemoryInfo (kernel32's
+/// K32GetProcessMemoryInfo forwarding — no psapi.dll dependency); the old
+/// /proc-only read returned a constant 0 on Windows.
+fn current_process_rss_bytes() -> f64 {
+    #[cfg(unix)]
+    {
+        bun_fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| {
+                s.split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
+            .unwrap_or(0.0)
+            * 4096.0
+    }
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            page_file_usage: usize,
+            peak_page_file_usage: usize,
+        }
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut core::ffi::c_void;
+            fn K32GetProcessMemoryInfo(
+                process: *mut core::ffi::c_void,
+                counters: *mut ProcessMemoryCounters,
+                cb: u32,
+            ) -> i32;
+        }
+        let mut pmc = ProcessMemoryCounters {
+            cb: core::mem::size_of::<ProcessMemoryCounters>() as u32,
+            page_fault_count: 0,
+            peak_working_set_size: 0,
+            working_set_size: 0,
+            quota_peak_paged_pool_usage: 0,
+            quota_paged_pool_usage: 0,
+            quota_peak_non_paged_pool_usage: 0,
+            quota_non_paged_pool_usage: 0,
+            page_file_usage: 0,
+            peak_page_file_usage: 0,
+        };
+        // SAFETY: pmc is a valid out-struct of the size its cb declares;
+        // GetCurrentProcess's pseudo-handle needs no closing.
+        let ok = unsafe {
+            K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb)
+        };
+        if ok != 0 {
+            pmc.working_set_size as f64
+        } else {
+            0.0
+        }
+    }
+}
+
 unsafe extern "C" fn process_memory_usage(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -7549,15 +7616,7 @@ unsafe extern "C" fn process_memory_usage(cx: *mut JSContext, _argc: u32, vp: *m
     // Read RSS from /proc/self/statm (resident pages * page_size) instead of shelling out to `ps`.
     // statm format: size resident shared text lib data dt  (all in pages)
     // Second field = resident set size in pages; multiply by 4096 (x86_64 page size) to get bytes.
-    let rss = bun_fs::read_to_string("/proc/self/statm")
-        .ok()
-        .and_then(|s| {
-            s.split_whitespace()
-                .nth(1)
-                .and_then(|v| v.parse::<f64>().ok())
-        })
-        .unwrap_or(0.0)
-        * 4096.0;
+    let rss = current_process_rss_bytes();
     rooted!(&in(cx_ref) let rss_root = mozjs::jsval::DoubleValue(rss));
     JS_DefineProperty(
         cx,
@@ -7617,15 +7676,7 @@ unsafe extern "C" fn process_memory_usage_rss(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let rss = bun_fs::read_to_string("/proc/self/statm")
-        .ok()
-        .and_then(|s| {
-            s.split_whitespace()
-                .nth(1)
-                .and_then(|v| v.parse::<f64>().ok())
-        })
-        .unwrap_or(0.0)
-        * 4096.0;
+    let rss = current_process_rss_bytes();
     args.rval().set(mozjs::jsval::DoubleValue(rss));
     true
 }

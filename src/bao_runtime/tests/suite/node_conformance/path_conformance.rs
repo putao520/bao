@@ -47,8 +47,11 @@ fn test_path_conformance_suite() {
         {scaffold}
         var path = require('path');
         check("resolve_absolute_passthrough", function() {{
+            // win32 resolve roots at the cwd drive ("C:\foo\bar") — the
+            // node-documented shape; assert the tail segments separator-agnostically.
             var r = path.resolve("/foo/bar");
-            return r === "/foo/bar" || r.indexOf("foo/bar") >= 0;
+            var tail = r.replace(/\\/g, "/");
+            return tail === "/foo/bar" || tail.endsWith("foo/bar");
         }});
         check("resolve_relative_to_absolute", function() {{
             var r = path.resolve("foo", "bar");

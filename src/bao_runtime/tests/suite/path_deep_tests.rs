@@ -59,8 +59,11 @@ fn test_path_deep() {
 
         // === path.normalize ===
         check("normalize_exists", function() { return typeof path.normalize === 'function'; });
-        check("normalize_dots", function() { return path.normalize('/foo/bar/../baz') === '/foo/baz'; });
-        check("normalize_double_slash", function() { return path.normalize('/foo//bar') === '/foo/bar'; });
+        // POSIX-literal shape asserts run against path.posix (node exposes
+        // it for exactly this); the platform-surface normalize is covered by
+        // the platform-tolerant node_path_tests checks.
+        check("normalize_dots", function() { return path.posix.normalize('/foo/bar/../baz') === '/foo/baz'; });
+        check("normalize_double_slash", function() { return path.posix.normalize('/foo//bar') === '/foo/bar'; });
 
         // === path.isAbsolute ===
         check("isAbsolute_exists", function() { return typeof path.isAbsolute === 'function'; });
@@ -74,13 +77,13 @@ fn test_path_deep() {
         // === path.parse ===
         check("parse_exists", function() { return typeof path.parse === 'function'; });
         check("parse_basic", function() {
-            var p = path.parse('/foo/bar/baz.txt');
+            var p = path.posix.parse('/foo/bar/baz.txt');
             return p.root === '/' && p.dir === '/foo/bar' && p.base === 'baz.txt' && p.ext === '.txt' && p.name === 'baz';
         });
 
         // === path.format ===
         check("format_exists", function() { return typeof path.format === 'function'; });
-        check("format_basic", function() { return path.format({dir: '/foo', base: 'bar.txt'}) === '/foo/bar.txt'; });
+        check("format_basic", function() { return path.posix.format({dir: '/foo', base: 'bar.txt'}) === '/foo/bar.txt'; });
 
         // === path properties ===
         check("sep_exists", function() { return typeof path.sep === 'string'; });

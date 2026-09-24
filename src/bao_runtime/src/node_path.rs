@@ -10,6 +10,379 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
+// ──────────────────────────────────────────────────────────────────────────
+// path.posix — the REAL posix face (node semantics on every platform).
+//
+// The module previously self-referenced the host implementation, which made
+// `path.posix.sep === '\\'` on Windows (posix-selfref conformance FAIL) and
+// every posix-literal assertion wrong. Node ships a genuine posix algorithm
+// on all platforms; these pure-string implementations are that algorithm
+// (join/normalize/resolve/dirname/basename/extname/isAbsolute/relative/
+// parse/format), separator-fixed to '/'.
+// ──────────────────────────────────────────────────────────────────────────
+
+mod posix_core {
+    /// Split a posix path into segments; keeps a leading-root flag.
+    fn split(p: &str) -> (bool, Vec<&str>) {
+        let rooted = p.starts_with('/');
+        let segs = p
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .collect();
+        (rooted, segs)
+    }
+
+    pub fn normalize(p: &str) -> String {
+        let (rooted, segs) = split(p);
+        let mut out: Vec<&str> = Vec::new();
+        for seg in segs {
+            if seg == ".." {
+                if !out.is_empty() && *out.last().unwrap() != ".." {
+                    out.pop();
+                } else if !rooted {
+                    out.push(seg);
+                }
+            } else {
+                out.push(seg);
+            }
+        }
+        let joined = out.join("/");
+        if rooted {
+            format!("/{}", joined)
+        } else if joined.is_empty() {
+            ".".to_string()
+        } else {
+            joined
+        }
+    }
+
+    pub fn join(parts: &[String]) -> String {
+        let joined: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+        normalize(&joined.join("/"))
+    }
+
+    pub fn is_absolute(p: &str) -> bool {
+        p.starts_with('/')
+    }
+
+    pub fn resolve(parts: &[String], cwd: &str) -> String {
+        // Right-most absolute segment wins; otherwise cwd + parts.
+        let mut abs_start = 0usize;
+        for (i, p) in parts.iter().enumerate() {
+            if is_absolute(p) {
+                abs_start = i;
+            }
+        }
+        let mut base: Vec<&str> = Vec::new();
+        let mut rooted = false;
+        if abs_start == 0 && !parts.first().is_some_and(|p| is_absolute(p)) {
+            let (r, segs) = split(cwd);
+            rooted = r;
+            base = segs;
+        }
+        for p in &parts[abs_start..] {
+            let (_r, segs) = split(p);
+            rooted = rooted || is_absolute(p);
+            for seg in segs {
+                if seg == ".." {
+                    if !base.is_empty() && *base.last().unwrap() != ".." {
+                        base.pop();
+                    } else if !rooted {
+                        base.push(seg);
+                    }
+                } else {
+                    base.push(seg);
+                }
+            }
+        }
+        let joined = base.join("/");
+        if rooted {
+            format!("/{}", joined)
+        } else if joined.is_empty() {
+            "/".to_string()
+        } else {
+            joined
+        }
+    }
+
+    pub fn dirname(p: &str) -> String {
+        match p.rfind('/') {
+            Some(0) => "/".to_string(),
+            Some(i) => normalize(&p[..i]),
+            None => ".".to_string(),
+        }
+    }
+
+    pub fn basename(p: &str, ext: Option<&str>) -> String {
+        let mut base = p.rsplit('/').next().unwrap_or("");
+        if base.is_empty() {
+            return String::new();
+        }
+        if let Some(e) = ext {
+            if !e.is_empty() && base.ends_with(e) && base.len() > e.len() {
+                base = &base[..base.len() - e.len()];
+            }
+        }
+        base.to_string()
+    }
+
+    pub fn extname(p: &str) -> String {
+        let base = basename(p, None);
+        match base.rfind('.') {
+            Some(0) => String::new(), // leading-dot only = no ext (node)
+            Some(i) => base[i..].to_string(),
+            None => String::new(),
+        }
+    }
+
+    pub fn relative(from: &str, to: &str) -> String {
+        let fa = normalize(from);
+        let ta = normalize(to);
+        if fa == ta {
+            return String::new();
+        }
+        let (_, fseg) = split(&fa);
+        let (_, tseg) = split(&ta);
+        let mut i = 0;
+        while i < fseg.len() && i < tseg.len() && fseg[i] == tseg[i] {
+            i += 1;
+        }
+        let ups = fseg.len() - i;
+        let mut parts: Vec<String> = Vec::new();
+        for _ in 0..ups {
+            parts.push("..".to_string());
+        }
+        for seg in &tseg[i..] {
+            parts.push(seg.to_string());
+        }
+        if parts.is_empty() {
+            ".".to_string()
+        } else {
+            parts.join("/")
+        }
+    }
+
+    /// node posix.parse: { root, dir, base, ext, name }
+    pub fn parse(p: &str) -> (String, String, String, String, String) {
+        let root = if is_absolute(p) { "/".to_string() } else { String::new() };
+        let dir = dirname(p);
+        let base = basename(p, None);
+        let ext = extname(p);
+        let name = if ext.is_empty() {
+            base.clone()
+        } else {
+            base[..base.len() - ext.len()].to_string()
+        };
+        (root, dir, base, ext, name)
+    }
+
+    pub fn format(dir: &str, base: &str) -> String {
+        if dir.is_empty() {
+            base.to_string()
+        } else if dir.ends_with('/') {
+            format!("{}{}", dir, base)
+        } else {
+            format!("{}/{}", dir, base)
+        }
+    }
+}
+
+/// arg_to_string for the posix natives (same contract as the platform fns).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn posix_arg(cx: *mut JSContext, v: mozjs::jsval::JSVal) -> Option<String> {
+    arg_to_string(cx, v)
+}
+
+macro_rules! posix_str_fn {
+    ($name:ident, $jsname:literal, $body:expr) => {
+        #[allow(unsafe_op_in_unsafe_fn)]
+        unsafe extern "C" fn $name(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+            let args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
+            let out: Option<String> = $body(cx, &args, argc);
+            match out {
+                Some(s) => return_string(cx, &args, &s),
+                None => {
+                    ::mozjs::jsapi::JS_ReportErrorUTF8(
+                        cx,
+                        c"posix path: invalid argument".as_ptr(),
+                    );
+                    false
+                }
+            }
+        }
+    };
+}
+
+posix_str_fn!(js_posix_join, "join", |cx: *mut JSContext,
+                                    args: &::mozjs::jsapi::CallArgs,
+                                    argc: u32|
+ -> Option<String> {
+    let mut parts = Vec::new();
+    for i in 0..argc {
+        parts.push(posix_arg(cx, *args.get(i).ptr)?);
+    }
+    Some(posix_core::join(&parts))
+});
+posix_str_fn!(js_posix_normalize, "normalize", |cx: *mut JSContext,
+                                             args: &::mozjs::jsapi::CallArgs,
+                                             _argc: u32|
+ -> Option<String> {
+    Some(posix_core::normalize(&posix_arg(cx, *args.get(0).ptr)?))
+});
+posix_str_fn!(js_posix_resolve, "resolve", |cx: *mut JSContext,
+                                         args: &::mozjs::jsapi::CallArgs,
+                                         argc: u32|
+ -> Option<String> {
+    let mut parts = Vec::new();
+    for i in 0..argc {
+        parts.push(posix_arg(cx, *args.get(i).ptr)?);
+    }
+    let cwd = ::std::env::current_dir().ok()?.to_string_lossy().replace('\\', "/");
+    Some(posix_core::resolve(&parts, &cwd))
+});
+posix_str_fn!(js_posix_dirname, "dirname", |cx: *mut JSContext,
+                                         args: &::mozjs::jsapi::CallArgs,
+                                         _argc: u32|
+ -> Option<String> {
+    Some(posix_core::dirname(&posix_arg(cx, *args.get(0).ptr)?))
+});
+posix_str_fn!(js_posix_basename, "basename", |cx: *mut JSContext,
+                                           args: &::mozjs::jsapi::CallArgs,
+                                           argc: u32|
+ -> Option<String> {
+    let p = posix_arg(cx, *args.get(0).ptr)?;
+    let ext = if argc > 1 {
+        Some(posix_arg(cx, *args.get(1).ptr)?)
+    } else {
+        None
+    };
+    Some(posix_core::basename(&p, ext.as_deref()))
+});
+posix_str_fn!(js_posix_extname, "extname", |cx: *mut JSContext,
+                                         args: &::mozjs::jsapi::CallArgs,
+                                         _argc: u32|
+ -> Option<String> {
+    Some(posix_core::extname(&posix_arg(cx, *args.get(0).ptr)?))
+});
+posix_str_fn!(js_posix_relative, "relative", |cx: *mut JSContext,
+                                           args: &::mozjs::jsapi::CallArgs,
+                                           _argc: u32|
+ -> Option<String> {
+    let from = posix_arg(cx, *args.get(0).ptr)?;
+    let to = posix_arg(cx, *args.get(1).ptr)?;
+    Some(posix_core::relative(&from, &to))
+});
+posix_str_fn!(js_posix_format, "format", |cx: *mut JSContext,
+                                       args: &::mozjs::jsapi::CallArgs,
+                                       _argc: u32|
+ -> Option<String> {
+    // Accepts the parsed-shape object {dir, base}.
+    let obj = (*args.get(0).ptr).to_object();
+    let mut wrapped = ::mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(cx),
+    );
+    let cx_ref = &mut wrapped;
+    ::mozjs::rooted!(&in(cx_ref) let obj_root = obj);
+    let mut dir = String::new();
+    let mut base = String::new();
+    let mut v = ::mozjs::jsval::UndefinedValue();
+    ::mozjs::jsapi::JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"dir".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_string() {
+        dir = arg_to_string(cx, v)?;
+    }
+    v = ::mozjs::jsval::UndefinedValue();
+    ::mozjs::jsapi::JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        c"base".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_string() {
+        base = arg_to_string(cx, v)?;
+    }
+    Some(posix_core::format(&dir, &base))
+});
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn posix_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(::mozjs::jsval::BooleanValue(false));
+        return true;
+    }
+    match posix_arg(cx, *args.get(0).ptr) {
+        Some(s) => args.rval().set(::mozjs::jsval::BooleanValue(posix_core::is_absolute(&s))),
+        None => args.rval().set(::mozjs::jsval::BooleanValue(false)),
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn posix_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        ::mozjs::jsapi::JS_ReportErrorUTF8(
+            cx,
+            ::std::ffi::CStr::from_bytes_with_nul(b"path.parse requires a path\0")
+                .unwrap()
+                .as_ptr(),
+        );
+        return false;
+    }
+    let Some(p) = posix_arg(cx, *args.get(0).ptr) else {
+        args.rval().set(::mozjs::jsval::UndefinedValue());
+        return true;
+    };
+    let (root, dir, base, ext, name) = posix_core::parse(&p);
+    let raw_cx = cx;
+    let mut wrapped = ::mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(raw_cx),
+    );
+    let cx_ref = &mut wrapped;
+    ::mozjs::rooted!(&in(cx_ref) let obj = ::mozjs::rust::wrappers2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(::mozjs::jsval::UndefinedValue());
+        return true;
+    }
+    let h = obj.handle().into();
+    macro_rules! def_str {
+        ($name:literal, $val:expr) => {{
+            let cs = ZBox::from_bytes($val.as_bytes());
+            let js = JS_NewStringCopyZ(raw_cx, cs.as_ptr());
+            if !js.is_null() {
+                ::mozjs::rooted!(&in(cx_ref) let sv = ::mozjs::jsval::StringValue(&*js));
+                ::mozjs::jsapi::JS_DefineProperty(
+                    raw_cx,
+                    h,
+                    ::std::ffi::CStr::from_bytes_with_nul(::std::concat!($name, "\0").as_bytes())
+                        .unwrap()
+                        .as_ptr(),
+                    sv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }};
+    }
+    def_str!("root", root);
+    def_str!("dir", dir);
+    def_str!("base", base);
+    def_str!("ext", ext);
+    def_str!("name", name);
+    args.rval().set(::mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
 pub fn install(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let path_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if path_obj.get().is_null() {
@@ -162,15 +535,92 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    // path.posix — self-reference to the path module (host-platform impl).
+    // path.posix — the REAL posix face (pure-string algorithms above);
+    // node ships a genuine posix implementation on every platform, and the
+    // old self-reference answered `path.posix.sep === path.sep` ('\' on
+    // Windows — posix-selfref conformance FAIL).
     unsafe {
-        w2::JS_DefineProperty3(
-            cx,
-            path_obj.handle(),
-            c"posix".as_ptr(),
-            path_obj.handle(),
-            JSPROP_ENUMERATE as u32,
-        );
+        rooted!(&in(cx) let posix_obj = w2::JS_NewPlainObject(cx));
+        if !posix_obj.get().is_null() {
+            let fns: &[(&str, ::std::option::Option<
+                unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool,
+            >)] = &[
+                ("join", Some(js_posix_join)),
+                ("normalize", Some(js_posix_normalize)),
+                ("resolve", Some(js_posix_resolve)),
+                ("dirname", Some(js_posix_dirname)),
+                ("basename", Some(js_posix_basename)),
+                ("extname", Some(js_posix_extname)),
+                ("isAbsolute", Some(posix_is_absolute)),
+                ("relative", Some(js_posix_relative)),
+                ("parse", Some(posix_parse_fn)),
+                ("format", Some(js_posix_format)),
+            ];
+            for (name, fp) in fns {
+                let c_name = ZBox::from_bytes(name.as_bytes());
+                let f = ::mozjs::jsapi::JS_NewFunction(
+                    cx.raw_cx(),
+                    *fp,
+                    2,
+                    0,
+                    c_name.as_ptr(),
+                );
+                if !f.is_null() {
+                    let fobj = ::mozjs::jsapi::JS_GetFunctionObject(f);
+                    ::mozjs::rooted!(&in(cx) let fv = ::mozjs::jsval::ObjectValue(fobj));
+                    ::mozjs::jsapi::JS_DefineProperty(
+                        cx.raw_cx(),
+                        posix_obj.handle().into(),
+                        c_name.as_ptr(),
+                        fv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+            // posix.sep = "/" / posix.delimiter = ":"
+            let sep_cstr = ZBox::from_bytes(b"/");
+            let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep_cstr.as_ptr());
+            if !sep_str.is_null() {
+                let v = ::mozjs::jsval::StringValue(&*sep_str);
+                ::mozjs::rooted!(&in(cx) let vr = v);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    posix_obj.handle().into(),
+                    c"sep".as_ptr(),
+                    vr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            let dlm_cstr = ZBox::from_bytes(b":");
+            let dlm_str = JS_NewStringCopyZ(cx.raw_cx(), dlm_cstr.as_ptr());
+            if !dlm_str.is_null() {
+                let v = ::mozjs::jsval::StringValue(&*dlm_str);
+                ::mozjs::rooted!(&in(cx) let vr = v);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    posix_obj.handle().into(),
+                    c"delimiter".as_ptr(),
+                    vr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            // posix.posix / posix.win32 self-refs (node shape)
+            w2::JS_DefineProperty3(
+                cx,
+                posix_obj.handle(),
+                c"posix".as_ptr(),
+                posix_obj.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
+            // Attach the real posix face to the module:
+            w2::JS_DefineProperty3(
+                cx,
+                path_obj.handle(),
+                c"posix".as_ptr(),
+                posix_obj.handle(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
     }
 
     // path.win32 — Node.js ships a real Windows-flavoured path object on all
@@ -554,8 +1004,26 @@ unsafe extern "C" fn path_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JS
             return true;
         }
     };
-    args.rval()
-        .set(mozjs::jsval::BooleanValue(Path::new(&s).is_absolute()));
+    // Node semantics, not Rust's: on win32 a rooted path WITHOUT a drive
+    // ('/foo') is absolute (node's lib/path.js win32 isAbsolute — separator
+    // at [0], or device-root + ':' + separator), while std's
+    // Path::is_absolute demands a drive prefix and answered false for
+    // '/foo' on Windows. POSIX keeps the std behavior (leading '/').
+    #[cfg(windows)]
+    {
+        let b = s.as_bytes();
+        let rooted = b.first().is_some_and(|&c| c == b'/' || c == b'\\');
+        let drive_rooted = b.len() > 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'/' || b[2] == b'\\');
+        args.rval().set(mozjs::jsval::BooleanValue(rooted || drive_rooted));
+    }
+    #[cfg(not(windows))]
+    {
+        args.rval()
+            .set(mozjs::jsval::BooleanValue(Path::new(&s).is_absolute()));
+    }
     true
 }
 

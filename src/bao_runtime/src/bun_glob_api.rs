@@ -79,7 +79,23 @@ fn resolve_scan_cwd(cwd_val: &str) -> String {
     if cwd_val.is_empty() {
         return process_cwd();
     }
-    if cwd_val.starts_with('/') {
+    // Platform-aware absolute test. The old leading-'/' check treated a
+    // Windows drive-rooted cwd ("C:\dir") as RELATIVE and joined it onto
+    // the process cwd ("<cwd>/C:\dir") — every scanSync("C:\...") then
+    // walked a nonexistent path and returned [] (fs.globSync worked because
+    // its options parser takes the cwd verbatim).
+    let absolute = if cfg!(windows) {
+        let b = cwd_val.as_bytes();
+        let rooted = b.first().is_some_and(|&c| c == b'/' || c == b'\\');
+        let drive_rooted = b.len() > 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'/' || b[2] == b'\\');
+        rooted || drive_rooted
+    } else {
+        cwd_val.starts_with('/')
+    };
+    if absolute {
         return cwd_val.to_string();
     }
     let base = process_cwd();
@@ -183,9 +199,37 @@ unsafe fn glob_scan_opts(
 
 /// Collect matches via the workspace GlobWalker (the same engine fs.glob
 /// uses — node_fs.rs glob_collect pattern). Returns cwd-rooted paths.
+/// Windows-absolute test shared by the glob collectors (drive-rooted or
+/// rooted); POSIX = leading '/'.
+pub(crate) fn glob_pattern_is_absolute(p: &str) -> bool {
+    if cfg!(windows) {
+        let b = p.as_bytes();
+        let rooted = b.first().is_some_and(|&c| c == b'/' || c == b'\\');
+        let drive_rooted = b.len() > 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'/' || b[2] == b'\\');
+        rooted || drive_rooted
+    } else {
+        p.starts_with('/')
+    }
+}
+
 fn glob_collect_impl(pattern: &str, cwd: &str, opts: ScanOpts) -> Vec<String> {
     type Walker = bun_glob::GlobWalker<bun_glob::walk::SyscallAccessor, false>;
-    let absolute = opts.absolute || pattern.starts_with('/');
+    // Windows absolute patterns carry MAIN_SEPARATOR, but the glob language
+    // treats '\' as an escape — normalize the pattern to '/' (filenames
+    // cannot contain backslashes on Windows, so the rewrite is lossless).
+    #[cfg(windows)]
+    let pattern_owned;
+    #[cfg(windows)]
+    let pattern = if glob_pattern_is_absolute(pattern) {
+        pattern_owned = pattern.replace('\\', "/");
+        &pattern_owned
+    } else {
+        pattern
+    };
+    let absolute = opts.absolute || glob_pattern_is_absolute(pattern);
     let mut walker = match Walker::init_with_cwd(
         pattern.as_bytes(),
         cwd.as_bytes(),
@@ -210,6 +254,15 @@ fn glob_collect_impl(pattern: &str, cwd: &str, opts: ScanOpts) -> Vec<String> {
             Ok(Ok(Some(path))) => out.push(String::from_utf8_lossy(&path).into_owned()),
             _ => break,
         }
+    }
+    // Glob results are '/'-shaped on every platform (the pattern language
+    // is posix-shaped; node fs.glob / Bun GlobWalker yield forward slashes
+    // on win32). The engine's platform join emits MAIN_SEPARATOR on
+    // Windows — normalize here (scan + scanSync share this collector). Safe
+    // blanket replace: a Windows filename cannot contain a backslash.
+    #[cfg(windows)]
+    for r in out.iter_mut() {
+        *r = r.replace('\\', "/");
     }
     out
 }
