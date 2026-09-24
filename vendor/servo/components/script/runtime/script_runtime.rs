@@ -1101,9 +1101,39 @@ unsafe extern "C" fn trace_rust_roots(tr: *mut JSTracer, data: *mut os::raw::c_v
 
 #[expect(unsafe_code)]
 unsafe extern "C" fn servo_build_id(build_id: *mut BuildIdCharVector) -> bool {
-    let servo_id = b"Servo\0";
-    unsafe { SetBuildId(build_id, servo_id[0] as *const c_char, servo_id.len()) }
+    // BAO patch (XDR build-id dual-defect, 2026-09-24):
+    //
+    // 1) Pointer-from-value crash: upstream passed `servo_id[0] as *const
+    //    c_char` — the BYTE VALUE 'S' (0x53) reinterpreted as the `chars`
+    //    pointer, so the very first `GetScriptTranscodingBuildId` on a
+    //    ScriptThread SIGSEGV'd reading address 0x53 (observed via
+    //    `_siginfo.si_addr == 0x53`). Latent until something invoked the
+    //    process build-id op — bao's stencil XDR decode
+    //    (`bao_engine::xdr_cache::load` → `VersionCheck`) became the first
+    //    caller and crashed every browser e2e that reached stealth
+    //    injection on a servo ScriptThread. Fix: pass the slice's address
+    //    (`as_ptr()`), length stays explicit (SetBuildId is length-based;
+    //    no NUL needed).
+    //
+    // 2) Process-singleton tag stability: `GetBuildId` is a PROCESS-global
+    //    function pointer with two installers in a bao browser process
+    //    (this one, per ScriptThread; and bao_engine's
+    //    `bao_process_build_id`, lazily on first stealth injection). Two
+    //    different tags ("Servo\0" vs "bao-stencil-xdr-1") make XDR entries
+    //    encode under one id and VersionCheck-fail under the other — cache
+    //    thrash with decode-time regeneration on every flip. Both
+    //    installers must write the SAME bytes; the tag lives canonically in
+    //    `bao_engine::xdr_cache::BUILD_ID_TAG` and is mirrored here.
+    let servo_id = BUILD_ID_TAG;
+    unsafe { SetBuildId(build_id, servo_id.as_ptr() as *const c_char, servo_id.len()) }
 }
+
+/// The process XDR build-id tag — mirror of
+/// `bao_engine::xdr_cache::BUILD_ID_TAG` (b"bao-stencil-xdr-1"). servo
+/// cannot depend on bao_engine (dependency direction is the other way), so
+/// the byte string is duplicated here; the two definitions must stay
+/// byte-identical (see `servo_build_id` above for why).
+const BUILD_ID_TAG: &[u8; 17] = b"bao-stencil-xdr-1";
 
 #[expect(unsafe_code)]
 #[cfg(feature = "debugmozjs")]

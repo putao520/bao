@@ -107,6 +107,14 @@ static BUILD_ID: OnceLock<Option<Vec<u8>>> = OnceLock::new();
 
 /// Fixed process tag — mixed by SM with endianness/pointer-size into the XDR
 /// version check, so it only needs to be stable per Bao build.
+///
+/// PROCESS-SINGLETON CONTRACT: `GetBuildId` is process-global with two
+/// installers in a browser process (this one, and servo's per-ScriptThread
+/// `servo_build_id` — vendor/servo script_runtime.rs). Both must write the
+/// SAME bytes or XDR entries encode under one id and VersionCheck-fail under
+/// the other (decode-time regeneration thrash). The servo side mirrors this
+/// literal as `BUILD_ID_TAG` in script_runtime.rs — keep the two
+/// byte-identical when changing either.
 const BUILD_ID_TAG: &[u8] = b"bao-stencil-xdr-1";
 
 /// # Safety
