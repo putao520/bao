@@ -310,26 +310,44 @@ fn worker_thread_alive(name: &str) -> bool {
             fn Thread32First(snapshot: *mut c_void, entry: *mut ThreadEntry32) -> i32;
             fn Thread32Next(snapshot: *mut c_void, entry: *mut ThreadEntry32) -> i32;
             fn CloseHandle(h: *mut c_void) -> i32;
+            fn OpenThread(desired: u32, inherit: i32, tid: u32) -> *mut c_void;
+            fn GetThreadDescription(h: *mut c_void, desc: *mut *mut u16) -> i32;
+            fn LocalFree(p: *mut c_void) -> *mut c_void;
         }
         const TH32CS_SNAPTHREAD: u32 = 0x4;
-        // Windows threads carry no comm names — a thread-count observation is
-        // the honest available signal; the named-worker assertion contract is
-        // unix-only. Returning true keeps the cleanup polling semantics alive
-        // without faking a match (the tests assert post-drop absence via the
-        // runtime's own worker registry, which is unix-shaped).
-        let _ = name;
+        const THREAD_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        // The runtime names worker threads via SetThreadDescription
+        // ("bao-worker-<threadId>" — bun_core::Global::set_thread_name's
+        // windows arm), so the probe matches the thread's DESCRIPTION — the
+        // exact-name contract the /proc/<tid>/comm arm implements on Linux.
+        // The previous "thread count > 1" heuristic could NEVER observe
+        // post-drop absence (infra threads — HTTPThread, the TLS driver —
+        // keep the count above 1 forever), false-failing both cleanup waits.
+        let name_wide: Vec<u16> = name.encode_utf16().collect();
+        let pid = std::process::id();
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
             if snap.is_null() || snap as usize == std::usize::MAX {
-                return true; // cannot observe — do not fake a match failure
+                return false; // cannot observe — report absence, never fake a match
             }
-            let mut n_own = 0usize;
-            let pid = std::process::id();
+            let mut found = false;
             let mut e = ThreadEntry32 { dw_size: std::mem::size_of::<ThreadEntry32>() as u32, cnt_usage: 0, th32_thread_id: 0, th32_owner_process_id: 0, tp_base_pri: 0, tp_delta_pri: 0, tp_flags: 0, sz_exe_file: [0; 260] };
             if Thread32First(snap, &mut e) != 0 {
                 loop {
-                    if e.th32_owner_process_id == pid {
-                        n_own += 1;
+                    if e.th32_owner_process_id == pid && !found {
+                        let th = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, e.th32_thread_id);
+                        if !th.is_null() {
+                            let mut desc: *mut u16 = std::ptr::null_mut();
+                            if GetThreadDescription(th, &mut desc) == 0 && !desc.is_null() {
+                                let len = (0..).take_while(|&i| *desc.add(i) != 0).count();
+                                let got = std::slice::from_raw_parts(desc, len);
+                                if got == name_wide.as_slice() {
+                                    found = true;
+                                }
+                                LocalFree(desc.cast());
+                            }
+                            CloseHandle(th);
+                        }
                     }
                     if Thread32Next(snap, &mut e) == 0 {
                         break;
@@ -337,8 +355,7 @@ fn worker_thread_alive(name: &str) -> bool {
                 }
             }
             CloseHandle(snap);
-            // more threads than the main thread ⇒ workers still alive shape
-            n_own > 1
+            found
         }
     }
 }
@@ -449,6 +466,27 @@ fn runtime_drop_is_per_token_other_runtimes_workers_untouched() {
 
 use std::collections::BTreeMap;
 
+/// Cross-platform long-running spawn target. Unix keeps the canonical
+/// `sleep 300`; Windows has no sleep.exe (node ENOENTs there too — oracle
+/// semantics), so use the classic `ping -n` idiom: a real System32 exe that
+/// runs ~N seconds. Per the b04cee87 POSIX-program-content platformization
+/// precedent; these three tests are cross-platform by design (drop-sweep
+/// semantics), only the sleeper binary is POSIX-flavored.
+fn sleeper_spawn_call_js() -> &'static str {
+    #[cfg(unix)]
+    {
+        "spawn('sleep', ['300'])"
+    }
+    #[cfg(windows)]
+    {
+        "spawn('ping', ['-n', '300', '-w', '1000', '127.0.0.1'])"
+    }
+}
+
+fn sleeper_cmd_js() -> String {
+    format!("require('child_process').{}", sleeper_spawn_call_js())
+}
+
 /// `/proc/<pid>/stat` state char (`R`/`S`/...; `Z` = zombie), `None` once the
 /// pid is gone — a REAPED child disappears from /proc entirely, so `None`
 /// proves dead-AND-reaped (a zombie would still show up as `Some('Z')`).
@@ -491,12 +529,10 @@ fn spawn_sleeper(
     pipes_before: &BTreeMap<i32, String>,
 ) -> (i32, BTreeMap<i32, String>) {
     rt.eval(
-        &format!(
-            "globalThis.{slot} = require('child_process').spawn('sleep', ['300']);"
-        ),
+        &format!("globalThis.{slot} = {};", sleeper_cmd_js()),
         "<runtime-cleanup-test>",
     )
-    .expect("spawn sleep 300 must succeed");
+    .expect("spawn sleeper must succeed");
     let pid = eval_number(rt, &format!("globalThis.{slot}.pid")) as i32;
     assert!(pid > 0, "spawn must produce a pid, got {}", pid);
     // `worker_thread_alive` is name-generic — the async child's pump thread is
@@ -585,6 +621,7 @@ fn runtime_drop_kills_and_reaps_owned_children() {
 
 /// T6: per-token isolation — dropping one runtime must not terminate another
 /// live runtime's children; the survivor and its cp-poll thread keep running.
+#[cfg(unix)] // observed via fd_targets/proc_state (/proc mechanics) — POSIX observation face
 #[test]
 fn runtime_drop_is_per_token_other_runtimes_children_untouched() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
@@ -634,14 +671,18 @@ fn runtime_drop_is_per_token_other_runtimes_children_untouched_body() {
 /// T7: the parent-side IPC channel (`stdio: [..., 'ipc']`) is created by the
 /// same spawn as the child and dies with it — the drop sweep closes its
 /// socketpair end (keyed by the same pid; no separate owner stamp).
+#[cfg(unix)] // parent-side IPC identity is observed via /proc/self/fd socket: links — POSIX mechanic
 #[test]
 fn runtime_drop_closes_child_ipc_channels() {
     let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
     warm_child_process(&mut rt);
     let sockets_before = fd_targets("socket:");
     rt.eval(
-        "globalThis.__cpT7 = require('child_process').spawn('sleep', ['300'], \
-         { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });",
+        &format!(
+            "globalThis.__cpT7 = require('child_process').{}, \
+             {{ stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }};",
+            sleeper_spawn_call_js()
+        ),
         "<runtime-cleanup-test>",
     )
     .expect("spawn with ipc stdio must succeed");
@@ -756,6 +797,7 @@ fn sigstate_wait_for(pred: impl Fn() -> bool, budget: Duration, what: &str) {
 /// library host's (pre-fix: blocked-everything) state into the child. The
 /// child reads ITS OWN /proc/self/status (`grep ^Sig`) and returns the lines
 /// via stdout, so the observed bitmap is the post-exec child's, not ours.
+#[cfg(unix)] // POSIX signal-bitmap semantics (/proc/self/status Sig*) — no Windows carrier
 #[test]
 fn spawn_sigstate_child_bitmap_is_clean_default() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
@@ -889,6 +931,7 @@ fn spawn_sigstate_sigterm_terminates_child_within_500ms() {
 /// risk) — a full spawn→SIGTERM→reap cycle leaves this process's SigBlk/SigIgn
 /// byte-identical.
 #[cfg(unix)]
+#[cfg(unix)] // reads host /proc/self/status SigBlk/SigIgn — POSIX-only contract
 #[test]
 fn spawn_sigstate_host_signal_state_untouched() {
     let host_sig_lines = || -> String {
@@ -1037,6 +1080,7 @@ fn child_exit_observation_closes_stdin_write_fd() {
 /// write end closed by the drop sweep. No listeners are attached, so the JS
 /// poll chain never runs and nothing observes the death before `Drop` — the
 /// sweep is the last consumer and must take the write end itself.
+#[cfg(unix)] // stdin write-end identity observed via /proc/self/fd + proc_state — POSIX mechanic (the drop sweep itself is cross-platform product code)
 #[test]
 fn runtime_drop_closes_piped_stdin_write_end_of_live_children() {
     // Deadline isolation: this body crashes (AV/abort) on Windows —
@@ -1050,10 +1094,10 @@ fn runtime_drop_closes_piped_stdin_write_end_of_live_children_body() {
     let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
     warm_child_process(&mut rt);
     rt.eval(
-        "globalThis.__cpT12 = require('child_process').spawn('sleep', ['300']);",
+        &format!("globalThis.__cpT12 = {};", sleeper_cmd_js()),
         "<runtime-cleanup-test>",
     )
-    .expect("spawn sleep 300 must succeed");
+    .expect("spawn sleeper must succeed");
     let pid = eval_number(&mut rt, "globalThis.__cpT12.pid") as i32;
     assert!(pid > 0, "spawn must produce a pid, got {}", pid);
     let stdin_fd = eval_number(&mut rt, "globalThis.__cpT12._stdinFd") as i32;

@@ -609,9 +609,26 @@ pub fn set_thread_name(name: &ZStr) {
     }
     #[cfg(windows)]
     {
-        let _ = name;
-        // TODO: use SetThreadDescription or NtSetInformationThread with 0x26 (ThreadNameInformation)
-        // without causing exit code 0xC0000409 (stack buffer overrun) in child process
+        // SetThreadDescription takes a PCWSTR. The historical 0xC0000409
+        // fastfail noted in the old TODO was the pointer-class mismatch this
+        // family always had: passing the raw char* bytes reinterpreted as a
+        // UTF-16 pointer walks garbage. Encode to real UTF-16 and call with
+        // the pseudo-handle for the CURRENT thread (valid only on the
+        // calling thread — which is the contract: name your own thread).
+        const THREAD_SET_INFORMATION: u32 = 0x0020;
+        unsafe extern "system" {
+            fn GetCurrentThread() -> *mut core::ffi::c_void;
+            fn SetThreadDescription(thread: *mut core::ffi::c_void, description: *const u16) -> u32;
+        }
+        // Thread names are ASCII in every caller ("bao-worker-<id>",
+        // "HTTP Client", "cp-poll-<pid>"); encode_utf16 covers the general case.
+        let mut wide: Vec<u16> = name.as_bytes().iter().map(|&b| u16::from(b)).collect();
+        wide.push(0);
+        // THREAD_SET_INFORMATION access is implied by the pseudo-handle.
+        let _ = THREAD_SET_INFORMATION;
+        unsafe {
+            SetThreadDescription(GetCurrentThread(), wide.as_ptr());
+        }
     }
 }
 
