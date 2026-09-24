@@ -167,6 +167,10 @@ Bun workspace 中 ~85 个纯 Rust crate(零 JSC)是经过生产验证的高性�
 | STL | REQ-STL-001~007 | Stealth 反指纹(TLS/HTTP2/Canvas/Navigator/WebGL/Audio/Behavior) |
 | LIB | REQ-LIB-001~004 | Headless 多页面库(PagePool/PageHandle) |
 
+## 工作归属立法(用户裁决 2026-09-24)
+
+**禁止把任何工作推到 daily-ops**。daily-ops 定时器与日常开发无关:交互会话中发现/立项的一切缺陷修复、上游吸收、测试面工作都由当前会话即时完成;`SKIPPED_BUSY`/backlog 让位不是推迟理由。daily-ops 仅在其自主定时窗口运行,不作为任何交互工作的下游承接方。
+
 ## 每日自动化(daily-ops)
 
 systemd timer 每日 06:07±10min 运行 `.claude/skills/daily-ops/`(全自主:上游任意窗口吸收含 BCE patch 重放 + issue 根治 + 波末验收 + 发布闭包,含 mozjs 跨版本升级(单轮 7 天预算长任务协议);2026-08-24 用户裁决扩权,详见该 skill)。交互会话在此窗口派工前先查 `systemctl --user status bao-daily-ops`。上游同步基线 SSOT = `.claude/upstream-baseline.json`。
