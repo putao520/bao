@@ -493,12 +493,59 @@ fn getenv_z_any_case_direct(key: &ZStr) -> Option<&'static [u8]> {
                 return Some(&line[(key_end + 1).min(line.len())..]);
             }
         }
-        None
+        // The startup snapshot is write-once: variables created AFTER process
+        // start (`process.env.X = v` bridges to a live `set_var`, test
+        // harnesses `std::env::set_var`) never appear in it — every such
+        // lookup missed and the BAO_ alias read-layer fallback resolved
+        // nothing. Fall back to the LIVE environment (`std::env::var_os` =
+        // GetEnvironmentVariable semantics on Windows: live and
+        // case-insensitive, matching the snapshot walk above) and hand out a
+        // leaked copy so the `&'static` borrow contract holds. Positive
+        // results are cached per name; a live miss also drops any stale
+        // cached value so unsets are observed.
+        return windows_live_env_lookup(key);
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = key;
         None
+    }
+}
+
+/// Live-environment fallback for the Windows startup-snapshot walk in
+/// [`getenv_z_any_case_direct`] — see the call site for the liveness
+/// rationale. Cached per name (the `&'static` borrow contract needs stable
+/// storage); a live miss evicts, so unsets propagate.
+#[cfg(windows)]
+fn windows_live_env_lookup(key: &ZStr) -> Option<&'static [u8]> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static LIVE_CACHE: Mutex<Option<HashMap<Vec<u8>, &'static [u8]>>> = Mutex::new(None);
+
+    // Env names are ASCII in every real consumer (BUN_/BAO_ prefixes); a
+    // non-UTF-8 (raw WTF-8) name has no stable OsStr constructor on Windows
+    // — leave it to the snapshot walk, which already covered startup vars.
+    let Ok(key_str) = std::str::from_utf8(key.as_bytes()) else {
+        return None;
+    };
+    let live = std::env::var_os(key_str).map(|v| v.as_encoded_bytes().to_vec());
+
+    let mut guard = LIVE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    let cache = guard.get_or_insert_with(HashMap::new);
+    match live {
+        Some(bytes) => {
+            // Box-leak gives the &'static storage the API promises; a
+            // re-set overwrites the cache entry (the old copy stays leaked
+            // — bounded by distinct values ever read, same shape as the
+            // startup snapshot's own one-time leak).
+            let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+            cache.insert(key.as_bytes().to_vec(), leaked);
+            Some(leaked)
+        }
+        None => {
+            cache.remove(key.as_bytes());
+            None
+        }
     }
 }
 

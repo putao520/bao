@@ -161,9 +161,21 @@ fn state() -> &'static Mutex<TraceState> {
     STATE.get_or_init(|| Mutex::new(TraceState::new()))
 }
 
+/// Last timestamp handed out — monotonic floor for [`monotonic_ns`].
+static LAST_TS_NS: AtomicU64 = AtomicU64::new(0);
+
 fn monotonic_ns() -> u64 {
     let start = MONO_START.get_or_init(Instant::now);
-    start.elapsed().as_nanos() as u64
+    let elapsed = start.elapsed().as_nanos() as u64;
+    // The lazy anchor initializes INSIDE this call on first use, so the
+    // measurement is the call's own overhead — under a coarse clock (Windows
+    // QPC can tick at 100ns+) that overhead rounds to zero and the first
+    // trace event carried ts_ns == 0. Trace timestamps must be non-zero and
+    // strictly increasing anyway: floor every reading at last + 1.
+    let last = LAST_TS_NS.load(Ordering::Relaxed);
+    let ts = if elapsed > last { elapsed } else { last + 1 };
+    LAST_TS_NS.store(ts, Ordering::Relaxed);
+    ts
 }
 
 fn current_pid() -> u32 {

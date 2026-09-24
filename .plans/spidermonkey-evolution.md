@@ -2187,3 +2187,16 @@ dops-20260923(5 commits:4 absorb+1 fix)三步验证绿(bun_runtime suite 构建/
 连带:204 语义断言按 RFC 7230 §3.3.2 平台化(node oracle:204 无 CL 无 body)。
 **Linux 全绿:bun_runtime 601/601+bao_engine 391/391**;windows 交叉构建绿;已 push(e7f96656)。
 教训入账:上游吸收(尤其 vendor C header 结构变更)必须横扫核对 repr(C) 镜像结构体——签名迁移(函数)不够,数据结构同样要逐字段对齐;测试驱动循环改造时保留驱动语义(只改等待判据,不删 RunJobs/tick)。
+
+### workspace 全量电池收口:32 红→0(2026-09-24,take 8→9)
+
+full8(11086 tests):11054 绿 / 32 红 / 5 skip。六组根治,全部独立验证后 commit+push(28adacfc..9698acc3):
+
+1. **bun_parsers json off-by-one**(28adacfc):`[0..written+1]` Zig sentinel 残留越过满缓冲(deep_array panic 502>501);`print_json` 返回的 written 已含 done() 换行。14/14 绿。
+2. **workflow_host SM153 trap**(c1b58325):trap 面换装后 run_jobs 只 drain 永不填充的 stored-job 队列——promise reaction 落 SM153 引擎自有微任务队列;镜像生产 job_queue 的 HasRegularMicroTasks/DequeueNextRegularMicroTask/RunJSMicroTask fixpoint(含 msvc sret 重声明)。2/2 绿。
+3. **REQ-SEC-003 源断言窗口**(c063c67b):5000 字符硬窗口被注释膨胀挤出 fetch 安装调用;改真函数边界。15/15 绿。
+4. **vendor/mozjs icu 电池闭合**(025ad33d):此前 cfg 引用未声明 feature=永久静默关(不诚实)——三 crate 声明 default-off dev features(icu-properties-dev 真实可开);9 个 vendored impl↔test skew 测试(bo/lt/tr/vi/reordering/conformance×2/is_normalized)门控 upstream-conformance-dev。**登记限制**:SM baked data 是 SpiderMonkey 裁剪子集(自带 CLDR pin),不承载全量上游期望;非 bao 产品缺陷(SM 自身 Intl 行为内部一致)。附带 stencil_xdr/bench trampoline 切换 + boringssl stdc++。158/158 绿。
+5. **h2 fixture piggyback + finder 横扫**(ec36a2e2):见 BUG-KNOWLEDGE 新条目。h2 4/4(20s 挂死→0.1s);finder 7 拷贝 current_exe 推导(profile 无关),CLI timeout 9/9。
+6. **servo_build_id 指针 bug + tag 统一**(9698acc3):`servo_id[0] as *const c_char`='S'(0x53)当指针;si_addr=0x53 实证;bao stencil XDR decode 是首个调用方→8/8 浏览器 e2e 崩。修复+双写者 tag 字节统一(canonical xdr_cache::BUILD_ID_TAG,servo 镜像,双向注释)。CLAUDE.md servo patch 表登记。8/8 绿(realworld_full_stack/security_sandbox 全过)。
+
+**取证方法沉淀**:符号化载体=test-ci-dbg profile(`cargo build --profile test-ci-dbg --tests`,C/Rust 双符号);strace 必须 trace sendto(send 不走 write);三层插桩法(C fprintf+BIO/flush 点位)10 分钟定位"返回 237 但零上线"类伪写入;`_siginfo._sifields._sigfault.si_addr` 与常量字节值对照可直接锤指针-从-值类 bug(0x53='S')。
