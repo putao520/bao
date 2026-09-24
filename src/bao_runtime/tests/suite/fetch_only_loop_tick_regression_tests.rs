@@ -48,6 +48,52 @@ fn find_bao_binary() -> PathBuf {
             return p;
         }
     }
+    // Injected-target builds (CARGO_TARGET_DIR env, the farm/CI shape):
+    // the workspace target dir is NOT under the manifest — probe the env
+    // target first or every binary-seeking test fails with a false "not
+    // found" despite a fresh bao sitting in the real target tree.
+    if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
+        for profile in ["debug", "release"] {
+            for name in ["bao", "bao.exe"] {
+                let candidate = std::path::Path::new(&t).join(profile).join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    // Static config injection (.cargo/config.toml [build] target-dir — the
+    // single-compile-universe shape where the workspace target dir is NOT
+    // under the manifest): parse the key so binary-seeking tests resolve
+    // the real target tree in every shell shape (env, config, manifest).
+    {
+        let cfg = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|root| root.join(".cargo/config.toml"));
+        if let Some(cfg) = cfg {
+            if let Ok(text) = std::fs::read_to_string(&cfg) {
+                if let Some(line) = text
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("target-dir"))
+                {
+                    if let Some(idx) = line.find('"') {
+                        if let Some(dir) = line[idx + 1..].split('"').next() {
+                            for profile in ["debug", "release"] {
+                                for name in ["bao", "bao.exe"] {
+                                    let candidate =
+                                        std::path::Path::new(dir).join(profile).join(name);
+                                    if candidate.is_file() {
+                                        return candidate;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = manifest
         .parent()
