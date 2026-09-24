@@ -2176,7 +2176,7 @@ impl<'trie, T: TrieValue> AbstractCodePointTrie<'trie, T> for CodePointTrie<'tri
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "icu-meta-dev"))] // alloc::Vec + databake cross-check deps absent in the extracted crate
 mod tests {
     use super::*;
     use crate::codepointtrie::planes;

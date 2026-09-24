@@ -59,8 +59,9 @@ unsafe fn compile_to_stencil(
 ) -> *mut jsapi::Stencil {
     let options = CompileOptionsWrapper::new(cx, CString::new(filename).unwrap(), 1);
     let mut source = transform_str_to_source_text(src);
-    let addrefed = wrappers2::CompileGlobalScriptToStencil(cx, options.ptr, &mut source);
-    let raw = addrefed.mRawPtr;
+    // ABI-safe face (bao #18): the plain wrapper is private + Itanium-shaped;
+    // the msvc-safe raw-pointer trampoline is the public ABI on every target.
+    let raw = wrappers2::bao_CompileGlobalScriptToStencil(cx, options.ptr, &mut source);
     assert!(!raw.is_null(), "CompileGlobalScriptToStencil failed");
     raw
 }

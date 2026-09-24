@@ -295,7 +295,7 @@ pub enum InvalidStringList {
     ),
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "icu-meta-dev"))] // upstream test API (try_from_u32_inversion_list_slice) not extracted
 mod tests {
     use super::*;
 

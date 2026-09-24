@@ -58,7 +58,12 @@ where
     }
 }
 
-#[cfg(test)]
+// The upstream test module cross-checks against the `icu` meta-crate and
+// `databake` — neither is in this extracted crate's dependency set. Gate the
+// whole module on a dev feature that is never enabled in-tree, so
+// `cargo test --workspace` links (the module needs deps that don't exist
+// here; upstream runs it inside the icu4x workspace).
+#[cfg(all(test, feature = "icu-meta-dev"))]
 mod tests {
     use core::fmt::Debug;
     use icu::collections::codepointinvlist::CodePointInversionListBuilder;

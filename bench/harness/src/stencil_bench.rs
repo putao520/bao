@@ -163,11 +163,14 @@ unsafe fn compile_stencil(
         let opts = CompileOptionsWrapper::new(realm_cx, filename, 1);
         let mut source = transform_str_to_source_text(src);
         let addrefed =
-            wrappers2::CompileGlobalScriptToStencil(realm_cx, opts.ptr, &mut source);
-        if addrefed.mRawPtr.is_null() {
+            // ABI-safe face (bao #18): plain wrapper is private + Itanium-shaped.
+            wrappers2::bao_CompileGlobalScriptToStencil(realm_cx, opts.ptr, &mut source);
+        // bao_CompileGlobalScriptToStencil returns the raw *mut Stencil
+        // directly (the trampoline unwraps the already_AddRefed shell).
+        if addrefed.is_null() {
             return Err(format!("{label}: CompileGlobalScriptToStencil returned null"));
         }
-        Ok(addrefed.mRawPtr)
+        Ok(addrefed)
     }
 }
 

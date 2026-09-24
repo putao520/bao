@@ -42,6 +42,13 @@ repository = "https://github.com/servo/mozjs"
 all-features = true
 
 [features]
+# bao extraction note: the src-unit tests gated on `icu-meta-dev` use the
+# upstream icu4x meta-workspace umbrella (`icu::collections`,
+# `icu::properties`) which is NOT vendored in this tree — upstream runs them
+# inside the icu4x workspace. The feature is declared (default-off) so the
+# cfg has a defined meaning in-tree; enabling it here cannot resolve the
+# umbrella crate, so it stays off outside a full icu4x checkout.
+icu-meta-dev = []
 alloc = [
     "serde?/alloc",
     "zerovec/alloc",

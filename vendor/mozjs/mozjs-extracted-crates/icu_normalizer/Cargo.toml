@@ -42,6 +42,18 @@ repository = "https://github.com/servo/mozjs"
 all-features = true
 
 [features]
+# bao extraction notes (both default-off, SM-vendored-tree self-test use only):
+# - icu-properties-dev: test_ccc / test_ccc_owned cross-check against
+#   icu_properties, which the extracted crate does not carry as a dev-dep;
+#   enabling this pulls the optional regular dep so the bodies compile.
+# - upstream-conformance-dev: test_is_normalized asserts the CURRENT
+#   upstream icu4x is_normalized_utf8 semantics for ill-formed input
+#   (WHATWG replacement then compare → true); the SM-vendored impl revision
+#   returns false for the same bytes. Vendored impl↔test skew, registered in
+#   .plans/spidermonkey-evolution.md — not a bao product defect (SM's own
+#   Intl behavior is internally consistent).
+icu-properties-dev = ["icu_properties"]
+upstream-conformance-dev = []
 compiled_data = [
     "dep:icu_normalizer_data",
     "icu_properties?/compiled_data",

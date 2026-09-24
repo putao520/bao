@@ -749,7 +749,7 @@ impl<'data> CodePointInversionList<'data> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "icu-meta-dev"))] // databake cross-check dep absent in the extracted crate
 mod tests {
     use super::{CodePointInversionList, InvalidSetError};
     use std::{char, vec::Vec};

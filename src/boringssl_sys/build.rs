@@ -513,6 +513,13 @@ fn main() {
     build.compile("boringssl");
 
     println!("cargo:rerun-if-changed={}/", bssl_dir.display());
+    // C++ runtime link directive: the vendored BoringSSL C++ objects
+    // reference sized operator delete — every consumer's link line needs
+    // the C++ stdlib. Linux only (msvc's CRT C++ runtime needs no extra
+    // lib; apple uses libc++dyld via cc defaults).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-lib=stdc++");
+    }
 }
 
 // cc-rs-compatible per-target compiler probe, mirroring cc's own resolution

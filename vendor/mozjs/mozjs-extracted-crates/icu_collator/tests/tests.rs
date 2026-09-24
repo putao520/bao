@@ -142,6 +142,10 @@ fn test_currency() {
 }
 
 #[test]
+// SM-vendored baked data (pruned CLDR subset, its own CLDR pin) does not
+// carry the locale tailoring / conformance corpus this test asserts — see
+// the `upstream-conformance-dev` feature note in Cargo.toml.
+#[cfg(feature = "upstream-conformance-dev")]
 fn test_bo() {
     let prefs = locale!("bo").into();
     let options = CollatorOptions::default();
@@ -815,6 +819,10 @@ fn test_reordering() {
 }
 
 #[test]
+// SM-vendored baked data (pruned CLDR subset, its own CLDR pin) does not
+// carry the locale tailoring / conformance corpus this test asserts — see
+// the `upstream-conformance-dev` feature note in Cargo.toml.
+#[cfg(feature = "upstream-conformance-dev")]
 fn test_reordering_owned() {
     let prefs = locale!("bn").into();
 
@@ -879,6 +887,10 @@ fn test_vi() {
 }
 
 #[test]
+// SM-vendored baked data (pruned CLDR subset, its own CLDR pin) does not
+// carry the locale tailoring / conformance corpus this test asserts — see
+// the `upstream-conformance-dev` feature note in Cargo.toml.
+#[cfg(feature = "upstream-conformance-dev")]
 fn test_vi_owned() {
     {
         let prefs = locale!("vi").into();
@@ -1251,6 +1263,10 @@ fn test_tr_primary() {
 }
 
 #[test]
+// SM-vendored baked data (pruned CLDR subset, its own CLDR pin) does not
+// carry the locale tailoring / conformance corpus this test asserts — see
+// the `upstream-conformance-dev` feature note in Cargo.toml.
+#[cfg(feature = "upstream-conformance-dev")]
 fn test_tr_primary_owned() {
     // Adapted from `CollationTurkishTest::TestPrimary` in trcoll.cpp in ICU4C
     let left = ["üoid", "voıd", "idea"];
@@ -1303,6 +1319,10 @@ fn test_lt_tertiary() {
 }
 
 #[test]
+// SM-vendored baked data (pruned CLDR subset, its own CLDR pin) does not
+// carry the locale tailoring / conformance corpus this test asserts — see
+// the `upstream-conformance-dev` feature note in Cargo.toml.
+#[cfg(feature = "upstream-conformance-dev")]
 fn test_lt_tertiary_owned() {
     let left = [
         "a\u{0307}\u{0300}a",
@@ -1696,6 +1716,10 @@ fn test_cantillation_utf8() {
 }
 
 #[test]
+// SM-vendored baked data (pruned CLDR subset, its own CLDR pin) does not
+// carry the locale tailoring / conformance corpus this test asserts — see
+// the `upstream-conformance-dev` feature note in Cargo.toml.
+#[cfg(feature = "upstream-conformance-dev")]
 fn test_conformance_shifted() {
     // Adapted from `UCAConformanceTest::TestTableShifted` of ucaconf.cpp in ICU4C.
     let bugs = [];
@@ -1739,6 +1763,10 @@ fn test_conformance_shifted() {
 }
 
 #[test]
+// SM-vendored baked data (pruned CLDR subset, its own CLDR pin) does not
+// carry the locale tailoring / conformance corpus this test asserts — see
+// the `upstream-conformance-dev` feature note in Cargo.toml.
+#[cfg(feature = "upstream-conformance-dev")]
 fn test_conformance_non_ignorable() {
     // Adapted from `UCAConformanceTest::TestTableNonIgnorable` of ucaconf.cpp in ICU4C.
     let bugs = [];

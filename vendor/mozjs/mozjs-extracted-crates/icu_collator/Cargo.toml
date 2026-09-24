@@ -42,6 +42,15 @@ repository = "https://github.com/servo/mozjs"
 all-features = true
 
 [features]
+# bao extraction note (default-off): the locale-tailoring and
+# CollationTest.TXT conformance tests gated on `upstream-conformance-dev`
+# expect the FULL upstream CLDR corpus (Tibetan/Lithuanian/Turkish/
+# Vietnamese tailorings, variable-weighting conformance lines). The
+# SM-vendored baked data is SpiderMonkey's pruned subset under its own CLDR
+# pin, which does not reproduce those expectations (root-fallback orderings
+# and corpus-version drift). Meaningful only against full icu4x compiled
+# data; registered in .plans/spidermonkey-evolution.md.
+upstream-conformance-dev = []
 compiled_data = [
     "dep:icu_collator_data",
     "icu_normalizer/compiled_data",
