@@ -1409,9 +1409,15 @@ mod tests {
                 minify_whitespace: false,
             },
         )?;
-        // TODO(port): Zig accessed writer.ctx.buffer.list.items.ptr[0..written+1].
+        // PORT FIX: Zig read items.ptr[0..written+1] because its `written` was
+        // captured BEFORE the writer appended the trailing newline/`;` byte —
+        // the +1 pulled that byte in. The Rust `print_json` returns
+        // `writer.slice().len()` AFTER `done()` (newline already inside), so
+        // the content is exactly `buf[0..written]`; the old `+1` read past the
+        // buffer whenever it was full (deep-array round trip: end 502 > len
+        // 501).
         let buf = &writer.ctx.buffer.list;
-        let mut js = &buf[0..written + 1];
+        let mut js = &buf[0..written];
 
         if js.len() > 1 {
             while js[js.len() - 1] == b'\n' {
