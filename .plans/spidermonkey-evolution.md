@@ -2177,3 +2177,13 @@ openSync windows=恒假 fd 0 的静默 stub(open/close/ftruncate/read/write 五�
 ### 合并:daily-ops 吸收波并入主线(0d1b51e0,2026-09-24)
 
 dops-20260923(5 commits:4 absorb+1 fix)三步验证绿(bun_runtime suite 构建/servo net·script·layout·fonts check 0 错/stream_locked 回归 1/1)后 merge 入 master。#47 验收核对过零改动;5 项延迟分诊全判定(档存 worktree daily-ops 目录)。合并后树:bun_runtime linux check 绿+windows suite 构建绿;真机抽验 stream_locked 1/1、fs 族 25/25 绿。tls_sni 6 失败=node:tls JS 驱动面(open 残余,签名已由 E7 换签归档)。今日 master 累计 14 commits 待 push(用户裁决后)。残余开放清单不变:RunJobs 窗口悬案/bun_glob/bun_build parse-worker/h2×2/c2 性能/sys fs O_* 横扫/soak 三连败(今晚树净验证)。
+
+### ★用户纠偏·回归三连根治(e7f96656,2026-09-24)
+
+用户点名「大量上游已解决+我们自己已解决的内容被回归」——实证确认,git 二分定位三个真回归全灭:
+1. **BunSocketContextOptions 结构 ABI 错位**(4af 吸收波 fc34baa8 引入):C header 在 secure_options 后新增 ssl_min/max_version+尾部 6 字段,Rust repr(C) 未跟——secure_options 之后全字段错位,create_ssl_context 读到垃圾(proxy FailedToOpenSocket/TLS 全面)。修=逐字段镜像 header+对齐契约注释。
+2. **h2 stream 事件 headers 丢失小写契约**:4af 吸收后 uWS 迭代器返回原始大小写(Host:),headers.host 读 undefined。修=ingest 小写(node http2 语义)。
+3. **bun_build drive_event_loop 被砍成裸轮询**(8d965656 引入):RunJobs+tick+sleep 全删,promise 永不 settle+15000 次纯 CPU 空烧。修=事件驱动等待恢复。
+连带:204 语义断言按 RFC 7230 §3.3.2 平台化(node oracle:204 无 CL 无 body)。
+**Linux 全绿:bun_runtime 601/601+bao_engine 391/391**;windows 交叉构建绿;已 push(e7f96656)。
+教训入账:上游吸收(尤其 vendor C header 结构变更)必须横扫核对 repr(C) 镜像结构体——签名迁移(函数)不够,数据结构同样要逐字段对齐;测试驱动循环改造时保留驱动语义(只改等待判据,不删 RunJobs/tick)。
