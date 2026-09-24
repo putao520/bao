@@ -7,7 +7,7 @@ use ::std::net::{TcpListener, TcpStream, ToSocketAddrs};
 #[cfg(unix)]
 use ::std::os::fd::AsRawFd;
 #[cfg(windows)]
-use ::std::os::windows::io::AsRawSocket;
+use ::std::os::windows::io::{AsRawSocket, IntoRawSocket};
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use ::std::sync::{Arc, Mutex, OnceLock};
@@ -497,7 +497,7 @@ enum DriverCmd {
 //   read/write/close on the wake fd ↔ recv/send/closesocket
 #[cfg(windows)]
 mod drv {
-    use ::std::os::windows::io::AsRawSocket;
+    use ::std::os::windows::io::{AsRawSocket, IntoRawSocket};
     use bun_windows_sys::ws2_32::{
         closesocket, ioctlsocket, recv, send, FIONBIO, SOCKET_ERROR, WSAPOLLFD, WSAPoll,
     };
@@ -515,24 +515,38 @@ mod drv {
     pub fn make_wake_pair() -> Option<(Raw, Raw)> {
         // Loopback TCP pair stands in for the posix wake pipe: the write end
         // wakes the driver's poll; the read end is non-blocking for draining.
+        //
+        // OWNERSHIP (root fix 2026-09-25): the returned fds must OUTLIVE this
+        // function — the driver polls the read end for the process lifetime
+        // and every JS-side wake sends on the write end. The first version
+        // returned `as_raw_socket()` casts while the owning std objects were
+        // dropped at scope exit, which CLOSED both sockets on the spot: the
+        // driver then sat on a dead fd (WSAPoll → POLLNVAL 0x4 every call,
+        // busy-loop) and every `tls_driver_wake` send returned -1 — the
+        // event chain died right after the handshake phase (client 'data'
+        // never delivered; wire-proven: wake send rc=-1 + wake_re=0x4).
+        // `into_raw_socket` hands ownership to the raw fds the driver keeps.
         let listener = ::std::net::TcpListener::bind("127.0.0.1:0").ok()?;
         let write = ::std::net::TcpStream::connect(
             listener.local_addr().ok()?,
         )
         .ok()?;
-        let (read, _) = listener.accept().ok()?;
+        let (read, _peer_addr) = listener.accept().ok()?;
+        let read_fd = read.into_raw_socket();
+        let write_fd = write.into_raw_socket();
         let mut mode: u32 = 1; // FIONBIO
         unsafe {
-            if ioctlsocket(read.as_raw_socket() as Raw, FIONBIO, &mut mode) == SOCKET_ERROR {
+            if ioctlsocket(read_fd as Raw, FIONBIO, &mut mode) == SOCKET_ERROR {
                 return None;
             }
         }
-        Some((read.as_raw_socket() as Raw, write.as_raw_socket() as Raw))
+        Some((read_fd as Raw, write_fd as Raw))
     }
 
     pub fn wake_write(fd: Raw, byte: &[u8]) {
         unsafe { send(fd, byte.as_ptr().cast(), byte.len() as i32, 0) };
     }
+
 
     /// Drain pending wake bytes; non-blocking (FIONBIO read end).
     pub fn drain(fd: Raw, buf: &mut [u8]) -> isize {
@@ -600,6 +614,7 @@ mod drv {
             let _ = libc::write(fd, byte.as_ptr().cast::<core::ffi::c_void>(), 1);
         }
     }
+
 
     pub fn drain(fd: Raw, buf: &mut [u8]) -> isize {
         unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }
