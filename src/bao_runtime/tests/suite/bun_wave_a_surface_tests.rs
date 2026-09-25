@@ -265,11 +265,22 @@ fn test_bun_wave_a_surface_all_body() {
     let tmp = std::env::temp_dir().join("bao_wave_a_exists.txt");
     std::fs::write(&tmp, b"x").unwrap();
     let tmp_js = tmp.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    // file:// URL of a Windows absolute path: the drive letter must ride in
+    // the PATH component (file:///C:/...), not the host slot — `file://C:`
+    // parses `C:` as host and decodes to a nonexistent path (POSIX temp
+    // paths are already well-formed as file:///...).
+    let file_url = if cfg!(windows) {
+        // drive-letter path: push it into the path component (file:///C:/x)
+        format!("file:///{}", tmp.to_string_lossy().replace('\\', "/"))
+    } else {
+        // POSIX absolute path already carries its own leading slash.
+        format!("file://{}", tmp.to_string_lossy())
+    };
     eval_ok(
         &mut ctx,
         &format!(
-            r#"var f2 = ''; var fu = new URL('file://{}'); Bun.file(fu).exists().then(function(v){{ f2 = String(v) + ':' + Bun.file(fu).path; }}); 'k'"#,
-            tmp_js
+            r#"var f2 = ''; var fu = new URL('{}'); Bun.file(fu).exists().then(function(v){{ f2 = String(v) + ':' + Bun.file(fu).path; }}); 'k'"#,
+            file_url
         ),
     );
     let f2 = eval_str(&mut ctx, "f2");

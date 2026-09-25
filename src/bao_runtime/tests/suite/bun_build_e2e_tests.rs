@@ -432,7 +432,7 @@ fn test_bun_build_hash_widen_on_collision() {
 }
 
 fn test_bun_build_hash_widen_on_collision_body() {
-    bun_core::output::init_test();
+        bun_core::output::init_test();
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     bao_bundler::build_api::install();
