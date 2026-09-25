@@ -349,6 +349,20 @@ fn test_bun_build_e2e_all_body() {
     });
     run_await_text_scenario(&mut ctx);
     let artifact_text = eval_string(&mut ctx, "globalThis.__r.text");
+    // Anti-vacuity guard (outdir Saved-bytes defect): a broken pipeline that
+    // loses the artifact bytes made BOTH sides of the byte-equality below
+    // empty and the assertion pass vacuously. The entry marker must actually
+    // be present before the comparison means anything.
+    assert!(
+        artifact_text.contains("outdir-bytes"),
+        "artifact bytes must carry the entry marker, got: {:?}",
+        artifact_text
+    );
+    assert!(
+        !disk_bytes.is_empty(),
+        "on-disk artifact must not be empty ({} bytes)",
+        disk_bytes.len()
+    );
     assert_eq!(
         String::from_utf8_lossy(&disk_bytes),
         artifact_text,

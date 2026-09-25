@@ -237,26 +237,23 @@ fn run_bundle(config: &NativeBuildConfig) -> NativeBuildResult {
 /// (mirrors upstream `configureBundler`'s post-init option writes).
 fn apply_api_overrides(transpiler: &mut Transpiler<'_>, config: &NativeBuildConfig) {
     let options = &mut transpiler.options;
-    // from_api defaults `output_dir` to "out" (CLI parity); the JS API wants
-    // the in-memory build (artifacts carry bytes; `outdir` writes happen from
-    // the same bytes after the build), so empty it before the linker picks
-    // the disk-write branch (`root_path.len() > 0`).
-    let output_dir: Box<[u8]> = match &config.outdir {
-        Some(dir) => Box::from(dir.as_bytes()),
-        // from_api defaults output_dir to "out" (CLI parity); the JS API
-        // wants the in-memory build (artifacts carry bytes; `outdir` writes
-        // happen from the same bytes after the build), so empty it before the
-        // linker picks the disk-write branch (`root_path.len() > 0`).
-        None => Box::default(),
-    };
-    options.output_dir = output_dir.clone();
-    // The linker reads `resolver.opts.output_dir` (Zig stores the full
-    // BundleOptions on the resolver; from_api projects the bundler-only
-    // fields there) — override BOTH sides or the disk-write branch still
-    // fires off the resolver's copy.
-    // SAFETY-free: `resolver` is a plain field; `opts` is the resolver-side
-    // projected BundleOptions.
-    transpiler.resolver.opts.output_dir = output_dir;
+    // The JS-face build is ALWAYS in-memory. from_api defaults `output_dir` to
+    // "out" (CLI parity), so empty it on both the options and the resolver-side
+    // projection — the linker reads `resolver.opts.output_dir` to pick its
+    // disk-write branch (`generateChunksInParallel`: `root_path =
+    // resolver.opts.output_dir`; non-empty → `write_output_files_to_disk`).
+    //
+    // Feeding `config.outdir` here (the previous behavior) was a defect: the
+    // disk-write branch returns chunk artifacts as `Value::Saved` (bytes NOT
+    // retained), so `map_outputs` read them back CWD-relative
+    // (`read_saved_bytes`) → empty bytes, which `write_outputs_to_disk` then
+    // clobbered over the linker's own on-disk file — every `outdir` build
+    // produced 0-byte artifacts in the JS face (and on Windows the linker's
+    // dirfd-relative write chain fails outright, failing the build). The
+    // outdir contract is served after the build by `write_outputs_to_disk`,
+    // from the same in-memory bytes.
+    options.output_dir = Box::default();
+    transpiler.resolver.opts.output_dir = Box::default();
     options.minify_whitespace = config.minify.whitespace;
     options.minify_syntax = config.minify.syntax;
     options.minify_identifiers = config.minify.identifiers;

@@ -164,12 +164,17 @@ fn test_child_process_vm_module_zlib_deep_body() {
     );
 
     // spawnSync returns result
+    // Windows: `echo` is a cmd.exe builtin (the file spawn ENOENTs — same
+    // platformization as the three arms above and the execFileSync arm
+    // below's own precedent).
     assert!(
         eval_bool(
             &mut ctx,
             r#"
         var cp = require('child_process');
-        var result = cp.spawnSync('echo', ['sync_test']);
+        var isWin = process.platform === 'win32';
+        var result = isWin ? cp.spawnSync('cmd.exe', ['/C', 'echo', 'sync_test'])
+                           : cp.spawnSync('echo', ['sync_test']);
         typeof result === 'object'
     "#
         ),
