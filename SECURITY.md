@@ -1,8 +1,8 @@
 # Security Policy
 
-Bao 是一个 Rust-native 浏览器运行时(alpha 阶段),安全加固仍在持续进行中。本文档说明如何负责任地报告安全漏洞。
+Bao 是一个可嵌入 Rust 应用的 JS/TS system runtime，组合 SpiderMonkey、Rust-native Node.js/Bun-compatible system APIs、Servo Web Runtime、CDP compatibility 与 Stealth。Bao 当前仍处于 0.x 快速迭代阶段，安全加固持续进行中。本文档说明如何负责任地报告安全漏洞。
 
-> **诚实声明**:Bao 当前版本为 `0.1.0-alpha`,尚未达到生产可用状态。已知安全面(尤其 CDP Server 默认监听、反指纹引擎边界、Node.js/Bun 兼容层与 Web API 共享 JSContext 的互操作)仍在加固。我们欢迎安全研究,但请不要将其视为已经 harden 的生产软件。
+> **诚实声明**:Bao 尚未达到稳定版（1.0）承诺。0.x 阶段 API、平台支持与安全边界仍可能变化；尤其是 CDP、浏览器/Web Runtime、Node.js/Bun 兼容层、FFI/native bridge 与宿主资源边界仍在持续加固。我们欢迎安全研究，但请不要将 0.x 版本视为已经 fully hardened 的生产软件。
 
 ---
 
@@ -10,10 +10,10 @@ Bao 是一个 Rust-native 浏览器运行时(alpha 阶段),安全加固仍在持
 
 | Version | Supported | Notes |
 |---------|-----------|-------|
-| `0.1.0-alpha` | ✅ 安全修复 | 当前唯一发布版本 |
-| `< 0.1.0` (pre-alpha / dev branch) | ❌ 不接受 | 临时开发分支,请用 tagged release 复现 |
+| 最新 tagged 0.x release | ✅ 安全修复 | 当前支持版本；报告前请先在最新 tagged release 上复现 |
+| 旧的 0.x release / 开发快照 | ❌ 不承诺回补 | 请升级到最新 tagged release 后再验证 |
 
-alpha 阶段我们**不会**为旧版本回port修复——升级到最新 tagged release 即可获得所有安全补丁。
+0.x 阶段我们**不会承诺为旧版本 backport 安全修复**——安全修复进入最新 tagged release。若问题只存在于旧版本而最新版本已修复，请在报告中注明受影响版本范围。
 
 ---
 
