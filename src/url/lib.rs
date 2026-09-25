@@ -279,6 +279,28 @@ pub mod whatwg {
                 v
             });
         };
+        // Windows drive-letter normalization (Node `url.fileURLToPath`
+        // parity, WINRED 2026-09-26): `file:///C:/x` leaves the drive letter
+        // behind the path-leading slash — the native path is `C:\x`. Strip
+        // the slash before a drive letter and fold separators to `\`.
+        // POSIX paths are untouched.
+        #[cfg(windows)]
+        {
+            let bytes = path;
+            if bytes.len() >= 3
+                && bytes[0] == b'/'
+                && bytes[1].is_ascii_alphabetic()
+                && bytes[2] == b':'
+            {
+                let mut v = Vec::with_capacity(bytes.len() - 1);
+                v.push(bytes[1]);
+                v.push(b':');
+                for &c in &bytes[3..] {
+                    v.push(if c == b'/' { b'\\' } else { c });
+                }
+                return string_from_owned_bytes(v);
+            }
+        }
         string_from_owned_bytes(path.to_vec())
     }
 

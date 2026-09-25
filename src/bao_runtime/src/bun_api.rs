@@ -6235,7 +6235,55 @@ unsafe extern "C" fn bun_file_exists(cx: *mut JSContext, argc: u32, vp: *mut JSV
     {
         path = crate::js_to_rust_string(cx, path_v);
     }
-    let exists = !path.is_empty() && bun_sys::fs::metadata(&path).is_ok();
+    // Path-form stat first; fd-form fallback (WINRED 2026-09-26): the fd
+    // form's synthetic path (`/dev/stdin` & friends, `/proc/self/fd/N`) is
+    // a POSIX device/link path that never stats on Windows — and even on
+    // POSIX a deleted-but-open fd should report exists via its descriptor.
+    // When the object carries a live `fd`, the descriptor is the truth.
+    let path_exists = !path.is_empty() && bun_sys::fs::metadata(&path).is_ok();
+    let exists = if path_exists {
+        true
+    } else {
+        let mut fd_v = UndefinedValue();
+        let has_fd = JS_GetProperty(
+            cx,
+            obj.handle().into(),
+            c"fd".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut fd_v,
+            },
+        );
+        if has_fd && fd_v.is_int32() {
+            let fd = fd_v.to_int32();
+            if fd >= 0 {
+                #[cfg(unix)]
+                {
+                    let mut st: libc::stat = unsafe { ::std::mem::zeroed() };
+                    // SAFETY: fd is a number property on this BunFile; fstat
+                    // only reads it.
+                    unsafe { libc::fstat(fd, &mut st) == 0 }
+                }
+                #[cfg(windows)]
+                {
+                    // CRT-level fstat on the fd (works for std streams and
+                    // regular files; character devices included).
+                    #[link(name = "ucrt")]
+                    unsafe extern "C" {
+                        fn _fstat64i32(fd: i32, out: *mut u8) -> i32;
+                    }
+                    let mut buf = [0u8; 160]; // struct _stat64i32
+                    // SAFETY: fd from the JS property; out buffer sized for
+                    // the CRT struct; call only reads the descriptor.
+                    unsafe { _fstat64i32(fd, buf.as_mut_ptr()) == 0 }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
 
     rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
     if promise.get().is_null() {
