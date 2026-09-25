@@ -91,6 +91,7 @@ fn test_child_process_vm_module_zlib_deep_body() {
         spawn_result.contains("pid_ok"),
         "spawn should return object with pid"
     );
+    {
 
     // spawn has stdout/stderr methods
     assert!(
@@ -126,6 +127,7 @@ fn test_child_process_vm_module_zlib_deep_body() {
         ),
         "spawn child should have kill"
     );
+    }
 
     // execSync returns output
     let exec_output = eval_string(

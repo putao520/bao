@@ -2210,6 +2210,20 @@ mod spawn_process_body {
                 unreachable!()
             };
             (*process).pid = uv_proc.pid;
+            // Ref-ledger mirror (WINRED flake root fix, 2026-09-26):
+            // `on_exit_uv` adopts "the +1 ref taken at uv_spawn" via
+            // `RefPtr::from_raw` and releases it on return — a ref nobody
+            // ever took. Without this mirror the exit callback underflows
+            // the intrusive count and frees the Process while its uv close
+            // endgame is still queued → intermittent 0xC0000005 in
+            // `uv__process_endgames` (.200 wire-proven). Full ledger after
+            // this: owner +1 (JS/sync side), mirror +1 (on_exit_uv),
+            // close-callback +1 (taken inside `close()`, released by
+            // `on_close_uv`) — the last one keeps the memory alive until
+            // the close endgame completes, which is the libuv contract.
+            // SAFETY: `process` is the freshly-spawned live Process; ref_
+            // only bumps the atomic count.
+            bun_ptr::ThreadSafeRefCount::<Process>::ref_(process);
             // Function pointers compared by address (`as usize`): direct
             // `fn == fn` is unreliable across codegen units and triggers
             // `unpredictable_function_pointer_comparisons`.

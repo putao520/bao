@@ -254,21 +254,24 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
         let pipes_drained =
             (stdout_eof || stdout_handle.is_null()) && (stderr_eof || stderr_handle.is_null());
 
-        // Exit detection EVERY iteration — the unix waitpid(WNOHANG) probe's
-        // twin. update_status_on_windows lifts an already-observed uv exit
-        // into the Process Status; we then read it and stash (exit_code,
-        // signal) exactly like the unix WIFEXITED/WTERMSIG arms.
+        // Exit observation (WINRED flake root fix, 2026-09-26): this
+        // thread only READS the Status — it must never drive uv. The old
+        // body called update_status_on_windows here, whose fall-through
+        // invokes uv_close on the JS thread's loop from THIS thread:
+        // cross-thread libuv queue mutation (single-threaded loop
+        // contract), racing the loop's own tick → intermittent
+        // 0xC0000005 in uv__process_endgames (.200 wire-proven stack).
+        // Exit delivery is single-path: the loop's on_exit_uv fires on
+        // the JS thread (guaranteed ticked by drain's live-children
+        // branch) or cp_try_reap on the JS thread — both legal loop
+        // owners. This thread mirrors the unix twin's read-and-stash.
         {
             let mut s = state.lock().unwrap();
             if !s.child_exited {
                 if let Some(process) = s.process {
-                    // SAFETY: `process` is the live intrusive `*mut Process`
-                    // handed over by WindowsSpawnResult (sole parent-side
-                    // owner after the result dropped) and only touched
-                    // through the spawn face's own methods.
-                    unsafe { Process::update_status_on_windows(process) };
-                    // SAFETY: same liveness contract; the Status read mirrors
-                    // what the uv exit callback wrote.
+                    // SAFETY: read-only clone of the POD Status field; the
+                    // write side is the loop's exit callback (JS thread) or
+                    // cp_try_reap (JS thread).
                     let status = unsafe { (*process).status.clone() };
                     match status {
                         Status::Exited(exited) => {
