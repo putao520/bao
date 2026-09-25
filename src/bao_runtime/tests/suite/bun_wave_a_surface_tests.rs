@@ -175,7 +175,19 @@ fn test_bun_wave_a_surface_all() {
     crate::exit_isolation::dispatch_timeout("bun_wave_a_surface_tests::test_bun_wave_a_surface_all", test_bun_wave_a_surface_all_body);
 }
 
+
+    #[cfg(windows)]
+    fn hc_probe() {
+        #[link(name = "ucrt")]
+        unsafe extern "C" {
+            fn _heapchk() -> i32;
+        }
+        let r = unsafe { _heapchk() };
+        eprintln!("[hc-probe] rc={}", r);
+    }
 fn test_bun_wave_a_surface_all_body() {
+    #[cfg(windows)]
+    hc_probe();
 
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();

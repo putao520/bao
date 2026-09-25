@@ -29,6 +29,10 @@ fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
 
 #[test]
 fn test_child_process_vm_module_zlib_deep() {
+    eprintln!(
+        "[env-parent] GC={}",
+        ::std::env::var_os("BAO_WINRED_GC").is_some()
+    );
     // Deadline isolation: this body crashes (AV/abort) on Windows —
     // run it in a bounded child so the shared-process harness survives
     // to report the failure (crash class).
@@ -36,18 +40,89 @@ fn test_child_process_vm_module_zlib_deep() {
 }
 
 fn test_child_process_vm_module_zlib_deep_body() {
+    // TEMP-flake: VEH faulting address + module base for attribution.
+    bun_crash_handler::init();
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            safe fn GetModuleHandleW(name: *const u16) -> *mut ::std::ffi::c_void;
+        }
+        eprintln!("[base] exe={:p}", unsafe { GetModuleHandleW(::std::ptr::null()) });
+    }
+
+    #[cfg(windows)]
+    fn heapchk(tag: &str) {
+        #[link(name = "ucrt")]
+        unsafe extern "C" {
+            fn _heapchk() -> i32;
+        }
+        // _HEAPOK = 0; anything else is corruption (-1 = _HEAPEMPTY is fine=2? actually: -2 _HEAPBADBEGIN etc.)
+        let r = unsafe { _heapchk() };
+        if r != 0 && r != 2 {
+            eprintln!("[heapchk] CORRUPT after {}: rc={}", tag, r);
+        }
+    }
+    eprintln!("[ck] body-entry");
+    // TEMP-flake: catch the silent abort (std::terminate/abort face) and
+    // make it observable — names the aborting moment.
+    {
+        extern "C" fn on_abrt(_sig: i32) {
+            eprintln!("[sigabrt] CAUGHT — abort()/terminate path hit");
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                safe fn GetCurrentThreadId() -> u32;
+            }
+            eprintln!("[sigabrt] thread={}", unsafe { GetCurrentThreadId() });
+            ::std::process::exit(233);
+        }
+        unsafe {
+            libc::signal(libc::SIGABRT, on_abrt as usize);
+        }
+    }
+    eprintln!("[envd] PATH={:?}", ::std::env::var("PATH").unwrap_or_default());
+    eprintln!(
+        "[env] GC={} SKIP={} MAP={}",
+        ::std::env::var_os("BAO_WINRED_GC").is_some(),
+        ::std::env::var_os("BAO_SKIP_ASYNC_SPAWN").is_some(),
+        ::std::env::var_os("BAO_WINRED_MAP").is_some()
+    );
+    #[cfg(windows)]
+    heapchk("body-entry");
     bun_runtime::install_exit_handler();
+    eprintln!("[ck] exit-handler-done");
     bun_runtime::bun_api::init_process_start();
+    eprintln!("[ck] process-start-done");
     let mut ctx = JsContext::for_test().expect("JsContext");
+    eprintln!("[ck] ctx-created");
     ctx.set_global_setup(bun_runtime::globals::install_all);
+    eprintln!("[ck] global-setup-set");
 
     // =============================================
     // === child_process module ===
     // =============================================
+    eprintln!("[ck] pre-first-eval");
+    #[cfg(windows)]
+    heapchk("pre-first-eval");
     assert!(
         eval_bool(&mut ctx, "typeof require('child_process') === 'object'"),
         "child_process should be object"
     );
+    eprintln!("[ck] post-first-eval");
+    #[cfg(windows)]
+    heapchk("post-first-eval");
+    // TEMP-flake GC probe: force a full GC between the two evals. If the
+    // intermittent AV is the known opt-profile unrooted-JSObject class,
+    // forcing GC here should spike the crash rate toward 100%.
+    if ::std::env::var_os("BAO_WINRED_GC").is_some() {
+        unsafe {
+            mozjs::jsapi::JS_GC(
+                ctx.raw_cx(),
+                mozjs::jsapi::JS::GCReason::API,
+            )
+        };
+        eprintln!("[ck] forced-gc done");
+    }
 
     let cp = eval_string(
         &mut ctx,
@@ -181,6 +256,10 @@ fn test_child_process_vm_module_zlib_deep_body() {
         ),
         "spawnSync should return object"
     );
+
+    eprintln!("[ck] cp-section-done");
+    #[cfg(windows)]
+    heapchk("cp-section-done");
 
     // =============================================
     // === vm module ===

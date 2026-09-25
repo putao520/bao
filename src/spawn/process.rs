@@ -2210,6 +2210,16 @@ mod spawn_process_body {
                 unreachable!()
             };
             (*process).pid = uv_proc.pid;
+            // TEMP-flake map (remove after the AV hunt): record this
+            // handle and its queue-node address so a crash-site fault
+            // address can be attributed to its owner struct.
+            if ::std::env::var_os("BAO_WINRED_MAP").is_some() {
+                eprintln!(
+                    "[map] process={:p} qnode={:p}",
+                    uv_proc as *const _,
+                    ::std::ptr::addr_of!(uv_proc.handle_queue)
+                );
+            }
             // Ref-ledger mirror (WINRED flake root fix, 2026-09-26):
             // `on_exit_uv` adopts "the +1 ref taken at uv_spawn" via
             // `RefPtr::from_raw` and releases it on return — a ref nobody
@@ -2601,6 +2611,15 @@ mod spawn_process_body {
                 unsafe {
                     (*this).pipe.set_data(this.cast());
                     (*this).pipe.ref_();
+                    // TEMP-flake map (remove after the AV hunt).
+                    if ::std::env::var_os("BAO_WINRED_MAP").is_some() {
+                        let pipe_ptr: *const uv::Pipe = &*(*this).pipe;
+                        eprintln!(
+                            "[map] pipe={:p} qnode={:p}",
+                            pipe_ptr,
+                            ::std::ptr::addr_of!((*this).pipe.handle_queue)
+                        );
+                    }
                     if let Some(err) = (*this)
                         .pipe
                         .read_start(Some(Self::uv_alloc_cb), Some(Self::uv_read_cb))

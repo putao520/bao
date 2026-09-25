@@ -191,3 +191,4 @@ mod yarn_tarball_name_tests;
 mod zlib_deep_tests;
 mod zlib_silent_tests;
 mod node_conformance;
+mod minimal_sm_init_tests;

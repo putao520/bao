@@ -2027,6 +2027,70 @@ mod draft {
     ) -> c_long {
         // SAFETY: kernel provides a valid EXCEPTION_POINTERS
         let info = unsafe { &*info };
+        // TEMP-WINRED: dump the faulting RIP + the raw top-of-stack slots
+        // (return addresses) for the jump-to-heap class — the stock
+        // unwinder yields a single frame there, but the caller's return
+        // address is still sitting at [Rsp]. Remove after the AV hunt.
+        if true { // TEMP-WINRED unconditional
+            // CONTEXT (x64): Rsp@0x98, Rip@0xF8 — offsets from winnt.h.
+            let ctx = info.ContextRecord.cast::<u8>();
+            let rsp = unsafe { ctx.add(0x98).cast::<u64>().read_unaligned() };
+            let rip = unsafe { ctx.add(0xF8).cast::<u64>().read_unaligned() };
+            eprintln!("[stack] rip={rip:#x} rsp={rsp:#x}");
+            {
+                #[link(name = "kernel32")]
+                unsafe extern "system" {
+                    fn GetModuleHandleExW(
+                        flags: u32,
+                        addr: *const core::ffi::c_void,
+                        module: *mut *mut core::ffi::c_void,
+                    ) -> i32;
+                    fn GetModuleFileNameW(
+                        module: *mut core::ffi::c_void,
+                        path: *mut u16,
+                        len: u32,
+                    ) -> u32;
+                }
+                let mut hmod = core::ptr::null_mut();
+                if unsafe {
+                    GetModuleHandleExW(
+                        0x00000004, // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                        rip as *const core::ffi::c_void,
+                        &raw mut hmod,
+                    )
+                } != 0
+                {
+                    let mut buf = [0u16; 512];
+                    let n = unsafe { GetModuleFileNameW(hmod, buf.as_mut_ptr(), 512) };
+                    let name: String = buf[..n as usize]
+                        .iter()
+                        .map(|&c| c as u8 as char)
+                        .collect();
+                    let base = hmod as usize;
+                    eprintln!("[stack] rip-module={name} +{:#x}", (rip as usize) - base);
+                } else {
+                    eprintln!("[stack] rip-module=UNKNOWN");
+                }
+            }
+            for i in 0..12u64 {
+                let v = unsafe { (rsp as *const u64).add(i as usize).read_volatile() };
+                eprintln!("[stack] rsp+{:#04x} = {v:#x}", i * 8);
+            }
+        }
+        // TEMP-WINRED: intercept MSVC C++ EH throws (0xE06D7363) and dump
+        // their parameters — the throwing component names itself via the
+        // exception-object/type pointers. Remove after the AV hunt.
+        unsafe {
+            let code = (*info.ExceptionRecord).ExceptionCode;
+            if code as u32 == 0xE06D7363 {
+                let ei = &(*info.ExceptionRecord).ExceptionInformation;
+                eprintln!(
+                    "[cxx] throw: argc={} argv={:#x} info={:#x}/{:#x}/{:#x}/{:#x}",
+                    (*info.ExceptionRecord).NumberParameters,
+                    ei[0], ei[1], ei[2], ei[3], ei[4]
+                );
+            }
+        }
         let reason = match unsafe { (*info.ExceptionRecord).ExceptionCode } {
             bun_sys::windows::EXCEPTION_DATATYPE_MISALIGNMENT => CrashReason::DatatypeMisalignment,
             STATUS_HEAP_CORRUPTION => CrashReason::HeapCorruption,
