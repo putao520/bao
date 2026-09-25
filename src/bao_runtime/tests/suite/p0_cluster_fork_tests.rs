@@ -227,16 +227,25 @@ if (cluster.isWorker) {
     if (m && m.type === 'worker-up' && m.envOk === true) {
       w.send({ ping: 1 });
     }
+    // Disconnect only AFTER the pong roundtrip completed: a fixed 600ms
+    // clock raced the worker's cold boot on Windows (bao.exe engine init
+    // exceeds 600ms there; Linux boots well inside it) — the disconnect
+    // tore the IPC channel before worker-up was sent, the handshake starved,
+    // and the worker sat in its 60s watchdog (exitCode 3).
+    if (m && m.type === 'pong' && !results.__discScheduled) {
+      results.__discScheduled = true;
+      setTimeout(function () {
+        try {
+          cluster.disconnect(function () { results.disconnected = true; });
+        } catch (e) {}
+      }, 100);
+    }
   });
   w.on('exit', function (code, signal) {
     results.exitCode = code;
     results.exitSignal = signal;
   });
-  setTimeout(function () {
-    try {
-      cluster.disconnect(function () { results.disconnected = true; });
-    } catch (e) {}
-  }, 600);
+
 }
 "#;
     let script_path = std::env::temp_dir().join("bao_p0_cluster_worker.js");

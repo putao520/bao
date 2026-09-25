@@ -1818,9 +1818,6 @@ const CLUSTER_JS: &str = r#"
               m = cp.__cp_ipc_recv(w._pid);
             }
           } catch (e) {
-            // No silent swallowing (observable once per pid): a poll error
-            // that forever eats cluster events is exactly the
-            // primary-pump-starvation class this pump exists to prevent.
             if (!__pumpErrOnce['recv' + w._pid]) {
               __pumpErrOnce['recv' + w._pid] = 1;
               try { console.error('cluster pump recv error', w._pid, String(e && e.message || e)); } catch (e2) {}
@@ -1981,7 +1978,21 @@ const CLUSTER_JS: &str = r#"
         var w = cluster.workers[ids[i]];
         try { if (w.send) w.send({ __cluster: 'disconnect' }); } catch (e) {}
         try { if (w.disconnect) w.disconnect(); } catch (e) {}
-        try { if (cluster.__cluster_worker_kill) cluster.__cluster_worker_kill(w._pid, 15); } catch (e) {}
+        // Windows grace: TerminateProcess is instant (no signal delivery
+        // latency like POSIX SIGTERM) — killing in the same tick as the
+        // send beats the worker's 10ms pump to the pipe, so the graceful
+        // exit(0) path never runs and the worker sat in its watchdog. Give
+        // the pump a window to read the disconnect message first; the kill
+        // stays as the backstop it was designed to be.
+        if (cluster.__noSignals) {
+          (function (pw) {
+            setTimeout(function () {
+              try { if (cluster.__cluster_worker_kill) cluster.__cluster_worker_kill(pw, 15); } catch (e) {}
+            }, 500);
+          })(w._pid);
+        } else {
+          try { if (cluster.__cluster_worker_kill) cluster.__cluster_worker_kill(w._pid, 15); } catch (e) {}
+        }
       }
       if (typeof callback === 'function') {
         setTimeout(callback, 50);
