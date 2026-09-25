@@ -2740,6 +2740,27 @@ mod spawn_process_body {
                 unsafe { (*loop_).run() };
             }
 
+            // Complete the uv handle close BEFORE the scope guard frees the
+            // Process (WINRED flake root cause, .200 wire-proven 2026-09-26):
+            // freeing a `uv_process_t` that is still linked in the loop's
+            // handle/endgame queues leaves a dangling queue node — the NEXT
+            // tick on this loop (any later sync spawn) walks it in
+            // `uv__process_endgames` → intermittent 0xC0000005. `close()`
+            // requests uv_close; ticks drain the endgame until `on_close_uv`
+            // flips the poller to Detached. Bounded: the close completes in
+            // one tick; the cap is a loud guard against a wedged loop.
+            unsafe { (*process).close() };
+            let mut close_drain = 0u32;
+            while matches!(unsafe { &(*process).poller }, Poller::Uv(_)) {
+                assert!(
+                    close_drain < 100,
+                    "sync spawn: uv close did not complete in 100 ticks"
+                );
+                // SAFETY: same live-loop contract as the wait loop above.
+                unsafe { (*loop_).tick() };
+                close_drain += 1;
+            }
+
             Ok(Ok(Result {
                 // SAFETY: process has exited; no further mutation.
                 status: unsafe { (*process).status.clone() },
@@ -2852,9 +2873,26 @@ mod spawn_process_body {
                     pid: (*(*this_ptr).process).pid,
                 }
             };
-            // SAFETY: drop the ref taken above, then reclaim the SyncWindowsProcess
-            // allocation. Mirrors Zig `this.process.deref(); destroy(this);`.
+            // Complete the uv handle close BEFORE freeing (same WINRED flake
+            // root cause as the no-pipes twin): the embedded `uv_process_t`
+            // must be unlinked from the loop's queues while the memory is
+            // still live, or the next tick on this loop walks a dangling
+            // endgame node (intermittent 0xC0000005 in
+            // `uv__process_endgames`).
             unsafe {
+                (*(*this_ptr).process).close();
+                let mut close_drain = 0u32;
+                while matches!(&(*(*this_ptr).process).poller, Poller::Uv(_)) {
+                    assert!(
+                        close_drain < 100,
+                        "sync spawn: uv close did not complete in 100 ticks"
+                    );
+                    (*loop_.platform_event_loop()).tick();
+                    close_drain += 1;
+                }
+                // SAFETY: drop the ref taken above, then reclaim the
+                // SyncWindowsProcess allocation. Mirrors Zig
+                // `this.process.deref(); destroy(this);`.
                 Process::deref((*this_ptr).process);
                 drop(bun_core::heap::take(this_ptr));
             }

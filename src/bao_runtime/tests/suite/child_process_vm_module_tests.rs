@@ -36,7 +36,6 @@ fn test_child_process_vm_module_zlib_deep() {
 }
 
 fn test_child_process_vm_module_zlib_deep_body() {
-
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
