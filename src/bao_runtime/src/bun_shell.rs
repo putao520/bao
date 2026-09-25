@@ -456,6 +456,57 @@ impl<'a> ShellInterpreter<'a> {
         }
     }
 
+
+    /// Resolve the shell executable for `exec_via_sh` (WINRED Windows arm,
+    /// 2026-09-26): POSIX keeps `/bin/sh`; Windows discovers `sh.exe` —
+    /// PATH first, then the canonical Git-for-Windows install locations —
+    /// resolved once and cached. Missing shell is a loud fail-closed error
+    /// (never a silent cmd.exe mapping, which would change command syntax
+    /// semantics; the Bun.$ surface is specced POSIX-shell).
+    fn sh_path() -> Option<&'static [u8]> {
+        use ::std::sync::OnceLock;
+        #[cfg(not(windows))]
+        {
+            Some(b"/bin/sh")
+        }
+        #[cfg(windows)]
+        {
+            static SH: OnceLock<Option<Box<[u8]>>> = OnceLock::new();
+            SH.get_or_init(|| {
+                    // 1) PATH lookup
+                    if let Some(path) = ::std::env::var_os("PATH") {
+                        for dir in ::std::env::split_paths(&path) {
+                            let cand = dir.join("sh.exe");
+                            if cand.is_file() {
+                                return cand.to_string_lossy().into_owned().into_bytes().into_boxed_slice().into();
+                            }
+                        }
+                    }
+                    // 2) Canonical Git-for-Windows locations (both the PATH
+                    // subdirs and the plain install roots).
+                    let mut roots: Vec<::std::path::PathBuf> = Vec::new();
+                    if let Some(pf) = ::std::env::var_os("ProgramFiles") {
+                        let pf = ::std::path::PathBuf::from(pf);
+                        roots.push(pf.join("Git").join("bin"));
+                        roots.push(pf.join("Git").join("usr").join("bin"));
+                    }
+                    if let Some(lad) = ::std::env::var_os("LOCALAPPDATA") {
+                        let lad = ::std::path::PathBuf::from(lad);
+                        roots.push(lad.join("Programs").join("Git").join("bin"));
+                        roots.push(lad.join("Programs").join("Git").join("usr").join("bin"));
+                    }
+                    for dir in roots {
+                        let cand = dir.join("sh.exe");
+                        if cand.is_file() {
+                            return cand.to_string_lossy().into_owned().into_bytes().into_boxed_slice().into();
+                        }
+                    }
+                    None
+                })
+                .as_deref()
+        }
+    }
+
     /// Execute a command via /bin/sh -c, optionally piping stdin data.
     /// Uses bun_spawn::run for subprocess management (reuses Bun's spawn infrastructure).
     /// Falls back to std::process::Command when cwd override or stdin piping is needed.
@@ -479,8 +530,14 @@ impl<'a> ShellInterpreter<'a> {
         // Build env map from overrides
         let env_map = self.build_env_map();
 
-        // Build argv for bun_spawn::run: ["/bin/sh", "-c", <cmd>]
-        let sh = b"/bin/sh";
+        // Build argv for bun_spawn::run: [<sh>, "-c", <cmd>]
+        let Some(sh) = Self::sh_path() else {
+            return ShellOutput {
+                stdout: Vec::new(),
+                stderr: b"Bun.Shell: no POSIX shell found (sh.exe) on PATH or in the canonical Git-for-Windows locations; refusing to silently substitute cmd.exe".to_vec(),
+                exit_code: -1,
+            };
+        };
         let dash_c = b"-c";
         let argv_slices: &[&[u8]] = &[sh, dash_c, cmd_str.as_bytes()];
 
@@ -517,7 +574,15 @@ impl<'a> ShellInterpreter<'a> {
     ///
     /// @trace REQ-BAO-API-018 [api:Bun.Shell/$ ShellInterpreter.exec_via_sh_with_stdin]
     fn exec_via_sh_with_stdin(&self, cmd_str: &str, stdin_data: Option<&[u8]>) -> ShellOutput {
-        let mut command = ::std::process::Command::new("/bin/sh");
+        let Some(sh) = Self::sh_path() else {
+            return ShellOutput {
+                stdout: Vec::new(),
+                stderr: b"Bun.Shell: no POSIX shell found (sh.exe) on PATH or in the canonical Git-for-Windows locations; refusing to silently substitute cmd.exe".to_vec(),
+                exit_code: -1,
+            };
+        };
+        let sh_str = String::from_utf8_lossy(sh).into_owned();
+        let mut command = ::std::process::Command::new(sh_str);
         command.arg("-c").arg(cmd_str);
 
         // CWD override
