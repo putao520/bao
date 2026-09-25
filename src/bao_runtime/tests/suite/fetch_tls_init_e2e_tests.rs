@@ -72,6 +72,12 @@ fn serve_one(server: &TlsServer, mut stream: TcpStream, records: &Records) {
 
     let mut plaintext = Vec::new();
     let mut sni: Option<String> = None;
+    // Whether ANY byte was read off the wire. An accepted socket that
+    // closes before sending a ClientHello (fetch's connect-probe ghosts)
+    // is not a TLS connection — recording it would poison the aborted-
+    // record assertion surface with a SNI-less empty record that has
+    // nothing to do with the phase under test.
+    let mut fed_any = false;
     let deadline = Instant::now() + Duration::from_secs(15);
 
     // Phase A+B: handshake, then request accumulation.
@@ -79,6 +85,18 @@ fn serve_one(server: &TlsServer, mut stream: TcpStream, records: &Records) {
         let Ok(res) = conn.process() else {
             break;
         };
+        // Capture the ClientHello SNI as soon as it has been parsed — NOT
+        // gated on handshake completion. On an aborted connection (the p5
+        // fail-closed phase: the client rejects our certificate and closes
+        // mid-handshake) the server side never reaches the completed state,
+        // but the ClientHello — and with it the SNI extension the wire
+        // assertion pins — was fully on the wire. SSL_get_servername is
+        // valid from the moment the ClientHello is decoded (it is read the
+        // same way inside the select-certificate callback); before that it
+        // returns NULL and the record keeps sni=None.
+        if sni.is_none() {
+            sni = conn.servername();
+        }
         let out = conn.take_outgoing();
         if !out.is_empty() && stream.write_all(&out).is_err() {
             break;
@@ -87,9 +105,6 @@ fn serve_one(server: &TlsServer, mut stream: TcpStream, records: &Records) {
             plaintext.extend_from_slice(chunk);
         }
         if !conn.is_handshaking() {
-            if sni.is_none() {
-                sni = conn.servername();
-            }
             if request_complete(&plaintext) {
                 break;
             }
@@ -97,9 +112,17 @@ fn serve_one(server: &TlsServer, mut stream: TcpStream, records: &Records) {
         let mut buf = [0u8; 16 * 1024];
         match stream.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) => conn.feed(&buf[..n]),
+            Ok(n) => {
+                fed_any = true;
+                conn.feed(&buf[..n])
+            }
             Err(_) => std::thread::sleep(Duration::from_millis(2)),
         }
+    }
+    if !fed_any {
+        // Byte-less socket: not a TLS connection (see the field's doc) —
+        // nothing to assert on, nothing to record.
+        return;
     }
 
     // Respond 200 + clean shutdown (only when the request actually arrived;
@@ -413,6 +436,7 @@ fn test_fetch_init_tls_e2e_body() {
         got.insert(k.to_string(), v.to_string());
     }
 
+
     // 1. No tls → fail-closed against system roots (the e-f6 posture,
     //    unchanged by this feature).
     assert_eq!(
@@ -491,6 +515,8 @@ fn test_fetch_init_tls_e2e_body() {
     // oversubscription lags the client-side settlement; the negative check
     // below is stable only after that observer loop finished.
     let aborted_b = wait_aborted_record(&records_b);
+
+
     let rec_b5 = record_for(&records_b, "/p5-wrong-ca");
     assert!(
         rec_b5.is_none(),

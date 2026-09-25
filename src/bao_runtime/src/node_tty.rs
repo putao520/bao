@@ -79,7 +79,16 @@ unsafe extern "C" fn tty_isatty(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     } else {
         -1
     };
+    // windows: the console-handle probe (GetStdHandle + GetConsoleMode) is
+    // the platform isatty — Node's libuv `uv_guess_handle` classifies by the
+    // OS handle type, not the CRT fd table, whose FDEV bit marks UNATTACHED
+    // std fds as devices (a piped/closed stdin then disagrees with the
+    // console truth). One detection source per platform: this is the same
+    // probe `console_is_tty` uses for the WriteStream/ReadStream isTTY.
+    #[cfg(unix)]
     let result = if fd >= 0 { libc::isatty(fd) } else { 0 };
+    #[cfg(windows)]
+    let result = if fd >= 0 && console_is_tty(fd) { 1 } else { 0 };
     args.rval().set(BooleanValue(result == 1));
     true
 }
@@ -113,8 +122,13 @@ unsafe extern "C" fn tty_read_stream_ctor(cx: *mut JSContext, argc: u32, vp: *mu
         JSPROP_ENUMERATE as u32,
     );
 
-    // isTTY
-    rooted!(&in(cx_ref) let tv = BooleanValue(libc::isatty(fd) == 1));
+    // isTTY — same platform probe as tty.isatty (console-handle semantics on
+    // windows; CRT isatty on unix).
+    #[cfg(unix)]
+    let rs_is_tty = libc::isatty(fd) == 1;
+    #[cfg(windows)]
+    let rs_is_tty = fd >= 0 && console_is_tty(fd);
+    rooted!(&in(cx_ref) let tv = BooleanValue(rs_is_tty));
     JS_DefineProperty(
         cx,
         obj.handle().into(),
@@ -855,9 +869,18 @@ fn console_is_tty(fd: core::ffi::c_int) -> bool {
 }
 
 /// windows winsize: the visible console window extents (Node parity:
-/// columns = Right-Left+1, rows = Bottom-Top+1).
+/// columns = Right-Left+1, rows = Bottom-Top+1). Falls back to the
+/// COLUMNS/LINES env vars (Node's documented resolution order) for the
+/// pseudo-console shapes where the std handle answers GetConsoleMode but not
+/// GetConsoleScreenBufferInfo (ConPTY output side) — reporting isTTY with no
+/// columns/rows is the un-TTY inconsistency the deep tty probe checks.
 #[cfg(windows)]
 fn console_window_size(fd: core::ffi::c_int) -> Option<(i32, i32)> {
+    console_window_size_console(fd).or_else(console_window_size_env)
+}
+
+#[cfg(windows)]
+fn console_window_size_console(fd: core::ffi::c_int) -> Option<(i32, i32)> {
     let h = console_handle_for_fd(fd);
     let mut csbi: bun_windows_sys::CONSOLE_SCREEN_BUFFER_INFO =
         unsafe { ::std::mem::zeroed() };
@@ -871,6 +894,19 @@ fn console_window_size(fd: core::ffi::c_int) -> Option<(i32, i32)> {
     let cols = (csbi.srWindow.Right - csbi.srWindow.Left + 1) as i32;
     let rows = (csbi.srWindow.Bottom - csbi.srWindow.Top + 1) as i32;
     Some((cols, rows))
+}
+
+/// COLUMNS/LINES env fallback (both must parse positive; Node treats a
+/// partial pair as absent rather than inventing a zero dimension).
+#[cfg(windows)]
+fn console_window_size_env() -> Option<(i32, i32)> {
+    let cols: i32 = ::std::env::var("COLUMNS").ok()?.trim().parse().ok()?;
+    let rows: i32 = ::std::env::var("LINES").ok()?.trim().parse().ok()?;
+    if cols > 0 && rows > 0 {
+        Some((cols, rows))
+    } else {
+        None
+    }
 }
 
 /// windows raw mode: clear the line/echo/processed input flags for raw,

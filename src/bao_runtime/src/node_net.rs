@@ -22,7 +22,10 @@ use mozjs::rust::wrappers2 as w2;
 
 use bun_uws_sys::app::App;
 use bun_uws_sys::socket_group::VTable;
-use bun_uws_sys::{CloseCode, ListenSocket, Loop, SocketGroup, SocketKind, us_socket_t};
+use bun_uws_sys::{
+    CloseCode, LIBUS_SOCKET_ALLOW_HALF_OPEN, ListenSocket, Loop, SocketGroup, SocketKind,
+    us_socket_t,
+};
 
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove, gc_store_unique_key};
 use crate::require::cache_builtin;
@@ -493,6 +496,12 @@ const NET_JS: &str = r#"
     this._polling = false;
     this._sawEnd = false;
     this._paused = false;
+    // Node net.Socket({ allowHalfOpen }): false (default) = the socket
+    // automatically end()s itself when 'end' fires. The native sockets bind
+    // half-open (LIBUS_SOCKET_ALLOW_HALF_OPEN) so a peer FIN can never close
+    // the fd behind this object's back; this flag restores Node's default
+    // auto-close in the tick, AFTER the buffered RX tail has drained.
+    this.allowHalfOpen = !!(opts && opts.allowHalfOpen);
     // Minimal readable-state Readable.prototype.pipe reads (endEmitted for
     // the late-attach case: pipe() after 'end' already delivered ends dest
     // immediately).
@@ -640,10 +649,8 @@ const NET_JS: &str = r#"
     // Socket lifecycle from the native side: 1 open, 2 peer-FIN seen,
     // 3 fully closed. Without this the poll chain spun forever after the
     // peer (or the server's close_all) closed the socket, holding the event
-    // loop open and never delivering 'end'/'close'. usockets commonly closes
-    // the socket right after dispatching on_end (no half-open window), so the
-    // poll may first observe state 3 — deliver 'end' before 'close' there
-    // too (Node ordering: end precedes close).
+    // loop open and never delivering 'end'/'close'. State 3 still needs the
+    // end-before-close delivery (Node ordering: end precedes close).
     if (typeof __net_poll_state === "function") {
       var st = __net_poll_state(this._ptr);
       if (st === 3) {
@@ -658,11 +665,6 @@ const NET_JS: &str = r#"
         this.emit("close");
         return;
       }
-      if (st === 2 && !this._sawEnd) {
-        this._sawEnd = true;
-        this._readableState.endEmitted = true;
-        this.emit("end");
-      }
     }
     if (typeof __net_read === "function") {
       var buf = __net_read(this._ptr);
@@ -674,7 +676,28 @@ const NET_JS: &str = r#"
       // Buffer.isBuffer(chunk) === false and .toString(enc) was missing).
       // Buffer.view over the transferred ArrayBuffer (zero-copy).
       if (buf && buf.byteLength > 0) {
+        // DRAIN BEFORE END: 'end' may only fire once every buffered byte has
+        // been delivered (Node readable contract — never 'end' over a
+        // non-empty buffer). The old order emitted 'end' first and let the
+        // pipe end the destination before this tail reached it.
         this.emit("data", Buffer.from(buf));
+      } else if (!this._sawEnd && typeof __net_poll_state === "function") {
+        // Buffer empty AND the native side saw the peer FIN → deliver 'end'.
+        // The sockets bind half-open natively (see net_listen), so the FIN
+        // cannot close the fd behind this object's back: this is the only
+        // 'end' site for the drained tail.
+        var stNow = __net_poll_state(this._ptr);
+        if (stNow === 2 || stNow === 3) {
+          this._sawEnd = true;
+          this._readableState.endEmitted = true;
+          if (!this.allowHalfOpen) {
+            // Node allowHalfOpen=false default: the socket end()s itself —
+            // end() emits 'end' then 'close' and closes the native fd.
+            this.end();
+            return;
+          }
+          this.emit("end");
+        }
       }
     }
     // Schedule next poll via setTimeout(0) to yield to other events
@@ -821,6 +844,13 @@ const NET_JS: &str = r#"
       var s = new Socket();
       s._ptr = ptr;
       s.connecting = false;
+      // Accepted sockets start their poll chain immediately (deferred first
+      // tick: the 'connection' handler attaches its listeners in the same
+      // task, ahead of any timer tick). The chain owns the half-open
+      // lifecycle — without it, an accepted socket whose handler never
+      // attaches 'data' would never see the peer FIN auto-end()d (the
+      // native side no longer closes on FIN; see net_listen).
+      s._startPoll();
       return s;
     };
   } catch (e) { /* globalThis unavailable — accept bridge disabled */ }
@@ -869,6 +899,18 @@ fn ptr_to_jsval(ptr: usize) -> JSVal {
 
 /// Get the uSockets event loop, ensuring bao_uloop is initialized.
 fn get_loop() -> *mut Loop {
+    // Windows: enter through the seeded accessor so this thread's uWS loop
+    // BORROWS the thread's process-lifetime libuv loop (`is_default = 0`,
+    // C++ `LoopCleaner::cleanMe = false`) — the same invariant the App::create
+    // chokepoint (P4, `seed_native_uws_loop`) established. Plain
+    // `uws_get_loop` (= `uWS::Loop::get()`) on first entry creates an OWNED
+    // uv loop; at thread exit LoopCleaner → `us_loop_free` → `uv_loop_delete`
+    // then hard-asserts EBUSY (uv-common.c:916, 0xC0000409) while any net
+    // socket is still open — exactly the net.connect/net.Server teardown
+    // crash. Idempotent: `uWS::Loop::get` returns the existing thread-local
+    // loop untouched when one is already created, seeded or not.
+    #[cfg(windows)]
+    bun_uws_sys::WindowsLoop::get();
     bao_uloop::force_link();
     bao_uloop::uws_get_loop()
 }
@@ -932,7 +974,14 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         None,                // no SSL
         Some((*host_cstr).as_cstr()),
         port,
-        0, // LIBUS_LISTEN_DEFAULT
+        LIBUS_SOCKET_ALLOW_HALF_OPEN, // accepted sockets inherit this: a peer
+        // FIN must NOT close natively before the JS poll chain drained the
+        // buffered RX tail (the C no-half-open EOF path dispatches on_end and
+        // closes in the same batch — on Windows the tail lands in that batch
+        // and the close dropped it via net_on_close: pipe-file roundtrip lost
+        // its final segment). Node allowHalfOpen=false semantics are restored
+        // in NET_JS: the tick delivers the buffered data, then 'end', then
+        // auto-end() (NET_JS Socket.allowHalfOpen default false).
         0, // socket_ext_size (no per-socket ext for listen sockets)
         &mut err,
     );
@@ -1049,7 +1098,8 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         (*host_cstr).as_cstr(),
         port,
         None, // local_binding: no source-address bind (absorbed 4af param)
-        0,
+        LIBUS_SOCKET_ALLOW_HALF_OPEN, // see net_listen: the peer FIN must not
+        // close the socket natively ahead of the JS drain of buffered RX.
         0, // socket_ext_size
     );
 
