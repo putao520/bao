@@ -573,16 +573,22 @@ impl StdArena {
         }
     }
 
-    /// Zeroed variant: `calloc` (the zeroing comes from the CRT, so no
-    /// second pass is needed).
+    /// Zeroed variant: the SAME block class as [`Self::raw_alloc`], zeroed
+    /// here — never plain `calloc`. Block-class pairing (WINRED root fix,
+    /// 2026-09-25): `raw_alloc` goes through `C_ALLOCATOR` with
+    /// `Alignment(16)`, which on Windows (`MAX_ALIGN_T = 8`) lands in
+    /// `_aligned_malloc`; a plain-`calloc` block released through the
+    /// `_aligned_free` pairing (or vice versa) is MSDN-documented heap
+    /// corruption (0xC0000374, .200 wire-proven across every StdArena
+    /// consumer). One allocator pair, one block class, both sides.
     #[inline]
     fn raw_calloc(&self, total: usize, zeroed: bool) -> *mut u8 {
-        if zeroed {
-            // SAFETY: `total > 0`; `calloc` with nmemb=1 has no overflow.
-            unsafe { libc::calloc(1, total).cast() }
-        } else {
-            self.raw_alloc(total)
+        let base = self.raw_alloc(total);
+        if !base.is_null() && zeroed {
+            // SAFETY: `base` holds exactly `total` bytes from raw_alloc.
+            unsafe { core::ptr::write_bytes(base, 0, total) };
         }
+        base
     }
 
     /// Plain libc free.
@@ -591,8 +597,19 @@ impl StdArena {
     /// `base` must be a live allocation from [`Self::raw_alloc`]/[`Self::raw_calloc`].
     #[inline]
     unsafe fn raw_free(&self, base: *mut u8) {
-        // SAFETY: caller contract — matching plain-libc allocation.
-        unsafe { libc::free(base.cast()) }
+        // Block-class pairing (WINRED root fix): every block in this module
+        // is born from `C_ALLOCATOR.raw_alloc(.., Alignment(16), ..)` — on
+        // Windows that is an `_aligned_malloc` block and MUST go back
+        // through `_aligned_free` (plain `free` is 0xC0000374). POSIX keeps
+        // plain `free` inside the same call — fallback.rs owns the switch.
+        // SAFETY: caller contract — `base` is a live raw_alloc result.
+        unsafe {
+            C_ALLOCATOR.raw_free(
+                core::slice::from_raw_parts_mut(base, 1),
+                crate::Alignment::from_byte_units(16),
+                0,
+            )
+        }
     }
 
     /// Unlink a block from whichever chain it sits on (live or quarantine)
