@@ -365,9 +365,31 @@ impl WindowsLoop {
         self.wakeup();
     }
 
-    pub fn tick_with_timeout(&mut self, _: Option<&Timespec>) {
+    pub fn tick_with_timeout(&mut self, timespec: Option<&Timespec>) {
+        // Root fix (WINRED-D, .200 wire-proven 2026-09-25): the old body
+        // discarded the timeout and called `us_loop_run` — an UNBOUNDED run
+        // that parks until the active handle set drains. With a cluster.fork
+        // child's uv process handle live on the JS-thread loop, the park
+        // lasted until the child exited (observed 60s), freezing EVERY bao
+        // timer on the thread: a 50ms heartbeat and the 300ms kill timer
+        // both fired at t=60097ms, and the kill face found the poller
+        // already Detached. Bounded shape: pump (non-blocking drain — same
+        // primitive tick_without_idle uses) + sleep at the legacy 1ms
+        // quantum capped by the requested delta. Timers fire within ~1-2ms
+        // of their deadline; ConcurrentTask wakeups (us_wakeup_loop) are
+        // drained by the next pump ≤1ms later.
         // SAFETY: self is a valid loop pointer
-        unsafe { c::us_loop_run(self) };
+        unsafe { c::us_loop_pump(self) };
+        if let Some(ts) = timespec {
+            let ns = ts.ns();
+            if ns > 0 {
+                let quantum = (ns + 999_999) / 1_000_000; // ceil to ms
+                let capped = quantum.min(1); // legacy 1ms poll cadence
+                ::std::thread::sleep(::std::time::Duration::from_millis(
+                    capped as u64,
+                ));
+            }
+        }
     }
 
     pub fn tick_without_idle(&mut self) {
