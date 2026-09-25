@@ -656,6 +656,11 @@ mod draft {
         DatatypeMisalignment,
         /// Windows-only
         StackOverflow,
+        /// Windows-only: STATUS_HEAP_CORRUPTION (0xC0000374) — the heap
+        /// manager detected a corrupted structure (double free / wild
+        /// write / cross-heap free). The faulting "instruction" is inside
+        /// ntdll's heap routines; the STACK is the evidence that matters.
+        HeapCorruption,
 
         /// Either `main` returned an error, or somewhere else in the code a trace string is printed.
         ZigError(bun_core::Error),
@@ -680,6 +685,9 @@ mod draft {
                 }
                 CrashReason::DatatypeMisalignment => writer.write_str("Unaligned memory access"),
                 CrashReason::StackOverflow => writer.write_str("Stack overflow"),
+                CrashReason::HeapCorruption => {
+                    writer.write_str("Heap corruption (double free / wild write / cross-heap free)")
+                }
                 CrashReason::ZigError(err) => {
                     write!(writer, "error.{}", bstr::BStr::new(err.name()))
                 }
@@ -2009,6 +2017,10 @@ mod draft {
         }
     }
 
+    /// STATUS_HEAP_CORRUPTION — not in bun_sys's EXCEPTION_* set.
+    #[cfg(windows)]
+    const STATUS_HEAP_CORRUPTION: u32 = 0xC0000374u32;
+
     #[cfg(windows)]
     pub(crate) extern "system" fn handle_segfault_windows(
         info: *mut bun_sys::windows::EXCEPTION_POINTERS,
@@ -2017,6 +2029,7 @@ mod draft {
         let info = unsafe { &*info };
         let reason = match unsafe { (*info.ExceptionRecord).ExceptionCode } {
             bun_sys::windows::EXCEPTION_DATATYPE_MISALIGNMENT => CrashReason::DatatypeMisalignment,
+            STATUS_HEAP_CORRUPTION => CrashReason::HeapCorruption,
             bun_sys::windows::EXCEPTION_ACCESS_VIOLATION => {
                 CrashReason::SegmentationFault(unsafe {
                     (*info.ExceptionRecord).ExceptionInformation[1]
@@ -2618,6 +2631,7 @@ mod draft {
 
             CrashReason::DatatypeMisalignment => writer.write_byte(b'6')?,
             CrashReason::StackOverflow => writer.write_byte(b'7')?,
+            CrashReason::HeapCorruption => writer.write_byte(b'8')?,
 
             CrashReason::ZigError(err) => {
                 writer.write_byte(b'8')?;
