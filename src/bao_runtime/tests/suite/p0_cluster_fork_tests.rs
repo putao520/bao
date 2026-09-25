@@ -213,9 +213,13 @@ if (cluster.isWorker) {
   // Watchdog: never hang the test if the primary dies.
   setTimeout(function () { process.exit(3); }, 60000);
 } else {
-  var results = { forked: false, online: 0, msgs: [], exitCode: null, exitSignal: null, disconnected: false };
+  var results = { forked: false, online: 0, msgs: [], exitCode: null, exitSignal: null, disconnected: false, discKillOk: null };
   globalThis.__clusterResults = results;
   globalThis.__clusterDone = function () {
+    // Diagnostics sampler (polled by the harness between drains): capture
+    // the disconnect-backstop kill's last verdict so a missing 'exit' can
+    // be attributed from the final state dump.
+    results.discKillOk = w._discKillOk === undefined ? null : w._discKillOk;
     return results.exitCode !== null
       && results.msgs.some(function (m) { return m && m.type === 'pong'; });
   };

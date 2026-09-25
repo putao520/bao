@@ -195,6 +195,7 @@ if (cluster.isWorker) {
   setTimeout(function () { process.exit(9); }, 60000); // test watchdog
 } else {
   var results = { pid: 0, online: 0, killed: false, isDeadAtKill: null,
+                  killOk: null, escOk: null, bootAt: Date.now(), killedAt: null, hbAt: null,
                   exitCode: null, exitSignal: null, isDeadAfterExit: null,
                   workersLeft: -1, processExitCode: null };
   globalThis.__results = results;
@@ -206,10 +207,14 @@ if (cluster.isWorker) {
     results.exitCode = code;
     results.exitSignal = signal;
     results.isDeadAfterExit = w.isDead;
+    results.killOk = w._lastKillOk === undefined ? null : w._lastKillOk;
+    results.escOk = w._lastEscOk === undefined ? null : w._lastEscOk;
     results.workersLeft = Object.keys(cluster.workers || {}).length;
     results.processExitCode = w.process && w.process.exitCode;
   });
+  setTimeout(function () { results.hbAt = Date.now() - results.bootAt; }, 50);
   setTimeout(function () {
+    results.killedAt = Date.now() - results.bootAt;
     results.killed = true;
     results.isDeadAtKill = w.isDead; // Node: still false — death is observed, not assumed
     w.kill(); // default SIGTERM

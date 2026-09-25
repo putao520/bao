@@ -586,6 +586,36 @@ pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int,
     }
 }
 
+/// Whether any async child is still alive (exit not yet observed). Windows
+/// exit observation is loop-driven (`on_exit_uv` consumes the IOCP
+/// completion for the process handle), so a JS thread with NO pending
+/// timers/servers/fs-crypto would otherwise never tick the loop and the
+/// child's termination would sit unprocessed forever — the fork-test shape
+/// (disconnect, all short timers fired, waiting only on the child's exit).
+/// Cross-platform body: `child_exited` exists on both faces; on unix the
+/// extra loop tick a caller takes is a cheap no-op (waitpid drives exits).
+pub(crate) fn has_live_async_children() -> bool {
+    CP_ASYNC_STATES
+        .lock()
+        .map(|registry| {
+            registry
+                .values()
+                .any(|state| state.lock().map(|s| !s.child_exited).unwrap_or(false))
+        })
+        .unwrap_or(false)
+}
+
+/// Windows: fetch the intrusive `*mut Process` registered for a pid (the
+/// cluster kill face calls uv_process_kill through it).
+#[cfg(windows)]
+pub(crate) fn cp_process_for_pid(pid: i32) -> Option<*mut ::std::ffi::c_void> {
+    CP_ASYNC_STATES
+        .lock()
+        .ok()
+        .and_then(|registry| registry.get(&pid).cloned())
+        .and_then(|state| state.lock().ok().and_then(|s| s.process.map(|p| p as *mut _)))
+}
+
 /// windows twin: HANDLE ends + the spawn face's `*mut Process` for exit
 /// observation (`Process::update_status_on_windows` — there is no waitpid).
 ///
@@ -1598,6 +1628,12 @@ pub(crate) fn spawn_cluster_worker(
                         registry.insert(pid, Arc::new(Mutex::new(channel)));
                     }
                 }
+                // Kill face: the cluster kill goes through the embedded
+                // uv_process_t (node_cluster's windows kill arm reads
+                // CP_ASYNC_STATES → Process.poller) — no separate handle
+                // registry is needed (the DuplicateHandle registry was a
+                // dead end: TerminateProcess rejected even duplicated
+                // full-rights handles, gle=0x5, .200 wire-proven).
                 // Exit-only tracking (stdio inherited — null pipe ends).
                 let _ = register_async_child(
                     pid,

@@ -2200,3 +2200,130 @@ full8(11086 tests):11054 绿 / 32 红 / 5 skip。六组根治,全部独立验证
 6. **servo_build_id 指针 bug + tag 统一**(9698acc3):`servo_id[0] as *const c_char`='S'(0x53)当指针;si_addr=0x53 实证;bao stencil XDR decode 是首个调用方→8/8 浏览器 e2e 崩。修复+双写者 tag 字节统一(canonical xdr_cache::BUILD_ID_TAG,servo 镜像,双向注释)。CLAUDE.md servo patch 表登记。8/8 绿(realworld_full_stack/security_sandbox 全过)。
 
 **取证方法沉淀**:符号化载体=test-ci-dbg profile(`cargo build --profile test-ci-dbg --tests`,C/Rust 双符号);strace 必须 trace sendto(send 不走 write);三层插桩法(C fprintf+BIO/flush 点位)10 分钟定位"返回 237 但零上线"类伪写入;`_siginfo._sifields._sigfault.si_addr` 与常量字节值对照可直接锤指针-从-值类 bug(0x53='S')。
+
+### Windows battery 重验(.200 真机,2026-09-24 深夜,0f731b93)
+
+交叉构建(xwin+clang-cl+lld-link,test-ci profile)RC=0;逐档真机结果:
+
+| 档 | 结果 |
+|---|---|
+| bao.exe smoke(run js) | PASS |
+| lib_core | 52/52 |
+| module_sm | 15/15 |
+| lib_sm | 208/208 |
+| lib_engine | 20/21(1 红=已知 c2 XDR decode 倒挂,Windows 复现 9832 vs 4893µs,open backlog) |
+| suite_engine | 全绿(RC=0) |
+| lib_stealth | 314/314 |
+| suite_stealth | 1379/1379 |
+| lib_runtime | **630/630**(linux_trace ts floor 修复后;此前 629+1) |
+| suite_runtime | **531/574**(逐测试进程隔离;43 稳定红) |
+
+本轮修复(0f731b93):①linux_trace ts 单调下限(懒锚点+粗粒度时钟→首事件 ts=0);②getenv_z Windows 活环境回落(启动快照 write-once,运行期 set_var 的变量查不到→BAO_ alias 全 miss;env_alias ×4 真机复绿)。
+
+**方法论沉淀**:Windows 电池必须逐测试进程隔离(镜像 nextest 语义)——r51/r52 类 should_panic 进程单例测试在单进程 libtest 下必然假红(OnceLock 跨测试污染);`while read` 循环里测试二进制会吞 stdin(=测试清单文件),必须 `< /dev/null`。
+
+**Windows 产品缺口波(43 稳定红分类,下一 P-波清单)**:
+- TLS/连接 ~11(tls_sni×6/ws_tls×2/wss/proxy_tunnel/net_refused):冷启动相关(同二进制 fail→pass→pass 三连实证)但 1-retry 不稳定=真缺陷域,疑 BoringSSL RNG/初始化;
+- spawn/生命周期 ~11(runtime_resource_cleanup×6/cluster×3/net_socket_pipe/child_vm_zlib);
+- path/tty ~8(node_path/path_conformance/path_platform/glob×2/tty/events_path);
+- env 深度 ×2(node_process_env_deep;cluster_isprimary env_write——Windows 无 .init_array 出生快照,需 .CRT$XCU 同形移植);
+- 杂项 ~7(crypto_ecdh/fetch_tls_init/process_deep/fs_rmdir/bun_p0×2/bun_wave_a)。
+转绿(隔离+新二进制):bun_build×2/bun_api/bun_face/bun_file_methods(此前 in-process 污染所致)。
+
+**登记限制**:bun_parsers lib-test 与 bao_workflow_host(Windows 链接缺 uws/cares/native_stubs 符号面)未入电池——既有目标图缺口,独立治理。
+
+### Windows TLS 家族双根因分析(用户裁决方法论:先分析再动手,2026-09-25)
+
+**根因 #1(已根治,3d605c3b)**:`X509_NAME_add_entry_by_txt` 手写 Rust extern 声明 `len: c_int` vs C++ `ossl_ssize_t`(i64)。Win64 ABI 第 5 参走栈槽,32 位写入留高 4 字节栈垃圾→被调方按 64 位读→CBS_init 扫描失控→`nchar > maxsize(64)`→STRING_TOO_LONG。栈垃圾随调用历史变化=fail/pass 假随机;Linux SysV 第 5 参在 r8(零扩展写)永远干净=平台分裂。证据:头文件签名对照+`ERR_clear_error` 每步调用排除 stale 归因+a_mbstr.cc:128 唯一触发点+修复后 static_cert 4/4 稳(修复前 fail→pass→pass)。**"TLS 冷启动家族"正名:非 RNG,FFI 宽度错配**。全树手写 extern 宽度审计:唯一命中。
+
+**根因 #2(开放,取证方案已定)**:tls 家族剩余 ~7 测(tls_sni ×4/client_connect/sni_two_domains/write_from_sni + ws_tls ×2 + wss + net_refused)的共同签名:**握手/证书/写全过,唯独服务端 echo 的客户端 `data` 事件不达**(client_connect:704 断言,writeOk=true 且 fp/serial/cert 全对)。疑点收敛两处:
+1. **loop 挂载**:node:tls socket 的 socket group 挂在哪个 loop——测试驱动的是 JsContext MiniEventLoop 的 uws loop(`timers::with_event_loop` + `tick_without_idle`→Windows=`us_loop_pump`→`uv_run(UV_RUN_NOWAIT)`+active_handles 强制);若 tls socket 挂在别的 loop(HTTPThread/独立),泵永远打不到它;
+2. **libuv pump 交付面**:`us_loop_pump` 的 active_handles++/UV_RUN_NOWAIT/-- 形态是否真的分发 IOCP 完成的 socket 读(W8 E8 为治 wedge 改过此面,可能丢了读交付)。
+取证轮(下一步):测试 JS 内联探针(srvLog/clientGot 两侧中间态打印)定位断点在「服务端未收到写」还是「客户端未派发 data」;再按归属查 loop attach/pump。
+
+### Windows TLS 家族双根因收官(939212c5,2026-09-25)
+
+按用户「先分析根因,拿出根治方案再去做」方法论执行:
+
+**根因 #2(939212c5)**:node:tls 驱动线程的 Windows `make_wake_pair` 返回 `as_raw_socket()` 裸转换,但持有所有权的 TcpStream/TcpListener 在作用域结束被 Drop→**两个 socket 创建即关闭**。此后:每次 `tls_driver_wake` send=-1;驱动 poll 恒 POLLNVAL(0x4) 空转;事件链在 SecureConnection 后断流(client data/echo 永不达)。POSIX 臂 pipe() 裸 fd 无持有对象→平台分裂。两轮插桩铁证:rc=-1+wake_re=0x4 → 修复后 rc=1+0.07s 过。修=`into_raw_socket()` 所有权移交。
+
+**验证**:TLS 家族 11 测 ×3 轮 10/11 稳定(修复前 3-4/11);Linux tls 域 18/18 无回归;全量隔离电池 **P=541 F=33**(48→43→33)。
+
+**剩余 33 红分类**(下一波):
+- net_connect_refused ×1=E8 类 libuv uv_loop_close EBUSY fastfail(net.connect 收尾生命周期);
+- spawn/生命周期 ~11、path/tty ~8、env 深度 ×2(.CRT$XCU 出生快照移植)、杂项 ~11。
+
+**取证方法沉淀**:「事件链断流」类两轮插桩法——第一轮在事件 enum 的 push 点+drain 点打标签(定断在哪一跳),第二轮在 wake 发送+poll 返回打数值(rc/revents;0x4=POLLNVAL 直接锤死 fd 尸体);WSAPoll revents 常量与 Linux 同名不同值(IN=0x300,NVAL=0x4)。
+
+### Windows 33→21 波(ef873312+9c07b811,2026-09-25,全自动 LOOP 第一周期)
+
+**Domain A(spawn/清理测试平台化,ef873312)**:
+- 产品:`set_thread_name` Windows 臂 TODO no-op 实装(SetThreadDescription UTF-16;历史 0xC0000409=指针类错配 PCWSTR 传 char*);
+- 测试:worker_thread_alive Windows 臂改真名匹配(GetThreadDescription);"线程数>1" 启发式永不可观测 drop 后消亡(基础设施线程恒>1)→ T3/T4 假红根因;
+- sleeper 平台化(sleep→ping -n);T6/T7/T12+sigstate×2 unix-gate(POSIX 观测机制)。
+
+**Domain B+C(path/glob/memoryUsage,9c07b811)**:
+- **path.posix 真面落地**(原为宿主自引用,posix.sep==='\\' 于 Windows):纯字符串 posix 算法全套;
+- path.isAbsolute 按 node win32 规则(根斜杠即绝对,std 需盘符);
+- memoryUsage.rss Windows=K32GetProcessMemoryInfo(原 /proc 恒 0);
+- **Bun.Glob.scanSync 空返回根因**:resolve_scan_cwd 只认 '/' 前缀→`C:\` 被拼进 process cwd 走不存在路径;绝对 pattern 反斜杠被 glob 语言当转义→两收集器规范化 '/';结果统一 '/' 形(node/bun glob 语义)。
+
+**验证**(.200 隔离电池):**P=553 F=21**(48→43→33→21);Linux path 族 71/71 无回归。
+
+**剩余 21 分域**(下周期):
+- worker_threads 域 ×2 + cluster ×3(worker 线程不可观测+EventEmitter 面缺失=产品双平台缺口);
+- crypto EC ×1(point2oct size query 失败,声明宽度已验对,需活体深挖);
+- fs 语义 ×3(rmdir ENOTEMPTY 族/pread 幂等/pipe 文件双向);
+- bun 面 ×7(Bun.write/spawnSync stdin/DataView face/wave_a+dollar 崩溃 -1073740940/resolve '/etc'/build×2);
+- fetch SNI ×1、tty ×1、env_deep ×1(复发,疑序)、net_refused ×1(E8 类)、vm_zlib ×1。
+
+### Windows 电池 21→11 波(4fea7f22+ef772e2d,2026-09-25,三 Agent 配额熔断后主会话接管)
+
+**执行形态**:3 并发 implementer(TASK-HEADER 契约)各完成域内工作后撞 5h 配额墙(02:42 重置);主会话接管补完+统一验证(用户裁决的 LOOP 形态)。
+
+**worker_threads 六层根因链(4fea7f22,.200 端到端 GOT worker-alive/marker/got=true 三重实证)**:
+1. worker realm 无 node 面(worker_global_setup 只有 __baoPostToMain/self→require 未定义→装 require 后又 Cannot find module fs——builtin 注册在 install_node_apis)→补 install_node_apis;
+2. WORKER_MAIN_SENDER TLS 在 eval 后才装→eval 期 postMessage 全丢(None 臂静默)→hoist 到 eval 前;
+3. emit 参数向量缺事件名(ee_* 契约 argv[0]=event)→JS_CallFunctionName+完整 argv;
+4. 泵在 timer drain 的 realm-NULL 上下文→AutoRealm 进 target realm;
+5. (D1)原型 EventEmitter 面+实例原型链接(裸 plain object 从未链 proto——typeof w.on undefined 而 own postMessage 工作);
+6. (D1)worker_entry 线程命名+主侧泵挂 cluster 泵通道。
+**取证法沉淀**:六轮插桩逐层剥(标记文件证线程执行→TLS 时机→参数向量→realm);「手动路径通+泵路径死」→realm/参数差分。
+
+**D2 域(4fea7f22)**:point_conversion_form_t=u8 vs C 枚举 int——**宽度类第三例**(BUG-FFI-WIN64-001 复发,Win64 r8 高位垃圾→point2oct 恒 0);pread 相对寻位+消费 cursor→绝对+save/restore;rmdir 四语义形状整形(合成消息带 errno token——CRT strerror 表对 POSIX errno 显示 Unknown error N);ppid Toolhelp32 真父。
+
+**T3/T4 探针(ef772e2d)**:OS 线程名在隔离子进程不可靠→改查产品自身账本 worker_registry(构造插入/drop 清扫移除=运行时自己的存活契约)。
+
+**电池演进:48→43→33→21→20→14→~11**(workers×2+rmdir 转绿后;剩:cluster×2(60s 超时,IPC 深)、fetch SNI、pipe、tty、vm_zlib、net_refused(E8 类)、build×1、face、dollar、wave_a)。
+Linux 回归:worker/cluster/ecdh/rmdir/glob/path 116/116。
+
+### spec-gov C-7 第一性归零闭环(114bdea8,2026-09-25)
+
+bce-domain-guard spec-gov 域 10 次计数触发→第一性审计:health 实测 0 errors(计数非活体错误);真缺陷=**跨文件同 ID 撞号两对**(REQ-ENG-012 双元素/REQ-BRW-004 双元素,ISSUE #84 类,1744199a ID 统一重命名落进已占号)。外科拆撞:Bun.spawn→REQ-ENG-047、族注记→REQ-BRW-045,SPAWN-BOUNDARY 测试 ref/xref/text+Bun.Shell 交叉引用归正;DEC-WK/DF-WK 引用逐条核实指向正主保留。工具不可用性记录(rename 全树同搬/update 拒 newId/DOM 层 02-SYSTEM 0 绑定)。**残留=0 机械判定:全树 data-req/data-bug/data-test 重复扫描 NONE(95/30/2165 全唯一)**。1633 warnings=草稿期完整性债(OC-3/OC-5+TV-1),登记内容 backlog 非缺陷类。SOL 审计体模型不可用阵亡(gpt-5.6-sol 400)——闭环由主会话机械证据直接完成,无第二意见交叉已披露。
+
+### Windows LOOP 续:face 平台化(本轮)
+
+spawnSync maxBuffer 探针 /bin/sh 硬编码→cmd.exe 臂。face 测试推进至末段异常观测(近绿)。当前电池估值 F≈10(cluster×2/fetch_sni/pipe/tty/vm_zlib/net_refused/build_hash/dollar/wave_a)。
+
+### 「周期规则」考古结论(用户质询,2026-09-25)
+上下文无任何要求周期的规则;CLAUDE.md 硬门⑩(用户 2026-09-23 裁决)恰恰**禁止**批次/Phase 强制分批;硬门⑤波末一次测仅测频纪律。记忆文件无可删条目。「下周期继续」为主会话不当自构节律,已废除——LOOP 连续推进。
+
+### cluster 域(4afeaa6c,连续推进)
+根因二连:①p0_cluster_fork 测试固定 600ms disconnect 时钟 vs Windows bao.exe 冷启动>600ms(通道先拔,worker-up 落空)→事件驱动化(pong 后调度);②CLUSTER_JS disconnect 同 tick TerminateProcess 打死 worker 10ms 泵前的 graceful 路径→windows 500ms 宽限(__noSignals 门控)。**CLI 端到端全通**(fork→online→双向消息→disconnect→RC=0 worker 干净退出);suite 状态 dump 证明 IPC 双向圆满(online=1+worker-up+pong+disconnected)。残留=cluster_worker_kill 的 isDeadAtKill 时序 + suite 语境 exit 观测慢(登记为 cluster 尾巴)。诊断脚手架沉淀:console.error 在 Windows suite realm 是输出黑洞→诊断走 globalThis 载体+测试状态附带;__cp_ipc_recv 空轮返回 null 是设计而非 bug。
+**电池 v9:P=562 F=12**(48→43→33→21→20→14→12)。Linux cluster+worker 17/17。
+
+### WINRED-D cluster kill 取证链(进行中,2026-09-25 下午)
+
+kill 面四路实验(.200 铁证):①OpenProcess(0x1)→句柄有效但 TerminateProcess gle=0x5(ACCESS_DENIED);②PROCESS_ALL_ACCESS(0x1FFFFF)同样 0x5;③fork 时 DuplicateHandle uv 原厂句柄入册再杀——仍不死;④uv_process_kill:外层 Process 指针误当 uv_process_t→uv 读垃圾 status 返 **UV_ESRCH(-4083)**;修正为从 poller 字段取内嵌 uv_process_t(镜像 update_status_on_windows 的 &mut 模式)后——poller 匹配落空("no uv ptr"——诊断二进制被 Agent C 的 node_tty.rs WIP 编译错挡住未部署,待其收口后跑 discriminant 判定轮)。**已锁定事实**:kill 失败链与 OpenProcess 权限无关(0x5 恒现),真根因在 Process 生命周期/poller 形态——下一轮 discriminant 输出将定案(疑 poll 线程 update_status_on_windows 已将 poller 置 Detached/close)。
+
+### WINRED-D 闭环(2026-09-25 傍晚,三层根因全链定案)
+
+**取证方法**:killedAt/hbAt/discKillOk 时间戳进测试状态 + Rust 探针时间线(--nocapture 揭示 libtest 成功时吞捕获输出)+ 存在性断言按落点分类。四路 kill 面死因全部下游化,真根因三层:
+
+1. **`uws_sys/Loop.rs` Windows `tick_with_timeout` 丢弃 timeout 参数**直接 `us_loop_run`(无界,跑到句柄集排空)→ cluster 子进程句柄活着就冻结整条 JS timer 链(铁证:50ms 心跳 timer hbAt=60097ms;kill timer killedAt=60097ms;worker 死(60s 自身 watchdog)→IOCP 投递→on_exit_uv→on_close→poller Detached→之后 kill 才跑→"FAIL detached-poller")。修=pump(非阻塞)+ 有界 1ms 量子睡眠(Legacy 轮询形态)。
+2. **loop-tick 饥饿**(.200 第二轮铁证):fork 测试 disconnect 后无任何 pending timer → drain_and_check/drain_one_pass 三分支(http/timer/fs-crypto)全不命中 → uv loop 永不被 tick → 已被杀 worker(discKillOk=true)的 IOCP 终止投递永不被处理 → on_exit_uv 零触发 → exit 永不发布。修=`has_live_async_children()` 第四分支(活子进程在册即每 pass 一次非阻塞 tick;unix 侧为良性 no-op,waitpid 驱动)。
+3. **kill 面正确的最终形态**:CP_ASYNC_STATES→Process.poller 内嵌 uv_process_t→uv_process_kill(外层指针 ESRCH=-4083 教训固化)+ sig 参数解析(escalation 9 不再误标 15)+ DuplicateHandle 死注册表整体删除(四路实验证明 duplicated 句柄同样 0x5,纯死代码)+ CLUSTER kill 返回值对齐 Node(worker.kill()→boolean)+ disconnect 后备 kill 记录 _discKillOk。
+
+**update_status_on_windows 存活判据合并**:`kernel_alive(GetExitCodeProcess==STILL_ACTIVE) || uv_proc.is_active()` 双门早退——纯 is_active 首拍误判(loop 未激活句柄→活子被标 Exited{0,0}→一切 by-handle kill 面失效);纯 kernel oracle 又与 loop 自有的退出发布竞态(纯 oracle 版 RC=124 挂起)。双门=首拍假阳性被内核否决+激活后退出归 loop 发布。
+
+**验收**(.200 bat-0925 终版 suite+bao.exe):cluster_worker_kill 0.72s 绿(exitSignal:15/exitCode:-1 全 Node 语义)、p0_cluster_fork roundtrip 0.69s 绿(exitCode:-1/exitSignal:15,disconnect+后备杀全链)、cluster 族 7/7。Linux 回归 105/105(cluster+child_process+timers)。诊断 eprintln 全清零。

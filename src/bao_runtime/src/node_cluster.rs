@@ -1580,39 +1580,64 @@ unsafe extern "C" fn cluster_ipc_send(cx: *mut JSContext, argc: u32, vp: *mut JS
 /// others) maps to TerminateProcess, the upstream node semantics on windows.
 #[cfg(windows)]
 unsafe extern "C" fn cluster_worker_kill(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    use bun_sys::windows::OpenProcess;
-    const PROCESS_TERMINATE: u32 = 0x0001;
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        pub safe fn TerminateProcess(hprocess: *mut ::std::ffi::c_void, uexitcode: u32) -> i32;
-        pub safe fn CloseHandle(hobject: *mut ::std::ffi::c_void) -> i32;
-    }
+    // Canonical kill face: uv_process_kill on the intrusive Process the
+    // spawn kept (register_async_child holds it for the child's lifetime).
+    // uv terminates through its own full-rights handle — every by-pid
+    // OpenProcess route (0x1 all-access, 0x1FFFFF, and even a fork-time
+    // DuplicateHandle of uv's handle) produced TerminateProcess
+    // ACCESS_DENIED (gle=0x5) from the JS thread; uv's internal path is
+    // the same one libuv's own uv_kill uses.
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 && (*args.get(0).ptr).is_int32() {
         (*args.get(0).ptr).to_int32()
     } else {
         0
     };
+    // signum only shapes the reported term_signal on Windows (Terminate-
+    // Process kills for every sig) — but parse it so SIGKILL escalation
+    // doesn't mislabel the death as SIGTERM.
+    let sig = if argc > 1 && (*args.get(1).ptr).is_int32() {
+        (*args.get(1).ptr).to_int32()
+    } else {
+        15
+    };
     if pid <= 0 {
         args.rval().set(BooleanValue(false));
         return true;
     }
-    // SAFETY: pid comes from the worker registry (numeric); the returned
-    // handle is closed immediately after the terminate attempt.
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
-    // The termination code is fixed at 1 (Node-on-windows reports the raw
-    // TerminateProcess code as exitCode with no signal; cp_signal_pid in
-    // node_child_process uses the same convention). ok must reflect the REAL
-    // terminate result, not just OpenProcess success — a kill that silently
-    // no-ops is the "kill never killed" class, and worker.kill() surfaces a
-    // false return once per pid.
-    let ok = if handle.is_null() {
-        false
-    } else {
-        let terminated = unsafe { TerminateProcess(handle, 1) } != 0;
-        // SAFETY: handle was just opened by our OpenProcess — sole owner.
-        unsafe { CloseHandle(handle) };
-        terminated
+    // The intrusive Process pointer keyed by pid in CP_ASYNC_STATES.
+    let proc_ptr: Option<*mut ::std::ffi::c_void> = super::node_child_process::cp_process_for_pid(pid);
+    let ok = match proc_ptr {
+        Some(pp) if !pp.is_null() => {
+            #[link(name = "uv")]
+            unsafe extern "system" {
+                // uv_process_kill(uv_process_t* handle, int signum) — from
+                // the vendored static libuv.
+                safe fn uv_process_kill(handle: *mut ::std::ffi::c_void, signum: i32) -> i32;
+            }
+            // `pp` is bun_spawn's intrusive Process; the uv_process_t lives
+            // INSIDE it (poller::Poller::Uv) — passing the outer pointer made
+            // uv read a garbage `status` and answer UV_ESRCH (wire-proven
+            // rc=-4083). Extract the embedded uv_process_t.
+            use bun_spawn::process::Poller;
+            // Mirror update_status_on_windows's exact access (&mut pattern).
+            let uv_ptr: *mut ::std::ffi::c_void = unsafe {
+                let p = &mut *pp.cast::<bun_spawn::process::Process>();
+                match &mut p.poller {
+                    Poller::Uv(uv_proc) => uv_proc as *mut _ as *mut ::std::ffi::c_void,
+                    _ => ::std::ptr::null_mut(),
+                }
+            };
+            if uv_ptr.is_null() {
+                // Poller already Detached (closed by an earlier exit
+                // publication) — nothing live to signal.
+                false
+            } else {
+                let rc = unsafe { uv_process_kill(uv_ptr, sig) };
+                rc == 0
+            }
+        }
+        _ => false,
     };
     args.rval().set(BooleanValue(ok));
     true
@@ -1898,6 +1923,7 @@ const CLUSTER_JS: &str = r#"
           if (cluster.__cluster_worker_kill) {
             try { killOk = !!cluster.__cluster_worker_kill(worker._pid, sig); } catch (e) {}
           }
+          worker._lastKillOk = killOk;
           // Windows: record the directed signal so the exit poll can
           // reconstruct (code -1, signal) for the TerminateProcess death our
           // kill caused (see pollWorkers).
@@ -1918,6 +1944,7 @@ const CLUSTER_JS: &str = r#"
             if (!worker.isDead && cluster.__cluster_worker_kill) {
               var escOk = false;
               try { escOk = !!cluster.__cluster_worker_kill(pid, 9); } catch (e) {}
+              worker._lastEscOk = escOk;
               if (cluster.__noSignals) __directedKill[pid] = 9;
               if (!escOk && !__pumpErrOnce['kill' + pid]) {
                 __pumpErrOnce['kill' + pid] = 1;
@@ -1987,7 +2014,9 @@ const CLUSTER_JS: &str = r#"
         if (cluster.__noSignals) {
           (function (pw) {
             setTimeout(function () {
-              try { if (cluster.__cluster_worker_kill) cluster.__cluster_worker_kill(pw, 15); } catch (e) {}
+              var ok = false;
+              try { if (cluster.__cluster_worker_kill) ok = !!cluster.__cluster_worker_kill(pw, 15); } catch (e) {}
+              try { w._discKillOk = ok; } catch (e2) {}
             }, 500);
           })(w._pid);
         } else {

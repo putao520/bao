@@ -56,6 +56,7 @@ pub mod spawn_sys {
 
 bun_core::declare_scope!(PROCESS, visible);
 
+
 // ─── Re-exports from `bun_spawn_sys` ─────────────────────────────────────────
 // The raw OS spawn layer (option/result structs, `Rusage`, `spawn_process_posix`)
 // moved into the leaf `bun_spawn_sys` crate so it has no event-loop dependency.
@@ -234,7 +235,44 @@ impl Process {
         // SAFETY: caller contract — `this` is live and exclusively accessed.
         let p = unsafe { &mut *this };
         if let Poller::Uv(uv_proc) = &mut p.poller {
-            if uv_proc.is_active() || !matches!(p.status, Status::Running) {
+            if !matches!(p.status, Status::Running) {
+                return;
+            }
+            // Liveness oracle fix (.200 wire-proven 2026-09-25): the old
+            // `uv_proc.is_active()` early-return misfires BEFORE the owning
+            // loop has ever run the handle (uv_is_active is 0 for a process
+            // handle the loop hasn't activated yet — exactly the cp-poll
+            // thread's first tick against a JUST-spawned child). The fall-
+            // through then closed the poller (Detached) and marked the LIVE
+            // child Exited{0,0} — every later kill face had no live handle
+            // (cluster kill chain: TerminateProcess ACCESS_DENIED /
+            // uv_process_kill ESRCH all downstream of this). The honest
+            // oracle for "did the process die" is the kernel's own exit
+            // code: STILL_ACTIVE means alive — early-return on THAT.
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                safe fn GetExitCodeProcess(
+                    hprocess: *mut ::std::ffi::c_void,
+                    lpexitcode: *mut u32,
+                ) -> i32;
+            }
+            const STILL_ACTIVE: u32 = 259;
+            let mut code: u32 = 0;
+            // SAFETY: `process_handle` is the full-rights handle uv_spawn
+            // kept on this Process (alive while the poller is Uv).
+            //
+            // Merge note (2026-09-25, post-hang forensics): the pure kernel
+            // oracle alone made the cluster-kill drain HANG (RC=124, zero
+            // output) — when the child DID die, GetExitCodeProcess stopped
+            // saying STILL_ACTIVE but the owning uv loop had not yet run the
+            // exit callback, so this thread's close+on_exit raced the loop's
+            // own dispatch. Keeping `is_active()` in the early-return set
+            // restores the loop-owned exit publication while still vetoing
+            // the false-positive first tick (both must agree the handle is
+            // dead before we publish). Full evidence: WINRED-D ledger.
+            let kernel_alive = GetExitCodeProcess(uv_proc.process_handle, &mut code) != 0
+                && code == STILL_ACTIVE;
+            if kernel_alive || uv_proc.is_active() {
                 return;
             }
             let rusage = uv_getrusage(uv_proc);
@@ -576,6 +614,7 @@ impl Process {
         // SAFETY: read POD `pid` first — `uv_handle` points at the inline
         // `Poller::Uv` payload inside `*this` (see `on_exit_uv`).
         let _pid = unsafe { (*uv_handle).pid };
+
         // SAFETY: `*mut Process` back-pointer stashed in `data` at spawn. Stay
         // raw — `RefPtr::drop` may free the allocation, so never bind a
         // `&mut Process` whose tag would have to outlive that.

@@ -561,6 +561,20 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         with_event_loop(|loop_| {
             loop_.tick_without_idle(core::ptr::null_mut());
         });
+    } else if crate::node_child_process::has_live_async_children() {
+        // Live-children case (WINRED-D root fix, .200 wire-proven
+        // 2026-09-25): Windows exit observation is loop-driven — the uv
+        // process handle's termination lands as an IOCP completion that
+        // only a loop tick processes into `on_exit_uv` → Status → the
+        // cp publish chain. A JS thread with no pending timers/servers/
+        // fs-crypto (cluster.disconnect's short timers all fired, the
+        // harness polling on nothing but the child's exit) never ticked
+        // the loop, so the exit sat unprocessed and 'exit' never fired.
+        // One non-blocking tick per pass — same primitive as the branches
+        // above; POSIX is unaffected (waitpid drives exits there).
+        with_event_loop(|loop_| {
+            loop_.tick_without_idle(core::ptr::null_mut());
+        });
     }
     // BCE-20260619-010: fetch-only busy-poll branch removed. FetchTasklet
     // event-driven paradigm uses ConcurrentTask auto-wakeup via MiniEventLoop;
@@ -698,6 +712,14 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
         // fs/crypto-only case (A' route): drain any arrived completion
         // tasklet — without this branch nothing in this pass ticks the
         // MiniEventLoop. Mirrors `drain_and_check`'s same-named branch.
+        with_event_loop(|loop_| {
+            loop_.tick_without_idle(core::ptr::null_mut());
+        });
+    } else if crate::node_child_process::has_live_async_children() {
+        // Live-children case (WINRED-D root fix): mirror drain_and_check —
+        // a Windows child's exit only becomes observable via a loop tick
+        // (IOCP → on_exit_uv), so a timer/server/fs-crypto-idle thread
+        // waiting on a child must still tick the loop each pass.
         with_event_loop(|loop_| {
             loop_.tick_without_idle(core::ptr::null_mut());
         });
