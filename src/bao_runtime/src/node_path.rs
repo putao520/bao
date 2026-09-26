@@ -965,6 +965,310 @@ mod node_alg {
             bytes[0] == b'/'
         }
     }
+
+    /// ASCII case-insensitive comparison — the `String.prototype.toLowerCase`
+    /// equality node's win32 resolve/relative use for device and root
+    /// matching (`C:` === `c:`, `\\SRV\share` === `\\srv\share`).
+    #[cfg(windows)]
+    fn eq_ignore_case(a: &str, b: &str) -> bool {
+        a.len() == b.len()
+            && a.bytes()
+                .zip(b.bytes())
+                .all(|(x, y)| x.to_ascii_lowercase() == y.to_ascii_lowercase())
+    }
+
+    /// node win32.resolve — the device/UNC-aware resolution the Windows face
+    /// runs (`path.resolve` on a Windows host). Iterates the arguments
+    /// right-to-left keeping the right-most device + root, then anchors on
+    /// the cwd (or the per-drive cwd when a bare device was pinned), so
+    /// `resolve('')` answers the drive-qualified `process.cwd()`. Faithful
+    /// port of node v22.11.0 lib/path.js win32 `resolve` (cross-verified
+    /// against bun's runtime/node/path.zig `resolveWindowsT`).
+    /// `drive_env` answers node's `process.env[`=${device}`]` per-drive cwd
+    /// lookup; `None` falls through to the process cwd exactly like a
+    /// missing environment entry in node.
+    #[cfg(windows)]
+    pub fn resolve_win32(
+        parts: &[&str],
+        cwd: &str,
+        drive_env: &dyn Fn(&str) -> Option<String>,
+    ) -> String {
+        let mut resolved_device = String::new();
+        let mut resolved_tail = String::new();
+        let mut resolved_absolute = false;
+
+        // Arguments right-to-left, then the cwd fallback leg (node's
+        // `i === -1`).
+        for leg in parts.iter().rev().map(Some).chain(::std::iter::once(None)) {
+            let path: String = match leg {
+                Some(p) => {
+                    if p.is_empty() {
+                        continue;
+                    }
+                    (*p).to_string()
+                }
+                None if resolved_device.is_empty() => cwd.to_string(),
+                None => {
+                    // Windows keeps a per-drive cwd; node reads it from the
+                    // environment and verifies it actually points at the
+                    // resolved device, defaulting to the drive's root.
+                    let device = resolved_device.clone();
+                    let mut candidate = drive_env(&device).unwrap_or_else(|| cwd.to_string());
+                    let cb = candidate.as_bytes();
+                    if cb.len() > 2
+                        && cb[2] == b'\\'
+                        && !eq_ignore_case(&candidate[0..2], &device)
+                    {
+                        candidate = format!("{}\\", device);
+                    }
+                    candidate
+                }
+            };
+
+            let bytes = path.as_bytes();
+            let len = bytes.len();
+            let mut root_end = 0usize;
+            let mut device: Option<String> = None;
+            let mut is_absolute = false;
+            let byte0 = if len > 0 { bytes[0] } else { 0 };
+
+            // Match a root: bare separator, UNC root, or device root.
+            if len == 1 {
+                if is_sep(byte0, true) {
+                    root_end = 1;
+                    is_absolute = true;
+                }
+            } else if is_sep(byte0, true) {
+                is_absolute = true;
+                if is_sep(bytes[1], true) {
+                    // Possible UNC root: \\<server>\<share>[tail].
+                    let mut j = 2usize;
+                    let mut last = j;
+                    while j < len && !is_sep(bytes[j], true) {
+                        j += 1;
+                    }
+                    if j < len && j != last {
+                        let first_part = &path[last..j];
+                        last = j;
+                        while j < len && is_sep(bytes[j], true) {
+                            j += 1;
+                        }
+                        if j < len && j != last {
+                            last = j;
+                            while j < len && !is_sep(bytes[j], true) {
+                                j += 1;
+                            }
+                            if j == len || j != last {
+                                device =
+                                    Some(format!("\\\\{}\\{}", first_part, &path[last..j]));
+                                root_end = j;
+                            }
+                        }
+                    }
+                } else {
+                    root_end = 1;
+                }
+            } else if is_device_root(byte0) && bytes[1] == b':' {
+                // Possible device root ('C:' / 'c:').
+                device = Some(path[0..2].to_string());
+                root_end = 2;
+                if len > 2 && is_sep(bytes[2], true) {
+                    is_absolute = true;
+                    root_end = 3;
+                }
+            }
+
+            if let Some(d) = &device {
+                if !resolved_device.is_empty() {
+                    if !eq_ignore_case(d, &resolved_device) {
+                        // This path points to another device: not applicable.
+                        continue;
+                    }
+                } else {
+                    resolved_device = d.clone();
+                }
+            }
+
+            if resolved_absolute {
+                if !resolved_device.is_empty() {
+                    break;
+                }
+            } else {
+                resolved_tail = format!("{}\\{}", &path[root_end..], resolved_tail);
+                resolved_absolute = is_absolute;
+                if is_absolute && !resolved_device.is_empty() {
+                    break;
+                }
+            }
+        }
+
+        if resolved_tail.is_empty() {
+            return ".".to_string();
+        }
+        let tail = normalize_string(&resolved_tail, !resolved_absolute, b'\\', true);
+        if resolved_absolute {
+            format!("{}\\{}", resolved_device, tail)
+        } else {
+            let out = format!("{}{}", resolved_device, tail);
+            if out.is_empty() {
+                ".".to_string()
+            } else {
+                out
+            }
+        }
+    }
+
+    /// node win32.relative — resolve both sides through `resolve_win32`
+    /// first, then strip the (case-insensitively compared) common prefix,
+    /// emitting `..` per surviving `from` segment. Faithful port of node
+    /// v22.11.0 lib/path.js win32 `relative`.
+    #[cfg(windows)]
+    pub fn relative_win32(
+        from: &str,
+        to: &str,
+        cwd: &str,
+        drive_env: &dyn Fn(&str) -> Option<String>,
+    ) -> String {
+        if from == to {
+            return String::new();
+        }
+        let from_orig = resolve_win32(&[from], cwd, drive_env);
+        let to_orig = resolve_win32(&[to], cwd, drive_env);
+        if from_orig == to_orig || eq_ignore_case(&from_orig, &to_orig) {
+            return String::new();
+        }
+
+        // node lowercases both resolved paths for the scan and slices the
+        // originals (lengths agree); the per-byte compare below is the same
+        // scan.
+        let from = from_orig.as_bytes();
+        let to = to_orig.as_bytes();
+
+        // Trim leading backslashes.
+        let mut from_start = 0usize;
+        while from_start < from.len() && from[from_start] == b'\\' {
+            from_start += 1;
+        }
+        // Trim trailing backslashes (applicable to UNC paths only).
+        let mut from_end = from.len();
+        while from_end > from_start && from[from_end - 1] == b'\\' {
+            from_end -= 1;
+        }
+        let from_len = from_end - from_start;
+
+        let mut to_start = 0usize;
+        while to_start < to.len() && to[to_start] == b'\\' {
+            to_start += 1;
+        }
+        let mut to_end = to.len();
+        while to_end > to_start && to[to_end - 1] == b'\\' {
+            to_end -= 1;
+        }
+        let to_len = to_end - to_start;
+
+        // Longest common case-insensitive prefix.
+        let length = from_len.min(to_len);
+        let mut last_common_sep: Option<usize> = None;
+        let mut i = 0usize;
+        while i < length {
+            let fb = from[from_start + i];
+            if fb.to_ascii_lowercase() != to[to_start + i].to_ascii_lowercase() {
+                break;
+            }
+            if fb == b'\\' {
+                last_common_sep = Some(i);
+            }
+            i += 1;
+        }
+        let matched_all = i == length;
+
+        if !matched_all {
+            if last_common_sep.is_none() {
+                // We found a mismatch before the first common path
+                // separator was seen, so return the original `to`.
+                return to_orig;
+            }
+        } else {
+            if to_len > length {
+                if to[to_start + length] == b'\\' {
+                    // `from` is the exact base path for `to`
+                    // (from='C:\foo\bar'; to='C:\foo\bar\baz').
+                    return to_orig[to_start + length + 1..].to_string();
+                }
+                if length == 2 {
+                    // `from` is the device root
+                    // (from='C:\'; to='C:\foo').
+                    return to_orig[to_start + length..].to_string();
+                }
+            }
+            if from_len > length {
+                if from[from_start + length] == b'\\' {
+                    // `to` is the exact base path for `from`
+                    // (from='C:\foo\bar'; to='C:\foo').
+                    last_common_sep = Some(length);
+                } else if length == 2 {
+                    // `to` is the device root
+                    // (from='C:\foo\bar'; to='C:\').
+                    last_common_sep = Some(3);
+                }
+            }
+        }
+
+        // `..` per surviving `from` segment past the common prefix.
+        let mut out = String::new();
+        let mut i = from_start + last_common_sep.map_or(0, |s| s + 1);
+        while i <= from_end {
+            if i == from_end || from[i] == b'\\' {
+                if out.is_empty() {
+                    out.push_str("..");
+                } else {
+                    out.push_str("\\..");
+                }
+            }
+            i += 1;
+        }
+
+        // `last_common_sep` is always resolved by the branches above (node's
+        // `-1` is normalized to 0 before the tail).
+        let to_start = to_start + last_common_sep.unwrap_or(0);
+        if !out.is_empty() {
+            return format!("{}{}", out, &to_orig[to_start..to_end]);
+        }
+        let mut to_start = to_start;
+        if to_orig.as_bytes()[to_start] == b'\\' {
+            to_start += 1;
+        }
+        to_orig[to_start..to_end].to_string()
+    }
+
+    /// node win32.toNamespacedPath — resolve, then prefix the `\\?\` long
+    /// namespace (`\\?\UNC\` for non-long UNC roots); short results come
+    /// back verbatim.
+    #[cfg(windows)]
+    pub fn to_namespaced_win32(
+        path: &str,
+        cwd: &str,
+        drive_env: &dyn Fn(&str) -> Option<String>,
+    ) -> String {
+        if path.is_empty() {
+            return path.to_string();
+        }
+        let resolved = resolve_win32(&[path], cwd, drive_env);
+        let b = resolved.as_bytes();
+        if b.len() <= 2 {
+            return path.to_string();
+        }
+        if b[0] == b'\\' && b[1] == b'\\' {
+            let code = b[2];
+            if code != b'?' && code != b'.' {
+                // Non-long UNC root → long UNC form.
+                return format!("\\\\?\\UNC\\{}", &resolved[2..]);
+            }
+        } else if is_device_root(b[0]) && b[1] == b':' && b.len() > 2 && b[2] == b'\\' {
+            return format!("\\\\?\\{}", resolved);
+        }
+        resolved
+    }
 }
 
 mod posix_core {
@@ -1763,9 +2067,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     );
                 }
             }
-            // cwd-dependent methods: forward the host implementations (their
-            // algorithm is platform/cwd-bound; the win32 face keeps the same
-            // behaviour as before this change).
+            // cwd-dependent methods: forward the host implementations. On a
+            // Windows host those now run the genuine win32 cores
+            // (`resolve_win32` / `relative_win32` / `to_namespaced_win32`), so
+            // the forwarded face is the real Windows algorithm there; on posix
+            // hosts the forwarding keeps the historical posix-leg behaviour.
             for fn_name in &["resolve", "relative"] {
                 let c_name = ZBox::from_bytes(fn_name.as_bytes());
                 let mut fn_val = UndefinedValue();
@@ -1984,6 +2290,13 @@ unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
 // `join('a','..','..')` answered '../..' instead of '..' (leading '..' above a
 // relative root mishandled), `format({name,ext})` dropped formatExt's dot, and
 // `parse` answered std::path shapes for dot-leading basenames.
+//
+// The cwd-bound natives (resolve / relative / toNamespacedPath) run the
+// matching node cores per host: `resolve_win32` / `relative_win32` /
+// `to_namespaced_win32` on Windows hosts (drive-qualified absolute output —
+// the prior std::path legs re-rooted to '/' and dropped the drive, answering
+// `resolve('') === '/Users\putao\...'` instead of `C:\Users\putao\...`), and
+// `posix_core::resolve` / `relative` on posix hosts.
 
 /// The cwd as a forward-slash string for the platform face's cwd-bound
 /// natives (resolve / relative / toNamespacedPath), falling back to ".".
@@ -1992,6 +2305,25 @@ fn host_cwd_string() -> String {
     match bun_core::getcwd(&mut buf) {
         Ok(z) => String::from_utf8_lossy(z.as_bytes()).into_owned(),
         Err(_) => ".".to_string(),
+    }
+}
+
+/// node's per-drive cwd lookup for the win32 resolve/relative cores —
+/// `process.env[`=${device}`]` (Windows keeps a per-drive cwd in its
+/// environment block as the `=C:` pseudo-entry). A miss (or a non-drive
+/// shaped value) answers `None`, which node treats exactly the same way:
+/// the process cwd is used and the drive-root default applies when it
+/// points at another device.
+#[cfg(windows)]
+fn win32_drive_env(device: &str) -> Option<String> {
+    let val = ::std::env::var_os(format!("={}", device))?;
+    let s = val.to_string_lossy().into_owned();
+    // Only a drive-shaped cwd ('X:\...') is a usable per-drive cwd.
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        Some(s)
+    } else {
+        None
     }
 }
 
@@ -2026,35 +2358,27 @@ unsafe extern "C" fn path_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             }
         }
     }
-    if cfg!(windows) {
-        // cwd-dependent win32 core (device/UNC root extraction) is not part of
-        // `node_alg`'s string set; the win32 face forwards these two natives
-        // from here as well, so the pre-existing std::path behavior stands.
-        let cwd = {
-            let mut buf = bun_paths::path_buffer_pool::get();
-            bun_core::getcwd(&mut buf)
-                .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
-                .unwrap_or_else(|_| PathBuf::from("."))
-        };
-        let mut resolved = cwd;
-
-        for s in &parts {
-            let p = Path::new(s);
-            if p.is_absolute() {
-                resolved = p.to_path_buf();
-            } else {
-                resolved = resolved.join(p);
-            }
-        }
-
-        let result = normalize_path(&resolved);
-        return return_string(cx, &args, &result.to_string_lossy());
+    #[cfg(windows)]
+    {
+        // Windows host face: node's win32 resolve — device/UNC-aware, and
+        // cwd-qualified with the DRIVE LETTER RETAINED (resolve('') ===
+        // process.cwd() === 'C:\...'). The previous std::path leg answered
+        // posix-flavored output (`normalize_path` re-roots to '/' and drops
+        // the device): `resolve('')` → '/Users\putao\...' on a real Windows
+        // host (B-class, node oracle: 'C:\Users\putao\...').
+        let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+        let cwd = host_cwd_string();
+        let result = node_alg::resolve_win32(&refs, &cwd, &win32_drive_env);
+        return return_string(cx, &args, &result);
     }
     // Posix host: the exact `path.posix.resolve` core (right-most absolute
     // segment wins, `..` clamps at the root).
-    let cwd = host_cwd_string();
-    let result = posix_core::resolve(&parts, &cwd);
-    return_string(cx, &args, &result)
+    #[cfg(not(windows))]
+    {
+        let cwd = host_cwd_string();
+        let result = posix_core::resolve(&parts, &cwd);
+        return_string(cx, &args, &result)
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2187,27 +2511,27 @@ unsafe extern "C" fn path_relative(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         None => return return_string(cx, &args, ""),
     };
 
-    if cfg!(windows) {
-        // cwd-dependent win32 core (device compare / UNC roots) is not part of
-        // `node_alg`'s string set; the win32 face forwards this native from
-        // here, so the pre-existing bun_paths behavior stands.
-        let from_abs = make_absolute(&from_str);
-        let to_abs = make_absolute(&to_str);
-
-        let result = pathdiff(&to_abs, &from_abs);
-        return return_string(
-            cx,
-            &args,
-            result.unwrap_or_default().to_string_lossy().as_ref(),
-        );
+    #[cfg(windows)]
+    {
+        // Windows host face: node's win32 relative — both sides resolved
+        // through the win32 resolve (device-qualified) first, then the
+        // common prefix stripped case-insensitively. The previous leg ran
+        // bun_paths' POSIX relative (same drive-prefix-loss class as
+        // resolve).
+        let cwd = host_cwd_string();
+        let result = node_alg::relative_win32(&from_str, &to_str, &cwd, &win32_drive_env);
+        return return_string(cx, &args, &result);
     }
     // Posix host: node resolves both args against the cwd first, then runs the
     // posix relative algorithm (the exact `path.posix.relative` core).
-    let cwd = host_cwd_string();
-    let from_abs = posix_core::resolve(&[from_str], &cwd);
-    let to_abs = posix_core::resolve(&[to_str], &cwd);
-    let result = posix_core::relative(&from_abs, &to_abs);
-    return_string(cx, &args, &result)
+    #[cfg(not(windows))]
+    {
+        let cwd = host_cwd_string();
+        let from_abs = posix_core::resolve(&[from_str], &cwd);
+        let to_abs = posix_core::resolve(&[to_str], &cwd);
+        let result = posix_core::relative(&from_abs, &to_abs);
+        return_string(cx, &args, &result)
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2293,44 +2617,41 @@ unsafe extern "C" fn path_to_namespaced(cx: *mut JSContext, argc: u32, vp: *mut 
             return true;
         }
     };
-    if cfg!(windows) {
-        // cwd-dependent win32 core (\\?\ namespace prefixing) is not part of
-        // `node_alg`'s string set; the win32 face forwards this native from
-        // here, so the pre-existing behavior stands.
-        let resolved = make_absolute(&s);
-        return return_string(cx, &args, &resolved.to_string_lossy());
+    #[cfg(windows)]
+    {
+        // Windows host face: node's win32 toNamespacedPath — `\\?\`-prefix
+        // the win32-resolved path (`\\?\UNC\...` for non-long UNC roots).
+        // The previous leg answered the same drive-prefix-loss shape as the
+        // old resolve (e.g. '/Users\putao\...' instead of 'C:\...\').
+        let cwd = host_cwd_string();
+        let result = node_alg::to_namespaced_win32(&s, &cwd, &win32_drive_env);
+        return return_string(cx, &args, &result);
     }
     // node posix.toNamespacedPath returns the input verbatim (there are no
     // namespaces to prefix on posix).
-    return_string(cx, &args, &s)
+    #[cfg(not(windows))]
+    {
+        return_string(cx, &args, &s)
+    }
 }
 
 // --- Pure logic helpers ---
-// @trace REQ-ENG-007 [api:path] [code:bun_paths] — absolute-path resolution
-// (`make_absolute`) and relative-path computation (`pathdiff`) delegate to
-// `bun_paths::resolve_path` (Zig std `std.fs.path` faithful port). These are
-// the cwd-dependent win32-leg helpers only (resolve / relative /
-// toNamespacedPath on cfg!(windows)); the posix legs run the node cores in
-// `posix_core`, and `normalize_path` additionally serves bun_api's
-// real-path resolution (REQ-ENG-007).
+// @trace REQ-ENG-007 [api:path] — the cwd-dependent Windows-host legs
+// (resolve / relative / toNamespacedPath on cfg!(windows)) run the node
+// win32 cores in `node_alg` (`resolve_win32` / `relative_win32` /
+// `to_namespaced_win32`); the posix legs run the node cores in `posix_core`.
+// The former bun_paths-based helpers (`make_absolute` / `pathdiff` /
+// `cwd_bytes`) are deleted: they were POSIX-leg ports consumed only by the
+// Windows legs, which re-rooted output to '/' and dropped the drive prefix
+// (`resolve('')` → '/Users\putao\...' on a real Windows host).
 //
 // The Node.js-specific `.`/`..` collapse for `normalize_path` stays in Rust
 // here because Node's `path.posix.normalize` deliberately preserves leading
 // `..` above the root (e.g. `/a/../../b` → `/../b`) while Zig std's
 // `normalizeString` clamps at the root (`/b`). The bundler/resolver consume
 // the Zig semantics; the Node compatibility layer keeps its own.
-
-use bun_paths::resolve_path::{self, platform::Posix};
-
-/// Resolve the current working directory as an owned byte vector, falling
-/// back to `b"."` so absolute-path joins never see an empty cwd.
-fn cwd_bytes() -> Vec<u8> {
-    let mut buf = bun_paths::path_buffer_pool::get();
-    match bun_core::getcwd(&mut buf) {
-        Ok(z) => z.as_bytes().to_vec(),
-        Err(_) => b".".to_vec(),
-    }
-}
+// `normalize_path` additionally serves bun_api's real-path resolution
+// (REQ-ENG-007).
 
 // NOTE: the old hand-rolled `posix_join` (B-class: `join('a','..','..')`
 // answered '../..', trailing-separator preservation wrong) is deleted — the
@@ -2369,48 +2690,6 @@ pub(crate) fn normalize_path(path: &::std::path::Path) -> PathBuf {
     } else {
         result
     }
-}
-
-pub(crate) fn make_absolute(s: &str) -> PathBuf {
-    let p = PathBuf::from(s);
-    if p.is_absolute() {
-        normalize_path(&p)
-    } else {
-        // @trace REQ-ENG-007 [code:bun_paths] — resolve `cwd + path` into a
-        // single absolute path via bun_paths::resolve_path::join_abs_string
-        // (Zig `joinAbsoluteString`, POSIX). Falls back to the std::path
-        // normalize if the resolved result round-trips lossily.
-        let cwd = cwd_bytes();
-        let part_bytes = s.as_bytes();
-        let resolved = resolve_path::join_abs_string::<Posix>(&cwd, &[part_bytes]);
-        PathBuf::from(String::from_utf8_lossy(resolved).into_owned())
-    }
-}
-
-pub(crate) fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf> {
-    let cwd = cwd_bytes();
-    let to_abs = if to.is_absolute() {
-        to.to_string_lossy().into_owned()
-    } else {
-        // Make `to` absolute against the cwd via bun_paths.
-        let resolved =
-            resolve_path::join_abs_string::<Posix>(&cwd, &[to.to_string_lossy().as_bytes()]);
-        String::from_utf8_lossy(resolved).into_owned()
-    };
-    let from_abs = if from.is_absolute() {
-        from.to_string_lossy().into_owned()
-    } else {
-        let resolved =
-            resolve_path::join_abs_string::<Posix>(&cwd, &[from.to_string_lossy().as_bytes()]);
-        String::from_utf8_lossy(resolved).into_owned()
-    };
-
-    // @trace REQ-ENG-007 [code:bun_paths] — relative-path computation delegated
-    // to bun_paths::resolve_path::relative_platform (Zig `relativePath`, POSIX).
-    // ALWAYS_COPY=true so the result owns its bytes (does not alias TLS scratch).
-    let rel =
-        resolve_path::relative_platform::<Posix, true>(from_abs.as_bytes(), to_abs.as_bytes());
-    ::std::option::Option::Some(PathBuf::from(String::from_utf8_lossy(rel).into_owned()))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2531,87 +2810,8 @@ mod tests {
         );
     }
 
-    // --- make_absolute ---
-
-    #[test]
-    fn test_make_absolute_already_absolute() {
-        assert_eq!(make_absolute("/foo/bar"), PathBuf::from("/foo/bar"));
-    }
-
-    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
-    // path semantics are correct product behavior, these tests hold the posix form.
-    #[cfg(unix)]
-    #[test]
-    fn test_make_absolute_relative() {
-        let result = make_absolute("foo/bar");
-        assert!(
-            result.is_absolute(),
-            "result should be absolute: {:?}",
-            result
-        );
-        assert!(result.to_str().unwrap().contains("foo/bar"));
-    }
-
-    // POSIX-path-form assertions (leading-/ anchors): on windows the per-OS
-    // path semantics are correct product behavior, these tests hold the posix form.
-    #[cfg(unix)]
-    #[test]
-    fn test_make_absolute_dot() {
-        let result = make_absolute(".");
-        assert!(result.is_absolute());
-    }
-
-    #[test]
-    fn test_make_absolute_dot_dot() {
-        let result = make_absolute("/a/b/..");
-        // Path-based normalization: /a/b/.. -> /a
-        let s = result.to_str().unwrap();
-        assert!(s == "/a" || s == "/a/", "expected /a or /a/, got {}", s);
-    }
-
-    // --- pathdiff ---
-
-    #[test]
-    fn test_pathdiff_same() {
-        let p = Path::new("/a/b/c");
-        assert_eq!(pathdiff(p, p), Some(PathBuf::from("")));
-    }
-
-    #[test]
-    fn test_pathdiff_sibling() {
-        let to = Path::new("/a/b/c");
-        let from = Path::new("/a/b/d");
-        // pathdiff strips common prefix then builds relative path
-        assert_eq!(pathdiff(to, from), Some(PathBuf::from("../c")));
-    }
-
-    #[test]
-    fn test_pathdiff_child() {
-        let to = Path::new("/a/b/c/d");
-        let from = Path::new("/a/b");
-        assert_eq!(pathdiff(to, from), Some(PathBuf::from("c/d")));
-    }
-
-    #[test]
-    fn test_pathdiff_parent() {
-        let to = Path::new("/a/b");
-        let from = Path::new("/a/b/c/d");
-        assert_eq!(pathdiff(to, from), Some(PathBuf::from("../..")));
-    }
-
-    #[test]
-    fn test_pathdiff_different_roots() {
-        let to = Path::new("/a/b");
-        let from = Path::new("/c/d");
-        let result = pathdiff(to, from);
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_pathdiff_relative() {
-        let to = Path::new("a/b");
-        let from = Path::new("a/c");
-        let result = pathdiff(to, from);
-        assert!(result.is_some());
-    }
+    // --- make_absolute / pathdiff tests deleted with their implementations:
+    // the Windows-host cwd-dependent legs now run the node win32 cores
+    // (`resolve_win32` / `relative_win32`), and nothing else consumed the
+    // bun_paths POSIX-leg helpers.
 }
