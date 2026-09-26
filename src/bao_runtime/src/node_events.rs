@@ -453,8 +453,9 @@ fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<EmitterState> {
                 // pointer a second time → double free + SIGSEGV
                 // (EmitterState ≈ 112B, matches the mimalloc report).
                 // Nested ops now each hold an independent snapshot; the last
-                // set_state wins (same-event nested once-removal may drift —
-                // Node snapshots listeners per emit too).
+                // set_state wins. ee_emit's write-back reconciles its snapshot
+                // with the live list afterwards (see the write-back comment
+                // there), so same-event nesting no longer drifts.
                 return Some((&*ptr).clone());
             }
         }
@@ -678,7 +679,14 @@ pub unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
     gc_store_insert(cx, &key, callback);
-    state.listeners.entry(event_name).or_default().push(key);
+    state.listeners.entry(event_name.clone()).or_default().push(key);
+    // once_flags is INDEX-ALIGNED with listeners (ee_once pushes `true`, so a
+    // non-once registration must own a `false` slot). Without it, the vec is
+    // short and every flag consumer — emit's once firing, ee_off's flag
+    // removal, emit's write-back — reads the NEXT listener's flag: a plain
+    // `on` followed by a `once` made emit treat the `on` listener as once
+    // (dropping it after one emit) and resurrect the `once` listener.
+    state.once_flags.entry(event_name).or_default().push(false);
     set_state(cx, this_obj_root.get(), state);
     args.rval().set(ObjectValue(this_obj_root.get()));
     true
@@ -888,8 +896,7 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
     };
 
-    let mut remaining_keys: Vec<String> = Vec::new();
-    let mut remaining_once: Vec<bool> = Vec::new();
+    let mut fired_once_keys: Vec<String> = Vec::new();
 
     for (i, key) in listener_keys.iter().enumerate() {
         if let Some(callback) = gc_store_get(cx, key) {
@@ -934,25 +941,46 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
             let is_once = once_flags.get(i).copied().unwrap_or(false);
             if is_once {
+                // Consumed by this emit: the GcStore entry goes now, and the
+                // key is dropped from the live list at write-back below.
                 gc_store_remove(cx, key);
-            } else {
-                remaining_keys.push(key.clone());
-                remaining_once.push(false);
+                fired_once_keys.push(key.clone());
             }
         }
         // If gc_store_get returns None, the object was GC'd — skip it (don't keep stale key)
     }
 
-    // KEYED MERGE write-back: listeners registered or removed by NESTED ee_*
-    // calls (same object) during the loop above live in the prop's CURRENT
-    // state — writing back our pre-loop snapshot would erase them
-    // (nested_on_registration regression). Re-read and apply only THIS emit's
-    // mutation: replace the fired event's listener list. Same-event nested
-    // off-during-emit can still resurrect a removed listener until the next
-    // emit (Node snapshots its firing list too); cross-event nesting is exact.
+    // WRITE-BACK = live list minus this emit's once-consumed keys.
+    //
+    // The firing list above is the pre-emit SNAPSHOT (iteration safety: a
+    // listener may freely add/remove listeners mid-emit without mutating what
+    // we iterate). Node's post-emit live list, though, is the array the
+    // NESTED ee_* calls mutated: `removeListener` during emit removes from
+    // the live list (the canonical self-removing listener
+    // `ee.on('y', function(){ this.removeListener('y', arguments.callee) })
+    // leaves listenerCount('y') === 0), and `on` during emit appends. So the
+    // write-back starts from the prop's CURRENT list for this event — nested
+    // adds and removals are already reflected there — and then drops exactly
+    // what THIS emit consumed (the fired once keys; their GcStore entries are
+    // already gone). Writing our snapshot-derived `remaining_keys` over the
+    // live list instead would resurrect a nested-removed listener (the old
+    // keyed-merge drift) and would flatten the once flags of listeners a
+    // nested call registered mid-emit. Cross-event nesting is untouched: only
+    // the fired event's lists are rewritten.
     let mut current = ensure_state(cx, this_obj_root.get());
-    current.listeners.insert(event_name.clone(), remaining_keys);
-    current.once_flags.insert(event_name, remaining_once);
+    let live_keys = current.listeners.remove(&event_name).unwrap_or_default();
+    let live_flags = current.once_flags.remove(&event_name).unwrap_or_default();
+    let mut final_keys: Vec<String> = Vec::with_capacity(live_keys.len());
+    let mut final_flags: Vec<bool> = Vec::with_capacity(live_keys.len());
+    for (idx, key) in live_keys.into_iter().enumerate() {
+        if fired_once_keys.contains(&key) {
+            continue;
+        }
+        final_flags.push(live_flags.get(idx).copied().unwrap_or(false));
+        final_keys.push(key);
+    }
+    current.listeners.insert(event_name.clone(), final_keys);
+    current.once_flags.insert(event_name, final_flags);
     set_state(cx, this_obj_root.get(), current);
 
     args.rval().set(BooleanValue(had_listeners));
