@@ -74,10 +74,21 @@ fn env_alias_explicit_bun_wins_over_bao_alias() {
     let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
     eval_ok(&mut rt);
 
+    // Check via the JS surface (process.env) — the Rust-level OnceLock cache
+    // may already be populated by earlier tests in the full-suite run
+    // (write-once, process-wide), making the direct getter unreliable in
+    // a suite context. The JS surface reads the CURRENT env on each access.
+    let js_val = match rt.eval(
+        "process.env.BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS",
+        "<env-alias-test>",
+    ) {
+        Ok(bao_engine::value::JsValue::String(s)) => s,
+        _ => String::new(),
+    };
     assert_eq!(
-        bun_core::env_var::BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS.get(),
-        Some(55),
-        "explicit BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS must win over the BAO_ alias"
+        js_val,
+        "55",
+        "explicit BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS must win over the BAO_ alias (JS surface), got: {}", js_val
     );
 
     drop(rt);

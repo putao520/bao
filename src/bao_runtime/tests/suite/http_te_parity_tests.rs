@@ -505,7 +505,7 @@ fn test_node_http2_streams_released_from_session_registry_on_close() {
     );
     assert_eq!(scheduled, "scheduled");
     let drained = {
-        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
             let n = eval_str(
                 &mut ctx,

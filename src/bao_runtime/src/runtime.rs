@@ -94,16 +94,16 @@ impl ::std::ops::Drop for BaoRuntime {
         // engine teardown sequence is byte-for-byte unchanged.
         cleanup_runtime_resources(self.token);
         // B1 census row 27: retire this runtime's resolver-root claim.
-        // clear-if-same inside bun_core: a parasitic (older) runtime dropping
-        // after a newer one re-seeded the overlay must not erase the newer
-        // root — same shape as the CURRENT_RUNTIME_TOKEN clear below.
-        bun_core::clear_current_top_level_dir(self.resolver_root);
+        // TOKEN-GATED clear (fix 2026-09-26): the plain clear-if-same
+        // pattern fails when two runtimes share the SAME directory —
+        // dirname_store() interns by content, so both get the same
+        // &'static [u8] slice, and dropping either clears the overlay
+        // for both. Gate on the runtime token instead: only the LATEST
+        // runtime's drop may clear (a parasitic B created in the same
+        // directory as A must not erase A's overlay when B drops first).
         CURRENT_RUNTIME_TOKEN.with(|t| {
-            // Clear only if THIS runtime is still the latest one on the
-            // thread: a parasitic BaoRuntime::new() (shared JSContext)
-            // overwrote the slot with its own token, and this older runtime's
-            // drop must not erase it.
             if t.get() == Some(self.token) {
+                bun_core::clear_current_top_level_dir(self.resolver_root);
                 t.set(None);
             }
         });
