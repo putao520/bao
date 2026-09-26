@@ -212,7 +212,19 @@ struct ListenTcpUserData {
     data_cb_key: Option<String>,
     close_cb_key: Option<String>,
     end_cb_key: Option<String>,
-    group_ptr: *mut SocketGroup,
+    /// The server's socket group, EMBEDDED in this Box. uSockets groups are
+    /// "embedded in their owner — never separately heap-allocated"
+    /// (libusockets.h); the owner here is this user-data box, so the group's
+    /// lifetime is the box's lifetime. This is the server-side twin of the
+    /// BCE-20260926-001 fix on ConnectUserData: the group used to live in its
+    /// own `Box<SocketGroup>` whose storage `tcp_server_stop` only ever
+    /// deinit'd (`SocketGroup::destroy` = `us_socket_group_deinit`, which
+    /// unlinks but never frees — SocketGroup.rs is an embedded-by-value
+    /// mirror), leaking the 88-byte Box on every `server.stop()`. Embedding
+    /// also satisfies the deinit contract structurally (context.c): the
+    /// box outlives the close_all → deinit sequence, so no dispatch of this
+    /// group's sockets can ever observe freed embedding storage.
+    group: SocketGroup,
     hostname: String,
     port: u16,
     actual_port: AtomicU16,
@@ -804,13 +816,16 @@ fn build_tcp_server(
         return true;
     }
 
-    // Build user data BEFORE SocketGroup::init so we can pass it as owner
+    // Build user data BEFORE SocketGroup::init so we can pass it as owner.
+    // The group lives INSIDE this box (see ListenTcpUserData.group); init
+    // stamps ext = ud_ptr, so group().owner::<ListenTcpUserData>() still
+    // resolves this box exactly as the separate-allocation shape did.
     let ud = Box::new(ListenTcpUserData {
         connect_cb_key,
         data_cb_key,
         close_cb_key,
         end_cb_key,
-        group_ptr: ptr::null_mut(), // filled in after group creation
+        group: SocketGroup::default(),
         hostname: hostname.to_string(),
         port,
         actual_port: AtomicU16::new(port), // updated after listen
@@ -818,14 +833,11 @@ fn build_tcp_server(
     });
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
-    // Create SocketGroup with VTable, passing user data as owner
-    let mut group = Box::new(SocketGroup::default());
-    group.init(loop_, Some(&TCP_LISTEN_VTABLE), ud_ptr);
-    let group_ptr = Box::into_raw(group);
-
-    // Back-fill group_ptr into user data
+    // Initialise the embedded server socket group, passing the owning box as
+    // user data.
+    let group_ptr: *mut SocketGroup = unsafe { &raw mut (*(ud_ptr as *mut ListenTcpUserData)).group };
     unsafe {
-        (*(ud_ptr as *mut ListenTcpUserData)).group_ptr = group_ptr;
+        (*group_ptr).init(loop_, Some(&TCP_LISTEN_VTABLE), ud_ptr);
     }
 
     let host_cstr = ZBox::from_bytes(hostname.as_bytes());
@@ -852,9 +864,13 @@ fn build_tcp_server(
     // Bun.listen TCP path.
     let _ = err;
     if listen_socket.is_null() {
+        // Deinit first (unlinks the never-populated group), then free the
+        // embedding box. No dispatch of this group's sockets is on the stack
+        // here — the listen failed synchronously.
         unsafe {
             SocketGroup::destroy(group_ptr);
         }
+        let _ = unsafe { Box::from_raw(ud_ptr as *mut ListenTcpUserData) };
         args.rval().set(UndefinedValue());
         return true;
     }
@@ -886,7 +902,18 @@ fn build_tcp_server(
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let server_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
     if server_obj.get().is_null() {
-        // Cleanup
+        // The server is live but can never gain a JS identity. Compliant
+        // teardown order (deinit contract, context.c): close_all runs the
+        // FULL close dispatches (accepted sockets + the listener) with the
+        // group storage still alive, then deinit unlinks the emptied group,
+        // then the embedding box is freed.
+        unsafe {
+            (*group_ptr).close_all();
+            SocketGroup::destroy(group_ptr);
+            crate::node_http::unregister_active_app(
+                group_ptr as *mut bun_uws_sys::app::App<false>,
+            );
+        }
         let _ = unsafe { Box::from_raw(ud_ptr as *mut ListenTcpUserData) };
         args.rval().set(UndefinedValue());
         return true;
@@ -921,13 +948,9 @@ fn build_tcp_server(
         }
     }
 
-    // Store pointers as private properties
-    let group_val = mozjs::jsval::PrivateValue(group_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref) let g_h = group_val);
-    unsafe {
-        JS_DefineProperty(cx, srv_h, c"_groupPtr".as_ptr(), g_h.handle().into(), 0);
-    }
-
+    // Store the owner pointer as a private property; the group is reachable
+    // through the box (ListenTcpUserData.group), so no separate _groupPtr
+    // alias is kept on the JS object.
     let ud_val = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
     rooted!(&in(cx_ref) let u_h = ud_val);
     unsafe {
@@ -943,39 +966,13 @@ fn build_tcp_server(
         rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
         let this_h = this_obj.handle().into();
 
-        // Close all sockets in the group and destroy it
-        let mut g_val = UndefinedValue();
-        JS_GetProperty(
-            cx,
-            this_h,
-            c"_groupPtr".as_ptr(),
-            MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut g_val,
-            },
-        );
-        if g_val.is_double() && (g_val.asBits_ & 0xFFFF000000000000) == 0 {
-            let group_ptr = g_val.to_private() as *mut SocketGroup;
-            if !group_ptr.is_null() {
-                (*group_ptr).close_all();
-                SocketGroup::destroy(group_ptr);
-                // Drop the JS-idle liveness token registered in
-                // build_tcp_server (see the BCE-007 note there).
-                unsafe {
-                    crate::node_http::unregister_active_app(
-                        group_ptr as *mut bun_uws_sys::app::App<false>,
-                    )
-                };
-            }
-            let undef = UndefinedValue();
-            let undef_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &undef,
-            };
-            JS_SetProperty(cx, this_h, c"_groupPtr".as_ptr(), undef_h);
-        }
-
-        // Free user data
+        // Teardown the server: close_all runs the FULL close dispatches of
+        // every socket in the group (accepted sockets + the listener) with
+        // the embedding storage still alive, destroy (= us_socket_group_deinit)
+        // unlinks the emptied group, and only then is the owning box — whose
+        // storage embeds the group (ListenTcpUserData.group) — freed. Freeing
+        // it any earlier would be the BCE-20260926-001 class (read-after-free
+        // of s->group when a close dispatch returns).
         let mut ud_val = UndefinedValue();
         JS_GetProperty(
             cx,
@@ -989,6 +986,16 @@ fn build_tcp_server(
         if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
             let ud_ptr = ud_val.to_private() as *mut ListenTcpUserData;
             if !ud_ptr.is_null() {
+                let group_ptr: *mut SocketGroup = &raw mut (*ud_ptr).group;
+                (*group_ptr).close_all();
+                SocketGroup::destroy(group_ptr);
+                // Drop the JS-idle liveness token registered in
+                // build_tcp_server (see the BCE-007 note there).
+                unsafe {
+                    crate::node_http::unregister_active_app(
+                        group_ptr as *mut bun_uws_sys::app::App<false>,
+                    )
+                };
                 drop(Box::from_raw(ud_ptr));
             }
             let undef = UndefinedValue();
