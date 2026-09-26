@@ -988,7 +988,15 @@ macro_rules! url_prop_setters {
                 rooted!(&in(cx_ref) let obj = this.to_object());
                 if _argc == 0 { return true; }
                 let val = *args.get(0).ptr;
-                let new_val = if val.is_string() { crate::js_to_rust_string(cx, val) } else { String::new() };
+                // WHATWG setters stringify the assigned value before parsing
+                // (`u.port = 9090` must behave as `u.port = "9090"`); the old
+                // non-string arm fell to "" and silently cleared the component.
+                // ToString failure (e.g. a Symbol) leaves a pending exception —
+                // propagate it by returning false.
+                let new_val = match qs_value_to_string(cx, val) {
+                    Some(s) => s,
+                    None => return false,
+                };
                 url_prop_set(cx, obj.get(), $field, &new_val);
                 true
             }
