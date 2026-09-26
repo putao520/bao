@@ -968,8 +968,8 @@ mod node_alg {
 
     /// ASCII case-insensitive comparison — the `String.prototype.toLowerCase`
     /// equality node's win32 resolve/relative use for device and root
-    /// matching (`C:` === `c:`, `\\SRV\share` === `\\srv\share`).
-    #[cfg(windows)]
+    /// matching (`C:` === `c:`, `\\SRV\share` === `\\srv\share`). Not
+    /// host-gated: the `path.win32` FACE runs it on every platform.
     fn eq_ignore_case(a: &str, b: &str) -> bool {
         a.len() == b.len()
             && a.bytes()
@@ -986,8 +986,10 @@ mod node_alg {
     /// against bun's runtime/node/path.zig `resolveWindowsT`).
     /// `drive_env` answers node's `process.env[`=${device}`]` per-drive cwd
     /// lookup; `None` falls through to the process cwd exactly like a
-    /// missing environment entry in node.
-    #[cfg(windows)]
+    /// missing environment entry in node. Not host-gated: node ships this
+    /// algorithm on every platform (`path.win32.resolve('C:\\a\\b', 'c') ===
+    /// 'C:\\a\\b\\c'` even on Linux — on a posix host the per-drive cwd
+    /// lookup simply misses and the process cwd takes its place).
     pub fn resolve_win32(
         parts: &[&str],
         cwd: &str,
@@ -1121,8 +1123,8 @@ mod node_alg {
     /// node win32.relative — resolve both sides through `resolve_win32`
     /// first, then strip the (case-insensitively compared) common prefix,
     /// emitting `..` per surviving `from` segment. Faithful port of node
-    /// v22.11.0 lib/path.js win32 `relative`.
-    #[cfg(windows)]
+    /// v22.11.0 lib/path.js win32 `relative`. Not host-gated: the
+    /// `path.win32` FACE runs it on every platform.
     pub fn relative_win32(
         from: &str,
         to: &str,
@@ -1243,8 +1245,8 @@ mod node_alg {
 
     /// node win32.toNamespacedPath — resolve, then prefix the `\\?\` long
     /// namespace (`\\?\UNC\` for non-long UNC roots); short results come
-    /// back verbatim.
-    #[cfg(windows)]
+    /// back verbatim. Not host-gated: the `path.win32` FACE runs it on
+    /// every platform.
     pub fn to_namespaced_win32(
         path: &str,
         cwd: &str,
@@ -1395,9 +1397,10 @@ mod posix_core {
 
 /// path.win32 — the genuine win32 face (node ships the Windows algorithm on
 /// every platform, so `path.win32.normalize('a/b') === 'a\\b'` even on
-/// Linux). Pure-string cores from `node_alg`; `resolve` / `relative` /
-/// `toNamespacedPath` are cwd-dependent and stay forwarded from the host
-/// module object.
+/// Linux). Pure-string cores from `node_alg`; the cwd-dependent members
+/// (`resolve` / `relative` / `toNamespacedPath`) run the `*_win32` cores on
+/// every host too — the `=X:` per-drive cwd lookup simply misses on posix
+/// hosts and falls through to the process cwd, matching node.
 mod win32_core {
     pub fn normalize(p: &str) -> String {
         super::node_alg::normalize(p, true)
@@ -1490,7 +1493,10 @@ posix_str_fn!(js_posix_resolve, "resolve", |cx: *mut JSContext,
     for i in 0..argc {
         parts.push(posix_arg(cx, *args.get(i).ptr)?);
     }
-    let cwd = ::std::env::current_dir().ok()?.to_string_lossy().replace('\\', "/");
+    // node keeps process.cwd() VERBATIM as the posix-resolve base (on a
+    // Windows host: cwd 'C:\Users\x' + resolve('a') === 'C:\Users\x/a' —
+    // mixed separators, node-faithful). No separator rewriting.
+    let cwd = ::std::env::current_dir().ok()?.to_string_lossy().into_owned();
     Some(posix_core::resolve(&parts, &cwd))
 });
 posix_str_fn!(js_posix_dirname, "dirname", |cx: *mut JSContext,
@@ -1625,6 +1631,65 @@ posix_str_fn!(js_win32_format, "format", |cx: *mut JSContext,
     let parsed = read_path_object(cx, args)?;
     Some(win32_core::format(&parsed))
 });
+
+// The win32 face's cwd-dependent members run the SAME win32 cores the
+// Windows-host face runs — unconditionally (node's win32 module object is
+// the genuine Windows algorithm on every platform, so `path.win32.resolve(
+// 'C:\\a\\b', 'c') === 'C:\\a\\b\\c'` on Linux too; the `=X:` per-drive cwd
+// lookup just misses on posix hosts and falls through to the process cwd).
+posix_str_fn!(js_win32_resolve, "resolve", |cx: *mut JSContext,
+                                            args: &::mozjs::jsapi::CallArgs,
+                                            argc: u32|
+ -> Option<String> {
+    let mut parts = Vec::new();
+    for i in 0..argc {
+        parts.push(posix_arg(cx, *args.get(i).ptr)?);
+    }
+    let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+    Some(node_alg::resolve_win32(
+        &refs,
+        &host_cwd_string(),
+        &win32_drive_env,
+    ))
+});
+posix_str_fn!(js_win32_relative, "relative", |cx: *mut JSContext,
+                                              args: &::mozjs::jsapi::CallArgs,
+                                              _argc: u32|
+ -> Option<String> {
+    let from = posix_arg(cx, *args.get(0).ptr)?;
+    let to = posix_arg(cx, *args.get(1).ptr)?;
+    Some(node_alg::relative_win32(
+        &from,
+        &to,
+        &host_cwd_string(),
+        &win32_drive_env,
+    ))
+});
+
+/// path.win32.toNamespacedPath — the win32 core on every host. An absent or
+/// non-coercible argument answers `undefined` (same arg contract as the host
+/// face's toNamespacedPath; node returns the input verbatim for non-strings).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn js_win32_to_namespaced(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let s = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    let result = node_alg::to_namespaced_win32(&s, &host_cwd_string(), &win32_drive_env);
+    return_string(cx, &args, &result)
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn win32_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
@@ -2025,12 +2090,13 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
     // path.win32 — Node.js ships a real Windows-flavoured path object on all
     // platforms: `path.win32.sep === "\\"`, `path.win32.normalize('a/b') ===
-    // 'a\\b'`, `path.win32.basename('C:\\dir\\f') === 'f'` — on Linux too.
-    // The string-algorithm methods therefore get genuine win32 cores
-    // (win32_core / node_alg, ported from node lib/path.js); only the
-    // cwd-dependent methods (`resolve` / `relative`) stay forwarded from the
-    // host module object. (See ~/code/rust/bun/src/runtime/node/path.zig —
-    // Bun likewise ships a real win32 face on every platform.)
+    // 'a\\b'`, `path.win32.basename('C:\\dir\\f') === 'f'`,
+    // `path.win32.resolve('C:\\a\\b', 'c') === 'C:\\a\\b\\c'` — on Linux too.
+    // Every member therefore gets genuine win32 cores (win32_core / node_alg,
+    // ported from node lib/path.js), including the cwd-dependent
+    // `resolve` / `relative` / `toNamespacedPath` — no host-face forwarding.
+    // (See ~/code/rust/bun/src/runtime/node/path.zig — Bun likewise ships a
+    // real win32 face on every platform.)
     unsafe {
         rooted!(&in(cx) let win32_obj = w2::JS_NewPlainObject(cx));
         if !win32_obj.get().is_null() {
@@ -2045,6 +2111,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ("isAbsolute", Some(win32_is_absolute)),
                 ("parse", Some(win32_parse_fn)),
                 ("format", Some(js_win32_format)),
+                ("resolve", Some(js_win32_resolve)),
+                ("relative", Some(js_win32_relative)),
+                ("toNamespacedPath", Some(js_win32_to_namespaced)),
             ];
             for (name, fp) in win_fns {
                 let c_name = ZBox::from_bytes(name.as_bytes());
@@ -2059,34 +2128,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     let fobj = ::mozjs::jsapi::JS_GetFunctionObject(f);
                     ::mozjs::rooted!(&in(cx) let fv = ::mozjs::jsval::ObjectValue(fobj));
                     ::mozjs::jsapi::JS_DefineProperty(
-                        cx.raw_cx(),
-                        win32_obj.handle().into(),
-                        c_name.as_ptr(),
-                        fv.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-            }
-            // cwd-dependent methods: forward the host implementations. On a
-            // Windows host those now run the genuine win32 cores
-            // (`resolve_win32` / `relative_win32` / `to_namespaced_win32`), so
-            // the forwarded face is the real Windows algorithm there; on posix
-            // hosts the forwarding keeps the historical posix-leg behaviour.
-            for fn_name in &["resolve", "relative"] {
-                let c_name = ZBox::from_bytes(fn_name.as_bytes());
-                let mut fn_val = UndefinedValue();
-                JS_GetProperty(
-                    cx.raw_cx(),
-                    path_obj.handle().into(),
-                    c_name.as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut fn_val,
-                    },
-                );
-                if fn_val.is_object() {
-                    rooted!(&in(cx) let fv = fn_val);
-                    JS_DefineProperty(
                         cx.raw_cx(),
                         win32_obj.handle().into(),
                         c_name.as_ptr(),
@@ -2313,8 +2354,9 @@ fn host_cwd_string() -> String {
 /// environment block as the `=C:` pseudo-entry). A miss (or a non-drive
 /// shaped value) answers `None`, which node treats exactly the same way:
 /// the process cwd is used and the drive-root default applies when it
-/// points at another device.
-#[cfg(windows)]
+/// points at another device. Not host-gated: on posix hosts the `=X:`
+/// entries simply do not exist, so the lookup misses and falls through to
+/// the process cwd — the same control flow node's win32 face takes there.
 fn win32_drive_env(device: &str) -> Option<String> {
     let val = ::std::env::var_os(format!("={}", device))?;
     let s = val.to_string_lossy().into_owned();
@@ -2640,6 +2682,12 @@ unsafe extern "C" fn path_to_namespaced(cx: *mut JSContext, argc: u32, vp: *mut 
 // (resolve / relative / toNamespacedPath on cfg!(windows)) run the node
 // win32 cores in `node_alg` (`resolve_win32` / `relative_win32` /
 // `to_namespaced_win32`); the posix legs run the node cores in `posix_core`.
+// The `path.win32` FACE runs those same win32 cores on EVERY host
+// (unconditional — the cores are pure string algorithms plus the `=X:`
+// per-drive cwd lookup, which simply misses on posix hosts), and the
+// `path.posix` FACE's resolve keeps the host cwd verbatim (no separator
+// rewriting, so `cwd + '/' + arg` on a Windows host is node's mixed-separator
+// shape).
 // The former bun_paths-based helpers (`make_absolute` / `pathdiff` /
 // `cwd_bytes`) are deleted: they were POSIX-leg ports consumed only by the
 // Windows legs, which re-rooted output to '/' and dropped the drive prefix
