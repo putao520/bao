@@ -180,7 +180,7 @@ fn test_serve_connection_abort_exits_spin_early() {
           port: 0,
           hostname: "127.0.0.1",
           fetch: function(req) {
-            if (req.url.split("?")[0] === "/fast") {
+            if (new URL(req.url).pathname === "/fast") {
               return new Response("fast-ok", { status: 200 });
             }
             // /slow: resolve only after 1200ms. If the client disconnects

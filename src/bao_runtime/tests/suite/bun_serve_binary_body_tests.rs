@@ -130,8 +130,9 @@ fn test_serve_response_body_byte_forms_roundtrip() {
           port: 0,
           hostname: "127.0.0.1",
           fetch: function(req) {
-            // req.url is the relative form (path + query), per uWS.
-            var p = req.url.split("?")[0];
+            // req.url is the ABSOLUTE form (upstream Request contract) —
+            // route on its pathname.
+            var p = new URL(req.url).pathname;
             if (p === "/u8") return new Response(u8, { status: 201 });
             if (p === "/buf") return new Response(buf, { status: 202 });
             if (p === "/ab") return new Response(ab, { status: 203 });
