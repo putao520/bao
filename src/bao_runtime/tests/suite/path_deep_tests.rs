@@ -40,7 +40,7 @@ fn test_path_deep() {
 
         // === path.resolve ===
         check("resolve_exists", function() { return typeof path.resolve === 'function'; });
-        check("resolve_absolute", function() { return path.resolve('/foo', '/bar') === '/bar'; });
+        check("resolve_absolute", function() { return path.resolve("/foo", "/bar") === (path.sep === "\\" ? "\\bar" : "/bar"); });
 
         // === path.basename ===
         check("basename_exists", function() { return typeof path.basename === 'function'; });
