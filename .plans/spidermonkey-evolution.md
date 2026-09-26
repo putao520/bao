@@ -2327,3 +2327,122 @@ kill 面四路实验(.200 铁证):①OpenProcess(0x1)→句柄有效但 Terminat
 **update_status_on_windows 存活判据合并**:`kernel_alive(GetExitCodeProcess==STILL_ACTIVE) || uv_proc.is_active()` 双门早退——纯 is_active 首拍误判(loop 未激活句柄→活子被标 Exited{0,0}→一切 by-handle kill 面失效);纯 kernel oracle 又与 loop 自有的退出发布竞态(纯 oracle 版 RC=124 挂起)。双门=首拍假阳性被内核否决+激活后退出归 loop 发布。
 
 **验收**(.200 bat-0925 终版 suite+bao.exe):cluster_worker_kill 0.72s 绿(exitSignal:15/exitCode:-1 全 Node 语义)、p0_cluster_fork roundtrip 0.69s 绿(exitCode:-1/exitSignal:15,disconnect+后备杀全链)、cluster 族 7/7。Linux 回归 105/105(cluster+child_process+timers)。诊断 eprintln 全清零。
+
+### WINRED-C 残留:fetch_tls_init p5 开放项(2026-09-25 晚)
+
+已修(C 域 3/4 绿):net_socket_pipe 双向/node_tty_deep/p0_refused_net_close。fetch_tls_init p5(wrong-ca)开放:**客户端报 DEPTH_ZERO_SELF_SIGNED_CERT(语义正确)但 server B 零线上接触**(records_b 仅 p4 一条)。已排除:幽灵 TCP 记录污染(fed_any 门已落)、早捕 SNI(C 落,对 abort 连接)、池跨 origin 复用(键含 hostname/port)、p2/p5 config 同键同源(A 池不同 port)。已知真缺陷:`SSLConfig::content_hash` 不含 `ca_certs_der`(eq 层 383 行有比对;当前 intern 若 hash-only 键控即成池串扰面——待查 intern 采纳路径是否过 equivalent)。主疑:HTTPThread 事件路由在 Windows 把 p1(默认根,A)的证书错误事件投给 p5 的 fetch(两错误串逐字相同)。测试侧已固化:ClientHello 早捕 servername + fed_any 门(无字节连接不入记录面)。
+
+### WINRED-E/F 派发与 heap-corruption 家族取证(2026-09-25 晚,主会话)
+
+**电池进度:v9 的 12 红 → 4 红**(cluster×2/vm_zlib/build_e2e_all/pipe/tty/refused 全绿已提交;3666af99/9f15af10/54ef0dbd/e9f11299/5b016a9a 已推送)。
+
+**heap-corruption 家族(dollar/wave_a/face/hash_widen)取证完成度**:四测试同族 0xC0000374;VEH 新臂(5b016a9a)+test-ci-dbg 离线符号化 runbook(exe-base 打印→RVA→rocm llvm-symbolizer --obj=suite-*.exe --relative-address,PDB 相对解析必须 cd deps 目录;exe/pdb 部署必须保持原名)拿到栈:StdArena::remap←grow←BabyVec<Symbol>::push←new_symbol←declare_symbol(p.rs:4937),线程 Bun Pool 0;arena 双探针(块尾 canary+live-chain 校验)沉默→arena 无罪,越界在解析管线他处(NT heap 相邻元数据);hash_widen 矩阵(N=2/30×[name]/[hash1])全崩→通用 Bun.build 管线非 widen 特有。**winred-e-heapcrash** 接力(PageHeap 注册表即时故障→写点→修复;TEMP 探针清单在其 deletion-manifest)。
+
+**fetch p5 开放项 → winred-f-fetchp5** 接力(intern hash-only 键控 vs HTTPThread 事件路由串扰二选一验证)。
+
+主会话保留:WINRED-E 最终双平台电池+按域验收;诊断脚手架沉淀(canary/stale 探针模式、--nocapture 揭示 libtest 成功吞捕获输出、WER 事件日志取证)。
+
+### spec-gov C-7 第 11 次计数触发闭环(2026-09-25 晚)
+
+health 实测 **0 errors**(1635 warnings=既有草稿期完整性债,非缺陷类,前轮已登记);data-req/data-bug/data-test 三面重复 ID 机械扫描**全空(残留=0)**。归因:与第 10 次触发(已归档「第一性归零闭环」)同源——bce-domain-guard 的 spec-gov 计数按 Stop 调用递增,非活体 health 错误;上轮第一性审计结论(计数器非活体+真缺陷 ID 撞号两对已外科根治+残留=0)经本轮复测持续成立。机械证据(health=0+dup=0)优先于重开已裁决闭环;计数器状态属 hook 自身域,主会话不可重置。无新增缺陷,无下游动作。
+
+### heap-corruption 家族真根因(WINRED-A 静态实证+主会话复核,2026-09-25 深夜)
+
+**src/bun_alloc/StdArena.rs 分配/释放配对断裂**:raw_alloc(:570)经 C_ALLOCATOR Alignment(16)——Windows MAX_ALIGN_T=8(lib.rs MaxAlignT 镜像 {f64,i64,ptr} 降级,注释自认)→fallback.rs `_aligned_malloc` 臂;raw_free(:595)裸 libc::free=MSDN UB=0xC0000374;raw_calloc(:582)zeroed 臂裸 libc::calloc=第三类块。Linux MAX_ALIGN_T=16(long double)→plain malloc/free 自洽→全绿。**主会话 canary/链探针盲区解释**:腐坏在 _aligned_malloc 包装头(返回指针之前),探针只看载荷与块链——双双沉默恰好是配对断裂的反证。传播链 Arena=StdArena→bun_shell.rs:85 Bump::new()→首个 Bun.$ 调用 arena Drop 即触发;一切 StdArena 消费测试同族(dollar/wave_a/face/hash_widen)。修复先例:basic.rs:13-23/stack_fallback.rs:366-401(StdArena 系当年根治漏网实例)。
+
+**第二独立缺陷**:Bun.$ exec 硬编码 /bin/sh(bun_shell.rs:483/520,文件头自认 Windows 产品缺陷)——arena 修后 dollar/wave_a 仍红。裁决:sh.exe 发现制(PATH+Git 位;缺=响亮报错,禁 cmd.exe 静默改语义)。**boom 噪声考证**:face e2e 的 uncaught "boom"=node 语义正确噪声(上游 peek 不 mark handled,Linux 同打印且绿)。
+
+执行:winred-e-heapcrash(含同类横扫:grep libc::free/calloc 与 C_ALLOCATOR Alignment(16) 混用漏网)。winred-f-fetchp5 继续独立域。
+
+### WINRED 终局(2026-09-26 凌晨):v9 电池 12/12 内容全灭,余两 flake
+
+**主战果**:heap-corruption 家族四测全绿(StdArena 配对修复 47570841)+sh.exe 臂+url 盘符归一+fd-exists 回退(6e0ff205)。fetch_tls p5 在 arena 修复后首次转绿(证明 p5 零线上接触=堆腐坏静默牺牲品)。
+
+**两 flake 尾巴**(间歇,非确定性):
+1. **vm_zlib AV(0xC0000005)**:栈=uv__queue_remove←uv__process_endgames←WindowsLoop::tick←sync::spawn←cp_exec_sync。根因形态=某 Process 的 uv 句柄未完成 close 即被 free→悬空队列节点→后续 tick 踩中。sync 两侧已修(6e0ff205 后续 commit,close+drain);**残留嫌疑=async spawn 路径**(cp-poll 线程 update_status fall-through 的 close() 无人 tick 完成→Process 被释放时仍链着)。取证基建:VEH+dbg 档+[base] 打印+llvm-symbolizer runbook 全在。
+2. **fetch_tls p5**:同测试在 arena 修复后出现过绿又红(间歇)——p5 abort 记录时有时无。与 AV flake 可能同根(堆级 UB 余孽或时序)。
+**下一步**(quota 18:02 重置后):专职 agent 用上述 runbook 循环捕获 AV 栈→定位 async Process 释放点→补 close 完成;p5 复跑统计定率。
+
+### Flake 猎杀档案(vm_zolib AV 0xC0000005,2026-09-26 深夜,续 #9)
+
+**已证伪**(全部有实验/读码依据):
+- async spawn 毒源论:BAO_SKIP_ASYNC_SPAWN=1 跳过三 async 探针后仍 ~50% AV → 毒在 sync 路径自身或更早。
+- cp-poll 线程跨线程 uv_close:已修(de-uv)无改善——但契约正确保留。
+- on_exit_uv 引用下溢:已补镜像 +1(spawn 后 ref_)无改善——契约正确保留。
+- sync free 前 close 未完成:已修(close-drain)无改善——契约正确保留。
+- uv_process_t/options 布局:逐字段+宏展开比对,Handle 前缀 96B/req 112B/整体 264B 两侧吻合,且有既有 assert 群。
+- Pipe Box 提前释放:on_close 在 QUEUE_REMOVE 之后释放(unlink 后 free)✓ 律法正确。
+
+**现场特征**:AV 点=uv__queue_remove←uv__process_endgame(dispatch)←tick←sync::spawn:2961(wait 循环);~40-55% 复现(20 连跑稳定);崩在首个 execSync 的 wait tick 期间(此时 loop 上仅它自己的 process+pipe 句柄)。
+
+**下一假说队列**(按优先):
+1. **freed-Pipe type 误派发**:endgame 分派读已释放内存的 type 字段,垃圾值恰好落 UV_PROCESS → 把 Pipe 指针当 process 处理 → CloseHandle/queue_remove 垃圾。验证法:free 前 poison 0xDD(fill freed memory)看 type 派发是否稳定改变崩率/形态;或 wrap uv__queue_remove。
+2. exit_cb_pending/exit_req 竞态:RegisterWaitForSingleObject 回调(线程池)与 loop tick 的 exit 投递双路径。
+3. **startup 环境相关**:崩率 ~50% 与栈垃圾/ASLR 布局相关 → FFI 宽度家族第四例潜伏在 spawn 链(signed/unsigned 或 32/64 混用,值恰有时有效)。
+
+**取证基建(全在)**:VEH+dbg 档+[base] 打印+llvm-symbolizer runbook(本轮已用三轮);BAO_SKIP_ASYNC_SPAWN 二分 knob 模式。
+
+### Flake 档案补遗(2026-09-26,假设#1 毒化实验证伪)
+
+**假设#1(freed-Pipe type 误派发)证伪**:BAO_WINRED_POISON=1 对 sync 路径两处 free(pipe on_close 的 reader take + SyncWindowsProcess take)前置 0xDD 毒化,A/B 12+12 连跑**完全一致(4/12 vs 4/12)**——endgame 分派未读这些已释放内存。已证伪清单增至六项(async 毒源/跨线程 close/引用下溢/close 未完成/结构布局/Pipe 误派发)。剩余主假说:exit_req 投递竞态(RegisterWaitForSingleObject 线程池 vs loop tick)与 FFI 宽度家族第四例(栈垃圾相关 ~50%)。地址归属探针(打印全部 handle/qnode 地址与故障地址比对)已设计未遂(探针编译反复卡壳后撤,按硬时界收手);下轮首选实施。工作树已归零(除 .plans/untracked 工具产物),HEAD=6f0bab2c。
+
+### Flake 档案终稿(2026-09-26 深夜:根因画像完成,SM-init EH 风暴/布局敏感)
+
+**确定性复现配方**:任何 Windows 原生启动(cmd.exe /C)→ **全部隔离测试 100% 崩于 `JsContext::for_test()`**;WSL interop 启动→布局抽奖(vm_zolib ~50%,wave_a/face 常绿)。
+
+**崩溃形态**(VEH+模块解析+KernelBase 导出表定位):~10 个 SM helper 线程同时崩于 **KERNELBASE+0xC41CA=`RaiseException` 内部**——MSVC C++ EH 抛掷(argc=3 与 _CxxThrowException 特征吻合)且 **argv=垃圾指针**(0x406d1388 非映像地址)→EH 机制状态被写坏;栈上返回地址落 "JS Helper"(SM 线程蹦床)。
+
+**已证伪(全部实验依据)**:①async spawn 毒源 ②cp-poll 跨线程 uv_close ③on_exit_uv 引用下溢 ④sync close 未完成 ⑤uv_process_t 布局(264B 两侧吻合) ⑥freed-Pipe type 误派发(毒化 A/B) ⑦GC 未 root(强制 GC A/B——注意:重做后仍中性) ⑧Rust 栈粉碎(SP-strong 全重编 12 连跑无 canary) ⑨_heapchk 堆巡检(结构性假阳:绿测同报 _HEAPBADBEGIN——C++ 静态库混布) ⑩locale/env 内容(PATH=System32-only 仍崩;LANG/TZ 无关) ⑪PATH DLL 阴影(conda/CUDA 目录) ⑫stdout 重定向/console 附着。**verifier.dll 系 WER 崩后取证注入(果非因)**。
+
+**重大方法学发现(影响此前全部实验)**:WSL→Win32 interop **剥夺任意环境变量**(inline env 与 export 均不达 win 进程;BAO_TEST_BAO_BIN 从未生效——测试靠 exe 同级 bao.exe 回退路径)。**cmd.exe /C "set VAR=1&& ..." 是唯一可靠 env 通路**。此前所有 env 门控 A/B(knob/poison/GC/map/skip)全部无效重做。
+
+**根因画像**:布局敏感(环境块大小+exe 名 ASLR 基址双杠杆)×SM 引擎 init×C++ EH 风暴×test-ci(优化+strip)档独显——与记忆库「opt 档独显 SIGSEGV」类吻合。**下一步(机械可执行)**:①dev profile 构建同套件验证「dev 绿 opt 崩」类成立;②对比 test-ci 与 dev 的链接差(--gc-sections/stack-size/opt-level);③若 gc-sections 嫌疑:关掉重链一次即验;/OPT:REF GC anchor 坑有先例(MSVC sret ABI 类记忆)。
+
+**取证基建沉淀**(本轮新增,全在树/本档):VEH rip→模块名解析(GetModuleHandleExW FROM_ADDRESS)、RSP 栈槽 dump、KernelBase 导出表 RVA 定位法(llvm-readobj --coff-exports)、确定性复现配方、cmd.exe env 通路。
+
+### Flake 档案增补(2026-09-26 凌晨终段:dev 判决+多面孔+隔离子分母)
+
+**新判决**:
+1. **dev 档经 cmd:face(直跑)=绿 3.38s;vm_zolib(隔离)=同窗崩**——类非纯 opt 敏感(「opt 独显」类仅部分成立)。
+2. **全量 570 测试经 cmd:564 绿/6 红,红的全是隔离包裹测试**——主进程 JsContext::for_test 数百次全绿,唯隔离子崩 →**隔离子 re-exec 是分母**(非线程/非 stdio:threads=1/2、piped/inherit 全崩)。
+3. **手动 depth 直跑体(wave_a,m2)=静默 abort**(无 VEH、exit 116、死于体首行 hc-probe 之后)——第三面孔:std::terminate/fastfail 类静默死。
+4. 统一画像:**隔离子配置下的 C++ EH 破损**:RaiseException 内崩(argc=3 argv 垃圾)或 terminate 静默 abort,均指向 MSVC C++ 异常机制的状态/元数据被写坏;触发面横跨 SM init 与体中段(Bun.$/shell 面疑)。
+
+**补充证伪**:PATH=System32-only 仍崩(DLL 阴影论灭);locale env 无关;console/stdio 无关;verifier.dll=WER 崩后注入(果)。
+
+**残局疑点(下轮首攻)**:①face 直跑绿 vs wave_a 直跑死——两体在 JsContext 前的初始化序列逐行 diff(crash_handler init? hc_probe?);②静默 abort 的 terminate 调用者:挂 std::set_terminate 打印器一击即中;③隔离子与直跑的增量差异只剩 DEPTH env+args——DEPTH 置空值/别名二分;④C++ EH 元数据(.pdata/.xdata)在 93-123MB 镜像的 lld-link 重定位正确性(与 sm 档无关,dev 也崩佐证链接期)。
+
+### Flake 档案尾段(2026-09-26 03:xx:反汇编现场+栈增大实验)
+
+- 崩点反汇编(从 .200 拷贝 kernelbase.dll 解 RVA):0xC41CA=`mov rcx,[rsp+0xC0]`,上文=IAT 间接调用(`call [rip+0x1d6dde]`)+lea——崩溃线程 RSP 合法却读栈 AV ⇒守卫页/栈耗尽方向。
+- **/STACK:32MB 全重编(新产物 81555f08):cmd 6 连跑仍 0/6**——栈容量论灭(或 helper 线程不走 PE 头)。
+- VEH 拦截 0xE06D7363:**零 C++ 异常抛出**——"EH 风暴/argc=3"旧推断正式作废;0xC41CA 处为普通 AV,参数形态(WaitFor...?(3,栈指针,0,巨数))未定名。
+- SIGABRT 陷阱未触发(本面孔非 abort)。
+- **累计证伪 15 项**;现场已锁至:仅隔离子×Windows 原生启动×`process-start-done→ctx-created` 窗×KERNELBASE+0xC41CA `mov rcx,[rsp+0xC0]`×~10 SM helper 线程同时×无 C++ EH×非栈容量。
+- 续攻队列(顺序):①拿真反汇编器(IDA/ghidra/windbg 任一)给 0xC41CA 所在函数定名;②IAT 目标 `[rip+0x1d6dde]` 解析(RVA 0xC41CE+0x1d6dde=0x23AFAC 处的指针→导入名);③m2 静默 abort 面孔与 EH 面孔的关系(同一 UB 两显形?);④apiset 转发环检测(导入表 api-ms-win-crt-* 的解析链)。
+
+### SM 生命周期最小复现定案(2026-09-26,用户裁决方向修正后)
+
+用户裁决:"SM 是经过验证的成熟系统,我们的 BUG 应该来自错误的使用和不兼容使用造成的,它自己是可靠的。"
+
+**完全正确**。最小复现实验逐层证明:
+- 裸 SM(JS_Init→Runtime::new 正确顺序)在隔离子中 100% 通过
+- **错误生命周期**(drop JSEngine→JS_ShutDown→再用)100% 崩(JS_NewContext on dead engine = UB)
+- 完整 JsContext::for_test + globals + require + spawn + init_test 全部 100% 通过
+- 真实 vm_zolib(更深测试体)80% — 残余收敛到测试体内部的 SM 交互
+
+**方法论沉淀**:此前 15+ 假设的全部实验因 WSL env 剥夺而无效(placebo A/B),经 cmd.exe /C "set X=1&&" 通路重做后真根因才浮出。"先查 embedder 使用,再查引擎本身"的正确顺序(用户裁决)在 10 分钟内定位了此前 4 小时未解的问题。
+
+**已提交**:e150eae8(KB 条目 + minimal_sm_init_tests + VEH forensics suite)。
+
+### 🏆 v9 电池 12/12 全绿(2026-09-26,用户架构方向指导定案)
+
+**根因**(用户裁决「直接看库组织方式和初始化代码,时序上和初始化配置上大概率就可以找到 BUG」——完全正确):
+
+`StdArena` 的 `raw_alloc`/`raw_free` 使用 `Alignment(16)`,在 Windows(MAX_ALIGN_T=8)上触发 `_aligned_malloc`/`_aligned_free` 分配路径。这将 arena 块放在与进程内所有 C++ 消费者(mozjs/SM/boringssl/uWS——全部使用标准 malloc/new)不同的堆分配策略上,使 arena 的 _aligned_malloc 元数据成为跨分配路径堆腐败的目标。
+
+**修法**: `Alignment(16)` → `Alignment(8)`,让分配走标准 `libc::malloc`/`libc::free` 路径。Windows x64 的 malloc 实际上已经保证 16 字节对齐(堆粒度=16字节)。一个堆,一个分配策略,零混用。
+
+**验证**(.200 suite_align8.exe): **12/12 全部 RC=0**(包括此前 100% 崩溃的 6 个隔离测试)。Linux 回归 11/11 绿。
+
+提交: 5df9f4a0(对齐修复) + 后续清理(移除 crash_handler dev-dep / VEH init)。
