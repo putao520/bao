@@ -10,7 +10,7 @@ use tungstenite::protocol::WebSocket;
 
 use crate::protocol::{self, CdpMessage, CdpResponse, SessionError};
 use crate::registry::SharedRegistry;
-use crate::{EventSender, RegistryDispatch};
+use crate::EventSender;
 
 /// Session lifecycle states (SM-CDP-SESSION).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

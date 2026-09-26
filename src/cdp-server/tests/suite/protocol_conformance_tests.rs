@@ -494,11 +494,12 @@ fn test_parse_activate_request_wrong_path_returns_none() {
 
 #[test]
 fn test_parse_new_request_extracts_query_url() {
-    // REQ-CDS-002-C1: GET /json/new?{url}
+    // REQ-CDS-002-C1: GET /json/new?{url} — Chrome's `?url=` key-value form
+    // strips the key; the value is the target URL, never the raw query.
     let req = "GET /json/new?url=https://example.com HTTP/1.1";
     assert_eq!(
         parse_new_request(req),
-        Some("url=https://example.com".to_string())
+        Some("https://example.com".to_string())
     );
 }
 

@@ -18,6 +18,13 @@ pub struct TargetInfo {
     pub web_socket_debugger_url: String,
 }
 
+/// Extract the request path (the token between the method and the version).
+/// "GET /json/list HTTP/1.1" → "/json/list". Query strings stay attached;
+/// callers that need the bare path compare against exact path literals.
+pub fn request_path(request: &str) -> &str {
+    request.split(' ').nth(1).unwrap_or("")
+}
+
 /// Handle an HTTP request. Returns Some((target_id, is_browser)) if this
 /// is a WebSocket upgrade request, None for plain HTTP.
 pub fn handle_http_request(
@@ -26,8 +33,10 @@ pub fn handle_http_request(
     config: &crate::ServerConfig,
     targets: &[TargetInfo],
 ) -> Option<(String, bool)> {
+    let path = request_path(request);
+
     // GET /json/version
-    if request.starts_with("GET /json/version") {
+    if path == "/json/version" {
         let ws_url = format!("ws://{}:{}/devtools/browser", config.host, config.port);
         let mut body = serde_json::json!({
             "Browser": config.browser_name,
@@ -47,8 +56,9 @@ pub fn handle_http_request(
         return None;
     }
 
-    // GET /json or GET /json/list
-    if request.starts_with("GET /json") && !request.starts_with("GET /json/") {
+    // GET /json or GET /json/list — both are the target-listing endpoint
+    // (Chrome serves both; close/activate/new are parsed before this point).
+    if path == "/json" || path == "/json/list" {
         respond_json(stream, &serde_json::json!(targets));
         return None;
     }
@@ -64,7 +74,7 @@ pub fn handle_http_request(
         return Some(("__browser__".into(), true));
     }
 
-    respond_raw(stream, "404 Not Found");
+    respond_text(stream, "404 Not Found", "Not Found");
     None
 }
 
@@ -79,6 +89,19 @@ pub fn respond_json(stream: &mut TcpStream, value: &Value) {
     let body = value.to_string();
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    respond_raw(stream, &response);
+}
+
+/// Plain-text HTTP response with a proper status line. Every discovery
+/// endpoint reply — success AND error — must go through a serializer that
+/// emits the status line; bare bodies are unparseable by real HTTP clients.
+pub fn respond_text(stream: &mut TcpStream, status: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
         body.len(),
         body
     );
@@ -111,12 +134,19 @@ pub fn parse_activate_request(request: &str) -> Option<String> {
     }
 }
 
+/// Parse `GET /json/new[?...]` into the URL for the new target.
+///
+/// Wire forms (Chrome discovery contract): `?url=<encoded url>` key-value
+/// form (the `url=` key is stripped, never forwarded to the target), the
+/// legacy bare `?<url>` form, and no query → `about:blank`.
 pub fn parse_new_request(request: &str) -> Option<String> {
     let prefix = "GET /json/new";
     if let Some(rest) = request.strip_prefix(prefix) {
         if rest.starts_with('?') {
             let end = rest.find(' ').unwrap_or(rest.len());
-            Some(percent_decode(&rest[1..end]))
+            let qs = &rest[1..end];
+            let url = qs.strip_prefix("url=").unwrap_or(qs);
+            Some(percent_decode(url))
         } else {
             Some("about:blank".to_string())
         }
@@ -194,18 +224,53 @@ mod tests {
     }
 
     #[test]
-    fn new_request_extracts_query_string() {
+    fn new_request_key_value_form_strips_url_key() {
         let req = "GET /json/new?url=https://example.com HTTP/1.1";
         assert_eq!(
             parse_new_request(req),
-            Some("url=https://example.com".to_string())
+            Some("https://example.com".to_string())
         );
+    }
+
+    #[test]
+    fn new_request_bare_url_form() {
+        let req = "GET /json/new?https://example.com/x HTTP/1.1";
+        assert_eq!(
+            parse_new_request(req),
+            Some("https://example.com/x".to_string())
+        );
+    }
+
+    #[test]
+    fn new_request_percent_encoded_url() {
+        let req = "GET /json/new?url=https%3A%2F%2Fexample.com%2Fa%20b HTTP/1.1";
+        assert_eq!(
+            parse_new_request(req),
+            Some("https://example.com/a b".to_string())
+        );
+    }
+
+    #[test]
+    fn new_request_no_query_defaults_to_about_blank() {
+        let req = "GET /json/new HTTP/1.1";
+        assert_eq!(parse_new_request(req), Some("about:blank".to_string()));
     }
 
     #[test]
     fn new_request_wrong_path() {
         let req = "GET /json/version HTTP/1.1";
         assert_eq!(parse_new_request(req), None);
+    }
+
+    #[test]
+    fn request_path_extracts_path_token() {
+        assert_eq!(request_path("GET /json/list HTTP/1.1"), "/json/list");
+        assert_eq!(request_path("GET /json HTTP/1.1"), "/json");
+        assert_eq!(
+            request_path("GET /json/new?url=x HTTP/1.1"),
+            "/json/new?url=x"
+        );
+        assert_eq!(request_path("garbage"), "");
     }
 
     #[test]

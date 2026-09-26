@@ -307,11 +307,15 @@ impl CdpServer {
                         );
                     }
                     Err(e) => {
-                        transport::respond_raw(&mut stream, &format!("500 {}", e));
+                        transport::respond_text(&mut stream, "500 Internal Server Error", &e);
                     }
                 }
             } else {
-                transport::respond_raw(&mut stream, "500 No target provider");
+                transport::respond_text(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    "No target provider",
+                );
             }
             return;
         }
@@ -319,9 +323,21 @@ impl CdpServer {
         if let Some(target_id) = transport::parse_activate_request(request) {
             if let Some(ref provider) = self.target_provider {
                 match provider.activate_target(&target_id) {
-                    Ok(()) => transport::respond_raw(&mut stream, "Target activated"),
-                    Err(e) => transport::respond_raw(&mut stream, &format!("500 {}", e)),
+                    Ok(()) => transport::respond_text(
+                        &mut stream,
+                        "200 OK",
+                        "Target activated",
+                    ),
+                    Err(e) => {
+                        transport::respond_text(&mut stream, "500 Internal Server Error", &e);
+                    }
                 }
+            } else {
+                transport::respond_text(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    "No target provider",
+                );
             }
             return;
         }
@@ -334,20 +350,28 @@ impl CdpServer {
                         transport::respond_json(&mut stream, &json);
                     }
                     Err(e) => {
-                        transport::respond_raw(&mut stream, &format!("500 {}", e));
+                        transport::respond_text(&mut stream, "500 Internal Server Error", &e);
                     }
                 }
+            } else {
+                transport::respond_text(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    "No target provider",
+                );
             }
             return;
         }
 
-        // GET /json/version and /json/list
-        if request.starts_with("GET /json/version")
-            || (request.starts_with("GET /json") && !request.starts_with("GET /json/"))
+        // GET /json/version, GET /json, GET /json/list — the discovery
+        // endpoints (close/activate/new already returned above).
         {
-            let targets = self.get_target_list();
-            transport::handle_http_request(&mut stream, request, &self.config, &targets);
-            return;
+            let path = transport::request_path(request);
+            if path == "/json/version" || path == "/json" || path == "/json/list" {
+                let targets = self.get_target_list();
+                transport::handle_http_request(&mut stream, request, &self.config, &targets);
+                return;
+            }
         }
 
         // WebSocket upgrade.
