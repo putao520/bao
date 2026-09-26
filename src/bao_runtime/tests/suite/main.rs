@@ -28,6 +28,7 @@ mod bun_api_deep_tests;
 mod bun_api_tests;
 mod bun_build_e2e_tests;
 mod bun_face_e2e_tests;
+mod bun_face_gap_tests;
 mod bun_file_methods_e2e_tests;
 mod bun_listen_tcp_behavior_tests;
 mod bun_p0_face_tests;
