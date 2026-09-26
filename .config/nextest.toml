@@ -85,3 +85,24 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'package(bun_runtime) and test(fs_watch_file_stat_polling_fires)'
 threads-required = "num-test-threads"
+
+# Test resource isolation (task: bao-browser SIGINT cancel e2e fleet flake,
+# diagnosed 2026-09-26 during the coverage-wave full-suite gate):
+#
+# `bao_cli_timeout_e2e_tests::sigint_cancels_runaway_under_timeout` spawns the
+# real bao binary running a `while(true){}` script, sends kill -INT, and
+# requires the interrupt bridge to cancel within a 10s window. In isolation it
+# finishes in 0.845s (~12× headroom), but in the full-workspace fleet at -j 4
+# with concurrent compile load (fix agents building during the gate) the
+# SIGINT delivery + interrupt-callback scheduling starves past the window —
+# the fifth instance of the fleet-starvation class documented above. The
+# interrupt-bridge product code was untouched by the wave (comment-only
+# @trace repoint in the test file); the narrow rerun immediately after the
+# fleet failure was green.
+#
+# Reserve the full test-thread budget so this signal-delivery-bound e2e never
+# co-runs with the fleet (same documented mechanism as the four entries
+# above). No test code or assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bao-browser) and test(sigint_cancels_runaway_under_timeout)'
+threads-required = "num-test-threads"
