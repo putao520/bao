@@ -104,6 +104,7 @@ mod net_deep_tests;
 mod net_echo_e2e_tests;
 mod net_socket_pipe_e2e_tests;
 mod node_assert_deep_tests;
+mod node_compat_port_tests;
 mod node_assert_util_tests;
 mod node_async_hooks_deep_tests;
 mod node_buffer_tests;
