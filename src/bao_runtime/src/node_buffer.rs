@@ -449,11 +449,28 @@ unsafe extern "C" fn buffer_transcode(cx: *mut JSContext, _argc: u32, vp: *mut J
     false
 }
 
+// Single truth site for the Buffer.isAscii / Buffer.isUtf8 byte predicates —
+// BOTH faces delegate here:
+//   * require('buffer') module face — the natives below
+//   * GLOBAL Buffer face — globals.rs `buffer_is_ascii` / `buffer_is_utf8`
+// The predicate itself comes from the workspace validator owner
+// `bun_simdutf_sys` (repo law 复用优先: workspace crate over a std hand-path);
+// per-face JS plumbing (CallArgs → byte view via the house extractor
+// `collect_byte_view`) stays at each registration site.
+// @trace REQ-ENG-005 [api:buffer.isAscii] [code:bun_simdutf_sys]
+pub(crate) fn is_ascii_bytes(bytes: &[u8]) -> bool {
+    bun_simdutf_sys::validate_ascii(bytes)
+}
+
+// @trace REQ-ENG-005 [api:buffer.isUtf8] [code:bun_simdutf_sys]
+pub(crate) fn is_utf8_bytes(bytes: &[u8]) -> bool {
+    bun_simdutf_sys::validate_utf8(bytes)
+}
+
 // @trace REQ-ENG-005 [api:buffer.isAscii] [code:bun_simdutf_sys] — Native
 // SMFunction returning a boolean primitive. Accepts Buffer/Uint8Array/
-// TypedArray/DataView/ArrayBuffer. Returns true iff every byte is <= 127.
-// Validation runs through `bun_simdutf_sys::validate_ascii`, which FFI-calls
-// into bun-simdutf.cpp (AVX2/NEON SIMD, ~3-10× faster than a byte loop).
+// TypedArray/DataView/ArrayBuffer. Returns true iff every byte is < 0x80.
+// Validation delegates to the single owner `is_ascii_bytes`.
 // Used both as a function AND as a constructor (new isAscii(buf)) — SM
 // preserves primitive returns from C++ natives invoked as constructors,
 // matching Bun's behaviour.
@@ -468,16 +485,15 @@ unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSV
             return true;
         }
     };
-    let is_ascii = bun_simdutf_sys::validate_ascii(bytes.as_slice());
+    let is_ascii = is_ascii_bytes(bytes.as_slice());
     args.rval().set(mozjs::jsval::BooleanValue(is_ascii));
     true
 }
 
 // @trace REQ-ENG-005 [api:buffer.isUtf8] [code:bun_simdutf_sys] — Native
 // SMFunction returning a boolean primitive. Validates UTF-8 byte sequences
-// per RFC 3629 via `bun_simdutf_sys::validate_utf8` (SIMD-accelerated; rejects
-// overlong encodings, surrogates, and malformed continuation bytes with the
-// same semantics as the hand-written DFA it replaces).
+// per RFC 3629 via the single owner `is_utf8_bytes` (rejects overlong
+// encodings, surrogates, and malformed continuation bytes).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -489,7 +505,7 @@ unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             return true;
         }
     };
-    let is_utf8 = bun_simdutf_sys::validate_utf8(bytes.as_slice());
+    let is_utf8 = is_utf8_bytes(bytes.as_slice());
     args.rval().set(mozjs::jsval::BooleanValue(is_utf8));
     true
 }

@@ -530,50 +530,17 @@ fn f16_to_f64(bits: u16) -> f64 {
     s * (1.0 + (frac as f64) / 1024.0) * 2f64.powi(exp - 15)
 }
 
-/// Byte view of a BufferSource (ArrayBufferView | ArrayBuffer), copied out
-/// before any further JSAPI use. None = not a BufferSource (never throws —
-/// the isAscii/isUtf8 predicates answer false for non-buffers, Node truth).
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn global_buffer_source_bytes(v: JSVal) -> Option<Vec<u8>> {
-    if !v.is_object() {
-        return None;
-    }
-    let obj = v.to_object();
-    unsafe {
-        let mut len: usize = 0;
-        let mut is_shared = false;
-        let mut data: *mut u8 = ::std::ptr::null_mut();
-        // Live views yield the byteOffset-adjusted pointer directly; detached
-        // buffers surface as length 0 + null data (empty byte sequence).
-        let view =
-            mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(obj, &mut len, &mut is_shared, &mut data);
-        if !view.is_null() {
-            return if data.is_null() {
-                Some(Vec::new())
-            } else {
-                Some(::std::slice::from_raw_parts(data, len).to_vec())
-            };
-        }
-        let ab = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj, &mut len, &mut data);
-        if !ab.is_null() {
-            return if data.is_null() {
-                Some(Vec::new())
-            } else {
-                Some(::std::slice::from_raw_parts(data, len).to_vec())
-            };
-        }
-        None
-    }
-}
-
 /// Buffer.isAscii(input) — true when every byte of the BufferSource is
 /// < 0x80 (Node 19+ surface). Non-BufferSource input → false (no throw).
+/// Byte extraction and validation delegate to the single owner in
+/// node_buffer.rs (`collect_byte_view` + `is_ascii_bytes`) — the same truth
+/// site as the require('buffer') module face.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let is_ascii = if argc > 0 {
-        match global_buffer_source_bytes(*args.get(0).ptr) {
-            Some(bytes) => bytes.is_ascii(),
+        match crate::node_buffer::collect_byte_view(cx, *args.get(0).ptr) {
+            Some(bytes) => crate::node_buffer::is_ascii_bytes(bytes.as_slice()),
             None => false,
         }
     } else {
@@ -584,14 +551,15 @@ unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSV
 }
 
 /// Buffer.isUtf8(input) — lossless UTF-8 validation over the BufferSource's
-/// byte view (std::str::from_utf8 — the lossless validator; overlong forms,
-/// surrogates and > U+10FFFF all reject). Non-BufferSource input → false.
+/// byte view (overlong forms, surrogates and > U+10FFFF all reject).
+/// Non-BufferSource input → false. Delegates to the single owner in
+/// node_buffer.rs (`collect_byte_view` + `is_utf8_bytes`).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let is_utf8 = if argc > 0 {
-        match global_buffer_source_bytes(*args.get(0).ptr) {
-            Some(bytes) => ::std::str::from_utf8(&bytes).is_ok(),
+        match crate::node_buffer::collect_byte_view(cx, *args.get(0).ptr) {
+            Some(bytes) => crate::node_buffer::is_utf8_bytes(bytes.as_slice()),
             None => false,
         }
     } else {
@@ -710,8 +678,9 @@ pub fn install_buffer_global(
         );
         // @trace REQ-ENG-005 [api:Buffer.isAscii/isUtf8] — Node.js 19+ static
         // predicates on the GLOBAL Buffer face (the require('buffer') module
-        // face has its own pair in node_buffer.rs). Lossless validation:
-        // std is_ascii / std::str::from_utf8 — no hand-rolled tables.
+        // face shares the same pair in node_buffer.rs). Byte extraction +
+        // validation delegate to the single owner in node_buffer.rs
+        // (collect_byte_view + bun_simdutf_sys) — no duplicate validator.
         JS_DefineFunction(
             cx,
             buf_root.handle(),
