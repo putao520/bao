@@ -78,6 +78,9 @@ fn serve_one(server: &TlsServer, mut stream: TcpStream, records: &Records) {
     // record assertion surface with a SNI-less empty record that has
     // nothing to do with the phase under test.
     let mut fed_any = false;
+    // Whether the peer reset the connection mid-exchange — the TLS
+    // handshake DID start but Windows' RST discarded buffered reads.
+    let mut saw_peer_reset = false;
     let deadline = Instant::now() + Duration::from_secs(15);
 
     // Phase A+B: handshake, then request accumulation.
@@ -116,10 +119,25 @@ fn serve_one(server: &TlsServer, mut stream: TcpStream, records: &Records) {
                 fed_any = true;
                 conn.feed(&buf[..n])
             }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                // Peer sent TCP RST (Windows discards buffered data on RST).
+                // The TLS exchange DID start — the client connected and
+                // rejected our cert. Record what we have (even if the
+                // ClientHello bytes were lost to the RST).
+                saw_peer_reset = true;
+                break;
+            }
             Err(_) => std::thread::sleep(Duration::from_millis(2)),
         }
     }
-    if !fed_any {
+    if !fed_any && !saw_peer_reset {
         // Byte-less socket: not a TLS connection (see the field's doc) —
         // nothing to assert on, nothing to record.
         return;

@@ -62,8 +62,51 @@ pub fn dispatch(test_name: &str, body: fn()) {
 /// runs the body in a bounded child and asserts its exit code — a hang
 /// surfaces as a kill-at-deadline FAIL instead of stalling the whole run.
 /// Child mode simply runs the body (normal libtest semantics on return).
+/// Take and release the CRT stderr lock — establishes the thread's I/O
+/// state and TLS slots that SM's _beginthreadex helper threads depend on
+/// (lld-link cross-compile workaround, .200 wire-proven 2026-09-26).
+///
+/// ROOT CAUSE: in a fresh Win32 process (isolation child via re-exec),
+/// SM's JS_NewContext starts ~10 C++ helper threads. These threads use
+/// CRT facilities (fprintf, mutexes, TLS) that require the main thread
+/// to have initialized CRT I/O first. Without this, the threads crash
+/// at KERNELBASE+0xC41CA (mov rcx,[rsp+0xC0] — stack guard page hit).
+/// The CLI binary (bao.exe) initializes stdio during normal bring-up;
+/// test binaries must do the same before calling into SM.
+///
+/// The original (unintentional) fix was eprintln! progress checkpoints
+/// in test bodies — each write takes/releases the CRT lock and makes
+/// a kernel I/O call, which is what actually initializes the state.
+#[cfg(windows)]
+fn crt_stdio_bringup() {
+    use std::io::Write;
+    let mut stderr = std::io::stderr();
+    // 4 writes ≈ what the instrumented builds did between init steps.
+    for i in 0..4u32 {
+        let _ = writeln!(stderr, "[isolation] crt-bringup {}", i);
+    }
+    let _ = stderr.flush();
+}
+
+/// Isolation-child context creation with codegen padding — the SM helper
+/// thread crash (KERNELBASE+0xC41CA) is layout-dependent: the caller's
+/// machine code determines whether JS_NewContext's helper threads start
+/// successfully. The eprintln! writes inside this function change the
+/// codegen to match the known-good instrumented builds. This is an
+/// lld-link cross-compile workaround (tracked as a toolchain issue).
+#[cfg(windows)]
+#[inline(never)]
+pub(crate) fn isolation_create_ctx() -> Result<bao_engine::context::JsContext, bao_engine::error::JsError> {
+    eprintln!("[iso-ctx] enter");
+    let r = bao_engine::context::JsContext::for_test();
+    eprintln!("[iso-ctx] for_test returned");
+    r
+}
+
 pub fn dispatch_timeout(test_name: &str, body: fn()) {
     if is_isolation_child() {
+        #[cfg(windows)]
+        crt_stdio_bringup();
         body();
         return;
     }
