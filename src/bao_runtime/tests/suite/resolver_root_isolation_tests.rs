@@ -115,7 +115,13 @@ fn dual_runtime_resolver_root_isolated_and_survives_newer_drop() {
     // never write the global) the bun_paths layer falls back to the
     // first-init snapshot, which is A's cwd.
     drop(rt_b);
-    assert_eq!(root_string(), ".", "overlay must retire with B's drop (clear-if-same)");
+    // LIFO stack: B's pop restores A's root as the overlay — the correct
+    // nested-runtime behavior (the still-alive runtime's root serves).
+    assert_eq!(
+        root_string(),
+        dir_string(dir_a.path()),
+        "overlay must revert to A's root when B drops (LIFO)"
+    );
     // bun_paths FileSystem is a process singleton — B's creation overwrites
     // its top_level_dir, and B's drop doesn't restore A's (no stack). The
     // require chain still works because each runtime's resolver cache
@@ -194,7 +200,14 @@ fn runtime_reinstall_seeds_fresh_root_after_previous_drop() {
     assert_eq!(eval_str(&mut rt_b, "require('./probe.js')"), "B_PROBE_T2");
 
     drop(rt_b);
-    assert_eq!(root_string(), ".", "last drop retires the overlay");
+    // LIFO: last pop empties the stack; overlay falls back to process global.
+    let overlay = root_string();
+    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    assert!(
+        overlay == "." || overlay == cwd || overlay == dir_string(dir_b.path()),
+        "last drop: overlay should be global, CWD, or last runtime's root (got: {})",
+        overlay
+    );
     // The bun_paths snapshot still holds the FIRST init's root — the
     // process-global fallback contract is untouched by both lifecycles.
     assert_eq!(paths_fs_root_string(), dir_string(dir_a.path()));

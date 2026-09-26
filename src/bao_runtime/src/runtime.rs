@@ -114,7 +114,7 @@ impl ::std::ops::Drop for BaoRuntime {
         // back to the process-global "." (correct: no runtime is "latest"
         // on the overlay anymore). A still-alive runtime's require chain
         // goes through bun_paths, not the overlay.
-        bun_core::clear_current_top_level_dir_force();
+        bun_core::pop_current_top_level_dir();
     }
 }
 

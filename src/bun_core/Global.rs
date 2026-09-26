@@ -57,6 +57,12 @@ pub fn top_level_dir() -> &'static [u8] {
 
 thread_local! {
     static CURRENT_TOP_LEVEL_DIR: Cell<Option<&'static [u8]>> = const { Cell::new(None) };
+    /// LIFO stack of resolver roots: each BaoRuntime pushes on creation
+    /// and pops on drop. The overlay (CURRENT_TOP_LEVEL_DIR) mirrors the
+    /// top of the stack. This supports nested/parasitic runtimes: when
+    /// the newer drops, the older's root is restored.
+    static ROOT_STACK: std::cell::RefCell<Vec<&'static [u8]>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Publish this runtime's resolver root (interned `'static` slice). One call
@@ -64,6 +70,13 @@ thread_local! {
 #[inline]
 pub fn set_current_top_level_dir(dir: &'static [u8]) {
     CURRENT_TOP_LEVEL_DIR.with(|c| c.set(Some(dir)));
+    // Also maintain the LIFO stack (idempotent for same-dir re-push).
+    ROOT_STACK.with(|s| {
+        let mut stack = s.borrow_mut();
+        if stack.last() != Some(&dir) {
+            stack.push(dir);
+        }
+    });
 }
 
 /// Retire the overlay value `dir` — but only if it is still the live one. A
@@ -82,6 +95,24 @@ pub fn clear_current_top_level_dir(dir: &'static [u8]) {
         if c.get() == Some(dir) {
             c.set(None);
         }
+    });
+}
+
+/// Push a runtime's resolver root onto the stack and set the overlay.
+#[inline]
+pub fn push_current_top_level_dir(dir: &'static [u8]) {
+    ROOT_STACK.with(|s| s.borrow_mut().push(dir));
+    CURRENT_TOP_LEVEL_DIR.with(|c| c.set(Some(dir)));
+}
+
+/// Pop the top resolver root and restore the overlay to the new top
+/// (or clear if the stack is empty).
+#[inline]
+pub fn pop_current_top_level_dir() {
+    ROOT_STACK.with(|s| {
+        s.borrow_mut().pop();
+        let top = s.borrow().last().copied();
+        CURRENT_TOP_LEVEL_DIR.with(|c| c.set(top));
     });
 }
 
