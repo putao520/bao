@@ -5,7 +5,15 @@
 // global (globals::install_web_apis). These are the live Headers/Request/
 // Response constructors; fetch_api::fetch_fn consumes their instance shape
 // (url/method/headers/_bodyText/_bodyBytes/_bodyBlob) when given a Request
-// object as input.
+// object as input. Requests may additionally carry a live ReadableStream
+// body (`_bodyStreamSource` — the serve path's per-chunk request streaming,
+// REQ-ENG-006): the body getter surfaces that exact stream and the body
+// mixin drains it through getReader(). KNOWN GAP (fail-closed boundary not
+// yet wired): fetch_api's Request-body extraction has no stream arm, so
+// `fetch(serveRequestInstance)` reads no body slot and would send an empty
+// body — the native extraction must reject streaming request bodies loudly
+// (probe `_bodyStreamSource` in fetch_api.rs) before relaying such a
+// Request through fetch() is safe.
 //
 // ## Design decisions
 //
@@ -238,6 +246,20 @@ pub fn install_fetch_classes(
     return v && typeof v === 'object' && typeof v.size === 'number' && typeof v.arrayBuffer === 'function';
   };
 
+  // ReadableStream body — the WHATWG init.body-as-stream form. The live
+  // web_streams.js stream IS the body (REQ-ENG-006 serve request streaming):
+  // the native serve path enqueues wire chunks into its controller as they
+  // arrive, so consumers observe chunks incrementally. Structural probe
+  // (same idiom as the other classifiers — the web_streams brand symbols are
+  // IIFE-private): the global constructor when resolvable, else the
+  // getReader+locked method surface.
+  var _bao_is_readable_stream = function _bao_is_readable_stream(v) {
+    if (typeof _g.ReadableStream === 'function' && v instanceof _g.ReadableStream) return true;
+    return v && typeof v === 'object'
+      && typeof v.getReader === 'function'
+      && typeof v.locked === 'boolean';
+  };
+
   var _bao_request_redirect_modes = ['follow', 'error', 'manual'];
   var _bao_request_modes = ['navigate', 'same-origin', 'no-cors', 'cors'];
   var _bao_request_credentials = ['omit', 'same-origin', 'include'];
@@ -249,6 +271,14 @@ pub fn install_fetch_classes(
 
     // Handle Request object as input
     if (input instanceof _g.Request) {
+      // A streaming body is a single-consumer live transport stream: a
+      // copy-construction from such a Request would share the SAME stream
+      // between two consumers (the WHATWG shape tees, which this runtime
+      // does not model). Fail loud — a silent shared stream would let the
+      // first consumer starve the second.
+      if (input._bodyStreamSource) {
+        throw new TypeError('Failed to construct \'Request\': cannot construct from a Request with a streaming body.');
+      }
       this.url = input.url;
       this.method = (init.method !== undefined) ? _bao_normalise_method(init.method) : input.method;
       this.headers = new _g.Headers(init.headers || input.headers);
@@ -313,6 +343,14 @@ pub fn install_fetch_classes(
       } else if (_bao_is_blob(this._bodySource)) {
         // Blob body — will be read lazily
         this._bodyBlob = this._bodySource;
+      } else if (_bao_is_readable_stream(this._bodySource)) {
+        // Streaming body — the live ReadableStream IS the body (WHATWG
+        // init.body-as-stream). Handed to consumers as-is: the body getter
+        // returns this exact stream, text()/json()/arrayBuffer()/blob()
+        // drain it through getReader(), and clone()/copy-construction
+        // refuse (single-consumer transport). The serve path feeds the
+        // stream's controller per wire chunk — see bun_serve_route_handler.
+        this._bodyStreamSource = this._bodySource;
       } else {
         throw new TypeError('Failed to construct \'Request\': unsupported body type ' + Object.prototype.toString.call(this._bodySource) + ' (expected string / ArrayBuffer / typed array / Blob / URLSearchParams).');
       }
@@ -338,6 +376,13 @@ pub fn install_fetch_classes(
     // body getter (returns null or ReadableStream)
     Object.defineProperty(this, 'body', {
       get: function() {
+        // Streaming body: return the live stream itself — the same object on
+        // every access (WHATWG body identity), the exact stream the serve
+        // controller feeds. Checked BEFORE the used-flag so the in-flight
+        // reader drain inside text()/arrayBuffer() (which runs with
+        // _bodyUsed already set, mirroring the Response streaming branch)
+        // can still reach the stream.
+        if (this._bodyStreamSource) return this._bodyStreamSource;
         if (this._bodyUsed) return null;
         if (this._bodySource == null) return null;
         // Return a simple ReadableStream-like wrapper
@@ -353,7 +398,39 @@ pub fn install_fetch_classes(
     });
   };
 
+  // Streaming-body reader pump shared by the Request mixin. `collect`
+  // receives each Uint8Array chunk and the accumulated state; returns the
+  // final state at done. Defined later in this IIFE (Response section) —
+  // methods run only after the IIFE has finished, so the forward reference
+  // is always initialized at call time.
+  //
+  // A streaming body rejects when the transport errors: the serve path
+  // errors the stream on connection abort / body-cap overflow, so a pending
+  // read() rejects and the pump rejects — network errors propagate to
+  // text()/json()/arrayBuffer(), never hang (WHATWG network-error shape).
+
   _g.Request.prototype.text = function text() {
+    if (this._bodyStreamSource) {
+      if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable'));
+      this._bodyUsed = true;
+      var dec = new TextDecoder();
+      var self = this;
+      // The drain starts on a job (not inline): a synchronous failure on the
+      // drain path (e.g. the stream already locked by a competing consumer)
+      // must REJECT this promise — WHATWG body-mixin shape — never throw out
+      // of text() itself, which would surface as an uncaught exception in
+      // the caller's frame instead of a catchable rejection.
+      return Promise.resolve().then(function() {
+        return _bao_drain_stream(self, function(parts, chunk) {
+          parts.push(dec.decode(chunk, { stream: true }));
+          return parts;
+        }, []);
+      }).then(function(parts) {
+        var tail = dec.decode();
+        if (tail) parts.push(tail);
+        return parts.join('');
+      });
+    }
     this._bodyUsed = true;
     if (this._bodyText !== undefined) return Promise.resolve(this._bodyText);
     if (this._bodyBytes) return Promise.resolve(new TextDecoder().decode(this._bodyBytes));
@@ -369,6 +446,28 @@ pub fn install_fetch_classes(
   };
 
   _g.Request.prototype.arrayBuffer = function arrayBuffer() {
+    if (this._bodyStreamSource) {
+      if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable'));
+      this._bodyUsed = true;
+      var self = this;
+      // Job-deferred start: sync drain failures reject (see text()).
+      return Promise.resolve().then(function() {
+        return _bao_drain_stream(self, function(chunks, chunk) {
+          chunks.push(chunk);
+          return chunks;
+        }, []);
+      }).then(function(chunks) {
+        var total = 0;
+        for (var i = 0; i < chunks.length; i++) total += chunks[i].byteLength;
+        var out = new Uint8Array(total);
+        var off = 0;
+        for (var j = 0; j < chunks.length; j++) {
+          out.set(chunks[j], off);
+          off += chunks[j].byteLength;
+        }
+        return out.buffer;
+      });
+    }
     this._bodyUsed = true;
     if (this._bodyBytes) return Promise.resolve(this._bodyBytes.buffer.slice(0));
     if (this._bodyText !== undefined) return Promise.resolve(new TextEncoder().encode(this._bodyText).buffer);
@@ -377,6 +476,12 @@ pub fn install_fetch_classes(
   };
 
   _g.Request.prototype.blob = function blob() {
+    if (this._bodyStreamSource) {
+      var type = this.headers.get('content-type') || '';
+      return this.arrayBuffer().then(function(buf) {
+        return new _g.Blob([new Uint8Array(buf)], { type: type });
+      });
+    }
     this._bodyUsed = true;
     if (this._bodyBlob) return Promise.resolve(this._bodyBlob);
     if (this._bodyBytes) return Promise.resolve(new _g.Blob([this._bodyBytes]));
@@ -385,6 +490,12 @@ pub fn install_fetch_classes(
   };
 
   _g.Request.prototype.clone = function clone() {
+    if (this._bodyStreamSource) {
+      // A streaming body is a single-consumer live transport stream — it
+      // cannot be duplicated (WHATWG clone would tee, which needs two
+      // independent consumers of one socket).
+      throw new TypeError('Cannot clone a Request with a streaming body');
+    }
     return new _g.Request(this);
   };
 
@@ -485,8 +596,18 @@ pub fn install_fetch_classes(
   // Streaming-body reader pump: drains the native pull stream into an
   // accumulated result. `collect` receives each Uint8Array chunk and the
   // accumulated state; returns the final state at done.
+  //
+  // The reader's internal closedPromise is marked handled: when a live
+  // transport stream is ERRORED from the producer side (serve connection
+  // abort / body-cap overflow), the web_streams reader machinery rejects
+  // closedPromise, and an unwatched internal rejection would surface through
+  // the rejection tracker as a fatal uncaught exception even though the
+  // consumer (the pump below) already observed the error via read().
+  // Attaching a no-op handler only marks the internal promise handled —
+  // a consumer awaiting reader.closed still sees the rejection.
   var _bao_drain_stream = function _bao_drain_stream(response, collect, init) {
     var reader = response.body.getReader();
+    reader.closed.then(function() {}, function() {});
     var acc = init;
     function pump() {
       return reader.read().then(function(r) {

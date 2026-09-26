@@ -3044,31 +3044,36 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     // Register catch-all route
     //
     // @trace REQ-ENG-006 [api:Bun.serve request body] [level:design]
-    // Two-phase dispatch. uWS fires the route handler the moment the request
-    // HEADERS are parsed; the request BODY chunks arrive afterwards through
+    // Two-phase dispatch with a LIVE REQUEST BODY STREAM (upstream Bun
+    // semantics: the fetch handler runs at HEADERS-complete and the body
+    // streams in). uWS fires the route handler the moment the request HEADERS
+    // are parsed; the request BODY chunks arrive afterwards through
     // `res.on_data` (uWS HttpContext.h: the body-chunk callback runs after
     // the route handler returns — first for the remainder of the triggering
-    // socket read, then once more with an empty `last=true` chunk). Building
-    // the Request inside the route handler would leave the body permanently
-    // unobservable (the removed body-factory object whose text()/json()
-    // promises no native ever resolved), so dispatch is split:
+    // socket read, then once more with an empty `last=true` chunk). Dispatch
+    // is split:
     //   phase 1 (route handler): capture the header set (the uWS Request is
-    //     only valid for this call), register on_aborted + on_data, return
-    //     without responding (the on_aborted registration satisfies uWS'
-    //     "handler must respond or register onAborted" contract).
-    //   phase 2 (on_data `last` chunk): the full body is on hand — build the
-    //     real Request (instanceof Request, absolute URL, Headers face, and
-    //     for bodies an ArrayBuffer init so `req.body` is a genuine
-    //     ReadableStream while text()/json()/arrayBuffer() resolve with the
-    //     received bytes), call the fetch handler, spin the promise to a
-    //     Response, write it.
-    // Responding only after the body is drained also keeps uWS keep-alive
-    // framing intact: an unread body would be misparsed as the start of the
-    // next request on the connection.
+    //     only valid for this call), register on_aborted + on_data, then
+    //     build the Request with a per-request controller-driven
+    //     ReadableStream body (the web_streams.js face — the native side
+    //     feeds `controller.enqueue` through the parked bundle object) and
+    //     invoke the fetch handler AT HEADERS-COMPLETE. The handler's return
+    //     value is parked in GcStore under a per-request key. The route
+    //     handler never writes to the wire — a mid-body response would break
+    //     uWS keep-alive framing (an unread body would be misparsed as the
+    //     start of the next request), so every write is deferred to
+    //     body-complete.
+    //   phase 2 (on_data): each chunk is enqueued into the stream controller
+    //     AS IT ARRIVES (per-chunk delivery — no buffering); on the final
+    //     empty `last=true` chunk (always delivered — bodyless requests
+    //     included) the stream is closed, the parked handler value resolved
+    //     to a Response, and the response written.
     //
     // Teardown ownership (exactly-once free of the state Box):
-    //   - on_aborted sets the latch; it frees the state only when no dispatch
-    //     borrow is live (phase == CAPTURED). A connection dying mid-spin
+    //   - on_aborted sets the latch, errors the body stream (WHATWG
+    //     network-error shape: pending readers reject, never hang), drops the
+    //     parked faces, and frees the state only when no dispatch borrow is
+    //     live (phase == CAPTURED). A connection dying mid-spin
     //     (phase == DISPATCHING) leaves the free to the spin, which observes
     //     the latch within one iteration — the dispatch borrow's AtomicBool
     //     stays valid for the whole spin.
@@ -3076,9 +3081,10 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     //     never fires the latch — same discipline as node_http2's
     //     h2_on_aborted).
     //
-    // Body cap: 128 MB (the upstream BodyReaderMixin MAX_BODY_SIZE). Overflow
-    // answers 413 and tears the request down — never a silently truncated
-    // body.
+    // Body cap: 128 MB (the upstream BodyReaderMixin MAX_BODY_SIZE), tracked
+    // as a byte counter (the stream path never buffers). Overflow errors the
+    // stream (a pending text()/getReader() rejects — never a silently
+    // truncated body) and answers 413 at body-complete.
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe extern "C" fn bun_serve_route_handler(
         res: *mut bun_uws_sys::response::c::uws_res,
@@ -3091,8 +3097,8 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         let req_ref = bun_opaque::opaque_deref_mut(req);
 
         // Phase 1 — capture everything the uWS Request can tell us before it
-        // dies at handler return; phase 2 works exclusively off these owned
-        // copies.
+        // dies at handler return; the rest of the dispatch works exclusively
+        // off these owned copies.
         let method = req_ref.method().to_vec();
         let url = req_ref.url().to_vec();
         let mut header_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -3103,29 +3109,35 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             &mut header_pairs as *mut Vec<(Vec<u8>, Vec<u8>)>,
         );
 
+        let req_id = SERVE_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         let state = Box::new(ServeRequestState {
             ud,
             method,
             url,
             headers: header_pairs,
-            body: Vec::new(),
+            req_id,
+            body_seen: 0,
             body_too_large: false,
+            outcome: ServePhase1Outcome::Dispatch,
             phase: AtomicU8::new(SERVE_PHASE_CAPTURED),
             aborted: AtomicBool::new(false),
         });
         let state_ptr = Box::into_raw(state);
 
         // Abort latch: ZST closure, state flows through the heap pointer (the
-        // previous inline dispatch used the identical shape with a standalone
-        // AtomicBool box; the latch now lives in the state so both callbacks
-        // see one object).
+        // latch lives in the state so both callbacks see one object).
         (*res_mut).on_aborted(
             |st: *mut ServeRequestState, _res: &mut Response<false>| {
                 (*st).aborted.store(true, Ordering::Release);
                 if (*st).phase.load(Ordering::Acquire) == SERVE_PHASE_CAPTURED {
                     // No dispatch borrow is live — the abort path owns the
                     // teardown. (Mid-spin aborts must NOT free: the spin
-                    // holds the borrow and frees on latch observation.)
+                    // holds the borrow and frees on latch observation.) The
+                    // body stream may still be open — error it so pending
+                    // readers reject with a network error instead of hanging
+                    // on a dead connection.
+                    serve_body_stream_signal(st, ServeBodySignal::AbortError);
+                    serve_drop_body_faces(st);
                     drop(Box::from_raw(st));
                 }
             },
@@ -3134,17 +3146,22 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 
         // Body chunks. uWS always delivers a final empty `last=true` chunk
         // once on_data is registered (bodyless requests included), so phase 2
-        // dispatches exactly once per request.
+        // completes exactly once per request.
         (*res_mut).on_data(
             |st: *mut ServeRequestState, res: &mut Response<false>, chunk: &[u8], last: bool| {
-                if !(*st).body_too_large
-                    && (*st).body.len().saturating_add(chunk.len()) > SERVE_BODY_MAX
-                {
-                    (*st).body_too_large = true;
-                    (*st).body = Vec::new();
+                // Cap accounting: a byte counter, not a buffer (the stream
+                // path never accumulates). Crossing the cap errors the stream
+                // immediately — a pending text()/getReader() rejects instead
+                // of observing a truncated body.
+                if !(*st).body_too_large {
+                    (*st).body_seen = (*st).body_seen.saturating_add(chunk.len());
+                    if (*st).body_seen > SERVE_BODY_MAX {
+                        (*st).body_too_large = true;
+                        serve_body_stream_signal(st, ServeBodySignal::CapError);
+                    }
                 }
                 if !(*st).body_too_large && !chunk.is_empty() {
-                    (*st).body.extend_from_slice(chunk);
+                    serve_body_stream_enqueue(st, chunk);
                 }
                 if !last {
                     return;
@@ -3169,6 +3186,7 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                     // the dead res; the free is ours (the abort handler saw
                     // phase == DISPATCHING and left the state for us).
                     SERVE_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    serve_drop_body_faces(st);
                     drop(Box::from_raw(st));
                     return;
                 }
@@ -3177,15 +3195,27 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                     (*res).write_header(b"Content-Type", b"text/plain");
                     (*res).end(b"request body exceeds the 128MB serve body cap", true);
                     (*res).clear_aborted();
+                    serve_drop_body_faces(st);
                     drop(Box::from_raw(st));
                     return;
                 }
-                serve_dispatch_and_respond(res, st);
-                // serve_dispatch_and_respond owns the response write and the
-                // clear_aborted-before-free teardown on every path.
+                // Body complete: close the stream (queued chunks then done —
+                // the deferred-close drain is the web_streams.js contract),
+                // resolve the parked handler value, write the response.
+                serve_body_stream_signal(st, ServeBodySignal::Close);
+                serve_finish_and_respond(res, st);
+                // serve_finish_and_respond owns the response write, the
+                // face drop, and the clear_aborted-before-free teardown on
+                // every path.
             },
             state_ptr,
         );
+
+        // Headers-complete dispatch: build the streaming Request and invoke
+        // the fetch handler NOW. Registered callbacks above already satisfy
+        // uWS' "respond or register onAborted" contract; this call only marks
+        // the state's outcome — all wire writes stay at body-complete.
+        serve_dispatch_headers(state_ptr);
     }
 
     let safe_handler: Option<
@@ -4486,62 +4516,439 @@ const SERVE_BODY_MAX: usize = 128 * 1024 * 1024;
 const SERVE_PHASE_CAPTURED: u8 = 1;
 const SERVE_PHASE_DISPATCHING: u8 = 2;
 
+/// Monotonic per-request id — roots the per-request GcStore keys (the body
+/// stream bundle + the parked handler return value). Unique per request, so
+/// concurrent/keep-alive requests never collide and teardown can drop its
+/// own faces without touching a neighbour's.
+static SERVE_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Which terminal transition to drive on the per-request body stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ServeBodySignal {
+    /// Body complete — `controller.close()` (queued chunks drain, then done).
+    Close,
+    /// Connection aborted mid-body — `controller.error(abortError)`: pending
+    /// readers reject with a TypeError (WHATWG network-error shape) instead
+    /// of hanging on a dead socket.
+    AbortError,
+    /// Body crossed `SERVE_BODY_MAX` — `controller.error(capError)`: a
+    /// pending text()/getReader() rejects; a truncated body is never
+    /// delivered.
+    CapError,
+}
+
+/// Phase-1 (headers-complete) dispatch outcome, consumed at body-complete.
+enum ServePhase1Outcome {
+    /// The fetch handler ran at headers-complete. Its return value is parked
+    /// under the per-request rval GcStore key (key absent at phase 2 = the
+    /// handler returned a non-object → 404, the pre-existing semantics).
+    Dispatch,
+    /// Phase-1 dispatch failure: the deferred status+text write at
+    /// body-complete. Wire timing matches the two-phase discipline — the
+    /// answer lands after the body is drained (uWS keep-alive framing).
+    DeferredFail {
+        status: &'static str,
+        body: &'static str,
+    },
+    /// The reflective default response (no fetch handler registered, or the
+    /// Request/stream construction failed) — the pre-existing no-handler
+    /// behavior, byte-identical timing.
+    DeferredDefault,
+}
+
 /// Per-request serve dispatch state, shared between the uWS route callback
-/// (phase 1: capture) and the body-chunk callback (phase 2: dispatch). Owned
-/// by neither callback alone — freed exactly once per the phase discipline
-/// documented on `bun_serve_route_handler`.
+/// (phase 1: capture + headers-complete dispatch) and the body-chunk callback
+/// (phase 2: stream feed + completion). Owned by neither callback alone —
+/// freed exactly once per the phase discipline documented on
+/// `bun_serve_route_handler`.
 struct ServeRequestState {
     /// Server-level user data (cx / handler key / port fallback). Lives for
     /// the server's lifetime, so a borrowed copy cannot dangle.
     ud: *const BunServeUserData,
     /// Captured header set — the uWS Request dies when the route handler
-    /// returns, so phase 2 works exclusively off these owned copies.
+    /// returns, so the rest of the dispatch works exclusively off these
+    /// owned copies.
     method: Vec<u8>,
     url: Vec<u8>,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
-    /// Accumulated request body bytes (drained through `res.on_data`).
-    body: Vec<u8>,
-    /// Set when the body crossed `SERVE_BODY_MAX` — phase 2 answers 413.
+    /// Per-request id for the GcStore face keys (`serve_body_{id}` /
+    /// `serve_rval_{id}`).
+    req_id: u64,
+    /// Total request-body bytes observed (cap accounting — no buffering).
+    body_seen: usize,
+    /// Set when the body crossed `SERVE_BODY_MAX` — phase 2 answers 413 and
+    /// the stream has already been errored (pending readers reject).
     body_too_large: bool,
+    /// Phase-1 dispatch outcome (see `ServePhase1Outcome`).
+    outcome: ServePhase1Outcome,
     /// CAPTURED → DISPATCHING; guards the exactly-once free.
     phase: AtomicU8,
-    /// on_aborted latch (the former standalone abort_flag box, folded in so
-    /// both callbacks share one object).
+    /// on_aborted latch (folded in so both callbacks share one object).
     aborted: AtomicBool,
 }
 
-/// Phase-2 serve dispatch: the full request headers + body are captured in
-/// `st` and the body has completed. Enter the persistent realm, resolve the
-/// fetch handler, build the Request face (with the received bytes as its
-/// body), invoke the handler, spin the returned Promise to a Response, and
-/// write it.
+impl ServeRequestState {
+    /// GcStore key rooting the per-request stream bundle
+    /// `{stream, controller, abortError, capError}`.
+    fn body_key(&self) -> String {
+        format!("serve_body_{}", self.req_id)
+    }
+
+    /// GcStore key rooting the fetch handler's return value (the Response or
+    /// Promise<Response> awaiting body-complete dispatch).
+    fn rval_key(&self) -> String {
+        format!("serve_rval_{}", self.req_id)
+    }
+}
+
+/// Run `work` inside the persistent realm (first-principles realm model: one
+/// realm per JsContext, held for the context's lifetime). Serve callbacks
+/// fire with NO realm entered; every GcStore op and JS call needs the realm
+/// (GcStore roots objects as properties on `CurrentGlobalOrNull`), so every
+/// JS-touching serve path funnels through here. Returns `None` when the
+/// thread has no live realm (runtime teardown in progress) — the `work`
+/// closure never ran, and the caller owns any teardown it would have done.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_with_dispatch_realm<T>(
+    cx: *mut JSContext,
+    work: impl FnOnce(&mut mozjs::context::JSContext) -> T,
+) -> Option<T> {
+    let global = bao_engine::context::thread_realm_global()?;
+    if global.is_null() {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let realm_ref: &mut mozjs::context::JSContext = &mut realm;
+    Some(work(realm_ref))
+}
+
+/// Capture + clear + route a pending exception left by a failed JS call on a
+/// serve dispatch path (never leak past a native entry point — same contract
+/// as timers.rs fire_callback).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_route_pending_exception(raw_cx: *mut JSContext) {
+    let mut exn = UndefinedValue();
+    JS_GetPendingException(
+        raw_cx,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut exn,
+        },
+    );
+    JS_ClearPendingException(raw_cx);
+    if !exn.is_undefined() {
+        crate::uncaught::route_uncaught_exception(raw_cx, exn);
+    }
+}
+
+/// The per-request body-stream factory source: builds ONE ReadableStream
+/// (the web_streams.js face) whose `start(controller)` captures the
+/// controller synchronously inside the constructor, plus the two terminal
+/// error values the native side hands to `controller.error`. Compiled once
+/// per process and cached in GcStore (same discipline as the request
+/// builder); called once per request.
 ///
-/// Owns the teardown on every path: `clear_aborted()` BEFORE the state Box
-/// free (a written response never fires the latch), and never touches `res`
-/// once the latch has fired (the abort handler saw phase == DISPATCHING and
-/// left the state free to this function).
+/// The controller is a plain JS object — the native side cannot call its
+/// methods directly, so it drives `controller.enqueue/close/error` through
+/// this parked bundle (per-request GcStore key, GC-rooted on the global —
+/// no raw JSObject pointers cross callback boundaries).
+const SERVE_BODY_STREAM_FACTORY_SRC: &str = r#"(function() {
+  var ctl;
+  var stream = new ReadableStream({
+    start: function(c) { ctl = c; }
+  });
+  return {
+    stream: stream,
+    controller: ctl,
+    abortError: new TypeError('network error: connection aborted before the request body completed'),
+    capError: new RangeError('request body exceeds the 128MB serve body cap')
+  };
+})"#;
+
+/// Cached-factory lookup-or-compile (realm must be entered). Returns null on
+/// failure (exception routed; never left pending).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_body_stream_factory(raw_cx: *mut JSContext) -> *mut JSObject {
+    if let Some(f) = gc_store_get(raw_cx, "serve_body_stream_factory") {
+        if !f.is_null() {
+            return f;
+        }
+    }
+    let mut src = mozjs::rust::transform_str_to_source_text(SERVE_BODY_STREAM_FACTORY_SRC);
+    let opts = mozjs::glue::NewCompileOptions(raw_cx, c"<serve-body-stream-factory>".as_ptr(), 1);
+    if opts.is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let mut fn_rval = UndefinedValue();
+    let evaluated = mozjs_sys::jsapi::JS::Evaluate2(
+        raw_cx,
+        opts,
+        &mut src,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut fn_rval,
+        },
+    );
+    libc::free(opts as *mut _);
+    if !evaluated || !fn_rval.is_object() {
+        serve_route_pending_exception(raw_cx);
+        return ::std::ptr::null_mut();
+    }
+    let f = fn_rval.to_object();
+    gc_store_insert(raw_cx, "serve_body_stream_factory", f);
+    f
+}
+
+/// Resolve the per-request body bundle's controller (realm must be entered).
+/// Returns null when the bundle is absent (a phase-1 failure outcome never
+/// parked one) or malformed.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_body_bundle_controller(
+    cx_ref: &mut mozjs::context::JSContext,
+    body_key: &str,
+) -> (*mut JSObject, *mut JSObject) {
+    let raw_cx = cx_ref.raw_cx();
+    let bundle = match gc_store_get(raw_cx, body_key) {
+        Some(b) if !b.is_null() => b,
+        _ => return (::std::ptr::null_mut(), ::std::ptr::null_mut()),
+    };
+    rooted!(&in(cx_ref) let bundle_r = bundle);
+    let mut ctl_val = UndefinedValue();
+    let got = JS_GetProperty(
+        raw_cx,
+        bundle_r.handle().into(),
+        c"controller".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ctl_val,
+        },
+    );
+    if !got || !ctl_val.is_object() {
+        return (::std::ptr::null_mut(), bundle_r.get());
+    }
+    rooted!(&in(cx_ref) let ctl_r = ctl_val.to_object());
+    (ctl_r.get(), bundle_r.get())
+}
+
+/// Drive a terminal transition on the per-request body stream (`Close` at
+/// body-complete; `AbortError`/`CapError` on the failure paths). A missing
+/// bundle (failure outcomes never created one) or a missing realm (runtime
+/// teardown) skips the JS face — the connection is going away either way.
+///
+/// Exceptions from the controller call are captured and routed (never left
+/// pending); native sequencing already excludes the closed/errored-controller
+/// races, so a throw here is a sequencing bug, not a request condition.
 ///
 /// # Safety
-/// - `res_mut` must be a live `&mut Response<false>` for the duration of the
-///   dispatch (guaranteed by the uWS on_data callback contract).
-/// - `st` must be a live `*mut ServeRequestState` in `SERVE_PHASE_DISPATCHING`
-///   with the abort latch clear, whose freeing ownership has passed to this
-///   call.
+/// `st` must be a live `*mut ServeRequestState` (no dispatch borrow needed —
+/// only the cx and the GcStore key are read).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn serve_dispatch_and_respond(res_mut: &mut Response<false>, st: *mut ServeRequestState) {
-    let state = &mut *st;
-    let ud = &*state.ud;
-
-    let cx = ud.cx;
+unsafe fn serve_body_stream_signal(st: *mut ServeRequestState, signal: ServeBodySignal) {
+    let cx = (*(*st).ud).cx;
     if cx.is_null() {
-        eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
-        (*res_mut).write_status(b"500 Internal Server Error");
-        (*res_mut).write_header(b"Content-Type", b"text/plain");
-        (*res_mut).end(b"no JS context", true);
-        (*res_mut).clear_aborted();
-        drop(Box::from_raw(st));
         return;
     }
+    let body_key = (*st).body_key();
+    let entered = serve_with_dispatch_realm(cx, |cx_ref| {
+        let raw_cx = cx_ref.raw_cx();
+        let (ctl, bundle) = serve_body_bundle_controller(cx_ref, &body_key);
+        if ctl.is_null() || bundle.is_null() {
+            return;
+        }
+        rooted!(&in(cx_ref) let ctl_r = ctl);
+        rooted!(&in(cx_ref) let bundle_r = bundle);
+
+        let (method_name, err_prop): (&[u8], &[u8]) = match signal {
+            ServeBodySignal::Close => (b"close", b""),
+            ServeBodySignal::AbortError => (b"error", b"abortError"),
+            ServeBodySignal::CapError => (b"error", b"capError"),
+        };
+        let mut method_val = UndefinedValue();
+        let method_c = ZBox::from_bytes(method_name);
+        let got = JS_GetProperty(
+            raw_cx,
+            ctl_r.handle().into(),
+            method_c.as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut method_val,
+            },
+        );
+        if !got || !method_val.is_object() {
+            return;
+        }
+        rooted!(&in(cx_ref) let method_fn = method_val.to_object());
+
+        // Argument: the terminal error value for error(); controller.close()
+        // declares no parameters and ignores the extra undefined.
+        let mut arg_val = UndefinedValue();
+        if !err_prop.is_empty() {
+            let err_c = ZBox::from_bytes(err_prop);
+            let got = JS_GetProperty(
+                raw_cx,
+                bundle_r.handle().into(),
+                err_c.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut arg_val,
+                },
+            );
+            if !got || !arg_val.is_object() {
+                return;
+            }
+        }
+        rooted!(&in(cx_ref) let arg_r = arg_val);
+        let args = HandleValueArray {
+            length_: 1,
+            elements_: &*arg_r.handle(),
+        };
+        rooted!(&in(cx_ref) let method_fn_val = ObjectValue(method_fn.get()));
+        let mut rv = UndefinedValue();
+        let ok = JS_CallFunctionValue(
+            raw_cx,
+            ctl_r.handle().into(),
+            method_fn_val.handle().into(),
+            &args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rv,
+            },
+        );
+        if !ok {
+            serve_route_pending_exception(raw_cx);
+        }
+    });
+    let _ = entered;
+}
+
+/// Enqueue one wire chunk into the per-request body stream. The uWS chunk
+/// buffer dies at callback return, so the bytes are copied into a fresh
+/// Uint8Array (binary-exact). Per-chunk delivery: each on_data call becomes
+/// exactly one `controller.enqueue` — no coalescing, no buffering.
+///
+/// A missing realm (runtime teardown) skips the enqueue; the state teardown
+/// still completes through the phase-2 paths.
+///
+/// # Safety
+/// `st` must be a live `*mut ServeRequestState` in `SERVE_PHASE_CAPTURED`,
+/// and `chunk` must be valid for the duration of the call (the uWS callback
+/// contract).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_body_stream_enqueue(st: *mut ServeRequestState, chunk: &[u8]) {
+    let cx = (*(*st).ud).cx;
+    if cx.is_null() {
+        return;
+    }
+    let body_key = (*st).body_key();
+    let entered = serve_with_dispatch_realm(cx, |cx_ref| {
+        let raw_cx = cx_ref.raw_cx();
+        let (ctl, _bundle) = serve_body_bundle_controller(cx_ref, &body_key);
+        if ctl.is_null() {
+            return;
+        }
+        rooted!(&in(cx_ref) let ctl_r = ctl);
+        let mut enq_val = UndefinedValue();
+        let got = JS_GetProperty(
+            raw_cx,
+            ctl_r.handle().into(),
+            c"enqueue".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut enq_val,
+            },
+        );
+        if !got || !enq_val.is_object() {
+            return;
+        }
+        rooted!(&in(cx_ref) let enq_fn = enq_val.to_object());
+
+        // Copy the chunk into a fresh Uint8Array (binary-exact — the uWS
+        // buffer is only valid for this callback).
+        rooted!(&in(cx_ref) let arr = JS_NewUint8Array(raw_cx, chunk.len()));
+        if arr.get().is_null() {
+            return;
+        }
+        if !chunk.is_empty() {
+            let mut ta_len: usize = 0;
+            let mut shared = false;
+            let mut data: *mut u8 = ::std::ptr::null_mut();
+            let unwrapped =
+                JS_GetObjectAsUint8Array(arr.get(), &mut ta_len, &mut shared, &mut data);
+            if unwrapped.is_null() || data.is_null() || ta_len < chunk.len() {
+                return;
+            }
+            ::std::ptr::copy_nonoverlapping(chunk.as_ptr(), data, chunk.len());
+        }
+        rooted!(&in(cx_ref) let arg_v = ObjectValue(arr.get()));
+        let args = HandleValueArray {
+            length_: 1,
+            elements_: &*arg_v.handle(),
+        };
+        rooted!(&in(cx_ref) let enq_fn_val = ObjectValue(enq_fn.get()));
+        let mut rv = UndefinedValue();
+        let ok = JS_CallFunctionValue(
+            raw_cx,
+            ctl_r.handle().into(),
+            enq_fn_val.handle().into(),
+            &args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rv,
+            },
+        );
+        if !ok {
+            serve_route_pending_exception(raw_cx);
+        }
+    });
+    let _ = entered;
+}
+
+/// Drop the per-request GcStore faces (stream bundle + parked handler value).
+/// EVERY terminal path calls this exactly once before freeing the state —
+/// the roots live as global properties, so skipping the drop would leak one
+/// bundle + one handler value per request for the server's lifetime. A
+/// missing realm (runtime teardown) leaves the untracked properties to the
+/// dying global.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_drop_body_faces(st: *mut ServeRequestState) {
+    let cx = (*(*st).ud).cx;
+    if cx.is_null() {
+        return;
+    }
+    let body_key = (*st).body_key();
+    let rval_key = (*st).rval_key();
+    let entered = serve_with_dispatch_realm(cx, |cx_ref| {
+        let raw_cx = cx_ref.raw_cx();
+        gc_store_remove(raw_cx, &body_key);
+        gc_store_remove(raw_cx, &rval_key);
+    });
+    let _ = entered;
+}
+
+/// Phase-1 serve dispatch (headers-complete): classify the deferred outcome,
+/// then — for a dispatched request — build the Request with a LIVE
+/// controller-driven ReadableStream body and invoke the fetch handler NOW
+/// (upstream Bun semantics: the handler runs before the body streams in; its
+/// returned value is parked for phase 2). No wire writes happen here: every
+/// response is deferred to body-complete (phase 2) so an unread body can
+/// never be misparsed as the start of the next request on a keep-alive
+/// connection.
+///
+/// Failure paths only MARK the state's outcome ([`ServePhase1Outcome`]) —
+/// the write + teardown stay in phase 2, keeping the
+/// respond-after-body-drained discipline byte-identical to the two-phase
+/// dispatch this replaces.
+///
+/// # Safety
+/// `st` must be a live `*mut ServeRequestState` in `SERVE_PHASE_CAPTURED`
+/// whose freeing ownership still belongs to the phase-2 callbacks.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
+    let state = &mut *st;
+    let ud = &*state.ud;
 
     // REQ-ENG-006 criterion 5: WebSocket upgrade requests are handled by
     // the `app.ws()` route registered before this `app.any()` route. If a
@@ -4567,63 +4974,29 @@ unsafe fn serve_dispatch_and_respond(res_mut: &mut Response<false>, st: *mut Ser
 
     if is_ws_upgrade && ud.fetch_cb_key.is_none() {
         // Neither handler registered — explicit 426 Upgrade Required.
-        (*res_mut).write_status(b"426 Upgrade Required");
-        (*res_mut).write_header(b"Content-Type", b"text/plain");
-        (*res_mut).end(b"Upgrade Required: no WebSocket handler registered", true);
-        (*res_mut).clear_aborted();
-        drop(Box::from_raw(st));
+        state.outcome = ServePhase1Outcome::DeferredFail {
+            status: "426 Upgrade Required",
+            body: "Upgrade Required: no WebSocket handler registered",
+        };
         return;
     }
 
     // The reflective default response is used ONLY when the caller created
-    // the server with no `fetch` handler (see the phase-1 route comment for
-    // the dispatch-failure 500 discipline).
+    // the server with no `fetch` handler.
     if ud.fetch_cb_key.is_none() {
-        serve_write_default_response(res_mut, &state.method, &state.url);
-        (*res_mut).clear_aborted();
-        drop(Box::from_raw(st));
+        state.outcome = ServePhase1Outcome::DeferredDefault;
         return;
     }
 
-    // Enter the context's persistent realm (first-principles realm model:
-    // one realm per JsContext, held for the context's lifetime). Async
-    // dispatch runs with no realm entered; the fetch handler is stored as
-    // a property on this realm's global (GcStore), so we must be in the
-    // realm to resolve it.
-    let global = match bao_engine::context::thread_realm_global() {
-        Some(g) if !g.is_null() => g,
-        _ => {
-            eprintln!("[bun:serve] no JS realm on this thread — responding 500");
-            (*res_mut).write_status(b"500 Internal Server Error");
-            (*res_mut).write_header(b"Content-Type", b"text/plain");
-            (*res_mut).end(b"no JS realm", true);
-            (*res_mut).clear_aborted();
-            drop(Box::from_raw(st));
-            return;
-        }
-    };
-
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let global_root = global);
-    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
-
-    // Inside the persistent realm: GcStore resolves the fetch handler.
-    // Registered-but-unresolvable is an explicit dispatch failure → 500
-    // (never a silent default echo that impersonates the handler response).
-    let fetch_handler = match ud.fetch_handler() {
-        Some(h) if !h.is_null() => h,
-        _ => {
-            eprintln!("[bun:serve] fetch handler registered but unresolvable — responding 500");
-            (*res_mut).write_status(b"500 Internal Server Error");
-            (*res_mut).write_header(b"Content-Type", b"text/plain");
-            (*res_mut).end(b"fetch handler unavailable", true);
-            (*res_mut).clear_aborted();
-            drop(Box::from_raw(st));
-            return;
-        }
-    };
+    let cx = ud.cx;
+    if cx.is_null() {
+        eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
+        state.outcome = ServePhase1Outcome::DeferredFail {
+            status: "500 Internal Server Error",
+            body: "no JS context",
+        };
+        return;
+    }
 
     // Absolute-URL authority for the Request face: the client's Host header
     // (HTTP/1.1 mandatory) wins; Host-less requests fall back to the serve
@@ -4643,99 +5016,299 @@ unsafe fn serve_dispatch_and_respond(res_mut: &mut Response<false>, st: *mut Ser
         }
     };
 
-    // The Request body: the received wire bytes (empty for bodyless
-    // requests — a zero-length body and no body surface identically through
-    // the Request face, and the builder takes no body init in that case).
-    let body_bytes = ::std::mem::take(&mut state.body);
-    let body_init = if body_bytes.is_empty() {
-        None
-    } else {
-        Some(body_bytes)
+    // Bodyless detection: no Content-Length (or a zero-length one) and no
+    // Transfer-Encoding — mirrors the pre-streaming contract where a
+    // zero-byte body surfaced as `req.body === null`. Everything else gets
+    // the live stream even if no chunks ever arrive (a stream that closes
+    // immediately reads as empty — the WHATWG shape for an empty body).
+    let has_body = {
+        let cl = header_lookup(b"content-length")
+            .and_then(|v| ::std::str::from_utf8(v).ok())
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let te = header_lookup(b"transfer-encoding").is_some();
+        cl > 0 || te
     };
-    rooted!(&in(cx_ref) let req_obj = serve_build_request_object(
-        cx_ref,
-        &state.method,
-        &state.url,
-        &state.headers,
-        &serve_authority,
-        body_init,
-    ));
-    if req_obj.get().is_null() {
-        serve_write_default_response(res_mut, &state.method, &state.url);
-        (*res_mut).clear_aborted();
-        drop(Box::from_raw(st));
-        return;
+
+    // Owned copies for the JS closure (the phase-2 default-response path
+    // still reads the originals off the state).
+    let method = state.method.clone();
+    let url = state.url.clone();
+    let headers = state.headers.clone();
+    let rval_key = state.rval_key();
+    let body_key = state.body_key();
+
+    let outcome = serve_with_dispatch_realm(cx, |cx_ref| -> ServePhase1Outcome {
+        let raw_cx = cx_ref.raw_cx();
+
+        // Inside the persistent realm: GcStore resolves the fetch handler.
+        // Registered-but-unresolvable is an explicit dispatch failure → 500
+        // (never a silent default echo that impersonates the handler
+        // response).
+        let fetch_handler = match ud.fetch_handler() {
+            Some(h) if !h.is_null() => h,
+            _ => {
+                eprintln!(
+                    "[bun:serve] fetch handler registered but unresolvable — responding 500"
+                );
+                return ServePhase1Outcome::DeferredFail {
+                    status: "500 Internal Server Error",
+                    body: "fetch handler unavailable",
+                };
+            }
+        };
+
+        // The live body stream: one ReadableStream per request WITH a body,
+        // its controller captured by the factory (web_streams.js
+        // start(controller) runs synchronously inside the constructor). The
+        // bundle is parked in GcStore so the on_data/abort callbacks can
+        // drive enqueue/close/error after this call returns. Bodyless
+        // requests skip the bundle entirely — the phase-2 Close signal
+        // no-ops on an absent bundle key.
+        let body_init: Option<*mut JSObject> = if !has_body {
+            None
+        } else {
+            let factory = serve_body_stream_factory(raw_cx);
+            if factory.is_null() {
+                return ServePhase1Outcome::DeferredDefault;
+            }
+            rooted!(&in(cx_ref) let factory_r = factory);
+            rooted!(&in(cx_ref) let factory_val = ObjectValue(factory_r.get()));
+            let mut bundle_val = UndefinedValue();
+            let factory_ok = JS_CallFunctionValue(
+                raw_cx,
+                factory_r.handle().into(),
+                factory_val.handle().into(),
+                &HandleValueArray {
+                    length_: 0,
+                    elements_: ::std::ptr::null(),
+                },
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut bundle_val,
+                },
+            );
+            if !factory_ok || !bundle_val.is_object() {
+                if !factory_ok {
+                    serve_route_pending_exception(raw_cx);
+                }
+                return ServePhase1Outcome::DeferredDefault;
+            }
+            rooted!(&in(cx_ref) let bundle_r = bundle_val.to_object());
+            gc_store_insert(raw_cx, &body_key, bundle_r.get());
+
+        // The bundle's stream object is the Request body init (the Request
+        // classifier parks it on _bodyStreamSource — the WHATWG
+        // init.body-as-stream form). Bodyless requests take no body init at
+        // all (`req.body === null` — the preserved pre-streaming contract).
+            let mut stream_val = UndefinedValue();
+            let got = JS_GetProperty(
+                raw_cx,
+                bundle_r.handle().into(),
+                c"stream".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut stream_val,
+                },
+            );
+            if !got || !stream_val.is_object() {
+                return ServePhase1Outcome::DeferredDefault;
+            }
+            rooted!(&in(cx_ref) let stream_r = stream_val.to_object());
+            Some(stream_r.get())
+        };
+
+        let req_obj = serve_build_request_object(
+            cx_ref,
+            &method,
+            &url,
+            &headers,
+            &serve_authority,
+            body_init,
+        );
+        if req_obj.is_null() {
+            return ServePhase1Outcome::DeferredDefault;
+        }
+        rooted!(&in(cx_ref) let req_r = req_obj);
+
+        // Invoke the fetch handler AT HEADERS-COMPLETE with the streaming
+        // Request. A synchronous throw answers 500 at body-complete (same
+        // wire shape as the two-phase dispatch this replaces); the exception
+        // is cleared, never left pending.
+        rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
+        rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_r.get()));
+        let call_args = HandleValueArray {
+            length_: 1,
+            elements_: &*req_val_elem.handle(),
+        };
+        let mut rval = UndefinedValue();
+        let global = CurrentGlobalOrNull(raw_cx);
+        if global.is_null() {
+            return ServePhase1Outcome::DeferredFail {
+                status: "500 Internal Server Error",
+                body: "no JS realm",
+            };
+        }
+        rooted!(&in(cx_ref) let global_r = global);
+        let ok = JS_CallFunctionValue(
+            raw_cx,
+            global_r.handle().into(),
+            handler_val.handle().into(),
+            &call_args,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        );
+        if !ok {
+            // JS callback threw — clear pending exception; the 500 lands at
+            // body-complete.
+            JS_ClearPendingException(raw_cx);
+            return ServePhase1Outcome::DeferredFail {
+                status: "500 Internal Server Error",
+                body: "fetch handler threw",
+            };
+        }
+
+        // Park the handler value for phase 2 (objects only: a Response or a
+        // Promise<Response>). A non-object return stays unparked and phase 2
+        // answers 404 — the pre-existing semantics.
+        if rval.is_object() {
+            gc_store_insert(raw_cx, &rval_key, rval.to_object());
+        }
+        ServePhase1Outcome::Dispatch
+    });
+
+    match outcome {
+        Some(o) => (*st).outcome = o,
+        None => {
+            // No realm (runtime teardown in progress) — fail-closed 500 at
+            // body-complete; nothing JS-reachable remains to dispatch.
+            eprintln!("[bun:serve] no JS realm on this thread — responding 500");
+            (*st).outcome = ServePhase1Outcome::DeferredFail {
+                status: "500 Internal Server Error",
+                body: "no JS realm",
+            };
+        }
+    }
+}
+
+/// Phase-2 serve completion: the body has completed (the final empty
+/// `last=true` chunk arrived and the stream was closed). Resolve the parked
+/// handler value to a Response and write it — or write the deferred phase-1
+/// outcome (500/426/default) for requests whose dispatch never started.
+///
+/// Owns the teardown on every path: drops the per-request GcStore faces and
+/// frees the state with `clear_aborted()` BEFORE the free (a written
+/// response never fires the latch), and never touches `res` once the latch
+/// has fired (the abort handler saw phase == DISPATCHING and left the state
+/// free to this function).
+///
+/// # Safety
+/// - `res_mut` must be a live `&mut Response<false>` for the duration of the
+///   dispatch (guaranteed by the uWS on_data callback contract).
+/// - `st` must be a live `*mut ServeRequestState` in `SERVE_PHASE_DISPATCHING`
+///   with the abort latch clear, whose freeing ownership has passed to this
+///   call.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_finish_and_respond(res_mut: &mut Response<false>, st: *mut ServeRequestState) {
+    let state = &mut *st;
+    let ud = &*state.ud;
+    let cx = ud.cx;
+
+    // Deferred phase-1 outcomes write without touching JS.
+    match state.outcome {
+        ServePhase1Outcome::DeferredFail { status, body } => {
+            (*res_mut).write_status(status.as_bytes());
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(body.as_bytes(), true);
+            (*res_mut).clear_aborted();
+            serve_drop_body_faces(st);
+            drop(Box::from_raw(st));
+            return;
+        }
+        ServePhase1Outcome::DeferredDefault => {
+            serve_write_default_response(res_mut, &state.method, &state.url);
+            (*res_mut).clear_aborted();
+            serve_drop_body_faces(st);
+            drop(Box::from_raw(st));
+            return;
+        }
+        ServePhase1Outcome::Dispatch => {}
     }
 
-    // Call the JS fetch handler: `fetch_handler(request)`. The abort latch
-    // lives in the state (alive for the whole dispatch borrow), so the spin
-    // can bail the moment the connection dies mid-dispatch.
-    rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
-    rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_obj.get()));
-    let call_args = HandleValueArray {
-        length_: 1,
-        elements_: &*req_val_elem.handle(),
-    };
-
-    let mut rval = UndefinedValue();
-    let rval_h = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut rval,
-    };
-    let ok = JS_CallFunctionValue(
-        cx,
-        global_root.handle().into(),
-        handler_val.handle().into(),
-        &call_args,
-        rval_h,
-    );
-    if !ok {
-        // JS callback threw — clear pending exception and write 500.
-        JS_ClearPendingException(cx);
+    if cx.is_null() {
+        eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
-        (*res_mut).end(b"fetch handler threw", true);
+        (*res_mut).end(b"no JS context", true);
         (*res_mut).clear_aborted();
+        serve_drop_body_faces(st);
         drop(Box::from_raw(st));
         return;
     }
 
-    // The fetch handler may return:
-    //   (a) a Response object synchronously, or
-    //   (b) a Promise<Response> (async handler).
-    // Resolve (b) to a Response by draining microtasks + pending fetches
-    // + due timers in a bounded spin-loop (the route handler runs on the
-    // JS thread, so no other thread can settle the promise — we must run
-    // jobs here). The spin polls the abort latch every iteration and
-    // bails out the moment the connection dies.
-    let resp_obj = serve_resolve_response_value(cx_ref, rval, &state.aborted);
-    if (*state).aborted.load(Ordering::Acquire) {
-        // Connection aborted mid-dispatch: the latch already fired (it is
-        // what set the flag, once per request). Abandon the response —
-        // never write to a dead socket, never touch the dead res (same
-        // discipline as h2_on_aborted). Record the abandon for the
-        // regression tests; no clear_aborted (the res is dead).
-        SERVE_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
+    // The parked handler value + the abort latch live across the spin — the
+    // state borrow keeps both valid for the whole completion.
+    let aborted_flag = &state.aborted;
+    let rval_key = state.rval_key();
+
+    let completed = serve_with_dispatch_realm(cx, |cx_ref| {
+        // Absent rval = the handler returned a non-object (undefined/null/…)
+        // → 404 (Bun semantics: returning nothing from fetch → Not Found).
+        let resp_obj = match gc_store_get(cx_ref.raw_cx(), &rval_key) {
+            Some(h) if !h.is_null() => {
+                rooted!(&in(cx_ref) let handler_r = h);
+                rooted!(&in(cx_ref) let rval_r = ObjectValue(handler_r.get()));
+                serve_resolve_response_value(cx_ref, rval_r.handle().get(), aborted_flag)
+            }
+            _ => ::std::ptr::null_mut(),
+        };
+        if (*st).aborted.load(Ordering::Acquire) {
+            // Connection aborted mid-dispatch: the latch already fired (it is
+            // what set the flag, once per request). Abandon the response —
+            // never write to a dead socket, never touch the dead res (same
+            // discipline as h2_on_aborted). Record the abandon for the
+            // regression tests; no clear_aborted (the res is dead).
+            SERVE_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
+            serve_drop_body_faces(st);
+            drop(Box::from_raw(st));
+            return;
+        }
+        if resp_obj.is_null() {
+            // Handler returned a non-Response value (undefined/null/etc.) or
+            // the promise rejected. Default to 404 (Bun semantics: returning
+            // nothing from fetch → 404 Not Found).
+            (*res_mut).write_status(b"404 Not Found");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"Not Found", true);
+            (*res_mut).clear_aborted();
+            serve_drop_body_faces(st);
+            drop(Box::from_raw(st));
+            return;
+        }
+
+        // Liveness re-check passed above (the flag read precedes this write)
+        // — the socket is still alive; write the handler's response.
+        serve_write_response_object(cx, &mut *res_mut, resp_obj);
+        (*res_mut).clear_aborted();
+        serve_drop_body_faces(st);
         drop(Box::from_raw(st));
-        return;
-    }
-    if resp_obj.is_null() {
-        // Handler returned a non-Response value (undefined/null/etc.) or
-        // the promise rejected. Default to 404 (Bun semantics: returning
-        // nothing from fetch → 404 Not Found).
-        (*res_mut).write_status(b"404 Not Found");
+    });
+
+    if completed.is_none() {
+        // The completion closure never ran (no realm — runtime teardown in
+        // progress): the teardown it would have done is ours. Fail-closed
+        // 500 — the parked faces cannot be resolved, and a silent default
+        // would impersonate the handler.
+        eprintln!("[bun:serve] no JS realm on this thread — responding 500");
+        (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
-        (*res_mut).end(b"Not Found", true);
+        (*res_mut).end(b"no JS realm", true);
         (*res_mut).clear_aborted();
+        serve_drop_body_faces(st);
         drop(Box::from_raw(st));
-        return;
     }
-
-    // Liveness re-check passed above (the flag read precedes this write)
-    // — the socket is still alive; write the handler's response.
-    serve_write_response_object(cx, &mut *res_mut, resp_obj);
-    (*res_mut).clear_aborted();
-    drop(Box::from_raw(st));
 }
 
 /// Build a JS Request object for a captured serve request.
@@ -4753,18 +5326,21 @@ unsafe fn serve_dispatch_and_respond(res_mut: &mut Response<false>, st: *mut Ser
 /// which would uppercase it AND reject arbitrary wire tokens with a
 /// TypeError — a serve handler must receive whatever method the client sent.
 ///
-/// Body: for requests that carried one, the received wire bytes are handed
-/// to the builder as an ArrayBuffer init — the Request class classifies that
-/// into its `_bodyBytes` slot, so the WHATWG `body` getter surfaces a
-/// genuine ReadableStream (the web_streams.js face, fed by the class's own
-/// start(controller) enqueue) and `text()` / `json()` / `arrayBuffer()` /
-/// `blob()` consume the received bytes through the class's ordinary body
-/// paths. `req.body` is null exactly when the client sent no body.
+/// Body: for requests that carried one, the per-request controller-driven
+/// ReadableStream (the `serve_body_stream_factory` bundle's `stream` object)
+/// is handed to the builder as a STREAM init — the Request class parks it on
+/// `_bodyStreamSource`, so the WHATWG `body` getter returns that exact live
+/// stream (chunks enqueue as the wire delivers them) and `text()` / `json()`
+/// / `arrayBuffer()` / `blob()` drain it through the class's ordinary
+/// stream-consumption paths. `req.body` is null exactly when the client sent
+/// no body.
 ///
 /// # Safety
 /// - `cx_ref` must be a live `&mut mozjs::JSContext` on the current thread.
 /// - `headers` must be the captured header set (phase-1 copies — the uWS
-///   Request is long gone by phase 2).
+///   Request is long gone by the time this runs).
+/// - `body`, when present, must be the live stream object from the
+///   request's own GcStore-rooted bundle.
 ///
 /// Returns a non-null `*mut JSObject` on success, null on failure (the
 /// caller falls back to the reflective default response).
@@ -4775,7 +5351,7 @@ unsafe fn serve_build_request_object(
     url: &[u8],
     headers: &[(Vec<u8>, Vec<u8>)],
     authority: &str,
-    body: Option<Vec<u8>>,
+    body: Option<*mut JSObject>,
 ) -> *mut JSObject {
     let raw_cx = cx_ref.raw_cx();
 
@@ -4816,32 +5392,20 @@ unsafe fn serve_build_request_object(
         }
     }
 
-    // Body — the received bytes go in as an ArrayBuffer (binary-exact: no
-    // UTF-8 lossy decode, `arrayBuffer()` returns the identical bytes).
-    let body_ab_val = match body {
+    // Body — the live stream goes in as a STREAM init (binary-exact: chunks
+    // enqueue as the wire delivers them; no UTF-8 lossy decode, no
+    // buffering). Bodyless requests take no body init.
+    let body_stream_val = match body {
         None => UndefinedValue(),
-        Some(bytes) => {
-            let ab_obj = mozjs_sys::jsapi::JS::NewArrayBuffer(raw_cx, bytes.len());
-            if ab_obj.is_null() {
+        Some(stream_obj) => {
+            if stream_obj.is_null() {
                 return ::std::ptr::null_mut();
             }
-            rooted!(&in(cx_ref) let ab_root = ab_obj);
-            if !bytes.is_empty() {
-                let mut is_shared = false;
-                let data_ptr = mozjs_sys::jsapi::JS::GetArrayBufferMaybeSharedData(
-                    ab_root.get(),
-                    &mut is_shared,
-                    ::std::ptr::null(),
-                );
-                if data_ptr.is_null() {
-                    return ::std::ptr::null_mut();
-                }
-                ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
-            }
-            ObjectValue(ab_root.get())
+            rooted!(&in(cx_ref) let stream_root = stream_obj);
+            ObjectValue(stream_root.get())
         }
     };
-    rooted!(&in(cx_ref) let body_val = body_ab_val);
+    rooted!(&in(cx_ref) let body_val = body_stream_val);
 
     // Construct the real Request instance through the global Request class
     // (installed by web_fetch_classes::install_fetch_classes) so
