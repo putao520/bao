@@ -285,12 +285,11 @@ fn test_url_search_params_ported() {
         eval_str(&mut ctx, "(function(){ var s = new URLSearchParams('a=1&b=2&a=3'); s.delete('a'); return s.toString(); })()"),
         "b=2"
     );
-    // set() collapses every existing pair of the name into one value.
-    // SKIPPED(bao-divergence): WHATWG moves the surviving pair to the end
-    // ("b=2&a=9"); bao replaces the first pair in place ("a=9&b=2").
+    // set() collapses every existing pair of the name into one value and
+    // moves it to the end (WHATWG move-to-end — fixed in the B-class wave).
     assert_eq!(
         eval_str(&mut ctx, "(function(){ var s = new URLSearchParams('a=1&b=2&a=3'); s.set('a', '9'); return s.toString() + '|' + s.getAll('a').length; })()"),
-        "a=9&b=2|1"
+        "b=2&a=9|1"
     );
     // append keeps duplicates
     assert_eq!(
@@ -437,11 +436,11 @@ fn test_text_encoding_ported() {
     // utf-16le label accepted.
     // SKIPPED(bao-divergence): upstream consumes little-endian byte PAIRS
     // ([0x42,0x00] → "B"; lone surrogate [0x00,0xd8] → exactly U+FFFD);
-    // bao decodes byte-per-unit ("B\0" for the ASCII pair, "\\u0000\\uFFFD"
-    // for the surrogate pair) — no paired decoding.
+    // FIXED (TextDecoder B-class wave): utf-16le decodes PAIRED bytes
+    // ("B" for the [0x42,0x00] little-endian pair — byte-per-unit gone).
     assert_eq!(
         eval_str(&mut ctx, "(function(){ try { return JSON.stringify(new TextDecoder('utf-16le').decode(new Uint8Array([0x42,0x00]))); } catch(e) { return 'throw'; } })()"),
-        "\"B\\u0000\""
+        "\"B\""
     );
     // SKIPPED(bao-divergence): upstream decode(..., {stream:true}) holds a
     // partial multi-byte sequence across calls ( '' then complete char );
@@ -487,11 +486,11 @@ fn test_crypto_hasher_ported() {
         eval_str(&mut ctx, "new Bun.CryptoHasher('sha256').update('abc').digest('base64')"),
         "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
     );
-    // SKIPPED(bao-divergence): upstream digest() with no argument returns a
-    // Buffer (Uint8Array, 32 bytes for sha256); bao returns the hex string.
+    // FIXED (B-class wave): digest() with no argument returns a Buffer
+    // (Uint8Array, 32 raw bytes for sha256 — upstream CryptoHasher contract).
     assert_eq!(
-        eval_str(&mut ctx, "(function(){ var d = new Bun.CryptoHasher('sha256').update('abc').digest(); return typeof d + '|' + String(d).length; })()"),
-        "string|64"
+        eval_str(&mut ctx, "(function(){ var d = new Bun.CryptoHasher('sha256').update('abc').digest(); return typeof d + '|' + d.length; })()"),
+        "object|32"
     );
     // update() chaining equals one-shot
     assert_eq!(
@@ -684,20 +683,23 @@ fn test_bun_serve_branches_ported_body() {
         globalThis.__srvW = Bun.serve({
             port: 19420,
             fetch: function(req) {
-                if (req.url.indexOf('/created') === 0) {
+                // FIXED (serve Request face): req.url is the ABSOLUTE URL
+                // (upstream contract) — route on its pathname.
+                var p = new URL(req.url).pathname;
+                if (p === '/created') {
                     return new Response('made', { status: 201, statusText: 'Created' });
                 }
-                if (req.url.indexOf('/nocontent') === 0) {
+                if (p === '/nocontent') {
                     return new Response(null, { status: 204 });
                 }
-                if (req.url.indexOf('/method') === 0) {
+                if (p === '/method') {
                     return new Response('method:' + req.method);
                 }
-                if (req.url.indexOf('/reqtype') === 0) {
+                if (p === '/reqtype') {
                     return new Response('req:' + typeof req.url + ':' + typeof req.method + ':' + typeof req.headers);
                 }
-                if (req.url.indexOf('/boom') === 0) { throw new Error('handler-boom'); }
-                if (req.url.indexOf('/undef') === 0) { return undefined; }
+                if (p === '/boom') { throw new Error('handler-boom'); }
+                if (p === '/undef') { return undefined; }
                 return new Response('default-body');
             },
         });

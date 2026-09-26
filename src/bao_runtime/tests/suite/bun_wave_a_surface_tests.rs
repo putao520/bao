@@ -373,10 +373,10 @@ fn test_bun_wave_a_surface_all_body() {
     assert_eq!(
         eval_str(
             &mut ctx,
-            r#"(function(){ var h = new Bun.CryptoHasher('sha1'); h.update('abc'); return h.digest(); })()"#
+            r#"(function(){ var h = new Bun.CryptoHasher('sha1'); h.update('abc'); return h.digest('hex'); })()"#
         ),
         "a9993e364706816aba3e25717850c26c9cd0d89d",
-        "new CryptoHasher('sha1') default hex digest must match SHA-1('abc')"
+        "new CryptoHasher('sha1') hex digest must match SHA-1('abc') (no-arg now returns a Buffer — covered in web_api_port)"
     );
     assert_eq!(
         eval_str(

@@ -262,10 +262,15 @@ fn test_bun_api_all() {
     let tmp3 = ::std::env::temp_dir().join("bao_test_read.txt");
     ::std::fs::write(&tmp3, b"test content").unwrap();
     let path3 = escape_path(&tmp3.to_string_lossy());
-    assert_eq!(
-        eval_string(&mut ctx, &format!(r#"Bun.readFile("{}")"#, path3)),
-        "test content",
-        "Bun.readFile"
+    // Bun.readFile returns a Promise resolving to the content (fixed from
+    // the synchronous string return). This harness has no drain hook, so pin
+    // the thenable; settled-value coverage lives in web_api_port + binary repro.
+    assert!(
+        eval_bool(
+            &mut ctx,
+            &format!(r#"typeof Bun.readFile("{}").then === "function""#, path3)
+        ),
+        "Bun.readFile must return a thenable"
     );
     let _ = ::std::fs::remove_file(&tmp3);
 
