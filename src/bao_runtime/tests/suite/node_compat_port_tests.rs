@@ -541,13 +541,30 @@ fn test_port_crypto_hmac_random() {
             var b = crypto.randomBytes(32).toString('hex');
             return a !== b;
         });
-        // SKIPPED(bao-divergence): crypto.randomBytes(size, cb) callback form
-        // (crypto-random.test.ts: err === null, buf instanceof Buffer) — the
-        // callback is never delivered even when the event loop is pumped, so
-        // only the synchronous form can be ported.
+        // FIXED (crypto A-class wave): randomBytes(size, cb) delivers the
+        // callback via the spawn_crypto_async pump path — asserted Rust-side
+        // after the drain pump below (delivery is event-loop-driven).
     "#,
     );
     assert_all_pass("crypto_hmac_random", &out);
+    // FIXED assertion (crypto A-class wave): randomBytes(size, cb) delivers
+    // cb(null, Buffer) on the pump — register, install the drain hook (the
+    // crypto area's ctx is bare make_ctx), pump via budgeted evals, then
+    // read the settled flag.
+    ctx.set_post_eval_hook(bounded_drain_hook);
+    eval_str(
+        &mut ctx,
+        r#"globalThis.__rbcb = 'unset'; require('crypto').randomBytes(16, function(err, buf) { globalThis.__rbcb = err === null && Buffer.isBuffer(buf) && buf.length === 16 ? 'ok' : 'bad'; }); 'registered'"#,
+    );
+    let mut cb_state = String::new();
+    for _ in 0..50 {
+        HOOK_BUDGET.with(|b| b.set(50));
+        cb_state = eval_str(&mut ctx, "globalThis.__rbcb");
+        if cb_state == "ok" || cb_state == "bad" {
+            break;
+        }
+    }
+    assert_eq!(cb_state, "ok", "randomBytes(size, cb) must deliver cb(null, Buffer)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -838,10 +855,16 @@ fn test_port_url_branches() {
             var u = new URL_('http://user:pass@example.com:80/');
             return u.username === 'user' && u.password === 'pass';
         });
-        // SKIPPED(bao-divergence): default ports must be omitted from .port and
-        // .host (Node: new URL('http://a.com:80/x').port === '' and
-        // .host === 'a.com'; the credentials form must drop ':80') — bao keeps
-        // ':80' / ':443' in port, host, href and origin.
+        // FIXED (URL conformance wave): default ports are elided from .port
+        // and .host (parser-side elision in bun_url).
+        check('default-ports-elided', function() {
+            var u = new URL_('http://a.com:80/x');
+            var u2 = new URL_('https://a.com:443/x');
+            var u3 = new URL_('http://user:pass@example.com:80/');
+            return u.port === '' && u.host === 'a.com'
+                && u2.port === '' && u2.host === 'a.com'
+                && u3.port === '' && u3.host === 'example.com';
+        });
         check('hash-and-search', function() {
             var u = new URL_('https://a.com/p?a=1&b=2#frag');
             return u.search === '?a=1&b=2' && u.hash === '#frag' && u.searchParams.get('b') === '2';
@@ -858,10 +881,11 @@ fn test_port_url_branches() {
             var u = new URL_('https://example.com:8443/x?y=1');
             return u.href === 'https://example.com:8443/x?y=1' && u.protocol === 'https:';
         });
-        // SKIPPED(bao-divergence): relative-reference resolution must normalize
-        // the resulting path (Node: new URL('../c', 'http://a.com/b/d/').href
-        // === 'http://a.com/b/c') — bao leaves the '..' segment unresolved
-        // ('http://a.com/b/d/../c').
+        // FIXED (URL conformance wave): relative resolution normalizes dot
+        // segments (face routes through bun_url::whatwg::join).
+        check('relative-dot-segments-normalized', function() {
+            return new URL_('../c', 'http://a.com/b/d/').href === 'http://a.com/b/c';
+        });
         check('searchParams-get-has-getAll', function() {
             var sp = new URLSearchParams('a=1&a=2&b=3');
             return sp.get('a') === '1' && sp.getAll('a').length === 2
@@ -894,9 +918,12 @@ fn test_port_url_branches() {
             var url = require('node:url');
             return url.format({ protocol: 'http:', hostname: 'a.com', pathname: '/p' }) === 'http://a.com/p';
         });
-        // SKIPPED(bao-divergence): url.format({protocol:'http', ...}) must emit
-        // the colon separator itself ('http://a.com/p?x=1'); bao drops it
-        // ('http//a.com/p?x=1'), so only the 'protocol:' spelling is ported.
+        // FIXED (URL conformance wave): url.format emits the protocol colon
+        // itself for colon-less protocol spellings.
+        check('url-format-colonless-protocol', function() {
+            var url = require('node:url');
+            return url.format({ protocol: 'http', host: 'a.com', pathname: '/p' }) === 'http://a.com/p';
+        });
     "#,
     );
     assert_all_pass("url_branches", &out);

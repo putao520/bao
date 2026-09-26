@@ -173,20 +173,25 @@ fn test_url_parse_branches_ported() {
     );
     // SKIPPED(bao-divergence): upstream parses non-special / non-hierarchical
     // URL forms (about:blank, mailto:, javascript:alert(1)) with protocol +
-    // origin "null"; bao rejects them ("Invalid URL: about:blank").
-    // SKIPPED(bao-divergence): upstream new URL('file://example.com').origin
-    // is "null"; bao serializes the origin as "file://example.com".
-    // blob: URL protocol face (upstream "blob urls").
-    // SKIPPED(bao-divergence): upstream derives the blob: origin from the
-    // inner URL ("blob:https://example.com/1234-5678" → origin
-    // "https://example.com"); bao always serializes "null".
+    // FIXED (URL conformance wave): about:/mailto:/javascript: parse with
+    // origin "null"; file://example.com origin is "null"; blob: origins
+    // derive from the inner URL (WHATWG).
+    assert_eq!(
+        eval_str(&mut ctx, "new URL('about:blank').protocol + '|' + new URL('about:blank').origin"),
+        "about:|null"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "new URL('file://example.com').origin"),
+        "null"
+    );
     assert_eq!(
         eval_str(&mut ctx, "new URL('blob:https://example.com/1234-5678').protocol + '|' + new URL('blob:https://example.com/1234-5678').origin"),
-        "blob:|null"
+        "blob:|https://example.com"
     );
-    // SKIPPED(bao-divergence): upstream derives blob: origins from the inner
-    // URL when it is special ("blob:ws://example.com" → "ws://example.com",
-    // "blob:file:///..." → "file://"); bao yields "null" for both.
+    assert_eq!(
+        eval_str(&mut ctx, "new URL('blob:ws://example.com').origin + '|' + new URL('blob:file:///x').origin"),
+        "ws://example.com|file://"
+    );
 
     // full-field parse (upstream "works" — username:password@api.foo.bar.com:9999)
     assert_eq!(

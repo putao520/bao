@@ -31,6 +31,63 @@ struct UrlState {
     origin: String,
 }
 
+/// The WHATWG special schemes — those with authority semantics (and, `file`
+/// aside, a default port the parser elides).
+fn is_special_scheme(scheme: &str) -> bool {
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "ws" | "wss" | "ftp" | "file"
+    )
+}
+
+/// blob: URL origin (WHATWG): derived from the inner URL when that URL is a
+/// special scheme ("blob:https://a.com/x" → "https://a.com"), opaque
+/// ("null") for any other inner scheme ("blob:kjka://…") or when the inner
+/// special URL has no host.
+fn blob_origin(inner: &str) -> String {
+    let parsed = BunUrl::parse(inner.as_bytes());
+    let scheme = core::str::from_utf8(parsed.protocol)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !is_special_scheme(&scheme) {
+        return "null".to_string();
+    }
+    // Bun serializes the hostless file shape as "file://" (the
+    // "blob:file:///…" port vector) — the parser's borrowed origin is
+    // trimmed of its "//" tail there.
+    if scheme == "file" {
+        return format!(
+            "file://{}",
+            core::str::from_utf8(parsed.host).unwrap_or("")
+        );
+    }
+    let hostname = core::str::from_utf8(parsed.hostname).unwrap_or("");
+    if hostname.is_empty() {
+        return "null".to_string();
+    }
+    match bun_url::origin_from_slice(inner.as_bytes()) {
+        Some(origin) => core::str::from_utf8(origin).unwrap_or("null").to_string(),
+        None => "null".to_string(),
+    }
+}
+
+/// Split an RFC 3986 scheme off `input` (`scheme:` prefix, ALPHA *( ALPHA /
+/// DIGIT / "+" / "-" / "." ) before the first ':'). `None` when the input is
+/// not scheme-shaped.
+fn split_scheme(input: &str) -> Option<(&str, &str)> {
+    let colon = input.find(':')?;
+    let scheme = &input[..colon];
+    let is_scheme = !scheme.is_empty()
+        && scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    is_scheme.then_some((scheme, &input[colon + 1..]))
+}
+
 // @trace REQ-ENG-007 [entity:URL] [code:bun_url::URL::parse]
 fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
     let input = input.trim();
@@ -48,6 +105,13 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
 
     // Handle special URLs (data:, blob:) that bun_url may not fully support
     if input.starts_with("data:") || input.starts_with("blob:") {
+        // WHATWG origin: data: is always opaque; blob: derives its origin
+        // from the inner URL ("blob:https://a.com/x" → "https://a.com").
+        let origin = if let Some(inner) = input.strip_prefix("blob:") {
+            blob_origin(inner)
+        } else {
+            "null".to_string()
+        };
         return Some(UrlState {
             href: input.to_string(),
             protocol: input.split(':').next().unwrap_or("").to_string() + ":",
@@ -59,8 +123,45 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
             pathname: input.split_once(':').map(|x| x.1).unwrap_or("").to_string(),
             search: String::new(),
             hash: String::new(),
-            origin: "null".to_string(),
+            origin,
         });
+    }
+
+    // Non-special opaque-path schemes (about:, mailto:, javascript:, tel:, …)
+    // parse as cannot-be-a-base URLs: protocol "about:", the opaque path in
+    // `pathname`, origin "null" (Node ground truth — the ported web/url
+    // vectors parse about:blank / mailto: / javascript:alert(1)). The `://`
+    // forms below keep authority semantics, and the parser's
+    // `localhost:3000` host:port reading is untouched (that scheme shape has
+    // a port-bearing colon, which reads as host:port there).
+    if !input.contains("://") {
+        if let Some((scheme, rest)) = split_scheme(input) {
+            if !is_special_scheme(scheme) {
+                // The opaque path ends at the first '?' / '#' (query /
+                // fragment ride along as their own components).
+                let (before_frag, hash) = match rest.find('#') {
+                    Some(pos) => (&rest[..pos], &rest[pos..]),
+                    None => (rest, ""),
+                };
+                let (path, search) = match before_frag.find('?') {
+                    Some(pos) => (&before_frag[..pos], &before_frag[pos..]),
+                    None => (before_frag, ""),
+                };
+                return Some(UrlState {
+                    href: input.to_string(),
+                    protocol: format!("{}:", scheme),
+                    username: String::new(),
+                    password: String::new(),
+                    host: String::new(),
+                    hostname: String::new(),
+                    port: String::new(),
+                    pathname: path.to_string(),
+                    search: search.to_string(),
+                    hash: hash.to_string(),
+                    origin: "null".to_string(),
+                });
+            }
+        }
     }
 
     // Determine the actual URL string to parse (resolve relative if needed)
@@ -78,15 +179,34 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
             return None;
         }
 
-        // Resolve relative URL against base using bun_url's join logic
+        // Path-bearing references resolve through the parser's WHATWG join so
+        // the joined path normalizes `.`/`..` dot segments (RFC 3986 §5.2.4):
+        // `../c` against `/b/d/` → `/b/c`, not the literal `/b/d/../c`.
+        let join_through_parser = |relative: &str| -> Option<String> {
+            let joined = bun_url::join(
+                &bun_core::String::from(base_str),
+                &bun_core::String::from(relative),
+            );
+            if joined.is_dead() {
+                return None;
+            }
+            let bytes = joined.utf8();
+            if bytes.is_empty() {
+                return None;
+            }
+            ::std::str::from_utf8(bytes).ok().map(str::to_string)
+        };
+
         if input.starts_with("/") {
             // Absolute path
-            format!(
-                "{}://{}{}",
-                core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
-                core::str::from_utf8(base_url.host).unwrap_or(""),
-                input
-            )
+            join_through_parser(input).unwrap_or_else(|| {
+                format!(
+                    "{}://{}{}",
+                    core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
+                    core::str::from_utf8(base_url.host).unwrap_or(""),
+                    input
+                )
+            })
         } else if input.starts_with('#') {
             // DEV-2: fragment-only reference — WHATWG inherits the base's
             // path AND query, replacing only the fragment (base minus its
@@ -113,24 +233,28 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
                 input
             )
         } else {
-            // Relative path
-            let base_path_raw = core::str::from_utf8(base_url.pathname).unwrap_or("/");
-            let base_path = base_path_raw
-                .split(['?', '#'])
-                .next()
-                .unwrap_or(base_path_raw);
-            let dir = if let Some(pos) = base_path.rfind('/') {
-                &base_path[..pos]
-            } else {
-                ""
-            };
-            format!(
-                "{}://{}{}/{}",
-                core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
-                core::str::from_utf8(base_url.host).unwrap_or(""),
-                dir,
-                input
-            )
+            // Relative path — through the parser join as well (its directory
+            // form matches the previous manual concat for plain refs, plus
+            // the dot-segment rule).
+            join_through_parser(input).unwrap_or_else(|| {
+                let base_path_raw = core::str::from_utf8(base_url.pathname).unwrap_or("/");
+                let base_path = base_path_raw
+                    .split(['?', '#'])
+                    .next()
+                    .unwrap_or(base_path_raw);
+                let dir = if let Some(pos) = base_path.rfind('/') {
+                    &base_path[..pos]
+                } else {
+                    ""
+                };
+                format!(
+                    "{}://{}{}/{}",
+                    core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
+                    core::str::from_utf8(base_url.host).unwrap_or(""),
+                    dir,
+                    input
+                )
+            })
         }
     } else {
         return None;
@@ -163,61 +287,90 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
         format!("{}:{}", hostname, port)
     };
 
-    let origin = if hostname.is_empty() {
+    let origin = if protocol == "file:" {
+        // WHATWG: file URLs have an opaque origin (Node ground truth: "null").
+        "null".to_string()
+    } else if hostname.is_empty() {
         "null".to_string()
     } else {
         format!("{}//{}", protocol, host)
     };
 
+    let username = core::str::from_utf8(parsed.username)
+        .unwrap_or("")
+        .to_string();
+    let password = core::str::from_utf8(parsed.password)
+        .unwrap_or("")
+        .to_string();
+    let pathname = {
+        // bun_url may include query/hash in pathname; WHATWG pathname is bare path.
+        let raw = core::str::from_utf8(parsed.pathname).unwrap_or("/");
+        let bare = raw.split(['?', '#']).next().unwrap_or(raw);
+        bare.to_string()
+    };
+    let search = {
+        // bun_url returns search without leading '?'; WHATWG spec includes '?'.
+        let raw = core::str::from_utf8(parsed.search).unwrap_or("");
+        if raw.is_empty() {
+            String::new()
+        } else if raw.starts_with('?') {
+            raw.to_string()
+        } else {
+            format!("?{}", raw)
+        }
+    };
+    let hash = {
+        // bun_url returns hash without leading '#'; WHATWG spec includes '#'.
+        let raw = core::str::from_utf8(parsed.hash).unwrap_or("");
+        // bun_url bug: for URLs without a path (e.g. "https://example.com#section"),
+        // parsed.hash can come back empty even when href contains '#'.
+        // Fall back to extracting from href.
+        if raw.is_empty() {
+            let href = core::str::from_utf8(parsed.href).unwrap_or("");
+            if let Some(pos) = href.find('#') {
+                href[pos..].to_string()
+            } else {
+                String::new()
+            }
+        } else if raw.starts_with('#') {
+            raw.to_string()
+        } else {
+            format!("#{}", raw)
+        }
+    };
+
+    // WHATWG serialization: href is the concatenation of the record's parts —
+    // which carries the parser's default-port elision into the raw-input view
+    // ("http://a.com:80/" → "http://a.com/"; the borrowed parser view cannot
+    // rewrite the bytes it was handed) and inserts the root "/" of a special
+    // scheme with an empty path ("http://a.com#f" → "http://a.com/#f").
+    let href = {
+        let auth = if username.is_empty() {
+            String::new()
+        } else if password.is_empty() {
+            format!("{}@", username)
+        } else {
+            format!("{}:{}@", username, password)
+        };
+        let path = if pathname.is_empty() && is_special_scheme(protocol.trim_end_matches(':')) {
+            "/"
+        } else {
+            pathname.as_str()
+        };
+        format!("{}//{}{}{}{}{}", protocol, auth, host, path, search, hash)
+    };
+
     Some(UrlState {
-        href: core::str::from_utf8(parsed.href).unwrap_or("").to_string(),
+        href,
         protocol,
-        username: core::str::from_utf8(parsed.username)
-            .unwrap_or("")
-            .to_string(),
-        password: core::str::from_utf8(parsed.password)
-            .unwrap_or("")
-            .to_string(),
+        username,
+        password,
         host,
         hostname,
         port,
-        pathname: {
-            // bun_url may include query/hash in pathname; WHATWG pathname is bare path.
-            let raw = core::str::from_utf8(parsed.pathname).unwrap_or("/");
-            let bare = raw.split(['?', '#']).next().unwrap_or(raw);
-            bare.to_string()
-        },
-        search: {
-            // bun_url returns search without leading '?'; WHATWG spec includes '?'.
-            let raw = core::str::from_utf8(parsed.search).unwrap_or("");
-            if raw.is_empty() {
-                String::new()
-            } else if raw.starts_with('?') {
-                raw.to_string()
-            } else {
-                format!("?{}", raw)
-            }
-        },
-        hash: {
-            // bun_url returns hash without leading '#'; WHATWG spec includes '#'.
-            let raw = core::str::from_utf8(parsed.hash).unwrap_or("");
-            // bun_url bug: for URLs without a path (e.g. "https://example.com#section"),
-            // parsed.hash can come back empty even when href contains '#'.
-            // Fall back to extracting from href.
-            let resolved = if raw.is_empty() {
-                let href = core::str::from_utf8(parsed.href).unwrap_or("");
-                if let Some(pos) = href.find('#') {
-                    href[pos..].to_string()
-                } else {
-                    String::new()
-                }
-            } else if raw.starts_with('#') {
-                raw.to_string()
-            } else {
-                format!("#{}", raw)
-            };
-            resolved
-        },
+        pathname,
+        search,
+        hash,
         origin,
     })
 }
@@ -1503,11 +1656,11 @@ unsafe extern "C" fn url_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSV
 
     let state = match parse_url(&input, base.as_deref()) {
         Some(s) => s,
+        // Node: `new URL('http://<invalid>')` throws a TypeError whose
+        // `code` is ERR_INVALID_URL.
         None => {
             let msg = format!("Invalid URL: {}", input);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            return false;
+            return unsafe { throw_type_error_with_code(cx, &msg, "ERR_INVALID_URL") };
         }
     };
 
@@ -1688,11 +1841,10 @@ unsafe fn sp_this_pairs(
     }
 }
 
-/// Throw a real TypeError (global constructor) and return the native
-/// `false` that propagates it. Used for Node ERR_MISSING_ARGS semantics
-/// (URLSearchParams methods validate required arguments).
+/// Throw a real TypeError (global constructor) carrying a Node-style `code`
+/// own property, and return the native `false` that propagates it.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn sp_throw_type_error(cx: *mut JSContext, msg: &str) -> bool {
+unsafe fn throw_type_error_with_code(cx: *mut JSContext, msg: &str, code: &str) -> bool {
     unsafe {
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         let cx_ref = &mut wrapped_cx;
@@ -1733,9 +1885,11 @@ unsafe fn sp_throw_type_error(cx: *mut JSContext, msg: &str) -> bool {
                     );
                     if called && err_val.is_object() {
                         rooted!(&in(cx_ref) let err_root = err_val);
-                        // Node's ERR_MISSING_ARGS errors carry a `code` own
-                        // property — pin it for message-level parity.
-                        let code_js = JS_NewStringCopyZ(cx, c"ERR_MISSING_ARGS".as_ptr());
+                        // Node's coded errors carry a `code` own property —
+                        // pin it for message-level parity (ERR_MISSING_ARGS,
+                        // ERR_INVALID_URL, …).
+                        let c_code = ZBox::from_bytes(code.as_bytes());
+                        let code_js = JS_NewStringCopyZ(cx, c_code.as_ptr());
                         if !code_js.is_null() {
                             rooted!(&in(cx_ref) let code_root = StringValue(&*code_js));
                             rooted!(&in(cx_ref) let err_obj = err_val.to_object());
@@ -1762,6 +1916,14 @@ unsafe fn sp_throw_type_error(cx: *mut JSContext, msg: &str) -> bool {
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         false
     }
+}
+
+/// Throw a real TypeError (global constructor) and return the native
+/// `false` that propagates it. Used for Node ERR_MISSING_ARGS semantics
+/// (URLSearchParams methods validate required arguments).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sp_throw_type_error(cx: *mut JSContext, msg: &str) -> bool {
+    unsafe { throw_type_error_with_code(cx, msg, "ERR_MISSING_ARGS") }
 }
 
 /// WHATWG USVString argument conversion for URLSearchParams methods
@@ -2977,6 +3139,16 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         } else {
             "http:".to_string()
         };
+        // The colon separator belongs to the protocol field: the formatted
+        // output glues `protocol` + `//`, so a colon-less spelling
+        // ({protocol:'http'}) must emit it itself (Node ground truth:
+        // url.format({protocol:'http',host:'a.com',pathname:'/p'}) ===
+        // 'http://a.com/p').
+        let proto = if proto.is_empty() || proto.ends_with(':') {
+            proto
+        } else {
+            format!("{}:", proto)
+        };
         let host = if host_val.is_string() {
             crate::js_to_rust_string(cx, host_val)
         } else if hostname_val.is_string() {
@@ -3266,7 +3438,109 @@ mod tests {
         let s = parse_url("blob:https://example.com/uuid-1234", None).unwrap();
         assert_eq!(s.protocol, "blob:");
         assert_eq!(s.pathname, "https://example.com/uuid-1234");
+        // WHATWG: the blob: origin derives from the inner URL.
+        assert_eq!(s.origin, "https://example.com");
+    }
+
+    // ── parse_url: WHATWG conformance wave (REQ-ENG-007) ─────────────
+
+    #[test]
+    fn parse_url_opaque_scheme_about_blank() {
+        // Non-special opaque-path schemes parse (previously: throw).
+        let s = parse_url("about:blank", None).unwrap();
+        assert_eq!(s.protocol, "about:");
+        assert_eq!(s.pathname, "blank");
+        assert_eq!(s.href, "about:blank");
         assert_eq!(s.origin, "null");
+        assert_eq!(s.host, "");
+        assert_eq!(s.port, "");
+    }
+
+    #[test]
+    fn parse_url_opaque_scheme_mailto() {
+        let s = parse_url("mailto:a@b?x=1#f", None).unwrap();
+        assert_eq!(s.protocol, "mailto:");
+        assert_eq!(s.pathname, "a@b");
+        assert_eq!(s.search, "?x=1");
+        assert_eq!(s.hash, "#f");
+        assert_eq!(s.href, "mailto:a@b?x=1#f");
+        assert_eq!(s.origin, "null");
+    }
+
+    #[test]
+    fn parse_url_opaque_scheme_with_base_wins() {
+        // A scheme-bearing reference is not relative — base ignored.
+        let s = parse_url("javascript:alert(1)", Some("https://example.com/")).unwrap();
+        assert_eq!(s.href, "javascript:alert(1)");
+        assert_eq!(s.origin, "null");
+    }
+
+    #[test]
+    fn parse_url_file_origin_is_null() {
+        for input in ["file:///x", "file://example.com/x"] {
+            let s = parse_url(input, None).unwrap();
+            assert_eq!(s.origin, "null", "origin of {input:?}");
+        }
+    }
+
+    #[test]
+    fn parse_url_blob_origin_variants() {
+        assert_eq!(
+            parse_url("blob:http://a.com/x", None).unwrap().origin,
+            "http://a.com"
+        );
+        // Non-special inner scheme → opaque origin.
+        assert_eq!(
+            parse_url("blob:kjka://example.com", None).unwrap().origin,
+            "null"
+        );
+        // data: stays opaque.
+        assert_eq!(parse_url("data:text/plain,x", None).unwrap().origin, "null");
+    }
+
+    #[test]
+    fn parse_url_default_port_elided_from_href() {
+        let s = parse_url("http://a.com:80/x", None).unwrap();
+        assert_eq!(s.port, "");
+        assert_eq!(s.host, "a.com");
+        assert_eq!(s.href, "http://a.com/x");
+
+        let s = parse_url("http://user:pass@example.com:80/", None).unwrap();
+        assert_eq!((s.username.as_str(), s.password.as_str()), ("user", "pass"));
+        assert_eq!(s.href, "http://user:pass@example.com/");
+
+        // Non-default ports keep their explicit form.
+        let s = parse_url("https://example.com:8443/x?y=1", None).unwrap();
+        assert_eq!(s.href, "https://example.com:8443/x?y=1");
+    }
+
+    #[test]
+    fn parse_url_root_slash_inserted_before_search_and_hash() {
+        let s = parse_url("http://a.com#f", None).unwrap();
+        assert_eq!(s.href, "http://a.com/#f");
+        assert_eq!(s.pathname, "/");
+
+        let s = parse_url("https://example.com#section", None).unwrap();
+        assert_eq!(s.href, "https://example.com/#section");
+        assert_eq!(s.hash, "#section");
+    }
+
+    #[test]
+    fn parse_url_relative_dot_segments_normalized() {
+        let s = parse_url("../c", Some("http://a.com/b/d/")).unwrap();
+        assert_eq!(s.href, "http://a.com/b/c");
+
+        let s = parse_url("./c", Some("http://a.com/b/d/")).unwrap();
+        assert_eq!(s.href, "http://a.com/b/d/c");
+
+        let s = parse_url("/b/../c", Some("http://a.com/d/")).unwrap();
+        assert_eq!(s.href, "http://a.com/c");
+
+        // Fragment/query-only references keep the base path+query.
+        let s = parse_url("#f", Some("http://a.com/p?a=1")).unwrap();
+        assert_eq!(s.href, "http://a.com/p?a=1#f");
+        let s = parse_url("?q=2", Some("http://a.com/p?a=1")).unwrap();
+        assert_eq!(s.href, "http://a.com/p?q=2");
     }
 
     // ── parse_url: absolute URLs ──
@@ -3778,8 +4052,12 @@ mod tests {
 
     #[test]
     fn parse_url_https_standard_port() {
+        // WHATWG: the special-scheme default port is elided (parser-side
+        // elision; the face's href serialization drops it from href too).
         let s = parse_url("https://example.com:443/path", None).unwrap();
-        assert_eq!(s.port, "443");
+        assert_eq!(s.port, "");
+        assert_eq!(s.host, "example.com");
+        assert_eq!(s.href, "https://example.com/path");
     }
 
     #[test]
