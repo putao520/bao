@@ -2446,3 +2446,7 @@ health 实测 **0 errors**(1635 warnings=既有草稿期完整性债,非缺陷�
 **验证**(.200 suite_align8.exe): **12/12 全部 RC=0**(包括此前 100% 崩溃的 6 个隔离测试)。Linux 回归 11/11 绿。
 
 提交: 5df9f4a0(对齐修复) + 后续清理(移除 crash_handler dev-dep / VEH init)。
+
+### spec-gov C-7 第 12 次计数触发闭环(2026-09-26,主会话)
+
+health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递增非活体错误)。本轮深挖 `id_registry_consistency` 发现**真缺陷类**:25 个存活 TEST-CDS 元素(009-020/REG-001~013)编号滞留 `.id-registry.json` deleted 墓碑集(历史 CDS 清理残留,存活元素按注册表非法)。根治:官方 `fixTombstoneReuse` 门(注册表全项目单文件=一次全量横扫)——tombstoneReuse 25→0、ghosts/duplicates/specOnly=0、25 墓碑移除复活入 allocated(2252→2277)、161 结构修复+208 link 规范化(warnings 1640→1524;锚点 0 断裂实测)。剩余 Gaps 段=墓碑保留设计必然形态(编号不可重用既定裁决),非缺陷。残留=0,commit 3c632ad1。防复发:门内置于 spec_govern;后续 create 撞墓碑号时 fail-closed 拒绝即本类早期信号。
