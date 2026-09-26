@@ -442,6 +442,40 @@ fn test_text_encoding_ported() {
         eval_str(&mut ctx, "(function(){ try { return JSON.stringify(new TextDecoder('utf-16le').decode(new Uint8Array([0x42,0x00]))); } catch(e) { return 'throw'; } })()"),
         "\"B\""
     );
+    // FIXED (utf-16be wave): BE label pairs big-endian — all vectors
+    // node-oracle-verified byte-identical.
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ try { return JSON.stringify(new TextDecoder('utf-16be').decode(new Uint8Array([0x00,0x42,0x00,0x44]))); } catch(e) { return 'throw'; } })()"),
+        "\"BD\""
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ try { return JSON.stringify(new TextDecoder('utf-16be').decode(new Uint8Array([0x00,0x42]))); } catch(e) { return 'throw'; } })()"),
+        "\"B\""
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "new TextDecoder('utf-16be').decode(new Uint8Array([0xD8,0x3D,0xDE,0x00]))"),
+        "\u{1F600}"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ try { return JSON.stringify(new TextDecoder('utf-16be').decode(new Uint8Array([0x00,0xD8]))); } catch(e) { return 'throw'; } })()"),
+        "\"Ø\""
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "new TextDecoder('utf-16be').decode(new Uint8Array([0xD8,0x00])).length"),
+        "1"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ try { return JSON.stringify(new TextDecoder('utf-16be').decode(new Uint8Array([0xFE,0xFF,0x00,0x42]))); } catch(e) { return 'throw'; } })()"),
+        "\"B\""
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ var d = new TextDecoder('unicodefffe'); return JSON.stringify(d.decode(new Uint8Array([0x00,0x66,0x00,0x68]))); })()"),
+        "\"fh\""
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ var d = new TextDecoder('utf-16be'); var a = d.decode(new Uint8Array([0x00]), {stream:true}); var b = d.decode(new Uint8Array([0x42]), {stream:true}); var c = d.decode(); return JSON.stringify([a,b,c]); })()"),
+        "[\"\",\"B\",\"\"]"
+    );
     // SKIPPED(bao-divergence): upstream decode(..., {stream:true}) holds a
     // partial multi-byte sequence across calls ( '' then complete char );
     // bao emits U+FFFD for the partial first chunk and drops the byte.

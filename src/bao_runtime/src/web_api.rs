@@ -1808,6 +1808,8 @@ enum TdFamily {
     /// single-byte table, 0x00-0xFF → U+0000-U+00FF.
     Latin1,
     Utf16Le,
+    /// utf-16be / unicodefffe labels: big-endian byte pairs ([hi, lo]).
+    Utf16Be,
 }
 
 fn td_label_family(label: &str) -> TdFamily {
@@ -1818,6 +1820,7 @@ fn td_label_family(label: &str) -> TdFamily {
         | "iso_8859-1" | "iso-ir-100" | "csisolatin1" | "l1" | "latin1" | "latin-1"
         | "ascii" | "us-ascii" | "ansi_x3.4-1968" | "cp819" | "ibm819" => TdFamily::Latin1,
         "utf-16le" | "utf-16" => TdFamily::Utf16Le,
+        "utf-16be" | "unicodefffe" => TdFamily::Utf16Be,
         // Unknown labels keep the runtime's legacy face: they echo the label
         // and decode through the UTF-8 path.
         _ => TdFamily::Utf8,
@@ -2017,12 +2020,13 @@ fn td_decode_utf8(buffer: &[u8], streaming: bool, fatal: bool, carry_out: &mut V
     }
 }
 
-/// UTF-16LE decode core: consumes little-endian byte PAIRS as code units,
-/// combines surrogate pairs, and maps lone surrogates to U+FFFD. An odd
-/// trailing byte is held in `carry_out` when streaming, otherwise decoded as
-/// U+FFFD at end of stream. A high surrogate that is the last complete unit
+/// UTF-16 decode core (shared by the utf-16le and utf-16be label families):
+/// consumes byte PAIRS as code units (`big_endian` selects [hi, lo] vs
+/// [lo, hi]), combines surrogate pairs, and maps lone surrogates to U+FFFD. An
+/// odd trailing byte is held in `carry_out` when streaming, otherwise decoded
+/// as U+FFFD at end of stream. A high surrogate that is the last complete unit
 /// of a streaming call is also held (its pair may arrive in the next chunk).
-fn td_decode_utf16le(buffer: &[u8], streaming: bool, carry_out: &mut Vec<u8>) -> Vec<u16> {
+fn td_decode_utf16(buffer: &[u8], streaming: bool, big_endian: bool, carry_out: &mut Vec<u8>) -> Vec<u16> {
     carry_out.clear();
     let (pair_bytes, tail_byte) = if buffer.len() % 2 == 0 {
         (buffer, None)
@@ -2031,7 +2035,13 @@ fn td_decode_utf16le(buffer: &[u8], streaming: bool, carry_out: &mut Vec<u8>) ->
     };
     let units: Vec<u16> = pair_bytes
         .chunks_exact(2)
-        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .map(|p| {
+            if big_endian {
+                u16::from_be_bytes([p[0], p[1]])
+            } else {
+                u16::from_le_bytes([p[0], p[1]])
+            }
+        })
         .collect();
     let mut out: Vec<u16> = Vec::with_capacity(units.len());
     let mut j = 0usize;
@@ -2200,6 +2210,7 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
         let bom: &[u8] = match family {
             TdFamily::Utf8 => &[0xEF, 0xBB, 0xBF],
             TdFamily::Utf16Le => &[0xFF, 0xFE],
+            TdFamily::Utf16Be => &[0xFE, 0xFF],
             TdFamily::Latin1 => &[],
         };
         if bom.is_empty() {
@@ -2241,7 +2252,8 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
                 return false;
             }
         },
-        TdFamily::Utf16Le => td_decode_utf16le(&buffer, streaming, &mut carry_out),
+        TdFamily::Utf16Le => td_decode_utf16(&buffer, streaming, false, &mut carry_out),
+        TdFamily::Utf16Be => td_decode_utf16(&buffer, streaming, true, &mut carry_out),
     };
 
     // Persist stream state: the held carry + the BOM-decision flag (a
