@@ -665,7 +665,19 @@ fn test_bun_env_ported() {
     let mut ctx = fresh_ctx();
 
     assert_eq!(eval_str(&mut ctx, "typeof Bun.env.PATH"), "string");
-    assert_eq!(eval_str(&mut ctx, "typeof Bun.env.HOME"), "string");
+    // POSIX exposes HOME; Windows exposes USERPROFILE — assert the
+    // platform's home variable is a string (both are env-view faces).
+    assert_eq!(
+        eval_str(
+            &mut ctx,
+            if cfg!(windows) {
+                "typeof Bun.env.USERPROFILE"
+            } else {
+                "typeof Bun.env.HOME"
+            }
+        ),
+        "string"
+    );
     // same underlying view as process.env: set → visible, delete → gone
     assert_eq!(
         eval_str(

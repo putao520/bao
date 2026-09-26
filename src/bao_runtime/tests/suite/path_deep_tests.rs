@@ -35,8 +35,8 @@ fn test_path_deep() {
 
         // === path.join ===
         check("join_exists", function() { return typeof path.join === 'function'; });
-        check("join_basic", function() { return path.join('/foo', 'bar', 'baz') === '/foo/bar/baz'; });
-        check("join_relative", function() { return path.join('foo', 'bar') === 'foo/bar'; });
+        check("join_basic", function() { return path.join("/foo", "bar", "baz") === (path.sep === "\\" ? "\\foo\\bar\\baz" : "/foo/bar/baz"); });
+        check("join_relative", function() { return path.join("foo", "bar") === (path.sep === "\\" ? "foo\\bar" : "foo/bar"); });
 
         // === path.resolve ===
         check("resolve_exists", function() { return typeof path.resolve === 'function'; });

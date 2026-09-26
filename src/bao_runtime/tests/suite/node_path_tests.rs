@@ -32,8 +32,8 @@ fn test_node_path_all() {
         }
 
         check("require", function() { return typeof path === 'object'; });
-        check("join", function() { return path.join("a", "b", "c") === "a/b/c"; });
-        check("join_abs", function() { return path.join("/foo", "bar", "baz") === "/foo/bar/baz"; });
+        check("join", function() { return path.join("a", "b", "c") === (path.sep === "\\" ? "a\\b\\c" : "a/b/c"); });
+        check("join_abs", function() { return path.join("/foo", "bar", "baz") === (path.sep === "\\" ? "\\foo\\bar\\baz" : "/foo/bar/baz"); });
         check("resolve", function() { var r = path.resolve("/foo/bar", "./baz"); return typeof r === "string" && r.indexOf("baz") >= 0; });
         check("basename", function() { return path.basename("/foo/bar/baz.txt") === "baz.txt"; });
         check("basename_ext", function() { return path.basename("/foo/bar/baz.txt", ".txt") === "baz"; });

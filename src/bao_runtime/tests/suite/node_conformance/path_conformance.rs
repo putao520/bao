@@ -18,13 +18,14 @@ fn test_path_conformance_suite() {
         r##"
         {scaffold}
         var path = require('path');
-        check("join_basic", function() {{ return path.join("a", "b", "c") === "a/b/c"; }});
+        check("join_basic", function() {{ return path.join("a", "b", "c") === (path.sep === "\\" ? "a\\b\\c" : "a/b/c"); }});
         check("join_absolute_segment", function() {{
-            return path.join("/foo", "bar", "baz") === "/foo/bar/baz";
+            return path.join("/foo", "bar", "baz") === (path.sep === "\\" ? "\\foo\\bar\\baz" : "/foo/bar/baz");
         }});
         check("join_normalizes_separators", function() {{
             var r = path.join("a/", "/b");
-            return r === "a/b" || r === "a//b";
+            var fwd = path.sep === "\\" ? "a\\b" : "a/b";
+            return r === fwd || r === "a/b" || r === "a//b";
         }});
         check("join_empty_returns_dot", function() {{
             return path.join("") === "." || path.join("") === "";

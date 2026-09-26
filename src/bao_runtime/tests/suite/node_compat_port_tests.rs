@@ -384,7 +384,10 @@ fn test_port_path_edge_cases() {
             return px.format(px.parse('/foo/bar/baz.txt')) === '/foo/bar/baz.txt'
                 && px.format({ root: '/ignored', dir: '/foo/bar', base: 'baz.txt' }) === '/foo/bar/baz.txt';
         });
-        check('sep-delimiter', function() { return path.sep === '/' && path.delimiter === ':'; });
+        check('sep-delimiter', function() {
+            return path.sep === (process.platform === 'win32' ? '\\' : '/')
+                && path.delimiter === (process.platform === 'win32' ? ';' : ':');
+        });
     "#,
     );
     assert_all_pass("path_edge_cases", &out);
