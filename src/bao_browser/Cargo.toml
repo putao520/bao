@@ -75,3 +75,14 @@ servo-net = { path = "../../vendor/servo/components/net", package = "bao-servo-n
 # fetch_async::start).
 bun_url.workspace = true
 bun_threading.workspace = true
+# link_higher_tier_seams (#28, win-cross lld-link): bun_bundler's CYCLEBREAK
+# faces (`JSBundlerPlugin__*` / `DevServerHandle__Bake__*` /
+# `VmLoaderCtx__Runtime__*` / `__bun_macro_context_*` / HMR) are owned by
+# `bao_bundler`, but nothing in a dep closure loads that crate (its only
+# referencers are cfg(test) seams), so rustc never puts its rlib on the test
+# link line. GNU ld's --gc-sections discards the dead referencing sections
+# (Linux links green); lld-link + /OPT:NOREF retains them → undefined-symbol
+# storm. Dev-dep + the cfg(test) seam below put the owner crate on the link
+# line; archive lazy-pull then resolves every face. No cycle: bao_bundler's
+# closure never contains bao_browser. Twin: bao_engine / bao_stealth.
+bao_bundler = { path = "../bao_bundler", version = "^0.2.0" }

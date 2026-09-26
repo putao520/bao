@@ -322,6 +322,7 @@ fn timeout_does_not_affect_fast_script() {
 /// terminal state: the engine terminates the script (uncatchable), the CLI
 /// surfaces "execution cancelled" on stderr and exits 130 (128+SIGINT).
 #[test]
+#[cfg(unix)] // POSIX signal semantics — Windows equivalent is a separate mechanism
 fn sigint_cancels_runaway_under_timeout() {
     let start = Instant::now();
     let mut child = spawn_bao(&[
@@ -368,6 +369,7 @@ fn sigint_cancels_runaway_under_timeout() {
 /// installed, so kill -INT terminates bao by the default disposition —
 /// the process is KILLED BY SIGNAL 2 (not a controlled exit code).
 #[test]
+#[cfg(unix)] // POSIX signal semantics — Windows equivalent is a separate mechanism
 fn sigint_without_timeout_keeps_default_kill() {
     use std::os::unix::process::ExitStatusExt;
     let mut child = spawn_bao(&["run", "--eval", "while(true){}"]);

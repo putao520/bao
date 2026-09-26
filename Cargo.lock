@@ -495,6 +495,7 @@ dependencies = [
  "bao-servo-net",
  "bao-servo-url",
  "bao_boringssl_bridge",
+ "bao_bundler",
  "bao_cdp",
  "bao_cdp_client",
  "bao_engine",

@@ -840,3 +840,19 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
 
     runtime.run()
 }
+
+// Higher-tier soft-link providers are dev-deps that nothing in this crate's
+// production code path `use`s, so rustc never puts them on the test link line
+// — GNU ld tolerates the undefined CYCLEBREAK faces in test executables
+// (--gc-sections discards the dead referencing sections), lld-link/COFF with
+// /OPT:NOREF does not (#28). This seam makes the lib-test unit load
+// `bao_bundler`, whose rlib then resolves `JSBundlerPlugin__*` /
+// `DevServerHandle__Bake__*` / `VmLoaderCtx__Runtime__*` / `__bun_macro_*` /
+// HMR via archive lazy-pull. Twin: bao_engine / bao_stealth test_link_seams.
+#[cfg(test)]
+mod test_link_seams {
+    #[test]
+    fn link_higher_tier_seams() {
+        bao_bundler::force_link_test_seams();
+    }
+}

@@ -92,3 +92,14 @@ mod fetch_axis_probe_tests;
 mod worker_realm_api_tests;
 mod shadow_axis_probe_tests;
 mod realm_discard_timers_tests;
+
+
+// Higher-tier soft-link providers are dev-deps nothing else `use`s in this
+// target (GNU ld tolerates undefineds in test executables; lld-link/COFF with
+// /OPT:NOREF does not — #28) — force the `bao_bundler` owner rlib onto the
+// link line so bun_bundler's CYCLEBREAK faces resolve (bao_engine / bao_stealth
+// suite precedent).
+#[test]
+fn link_higher_tier_seams() {
+    bao_bundler::force_link_test_seams();
+}
