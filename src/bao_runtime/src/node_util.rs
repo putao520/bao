@@ -1474,6 +1474,40 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
                 return format!("[ {} ]", parts.join(", "));
             }
 
+            // Buffer instances → '<Buffer 68 69>' (node buffer-inspect form:
+            // the typed-array bytes as space-separated lowercase hex pairs;
+            // the empty buffer keeps the trailing space, '<Buffer >'). A
+            // Buffer shares the Uint8Array representation with a `_isBuffer`
+            // marker — the same detection `Buffer.isBuffer` uses — so this
+            // check must run before the generic plain-object path (which
+            // would otherwise render the byte indices as '{ 0: 104, ... }').
+            // Node shows the bytes regardless of `depth` (they are a flat
+            // preview, not nested structure).
+            if let Some((len, data)) = jsval_buffer_bytes(cx, &val) {
+                const INSPECT_BUFFER_MAX_BYTES: usize = 512;
+                let mut s = String::from("<Buffer");
+                if len == 0 {
+                    // '<Buffer >' — node renders the empty buffer with a
+                    // trailing space.
+                    s.push(' ');
+                } else {
+                    let shown = len.min(INSPECT_BUFFER_MAX_BYTES);
+                    let bytes = ::std::slice::from_raw_parts(data, shown);
+                    for b in bytes {
+                        s.push(' ');
+                        s.push_str(&format!("{:02x}", b));
+                    }
+                    if len > INSPECT_BUFFER_MAX_BYTES {
+                        s.push_str(&format!(
+                            " ... {} more bytes",
+                            len - INSPECT_BUFFER_MAX_BYTES
+                        ));
+                    }
+                }
+                s.push('>');
+                return s;
+            }
+
             // Functions → [Function: name] or [Function (anonymous)]
             if JS_ObjectIsFunction(obj.get()) {
                 let mut name_val = UndefinedValue();
@@ -1564,6 +1598,114 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String {
         }
         String::new()
     }
+}
+
+/// Identify a Buffer instance and return its byte view `(len, data)`.
+///
+/// Buffer instances are real Uint8Arrays with `Buffer.prototype` rebound plus
+/// a `_isBuffer` own marker (globals.rs `create_buffer_object`) — the exact
+/// detection `Buffer.isBuffer` performs. Returns `None` for non-Buffers and
+/// for Buffer-shaped objects that are not Uint8Array-backed.
+unsafe fn jsval_buffer_bytes(cx: *mut JSContext, val: &JSVal) -> ::std::option::Option<(usize, *mut u8)> {
+    if !val.is_object() {
+        return ::std::option::Option::None;
+    }
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj = val.to_object());
+    let mut marker = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_isBuffer".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut marker,
+        },
+    );
+    if !marker.is_boolean() || !marker.to_boolean() {
+        return ::std::option::Option::None;
+    }
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data: *mut u8 = ::std::ptr::null_mut();
+    let view = JS_GetObjectAsUint8Array(obj.get(), &mut length, &mut is_shared, &mut data);
+    if view.is_null() || data.is_null() {
+        return ::std::option::Option::None;
+    }
+    ::std::option::Option::Some((length, data))
+}
+
+/// `util.format('%j', v)` — JSON.stringify semantics (node contract): the
+/// stringify result string, `'undefined'` when stringify yields undefined
+/// (undefined / function / symbol input), and `'[Circular]'` when stringify
+/// throws (cyclic structure).
+unsafe fn json_stringify_for_format(cx: *mut JSContext, val: JSVal) -> String {
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return "undefined".to_string();
+    }
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let global_root = global);
+    let mut json_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"JSON".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut json_val,
+        },
+    );
+    if !json_val.is_object() {
+        return "undefined".to_string();
+    }
+    let json_obj = json_val.to_object();
+    rooted!(&in(wrapped_cx) let json_root = json_obj);
+    let mut stringify_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        json_root.handle().into(),
+        c"stringify".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut stringify_val,
+        },
+    );
+    if !stringify_val.is_object() {
+        return "undefined".to_string();
+    }
+    // The callee slot takes a VALUE handle — root the jsval form.
+    rooted!(&in(wrapped_cx) let stringify_root = stringify_val);
+    rooted!(&in(wrapped_cx) let val_root = val);
+    let call_args = HandleValueArray {
+        length_: 1,
+        elements_: &val_root.get() as *const Value,
+    };
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        cx,
+        json_root.handle().into(),
+        stringify_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(cx);
+        return "[Circular]".to_string();
+    }
+    if rval.is_undefined() {
+        return "undefined".to_string();
+    }
+    if rval.is_string() {
+        return crate::js_to_rust_string(cx, rval);
+    }
+    if rval.is_null() {
+        return "null".to_string();
+    }
+    jsval_to_display(cx, rval)
 }
 
 /// Format a JSVal for `util.format` / console output. Strings are emitted
@@ -1840,7 +1982,19 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             while let Some(c) = chars.next() {
                 if c == '%' {
                     match chars.peek() {
-                        Some(&'s') | Some(&'d') | Some(&'i') | Some(&'f') | Some(&'j')
+                        // %j = JSON.stringify form (node: '{"a":1}' for
+                        // util.format('%j', {a:1})), NOT the inspected form.
+                        Some(&'j') => {
+                            chars.next();
+                            if arg_idx < argc {
+                                result.push_str(&json_stringify_for_format(
+                                    cx,
+                                    *args.get(arg_idx).ptr,
+                                ));
+                                arg_idx += 1;
+                            }
+                        }
+                        Some(&'s') | Some(&'d') | Some(&'i') | Some(&'f')
                         | Some(&'o') | Some(&'O') => {
                             chars.next();
                             if arg_idx < argc {

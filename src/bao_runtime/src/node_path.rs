@@ -11,18 +11,966 @@ use mozjs::rust::wrappers2 as w2;
 use crate::require::cache_builtin;
 
 // ──────────────────────────────────────────────────────────────────────────
-// path.posix — the REAL posix face (node semantics on every platform).
+// Node.js path algorithm cores — the REAL posix and win32 faces (node ships
+// a genuine implementation of BOTH algorithms on every platform, so
+// `path.posix` and `path.win32` behave identically everywhere; only the
+// separators and root forms differ).
 //
-// The module previously self-referenced the host implementation, which made
-// `path.posix.sep === '\\'` on Windows (posix-selfref conformance FAIL) and
-// every posix-literal assertion wrong. Node ships a genuine posix algorithm
-// on all platforms; these pure-string implementations are that algorithm
-// (join/normalize/resolve/dirname/basename/extname/isAbsolute/relative/
-// parse/format), separator-fixed to '/'.
+// `node_alg` below is a faithful port of node's lib/path.js string
+// algorithms (v21.6.1 lineage; cross-verified line-by-line against bun's
+// runtime/node/path.zig port and empirically against the node v24.19.0
+// oracle for every vector in the trailing-separator / dot-basename /
+// win32-separator divergence class). The previous hand-rolled segment
+// splitter dropped surviving trailing separators (`normalize('bar/foo../../')`
+// answered 'bar' instead of 'bar/'), left '..' unresolved in join outputs,
+// mis-answered dot-only basenames in extname ('..') and trailing-separator
+// inputs in basename/dirname — all B-class Node-semantics divergences
+// (REQ-ENG-007).
 // ──────────────────────────────────────────────────────────────────────────
+
+mod node_alg {
+    /// node `isPathSeparator` — win32 additionally treats '\' as a separator.
+    #[inline]
+    fn is_sep(c: u8, windows: bool) -> bool {
+        c == b'/' || (windows && c == b'\\')
+    }
+
+    /// node `isWindowsDeviceRoot` — 'a'..'z' / 'A'..'Z'.
+    #[inline]
+    fn is_device_root(c: u8) -> bool {
+        c.is_ascii_alphabetic()
+    }
+
+    /// node `normalizeString` — resolves `.` / `..` segments. Faithful port
+    /// (bun runtime/node/path.zig `normalizeStringT`), including the
+    /// trailing-separator preservation semantics: a surviving trailing
+    /// separator in the input yields one trailing separator in the output
+    /// (`normalize('bar/foo../../') === 'bar/'`), and `..` resolution never
+    /// consumes a segment that does not exist (leading `..` survives on
+    /// relative paths when `allow_above_root`).
+    ///
+    /// `sep` is the OUTPUT separator ('/' posix, '\\' win32); on win32 both
+    /// separators are recognized in the input.
+    pub fn normalize_string(path: &str, allow_above_root: bool, sep: u8, windows: bool) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        let mut res: Vec<u8> = Vec::new();
+        let mut last_segment_length: usize = 0;
+        let mut last_slash: Option<usize> = None;
+        // None = "saw a non-dot"; Some(n) = run of n dots since last segment.
+        let mut dots: Option<usize> = Some(0);
+        let mut byte: u8 = 0;
+        let mut i: usize = 0;
+
+        while i <= len {
+            if i < len {
+                byte = bytes[i];
+            } else if is_sep(byte, windows) {
+                break;
+            } else {
+                byte = b'/';
+            }
+
+            if is_sep(byte, windows) {
+                if (last_slash.is_none() && i == 0)
+                    || (i > 0 && last_slash.is_some() && last_slash.unwrap() == i - 1)
+                    || dots == Some(1)
+                {
+                    // Consecutive separators, leading separator, or a '.'
+                    // segment — no-op.
+                } else if dots == Some(2) {
+                    // '..' segment: pop the previous segment unless `res`
+                    // already ends with '..'.
+                    let ends_with_dotdot = res.len() >= 2
+                        && last_segment_length == 2
+                        && res[res.len() - 1] == b'.'
+                        && res[res.len() - 2] == b'.';
+                    if !ends_with_dotdot {
+                        if res.len() > 2 {
+                            match res.iter().rposition(|&c| c == sep) {
+                                None => {
+                                    res.clear();
+                                    last_segment_length = 0;
+                                }
+                                Some(idx) => {
+                                    res.truncate(idx);
+                                    // node quirk (see bun's translation note):
+                                    // lastSegmentLength derives from a
+                                    // lastIndexOf over the truncated result.
+                                    last_segment_length = match res.iter().rposition(|&c| c == sep)
+                                    {
+                                        None => res.len(),
+                                        Some(inner) => res.len() - 1 - inner,
+                                    };
+                                }
+                            }
+                            last_slash = Some(i);
+                            dots = Some(0);
+                            i += 1;
+                            continue;
+                        } else if !res.is_empty() {
+                            res.clear();
+                            last_segment_length = 0;
+                            last_slash = Some(i);
+                            dots = Some(0);
+                            i += 1;
+                            continue;
+                        }
+                    }
+                    if allow_above_root {
+                        if res.is_empty() {
+                            res.extend_from_slice(b"..");
+                        } else {
+                            res.push(sep);
+                            res.extend_from_slice(b"..");
+                        }
+                        last_segment_length = 2;
+                    }
+                } else {
+                    // Regular segment: append with the output separator.
+                    if !res.is_empty() {
+                        res.push(sep);
+                    }
+                    let slice_start = last_slash.map_or(0, |s| s + 1);
+                    res.extend_from_slice(&bytes[slice_start..i]);
+                    let subtract = last_slash.map_or(2, |s| s + 1);
+                    last_segment_length = if i >= subtract { i - subtract } else { 0 };
+                }
+                last_slash = Some(i);
+                dots = Some(0);
+                i += 1;
+                continue;
+            } else if byte == b'.' && dots.is_some() {
+                dots = Some(dots.unwrap() + 1);
+            } else {
+                dots = None;
+            }
+            i += 1;
+        }
+        String::from_utf8_lossy(&res).into_owned()
+    }
+
+    /// node path.posix.normalize / path.win32.normalize.
+    pub fn normalize(path: &str, windows: bool) -> String {
+        let bytes = path.as_bytes();
+        if bytes.is_empty() {
+            return ".".to_string();
+        }
+        if windows {
+            return normalize_windows(path);
+        }
+        let is_absolute = bytes[0] == b'/';
+        let trailing = is_sep(bytes[bytes.len() - 1], false);
+        let normalized = normalize_string(path, !is_absolute, b'/', false);
+        if normalized.is_empty() {
+            return if is_absolute {
+                "/".to_string()
+            } else if trailing {
+                "./".to_string()
+            } else {
+                ".".to_string()
+            };
+        }
+        let mut out = normalized;
+        if trailing {
+            out.push('/');
+        }
+        if is_absolute {
+            out.insert(0, '/');
+        }
+        out
+    }
+
+    /// node path.win32.normalize — device / UNC root extraction (bun
+    /// `normalizeWindowsT`), with the tail normalized by `normalize_string`.
+    fn normalize_windows(path: &str) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        if len == 1 {
+            // `path` is a single character: a lone separator normalizes to
+            // the win32 root, anything else is itself.
+            return if is_sep(bytes[0], true) {
+                "\\".to_string()
+            } else {
+                path.to_string()
+            };
+        }
+
+        let byte0 = bytes[0];
+        let mut root_end: usize = 0;
+        let mut device: Option<String> = None;
+        let mut is_absolute = false;
+
+        if is_sep(byte0, true) {
+            // Possible UNC root.
+            is_absolute = true;
+            if is_sep(bytes[1], true) {
+                let mut j = 2usize;
+                let mut last = j;
+                while j < len && !is_sep(bytes[j], true) {
+                    j += 1;
+                }
+                if j < len && j != last {
+                    let first_part = &path[last..j];
+                    last = j;
+                    while j < len && is_sep(bytes[j], true) {
+                        j += 1;
+                    }
+                    if j < len && j != last {
+                        last = j;
+                        while j < len && !is_sep(bytes[j], true) {
+                            j += 1;
+                        }
+                        if j == len {
+                            // UNC root only — normalized form keeps the
+                            // trailing separator: `\\\\<server>\\<share>\\`.
+                            return format!("\\\\{}\\{}\\", first_part, &path[last..]);
+                        }
+                        if j != last {
+                            device = Some(format!("\\\\{}{}", first_part, &path[last..j]));
+                            root_end = j;
+                        }
+                    }
+                }
+            } else {
+                root_end = 1;
+            }
+        } else if is_device_root(byte0) && bytes[1] == b':' {
+            // Possible device root ('C:' / 'c:').
+            device = Some(path[0..2].to_string());
+            root_end = 2;
+            if len > 2 && is_sep(bytes[2], true) {
+                is_absolute = true;
+                root_end = 3;
+            }
+        }
+
+        let mut tail = if root_end < len {
+            normalize_string(&path[root_end..], !is_absolute, b'\\', true)
+        } else {
+            String::new()
+        };
+        if tail.is_empty() && !is_absolute {
+            tail.push('.');
+        }
+        if !tail.is_empty() && is_sep(bytes[len - 1], true) {
+            tail.push('\\');
+        }
+        let mut out = String::with_capacity(
+            device.as_ref().map_or(0, |d| d.len()) + is_absolute as usize + tail.len(),
+        );
+        if let Some(d) = &device {
+            out.push_str(d);
+        }
+        if is_absolute {
+            out.push('\\');
+        }
+        out.push_str(&tail);
+        out
+    }
+
+    /// node path.posix.join / path.win32.join — concatenate the non-empty
+    /// parts with the face separator, then normalize the joined string (this
+    /// is why join resolves a trailing '..' the same way normalize does).
+    pub fn join(parts: &[&str], windows: bool) -> String {
+        let sep: u8 = if windows { b'\\' } else { b'/' };
+        if parts.is_empty() {
+            return ".".to_string();
+        }
+        let mut joined = String::new();
+        let mut first_part: Option<&str> = None;
+        for p in parts {
+            if p.is_empty() {
+                continue;
+            }
+            if first_part.is_none() {
+                first_part = Some(p);
+            }
+            if !joined.is_empty() {
+                joined.push(sep as char);
+            }
+            joined.push_str(p);
+        }
+        if joined.is_empty() {
+            return ".".to_string();
+        }
+        if windows {
+            joined = collapse_win32_leading_separators(&joined, first_part.unwrap_or(""));
+        }
+        normalize(&joined, windows)
+    }
+
+    /// node win32.join's pre-normalize step: make sure the joined path does
+    /// not start with two separators (normalize would mistake it for a UNC
+    /// root) unless the first part explicitly named a UNC share. `first_part`
+    /// is the first non-empty argument (node inspects its prefix, not the
+    /// joined string's).
+    fn collapse_win32_leading_separators(joined: &str, first_part: &str) -> String {
+        let bytes = joined.as_bytes();
+        let first_bytes = first_part.as_bytes();
+        let mut needs_replace = true;
+        let mut slash_count = 0usize;
+        if is_sep(first_bytes[0], true) {
+            slash_count += 1;
+            let first_len = first_bytes.len();
+            if first_len > 1 && is_sep(first_bytes[1], true) {
+                slash_count += 1;
+                if first_len > 2 {
+                    if is_sep(first_bytes[2], true) {
+                        slash_count += 1;
+                    } else {
+                        // The first part named a UNC server: keep the root.
+                        needs_replace = false;
+                    }
+                }
+            }
+        }
+        if !needs_replace {
+            return joined.to_string();
+        }
+        let len = bytes.len();
+        while slash_count < len && is_sep(bytes[slash_count], true) {
+            slash_count += 1;
+        }
+        if slash_count >= 2 {
+            format!("\\{}", &joined[slash_count..])
+        } else {
+            joined.to_string()
+        }
+    }
+
+    /// node path.posix.dirname / path.win32.dirname — trailing separators
+    /// are stripped before the parent is taken ('/a/b/' → '/a').
+    pub fn dirname(path: &str, windows: bool) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        if len == 0 {
+            return ".".to_string();
+        }
+        if windows {
+            return dirname_windows(path);
+        }
+        let has_root = bytes[0] == b'/';
+        let mut end: Option<usize> = None;
+        let mut matched_slash = true;
+        let mut i = len - 1;
+        while i >= 1 {
+            if bytes[i] == b'/' {
+                if !matched_slash {
+                    end = Some(i);
+                    break;
+                }
+            } else {
+                matched_slash = false;
+            }
+            i -= 1;
+        }
+        if let Some(e) = end {
+            return if has_root && e == 1 {
+                "//".to_string()
+            } else {
+                path[0..e].to_string()
+            };
+        }
+        if has_root {
+            "/".to_string()
+        } else {
+            ".".to_string()
+        }
+    }
+
+    fn dirname_windows(path: &str) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        let byte0 = bytes[0];
+        if len == 1 {
+            return if is_sep(byte0, true) {
+                path.to_string()
+            } else {
+                ".".to_string()
+            };
+        }
+
+        let mut root_end: Option<usize> = None;
+        let mut offset = 0usize;
+
+        if is_sep(byte0, true) {
+            // Possible UNC root.
+            root_end = Some(1);
+            offset = 1;
+            if is_sep(bytes[1], true) {
+                let mut j = 2usize;
+                let mut last = j;
+                while j < len && !is_sep(bytes[j], true) {
+                    j += 1;
+                }
+                if j < len && j != last {
+                    last = j;
+                    while j < len && is_sep(bytes[j], true) {
+                        j += 1;
+                    }
+                    if j < len && j != last {
+                        last = j;
+                        while j < len && !is_sep(bytes[j], true) {
+                            j += 1;
+                        }
+                        if j == len {
+                            return path.to_string();
+                        }
+                        if j != last {
+                            offset = j + 1;
+                            root_end = Some(offset);
+                        }
+                    }
+                }
+            }
+        } else if is_device_root(byte0) && bytes[1] == b':' {
+            offset = if len > 2 && is_sep(bytes[2], true) { 3 } else { 2 };
+            root_end = Some(offset);
+        }
+
+        let mut end: Option<usize> = None;
+        let mut matched_slash = true;
+        let mut i = len as i64 - 1;
+        while i >= offset as i64 {
+            let iu = i as usize;
+            if is_sep(bytes[iu], true) {
+                if !matched_slash {
+                    end = Some(iu);
+                    break;
+                }
+            } else {
+                matched_slash = false;
+            }
+            i -= 1;
+        }
+        if let Some(e) = end {
+            return path[0..e].to_string();
+        }
+        match root_end {
+            Some(r) => path[0..r].to_string(),
+            None => ".".to_string(),
+        }
+    }
+
+    /// node path.posix.basename / path.win32.basename — trailing separators
+    /// are stripped before extraction ('/dir/' → 'dir'). `suffix` follows
+    /// node's backward scan (the suffix must match the tail of the last
+    /// segment; a suffix that spans a separator does not strip).
+    pub fn basename(path: &str, suffix: Option<&str>, windows: bool) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        if len == 0 {
+            return String::new();
+        }
+        if windows {
+            return basename_windows(path, suffix);
+        }
+
+        let mut start = 0usize;
+        let mut end: Option<usize> = None;
+        let mut matched_slash = true;
+
+        if let Some(sfx) = suffix {
+            let sfx_len = sfx.len();
+            if sfx_len > 0 && sfx_len <= len {
+                if sfx == path {
+                    return String::new();
+                }
+                let sfx_bytes = sfx.as_bytes();
+                let mut ext_idx: Option<usize> = Some(sfx_len - 1);
+                let mut first_non_slash_end: Option<usize> = None;
+                let mut i = len as i64 - 1;
+                while i >= start as i64 {
+                    let iu = i as usize;
+                    let byte = bytes[iu];
+                    if byte == b'/' {
+                        if !matched_slash {
+                            start = iu + 1;
+                            break;
+                        }
+                    } else {
+                        if first_non_slash_end.is_none() {
+                            matched_slash = false;
+                            first_non_slash_end = Some(iu + 1);
+                        }
+                        if let Some(ei) = ext_idx {
+                            if byte == sfx_bytes[ei] {
+                                if ei == 0 {
+                                    end = Some(iu);
+                                    ext_idx = None;
+                                } else {
+                                    ext_idx = Some(ei - 1);
+                                }
+                            } else {
+                                ext_idx = None;
+                                end = first_non_slash_end;
+                            }
+                        }
+                    }
+                    i -= 1;
+                }
+                if let Some(e) = end {
+                    if start == e {
+                        return path[start..first_non_slash_end.unwrap_or(len)].to_string();
+                    }
+                    return path[start..e].to_string();
+                }
+                return path[start..len].to_string();
+            }
+        }
+
+        let mut i = len as i64 - 1;
+        while i > -1 {
+            let iu = i as usize;
+            let byte = bytes[iu];
+            if byte == b'/' {
+                if !matched_slash {
+                    start = iu + 1;
+                    break;
+                }
+            } else if end.is_none() {
+                matched_slash = false;
+                end = Some(iu + 1);
+            }
+            i -= 1;
+        }
+        match end {
+            Some(e) => path[start..e].to_string(),
+            None => String::new(),
+        }
+    }
+
+    fn basename_windows(path: &str, suffix: Option<&str>) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        let mut start = 0usize;
+        let mut end: Option<usize> = None;
+        let mut matched_slash = true;
+
+        // A drive prefix ('C:') is not a separator: skip it so the scan does
+        // not treat the separator after the drive as an end-of-path marker.
+        if len >= 2 && is_device_root(bytes[0]) && bytes[1] == b':' {
+            start = 2;
+        }
+
+        if let Some(sfx) = suffix {
+            let sfx_len = sfx.len();
+            if sfx_len > 0 && sfx_len <= len {
+                if sfx == path {
+                    return String::new();
+                }
+                let sfx_bytes = sfx.as_bytes();
+                let mut ext_idx: Option<usize> = Some(sfx_len - 1);
+                let mut first_non_slash_end: Option<usize> = None;
+                let mut i = len as i64 - 1;
+                while i >= start as i64 {
+                    let iu = i as usize;
+                    let byte = bytes[iu];
+                    if is_sep(byte, true) {
+                        if !matched_slash {
+                            start = iu + 1;
+                            break;
+                        }
+                    } else {
+                        if first_non_slash_end.is_none() {
+                            matched_slash = false;
+                            first_non_slash_end = Some(iu + 1);
+                        }
+                        if let Some(ei) = ext_idx {
+                            if byte == sfx_bytes[ei] {
+                                if ei == 0 {
+                                    end = Some(iu);
+                                    ext_idx = None;
+                                } else {
+                                    ext_idx = Some(ei - 1);
+                                }
+                            } else {
+                                ext_idx = None;
+                                end = first_non_slash_end;
+                            }
+                        }
+                    }
+                    i -= 1;
+                }
+                if let Some(e) = end {
+                    if start == e {
+                        return path[start..first_non_slash_end.unwrap_or(len)].to_string();
+                    }
+                    return path[start..e].to_string();
+                }
+                return path[start..len].to_string();
+            }
+        }
+
+        let mut i = len as i64 - 1;
+        while i >= start as i64 {
+            let iu = i as usize;
+            let byte = bytes[iu];
+            if is_sep(byte, true) {
+                if !matched_slash {
+                    start = iu + 1;
+                    break;
+                }
+            } else if end.is_none() {
+                matched_slash = false;
+                end = Some(iu + 1);
+            }
+            i -= 1;
+        }
+        match end {
+            Some(e) => path[start..e].to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// node path.posix.extname / path.win32.extname — dot-only basenames
+    /// have no extension ('..' / '.' / 'a/..' → ''), and trailing separators
+    /// are stripped first ('file.ext/' → '.ext', 'file./' → '.').
+    ///
+    /// Implemented as the observed node rule (validated against the node
+    /// v24.19.0 oracle over the full extname edge table incl. '...', '....',
+    /// '..file.', trailing separators and mixed '..' segments):
+    ///   1. strip trailing separators to get the basename,
+    ///   2. a basename of exactly '..' has no extension,
+    ///   3. otherwise the substring from the last '.' (empty when the dot
+    ///      is the first character or absent).
+    pub fn extname(path: &str, windows: bool) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        if len == 0 {
+            return String::new();
+        }
+        // Strip trailing separators, then cut at the last interior one.
+        let mut end = len;
+        while end > 0 && is_sep(bytes[end - 1], windows) {
+            end -= 1;
+        }
+        if end == 0 {
+            return String::new();
+        }
+        let mut start = 0usize;
+        let mut i = end;
+        while i > 0 {
+            i -= 1;
+            if is_sep(bytes[i], windows) {
+                start = i + 1;
+                break;
+            }
+        }
+        let base = &path[start..end];
+        if base == ".." {
+            return String::new();
+        }
+        match base.rfind('.') {
+            Some(0) => String::new(),
+            Some(idx) => base[idx..].to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// node path.parse result — { root, dir, base, ext, name }.
+    pub struct Parsed {
+        pub root: String,
+        pub dir: String,
+        pub base: String,
+        pub ext: String,
+        pub name: String,
+    }
+
+    /// node path.posix.parse / path.win32.parse.
+    pub fn parse(path: &str, windows: bool) -> Parsed {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        let empty = Parsed {
+            root: String::new(),
+            dir: String::new(),
+            base: String::new(),
+            ext: String::new(),
+            name: String::new(),
+        };
+        if len == 0 {
+            return empty;
+        }
+        if windows {
+            return parse_windows(path);
+        }
+
+        let is_absolute = bytes[0] == b'/';
+        let root = if is_absolute { "/".to_string() } else { String::new() };
+        let mut start = if is_absolute { 1usize } else { 0usize };
+
+        let mut start_dot: Option<usize> = None;
+        let mut start_part = 0usize;
+        let mut end: Option<usize> = None;
+        let mut matched_slash = true;
+        let mut pre_dot_state: Option<usize> = Some(0);
+
+        let mut i = len as i64 - 1;
+        while i >= start as i64 {
+            let iu = i as usize;
+            let byte = bytes[iu];
+            if byte == b'/' {
+                if !matched_slash {
+                    start_part = iu + 1;
+                    break;
+                }
+            } else {
+                if end.is_none() {
+                    matched_slash = false;
+                    end = Some(iu + 1);
+                }
+                if byte == b'.' {
+                    if start_dot.is_none() {
+                        start_dot = Some(iu);
+                    } else if let Some(p) = pre_dot_state {
+                        if p != 1 {
+                            pre_dot_state = Some(1);
+                        }
+                    }
+                } else if start_dot.is_some() {
+                    pre_dot_state = None;
+                }
+            }
+            i -= 1;
+        }
+
+        let mut base = String::new();
+        let mut name = String::new();
+        let mut ext = String::new();
+        if let Some(e) = end {
+            start = if start_part == 0 && is_absolute { 1 } else { start_part };
+            let no_ext = start_dot.is_none()
+                || (pre_dot_state.is_some() && pre_dot_state.unwrap() == 0)
+                || (pre_dot_state == Some(1)
+                    && start_dot.unwrap() == e - 1
+                    && start_dot.unwrap() == start_part + 1);
+            if no_ext {
+                name = path[start..e].to_string();
+                base = name.clone();
+            } else {
+                name = path[start..start_dot.unwrap()].to_string();
+                base = path[start..e].to_string();
+                ext = path[start_dot.unwrap()..e].to_string();
+            }
+        }
+        let dir = if start_part > 0 {
+            path[0..start_part - 1].to_string()
+        } else if is_absolute {
+            "/".to_string()
+        } else {
+            String::new()
+        };
+        Parsed {
+            root,
+            dir,
+            base,
+            ext,
+            name,
+        }
+    }
+
+    fn parse_windows(path: &str) -> Parsed {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        let byte0 = bytes[0];
+        if len == 1 {
+            if is_sep(byte0, true) {
+                return Parsed {
+                    root: path.to_string(),
+                    dir: path.to_string(),
+                    base: String::new(),
+                    ext: String::new(),
+                    name: String::new(),
+                };
+            }
+            return Parsed {
+                root: String::new(),
+                dir: String::new(),
+                base: path.to_string(),
+                ext: String::new(),
+                name: path.to_string(),
+            };
+        }
+
+        let mut root_end = 0usize;
+        if is_sep(byte0, true) {
+            root_end = 1;
+            if is_sep(bytes[1], true) {
+                let mut j = 2usize;
+                let mut last = j;
+                while j < len && !is_sep(bytes[j], true) {
+                    j += 1;
+                }
+                if j < len && j != last {
+                    last = j;
+                    while j < len && is_sep(bytes[j], true) {
+                        j += 1;
+                    }
+                    if j < len && j != last {
+                        last = j;
+                        while j < len && !is_sep(bytes[j], true) {
+                            j += 1;
+                        }
+                        root_end = if j == len { j } else if j != last { j + 1 } else { root_end };
+                    }
+                }
+            }
+        } else if is_device_root(byte0) && bytes[1] == b':' {
+            if len <= 2 {
+                return Parsed {
+                    root: path.to_string(),
+                    dir: path.to_string(),
+                    base: String::new(),
+                    ext: String::new(),
+                    name: String::new(),
+                };
+            }
+            root_end = 2;
+            if is_sep(bytes[2], true) {
+                if len == 3 {
+                    return Parsed {
+                        root: path.to_string(),
+                        dir: path.to_string(),
+                        base: String::new(),
+                        ext: String::new(),
+                        name: String::new(),
+                    };
+                }
+                root_end = 3;
+            }
+        }
+        let root = if root_end > 0 {
+            path[0..root_end].to_string()
+        } else {
+            String::new()
+        };
+
+        let mut start_dot: Option<usize> = None;
+        let mut start_part = root_end;
+        let mut end: Option<usize> = None;
+        let mut matched_slash = true;
+        let mut pre_dot_state: Option<usize> = Some(0);
+
+        let mut i = len as i64 - 1;
+        while i >= root_end as i64 {
+            let iu = i as usize;
+            let byte = bytes[iu];
+            if is_sep(byte, true) {
+                if !matched_slash {
+                    start_part = iu + 1;
+                    break;
+                }
+            } else {
+                if end.is_none() {
+                    matched_slash = false;
+                    end = Some(iu + 1);
+                }
+                if byte == b'.' {
+                    if start_dot.is_none() {
+                        start_dot = Some(iu);
+                    } else if let Some(p) = pre_dot_state {
+                        if p != 1 {
+                            pre_dot_state = Some(1);
+                        }
+                    }
+                } else if start_dot.is_some() {
+                    pre_dot_state = None;
+                }
+            }
+            i -= 1;
+        }
+
+        let mut base = String::new();
+        let mut name = String::new();
+        let mut ext = String::new();
+        if let Some(e) = end {
+            let no_ext = start_dot.is_none()
+                || (pre_dot_state.is_some() && pre_dot_state.unwrap() == 0)
+                || (pre_dot_state == Some(1)
+                    && start_dot.unwrap() == e - 1
+                    && start_dot.unwrap() == start_part + 1);
+            if no_ext {
+                name = path[start_part..e].to_string();
+                base = name.clone();
+            } else {
+                name = path[start_part..start_dot.unwrap()].to_string();
+                base = path[start_part..e].to_string();
+                ext = path[start_dot.unwrap()..e].to_string();
+            }
+        }
+        // The directory is the root itself when the first segment starts at
+        // the root end ('C:\abc' → dir 'C:\'); otherwise the trailing
+        // separator is stripped ('C:\abc\def' → dir 'C:\abc').
+        let dir = if start_part > 0 && start_part != root_end {
+            path[0..start_part - 1].to_string()
+        } else {
+            root.clone()
+        };
+        Parsed {
+            root,
+            dir,
+            base,
+            ext,
+            name,
+        }
+    }
+
+    /// node path.format — `dir || root` + `base || name + formatExt(ext)`,
+    /// joined with the face separator unless dir IS the pathObject root.
+    pub fn format(p: &Parsed, windows: bool) -> String {
+        let sep: char = if windows { '\\' } else { '/' };
+        let dir_is_empty = p.dir.is_empty();
+        let dir = if dir_is_empty { &p.root } else { &p.dir };
+        let dir = dir.as_str();
+        let base = if !p.base.is_empty() {
+            p.base.clone()
+        } else {
+            // node formatExt: a missing leading dot is supplied.
+            let ext = if p.ext.is_empty() {
+                String::new()
+            } else if p.ext.starts_with('.') {
+                p.ext.clone()
+            } else {
+                format!(".{}", p.ext)
+            };
+            format!("{}{}", p.name, ext)
+        };
+        if dir.is_empty() {
+            return base;
+        }
+        if dir == p.root {
+            format!("{}{}", dir, base)
+        } else {
+            format!("{}{}{}", dir, sep, base)
+        }
+    }
+
+    /// node path.posix.isAbsolute / path.win32.isAbsolute. On win32 a rooted
+    /// path without a drive ('/foo') is absolute, and a bare device ('C:')
+    /// is NOT.
+    pub fn is_absolute(path: &str, windows: bool) -> bool {
+        let bytes = path.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        if windows {
+            let c = bytes[0];
+            is_sep(c, true)
+                || (bytes.len() > 2
+                    && is_device_root(c)
+                    && bytes[1] == b':'
+                    && is_sep(bytes[2], true))
+        } else {
+            bytes[0] == b'/'
+        }
+    }
+}
 
 mod posix_core {
     /// Split a posix path into segments; keeps a leading-root flag.
+    /// (Consumed by `resolve` / `relative` below; the string-algorithm
+    /// primitives live in `node_alg`.)
     fn split(p: &str) -> (bool, Vec<&str>) {
         let rooted = p.starts_with('/');
         let segs = p
@@ -33,36 +981,16 @@ mod posix_core {
     }
 
     pub fn normalize(p: &str) -> String {
-        let (rooted, segs) = split(p);
-        let mut out: Vec<&str> = Vec::new();
-        for seg in segs {
-            if seg == ".." {
-                if !out.is_empty() && *out.last().unwrap() != ".." {
-                    out.pop();
-                } else if !rooted {
-                    out.push(seg);
-                }
-            } else {
-                out.push(seg);
-            }
-        }
-        let joined = out.join("/");
-        if rooted {
-            format!("/{}", joined)
-        } else if joined.is_empty() {
-            ".".to_string()
-        } else {
-            joined
-        }
+        super::node_alg::normalize(p, false)
     }
 
     pub fn join(parts: &[String]) -> String {
         let joined: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
-        normalize(&joined.join("/"))
+        super::node_alg::join(&joined, false)
     }
 
     pub fn is_absolute(p: &str) -> bool {
-        p.starts_with('/')
+        super::node_alg::is_absolute(p, false)
     }
 
     pub fn resolve(parts: &[String], cwd: &str) -> String {
@@ -106,33 +1034,15 @@ mod posix_core {
     }
 
     pub fn dirname(p: &str) -> String {
-        match p.rfind('/') {
-            Some(0) => "/".to_string(),
-            Some(i) => normalize(&p[..i]),
-            None => ".".to_string(),
-        }
+        super::node_alg::dirname(p, false)
     }
 
     pub fn basename(p: &str, ext: Option<&str>) -> String {
-        let mut base = p.rsplit('/').next().unwrap_or("");
-        if base.is_empty() {
-            return String::new();
-        }
-        if let Some(e) = ext {
-            if !e.is_empty() && base.ends_with(e) && base.len() > e.len() {
-                base = &base[..base.len() - e.len()];
-            }
-        }
-        base.to_string()
+        super::node_alg::basename(p, ext, false)
     }
 
     pub fn extname(p: &str) -> String {
-        let base = basename(p, None);
-        match base.rfind('.') {
-            Some(0) => String::new(), // leading-dot only = no ext (node)
-            Some(i) => base[i..].to_string(),
-            None => String::new(),
-        }
+        super::node_alg::extname(p, false)
     }
 
     pub fn relative(from: &str, to: &str) -> String {
@@ -164,26 +1074,65 @@ mod posix_core {
 
     /// node posix.parse: { root, dir, base, ext, name }
     pub fn parse(p: &str) -> (String, String, String, String, String) {
-        let root = if is_absolute(p) { "/".to_string() } else { String::new() };
-        let dir = dirname(p);
-        let base = basename(p, None);
-        let ext = extname(p);
-        let name = if ext.is_empty() {
-            base.clone()
-        } else {
-            base[..base.len() - ext.len()].to_string()
-        };
-        (root, dir, base, ext, name)
+        let parsed = super::node_alg::parse(p, false);
+        (
+            parsed.root,
+            parsed.dir,
+            parsed.base,
+            parsed.ext,
+            parsed.name,
+        )
     }
 
-    pub fn format(dir: &str, base: &str) -> String {
-        if dir.is_empty() {
-            base.to_string()
-        } else if dir.ends_with('/') {
-            format!("{}{}", dir, base)
-        } else {
-            format!("{}/{}", dir, base)
-        }
+    pub fn format(p: &super::node_alg::Parsed) -> String {
+        super::node_alg::format(p, false)
+    }
+}
+
+/// path.win32 — the genuine win32 face (node ships the Windows algorithm on
+/// every platform, so `path.win32.normalize('a/b') === 'a\\b'` even on
+/// Linux). Pure-string cores from `node_alg`; `resolve` / `relative` /
+/// `toNamespacedPath` are cwd-dependent and stay forwarded from the host
+/// module object.
+mod win32_core {
+    pub fn normalize(p: &str) -> String {
+        super::node_alg::normalize(p, true)
+    }
+
+    pub fn join(parts: &[String]) -> String {
+        let joined: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+        super::node_alg::join(&joined, true)
+    }
+
+    pub fn dirname(p: &str) -> String {
+        super::node_alg::dirname(p, true)
+    }
+
+    pub fn basename(p: &str, ext: Option<&str>) -> String {
+        super::node_alg::basename(p, ext, true)
+    }
+
+    pub fn extname(p: &str) -> String {
+        super::node_alg::extname(p, true)
+    }
+
+    pub fn is_absolute(p: &str) -> bool {
+        super::node_alg::is_absolute(p, true)
+    }
+
+    pub fn parse(p: &str) -> (String, String, String, String, String) {
+        let parsed = super::node_alg::parse(p, true);
+        (
+            parsed.root,
+            parsed.dir,
+            parsed.base,
+            parsed.ext,
+            parsed.name,
+        )
+    }
+
+    pub fn format(p: &super::node_alg::Parsed) -> String {
+        super::node_alg::format(p, true)
     }
 }
 
@@ -251,7 +1200,9 @@ posix_str_fn!(js_posix_basename, "basename", |cx: *mut JSContext,
                                            argc: u32|
  -> Option<String> {
     let p = posix_arg(cx, *args.get(0).ptr)?;
-    let ext = if argc > 1 {
+    // node: an explicit `undefined` suffix is valid (no strip); anything
+    // else non-string is invalid.
+    let ext = if argc > 1 && !(*args.get(1).ptr).is_undefined() {
         Some(posix_arg(cx, *args.get(1).ptr)?)
     } else {
         None
@@ -276,43 +1227,171 @@ posix_str_fn!(js_posix_format, "format", |cx: *mut JSContext,
                                        args: &::mozjs::jsapi::CallArgs,
                                        _argc: u32|
  -> Option<String> {
-    // Accepts the parsed-shape object {dir, base}.
+    // Accepts the parsed-shape object {root, dir, base, ext, name} (node
+    // format: dir || root, base || name + formatExt(ext)).
+    let parsed = read_path_object(cx, args)?;
+    Some(posix_core::format(&parsed))
+});
+
+/// Read the `{root, dir, base, ext, name}` pathObject shape shared by
+/// path.format on both faces. Absent properties coerce to "" (node treats
+/// them as falsy).
+unsafe fn read_path_object(
+    cx: *mut JSContext,
+    args: &::mozjs::jsapi::CallArgs,
+) -> Option<node_alg::Parsed> {
     let obj = (*args.get(0).ptr).to_object();
-    let mut wrapped = ::mozjs::context::JSContext::from_ptr(
-        ::std::ptr::NonNull::new_unchecked(cx),
-    );
-    let cx_ref = &mut wrapped;
-    ::mozjs::rooted!(&in(cx_ref) let obj_root = obj);
+    let wrapped_cx = ::mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
+    let mut root = String::new();
     let mut dir = String::new();
     let mut base = String::new();
-    let mut v = ::mozjs::jsval::UndefinedValue();
-    ::mozjs::jsapi::JS_GetProperty(
-        cx,
-        obj_root.handle().into(),
-        c"dir".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut v,
-        },
-    );
-    if v.is_string() {
-        dir = arg_to_string(cx, v)?;
+    let mut ext = String::new();
+    let mut name = String::new();
+    if let Some(v) = get_string_prop(cx, obj_root.handle().into(), "root") {
+        root = v;
     }
-    v = ::mozjs::jsval::UndefinedValue();
-    ::mozjs::jsapi::JS_GetProperty(
-        cx,
-        obj_root.handle().into(),
-        c"base".as_ptr(),
-        MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut v,
-        },
-    );
-    if v.is_string() {
-        base = arg_to_string(cx, v)?;
+    if let Some(v) = get_string_prop(cx, obj_root.handle().into(), "dir") {
+        dir = v;
     }
-    Some(posix_core::format(&dir, &base))
+    if let Some(v) = get_string_prop(cx, obj_root.handle().into(), "base") {
+        base = v;
+    }
+    if let Some(v) = get_string_prop(cx, obj_root.handle().into(), "ext") {
+        ext = v;
+    }
+    if let Some(v) = get_string_prop(cx, obj_root.handle().into(), "name") {
+        name = v;
+    }
+    Some(node_alg::Parsed {
+        root,
+        dir,
+        base,
+        ext,
+        name,
+    })
+}
+
+posix_str_fn!(js_win32_join, "join", |cx: *mut JSContext,
+                                    args: &::mozjs::jsapi::CallArgs,
+                                    argc: u32|
+ -> Option<String> {
+    let mut parts = Vec::new();
+    for i in 0..argc {
+        parts.push(posix_arg(cx, *args.get(i).ptr)?);
+    }
+    Some(win32_core::join(&parts))
 });
+posix_str_fn!(js_win32_normalize, "normalize", |cx: *mut JSContext,
+                                             args: &::mozjs::jsapi::CallArgs,
+                                             _argc: u32|
+ -> Option<String> {
+    Some(win32_core::normalize(&posix_arg(cx, *args.get(0).ptr)?))
+});
+posix_str_fn!(js_win32_dirname, "dirname", |cx: *mut JSContext,
+                                         args: &::mozjs::jsapi::CallArgs,
+                                         _argc: u32|
+ -> Option<String> {
+    Some(win32_core::dirname(&posix_arg(cx, *args.get(0).ptr)?))
+});
+posix_str_fn!(js_win32_basename, "basename", |cx: *mut JSContext,
+                                           args: &::mozjs::jsapi::CallArgs,
+                                           argc: u32|
+ -> Option<String> {
+    let p = posix_arg(cx, *args.get(0).ptr)?;
+    // node: an explicit `undefined` suffix is valid (no strip); anything
+    // else non-string is invalid.
+    let ext = if argc > 1 && !(*args.get(1).ptr).is_undefined() {
+        Some(posix_arg(cx, *args.get(1).ptr)?)
+    } else {
+        None
+    };
+    Some(win32_core::basename(&p, ext.as_deref()))
+});
+posix_str_fn!(js_win32_extname, "extname", |cx: *mut JSContext,
+                                         args: &::mozjs::jsapi::CallArgs,
+                                         _argc: u32|
+ -> Option<String> {
+    Some(win32_core::extname(&posix_arg(cx, *args.get(0).ptr)?))
+});
+posix_str_fn!(js_win32_format, "format", |cx: *mut JSContext,
+                                       args: &::mozjs::jsapi::CallArgs,
+                                       _argc: u32|
+ -> Option<String> {
+    let parsed = read_path_object(cx, args)?;
+    Some(win32_core::format(&parsed))
+});
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn win32_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(::mozjs::jsval::BooleanValue(false));
+        return true;
+    }
+    match posix_arg(cx, *args.get(0).ptr) {
+        Some(s) => args
+            .rval()
+            .set(::mozjs::jsval::BooleanValue(win32_core::is_absolute(&s))),
+        None => args.rval().set(::mozjs::jsval::BooleanValue(false)),
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn win32_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        ::mozjs::jsapi::JS_ReportErrorUTF8(
+            cx,
+            ::std::ffi::CStr::from_bytes_with_nul(b"path.parse requires a path\0")
+                .unwrap()
+                .as_ptr(),
+        );
+        return false;
+    }
+    let Some(p) = posix_arg(cx, *args.get(0).ptr) else {
+        args.rval().set(::mozjs::jsval::UndefinedValue());
+        return true;
+    };
+    let (root, dir, base, ext, name) = win32_core::parse(&p);
+    let raw_cx = cx;
+    let mut wrapped = ::mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(raw_cx),
+    );
+    let cx_ref = &mut wrapped;
+    ::mozjs::rooted!(&in(cx_ref) let obj = ::mozjs::rust::wrappers2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(::mozjs::jsval::UndefinedValue());
+        return true;
+    }
+    let h = obj.handle().into();
+    macro_rules! def_str {
+        ($name:literal, $val:expr) => {{
+            let cs = ZBox::from_bytes($val.as_bytes());
+            let js = JS_NewStringCopyZ(raw_cx, cs.as_ptr());
+            if !js.is_null() {
+                ::mozjs::rooted!(&in(cx_ref) let sv = ::mozjs::jsval::StringValue(&*js));
+                ::mozjs::jsapi::JS_DefineProperty(
+                    raw_cx,
+                    h,
+                    ::std::ffi::CStr::from_bytes_with_nul(::std::concat!($name, "\0").as_bytes())
+                        .unwrap()
+                        .as_ptr(),
+                    sv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }};
+    }
+    def_str!("root", root);
+    def_str!("dir", dir);
+    def_str!("base", base);
+    def_str!("ext", ext);
+    def_str!("name", name);
+    args.rval().set(::mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn posix_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
@@ -624,29 +1703,53 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     // path.win32 — Node.js ships a real Windows-flavoured path object on all
-    // platforms so `path.win32.sep === "\\"` even on Linux. We expose a thin
-    // JS wrapper that mirrors the host's path API but overrides `sep` /
-    // `delimiter` to the Windows values. (See ~/code/rust/bun/src/js/node/
-    // path.ts — Bun likewise ships both `posix` and `win32`.)
+    // platforms: `path.win32.sep === "\\"`, `path.win32.normalize('a/b') ===
+    // 'a\\b'`, `path.win32.basename('C:\\dir\\f') === 'f'` — on Linux too.
+    // The string-algorithm methods therefore get genuine win32 cores
+    // (win32_core / node_alg, ported from node lib/path.js); only the
+    // cwd-dependent methods (`resolve` / `relative`) stay forwarded from the
+    // host module object. (See ~/code/rust/bun/src/runtime/node/path.zig —
+    // Bun likewise ships a real win32 face on every platform.)
     unsafe {
         rooted!(&in(cx) let win32_obj = w2::JS_NewPlainObject(cx));
         if !win32_obj.get().is_null() {
-            // Reuse the host path functions; only the separator/delimiter
-            // constants differ. Methods are forwarded by assigning the same
-            // function references the host module already exposes.
-            for fn_name in &[
-                "join",
-                "resolve",
-                "dirname",
-                "basename",
-                "extname",
-                "normalize",
-                "isAbsolute",
-                "relative",
-                "parse",
-                "format",
-                "toNamespaced",
-            ] {
+            let win_fns: &[(&str, ::std::option::Option<
+                unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool,
+            >)] = &[
+                ("join", Some(js_win32_join)),
+                ("normalize", Some(js_win32_normalize)),
+                ("dirname", Some(js_win32_dirname)),
+                ("basename", Some(js_win32_basename)),
+                ("extname", Some(js_win32_extname)),
+                ("isAbsolute", Some(win32_is_absolute)),
+                ("parse", Some(win32_parse_fn)),
+                ("format", Some(js_win32_format)),
+            ];
+            for (name, fp) in win_fns {
+                let c_name = ZBox::from_bytes(name.as_bytes());
+                let f = ::mozjs::jsapi::JS_NewFunction(
+                    cx.raw_cx(),
+                    *fp,
+                    2,
+                    0,
+                    c_name.as_ptr(),
+                );
+                if !f.is_null() {
+                    let fobj = ::mozjs::jsapi::JS_GetFunctionObject(f);
+                    ::mozjs::rooted!(&in(cx) let fv = ::mozjs::jsval::ObjectValue(fobj));
+                    ::mozjs::jsapi::JS_DefineProperty(
+                        cx.raw_cx(),
+                        win32_obj.handle().into(),
+                        c_name.as_ptr(),
+                        fv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+            // cwd-dependent methods: forward the host implementations (their
+            // algorithm is platform/cwd-bound; the win32 face keeps the same
+            // behaviour as before this change).
+            for fn_name in &["resolve", "relative"] {
                 let c_name = ZBox::from_bytes(fn_name.as_bytes());
                 let mut fn_val = UndefinedValue();
                 JS_GetProperty(

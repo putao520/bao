@@ -84,6 +84,44 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
 
         rooted!(&in(cx) let proto_h = proto);
+
+        // Node exposes the alias methods as the SAME function object —
+        // `ee.on === ee.addListener` and `ee.off === ee.removeListener` hold
+        // by reference (event-emitter.test.ts asserts identity). Defining
+        // each alias through a fresh JSFunctionSpec entry would install a
+        // distinct function object, so each alias re-defines the canonical
+        // function's value under the alias name (same object, one definition
+        // site per native).
+        for (alias, canonical) in [
+            ("on", "addListener"),
+            ("addEventListener", "addListener"),
+            ("off", "removeListener"),
+            ("removeEventListener", "removeListener"),
+        ] {
+            let c_canonical = ZBox::from_bytes(canonical.as_bytes());
+            let mut fn_val = UndefinedValue();
+            JS_GetProperty(
+                cx.raw_cx(),
+                proto_h.handle().into(),
+                c_canonical.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut fn_val,
+                },
+            );
+            if fn_val.is_object() {
+                let c_alias = ZBox::from_bytes(alias.as_bytes());
+                rooted!(&in(cx) let fv = fn_val);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    proto_h.handle().into(),
+                    c_alias.as_ptr(),
+                    fv.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+
         rooted!(&in(cx) let ctor = JS_GetConstructor(cx.raw_cx(), proto_h.handle().into()));
         if !ctor.get().is_null() {
             let ctor_val = ObjectValue(ctor.get());
@@ -203,18 +241,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 }
 
 const METHODS: &[JSFunctionSpec] = &[
-    JSFunctionSpec {
-        name: JSPropertySpec_Name {
-            string_: c"on".as_ptr(),
-        },
-        call: JSNativeWrapper {
-            op: Some(ee_on),
-            info: ::std::ptr::null_mut(),
-        },
-        nargs: 2,
-        flags: JSPROP_ENUMERATE as u16,
-        selfHostedName: ::std::ptr::null_mut(),
-    },
+    // Canonical registration names. Node defines `addListener` and assigns
+    // `on` to it (`EventEmitter.prototype.on.name === 'addListener'`), so the
+    // JSFunctionSpec installs the canonical names only; `on` / `off` /
+    // `addEventListener` / `removeEventListener` are defined below as the
+    // SAME function object (node exposes aliases, not copies —
+    // `on === addListener`, `off === removeListener` holds by reference).
     JSFunctionSpec {
         name: JSPropertySpec_Name {
             string_: c"addListener".as_ptr(),
@@ -229,43 +261,7 @@ const METHODS: &[JSFunctionSpec] = &[
     },
     JSFunctionSpec {
         name: JSPropertySpec_Name {
-            string_: c"addEventListener".as_ptr(),
-        },
-        call: JSNativeWrapper {
-            op: Some(ee_on),
-            info: ::std::ptr::null_mut(),
-        },
-        nargs: 2,
-        flags: JSPROP_ENUMERATE as u16,
-        selfHostedName: ::std::ptr::null_mut(),
-    },
-    JSFunctionSpec {
-        name: JSPropertySpec_Name {
-            string_: c"off".as_ptr(),
-        },
-        call: JSNativeWrapper {
-            op: Some(ee_off),
-            info: ::std::ptr::null_mut(),
-        },
-        nargs: 2,
-        flags: JSPROP_ENUMERATE as u16,
-        selfHostedName: ::std::ptr::null_mut(),
-    },
-    JSFunctionSpec {
-        name: JSPropertySpec_Name {
             string_: c"removeListener".as_ptr(),
-        },
-        call: JSNativeWrapper {
-            op: Some(ee_off),
-            info: ::std::ptr::null_mut(),
-        },
-        nargs: 2,
-        flags: JSPROP_ENUMERATE as u16,
-        selfHostedName: ::std::ptr::null_mut(),
-    },
-    JSFunctionSpec {
-        name: JSPropertySpec_Name {
-            string_: c"removeEventListener".as_ptr(),
         },
         call: JSNativeWrapper {
             op: Some(ee_off),
@@ -879,13 +875,9 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         Vec::new()
     };
 
-    let global = CurrentGlobalOrNull(cx);
-    if global.is_null() {
-        set_state(cx, this_obj_root.get(), state);
-        args.rval().set(BooleanValue(had_listeners));
-        return true;
-    }
-    rooted!(&in(wrapped_cx) let global_root = global);
+    // Node contract: `this` inside a listener is the emitter instance (the
+    // canonical `this.on('x', ...)` / `this.removeListener` listener shapes
+    // depend on it), NOT the global object.
 
     let call_args = if emit_args.is_empty() {
         HandleValueArray::empty()
@@ -910,7 +902,7 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             };
             let ok = JS_CallFunctionValue(
                 cx,
-                global_root.handle().into(),
+                this_obj_root.handle().into(),
                 cb_root.handle().into(),
                 &call_args,
                 rval_h,
