@@ -8,7 +8,7 @@ use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 use ::std::ptr::NonNull;
-use ::std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use ::std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::{RootableVec, RootedVec};
@@ -3044,6 +3044,43 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
     // Register catch-all route
+    //
+    // @trace REQ-ENG-006 [api:Bun.serve request body] [level:design]
+    // Two-phase dispatch. uWS fires the route handler the moment the request
+    // HEADERS are parsed; the request BODY chunks arrive afterwards through
+    // `res.on_data` (uWS HttpContext.h: the body-chunk callback runs after
+    // the route handler returns — first for the remainder of the triggering
+    // socket read, then once more with an empty `last=true` chunk). Building
+    // the Request inside the route handler would leave the body permanently
+    // unobservable (the removed body-factory object whose text()/json()
+    // promises no native ever resolved), so dispatch is split:
+    //   phase 1 (route handler): capture the header set (the uWS Request is
+    //     only valid for this call), register on_aborted + on_data, return
+    //     without responding (the on_aborted registration satisfies uWS'
+    //     "handler must respond or register onAborted" contract).
+    //   phase 2 (on_data `last` chunk): the full body is on hand — build the
+    //     real Request (instanceof Request, absolute URL, Headers face, and
+    //     for bodies an ArrayBuffer init so `req.body` is a genuine
+    //     ReadableStream while text()/json()/arrayBuffer() resolve with the
+    //     received bytes), call the fetch handler, spin the promise to a
+    //     Response, write it.
+    // Responding only after the body is drained also keeps uWS keep-alive
+    // framing intact: an unread body would be misparsed as the start of the
+    // next request on the connection.
+    //
+    // Teardown ownership (exactly-once free of the state Box):
+    //   - on_aborted sets the latch; it frees the state only when no dispatch
+    //     borrow is live (phase == CAPTURED). A connection dying mid-spin
+    //     (phase == DISPATCHING) leaves the free to the spin, which observes
+    //     the latch within one iteration — the dispatch borrow's AtomicBool
+    //     stays valid for the whole spin.
+    //   - phase 2 clears the abort latch BEFORE freeing (a written response
+    //     never fires the latch — same discipline as node_http2's
+    //     h2_on_aborted).
+    //
+    // Body cap: 128 MB (the upstream BodyReaderMixin MAX_BODY_SIZE). Overflow
+    // answers 413 and tears the request down — never a silently truncated
+    // body.
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe extern "C" fn bun_serve_route_handler(
         res: *mut bun_uws_sys::response::c::uws_res,
@@ -3055,207 +3092,102 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         let res_mut = Response::<false>::cast_res(res);
         let req_ref = bun_opaque::opaque_deref_mut(req);
 
-        // REQ-ENG-006 criterion 5: WebSocket upgrade requests are handled by
-        // the `app.ws()` route registered before this `app.any()` route.
-        // If a WS upgrade reaches here, no ws route was registered (no
-        // websocket handler). Upstream Bun semantics: the upgrade request is
-        // delivered to the FETCH handler in that case (the handler sees the
-        // request with `Upgrade: websocket` and decides — typically
-        // answering 4xx or upgrading manually). Only when there is no fetch
-        // handler either do we answer 426 ourselves (audit row
-        // "serve websocket upgrade — client errors before fetch handler
-        // invoked").
-        // A proper WebSocket handshake requires BOTH "Upgrade: websocket" AND
-        // "Sec-WebSocket-Key" headers (RFC 6455 §4.1). Checking only Upgrade
-        // would misclassify non-WS requests that happen to carry an Upgrade
-        // header (e.g. HTTP/2 h2c, CONNECT tunnelling).
-        let upgrade_header = req_ref
-            .header(b"upgrade")
-            .map(|h| h.to_vec())
-            .unwrap_or_default();
-        let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket")
-            && req_ref.header(b"sec-websocket-key").is_some();
-
-        if is_ws_upgrade && ud.fetch_cb_key.is_none() {
-            // Neither handler registered — explicit 426 Upgrade Required.
-            (*res_mut).write_status(b"426 Upgrade Required");
-            (*res_mut).write_header(b"Content-Type", b"text/plain");
-            (*res_mut).end(b"Upgrade Required: no WebSocket handler registered", true);
-            return;
-        }
-
-        // @trace REQ-ENG-006 [api:Bun.serve default response] [level:design]
-        // The reflective default response `{"method":"...","url":"..."}` is
-        // used ONLY when the caller created the server with no `fetch`
-        // handler (e.g. `Bun.serve({ port: 0 })` as a diagnostic echo
-        // server). A registered-but-unresolvable handler is a dispatch
-        // failure and must surface as an explicit 500 (BCE: the old
-        // behavior masked the lost-handler gap by impersonating the
-        // handler's response with a default echo — see the dispatch-after-eval
-        // fix in gc_store.rs).
-        if ud.fetch_cb_key.is_none() {
-            serve_write_default_response(&mut *res_mut, &*req_ref);
-            return;
-        }
-
-        let cx = ud.cx;
-        if cx.is_null() {
-            eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
-            (*res_mut).write_status(b"500 Internal Server Error");
-            (*res_mut).write_header(b"Content-Type", b"text/plain");
-            (*res_mut).end(b"no JS context", true);
-            return;
-        }
-
-        // @trace REQ-ENG-006 [api:Bun.serve fetch handler] [level:design]
-        // Enter the context's persistent realm (first-principles realm model:
-        // one realm per JsContext, held for the context's lifetime). Async
-        // dispatch runs with no realm entered; the fetch handler is stored as
-        // a property on this realm's global (GcStore), so we must be in the
-        // realm to resolve it.
-        let global = match bao_engine::context::thread_realm_global() {
-            Some(g) if !g.is_null() => g,
-            _ => {
-                eprintln!("[bun:serve] no JS realm on this thread — responding 500");
-                (*res_mut).write_status(b"500 Internal Server Error");
-                (*res_mut).write_header(b"Content-Type", b"text/plain");
-                (*res_mut).end(b"no JS realm", true);
-                return;
-            }
-        };
-
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
-        rooted!(&in(cx_ref) let global_root = global);
-        let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
-        let cx_ref: &mut mozjs::context::JSContext = &mut realm;
-
-        // Inside the persistent realm: GcStore resolves the fetch handler.
-        // Registered-but-unresolvable is an explicit dispatch failure → 500
-        // (never a silent default echo that impersonates the handler response).
-        let fetch_handler = match ud.fetch_handler() {
-            Some(h) if !h.is_null() => h,
-            _ => {
-                eprintln!("[bun:serve] fetch handler registered but unresolvable — responding 500");
-                (*res_mut).write_status(b"500 Internal Server Error");
-                (*res_mut).write_header(b"Content-Type", b"text/plain");
-                (*res_mut).end(b"fetch handler unavailable", true);
-                return;
-            }
-        };
-
-        // Absolute-URL authority for the Request face: the client's Host
-        // header (HTTP/1.1 mandatory) wins; Host-less requests fall back to
-        // the serve config's hostname:port.
-        let serve_authority = {
-            let host_header = req_ref
-                .header(b"host")
-                .and_then(|h| ::std::str::from_utf8(h).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            match host_header {
-                Some(h) => h,
-                None => {
-                    let bound = ud.actual_port.load(Ordering::Acquire);
-                    let port = if bound > 0 { bound } else { ud.port };
-                    format!("{}:{}", ud.hostname, port)
-                }
-            }
-        };
-        rooted!(&in(cx_ref) let req_obj = serve_build_request_object(cx_ref, &*req_ref, &serve_authority));
-        if req_obj.get().is_null() {
-            serve_write_default_response(&mut *res_mut, &*req_ref);
-            return;
-        }
-
-        // domain-check a4ed5948b8(own-idiom fix): abort surface. Bun.serve had
-        // NO on_aborted registration — once a connection closed mid-dispatch,
-        // the handler's promise spin kept burning the JS thread to the
-        // iteration cap and then wrote 404 to a dead socket. Register the
-        // abort latch before dispatch: uWS fires on_aborted exactly once per
-        // request when the connection dies before the response ends (same
-        // registration shape as node_http2's h2 path, node_http2.rs:2046; the
-        // ZST closure carries no captures, all state flows through the
-        // heap-allocated AtomicBool pointer). Lifetime discipline:
-        // clear_aborted() BEFORE Box::from_raw on every write path (an ended
-        // response never fires the latch, so the late-close window is closed);
-        // on the abort path the latch has already fired (it is what set the
-        // flag) and the res is dead — do NOT touch it, just free.
-        let abort_flag: *mut AtomicBool = Box::into_raw(Box::new(AtomicBool::new(false)));
-        (*res_mut).on_aborted(
-            |st: *mut AtomicBool, _res: &mut Response<false>| {
-                (*st).store(true, Ordering::Release);
+        // Phase 1 — capture everything the uWS Request can tell us before it
+        // dies at handler return; phase 2 works exclusively off these owned
+        // copies.
+        let method = req_ref.method().to_vec();
+        let url = req_ref.url().to_vec();
+        let mut header_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        req_ref.for_each_header(
+            |pairs: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]| {
+                pairs.push((name.to_vec(), value.to_vec()));
             },
-            abort_flag,
+            &mut header_pairs as *mut Vec<(Vec<u8>, Vec<u8>)>,
         );
 
-        // Call the JS fetch handler: `fetch_handler(request)`.
-        rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
-        rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_obj.get()));
-        let call_args = HandleValueArray {
-            length_: 1,
-            elements_: &*req_val_elem.handle(),
-        };
+        let state = Box::new(ServeRequestState {
+            ud,
+            method,
+            url,
+            headers: header_pairs,
+            body: Vec::new(),
+            body_too_large: false,
+            phase: AtomicU8::new(SERVE_PHASE_CAPTURED),
+            aborted: AtomicBool::new(false),
+        });
+        let state_ptr = Box::into_raw(state);
 
-        let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut rval,
-        };
-        let ok = JS_CallFunctionValue(
-            cx,
-            global_root.handle().into(),
-            handler_val.handle().into(),
-            &call_args,
-            rval_h,
+        // Abort latch: ZST closure, state flows through the heap pointer (the
+        // previous inline dispatch used the identical shape with a standalone
+        // AtomicBool box; the latch now lives in the state so both callbacks
+        // see one object).
+        (*res_mut).on_aborted(
+            |st: *mut ServeRequestState, _res: &mut Response<false>| {
+                (*st).aborted.store(true, Ordering::Release);
+                if (*st).phase.load(Ordering::Acquire) == SERVE_PHASE_CAPTURED {
+                    // No dispatch borrow is live — the abort path owns the
+                    // teardown. (Mid-spin aborts must NOT free: the spin
+                    // holds the borrow and frees on latch observation.)
+                    drop(Box::from_raw(st));
+                }
+            },
+            state_ptr,
         );
-        if !ok {
-            // JS callback threw — clear pending exception and write 500.
-            JS_ClearPendingException(cx);
-            (*res_mut).write_status(b"500 Internal Server Error");
-            (*res_mut).write_header(b"Content-Type", b"text/plain");
-            (*res_mut).end(b"fetch handler threw", true);
-            (*res_mut).clear_aborted();
-            drop(Box::from_raw(abort_flag));
-            return;
-        }
 
-        // The fetch handler may return:
-        //   (a) a Response object synchronously, or
-        //   (b) a Promise<Response> (async handler).
-        // Resolve (b) to a Response by draining microtasks + pending fetches
-        // + due timers in a bounded spin-loop (the route handler runs on the
-        // JS thread, so no other thread can settle the promise — we must run
-        // jobs here). The spin polls the abort latch every iteration and
-        // bails out the moment the connection dies.
-        let resp_obj = serve_resolve_response_value(cx_ref, rval, abort_flag);
-        if (*abort_flag).load(Ordering::Acquire) {
-            // Connection aborted mid-dispatch: the latch already fired (it is
-            // what set the flag, once per request). Abandon the response —
-            // never write to a dead socket, never touch the dead res (same
-            // discipline as h2_on_aborted). Record the abandon for the
-            // regression tests, free the latch, done.
-            SERVE_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
-            drop(Box::from_raw(abort_flag));
-            return;
-        }
-        if resp_obj.is_null() {
-            // Handler returned a non-Response value (undefined/null/etc.) or
-            // the promise rejected. Default to 404 (Bun semantics: returning
-            // nothing from fetch → 404 Not Found).
-            (*res_mut).write_status(b"404 Not Found");
-            (*res_mut).write_header(b"Content-Type", b"text/plain");
-            (*res_mut).end(b"Not Found", true);
-            (*res_mut).clear_aborted();
-            drop(Box::from_raw(abort_flag));
-            return;
-        }
-
-        // Liveness re-check passed above (the flag read precedes this write)
-        // — the socket is still alive; write the handler's response.
-        serve_write_response_object(cx, &mut *res_mut, resp_obj);
-        (*res_mut).clear_aborted();
-        drop(Box::from_raw(abort_flag));
+        // Body chunks. uWS always delivers a final empty `last=true` chunk
+        // once on_data is registered (bodyless requests included), so phase 2
+        // dispatches exactly once per request.
+        (*res_mut).on_data(
+            |st: *mut ServeRequestState, res: &mut Response<false>, chunk: &[u8], last: bool| {
+                if !(*st).body_too_large
+                    && (*st).body.len().saturating_add(chunk.len()) > SERVE_BODY_MAX
+                {
+                    (*st).body_too_large = true;
+                    (*st).body = Vec::new();
+                }
+                if !(*st).body_too_large && !chunk.is_empty() {
+                    (*st).body.extend_from_slice(chunk);
+                }
+                if !last {
+                    return;
+                }
+                if (*st)
+                    .phase
+                    .compare_exchange(
+                        SERVE_PHASE_CAPTURED,
+                        SERVE_PHASE_DISPATCHING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    // Double dispatch — impossible per the uWS contract (the
+                    // inStream handler is cleared after the fin chunk); never
+                    // free a state whose ownership is contested.
+                    return;
+                }
+                if (*st).aborted.load(Ordering::Acquire) {
+                    // Connection died before the body completed. Never touch
+                    // the dead res; the free is ours (the abort handler saw
+                    // phase == DISPATCHING and left the state for us).
+                    SERVE_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    drop(Box::from_raw(st));
+                    return;
+                }
+                if (*st).body_too_large {
+                    (*res).write_status(b"413 Payload Too Large");
+                    (*res).write_header(b"Content-Type", b"text/plain");
+                    (*res).end(b"request body exceeds the 128MB serve body cap", true);
+                    (*res).clear_aborted();
+                    drop(Box::from_raw(st));
+                    return;
+                }
+                serve_dispatch_and_respond(res, st);
+                // serve_dispatch_and_respond owns the response write and the
+                // clear_aborted-before-free teardown on every path.
+            },
+            state_ptr,
+        );
     }
 
     let safe_handler: Option<
@@ -4547,7 +4479,268 @@ impl BunWsUserData {
 /// settles within a few iterations).
 const SERVE_PROMISE_POLL_MAX_ITERS: u32 = 10_000;
 
-/// Build a JS Request object from a uWS Request.
+/// Serve request-body cap (the upstream BodyReaderMixin MAX_BODY_SIZE). A
+/// body that crosses the cap answers 413 instead of silently truncating.
+const SERVE_BODY_MAX: usize = 128 * 1024 * 1024;
+
+/// `ServeRequestState` lifecycle phases (guards the exactly-once state free —
+/// see the teardown discipline on `bun_serve_route_handler`).
+const SERVE_PHASE_CAPTURED: u8 = 1;
+const SERVE_PHASE_DISPATCHING: u8 = 2;
+
+/// Per-request serve dispatch state, shared between the uWS route callback
+/// (phase 1: capture) and the body-chunk callback (phase 2: dispatch). Owned
+/// by neither callback alone — freed exactly once per the phase discipline
+/// documented on `bun_serve_route_handler`.
+struct ServeRequestState {
+    /// Server-level user data (cx / handler key / port fallback). Lives for
+    /// the server's lifetime, so a borrowed copy cannot dangle.
+    ud: *const BunServeUserData,
+    /// Captured header set — the uWS Request dies when the route handler
+    /// returns, so phase 2 works exclusively off these owned copies.
+    method: Vec<u8>,
+    url: Vec<u8>,
+    headers: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Accumulated request body bytes (drained through `res.on_data`).
+    body: Vec<u8>,
+    /// Set when the body crossed `SERVE_BODY_MAX` — phase 2 answers 413.
+    body_too_large: bool,
+    /// CAPTURED → DISPATCHING; guards the exactly-once free.
+    phase: AtomicU8,
+    /// on_aborted latch (the former standalone abort_flag box, folded in so
+    /// both callbacks share one object).
+    aborted: AtomicBool,
+}
+
+/// Phase-2 serve dispatch: the full request headers + body are captured in
+/// `st` and the body has completed. Enter the persistent realm, resolve the
+/// fetch handler, build the Request face (with the received bytes as its
+/// body), invoke the handler, spin the returned Promise to a Response, and
+/// write it.
+///
+/// Owns the teardown on every path: `clear_aborted()` BEFORE the state Box
+/// free (a written response never fires the latch), and never touches `res`
+/// once the latch has fired (the abort handler saw phase == DISPATCHING and
+/// left the state free to this function).
+///
+/// # Safety
+/// - `res_mut` must be a live `&mut Response<false>` for the duration of the
+///   dispatch (guaranteed by the uWS on_data callback contract).
+/// - `st` must be a live `*mut ServeRequestState` in `SERVE_PHASE_DISPATCHING`
+///   with the abort latch clear, whose freeing ownership has passed to this
+///   call.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_dispatch_and_respond(res_mut: &mut Response<false>, st: *mut ServeRequestState) {
+    let state = &mut *st;
+    let ud = &*state.ud;
+
+    let cx = ud.cx;
+    if cx.is_null() {
+        eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"no JS context", true);
+        (*res_mut).clear_aborted();
+        drop(Box::from_raw(st));
+        return;
+    }
+
+    // REQ-ENG-006 criterion 5: WebSocket upgrade requests are handled by
+    // the `app.ws()` route registered before this `app.any()` route. If a
+    // WS upgrade reaches here, no ws route was registered (no websocket
+    // handler). Upstream Bun semantics: the upgrade request is delivered to
+    // the FETCH handler in that case (the handler sees the request with
+    // `Upgrade: websocket` and decides — typically answering 4xx or
+    // upgrading manually). Only when there is no fetch handler either do we
+    // answer 426 ourselves. A proper WebSocket handshake requires BOTH
+    // "Upgrade: websocket" AND "Sec-WebSocket-Key" headers (RFC 6455 §4.1).
+    // Checking only Upgrade would misclassify non-WS requests that happen
+    // to carry an Upgrade header (e.g. HTTP/2 h2c, CONNECT tunnelling).
+    let header_lookup = |name: &[u8]| -> Option<&[u8]> {
+        state
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_slice())
+    };
+    let upgrade_header = header_lookup(b"upgrade").unwrap_or(b"");
+    let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket")
+        && header_lookup(b"sec-websocket-key").is_some();
+
+    if is_ws_upgrade && ud.fetch_cb_key.is_none() {
+        // Neither handler registered — explicit 426 Upgrade Required.
+        (*res_mut).write_status(b"426 Upgrade Required");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"Upgrade Required: no WebSocket handler registered", true);
+        (*res_mut).clear_aborted();
+        drop(Box::from_raw(st));
+        return;
+    }
+
+    // The reflective default response is used ONLY when the caller created
+    // the server with no `fetch` handler (see the phase-1 route comment for
+    // the dispatch-failure 500 discipline).
+    if ud.fetch_cb_key.is_none() {
+        serve_write_default_response(res_mut, &state.method, &state.url);
+        (*res_mut).clear_aborted();
+        drop(Box::from_raw(st));
+        return;
+    }
+
+    // Enter the context's persistent realm (first-principles realm model:
+    // one realm per JsContext, held for the context's lifetime). Async
+    // dispatch runs with no realm entered; the fetch handler is stored as
+    // a property on this realm's global (GcStore), so we must be in the
+    // realm to resolve it.
+    let global = match bao_engine::context::thread_realm_global() {
+        Some(g) if !g.is_null() => g,
+        _ => {
+            eprintln!("[bun:serve] no JS realm on this thread — responding 500");
+            (*res_mut).write_status(b"500 Internal Server Error");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"no JS realm", true);
+            (*res_mut).clear_aborted();
+            drop(Box::from_raw(st));
+            return;
+        }
+    };
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+
+    // Inside the persistent realm: GcStore resolves the fetch handler.
+    // Registered-but-unresolvable is an explicit dispatch failure → 500
+    // (never a silent default echo that impersonates the handler response).
+    let fetch_handler = match ud.fetch_handler() {
+        Some(h) if !h.is_null() => h,
+        _ => {
+            eprintln!("[bun:serve] fetch handler registered but unresolvable — responding 500");
+            (*res_mut).write_status(b"500 Internal Server Error");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"fetch handler unavailable", true);
+            (*res_mut).clear_aborted();
+            drop(Box::from_raw(st));
+            return;
+        }
+    };
+
+    // Absolute-URL authority for the Request face: the client's Host header
+    // (HTTP/1.1 mandatory) wins; Host-less requests fall back to the serve
+    // config's hostname:port.
+    let serve_authority = {
+        let host_header = header_lookup(b"host")
+            .and_then(|h| ::std::str::from_utf8(h).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        match host_header {
+            Some(h) => h,
+            None => {
+                let bound = ud.actual_port.load(Ordering::Acquire);
+                let port = if bound > 0 { bound } else { ud.port };
+                format!("{}:{}", ud.hostname, port)
+            }
+        }
+    };
+
+    // The Request body: the received wire bytes (empty for bodyless
+    // requests — a zero-length body and no body surface identically through
+    // the Request face, and the builder takes no body init in that case).
+    let body_bytes = ::std::mem::take(&mut state.body);
+    let body_init = if body_bytes.is_empty() {
+        None
+    } else {
+        Some(body_bytes)
+    };
+    rooted!(&in(cx_ref) let req_obj = serve_build_request_object(
+        cx_ref,
+        &state.method,
+        &state.url,
+        &state.headers,
+        &serve_authority,
+        body_init,
+    ));
+    if req_obj.get().is_null() {
+        serve_write_default_response(res_mut, &state.method, &state.url);
+        (*res_mut).clear_aborted();
+        drop(Box::from_raw(st));
+        return;
+    }
+
+    // Call the JS fetch handler: `fetch_handler(request)`. The abort latch
+    // lives in the state (alive for the whole dispatch borrow), so the spin
+    // can bail the moment the connection dies mid-dispatch.
+    rooted!(&in(cx_ref) let handler_val = ObjectValue(fetch_handler));
+    rooted!(&in(cx_ref) let req_val_elem = ObjectValue(req_obj.get()));
+    let call_args = HandleValueArray {
+        length_: 1,
+        elements_: &*req_val_elem.handle(),
+    };
+
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let ok = JS_CallFunctionValue(
+        cx,
+        global_root.handle().into(),
+        handler_val.handle().into(),
+        &call_args,
+        rval_h,
+    );
+    if !ok {
+        // JS callback threw — clear pending exception and write 500.
+        JS_ClearPendingException(cx);
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"fetch handler threw", true);
+        (*res_mut).clear_aborted();
+        drop(Box::from_raw(st));
+        return;
+    }
+
+    // The fetch handler may return:
+    //   (a) a Response object synchronously, or
+    //   (b) a Promise<Response> (async handler).
+    // Resolve (b) to a Response by draining microtasks + pending fetches
+    // + due timers in a bounded spin-loop (the route handler runs on the
+    // JS thread, so no other thread can settle the promise — we must run
+    // jobs here). The spin polls the abort latch every iteration and
+    // bails out the moment the connection dies.
+    let resp_obj = serve_resolve_response_value(cx_ref, rval, &state.aborted);
+    if (*state).aborted.load(Ordering::Acquire) {
+        // Connection aborted mid-dispatch: the latch already fired (it is
+        // what set the flag, once per request). Abandon the response —
+        // never write to a dead socket, never touch the dead res (same
+        // discipline as h2_on_aborted). Record the abandon for the
+        // regression tests; no clear_aborted (the res is dead).
+        SERVE_ABORT_COUNT.fetch_add(1, Ordering::Relaxed);
+        drop(Box::from_raw(st));
+        return;
+    }
+    if resp_obj.is_null() {
+        // Handler returned a non-Response value (undefined/null/etc.) or
+        // the promise rejected. Default to 404 (Bun semantics: returning
+        // nothing from fetch → 404 Not Found).
+        (*res_mut).write_status(b"404 Not Found");
+        (*res_mut).write_header(b"Content-Type", b"text/plain");
+        (*res_mut).end(b"Not Found", true);
+        (*res_mut).clear_aborted();
+        drop(Box::from_raw(st));
+        return;
+    }
+
+    // Liveness re-check passed above (the flag read precedes this write)
+    // — the socket is still alive; write the handler's response.
+    serve_write_response_object(cx, &mut *res_mut, resp_obj);
+    (*res_mut).clear_aborted();
+    drop(Box::from_raw(st));
+}
+
+/// Build a JS Request object for a captured serve request.
 ///
 /// Upstream Bun hands serve handlers a REAL `Request` instance:
 /// `req instanceof Request` is true, `req.url` is the ABSOLUTE URL
@@ -4562,56 +4755,52 @@ const SERVE_PROMISE_POLL_MAX_ITERS: u32 = 10_000;
 /// which would uppercase it AND reject arbitrary wire tokens with a
 /// TypeError — a serve handler must receive whatever method the client sent.
 ///
-/// Body: the WHATWG `body` getter of the constructed Request surfaces null
-/// (the previous per-request body-factory object was dead plumbing — its
-/// text()/json() promises could never settle because no native on_data hook
-/// ever resolves them — and is not carried over).
+/// Body: for requests that carried one, the received wire bytes are handed
+/// to the builder as an ArrayBuffer init — the Request class classifies that
+/// into its `_bodyBytes` slot, so the WHATWG `body` getter surfaces a
+/// genuine ReadableStream (the web_streams.js face, fed by the class's own
+/// start(controller) enqueue) and `text()` / `json()` / `arrayBuffer()` /
+/// `blob()` consume the received bytes through the class's ordinary body
+/// paths. `req.body` is null exactly when the client sent no body.
 ///
 /// # Safety
 /// - `cx_ref` must be a live `&mut mozjs::JSContext` on the current thread.
-/// - `req_ref` must be a live `&Request` (uWS-owned, valid for the duration
-///   of this call).
+/// - `headers` must be the captured header set (phase-1 copies — the uWS
+///   Request is long gone by phase 2).
 ///
 /// Returns a non-null `*mut JSObject` on success, null on failure (the
 /// caller falls back to the reflective default response).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn serve_build_request_object(
     cx_ref: &mut mozjs::context::JSContext,
-    req_ref: &Request,
+    method: &[u8],
+    url: &[u8],
+    headers: &[(Vec<u8>, Vec<u8>)],
     authority: &str,
+    body: Option<Vec<u8>>,
 ) -> *mut JSObject {
     let raw_cx = cx_ref.raw_cx();
 
-    let method_bytes = req_ref.method();
-    let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET").to_string();
+    let method_str = ::std::str::from_utf8(method).unwrap_or("GET").to_string();
 
     // url — uWS exposes the request target (path + query) as a relative
     // form; the Request face carries the ABSOLUTE URL (upstream Bun), so
     // prefix the scheme + authority.
-    let url_bytes = req_ref.url();
-    let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
+    let url_str = ::std::str::from_utf8(url).unwrap_or("/");
     let absolute_url = if url_str.starts_with('/') {
         format!("http://{}{}", authority, url_str)
     } else {
         format!("http://{}/{}", authority, url_str)
     };
 
-    // headers — iterate ALL headers via uWS forEachHeader (not just
-    // hardcoded common headers) so the request carries every header the
-    // client sent. Built as a plain record first; the JS helper consumes it
-    // through the Headers constructor.
+    // headers — every captured header the client sent. Built as a plain
+    // record first; the JS helper consumes it through the Headers
+    // constructor.
     rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx_ref));
     if headers_obj.get().is_null() {
         return ::std::ptr::null_mut();
     }
-    let mut header_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    req_ref.for_each_header(
-        |pairs: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]| {
-            pairs.push((name.to_vec(), value.to_vec()));
-        },
-        &mut header_pairs as *mut Vec<(Vec<u8>, Vec<u8>)>,
-    );
-    for (name, value) in &header_pairs {
+    for (name, value) in headers {
         let c_k = ZBox::from_bytes(name);
         // Header values can carry UTF-8 — build the JSString through the
         // UTF-8 decoder, not the Latin-1 byte copy.
@@ -4629,6 +4818,33 @@ unsafe fn serve_build_request_object(
         }
     }
 
+    // Body — the received bytes go in as an ArrayBuffer (binary-exact: no
+    // UTF-8 lossy decode, `arrayBuffer()` returns the identical bytes).
+    let body_ab_val = match body {
+        None => UndefinedValue(),
+        Some(bytes) => {
+            let ab_obj = mozjs_sys::jsapi::JS::NewArrayBuffer(raw_cx, bytes.len());
+            if ab_obj.is_null() {
+                return ::std::ptr::null_mut();
+            }
+            rooted!(&in(cx_ref) let ab_root = ab_obj);
+            if !bytes.is_empty() {
+                let mut is_shared = false;
+                let data_ptr = mozjs_sys::jsapi::JS::GetArrayBufferMaybeSharedData(
+                    ab_root.get(),
+                    &mut is_shared,
+                    ::std::ptr::null(),
+                );
+                if data_ptr.is_null() {
+                    return ::std::ptr::null_mut();
+                }
+                ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+            }
+            ObjectValue(ab_root.get())
+        }
+    };
+    rooted!(&in(cx_ref) let body_val = body_ab_val);
+
     // Construct the real Request instance through the global Request class
     // (installed by web_fetch_classes::install_fetch_classes) so
     // `instanceof Request` and the Headers face are genuine. The tiny
@@ -4637,8 +4853,10 @@ unsafe fn serve_build_request_object(
     let builder_obj = match gc_store_get(raw_cx, "serve_request_builder") {
         Some(o) if !o.is_null() => o,
         _ => {
-            let builder_src = r#"(function(method, url, headers) {
-  var r = new Request(url, { headers: headers });
+            let builder_src = r#"(function(method, url, headers, bodyInit) {
+  var init = { headers: headers };
+  if (bodyInit !== undefined) init.body = bodyInit;
+  var r = new Request(url, init);
   r.method = method; // wire-case method preserved (no IANA normalization)
   return r;
 })"#;
@@ -4694,9 +4912,10 @@ unsafe fn serve_build_request_object(
         m_val.handle().get(),
         u_val.handle().get(),
         h_val.handle().get(),
+        body_val.handle().get(),
     ];
     let call_arr = HandleValueArray {
-        length_: 3,
+        length_: 4,
         elements_: call_vals.as_ptr(),
     };
     let mut call_rval = UndefinedValue();
@@ -4748,16 +4967,16 @@ unsafe fn serve_build_request_object(
 ///
 /// # Safety
 /// - `cx_ref` must be a live `&mut mozjs::JSContext` on the current thread.
-/// - `abort_flag` must be null or a live `*mut AtomicBool` owned by the
-///   caller for the duration of this call (the route handler's on_aborted
-///   latch).
+/// - `abort_flag` must stay valid for the duration of this call (the serve
+///   dispatch state's on_aborted latch — the dispatcher borrow keeps it
+///   alive for the whole spin).
 /// - Must be called with no other JS-thread code mutating runtime state
 ///   (the route handler is the sole mutator during dispatch).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn serve_resolve_response_value(
     cx_ref: &mut mozjs::context::JSContext,
     rval: JSVal,
-    abort_flag: *mut AtomicBool,
+    abort_flag: &AtomicBool,
 ) -> *mut JSObject {
     if !rval.is_object() {
         return ::std::ptr::null_mut();
@@ -4785,7 +5004,7 @@ unsafe fn serve_resolve_response_value(
         // mid-dispatch — nothing can consume this response anymore. Exit NOW
         // instead of burning the JS thread to the cap; the caller sees the
         // aborted latch and abandons the write (never write to a dead socket).
-        if !abort_flag.is_null() && (*abort_flag).load(Ordering::Acquire) {
+        if abort_flag.load(Ordering::Acquire) {
             return ::std::ptr::null_mut();
         }
 
@@ -5209,12 +5428,16 @@ unsafe fn serve_write_response_object(
 /// expect the canonical uppercase form ("GET"/"POST"/...). Mirrors the
 /// behavior the legacy synchronous path produced.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn serve_write_default_response(res_mut: &mut Response<false>, req_ref: &Request) {
-    let method_bytes = req_ref.method();
-    let url_bytes = req_ref.url();
-    let method_str_lower = ::std::str::from_utf8(method_bytes).unwrap_or("get");
+unsafe fn serve_write_default_response(
+    res_mut: &mut Response<false>,
+    method: &[u8],
+    url: &[u8],
+) {
+    // Works off the captured phase-1 copies — the uWS Request is long dead
+    // by the time this runs (phase 2).
+    let method_str_lower = ::std::str::from_utf8(method).unwrap_or("get");
     let method_str = method_str_lower.to_ascii_uppercase();
-    let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
+    let url_str = ::std::str::from_utf8(url).unwrap_or("/");
 
     let body = serde_json::json!({
         "method": method_str,
@@ -6307,7 +6530,495 @@ unsafe fn define_bunfile_methods(
         3,
         JSPROP_ENUMERATE as u32,
     );
+    // writer() — FileSink face (upstream BunFile.writer()); writes go
+    // incrementally to the real descriptor.
+    // @trace REQ-ENG-007 [api:Bun.file.writer FileSink]
+    JS_DefineFunction(
+        cx,
+        obj,
+        c"writer".as_ptr(),
+        Some(bun_file_writer),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
 }
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-007 [api:Bun.file.writer FileSink] — BunFile.writer()
+//
+// `Bun.file(path).writer()` / `Bun.file(fd).writer()` return a FileSink: a
+// buffered, REAL-descriptor streaming writer (port of the upstream
+// webcore::FileSink face, scoped to this runtime's synchronous
+// JS-thread write path).
+//
+// Semantics (mirroring the upstream FileSink):
+//   - write(chunk) → number: accepts string (UTF-8 bytes) / typed array /
+//     ArrayBuffer, appends to the sink buffer, and auto-flushes through to
+//     the fd once the buffer reaches `highWaterMark` (default 16 KiB).
+//     Returns the number of bytes accepted by this call. After end() the
+//     sink is dead and every write reports 0 — the bytes are never silently
+//     dropped into a live buffer.
+//   - flush() → Promise<number>: writes the buffered bytes to the fd,
+//     resolving with the byte count actually flushed.
+//   - end() → Promise<number>: flushes what remains, closes the descriptor
+//     (only when the sink opened it — a `Bun.file(fd)` writer never closes a
+//     descriptor it does not own), and resolves with the total bytes
+//     written. The sink state is torn down; the final total is preserved on
+//     the JS object so a second end() resolves with the same number instead
+//     of dereferencing freed state.
+//   - ref() / unref() → this: passthrough faces. In this design writes
+//     complete synchronously to the fd on the JS thread (no event-loop
+//     pending-write state exists to keep alive), so the faces are
+//     identity-preserving for API compatibility.
+//
+// Ownership / GC discipline: the Rust state lives in a heap Box whose
+// pointer is stored in the sink object's `_sinkPtr` PrivateValue slot (the
+// same full-64-bit pattern as the server object's `_appPtr`). No JSObject
+// pointer crosses threads and no raw pointer survives past end(); writes
+// happen inline on the JS thread. Delta vs upstream (which closes at GC
+// finalize): a sink that is abandoned WITHOUT end() keeps its descriptor
+// until process exit — end() is the documented close point, matching the
+// observable contract of every FileSink repro.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Rust-side FileSink state (held by the sink object's `_sinkPtr` slot).
+struct BunFileSinkState {
+    /// Owning handle — Some only when the sink opened the file itself (the
+    /// path form). Dropped (closing the descriptor) at end(). The stdio
+    /// descriptors are never closed by the Drop guard.
+    file: Option<bun_sys::File>,
+    /// Raw descriptor used for every write (owned or borrowed form).
+    fd: i32,
+    /// Display identity for error messages.
+    display: String,
+    /// Buffered bytes not yet handed to the fd.
+    buf: Vec<u8>,
+    /// Auto-flush threshold (upstream highWaterMark default 16 KiB).
+    high_water_mark: usize,
+    /// Total bytes handed to the fd so far.
+    written_total: u64,
+    /// Set by end() — a dead sink accepts nothing further.
+    ended: bool,
+}
+
+impl BunFileSinkState {
+    /// Write everything currently buffered to the fd. Returns the number of
+    /// bytes flushed by THIS call.
+    fn flush_buf(&mut self) -> ::std::result::Result<u64, ::std::io::Error> {
+        if self.buf.is_empty() {
+            return Ok(0);
+        }
+        let n = self.buf.len() as u64;
+        // Write path: the owned handle when present, otherwise a non-owning
+        // view of the borrowed descriptor (`Bun.file(fd).writer()` never
+        // takes ownership of the caller's descriptor).
+        let result = match self.file.as_ref() {
+            Some(f) => f.write_all(&self.buf),
+            None => bun_sys::File::borrow(&bun_sys::Fd::from_native(self.fd)).write_all(&self.buf),
+        };
+        match result {
+            Ok(()) => {
+                self.written_total += n;
+                self.buf.clear();
+                Ok(n)
+            }
+            Err(e) => Err(::std::io::Error::from_raw_os_error(e.errno as i32)),
+        }
+    }
+}
+
+/// Read the sink state pointer off a FileSink receiver.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn bun_file_sink_state(
+    cx: *mut JSContext,
+    this: Handle<Value>,
+) -> Option<*mut BunFileSinkState> {
+    if !this.is_object() {
+        return None;
+    }
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let obj = this.get().to_object());
+    let mut ptr_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj.handle().into(),
+        c"_sinkPtr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ptr_val,
+        },
+    );
+    if !ptr_val.is_double() || (ptr_val.asBits_ & 0xFFFF000000000000) != 0 {
+        // Absent / a plain double — the sink already ended (the slot was
+        // cleared) or this is not a FileSink at all.
+        return None;
+    }
+    let ptr = ptr_val.to_private() as *mut BunFileSinkState;
+    if ptr.is_null() {
+        None
+    } else {
+        Some(ptr)
+    }
+}
+
+/// `BunFile.writer(options?)` — create the FileSink.
+///
+/// The path form opens the target with write+create+truncate (the upstream
+/// `Bun.file(path).writer()` open mode); the fd form writes to the live
+/// descriptor WITHOUT taking ownership of it.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_writer(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        JS_ReportErrorUTF8(cx, c"BunFile.writer: not a BunFile receiver".as_ptr());
+        return false;
+    }
+
+    // Optional { highWaterMark } (upstream writer option).
+    let mut high_water_mark: usize = 16 * 1024;
+    if argc > 0 {
+        let opts_val = *args.get(0).ptr;
+        if opts_val.is_object() {
+            let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped;
+            rooted!(&in(cx_ref) let opts_obj = opts_val.to_object());
+            let mut hwm_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                opts_obj.handle().into(),
+                c"highWaterMark".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut hwm_val,
+                },
+            );
+            if hwm_val.is_int32() {
+                let n = hwm_val.to_int32();
+                if n > 0 {
+                    high_water_mark = n as usize;
+                }
+            } else if hwm_val.is_double() {
+                let n = hwm_val.to_double();
+                if n > 0.0 {
+                    high_water_mark = n as usize;
+                }
+            }
+        }
+    }
+
+    let src = match bunfile_src(cx, this) {
+        Some(s) => s,
+        None => {
+            JS_ReportErrorUTF8(
+                cx,
+                c"BunFile.writer: receiver has no readable path or fd".as_ptr(),
+            );
+            return false;
+        }
+    };
+
+    let (file, fd, display) = match src {
+        BunfileSrc::Path(path) => {
+            // Same open discipline as Bun.write (unix libc flags; Windows
+            // decodes through bun_sys::O). Write + create + truncate: the
+            // writer owns the target from offset 0.
+            let zpath = ZBox::from_bytes(path.as_bytes());
+            match bun_sys::File::open(
+                zpath.as_zstr(),
+                bun_sys::O::WRONLY | bun_sys::O::CREAT | bun_sys::O::TRUNC | bun_sys::O::CLOEXEC,
+                0o666 as bun_core::Mode,
+            ) {
+                Ok(f) => {
+                    let fd = f.fd().native();
+                    (Some(f), fd, path)
+                }
+                Err(e) => {
+                    let code = bunfile_io_code(&::std::io::Error::from_raw_os_error(e.errno as i32));
+                    let msg = format!("BunFile.writer: failed to open {}: errno {}", path, e.errno);
+                    let c_code = ZBox::from_bytes(code.as_bytes());
+                    let c_msg = ZBox::from_bytes(msg.as_bytes());
+                    JS_ReportErrorUTF8(cx, c"%s: %s".as_ptr(), c_code.as_ptr(), c_msg.as_ptr());
+                    return false;
+                }
+            }
+        }
+        BunfileSrc::Fd(fd) => {
+            // Borrowed descriptor — never closed by this sink.
+            (None, fd, format!("/proc/self/fd/{}", fd))
+        }
+    };
+
+    let state = Box::new(BunFileSinkState {
+        file,
+        fd,
+        display,
+        buf: Vec::new(),
+        high_water_mark,
+        written_total: 0,
+        ended: false,
+    });
+    let state_ptr = Box::into_raw(state);
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let sink_obj = JS_NewPlainObject(cx_ref));
+    if sink_obj.get().is_null() {
+        drop(Box::from_raw(state_ptr));
+        JS_ReportErrorUTF8(cx, c"BunFile.writer: failed to create the sink object".as_ptr());
+        return false;
+    }
+
+    let sink_h = sink_obj.handle().into();
+    // `_sinkPtr` — PrivateValue preserves the full 64-bit pointer (same
+    // pattern as the server object's `_appPtr`).
+    let ptr_val = mozjs::jsval::PrivateValue(state_ptr as *const core::ffi::c_void);
+    rooted!(&in(cx_ref) let ptr_root = ptr_val);
+    JS_DefineProperty(cx, sink_h, c"_sinkPtr".as_ptr(), ptr_root.handle().into(), 0);
+
+    // Chainable passthrough faces + the write family.
+    JS_DefineFunction(cx_ref, sink_obj.handle(), c"write".as_ptr(), Some(bun_file_sink_write), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx_ref, sink_obj.handle(), c"flush".as_ptr(), Some(bun_file_sink_flush), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx_ref, sink_obj.handle(), c"end".as_ptr(), Some(bun_file_sink_end), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx_ref, sink_obj.handle(), c"ref".as_ptr(), Some(bun_file_sink_ref), 0, 0);
+    JS_DefineFunction(cx_ref, sink_obj.handle(), c"unref".as_ptr(), Some(bun_file_sink_unref), 0, 0);
+
+    args.rval().set(mozjs::jsval::ObjectValue(sink_obj.get()));
+    true
+}
+
+/// FileSink.write(chunk) → number of bytes accepted. Strings are UTF-8
+/// encoded; typed arrays / ArrayBuffers are copied byte-exact. The buffer
+/// auto-flushes through to the fd once it reaches highWaterMark.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_sink_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+
+    let chunk: Vec<u8> = if argc > 0 && (*args.get(0).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
+    } else if argc > 0 && (*args.get(0).ptr).is_object() {
+        let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped;
+        rooted!(&in(cx_ref) let body_obj = (*args.get(0).ptr).to_object());
+        if let Ok(view) = mozjs::typedarray::TypedArray::<
+            mozjs::typedarray::ArrayBufferViewU8,
+            *mut JSObject,
+        >::from(body_obj.get())
+        {
+            // Copy out before any further JSAPI call.
+            match view.to_vec() {
+                Some(bytes) => bytes,
+                None => Vec::new(),
+            }
+        } else if let Ok(ab) = mozjs::typedarray::TypedArray::<
+            mozjs::typedarray::ArrayBufferU8,
+            *mut JSObject,
+        >::from(body_obj.get())
+        {
+            match ab.to_vec() {
+                Some(bytes) => bytes,
+                None => Vec::new(),
+            }
+        } else {
+            JS_ReportErrorUTF8(
+                cx,
+                c"FileSink.write: chunk must be a string, Buffer/Uint8Array, or ArrayBuffer"
+                    .as_ptr(),
+            );
+            return false;
+        }
+    } else {
+        JS_ReportErrorUTF8(
+            cx,
+            c"FileSink.write: chunk must be a string, Buffer/Uint8Array, or ArrayBuffer".as_ptr(),
+        );
+        return false;
+    };
+
+    let state_ptr = match bun_file_sink_state(cx, this) {
+        Some(p) => p,
+        None => {
+            // Ended sink (or non-sink receiver): nothing is accepted.
+            args.rval().set(Int32Value(0));
+            return true;
+        }
+    };
+    let state = &mut *state_ptr;
+
+    let accepted = chunk.len();
+    state.buf.extend_from_slice(&chunk);
+    if state.buf.len() >= state.high_water_mark {
+        if let Err(e) = state.flush_buf() {
+            let code = bunfile_io_code(&e);
+            let msg = format!("FileSink.write: flush failed on {}: {}", state.display, e);
+            let c_code = ZBox::from_bytes(code.as_bytes());
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s: %s".as_ptr(), c_code.as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    }
+
+    args.rval().set(mozjs::jsval::DoubleValue(accepted as f64));
+    true
+}
+
+/// FileSink.flush() → Promise<number> resolving with the bytes this flush
+/// handed to the fd.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_sink_flush(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let flush_result = match bun_file_sink_state(cx, this) {
+        Some(p) => (*p).flush_buf(),
+        None => Ok(0),
+    };
+
+    match flush_result {
+        Ok(n) => {
+            rooted!(&in(cx_ref) let flushed = DoubleValue(n as f64));
+            let _ = JS::ResolvePromise(cx, promise.handle().into(), flushed.handle().into());
+        }
+        Err(e) => {
+            let code = bunfile_io_code(&e);
+            let display = match bun_file_sink_state(cx, this) {
+                Some(p) => (*p).display.clone(),
+                None => String::new(),
+            };
+            let msg = format!("FileSink.flush failed on {}: {}", display, e);
+            rooted!(&in(cx_ref) let err_val = make_coded_error_value(cx, code, &msg));
+            let _ = JS::RejectPromise(cx, promise.handle().into(), err_val.handle().into());
+        }
+    }
+
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+/// FileSink.end() → Promise<number> resolving with the total bytes written.
+/// Flushes what remains, closes the descriptor when the sink owns it, and
+/// tears the state down (the final total survives on the JS object so a
+/// second end() resolves with the same number).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_sink_end(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let state_ptr = match bun_file_sink_state(cx, this) {
+        Some(p) => p,
+        None => {
+            // Already ended: resolve the preserved final total.
+            let mut total_val = UndefinedValue();
+            rooted!(&in(cx_ref) let obj = this.get().to_object());
+            JS_GetProperty(
+                cx,
+                obj.handle().into(),
+                c"_finalWritten".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut total_val,
+                },
+            );
+            let total = if total_val.is_number() {
+                total_val.to_number()
+            } else {
+                0.0
+            };
+            rooted!(&in(cx_ref) let tv = DoubleValue(total));
+            let _ = JS::ResolvePromise(cx, promise.handle().into(), tv.handle().into());
+            args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+            return true;
+        }
+    };
+
+    let mut state = Box::from_raw(state_ptr);
+    let total;
+    let display = state.display.clone();
+    let mut err: Option<::std::io::Error> = None;
+
+    if state.ended {
+        total = state.written_total;
+    } else {
+        match state.flush_buf() {
+            Ok(_flushed) => total = state.written_total,
+            Err(e) => {
+                total = state.written_total;
+                err = Some(e);
+            }
+        }
+    }
+
+    // Preserve the final total on the JS object BEFORE dropping the state so
+    // repeat end() calls resolve with the same number, then tear down (the
+    // owned File's Drop closes the descriptor; borrowed descriptors are left
+    // to their owner).
+    rooted!(&in(cx_ref) let obj = this.get().to_object());
+    rooted!(&in(cx_ref) let total_root = DoubleValue(total as f64));
+    JS_DefineProperty(
+        cx,
+        obj.handle().into(),
+        c"_finalWritten".as_ptr(),
+        total_root.handle().into(),
+        0,
+    );
+    let undef_val = UndefinedValue();
+    rooted!(&in(cx_ref) let undef_root = undef_val);
+    JS_SetProperty(cx, obj.handle().into(), c"_sinkPtr".as_ptr(), undef_root.handle().into());
+    drop(state);
+
+    match err {
+        None => {
+            rooted!(&in(cx_ref) let tv = DoubleValue(total as f64));
+            let _ = JS::ResolvePromise(cx, promise.handle().into(), tv.handle().into());
+        }
+        Some(e) => {
+            let code = bunfile_io_code(&e);
+            let msg = format!("FileSink.end failed on {}: {}", display, e);
+            rooted!(&in(cx_ref) let err_val = make_coded_error_value(cx, code, &msg));
+            let _ = JS::RejectPromise(cx, promise.handle().into(), err_val.handle().into());
+        }
+    }
+
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+/// FileSink.ref() / FileSink.unref() — chainable passthrough faces (writes
+/// complete synchronously on the JS thread; there is no event-loop
+/// pending-write state to keep alive — see the FileSink module comment).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_sink_ref(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(*args.thisv());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_sink_unref(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(*args.thisv());
+    true
+}
+
 
 /// What a BunFile instance points at: the fd form carries a live descriptor
 /// (its `path` is a derived /proc/self/fd link — the descriptor itself is the
