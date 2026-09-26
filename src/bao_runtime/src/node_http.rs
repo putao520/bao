@@ -964,6 +964,347 @@ impl ServerUserData {
     }
 }
 
+// ──────────────────────────────────────────────────────────────
+// Server request body streaming — the IncomingMessage 'data'/'end' face
+//
+// Node semantics: the request handler receives a Readable-shaped
+// IncomingMessage and `rq.on('data', cb)` / `rq.on('end', cb)` must deliver
+// the body. uWS fires the route handler at HEADERS-complete; the body
+// streams in through `res.on_data` afterwards (HttpContext.h always delivers
+// a final empty `last=true` chunk — bodyless requests included — so 'end'
+// fires for GETs too). The on_data/on_aborted callbacks are therefore
+// registered BEFORE the JS handler runs, keyed by the uWS res pointer in a
+// thread-local registry: a registry miss means the request was already torn
+// down and the late uWS callback is a no-op (never a dangling dispatch).
+//
+// Teardown is exactly-once by map removal, owned by whichever terminal fires
+// first: the fin chunk (dispatch + fail-closed 500 if nobody answered), the
+// abort (client died mid-body), or the handler-throw path in the route
+// handler (500 already written there).
+// ──────────────────────────────────────────────────────────────
+
+/// Monotonic request ID for per-request GcStore key namespacing.
+static NEXT_SERVER_REQ_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Per-request body-stream state. `req_key` resolves the request object from
+/// GcStore (GC-safe: no raw JSObject held across the uWS callback boundary).
+struct ServerReqBodyState {
+    cx: *mut JSContext,
+    req_key: String,
+}
+
+thread_local! {
+    /// uWS res pointer → state. Single-threaded uWS/JS loop (the route
+    /// handler and every body callback run on the loop thread, same as
+    /// LISTEN_TCP_SOCKETS in bun_listen).
+    static SERVER_REQ_BODIES: RefCell<::std::collections::HashMap<usize, ServerReqBodyState>> =
+        RefCell::new(::std::collections::HashMap::new());
+}
+
+/// Remove the registry entry and its GcStore request reference. Safe to call
+/// at any terminal: the callbacks re-check the registry, so a stale uWS
+/// callback after teardown is a no-op, and removal wins the exactly-once race
+/// whichever terminal fires first.
+unsafe fn server_req_body_teardown(res_ptr: usize) {
+    let entry = SERVER_REQ_BODIES.with(|m| m.borrow_mut().remove(&res_ptr));
+    if let Some(st) = entry {
+        if !st.cx.is_null() {
+            gc_store_remove_ns(st.cx, "http", &st.req_key);
+        }
+    }
+}
+
+/// Build the JS value for one body chunk: a fresh Uint8Array holding a copy
+/// of the uWS chunk (the uWS buffer is only valid for this callback), then
+/// upgraded to a real Buffer via the realm's `Buffer.from` — Node 'data'
+/// chunks are Buffers (`chunk.toString()` / `instanceof Buffer` must behave).
+/// Falls back to the bare Uint8Array when no Buffer face exists (same
+/// fallback contract as the client face's `_chunk`).
+unsafe fn server_req_chunk_value(
+    cx_ref: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    chunk: &[u8],
+) -> JSVal {
+    let raw_cx = cx_ref.raw_cx();
+    rooted!(&in(cx_ref) let global_root = global);
+    rooted!(&in(cx_ref) let arr = w2::JS_NewUint8Array(cx_ref, chunk.len()));
+    if arr.get().is_null() {
+        return UndefinedValue();
+    }
+    if !chunk.is_empty() {
+        let mut ta_len: usize = 0;
+        let mut shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped = JS_GetObjectAsUint8Array(arr.get(), &mut ta_len, &mut shared, &mut data);
+        if unwrapped.is_null() || data.is_null() || ta_len < chunk.len() {
+            return UndefinedValue();
+        }
+        ::std::ptr::copy_nonoverlapping(chunk.as_ptr(), data, chunk.len());
+    }
+
+    // Buffer.from(u8) — copy into a proper Buffer instance.
+    if !global.is_null() {
+        let mut buf_val = UndefinedValue();
+        JS_GetProperty(
+            raw_cx,
+            global_root.handle().into(),
+            c"Buffer".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut buf_val,
+            },
+        );
+        if buf_val.is_object() {
+            rooted!(&in(cx_ref) let buf_root = buf_val.to_object());
+            let mut from_val = UndefinedValue();
+            JS_GetProperty(
+                raw_cx,
+                buf_root.handle().into(),
+                c"from".as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut from_val,
+                },
+            );
+            if from_val.is_object() {
+                rooted!(&in(cx_ref) let from_root = from_val.to_object());
+                let u8_val = ObjectValue(arr.get());
+                rooted!(&in(cx_ref) let u8_root = u8_val);
+                let args_vals = [u8_root.get()];
+                let call_args = HandleValueArray {
+                    length_: 1,
+                    elements_: args_vals.as_ptr(),
+                };
+                let from_fn_val = ObjectValue(from_root.get());
+                rooted!(&in(cx_ref) let from_fn_root = from_fn_val);
+                let mut rval = UndefinedValue();
+                let ok = JS_CallFunctionValue(
+                    raw_cx,
+                    buf_root.handle().into(),
+                    from_fn_root.handle().into(),
+                    &call_args,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut rval,
+                    },
+                );
+                if ok && rval.is_object() {
+                    return rval;
+                }
+                JS_ClearPendingException(raw_cx);
+            }
+        }
+    }
+    ObjectValue(arr.get())
+}
+
+/// Emit `event` (with one optional arg) on the request object through its
+/// `emit` function — the shared node_events emit, which routes listener
+/// throws to the unified uncaught-exception router itself. A `false` return
+/// means the emit surface itself failed; the caller routes the pending
+/// exception (same split as the 'upgrade' emit in the route handler).
+unsafe fn server_req_emit(
+    cx: *mut JSContext,
+    req_obj: *mut JSObject,
+    event: &str,
+    arg: JSVal,
+) -> bool {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let req_root = req_obj);
+    // Root the arg BEFORE the event-string allocation below — a minor GC
+    // there moves nursery objects and a bare value held across it goes stale
+    // (same UB class h2_emit_event documents).
+    rooted!(&in(cx_ref) let arg_root = arg);
+
+    let mut emit_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        req_root.handle().into(),
+        c"emit".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut emit_val,
+        },
+    );
+    if !emit_val.is_object() {
+        return false;
+    }
+    rooted!(&in(cx_ref) let emit_fn = emit_val.to_object());
+
+    let c_event = ZBox::from_bytes(event.as_bytes());
+    let event_str = JS_NewStringCopyZ(cx, c_event.as_ptr());
+    if event_str.is_null() {
+        return false;
+    }
+    let ev_val = StringValue(&*event_str);
+    rooted!(&in(cx_ref) let ev_root = ev_val);
+
+    let args_vals = [ev_root.get(), arg_root.get()];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: args_vals.as_ptr(),
+    };
+    let emit_fn_val = ObjectValue(emit_fn.get());
+    rooted!(&in(cx_ref) let emit_fn_root = emit_fn_val);
+
+    let mut rval = UndefinedValue();
+    let ok = JS_CallFunctionValue(
+        cx,
+        req_root.handle().into(),
+        emit_fn_root.handle().into(),
+        &call_args,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        },
+    );
+    if !ok {
+        JS_ClearPendingException(cx);
+        return false;
+    }
+    rval.is_boolean() && rval.to_boolean()
+}
+
+/// res.on_data callback: dispatch one body chunk to the request object's
+/// 'data' listeners as it arrives (per-chunk streaming, Node semantics); on
+/// the final `last=true` chunk fire 'end' and own the terminal: a request
+/// whose handler never answered gets an explicit 500 (the route-handler-tail
+/// deferral hands the fail-closed duty here), then the registry entry is
+/// torn down.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn server_req_body_chunk(
+    ud: *mut ::std::ffi::c_void,
+    res: &mut Response<false>,
+    chunk: &[u8],
+    last: bool,
+) {
+    let res_ptr = ud as usize;
+    let Some((cx, req_key)) = SERVER_REQ_BODIES.with(|m| {
+        m.borrow()
+            .get(&res_ptr)
+            .map(|st| (st.cx, st.req_key.clone()))
+    }) else {
+        return; // torn down — late uWS callback
+    };
+    if cx.is_null() {
+        return;
+    }
+
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        return;
+    };
+    if global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let cx_ref: &mut mozjs::context::JSContext = &mut realm;
+    let raw_cx = cx_ref.raw_cx();
+
+    if let Some(req_obj) = gc_store_get_ns(cx, "http", &req_key).filter(|o| !o.is_null()) {
+        rooted!(&in(cx_ref) let req_root = req_obj);
+        if !chunk.is_empty() {
+            let chunk_val = server_req_chunk_value(cx_ref, global, chunk);
+            if !chunk_val.is_undefined() {
+                if !server_req_emit(cx, req_root.get(), "data", chunk_val) {
+                    route_pending_exception(raw_cx, cx_ref);
+                }
+            }
+        }
+        if last {
+            // Node IncomingMessage lifecycle flag: complete once the message
+            // (head + body) has been fully received — set BEFORE 'end' fires
+            // (parserOnMessageComplete runs ahead of the 'end' delivery).
+            let done_val = mozjs::jsval::BooleanValue(true);
+            rooted!(&in(cx_ref) let done_root = done_val);
+            JS_SetProperty(
+                raw_cx,
+                req_root.handle().into(),
+                c"complete".as_ptr(),
+                done_root.handle().into(),
+            );
+            if !server_req_emit(cx, req_root.get(), "end", UndefinedValue()) {
+                route_pending_exception(raw_cx, cx_ref);
+            }
+        }
+    }
+
+    if last {
+        // Fail-closed terminal (mirrors the route-handler tail): a handler
+        // that registered listeners but never answered — and a handler that
+        // registered nothing and returned — gets an explicit 500, never a
+        // silent hang. Suppressed when the response already completed.
+        if !res.state().is_http_end_called() {
+            eprintln!("[node:http] request handler did not respond — responding 500");
+            res.write_status(b"500 Internal Server Error");
+            res.write_header(b"Content-Type", b"text/plain");
+            res.end(b"request handler did not respond", true);
+        }
+        // A response written here must not also trip the abort latch
+        // (bun_serve's clear-aborted-before-free discipline).
+        res.clear_aborted();
+        server_req_body_teardown(res_ptr);
+    }
+}
+
+/// res.on_aborted callback: the client died before the request completed.
+/// Node fires 'aborted' on the IncomingMessage; then the request state is
+/// torn down (whichever terminal — this or the fin chunk — fires first wins
+/// the exactly-once removal).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn server_req_body_aborted(ud: *mut ::std::ffi::c_void) {
+    let res_ptr = ud as usize;
+    let Some((cx, req_key)) = SERVER_REQ_BODIES.with(|m| {
+        m.borrow()
+            .get(&res_ptr)
+            .map(|st| (st.cx, st.req_key.clone()))
+    }) else {
+        return;
+    };
+
+    if !cx.is_null() {
+        if let Some(global) = bao_engine::context::thread_realm_global() {
+            if !global.is_null() {
+                if let Some(req_obj) = gc_store_get_ns(cx, "http", &req_key).filter(|o| !o.is_null())
+                {
+                    let mut wrapped_cx =
+                        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    let cx_ref = &mut wrapped_cx;
+                    rooted!(&in(cx_ref) let global_root = global);
+                    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+                    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+                    let raw_cx = realm_cx.raw_cx();
+                    rooted!(&in(realm_cx) let req_root = req_obj);
+                    if !server_req_emit(cx, req_root.get(), "aborted", UndefinedValue()) {
+                        route_pending_exception(raw_cx, realm_cx);
+                    }
+                }
+            }
+        }
+    }
+    server_req_body_teardown(res_ptr);
+}
+
+/// `rq.resume()` / `rq.pause()` — flow-control no-ops returning the request
+/// object (push-streamed body; see the resume/pause wiring above).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn req_stream_noop(
+    _cx: *mut JSContext,
+    argc: u32,
+    vp: *mut mozjs::jsval::JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if args.thisv().is_object() {
+        args.rval().set(ObjectValue(args.thisv().to_object()));
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+    true
+}
+
 /// uWS route handler callback. Called by uWS C++ when an HTTP request arrives.
 ///
 /// Reads method/url/headers from the uWS `Request` (already parsed by C++),
@@ -1114,6 +1455,106 @@ unsafe extern "C" fn uws_route_handler(
         );
     }
 
+    // Node.js: the request object is an EventEmitter (IncomingMessage), so
+    // `rq.on('data', ...)` / `rq.on('end', ...)` / `rq.emit(...)` must work.
+    // Attach the shared EventEmitter natives from node_events — same wiring
+    // as the server object (the EE state lives in a hidden property on the
+    // object, so this works without changing the object's prototype).
+    //
+    // @trace REQ-ENG-007 [sm:IncomingMessage]
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"on".as_ptr(),
+        Some(crate::node_events::ee_on),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"addListener".as_ptr(),
+        Some(crate::node_events::ee_on),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"once".as_ptr(),
+        Some(crate::node_events::ee_once),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"off".as_ptr(),
+        Some(crate::node_events::ee_off),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"removeListener".as_ptr(),
+        Some(crate::node_events::ee_off),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"prependListener".as_ptr(),
+        Some(crate::node_events::ee_prepend),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"prependOnceListener".as_ptr(),
+        Some(crate::node_events::ee_prepend_once),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"removeAllListeners".as_ptr(),
+        Some(crate::node_events::ee_remove_all),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"emit".as_ptr(),
+        Some(crate::node_events::ee_emit),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    // Flow-control face: the body streams through res.on_data regardless of
+    // listener state (push model, same documented semantics as the client
+    // face's resume/pause), so both are genuine no-ops that return the
+    // request object.
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"resume".as_ptr(),
+        Some(req_stream_noop),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx_ref,
+        req_obj.handle(),
+        c"pause".as_ptr(),
+        Some(req_stream_noop),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+
     // Detect WebSocket upgrade: if `Upgrade: websocket` header is present,
     // emit 'upgrade' event on the server object instead of 'request'.
     let upgrade_header = req_ref
@@ -1259,10 +1700,77 @@ unsafe extern "C" fn uws_route_handler(
         return;
     }
 
+    // ── IncomingMessage body stream ──
+    // Register on_data/on_aborted BEFORE the handler call: uWS fires the
+    // route handler at HEADERS-complete and the body arrives through these
+    // callbacks afterwards (always closed by a final empty last=true chunk),
+    // which is what makes `rq.on('data'/'end')` delivery possible at all.
+    // The registry entry is keyed by the uWS res pointer and torn down at
+    // exactly one terminal (fin dispatch / abort / handler throw).
+    let req_id = NEXT_SERVER_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let req_key = format!("http_server_req_{}", req_id);
+    gc_store_insert_ns(cx, "http", &req_key, req_obj.get());
+    SERVER_REQ_BODIES.with(|m| {
+        m.borrow_mut().insert(
+            res as usize,
+            ServerReqBodyState {
+                cx,
+                req_key,
+            },
+        );
+    });
+    (*res_mut).on_data(
+        |ud: *mut ::std::ffi::c_void,
+         res_cb: &mut Response<false>,
+         chunk: &[u8],
+         last: bool| { server_req_body_chunk(ud, res_cb, chunk, last) },
+        res as *mut ::std::ffi::c_void,
+    );
+    (*res_mut).on_aborted(
+        |ud: *mut ::std::ffi::c_void, _res_cb: &mut Response<false>| {
+            server_req_body_aborted(ud);
+        },
+        res as *mut ::std::ffi::c_void,
+    );
+
     // Build JS response object with writeHead/write/end bridging to uWS Response.
     rooted!(&in(cx_ref) let res_obj = w2::JS_NewPlainObject(cx_ref));
     if res_obj.get().is_null() {
         return;
+    }
+
+    // Node.js: ServerResponse is an EventEmitter too (OutgoingMessage) —
+    // `rs.on('error', ...)` is standard usage and must not throw. Same shared
+    // node_events wiring as the request object above.
+    //
+    // @trace REQ-ENG-007 [sm:ServerResponse]
+    let ee_on: JSNative = Some(crate::node_events::ee_on);
+    let ee_once: JSNative = Some(crate::node_events::ee_once);
+    let ee_off: JSNative = Some(crate::node_events::ee_off);
+    let ee_prepend: JSNative = Some(crate::node_events::ee_prepend);
+    let ee_prepend_once: JSNative = Some(crate::node_events::ee_prepend_once);
+    let ee_remove_all: JSNative = Some(crate::node_events::ee_remove_all);
+    let ee_emit: JSNative = Some(crate::node_events::ee_emit);
+    for (name, op, arity) in [
+        ("on", ee_on, 2u32),
+        ("addListener", ee_on, 2),
+        ("once", ee_once, 2),
+        ("off", ee_off, 2),
+        ("removeListener", ee_off, 2),
+        ("prependListener", ee_prepend, 2),
+        ("prependOnceListener", ee_prepend_once, 2),
+        ("removeAllListeners", ee_remove_all, 1),
+        ("emit", ee_emit, 1),
+    ] {
+        let c_name = ZBox::from_bytes(name.as_bytes());
+        w2::JS_DefineFunction(
+            cx_ref,
+            res_obj.handle(),
+            c_name.as_ptr(),
+            op,
+            arity,
+            JSPROP_ENUMERATE as u32,
+        );
     }
 
     w2::JS_DefineFunction(
@@ -1333,7 +1841,11 @@ unsafe extern "C" fn uws_route_handler(
         rval_h,
     );
     if !ok {
-        // Handler threw — explicit 500 (never silent terminate).
+        // Handler threw — explicit 500 (never silent terminate). The body
+        // stream state is torn down here: the 500 is already on the wire and
+        // a late body callback must not dispatch into a failed handler (the
+        // registry re-check makes the late uWS callback a no-op).
+        server_req_body_teardown(res as usize);
         JS_ClearPendingException(raw_cx);
         eprintln!("[node:http] request handler threw — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
@@ -1341,15 +1853,14 @@ unsafe extern "C" fn uws_route_handler(
         (*res_mut).end(b"request handler threw", true);
         return;
     }
-    // Handler returned without ending the response. uWS would
-    // std::terminate (returning from a request handler without responding);
-    // fail explicitly instead of crashing the process.
-    if !(*res_mut).state().is_http_end_called() {
-        eprintln!("[node:http] request handler returned without responding — responding 500");
-        (*res_mut).write_status(b"500 Internal Server Error");
-        (*res_mut).write_header(b"Content-Type", b"text/plain");
-        (*res_mut).end(b"handler did not respond", true);
-    }
+    // Handler returned without ending the response. Node semantics allow a
+    // body-driven response: the 'data'/'end' listeners registered on the
+    // request object fire when the body completes (uWS always delivers the
+    // final last=true chunk), and server_req_body_chunk owns the fail-closed
+    // duty — an unanswered request gets an explicit 500 there, never a silent
+    // hang (on_aborted covers a client dying mid-body, uWS timeouts a
+    // stalled one). uWS's own "must respond or register on_data/on_aborted"
+    // contract is satisfied by the registration above.
 }
 
 // ──────────────────────────────────────────────────────────────
