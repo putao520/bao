@@ -1797,6 +1797,275 @@ unsafe extern "C" fn text_encoder_encode_into(
     true
 }
 
+// ── TextDecoder label families (WHATWG encoding label table) ──
+// The decode dispatch is by label family; the `.encoding` getter keeps
+// echoing the caller's lowercased label (the runtime's established face:
+// `new TextDecoder('latin1').encoding === "latin1"`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TdFamily {
+    Utf8,
+    /// windows-1252 label family (latin1 / iso-8859-1 / ascii aliases):
+    /// single-byte table, 0x00-0xFF → U+0000-U+00FF.
+    Latin1,
+    Utf16Le,
+}
+
+fn td_label_family(label: &str) -> TdFamily {
+    match label {
+        "utf-8" | "utf8" | "unicode-1-1-utf-8" | "unicode11utf8" | "unicode20utf8"
+        | "x-unicode20utf8" => TdFamily::Utf8,
+        "windows-1252" | "cp1252" | "x-cp1252" | "iso-8859-1" | "iso8859-1" | "iso88591"
+        | "iso_8859-1" | "iso-ir-100" | "csisolatin1" | "l1" | "latin1" | "latin-1"
+        | "ascii" | "us-ascii" | "ansi_x3.4-1968" | "cp819" | "ibm819" => TdFamily::Latin1,
+        "utf-16le" | "utf-16" => TdFamily::Utf16Le,
+        // Unknown labels keep the runtime's legacy face: they echo the label
+        // and decode through the UTF-8 path.
+        _ => TdFamily::Utf8,
+    }
+}
+
+/// Read a property off `obj` (UndefinedValue when obj is null / absent prop).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn td_prop(cx: *mut JSContext, obj: *mut JSObject, name: &[u8]) -> JSVal {
+    let mut out = UndefinedValue();
+    if obj.is_null() {
+        return out;
+    }
+    let wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped) let obj_r = obj);
+    let cname = ZBox::from_bytes(name.to_vec());
+    let _ = JS_GetProperty(
+        cx,
+        obj_r.handle().into(),
+        cname.as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut out,
+        },
+    );
+    out
+}
+
+/// Read a boolean property (absent / non-boolean → false).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn td_prop_bool(cx: *mut JSContext, obj: *mut JSObject, name: &[u8]) -> bool {
+    let v = td_prop(cx, obj, name);
+    v.is_boolean() && v.to_boolean()
+}
+
+/// Read a boolean property with an explicit default for the absent case.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn td_prop_bool_or(cx: *mut JSContext, obj: *mut JSObject, name: &[u8], dflt: bool) -> bool {
+    let v = td_prop(cx, obj, name);
+    if v.is_boolean() {
+        v.to_boolean()
+    } else {
+        dflt
+    }
+}
+
+/// Read a string property as a Rust String (None when absent / non-string).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn td_prop_string(cx: *mut JSContext, obj: *mut JSObject, name: &[u8]) -> Option<String> {
+    let v = td_prop(cx, obj, name);
+    if v.is_string() {
+        Some(crate::js_to_rust_string(cx, v))
+    } else {
+        None
+    }
+}
+
+/// Persist the streaming carry (pending bytes held for the next decode call)
+/// on the decoder instance. GC-safe: the bytes live in a real Uint8Array the
+/// instance roots — no raw-pointer caching. Empty carry → undefined slot.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn td_store_carry(cx: *mut JSContext, obj: *mut JSObject, carry: &[u8]) {
+    if obj.is_null() {
+        return;
+    }
+    let val = if carry.is_empty() {
+        UndefinedValue()
+    } else {
+        let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, carry.len());
+        if u8_obj.is_null() {
+            return;
+        }
+        let mut is_shared = false;
+        let data = mozjs_sys::jsapi::JS_GetUint8ArrayData(u8_obj, &mut is_shared, ::std::ptr::null());
+        if !data.is_null() {
+            ::std::ptr::copy_nonoverlapping(carry.as_ptr(), data, carry.len());
+        }
+        ObjectValue(u8_obj)
+    };
+    let wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped) let obj_r = obj);
+    rooted!(&in(wrapped) let val_r = val);
+    let _ = JS_DefineProperty(
+        cx,
+        obj_r.handle().into(),
+        c"__bao_carry".as_ptr(),
+        val_r.handle().into(),
+        0u32,
+    );
+}
+
+/// Persist the BOM-decision flag for streaming decoders (true until the BOM
+/// check for the stream has been decided).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn td_store_bom_pending(cx: *mut JSContext, obj: *mut JSObject, pending: bool) {
+    if obj.is_null() {
+        return;
+    }
+    let wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped) let obj_r = obj);
+    rooted!(&in(wrapped) let val_r = BooleanValue(pending));
+    let _ = JS_DefineProperty(
+        cx,
+        obj_r.handle().into(),
+        c"__bao_bom_pending".as_ptr(),
+        val_r.handle().into(),
+        0u32,
+    );
+}
+
+/// WHATWG BufferSource extraction: ArrayBufferView (every view type,
+/// byteOffset-adjusted) OR ArrayBuffer → byte vector. Returns None (with a
+/// pending TypeError) for anything that is not a BufferSource; detached
+/// buffers surface as an empty byte sequence per spec.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn td_buffer_source_bytes(cx: *mut JSContext, input: JSVal) -> Option<Vec<u8>> {
+    if !input.is_object() {
+        let mut cx_s =
+            unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+        mozjs::error::throw_type_error_safe(
+            &mut cx_s,
+            c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
+        );
+        return None;
+    }
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj = input.to_object());
+    unsafe {
+        let mut len: usize = 0;
+        let mut is_shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+            obj.get(),
+            &mut len,
+            &mut is_shared,
+            &mut data,
+        );
+        if !unwrapped.is_null() && !data.is_null() {
+            // A live view yields the byteOffset-adjusted pointer directly.
+            return Some(::std::slice::from_raw_parts(data, len).to_vec());
+        }
+        if !unwrapped.is_null() {
+            return Some(Vec::new()); // detached view: empty byte sequence
+        }
+        let ab_unwrapped =
+            mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj.get(), &mut len, &mut data);
+        if !ab_unwrapped.is_null() && !data.is_null() {
+            return Some(::std::slice::from_raw_parts(data, len).to_vec());
+        }
+        if !ab_unwrapped.is_null() {
+            return Some(Vec::new()); // detached ArrayBuffer
+        }
+        let mut cx_s =
+            unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
+        mozjs::error::throw_type_error_safe(
+            &mut cx_s,
+            c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
+        );
+        None
+    }
+}
+
+/// UTF-8 decode core. Returns the emitted text (None = fatal violation, the
+/// caller must throw a TypeError). `carry_out` receives the incomplete
+/// trailing sequence held for the next streaming call.
+///
+/// - stream mode: a sequence truncated at the buffer end is HELD (spec:
+///   byte stream semantics — never a premature U+FFFD).
+/// - end-of-stream (stream:false): a truncated tail is U+FFFD (fatal →
+///   throw); a genuinely invalid sequence throws under fatal, otherwise the
+///   whole buffer decodes lossy (Rust's from_utf8_lossy follows the WHATWG
+///   "maximal subpart" replacement rule).
+fn td_decode_utf8(buffer: &[u8], streaming: bool, fatal: bool, carry_out: &mut Vec<u8>) -> Option<String> {
+    carry_out.clear();
+    match ::std::str::from_utf8(buffer) {
+        Ok(s) => Some(s.to_string()),
+        Err(e) if e.error_len().is_none() => {
+            let v = e.valid_up_to();
+            if streaming {
+                carry_out.extend_from_slice(&buffer[v..]);
+                Some(String::from_utf8_lossy(&buffer[..v]).into_owned())
+            } else if fatal {
+                None
+            } else {
+                let mut out = String::from_utf8_lossy(&buffer[..v]).into_owned();
+                out.push('\u{FFFD}');
+                Some(out)
+            }
+        }
+        Err(_) => {
+            if fatal {
+                None
+            } else {
+                Some(String::from_utf8_lossy(buffer).into_owned())
+            }
+        }
+    }
+}
+
+/// UTF-16LE decode core: consumes little-endian byte PAIRS as code units,
+/// combines surrogate pairs, and maps lone surrogates to U+FFFD. An odd
+/// trailing byte is held in `carry_out` when streaming, otherwise decoded as
+/// U+FFFD at end of stream. A high surrogate that is the last complete unit
+/// of a streaming call is also held (its pair may arrive in the next chunk).
+fn td_decode_utf16le(buffer: &[u8], streaming: bool, carry_out: &mut Vec<u8>) -> Vec<u16> {
+    carry_out.clear();
+    let (pair_bytes, tail_byte) = if buffer.len() % 2 == 0 {
+        (buffer, None)
+    } else {
+        (&buffer[..buffer.len() - 1], Some(buffer[buffer.len() - 1]))
+    };
+    let units: Vec<u16> = pair_bytes
+        .chunks_exact(2)
+        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .collect();
+    let mut out: Vec<u16> = Vec::with_capacity(units.len());
+    let mut j = 0usize;
+    while j < units.len() {
+        let u = units[j];
+        if (0xD800..=0xDBFF).contains(&u) {
+            let next_low = j + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[j + 1]);
+            if next_low {
+                out.push(u);
+                out.push(units[j + 1]);
+                j += 2;
+                continue;
+            }
+            if j + 1 == units.len() && streaming {
+                // Pair-pending surrogate: hold its bytes (plus any odd tail
+                // byte, which chronologically follows it).
+                carry_out.extend_from_slice(&buffer[j * 2..]);
+                return out;
+            }
+            out.push(0xFFFD);
+            j += 1;
+            continue;
+        }
+        out.push(if (0xDC00..=0xDFFF).contains(&u) { 0xFFFD } else { u });
+        j += 1;
+    }
+    match tail_byte {
+        Some(_) if streaming => carry_out.push(tail_byte.unwrap()),
+        Some(_) => out.push(0xFFFD), // odd trailing byte at end of stream
+        None => {}
+    }
+    out
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn text_decoder_constructor(
     cx: *mut JSContext,
@@ -1809,20 +2078,31 @@ unsafe extern "C" fn text_decoder_constructor(
         args.rval().set(UndefinedValue());
         return true;
     }
+    // WHATWG label normalization: strip ASCII whitespace, ASCII-lowercase.
     let encoding = if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_string() {
-            crate::js_to_rust_string(cx, v)
+            crate::js_to_rust_string(cx, v).trim().to_lowercase()
         } else {
             "utf-8".to_string()
         }
     } else {
         "utf-8".to_string()
     };
-    let encoding_lower = encoding.to_lowercase();
+    // Options bag: { fatal, ignoreBOM } — both surface as the spec getters
+    // AND drive the decode behavior (non-writable, so they cannot be tampered
+    // with after construction).
+    let opts_obj = if argc > 1 && (*args.get(1).ptr).is_object() {
+        (*args.get(1).ptr).to_object()
+    } else {
+        ::std::ptr::null_mut()
+    };
+    let fatal = unsafe { td_prop_bool(cx, opts_obj, b"fatal") };
+    let ignore_bom = unsafe { td_prop_bool(cx, opts_obj, b"ignoreBOM") };
+
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_r = obj);
-    let encoding_str = js_string_from_utf8(cx, &encoding_lower);
+    let encoding_str = js_string_from_utf8(cx, &encoding);
     if !encoding_str.is_null() {
         let val = StringValue(&*encoding_str);
         rooted!(&in(wrapped_cx) let val_root = val);
@@ -1834,7 +2114,7 @@ unsafe extern "C" fn text_decoder_constructor(
             (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
         );
     }
-    rooted!(&in(wrapped_cx) let fatal_val = BooleanValue(false));
+    rooted!(&in(wrapped_cx) let fatal_val = BooleanValue(fatal));
     JS_DefineProperty(
         cx,
         obj_r.handle().into(),
@@ -1842,7 +2122,7 @@ unsafe extern "C" fn text_decoder_constructor(
         fatal_val.handle().into(),
         (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
     );
-    rooted!(&in(wrapped_cx) let bom_val = BooleanValue(false));
+    rooted!(&in(wrapped_cx) let bom_val = BooleanValue(ignore_bom));
     JS_DefineProperty(
         cx,
         obj_r.handle().into(),
@@ -1850,6 +2130,9 @@ unsafe extern "C" fn text_decoder_constructor(
         bom_val.handle().into(),
         (JSPROP_ENUMERATE | JSPROP_READONLY) as u32,
     );
+    // Hidden streaming state (non-enumerable): pending carry bytes + BOM flag.
+    td_store_carry(cx, obj, &[]);
+    td_store_bom_pending(cx, obj, true);
 
     JS_DefineFunction(
         &mut wrapped_cx,
@@ -1867,77 +2150,105 @@ unsafe extern "C" fn text_decoder_constructor(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 {
-        let empty = JS_NewStringCopyZ(cx, c"".as_ptr());
-        args.rval().set(if empty.is_null() {
-            UndefinedValue()
-        } else {
-            StringValue(&*empty)
-        });
-        return true;
-    }
 
-    let input = *args.get(0).ptr;
-    // Primitive input (number/string/null) is not a BufferSource — spec
-    // TypeError. Guard BEFORE to_object(): to_object() on a non-object
-    // asserts.
-    if !input.is_object() {
-        {
-            let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-            mozjs::error::throw_type_error_safe(
-                &mut cx_s,
-                c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
-            );
+    // input: omitted or `undefined` → empty byte sequence (the spec's
+    // optional BufferSource). Anything else must be a BufferSource.
+    let mut input_bytes: Vec<u8> = Vec::new();
+    if argc > 0 && !(*args.get(0).ptr).is_undefined() {
+        match td_buffer_source_bytes(cx, *args.get(0).ptr) {
+            Some(b) => input_bytes = b,
+            None => return false, // TypeError pending
         }
-        return false;
     }
+    // options.stream
+    let streaming = argc > 1
+        && (*args.get(1).ptr).is_object()
+        && td_prop_bool(cx, (*args.get(1).ptr).to_object(), b"stream");
 
-    // WHATWG BufferSource extraction: ArrayBufferView (Uint8Array & every
-    // other view, byteOffset-adjusted) OR ArrayBuffer. Both take the direct
-    // data-pointer path — the previous generic length+GetElement loop read
-    // view ELEMENTS one by one and produced "" for a bare ArrayBuffer (it
-    // has no `length` property). Anything that is not a BufferSource is a
-    // TypeError per spec (decode() with no args returns "" above).
-    let bytes: Vec<u8> = {
-        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let obj = input.to_object());
-        let mut len: usize = 0;
-        let mut is_shared = false;
-        let mut data: *mut u8 = ::std::ptr::null_mut();
-        let unwrapped =
-            mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(obj.get(), &mut len, &mut is_shared, &mut data);
-        if !unwrapped.is_null() && !data.is_null() {
-            // Detached views surface as length 0 + null data (handled below);
-            // a live view yields the byteOffset-adjusted pointer directly.
-            ::std::slice::from_raw_parts(data, len).to_vec()
-        } else if !unwrapped.is_null() {
-            Vec::new() // detached view: empty byte sequence per spec
+    // Instance face: encoding family + fatal/ignoreBOM options + stream state.
+    let this_obj = if args.thisv().is_object() {
+        args.thisv().to_object()
+    } else {
+        ::std::ptr::null_mut()
+    };
+    let encoding = td_prop_string(cx, this_obj, b"encoding").unwrap_or_else(|| "utf-8".to_string());
+    let family = td_label_family(&encoding);
+    let fatal = td_prop_bool(cx, this_obj, b"fatal");
+    let ignore_bom = td_prop_bool(cx, this_obj, b"ignoreBOM");
+
+    // State: the held carry always prepends — a streaming call resumes it and
+    // a stream:false call is the end-of-stream FLUSH of everything buffered
+    // so far (state resets after the call).
+    let carry_val = td_prop(cx, this_obj, b"__bao_carry");
+    let mut buffer = if carry_val.is_object() {
+        td_buffer_source_bytes(cx, carry_val).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    buffer.extend_from_slice(&input_bytes);
+    let mut bom_pending = if streaming {
+        td_prop_bool_or(cx, this_obj, b"__bao_bom_pending", true)
+    } else {
+        true
+    };
+    let mut carry_out: Vec<u8> = Vec::new();
+
+    // BOM handling: stripped by default (ignored only under ignoreBOM:true).
+    // A streaming call whose buffer is still a strict prefix of the BOM holds
+    // the bytes until the decision can be made.
+    if !ignore_bom && bom_pending {
+        let bom: &[u8] = match family {
+            TdFamily::Utf8 => &[0xEF, 0xBB, 0xBF],
+            TdFamily::Utf16Le => &[0xFF, 0xFE],
+            TdFamily::Latin1 => &[],
+        };
+        if bom.is_empty() {
+            bom_pending = false;
         } else {
-            let ab_unwrapped =
-                mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj.get(), &mut len, &mut data);
-            if !ab_unwrapped.is_null() && !data.is_null() {
-                ::std::slice::from_raw_parts(data, len).to_vec()
-            } else if !ab_unwrapped.is_null() {
-                Vec::new() // detached ArrayBuffer
-            } else {
-                {
-                    let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-                    mozjs::error::throw_type_error_safe(
-                        &mut cx_s,
-                        c"The provided value is not an instance of ArrayBuffer or ArrayBufferView"
-                            .as_ref(),
-                    );
+            let n = bom.len().min(buffer.len());
+            if buffer[..n] == bom[..n] {
+                if n < bom.len() {
+                    if streaming {
+                        td_store_carry(cx, this_obj, &buffer);
+                        td_store_bom_pending(cx, this_obj, true);
+                        let empty = JS_NewStringCopyN(cx, c"".as_ptr(), 0);
+                        args.rval().set(if empty.is_null() {
+                            UndefinedValue()
+                        } else {
+                            StringValue(&*empty)
+                        });
+                        return true;
+                    }
+                    bom_pending = false; // truncated BOM at EOS decodes as data
+                } else {
+                    buffer.drain(..bom.len());
+                    bom_pending = false;
                 }
-                return false;
+            } else {
+                bom_pending = false;
             }
         }
+    }
+
+    // Dispatch by label family.
+    let utf16: Vec<u16> = match family {
+        TdFamily::Latin1 => buffer.iter().map(|&b| b as u16).collect(),
+        TdFamily::Utf8 => match td_decode_utf8(&buffer, streaming, fatal, &mut carry_out) {
+            Some(text) => text.encode_utf16().collect(),
+            None => {
+                // fatal:true — spec TypeError on invalid / truncated input.
+                report_type_error(cx, "The encoded data is not valid.");
+                return false;
+            }
+        },
+        TdFamily::Utf16Le => td_decode_utf16le(&buffer, streaming, &mut carry_out),
     };
 
-    // TextDecoder defaults to fatal:false — invalid sequences become U+FFFD
-    // replacement characters instead of throwing.
-    let decoded = String::from_utf8_lossy(&bytes).into_owned();
+    // Persist stream state: the held carry + the BOM-decision flag (a
+    // stream:false call resets both).
+    td_store_carry(cx, this_obj, &carry_out);
+    td_store_bom_pending(cx, this_obj, if streaming { bom_pending } else { true });
 
-    let utf16: Vec<u16> = decoded.encode_utf16().collect();
     let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
     args.rval().set(if js_str.is_null() {
         UndefinedValue()

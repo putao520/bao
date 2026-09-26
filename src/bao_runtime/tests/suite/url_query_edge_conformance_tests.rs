@@ -124,8 +124,9 @@ fn test_urlsearchparams_parse_edges() {
             new URLSearchParams('a=1&b=2&a=3').forEach(function (v, k) { out.push(k + '=' + v); });
             return out.length === 3 && out[0] === 'a=1' && out[1] === 'b=2' && out[2] === 'a=3';
         });
-        // Node: set() replaces all pairs of the name in place of the first.
-        check('P30_set_replace_pos', function() { var p = new URLSearchParams('a=1&b=2&a=3'); p.set('a', '9'); return S(p) === 'a=9&b=2'; });
+        // WHATWG: set() removes all pairs of the name and appends the
+        // surviving pair at the END (fixed in the B-class wave).
+        check('P30_set_replace_pos', function() { var p = new URLSearchParams('a=1&b=2&a=3'); p.set('a', '9'); return S(p) === 'b=2&a=9'; });
         check('P31_set_new_key', function() { var p = new URLSearchParams('a=1'); p.set('b', '2'); return S(p) === 'a=1&b=2'; });
 
         // ── serializer boundaries (application/x-www-form-urlencoded) ──
@@ -232,7 +233,7 @@ fn test_url_search_params_linkage() {
             u.searchParams.delete('a');
             return u.search === '' && u.href === 'http://x/p';
         });
-        check('U12_set_syncs_search', function() { var u = new URL('http://x/p?a=1&b=2'); u.searchParams.set('a', '9'); return u.search === '?a=9&b=2'; });
+        check('U12_set_syncs_search', function() { var u = new URL('http://x/p?a=1&b=2'); u.searchParams.set('a', '9'); return u.search === '?b=2&a=9'; });
 
         // url.search / href / pathname setters re-sync searchParams.
         check('U03_search_setter', function() {

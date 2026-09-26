@@ -3144,7 +3144,25 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             }
         };
 
-        rooted!(&in(cx_ref) let req_obj = serve_build_request_object(cx_ref, &*req_ref));
+        // Absolute-URL authority for the Request face: the client's Host
+        // header (HTTP/1.1 mandatory) wins; Host-less requests fall back to
+        // the serve config's hostname:port.
+        let serve_authority = {
+            let host_header = req_ref
+                .header(b"host")
+                .and_then(|h| ::std::str::from_utf8(h).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            match host_header {
+                Some(h) => h,
+                None => {
+                    let bound = ud.actual_port.load(Ordering::Acquire);
+                    let port = if bound > 0 { bound } else { ud.port };
+                    format!("{}:{}", ud.hostname, port)
+                }
+            }
+        };
+        rooted!(&in(cx_ref) let req_obj = serve_build_request_object(cx_ref, &*req_ref, &serve_authority));
         if req_obj.get().is_null() {
             serve_write_default_response(&mut *res_mut, &*req_ref);
             return;
@@ -4531,251 +4549,191 @@ const SERVE_PROMISE_POLL_MAX_ITERS: u32 = 10_000;
 
 /// Build a JS Request object from a uWS Request.
 ///
-/// The returned object has the shape `{ method, url, headers }` matching
-/// `fetch_api::request_constructor`. Body is omitted (Bun.serve fetch
-/// handlers in Bao do not currently consume `request.body` — the uWS
-/// Request body is fully drained into the route handler only on demand).
+/// Upstream Bun hands serve handlers a REAL `Request` instance:
+/// `req instanceof Request` is true, `req.url` is the ABSOLUTE URL
+/// ("http://<authority><path><query>" — `new URL(req.url)` works inside a
+/// handler), and `req.headers` is a `Headers` instance exposing
+/// .get()/.has()/.entries(). The authority comes from the client's Host
+/// header (mandatory in HTTP/1.1), falling back to the serve config's
+/// hostname:port for Host-less requests.
+///
+/// The wire method is preserved byte-exact (lowercase "post" stays "post"):
+/// the helper bypasses the Request constructor's IANA method normalization,
+/// which would uppercase it AND reject arbitrary wire tokens with a
+/// TypeError — a serve handler must receive whatever method the client sent.
+///
+/// Body: the WHATWG `body` getter of the constructed Request surfaces null
+/// (the previous per-request body-factory object was dead plumbing — its
+/// text()/json() promises could never settle because no native on_data hook
+/// ever resolves them — and is not carried over).
 ///
 /// # Safety
 /// - `cx_ref` must be a live `&mut mozjs::JSContext` on the current thread.
 /// - `req_ref` must be a live `&Request` (uWS-owned, valid for the duration
 ///   of this call).
 ///
-/// Returns a non-null `*mut JSObject` on success, null on allocation failure.
+/// Returns a non-null `*mut JSObject` on success, null on failure (the
+/// caller falls back to the reflective default response).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn serve_build_request_object(
     cx_ref: &mut mozjs::context::JSContext,
     req_ref: &Request,
+    authority: &str,
 ) -> *mut JSObject {
     let raw_cx = cx_ref.raw_cx();
 
-    rooted!(&in(cx_ref) let req_obj = JS_NewPlainObject(cx_ref));
-    if req_obj.get().is_null() {
-        return ::std::ptr::null_mut();
-    }
-
-    // method
     let method_bytes = req_ref.method();
-    let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET");
-    {
-        let js_m = js_string_from_utf8(raw_cx, method_str);
-        if !js_m.is_null() {
-            let mv = StringValue(&*js_m);
-            rooted!(&in(cx_ref) let mvr = mv);
-            JS_DefineProperty(
-                raw_cx,
-                req_obj.handle().into(),
-                c"method".as_ptr(),
-                mvr.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-        }
-    }
+    let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET").to_string();
 
-    // url (path + query string as returned by uWS — relative URL form)
+    // url — uWS exposes the request target (path + query) as a relative
+    // form; the Request face carries the ABSOLUTE URL (upstream Bun), so
+    // prefix the scheme + authority.
     let url_bytes = req_ref.url();
     let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
-    {
-        let js_u = js_string_from_utf8(raw_cx, url_str);
-        if !js_u.is_null() {
-            let uv = StringValue(&*js_u);
-            rooted!(&in(cx_ref) let uvr = uv);
+    let absolute_url = if url_str.starts_with('/') {
+        format!("http://{}{}", authority, url_str)
+    } else {
+        format!("http://{}/{}", authority, url_str)
+    };
+
+    // headers — iterate ALL headers via uWS forEachHeader (not just
+    // hardcoded common headers) so the request carries every header the
+    // client sent. Built as a plain record first; the JS helper consumes it
+    // through the Headers constructor.
+    rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx_ref));
+    if headers_obj.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+    let mut header_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    req_ref.for_each_header(
+        |pairs: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]| {
+            pairs.push((name.to_vec(), value.to_vec()));
+        },
+        &mut header_pairs as *mut Vec<(Vec<u8>, Vec<u8>)>,
+    );
+    for (name, value) in &header_pairs {
+        let c_k = ZBox::from_bytes(name);
+        // Header values can carry UTF-8 — build the JSString through the
+        // UTF-8 decoder, not the Latin-1 byte copy.
+        let js_v = js_string_from_utf8(raw_cx, &String::from_utf8_lossy(value));
+        if !js_v.is_null() {
+            let hv = StringValue(&*js_v);
+            rooted!(&in(cx_ref) let hvr = hv);
             JS_DefineProperty(
                 raw_cx,
-                req_obj.handle().into(),
-                c"url".as_ptr(),
-                uvr.handle().into(),
+                headers_obj.handle().into(),
+                c_k.as_ptr(),
+                hvr.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }
     }
 
-    // headers — iterate ALL headers via uWS forEachHeader (not just
-    // hardcoded common headers) so the request object carries every header
-    // the client sent.
-    rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx_ref));
-    if !headers_obj.get().is_null() {
-        let mut header_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        req_ref.for_each_header(
-            |pairs: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]| {
-                pairs.push((name.to_vec(), value.to_vec()));
-            },
-            &mut header_pairs as *mut Vec<(Vec<u8>, Vec<u8>)>,
-        );
-        for (name, value) in &header_pairs {
-            let c_k = ZBox::from_bytes(name);
-            // Header values can carry UTF-8 — build the JSString through the
-            // UTF-8 decoder, not the Latin-1 byte copy.
-            let js_v = js_string_from_utf8(raw_cx, &String::from_utf8_lossy(value));
-            if !js_v.is_null() {
-                let hv = StringValue(&*js_v);
-                rooted!(&in(cx_ref) let hvr = hv);
-                JS_DefineProperty(
-                    raw_cx,
-                    headers_obj.handle().into(),
-                    c_k.as_ptr(),
-                    hvr.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
+    // Construct the real Request instance through the global Request class
+    // (installed by web_fetch_classes::install_fetch_classes) so
+    // `instanceof Request` and the Headers face are genuine. The tiny
+    // builder function is compiled once and cached in GcStore (JS-thread
+    // bound — same lifetime discipline as the realm's fetch handler).
+    let builder_obj = match gc_store_get(raw_cx, "serve_request_builder") {
+        Some(o) if !o.is_null() => o,
+        _ => {
+            let builder_src = r#"(function(method, url, headers) {
+  var r = new Request(url, { headers: headers });
+  r.method = method; // wire-case method preserved (no IANA normalization)
+  return r;
+})"#;
+            let mut src = mozjs::rust::transform_str_to_source_text(builder_src);
+            let opts =
+                mozjs::glue::NewCompileOptions(raw_cx, c"<serve-request-builder>".as_ptr(), 1);
+            if opts.is_null() {
+                return ::std::ptr::null_mut();
             }
+            let mut fn_rval = UndefinedValue();
+            let fn_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut fn_rval,
+            };
+            let evaluated = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut src, fn_h);
+            libc::free(opts as *mut _);
+            if !evaluated || !fn_rval.is_object() {
+                // Capture, clear, route — a pending exception must never leak
+                // past a native entry point (same contract as timers.rs
+                // fire_callback).
+                let mut exn = UndefinedValue();
+                JS_GetPendingException(
+                    raw_cx,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut exn,
+                    },
+                );
+                JS_ClearPendingException(raw_cx);
+                if !exn.is_undefined() {
+                    crate::uncaught::route_uncaught_exception(raw_cx, exn);
+                }
+                return ::std::ptr::null_mut();
+            }
+            let b = fn_rval.to_object();
+            gc_store_insert(raw_cx, "serve_request_builder", b);
+            b
         }
-        let hdrs_val = ObjectValue(headers_obj.get());
-        rooted!(&in(cx_ref) let hdrs_r = hdrs_val);
-        JS_DefineProperty(
-            raw_cx,
-            req_obj.handle().into(),
-            c"headers".as_ptr(),
-            hdrs_r.handle().into(),
-            JSPROP_ENUMERATE as u32,
-        );
+    };
+
+    rooted!(&in(cx_ref) let builder_val = ObjectValue(builder_obj));
+    let m_js = js_string_from_utf8(raw_cx, &method_str);
+    let u_js = js_string_from_utf8(raw_cx, &absolute_url);
+    if m_js.is_null() || u_js.is_null() {
+        return ::std::ptr::null_mut();
     }
-
-    // body — attach a body property with .text(), .json(), .arrayBuffer()
-    // methods. The body content is read from the uWS request via on_data
-    // (async). For the synchronous route handler model, we store an empty
-    // body by default and provide methods that return Promises. When
-    // Content-Length is 0 or the method is GET/HEAD, the body is empty.
-    {
-        // Determine Content-Length to decide if there's a body to read.
-        let content_length: usize = req_ref
-            .header(b"content-length")
-            .and_then(|v| ::std::str::from_utf8(v).ok())
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0);
-
-        let method_bytes = req_ref.method();
-        let is_bodyless_method =
-            method_bytes.eq_ignore_ascii_case(b"GET") || method_bytes.eq_ignore_ascii_case(b"HEAD");
-
-        // Build a JS body object with text/json/arrayBuffer methods.
-        // For bodyless methods or zero-length bodies, methods resolve
-        // immediately with empty values. For methods with a body, they
-        // return a Promise (body reading is async in uWS).
-        let body_src = if is_bodyless_method || content_length == 0 {
-            r#"(function() {
-  var b = {
-    text: function() { return Promise.resolve(''); },
-    json: function() { return Promise.resolve(null); },
-    arrayBuffer: function() { return Promise.resolve(new ArrayBuffer(0)); },
-    _bodyText: '',
-    _bodyBytes: new Uint8Array(0),
-  };
-  return b;
-})"#
-        } else {
-            r#"(function() {
-  // Lazy body — text/json/arrayBuffer return Promises that resolve
-  // once the body is read. The _bodyText field is populated by the
-  // native host when the body arrives via on_data.
-  var _resolved = false;
-  var _text = '';
-  var _bytes = null;
-  var _promises = [];
-
-  function resolveBody(text) {
-    _resolved = true;
-    _text = text;
-    _bytes = new TextEncoder().encode(text);
-    for (var i = 0; i < _promises.length; i++) {
-      _promises[i](text);
-    }
-    _promises = [];
-  }
-
-  var b = {
-    text: function() {
-      if (_resolved) return Promise.resolve(_text);
-      return new Promise(function(resolve) { _promises.push(resolve); });
-    },
-    json: function() {
-      if (_resolved) {
-        try { return Promise.resolve(JSON.parse(_text)); }
-        catch(e) { return Promise.reject(e); }
-      }
-      return b.text().then(function(t) {
-        try { return JSON.parse(t); }
-        catch(e) { throw e; }
-      });
-    },
-    arrayBuffer: function() {
-      if (_resolved) return Promise.resolve(_bytes.buffer || new ArrayBuffer(0));
-      return b.text().then(function(t) {
-        return new TextEncoder().encode(t).buffer;
-      });
-    },
-    _bodyText: '',
-    _bodyBytes: null,
-    _resolveBody: resolveBody,
-  };
-  return b;
-})"#
-        };
-        let mut body_text = mozjs::rust::transform_str_to_source_text(body_src);
-        let mut body_rval = UndefinedValue();
-        let body_rval_h = MutableHandle::<Value> {
+    rooted!(&in(cx_ref) let m_str_r = m_js);
+    rooted!(&in(cx_ref) let u_str_r = u_js);
+    rooted!(&in(cx_ref) let m_val = StringValue(&*m_js));
+    rooted!(&in(cx_ref) let u_val = StringValue(&*u_js));
+    rooted!(&in(cx_ref) let h_val = ObjectValue(headers_obj.get()));
+    let call_vals = [
+        m_val.handle().get(),
+        u_val.handle().get(),
+        h_val.handle().get(),
+    ];
+    let call_arr = HandleValueArray {
+        length_: 3,
+        elements_: call_vals.as_ptr(),
+    };
+    let mut call_rval = UndefinedValue();
+    rooted!(&in(cx_ref) let null_obj = ::std::ptr::null_mut::<JSObject>());
+    let called = JS_CallFunctionValue(
+        raw_cx,
+        null_obj.handle().into(),
+        builder_val.handle().into(),
+        &call_arr,
+        MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut body_rval,
-        };
-        let body_opts = mozjs::glue::NewCompileOptions(raw_cx, c"<body-factory>".as_ptr(), 1);
-        if !body_opts.is_null() {
-            if mozjs_sys::jsapi::JS::Evaluate2(raw_cx, body_opts, &mut body_text, body_rval_h)
-                && body_rval.is_object()
-            {
-                // Call the factory function to create the body object.
-                rooted!(&in(cx_ref) let factory_fn = body_rval.to_object());
-                rooted!(&in(cx_ref) let factory_val = ObjectValue(factory_fn.get()));
-                rooted!(&in(cx_ref) let null_obj = ::std::ptr::null_mut::<JSObject>());
-                let mut call_rval = UndefinedValue();
-                let call_rval_h = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut call_rval,
-                };
-                let called = JS_CallFunctionValue(
-                    raw_cx,
-                    null_obj.handle().into(),
-                    factory_val.handle().into(),
-                    &HandleValueArray::empty(),
-                    call_rval_h,
-                );
-                if !called {
-                    // BCE (P0 browser startup panic, servo error.rs:74): the
-                    // factory wraps caller-authored body code — a throw inside
-                    // it leaves the exception pending on the ScriptThread
-                    // context (browser mode). Capture, clear, route — same
-                    // contract as timers.rs fire_callback; the old `let _ =`
-                    // swallowed the throw AND leaked the exception.
-                    let mut exn = UndefinedValue();
-                    JS_GetPendingException(
-                        raw_cx,
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut exn,
-                        },
-                    );
-                    JS_ClearPendingException(raw_cx);
-                    rooted!(&in(cx_ref) let reason_root = exn);
-                    if !exn.is_undefined() {
-                        crate::uncaught::route_uncaught_exception(raw_cx, exn);
-                    }
-                }
-                if call_rval.is_object() {
-                    rooted!(&in(cx_ref) let body_obj = call_rval.to_object());
-                    let body_val = ObjectValue(body_obj.get());
-                    rooted!(&in(cx_ref) let body_val_root = body_val);
-                    JS_DefineProperty(
-                        raw_cx,
-                        req_obj.handle().into(),
-                        c"body".as_ptr(),
-                        body_val_root.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
-            }
-            libc::free(body_opts as *mut _);
+            ptr: &mut call_rval,
+        },
+    );
+    if !called {
+        // Handler-facing construction failure (e.g. a future Request-class
+        // change throwing) — capture, clear, route; never leave the
+        // exception pending on the ScriptThread context.
+        let mut exn = UndefinedValue();
+        JS_GetPendingException(
+            raw_cx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            },
+        );
+        JS_ClearPendingException(raw_cx);
+        if !exn.is_undefined() {
+            crate::uncaught::route_uncaught_exception(raw_cx, exn);
         }
+        return ::std::ptr::null_mut();
     }
-
-    req_obj.get()
+    if !call_rval.is_object() {
+        return ::std::ptr::null_mut();
+    }
+    rooted!(&in(cx_ref) let req_out = call_rval.to_object());
+    req_out.get()
 }
 
 /// Resolve a JS value (the fetch handler's return value) into a Response
@@ -7111,25 +7069,43 @@ unsafe extern "C" fn bun_read_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         return false;
     }
     let fpath = crate::js_to_rust_string(cx, path_val);
-    match bun_sys::fs::read_to_string(fpath.as_str()) {
+    // Settle discipline (same as Bun.write / the BunFile read family):
+    // plain-Rust work first, then Resolve/Reject on the JS thread — reactions
+    // fire at the next microtask checkpoint. Bun.readFile returns
+    // Promise<string> (upstream); a plain-string return here made `.then`
+    // throw for every caller.
+    let read_result = bun_sys::fs::read_to_string(fpath.as_str());
+
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    match read_result {
         Ok(content) => {
             // Same Latin-1 mojibake class as the Bun.file path: file content
             // is UTF-8 bytes and must reach JS as code points.
             let js_str = js_string_from_utf8(cx, &content);
             if !js_str.is_null() {
-                args.rval().set(StringValue(&*js_str));
+                rooted!(&in(cx_ref) let content_val = StringValue(&*js_str));
+                let _ = JS::ResolvePromise(cx, promise.handle().into(), content_val.handle().into());
             } else {
-                args.rval().set(UndefinedValue());
+                rooted!(&in(cx_ref) let undef_val = UndefinedValue());
+                let _ = JS::ResolvePromise(cx, promise.handle().into(), undef_val.handle().into());
             }
-            true
         }
         Err(e) => {
+            let code = bunfile_io_code(&e);
             let msg = format!("Bun.readFile failed: {}", e);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            false
+            rooted!(&in(cx_ref) let err_val = make_coded_error_value(cx, code, &msg));
+            let _ = JS::RejectPromise(cx, promise.handle().into(), err_val.handle().into());
         }
     }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -8920,6 +8896,23 @@ unsafe extern "C" fn crypto_hasher_digest(cx: *mut JSContext, argc: u32, vp: *mu
             out.to_vec()
         }
     };
+
+    // @trace REQ-ENG-006 [api:Bun.CryptoHasher.digest] — digest() with NO
+    // encoding argument returns a Buffer of the raw digest bytes (upstream
+    // Bun / node parity: node_crypto::hash_digest's no-arg branch). The old
+    // no-arg default of "hex" broke Buffer.isBuffer() and returned 64 hex
+    // chars instead of 32 raw bytes for sha256. Only an EXPLICIT string
+    // argument selects an encoded form; a present-but-non-string argument
+    // keeps the historical "hex" fallback.
+    if argc == 0 {
+        let buf_obj = crate::globals::create_buffer_object(cx, &hash_bytes);
+        if buf_obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+        return true;
+    }
 
     match encoding.as_str() {
         "buffer" => {

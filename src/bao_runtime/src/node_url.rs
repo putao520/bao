@@ -2074,22 +2074,11 @@ unsafe extern "C" fn sp_set(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
         ::std::option::Option::Some(v) => v,
         ::std::option::Option::None => return false,
     };
-    let mut replaced = false;
-    let mut i = 0;
-    while i < pairs.len() {
-        if pairs[i].0 == key {
-            if replaced {
-                pairs.remove(i);
-                continue;
-            }
-            pairs[i] = (key.clone(), value.clone());
-            replaced = true;
-        }
-        i += 1;
-    }
-    if !replaced {
-        pairs.push((key, value));
-    }
+    // WHATWG "set": remove EVERY existing pair of the name, then append the
+    // new pair at the END of the list (move-to-end) — the surviving pair does
+    // not keep the first occurrence's position.
+    pairs.retain(|p| p.0 != key);
+    pairs.push((key, value));
     unsafe { sp_commit(cx, obj, pairs) };
     args.rval().set(UndefinedValue());
     true

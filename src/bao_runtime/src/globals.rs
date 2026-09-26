@@ -79,6 +79,41 @@ pub unsafe fn install_web_apis(
     // constructors blob so their lazy deps (Blob/AbortController/
     // ReadableStream/TextEncoder) are already on the global.
     crate::web_fetch_classes::install_fetch_classes(cx, global);
+
+    // @trace REQ-ENG-006 [api:self global] — WHATWG `self` getter aliasing
+    // globalThis (Window.self / WorkerGlobalScope.self; upstream Bun defines
+    // the same getter face). A live getter — not a copied value — so
+    // `self === globalThis` holds even if `globalThis` is reassigned, and
+    // the alias never goes stale across realm swaps.
+    {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let g = global.get());
+        mozjs_sys::jsapi::JS_DefineProperty1(
+            raw_cx,
+            g.handle().into(),
+            c"self".as_ptr(),
+            ::std::option::Option::Some(global_self_getter),
+            ::std::option::Option::None,
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+}
+
+/// Getter native behind the `self` global — resolves to the current global
+/// object (`self === globalThis`).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn global_self_getter(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped) let g = global);
+    args.rval().set(ObjectValue(g.get()));
+    true
 }
 
 /// Install Node.js/Bun APIs — only for privileged CLI/engine context (REQ-SEC-003).
@@ -495,6 +530,77 @@ fn f16_to_f64(bits: u16) -> f64 {
     s * (1.0 + (frac as f64) / 1024.0) * 2f64.powi(exp - 15)
 }
 
+/// Byte view of a BufferSource (ArrayBufferView | ArrayBuffer), copied out
+/// before any further JSAPI use. None = not a BufferSource (never throws —
+/// the isAscii/isUtf8 predicates answer false for non-buffers, Node truth).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn global_buffer_source_bytes(v: JSVal) -> Option<Vec<u8>> {
+    if !v.is_object() {
+        return None;
+    }
+    let obj = v.to_object();
+    unsafe {
+        let mut len: usize = 0;
+        let mut is_shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        // Live views yield the byteOffset-adjusted pointer directly; detached
+        // buffers surface as length 0 + null data (empty byte sequence).
+        let view =
+            mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(obj, &mut len, &mut is_shared, &mut data);
+        if !view.is_null() {
+            return if data.is_null() {
+                Some(Vec::new())
+            } else {
+                Some(::std::slice::from_raw_parts(data, len).to_vec())
+            };
+        }
+        let ab = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj, &mut len, &mut data);
+        if !ab.is_null() {
+            return if data.is_null() {
+                Some(Vec::new())
+            } else {
+                Some(::std::slice::from_raw_parts(data, len).to_vec())
+            };
+        }
+        None
+    }
+}
+
+/// Buffer.isAscii(input) — true when every byte of the BufferSource is
+/// < 0x80 (Node 19+ surface). Non-BufferSource input → false (no throw).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_is_ascii(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let is_ascii = if argc > 0 {
+        match global_buffer_source_bytes(*args.get(0).ptr) {
+            Some(bytes) => bytes.is_ascii(),
+            None => false,
+        }
+    } else {
+        false
+    };
+    args.rval().set(mozjs::jsval::BooleanValue(is_ascii));
+    true
+}
+
+/// Buffer.isUtf8(input) — lossless UTF-8 validation over the BufferSource's
+/// byte view (std::str::from_utf8 — the lossless validator; overlong forms,
+/// surrogates and > U+10FFFF all reject). Non-BufferSource input → false.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_is_utf8(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let is_utf8 = if argc > 0 {
+        match global_buffer_source_bytes(*args.get(0).ptr) {
+            Some(bytes) => ::std::str::from_utf8(&bytes).is_ok(),
+            None => false,
+        }
+    } else {
+        false
+    };
+    args.rval().set(mozjs::jsval::BooleanValue(is_utf8));
+    true
+}
+
 pub fn install_buffer_global(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -599,6 +705,26 @@ pub fn install_buffer_global(
             buf_root.handle(),
             c"isEncoding".as_ptr(),
             ::std::option::Option::Some(buffer_is_encoding),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        // @trace REQ-ENG-005 [api:Buffer.isAscii/isUtf8] — Node.js 19+ static
+        // predicates on the GLOBAL Buffer face (the require('buffer') module
+        // face has its own pair in node_buffer.rs). Lossless validation:
+        // std is_ascii / std::str::from_utf8 — no hand-rolled tables.
+        JS_DefineFunction(
+            cx,
+            buf_root.handle(),
+            c"isAscii".as_ptr(),
+            ::std::option::Option::Some(buffer_is_ascii),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
+            cx,
+            buf_root.handle(),
+            c"isUtf8".as_ptr(),
+            ::std::option::Option::Some(buffer_is_utf8),
             1,
             JSPROP_ENUMERATE as u32,
         );
