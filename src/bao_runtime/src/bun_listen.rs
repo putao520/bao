@@ -170,8 +170,6 @@ unsafe fn invoke_js_callback(cx: *mut JSContext, cb_key: &Option<String>, args: 
 // ──────────────────── Thread-local state ────────────────────
 
 thread_local! {
-    /// Socket groups owned by Bun.listen TCP servers and Bun.connect.
-    static CONNECT_GROUPS: ::std::cell::RefCell<HashMap<usize, Box<SocketGroup>>> = ::std::cell::RefCell::new(HashMap::new());
     /// Connected socket pointers.
     static LISTEN_TCP_SOCKETS: ::std::cell::RefCell<HashMap<usize, bool>> = ::std::cell::RefCell::new(HashMap::new());
     /// Result of a pending connect.
@@ -1063,12 +1061,32 @@ struct ConnectUserData {
     close_cb_key: Option<String>,
     open_cb_key: Option<String>,
     end_cb_key: Option<String>,
-    group_ptr: *mut SocketGroup,
+    /// The connection's socket group, EMBEDDED in this Box. uSockets groups
+    /// are "embedded in their owner — never separately heap-allocated"
+    /// (libusockets.h); the owner here is this user-data box, so the group's
+    /// lifetime is the box's lifetime. This is the BCE-20260926-001 fix: the
+    /// group used to live in a pointer-keyed `Box<SocketGroup>` registry that
+    /// connect_on_close dropped from inside the C close dispatch —
+    /// us_internal_socket_close_raw re-reads s->group->loop right after the
+    /// on_close handler returns (us_internal_ssl_detach, socket.c:336 →
+    /// openssl.c:1844), so that drop was a read-after-free on every close
+    /// (valgrind: 2× invalid 8-byte read, 0 bytes inside a freed 88-byte
+    /// block), faulting or silently corrupting per allocation layout. The
+    /// deinit contract (us_socket_group_deinit, context.c) forbids freeing
+    /// the embedding storage from inside a dispatch of the group's own
+    /// sockets — embedding in ud, which outlives every close dispatch,
+    /// satisfies it structurally.
+    group: SocketGroup,
     cx: *mut JSContext,
     /// Pending Promise to resolve on open / reject on error.
     promise: *mut JSObject,
     /// Whether the promise has been settled (resolved or rejected).
     promise_settled: Cell<bool>,
+    /// Whether the `end` event has been delivered to this connection's JS
+    /// identity. The peer's FIN delivers `end` (connect_on_end); a full close
+    /// without a prior FIN delivers it once from connect_on_close ("close
+    /// implies end") — the flag keeps `end` single-delivery across both paths.
+    end_delivered: Cell<bool>,
     /// Whether the `open` callback has been delivered. Loopback connects
     /// complete synchronously inside bun_connect (which fires `open` there),
     /// yet uWS still dispatches connect_on_open on the next loop pass for the
@@ -1244,29 +1262,30 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return true;
     }
 
-    // Build user data BEFORE group init so we can pass it as owner for VTable callbacks
+    // Build user data BEFORE group init so we can pass it as owner for VTable
+    // callbacks. The group lives INSIDE this box (see ConnectUserData.group);
+    // init stamps ext = ud_ptr, so group().owner::<ConnectUserData>() still
+    // resolves this box exactly as the separate-allocation shape did.
     let ud = Box::new(ConnectUserData {
         data_cb_key,
         error_cb_key,
         close_cb_key,
         open_cb_key,
         end_cb_key,
-        group_ptr: ptr::null_mut(), // filled in after group creation
+        group: SocketGroup::default(),
         cx,
         promise,
         promise_settled: Cell::new(false),
+        end_delivered: Cell::new(false),
         open_fired: Cell::new(false),
     });
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
-    // Create per-connection socket group, passing user data as owner
-    let mut group = Box::new(SocketGroup::default());
-    group.init(loop_, Some(&CONNECT_VTABLE), ud_ptr);
-    let group_ptr = Box::into_raw(group);
-
-    // Back-fill group_ptr into user data
+    // Initialise the embedded per-connection socket group, passing the owning
+    // box as user data.
+    let group_ptr: *mut SocketGroup = unsafe { &raw mut (*(ud_ptr as *mut ConnectUserData)).group };
     unsafe {
-        (*(ud_ptr as *mut ConnectUserData)).group_ptr = group_ptr;
+        (*group_ptr).init(loop_, Some(&CONNECT_VTABLE), ud_ptr);
     }
 
     let host_cstr = ZBox::from_bytes(hostname.as_bytes());
@@ -1288,23 +1307,13 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     let socket_key = match result {
         ConnectResult::Socket(socket) => {
-            // Synchronous connect (e.g. localhost)
-            let key = socket as usize;
-            // Keep group alive alongside the socket
-            CONNECT_GROUPS.with(|g| {
-                g.borrow_mut()
-                    .insert(key, unsafe { Box::from_raw(group_ptr) })
-            });
-            key
+            // Synchronous connect (e.g. localhost). The group needs no
+            // side-registration: it lives inside ConnectUserData, which
+            // outlives every close dispatch of this connection.
+            socket as usize
         }
         ConnectResult::Connecting(_) => {
             // Async connect — tick the loop until on_open or on_connect_error fires
-            let group_key = group_ptr as usize;
-            CONNECT_GROUPS.with(|g| {
-                g.borrow_mut()
-                    .insert(group_key, unsafe { Box::from_raw(group_ptr) })
-            });
-
             let max_ticks: u32 = 5000;
             for _ in 0..max_ticks {
                 if CONNECT_RESULT.with(|r| r.get().is_some()) {
@@ -1324,6 +1333,9 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             }
         }
         ConnectResult::Failed => {
+            // Deinit first (unlinks the never-populated group), then free the
+            // embedding box. No dispatch of this group's sockets is on the
+            // stack here — the connect failed synchronously.
             unsafe {
                 SocketGroup::destroy(group_ptr);
             }
@@ -1333,12 +1345,8 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
     };
 
-    // Update group_ptr in user data based on connect result
-    if socket_key == 0 {
-        unsafe {
-            (*(ud_ptr as *mut ConnectUserData)).group_ptr = ptr::null_mut();
-        }
-    } else {
+    // JS-idle tick surface for the successful-connect path
+    if socket_key != 0 {
         // JS-idle tick surface (BCE-007 class): connect-side data/close events
         // fire from vtable callbacks, which only run while the loop is ticked
         // (node_http::has_active_servers). Register the client socket as a
@@ -1354,6 +1362,15 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let socket_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
     if socket_obj.get().is_null() {
+        // The connection is live but can never gain a JS identity. Compliant
+        // teardown order (deinit contract, context.c): close() runs the FULL
+        // C close dispatch with the group storage still alive — connect_on_close
+        // runs inside it and must not observe a freed group — then deinit the
+        // emptied group, then free the embedding box.
+        if socket_key != 0 {
+            unsafe { (*(socket_key as *mut us_socket_t)).close(CloseCode::failure) };
+            unsafe { SocketGroup::destroy(group_ptr) };
+        }
         let _ = unsafe { Box::from_raw(ud_ptr as *mut ConnectUserData) };
         unsafe {
             reject_connect_promise(cx, promise, "Bun.connect: failed to create socket object");
@@ -2229,7 +2246,7 @@ static CONNECT_VTABLE: VTable = VTable {
     on_close: Some(connect_on_close),
     on_timeout: Some(tcp_on_timeout),
     on_long_timeout: Some(tcp_on_long_timeout),
-    on_end: Some(tcp_on_end),
+    on_end: Some(connect_on_end),
     on_connect_error: Some(connect_on_connect_error),
     on_connecting_error: Some(tcp_on_connecting_error),
     on_handshake: Some(tcp_on_handshake),
@@ -2892,6 +2909,52 @@ unsafe extern "C" fn connect_on_data(
     s
 }
 
+/// @trace REQ-BAO-API-017 [api:Bun.connect] on_end callback — fires socket.end JS callback
+/// when the PEER half-closes (FIN). Client-side parity with tcp_on_end.
+///
+/// BCE-20260926-001 SSE: CONNECT_VTABLE previously reused the listen-side
+/// tcp_on_end here, which casts the group owner to ListenTcpUserData — a type
+/// confusion on every client half-close: `cx` was read out of ConnectUserData
+/// bytes at the listen-side offset (pre-fix: the promise pointer — silently
+/// wrong; post-embedding: interior group bytes — wild deref). This handler
+/// casts to ConnectUserData and mirrors connect_on_data's realm discipline.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn connect_on_end(s: *mut us_socket_t) -> *mut us_socket_t {
+    let ud = &*((*s).group().owner::<ConnectUserData>() as *const ConnectUserData);
+    let cx = ud.cx;
+    if cx.is_null() {
+        return s;
+    }
+
+    // Enter the persistent realm before touching GcStore — same discipline as
+    // connect_on_data (dispatch runs with no realm entered; GcStore resolves
+    // against the context's current global).
+    let Some(global) = bao_engine::context::thread_realm_global() else {
+        return s;
+    };
+    if global.is_null() {
+        return s;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
+    let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+    let sock_key = listen_sock_store_key(s);
+    if let Some(sock_obj) = gc_store_get(cx, &sock_key) {
+        if !sock_obj.is_null() {
+            rooted!(&in(realm_cx) let sock_val = ObjectValue(sock_obj));
+            let _ = invoke_js_callback(cx, &ud.end_cb_key, &[*sock_val.handle()]);
+            ud.end_delivered.set(true);
+            return s;
+        }
+    }
+    let _ = invoke_js_callback(cx, &ud.end_cb_key, &[]);
+    ud.end_delivered.set(true);
+    s
+}
+
 /// @trace REQ-BAO-API-017 [api:Bun.connect] on_close callback — fires socket.close JS callback
 /// and socket.end JS callback.
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2942,7 +3005,11 @@ unsafe extern "C" fn connect_on_close(
                         &ud.close_cb_key,
                         &[*sock_val.handle(), code_val],
                     );
-                    let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[*sock_val.handle()]);
+                    // "close implies end" — only when the peer's FIN never
+                    // delivered it (connect_on_end sets end_delivered).
+                    if !ud.end_delivered.replace(true) {
+                        let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[*sock_val.handle()]);
+                    }
                     delivered_with_identity = true;
                 }
             }
@@ -2950,11 +3017,19 @@ unsafe extern "C" fn connect_on_close(
     }
     if !delivered_with_identity {
         let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
-        // Also fire end callback on close (Bun API: close implies end)
-        let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[]);
+        // Also fire end callback on close (Bun API: close implies end), once.
+        if !ud.end_delivered.replace(true) {
+            let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[]);
+        }
     }
 
-    CONNECT_GROUPS.with(|g| g.borrow_mut().remove(&key));
+    // NOTE (BCE-20260926-001): the group's embedding storage is NOT freed here.
+    // us_internal_socket_close_raw re-reads s->group->loop after this handler
+    // returns (us_internal_ssl_detach, socket.c:336 → openssl.c:1844) — freeing
+    // the group inside its own socket's close dispatch was a read-after-free on
+    // every connection close. The group now lives in ConnectUserData and is
+    // freed with it (socket_destroy / bun_connect failure paths), both of which
+    // run strictly after every close dispatch has unwound.
     // Drop the JS-idle liveness token registered in bun_connect.
     unsafe { crate::node_http::unregister_active_app(s as *mut bun_uws_sys::app::App<false>) };
 

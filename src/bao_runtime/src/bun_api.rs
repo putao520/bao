@@ -108,8 +108,7 @@ unsafe fn populate_bun_object(
         rooted!(&in(cx) let argv_arr = NewArrayObject1(cx, args.len()));
         if !argv_arr.get().is_null() {
             for (i, arg) in args.iter().enumerate() {
-                let c_arg = ZBox::from_bytes(arg.as_bytes());
-                let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_arg.as_ptr());
+                let js_str = js_string_from_utf8(cx.raw_cx(), arg);
                 if !js_str.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*js_str));
                     JS_DefineElement(
@@ -328,8 +327,8 @@ unsafe fn populate_bun_object(
                 crate::require::get_require_dir()
                     .unwrap_or_else(|| ::std::env::current_dir().unwrap_or_default())
             });
-        let c_main = ZBox::from_vec(main_path.to_string_lossy().into_owned().into_bytes());
-        let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_main.as_ptr());
+        let main_s = main_path.to_string_lossy().into_owned();
+        let js_str = js_string_from_utf8(cx.raw_cx(), &main_s);
         if !js_str.is_null() {
             rooted!(&in(cx) let mv = StringValue(&*js_str));
             JS_DefineProperty(
@@ -836,8 +835,7 @@ unsafe fn populate_process_object(
                     bao_entries.push((key.clone(), value.clone()));
                 }
                 let c_key = ZBox::from_bytes(key.as_bytes());
-                let c_val = ZBox::from_bytes(value.as_bytes());
-                let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
+                let val_str = js_string_from_utf8(cx.raw_cx(), &value);
                 if !val_str.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*val_str));
                     JS_DefineProperty(
