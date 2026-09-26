@@ -184,6 +184,58 @@ pub mod whatwg {
         str.clone()
     }
 
+    /// RFC 3986 §5.2.4 remove_dot_segments (WHATWG "shorten a path" parity):
+    /// `/b/d/../c` → `/b/c`, `/b/./c` → `/b/c`, `/../c` → `/c`, and a final
+    /// `.`/`..` leaves a directory-style trailing `/` (`/b/d/..` → `/b/`).
+    /// Percent-escaped `%2e` spellings are not treated as dots (plain-form
+    /// inputs only — the class the relative-resolution conformance cases hit).
+    fn remove_dot_segments(path: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(path.len() + 1);
+        out.push(b'/');
+        let body = if let Some(rest) = path.strip_prefix(b"/") {
+            rest
+        } else {
+            path
+        };
+        let mut stack: Vec<&[u8]> = Vec::new();
+        let mut trailing_slash = false;
+        let mut it = body.split(|&b| b == b'/').peekable();
+        while let Some(seg) = it.next() {
+            let last = it.peek().is_none();
+            match seg {
+                b"." => {
+                    trailing_slash = true;
+                    if last {
+                        break;
+                    }
+                }
+                b".." => {
+                    stack.pop();
+                    trailing_slash = true;
+                    if last {
+                        break;
+                    }
+                }
+                s => {
+                    stack.push(s);
+                    trailing_slash = false;
+                }
+            }
+        }
+        for (i, seg) in stack.iter().enumerate() {
+            if i > 0 {
+                out.push(b'/');
+            }
+            out.extend_from_slice(seg);
+        }
+        // A final `.`/`..` leaves a directory-style trailing `/` — but when
+        // every segment was popped the root `/` is already that slash.
+        if trailing_slash && out.len() > 1 {
+            out.push(b'/');
+        }
+        out
+    }
+
     /// Resolves `relative` against `base` and returns the joined href.
     /// Returns `Dead` if base is invalid.
     pub fn join(base: &String, relative: &String) -> String {
@@ -206,16 +258,29 @@ pub mod whatwg {
         if !rel_url.protocol.is_empty() {
             return relative.clone();
         }
-        // Resolve relative against base origin
+        // Resolve relative against base origin. The path portion is
+        // dot-segment-normalized (`../c` against `/b/d/` → `/b/c`, not the
+        // literal `/b/d/../c`); query/fragment ride along untouched.
         let origin = base_url.origin;
-        let mut buf: Vec<u8> = Vec::with_capacity(origin.len() + 1 + rel_bytes.len());
-        buf.extend_from_slice(origin);
-        if !rel_bytes.starts_with(b"/") {
+        let path_end = rel_bytes
+            .iter()
+            .position(|&c| c == b'?' || c == b'#')
+            .unwrap_or(rel_bytes.len());
+        let (rel_path, rel_rest) = rel_bytes.split_at(path_end);
+        let mut path: Vec<u8> = Vec::with_capacity(base_url.pathname.len() + 1 + rel_path.len());
+        if rel_path.starts_with(b"/") {
+            path.extend_from_slice(rel_path);
+        } else {
             let dir = base_url.pathname;
             let dir_end = dir.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
-            buf.extend_from_slice(&dir[..dir_end]);
+            path.extend_from_slice(&dir[..dir_end]);
+            path.extend_from_slice(rel_path);
         }
-        buf.extend_from_slice(rel_bytes);
+        let normalized = remove_dot_segments(&path);
+        let mut buf: Vec<u8> = Vec::with_capacity(origin.len() + normalized.len() + rel_rest.len());
+        buf.extend_from_slice(origin);
+        buf.extend_from_slice(&normalized);
+        buf.extend_from_slice(rel_rest);
         string_from_owned_bytes(buf)
     }
 
@@ -1030,7 +1095,43 @@ impl<'a> URL<'a> {
         }
 
         url.origin = strings::trim(url.origin, b"/ ?#");
+
+        // WHATWG "port state": an explicit default port of a special scheme is
+        // elided — `new URL('http://a.com:80/')` reads port '' and host/origin
+        // without ':80' (same for https/ws/wss/ftp). `hostname` keeps its
+        // value; the raw `href` bytes are the caller's input view and keep
+        // `:80` (the serializing face owns href rewriting).
+        if let Some(port) = url.get_port() {
+            if Some(port) == Self::special_scheme_default_port(url.protocol) {
+                let port_len = url.port.len();
+                url.port = b"";
+                url.host = url.hostname;
+                // `origin` is the `scheme://host[:port]` prefix, so the elided
+                // `:port` is its tail.
+                if url.origin.len() > port_len
+                    && url.origin[url.origin.len() - port_len - 1] == b':'
+                {
+                    url.origin = &url.origin[..url.origin.len() - port_len - 1];
+                }
+            }
+        }
         url
+    }
+
+    /// The WHATWG special-scheme default port, if the scheme defines one.
+    /// `file` is special but has no default port, so `:80` on a file URL stays.
+    fn special_scheme_default_port(protocol: &[u8]) -> Option<u16> {
+        const TABLE: [(&[u8], u16); 5] = [
+            (b"http", 80),
+            (b"ws", 80),
+            (b"https", 443),
+            (b"wss", 443),
+            (b"ftp", 21),
+        ];
+        TABLE
+            .iter()
+            .find(|(scheme, _)| strings::eql_case_insensitive_ascii(protocol, scheme, true))
+            .map(|(_, port)| *port)
     }
 
     pub fn parse_protocol(&mut self, str: &'a [u8]) -> Option<u32> {
@@ -2241,5 +2342,103 @@ mod authority_end_tests {
         );
         assert_eq!(url.hostname, b"second.example");
         assert_eq!(url.authority_end, AuthorityEnd::SlashQueryOrHash);
+    }
+}
+
+/// REQ-ENG-007 WHATWG/Node conformance fixes in this parser:
+/// 1. A special scheme's explicit default port is elided from `port`, `host`
+///    and `origin` (`http://a.com:80/` reads like `http://a.com/`). The raw
+///    `href` bytes keep `:80` — href rewriting is the serializing face's job
+///    (node_url re-serializes; this view cannot, it borrows the input).
+/// 7b. `whatwg::join` consumes `.`/`..` dot segments (RFC 3986 §5.2.4).
+#[cfg(test)]
+mod default_port_and_join_dot_segments_tests {
+    use super::{whatwg, BunString, URL};
+
+    #[test]
+    fn special_scheme_default_ports_are_elided() {
+        for (input, expected_origin) in [
+            (&b"http://a.com:80/"[..], &b"http://a.com"[..]),
+            (&b"https://a.com:443/x"[..], &b"https://a.com"[..]),
+            (&b"ftp://a.com:21/"[..], &b"ftp://a.com"[..]),
+            (&b"ws://a.com:80/"[..], &b"ws://a.com"[..]),
+            (&b"wss://a.com:443/"[..], &b"wss://a.com"[..]),
+            (&b"HTTP://a.com:80/"[..], &b"HTTP://a.com"[..]),
+            (&b"http://a.com:080/"[..], &b"http://a.com"[..]),
+            (&b"http://a.com:80?x=1"[..], &b"http://a.com"[..]),
+            (&b"http://a.com:80#f"[..], &b"http://a.com"[..]),
+        ] {
+            let url = URL::parse(input);
+            assert_eq!(url.port, b"", "port of {input:?}");
+            assert_eq!(url.host, b"a.com", "host of {input:?}");
+            assert_eq!(url.origin, expected_origin, "origin of {input:?}");
+        }
+    }
+
+    #[test]
+    fn non_default_and_unknown_ports_stay() {
+        for input in [
+            &b"http://a.com:8080/"[..],
+            &b"https://a.com:8443/"[..],
+            &b"http://a.com:80abc/"[..],
+        ] {
+            let url = URL::parse(input);
+            assert!(!url.port.is_empty(), "port of {input:?}");
+        }
+        let url = URL::parse(b"http://a.com:8080/");
+        assert_eq!((url.host, url.origin), (&b"a.com:8080"[..], &b"http://a.com:8080"[..]));
+    }
+
+    #[test]
+    fn file_has_no_whatwg_default_port() {
+        let url = URL::parse(b"file://a.com:80/x");
+        assert_eq!(url.port, b"80");
+        assert_eq!(url.host, b"a.com:80");
+    }
+
+    #[test]
+    fn scheme_less_host_port_reading_is_untouched() {
+        // The npm/host:port reading (`localhost:3000`) has no protocol, so no
+        // default port applies — pinned by authority_end_tests, re-pinned here
+        // next to the new elision.
+        let url = URL::parse(b"a.com:80/x");
+        assert_eq!((url.protocol, url.port), (&b""[..], &b"80"[..]));
+
+        let url = URL::parse(b"[::1]:80/");
+        assert_eq!(url.port, b"80");
+
+        let url = URL::parse(b"http://[::1]:80/x");
+        assert_eq!(url.port, b"");
+        assert_eq!(url.host, b"[::1]");
+        assert_eq!(url.origin, b"http://[::1]");
+    }
+
+    #[test]
+    fn href_keeps_the_raw_input_bytes() {
+        // Documented residual: the borrowed view cannot rewrite `href`; the
+        // serializing face (node_url) owns default-port href rewriting.
+        let url = URL::parse(b"http://a.com:80/x");
+        assert_eq!(url.href, b"http://a.com:80/x");
+    }
+
+    fn join(base: &'static [u8], relative: &'static [u8]) -> Vec<u8> {
+        whatwg::join(&BunString::static_(base), &BunString::static_(relative))
+            .utf8()
+            .to_vec()
+    }
+
+    #[test]
+    fn join_consumes_dot_segments() {
+        assert_eq!(join(b"http://a.com/b/d/", b"../c"), b"http://a.com/b/c");
+        assert_eq!(join(b"http://a.com/b/d", b"../c"), b"http://a.com/c");
+        assert_eq!(join(b"http://a.com/b/d/", b"./c"), b"http://a.com/b/d/c");
+        assert_eq!(join(b"http://a.com/b/d/", b"../c?q=1#f"), b"http://a.com/b/c?q=1#f");
+        assert_eq!(join(b"http://a.com/b/d/", b"../.."), b"http://a.com/");
+        assert_eq!(join(b"http://a.com/b/d/", b"/root"), b"http://a.com/root");
+        // Pre-existing directory semantics for plain relative refs are unchanged.
+        assert_eq!(join(b"http://a.com/b/d/", b"c"), b"http://a.com/b/d/c");
+        assert_eq!(join(b"http://a.com/b/", b"a//b"), b"http://a.com/b/a//b");
+        // Cross-check with the elided default-port origin.
+        assert_eq!(join(b"http://a.com:80/b/", b"c"), b"http://a.com/b/c");
     }
 }
