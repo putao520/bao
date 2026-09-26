@@ -647,12 +647,14 @@ fn runtime_drop_closes_child_ipc_channels() {
     let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
     warm_child_process(&mut rt);
     let sockets_before = fd_targets("socket:");
+    // The options MUST be the third argument to spawn(), not a comma-
+    // separated object literal after the call (the old format string
+    // produced `spawn(...), {stdio: ...}` — a comma expression that
+    // silently dropped the options).
+    // Build the spawn call with options INSIDE the parentheses:
+    // spawn('sleep', ['300'], {stdio: ['ignore','pipe','pipe','ipc']})
     rt.eval(
-        &format!(
-            "globalThis.__cpT7 = require('child_process').{}, \
-             {{ stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }};",
-            sleeper_spawn_call_js()
-        ),
+        "globalThis.__cpT7 = require('child_process').spawn('sleep', ['300'],          { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });",
         "<runtime-cleanup-test>",
     )
     .expect("spawn with ipc stdio must succeed");

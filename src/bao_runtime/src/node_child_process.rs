@@ -1283,6 +1283,49 @@ unsafe fn js_stdio_wants_pipe(
 /// Returns true if we should create a socketpair at child fd 3 and store the
 /// parent endpoint as an `IpcChannel` keyed by pid in `CP_IPC_CHANNELS`.
 #[allow(unsafe_op_in_unsafe_fn)]
+
+/// Read a JS array of strings into a Vec<String> (the args-array form).
+#[allow(static_mut_refs)]
+unsafe fn js_str_array_from_js_array(
+    cx: *mut JSContext,
+    arr_h: Handle<*mut JSObject>,
+) -> Vec<String> {
+    unsafe {
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            arr_h,
+            c"length".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut len_val,
+            },
+        );
+        let len = if len_val.is_int32() {
+            len_val.to_int32().max(0) as u32
+        } else {
+            0
+        };
+        let mut out = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let mut elem = UndefinedValue();
+            JS_GetElement(
+                cx,
+                arr_h,
+                i,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut elem,
+                },
+            );
+            if elem.is_string() {
+                out.push(crate::js_to_rust_string(cx, elem));
+            }
+        }
+        out
+    }
+}
+
 unsafe fn js_wants_ipc(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> bool {
     unsafe {
         // 1) options.serialization set (any truthy string / non-null value).
@@ -1350,7 +1393,10 @@ unsafe fn js_wants_ipc(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> bool
             }
         }
 
-        // 3) Legacy shorthand: stdin/stdout/stderr === "ipc".
+        if !stdio_val.is_object() {
+            eprintln!("[dbg3] stdio not object: is_string={} is_undef={} is_null={}", stdio_val.is_string(), stdio_val.is_undefined(), stdio_val.is_null());
+        }
+        // 3) Legacy shorthand
         for slot in [c"stdin".as_ptr(), c"stdout".as_ptr(), c"stderr".as_ptr()].iter() {
             if let Some(s) = js_str_prop(cx, obj_h, *slot) {
                 if s == "ipc" {
@@ -1743,9 +1789,56 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         let mut pe = true;
         let mut pi = false;
         let mut ipc = false;
-        if second_obj.is_some() && !second_obj_r.get().is_null() {
-            let obj_h = second_obj_r.handle();
-            let cargs = js_str_array_prop(cx, obj_h.into(), c"args".as_ptr());
+        // Options resolution (Node.js spawn API contract):
+        //   spawn(cmd, options)        — options is arg[1] (the object)
+        //   spawn(cmd, args, options)  — options is arg[2] (arg[1] is the
+        //                                args ARRAY, not an options bag)
+        // The old code always used arg[1] as options — for the 3-arg form
+        // it scanned the args array for stdio/ipc (never finding them,
+        // since arrays don't carry those properties), silently dropping
+        // the entire options object. Node-contract fix 2026-09-26.
+        // Options resolution (Node.js spawn API contract):
+        //   spawn(cmd, options)        — options is arg[1]
+        //   spawn(cmd, args, options)  — options is arg[2] (arg[1] is the
+        //                                args ARRAY, not an options bag)
+        // The old code always used arg[1] as options — for the 3-arg form
+        // it scanned the args array for stdio/ipc (never finding them),
+        // silently dropping the entire options object. Node fix 2026-09-26.
+        rooted!(&in(cx_ref) let third_r = if argc > 2 {
+            let third = *args.get(2).ptr;
+            if third.is_object() {
+                third.to_object()
+            } else {
+                ::std::ptr::null_mut::<JSObject>()
+            }
+        } else {
+            ::std::ptr::null_mut::<JSObject>()
+        });
+        // For 3-arg form use third_r; for 2-arg use second_obj_r.
+        let use_third = argc > 2 && !third_r.get().is_null();
+        let opt_obj_raw: *mut JSObject = if use_third {
+            third_r.get()
+        } else if second_obj.is_some() && !second_obj_r.get().is_null() {
+            second_obj_r.get()
+        } else {
+            ::std::ptr::null_mut::<JSObject>()
+        };
+        if !opt_obj_raw.is_null() {
+            rooted!(&in(cx_ref) let opt_r = opt_obj_raw);
+            let obj_h = opt_r.handle();
+            let cargs = if use_third {
+                // 3-arg form: args are the second arg (a JS array)
+                let arr_val = *args.get(1).ptr;
+                if arr_val.is_object() {
+                    rooted!(&in(cx_ref) let a_r = arr_val.to_object());
+                    js_str_array_from_js_array(cx, a_r.handle().into())
+                } else {
+                    Vec::new()
+                }
+            } else {
+                // 2-arg form: args are the options object's args property
+                js_str_array_prop(cx, obj_h.into(), c"args".as_ptr())
+            };
             a = cargs;
             c = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
             ps = js_stdio_wants_pipe(cx, obj_h.into(), c"stdout".as_ptr());
@@ -1948,6 +2041,7 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     // end via `posix_result.extra_pipes[0]` as `ExtraPipe::OwnedFd(parent_fd)`.
     // We then wrap that fd into an `IpcChannel` and register it for
     // `__cp_ipc_send` / `__cp_ipc_recv` lookups by pid.
+    #[cfg(unix)]
     #[cfg(unix)]
     let extra_fds: Box<[PosixStdio]> = if wants_ipc {
         Box::new([PosixStdio::Ipc])
