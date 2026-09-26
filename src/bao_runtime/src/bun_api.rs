@@ -7148,8 +7148,11 @@ struct BunFileSinkState {
     /// path form). Dropped (closing the descriptor) at end(). The stdio
     /// descriptors are never closed by the Drop guard.
     file: Option<bun_sys::File>,
-    /// Raw descriptor used for every write (owned or borrowed form).
-    fd: i32,
+    /// Raw descriptor used for every write (owned or borrowed form). Kept in
+    /// the platform-faithful `Fd` form (c_int on POSIX, HANDLE-tagged u64 on
+    /// Windows) so the borrowed-form write path hands it straight to
+    /// `File::borrow` on both platforms.
+    fd: bun_sys::Fd,
     /// Display identity for error messages.
     display: String,
     /// Buffered bytes not yet handed to the fd.
@@ -7175,7 +7178,7 @@ impl BunFileSinkState {
         // takes ownership of the caller's descriptor).
         let result = match self.file.as_ref() {
             Some(f) => f.write_all(&self.buf),
-            None => bun_sys::File::borrow(&bun_sys::Fd::from_native(self.fd)).write_all(&self.buf),
+            None => bun_sys::File::borrow(&self.fd).write_all(&self.buf),
         };
         match result {
             Ok(()) => {
@@ -7292,7 +7295,7 @@ unsafe extern "C" fn bun_file_writer(cx: *mut JSContext, argc: u32, vp: *mut JSV
                 0o666 as bun_core::Mode,
             ) {
                 Ok(f) => {
-                    let fd = f.fd().native();
+                    let fd = f.fd();
                     (Some(f), fd, path)
                 }
                 Err(e) => {
@@ -7307,7 +7310,7 @@ unsafe extern "C" fn bun_file_writer(cx: *mut JSContext, argc: u32, vp: *mut JSV
         }
         BunfileSrc::Fd(fd) => {
             // Borrowed descriptor — never closed by this sink.
-            (None, fd, format!("/proc/self/fd/{}", fd))
+            (None, fd, format!("/proc/self/fd/{}", fd.uv()))
         }
     };
 
@@ -7587,7 +7590,11 @@ unsafe extern "C" fn bun_file_sink_unref(_cx: *mut JSContext, _argc: u32, vp: *m
 /// true source), the path form carries the target path.
 enum BunfileSrc {
     Path(String),
-    Fd(i32),
+    /// The live descriptor in the platform-faithful `Fd` form. The JS `fd`
+    /// prop is a descriptor NUMBER (c_int on POSIX, CRT fd on Windows — see
+    /// the CRT fstat/pread faces below), tagged via `Fd::from_uv` so the
+    /// write path can borrow it as an `Fd` on both platforms.
+    Fd(bun_sys::Fd),
 }
 
 /// Read the BunFile's backing source off `this` (fd prop wins over path).
@@ -7610,7 +7617,7 @@ unsafe fn bunfile_src(cx: *mut JSContext, this: Handle<Value>) -> Option<Bunfile
         },
     ) && fd_v.is_int32()
     {
-        return Some(BunfileSrc::Fd(fd_v.to_int32()));
+        return Some(BunfileSrc::Fd(bun_sys::Fd::from_uv(fd_v.to_int32())));
     }
     let mut path_v = UndefinedValue();
     if JS_GetProperty(
@@ -7636,7 +7643,7 @@ unsafe fn bunfile_src(cx: *mut JSContext, this: Handle<Value>) -> Option<Bunfile
 fn bunfile_display_path(src: &BunfileSrc) -> String {
     match src {
         BunfileSrc::Path(p) => p.clone(),
-        BunfileSrc::Fd(fd) => format!("/proc/self/fd/{}", fd),
+        BunfileSrc::Fd(fd) => format!("/proc/self/fd/{}", fd.uv()),
     }
 }
 
@@ -7931,7 +7938,7 @@ unsafe fn file_read_promise(cx: *mut JSContext, args: &CallArgs, mode: BunfileRe
     // Plain-Rust read (no GC window); fd form reads the descriptor itself,
     // path form reads the path.
     let read_res: ::std::result::Result<Vec<u8>, ::std::io::Error> = match &src {
-        BunfileSrc::Fd(fd) => read_fd_all(*fd),
+        BunfileSrc::Fd(fd) => read_fd_all(fd.uv()),
         BunfileSrc::Path(p) => bun_fs::read(p),
     };
 
@@ -8051,7 +8058,7 @@ unsafe extern "C" fn bun_file_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let size_res: ::std::result::Result<usize, ::std::io::Error> = match &src {
         BunfileSrc::Fd(fd) => {
             let mut st: libc::stat = unsafe { ::std::mem::zeroed() };
-            if unsafe { libc::fstat(*fd, &mut st) } == 0 {
+            if unsafe { libc::fstat(fd.uv(), &mut st) } == 0 {
                 Ok(st.st_size.max(0) as usize)
             } else {
                 Err(::std::io::Error::last_os_error())
@@ -8104,7 +8111,7 @@ unsafe extern "C" fn bun_file_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 
     // Range read off the same source (fd pread keeps the cursor untouched).
     let range_res: ::std::result::Result<Vec<u8>, ::std::io::Error> = match &src {
-        BunfileSrc::Fd(fd) => pread_range(*fd, start, span),
+        BunfileSrc::Fd(fd) => pread_range(fd.uv(), start, span),
         BunfileSrc::Path(p) => read_path_range(p, start, span),
     };
     let bytes = match range_res {
