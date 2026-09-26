@@ -77,3 +77,8 @@ src/bao_browser/bottles/
 # gsc pre-spec-first-gate AC02 布局 accommodation:repo 根 SPEC -> .spec symlink
 # (SSOT 仍是 .spec/,symlink 只是门的字面路径别名;见 gsc#89,上游修复后移除)
 /SPEC
+
+# teardown-forensics test step log (append-on-run; was briefly tracked as
+# W8-wave evidence e7f96656 — artifact now lives in the cargo target tmp dir,
+# this entry keeps the historical CWD copy out of status)
+/src/bao_engine/tdf.log

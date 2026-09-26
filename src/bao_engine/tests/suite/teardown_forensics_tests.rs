@@ -8,17 +8,33 @@
 // teardown — a stale stack root crashes at the FIRST collection, not only at
 // destroyRuntime, so the per-step log pins the culprit to one eval. Each
 // `#[test]` runs in its own nextest process; the step log is appended to
-// `tdf.log` in the process CWD (C:\bao-win-test on the probe host).
+// `tdf.log` under the cargo target temp dir (CARGO_TARGET_TMPDIR, OS temp dir
+// as fallback) — never the process CWD, which would dirty the repo tree (the
+// CWD variant was briefly tracked as W8-wave evidence, e7f96656).
 
 use bao_engine::context::JsContext;
 use mozjs::jsapi::{GCReason, JS_GC};
 
+/// Directory for the step log: cargo's per-target temp dir when available
+/// (compile-time for integration tests; also honored at runtime), else the
+/// OS temp dir. Same `tdf.log` filename, untracked location.
+fn tdf_log_dir() -> std::path::PathBuf {
+    if let Some(dir) = option_env!("CARGO_TARGET_TMPDIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    if let Ok(dir) = std::env::var("CARGO_TARGET_TMPDIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    std::env::temp_dir()
+}
+
 fn tdf_log(step: &str) {
     use std::io::Write;
+    let path = tdf_log_dir().join("tdf.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("tdf.log")
+        .open(path)
     {
         let _ = writeln!(f, "{step}");
     }
