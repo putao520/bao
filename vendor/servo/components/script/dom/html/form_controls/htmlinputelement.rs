@@ -2020,8 +2020,8 @@ impl VirtualMethods for HTMLInputElement {
         match *attr.local_name() {
             local_name!("disabled") => {
                 let disabled_state = match mutation {
-                    AttributeMutation::Set(None, _) => true,
-                    AttributeMutation::Set(Some(_), _) => {
+                    AttributeMutation::Set(None) => true,
+                    AttributeMutation::Set(Some(_)) => {
                         // Input was already disabled before.
                         return;
                     },
@@ -2039,8 +2039,8 @@ impl VirtualMethods for HTMLInputElement {
             },
             local_name!("checked") if !self.checked_changed.get() => {
                 let checked_state = match mutation {
-                    AttributeMutation::Set(None, _) => true,
-                    AttributeMutation::Set(Some(_), _) => {
+                    AttributeMutation::Set(None) => true,
+                    AttributeMutation::Set(Some(_)) => {
                         // Input was already checked before.
                         return;
                     },
@@ -2054,7 +2054,7 @@ impl VirtualMethods for HTMLInputElement {
             },
             local_name!("type") => {
                 match mutation {
-                    AttributeMutation::Set(previous_value, _) => {
+                    AttributeMutation::Set(previous_value) => {
                         // https://html.spec.whatwg.org/multipage/#input-type-change
 
                         // Ensure there was actually a change in type
@@ -2196,7 +2196,7 @@ impl VirtualMethods for HTMLInputElement {
                 {
                     let mut placeholder = self.placeholder.borrow_mut();
                     placeholder.clear();
-                    if let AttributeMutation::Set(..) = mutation {
+                    if let AttributeMutation::Set(_) = mutation {
                         placeholder
                             .extend(attr.value().chars().filter(|&c| c != '\n' && c != '\r'));
                     }
@@ -2210,7 +2210,7 @@ impl VirtualMethods for HTMLInputElement {
                 if self.input_type().is_textual() {
                     let el = self.upcast::<Element>();
                     match mutation {
-                        AttributeMutation::Set(..) => {
+                        AttributeMutation::Set(_) => {
                             el.set_read_write_state(false);
                         },
                         AttributeMutation::Removed => {

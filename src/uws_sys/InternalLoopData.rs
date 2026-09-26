@@ -51,6 +51,12 @@ pub struct InternalLoopData {
     pub closed_udp_head: *mut udp::Socket,
     pub closed_head: *mut us_socket_t,
     pub low_prio_head: *mut us_socket_t,
+    /// Sweep cursor over the low-priority park queue: `us_internal_timer_sweep`
+    /// walks parked sockets too (zero-byte pre-handshake TLS bursts would
+    /// otherwise outlive their timeout tick — oven-sh/bun a10f500a7d), and
+    /// close/detach/adopt/drain advance it past a socket they unlink, same as
+    /// `iterator`/`group->iterator` do for `head_sockets`.
+    pub low_prio_iterator: *mut us_socket_t,
     pub low_prio_budget: i32,
     pub dns_ready_head: *mut ConnectingSocket,
     pub closed_connecting_head: *mut ConnectingSocket,

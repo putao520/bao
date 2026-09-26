@@ -286,7 +286,7 @@ impl VirtualMethods for HTMLLinkElement {
         // For stylesheets, we should only refetch when the actual attribute value
         // has been changed.
         if self.relations.get().contains(LinkRelations::STYLESHEET) &&
-            let AttributeMutation::Set(Some(previous_value), _) = mutation &&
+            let AttributeMutation::Set(Some(previous_value)) = mutation &&
             **previous_value == **attr.value()
         {
             return;
@@ -383,7 +383,7 @@ impl VirtualMethods for HTMLLinkElement {
                 // When the as attribute of the link element of an external resource link
                 // that is already browsing-context connected is changed.
                 if self.relations.get().contains(LinkRelations::PRELOAD) &&
-                    let AttributeMutation::Set(Some(_), _) = mutation
+                    let AttributeMutation::Set(Some(_)) = mutation
                 {
                     self.handle_preload_url();
                 }
@@ -420,7 +420,7 @@ impl VirtualMethods for HTMLLinkElement {
                     !self.previous_media_environment_matched.get()
                 {
                     match mutation {
-                        AttributeMutation::Removed | AttributeMutation::Set(Some(_), _) => {
+                        AttributeMutation::Removed | AttributeMutation::Set(Some(_)) => {
                             self.handle_preload_url()
                         },
                         _ => {},
@@ -433,7 +433,7 @@ impl VirtualMethods for HTMLLinkElement {
                     let mut guard = shared_lock.write();
                     let media = stylesheet.media.write_with(&mut guard);
                     match mutation {
-                        AttributeMutation::Set(..) => {
+                        AttributeMutation::Set(_) => {
                             *media = MediaList::parse_media_list(&attr.value(), document.window())
                         },
                         AttributeMutation::Removed => *media = StyleMediaList::empty(),

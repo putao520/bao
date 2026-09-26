@@ -186,6 +186,15 @@ static int us_ssl_is_socket_ex_idx = -1;
  * (node's ssl.verifyError() verdict) as (void*)(intptr_t). */
 static int us_ssl_inline_reject_enabled_ex_idx = -1;
 static int us_ssl_inline_reject_err_ex_idx = -1;
+/* (SSL) (void*)1 once a verify callback walked a peer chain on this SSL
+ * (upstream: us_socket_t.ssl_peer_chain_checked, set from us_cert_verify_cb).
+ * Bao keeps per-connection SSL state off the socket (SSL ex_data — see
+ * us_internal_ssl_attach), and the verify callback has the SSL at hand, so
+ * the flag rides ex_data instead of a socket bitfield: a fresh SSL starts
+ * NULL (= upstream's per-attach reset) and the mark survives renegotiations
+ * on the same SSL. Only us_socket_t-attached SSLs are read back, so marks on
+ * SSLWrapper-owned SSLs are inert. */
+static int us_ssl_chain_checked_ex_idx = -1;
 /* (SSL_CTX) packed client-certificate policy of a Bun.serve per-serverName
  * entry — see us_ssl_ctx_set_sni_policy. Absent on node:tls SecureContexts,
  * whose policy is server-level. */
@@ -459,6 +468,7 @@ static void us_ex_idx_init(void) {
   us_ssl_is_socket_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
   us_ssl_inline_reject_enabled_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
   us_ssl_inline_reject_err_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+  us_ssl_chain_checked_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
   us_ssl_pending_session_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_pending_session_free);
   us_ssl_pending_keylog_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_pending_session_free);
   us_ssl_new_session_ref_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_new_session_ref_free);
@@ -589,7 +599,7 @@ static inline struct us_ssl_reneg_state_t *us_reneg_state(SSL *ssl) {
 /* socket.c — raw TCP FIN that does NOT re-enter the SSL layer. */
 extern void us_internal_socket_raw_shutdown(struct us_socket_t *s);
 
-static void ssl_update_handshake(struct us_socket_t *s);
+static void ssl_update_handshake(struct us_socket_t *s, int fin_ends_handshake);
 static int ssl_flush_write_batch(struct loop_ssl_data *loop_ssl_data, struct us_socket_t *s);
 static int us_ssl_inline_reject_tripped(struct us_socket_t *s);
 static inline int ssl_gone(struct us_socket_t *s);
@@ -1201,10 +1211,24 @@ end:
   return ret;
 }
 
+/* The peer sent a certificate chain and this handshake walked it (upstream:
+ * us_cert_verify_cb sets us_socket_t.ssl_peer_chain_checked for every socket
+ * whose chain the callback saw — server or client, valid or not). Consulted by
+ * ssl_failed_handshake_verify_error: after our own FIN, a failed handshake
+ * reports the SSL's verdict only for a chain that it checked. */
+static void us_ssl_note_chain_checked(X509_STORE_CTX *ctx) {
+  if (us_ssl_chain_checked_ex_idx < 0) return;
+  SSL *ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+  if (ssl) {
+    SSL_set_ex_data(ssl, us_ssl_chain_checked_ex_idx, (void *)1);
+  }
+}
+
 static int us_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
   /* Always continue; the user inspects via us_socket_verify_error after
    * on_handshake. Returning 1 defers the decision to JS without aborting
    * mid-handshake - the same model as Node (crypto_tls.cc VerifyCallback). */
+  us_ssl_note_chain_checked(ctx);
   return 1;
 }
 
@@ -1212,6 +1236,7 @@ static int us_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
  * ssl.verifyError()) but remember the failure; the BIO hook and the
  * handshake drive then keep the Finished off the wire and fail the socket. */
 static int us_inline_reject_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
+  us_ssl_note_chain_checked(ctx);
   if (!preverify_ok) {
     SSL *ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
     if (ssl) {
@@ -1929,11 +1954,31 @@ struct us_bun_verify_error_t us_ssl_socket_verify_error_from_ssl(SSL *ssl) {
   return (struct us_bun_verify_error_t){.error = x509_verify_error, .code = code, .reason = reason};
 }
 
+/* A sent FIN, a sent close_notify or a fatal error says nothing about the
+ * peer's certificate: on an open socket the SSL alone answers, like node's
+ * TLSWrap::VerifyError
+ * (https://github.com/nodejs/node/blob/v26.3.0/src/crypto/crypto_tls.cc#L1840-L1853). */
 struct us_bun_verify_error_t us_internal_ssl_verify_error(struct us_socket_t *s) {
-  if (!s->ssl || !s_ssl(s) || us_socket_is_closed(s) || us_internal_ssl_is_shut_down(s)) {
+  if (!s->ssl || !s_ssl(s) || us_socket_is_closed(s)) {
     return (struct us_bun_verify_error_t){.error = 0, .code = NULL, .reason = NULL};
   }
   return us_ssl_socket_verify_error_from_ssl(s_ssl(s));
+}
+
+/* Whether a verify callback walked a peer chain on this socket's SSL. */
+static int us_ssl_peer_chain_checked(struct us_socket_t *s) {
+  return s->ssl && s_ssl(s) && us_ssl_chain_checked_ex_idx >= 0 &&
+         SSL_get_ex_data(s_ssl(s), us_ssl_chain_checked_ex_idx) != NULL;
+}
+
+/* After our own FIN a failed handshake reports the SSL's verdict only for a
+ * chain that it checked: node:tls reads a failure with an X509 code as an
+ * established session. */
+static struct us_bun_verify_error_t ssl_failed_handshake_verify_error(struct us_socket_t *s) {
+  if (us_internal_ssl_is_shut_down(s) && !us_ssl_peer_chain_checked(s)) {
+    return (struct us_bun_verify_error_t){.error = 0, .code = NULL, .reason = NULL};
+  }
+  return us_internal_ssl_verify_error(s);
 }
 
 /* ── Handshake state machine ─────────────────────────────────────────────── */
@@ -2020,7 +2065,10 @@ static void ssl_trigger_handshake(struct us_socket_t *s, int success) {
   if (!success && ssl_dispatch_parked_reason(s)) {
     return;
   }
-  struct us_bun_verify_error_t verify_error = us_internal_ssl_verify_error(s);
+  /* A finished handshake reports the SSL's X509 verdict in every socket state. */
+  struct us_bun_verify_error_t verify_error =
+      success && s->ssl ? us_ssl_socket_verify_error_from_ssl(s_ssl(s))
+                        : ssl_failed_handshake_verify_error(s);
   us_dispatch_handshake(s, success, verify_error);
 }
 
@@ -2178,7 +2226,7 @@ struct us_socket_t *us_internal_ssl_close(struct us_socket_t *s, int code, void 
     return us_internal_socket_close_raw(s, code, reason);
   }
   ssl_set_loop_data(s);
-  ssl_update_handshake(s);
+  ssl_update_handshake(s, 1);
   if (ssl_gone(s)) return s;
 
   if (s->ssl_handshake_state != HANDSHAKE_COMPLETED) {
@@ -2215,7 +2263,11 @@ struct us_socket_t *us_internal_ssl_close(struct us_socket_t *s, int code, void 
 }
 #define ssl_close us_internal_ssl_close
 
-static void ssl_update_handshake(struct us_socket_t *s) {
+/* `fin_ends_handshake` is 0 only from the writable event, which the read path
+ * re-enters while a handshake is in progress: the socket keeps reading after
+ * our FIN or close_notify, and the peer's next flight can still complete that
+ * handshake. For every other caller a half-closed socket's handshake is over. */
+static void ssl_update_handshake(struct us_socket_t *s, int fin_ends_handshake) {
   /* The OpenSSL error queue is per-thread and another socket's failure (a
    * server and a client commonly share this thread) may have left entries on
    * it; clear it before this socket's handshake step so any reason captured
@@ -2234,8 +2286,9 @@ static void ssl_update_handshake(struct us_socket_t *s) {
     return;
   }
 
-  if (us_socket_is_closed(s) || us_internal_ssl_is_shut_down(s) ||
-      (s_ssl(s) && SSL_get_shutdown(s_ssl(s)) & SSL_RECEIVED_SHUTDOWN)) {
+  if (us_socket_is_closed(s) || s->ssl_fatal_error ||
+      (SSL_get_shutdown(s_ssl(s)) & SSL_RECEIVED_SHUTDOWN) ||
+      (fin_ends_handshake && us_internal_ssl_is_shut_down(s))) {
     ssl_trigger_handshake(s, 0);
     return;
   }
@@ -2309,7 +2362,7 @@ struct us_socket_t *us_internal_ssl_on_open(struct us_socket_t *s, int is_client
   if (!result || ssl_gone(result)) return result;
   /* Kick the handshake immediately — some peers stall waiting for ClientHello. */
   ssl_set_loop_data(result);
-  ssl_update_handshake(result);
+  ssl_update_handshake(result, 1);
   return result;
 }
 
@@ -2452,7 +2505,7 @@ struct us_socket_t *us_internal_ssl_on_writable(struct us_socket_t *s) {
       return us_internal_ssl_close(s, s->ssl_pending_close_code, NULL);
     }
   }
-  ssl_update_handshake(s);
+  ssl_update_handshake(s, 0);
   if (ssl_gone(s)) return s;
 
   if (s->ssl_read_wants_write) {
@@ -2983,7 +3036,7 @@ void us_socket_sni_resolve(struct us_socket_t *s, struct ssl_ctx_st *ctx, int er
   }
   /* Re-drive the handshake; select_cert_cb re-fires and consumes the state. */
   ssl_set_loop_data(s);
-  ssl_update_handshake(s);
+  ssl_update_handshake(s, 1);
 }
 
 /* ── Adopt-TLS (STARTTLS / Bun.connect upgrade) ──────────────────────────── */
@@ -3034,7 +3087,7 @@ struct us_socket_t *us_socket_adopt_tls(struct us_socket_t *s,
 void us_socket_start_tls_handshake(struct us_socket_t *s) {
   if (!s->ssl || us_socket_is_closed(s)) return;
   ssl_set_loop_data(s);
-  ssl_update_handshake(s);
+  ssl_update_handshake(s, 1);
 }
 
 /* ── SNI on listen sockets ───────────────────────────────────────────────── */

@@ -1998,7 +1998,6 @@ impl Element {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_new_attribute(
         &self,
         cx: &mut JSContext,
@@ -2007,7 +2006,6 @@ impl Element {
         name: LocalName,
         namespace: Namespace,
         prefix: Option<Prefix>,
-        reason: AttributeMutationReason,
     ) {
         // Build ContentAttributeData on the stack. We keep the original on the
         // stack for the AttrRef (used by handle_attribute_changes / attribute_mutated),
@@ -2030,7 +2028,7 @@ impl Element {
             value: data.value.clone(),
         });
         // Step 4: Handle attribute changes using stack-local AttrRef.
-        self.handle_attribute_changes(cx, attr_ref, None, Some(&*attr_ref.value()), reason);
+        self.handle_attribute_changes(cx, attr_ref, None, Some(&*attr_ref.value()));
     }
 
     /// <https://dom.spec.whatwg.org/#handle-attribute-changes>
@@ -2040,7 +2038,6 @@ impl Element {
         attr: AttrRef<'_>,
         old_value: Option<&AttrValue>,
         new_value: Option<&AttrValue>,
-        reason: AttributeMutationReason,
     ) {
         // Step 1. Queue a mutation record of "attributes" for element with attribute’s local name,
         // attribute’s namespace, oldValue, « », « », null, and null.
@@ -2071,7 +2068,7 @@ impl Element {
         // Step 3. Run the attribute change steps with element, attribute’s local name, oldValue, newValue, and attribute’s namespace.
         if is_relevant_attribute(attr.namespace(), attr.local_name()) {
             let attribute_mutation = if has_new_value {
-                AttributeMutation::Set(old_value, reason)
+                AttributeMutation::Set(old_value)
             } else {
                 AttributeMutation::Removed
             };
@@ -2091,22 +2088,11 @@ impl Element {
         // Step 3. Handle attribute changes for attribute with attribute’s element, oldValue, and value.
         //
         // Put on a separate line to avoid double borrow
-        self.handle_attribute_changes(
-            cx,
-            AttrRef::Dom(attr),
-            Some(old_value),
-            Some(&*attr.value()),
-            AttributeMutationReason::Directly,
-        );
+        self.handle_attribute_changes(cx, AttrRef::Dom(attr), Some(old_value), Some(&*attr.value()));
     }
 
     /// <https://dom.spec.whatwg.org/#concept-element-attributes-append>
-    pub(crate) fn push_attribute(
-        &self,
-        cx: &mut JSContext,
-        attr: &Attr,
-        reason: AttributeMutationReason,
-    ) {
+    pub(crate) fn push_attribute(&self, cx: &mut JSContext, attr: &Attr) {
         // Step 2. Set attribute’s element to element.
         //
         // Handled by callers of this function and asserted here.
@@ -2121,7 +2107,7 @@ impl Element {
         // Step 4. Handle attribute changes for attribute with element, null, and attribute’s value.
         //
         // Put on a separate line to avoid double borrow
-        self.handle_attribute_changes(cx, AttrRef::Dom(attr), None, Some(&*attr.value()), reason);
+        self.handle_attribute_changes(cx, AttrRef::Dom(attr), None, Some(&*attr.value()));
     }
 
     pub(crate) fn with_attribute<R, F>(
@@ -2208,15 +2194,7 @@ impl Element {
             },
         };
         let value = self.parse_attribute(&qname.ns, &qname.local, value);
-        self.push_new_attribute(
-            cx,
-            qname.local,
-            value,
-            name,
-            qname.ns,
-            qname.prefix,
-            AttributeMutationReason::ByParser,
-        );
+        self.push_new_attribute(cx, qname.local, value, name, qname.ns, qname.prefix);
     }
 
     pub(crate) fn set_attribute(&self, cx: &mut JSContext, name: &LocalName, value: AttrValue) {
@@ -2285,15 +2263,7 @@ impl Element {
             // namespace prefix is prefix, local name is localName, value is value,
             // and node document is element’s node document,
             // then append this attribute to element, and then return.
-            self.push_new_attribute(
-                cx,
-                local_name,
-                value,
-                name,
-                namespace,
-                prefix,
-                AttributeMutationReason::Directly,
-            );
+            self.push_new_attribute(cx, local_name, value, name, namespace, prefix);
         };
     }
 
@@ -2348,13 +2318,7 @@ impl Element {
             // Step 3. Set attribute’s element to null.
             attr.set_owner(cx, None);
             // Step 4. Handle attribute changes for attribute with element, attribute’s value, and null.
-            self.handle_attribute_changes(
-                cx,
-                AttrRef::Dom(&attr),
-                Some(&attr.value()),
-                None,
-                AttributeMutationReason::Directly,
-            );
+            self.handle_attribute_changes(cx, AttrRef::Dom(&attr), Some(&attr.value()), None);
 
             attr
         })
@@ -2394,7 +2358,7 @@ impl Element {
         let doc = self.upcast::<Node>().owner_doc();
         // Modifying the `style` attribute might change style.
         *self.style_attribute.borrow_mut() = match mutation {
-            AttributeMutation::Set(..) => {
+            AttributeMutation::Set(_) => {
                 let value = attr.as_attr().map_or_else(
                     || attr.value(),
                     |attribute| AttrValueRef::Borrowed(attribute.value()),
@@ -2514,7 +2478,6 @@ impl Element {
                 AttrRef::Dom(attr),
                 Some(&old_attr.value()),
                 Some(&AttrValue::String(verified_value.into())),
-                AttributeMutationReason::Directly,
             );
 
             Some(old_attr)
@@ -2522,7 +2485,7 @@ impl Element {
             // Step 7. Otherwise, append attr to element.
             attr.set_owner(cx, Some(self));
             attr.upcast::<Node>().set_owner_doc(&self.node.owner_doc());
-            self.push_attribute(cx, attr, AttributeMutationReason::Directly);
+            self.push_attribute(cx, attr);
 
             None
         };
@@ -4694,7 +4657,7 @@ impl VirtualMethods for Element {
                 let event_name = &name[2..];
                 match mutation {
                     // https://html.spec.whatwg.org/multipage/#activate-an-event-handler
-                    AttributeMutation::Set(..) => {
+                    AttributeMutation::Set(_) => {
                         let source = &**attr.value();
                         let source_line = 1; // TODO(#9604) get current JS execution line
                         evtarget.set_event_handler_uncompiled(
@@ -4730,7 +4693,7 @@ impl VirtualMethods for Element {
                 if node.is_in_a_document_tree() || node.is_in_a_shadow_tree() {
                     let value = attr.value().as_atom().clone();
                     match mutation {
-                        AttributeMutation::Set(old_value, _) => {
+                        AttributeMutation::Set(old_value) => {
                             if let Some(old_value) = old_value {
                                 let old_value = old_value.as_atom();
                                 if let Some(ref shadow_root) = containing_shadow_root {
@@ -4775,7 +4738,7 @@ impl VirtualMethods for Element {
                 if node.is_connected() && node.containing_shadow_root().is_none() {
                     let value = attr.value().as_atom().clone();
                     match mutation {
-                        AttributeMutation::Set(old_value, _) => {
+                        AttributeMutation::Set(old_value) => {
                             if let Some(old_value) = old_value {
                                 doc.unregister_element_name(old_value.as_atom());
                             }
@@ -5315,18 +5278,11 @@ impl Element {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum AttributeMutationReason {
-    ByCloning,
-    ByParser,
-    Directly,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum AttributeMutation<'a> {
     /// The attribute is set, keep track of old value.
     /// <https://dom.spec.whatwg.org/#attribute-is-set>
-    Set(Option<&'a AttrValue>, AttributeMutationReason),
+    Set(Option<&'a AttrValue>),
 
     /// The attribute is removed.
     /// <https://dom.spec.whatwg.org/#attribute-is-removed>
@@ -5337,20 +5293,20 @@ impl AttributeMutation<'_> {
     pub(crate) fn is_removal(&self) -> bool {
         match *self {
             AttributeMutation::Removed => true,
-            AttributeMutation::Set(..) => false,
+            AttributeMutation::Set(_) => false,
         }
     }
 
     pub(crate) fn new_value<'b>(&self, attr: AttrRef<'b>) -> Option<AttrValueRef<'b>> {
         match *self {
-            AttributeMutation::Set(..) => Some(attr.value()),
+            AttributeMutation::Set(_) => Some(attr.value()),
             AttributeMutation::Removed => None,
         }
     }
 
     pub(crate) fn old_value(&self, attr: AttrRef<'_>) -> Option<String> {
         match *self {
-            AttributeMutation::Set(old, _) => old.map(|value| value.to_string()),
+            AttributeMutation::Set(old) => old.map(|value| value.to_string()),
             AttributeMutation::Removed => Some(attr.value().to_string()),
         }
     }

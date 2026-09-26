@@ -354,6 +354,17 @@ pub mod ssl_wrapper {
         HandshakeRenegotiationPending = 2,
     }
 
+    /// What `trigger_handshake_callback` reports.
+    #[derive(Clone, Copy)]
+    enum HandshakeOutcome {
+        /// A handshake or a renegotiation finished.
+        Established,
+        /// `SSL_do_handshake` failed.
+        HandshakeError,
+        /// Closed before the handshake finished, or a renegotiation was refused.
+        Aborted,
+    }
+
     pub struct Handlers<T: Copy> {
         /// Backref to the parent (e.g. *mut HTTPClient / *mut WebSocketProxyTunnel / *mut UpgradedDuplex).
         pub ctx: T,
@@ -620,8 +631,7 @@ pub mod ssl_wrapper {
                     Self::r(this)
                         .flags
                         .set_handshake_state(HandshakeState::HandshakeCompleted);
-                    let verify = Self::r(this).get_verify_error();
-                    Self::r(this).trigger_handshake_callback(false, verify);
+                    Self::r(this).trigger_handshake_callback(HandshakeOutcome::Aborted);
                 }
 
                 // we need to trigger close because we are not receiving a SSL_shutdown
@@ -727,6 +737,11 @@ pub mod ssl_wrapper {
             if self.flags.sent_ssl_shutdown() {
                 return Err(WriteDataError::ConnectionClosed);
             }
+            // The fatal read closes once its callbacks return. A close from here
+            // would run the owner's `on_close` under one of them.
+            if self.flags.fatal_error() {
+                return Err(WriteDataError::ConnectionClosed);
+            }
 
             if data.is_empty() {
                 // just cycle through internal openssl's state
@@ -782,10 +797,19 @@ pub mod ssl_wrapper {
             }
         }
 
-        fn trigger_handshake_callback(&mut self, success: bool, result: us_bun_verify_error_t) {
+        fn trigger_handshake_callback(&mut self, outcome: HandshakeOutcome) {
             if self.flags.closed_notified() {
                 return;
             }
+            let (success, result) = match outcome {
+                HandshakeOutcome::Established => (true, self.verify_error()),
+                HandshakeOutcome::HandshakeError => (false, self.verify_error()),
+                // node:tls reads a failure with no error after end() as its own close.
+                HandshakeOutcome::Aborted if self.is_shutdown() => {
+                    (false, us_bun_verify_error_t::default())
+                }
+                HandshakeOutcome::Aborted => (false, self.verify_error()),
+            };
             self.flags.set_authorized(success);
             // trigger the handshake callback
             (self.handlers.on_handshake)(self.handlers.ctx, success, result);
@@ -816,10 +840,8 @@ pub mod ssl_wrapper {
             (self.handlers.on_close)(self.handlers.ctx);
         }
 
-        fn get_verify_error(&self) -> us_bun_verify_error_t {
-            if self.is_shutdown() {
-                return us_bun_verify_error_t::default();
-            }
+        /// The SSL's X509 verdict. Shutdown state does not change it.
+        fn verify_error(&self) -> us_bun_verify_error_t {
             let Some(ssl) = self.ssl else {
                 return us_bun_verify_error_t::default();
             };
@@ -900,8 +922,7 @@ pub mod ssl_wrapper {
                     Self::r(this)
                         .flags
                         .set_handshake_state(HandshakeState::HandshakeCompleted);
-                    let verify = Self::r(this).get_verify_error();
-                    Self::r(this).trigger_handshake_callback(false, verify);
+                    Self::r(this).trigger_handshake_callback(HandshakeOutcome::HandshakeError);
 
                     if Self::r(this).flags.fatal_error() {
                         Self::r(this).trigger_close_callback();
@@ -919,8 +940,7 @@ pub mod ssl_wrapper {
             Self::r(this)
                 .flags
                 .set_handshake_state(HandshakeState::HandshakeCompleted);
-            let verify = Self::r(this).get_verify_error();
-            Self::r(this).trigger_handshake_callback(true, verify);
+            Self::r(this).trigger_handshake_callback(HandshakeOutcome::Established);
 
             true
         }
@@ -937,8 +957,7 @@ pub mod ssl_wrapper {
                 // renegotiation ended successfully call on_handshake
                 self.flags
                     .set_handshake_state(HandshakeState::HandshakeCompleted);
-                let verify = self.get_verify_error();
-                self.trigger_handshake_callback(true, verify);
+                self.trigger_handshake_callback(HandshakeOutcome::Established);
             }
         }
 
@@ -1002,8 +1021,7 @@ pub mod ssl_wrapper {
                                     .flags
                                     .set_handshake_state(HandshakeState::HandshakeCompleted);
                                 // we failed to renegotiate
-                                let verify = Self::r(this).get_verify_error();
-                                Self::r(this).trigger_handshake_callback(false, verify);
+                                Self::r(this).trigger_handshake_callback(HandshakeOutcome::Aborted);
                                 Self::r(this).trigger_close_callback();
                                 return false;
                             }

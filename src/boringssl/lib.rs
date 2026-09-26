@@ -331,27 +331,39 @@ fn match_dns_name(pattern: &[u8], hostname: &[u8]) -> bool {
     strings::eql_case_insensitive_ascii(pattern, hostname, true)
 }
 
-/// `url.domainToASCII`-equivalent normalization for the native server-identity
-/// matcher (CVE-2026-48618, upstream 8705d893b5): IDNA (UTS #46) maps U+3002 /
+/// Plain UTS #46 (IDNA) ToASCII for the native server-identity matcher
+/// (CVE-2026-48618, upstream 8705d893b5 + 9103862a8f): IDNA maps U+3002 /
 /// U+FF0E / U+FF61 to ".", so splitting on ASCII "." alone lets
 /// "foo。bar.example.com" match `*.example.com` two labels deep. A host that
-/// does not convert matches nothing. Uses the `idna` crate — the same UTS #46
-/// engine servo's WHATWG URL (and thus `url.domainToASCII`) applies.
+/// does not convert matches nothing. NOT `url.domainToASCII`-equivalent: that
+/// is a WHATWG URL host parse, which cuts the name at "/", "?", "#" and "\"
+/// and decodes "%xx" (the #43040 bypass); this is the mapping alone, as
+/// Node's resolver path applies it. Uses the `idna` crate (UTS #46).
 // @trace REQ-ENG-007 [entity:TlsConnection]
 fn domain_to_ascii_host(host: &[u8]) -> Option<Vec<u8>> {
     let domain = core::str::from_utf8(host).ok()?;
     idna::domain_to_ascii(domain).ok().map(String::into_bytes)
 }
 
+/// Node.js `unfqdn`: strip ONE trailing dot ("Remove trailing dots for error
+/// messages and matching"). Applied to the as-typed host before the IP check
+/// and to the (possibly IDNA-mapped) host before SAN/CN matching
+/// (upstream 9103862a8f).
+fn unfqdn(name: &[u8]) -> &[u8] {
+    name.strip_suffix(b".").unwrap_or(name)
+}
+
 // @trace REQ-ENG-007 [entity:TlsConnection]
 pub fn check_x509_server_identity(x509: &mut boring::X509, hostname: &[u8]) -> bool {
-    // A host is an IP address only as typed, not after the IDNA mapping —
-    // Node keeps `domainToASCII("::1") == ""` out of the IP path
-    // (CVE-2026-48618, upstream 8705d893b5).
-    let host_is_ip = strings::is_ip_address(hostname);
+    // As in Node.js, a host is an IP address only as typed, not after the
+    // IDNA mapping — Node keeps `domainToASCII("::1") == ""` out of the IP
+    // path (CVE-2026-48618, upstream 8705d893b5; unfqdn per 9103862a8f).
+    let host_is_ip = strings::is_ip_address(unfqdn(hostname));
     let ascii_hostname;
-    // Match a non-ASCII host on its domainToASCII form; a host that does not
-    // convert matches nothing. ASCII hosts are unchanged.
+    // Match a non-ASCII host on its UTS #46 form, as in
+    // `tls.checkServerIdentity`; a host that does not convert matches
+    // nothing. ASCII hosts are unchanged (upstream 9103862a8f: the plain
+    // IDNA mapping, never a URL host parse).
     let hostname = if strings::first_non_ascii(hostname).is_some() {
         match domain_to_ascii_host(hostname) {
             Some(ascii) => {
@@ -363,6 +375,8 @@ pub fn check_x509_server_identity(x509: &mut boring::X509, hostname: &[u8]) -> b
     } else {
         hostname
     };
+    // Node.js: "Remove trailing dots for error messages and matching."
+    let hostname = unfqdn(hostname);
     // Node.js: CN is consulted only when the certificate carries no
     // DNS / IP / URI subjectAltName entries. Track whether any were seen.
     let mut has_identifier_san = false;
@@ -503,9 +517,12 @@ pub fn check_server_identity(ssl_ptr: &mut boring::SSL, hostname: &[u8]) -> bool
 
 #[cfg(test)]
 mod server_identity_tests {
-    //! CVE-2026-48618 (upstream 8705d893b5) matcher rows: non-ASCII hosts are
-    //! matched on their domainToASCII form, conversion failures match nothing,
-    //! and ASCII behavior is unchanged. `*` never matches an empty label.
+    //! CVE-2026-48618 (upstream 8705d893b5 + 9103862a8f) matcher rows:
+    //! non-ASCII hosts are matched on their UTS #46 form (the plain IDNA
+    //! mapping, not a URL host parse), conversion failures match nothing,
+    //! ASCII behavior is unchanged, and one trailing dot is stripped
+    //! (`unfqdn`) before the IP check and before matching. `*` never matches
+    //! an empty label.
     // @trace REQ-ENG-007 [entity:TlsConnection]
     use super::*;
 
@@ -568,5 +585,39 @@ mod server_identity_tests {
             domain_to_ascii_host("b\u{00fc}cher.example.com".as_bytes()).expect("converts");
         assert_eq!(ascii, b"xn--bcher-kva.example.com".to_vec());
         assert!(match_dns_name(b"*.example.com", &ascii));
+    }
+
+    #[test]
+    fn unfqdn_strips_exactly_one_trailing_dot() {
+        // Node.js unfqdn: "Remove trailing dots for error messages and
+        // matching" — one dot, not all of them (upstream 9103862a8f).
+        assert_eq!(unfqdn(b"example.com."), b"example.com");
+        assert_eq!(unfqdn(b"example.com"), b"example.com");
+        // Two trailing dots keep one: an empty last label is not an FQDN
+        // shape Node's checkServerIdentity normalizes away.
+        assert_eq!(unfqdn(b"example.com.."), b"example.com.");
+        assert_eq!(unfqdn(b"."), b"");
+        assert_eq!(unfqdn(b""), b"");
+    }
+
+    #[test]
+    fn fqdn_host_matches_after_unfqdn() {
+        // "example.com." must match a cert for "example.com": the trailing
+        // dot is stripped before SAN/CN comparison, as in Node.
+        let host = unfqdn(b"example.com.");
+        assert!(match_dns_name(b"example.com", host));
+        let wild_host = unfqdn(b"foo.example.com.");
+        assert!(match_dns_name(b"*.example.com", wild_host));
+        // Sanity: without the strip the raw FQDN would not compare equal.
+        assert!(!match_dns_name(b"example.com", b"example.com."));
+    }
+
+    #[test]
+    fn trailing_dot_ip_literal_is_still_an_ip() {
+        // The IP gate runs on the unfqdn form: "127.0.0.1." is an IP host,
+        // so it is matched against IP SANs only, never DNS names.
+        assert!(strings::is_ip_address(unfqdn(b"127.0.0.1.")));
+        assert!(strings::is_ip_address(unfqdn(b"::1.")));
+        assert!(!strings::is_ip_address(unfqdn(b"example.com.")));
     }
 }
