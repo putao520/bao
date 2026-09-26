@@ -567,7 +567,16 @@ impl StdArena {
     /// ever has to remember an alignment.
     #[inline]
     fn raw_alloc(&self, total: usize) -> *mut u8 {
-        match C_ALLOCATOR.raw_alloc(total, crate::Alignment::from_byte_units(16), 0) {
+        // Alignment 8 (not 16): Windows x64 malloc already guarantees 16-byte
+        // alignment in practice (heap granularity), and requesting 8 ≤ MAX_ALIGN_T
+        // routes through the SAME libc::malloc path as every C++ consumer in the
+        // process — one heap, one allocation strategy, no _aligned_malloc
+        // intermixing. The old Alignment(16) triggered _aligned_malloc on Windows
+        // (MAX_ALIGN_T=8), placing arena blocks on a different allocation path
+        // than the C++ statics/SM/uWS neighbors, making them targets for
+        // cross-allocation-path metadata corruption (.200 heap-corruption
+        // wire-proven 2026-09-26, user-directed architecture analysis).
+        match C_ALLOCATOR.raw_alloc(total, crate::Alignment::from_byte_units(8), 0) {
             Some(p) => p,
             None => ptr::null_mut(),
         }
@@ -606,7 +615,7 @@ impl StdArena {
         unsafe {
             C_ALLOCATOR.raw_free(
                 core::slice::from_raw_parts_mut(base, 1),
-                crate::Alignment::from_byte_units(16),
+                crate::Alignment::from_byte_units(8),
                 0,
             )
         }
