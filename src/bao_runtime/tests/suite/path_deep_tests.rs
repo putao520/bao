@@ -40,7 +40,13 @@ fn test_path_deep() {
 
         // === path.resolve ===
         check("resolve_exists", function() { return typeof path.resolve === 'function'; });
-        check("resolve_absolute", function() { return path.resolve("/foo", "/bar") === (path.sep === "\\" ? "\\bar" : "/bar"); });
+        check("resolve_absolute", function() {
+            // Root-relative inputs resolve against the CURRENT DRIVE on
+            // Windows (node: resolve('/foo','/bar') → 'C:\\bar' — drive-
+            // qualified); POSIX keeps the bare root.
+            var expected = path.sep === "\\" ? process.cwd().slice(0, 2) + "\\bar" : "/bar";
+            return path.resolve("/foo", "/bar") === expected;
+        });
 
         // === path.basename ===
         check("basename_exists", function() { return typeof path.basename === 'function'; });
