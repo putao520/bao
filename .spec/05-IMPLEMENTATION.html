@@ -65,7 +65,7 @@
       <h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT" id="req-impl-01" data-req="REQ-IMPL-01" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="GET /impl/phase1-status">
+      <div id="req-impl-01" data-req="REQ-IMPL-01" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="GET /impl/phase1-status" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT">
         <h3>Phase 1 详细任务（已完成）</h3>
 
         <h4>1.1 集成 mozjs crate</h4>
@@ -343,13 +343,13 @@
             <li>grep -rn "JS_NewContext\|JS_DestroyContext" src/bao_engine/src/ 显示 JSContext 生命周期管理完整</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-01">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="ModuleSource" href="04-DATA-MODEL#ModuleSource">ModuleSource</a>, <a data-xref-type="entity" data-xref-id="JsCallback" href="04-DATA-MODEL#JsCallback">JsCallback</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-01">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="modulesource" href="./04-DATA-MODEL#modulesource">ModuleSource</a>, <a data-xref-type="entity" data-xref-id="jscallback" href="./04-DATA-MODEL#jscallback">JsCallback</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§3 Phase 2: servo 引擎集成 + 渲染</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-HEADLESS-BROWSER,PRD-REQ-UNIFIED-RUNTIME" id="req-impl-02" data-req="REQ-IMPL-02" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="GET /impl/phase2-status">
+      <div id="req-impl-02" data-req="REQ-IMPL-02" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="GET /impl/phase2-status" data-groundedin="PRD-REQ-HEADLESS-BROWSER,PRD-REQ-UNIFIED-RUNTIME">
         <h3>Phase 2 详细任务</h3>
 
         <h4>2.1 servo path 依赖集成</h4>
@@ -522,13 +522,13 @@
             <li>Web API + Node.js API 同一 JSContext 共存测试通过</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-02">关联实体: <a data-xref-type="entity" data-xref-id="BrowserContext" href="04-DATA-MODEL#BrowserContext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-02">关联实体: <a data-xref-type="entity" data-xref-id="browsercontext" href="./04-DATA-MODEL#browsercontext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§4 Phase 3: CDP Server</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-impl-03" data-req="REQ-IMPL-03" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-api="GET /impl/phase3-status">
+      <div id="req-impl-03" data-req="REQ-IMPL-03" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-api="GET /impl/phase3-status" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>Phase 3 详细任务</h3>
         <table>
           <tr>
@@ -635,13 +635,13 @@
             <li>11 个 CDP Domain 全部路由测试通过 (grep -c "DomainHandler" src/bao_cdp/src/ ≥ 11)</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-03">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="CdpServer" href="06-CDP-SERVER#CdpServer">CdpServer</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-03">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="cdpserver" href="./06-CDP-SERVER#cdpserver">CdpServer</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§5 Phase 4: Stealth 反指纹</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-STEALTH-NET,PRD-REQ-STEALTH-PAGE,PRD-REQ-STEALTH-AUTO,PRD-REQ-STEALTH-BEHAVIOR" id="req-impl-04" data-req="REQ-IMPL-04" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-api="GET /impl/phase4-status">
+      <div id="req-impl-04" data-req="REQ-IMPL-04" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-api="GET /impl/phase4-status" data-groundedin="PRD-REQ-STEALTH-NET,PRD-REQ-STEALTH-PAGE,PRD-REQ-STEALTH-AUTO,PRD-REQ-STEALTH-BEHAVIOR">
         <h3>Phase 4 详细任务</h3>
         <table>
           <tr>
@@ -755,13 +755,13 @@
             <li>cargo test -p bao_stealth --test behavior_deep_tests 通过 (贝塞尔鼠标/节奏打字/特征滚动)</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-04">关联实体: <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="NavigatorProfile" href="04-DATA-MODEL#NavigatorProfile">NavigatorProfile</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-04">关联实体: <a data-xref-type="entity" data-xref-id="tlsprofile" href="./04-DATA-MODEL#tlsprofile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="navigatorprofile" href="./04-DATA-MODEL#navigatorprofile">NavigatorProfile</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§6 Phase 5: 集成测试与发布</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT,PRD-REQ-CDP-CONNECT" id="req-impl-05" data-req="REQ-IMPL-05" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="PagePool,CdpRouter,Permission" data-req-api="GET /impl/phase5-status">
+      <div id="req-impl-05" data-req="REQ-IMPL-05" data-req-status="implemented" data-req-domain="IMPL" data-req-category="business" data-req-entity="PagePool,CdpRouter,Permission" data-req-api="GET /impl/phase5-status" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT,PRD-REQ-CDP-CONNECT">
         <h3>Phase 5 详细任务</h3>
         <table>
           <tr>
@@ -842,7 +842,7 @@
             <li>cargo build --release --target x86_64-unknown-linux-gnu 通过 (Linux x64)</li>
           </ol>
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-IMPL-05">关联实体: <a data-xref-type="entity" data-xref-id="PagePool" href="04-DATA-MODEL#PagePool">PagePool</a>, <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="Permission" href="04-DATA-MODEL#Permission">Permission</a></p></div>
+      <p data-xref-type="req" data-xref-id="REQ-IMPL-05">关联实体: <a data-xref-type="entity" data-xref-id="pagepool" href="./04-DATA-MODEL#pagepool">PagePool</a>, <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="permission" href="./04-DATA-MODEL#permission">Permission</a></p></div>
 
       <!-- ============================================================ -->
       <h2>§7 复用分析</h2>

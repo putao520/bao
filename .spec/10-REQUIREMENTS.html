@@ -12,7 +12,7 @@
       <h2>§1 引擎需求</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-SCRIPT-RUN" id="req-eng-001" data-req="REQ-ENG-001" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="POST /runtime/eval">
+      <div id="req-eng-001" data-req="REQ-ENG-001" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-api="POST /runtime/eval" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-SCRIPT-RUN">
         <h3>REQ-ENG-001: SpiderMonkey 引擎集成</h3>
         <p>通过 mozjs crate (v0.15.14) 集成 SpiderMonkey JS 引擎，替代 Bun 原有的 JavaScriptCore。</p>
         <h4>验收标准</h4>
@@ -39,7 +39,7 @@
           Loop 桥接)
         </p>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="ModuleSource" href="04-DATA-MODEL#ModuleSource">ModuleSource</a>, <a data-xref-type="entity" data-xref-id="JsCallback" href="04-DATA-MODEL#JsCallback">JsCallback</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-001">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="modulesource" href="./04-DATA-MODEL#modulesource">ModuleSource</a>, <a data-xref-type="entity" data-xref-id="jscallback" href="./04-DATA-MODEL#jscallback">JsCallback</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -51,9 +51,9 @@
             <li>bao -e "WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0]))" 返回 true</li>
           </ol>
         </div>
-      <p>关联接口: <a data-xref-type="interface" data-xref-id="IF-ENGINE-SM" href="02-SYSTEM">IF-ENGINE-SM</a></p></div>
+      <p>关联接口: <a data-xref-type="interface" data-xref-id="" href="02-SYSTEM">IF-ENGINE-SM</a></p></div>
 
-      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT" id="req-eng-002" data-req="REQ-ENG-002" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /codegen/generate">
+      <div id="req-eng-002" data-req="REQ-ENG-002" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /codegen/generate" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-BUN-COMPAT">
         <h3>REQ-ENG-002: 代码生成后端重写</h3>
         <p>
           重写 Bun 的 .classes.ts 代码生成后端，将 JSC C++ 模板改为 SpiderMonkey 绑定生成。30 个 .classes.ts
@@ -75,7 +75,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-002">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-002">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -91,7 +91,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME" id="req-eng-003" data-req="REQ-ENG-003" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="JsCallback,BaoRuntime" data-req-api="POST /host-fn/call">
+      <div id="req-eng-003" data-req="REQ-ENG-003" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="JsCallback,BaoRuntime" data-req-api="POST /host-fn/call" data-groundedin="PRD-REQ-UNIFIED-RUNTIME">
         <h3>REQ-ENG-003: host_fn 抽象层</h3>
         <p>
           新建 mozjs safe FFI wrapper，替代 bun_jsc 的 host_fn 安全抽象。提供 JS 函数调用、类型转换、异常处理的 Rust
@@ -113,7 +113,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-003">关联实体: <a data-xref-type="entity" data-xref-id="JsCallback" href="04-DATA-MODEL#JsCallback">JsCallback</a>, <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-003">关联实体: <a data-xref-type="entity" data-xref-id="jscallback" href="./04-DATA-MODEL#jscallback">JsCallback</a>, <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-003"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -126,7 +126,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME" id="req-eng-004" data-req="REQ-ENG-004" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /event-loop/drain">
+      <div id="req-eng-004" data-req="REQ-ENG-004" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /event-loop/drain" data-groundedin="PRD-REQ-UNIFIED-RUNTIME">
         <h3>REQ-ENG-004: Event Loop 桥接</h3>
         <p>实现 SpiderMonkey JS::JobQueue → Bun uSockets I/O 的事件循环桥接。</p>
         <h4>验收标准</h4>
@@ -145,7 +145,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-004">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-004">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -161,7 +161,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-SCRIPT-RUN" id="req-eng-005" data-req="REQ-ENG-005" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="ModuleSource" data-req-api="POST /module/resolve">
+      <div id="req-eng-005" data-req="REQ-ENG-005" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="ModuleSource" data-req-api="POST /module/resolve" data-groundedin="PRD-REQ-SCRIPT-RUN">
         <h3>REQ-ENG-005: Module Loader 桥接</h3>
         <p>实现 SpiderMonkey ESM hooks → Bun resolver 的模块加载桥接。</p>
         <h4>验收标准</h4>
@@ -183,7 +183,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-005">关联实体: <a data-xref-type="entity" data-xref-id="ModuleSource" href="04-DATA-MODEL#ModuleSource">ModuleSource</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-005">关联实体: <a data-xref-type="entity" data-xref-id="modulesource" href="./04-DATA-MODEL#modulesource">ModuleSource</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-005"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -196,7 +196,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-BUN-COMPAT" id="req-eng-006" data-req="REQ-ENG-006" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="GET /api/bun-compat">
+      <div id="req-eng-006" data-req="REQ-ENG-006" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="GET /api/bun-compat" data-groundedin="PRD-REQ-BUN-COMPAT">
         <h3>REQ-ENG-006: Bun API 适配</h3>
         <p>将 Bun.* JS API 从 JSC 绑定适配到 SpiderMonkey 绑定。</p>
         <h4>验收标准</h4>
@@ -221,7 +221,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-ENG-006">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-006">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-006"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -234,7 +234,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-NODE-COMPAT" id="req-eng-007" data-req="REQ-ENG-007" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="TlsProfile,TlsConnection" data-req-api="GET /api/node-compat">
+      <div id="req-eng-007" data-req="REQ-ENG-007" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="TlsProfile,TlsConnection" data-req-api="GET /api/node-compat" data-groundedin="PRD-REQ-NODE-COMPAT">
         <h3>REQ-ENG-007: Node.js 兼容层适配</h3>
         <p data-req-description="">
           将现有 Node.js 兼容 API (node:fs, node:path, node:http, node:crypto, node:tls 等) 从 JSC 移植到
@@ -250,7 +250,7 @@
           <li>Buffer 全局对象正常工作</li>
           <li>process 全局对象正常工作</li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-007">关联实体: <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="TlsConnection" href="04-DATA-MODEL#TlsConnection">TlsConnection</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-007">关联实体: <a data-xref-type="entity" data-xref-id="tlsprofile" href="./04-DATA-MODEL#tlsprofile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="tlsconnection" href="./04-DATA-MODEL#tlsconnection">TlsConnection</a></p>
         <p>关联 API: <span data-xref-type="api" data-xref-id="GET /api/node-compat">GET /api/node-compat</span></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
@@ -265,7 +265,7 @@
           </ol>
         </div>
       </div>
-      <div data-groundedin="PRD-REQ-BUILTIN-DATA" id="req-eng-008" data-req="REQ-ENG-008" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="SqliteDatabase" data-req-api="POST /sqlite/open">
+      <div id="req-eng-008" data-req="REQ-ENG-008" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="SqliteDatabase" data-req-api="POST /sqlite/open" data-groundedin="PRD-REQ-BUILTIN-DATA">
         <h3>REQ-ENG-008: bun:sqlite SpiderMonkey bridge</h3>
         <p data-req-description="">
           将 bun:sqlite 模块从 JSC 移植到 SpiderMonkey。bun:sqlite 是 Bun 内置的 SQLite3
@@ -278,7 +278,7 @@
           <li>事务/查询/迭代器正常</li>
           <li>cargo test 通过</li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-008">关联实体: <a data-xref-type="entity" data-xref-id="SqliteDatabase" href="04-DATA-MODEL#SqliteDatabase">SqliteDatabase</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-008">关联实体: <a data-xref-type="entity" data-xref-id="sqlitedatabase" href="./04-DATA-MODEL#sqlitedatabase">SqliteDatabase</a></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
           <ol>
@@ -294,7 +294,7 @@
       <h2>§2 CLI 需求</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-BUILTIN-DATA" id="req-eng-009" data-req="REQ-ENG-009" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="FfiLibrary" data-req-api="POST /ffi/load">
+      <div id="req-eng-009" data-req="REQ-ENG-009" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="FfiLibrary" data-req-api="POST /ffi/load" data-groundedin="PRD-REQ-BUILTIN-DATA">
         <h3>REQ-ENG-009: bun:ffi SpiderMonkey bridge</h3>
         <p data-req-description="">
           将 bun:ffi 模块从 JSC 移植到 SpiderMonkey。bun:ffi 是 Bun 内置的 FFI (Foreign Function Interface) 绑定，允许
@@ -307,7 +307,7 @@
           <li>C 类型转换（指针/结构体/枚举）正常</li>
           <li>cargo test 通过</li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-009">关联实体: <a data-xref-type="entity" data-xref-id="FfiLibrary" href="04-DATA-MODEL#FfiLibrary">FfiLibrary</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-009">关联实体: <a data-xref-type="entity" data-xref-id="ffilibrary" href="./04-DATA-MODEL#ffilibrary">FfiLibrary</a></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
           <ol>
@@ -318,7 +318,7 @@
           </ol>
         </div>
       </div>
-      <div data-groundedin="PRD-REQ-SCRIPT-RUN,PRD-REQ-TOOLCHAIN" id="req-cli-001" data-req="REQ-CLI-001" data-req-status="implemented" data-req-domain="CLI" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /cli/exec">
+      <div id="req-cli-001" data-req="REQ-CLI-001" data-req-status="implemented" data-req-domain="CLI" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /cli/exec" data-groundedin="PRD-REQ-SCRIPT-RUN,PRD-REQ-TOOLCHAIN">
         <h3>REQ-CLI-001: bao 品牌替换</h3>
         <p>用户可见的命令和输出从 bun 替换为 bao。</p>
         <h4>验收标准</h4>
@@ -346,7 +346,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CLI-001">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CLI-001">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CLI-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -362,7 +362,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT,PRD-REQ-HIGHLEVEL-API" id="req-cli-002" data-req="REQ-CLI-002" data-req-status="implemented" data-req-domain="CLI" data-req-category="business" data-req-entity="BrowserContext,Viewport,CdpRouter,BrowserContext,Viewport,PixelBuffer" data-req-api="POST /cli/browser">
+      <div id="req-cli-002" data-req="REQ-CLI-002" data-req-status="implemented" data-req-domain="CLI" data-req-category="business" data-req-entity="BrowserContext,Viewport,CdpRouter,BrowserContext,Viewport,PixelBuffer" data-req-api="POST /cli/browser" data-groundedin="PRD-REQ-CDP-CONNECT,PRD-REQ-HIGHLEVEL-API">
         <h3>REQ-CLI-002: bao browser 子命令</h3>
         <p>新增 bao browser 子命令，便捷启动 servo + CDP。</p>
         <h4>验收标准</h4>
@@ -384,7 +384,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CLI-002">关联实体: <a data-xref-type="entity" data-xref-id="BrowserContext" href="04-DATA-MODEL#BrowserContext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a>, <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CLI-002">关联实体: <a data-xref-type="entity" data-xref-id="browsercontext" href="./04-DATA-MODEL#browsercontext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a>, <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="pixelbuffer" href="./04-DATA-MODEL#pixelbuffer">PixelBuffer</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CLI-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -403,7 +403,7 @@
       <h2>§3 浏览器能力需求</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-HEADLESS-BROWSER" id="req-brw-001" data-req="REQ-BRW-001" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="POST /browser/create-page">
+      <div id="req-brw-001" data-req="REQ-BRW-001" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-api="POST /browser/create-page" data-groundedin="PRD-REQ-HEADLESS-BROWSER">
         <h3>REQ-BRW-001: libservo 集成</h3>
         <p>
           集成 servo crate 作为浏览器引擎核心，实现 ServoDelegate + WebViewDelegate trait，使用 SoftwareRenderingContext
@@ -440,7 +440,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-BRW-001">关联实体: <a data-xref-type="entity" data-xref-id="BrowserContext" href="04-DATA-MODEL#BrowserContext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-001">关联实体: <a data-xref-type="entity" data-xref-id="browsercontext" href="./04-DATA-MODEL#browsercontext">BrowserContext</a>, <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -452,9 +452,9 @@
             <li>cargo test -p bao_browser --test servo_render_pipeline_tests 通过 (CSS 样式 + 导航)</li>
           </ol>
         </div>
-      <p>关联接口: <a data-xref-type="interface" data-xref-id="IF-BROWSER-SERVO" href="02-SYSTEM">IF-BROWSER-SERVO</a></p></div>
+      <p>关联接口: <a data-xref-type="interface" data-xref-id="" href="02-SYSTEM">IF-BROWSER-SERVO</a></p></div>
 
-      <div data-groundedin="PRD-REQ-HEADLESS-BROWSER" id="req-brw-002" data-req="REQ-BRW-002" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="PixelBuffer,Viewport" data-req-api="POST /browser/screenshot">
+      <div id="req-brw-002" data-req="REQ-BRW-002" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="PixelBuffer,Viewport" data-req-api="POST /browser/screenshot" data-groundedin="PRD-REQ-HEADLESS-BROWSER">
         <h3>REQ-BRW-002: 内存渲染</h3>
         <p>
           基于 servo 内置 webrender 渲染管线，支持 SoftwareRenderingContext（无头场景）和 servo 原有渲染后端（尊重 servo
@@ -497,7 +497,7 @@
           无头场景使用 SoftwareRenderingContext，有 GPU 时使用 servo 原有 GL 后端。
         </p>
 
-        <p data-xref-type="req" data-xref-id="REQ-BRW-002">关联实体: <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-002">关联实体: <a data-xref-type="entity" data-xref-id="pixelbuffer" href="./04-DATA-MODEL#pixelbuffer">PixelBuffer</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -515,7 +515,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-PAGE-SCRIPT" id="req-brw-003" data-req="REQ-BRW-003" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="BaoRuntime,CdpRouter,CdpSession" data-req-api="POST /browser/jscontext-fuse">
+      <div id="req-brw-003" data-req="REQ-BRW-003" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="BaoRuntime,CdpRouter,CdpSession" data-req-api="POST /browser/jscontext-fuse" data-groundedin="PRD-REQ-UNIFIED-RUNTIME,PRD-REQ-PAGE-SCRIPT">
         <h3>REQ-BRW-003: SpiderMonkey JSContext 融合</h3>
         <p>
           servo 拥有全局唯一 JSEngine，每个 ScriptThread 持有自己的线程局部 JSContext（servo script_runtime.rs 的 RustRuntime::get() 是 thread-local slot）。Bao 的 Node.js/Bun host functions 注册到各 ScriptThread 的 JSContext 中。选择 SpiderMonkey 的目的就是与 servo 共享同一引擎（JSEngine），实现真正融合。
@@ -529,25 +529,25 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-BRW-003">关联实体: <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-003">关联实体: <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a>, <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-003"></span></p>
-        
-        
+
+
         <div id="evaluate-js()-可信脚本通过-enterrealm(node)-切换到-node-realm-执行，拥有-node.js-+-dom-全权限" data-criterion="evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限">
           evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限
         </div>
         <div id="evaluate-js-web()-页面脚本在-page-realm（window）执行，只有-web-api，物理上无法访问-node-api" data-criterion="evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API">
           evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API
         </div>
-        
+
         <div id="gc-由-servo-spin-event-loop()-统一管理，两个-realm-共享同一-gc-2" data-criterion="GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC">
           GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC
         </div>
-        
-        
+
+
       <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-      <div data-groundedin="PRD-REQ-WEB-WORKER" id="req-brw-004" data-req="REQ-BRW-004" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="Worker,DedicatedWorkerGlobalScope,WorkerGlobalScope,WorkerLocation,WorkerNavigator" data-req-api="new Worker(url,options),worker.postMessage(msg,transfer),worker.terminate(),self.postMessage(msg,transfer),self.close(),self.addEventListener('message',fn)">
+      <div id="req-brw-004" data-req="REQ-BRW-004" data-req-status="implemented" data-req-domain="BRW" data-req-category="business" data-req-entity="Worker,DedicatedWorkerGlobalScope,WorkerGlobalScope,WorkerLocation,WorkerNavigator" data-req-api="new Worker(url,options),worker.postMessage(msg,transfer),worker.terminate(),self.postMessage(msg,transfer),self.close(),self.addEventListener('message',fn)" data-groundedin="PRD-REQ-WEB-WORKER">
         <h3>REQ-BRW-004: 浏览器 Web Worker API (Dedicated Worker)</h3>
         <p>接入 Servo vendor 中的 DOM Worker 实现，支持浏览器风格的 Dedicated Worker（new Worker()），使 bao_browser 支持完整的 Web Worker API。</p>
         <h4>验收标准</h4>
@@ -590,7 +590,7 @@
         <p>
           参见 02-SYSTEM.html §3 (Servo 组件分层) · vendor/servo/components/script/dom/workers/ (Servo DOM Worker 实现)
         </p>
-        <p data-xref-type="req" data-xref-id="REQ-BRW-004">关联实体: <a data-xref-type="entity" data-xref-id="Worker" href="04-DATA-MODEL#Worker">Worker</a>, <a data-xref-type="entity" data-xref-id="DedicatedWorkerGlobalScope" href="04-DATA-MODEL#DedicatedWorkerGlobalScope">DedicatedWorkerGlobalScope</a>, <a data-xref-type="entity" data-xref-id="WorkerGlobalScope" href="04-DATA-MODEL#WorkerGlobalScope">WorkerGlobalScope</a>, <a data-xref-type="entity" data-xref-id="WorkerLocation" href="04-DATA-MODEL#WorkerLocation">WorkerLocation</a>, <a data-xref-type="entity" data-xref-id="WorkerNavigator" href="04-DATA-MODEL#WorkerNavigator">WorkerNavigator</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-004">关联实体: <a data-xref-type="entity" data-xref-id="worker" href="./04-DATA-MODEL#worker">Worker</a>, <a data-xref-type="entity" data-xref-id="dedicatedworkerglobalscope" href="./04-DATA-MODEL#dedicatedworkerglobalscope">DedicatedWorkerGlobalScope</a>, <a data-xref-type="entity" data-xref-id="workerglobalscope" href="./04-DATA-MODEL#workerglobalscope">WorkerGlobalScope</a>, <a data-xref-type="entity" data-xref-id="workerlocation" href="./04-DATA-MODEL#workerlocation">WorkerLocation</a>, <a data-xref-type="entity" data-xref-id="workernavigator" href="./04-DATA-MODEL#workernavigator">WorkerNavigator</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -615,7 +615,7 @@
       <h2>§4 CDP 需求</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-001" data-req="REQ-CDP-001" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter, CdpSession, CdpServer, ServerConfig, DomainRegistry, CdpSessionGeneric, CdpTarget, EventSubscription, CdpError" data-req-api="GET /json/version,GET /json/list">
+      <div id="req-cdp-001" data-req="REQ-CDP-001" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter, CdpSession, CdpServer, ServerConfig, DomainRegistry, CdpSessionGeneric, CdpTarget, EventSubscription, CdpError" data-req-api="GET /json/version,GET /json/list" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-001: CDP WebSocket Server</h3>
         <p>实现 CDP WebSocket 服务端，支持 Playwright/Puppeteer 连接。</p>
         <h4>验收标准</h4>
@@ -637,7 +637,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-001">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="CdpServer" href="06-CDP-SERVER#CdpServer">CdpServer</a>, <a data-xref-type="entity" data-xref-id="ServerConfig" href="06-CDP-SERVER#ServerConfig">ServerConfig</a>, <a data-xref-type="entity" data-xref-id="DomainRegistry" href="06-CDP-SERVER#DomainRegistry">DomainRegistry</a>, <a data-xref-type="entity" data-xref-id="CdpSessionGeneric" href="06-CDP-SERVER#CdpSessionGeneric">CdpSessionGeneric</a>, <a data-xref-type="entity" data-xref-id="CdpTarget" href="06-CDP-SERVER#CdpTarget">CdpTarget</a>, <a data-xref-type="entity" data-xref-id="EventSubscription" href="06-CDP-SERVER#EventSubscription">EventSubscription</a>, <a data-xref-type="entity" data-xref-id="CdpError" href="04-DATA-MODEL#CdpError">CdpError</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-001">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="cdpserver" href="./06-CDP-SERVER#cdpserver">CdpServer</a>, <a data-xref-type="entity" data-xref-id="serverconfig" href="./06-CDP-SERVER#serverconfig">ServerConfig</a>, <a data-xref-type="entity" data-xref-id="domainregistry" href="./06-CDP-SERVER#domainregistry">DomainRegistry</a>, <a data-xref-type="entity" data-xref-id="cdpsessiongeneric" href="./06-CDP-SERVER#cdpsessiongeneric">CdpSessionGeneric</a>, <a data-xref-type="entity" data-xref-id="cdptarget" href="./06-CDP-SERVER#cdptarget">CdpTarget</a>, <a data-xref-type="entity" data-xref-id="eventsubscription" href="./06-CDP-SERVER#eventsubscription">EventSubscription</a>, <a data-xref-type="entity" data-xref-id="cdperror" href="./04-DATA-MODEL#cdperror">CdpError</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -650,9 +650,9 @@
             <li>bao browser 启动后 Playwright connectOverCDP 成功 (列出 targets)</li>
           </ol>
         </div>
-      <p>关联接口: <a data-xref-type="interface" data-xref-id="IF-CDP-BROWSER" href="02-SYSTEM">IF-CDP-BROWSER</a></p></div>
+      <p>关联接口: <a data-xref-type="interface" data-xref-id="" href="02-SYSTEM">IF-CDP-BROWSER</a></p></div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-002" data-req="REQ-CDP-002" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand,CdpResponse" data-req-api="POST /cdp/runtime">
+      <div id="req-cdp-002" data-req="REQ-CDP-002" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand,CdpResponse" data-req-api="POST /cdp/runtime" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-002: Runtime Domain</h3>
         <p>实现 CDP Runtime domain，映射到 SpiderMonkey Debugger API (JS 层)。</p>
         <h4>验收标准</h4>
@@ -677,7 +677,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-002">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a>, <a data-xref-type="entity" data-xref-id="CdpResponse" href="04-DATA-MODEL#CdpResponse">CdpResponse</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-002">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpcommand" href="./04-DATA-MODEL#cdpcommand">CdpCommand</a>, <a data-xref-type="entity" data-xref-id="cdpresponse" href="./04-DATA-MODEL#cdpresponse">CdpResponse</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -691,7 +691,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-003" data-req="REQ-CDP-003" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/debugger">
+      <div id="req-cdp-003" data-req="REQ-CDP-003" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/debugger" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-003: Debugger Domain</h3>
         <p>实现 CDP Debugger domain，映射到 SpiderMonkey JS 层 Debugger API。</p>
         <h4>验收标准</h4>
@@ -716,7 +716,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-003">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-003">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpcommand" href="./04-DATA-MODEL#cdpcommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-003"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -732,7 +732,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-004" data-req="REQ-CDP-004" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,PixelBuffer,Viewport" data-req-api="POST /cdp/page">
+      <div id="req-cdp-004" data-req="REQ-CDP-004" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,PixelBuffer,Viewport" data-req-api="POST /cdp/page" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-004: Page Domain</h3>
         <p>实现 CDP Page domain，映射到 servo WebView（导航 + 截图）。</p>
         <h4>验收标准</h4>
@@ -757,7 +757,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-004">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a>, <a data-xref-type="entity" data-xref-id="Viewport" href="04-DATA-MODEL#Viewport">Viewport</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-004">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="pixelbuffer" href="./04-DATA-MODEL#pixelbuffer">PixelBuffer</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -771,7 +771,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-005" data-req="REQ-CDP-005" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/dom">
+      <div id="req-cdp-005" data-req="REQ-CDP-005" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/dom" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-005: DOM Domain</h3>
         <p>实现 CDP DOM domain，映射到 libservo DOM 树查询。</p>
         <h4>验收标准</h4>
@@ -796,7 +796,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-005">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-005">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpcommand" href="./04-DATA-MODEL#cdpcommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-005"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -810,7 +810,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-006" data-req="REQ-CDP-006" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/network">
+      <div id="req-cdp-006" data-req="REQ-CDP-006" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/network" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-006: Network Domain</h3>
         <p>实现 CDP Network domain，映射到 Bun HTTP 栈 hook。</p>
         <h4>验收标准</h4>
@@ -835,7 +835,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-006">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-006">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpcommand" href="./04-DATA-MODEL#cdpcommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-006"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -849,7 +849,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-007" data-req="REQ-CDP-007" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/emulation">
+      <div id="req-cdp-007" data-req="REQ-CDP-007" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/emulation" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-007: CSS/Input/Emulation/Overlay Domain</h3>
         <p>实现辅助 CDP domain。</p>
         <h4>验收标准</h4>
@@ -874,7 +874,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-007">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpCommand" href="04-DATA-MODEL#CdpCommand">CdpCommand</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-007">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpcommand" href="./04-DATA-MODEL#cdpcommand">CdpCommand</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-007"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -890,7 +890,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-CDP-CONNECT" id="req-cdp-008" data-req="REQ-CDP-008" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter, CdpSession, TlsProfile, StealthProfile, CdpTarget" data-req-api="GET /json/new,GET /json/close/{targetId},GET /json/activate/{targetId}">
+      <div id="req-cdp-008" data-req="REQ-CDP-008" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter, CdpSession, TlsProfile, StealthProfile, CdpTarget" data-req-api="GET /json/new,GET /json/close/{targetId},GET /json/activate/{targetId}" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-008: Target Domain</h3>
         <p>实现 CDP Target domain，支持 Context/Target 发现。</p>
         <h4>验收标准</h4>
@@ -909,7 +909,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-CDP-008">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="CdpTarget" href="06-CDP-SERVER#CdpTarget">CdpTarget</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-CDP-008">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="tlsprofile" href="./04-DATA-MODEL#tlsprofile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="cdptarget" href="./06-CDP-SERVER#cdptarget">CdpTarget</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-008"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -927,7 +927,7 @@
       <h2>§5 Stealth 需求</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-STEALTH-NET" id="req-stl-001" data-req="REQ-STL-001" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile" data-req-api="POST /stealth/tls">
+      <div id="req-stl-001" data-req="REQ-STL-001" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="TlsProfile,StealthProfile" data-req-api="POST /stealth/tls" data-groundedin="PRD-REQ-STEALTH-NET">
         <h3>REQ-STL-001: TLS 指纹模拟</h3>
         <p>通过 rustls cipher suite + extension 顺序配置模拟 Firefox 的 JA3/JA4 TLS 指纹。</p>
         <h4>验收标准</h4>
@@ -949,7 +949,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-001">关联实体: <a data-xref-type="entity" data-xref-id="TlsProfile" href="04-DATA-MODEL#TlsProfile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-001">关联实体: <a data-xref-type="entity" data-xref-id="tlsprofile" href="./04-DATA-MODEL#tlsprofile">TlsProfile</a>, <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-001"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -962,7 +962,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-STEALTH-NET" id="req-stl-002" data-req="REQ-STL-002" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile" data-req-api="POST /stealth/http2">
+      <div id="req-stl-002" data-req="REQ-STL-002" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile" data-req-api="POST /stealth/http2" data-groundedin="PRD-REQ-STEALTH-NET">
         <h3>REQ-STL-002: HTTP/2 指纹匹配</h3>
         <p>通过 hyper 配置调优，使 HTTP/2 SETTINGS 帧参数匹配 Firefox。</p>
         <h4>验收标准</h4>
@@ -981,7 +981,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-002">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-002">关联实体: <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-002"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -995,7 +995,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-STEALTH-PAGE" id="req-stl-003" data-req="REQ-STL-003" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile,PixelBuffer" data-req-api="POST /stealth/canvas">
+      <div id="req-stl-003" data-req="REQ-STL-003" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile,PixelBuffer" data-req-api="POST /stealth/canvas" data-groundedin="PRD-REQ-STEALTH-PAGE">
         <h3>REQ-STL-003: Canvas 指纹防护</h3>
         <p>在 servo webrender 渲染层注入确定性随机噪声，使 Canvas toDataURL/toBlob 输出包含不可检测的微小差异。</p>
         <h4>验收标准</h4>
@@ -1017,7 +1017,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-003">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="PixelBuffer" href="04-DATA-MODEL#PixelBuffer">PixelBuffer</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-003">关联实体: <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="pixelbuffer" href="./04-DATA-MODEL#pixelbuffer">PixelBuffer</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-003"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1031,7 +1031,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-STEALTH-PAGE" id="req-stl-004" data-req="REQ-STL-004" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="NavigatorProfile,StealthProfile" data-req-api="POST /stealth/navigator">
+      <div id="req-stl-004" data-req="REQ-STL-004" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="NavigatorProfile,StealthProfile" data-req-api="POST /stealth/navigator" data-groundedin="PRD-REQ-STEALTH-PAGE">
         <h3>REQ-STL-004: Navigator/Screen 构造</h3>
         <p>在 SpiderMonkey 引擎层构造 Navigator 和 Screen 属性，使 JS 层读取的值与目标浏览器一致且不可篡改检测。</p>
         <h4>验收标准</h4>
@@ -1062,7 +1062,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-004">关联实体: <a data-xref-type="entity" data-xref-id="NavigatorProfile" href="04-DATA-MODEL#NavigatorProfile">NavigatorProfile</a>, <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-004">关联实体: <a data-xref-type="entity" data-xref-id="navigatorprofile" href="./04-DATA-MODEL#navigatorprofile">NavigatorProfile</a>, <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-004"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1077,7 +1077,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-STEALTH-PAGE" id="req-stl-005" data-req="REQ-STL-005" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile" data-req-api="POST /stealth/webgl-audio">
+      <div id="req-stl-005" data-req="REQ-STL-005" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile" data-req-api="POST /stealth/webgl-audio" data-groundedin="PRD-REQ-STEALTH-PAGE">
         <h3>REQ-STL-005: WebGL/Audio 指纹防护</h3>
         <p>WebGL vendor/renderer 信息和 AudioContext 浮点运算噪声注入。</p>
         <h4>验收标准</h4>
@@ -1096,7 +1096,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-005">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-005">关联实体: <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-005"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1109,7 +1109,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-STEALTH-BEHAVIOR" id="req-stl-006" data-req="REQ-STL-006" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile" data-req-api="POST /stealth/behavior">
+      <div id="req-stl-006" data-req="REQ-STL-006" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile" data-req-api="POST /stealth/behavior" data-groundedin="PRD-REQ-STEALTH-BEHAVIOR">
         <h3>REQ-STL-006: 行为模拟</h3>
         <p>模拟人类鼠标轨迹、打字节奏和滚动模式。</p>
         <h4>验收标准</h4>
@@ -1128,7 +1128,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-006">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-006">关联实体: <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-006"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1143,7 +1143,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-STEALTH-AUTO" id="req-stl-007" data-req="REQ-STL-007" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile,PageHandle,PagePool,BrowserContext" data-req-api="GET /stealth/cdp-stealth">
+      <div id="req-stl-007" data-req="REQ-STL-007" data-req-status="implemented" data-req-domain="STL" data-req-category="business" data-req-entity="StealthProfile,PageHandle,PagePool,BrowserContext" data-req-api="GET /stealth/cdp-stealth" data-groundedin="PRD-REQ-STEALTH-AUTO">
         <h3>REQ-STL-007: CDP 隐蔽性</h3>
         <p>CDP 通道不暴露到页面 JS 环境，页面无法检测自动化。</p>
         <h4>验收标准</h4>
@@ -1165,7 +1165,7 @@
           </li>
         </ul>
 
-        <p data-xref-type="req" data-xref-id="REQ-STL-007">关联实体: <a data-xref-type="entity" data-xref-id="StealthProfile" href="04-DATA-MODEL#StealthProfile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="PagePool" href="04-DATA-MODEL#PagePool">PagePool</a>, <a data-xref-type="entity" data-xref-id="BrowserContext" href="04-DATA-MODEL#BrowserContext">BrowserContext</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-STL-007">关联实体: <a data-xref-type="entity" data-xref-id="stealthprofile" href="./04-DATA-MODEL#stealthprofile">StealthProfile</a>, <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="pagepool" href="./04-DATA-MODEL#pagepool">PagePool</a>, <a data-xref-type="entity" data-xref-id="browsercontext" href="./04-DATA-MODEL#browsercontext">BrowserContext</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-007"></span></p>
         <div data-criteria="">
           <strong>验收标准（客观可验证）：</strong>
@@ -1184,7 +1184,7 @@
       <h2>§5.5 多页面库需求</h2>
       <!-- ============================================================ -->
 
-      <div data-groundedin="PRD-REQ-MULTIPAGE" id="req-lib-001" data-req="REQ-LIB-001" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="PageHandle,PagePool,BaoRuntime" data-req-api="POST /pagepool/create">
+      <div id="req-lib-001" data-req="REQ-LIB-001" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="PageHandle,PagePool,BaoRuntime" data-req-api="POST /pagepool/create" data-groundedin="PRD-REQ-MULTIPAGE">
         <h3>REQ-LIB-001: 多页面管理</h3>
         <p>
           支持在单个 BaoRuntime 中创建、管理和销毁多个隔离的 Page。每个 Page 对应一个 servo WebView，拥有独立的 SM
@@ -1212,7 +1212,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.5 (多页面管理架构) · 04-DATA-MODEL.html (PageHandle, PagePool 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-001">关联实体: <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="PagePool" href="04-DATA-MODEL#PagePool">PagePool</a>, <a data-xref-type="entity" data-xref-id="BaoRuntime" href="04-DATA-MODEL#BaoRuntime">BaoRuntime</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-001">关联实体: <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a>, <a data-xref-type="entity" data-xref-id="pagepool" href="./04-DATA-MODEL#pagepool">PagePool</a>, <a data-xref-type="entity" data-xref-id="baoruntime" href="./04-DATA-MODEL#baoruntime">BaoRuntime</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-001"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-002"></span>
@@ -1231,7 +1231,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-MULTIPAGE" id="req-lib-002" data-req="REQ-LIB-002" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="PagePool,PageHandle" data-req-api="GET /pagepool/stats">
+      <div id="req-lib-002" data-req="REQ-LIB-002" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="PagePool,PageHandle" data-req-api="GET /pagepool/stats" data-groundedin="PRD-REQ-MULTIPAGE">
         <h3>REQ-LIB-002: PagePool 资源管理</h3>
         <p>实现分层资源管理策略，防止爬虫等长期运行场景下的内存泄漏。</p>
         <h4>验收标准</h4>
@@ -1258,7 +1258,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.5 (Page 生命周期状态机) · 04-DATA-MODEL.html (PagePool 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-002">关联实体: <a data-xref-type="entity" data-xref-id="PagePool" href="04-DATA-MODEL#PagePool">PagePool</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-002">关联实体: <a data-xref-type="entity" data-xref-id="pagepool" href="./04-DATA-MODEL#pagepool">PagePool</a>, <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-003"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-004"></span>
@@ -1275,7 +1275,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-HIGHLEVEL-API" id="req-lib-003" data-req="REQ-LIB-003" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="CdpRouter,CdpBackendInternal,CdpBackendExternal,CdpSession" data-req-api="GET /api/bao-runtime, GET /api/bao-runtime-js, GET /api/bao-library-mode">
+      <div id="req-lib-003" data-req="REQ-LIB-003" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="CdpRouter,CdpBackendInternal,CdpBackendExternal,CdpSession" data-req-api="GET /api/bao-runtime, GET /api/bao-runtime-js, GET /api/bao-library-mode" data-groundedin="PRD-REQ-HIGHLEVEL-API">
         <h3>REQ-LIB-003: CDP 双层抽象 API</h3>
         <p>
           提供高性能 Rust/JS API（内部直调）和 CDP 兼容层（Playwright/Puppeteer 连接），支持内部 servo 和外部 CDP 端点。
@@ -1304,7 +1304,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.6 (CDP 双层抽象架构) · 04-DATA-MODEL.html (CdpRouter, CdpBackend 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-003">关联实体: <a data-xref-type="entity" data-xref-id="CdpRouter" href="04-DATA-MODEL#CdpRouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="CdpBackendInternal" href="04-DATA-MODEL#CdpBackendInternal">CdpBackendInternal</a>, <a data-xref-type="entity" data-xref-id="CdpBackendExternal" href="04-DATA-MODEL#CdpBackendExternal">CdpBackendExternal</a>, <a data-xref-type="entity" data-xref-id="CdpSession" href="04-DATA-MODEL#CdpSession">CdpSession</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-003">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="cdpbackendinternal" href="./04-DATA-MODEL#cdpbackendinternal">CdpBackendInternal</a>, <a data-xref-type="entity" data-xref-id="cdpbackendexternal" href="./04-DATA-MODEL#cdpbackendexternal">CdpBackendExternal</a>, <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-005"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-006"></span>
@@ -1322,7 +1322,7 @@
         </div>
       </div>
 
-      <div data-groundedin="PRD-REQ-PERMISSION" id="req-lib-004" data-req="REQ-LIB-004" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="Permission,PageHandle" data-req-api="POST /permission/set">
+      <div id="req-lib-004" data-req="REQ-LIB-004" data-req-status="implemented" data-req-domain="LIB" data-req-category="business" data-req-entity="Permission,PageHandle" data-req-api="POST /permission/set" data-groundedin="PRD-REQ-PERMISSION">
         <h3>REQ-LIB-004: Permission 可选沙箱</h3>
         <p>
           基于 host_fn 层拦截的可选权限系统，浏览器页面和 Bun 脚本都可复用。默认不启用（零开销），启用后为白名单模式。
@@ -1351,7 +1351,7 @@
         <h4>关联设计</h4>
         <p>参见 02-SYSTEM.html §4.7 (Permission 沙箱架构) · 04-DATA-MODEL.html (Permission 实体)</p>
 
-        <p data-xref-type="req" data-xref-id="REQ-LIB-004">关联实体: <a data-xref-type="entity" data-xref-id="Permission" href="04-DATA-MODEL#Permission">Permission</a>, <a data-xref-type="entity" data-xref-id="PageHandle" href="04-DATA-MODEL#PageHandle">PageHandle</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-LIB-004">关联实体: <a data-xref-type="entity" data-xref-id="permission" href="./04-DATA-MODEL#permission">Permission</a>, <a data-xref-type="entity" data-xref-id="pagehandle" href="./04-DATA-MODEL#pagehandle">PageHandle</a></p>
         <p>
           关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-008"></span>
           <span data-xref-type="test" data-xref-id="TEST-LIB-009"></span>
@@ -1708,7 +1708,7 @@
       <h2>§7 需求追溯矩阵</h2>
       <!-- ============================================================ -->
 
-      
+
 <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
         <h3>REQ ↔ 架构模块映射</h3>
         <table>
@@ -1919,7 +1919,7 @@
         </table>
       </div>
 
-      <section data-groundedin="PRD-REQ-BUN-COMPAT" id="req-eng-010" data-req="REQ-ENG-010" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="FetchTasklet, FetchResolveTask, FetchOutcome" data-req-api="POST /fetch/async-tasklet">
+      <section id="req-eng-010" data-req="REQ-ENG-010" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="FetchTasklet, FetchResolveTask, FetchOutcome" data-req-api="POST /fetch/async-tasklet" data-groundedin="PRD-REQ-BUN-COMPAT">
         <h3>REQ-ENG-010 异步 Fetch/HTTP 事件循环集成(复用 Bun FetchTasklet 事件驱动范式)</h3>
         <p>
           所有对外 JS fetch/http/https/tls API 必须复用 Bun 上游 FetchTasklet.zig 设计模式:返回 pending Promise,通过
@@ -2038,8 +2038,8 @@
           而非 metrics。enforcement: verify(verifyMode=spec, dir=.spec) 必须完成全部 3 阶段不崩溃；grep '"metrics": *{'
           .spec/*.html 必须返回 0 行。归因: BCE-20260621-001。
         </div>
-      <p data-xref-type="req" data-xref-id="REQ-ENG-010">关联实体: <a data-xref-type="entity" data-xref-id="FetchTasklet" href="04-DATA-MODEL#FetchTasklet">FetchTasklet</a>, <a data-xref-type="entity" data-xref-id="FetchResolveTask" href="04-DATA-MODEL#FetchResolveTask">FetchResolveTask</a>, <a data-xref-type="entity" data-xref-id="FetchOutcome" href="04-DATA-MODEL#FetchOutcome">FetchOutcome</a></p><p>关联状态机: <a data-xref-type="sm" data-xref-id="FetchTaskletLifecycle" href="03-PROCESS#artifact-state-machine">FetchTaskletLifecycle</a></p></section>
-      <div data-req-entity="BaoStencilXdrCache" data-groundedin="PRD-REQ-STENCIL-XDR-CACHE" id="req-eng-012" data-req="REQ-ENG-012" data-req-status="specified" data-req-domain="ENG" data-req-category="business" data-req-api="">
+      <p data-xref-type="req" data-xref-id="REQ-ENG-010">关联实体: <a data-xref-type="entity" data-xref-id="fetchtasklet" href="./04-DATA-MODEL#fetchtasklet">FetchTasklet</a>, <a data-xref-type="entity" data-xref-id="fetchresolvetask" href="./04-DATA-MODEL#fetchresolvetask">FetchResolveTask</a>, <a data-xref-type="entity" data-xref-id="fetchoutcome" href="./04-DATA-MODEL#fetchoutcome">FetchOutcome</a></p><p>关联状态机: <a data-xref-type="sm" data-xref-id="artifact-state-machine" href="./03-PROCESS#artifact-state-machine">FetchTaskletLifecycle</a></p></section>
+      <div id="req-eng-012" data-req="REQ-ENG-012" data-req-status="specified" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoStencilXdrCache" data-req-api="" data-groundedin="PRD-REQ-STENCIL-XDR-CACHE">
         <h3>REQ-ENG-012: Stencil XDR 持久化缓存</h3>
         <p>已编译 Stencil 经 XDR <code>EncodeStencil</code> 编码落盘(按源 hash + 编译选项寻址),进程重启后 <code>DecodeStencil</code> 直接实例化——消除跨进程冷启动重复编译。in-memory 层(bao_engine StencilCache,16 条 LRU)语义不变,XDR 为其持久化前置层。</p>
         <p data-xref-type="req" data-xref-id="REQ-ENG-012">groundedIn: PRD-REQ-STENCIL-XDR-CACHE(立法留档: issue #26 用户立法("Build Stencil/XDR/off-thread compile script cache";off-thread 面已裁关闭) + #26 bench 证据(编译占比 79.6%、缓存命中 4.9×、breakeven 0.9 realm)</p>
@@ -2052,9 +2052,9 @@
             <li id="原子写盘" data-criterion="缓存写入临时文件+rename,中断不留半写缓存被误读" data-criterion-id="REQ-ENG-012-C4">缓存写入原子性:临时文件+rename,中断不留半写缓存</li>
           </ol>
         </div>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-012">关联实体: <a data-xref-type="entity" data-xref-id="BaoStencilXdrCache" href="04-DATA-MODEL#BaoStencilXdrCache">BaoStencilXdrCache</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-012">关联实体: <a data-xref-type="entity" data-xref-id="BaoStencilXdrCache" href="./04-DATA-MODEL#BaoStencilXdrCache">BaoStencilXdrCache</a></p>
       </div>
-      <div data-groundedin="PRD-REQ-BUILTIN-DATA" id="req-eng-011" data-req="REQ-ENG-011" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="VmSandboxContext" data-req-api="">
+      <div id="req-eng-011" data-req="REQ-ENG-011" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="VmSandboxContext" data-req-api="" data-groundedin="PRD-REQ-BUILTIN-DATA">
         <h3>REQ-ENG-011: node:vm Sandbox 语义实现</h3>
         <p data-req-description="">
           实现 node:vm 模块的完整 sandbox 语义，使 vm.runInNewContext / vm.createContext / vm.Script.runInContext 在独立
@@ -2089,7 +2089,7 @@
             codeGeneration 选项可禁用 eval/function 编译
           </li>
         </ul>
-        <p data-xref-type="req" data-xref-id="REQ-ENG-011">关联实体: <a data-xref-type="entity" data-xref-id="VmSandboxContext" href="04-DATA-MODEL#VmSandboxContext">VmSandboxContext</a></p>
+        <p data-xref-type="req" data-xref-id="REQ-ENG-011">关联实体: <a data-xref-type="entity" data-xref-id="vmsandboxcontext" href="./04-DATA-MODEL#vmsandboxcontext">VmSandboxContext</a></p>
         <p>关联 API: <span data-xref-type="api" data-xref-id="API-ENG-010">POST /vm/sandbox</span></p>
         <div data-criteria="">
           <strong>验收标准：</strong>
@@ -2142,8 +2142,8 @@
         </div>
         <div data-bug-req-ref="REQ-ENG-010">REQ-ENG-010</div>
       </section>
-      
-    <section data-groundedin="PRD-REQ-BUN-COMPAT" id="req-bao-api-017" data-req="REQ-BAO-API-017" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api"><h3>REQ-BAO-API-017 Bun.listen/connect/udpSocket 网络桥接 API</h3><p>Bun 原生网络 API — TCP 服务器/客户端 + UDP Socket，桥接 bun_uws_sys (App/SocketGroup/udp::Socket) 到 SpiderMonkey host_fn。
+
+    <section id="req-bao-api-017" data-req="REQ-BAO-API-017" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-groundedin="PRD-REQ-BUN-COMPAT"><h3>REQ-BAO-API-017 Bun.listen/connect/udpSocket 网络桥接 API</h3><p>Bun 原生网络 API — TCP 服务器/客户端 + UDP Socket，桥接 bun_uws_sys (App/SocketGroup/udp::Socket) 到 SpiderMonkey host_fn。
 
 ## 功能范围
 
@@ -2186,7 +2186,7 @@
 ## 关联
 - REQ-ENG-23: Node.js net 模块 (TCP/IPC) — Node.js 层面 TCP
 - REQ-ENG-40: Node.js dgram 模块 (UDP) — Node.js 层面 UDP
-- NFR-THREAD-SAFETY: 禁止跨线程 JSObject 裸指针</p><div data-criterion="1. Bun.listen({port:0}) 返回 BunServer 对象，server.port > 0">1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0</div><div data-criterion="2. Bun.listen({fetch}) HTTP 模式正常响应请求">2. Bun.listen({fetch}) HTTP 模式正常响应请求</div><div data-criterion="3. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise<Socket>">3. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt;</div><div data-criterion="4. Socket.write(data) 发送数据, Socket.end()/destroy() 关闭连接">4. Socket.write(data) 发送数据, Socket.end()/destroy() 关闭连接</div><div data-criterion="5. Bun.udpSocket({type:'udp4'}) 返回 Promise<BunUdpSocket>">5. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt;</div><div data-criterion="6. BunUdpSocket.send(data,port,address) 发送 UDP 数据, BunUdpSocket.close() 关闭">6. BunUdpSocket.send(data,port,address) 发送 UDP 数据, BunUdpSocket.close() 关闭</div><div data-criterion="7. TLS 模式 Bun.connect({tls:true}) 正常握手">7. TLS 模式 Bun.connect({tls:true}) 正常握手</div><div data-criterion="8. BunServer.stop() 停止监听">8. BunServer.stop() 停止监听</div><div data-criterion="9. 所有 JS 回调通过 GcStore 管理，无跨线程 JSObject 裸指针 (NFR-THREAD-SAFETY)">9. 所有 JS 回调通过 GcStore 管理，无跨线程 JSObject 裸指针 (NFR-THREAD-SAFETY)</div><div data-criterion="10. 所有 socket I/O 回调在 JS 线程内分发 (BCE-20260621-001 不变式)">10. 所有 socket I/O 回调在 JS 线程内分发 (BCE-20260621-001 不变式)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-groundedin="PRD-REQ-BUN-COMPAT" id="req-bao-api-018" data-req="REQ-BAO-API-018" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api"><h3>REQ-BAO-API-018 Bun.Shell/$ Shell 解释器桥接 API</h3><p>Bun.Shell 类 + Bun.$ tagged template — Shell 命令解释器，桥接 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程) 到 SpiderMonkey host_fn。
+- NFR-THREAD-SAFETY: 禁止跨线程 JSObject 裸指针</p><div data-criterion="1. Bun.listen({port:0}) 返回 BunServer 对象，server.port > 0">1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0</div><div data-criterion="2. Bun.listen({fetch}) HTTP 模式正常响应请求">2. Bun.listen({fetch}) HTTP 模式正常响应请求</div><div data-criterion="3. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise<Socket>">3. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt;</div><div data-criterion="4. Socket.write(data) 发送数据, Socket.end()/destroy() 关闭连接">4. Socket.write(data) 发送数据, Socket.end()/destroy() 关闭连接</div><div data-criterion="5. Bun.udpSocket({type:'udp4'}) 返回 Promise<BunUdpSocket>">5. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt;</div><div data-criterion="6. BunUdpSocket.send(data,port,address) 发送 UDP 数据, BunUdpSocket.close() 关闭">6. BunUdpSocket.send(data,port,address) 发送 UDP 数据, BunUdpSocket.close() 关闭</div><div data-criterion="7. TLS 模式 Bun.connect({tls:true}) 正常握手">7. TLS 模式 Bun.connect({tls:true}) 正常握手</div><div data-criterion="8. BunServer.stop() 停止监听">8. BunServer.stop() 停止监听</div><div data-criterion="9. 所有 JS 回调通过 GcStore 管理，无跨线程 JSObject 裸指针 (NFR-THREAD-SAFETY)">9. 所有 JS 回调通过 GcStore 管理，无跨线程 JSObject 裸指针 (NFR-THREAD-SAFETY)</div><div data-criterion="10. 所有 socket I/O 回调在 JS 线程内分发 (BCE-20260621-001 不变式)">10. 所有 socket I/O 回调在 JS 线程内分发 (BCE-20260621-001 不变式)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section id="req-bao-api-018" data-req="REQ-BAO-API-018" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-groundedin="PRD-REQ-BUN-COMPAT"><h3>REQ-BAO-API-018 Bun.Shell/$ Shell 解释器桥接 API</h3><p>Bun.Shell 类 + Bun.$ tagged template — Shell 命令解释器，桥接 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程) 到 SpiderMonkey host_fn。
 
 ## 功能范围
 
@@ -2281,7 +2281,7 @@ tagged template literal 执行 shell 命令。
       "unit": "%"
     }
   ]
-}</script></section><section data-groundedin="PRD-REQ-TARGET-MATRIX" data-req-category="deployment" data-req-domain="DEPLOY" data-req-status="unknown" data-req="REQ-DEPLOY-1" id="req-deploy-1"><h3>REQ-DEPLOY-1 支持目标矩阵:x86_64-unknown-linux-musl 进入 v1 Supported(native 闭包交叉构建 + consumer gate)</h3><p>将 x86_64-unknown-linux-musl 纳入 v1 支持目标矩阵(Supported),覆盖完整 native 依赖闭包交叉构建与消费者验证:表层阻塞 freetype-sys 交叉 pkg-config(issue #10),深层为 SpiderMonkey/Servo native 栈/BoringSSL/uWS 的 musl 交叉构建。macOS/Windows 等其余平台状态不在本 REQ 范围(由 #18 后续裁决)。实施走长任务协议(高风险:mozjs musl 交叉未经上游验证)。</p><div data-criterion="x86_64-unknown-linux-musl 交叉工具链就位:rustup target + musl cross cc/sysroot 配置有文档与检测命令(bao doctor 联动)">x86_64-unknown-linux-musl 交叉工具链就位:rustup target + musl cross cc/sysroot 配置有文档与检测命令(bao doctor 联动)</div><div data-criterion="freetype-sys 等 pkg-config 类交叉阻塞根治(交叉环境变量/sysroot 方案,禁 PKG_CONFIG_ALLOW_CROSS 裸开关文档化收尾)">freetype-sys 等 pkg-config 类交叉阻塞根治(交叉环境变量/sysroot 方案,禁 PKG_CONFIG_ALLOW_CROSS 裸开关文档化收尾)</div><div data-criterion="mozjs(SpiderMonkey C++)musl 交叉编译通过(已知最高风险项;若需 mozjs build.rs patch 按上游同步 patch 清单协议沉淀重放条目)">mozjs(SpiderMonkey C++)musl 交叉编译通过(已知最高风险项;若需 mozjs build.rs patch 按上游同步 patch 清单协议沉淀重放条目)</div><div data-criterion="BoringSSL/uWS/Servo native 栈 musl 交叉编译通过,无重复符号(strict linker)">BoringSSL/uWS/Servo native 栈 musl 交叉编译通过,无重复符号(strict linker)</div><div data-criterion="bao-core 依赖闭包在 musl target 全量 cargo build --release 通过">bao-core 依赖闭包在 musl target 全量 cargo build --release 通过</div><div data-criterion="consumer gate:registry-only 空项目 cargo add bao-core 后 build/link/run 三段验证(对齐 crates-io-published-final 冒烟三段法)">consumer gate:registry-only 空项目 cargo add bao-core 后 build/link/run 三段验证(对齐 crates-io-published-final 冒烟三段法)</div><div data-criterion="支持目标矩阵文档化:x86_64-unknown-linux-gnu=Supported、x86_64-unknown-linux-musl=Supported(用户裁决 2026-09-01),其余平台显式列出状态禁灰区">支持目标矩阵文档化:x86_64-unknown-linux-gnu=Supported、x86_64-unknown-linux-musl=Supported(用户裁决 2026-09-01),其余平台显式列出状态禁灰区</div><div data-criterion="daily-ops 长任务协议承接:单轮 7 天预算,state.json long_running 记录 phase,超时中途态保留续跑">daily-ops 长任务协议承接:单轮 7 天预算,state.json long_running 记录 phase,超时中途态保留续跑</div></section><section data-groundedin="PRD-REQ-SCRIPT-RUN" data-req-category="business" data-req-domain="CLI" data-req-status="implemented" data-req="REQ-CLI-3" id="req-cli-3"><h3>REQ-CLI-3 脚本入口执行控制:--timeout / SIGINT→cancel</h3><p>脚本执行入口(bao run &lt;file&gt; / 顶层 -e / run -e / run --module -e)支持全局可选参数 --timeout &lt;MS&gt;:deadline 到期或 SIGINT 触发 S1 引擎原生 ExecutionControl(bao_engine execution_control + bao_runtime interrupt_bridge)受控终止。授权链:SM-EVOLUTION S1「SPEC 立法提案停点」——用户裁决 2026-09-10「全部完成」,2026-09-11 落地 commit 7f2f8e2a(消费 BaoRuntime::{eval,eval_module}_with_control + run_file_with_control);验收载体 bao_browser/tests/suite/bao_cli_timeout_e2e_tests.rs(真二进制 + kill -INT,9 用例)。</p><div data-criterion-id="REQ-CLI-3-AC01" data-criterion="--timeout <MS> 仅由脚本执行入口消费(bao run <file> / 顶层 -e / run -e / run --module -e);deadline 到期受控终止,退出码 124(GNU timeout(1) 惯例)">--timeout &lt;MS&gt; 仅由脚本执行入口消费(bao run &lt;file&gt; / 顶层 -e / run -e / run --module -e);deadline 到期受控终止,退出码 124(GNU timeout(1) 惯例)</div><div data-criterion-id="REQ-CLI-3-AC02" data-criterion="SIGINT 命中 armed --timeout 时触发 cancel 受控终止,退出码 130(128+SIGINT),stderr 输出 cancelled 终态">SIGINT 命中 armed --timeout 时触发 cancel 受控终止,退出码 130(128+SIGINT),stderr 输出 cancelled 终态</div><div data-criterion-id="REQ-CLI-3-AC03" data-criterion="受控终止码(124/130)优先于 module 管线 uncaught 路由的 request_exit(1) 副作用;显式 process.exit(n) 退出码不受优先序破坏">受控终止码(124/130)优先于 module 管线 uncaught 路由的 request_exit(1) 副作用;显式 process.exit(n) 退出码不受优先序破坏</div><div data-criterion-id="REQ-CLI-3-AC04" data-criterion="无 --timeout 时全部入口行为字节级不变:SIGINT 保持默认 disposition(进程死于信号 2,负对照锁定);deadline 未到的快脚本正常退出 0">无 --timeout 时全部入口行为字节级不变:SIGINT 保持默认 disposition(进程死于信号 2,负对照锁定);deadline 未到的快脚本正常退出 0</div><div data-criterion-id="REQ-CLI-3-AC05" data-criterion="--timeout 0 被 value parser 拒绝(exit 2);非脚本子命令携带 --timeout 即拒(exit 2)而非静默忽略(fail-closed)">--timeout 0 被 value parser 拒绝(exit 2);非脚本子命令携带 --timeout 即拒(exit 2)而非静默忽略(fail-closed)</div><div data-criterion-id="REQ-CLI-3-AC06" data-criterion="SIGINT 桥 async-signal-safe:signal handler 仅写 self-pipe,watcher 线程在普通线程上下文调 cancel(JS_RequestInterruptCallback 取引擎锁,禁在 handler 内执行);无 armed control 时收到的 SIGINT 在桥 Drop 后 raise(SIGINT) 重放,Ctrl-C 永不被静默吞掉">SIGINT 桥 async-signal-safe:signal handler 仅写 self-pipe,watcher 线程在普通线程上下文调 cancel(JS_RequestInterruptCallback 取引擎锁,禁在 handler 内执行);无 armed control 时收到的 SIGINT 在桥 Drop 后 raise(SIGINT) 重放,Ctrl-C 永不被静默吞掉</div><a data-xref-id="test-cli-8" data-xref-type="test" href="11-TESTING.html#test-cli-8">TEST-CLI-8</a></section><section data-groundedin="PRD-REQ-NODE-COMPAT" data-req-category="system" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-46" id="req-eng-46"><h3>REQ-ENG-46 process/子进程能力全平台真实现(撤销裁剪)</h3><p>用户裁决 2026-09-23:「我们原本想阉割 BUN 的 PROCESS 能力,这么看我们还是原本实现吧,SPEC 里改一下,任意 OS 都支持 PROCESS」。process/子进程能力(spawn 家族、child_process 模块、IPC、cluster)撤销一切平台裁剪意图:在全部支持目标平台按 Node/Bun 语义真实现——windows 不做 stub/不做 fail-closed 降级,与 linux 同一契约。承接:本波 b04cee87/072cb36a 已落地的 windows spawn/ipc/cluster/UCRT fd 真面即本 REQ 的实现基线;残余(cluster primary 泵/bun_build parse-worker)归本 REQ 收尾。</p><div data-criterion-id="REQ-ENG-46-AC01" data-criterion="process/child_process 家族(spawn/spawnSync/exec/execSync/fork、IPC 通道、cluster 模块、process.send/on('message') 消息往返)在全部支持目标平台(含 windows)真实现,零平台 stub/零 fail-closed 降级">process/child_process 家族(spawn/spawnSync/exec/execSync/fork、IPC 通道、cluster 模块、process.send/on('message') 消息往返)在全部支持目标平台(含 windows)真实现,零平台 stub/零 fail-closed 降级</div><div data-criterion-id="REQ-ENG-46-AC02" data-criterion="子进程退出码/stdio 管道/stdin 写入在全部平台按 Node 语义一致(退出码透传、pipe 读回、ignore/inherit 形态)">子进程退出码/stdio 管道/stdin 写入在全部平台按 Node 语义一致(退出码透传、pipe 读回、ignore/inherit 形态)</div><div data-criterion-id="REQ-ENG-46-AC03" data-criterion="IPC 通道在全部平台建立且 process.send/process.on('message') 消息往返可用(cluster fork 的 online/message/exit 事件链闭合)">IPC 通道在全部平台建立且 process.send/process.on('message') 消息往返可用(cluster fork 的 online/message/exit 事件链闭合)</div><div data-criterion-id="REQ-ENG-46-AC04" data-criterion="windows 平台的子进程以真进程语义执行(经 CRT/libuv 正确环境块与句柄继承),非任何形式的进程内模拟">windows 平台的子进程以真进程语义执行(经 CRT/libuv 正确环境块与句柄继承),非任何形式的进程内模拟</div><div data-criterion-id="REQ-ENG-46-AC05" data-criterion="全部平台以真实子进程端到端测试验收(exit code/stdio/IPC 消息往返用例在 linux 与 windows 真机各跑一遍绿)">全部平台以真实子进程端到端测试验收(exit code/stdio/IPC 消息往返用例在 linux 与 windows 真机各跑一遍绿)</div><a data-xref-id="test-eng-process-46" data-xref-type="test" href="11-TESTING.html#test-eng-process-46">TEST-ENG-PROCESS-46</a></section></main>
+}</script></section><section id="req-deploy-1" data-req="REQ-DEPLOY-1" data-req-status="unknown" data-req-domain="DEPLOY" data-req-category="deployment" data-groundedin="PRD-REQ-TARGET-MATRIX"><h3>REQ-DEPLOY-1 支持目标矩阵:x86_64-unknown-linux-musl 进入 v1 Supported(native 闭包交叉构建 + consumer gate)</h3><p>将 x86_64-unknown-linux-musl 纳入 v1 支持目标矩阵(Supported),覆盖完整 native 依赖闭包交叉构建与消费者验证:表层阻塞 freetype-sys 交叉 pkg-config(issue #10),深层为 SpiderMonkey/Servo native 栈/BoringSSL/uWS 的 musl 交叉构建。macOS/Windows 等其余平台状态不在本 REQ 范围(由 #18 后续裁决)。实施走长任务协议(高风险:mozjs musl 交叉未经上游验证)。</p><div data-criterion="x86_64-unknown-linux-musl 交叉工具链就位:rustup target + musl cross cc/sysroot 配置有文档与检测命令(bao doctor 联动)">x86_64-unknown-linux-musl 交叉工具链就位:rustup target + musl cross cc/sysroot 配置有文档与检测命令(bao doctor 联动)</div><div data-criterion="freetype-sys 等 pkg-config 类交叉阻塞根治(交叉环境变量/sysroot 方案,禁 PKG_CONFIG_ALLOW_CROSS 裸开关文档化收尾)">freetype-sys 等 pkg-config 类交叉阻塞根治(交叉环境变量/sysroot 方案,禁 PKG_CONFIG_ALLOW_CROSS 裸开关文档化收尾)</div><div data-criterion="mozjs(SpiderMonkey C++)musl 交叉编译通过(已知最高风险项;若需 mozjs build.rs patch 按上游同步 patch 清单协议沉淀重放条目)">mozjs(SpiderMonkey C++)musl 交叉编译通过(已知最高风险项;若需 mozjs build.rs patch 按上游同步 patch 清单协议沉淀重放条目)</div><div data-criterion="BoringSSL/uWS/Servo native 栈 musl 交叉编译通过,无重复符号(strict linker)">BoringSSL/uWS/Servo native 栈 musl 交叉编译通过,无重复符号(strict linker)</div><div data-criterion="bao-core 依赖闭包在 musl target 全量 cargo build --release 通过">bao-core 依赖闭包在 musl target 全量 cargo build --release 通过</div><div data-criterion="consumer gate:registry-only 空项目 cargo add bao-core 后 build/link/run 三段验证(对齐 crates-io-published-final 冒烟三段法)">consumer gate:registry-only 空项目 cargo add bao-core 后 build/link/run 三段验证(对齐 crates-io-published-final 冒烟三段法)</div><div data-criterion="支持目标矩阵文档化:x86_64-unknown-linux-gnu=Supported、x86_64-unknown-linux-musl=Supported(用户裁决 2026-09-01),其余平台显式列出状态禁灰区">支持目标矩阵文档化:x86_64-unknown-linux-gnu=Supported、x86_64-unknown-linux-musl=Supported(用户裁决 2026-09-01),其余平台显式列出状态禁灰区</div><div data-criterion="daily-ops 长任务协议承接:单轮 7 天预算,state.json long_running 记录 phase,超时中途态保留续跑">daily-ops 长任务协议承接:单轮 7 天预算,state.json long_running 记录 phase,超时中途态保留续跑</div></section><section id="req-cli-3" data-req="REQ-CLI-3" data-req-status="implemented" data-req-domain="CLI" data-req-category="business" data-groundedin="PRD-REQ-SCRIPT-RUN"><h3>REQ-CLI-3 脚本入口执行控制:--timeout / SIGINT→cancel</h3><p>脚本执行入口(bao run &lt;file&gt; / 顶层 -e / run -e / run --module -e)支持全局可选参数 --timeout &lt;MS&gt;:deadline 到期或 SIGINT 触发 S1 引擎原生 ExecutionControl(bao_engine execution_control + bao_runtime interrupt_bridge)受控终止。授权链:SM-EVOLUTION S1「SPEC 立法提案停点」——用户裁决 2026-09-10「全部完成」,2026-09-11 落地 commit 7f2f8e2a(消费 BaoRuntime::{eval,eval_module}_with_control + run_file_with_control);验收载体 bao_browser/tests/suite/bao_cli_timeout_e2e_tests.rs(真二进制 + kill -INT,9 用例)。</p><div data-criterion="--timeout <MS> 仅由脚本执行入口消费(bao run <file> / 顶层 -e / run -e / run --module -e);deadline 到期受控终止,退出码 124(GNU timeout(1) 惯例)" data-criterion-id="REQ-CLI-3-AC01">--timeout &lt;MS&gt; 仅由脚本执行入口消费(bao run &lt;file&gt; / 顶层 -e / run -e / run --module -e);deadline 到期受控终止,退出码 124(GNU timeout(1) 惯例)</div><div data-criterion="SIGINT 命中 armed --timeout 时触发 cancel 受控终止,退出码 130(128+SIGINT),stderr 输出 cancelled 终态" data-criterion-id="REQ-CLI-3-AC02">SIGINT 命中 armed --timeout 时触发 cancel 受控终止,退出码 130(128+SIGINT),stderr 输出 cancelled 终态</div><div data-criterion="受控终止码(124/130)优先于 module 管线 uncaught 路由的 request_exit(1) 副作用;显式 process.exit(n) 退出码不受优先序破坏" data-criterion-id="REQ-CLI-3-AC03">受控终止码(124/130)优先于 module 管线 uncaught 路由的 request_exit(1) 副作用;显式 process.exit(n) 退出码不受优先序破坏</div><div data-criterion="无 --timeout 时全部入口行为字节级不变:SIGINT 保持默认 disposition(进程死于信号 2,负对照锁定);deadline 未到的快脚本正常退出 0" data-criterion-id="REQ-CLI-3-AC04">无 --timeout 时全部入口行为字节级不变:SIGINT 保持默认 disposition(进程死于信号 2,负对照锁定);deadline 未到的快脚本正常退出 0</div><div data-criterion="--timeout 0 被 value parser 拒绝(exit 2);非脚本子命令携带 --timeout 即拒(exit 2)而非静默忽略(fail-closed)" data-criterion-id="REQ-CLI-3-AC05">--timeout 0 被 value parser 拒绝(exit 2);非脚本子命令携带 --timeout 即拒(exit 2)而非静默忽略(fail-closed)</div><div data-criterion="SIGINT 桥 async-signal-safe:signal handler 仅写 self-pipe,watcher 线程在普通线程上下文调 cancel(JS_RequestInterruptCallback 取引擎锁,禁在 handler 内执行);无 armed control 时收到的 SIGINT 在桥 Drop 后 raise(SIGINT) 重放,Ctrl-C 永不被静默吞掉" data-criterion-id="REQ-CLI-3-AC06">SIGINT 桥 async-signal-safe:signal handler 仅写 self-pipe,watcher 线程在普通线程上下文调 cancel(JS_RequestInterruptCallback 取引擎锁,禁在 handler 内执行);无 armed control 时收到的 SIGINT 在桥 Drop 后 raise(SIGINT) 重放,Ctrl-C 永不被静默吞掉</div><a data-xref-type="test" data-xref-id="test-cli-8" href="./11-TESTING#test-cli-8">TEST-CLI-8</a></section><section id="req-eng-46" data-req="REQ-ENG-46" data-req-status="implemented" data-req-domain="ENG" data-req-category="system" data-groundedin="PRD-REQ-NODE-COMPAT"><h3>REQ-ENG-46 process/子进程能力全平台真实现(撤销裁剪)</h3><p>用户裁决 2026-09-23:「我们原本想阉割 BUN 的 PROCESS 能力,这么看我们还是原本实现吧,SPEC 里改一下,任意 OS 都支持 PROCESS」。process/子进程能力(spawn 家族、child_process 模块、IPC、cluster)撤销一切平台裁剪意图:在全部支持目标平台按 Node/Bun 语义真实现——windows 不做 stub/不做 fail-closed 降级,与 linux 同一契约。承接:本波 b04cee87/072cb36a 已落地的 windows spawn/ipc/cluster/UCRT fd 真面即本 REQ 的实现基线;残余(cluster primary 泵/bun_build parse-worker)归本 REQ 收尾。</p><div data-criterion="process/child_process 家族(spawn/spawnSync/exec/execSync/fork、IPC 通道、cluster 模块、process.send/on('message') 消息往返)在全部支持目标平台(含 windows)真实现,零平台 stub/零 fail-closed 降级" data-criterion-id="REQ-ENG-46-AC01">process/child_process 家族(spawn/spawnSync/exec/execSync/fork、IPC 通道、cluster 模块、process.send/on('message') 消息往返)在全部支持目标平台(含 windows)真实现,零平台 stub/零 fail-closed 降级</div><div data-criterion="子进程退出码/stdio 管道/stdin 写入在全部平台按 Node 语义一致(退出码透传、pipe 读回、ignore/inherit 形态)" data-criterion-id="REQ-ENG-46-AC02">子进程退出码/stdio 管道/stdin 写入在全部平台按 Node 语义一致(退出码透传、pipe 读回、ignore/inherit 形态)</div><div data-criterion="IPC 通道在全部平台建立且 process.send/process.on('message') 消息往返可用(cluster fork 的 online/message/exit 事件链闭合)" data-criterion-id="REQ-ENG-46-AC03">IPC 通道在全部平台建立且 process.send/process.on('message') 消息往返可用(cluster fork 的 online/message/exit 事件链闭合)</div><div data-criterion="windows 平台的子进程以真进程语义执行(经 CRT/libuv 正确环境块与句柄继承),非任何形式的进程内模拟" data-criterion-id="REQ-ENG-46-AC04">windows 平台的子进程以真进程语义执行(经 CRT/libuv 正确环境块与句柄继承),非任何形式的进程内模拟</div><div data-criterion="全部平台以真实子进程端到端测试验收(exit code/stdio/IPC 消息往返用例在 linux 与 windows 真机各跑一遍绿)" data-criterion-id="REQ-ENG-46-AC05">全部平台以真实子进程端到端测试验收(exit code/stdio/IPC 消息往返用例在 linux 与 windows 真机各跑一遍绿)</div><a data-xref-type="test" data-xref-id="test-eng-process-46" href="./11-TESTING#test-eng-process-46">TEST-ENG-PROCESS-46</a></section></main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
       <div id="test-eng-008" data-test="TEST-ENG-008" data-req-ref="REQ-ENG-008" data-test-categories="unit">
