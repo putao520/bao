@@ -8,12 +8,11 @@
 // object as input. Requests may additionally carry a live ReadableStream
 // body (`_bodyStreamSource` — the serve path's per-chunk request streaming,
 // REQ-ENG-006): the body getter surfaces that exact stream and the body
-// mixin drains it through getReader(). KNOWN GAP (fail-closed boundary not
-// yet wired): fetch_api's Request-body extraction has no stream arm, so
-// `fetch(serveRequestInstance)` reads no body slot and would send an empty
-// body — the native extraction must reject streaming request bodies loudly
-// (probe `_bodyStreamSource` in fetch_api.rs) before relaying such a
-// Request through fetch() is safe.
+// mixin drains it through getReader(). The fetch() relay boundary is
+// fail-closed: fetch_api's Request-body extraction probes
+// `_bodyStreamSource` and throws "streaming request bodies cannot be
+// relayed through fetch()" (one-arg relay of a streaming Request — never
+// a silent empty body).
 //
 // ## Design decisions
 //

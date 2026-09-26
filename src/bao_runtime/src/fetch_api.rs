@@ -295,6 +295,17 @@ unsafe extern "C" fn fetch_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                             }
                         }
                     }
+                    // Streaming slot: the serve path parks the live request
+                    // stream on _bodyStreamSource (REQ-ENG-006). fetch() has
+                    // no drain arm for it here — falling through would send
+                    // an empty body (silent data loss), so fail closed.
+                    if get_val_prop(cx, req_obj.handle(), "_bodyStreamSource").is_object() {
+                        JS_ReportErrorUTF8(
+                            cx,
+                            c"streaming request bodies cannot be relayed through fetch()".as_ptr(),
+                        );
+                        return false;
+                    }
                 }
             }
         }
