@@ -242,8 +242,20 @@ fn test_bun_api_all() {
         "hello world",
         "Bun.write content"
     );
-    let written = eval_number(&mut ctx, &format!(r#"Bun.write("{}", "abc")"#, path2));
-    assert_eq!(written as i32, 3, "Bun.write returns bytes");
+    // Bun.write returns a Promise resolving to the byte count (fixed from the
+    // defective synchronous Number return). This harness has no drain hook,
+    // so pin the thenable; settled-value coverage lives in
+    // web_api_port_tests (drain hook) and the binary repro.
+    assert!(
+        eval_bool(
+            &mut ctx,
+            &format!(
+                r#"typeof Bun.write("{}", "abc").then === "function""#,
+                path2
+            )
+        ),
+        "Bun.write must return a thenable"
+    );
     let _ = ::std::fs::remove_file(&tmp2);
 
     // --- Bun.readFile ---

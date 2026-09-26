@@ -2780,7 +2780,7 @@ unsafe extern "C" fn stdin_read(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
         }
         Ok(n) => {
             let s = ::std::str::from_utf8(&buf[..n]).unwrap_or("");
-            let js_str = JS_NewStringCopyN(cx, s.as_ptr() as *const i8, s.len());
+            let js_str = js_string_from_utf8(cx, s);
             if !js_str.is_null() {
                 args.rval().set(StringValue(&*js_str));
             } else {
@@ -3335,9 +3335,8 @@ unsafe extern "C" fn bun_serve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         JSPROP_ENUMERATE as u32,
     );
 
-    let c_hn = ZBox::from_bytes(hostname.as_bytes());
     {
-        let hn_str = JS_NewStringCopyZ(cx, c_hn.as_ptr());
+        let hn_str = js_string_from_utf8(cx, &hostname);
         if !hn_str.is_null() {
             rooted!(&in(cx_ref) let hn_v = StringValue(&*hn_str));
             JS_DefineProperty(
@@ -4264,8 +4263,7 @@ unsafe extern "C" fn ws_on_message(
         // SAFETY: data[..length] is valid for the duration of this callback.
         let bytes = ::std::slice::from_raw_parts(data, length);
         let text = ::std::str::from_utf8(bytes).unwrap_or("");
-        let c_text = ZBox::from_bytes(text.as_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_text.as_ptr());
+        let js_str = js_string_from_utf8(cx, text);
         if !js_str.is_null() {
             msg_arg = StringValue(&*js_str);
         }
@@ -4423,8 +4421,7 @@ unsafe extern "C" fn ws_on_close(
                     Vec::new()
                 };
                 let reason_str = String::from_utf8_lossy(&reason_bytes).into_owned();
-                let c_reason = ZBox::from_bytes(reason_str.as_bytes());
-                let js_reason = JS_NewStringCopyZ(cx, c_reason.as_ptr());
+                let js_reason = js_string_from_utf8(cx, &reason_str);
 
                 rooted!(&in(cx_ref) let close_fn_val = ObjectValue(close_fn.get()));
                 rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj_root.get()));
@@ -4561,8 +4558,7 @@ unsafe fn serve_build_request_object(
     let method_bytes = req_ref.method();
     let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET");
     {
-        let c_m = ZBox::from_bytes(method_str.as_bytes());
-        let js_m = JS_NewStringCopyZ(raw_cx, c_m.as_ptr());
+        let js_m = js_string_from_utf8(raw_cx, method_str);
         if !js_m.is_null() {
             let mv = StringValue(&*js_m);
             rooted!(&in(cx_ref) let mvr = mv);
@@ -4580,8 +4576,7 @@ unsafe fn serve_build_request_object(
     let url_bytes = req_ref.url();
     let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
     {
-        let c_u = ZBox::from_bytes(url_str.as_bytes());
-        let js_u = JS_NewStringCopyZ(raw_cx, c_u.as_ptr());
+        let js_u = js_string_from_utf8(raw_cx, url_str);
         if !js_u.is_null() {
             let uv = StringValue(&*js_u);
             rooted!(&in(cx_ref) let uvr = uv);
@@ -4609,8 +4604,9 @@ unsafe fn serve_build_request_object(
         );
         for (name, value) in &header_pairs {
             let c_k = ZBox::from_bytes(name);
-            let c_v = ZBox::from_bytes(value);
-            let js_v = JS_NewStringCopyZ(raw_cx, c_v.as_ptr());
+            // Header values can carry UTF-8 — build the JSString through the
+            // UTF-8 decoder, not the Latin-1 byte copy.
+            let js_v = js_string_from_utf8(raw_cx, &String::from_utf8_lossy(value));
             if !js_v.is_null() {
                 let hv = StringValue(&*js_v);
                 rooted!(&in(cx_ref) let hvr = hv);
@@ -5446,11 +5442,7 @@ unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         match crate::require::resolve_node_modules(&specifier, from.as_deref()) {
             Some(p) => {
                 let s = p.to_string_lossy().into_owned();
-                let js_str = JS_NewStringCopyN(
-                    cx,
-                    s.as_ptr() as *const ::std::os::raw::c_char,
-                    s.len(),
-                );
+                let js_str = js_string_from_utf8(cx, &s);
                 if !js_str.is_null() {
                     args.rval().set(mozjs::jsval::StringValue(&*js_str));
                 } else {
@@ -5486,11 +5478,7 @@ unsafe extern "C" fn bun_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
     let canonical = lexical.canonicalize().unwrap_or(lexical);
     let s = canonical.to_string_lossy().into_owned();
-    let js_str = JS_NewStringCopyN(
-        cx,
-        s.as_ptr() as *const ::std::os::raw::c_char,
-        s.len(),
-    );
+    let js_str = js_string_from_utf8(cx, &s);
     if !js_str.is_null() {
         args.rval().set(mozjs::jsval::StringValue(&*js_str));
     } else {
@@ -5519,8 +5507,7 @@ unsafe extern "C" fn bun_which(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         let candidate = ::std::path::Path::new(dir).join(&name);
         if candidate.exists() {
             let result = candidate.to_string_lossy().into_owned();
-            let c_result = ZBox::from_vec(result.into_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_result.as_ptr());
+            let js_str = js_string_from_utf8(cx, &result);
             if !js_str.is_null() {
                 args.rval().set(StringValue(&*js_str));
             } else {
@@ -5533,8 +5520,7 @@ unsafe extern "C" fn bun_which(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             let candidate = ::std::path::Path::new(dir).join(&name);
             if candidate.exists() {
                 let result = candidate.to_string_lossy().into_owned();
-                let c_result = ZBox::from_vec(result.into_bytes());
-                let js_str = JS_NewStringCopyZ(cx, c_result.as_ptr());
+                let js_str = js_string_from_utf8(cx, &result);
                 if !js_str.is_null() {
                     args.rval().set(StringValue(&*js_str));
                 } else {
@@ -5986,8 +5972,7 @@ unsafe extern "C" fn test_run(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
     if !failures.is_empty() {
         rooted!(&in(cx_ref) let fail_arr = NewArrayObject1(cx_ref, 0));
         for (i, fname) in failures.iter().enumerate() {
-            let c_name = ZBox::from_bytes(fname.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
+            let js_str = js_string_from_utf8(cx, fname);
             if !js_str.is_null() {
                 let fval = StringValue(&*js_str);
                 rooted!(&in(cx_ref) let fv2 = fval);
@@ -6176,8 +6161,12 @@ unsafe extern "C" fn bun_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         args.rval().set(UndefinedValue());
         return true;
     }
-    let c_path = ZBox::from_bytes(s.as_bytes());
-    let path_js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+    // The path property must carry the path's code points, not its UTF-8
+    // bytes relabeled Latin-1: JS_NewStringCopyZ turned "uni-世界.txt" into
+    // "uni-ä¸–ç•Œ.txt", so exists()/text() re-stat'd a path that never
+    // existed. js_string_from_utf8 keeps the JS↔Rust path round-trip
+    // byte-exact (same encoder as the file text() reader).
+    let path_js_str = js_string_from_utf8(cx, &s);
     if !path_js_str.is_null() {
         rooted!(&in(cx_ref) let val = StringValue(&*path_js_str));
         JS_DefineProperty(
@@ -6591,8 +6580,9 @@ unsafe fn make_coded_error_value(cx: *mut JSContext, code: &str, msg: &str) -> V
 /// multibyte UTF-8 (E5 8C 85 → "å\x8c\x85" instead of 包); the JSString must
 /// be built via JS_NewStringCopyUTF8N — same discipline as the
 /// Buffer.toString mojibake fix in globals.rs (@trace REQ-ENG-005).
+/// pub(crate): the same Latin-1 mojibake class lives in web_api.rs.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn js_string_from_utf8(cx: *mut JSContext, text: &str) -> *mut JSString {
+pub(crate) unsafe fn js_string_from_utf8(cx: *mut JSContext, text: &str) -> *mut JSString {
     let chars = mozjs::conversions::Utf8Chars::from(text);
     mozjs_sys::jsapi::JS_NewStringCopyUTF8N(
         cx,
@@ -6946,8 +6936,7 @@ unsafe extern "C" fn bun_file_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     } else {
         String::new()
     };
-    let c_ct = ZBox::from_bytes(ct.as_bytes());
-    let ct_js = JS_NewStringCopyZ(cx, c_ct.as_ptr());
+    let ct_js = js_string_from_utf8(cx, &ct);
     if !ct_js.is_null() {
         rooted!(&in(cx_ref) let ct_val = StringValue(unsafe { &*ct_js }));
         JS_DefineProperty(
@@ -7008,12 +6997,58 @@ unsafe extern "C" fn bun_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     }
     let path_val = *args.get(0).ptr;
     let content_val = *args.get(1).ptr;
-    if !path_val.is_string() || !content_val.is_string() {
-        JS_ReportErrorUTF8(cx, c"Bun.write requires string arguments".as_ptr());
+    if !path_val.is_string() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"Bun.write: destination must be a path string".as_ptr(),
+        );
         return false;
     }
     let fpath = crate::js_to_rust_string(cx, path_val);
-    let content = crate::js_to_rust_string(cx, content_val);
+    // Body forms (upstream Bun.write byte path): string (UTF-8 bytes) |
+    // ArrayBufferView (Uint8Array / Buffer) | ArrayBuffer. Blob / Request /
+    // Response bodies are not implemented in this runtime's write path —
+    // they fail closed below instead of silently writing nothing.
+    let content: Vec<u8> = if content_val.is_string() {
+        crate::js_to_rust_string(cx, content_val).into_bytes()
+    } else if content_val.is_object() {
+        let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped;
+        rooted!(&in(cx_ref) let body_obj = content_val.to_object());
+        if let Ok(view) = mozjs::typedarray::TypedArray::<
+            mozjs::typedarray::ArrayBufferViewU8,
+            *mut JSObject,
+        >::from(body_obj.get())
+        {
+            // Copy out before any further JSAPI call.
+            match view.to_vec() {
+                Some(bytes) => bytes,
+                None => Vec::new(),
+            }
+        } else if let Ok(ab) = mozjs::typedarray::TypedArray::<
+            mozjs::typedarray::ArrayBufferU8,
+            *mut JSObject,
+        >::from(body_obj.get())
+        {
+            // Copy out before any further JSAPI call.
+            match ab.to_vec() {
+                Some(bytes) => bytes,
+                None => Vec::new(),
+            }
+        } else {
+            JS_ReportErrorUTF8(
+                cx,
+                c"Bun.write: body must be a string, Buffer/Uint8Array, or ArrayBuffer".as_ptr(),
+            );
+            return false;
+        }
+    } else {
+        JS_ReportErrorUTF8(
+            cx,
+            c"Bun.write: body must be a string, Buffer/Uint8Array, or ArrayBuffer".as_ptr(),
+        );
+        return false;
+    };
     // Windows (WINRED-D3): `bun_sys::fs::write` still passes raw MSVCRT
     // `libc::O_*` values, but on Windows the open path decodes flags through
     // `uv::O::from_bun_o`, which bit-tests the sys.zig-shaped `bun_sys::O`
@@ -7030,22 +7065,37 @@ unsafe extern "C" fn bun_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     )
     .map_err(|e| ::std::io::Error::from_raw_os_error(e.errno as i32))
     .and_then(|file| {
-        file.write_all(content.as_bytes())
+        file.write_all(&content)
             .map_err(|e| ::std::io::Error::from_raw_os_error(e.errno as i32))
     });
+
+    // Bun.write returns Promise<number> (upstream): resolve with the byte
+    // count after the write completes, reject with a coded errno Error on
+    // failure. Same settle discipline as the BunFile read family
+    // (file_read_promise): plain-Rust work first, then Resolve/Reject on the
+    // JS thread — reactions fire at the next microtask checkpoint.
+    let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped;
+    rooted!(&in(cx_ref) let promise = JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() {
+        JS_ClearPendingException(cx);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
     match write_result {
         Ok(()) => {
-            let written = DoubleValue(content.len() as f64);
-            args.rval().set(written);
-            true
+            rooted!(&in(cx_ref) let written = DoubleValue(content.len() as f64));
+            let _ = JS::ResolvePromise(cx, promise.handle().into(), written.handle().into());
         }
         Err(e) => {
+            let code = bunfile_io_code(&e);
             let msg = format!("Bun.write failed: {}", e);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-            false
+            rooted!(&in(cx_ref) let err_val = make_coded_error_value(cx, code, &msg));
+            let _ = JS::RejectPromise(cx, promise.handle().into(), err_val.handle().into());
         }
     }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -7063,8 +7113,9 @@ unsafe extern "C" fn bun_read_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let fpath = crate::js_to_rust_string(cx, path_val);
     match bun_sys::fs::read_to_string(fpath.as_str()) {
         Ok(content) => {
-            let c_content = ZBox::from_bytes(content.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_content.as_ptr());
+            // Same Latin-1 mojibake class as the Bun.file path: file content
+            // is UTF-8 bytes and must reach JS as code points.
+            let js_str = js_string_from_utf8(cx, &content);
             if !js_str.is_null() {
                 args.rval().set(StringValue(&*js_str));
             } else {
@@ -7087,8 +7138,7 @@ unsafe extern "C" fn process_cwd(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     match ::std::env::current_dir() {
         Ok(dir) => {
             let s = dir.to_string_lossy().into_owned();
-            let c_s = ZBox::from_bytes(s.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+            let js_str = js_string_from_utf8(cx, &s);
             if !js_str.is_null() {
                 args.rval().set(StringValue(&*js_str));
             } else {
@@ -9187,8 +9237,9 @@ unsafe extern "C" fn bun_file_url_to_path(cx: *mut JSContext, argc: u32, vp: *mu
     // Decode percent-encoding in the path
     let decoded = percent_decode_path(&path);
 
-    let c_path = ZBox::from_bytes(decoded.as_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+    // Non-ASCII decoded paths must reach JS as code points (same
+    // Latin-1 mojibake class as the Bun.file path property).
+    let js_str = js_string_from_utf8(cx, &decoded);
     args.rval().set(if js_str.is_null() {
         UndefinedValue()
     } else {
@@ -9480,8 +9531,7 @@ unsafe extern "C" fn bun_escape_html(cx: *mut JSContext, argc: u32, vp: *mut JSV
             _ => out.push(ch),
         }
     }
-    let c_out = ZBox::from_bytes(out.as_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
+    let js_str = js_string_from_utf8(cx, &out);
     args.rval().set(if js_str.is_null() {
         UndefinedValue()
     } else {

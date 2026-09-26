@@ -25,6 +25,7 @@ use mozjs::rust::wrappers2::{
     JS_NewPlainObject, NewArrayObject1,
 };
 
+use crate::bun_api::js_string_from_utf8;
 use crate::gc_store::{gc_store_get, gc_store_insert, gc_store_remove};
 
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
@@ -835,8 +836,7 @@ unsafe extern "C" fn websocket_constructor(cx: *mut JSContext, argc: u32, vp: *m
     }
 
     {
-        let c_url = ZBox::from_bytes(url.as_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_url.as_ptr());
+        let js_str = js_string_from_utf8(cx, &url);
         if !js_str.is_null() {
             rooted!(&in(wrapped_cx) let v = StringValue(&*js_str));
             JS_DefineProperty(
@@ -1198,8 +1198,7 @@ unsafe fn ws_connect_dispatch(
                 rooted!(&in(cx_ref) let global_root = info.realm_global);
                 let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
                 let _cx_in_realm: &mut mozjs::context::JSContext = &mut realm;
-                let c_msg = ZBox::from_bytes(msg.as_bytes());
-                let js_str = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+                let js_str = js_string_from_utf8(raw_cx, &msg);
                 if !js_str.is_null() {
                     ::std::option::Option::Some(StringValue(&*js_str))
                 } else {
@@ -1246,8 +1245,7 @@ unsafe fn ws_message_dispatch(
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
     let cx_ref: &mut mozjs::context::JSContext = &mut realm;
     let data = if let ::std::option::Option::Some(t) = text {
-        let c_text = ZBox::from_bytes(t.as_bytes());
-        let js_str = JS_NewStringCopyZ(raw_cx, c_text.as_ptr());
+        let js_str = js_string_from_utf8(raw_cx, &t);
         if js_str.is_null() {
             return;
         }
@@ -1310,8 +1308,7 @@ unsafe fn ws_closed_dispatch(
             rooted!(&in(cx_ref) let global_root = info.realm_global);
             let mut realm = AutoRealm::new_from_handle(cx_ref, global_root.handle());
             let _cx_in_realm: &mut mozjs::context::JSContext = &mut realm;
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            let js_str = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+            let js_str = js_string_from_utf8(raw_cx, &msg);
             if !js_str.is_null() {
                 ::std::option::Option::Some(StringValue(&*js_str))
             } else {
@@ -1709,14 +1706,94 @@ unsafe extern "C" fn text_encoder_encode(cx: *mut JSContext, argc: u32, vp: *mut
     true
 }
 
+/// WHATWG TextEncoder.encodeInto(source, destination): UTF-8-encode as many
+/// COMPLETE code points as fit into `destination`, returning `{read, written}`
+/// — read = UTF-16 code units consumed, written = bytes written. Never throws
+/// for a partial fit: it stops before the code point that would overflow the
+/// destination (a destination too small for even one code point yields
+/// {read:0, written:0}). The code-point domain is shared with encode():
+/// `js_to_rust_string` maps lone surrogates to U+FFFD, so both faces encode
+/// identically (lone surrogate → EF BF BD, 3 bytes).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn text_encoder_encode_into(
-    _cx: *mut JSContext,
-    _argc: u32,
+    cx: *mut JSContext,
+    argc: u32,
     vp: *mut JSVal,
 ) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 || !(*args.get(0).ptr).is_string() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"encodeInto requires a string source and a Uint8Array destination".as_ptr(),
+        );
+        return false;
+    }
+    if !(*args.get(1).ptr).is_object() {
+        JS_ReportErrorUTF8(
+            cx,
+            c"encodeInto requires a string source and a Uint8Array destination".as_ptr(),
+        );
+        return false;
+    }
+    let source = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let dest_obj = (*args.get(1).ptr).to_object());
+    // Uint8Array check (Buffer included — a JS subclass shares the internal
+    // Uint8Array class). DataView / plain object → TypeError, per WHATWG.
+    let mut dest_arr = match mozjs::typedarray::TypedArray::<
+        mozjs::typedarray::Uint8,
+        *mut JSObject,
+    >::from(dest_obj.get())
+    {
+        Ok(a) => a,
+        Err(()) => {
+            JS_ReportErrorUTF8(cx, c"encodeInto: destination must be a Uint8Array".as_ptr());
+            return false;
+        }
+    };
+    // SAFETY: no JS runs between the token creation and the mutable slice
+    // use (the encode loop below touches only Rust state).
+    let no_gc = unsafe { mozjs::context::NoGC::new() };
+    let dest: &mut [u8] = dest_arr.as_mut_slice_safe(&no_gc).unwrap_or(&mut []);
+
+    let mut read: u32 = 0;
+    let mut written: u32 = 0;
+    for ch in source.chars() {
+        let byte_len = ch.len_utf8();
+        if written as usize + byte_len > dest.len() {
+            // Not enough space for this code point — stop at the last
+            // COMPLETE one (never a partial multi-byte sequence).
+            break;
+        }
+        ch.encode_utf8(&mut dest[written as usize..written as usize + byte_len]);
+        written += byte_len as u32;
+        read += ch.len_utf16() as u32;
+    }
+
+    // { read, written }
+    let result = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if result.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    rooted!(&in(wrapped_cx) let result_root = result);
+    rooted!(&in(wrapped_cx) let read_v = Int32Value(read as i32));
+    JS_DefineProperty(
+        cx,
+        result_root.handle().into(),
+        c"read".as_ptr(),
+        read_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    rooted!(&in(wrapped_cx) let written_v = Int32Value(written as i32));
+    JS_DefineProperty(
+        cx,
+        result_root.handle().into(),
+        c"written".as_ptr(),
+        written_v.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    args.rval().set(ObjectValue(result_root.get()));
     true
 }
 
@@ -1745,7 +1822,7 @@ unsafe extern "C" fn text_decoder_constructor(
     let encoding_lower = encoding.to_lowercase();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_r = obj);
-    let encoding_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(encoding_lower.as_bytes()).as_ptr());
+    let encoding_str = js_string_from_utf8(cx, &encoding_lower);
     if !encoding_str.is_null() {
         let val = StringValue(&*encoding_str);
         rooted!(&in(wrapped_cx) let val_root = val);
@@ -2429,8 +2506,7 @@ unsafe fn subtle_reject(cx: *mut JSContext, promise: *mut JSObject, msg: &str) {
     let global = CurrentGlobalOrNull(cx);
     let err_obj = if !global.is_null() {
         rooted!(&in(cx_ref) let global_root = global);
-        let c_msg = ZBox::from_bytes(msg.as_bytes());
-        let msg_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+        let msg_js = js_string_from_utf8(cx, &msg);
         let mut err = UndefinedValue();
         if !msg_js.is_null() {
             rooted!(&in(cx_ref) let mv = StringValue(&*msg_js));
@@ -2481,8 +2557,7 @@ unsafe fn subtle_reject(cx: *mut JSContext, promise: *mut JSObject, msg: &str) {
         // message still reaches the rejection.
         rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx_ref));
         if !obj.get().is_null() {
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            let m_js = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+            let m_js = js_string_from_utf8(cx, &msg);
             if !m_js.is_null() {
                 rooted!(&in(cx_ref) let mv = StringValue(&*m_js));
                 JS_DefineProperty(cx, obj.handle().into(), c"message".as_ptr(), mv.handle().into(), JSPROP_ENUMERATE as u32);
@@ -3349,8 +3424,7 @@ unsafe extern "C" fn ls_get_item(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let v = m.get(&key).cloned();
         match v {
             Some(s) => {
-                let c_s = ZBox::from_bytes(s.as_bytes());
-                let js = JS_NewStringCopyZ(cx, c_s.as_ptr());
+                let js = js_string_from_utf8(cx, &s);
                 args.rval().set(if js.is_null() {
                     UndefinedValue()
                 } else {
@@ -3425,8 +3499,7 @@ unsafe extern "C" fn ls_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     });
     match val {
         Some(k) => {
-            let c_k = ZBox::from_bytes(k.as_bytes());
-            let js = JS_NewStringCopyZ(cx, c_k.as_ptr());
+            let js = js_string_from_utf8(cx, &k);
             args.rval().set(if js.is_null() {
                 NullValue()
             } else {
