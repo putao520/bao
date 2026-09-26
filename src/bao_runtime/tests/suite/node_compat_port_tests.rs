@@ -294,25 +294,12 @@ fn test_port_buffer_methods() {
 //     extname.test.js, join.test.js, basename/dirname/parse-format)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// SKIPPED(bao-divergence) — trailing-separator / win32-separator class found
-// while porting; each assertion below marked inline:
-//   * path.posix.normalize drops a trailing separator when it survives
-//     resolution: normalize('bar/foo../../') must be 'bar/' (bao: 'bar'),
-//     normalize('bar/foo../') must be 'bar/foo../' (bao: 'bar/foo..').
-//   * path.win32.normalize emits forward slashes: normalize('./fixtures///b/../b/c.js')
-//     must be 'fixtures\\b\\c.js' (bao: 'fixtures/b/c.js').
-//   * path.posix.join does not resolve a trailing '..' segment:
-//     join('/foo','bar','baz/asdf','quux','..') must be '/foo/bar/baz'
-//     (bao: '/foo/bar/baz/asdf').
-//   * path.posix.join('./x/../yyy','../zzz/') must keep the trailing slash
-//     'zzz/' (bao: 'zzz').
-//   * path.posix.join('', '') must be '.' (bao: ''); join('') itself passes.
-//   * path.posix.extname of dot-only basenames and of inputs with a trailing
-//     separator: extname('/path/to/..') / extname('..') must be '' (bao: '.');
-//     extname('file.ext/'), extname('file.ext//') must be '.ext',
-//     extname('file./'), extname('file.//') must be '.' (bao: '').
-//   * path.posix.basename('/dir/') must be 'dir' (bao: '').
-//   * path.posix.dirname('/a/b/') must be '/a' (bao: '/a/b').
+// FIXED (node B-class wave): the trailing-separator / dot-basename /
+// win32-separator class — node_alg port (node lib/path.js algorithms,
+// node v24 oracle-verified). Assertions restored below; the join vector's
+// old banner expectation was WRONG (node v24 returns '/foo/bar/baz/asdf'
+// for join('/foo','bar','baz/asdf','quux','..') — a single '..' pops only
+// 'quux'); the restored assertion carries the node-correct value.
 
 #[test]
 fn test_port_path_edge_cases() {
@@ -332,6 +319,15 @@ fn test_port_path_edge_cases() {
         check('norm-6', function() { return px.normalize('/a/b/c/../../../x/y/z') === '/x/y/z'; });
         check('norm-7', function() { return px.normalize('///..//./foo/.//bar') === '/foo/bar'; });
         check('norm-9', function() { return px.normalize('bar/foo../..') === 'bar'; });
+        // FIXED rows (trailing-separator / dot-basename / win32 class):
+        check('norm-trailing-sep-survives', function() { return px.normalize('bar/foo../../') === 'bar/' && px.normalize('bar/foo../') === 'bar/foo../'; });
+        check('win32-normalize-backslashes', function() { return path.win32.normalize('./fixtures///b/../b/c.js') === 'fixtures\\b\\c.js'; });
+        check('join-pops-quux-only', function() { return px.join('/foo','bar','baz/asdf','quux','..') === '/foo/bar/baz/asdf'; });
+        check('join-keeps-trailing-slash', function() { return px.join('./x/../yyy','../zzz/') === 'zzz/'; });
+        check('join-empty-empty-dot', function() { return px.join('', '') === '.'; });
+        check('extname-dot-only-and-trailing', function() { return px.extname('/path/to/..') === '' && px.extname('..') === '' && px.extname('file.ext/') === '.ext' && px.extname('file.ext//') === '.ext' && px.extname('file./') === '.' && px.extname('file.//') === '.'; });
+        check('basename-trailing-sep', function() { return px.basename('/dir/') === 'dir'; });
+        check('dirname-trailing-sep', function() { return px.dirname('/a/b/') === '/a'; });
         check('norm-10', function() { return px.normalize('bar/foo../../baz') === 'bar/baz'; });
         check('norm-12', function() { return px.normalize('bar/foo..') === 'bar/foo..'; });
         check('norm-13', function() { return px.normalize('../foo../../../bar') === '../../bar'; });
@@ -447,15 +443,25 @@ fn test_port_crypto_hash() {
             h.digest('hex');
             try { h.digest('hex'); return false; } catch (e) { return true; }
         });
-        // SKIPPED(bao-divergence): hash.copy() digesting the copy invalidates
-        // the ORIGINAL hash in bao — h.digest() after c.digest() throws
-        // "Unsupported hash algorithm: " instead of returning the same digest
-        // (node-crypto.test.js "copy is the same").
-        // SKIPPED(bao-divergence): copy() after digest() must throw
-        // "Digest already called" (node-crypto.test.js); bao silently allows it.
-        // SKIPPED(bao-divergence): createHash('no-such-algo') must throw at
-        // construction ("Digest method not supported"); bao accepts it and
-        // defers the throw to digest().
+        // FIXED (crypto A-class wave): per-instance hash state — copy is
+        // independent, finalize contracts enforced.
+        check('copy-is-the-same-and-independent', function() {
+            var h = crypto.createHash('sha256');
+            h.update('hello world');
+            var c = h.copy();
+            var d1 = c.digest('hex');
+            var d2 = h.digest('hex');
+            return d1 === d2 && d1.length === 64;
+        });
+        check('copy-after-digest-throws', function() {
+            var h = crypto.createHash('sha256');
+            h.update('x');
+            h.digest('hex');
+            try { h.copy(); return false; } catch (e) { return true; }
+        });
+        check('unknown-algo-throws-at-construction', function() {
+            try { crypto.createHash('no-such-algo'); return false; } catch (e) { return true; }
+        });
         check('known-algo-accepts-update', function() {
             var h = crypto.createHash('sha256');
             h.update('abc');
@@ -527,8 +533,11 @@ fn test_port_crypto_hmac_random() {
             var b64 = crypto.createHmac('sha256', 'key').update('').digest('base64');
             return b64 === 'XV0TlWPJW1lnub2ajJsjOp3ttFByeUzSMtwbdIMmB9A=';
         });
-        // SKIPPED(bao-divergence): createHmac with an unknown algorithm must
-        // throw (Node: "Digest method not supported"); bao accepts it silently.
+        // FIXED (crypto A-class wave): unknown HMAC algorithm throws at
+        // construction.
+        check('unknown-hmac-algo-throws-at-construction', function() {
+            try { crypto.createHmac('no-such-algo', 'k'); return false; } catch (e) { return true; }
+        });
         check('randomBytes-length-and-buffer', function() {
             var b = crypto.randomBytes(16);
             return Buffer.isBuffer(b) && b.length === 16;
@@ -708,10 +717,12 @@ fn test_port_events_emitter() {
             e.off('hey', fn);
             return e.listenerCount('hey') === 0;
         });
-        // SKIPPED(bao-divergence): EventEmitter.prototype.off must be the same
-        // function object as removeListener (and addListener === on);
-        // event-emitter.test.ts asserts reference identity, bao installs
-        // distinct function objects.
+        // FIXED (node B-class wave): alias reference identity —
+        // off === removeListener, on === addListener.
+        check('alias-reference-identity', function() {
+            return EventEmitter.prototype.off === EventEmitter.prototype.removeListener
+                && EventEmitter.prototype.on === EventEmitter.prototype.addListener;
+        });
         check('removeAllListeners', function() {
             var e = new EventEmitter(); var ran = false;
             e.on('hey', function() { ran = true; });
@@ -759,8 +770,13 @@ fn test_port_events_emitter() {
             var names = e.eventNames().sort();
             return names.length === 2 && names[0] === 'a' && names[1] === 'b';
         });
-        // SKIPPED(bao-divergence): `this` inside a listener must be the
-        // emitter (Node contract); bao binds globalThis instead.
+        // FIXED (node B-class wave): listener `this` binds the emitter.
+        check('listener-this-is-emitter', function() {
+            var e = new EventEmitter(); var bound = null;
+            e.on('x', function() { bound = this; });
+            e.emit('x');
+            return bound === e;
+        });
     "#,
     );
     assert_all_pass("events_emitter", &out);
@@ -796,9 +812,11 @@ fn test_port_util_inspect_format() {
             var s = util.inspect({ a: { b: 1 } });
             return s.indexOf('{') >= 0 && s.indexOf('a:') >= 0 && s.indexOf('b: 1') >= 0;
         });
-        // SKIPPED(bao-divergence): util.inspect(Buffer) must print the Buffer
-        // summary form ('<Buffer 68 69>', buffer.test.js/inspect conformance);
-        // bao prints the plain object form '{ 0: 104, 1: 105 }'.
+        // FIXED (node B-class wave): util.inspect(Buffer) prints the Buffer
+        // summary form.
+        check('inspect-buffer-form', function() {
+            return util.inspect(Buffer.from('hi')) === '<Buffer 68 69>';
+        });
         check('inspect-depth-option', function() {
             var deep = { a: { b: { c: { d: 1 } } } };
             var s = util.inspect(deep, { depth: 0 });
@@ -812,8 +830,10 @@ fn test_port_util_inspect_format() {
         check('format-substitutions', function() {
             return util.format('%s-%d', 'x', 5) === 'x-5';
         });
-        // SKIPPED(bao-divergence): util.format('%j', value) must emit the JSON
-        // form ('{"a":1}'); bao emits the inspected object form '{ a: 1 }'.
+        // FIXED (node B-class wave): util.format('%j') emits the JSON form.
+        check('format-json-specifier', function() {
+            return util.format('%j', { a: 1 }) === '{"a":1}';
+        });
         check('format-extra-args-appended', function() {
             return util.format('a', 'b', 'c') === 'a b c';
         });
