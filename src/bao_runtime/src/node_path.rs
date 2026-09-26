@@ -1614,89 +1614,106 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    // path.posix — the REAL posix face (pure-string algorithms above);
-    // node ships a genuine posix implementation on every platform, and the
-    // old self-reference answered `path.posix.sep === path.sep` ('\' on
-    // Windows — posix-selfref conformance FAIL).
+    // path.posix — node ships a genuine posix face on every platform, and on
+    // posix hosts the platform face IS the posix face (`path === path.posix`:
+    // module.exports is the posix module object, which also carries the win32
+    // face). The host face above now runs the same `windows=false` node_alg
+    // cores as `posix_core`, so on posix platforms `path.posix` is defined as
+    // a SELF-REFERENCE on the host object (identity, not a copy) and no
+    // separate module object is built. On windows the host face runs the
+    // win32 cores, so the pure posix face is a separate object there.
     unsafe {
-        rooted!(&in(cx) let posix_obj = w2::JS_NewPlainObject(cx));
-        if !posix_obj.get().is_null() {
-            let fns: &[(&str, ::std::option::Option<
-                unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool,
-            >)] = &[
-                ("join", Some(js_posix_join)),
-                ("normalize", Some(js_posix_normalize)),
-                ("resolve", Some(js_posix_resolve)),
-                ("dirname", Some(js_posix_dirname)),
-                ("basename", Some(js_posix_basename)),
-                ("extname", Some(js_posix_extname)),
-                ("isAbsolute", Some(posix_is_absolute)),
-                ("relative", Some(js_posix_relative)),
-                ("parse", Some(posix_parse_fn)),
-                ("format", Some(js_posix_format)),
-            ];
-            for (name, fp) in fns {
-                let c_name = ZBox::from_bytes(name.as_bytes());
-                let f = ::mozjs::jsapi::JS_NewFunction(
-                    cx.raw_cx(),
-                    *fp,
-                    2,
-                    0,
-                    c_name.as_ptr(),
-                );
-                if !f.is_null() {
-                    let fobj = ::mozjs::jsapi::JS_GetFunctionObject(f);
-                    ::mozjs::rooted!(&in(cx) let fv = ::mozjs::jsval::ObjectValue(fobj));
-                    ::mozjs::jsapi::JS_DefineProperty(
+        if cfg!(windows) {
+            rooted!(&in(cx) let posix_obj = w2::JS_NewPlainObject(cx));
+            if !posix_obj.get().is_null() {
+                let fns: &[(&str, ::std::option::Option<
+                    unsafe extern "C" fn(*mut JSContext, u32, *mut JSVal) -> bool,
+                >)] = &[
+                    ("join", Some(js_posix_join)),
+                    ("normalize", Some(js_posix_normalize)),
+                    ("resolve", Some(js_posix_resolve)),
+                    ("dirname", Some(js_posix_dirname)),
+                    ("basename", Some(js_posix_basename)),
+                    ("extname", Some(js_posix_extname)),
+                    ("isAbsolute", Some(posix_is_absolute)),
+                    ("relative", Some(js_posix_relative)),
+                    ("parse", Some(posix_parse_fn)),
+                    ("format", Some(js_posix_format)),
+                ];
+                for (name, fp) in fns {
+                    let c_name = ZBox::from_bytes(name.as_bytes());
+                    let f = ::mozjs::jsapi::JS_NewFunction(
+                        cx.raw_cx(),
+                        *fp,
+                        2,
+                        0,
+                        c_name.as_ptr(),
+                    );
+                    if !f.is_null() {
+                        let fobj = ::mozjs::jsapi::JS_GetFunctionObject(f);
+                        ::mozjs::rooted!(&in(cx) let fv = ::mozjs::jsval::ObjectValue(fobj));
+                        ::mozjs::jsapi::JS_DefineProperty(
+                            cx.raw_cx(),
+                            posix_obj.handle().into(),
+                            c_name.as_ptr(),
+                            fv.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
+                    }
+                }
+                // posix.sep = "/" / posix.delimiter = ":"
+                let sep_cstr = ZBox::from_bytes(b"/");
+                let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep_cstr.as_ptr());
+                if !sep_str.is_null() {
+                    let v = ::mozjs::jsval::StringValue(&*sep_str);
+                    ::mozjs::rooted!(&in(cx) let vr = v);
+                    JS_DefineProperty(
                         cx.raw_cx(),
                         posix_obj.handle().into(),
-                        c_name.as_ptr(),
-                        fv.handle().into(),
+                        c"sep".as_ptr(),
+                        vr.handle().into(),
                         JSPROP_ENUMERATE as u32,
                     );
                 }
-            }
-            // posix.sep = "/" / posix.delimiter = ":"
-            let sep_cstr = ZBox::from_bytes(b"/");
-            let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep_cstr.as_ptr());
-            if !sep_str.is_null() {
-                let v = ::mozjs::jsval::StringValue(&*sep_str);
-                ::mozjs::rooted!(&in(cx) let vr = v);
-                JS_DefineProperty(
-                    cx.raw_cx(),
-                    posix_obj.handle().into(),
-                    c"sep".as_ptr(),
-                    vr.handle().into(),
+                let dlm_cstr = ZBox::from_bytes(b":");
+                let dlm_str = JS_NewStringCopyZ(cx.raw_cx(), dlm_cstr.as_ptr());
+                if !dlm_str.is_null() {
+                    let v = ::mozjs::jsval::StringValue(&*dlm_str);
+                    ::mozjs::rooted!(&in(cx) let vr = v);
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        posix_obj.handle().into(),
+                        c"delimiter".as_ptr(),
+                        vr.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+                // posix.posix self-ref (node shape)
+                w2::JS_DefineProperty3(
+                    cx,
+                    posix_obj.handle(),
+                    c"posix".as_ptr(),
+                    posix_obj.handle(),
+                    JSPROP_ENUMERATE as u32,
+                );
+                // Attach the real posix face to the module:
+                w2::JS_DefineProperty3(
+                    cx,
+                    path_obj.handle(),
+                    c"posix".as_ptr(),
+                    posix_obj.handle(),
                     JSPROP_ENUMERATE as u32,
                 );
             }
-            let dlm_cstr = ZBox::from_bytes(b":");
-            let dlm_str = JS_NewStringCopyZ(cx.raw_cx(), dlm_cstr.as_ptr());
-            if !dlm_str.is_null() {
-                let v = ::mozjs::jsval::StringValue(&*dlm_str);
-                ::mozjs::rooted!(&in(cx) let vr = v);
-                JS_DefineProperty(
-                    cx.raw_cx(),
-                    posix_obj.handle().into(),
-                    c"delimiter".as_ptr(),
-                    vr.handle().into(),
-                    JSPROP_ENUMERATE as u32,
-                );
-            }
-            // posix.posix / posix.win32 self-refs (node shape)
-            w2::JS_DefineProperty3(
-                cx,
-                posix_obj.handle(),
-                c"posix".as_ptr(),
-                posix_obj.handle(),
-                JSPROP_ENUMERATE as u32,
-            );
-            // Attach the real posix face to the module:
+        } else {
+            // Posix host: `path === path.posix` by reference (node shape) —
+            // the win32 face below re-reads this property for its own
+            // `win32.posix` alias.
             w2::JS_DefineProperty3(
                 cx,
                 path_obj.handle(),
                 c"posix".as_ptr(),
-                posix_obj.handle(),
+                path_obj.handle(),
                 JSPROP_ENUMERATE as u32,
             );
         }
@@ -1799,7 +1816,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     JSPROP_ENUMERATE as u32,
                 );
             }
-            // win32.win32 / win32.posix self-refs (matches Node.js shape)
+            // win32.win32 self-ref + win32.posix alias (matches Node.js
+            // shape: `path.win32.posix === path.posix` — the posix face,
+            // which on posix hosts is the host object itself).
             w2::JS_DefineProperty3(
                 cx,
                 win32_obj.handle(),
@@ -1807,13 +1826,28 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 win32_obj.handle(),
                 JSPROP_ENUMERATE as u32,
             );
-            w2::JS_DefineProperty3(
-                cx,
-                win32_obj.handle(),
+            let mut posix_face_val = UndefinedValue();
+            JS_GetProperty(
+                cx.raw_cx(),
+                path_obj.handle().into(),
                 c"posix".as_ptr(),
-                path_obj.handle(),
-                JSPROP_ENUMERATE as u32,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut posix_face_val,
+                },
             );
+            if posix_face_val.is_object() {
+                rooted!(&in(cx) let pfv = posix_face_val);
+                let pv = ::mozjs::jsval::ObjectValue(pfv.get().to_object());
+                rooted!(&in(cx) let pvr = pv);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    win32_obj.handle().into(),
+                    c"posix".as_ptr(),
+                    pvr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
 
             w2::JS_DefineProperty3(
                 cx,
@@ -1940,6 +1974,27 @@ unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
     true
 }
 
+// ── Host/platform face ────────────────────────────────────────────────────
+// Every pure-string native below is the SAME `node_alg` core the posix/win32
+// faces use, with `windows = cfg!(windows)` — node builds the platform face
+// out of one of the two shipped algorithms (`path === path.posix` on posix
+// hosts), so the host face must not carry a third (std::path-flavoured)
+// behavior. The B-class divergences this removes: `normalize('bar/foo../../')`
+// answered 'bar' instead of 'bar/' (surviving trailing separator dropped),
+// `join('a','..','..')` answered '../..' instead of '..' (leading '..' above a
+// relative root mishandled), `format({name,ext})` dropped formatExt's dot, and
+// `parse` answered std::path shapes for dot-leading basenames.
+
+/// The cwd as a forward-slash string for the platform face's cwd-bound
+/// natives (resolve / relative / toNamespacedPath), falling back to ".".
+fn host_cwd_string() -> String {
+    let mut buf = bun_paths::path_buffer_pool::get();
+    match bun_core::getcwd(&mut buf) {
+        Ok(z) => String::from_utf8_lossy(z.as_bytes()).into_owned(),
+        Err(_) => ".".to_string(),
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn path_join(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
@@ -1953,40 +2008,53 @@ unsafe extern "C" fn path_join(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             }
         }
     }
-    let joined = posix_join(&parts);
+    let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+    let joined = node_alg::join(&refs, cfg!(windows));
     return_string(cx, &args, &joined)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn path_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let cwd = {
-        let mut buf = bun_paths::path_buffer_pool::get();
-        bun_core::getcwd(&mut buf)
-            .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
-            .unwrap_or_else(|_| PathBuf::from("."))
-    };
-    let mut resolved = cwd;
-
+    let mut parts: Vec<::std::string::String> = Vec::new();
     for val in ::std::slice::from_raw_parts(args.argv_, argc as usize) {
         match arg_to_string(cx, *val) {
-            Some(s) => {
-                let p = Path::new(&s);
-                if p.is_absolute() {
-                    resolved = p.to_path_buf();
-                } else {
-                    resolved = resolved.join(p);
-                }
-            }
+            Some(s) => parts.push(s),
             None => {
                 JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
                 return false;
             }
         }
     }
+    if cfg!(windows) {
+        // cwd-dependent win32 core (device/UNC root extraction) is not part of
+        // `node_alg`'s string set; the win32 face forwards these two natives
+        // from here as well, so the pre-existing std::path behavior stands.
+        let cwd = {
+            let mut buf = bun_paths::path_buffer_pool::get();
+            bun_core::getcwd(&mut buf)
+                .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
+                .unwrap_or_else(|_| PathBuf::from("."))
+        };
+        let mut resolved = cwd;
 
-    let result = normalize_path(&resolved);
-    return_string(cx, &args, &result.to_string_lossy())
+        for s in &parts {
+            let p = Path::new(s);
+            if p.is_absolute() {
+                resolved = p.to_path_buf();
+            } else {
+                resolved = resolved.join(p);
+            }
+        }
+
+        let result = normalize_path(&resolved);
+        return return_string(cx, &args, &result.to_string_lossy());
+    }
+    // Posix host: the exact `path.posix.resolve` core (right-most absolute
+    // segment wins, `..` clamps at the root).
+    let cwd = host_cwd_string();
+    let result = posix_core::resolve(&parts, &cwd);
+    return_string(cx, &args, &result)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2004,17 +2072,7 @@ unsafe extern "C" fn path_dirname(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             return false;
         }
     };
-    let result = Path::new(&s)
-        .parent()
-        .map(|p| {
-            let pstr = p.to_string_lossy().into_owned();
-            if pstr.is_empty() {
-                ".".to_string()
-            } else {
-                pstr
-            }
-        })
-        .unwrap_or_else(|| ".".to_string());
+    let result = node_alg::dirname(&s, cfg!(windows));
     return_string(cx, &args, &result)
 }
 
@@ -2033,20 +2091,20 @@ unsafe extern "C" fn path_basename(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             return false;
         }
     };
-    let mut base = Path::new(&s)
-        .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_else(|| s.clone());
-
-    if argc >= 2 {
-        let ext_val = *args.get(1).ptr;
-        if let Some(ext) = arg_to_string(cx, ext_val)
-            && base.ends_with(&ext)
-            && !ext.is_empty()
-        {
-            base.truncate(base.len() - ext.len());
+    // node: an explicit `undefined` suffix is valid (no strip); anything
+    // else non-string is invalid.
+    let ext = if argc >= 2 && !(*args.get(1).ptr).is_undefined() {
+        match arg_to_string(cx, *args.get(1).ptr) {
+            Some(e) => Some(e),
+            None => {
+                JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+                return false;
+            }
         }
-    }
+    } else {
+        None
+    };
+    let base = node_alg::basename(&s, ext.as_deref(), cfg!(windows));
     return_string(cx, &args, &base)
 }
 
@@ -2065,10 +2123,7 @@ unsafe extern "C" fn path_extname(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             return false;
         }
     };
-    let ext = Path::new(&s)
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    let ext = node_alg::extname(&s, cfg!(windows));
     return_string(cx, &args, &ext)
 }
 
@@ -2087,9 +2142,8 @@ unsafe extern "C" fn path_normalize(cx: *mut JSContext, argc: u32, vp: *mut JSVa
             return false;
         }
     };
-    let p = Path::new(&s);
-    let normalized = normalize_path(p);
-    return_string(cx, &args, &normalized.to_string_lossy())
+    let normalized = node_alg::normalize(&s, cfg!(windows));
+    return_string(cx, &args, &normalized)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2107,26 +2161,8 @@ unsafe extern "C" fn path_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JS
             return true;
         }
     };
-    // Node semantics, not Rust's: on win32 a rooted path WITHOUT a drive
-    // ('/foo') is absolute (node's lib/path.js win32 isAbsolute — separator
-    // at [0], or device-root + ':' + separator), while std's
-    // Path::is_absolute demands a drive prefix and answered false for
-    // '/foo' on Windows. POSIX keeps the std behavior (leading '/').
-    #[cfg(windows)]
-    {
-        let b = s.as_bytes();
-        let rooted = b.first().is_some_and(|&c| c == b'/' || c == b'\\');
-        let drive_rooted = b.len() > 2
-            && b[0].is_ascii_alphabetic()
-            && b[1] == b':'
-            && (b[2] == b'/' || b[2] == b'\\');
-        args.rval().set(mozjs::jsval::BooleanValue(rooted || drive_rooted));
-    }
-    #[cfg(not(windows))]
-    {
-        args.rval()
-            .set(mozjs::jsval::BooleanValue(Path::new(&s).is_absolute()));
-    }
+    let absolute = node_alg::is_absolute(&s, cfg!(windows));
+    args.rval().set(mozjs::jsval::BooleanValue(absolute));
     true
 }
 
@@ -2151,15 +2187,27 @@ unsafe extern "C" fn path_relative(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         None => return return_string(cx, &args, ""),
     };
 
-    let from_abs = make_absolute(&from_str);
-    let to_abs = make_absolute(&to_str);
+    if cfg!(windows) {
+        // cwd-dependent win32 core (device compare / UNC roots) is not part of
+        // `node_alg`'s string set; the win32 face forwards this native from
+        // here, so the pre-existing bun_paths behavior stands.
+        let from_abs = make_absolute(&from_str);
+        let to_abs = make_absolute(&to_str);
 
-    let result = pathdiff(&to_abs, &from_abs);
-    return_string(
-        cx,
-        &args,
-        result.unwrap_or_default().to_string_lossy().as_ref(),
-    )
+        let result = pathdiff(&to_abs, &from_abs);
+        return return_string(
+            cx,
+            &args,
+            result.unwrap_or_default().to_string_lossy().as_ref(),
+        );
+    }
+    // Posix host: node resolves both args against the cwd first, then runs the
+    // posix relative algorithm (the exact `path.posix.relative` core).
+    let cwd = host_cwd_string();
+    let from_abs = posix_core::resolve(&[from_str], &cwd);
+    let to_abs = posix_core::resolve(&[to_str], &cwd);
+    let result = posix_core::relative(&from_abs, &to_abs);
+    return_string(cx, &args, &result)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2178,29 +2226,7 @@ unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         }
     };
 
-    let p = Path::new(&s);
-    let root = if p.is_absolute() {
-        "/".to_string()
-    } else {
-        String::new()
-    };
-    let dir = p
-        .parent()
-        .map(|d| d.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let file_name = p
-        .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let ext = p
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
-    let name = if !file_name.is_empty() && !ext.is_empty() {
-        file_name[..file_name.len() - ext.len()].to_string()
-    } else {
-        file_name.clone()
-    };
+    let parsed_shape = node_alg::parse(&s, cfg!(windows));
 
     let parsed = JS_NewPlainObject(cx);
     if parsed.is_null() {
@@ -2210,11 +2236,11 @@ unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let parsed_root = parsed);
 
-    define_string_prop(cx, parsed_root.handle().into(), "root", &root);
-    define_string_prop(cx, parsed_root.handle().into(), "dir", &dir);
-    define_string_prop(cx, parsed_root.handle().into(), "base", &file_name);
-    define_string_prop(cx, parsed_root.handle().into(), "ext", &ext);
-    define_string_prop(cx, parsed_root.handle().into(), "name", &name);
+    define_string_prop(cx, parsed_root.handle().into(), "root", &parsed_shape.root);
+    define_string_prop(cx, parsed_root.handle().into(), "dir", &parsed_shape.dir);
+    define_string_prop(cx, parsed_root.handle().into(), "base", &parsed_shape.base);
+    define_string_prop(cx, parsed_root.handle().into(), "ext", &parsed_shape.ext);
+    define_string_prop(cx, parsed_root.handle().into(), "name", &parsed_shape.name);
 
     args.rval().set(mozjs::jsval::ObjectValue(parsed));
     true
@@ -2238,29 +2264,17 @@ unsafe extern "C" fn path_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         );
         return false;
     }
-    let obj = val.to_object();
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let obj_root = obj);
-    let dir = get_string_prop(cx, obj_root.handle().into(), "dir");
-    let base = get_string_prop(cx, obj_root.handle().into(), "base");
-    let name = get_string_prop(cx, obj_root.handle().into(), "name");
-    let ext = get_string_prop(cx, obj_root.handle().into(), "ext");
-
-    let result = if let Some(b) = base {
-        if dir.as_ref().is_some_and(|d| !d.is_empty()) {
-            format!("{}/{}", dir.unwrap_or_default(), b)
-        } else {
-            b
+    // node format: dir || root, base || name + formatExt(ext) — the same
+    // core both faces use (`formatExt` supplies a missing leading dot, so
+    // format({name:'b',ext:'txt'}) === 'b.txt').
+    let parsed = match read_path_object(cx, &args) {
+        Some(p) => p,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
         }
-    } else {
-        let mut s = dir.unwrap_or_default();
-        if !s.is_empty() && !s.ends_with('/') {
-            s.push('/');
-        }
-        s.push_str(&name.unwrap_or_default());
-        s.push_str(&ext.unwrap_or_default());
-        s
     };
+    let result = node_alg::format(&parsed, cfg!(windows));
     return_string(cx, &args, &result)
 }
 
@@ -2279,24 +2293,32 @@ unsafe extern "C" fn path_to_namespaced(cx: *mut JSContext, argc: u32, vp: *mut 
             return true;
         }
     };
-    let resolved = make_absolute(&s);
-    return_string(cx, &args, &resolved.to_string_lossy())
+    if cfg!(windows) {
+        // cwd-dependent win32 core (\\?\ namespace prefixing) is not part of
+        // `node_alg`'s string set; the win32 face forwards this native from
+        // here, so the pre-existing behavior stands.
+        let resolved = make_absolute(&s);
+        return return_string(cx, &args, &resolved.to_string_lossy());
+    }
+    // node posix.toNamespacedPath returns the input verbatim (there are no
+    // namespaces to prefix on posix).
+    return_string(cx, &args, &s)
 }
 
 // --- Pure logic helpers ---
 // @trace REQ-ENG-007 [api:path] [code:bun_paths] — absolute-path resolution
 // (`make_absolute`) and relative-path computation (`pathdiff`) delegate to
-// `bun_paths::resolve_path` (Zig std `std.fs.path` faithful port):
-//   * `join_abs_string::<Posix>(cwd, parts)` resolves `cwd + parts` into a
-//     single absolute path (the equivalent of Node's `path.resolve` core).
-//   * `relative_platform::<Posix, _>(from, to)` computes the relative path
-//     from one absolute path to another (the equivalent of `path.relative`).
+// `bun_paths::resolve_path` (Zig std `std.fs.path` faithful port). These are
+// the cwd-dependent win32-leg helpers only (resolve / relative /
+// toNamespacedPath on cfg!(windows)); the posix legs run the node cores in
+// `posix_core`, and `normalize_path` additionally serves bun_api's
+// real-path resolution (REQ-ENG-007).
 //
-// The Node.js-specific `.`/`..` collapse for `posix_join` and `normalize_path`
-// stays in Rust here because Node's `path.posix.normalize` deliberately
-// preserves leading `..` above the root (e.g. `/a/../../b` → `/../b`) while
-// Zig std's `normalizeString` clamps at the root (`/b`). The bundler/resolver
-// consume the Zig semantics; the Node compatibility layer keeps its own.
+// The Node.js-specific `.`/`..` collapse for `normalize_path` stays in Rust
+// here because Node's `path.posix.normalize` deliberately preserves leading
+// `..` above the root (e.g. `/a/../../b` → `/../b`) while Zig std's
+// `normalizeString` clamps at the root (`/b`). The bundler/resolver consume
+// the Zig semantics; the Node compatibility layer keeps its own.
 
 use bun_paths::resolve_path::{self, platform::Posix};
 
@@ -2310,80 +2332,9 @@ fn cwd_bytes() -> Vec<u8> {
     }
 }
 
-pub(crate) fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
-    if parts.is_empty() {
-        return ".".to_string();
-    }
-
-    // Node.js path.posix.join:
-    // 1. Filter empty parts
-    // 2. Join all parts with / (absolute components treated as regular — leading / stripped at join time)
-    // 3. If first non-empty part started with /, result is absolute
-    // 4. Normalize . and ..
-    // 5. Preserve trailing / from last non-empty part
-
-    // Step 1: Collect non-empty parts, strip leading / from each, track if first was absolute
-    let mut segments: Vec<&str> = Vec::new();
-    let mut has_root = false;
-    let mut first_seen = false;
-    let mut trailing_slash = false;
-
-    for part in parts {
-        if part.is_empty() {
-            continue;
-        }
-        if !first_seen {
-            first_seen = true;
-            has_root = part.starts_with('/');
-        }
-        // Track trailing slash from last part
-        trailing_slash = part.ends_with('/');
-        // Split by / and collect non-empty segments
-        for seg in part.split('/') {
-            if !seg.is_empty() && seg != "." {
-                segments.push(seg);
-            }
-        }
-    }
-
-    if !first_seen {
-        return ".".to_string();
-    }
-
-    // Step 2: Normalize .. by popping
-    let mut normalized: Vec<&str> = Vec::new();
-    for seg in &segments {
-        if *seg == ".." {
-            if !normalized.is_empty() && *normalized.last().expect("segments") != ".." {
-                normalized.pop();
-            } else if !has_root {
-                normalized.push("..");
-            }
-        } else {
-            normalized.push(seg);
-        }
-    }
-
-    let mut result = if has_root {
-        "/".to_string()
-    } else {
-        String::new()
-    };
-    result.push_str(&normalized.join("/"));
-
-    // Trailing slash: only when last non-empty part had trailing slash AND result is relative
-    // or when result is empty (only . and / segments)
-    if result.is_empty() && trailing_slash {
-        "./".to_string()
-    } else if !result.is_empty() && trailing_slash && !result.ends_with('/') {
-        result.push('/');
-        result
-    } else if result.is_empty() {
-        ".".to_string()
-    } else {
-        result
-    }
-}
+// NOTE: the old hand-rolled `posix_join` (B-class: `join('a','..','..')`
+// answered '../..', trailing-separator preservation wrong) is deleted — the
+// host join native delegates to `node_alg::join` like both faces do.
 
 pub(crate) fn normalize_path(path: &::std::path::Path) -> PathBuf {
     let mut components = Vec::new();
@@ -2505,77 +2456,6 @@ unsafe fn get_string_prop(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- posix_join ---
-
-    #[test]
-    fn test_posix_join_empty() {
-        assert_eq!(posix_join(&[]), ".");
-    }
-
-    #[test]
-    fn test_posix_join_single() {
-        assert_eq!(posix_join(&["foo".to_string()]), "foo");
-    }
-
-    #[test]
-    fn test_posix_join_multiple() {
-        assert_eq!(
-            posix_join(&["a".to_string(), "b".to_string(), "c".to_string()]),
-            "a/b/c"
-        );
-    }
-
-    // posix_join: absolute parts after first are joined as relative, NOT overriding
-    #[test]
-    fn test_posix_join_absolute_part() {
-        // Leading / in non-first part is stripped (posix join behavior)
-        assert_eq!(
-            posix_join(&["a".to_string(), "/b".to_string(), "c".to_string()]),
-            "a/b/c"
-        );
-    }
-
-    #[test]
-    fn test_posix_join_trailing_slash() {
-        assert_eq!(posix_join(&["a/".to_string(), "b".to_string()]), "a/b");
-    }
-
-    #[test]
-    fn test_posix_join_dot() {
-        assert_eq!(posix_join(&[".".to_string(), "b".to_string()]), "b");
-    }
-
-    #[test]
-    fn test_posix_join_empty_parts_skipped() {
-        assert_eq!(
-            posix_join(&["a".to_string(), "".to_string(), "b".to_string()]),
-            "a/b"
-        );
-    }
-
-    #[test]
-    fn test_posix_join_root() {
-        assert_eq!(posix_join(&["/".to_string()]), "/");
-    }
-
-    #[test]
-    fn test_posix_join_dot_dot_normalizes() {
-        assert_eq!(
-            posix_join(&["a".to_string(), "b".to_string(), "..".to_string()]),
-            "a"
-        );
-    }
-
-    // posix_join: .. beyond root resolves within root (absolute path can't go beyond root)
-    #[test]
-    fn test_posix_join_dot_dot_beyond_root_stays() {
-        // For relative path, .. resolves upward; extra .. stays as ..
-        assert_eq!(
-            posix_join(&["a".to_string(), "..".to_string(), "..".to_string()]),
-            ".."
-        );
-    }
 
     // --- normalize_path (Path-based) ---
 
