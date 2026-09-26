@@ -1821,6 +1821,13 @@ unsafe extern "system" {
 
     pub fn CloseHandle(hObject: HANDLE) -> BOOL;
 
+    pub fn CreatePipe(
+        hReadPipe: *mut HANDLE,
+        hWritePipe: *mut HANDLE,
+        lpPipeAttributes: *const SECURITY_ATTRIBUTES,
+        nSize: DWORD,
+    ) -> BOOL;
+
     pub fn GetFinalPathNameByHandleW(
         hFile: HANDLE,
         lpszFilePath: *mut u16,

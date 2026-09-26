@@ -204,37 +204,116 @@ fn cp_pipe_read(handle: HANDLE, buf: &mut [u8]) -> ::std::io::Result<usize> {   
     Ok(read as usize)
 }
 
-/// Allocate a zeroed libuv pipe for a `WindowsStdio::Buffer` stdio slot —
-/// the spawn face `uv_pipe_init`s it on the wired loop, wires one end into
-/// the child, and hands the connected parent end back in WindowsSpawnResult
-/// as `WindowsStdioResult::Buffer` (the lifecycle_script_runner pattern).
+/// One stdio pipe pair for the cp async drain face (windows).
+///
+/// - `slot`: the child's end wrapped as a `WindowsStdio::Pipe` (UV_INHERIT_FD)
+///   spawn option. The fd is CRT-backed (`_open_osfhandle`); libuv duplicates
+///   it inheritable into the child at `uv_spawn` (uv__duplicate_handle sets
+///   bInheritHandle=TRUE). Closed parent-side right after a successful spawn
+///   — the child owns its inherited copy from then on.
+/// - `parent`: the parent's end, handed to the drain face (poll thread for
+///   stdout/stderr, `CP_STDIN_FDS` for stdin). Plain synchronous anonymous-
+///   pipe handle.
+///
+/// ROOT CAUSE (#29 / BCE-20260927-001): the cp async face previously used
+/// `WindowsStdio::Buffer` uv pipes. `uv__create_stdio_pipe_pair` registers the
+/// parent end on the wired loop's IOCP **with the `uv_pipe_t` pointer as the
+/// completion key**, and `cp_stdio_handle` then Box-dropped that still-linked
+/// `uv_pipe_t` (the `WindowsSpawnResult::Drop` doc names exactly this UB).
+/// Every later completion packet on those handles (the drain thread's own
+/// ReadFile on a FILE_FLAG_OVERLAPPED handle posts one) therefore keyed to
+/// freed memory, and the next loop tick — any later sync spawn's `uv_run` —
+/// dispatched on the freed key: intermittent 0xC0000005 in the jump-to-heap
+/// class (wire-proven .200 stack: test body → sync::spawn_with_argv →
+/// uv_run → ntdll → wild call). DESIGN CONSTRAINT: nothing on the cp async
+/// drain face may live on the loop — no libuv handles, no IOCP association.
 #[cfg(windows)]
-fn cp_new_uv_stdio_buffer() -> WindowsStdio {
-    // SAFETY: fresh zeroed uv_pipe_t-sized allocation; libuv's init writes
-    // the full handle before any use.
-    let pipe = unsafe {
-        bun_core::heap::into_raw(Box::new(bun_core::ffi::zeroed::<
-            bun_sys::windows::libuv::Pipe,
-        >()))
-    };
-    WindowsStdio::Buffer(pipe)
+struct CpStdioPipe {
+    parent: HANDLE,
+    /// CRT-backed fd owning the child end (`_open_osfhandle`). Becomes the
+    /// `WindowsStdio::Pipe` spawn slot (`Fd` is `Copy`); closed right after a
+    /// successful spawn (the child owns its inherited duplicate) or on
+    /// cleanup.
+    child_crt: bun_sys::Fd,
 }
 
-/// Parent stdio end out of the spawn result: the OS HANDLE behind a
-/// connected libuv pipe (Buffer), or null for inherit/ignore slots.
 #[cfg(windows)]
-fn cp_stdio_handle(stdio: WindowsStdioResult) -> HANDLE {
-    match stdio {
-        WindowsStdioResult::Buffer(pipe) => pipe.handle,
-        WindowsStdioResult::BufferFd(fd) => {
-            // SAFETY: Fd's native repr IS the HANDLE on windows; this reads
-            // it without taking ownership (registry owns the close).
-            let native = fd.native();
-            native as HANDLE
-        }
-        WindowsStdioResult::Unavailable => ::std::ptr::null_mut(),
+impl CpStdioPipe {
+    /// The UV_INHERIT_FD spawn option for this pair's child end.
+    fn slot(&self) -> WindowsStdio {
+        WindowsStdio::Pipe(self.child_crt)
     }
 }
+
+/// `child_reads` = stdin (child gets the read end, parent keeps the write
+/// end); `!child_reads` = stdout/stderr (child gets the write end, parent
+/// keeps the read end). Both ends are created non-inheritable; libuv makes
+/// the inheritable copy itself at spawn.
+#[cfg(windows)]
+fn cp_new_stdio_pipe_pair(child_reads: bool) -> ::std::result::Result<CpStdioPipe, ()> {
+    let mut read: HANDLE = ::std::ptr::null_mut();
+    let mut write: HANDLE = ::std::ptr::null_mut();
+    // SAFETY: out-params are stack HANDLEs; no security attributes (the ends
+    // must NOT be inheritable — libuv makes its own inheritable dup into the
+    // child, and an inherited stray parent end would pin the pipe open).
+    let ok = unsafe { w::CreatePipe(&mut read, &mut write, ::std::ptr::null(), 0) };
+    if ok == 0 {
+        return Err(());
+    }
+    let (child_end, parent) = if child_reads { (read, write) } else { (write, read) };
+    // CRT-backed fd for the UV_INHERIT_FD slot. On failure fail-closed:
+    // reclaim both ends, never half-own a pipe.
+    let crt = match bun_sys::Fd::from_native(child_end as _).make_libuv_owned() {
+        Ok(fd) => fd,
+        Err(()) => {
+            unsafe { w::CloseHandle(read) };
+            unsafe { w::CloseHandle(write) };
+            return Err(());
+        }
+    };
+    Ok(CpStdioPipe {
+        parent,
+        child_crt: crt,
+    })
+}
+
+/// Reclaim a cp stdio pipe pair whose spawn never consumed it: close the
+/// parent end and the child-end CRT fd. Take-then-null so double-cleanup
+/// can never double-close.
+#[cfg(windows)]
+fn cp_stdio_pipe_cleanup(pair: &mut Option<CpStdioPipe>) {
+    if let Some(mut p) = pair.take() {
+        if !p.parent.is_null() {
+            unsafe { w::CloseHandle(p.parent) };
+            p.parent = ::std::ptr::null_mut();
+        }
+        if p.child_crt != bun_sys::Fd::INVALID {
+            // SAFETY: CRT fd owning the child end; never spawned.
+            <bun_sys::Fd as bun_sys::FdExt>::close(p.child_crt);
+        }
+    }
+}
+
+/// Close the child-end CRT fds after a successful spawn. The child received
+/// its own inheritable duplicate at `uv_spawn`; keeping the parent-side CRT
+/// fd open would pin the child's pipe ends open and break EOF detection.
+#[cfg(windows)]
+fn cp_stdio_pipe_close_child_ends(pairs: [&mut Option<CpStdioPipe>; 3]) {
+    for pair in pairs {
+        if let Some(p) = pair.as_mut() {
+            if p.child_crt != bun_sys::Fd::INVALID {
+                // SAFETY: CRT fd owning the parent-side child end; spawned.
+                <bun_sys::Fd as bun_sys::FdExt>::close(p.child_crt);
+                p.child_crt = bun_sys::Fd::INVALID;
+            }
+        }
+    }
+}
+
+// (cp_stdio_handle removed — BCE-20260927-001: the cp async drain face no
+// longer consumes `WindowsStdioResult` stdio at all. Its old `Buffer(pipe)`
+// arm Box-dropped a loop-linked `uv_pipe_t` whose pointer was the loop's
+// IOCP completion key; see CpStdioPipe's doc for the full mechanism.)
 
 #[cfg(windows)]
 fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
@@ -1884,11 +1963,13 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     };
 
     // Create pipes for stdout/stderr/stdin as needed.
-    // unix: pipe(2) pairs. windows (#18): there is no pipe(2) — each piped
-    // stdio slot carries a fresh zeroed libuv pipe (`WindowsStdio::Buffer`);
-    // the spawn face uv_pipe_init's it on the wired loop and hands the
-    // connected parent end back in WindowsSpawnResult as
-    // WindowsStdioResult::Buffer.
+    // unix: pipe(2) pairs. windows (#18, BCE-20260927-001): raw CreatePipe
+    // pairs (`cp_new_stdio_pipe_pair`) — the child end rides UV_INHERIT_FD,
+    // the parent end goes to the drain face. NO libuv pipe: the old
+    // `WindowsStdio::Buffer` face loop-registered the parent end with the
+    // `uv_pipe_t` pointer as its IOCP completion key and then Box-dropped
+    // the still-linked handle, keying every later completion packet to freed
+    // memory (see CpStdioPipe's doc for the full mechanism).
     #[cfg(unix)]
     let mut stdout_pipe: [c_int; 2] = [-1, -1];
     #[cfg(unix)]
@@ -1896,23 +1977,65 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     #[cfg(unix)]
     let mut stdin_pipe: [c_int; 2] = [-1, -1];
 
+    // windows: create stdout first, then stderr, then stdin; any failure
+    // reclaims the pairs created so far (fail-closed, no half-owned pipe).
     #[cfg(windows)]
-    let mut stdin_stdio: WindowsStdio = if pipe_stdin {
-        cp_new_uv_stdio_buffer()
+    let mut stdout_pair: Option<CpStdioPipe> = if pipe_stdout {
+        match cp_new_stdio_pipe_pair(false) {
+            Ok(p) => Some(p),
+            Err(()) => {
+                let c_msg = ZBox::from_bytes(b"spawn: failed to create stdout pipe".to_vec());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                return false;
+            }
+        }
     } else {
-        WindowsStdio::Inherit
+        None
     };
     #[cfg(windows)]
-    let mut stdout_stdio: WindowsStdio = if pipe_stdout {
-        cp_new_uv_stdio_buffer()
+    let mut stderr_pair: Option<CpStdioPipe> = if pipe_stderr {
+        match cp_new_stdio_pipe_pair(false) {
+            Ok(p) => Some(p),
+            Err(()) => {
+                cp_stdio_pipe_cleanup(&mut stdout_pair);
+                let c_msg = ZBox::from_bytes(b"spawn: failed to create stderr pipe".to_vec());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                return false;
+            }
+        }
     } else {
-        WindowsStdio::Inherit
+        None
     };
     #[cfg(windows)]
-    let mut stderr_stdio: WindowsStdio = if pipe_stderr {
-        cp_new_uv_stdio_buffer()
+    let mut stdin_pair: Option<CpStdioPipe> = if pipe_stdin {
+        match cp_new_stdio_pipe_pair(true) {
+            Ok(p) => Some(p),
+            Err(()) => {
+                cp_stdio_pipe_cleanup(&mut stdout_pair);
+                cp_stdio_pipe_cleanup(&mut stderr_pair);
+                let c_msg = ZBox::from_bytes(b"spawn: failed to create stdin pipe".to_vec());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                return false;
+            }
+        }
     } else {
-        WindowsStdio::Inherit
+        None
+    };
+
+    #[cfg(windows)]
+    let mut stdin_stdio: WindowsStdio = match stdin_pair.as_ref() {
+        Some(p) => p.slot(),
+        None => WindowsStdio::Inherit,
+    };
+    #[cfg(windows)]
+    let mut stdout_stdio: WindowsStdio = match stdout_pair.as_ref() {
+        Some(p) => p.slot(),
+        None => WindowsStdio::Inherit,
+    };
+    #[cfg(windows)]
+    let mut stderr_stdio: WindowsStdio = match stderr_pair.as_ref() {
+        Some(p) => p.slot(),
+        None => WindowsStdio::Inherit,
     };
 
     // IPC carrier — windows: named-pipe pair (ipc_channel windows half).
@@ -1943,6 +2066,9 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                         stdin_stdio.deinit();
                         stdout_stdio.deinit();
                         stderr_stdio.deinit();
+                        cp_stdio_pipe_cleanup(&mut stdin_pair);
+                        cp_stdio_pipe_cleanup(&mut stdout_pair);
+                        cp_stdio_pipe_cleanup(&mut stderr_pair);
                         let msg = "spawn: ipc client handle -> crt fd failed".to_string();
                         let c_msg = ZBox::from_bytes(msg.as_bytes());
                         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
@@ -1953,11 +2079,14 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             }
             Err(e) => {
                 // Stdio slots were allocated before the pair — reclaim them
-                // (deinit uv_close's any init'd pipe; these were never init'd
-                // yet, so this is the plain Box reclaim path).
+                // (deinit is a no-op for Pipe slots; the pairs reclaim the
+                // raw parent ends + child CRT fds).
                 stdin_stdio.deinit();
                 stdout_stdio.deinit();
                 stderr_stdio.deinit();
+                cp_stdio_pipe_cleanup(&mut stdin_pair);
+                cp_stdio_pipe_cleanup(&mut stdout_pair);
+                cp_stdio_pipe_cleanup(&mut stderr_pair);
                 let msg = format!("spawn: failed to create ipc pipe: {}", e);
                 let c_msg = ZBox::from_bytes(msg.as_bytes());
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
@@ -2139,12 +2268,16 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             }
         }
         // windows: ownership moved into spawn_opts (spawn never ran) —
-        // deinit the option slots through it (uv_close any init'd pipe).
+        // deinit the option slots through it (uv_close any init'd pipe),
+        // and reclaim the raw pipe pairs (deinit is a no-op on Pipe slots).
         #[cfg(windows)]
         {
             spawn_opts.stdin.deinit();
             spawn_opts.stdout.deinit();
             spawn_opts.stderr.deinit();
+            cp_stdio_pipe_cleanup(&mut stdin_pair);
+            cp_stdio_pipe_cleanup(&mut stdout_pair);
+            cp_stdio_pipe_cleanup(&mut stderr_pair);
             if let Some(server) = ipc_server {
                 drop(server);
             }
@@ -2220,12 +2353,16 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     }
                 }
             }
-            // windows: ownership never transferred — deinit the option slots.
+            // windows: ownership never transferred — deinit the option slots
+            // (no-op on Pipe slots) and reclaim the raw pipe pairs.
             #[cfg(windows)]
             {
                 spawn_opts.stdin.deinit();
                 spawn_opts.stdout.deinit();
                 spawn_opts.stderr.deinit();
+                cp_stdio_pipe_cleanup(&mut stdin_pair);
+                cp_stdio_pipe_cleanup(&mut stdout_pair);
+                cp_stdio_pipe_cleanup(&mut stderr_pair);
                 if let Some(server) = ipc_server {
                     drop(server);
                 }
@@ -2254,12 +2391,16 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     }
                 }
             }
-            // windows: same deinit face (pipes may be half-wired).
+            // windows: same deinit face (no-op on Pipe slots) + raw pair
+            // reclaim.
             #[cfg(windows)]
             {
                 spawn_opts.stdin.deinit();
                 spawn_opts.stdout.deinit();
                 spawn_opts.stderr.deinit();
+                cp_stdio_pipe_cleanup(&mut stdin_pair);
+                cp_stdio_pipe_cleanup(&mut stdout_pair);
+                cp_stdio_pipe_cleanup(&mut stderr_pair);
                 if let Some(server) = ipc_server {
                     drop(server);
                 }
@@ -2332,10 +2473,13 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             };
 
             // windows arm (#18): pid lives behind the intrusive `*mut Process`;
-            // the parent stdio ends are the spawn face's connected libuv pipes
-            // (PeekNamedPipe/ReadFile drain face, WriteFile stdin face); IPC
-            // rides the named-pipe pair created pre-spawn (server = parent).
-            // W3'(real-machine pending): the child-side fd-3 handle round-trip.
+            // the parent stdio ends are OUR raw CreatePipe ends (drain face:
+            // PeekNamedPipe/ReadFile, stdin face: WriteFile); IPC rides the
+            // named-pipe pair created pre-spawn (server = parent).
+            // BCE-20260927-001: no libuv pipe is involved on this face — the
+            // old `WindowsStdioResult::Buffer` extraction Box-dropped the
+            // loop-linked `uv_pipe_t` whose pointer was the IOCP completion
+            // key, detonating on the next loop tick.
             #[cfg(windows)]
             let pid = {
                 let pid = match posix_result.process_ {
@@ -2344,17 +2488,36 @@ unsafe extern "C" fn cp_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                     // moves); only touched through its own methods.
                     Some(p) => unsafe { (*p).pid },
                     None => {
+                        cp_stdio_pipe_cleanup(&mut stdin_pair);
+                        cp_stdio_pipe_cleanup(&mut stdout_pair);
+                        cp_stdio_pipe_cleanup(&mut stderr_pair);
                         let msg = "spawn: process handle missing".to_string();
                         let c_msg = ZBox::from_bytes(msg.as_bytes());
                         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                         return false;
                     }
                 };
+                // Close the child-end CRT fds: the child received its own
+                // inheritable duplicate at uv_spawn, and a stray parent-side
+                // child end would keep the pipe open and break EOF.
+                cp_stdio_pipe_close_child_ends([
+                    &mut stdin_pair,
+                    &mut stdout_pair,
+                    &mut stderr_pair,
+                ]);
                 // Parent stdio ends (HANDLEs; null = inherit slot).
-                let stdout_handle = cp_stdio_handle(posix_result.stdout.take());
-                let stderr_handle = cp_stdio_handle(posix_result.stderr.take());
-                let stdin_handle = cp_stdio_handle(posix_result.stdin.take());
-                // The result's Drop reclaims any un-consumed Buffer pipes.
+                let stdout_handle = stdout_pair
+                    .as_ref()
+                    .map(|p| p.parent)
+                    .unwrap_or(::std::ptr::null_mut());
+                let stderr_handle = stderr_pair
+                    .as_ref()
+                    .map(|p| p.parent)
+                    .unwrap_or(::std::ptr::null_mut());
+                let stdin_handle = stdin_pair
+                    .as_ref()
+                    .map(|p| p.parent)
+                    .unwrap_or(::std::ptr::null_mut());
 
                 // IPC: the parent keeps the named-pipe SERVER end (the
                 // inheritable client rode extra_fds as the child's fd-3).
@@ -4879,12 +5042,56 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         let _ = unsafe { libc::pipe(stdin_pipe.as_mut_ptr()) };
     }
 
+    // BCE-20260927-001: raw CreatePipe pairs (see cp_new_stdio_pipe_pair) —
+    // same face as cp_spawn, no loop-wired uv pipe.
     #[cfg(windows)]
-    let mut stdin_stdio: WindowsStdio = cp_new_uv_stdio_buffer();
+    let mut stdin_pair: Option<CpStdioPipe> = match cp_new_stdio_pipe_pair(true) {
+        Ok(p) => Some(p),
+        Err(()) => {
+            let msg = "fork: failed to create stdin pipe".to_string();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    };
     #[cfg(windows)]
-    let mut stdout_stdio: WindowsStdio = cp_new_uv_stdio_buffer();
+    let mut stdout_pair: Option<CpStdioPipe> = match cp_new_stdio_pipe_pair(false) {
+        Ok(p) => Some(p),
+        Err(()) => {
+            cp_stdio_pipe_cleanup(&mut stdin_pair);
+            let msg = "fork: failed to create stdout pipe".to_string();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    };
     #[cfg(windows)]
-    let mut stderr_stdio: WindowsStdio = cp_new_uv_stdio_buffer();
+    let mut stderr_pair: Option<CpStdioPipe> = match cp_new_stdio_pipe_pair(false) {
+        Ok(p) => Some(p),
+        Err(()) => {
+            cp_stdio_pipe_cleanup(&mut stdin_pair);
+            cp_stdio_pipe_cleanup(&mut stdout_pair);
+            let msg = "fork: failed to create stderr pipe".to_string();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    };
+    #[cfg(windows)]
+    let mut stdin_stdio: WindowsStdio = match stdin_pair.as_ref() {
+        Some(p) => p.slot(),
+        None => WindowsStdio::Inherit,
+    };
+    #[cfg(windows)]
+    let mut stdout_stdio: WindowsStdio = match stdout_pair.as_ref() {
+        Some(p) => p.slot(),
+        None => WindowsStdio::Inherit,
+    };
+    #[cfg(windows)]
+    let mut stderr_stdio: WindowsStdio = match stderr_pair.as_ref() {
+        Some(p) => p.slot(),
+        None => WindowsStdio::Inherit,
+    };
 
     #[cfg(unix)]
     let spawn_opts = PosixSpawnOptions {
@@ -4967,12 +5174,15 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             }
         }
         // windows: ownership moved into spawn_opts (spawn never ran) —
-        // deinit the option slots through it.
+        // deinit the option slots (no-op on Pipe slots) + reclaim the pairs.
         #[cfg(windows)]
         {
             spawn_opts.stdin.deinit();
             spawn_opts.stdout.deinit();
             spawn_opts.stderr.deinit();
+            cp_stdio_pipe_cleanup(&mut stdin_pair);
+            cp_stdio_pipe_cleanup(&mut stdout_pair);
+            cp_stdio_pipe_cleanup(&mut stderr_pair);
         }
         JS_ReportErrorUTF8(cx, c"child_process.fork: out of memory".as_ptr());
         return false;
@@ -5041,6 +5251,9 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 spawn_opts.stdin.deinit();
                 spawn_opts.stdout.deinit();
                 spawn_opts.stderr.deinit();
+                cp_stdio_pipe_cleanup(&mut stdin_pair);
+                cp_stdio_pipe_cleanup(&mut stdout_pair);
+                cp_stdio_pipe_cleanup(&mut stderr_pair);
             }
             let msg = format!("fork failed: {:?}", e);
             let c_msg = ZBox::from_bytes(msg.as_bytes());
@@ -5061,6 +5274,9 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                 spawn_opts.stdin.deinit();
                 spawn_opts.stdout.deinit();
                 spawn_opts.stderr.deinit();
+                cp_stdio_pipe_cleanup(&mut stdin_pair);
+                cp_stdio_pipe_cleanup(&mut stdout_pair);
+                cp_stdio_pipe_cleanup(&mut stderr_pair);
             }
             let msg = format!("fork system error: {:?}", sys_err);
             let c_msg = ZBox::from_bytes(msg.as_bytes());
@@ -5124,9 +5340,26 @@ unsafe extern "C" fn cp_fork(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
                         return false;
                     }
                 };
-                let stdout_handle = cp_stdio_handle(posix_result.stdout.take());
-                let stderr_handle = cp_stdio_handle(posix_result.stderr.take());
-                let stdin_handle = cp_stdio_handle(posix_result.stdin.take());
+                // Close the child-end CRT fds (the child got its inherited
+                // duplicate at uv_spawn) and take OUR parent ends — see
+                // cp_spawn's success arm for the ownership notes.
+                cp_stdio_pipe_close_child_ends([
+                    &mut stdin_pair,
+                    &mut stdout_pair,
+                    &mut stderr_pair,
+                ]);
+                let stdout_handle = stdout_pair
+                    .as_ref()
+                    .map(|p| p.parent)
+                    .unwrap_or(::std::ptr::null_mut());
+                let stderr_handle = stderr_pair
+                    .as_ref()
+                    .map(|p| p.parent)
+                    .unwrap_or(::std::ptr::null_mut());
+                let stdin_handle = stdin_pair
+                    .as_ref()
+                    .map(|p| p.parent)
+                    .unwrap_or(::std::ptr::null_mut());
                 let async_state = Arc::new(Mutex::new(AsyncChildState {
                     pid,
                     stdout_handle,
