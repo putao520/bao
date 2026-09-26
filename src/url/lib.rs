@@ -76,8 +76,9 @@ pub mod whatwg {
                 return None;
             }
             let parsed = super::URL::parse(input);
-            // Require a protocol (same gate as `href_from_string`).
-            if parsed.protocol.is_empty() {
+            // Require a protocol (same gate as `href_from_string`); a failed
+            // host parse (forbidden domain code point) is no URL either.
+            if parsed.protocol.is_empty() || parsed.parse_failed() {
                 return None;
             }
             let owned = Box::new(URL {
@@ -175,7 +176,7 @@ pub mod whatwg {
             return String::dead();
         }
         let url = super::URL::parse(bytes);
-        if url.protocol.is_empty() {
+        if url.protocol.is_empty() || url.parse_failed() {
             return String::dead();
         }
         drop(utf8);
@@ -245,7 +246,7 @@ pub mod whatwg {
             return String::dead();
         }
         let base_url = super::URL::parse(base_bytes);
-        if base_url.protocol.is_empty() {
+        if base_url.protocol.is_empty() || base_url.parse_failed() {
             return String::dead();
         }
         let rel_utf8 = relative.to_utf8();
@@ -253,9 +254,12 @@ pub mod whatwg {
         if rel_bytes.is_empty() {
             return base.clone();
         }
-        // Absolute URL — return as-is
+        // Absolute URL — return as-is (unless it failed its own host parse)
         let rel_url = super::URL::parse(rel_bytes);
         if !rel_url.protocol.is_empty() {
+            if rel_url.parse_failed() {
+                return String::dead();
+            }
             return relative.clone();
         }
         // Resolve relative against base origin. The path portion is
@@ -420,6 +424,14 @@ pub struct URL<'a> {
     pub port_was_automatically_set: bool,
     /// The rule `parse` used, so `href_without_userinfo` cuts the same bytes.
     pub(crate) authority_end: AuthorityEnd,
+    /// WHATWG host-parsing failure carried in-band: a forbidden domain code
+    /// point in a special-scheme host (`new URL('http://a b/')`,
+    /// `new URL('http://a^b/')`). The borrowed `parse` view is a pure slicer
+    /// over the caller's bytes and cannot return `Result`, so the failure
+    /// rides on the view (`parse_failed`); the owned entry points
+    /// (`whatwg::href_from_string` / `URL::from_string`) and the JS faces
+    /// turn it into their existing error path.
+    parse_failed: bool,
 }
 
 impl<'a> Default for URL<'a> {
@@ -440,6 +452,7 @@ impl<'a> Default for URL<'a> {
             username: b"",
             port_was_automatically_set: false,
             authority_end: AuthorityEnd::LikeNewURL,
+            parse_failed: false,
         }
     }
 }
@@ -535,7 +548,14 @@ impl<'a> URL<'a> {
             username: d(self.username),
             port_was_automatically_set: self.port_was_automatically_set,
             authority_end: self.authority_end,
+            parse_failed: self.parse_failed,
         }
+    }
+
+    /// Whether `parse` rejected the input — the WHATWG host-parsing failure
+    /// class (a forbidden domain code point in a special-scheme host).
+    pub fn parse_failed(&self) -> bool {
+        self.parse_failed
     }
 
     pub fn is_file(&self) -> bool {
@@ -1134,6 +1154,83 @@ impl<'a> URL<'a> {
             .map(|(_, port)| *port)
     }
 
+    /// WHATWG "forbidden domain code point" — what the host of a special
+    /// scheme may not contain (node v24.19.0 oracle over the class:
+    /// `http://a b/`, `http://a^b/`, `http://a|b/`, `http://a<b/`,
+    /// `http://a%20b/`, `http://a%zzb/` all throw ERR_INVALID_URL, while
+    /// `http://a"b/` and `http://a\`b/` parse — those two are NOT forbidden).
+    ///
+    /// `decoded` marks the percent-decoded pass: a raw `%` in the input is
+    /// only legal as the head of a valid escape, but a `%` that *survives*
+    /// decoding (as from `%25`) is itself a forbidden domain code point.
+    /// TAB/LF/CR are excluded: WHATWG input processing strips them from the
+    /// whole input before the host state is ever entered (node accepts
+    /// `http://a\tb/` with host `ab`), so throwing on them here would fail
+    /// inputs the spec accepts; that strip is an upstream-of-host concern.
+    fn is_forbidden_domain_byte(b: u8, decoded: bool) -> bool {
+        let c0_control = (0x00..=0x1f).contains(&b) && !matches!(b, b'\t' | b'\n' | b'\r');
+        c0_control
+            || b == 0x7f
+            || matches!(
+                b,
+                b' ' | b'#'
+                    | b'/'
+                    | b':'
+                    | b'<'
+                    | b'>'
+                    | b'?'
+                    | b'@'
+                    | b'['
+                    | b'\\'
+                    | b']'
+                    | b'^'
+                    | b'|'
+            )
+            || (decoded && b == b'%')
+    }
+
+    /// WHATWG host parsing: a special-scheme host containing a forbidden
+    /// domain code point fails the parse. Percent escapes are validated the
+    /// way domain-to-ASCII reads them — a valid escape is judged by its
+    /// decoded byte (`%20` → forbidden space, `%22` → allowed quote), an
+    /// invalid escape (`%zz`, `%b`, a bare `%`) fails outright. Non-special
+    /// schemes are untouched (opaque hosts may carry those bytes), and so are
+    /// bracketed IPv6 literals (the bracket bytes themselves are the
+    /// delimiter form, not host content).
+    fn check_host_forbidden_domain_code_points(&mut self) {
+        if !self.has_special_scheme() {
+            return;
+        }
+        let bytes: &[u8] = self.hostname;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'%' {
+                let Some(hex) = bytes.get(i + 1..i + 3) else {
+                    self.parse_failed = true;
+                    return;
+                };
+                let hi = (hex[0] as char).to_digit(16);
+                let lo = (hex[1] as char).to_digit(16);
+                let Some(decoded) = hi.and_then(|h| lo.map(|l| (h * 16 + l) as u8)) else {
+                    self.parse_failed = true;
+                    return;
+                };
+                if Self::is_forbidden_domain_byte(decoded, true) {
+                    self.parse_failed = true;
+                    return;
+                }
+                i += 3;
+            } else {
+                if Self::is_forbidden_domain_byte(b, false) {
+                    self.parse_failed = true;
+                    return;
+                }
+                i += 1;
+            }
+        }
+    }
+
     pub fn parse_protocol(&mut self, str: &'a [u8]) -> Option<u32> {
         if str.len() < b"://".len() {
             return None;
@@ -1267,6 +1364,8 @@ impl<'a> URL<'a> {
             } else {
                 self.hostname = &str[0..i as usize];
             }
+
+            self.check_host_forbidden_domain_code_points();
         }
 
         Some(i)
@@ -2175,6 +2274,99 @@ impl<'a> Scanner<'a> {
 }
 
 // ported from: src/url/url.zig
+
+#[cfg(test)]
+mod forbidden_host_code_point_tests {
+    //! WHATWG host parsing: a special-scheme host containing a forbidden
+    //! domain code point fails the parse (`parse_failed`), and the owned
+    //! entry points turn that into Dead/None. Oracle: node v24.19.0 over the
+    //! class — space/`<`/`>`/`^`/`|`/C0 controls throw, `"` and backtick do
+    //! not, `%20` throws through its decoded byte, `%22` and `%41` do not,
+    //! and a non-special scheme is untouched.
+
+    use super::{BunString, URL, whatwg};
+
+    #[test]
+    fn space_in_special_host_fails() {
+        assert!(URL::parse(b"http://a b/").parse_failed());
+        assert!(URL::parse(b"https://a b/").parse_failed());
+        assert!(URL::parse(b"ws://a b/").parse_failed());
+        assert!(URL::parse(b"wss://a b/").parse_failed());
+        assert!(URL::parse(b"ftp://a b/").parse_failed());
+        assert!(URL::parse(b"file://a b/").parse_failed());
+    }
+
+    #[test]
+    fn punctuation_in_special_host_fails() {
+        assert!(URL::parse(b"http://a<b/").parse_failed());
+        assert!(URL::parse(b"http://a>b/").parse_failed());
+        assert!(URL::parse(b"http://a^b/").parse_failed());
+        assert!(URL::parse(b"http://a|b/").parse_failed());
+        assert!(URL::parse(b"http://a b/").parse_failed());
+        assert!(URL::parse(b"http://a\x01b/").parse_failed());
+        assert!(URL::parse(b"http://a\x7fb/").parse_failed());
+    }
+
+    #[test]
+    fn quote_and_backtick_are_not_forbidden() {
+        // node v24.19.0: `new URL('http://a"b/')` and `new URL('http://a`b/')`
+        // parse (they are not WHATWG forbidden domain code points).
+        assert!(!URL::parse(b"http://a\"b/").parse_failed());
+        assert!(!URL::parse(b"http://a`b/").parse_failed());
+    }
+
+    #[test]
+    fn percent_escapes_judged_by_decoded_byte() {
+        // Decodes to a forbidden code point (space) → fails.
+        assert!(URL::parse(b"http://a%20b/").parse_failed());
+        // Decodes to `^` → fails; decodes to `%` (`%25`) → fails.
+        assert!(URL::parse(b"http://a%5Eb/").parse_failed());
+        assert!(URL::parse(b"http://a%25b/").parse_failed());
+        // Invalid escape → fails (`%zz`, `%b`, bare `%`).
+        assert!(URL::parse(b"http://a%zzb/").parse_failed());
+        assert!(URL::parse(b"http://a%b/").parse_failed());
+        assert!(URL::parse(b"http://%/").parse_failed());
+        // Valid escapes of allowed bytes parse (`"` and `A`).
+        assert!(!URL::parse(b"http://a%22b/").parse_failed());
+        assert!(!URL::parse(b"http://a%41b/").parse_failed());
+    }
+
+    #[test]
+    fn delimiters_still_split_before_the_check() {
+        // `#`, `?`, `/`, `@`, `\` end the authority; what they bound is not
+        // host content, so these stay valid URLs.
+        assert!(!URL::parse(b"http://a.com/p?q#f").parse_failed());
+        assert!(!URL::parse(b"http://user:pass@a.com/").parse_failed());
+        assert!(!URL::parse(b"http://a.com\\path").parse_failed());
+    }
+
+    #[test]
+    fn non_special_schemes_unaffected() {
+        // Opaque hosts may carry the forbidden bytes.
+        assert!(!URL::parse(b"mailto:a b@c").parse_failed());
+        assert!(!URL::parse(b"s:o^l|id/").parse_failed());
+        // Scheme-less host:port reads (npmrc / S3 endpoint strings) keep
+        // parsing — no protocol means no special-scheme host rules.
+        assert!(!URL::parse(b"a b:8080/").parse_failed());
+    }
+
+    #[test]
+    fn owned_entry_points_honor_the_failure() {
+        assert!(whatwg::href_from_string(&BunString::from("http://a b/")).is_dead());
+        assert!(!whatwg::href_from_string(&BunString::from("http://a.com/")).is_dead());
+        assert!(whatwg::URL::from_utf8(b"http://a b/").is_none());
+        assert!(whatwg::URL::from_utf8(b"http://a.com/").is_some());
+        // `URL::from_string` routes the same gate into its coded error.
+        assert!(URL::from_string(&BunString::from("http://a b/")).is_err());
+        assert!(URL::from_string(&BunString::from("http://a.com/")).is_ok());
+        // A base that fails the host check invalidates the join; an absolute
+        // reference that fails its own check does not pass through.
+        let base_ok = BunString::from("http://a.com/b/d/");
+        assert!(whatwg::join(&BunString::from("http://a b/"), &BunString::from("../c")).is_dead());
+        assert!(whatwg::join(&base_ok, &BunString::from("http://a b/")).is_dead());
+        assert!(!whatwg::join(&base_ok, &BunString::from("../c")).is_dead());
+    }
+}
 
 #[cfg(test)]
 mod bare_bracketed_ipv6_tests {
