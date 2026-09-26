@@ -125,16 +125,18 @@ fn test_bun_sqlite_parameter_binding_forms() {
         }});
 
         // ── One-shot db.query / db.run with parameters ──
+        // (db.query is a Statement alias — upstream bun:sqlite semantics;
+        // params bind at .get/.all time, no eager row materialization)
         check('db_query_params', function () {{
-            var rows = db.query('SELECT name FROM t WHERE name = ?', ['alice']);
-            return rows.length === 1 && rows[0].name === 'alice';
+            var row = db.query('SELECT name FROM t WHERE name = ?').get('alice');
+            return row.name === 'alice';
         }});
         check('db_run_params', function () {{
             var r = db.run('UPDATE t SET flags = ? WHERE name = ?', 7, 'alice');
             return r.changes === 1;
         }});
         check('db_run_change_visible', function () {{
-            var row = db.query('SELECT flags FROM t WHERE name = ?', ['alice'])[0];
+            var row = db.query('SELECT flags FROM t WHERE name = ?').get('alice');
             return row.flags === 7;
         }});
 

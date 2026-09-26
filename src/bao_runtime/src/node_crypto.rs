@@ -1056,6 +1056,20 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
     };
 
+    // @trace REQ-ENG-007 [api:crypto.hash.digest] — Node: digest() with NO
+    // encoding argument returns a Buffer of the raw digest bytes
+    // (node-crypto.test.js "returns Buffer"); only the explicit string forms
+    // below encode. The previous no-arg hex string broke Buffer.isBuffer().
+    if argc == 0 {
+        let buf_obj = crate::globals::create_buffer_object(cx, &result);
+        if buf_obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+        return true;
+    }
+
     match encoding.as_str() {
         "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
@@ -1333,6 +1347,18 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             return throw_type_error(cx, &format!("Unsupported HMAC algorithm: {}", algo));
         }
     };
+
+    // @trace REQ-ENG-007 [api:crypto.hmac.digest] — Same Node contract as
+    // hash.digest(): no encoding argument returns a Buffer of raw bytes.
+    if argc == 0 {
+        let buf_obj = crate::globals::create_buffer_object(cx, &result);
+        if buf_obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+        return true;
+    }
 
     match encoding.as_str() {
         "hex" => return_string(cx, &args, &hex::encode(&result)),

@@ -1264,11 +1264,9 @@ fn test_port_stream_basic() {
 // 15. Bun.sqlite / bun:sqlite (port of test/js/bun/sqlite/sqlite.test.js basics)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// SKIPPED(bao-divergence): db.query(...) must return a DatabaseStatement —
-// Bun defines it as an alias of db.prepare() (sqlite.test.js uses
-// db.query(...).get()/all()/run() interchangeably with prepare); bao's
-// db.query() instead returns an array-like of result rows and has no
-// get/all/run methods, so all statement forms below use prepare().
+// FIXED (crypto/sqlite B-class wave): db.query(...) returns a Statement —
+// the upstream alias of db.prepare() (params bind lazily at get/all/run).
+        // asserted in the checks below via query() interchangeably with prepare().
 
 #[test]
 fn test_port_sqlite_basic() {
@@ -1289,6 +1287,13 @@ fn test_port_sqlite_basic() {
             ins.run('banana', 5);
             var cnt = db.prepare('SELECT COUNT(*) AS n FROM items').get();
             return cnt.n === 2;
+        });
+        // FIXED row: db.query is a Statement alias of prepare (upstream
+        // bun:sqlite), with lazily-bound params.
+        check('query-is-statement-alias', function() {
+            var q = db.query('SELECT name, qty FROM items WHERE name = ?');
+            return typeof q.get === 'function' && typeof q.all === 'function'
+                && q.get('apple').qty === 3;
         });
         check('get-named-fields', function() {
             var row = db.prepare('SELECT * FROM items WHERE name = ?').get('apple');

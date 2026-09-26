@@ -950,97 +950,18 @@ unsafe extern "C" fn database_close(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     }
 }
 
-// ── Database.query(sql, params?) → row[] ──
+// ── Database.query(sql, params?) → Statement ──
+//
+// @trace REQ-ENG-007 [api:bun:sqlite.query] — Upstream bun:sqlite: query() is
+// the Statement-returning alias of prepare() (js/bun/sqlite.ts: `query(query)`
+// ends in `return this.prepare(query, ...)`), evaluated lazily through
+// Statement.run/get/all/iterate. The previous eager row-array materialization
+// diverged: `typeof db.query(sql).get !== 'function'` and rows were read even
+// when the caller only needed `.run()`.
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn database_query(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let thisv = args.thisv();
-
-    let db_ptr = match get_db_ptr(cx, thisv) {
-        Some(p) => p,
-        None => {
-            let msg = ZBox::from_bytes("Database.query: invalid Database object".as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            return false;
-        }
-    };
-
-    let sql = if argc >= 1 {
-        crate::js_to_rust_string(cx, *args.get(0).ptr)
-    } else {
-        String::new()
-    };
-
-    let db = &*db_ptr;
-    let conn = match db.conn.borrow() {
-        c if c.is_some() => c,
-        _ => {
-            let msg = ZBox::from_bytes("Database is closed".as_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            return false;
-        }
-    };
-    let conn = conn.as_ref().unwrap();
-
-    match conn.prepare(&sql) {
-        Ok(mut stmt) => {
-            let col_count = stmt.column_count();
-            let col_names: Vec<String> = (0..col_count)
-                .map(|i| stmt.column_name(i).unwrap_or("unknown").to_string())
-                .collect();
-
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let result_arr = w2::NewArrayObject1(cx_ref, 0));
-            if result_arr.get().is_null() {
-                args.rval().set(NullValue());
-                return true;
-            }
-
-            // BCE (v-surface P0-2): forward db.query(sql, ...params) args.
-            if let Err(e) = bind_stmt_args(cx, &mut stmt, &args, 1, argc) {
-                let msg = ZBox::from_vec(e.into_bytes());
-                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-                return false;
-            }
-
-            let mut row_idx: u32 = 0;
-            let mut rows_iter = stmt.raw_query();
-            loop {
-                match rows_iter.next() {
-                    Ok(Some(row)) => {
-                        let row_obj = row_to_js_object(cx, &row, &col_names, cx_ref);
-                        if row_obj.is_null() {
-                            break;
-                        }
-                        rooted!(&in(cx_ref) let row_val = ObjectValue(row_obj));
-                        w2::JS_SetElement(
-                            cx_ref,
-                            result_arr.handle().into(),
-                            row_idx,
-                            row_val.handle().into(),
-                        );
-                        row_idx += 1;
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        let msg = ZBox::from_vec(e.to_string().into_bytes());
-                        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-                        return false;
-                    }
-                }
-            }
-
-            args.rval().set(ObjectValue(result_arr.get()));
-            true
-        }
-        Err(e) => {
-            let msg = ZBox::from_vec(e.to_string().into_bytes());
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
-            false
-        }
-    }
+    database_prepare(cx, argc, vp)
 }
 
 // ── Database.prepare(sql) → Statement ──
