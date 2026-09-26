@@ -71,6 +71,12 @@ pub fn set_current_top_level_dir(dir: &'static [u8]) {
 /// runtime's drop (parasitic-runtime shape), mirroring the
 /// `CURRENT_RUNTIME_TOKEN` clear-if-same discipline.
 #[inline]
+/// Force-clear the overlay and root stack (regardless of current value).
+/// Used by runtime Drop: the overlay is a single-slot read-path hint.
+pub fn clear_current_top_level_dir_force() {
+    CURRENT_TOP_LEVEL_DIR.with(|c| c.set(None));
+}
+
 pub fn clear_current_top_level_dir(dir: &'static [u8]) {
     CURRENT_TOP_LEVEL_DIR.with(|c| {
         if c.get() == Some(dir) {

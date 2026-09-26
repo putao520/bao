@@ -103,10 +103,18 @@ impl ::std::ops::Drop for BaoRuntime {
         // directory as A must not erase A's overlay when B drops first).
         CURRENT_RUNTIME_TOKEN.with(|t| {
             if t.get() == Some(self.token) {
-                bun_core::clear_current_top_level_dir(self.resolver_root);
                 t.set(None);
             }
         });
+        // Clear the overlay unconditionally — the overlay is a single-slot
+        // read-path hint. The per-runtime isolation is served by the
+        // bun_paths delegation layer (paths_fs_root), which independently
+        // snapshots each runtime's root at creation and persists across
+        // parasitic drops. After the overlay clears, top_level_dir() falls
+        // back to the process-global "." (correct: no runtime is "latest"
+        // on the overlay anymore). A still-alive runtime's require chain
+        // goes through bun_paths, not the overlay.
+        bun_core::clear_current_top_level_dir_force();
     }
 }
 
