@@ -738,6 +738,66 @@ fn rebuild_href(state: &UrlState, field: &str, new_val: &str) -> String {
     href
 }
 
+/// WHATWG port-setter strictness, applied before the generic field rewrite
+/// (Node 24 ground truth, probed — the oracle table):
+///
+/// | assignment                | node 24 result                           |
+/// |---------------------------|------------------------------------------|
+/// | `u.port = ""`             | port cleared (null)                      |
+/// | `u.port = "8080"` / `"0"` | set (canonical decimal)                  |
+/// | `u.port = "0x10"` / `"1e3"` / `"8x0"` / `"80.5"` | leading digits only — `0` / `1` / `8` / `80`; the rest of the value is dropped |
+/// | `u.port = "0080"` / `"80x"` / `"80 "` | `""` — 80 is http's default port → elided |
+/// | `u.port = "65535x"`       | `65535`                                  |
+/// | `u.port = "abc"` / `" 80 "` / `"-1"` / `"+80"` / `"NaN"` | silent no-op — port and href unchanged |
+/// | `u.port = "65536"` / `"65536abc"` / `"9999…"` (20 digits) | silent no-op — port-out-of-range failure |
+/// | `about:` / `data:` (null host) or `file:` URLs | silent no-op — cannot have a port |
+///
+/// Spec shape: the port setter runs the basic URL parser with `port state`
+/// as state override; there any non-digit terminates the port scan and
+/// "if state override is given, then return" drops the remainder (so
+/// `"0x10"` → 0), while a digitless head or a buffer out of the 16-bit
+/// unsigned range is a validation failure — the parse fails and the setter
+/// leaves the URL untouched.
+///
+/// Returns `None` for the no-op cases (the setter must leave the URL
+/// untouched) and `Some(canonical)` — the validated decimal port — for the
+/// generic rewrite; the scheme's default port is elided downstream by the
+/// re-parse in [`parse_url`], matching node's elision.
+fn port_setter_canonical_value(state: &UrlState, value: &str) -> Option<String> {
+    // A null-host URL (about:/data:/mailto: — cannot-be-a-base) or a file:
+    // URL cannot carry a username/password/port; the setter is a no-op.
+    // (This also keeps rebuild_href from re-authority-forming an opaque-path
+    // URL like `about:blank` into `about://…`.)
+    if state.hostname.is_empty() || state.protocol.eq_ignore_ascii_case("file:") {
+        return None;
+    }
+    // Empty string clears the port (null).
+    if value.is_empty() {
+        return Some(String::new());
+    }
+    // The port is the leading run of ASCII digits; the first non-digit ends
+    // it (state-override "return" — the remainder is ignored), and a
+    // digitless head is a port-invalid failure → no-op.
+    let digit_end = value
+        .bytes()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(value.len());
+    if digit_end == 0 {
+        return None;
+    }
+    // The buffer must be a 16-bit unsigned integer; anything larger is the
+    // port-out-of-range failure → no-op (checked per digit, so arbitrarily
+    // long digit runs are safe).
+    let mut port: u32 = 0;
+    for b in &value.as_bytes()[..digit_end] {
+        port = port.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+        if port > u32::from(u16::MAX) {
+            return None;
+        }
+    }
+    Some(port.to_string())
+}
+
 /// Generic URL property setter — modifies UrlState, re-parses, and syncs all properties.
 /// `search`/`hash` values are normalized to the WHATWG basic URL parser
 /// setter shapes first: an empty value clears the component, a value
@@ -750,7 +810,17 @@ unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_
         None => return false,
     };
 
-    let normalized = normalize_url_marker(field, new_val);
+    // The port setter validates against the node oracle machine first —
+    // invalid or absorbed values must leave the URL untouched, never splice
+    // raw junk (":abc", ":65536") into the authority.
+    let normalized = if field == "port" {
+        match port_setter_canonical_value(&state, new_val) {
+            Some(v) => v,
+            None => return true,
+        }
+    } else {
+        normalize_url_marker(field, new_val)
+    };
     let new_href = rebuild_href(&state, field, &normalized);
 
     // Re-parse from the new href
@@ -3818,6 +3888,98 @@ mod tests {
         let state = make_state();
         let result = rebuild_href(&state, "port", "9090");
         assert!(result.contains(":9090"));
+    }
+
+    // ── port setter strictness (Node 24 oracle vectors, probed) ─────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn port_setter_digitless_head_is_noop() {
+        let s = make_state();
+        assert_eq!(port_setter_canonical_value(&s, "abc"), None);
+        assert_eq!(port_setter_canonical_value(&s, " 80 "), None);
+        assert_eq!(port_setter_canonical_value(&s, " 80"), None);
+        assert_eq!(port_setter_canonical_value(&s, "-1"), None);
+        assert_eq!(port_setter_canonical_value(&s, "+80"), None);
+        assert_eq!(port_setter_canonical_value(&s, "e"), None);
+        assert_eq!(port_setter_canonical_value(&s, "NaN"), None);
+        assert_eq!(port_setter_canonical_value(&s, "Infinity"), None);
+    }
+
+    #[test]
+    fn port_setter_out_of_range_is_noop() {
+        let s = make_state();
+        assert_eq!(port_setter_canonical_value(&s, "65536"), None);
+        // Overflow detection does not depend on the junk tail.
+        assert_eq!(port_setter_canonical_value(&s, "65536abc"), None);
+        assert_eq!(
+            port_setter_canonical_value(&s, "99999999999999999999"),
+            None
+        );
+    }
+
+    #[test]
+    fn port_setter_leading_digits_win_rest_dropped() {
+        let s = make_state();
+        assert_eq!(port_setter_canonical_value(&s, "0x10").as_deref(), Some("0"));
+        assert_eq!(port_setter_canonical_value(&s, "1e3").as_deref(), Some("1"));
+        assert_eq!(port_setter_canonical_value(&s, "8x0").as_deref(), Some("8"));
+        assert_eq!(
+            port_setter_canonical_value(&s, "80.5").as_deref(),
+            Some("80")
+        );
+        assert_eq!(
+            port_setter_canonical_value(&s, "65535x").as_deref(),
+            Some("65535")
+        );
+        assert_eq!(
+            port_setter_canonical_value(&s, "80 ").as_deref(),
+            Some("80")
+        );
+    }
+
+    #[test]
+    fn port_setter_valid_and_clear_canonicalize() {
+        let s = make_state();
+        assert_eq!(
+            port_setter_canonical_value(&s, "").as_deref(),
+            Some(""),
+            "empty clears the port"
+        );
+        assert_eq!(
+            port_setter_canonical_value(&s, "9090").as_deref(),
+            Some("9090")
+        );
+        assert_eq!(port_setter_canonical_value(&s, "0").as_deref(), Some("0"));
+        // Leading zeros collapse to the canonical decimal (node: "0000" → 0).
+        assert_eq!(
+            port_setter_canonical_value(&s, "0000").as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            port_setter_canonical_value(&s, "0008080").as_deref(),
+            Some("8080")
+        );
+        assert_eq!(
+            port_setter_canonical_value(&s, "65535").as_deref(),
+            Some("65535")
+        );
+    }
+
+    #[test]
+    fn port_setter_noop_on_urls_that_cannot_have_a_port() {
+        // file: URLs cannot carry a port (WHATWG cannot-have-credentials).
+        let mut s = make_state();
+        s.protocol = "file:".into();
+        assert_eq!(port_setter_canonical_value(&s, "80"), None);
+        assert_eq!(port_setter_canonical_value(&s, ""), None);
+        // Null-host (cannot-be-a-base) URLs — about:/data:/mailto:.
+        let mut s = make_state();
+        s.protocol = "about:".into();
+        s.hostname = String::new();
+        s.host = String::new();
+        s.port = String::new();
+        assert_eq!(port_setter_canonical_value(&s, "80"), None);
     }
 
     #[test]
