@@ -17,14 +17,6 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
-thread_local! {
-    static HASH_DATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    static HASH_ALGO: RefCell<String> = const { RefCell::new(String::new()) };
-    static HMAC_ALGO: RefCell<String> = const { RefCell::new(String::new()) };
-    static HMAC_KEY: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    static HMAC_DATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-}
-
 /// Define a numeric constant property on a JS object (used for crypto.constants).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn define_constant_number(
@@ -758,6 +750,11 @@ unsafe extern "C" fn crypto_create_hash(cx: *mut JSContext, argc: u32, vp: *mut 
         Some(s) => s.to_lowercase(),
         None => return throw_type_error(cx, "createHash() algorithm must be a string"),
     };
+    // Node rejects an unknown digest at construction ("Digest method not
+    // supported", node-crypto.test.js), not at first digest().
+    if !is_supported_digest(&algo) {
+        return throw_type_error(cx, "Digest method not supported");
+    }
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -768,13 +765,25 @@ unsafe extern "C" fn crypto_create_hash(cx: *mut JSContext, argc: u32, vp: *mut 
         return true;
     }
 
-    HASH_ALGO.with(|a| *a.borrow_mut() = algo);
-    HASH_DATA.with(|d| d.borrow_mut().clear());
+    // Per-instance algorithm + accumulated data. BCE (v-surface P0-3, same
+    // class as the Sign/Verify fix): the shared HASH_ALGO/HASH_DATA
+    // thread-locals made hash.copy() digesting the copy wipe the ORIGINAL's
+    // state — each Hash instance owns its state on the instance itself.
+    set_hidden_string_prop(cx, hash_obj.get(), c"_baoAlgo".as_ptr(), &algo);
 
     attach_hash_methods(cx_ref, hash_obj.handle());
 
     args.rval().set(mozjs::jsval::ObjectValue(hash_obj.get()));
     true
+}
+
+/// The digest algorithms this face computes (SHA-2 family + SHA-1 + MD5).
+/// createHash/createHmac validate against this at construction time.
+fn is_supported_digest(algo: &str) -> bool {
+    matches!(
+        algo,
+        "sha256" | "sha512" | "sha384" | "sha224" | "sha1" | "md5"
+    )
 }
 
 /// Attach the update/digest/copy surface to a hash instance object.
@@ -958,7 +967,15 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         );
     };
 
-    HASH_DATA.with(|d| d.borrow_mut().extend_from_slice(&data));
+    if !this.is_object() {
+        return throw_type_error(cx, "hash.update() requires a Hash instance receiver");
+    }
+    let this_obj = this.to_object();
+    // Node ERR_CRYPTO_HASH_FINALIZED: update after digest() throws.
+    if instance_is_finalized(cx, this_obj) {
+        return throw_type_error(cx, "Digest already called");
+    }
+    push_instance_data(cx, this_obj, &data);
     args.rval().set(*this.ptr);
     true
 }
@@ -966,6 +983,15 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    let this_v = *args.thisv().ptr;
+    if !this_v.is_object() {
+        return throw_type_error(cx, "hash.digest() requires a Hash instance receiver");
+    }
+    let this_obj = this_v.to_object();
+    if instance_is_finalized(cx, this_obj) {
+        return throw_type_error(cx, "Digest already called");
+    }
 
     let encoding = if argc > 0 {
         match arg_to_string(cx, *args.get(0).ptr) {
@@ -976,8 +1002,11 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "hex".to_string()
     };
 
-    let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
-    let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
+    let algo = get_string_prop(cx, this_obj, c"_baoAlgo".as_ptr()).unwrap_or_default();
+    let data = take_instance_data(cx, this_obj);
+    // Final even when the algorithm turns out unsupported (fail-closed
+    // either way): Node finalizes before the OpenSSL call can fail.
+    mark_instance_finalized(cx, this_obj);
 
     let result = match algo.as_str() {
         "sha256" => {
@@ -1040,14 +1069,25 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
 }
 
-/// Hash .copy() — creates a new Hash with the same algorithm and current state.
+/// Hash .copy() — creates a new Hash with the same algorithm and an
+/// independent snapshot of the accumulated update() data (node-crypto.test.js
+/// "copy is the same": h and its copy digest to the same value, each on its
+/// own state; copy after digest() throws "Digest already called").
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn hash_copy(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    // Re-create a hash with the same algo; the internal state is thread-local
-    // so the copy will start with the same accumulated data.
-    let algo = HASH_ALGO.with(|a| a.borrow().clone());
-    let data = HASH_DATA.with(|d| d.borrow().clone());
+    let this_v = *args.thisv().ptr;
+    if !this_v.is_object() {
+        return throw_type_error(cx, "hash.copy() requires a Hash instance receiver");
+    }
+    let this_obj = this_v.to_object();
+    if instance_is_finalized(cx, this_obj) {
+        return throw_type_error(cx, "Digest already called");
+    }
+
+    let algo = get_string_prop(cx, this_obj, c"_baoAlgo".as_ptr()).unwrap_or_default();
+    let data = read_instance_data(cx, this_obj);
+
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let hash_obj = w2::JS_NewPlainObject(cx_ref));
@@ -1055,32 +1095,9 @@ unsafe extern "C" fn hash_copy(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -
         args.rval().set(UndefinedValue());
         return true;
     }
-    HASH_ALGO.with(|a| *a.borrow_mut() = algo);
-    HASH_DATA.with(|d| *d.borrow_mut() = data);
-    w2::JS_DefineFunction(
-        cx_ref,
-        hash_obj.handle(),
-        c"update".as_ptr(),
-        Some(hash_update),
-        1,
-        JSPROP_ENUMERATE as u32,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        hash_obj.handle(),
-        c"digest".as_ptr(),
-        Some(hash_digest),
-        1,
-        JSPROP_ENUMERATE as u32,
-    );
-    w2::JS_DefineFunction(
-        cx_ref,
-        hash_obj.handle(),
-        c"copy".as_ptr(),
-        Some(hash_copy),
-        0,
-        JSPROP_ENUMERATE as u32,
-    );
+    set_hidden_string_prop(cx, hash_obj.get(), c"_baoAlgo".as_ptr(), &algo);
+    push_instance_data(cx, hash_obj.get(), &data);
+    attach_hash_methods(cx_ref, hash_obj.handle());
     args.rval().set(mozjs::jsval::ObjectValue(hash_obj.get()));
     true
 }
@@ -1097,6 +1114,11 @@ unsafe extern "C" fn crypto_create_hmac(cx: *mut JSContext, argc: u32, vp: *mut 
         Some(s) => s.to_lowercase(),
         None => return throw_type_error(cx, "createHmac() algorithm must be a string"),
     };
+    // Node rejects an unknown digest at construction ("Digest method not
+    // supported"), not at first digest() (same contract as createHash).
+    if !is_supported_digest(&algo) {
+        return throw_type_error(cx, "Digest method not supported");
+    }
     // Key material as BYTES (BCE: routing a Buffer key through string
     // coercion mangled bytes ≥ 0x80 into UTF-8 replacement chars — a silent
     // WRONG mac). Node shapes: string (UTF-8 bytes) | Buffer/TypedArray |
@@ -1163,9 +1185,11 @@ unsafe extern "C" fn crypto_create_hmac(cx: *mut JSContext, argc: u32, vp: *mut 
         return true;
     }
 
-    HMAC_ALGO.with(|a| *a.borrow_mut() = algo);
-    HMAC_KEY.with(|k| *k.borrow_mut() = key);
-    HMAC_DATA.with(|d| d.borrow_mut().clear());
+    // Per-instance algorithm, key and accumulated data (same BCE class as the
+    // Hash face: shared HMAC_* thread-locals let two interleaved createHmac
+    // instances corrupt each other's state).
+    set_hidden_string_prop(cx, hmac_obj.get(), c"_baoHmacAlgo".as_ptr(), &algo);
+    set_hidden_buffer_prop(cx, hmac_obj.get(), c"_baoHmacKey".as_ptr(), &key);
 
     w2::JS_DefineFunction(
         cx_ref,
@@ -1223,7 +1247,15 @@ unsafe extern "C" fn hmac_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     } else {
         return throw_type_error(cx, "hmac.update() data must be a string");
     };
-    HMAC_DATA.with(|d| d.borrow_mut().extend_from_slice(&data));
+    if !this.is_object() {
+        return throw_type_error(cx, "hmac.update() requires a Hmac instance receiver");
+    }
+    let this_obj = this.to_object();
+    // Node ERR_CRYPTO_HASH_FINALIZED: update after digest() throws.
+    if instance_is_finalized(cx, this_obj) {
+        return throw_type_error(cx, "Digest already called");
+    }
+    push_instance_data(cx, this_obj, &data);
     args.rval().set(*this.ptr);
     true
 }
@@ -1231,6 +1263,15 @@ unsafe extern "C" fn hmac_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    let this_v = *args.thisv().ptr;
+    if !this_v.is_object() {
+        return throw_type_error(cx, "hmac.digest() requires a Hmac instance receiver");
+    }
+    let this_obj = this_v.to_object();
+    if instance_is_finalized(cx, this_obj) {
+        return throw_type_error(cx, "Digest already called");
+    }
 
     let encoding = if argc > 0 {
         match arg_to_string(cx, *args.get(0).ptr) {
@@ -1241,9 +1282,10 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "hex".to_string()
     };
 
-    let algo = HMAC_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
-    let key = HMAC_KEY.with(|k| ::std::mem::take(&mut *k.borrow_mut()));
-    let data = HMAC_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
+    let algo = get_string_prop(cx, this_obj, c"_baoHmacAlgo".as_ptr()).unwrap_or_default();
+    let key = get_hidden_buffer_prop(cx, this_obj, c"_baoHmacKey".as_ptr());
+    let data = take_instance_data(cx, this_obj);
+    mark_instance_finalized(cx, this_obj);
 
     let result: Vec<u8> = match algo.as_str() {
         "sha256" => {
@@ -1315,12 +1357,42 @@ unsafe extern "C" fn crypto_random_bytes(cx: *mut JSContext, argc: u32, vp: *mut
     }
     let size_val = *args.get(0).ptr;
     let size = if size_val.is_int32() {
-        size_val.to_int32() as usize
+        size_val.to_int32() as i64
     } else if size_val.is_double() {
-        size_val.to_double() as usize
+        let n = size_val.to_double();
+        if !n.is_finite() {
+            return throw_type_error(cx, "randomBytes() size must be a number");
+        }
+        n as i64
     } else {
         return throw_type_error(cx, "randomBytes() size must be a number");
     };
+    // Node ERR_OUT_OF_RANGE: negative / oversized sizes throw synchronously
+    // (both forms) instead of wrapping into a huge allocation.
+    if !(0..=0x7FFF_FFFF).contains(&size) {
+        return throw_type_error(cx, "randomBytes() size must be between 0 and 2147483647");
+    }
+    let size = size as usize;
+
+    // Node crypto.randomBytes(size[, callback]): the callback form delivers
+    // (err=null, Buffer) asynchronously via the shared spawn_crypto_async
+    // tasklet (same delivery path as pbkdf2 / randomFill). Invalid sizes
+    // above throw synchronously even when a callback is given.
+    if argc > 1 {
+        let cb_val = *args.get(1).ptr;
+        if !cb_val.is_object() || !JS_ObjectIsFunction(cb_val.to_object()) {
+            return throw_type_error(cx, "randomBytes() callback must be a function");
+        }
+        let callback = cb_val.to_object();
+        spawn_crypto_async(cx, "randomBytes", callback, move || {
+            let mut bytes = vec![0u8; size];
+            bao_crypto::random::rand_bytes(&mut bytes)
+                .map(|_| bytes)
+                .map_err(|e| format!("randomBytes: {}", e))
+        });
+        args.rval().set(UndefinedValue());
+        return true;
+    }
 
     let mut bytes = vec![0u8; size];
     // Use BoringSSL CSPRNG instead of rand
@@ -2523,9 +2595,10 @@ unsafe fn push_instance_data(cx: *mut JSContext, obj: *mut JSObject, bytes: &[u8
     }
 }
 
-/// Consume the instance's accumulated update() data and clear it.
+/// Read the instance's accumulated update() data WITHOUT consuming it
+/// (hash.copy() snapshots the state; digest() consumes via take_instance_data).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn take_instance_data(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> {
+unsafe fn read_instance_data(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj_root = obj);
@@ -2540,8 +2613,6 @@ unsafe fn take_instance_data(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> 
             ptr: &mut arr_val,
         },
     );
-    // Clear consumed state regardless of how the read goes.
-    JS_DeleteProperty1(cx, obj_root.handle().into(), c"_baoData".as_ptr());
     if !arr_val.is_object() {
         return Vec::new();
     }
@@ -2567,6 +2638,80 @@ unsafe fn take_instance_data(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> 
         }
     }
     out
+}
+
+/// Consume the instance's accumulated update() data and clear it.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn take_instance_data(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> {
+    let data = read_instance_data(cx, obj);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    // Clear consumed state regardless of how the read goes.
+    JS_DeleteProperty1(cx, obj_root.handle().into(), c"_baoData".as_ptr());
+    data
+}
+
+/// Mark a Hash/Hmac instance finalized: Node ERR_CRYPTO_HASH_FINALIZED makes
+/// every post-finalize operation (update/digest/copy) throw "Digest already
+/// called" (node-crypto.test.js).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn mark_instance_finalized(cx: *mut JSContext, obj: *mut JSObject) {
+    set_hidden_string_prop(cx, obj, c"_baoFinalized".as_ptr(), "1");
+}
+
+/// True once the instance's digest() has run.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn instance_is_finalized(cx: *mut JSContext, obj: *mut JSObject) -> bool {
+    get_string_prop(cx, obj, c"_baoFinalized".as_ptr()).is_some()
+}
+
+/// Store a non-enumerable Buffer-valued property (hidden byte-string slot,
+/// e.g. the createHmac key material — binary-safe unlike a string slot).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn set_hidden_buffer_prop(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: *const ::std::os::raw::c_char,
+    bytes: &[u8],
+) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let buf = crate::globals::create_buffer_object(cx, bytes);
+    if buf.is_null() {
+        return;
+    }
+    rooted!(&in(cx_ref) let buf_root = buf);
+    rooted!(&in(cx_ref) let v = mozjs::jsval::ObjectValue(buf_root.get()));
+    JS_DefineProperty(cx, obj_root.handle().into(), name, v.handle().into(), 0);
+}
+
+/// Read a hidden Buffer-valued property back as raw bytes (empty when absent).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_hidden_buffer_prop(
+    cx: *mut JSContext,
+    obj: *mut JSObject,
+    name: *const ::std::os::raw::c_char,
+) -> Vec<u8> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        obj_root.handle().into(),
+        name,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    if v.is_object() {
+        extract_buffer_bytes(cx, v)
+    } else {
+        Vec::new()
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2809,7 +2954,7 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             take_instance_data(cx, this_obj),
         )
     } else {
-        (HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut())), Vec::new())
+        (String::new(), Vec::new())
     };
     let key = if argc > 0 {
         match arg_to_string(cx, *args.get(0).ptr) {
@@ -2947,7 +3092,7 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
             take_instance_data(cx, this_obj),
         )
     } else {
-        (HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut())), Vec::new())
+        (String::new(), Vec::new())
     };
 
     let verified: bool = if let Some(sign_algo) = resolve_sign_algorithm_for_key(&algo, &key) {
