@@ -121,9 +121,6 @@ bun_zlib = { path = "../zlib", version = "^0.2.0" }
 regex = "1"
 
 [dev-dependencies]
-# TEMP-WINRED: isolation children install the VEH crash handler for
-# symbolized 0xC0000374 stacks (test-ci-dbg builds).
-bun_crash_handler = { path = "../crash_handler" }
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 bao_uloop = { path = "../bao_uloop", version = "0.2.0" }
 bao_cdp = { path = "../bao_cdp", version = "0.3.0" }
