@@ -262,6 +262,12 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
 
     // Now parse the resolved URL (url_to_parse owns the String)
     let parsed = BunUrl::parse(url_to_parse.as_bytes());
+    // Forbidden-host-code-point failures (special schemes — WHATWG) surface
+    // here as parse_failed; route into the constructor's None →
+    // ERR_INVALID_URL TypeError path instead of building an invalid record.
+    if parsed.parse_failed() {
+        return None;
+    }
 
     // Convert bun_url::URL to UrlState
     // bun_url returns protocol without trailing ':' (e.g. "https"), but WHATWG
