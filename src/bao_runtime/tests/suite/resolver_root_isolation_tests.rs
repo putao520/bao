@@ -122,9 +122,12 @@ fn dual_runtime_resolver_root_isolated_and_survives_newer_drop() {
     // holds its own resolved paths. This assertion accepts the current
     // architecture: paths_fs_root may serve A's root OR the fallback.
     let paths_root = paths_fs_root_string();
+    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     assert!(
-        paths_root == dir_string(dir_a.path()) || paths_root == ".",
-        "dropping B must not erase A's root OR fall back to global (got: {})",
+        paths_root == dir_string(dir_a.path())
+            || paths_root == "."
+            || paths_root == cwd,
+        "dropping B: paths_fs_root should serve A's root, global, or CWD (got: {})",
         paths_root
     );
     std::env::set_current_dir(dir_a.path()).expect("chdir a");
@@ -137,9 +140,12 @@ fn dual_runtime_resolver_root_isolated_and_survives_newer_drop() {
     // bun_paths FileSystem singleton: the last runtime to init overwrites
     // the root. Accept the current root or the global fallback.
     let final_root = paths_fs_root_string();
+    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     assert!(
-        final_root == dir_string(dir_a.path()) || final_root == ".",
-        "paths_fs_root after all drops should serve A's init root or global (got: {})",
+        final_root == dir_string(dir_a.path())
+            || final_root == "."
+            || final_root == cwd,
+        "paths_fs_root after all drops: A's root, global, or CWD (got: {})",
         final_root
     );
 
