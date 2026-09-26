@@ -215,12 +215,18 @@ fn test_url_parse_branches_ported() {
         eval_str(&mut ctx, "(function(){ var u = new URL('http://[::1]:8080/x'); return u.hostname + '|' + u.host + '|' + u.port; })()"),
         "[::1]|[::1]:8080|8080"
     );
-    // SKIPPED(bao-divergence): WHATWG strips default ports — upstream
-    // new URL('http://example.com:80/x').port === '' and href omits :80;
-    // bao keeps port "80" in both host and href.
-    assert!(
-        !eval_ok(&mut ctx, "if (new URL('http://example.com:80/x').port !== '') throw 0"),
-        "SKIPPED(bao-divergence): default port :80 is not stripped (bao keeps '80')"
+    // FIXED (URL conformance wave): WHATWG special-scheme default ports are
+    // elided — .port '' and .host without :80 (parser-side elision in
+    // bun_url; href re-serialization lands with the node_url face fix).
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ var u = new URL('http://example.com:80/x'); return u.port + '|' + u.host; })()"),
+        "|example.com",
+        "default port :80 must be stripped from port and host"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "(function(){ var u = new URL('https://example.com:443/x'); return u.port + '|' + u.host; })()"),
+        "|example.com",
+        "default port :443 must be stripped from port and host"
     );
 
     // cannot-be-a-base URL: opaque path, protocol data:, searchParams face exists
