@@ -60,3 +60,9 @@
 - 死线停(如实):桶 B 13 颗——批量应用 1234 错爆炸;63/77 文件相对窗口基线漂移;与桶 C 前置纠缠(3596f53ad 依赖 resolve_or_wrap_promise/rooted_heap_handle)。回退一致绿态验证。
 - 重分类:**桶 B → script 协调大波**(与 script-71 主体合一,排在桶 C 之后);3596f53ad 并入桶 C;b4b6adf49 fork 已含等价(N/A)。
 - **队列终序**:paint 协调波(E1 在跑)→ 桶 C promise 重构波 → script 协调大波(71+B)→ task#8。
+
+## 闭合波②停报改判(2026-09-28,E1 侦察后主会话裁决)
+
+**事实反转**:paint 链当前 RC=0(撕裂从未入库——系主会话在途实验态被误判为 HEAD 断裂)。真结构=**双向互斥实现**:vendor 持 fork 独有 LCP 迭代岛(largest_contentful_paint_calculator+孤儿模块+display_list 岛字段),基线持上游 PaintTiming 面(PaintTimingReport/Info+performance/LCP)——基线没有 vendor 的岛,vendor 没有基线的面。
+
+**改判**:paint 闭合波 → **岛→基线迁移波**(特性级:删岛两模块+采基线面,跨 paint/shared-paint/layout(3-4 文件)/script(performance+document+window+2 webidl))。蓝图六点(E1 停报)采纳为合同基础。**队列终位**:script 协调大波之后(需 script 域安静)。shared/constellation+constellation 维持 vendor(per-WebView 消息族是 RouterProxy 补丁消费面,基线无此族——API 比对结论=不同步,已实证)。completion②③ 待 E3 检查点补取证。
