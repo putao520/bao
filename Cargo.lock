@@ -3651,6 +3651,7 @@ dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
  "bao_boringssl_bridge",
+ "bao_bundler",
  "bao_cdp",
  "bao_cdp_client",
  "bao_crypto",
