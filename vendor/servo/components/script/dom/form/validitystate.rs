@@ -10,6 +10,7 @@ use dom_struct::dom_struct;
 use itertools::Itertools;
 use js::context::JSContext;
 use script_bindings::cell::{DomRefCell, Ref};
+use script_bindings::dom::UnrootedDom;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use stylo_dom::ElementState;
 
@@ -163,12 +164,15 @@ impl ValidityState {
             form_owner.update_validity(cx);
         }
 
-        if let Some(fieldset) = self
+        // BAO patch (fork-maintained, 2026-09-27): bind through a local so the
+        // `no_gc` borrow ends before the mutable `cx` use below.
+        let fieldset = self
             .element
             .upcast::<Node>()
-            .ancestors()
-            .find_map(DomRoot::downcast::<HTMLFieldSetElement>)
-        {
+            .ancestors_unrooted(cx.no_gc())
+            .find_map(UnrootedDom::downcast::<HTMLFieldSetElement>)
+            .map(|node| node.as_rooted());
+        if let Some(fieldset) = fieldset {
             fieldset.update_validity(cx);
         }
     }

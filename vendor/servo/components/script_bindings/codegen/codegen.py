@@ -6617,7 +6617,13 @@ class CGDOMJSProxyHandler_ownPropertyKeys(CGAbstractExternMethod):
         else:
             cross_origin = "None"
         if self.descriptor.operations['IndexedGetter']:
-            if "Length" in self.descriptor.cxMethods or "Length" in self.descriptor.cx_no_gcMethods:
+            # BAO patch (fork-maintained, 2026-09-27): the fused
+            # indexed-getter-and-length closure also honors the `no_gc`
+            # annotation, matching upstream's newer codegen (GC root safety
+            # series replay, REQ-BRW-047 wave ①).
+            if "Length" in self.descriptor.no_gcMethods:
+                length = f"Some(|unwrapped_proxy: &{self.descriptor.concreteType}, cx| unwrapped_proxy.Length(cx.no_gc()))"
+            elif "Length" in self.descriptor.cxMethods or "Length" in self.descriptor.cx_no_gcMethods:
                 length = f"Some(|unwrapped_proxy: &{self.descriptor.concreteType}, cx| unwrapped_proxy.Length(cx))"
             else:
                 length = f"Some(|unwrapped_proxy: &{self.descriptor.concreteType}, _cx| unwrapped_proxy.Length())"
@@ -6661,7 +6667,12 @@ class CGDOMJSProxyHandler_getOwnEnumerablePropertyKeys(CGAbstractExternMethod):
 
     def definition_body(self) -> CGThing:
         if self.descriptor.operations['IndexedGetter']:
-            if "Length" in self.descriptor.cxMethods or "Length" in self.descriptor.cx_no_gcMethods:
+            # BAO patch (fork-maintained, 2026-09-27): see the matching anchor
+            # in CGDOMJSProxyHandler_ownPropertyKeys (no_gc-aware fused
+            # closure).
+            if "Length" in self.descriptor.no_gcMethods:
+                length = f"Some(Box::new(|unwrapped_proxy: &{self.descriptor.concreteType}, cx| unwrapped_proxy.Length(cx.no_gc())))"
+            elif "Length" in self.descriptor.cxMethods or "Length" in self.descriptor.cx_no_gcMethods:
                 length = f"Some(Box::new(|unwrapped_proxy: &{self.descriptor.concreteType}, cx| unwrapped_proxy.Length(cx)))"
             else:
                 length = f"Some(Box::new(|unwrapped_proxy: &{self.descriptor.concreteType}, _cx| unwrapped_proxy.Length()))"

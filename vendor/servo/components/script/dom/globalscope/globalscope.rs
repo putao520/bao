@@ -55,6 +55,9 @@ use profile_traits::{
     time as profile_time,
 };
 use rustc_hash::{FxBuildHasher, FxHashMap};
+// BAO patch (fork-maintained, 2026-09-27): rooted/traced callback replay
+// (GC root safety series, REQ-BRW-047 wave ①).
+use script_bindings::callback::{RootedCallback, TracedCallback};
 use script_bindings::callback::OwnerWindow;
 use script_bindings::cell::{DomRefCell, RefMut};
 use script_bindings::interfaces::GlobalScopeHelpers;
@@ -228,7 +231,8 @@ pub(crate) struct GlobalScope {
     /// When the count transitions from 0 to 1, a RegisterInterest message is sent.
     /// When it transitions from 1 to 0, an UnregisterInterest message is sent.
     #[no_trace]
-    constellation_interest_counts: RefCell<HashMap<ConstellationInterest, usize>>,
+    // BAO patch (fork-maintained, 2026-09-27): 57c714a0e FxHashMap replay.
+    constellation_interest_counts: RefCell<FxHashMap<ConstellationInterest, usize>>,
 
     /// The blobs managed by this global, if any.
     blob_state: DomRefCell<HashMapTracedValues<BlobId, BlobInfo, FxBuildHasher>>,
@@ -807,7 +811,7 @@ impl GlobalScope {
         Self {
             message_port_state: DomRefCell::new(MessagePortState::UnManaged),
             broadcast_channel_state: DomRefCell::new(BroadcastChannelState::UnManaged),
-            constellation_interest_counts: RefCell::new(HashMap::new()),
+            constellation_interest_counts: Default::default(),
             blob_state: Default::default(),
             eventtarget: EventTarget::new_inherited(),
             registration_map: DomRefCell::new(HashMapTracedValues::new_fx()),
@@ -3468,9 +3472,7 @@ impl GlobalScope {
     }
 
     pub(crate) fn get_byte_length_queuing_strategy_size(&self) -> Option<Rc<Function>> {
-        self.byte_length_queuing_strategy_size_function
-            .get()
-            .cloned()
+        self.byte_length_queuing_strategy_size_function.get().cloned()
     }
 
     pub(crate) fn set_count_queuing_strategy_size(&self, function: Rc<Function>) {

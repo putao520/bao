@@ -67,7 +67,7 @@ use paint_api::{CrossProcessPaintApi, PinchZoomInfos};
 use profile_traits::generic_channel as ProfiledGenericChannel;
 use profile_traits::mem::ProfilerChan as MemProfilerChan;
 use profile_traits::time::ProfilerChan as TimeProfilerChan;
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::codegen::GenericBindings::WindowBinding::ScrollToOptions;
 use script_bindings::dom::UnrootedDom;
@@ -330,7 +330,8 @@ pub(crate) struct Window {
     /// For sending timeline markers. Will be ignored if
     /// no devtools server
     #[no_trace]
-    devtools_markers: DomRefCell<HashSet<TimelineMarkerType>>,
+    // BAO patch (fork-maintained, 2026-09-27): 57c714a0e FxHashSet replay.
+    devtools_markers: DomRefCell<FxHashSet<TimelineMarkerType>>,
     #[no_trace]
     devtools_marker_sender: DomRefCell<Option<GenericSender<Option<TimelineMarker>>>>,
 

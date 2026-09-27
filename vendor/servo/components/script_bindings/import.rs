@@ -32,7 +32,10 @@ pub(crate) mod base {
 
     pub(crate) use crate::callback::{
         CallbackContainer, CallbackFunction, CallbackInterface, CallbackObject, ExceptionHandling,
-        OwnerWindow, ThisReflector, call_setup, wrap_call_this_value,
+        // BAO patch (fork-maintained, 2026-09-27): RootedCallback/TracedCallback
+        // replayed for the GC root safety series (REQ-BRW-047 wave ①).
+        OwnerWindow, RootedCallback, ThisReflector, TracedCallback, call_setup,
+        wrap_call_this_value,
     };
     pub(crate) use crate::codegen::DomTypes::DomTypes;
     pub(crate) use crate::codegen::GenericUnionTypes;
