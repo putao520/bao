@@ -2457,3 +2457,7 @@ health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递
 2. **PRD-DEC-UPSTREAM-STRATEGY-V2**(新):①「我们 BUN 深度修改了,很多东西可能不吸收但是参考,我们要自己实现」②「兼容是必须对齐甚至要超越 BUN 上游的」(node oracle 为尺,上游偏离 node 处保持 node 忠实即超越)③「清理和构建记录也很重要」(随波执行留痕)④「3 方支持一样重要可以支持,但是我们可以用纯 RUST 优先」(生态兼容同等,选型纯 Rust 优先,非 Rust 仅在无纯 Rust 替代时用)。
 
 载体说明:两次 prd MCP 写入超时(runtime 重工具面降级,fail-closed 禁本地 HTML 编辑);本条目为过渡真源,runtime 恢复后经 prd 工具转录并删除本注记。
+
+### spec-gov C-7 第 13 次计数触发闭环(2026-09-27,主会话)
+
+与第 10/11/12 次(计数器非活体)不同,本轮有**真实错误类事件**:gsc-spec runtime-server 重工具面活体降级——prd 写入两度 120s 超时(kues9jjos/k2frfvj8h)、spec_govern health 60s 超时(闭环取证探针本身即证)、Stop hook 400 ×2。轻面 cache_stats 应答(进程活,请求处理挂)。归因:计数由活体降级事件驱动,非陈旧噪声。处置:runtime 由宿主懒拉起(REQ-RUNTIME-1,无手动路径,主会话不可干预);#33 已排队(PRD 转录,runtime 恢复即执行);残留度量顺延至恢复后(health 自身挂起时无法测量=如实陈述)。机械证据(timeout 探针)优先于重开 LLM 审计——一个超时探针证明的东西不需要 architect 再推导一遍。用户方向裁决原文已在 git 台账(过渡载体),零丢失。
