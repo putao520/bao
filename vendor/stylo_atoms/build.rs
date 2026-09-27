@@ -28,4 +28,10 @@ fn main() {
         .atoms(static_atoms.lines().map(Result::unwrap))
         .write_to_file(&Path::new(&env::var_os("OUT_DIR").unwrap()).join("atom.rs"))
         .unwrap();
+
+    // BAO patch (fork-maintained, 2026-09-28): declare the atom-table inputs —
+    // without this, appending to static_atoms.txt after a fingerprint rotation
+    // leaves a stale generated atom.rs (missing newly appended atoms).
+    println!("cargo:rerun-if-changed=static_atoms.txt");
+    println!("cargo:rerun-if-changed=predefined_counter_styles.rs");
 }

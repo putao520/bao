@@ -31,7 +31,8 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::fontface::FontFace;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, TracedPromise};
+use script_bindings::interfaces::StackRootPromiseHelpers;
 use crate::dom::promisenativehandler::Callback;
 use crate::dom::types::PromiseNativeHandler;
 use crate::dom::window::Window;
@@ -268,8 +269,7 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
 
         #[derive(MallocSizeOf, JSTraceable)]
         struct LoadPromiseFulfillmentHandler {
-            #[conditional_malloc_size_of]
-            load_promise: Rc<Promise>,
+            load_promise: TracedPromise,
         }
         impl Callback for LoadPromiseFulfillmentHandler {
             fn callback(&self, cx: &mut CurrentRealm, _: Handle<Value>) {
@@ -285,7 +285,7 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
             .task_manager()
             .font_loading_task_source()
             .queue(task!(resolve_font_face_set_load_task: move |cx| {
-                let load_promise = trusted_load_promise.root();
+                let load_promise = trusted_load_promise.root(cx);
                 let this = trusted_this.root();
 
                 // Step 4.1. For all of the font faces in the font face list, call their load()
@@ -304,7 +304,7 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
                     cx,
                     &global,
                     Some(Box::new(LoadPromiseFulfillmentHandler {
-                        load_promise,
+                        load_promise: load_promise.to_traced(),
                     })),
                     None,
                 );

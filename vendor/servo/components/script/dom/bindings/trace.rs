@@ -278,9 +278,3 @@ unsafe_no_jsmanaged_fields!(SourceSet);
 unsafe_no_jsmanaged_fields!(HTMLMediaElementFetchContext);
 unsafe_no_jsmanaged_fields!(StreamConsumer);
 
-unsafe impl<T: DomObject> JSTraceable for Trusted<T> {
-    #[inline]
-    unsafe fn trace(&self, _: *mut JSTracer) {
-        // Do nothing
-    }
-}

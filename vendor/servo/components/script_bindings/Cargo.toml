@@ -26,6 +26,7 @@ crossbeam-channel = {version = "0.5"}
 deny_public_fields = {package = "bao-servo-deny-public-fields", path = "../deny_public_fields", version = "=0.5.2"}
 dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version = "=0.5.2"}
 encoding_rs = {version = "0.8", features = ["serde"]}
+rustc-hash = {version = "2.1.2"}
 html5ever = {version = "0.39"}
 indexmap = {version = "2.14.0", features = ["std"]}
 js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.24", default-features = false, features = ["intl", "libz-sys"]}

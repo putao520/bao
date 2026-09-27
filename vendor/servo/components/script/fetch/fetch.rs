@@ -50,7 +50,7 @@ use crate::dom::fetchlaterresult::FetchLaterResult;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::headers::Guard;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::request::Request;
 use crate::dom::response::Response;
 use crate::dom::serviceworkerglobalscope::ServiceWorkerGlobalScope;
@@ -177,7 +177,7 @@ fn request_init_from_request(request: NetTraitsRequest, global: &GlobalScope) ->
 
 /// <https://fetch.spec.whatwg.org/#abort-fetch>
 fn abort_fetch_call(
-    promise: Rc<Promise>,
+    promise: RootedPromise,
     request: &Request,
     response_object: Option<&Response>,
     abort_reason: HandleValue,
@@ -242,7 +242,11 @@ pub(crate) fn Fetch(
         rooted!(&in(cx) let mut abort_reason = UndefinedValue());
         signal.Reason(abort_reason.handle_mut());
         abort_fetch_call(
-            promise.clone(),
+            // BAO patch (fork-maintained, 2026-09-28): transitional bridge —
+            // fetch's own promise is still the Rc form until the ③c fetch
+            // migration; duplicate(cx) lifts it to the rooted form expected
+            // by abort_fetch_call.
+            promise.clone().duplicate(cx),
             &request_object,
             None,
             abort_reason.handle(),
@@ -511,7 +515,7 @@ impl FetchContext {
             .fetch_promise
             .take()
             .expect("fetch promise is missing")
-            .root();
+            .root(cx);
         abort_fetch_call(
             promise,
             &self.request.root(),
@@ -543,7 +547,7 @@ impl FetchResponseListener for FetchContext {
             .fetch_promise
             .take()
             .expect("fetch promise is missing")
-            .root();
+            .root(cx);
 
         let mut realm = enter_auto_realm(cx, &*promise);
         let cx = &mut realm.current_realm();
@@ -552,7 +556,7 @@ impl FetchResponseListener for FetchContext {
             // p with a TypeError and abort these steps.
             Err(error) => {
                 promise.reject_error(cx, Error::Type(cformat!("Network error: {:?}", error)));
-                self.fetch_promise = Some(TrustedPromise::new(promise));
+                self.fetch_promise = Some(TrustedPromise::from(&promise));
                 let response = self.response_object.root();
                 response.set_type(cx, DOMResponseType::Error);
                 response.error_stream(cx, Error::Type(c"Network error occurred".to_owned()));
@@ -593,7 +597,7 @@ impl FetchResponseListener for FetchContext {
 
         // Step 12.5. Resolve p with responseObject.
         promise.resolve_native(cx, &self.response_object.root());
-        self.fetch_promise = Some(TrustedPromise::new(promise));
+        self.fetch_promise = Some(TrustedPromise::from(&promise));
     }
 
     fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Vec<u8>) {

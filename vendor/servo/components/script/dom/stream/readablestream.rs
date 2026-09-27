@@ -51,7 +51,8 @@ use crate::dom::stream::byteteeunderlyingsource::{ByteTeeCancelAlgorithm, ByteTe
 use crate::dom::stream::countqueuingstrategy::{extract_high_water_mark, extract_size_algorithm};
 use crate::dom::stream::readablestreamgenericreader::ReadableStreamGenericReader;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::{wait_for_all_promise, Promise};
+use crate::dom::promise::{wait_for_all_promise, Promise, TracedPromise};
+use script_bindings::interfaces::StackRootPromiseHelpers;
 use crate::dom::stream::readablebytestreamcontroller::ReadableByteStreamController;
 use crate::dom::stream::readablestreambyobreader::ReadableStreamBYOBReader;
 use crate::dom::stream::readablestreamdefaultcontroller::ReadableStreamDefaultController;
@@ -160,8 +161,8 @@ pub(crate) struct PipeTo {
 
     /// The promise returned by a shutdown action.
     /// We keep it to only continue when it is not pending anymore.
-    #[ignore_malloc_size_of = "nested Rc"]
-    shutdown_action_promise: Rc<RefCell<Option<Rc<Promise>>>>,
+    #[conditional_malloc_size_of]
+    shutdown_action_promise: Rc<RefCell<Option<TracedPromise>>>,
 
     /// The promise resolved or rejected at
     /// <https://streams.spec.whatwg.org/#rs-pipeTo-finalize>
@@ -636,17 +637,17 @@ impl PipeTo {
         let promise = match action {
             ShutdownAction::WritableStreamAbort => {
                 let dest = self.writer.get_stream().expect("Stream must be set");
-                dest.abort(cx, global, error.handle())
+                dest.abort(cx, global, error.handle()).duplicate(cx)
             },
             ShutdownAction::ReadableStreamCancel => {
                 let source = self
                     .reader
                     .get_stream()
                     .expect("Reader should have a stream.");
-                source.cancel(cx, global, error.handle())
+                source.cancel(cx, global, error.handle()).duplicate(cx)
             },
             ShutdownAction::WritableStreamDefaultWriterCloseWithErrorPropagation => {
-                self.writer.close_with_error_propagation(cx, global)
+                self.writer.close_with_error_propagation(cx, global).duplicate(cx)
             },
             ShutdownAction::Abort => {
                 // Note: implementation of the `abortAlgorithm`
@@ -669,10 +670,15 @@ impl PipeTo {
                     // If dest.[[state]] is "writable",
                     let promise = if dest.is_writable() {
                         // return ! WritableStreamAbort(dest, error)
-                        dest.abort(cx, global, error.handle())
+                        dest.abort(cx, global, error.handle()).duplicate(cx)
                     } else {
                         // Otherwise, return a promise resolved with undefined.
-                        Promise::new_resolved(cx, global, ())
+                        // BAO patch (fork-maintained, 2026-09-28): transitional
+                        // bridge — the not-yet-resynced stream family still
+                        // returns `Rc<Promise>` here; `duplicate(cx)` lifts it
+                        // to the rooted form. Removed with the ③c stream
+                        // family resync.
+                        Promise::new_resolved(cx, global, ()).duplicate(cx)
                     };
                     actions.push(promise);
                 }
@@ -684,10 +690,15 @@ impl PipeTo {
                     // If source.[[state]] is "readable",
                     let promise = if source.is_readable() {
                         // return ! ReadableStreamCancel(source, error).
-                        source.cancel(cx, global, error.handle())
+                        source.cancel(cx, global, error.handle()).duplicate(cx)
                     } else {
                         // Otherwise, return a promise resolved with undefined.
-                        Promise::new_resolved(cx, global, ())
+                        // BAO patch (fork-maintained, 2026-09-28): transitional
+                        // bridge — the not-yet-resynced stream family still
+                        // returns `Rc<Promise>` here; `duplicate(cx)` lifts it
+                        // to the rooted form. Removed with the ③c stream
+                        // family resync.
+                        Promise::new_resolved(cx, global, ()).duplicate(cx)
                     };
                     actions.push(promise);
                 }
@@ -708,7 +719,9 @@ impl PipeTo {
             Some(Box::new(self.clone())),
         );
         promise.append_native_handler(cx, &handler);
-        *self.shutdown_action_promise.borrow_mut() = Some(promise);
+        // BAO patch (fork-maintained, 2026-09-28): traced storage for the
+        // shutdown action promise (upstream window-end form).
+        *self.shutdown_action_promise.borrow_mut() = Some(promise.to_traced());
     }
 
     /// <https://streams.spec.whatwg.org/#rs-pipeTo-finalize>

@@ -7139,7 +7139,7 @@ class CGInterfaceTrait(CGThing):
                                                      cx_no_gc=name in descriptor.cx_no_gcMethods,
                                                      cx=name in descriptor.cxMethods or descriptor.interface.isIteratorInterface(),
                                                      realm=name in descriptor.realmMethods)
-                        rettype = return_type(descriptor, rettype, infallible)
+                        rettype = return_type(descriptor, rettype, infallible, useRcPromise=descriptor.useRcPromise)
                         yield f"{name}{'_' * idx}", arguments, rettype, m.isStatic()
                 elif m.isAttr():
                     name = CGSpecializedGetter.makeNativeName(descriptor, m)
@@ -7160,7 +7160,7 @@ class CGInterfaceTrait(CGThing):
                                realm=name in descriptor.realmMethods,
                                retval=True
                            ),
-                           return_type(descriptor, m.type, infallible),
+                           return_type(descriptor, m.type, infallible, useRcPromise=descriptor.useRcPromise),
                            m.isStatic())
 
                     if not m.readonly:
@@ -7214,7 +7214,7 @@ class CGInterfaceTrait(CGThing):
                                                      cx_no_gc=name in descriptor.cx_no_gcMethods,
                                                      cx=name in descriptor.cxMethods,
                                                      realm=name in descriptor.realmMethods)
-                    rettype = return_type(descriptor, rettype, infallible)
+                    rettype = return_type(descriptor, rettype, infallible, useRcPromise=descriptor.useRcPromise)
                     yield name, arguments, rettype, False
 
         def fmt(arguments: list[tuple[str, str]], leadingComma: bool = True) -> str:
@@ -7263,7 +7263,7 @@ class CGInterfaceTrait(CGThing):
                 args = [args[0]] + extra + args[1:]
                 yield CGGeneric(
                     f"fn {name}({fmt(args, leadingComma=False)}) -> "
-                    f"{return_type(descriptorProvider, rettype, infallible)};\n"
+                    f"{return_type(descriptorProvider, rettype, infallible, useRcPromise=descriptor.useRcPromise)};\n"
                 )
 
         ctor = descriptor.interface.ctor()
@@ -8494,8 +8494,9 @@ def method_arguments(descriptorProvider: DescriptorProvider,
         yield "rval", outparamTypeFromReturnType(returnType),
 
 
-def return_type(descriptorProvider: DescriptorProvider, rettype: IDLType, infallible: bool) -> str:
-    result = getRetvalDeclarationForType(rettype, descriptorProvider)
+def return_type(descriptorProvider: DescriptorProvider, rettype: IDLType, infallible: bool,
+                useRcPromise: bool = True) -> str:
+    result = getRetvalDeclarationForType(rettype, descriptorProvider, useRcPromise=useRcPromise)
     if rettype and returnTypeNeedsOutparam(rettype):
         result = CGGeneric("()")
     if not infallible:

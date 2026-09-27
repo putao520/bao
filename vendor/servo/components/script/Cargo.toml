@@ -132,6 +132,9 @@ regex = {version = "1.12"}
 resvg = {version = "0.48.1"}
 rsa = {version = "=0.10.0-rc.18"}
 rustc-hash = {version = "2.1.2"}
+# BAO patch (fork-maintained, 2026-09-28): webcrypto hybrid-KEM dependency,
+# synced with the upstream 7ca99fe3f subtlecrypto.rs end-state (REQ-BRW-047 wave ③).
+x-wing = { version = "0.1.0", features = ["zeroize"] }
 script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.14"}
 script_webgpu = {package = "bao-servo-script-webgpu", path = "../script_webgpu", version = "=0.5.14", optional = true}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}

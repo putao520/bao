@@ -31,7 +31,11 @@ impl<R: Serialize + DeserializeOwned + Send, T: RoutedPromiseListener<R> + DomOb
     RoutedPromiseContext<R, T>
 {
     fn response(self, cx: &mut JSContext, response: R) {
-        let promise = self.trusted.root();
+        // BAO patch (fork-maintained, 2026-09-28): transitional — the
+        // `RoutedPromiseListener` family still takes `&Rc<Promise>`;
+        // `native()` avoids rooting here. Flipped with the ③c listener
+        // migration.
+        let promise = self.trusted.native();
         self.receiver.root().handle_response(cx, response, &promise);
     }
 }

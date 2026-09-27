@@ -16,6 +16,7 @@ extern crate log;
 extern crate malloc_size_of_derive;
 
 pub mod assert;
+pub mod buffer_source;
 pub mod callback;
 pub mod cell;
 mod constant;
@@ -41,6 +42,7 @@ pub mod principals;
 pub mod proxyhandler;
 pub mod realms;
 pub mod record;
+pub mod refcounted;
 pub mod reflector;
 pub mod root;
 pub mod script_runtime;

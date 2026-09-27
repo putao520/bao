@@ -1957,6 +1957,7 @@ dependencies = [
  "web_atoms",
  "webdriver",
  "webrender_api",
+ "x-wing",
  "x25519-dalek",
  "x448",
  "xml5ever",
@@ -1994,6 +1995,7 @@ dependencies = [
  "phf_codegen",
  "phf_shared 0.13.1",
  "regex",
+ "rustc-hash",
  "serde_json",
  "servo_arc",
  "smallvec",
@@ -12506,6 +12508,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4dbb1eebaa6782421e6aeac4ab5f9f3b9c665eb2f8650073f5235408b3898e2"
 dependencies = [
  "wuff",
+]
+
+[[package]]
+name = "x-wing"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b51507b887016c3925c84591108dadb8c099f776eb04fec6a60ae3519fee856f"
+dependencies = [
+ "kem",
+ "ml-kem",
+ "sha3 0.12.0",
+ "shake",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

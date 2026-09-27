@@ -48,7 +48,7 @@ impl PromiseRejectionEvent {
         type_: Atom,
         bubbles: EventBubbles,
         cancelable: EventCancelable,
-        promise: Rc<Promise>,
+        promise: &Promise,
         reason: HandleValue,
     ) -> DomRoot<Self> {
         Self::new_with_proto(
