@@ -82,3 +82,5 @@ src/bao_browser/bottles/
 # W8-wave evidence e7f96656 — artifact now lives in the cargo target tmp dir,
 # this entry keeps the historical CWD copy out of status)
 /src/bao_engine/tdf.log
+/.claude/commit-gate-results/
+/.claude/last-commit-gate.json
