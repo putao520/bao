@@ -8,6 +8,8 @@ use std::iter::Peekable;
 use std::rc::{Rc, Weak};
 use std::str::Chars;
 
+use markup5ever::data::{C1_REPLACEMENTS, NAMED_ENTITIES};
+
 use crate::collectors::collect_webvtt_timestamp;
 
 /// <https://w3c.github.io/webvtt/#webvtt-internal-node-object>
@@ -405,6 +407,98 @@ enum CueTokenizerResult {
 }
 
 /// <https://w3c.github.io/webvtt/#webvtt-cue-text-tokenizer>
+/// Consume an HTML character reference, per
+/// <https://html.spec.whatwg.org/multipage/#consume-a-character-reference>
+/// in data-state semantics (WebVTT cue text passes "no additional allowed
+/// character"; the annotation state passes `>` — both are exhausted by the
+/// same greedy table match, since entity names never contain `>`).
+/// The leading `&` is already consumed by the tokenizer loop (step 7 Next);
+/// `position` points at the first character after it.
+///
+/// BAO patch (fork-maintained, 2026-09-28): task#8 — backed by the full HTML
+/// named entity table (`markup5ever::data::NAMED_ENTITIES`, keys carry the
+/// trailing semicolon; shorter prefixes map to the (0, 0) sentinel and never
+/// match, so — matching html5ever — legacy semicolon-less names flush
+/// literally) and the spec C1 replacement window
+/// (`markup5ever::data::C1_REPLACEMENTS`).
+///
+/// Returns the text to append to the token buffer: the replacement characters
+/// on success, or the literally-flushed consumed input when no reference
+/// matched (always including the reconstituted leading `&`).
+fn consume_html_character_reference(position: &mut Peekable<Chars<'_>>) -> String {
+    let mut consumed = String::from("&");
+
+    // Numeric reference: `&#` + optional x/X + digits + optional ';'.
+    if position.peek() == Some(&'#') {
+        consumed.push(position.next().unwrap());
+        let radix = match position.peek() {
+            Some('x') | Some('X') => {
+                consumed.push(position.next().unwrap());
+                16
+            },
+            _ => 10,
+        };
+        let digits_start = consumed.len();
+        while matches!(position.peek(), Some(c)
+            if (radix == 16 && c.is_ascii_hexdigit()) || (radix == 10 && c.is_ascii_digit()))
+        {
+            consumed.push(position.next().unwrap());
+        }
+        if consumed.len() > digits_start {
+            let value =
+                u32::from_str_radix(&consumed[digits_start..], radix).unwrap_or(u32::MAX);
+            let replacement = match value {
+                0 => '\u{FFFD}',
+                0x80..=0x9F => C1_REPLACEMENTS[(value - 0x80) as usize].unwrap_or('\u{FFFD}'),
+                n if n <= char::MAX as u32 => char::from_u32(n).unwrap_or('\u{FFFD}'),
+                _ => '\u{FFFD}',
+            };
+            if position.peek() == Some(&';') {
+                consumed.push(position.next().unwrap());
+            }
+            return replacement.to_string();
+        }
+        return consumed;
+    }
+
+    // Named reference: longest semicolon-terminated match against the table.
+    // Chars consumed past the best match flush literally (they were consumed
+    // optimistically by the greedy scan; flushing keeps the output identical
+    // to leaving them in the stream as ordinary data).
+    let mut candidate = String::new();
+    let mut best: Option<(String, usize)> = None;
+    loop {
+        let Some(c) = position.peek().copied() else {
+            break;
+        };
+        if !(c.is_ascii_alphanumeric() || c == ';') {
+            break;
+        }
+        position.next();
+        candidate.push(c);
+        consumed.push(c);
+        match NAMED_ENTITIES.get(candidate.as_str()) {
+            // (0, 0) is the trie prefix sentinel: keep extending.
+            Some(&(0, 0)) => {},
+            Some(&(cp1, cp2)) => {
+                let mut replacement = char::from_u32(cp1).unwrap_or('\u{FFFD}').to_string();
+                if cp2 != 0 {
+                    replacement.push(char::from_u32(cp2).unwrap_or('\u{FFFD}'));
+                }
+                best = Some((replacement, consumed.len()));
+                if c == ';' {
+                    break;
+                }
+            },
+            None => break,
+        }
+    }
+    match best {
+        Some((replacement, best_len)) => replacement + &consumed[best_len..],
+        None => consumed,
+    }
+}
+
 fn webvtt_cue_text_tokenizer(position: &mut Peekable<Chars<'_>>) -> CueTokenizerResult {
     // Step 1. Let input and position be the same variables as
     // those of the same name in the algorithm that invoked these steps.
@@ -464,11 +558,15 @@ fn webvtt_cue_text_tokenizer(position: &mut Peekable<Chars<'_>>) -> CueTokenizer
                 // > Attempt to consume an HTML character reference, with no additional allowed character.
                 // > If nothing is returned, append a U+0026 AMPERSAND character (&) to result.
                 // > Otherwise, append the data of the character tokens that were returned to result.
-                // TODO: The character reference case
-                result.push('\u{0026}');
-                // > Then, in any case, set tokenizer state to the WebVTT data state,
-                // > and jump to the step labeled next.
+                // BAO patch (fork-maintained, 2026-09-28): task#8 — the reference
+                // consumption is implemented (was: literal '&' fallback).
+                let text = consume_html_character_reference(position);
+                result.push_str(&text);
+                // The reference (incl. its terminator) is fully consumed;
+                // skip this iteration's step-7 advance, which would eat the
+                // first character after the reference.
                 tokenizer_state = TokenizerState::WebVTTData;
+                continue;
             },
             // https://w3c.github.io/webvtt/#webvtt-tag-state
             TokenizerState::WebVTTTag => {
@@ -692,11 +790,14 @@ fn webvtt_cue_text_tokenizer(position: &mut Peekable<Chars<'_>>) -> CueTokenizer
                 // > with the additional allowed character being U+003E GREATER-THAN SIGN (>).
                 // > If nothing is returned, append a U+0026 AMPERSAND character (&) to buffer.
                 // > Otherwise, append the data of the character tokens that were returned to buffer.
-                // TODO: The character reference case
-                buffer.push('\u{0026}');
-                // > Then, in any case, set tokenizer state to the WebVTT start tag annotation state,
-                // > and jump to the step labeled next.
+                // BAO patch (fork-maintained, 2026-09-28): task#8 — the reference
+                // consumption is implemented (was: literal '&' fallback).
+                let text = consume_html_character_reference(position);
+                buffer.push_str(&text);
+                // As above: the reference is fully consumed; skip the step-7
+                // advance (it would eat the first annotation character).
                 tokenizer_state = TokenizerState::WebVTTStartTagAnnotation;
+                continue;
             },
             // https://w3c.github.io/webvtt/#webvtt-end-tag-state
             TokenizerState::WebVTTEndTag => {
