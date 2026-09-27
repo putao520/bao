@@ -129,13 +129,6 @@ impl<T> TracedCallback<T> {
     }
 }
 
-
-impl<T> TracedCallback<T> {
-    pub fn root(&self) -> RootedCallback<T> {
-        RootedCallback(self.0.clone())
-    }
-}
-
 /// A common base class for representing IDL callback function and
 /// callback interface types.
 #[derive(JSTraceable, MallocSizeOf)]
