@@ -123,6 +123,25 @@ pub(crate) struct ImageFragment {
     pub natural_width: Option<Au>,
     /// The intrinsic (natural) height of the image, if known.
     pub natural_height: Option<Au>,
+    /// Shaped WebVTT cue text painted on top of the image, positioned within
+    /// the fragment rect. Only the video replaced content produces these
+    /// (BAO patch, fork-maintained, 2026-09-27, REQ-BRW-047).
+    pub cue_overlays: Vec<CueTextOverlay>,
+}
+
+/// One shaped, positioned WebVTT cue text line painted on top of a video
+/// image fragment (BAO patch, fork-maintained, 2026-09-27, REQ-BRW-047).
+#[derive(MallocSizeOf)]
+pub(crate) struct CueTextOverlay {
+    #[conditional_malloc_size_of]
+    pub glyphs: Vec<Arc<ShapedTextSlice>>,
+    #[ignore_malloc_size_of = "copy-type webrender key"]
+    pub font_key: FontInstanceKey,
+    #[conditional_malloc_size_of]
+    pub font_metrics: Arc<FontMetrics>,
+    /// Baseline origin of this text line, relative to the fragment rect
+    /// origin.
+    pub baseline_origin: PhysicalPoint<Au>,
 }
 
 #[derive(MallocSizeOf)]

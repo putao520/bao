@@ -2,9 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// BAO patch (fork-maintained, 2026-09-27): import paths follow the resynced
+// module layout (cue types now live in `cue::settings`; `WebVttParserError`
+// stays at the crate root).
 use servo_webvtt::shared_test_setup::{compute_result_in_seconds, parser_with_dummy_sink};
-use servo_webvtt::{
-    WebVttCue, WebVttCueSize, WebVttLineAndPositionSetting, WebVttParserError, WebVttSnapToLines,
+use servo_webvtt::WebVttParserError;
+use servo_webvtt::cue::settings::{
+    WebVttCue, WebVttCueSize, WebVttLineAndPositionSetting, WebVttSnapToLines,
     WebVttTextAlignment, WebVttWritingDirection,
 };
 

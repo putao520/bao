@@ -841,6 +841,47 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
 
             self.check_if_paintable(rect, common.clip_rect, style.clone_opacity());
 
+            // BAO patch (fork-maintained, 2026-09-27): paint the active WebVTT
+            // cue boxes on top of the video frame (REQ-BRW-047). The white
+            // color mirrors the WebVTT UA default cue text color
+            // (<https://www.w3.org/TR/webvtt1/#css-definitions>).
+            if !fragment.cue_overlays.is_empty() {
+                let cue_color = wr::ColorF::WHITE;
+                for overlay in &fragment.cue_overlays {
+                    let baseline_origin = overlay.baseline_origin +
+                        fragment.base.rect().origin.to_vector() +
+                        containing_block.origin.to_vector();
+                    let (glyphs, largest_advance) = glyphs(
+                        &overlay.glyphs,
+                        baseline_origin,
+                        Au::zero(),
+                        true, /* include_whitespace */
+                    );
+                    if glyphs.is_empty() {
+                        continue;
+                    }
+                    let mut line_rect = baseline_origin;
+                    line_rect.y -= overlay.font_metrics.ascent;
+                    let line_rect = PhysicalRect::new(
+                        line_rect,
+                        PhysicalSize::new(
+                            largest_advance.scale_by(2.0),
+                            (overlay.font_metrics.ascent + overlay.font_metrics.descent)
+                                .max(Au::from_px(1)),
+                        ),
+                    );
+                    let line_bounds = line_rect.to_webrender();
+                    self.wr().push_text(
+                        &common,
+                        line_bounds,
+                        &glyphs,
+                        overlay.font_key,
+                        cue_color,
+                        None,
+                    );
+                }
+            }
+
             // From <https://www.w3.org/TR/paint-timing/#contentful>:
             // An element target is contentful when one or more of the following apply:
             // > target is a replaced element representing an available image.

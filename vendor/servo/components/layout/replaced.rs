@@ -8,7 +8,9 @@ use app_units::{Au, MAX_AU};
 use data_url::DataUrl;
 use embedder_traits::ViewportDetails;
 use euclid::{Scale, Size2D};
-use layout_api::{IFrameSize, LayoutElement, LayoutImageDestination, LayoutNode, SVGElementData};
+use layout_api::{
+    IFrameSize, LayoutElement, LayoutImageDestination, LayoutNode, SVGElementData, WebVttCueBoxData,
+};
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::{Image, ImageOrMetadataAvailable, VectorImage};
 use net_traits::request::InternalRequest;
@@ -46,6 +48,8 @@ use crate::sizing::{
     ComputeInlineContentSizes, InlineContentSizesResult, LazySize, SizeConstraint,
 };
 use crate::style_ext::{AspectRatio, Clamp, ComputedValuesExt, LayoutStyle};
+// BAO patch (fork-maintained, 2026-09-27): WebVTT cue box overlay builder (REQ-BRW-047).
+use crate::webvtt_cue_overlay;
 use crate::{ConstraintSpace, ContainingBlock};
 
 #[derive(Debug, MallocSizeOf)]
@@ -141,6 +145,9 @@ pub(crate) struct ImageInfo {
 pub(crate) struct VideoInfo {
     pub image_key: Option<ImageKey>,
     pub poster_url: Option<ServoUrl>,
+    /// Active WebVTT cue boxes to paint on top of the video frame
+    /// (BAO patch, fork-maintained, 2026-09-27, REQ-BRW-047).
+    pub cue_overlays: Vec<WebVttCueBoxData>,
 }
 
 #[derive(Debug, MallocSizeOf)]
@@ -541,11 +548,22 @@ impl ReplacedContents {
                         url: image_info.url.clone(),
                         natural_width: self.natural_size.width,
                         natural_height: self.natural_size.height,
+                        cue_overlays: Vec::new(),
                     }))
                 })
                 .into_iter()
                 .collect(),
             ReplacedContentKind::Video(video_info) => {
+                // BAO patch (fork-maintained, 2026-09-27): shape the active
+                // WebVTT cue boxes and paint them on top of the video frame
+                // (REQ-BRW-047).
+                let cue_overlays = webvtt_cue_overlay::build_cue_overlays(
+                    layout_context,
+                    style.clone_font(),
+                    &video_info.cue_overlays,
+                    rect.size.width,
+                    rect.size.height,
+                );
                 vec![Fragment::Image(Arc::new(ImageFragment {
                     base,
                     style: style.clone().into(),
@@ -555,6 +573,7 @@ impl ReplacedContents {
                     url: video_info.poster_url.clone(),
                     natural_width: self.natural_size.width,
                     natural_height: self.natural_size.height,
+                    cue_overlays,
                 }))]
             },
             ReplacedContentKind::IFrame(iframe) => {
@@ -599,6 +618,7 @@ impl ReplacedContents {
                     url: None,
                     natural_width: self.natural_size.width,
                     natural_height: self.natural_size.height,
+                    cue_overlays: Vec::new(),
                 }))]
             },
             ReplacedContentKind::SVGElement {
@@ -654,6 +674,7 @@ impl ReplacedContents {
                             url: None,
                             natural_width: self.natural_size.width,
                             natural_height: self.natural_size.height,
+                            cue_overlays: Vec::new(),
                         }))
                     })
                     .into_iter()

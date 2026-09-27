@@ -751,7 +751,9 @@ fn webvtt_cue_text_tokenizer(position: &mut Peekable<Chars<'_>>) -> CueTokenizer
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+// BAO patch (fork-maintained, 2026-09-27): un-gated like
+// `shared_test_setup` — see the anchor there (non-member crate, no
+// resolvable self dev-dependency in this fork's cargo universe).
 impl WebVTTNodeObjectIterator {
     pub fn assert_and_return_next_child(&mut self) -> Rc<WebVTTNodeObject> {
         let Some(iterator_direction) = self.next() else {

@@ -5,7 +5,7 @@
 use std::cell::{Cell, Ref};
 
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
 use script_bindings::reflector::reflect_dom_object_with_cx;
@@ -16,7 +16,10 @@ use crate::dom::bindings::codegen::Bindings::TextTrackBinding::{
 };
 use crate::dom::bindings::error::{Error, ErrorResult};
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f
+// (active cue list + cue-order queries, REQ-BRW-047); `UnrootedDom` reaches
+// this file through the same `script_bindings::root` re-export the fork uses.
+use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom, UnrootedDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::element::Element;
 use crate::dom::eventtarget::EventTarget;
@@ -41,6 +44,8 @@ pub(crate) struct TextTrack {
     mode: Cell<TextTrackMode>,
     /// <https://html.spec.whatwg.org/multipage/#text-track-list-of-cues>
     cue_list: MutNullableDom<TextTrackCueList>,
+    /// <https://html.spec.whatwg.org/multipage/#dom-texttrack-activecues>
+    active_cue_list: MutNullableDom<TextTrackCueList>,
     track_list: DomRefCell<Option<Dom<TextTrackList>>>,
     associated_track: DomRefCell<Option<Dom<HTMLTrackElement>>>,
 }
@@ -62,6 +67,7 @@ impl TextTrack {
             id: DomRefCell::new(id),
             mode: Cell::new(mode),
             cue_list: Default::default(),
+            active_cue_list: Default::default(),
             track_list: DomRefCell::new(track_list.map(Dom::from_ref)),
             associated_track: Default::default(),
         }
@@ -87,9 +93,29 @@ impl TextTrack {
         )
     }
 
-    pub(crate) fn get_cues(&self, cx: &mut JSContext) -> DomRoot<TextTrackCueList> {
+    pub(crate) fn cues<'no_gc>(
+        &self,
+        no_gc: &'no_gc NoGC,
+    ) -> Vec<UnrootedDom<'no_gc, TextTrackCue>> {
         self.cue_list
-            .or_init(|| TextTrackCueList::new(cx, self.global().as_window(), &[]))
+            .get_unrooted(no_gc)
+            .map(|list| list.cues(no_gc))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn text_track_cue_list(&self, cx: &mut JSContext) -> DomRoot<TextTrackCueList> {
+        self.cue_list
+            .or_init(|| TextTrackCueList::new(cx, self, self.global().as_window()))
+    }
+
+    fn active_text_track_cue_list(&self, cx: &mut JSContext) -> DomRoot<TextTrackCueList> {
+        let active_cue_list = self
+            .active_cue_list
+            .or_init(|| TextTrackCueList::new(cx, self, self.global().as_window()));
+        if let Some(cue_list) = self.cue_list.get_unrooted(cx.no_gc()) {
+            active_cue_list.refresh_active_cues(cx.no_gc(), cue_list);
+        }
+        active_cue_list
     }
 
     pub(crate) fn id(&self) -> Ref<'_, DOMString> {
@@ -98,6 +124,13 @@ impl TextTrack {
 
     pub(crate) fn add_track_list(&self, track_list: &TextTrackList) {
         *self.track_list.borrow_mut() = Some(Dom::from_ref(track_list));
+    }
+
+    pub(crate) fn track_list(&self) -> Option<DomRoot<TextTrackList>> {
+        self.track_list
+            .borrow()
+            .as_ref()
+            .map(|track_list| track_list.as_rooted())
     }
 
     pub(crate) fn remove_track_list(&self) {
@@ -153,6 +186,12 @@ impl TextTrack {
         }
     }
 
+    pub(crate) fn sort_cue_list(&self) {
+        if let Some(cue_list) = self.cue_list.get() {
+            cue_list.sort();
+        }
+    }
+
     pub(crate) fn set_text_track_mode(&self, cx: &mut JSContext, value: TextTrackMode) {
         if self.mode.get() == value {
             return;
@@ -201,22 +240,27 @@ impl TextTrackMethods<crate::DomTypeHolder> for TextTrack {
     fn GetCues(&self, cx: &mut JSContext) -> Option<DomRoot<TextTrackCueList>> {
         match self.Mode() {
             TextTrackMode::Disabled => None,
-            _ => Some(self.get_cues(cx)),
+            _ => Some(self.text_track_cue_list(cx)),
         }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrack-activecues>
     fn GetActiveCues(&self, cx: &mut JSContext) -> Option<DomRoot<TextTrackCueList>> {
-        // XXX implement active cues logic
-        //      https://github.com/servo/servo/issues/22314
-        Some(TextTrackCueList::new(cx, self.global().as_window(), &[]))
+        // Step 1. If this's mode is the text track disabled mode, then return null.
+        if self.mode.get() == TextTrackMode::Disabled {
+            return None;
+        }
+        // Step 2. Return a live TextTrackCueList object that represents
+        // the subset of this's text track list of cues whose active flag
+        // was set when the script started, in text track cue order.
+        Some(self.active_text_track_cue_list(cx))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrack-addcue>
     fn AddCue(&self, cx: &mut JSContext, cue: &TextTrackCue) -> ErrorResult {
         // FIXME(#22314, dlrobertson) add Step 1 & 2
         // Step 3
-        if let Some(old_track) = cue.get_track() {
+        if let Some(old_track) = cue.get_text_track() {
             // gecko calls RemoveCue when the given cue
             // has an associated track, but doesn't return
             // the error from it, so we wont either.
@@ -225,19 +269,21 @@ impl TextTrackMethods<crate::DomTypeHolder> for TextTrack {
             }
         }
         // Step 4
-        self.get_cues(cx).add(cue);
+        cue.set_text_track(Some(self));
+        self.text_track_cue_list(cx).add(cx, cue);
         Ok(())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrack-removecue>
     fn RemoveCue(&self, cx: &mut JSContext, cue: &TextTrackCue) -> ErrorResult {
         // Step 1
-        let cues = self.get_cues(cx);
+        let cues = self.text_track_cue_list(cx);
         let index = match cues.find(cue) {
             Some(i) => Ok(i),
             None => Err(Error::NotFound(None)),
         }?;
         // Step 2
+        cue.set_text_track(None);
         cues.remove(index);
         Ok(())
     }

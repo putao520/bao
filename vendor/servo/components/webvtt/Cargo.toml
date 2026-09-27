@@ -21,4 +21,8 @@ markup5ever = {version = "0.39"}
 regex = {version = "1.12"}
 
 [dev-dependencies]
-bao-servo-webvtt = { path = ".", version = "=0.5.3", features = ["test-util"] }
+# BAO patch (fork-maintained, 2026-09-27): the upstream self-referential
+# dev-dependency (`bao-servo-webvtt = { path = ".", ... }`) is removed — it
+# cannot be resolved for a non-member path dependency in this fork's single
+# cargo universe; `shared_test_setup` is un-gated in lib.rs instead.
+

@@ -437,6 +437,9 @@ impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
             VideoInfo {
                 image_key: data.current_frame.map(|frame| frame.image_key),
                 poster_url: data.poster_url,
+                // BAO patch (fork-maintained, 2026-09-27): active WebVTT cue
+                // boxes painted on top of the video frame (REQ-BRW-047).
+                cue_overlays: data.cue_overlays,
             },
             natural_size,
         ))

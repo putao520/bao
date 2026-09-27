@@ -2,37 +2,54 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
+// the list knows its owning `TextTrack` again (so `add` can seed the media
+// element's newly-introduced-cues list), plus cue-order `sort`, and
+// `refresh_active_cues`/`cues` backing `TextTrack::GetActiveCues`
+// (REQ-BRW-047). Fork form: `Dom::as_unrooted` does not exist in this fork's
+// `script_bindings`, so unrooted views are built with
+// `UnrootedDom::from_dom(.., no_gc)` instead (same semantics, local rewrite).
+
+use std::ops::Deref;
+
 use dom_struct::dom_struct;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 
 use crate::dom::bindings::codegen::Bindings::TextTrackCueListBinding::TextTrackCueListMethods;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{Dom, DomRoot, MutDom, UnrootedDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::texttrack::TextTrack;
 use crate::dom::texttrackcue::TextTrackCue;
 use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct TextTrackCueList {
     reflector_: Reflector,
+    text_track: MutDom<TextTrack>,
     dom_cues: DomRefCell<Vec<Dom<TextTrackCue>>>,
 }
 
 impl TextTrackCueList {
-    pub(crate) fn new_inherited(cues: &[&TextTrackCue]) -> TextTrackCueList {
+    pub(crate) fn new_inherited(text_track: &TextTrack) -> TextTrackCueList {
         TextTrackCueList {
             reflector_: Reflector::new(),
-            dom_cues: DomRefCell::new(cues.iter().map(|g| Dom::from_ref(&**g)).collect()),
+            text_track: MutDom::new(text_track),
+            dom_cues: Default::default(),
         }
     }
 
     pub(crate) fn new(
         cx: &mut JSContext,
+        text_track: &TextTrack,
         window: &Window,
-        cues: &[&TextTrackCue],
     ) -> DomRoot<TextTrackCueList> {
-        reflect_dom_object_with_cx(Box::new(TextTrackCueList::new_inherited(cues)), window, cx)
+        reflect_dom_object_with_cx(
+            Box::new(TextTrackCueList::new_inherited(text_track)),
+            window,
+            cx,
+        )
     }
 
     pub(crate) fn item(&self, idx: usize) -> Option<DomRoot<TextTrackCue>> {
@@ -51,11 +68,38 @@ impl TextTrackCueList {
             .map(|(i, _)| i)
     }
 
-    pub(crate) fn add(&self, cue: &TextTrackCue) {
+    /// <https://html.spec.whatwg.org/multipage/#text-track-cue-order>
+    pub(crate) fn sort(&self) {
+        // Manually call `Ord::cmp` since `Dom<T>` doesn't implement Ord
+        self.dom_cues.borrow_mut().sort_by(|a, b| a.cmp(b));
+    }
+
+    pub(crate) fn add(&self, cx: &mut JSContext, cue: &TextTrackCue) {
         // Only add a cue if it does not exist in the list
         if self.find(cue).is_none() {
-            self.dom_cues.borrow_mut().push(Dom::from_ref(cue));
+            {
+                let mut dom_cues = self.dom_cues.borrow_mut();
+                dom_cues.push(Dom::from_ref(cue));
+                cue.set_initial_index_in_list(dom_cues.len());
+            }
+            self.sort();
+            if let Some(track_list) = self.text_track.get().track_list() {
+                track_list.notify_media_element_for_added_cue(cx, cue);
+            }
         }
+    }
+
+    pub(crate) fn refresh_active_cues<'no_gc>(
+        &self,
+        no_gc: &'no_gc NoGC,
+        other: UnrootedDom<'no_gc, TextTrackCueList>,
+    ) {
+        *self.dom_cues.safe_borrow_mut(no_gc) = other
+            .cues(no_gc)
+            .iter()
+            .filter(|cue| cue.is_active())
+            .map(|cue| cue.deref().clone())
+            .collect();
     }
 
     pub(crate) fn remove(&self, idx: usize) {
@@ -64,6 +108,18 @@ impl TextTrackCueList {
 
     pub(crate) fn empty(&self) {
         self.dom_cues.borrow_mut().clear();
+    }
+
+    pub(crate) fn cues<'no_gc>(
+        &self,
+        no_gc: &'no_gc NoGC,
+    ) -> Vec<UnrootedDom<'no_gc, TextTrackCue>> {
+        self.dom_cues
+            .borrow()
+            .clone()
+            .into_iter()
+            .map(|cue| UnrootedDom::from_dom(cue, no_gc))
+            .collect()
     }
 }
 

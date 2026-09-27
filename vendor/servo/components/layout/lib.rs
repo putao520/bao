@@ -33,6 +33,9 @@ mod sizing;
 mod style_ext;
 pub mod table;
 mod traversal;
+// BAO patch (fork-maintained, 2026-09-27): WebVTT cue box overlay geometry +
+// shaping for the video replaced content (REQ-BRW-047).
+mod webvtt_cue_overlay;
 
 use app_units::Au;
 pub use cell::ArcRefCell;
