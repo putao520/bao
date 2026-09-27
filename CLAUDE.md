@@ -30,14 +30,15 @@
 - **禁止跨线程传递 `JSObject` 裸指针(铁律)**:`JSObject` 归属于创建它的线程的 JSContext。bao 层不得在跨线程结构(`DashMap` / `Mutex` / 全局 `static`)中持有 `JSObject` 裸指针,跨线程只能传 `PageId` / 句柄 / 序列化数据
 - `bao_engine` / `bao_browser` 通过 `RustRuntime::get()` 获取当前线程的 JSContext(thread-local),不创建独立 JSEngine
 
-### 3. 复用优先(Bun crate > 社区库 > 手写)
+### 3. 复用优先(Bun crate > 社区库 > 翻译他语言库 > 手写)
 
 Bun workspace 中 ~85 个纯 Rust crate(零 JSC)是经过生产验证的高性能实现,**100% 复用,禁止手写已有功能**。
 
 ```
 1. workspace 内 bun_* crate(已编译、已优化、已测试)
-2. crates.io 成熟库(url, sha2, hmac, etc. — 已在 Cargo.toml)
-3. 仅当 1/2 都没有时才允许手写
+2. crates.io 成熟库(url, sha2, hmac, kurbo, svgtypes, etc. — 优先查依赖树内已有版本)
+3. 无 Rust 库时:翻译同功能他语言库(如 mozilla C++ 参考实现)
+4. 仅当 1/2/3 都没有时才允许手写(用户裁决 2026-09-27:实在没办法才自己裸写)
 ```
 
 **只有以下情况允许手写 Rust**:
