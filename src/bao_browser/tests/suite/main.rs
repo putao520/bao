@@ -113,6 +113,8 @@ mod fetch_axis_probe_tests;
 mod worker_realm_api_tests;
 mod shadow_axis_probe_tests;
 mod realm_discard_timers_tests;
+mod svg_dom_geometry_tests;
+mod webvtt_render_tests;
 
 
 // Higher-tier soft-link providers are dev-deps nothing else `use`s in this
