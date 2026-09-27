@@ -275,8 +275,7 @@ class Descriptor(DescriptorProvider):
         elif self.interface.isCallback():
             ty = 'crate::codegen::GenericBindings::%sBinding::%s' % (ifaceName, ifaceName)
             pathDefault = ty
-            callback_type = "Rc" if desc.get('useRcCallback', False) else "RootedCallback"
-            self.returnType = "%s<%s<D>>" % (callback_type, ty)
+            self.returnType = "Rc<%s<D>>" % ty
             self.argumentType = "???"
             self.nativeType = ty
         else:

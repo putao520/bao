@@ -66,3 +66,6 @@
 **事实反转**:paint 链当前 RC=0(撕裂从未入库——系主会话在途实验态被误判为 HEAD 断裂)。真结构=**双向互斥实现**:vendor 持 fork 独有 LCP 迭代岛(largest_contentful_paint_calculator+孤儿模块+display_list 岛字段),基线持上游 PaintTiming 面(PaintTimingReport/Info+performance/LCP)——基线没有 vendor 的岛,vendor 没有基线的面。
 
 **改判**:paint 闭合波 → **岛→基线迁移波**(特性级:删岛两模块+采基线面,跨 paint/shared-paint/layout(3-4 文件)/script(performance+document+window+2 webidl))。蓝图六点(E1 停报)采纳为合同基础。**队列终位**:script 协调大波之后(需 script 域安静)。shared/constellation+constellation 维持 vendor(per-WebView 消息族是 RouterProxy 补丁消费面,基线无此族——API 比对结论=不同步,已实证)。completion②③ 待 E3 检查点补取证。
+
+## 闭合波②可验部分收口(2026-09-28 00:43 窗口取证)
+completion 四项齐备:①链检查 RC=0(断裂=在途实验态误判,已澄清);②servo 聚合 RC=0(script+layout+paint+constellation 全链);③回归双绿(CSS 门 73/73+SVG 13/13);④BCE 根因陈述(双向互斥实现)。**迁移本体**(岛→基线 PaintTiming)按六点蓝图排队 script 协调大波后。

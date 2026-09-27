@@ -558,8 +558,7 @@ pub(crate) struct Document {
     /// <https://html.spec.whatwg.org/multipage/#completely-loaded>
     completely_loaded: Cell<bool>,
     /// Set of shadow roots connected to the document tree.
-    // BAO patch (fork-maintained, 2026-09-27): 57c714a0e FxHashSet replay.
-    shadow_roots: DomRefCell<FxHashSet<Dom<ShadowRoot>>>,
+    shadow_roots: DomRefCell<HashSet<Dom<ShadowRoot>>>,
     /// Whether any of the shadow roots need the stylesheets flushed.
     shadow_roots_styles_changed: Cell<bool>,
     /// List of registered media controls.
@@ -4108,7 +4107,7 @@ impl Document {
             completely_loaded: Cell::new(false),
             script_and_layout_blockers: Cell::new(0),
             delayed_tasks: Default::default(),
-            shadow_roots: Default::default(),
+            shadow_roots: DomRefCell::new(HashSet::new()),
             shadow_roots_styles_changed: Cell::new(false),
             media_controls: DomRefCell::new(HashMap::new()),
             dirty_canvases: DomRefCell::new(Default::default()),
@@ -6076,7 +6075,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         cx: &mut js::context::JSContext,
         root: &Node,
         what_to_show: u32,
-        filter: Option<RootedCallback<NodeFilter>>,
+        filter: Option<Rc<NodeFilter>>,
     ) -> DomRoot<NodeIterator> {
         NodeIterator::new(cx, self, root, what_to_show, filter)
     }
@@ -6087,7 +6086,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         cx: &mut JSContext,
         root: &Node,
         what_to_show: u32,
-        filter: Option<RootedCallback<NodeFilter>>,
+        filter: Option<Rc<NodeFilter>>,
     ) -> DomRoot<TreeWalker> {
         TreeWalker::new(cx, self, root, what_to_show, filter)
     }

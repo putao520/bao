@@ -33,21 +33,14 @@ pub(crate) struct NodeIterator {
 }
 
 impl NodeIterator {
-    fn new_inherited(
-        root_node: &Node,
-        what_to_show: u32,
-        node_filter: Option<RootedCallback<NodeFilter>>,
-    ) -> NodeIterator {
+    fn new_inherited(root_node: &Node, what_to_show: u32, filter: Filter) -> NodeIterator {
         NodeIterator {
             reflector_: Reflector::new(),
             root_node: Dom::from_ref(root_node),
             reference_node: MutDom::new(root_node),
             pointer_before_reference_node: Cell::new(true),
             what_to_show,
-            filter: match node_filter {
-                None => Filter::None,
-                Some(callback) => Filter::Callback(callback.to_traced()),
-            },
+            filter,
             active: Cell::new(false),
         }
     }
@@ -71,9 +64,13 @@ impl NodeIterator {
         document: &Document,
         root_node: &Node,
         what_to_show: u32,
-        node_filter: Option<RootedCallback<NodeFilter>>,
+        node_filter: Option<Rc<NodeFilter>>,
     ) -> DomRoot<NodeIterator> {
-        NodeIterator::new_with_filter(cx, document, root_node, what_to_show, node_filter)
+        let filter = match node_filter {
+            None => Filter::None,
+            Some(jsfilter) => Filter::Callback(jsfilter),
+        };
+        NodeIterator::new_with_filter(cx, document, root_node, what_to_show, filter)
     }
 }
 
@@ -89,10 +86,10 @@ impl NodeIteratorMethods<crate::DomTypeHolder> for NodeIterator {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-nodeiterator-filter>
-    fn GetFilter(&self) -> Option<RootedCallback<NodeFilter>> {
+    fn GetFilter(&self) -> Option<Rc<NodeFilter>> {
         match self.filter {
             Filter::None => None,
-            Filter::Callback(ref nf) => Some(nf.root()),
+            Filter::Callback(ref nf) => Some((*nf).clone()),
         }
     }
 
@@ -234,10 +231,9 @@ impl NodeIterator {
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum Filter {
     None,
-    Callback(TracedCallback<NodeFilter>),
+    Callback(#[ignore_malloc_size_of = "callbacks are hard"] Rc<NodeFilter>),
 }
 
 impl OwnerWindow<crate::DomTypeHolder> for NodeIterator {}

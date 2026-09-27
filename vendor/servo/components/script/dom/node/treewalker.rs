@@ -33,20 +33,13 @@ pub(crate) struct TreeWalker {
 }
 
 impl TreeWalker {
-    fn new_inherited(
-        root_node: &Node,
-        what_to_show: u32,
-        node_filter: Option<RootedCallback<NodeFilter>>,
-    ) -> TreeWalker {
+    fn new_inherited(root_node: &Node, what_to_show: u32, filter: Filter) -> TreeWalker {
         TreeWalker {
             reflector_: Reflector::new(),
             root_node: Dom::from_ref(root_node),
             current_node: MutDom::new(root_node),
             what_to_show,
-            filter: match node_filter {
-                None => Filter::None,
-                Some(jsfilter) => Filter::Dom(jsfilter.to_traced()),
-            },
+            filter,
             active: Cell::new(false),
         }
     }
@@ -70,9 +63,13 @@ impl TreeWalker {
         document: &Document,
         root_node: &Node,
         what_to_show: u32,
-        node_filter: Option<RootedCallback<NodeFilter>>,
+        node_filter: Option<Rc<NodeFilter>>,
     ) -> DomRoot<TreeWalker> {
-        TreeWalker::new_with_filter(cx, document, root_node, what_to_show, node_filter)
+        let filter = match node_filter {
+            None => Filter::None,
+            Some(jsfilter) => Filter::Dom(jsfilter),
+        };
+        TreeWalker::new_with_filter(cx, document, root_node, what_to_show, filter)
     }
 }
 
@@ -88,10 +85,10 @@ impl TreeWalkerMethods<crate::DomTypeHolder> for TreeWalker {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-treewalker-filter>
-    fn GetFilter(&self) -> Option<RootedCallback<NodeFilter>> {
+    fn GetFilter(&self) -> Option<Rc<NodeFilter>> {
         match self.filter {
             Filter::None => None,
-            Filter::Dom(ref nf) => Some(nf.root()),
+            Filter::Dom(ref nf) => Some(nf.clone()),
         }
     }
 
@@ -506,10 +503,9 @@ impl Iterator for &TreeWalker {
 }
 
 #[derive(JSTraceable)]
-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum Filter {
     None,
-    Dom(TracedCallback<NodeFilter>),
+    Dom(Rc<NodeFilter>),
 }
 
 impl OwnerWindow<crate::DomTypeHolder> for TreeWalker {}
