@@ -2450,3 +2450,10 @@ health 实测 **0 errors**(1635 warnings=既有草稿期完整性债,非缺陷�
 ### spec-gov C-7 第 12 次计数触发闭环(2026-09-26,主会话)
 
 health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递增非活体错误)。本轮深挖 `id_registry_consistency` 发现**真缺陷类**:25 个存活 TEST-CDS 元素(009-020/REG-001~013)编号滞留 `.id-registry.json` deleted 墓碑集(历史 CDS 清理残留,存活元素按注册表非法)。根治:官方 `fixTombstoneReuse` 门(注册表全项目单文件=一次全量横扫)——tombstoneReuse 25→0、ghosts/duplicates/specOnly=0、25 墓碑移除复活入 allocated(2252→2277)、161 结构修复+208 link 规范化(warnings 1640→1524;锚点 0 断裂实测)。剩余 Gaps 段=墓碑保留设计必然形态(编号不可重用既定裁决),非缺陷。残留=0,commit 3c632ad1。防复发:门内置于 spec_govern;后续 create 撞墓碑号时 fail-closed 拒绝即本类早期信号。
+
+### 用户方向裁决 2026-09-27(PRD 载体写入待 runtime 恢复后转录;原文忠实记录)
+
+1. **PRD-REQ-WEB-PLATFORM**(新):「我们也需要支持 CSS/WebVTT/SVG DOM 的啊,DevTools 可能都要支持,因为我们本来就有内置 CDP对吧」— Web 平台能力持续对齐:CSS 随 Stylo 升级继承;WebVTT/SVG DOM 按自维护 fork 模式(上游有则吸收重放,未完成处可自行提前实现);DevTools 建于内置 CDP Server(12 域)深化。范围细节按特性开工时逐项裁定。
+2. **PRD-DEC-UPSTREAM-STRATEGY-V2**(新):①「我们 BUN 深度修改了,很多东西可能不吸收但是参考,我们要自己实现」②「兼容是必须对齐甚至要超越 BUN 上游的」(node oracle 为尺,上游偏离 node 处保持 node 忠实即超越)③「清理和构建记录也很重要」(随波执行留痕)④「3 方支持一样重要可以支持,但是我们可以用纯 RUST 优先」(生态兼容同等,选型纯 Rust 优先,非 Rust 仅在无纯 Rust 替代时用)。
+
+载体说明:两次 prd MCP 写入超时(runtime 重工具面降级,fail-closed 禁本地 HTML 编辑);本条目为过渡真源,runtime 恢复后经 prd 工具转录并删除本注记。
