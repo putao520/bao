@@ -47,3 +47,10 @@
 
 ## 基线诚实性
 143 颗全处置完成前,upstream-baseline.json 的 servo notes 必须显式记录「b820a9679..7ca99fe3f 缺口 triage 在案(本文件)」;全处置后维持 7ca99fe3f。
+
+## 闭合波①执行口径(2026-09-27,E3 枚举后主会话裁决)
+
+全窗扫描 36 颗真候选,四桶:
+- **桶 A(12 颗,直接重放)**+**桶 B(12 颗,先补 callback.rs ~50 行 pre-window delta:RootedCallback/TracedCallback)= 本波(口径 2 批准)**;2b71c3cc1 codegen 语义面按 SM153 表纪律逐处锚。
+- **桶 C(~20 颗,promise 重构前置:RootedPromise/TracedPromise+87 文件 Rc<Promise> 迁移)= 单独立项另波**(体量风险自成一波,枚举分析留作合同基础)。
+- **桶 D(3 颗 N/A 确认)**:hyper-rustls bump/activeCues(WebVTT 波已吸)/IDBIndex openCursor(特性候选非安全系列,记 backlog)。
