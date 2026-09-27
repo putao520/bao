@@ -925,7 +925,7 @@ unsafe fn load_esm_module(cx: *mut JSContext, source: &str, path: &Path) -> Opti
     }
     let mut src = transform_str_to_source_text(source);
     let module = mozjs_sys::jsapi::JS::CompileModule1(cx, opts, &mut src);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if module.is_null() {
         return None;
     }
@@ -1093,7 +1093,7 @@ unsafe fn load_cjs_module(
         ptr: &mut rval,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
 
     // IMPORTANT: read module.exports BEFORE restoring old globals.
     // After Evaluate2 (which can trigger GC), re-read from global to get fresh pointers.

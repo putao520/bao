@@ -565,7 +565,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         ptr: &mut rval,
                     },
                 );
-                libc::free(opts as *mut _);
+                mozjs::glue::DeleteCompileOptions(opts);
                 if rval.is_object() {
                     rooted!(&in(cx) let ctor_root = rval.to_object());
                     let server_ctor = ObjectValue(ctor_root.get());
@@ -812,7 +812,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         call_rval_h,
                     );
                 }
-                libc::free(vopts as *mut _);
+                mozjs::glue::DeleteCompileOptions(vopts);
             }
         }
 
@@ -856,7 +856,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         call_rval_h,
                     );
                 }
-                libc::free(copts as *mut _);
+                mozjs::glue::DeleteCompileOptions(copts);
             }
         }
 
@@ -895,7 +895,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
                     );
                 }
-                libc::free(aopts as *mut _);
+                mozjs::glue::DeleteCompileOptions(aopts);
             }
         }
     }

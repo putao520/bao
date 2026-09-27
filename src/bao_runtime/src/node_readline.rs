@@ -672,7 +672,7 @@ unsafe extern "C" fn rl_promises_question(cx: *mut JSContext, argc: u32, vp: *mu
             ptr: &mut thunk,
         },
     );
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if !ok || !thunk.is_object() {
         JS_ReportErrorUTF8(cx, c"readline question(): failed to build Promise wrapper".as_ptr());
         return false;

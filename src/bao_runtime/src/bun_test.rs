@@ -1451,7 +1451,7 @@ unsafe fn eval_shim(raw: *mut JSContext, source: &str, label: &str) {
         ptr: &mut rval,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(raw, opts, &mut src_text, rval_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if !ok {
         log::warn!("Failed to eval {} shim", label);
     }
@@ -1470,7 +1470,7 @@ unsafe fn eval_shim_get_obj(raw: *mut JSContext, expr: &str) -> *mut JSObject {
         ptr: &mut rval,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(raw, opts, &mut src_text, rval_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if ok && rval.is_object() {
         rval.to_object()
     } else {

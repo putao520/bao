@@ -612,7 +612,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ptr: &mut rval,
             };
             let _ = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut src, rval_handle);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
     }
 }

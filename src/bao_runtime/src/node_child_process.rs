@@ -1230,7 +1230,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ptr: &mut rval,
             };
             let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut src, rval_handle);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
             // JS shim returns undefined; errors are non-fatal (ChildProcess class is optional).
             let _ = ok;
         }
@@ -2899,7 +2899,7 @@ unsafe fn build_stdio_streams(
         ptr: &mut rval,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src_text, rval_handle);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
 
     if !ok || !rval.is_object() {
         // JS failure — attach nulls so the child object is still well-formed

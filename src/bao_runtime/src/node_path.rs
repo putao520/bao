@@ -2284,7 +2284,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     call_rval_h,
                 );
             }
-            libc::free(mopts as *mut _);
+            mozjs::glue::DeleteCompileOptions(mopts);
         }
     }
 

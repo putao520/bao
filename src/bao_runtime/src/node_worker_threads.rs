@@ -287,7 +287,7 @@ pub(crate) unsafe fn install_sc_boundary_helpers(
         ptr: &mut rval,
     };
     let _ = JS::Evaluate2(cx.raw_cx(), opts, &mut source_text, rval_handle);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     rooted!(&in(cx) let _global_guard = global.get());
 }
 
@@ -1577,7 +1577,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 &mut intr_text,
                 intr_val.handle_mut().into(),
             );
-            libc::free(intr_opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(intr_opts);
             if intr_ok && intr_val.get().is_object() {
                 rooted!(&in(cx) let intr_arr = intr_val.get().to_object());
                 JS_GetElement(
@@ -1674,7 +1674,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             if !opts.is_null() {
                 let ok =
                     mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
-                libc::free(opts as *mut _);
+                mozjs::glue::DeleteCompileOptions(opts);
                 if ok && rval.is_object() {
                     // The source IS a function expression, so Evaluate2's
                     // completion value is the stub constructor already — do
@@ -1732,7 +1732,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         ptr: &mut mp_val,
                     },
                 );
-                libc::free(mp_opts as *mut _);
+                mozjs::glue::DeleteCompileOptions(mp_opts);
                 if mp_ok && mp_val.is_object() {
                     rooted!(&in(cx) let mp_obj = ObjectValue(mp_val.to_object()));
                     JS_DefineProperty(
@@ -1838,7 +1838,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                         ptr: &mut bc_val,
                     },
                 );
-                libc::free(bc_opts as *mut _);
+                mozjs::glue::DeleteCompileOptions(bc_opts);
                 if bc_ok && bc_val.is_object() {
                     rooted!(&in(cx) let bc_obj = ObjectValue(bc_val.to_object()));
                     JS_DefineProperty(
@@ -1911,7 +1911,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 &mut se_text,
                 se_val.handle_mut().into(),
             );
-            libc::free(se_opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(se_opts);
             if se_ok {
                 JS_DefineProperty(
                     raw_cx,
@@ -1945,7 +1945,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     ptr: &mut ut_val,
                 },
             );
-            libc::free(ut_opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(ut_opts);
             if ut_ok && ut_val.is_object() {
                 let utils_obj = ut_val.to_object();
                 rooted!(&in(cx) let utils_root = utils_obj);

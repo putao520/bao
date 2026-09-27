@@ -367,7 +367,7 @@ t.isCryptoKey=function(){return false};
                             call_rval_h,
                         );
                     }
-                    libc::free(opts as *mut _);
+                    mozjs::glue::DeleteCompileOptions(opts);
                 }
 
                 w2::JS_DefineProperty3(
@@ -485,7 +485,7 @@ t.isCryptoKey=function(){return false};
                     call_rval_h,
                 );
             }
-            libc::free(eopts as *mut _);
+            mozjs::glue::DeleteCompileOptions(eopts);
         }
     }
 
@@ -1186,7 +1186,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
             return;
         }
         let ok = JS::Evaluate2(cx.raw_cx(), opts, &mut src_text, rval_h);
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
         if !ok || !rval.is_object() {
             return;
         }
@@ -2093,11 +2093,11 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
         return true;
     }
     if !JS::Evaluate2(cx, opts, &mut src, factory_h) || !factory_val.is_object() {
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
         args.rval().set(*args.get(0).ptr);
         return true;
     }
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
 
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
@@ -2196,11 +2196,11 @@ unsafe extern "C" fn util_callbackify(cx: *mut JSContext, _argc: u32, vp: *mut J
         return true;
     }
     if !JS::Evaluate2(cx, opts, &mut src, factory_h) || !factory_val.is_object() {
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
         args.rval().set(*args.get(0).ptr);
         return true;
     }
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
 
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
@@ -2591,7 +2591,7 @@ unsafe extern "C" fn assert_rejects(cx: *mut JSContext, _argc: u32, vp: *mut JSV
         ptr: &mut rval,
     };
     let ok = unsafe { mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h) };
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     args.rval().set(if ok { rval } else { UndefinedValue() });
     true
 }

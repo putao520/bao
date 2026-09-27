@@ -156,7 +156,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ptr: &mut rval,
             };
             mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src, rval_handle);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
             if !rval.is_undefined() {
                 rooted!(&in(cx) let sb_root = rval);
                 JS_DefineProperty(
@@ -187,7 +187,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ptr: &mut lazy_rval,
             };
             mozjs_sys::jsapi::JS::Evaluate2(cx_raw, lazy_opts, &mut lazy_src_text, lazy_rval_h);
-            libc::free(lazy_opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(lazy_opts);
         }
 
         // @trace REQ-ENG-005 [api:buffer] — re-export Blob/File on the
@@ -210,7 +210,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ptr: &mut blob_rval,
             };
             mozjs_sys::jsapi::JS::Evaluate2(cx_raw, blob_opts, &mut blob_src_text, blob_rval_h);
-            libc::free(blob_opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(blob_opts);
             if blob_rval.is_object() {
                 rooted!(&in(cx) let blob_obj = blob_rval.to_object());
                 for prop in &["Blob", "File"] {
@@ -326,7 +326,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 &mut extras_src_text,
                 extras_rval_h,
             );
-            libc::free(extras_opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(extras_opts);
             if extras_rval.is_object() {
                 rooted!(&in(cx) let extras_obj = extras_rval.to_object());
                 // Copy isAscii / isUtf8 / resolveObjectURL onto the module

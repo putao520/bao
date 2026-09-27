@@ -465,7 +465,7 @@ unsafe extern "C" fn glob_scan(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         ptr: &mut ctor,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut text, ctor_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if !ok || !ctor.is_object() {
         JS_ClearPendingException(cx);
         args.rval().set(ObjectValue(arr));

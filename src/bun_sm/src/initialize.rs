@@ -22,7 +22,7 @@ pub unsafe fn eval_and_print(cx: *mut JSContext, source: &str, filename: &str) {
         ptr: &mut rval,
     };
     let ok = unsafe { mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_handle) };
-    unsafe { libc::free(opts as *mut _) };
+    unsafe { mozjs::glue::DeleteCompileOptions(opts) };
 
     if !ok {
         return;

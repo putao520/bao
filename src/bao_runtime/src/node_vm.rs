@@ -1594,7 +1594,7 @@ unsafe extern "C" fn vm_compile_function(cx: *mut JSContext, argc: u32, vp: *mut
         ptr: &mut rval,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
 
     if ok && rval.is_object() {
         args.rval().set(rval);
@@ -1654,7 +1654,7 @@ unsafe extern "C" fn vm_script_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         }
         let mut src = mozjs::rust::transform_str_to_source_text(&code);
         let compiled = mozjs_sys::jsapi::JS::Compile1(cx, opts, &mut src);
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
         if compiled.is_null() {
             // Pending exception is SM's SyntaxError for this source (the
             // parser message, with "<filename>:<line>:<col>" on the stack

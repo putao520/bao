@@ -270,7 +270,7 @@ pub unsafe fn install(
         ptr: &mut rval,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut text, rval_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if !ok || !rval.is_object() {
         JS_ClearPendingException(cx.raw_cx());
         return;

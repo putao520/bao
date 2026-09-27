@@ -309,7 +309,7 @@ pub unsafe fn install_module_on_target(
     let opts = mozjs::glue::NewCompileOptions(raw, c"<module-setup>".as_ptr(), 1);
     if !opts.is_null() {
         let ok = JS::Evaluate2(raw, opts, &mut setup_text, factory_h);
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
         if ok && factory.is_object() {
             let elems = [ObjectValue(global.get()), ObjectValue(mod_obj.get())];
             let args = HandleValueArray {
@@ -414,7 +414,7 @@ pub fn install_module_global(
         let opts = mozjs::glue::NewCompileOptions(raw, c"<module-setup>".as_ptr(), 1);
         if !opts.is_null() {
             let ok = JS::Evaluate2(raw, opts, &mut setup_text, factory_h);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
             if ok && factory.is_object() {
                 let elems = [ObjectValue(global.get()), ObjectValue(mod_obj.get())];
                 let args = HandleValueArray {
@@ -2275,7 +2275,7 @@ pub fn install_buffer_global(
                 ptr: &mut rval,
             };
             mozjs_sys::jsapi::JS::Evaluate2(raw, opts, &mut src, rval_h);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
     }
 }
@@ -3201,7 +3201,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                         ptr: &mut rval_fn,
                     };
                     mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
-                    libc::free(opts as *mut _);
+                    mozjs::glue::DeleteCompileOptions(opts);
                     if rval_fn.is_object() {
                         rooted!(&in(cx_ref_t) let fn_obj = rval_fn.to_object());
                         rooted!(&in(cx_ref_t) let obj_val = ObjectValue(obj_root.get()));
@@ -6565,7 +6565,7 @@ if (typeof _g.PopStateEvent === 'undefined') {
             if !evaluated {
                 JS_ClearPendingException(raw);
             }
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
     }
 }

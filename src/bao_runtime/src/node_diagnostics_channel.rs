@@ -229,7 +229,7 @@ return {
             mozjs::glue::NewCompileOptions(raw_cx, c"<node:diagnostics_channel>".as_ptr(), 1);
         if !opts.is_null() {
             let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut source_text, rval_handle);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
             if ok && rval.is_object() {
                 let obj = rval.to_object();
                 cache_builtin(cx, "diagnostics_channel", obj);

@@ -93,7 +93,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             ptr: &mut rval,
         };
         let ok = mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src, rval_handle);
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
 
         if !ok || !rval.is_object() {
             return;

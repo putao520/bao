@@ -219,7 +219,7 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
             return;
         }
         let evaluated = JS::Evaluate2(cx.raw_cx(), opts, &mut stamp_js, factory_h);
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
         if !evaluated || !factory_val.is_object() {
             eprintln!("[node_timers_module] promisify-custom wiring factory evaluation failed");
             return;
@@ -423,7 +423,7 @@ unsafe extern "C" fn timers_promises_set_timeout(
                 ptr: &mut rval,
             },
         );
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
     }
     args.rval().set(rval);
     true
@@ -451,7 +451,7 @@ unsafe extern "C" fn timers_promises_set_immediate(
                 ptr: &mut rval,
             },
         );
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
     }
     args.rval().set(rval);
     true
@@ -494,7 +494,7 @@ unsafe extern "C" fn timers_promises_set_interval(
                 ptr: &mut rval,
             },
         );
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
     }
     args.rval().set(rval);
     true

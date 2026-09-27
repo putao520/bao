@@ -4033,7 +4033,7 @@ pub fn install_event_source(cx: &mut mozjs::context::JSContext, global: mozjs::r
                     ptr: &mut rval,
                 },
             );
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
         let _ = global;
     }

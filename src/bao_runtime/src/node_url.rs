@@ -1687,7 +1687,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
                     );
                 }
             }
-            unsafe { libc::free(eopts as *mut _) };
+            unsafe { mozjs::glue::DeleteCompileOptions(eopts) };
         }
 
         cache_builtin(cx, "url", url_mod.get());

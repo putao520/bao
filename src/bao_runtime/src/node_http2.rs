@@ -1219,7 +1219,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     }
                 }
             }
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
     }
 

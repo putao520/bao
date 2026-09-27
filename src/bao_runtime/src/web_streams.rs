@@ -38,7 +38,7 @@ pub fn install_web_streams(
                     ptr: &mut rval,
                 },
             );
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
     }
 }

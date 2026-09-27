@@ -925,7 +925,7 @@ unsafe fn populate_process_object(
                     ptr: &mut rval,
                 };
                 let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut src, rval_h);
-                libc::free(opts as *mut _);
+                mozjs::glue::DeleteCompileOptions(opts);
                 if ok && rval.is_object() {
                     rooted!(&in(cx) let handler_fn = rval.to_object());
                     rooted!(&in(cx) let fn_val = ObjectValue(handler_fn.get()));
@@ -2388,7 +2388,7 @@ unsafe extern "C" fn bun_spawn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
                     &mut dispose_text,
                     dispose_rval_h,
                 );
-                libc::free(dispose_opts as *mut _);
+                mozjs::glue::DeleteCompileOptions(dispose_opts);
                 if dispose_rval.is_object() {
                     rooted!(&in(cx_ref) let wrapper_fn = dispose_rval.to_object());
                     // Call wrapper(subproc_obj) — pass proc as `this` and arg.
@@ -4692,7 +4692,7 @@ unsafe fn serve_body_stream_factory(raw_cx: *mut JSContext) -> *mut JSObject {
             ptr: &mut fn_rval,
         },
     );
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if !evaluated || !fn_rval.is_object() {
         serve_route_pending_exception(raw_cx);
         return ::std::ptr::null_mut();
@@ -5434,7 +5434,7 @@ unsafe fn serve_build_request_object(
                 ptr: &mut fn_rval,
             };
             let evaluated = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut src, fn_h);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
             if !evaluated || !fn_rval.is_object() {
                 // Capture, clear, route — a pending exception must never leak
                 // past a native entry point (same contract as timers.rs
@@ -8939,7 +8939,7 @@ unsafe extern "C" fn process_next_tick(cx: *mut JSContext, argc: u32, vp: *mut J
                 ptr: &mut eval_rval,
             };
             mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, eval_rval_h);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
     }
 
@@ -9028,7 +9028,7 @@ unsafe extern "C" fn hrtime_bigint(cx: *mut JSContext, _argc: u32, vp: *mut JSVa
                 ptr: &mut rval,
             },
         );
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
     }
     args.rval().set(rval);
     true
@@ -10684,7 +10684,7 @@ unsafe fn install_bun_semver(
         ptr: &mut rval,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut text, rval_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if ok && rval.is_object() {
         rooted!(&in(cx) let semver_obj = rval.to_object());
         // `order` — native, backed by the bun_semver crate (Bun's own

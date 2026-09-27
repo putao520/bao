@@ -193,7 +193,7 @@ unsafe extern "C" fn bun_peek(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         ptr: &mut ctor,
     };
     let evaluated = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut text, ctor_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if !evaluated || !ctor.is_object() {
         JS_ClearPendingException(cx);
         args.rval().set(val);
@@ -469,7 +469,7 @@ unsafe extern "C" fn readable_stream_to_array(
         ptr: &mut fn_val,
     };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut text, fn_h);
-    libc::free(opts as *mut _);
+    mozjs::glue::DeleteCompileOptions(opts);
     if !ok || !fn_val.is_object() {
         JS_ClearPendingException(cx);
         JS_ReportErrorUTF8(cx, c"Bun.readableStreamToArray: compile failed".as_ptr());

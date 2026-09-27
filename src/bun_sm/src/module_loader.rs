@@ -1173,7 +1173,7 @@ export default _m;
         if !opts.is_null() {
             let mut src = transform_str_to_source_text(esm_src);
             let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
             if !module.is_null() {
                 // BUG-ENG-365: attach private value to synthetic builtin modules
                 let priv_url = format!("builtin:{}", stripped);
@@ -1210,7 +1210,7 @@ export default _m;
             if !opts.is_null() {
                 let mut src = transform_str_to_source_text(&payload);
                 let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-                libc::free(opts as *mut _);
+                mozjs::glue::DeleteCompileOptions(opts);
                 if !module.is_null() {
                     set_module_private(raw_cx, module, &specifier_str);
                     module_cache_insert(raw_cx, &cache_key, module);
@@ -1257,7 +1257,7 @@ export default _m;
         if !opts.is_null() {
             let mut src = transform_str_to_source_text(&wrapper);
             let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
             if !module.is_null() {
                 let priv_url = path_to_file_url(&canonical);
                 set_module_private(raw_cx, module, &priv_url);
@@ -1284,7 +1284,7 @@ export default _m;
         }
         let mut src = transform_str_to_source_text(&transpiled);
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-        libc::free(opts as *mut _);
+        mozjs::glue::DeleteCompileOptions(opts);
         if !module.is_null() {
             // BUG-ENG-365: SetModulePrivate on every compiled module so that
             // subsequent imports/evaluates can resolve relative specifiers and

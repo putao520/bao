@@ -807,7 +807,7 @@ pub fn install_fetch_classes(
             if !evaluated {
                 JS_ClearPendingException(raw);
             }
-            libc::free(opts as *mut _);
+            mozjs::glue::DeleteCompileOptions(opts);
         }
     }
 }
