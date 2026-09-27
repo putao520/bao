@@ -518,7 +518,8 @@ fn bao_cli_subcommand_install_argument_surface() {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.code() == Some(0)
-                && stdout.contains("Usage: bao install")
+                && stdout.contains("Usage: bao") // argv[0] basename: "bao" posix / "bao.exe" windows
+                && stdout.contains("install")
                 && stdout.contains("Install dependencies")
             {
                 eprintln!("PASS  §a::install_help_exits_zero");
