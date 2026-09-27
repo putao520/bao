@@ -71,6 +71,7 @@ fi
 
 BAO_WIN_CROSS_ROOT="${BAO_WIN_CROSS_ROOT:-/opt/bao-win-cross}"
 WSROOT="$BAO_WIN_CROSS_ROOT/wsroot"
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ ! -d "$WSROOT/vc14/include" ] || [ ! -d "$WSROOT/sdk10/Include" ]; then
     echo "error: winsysroot not found at $WSROOT (see the rebuild recipe in this file's header)" >&2
@@ -154,15 +155,38 @@ for _d in "${WIN_CROSS_INCLUDE_DIRS[@]}"; do
 done
 
 export PATH="$BAO_WIN_CROSS_ROOT/shim-bin:$PATH"
+# Install the clang-cl linkjob shim into shim-bin as `clang-cl` (shadows the
+# system binary for this env only): mozangle build_dlls' libEGL/libGLESv2 DLL
+# link jobs are issued from a fresh default (C) cc::Build and pass
+# `/Fo<objdir>\` alongside many .obj inputs — real cl.exe ignores /Fo on link
+# jobs, the clang-cl driver errors out, and with the .obj inputs it routes the
+# link to the host default linker instead of an MSVC-mode linker. The shim is a
+# byte-exact passthrough for every non-/LD job; see scripts/clang-cl-linkjob.sh
+# (repo SSOT) for the link-job translation.
+install -m 0755 "$_script_dir/clang-cl-linkjob.sh" \
+    "$BAO_WIN_CROSS_ROOT/shim-bin/clang-cl"
+# mozbuild derives the clang-frontend path as <dirname(clang-cl)>/clang
+# (toolchain.configure llvm_tool: used for --print-prog-name tool discovery);
+# provide it next to the shim or configure dies on FileNotFoundError. It also
+# derives the host C++ compiler as <dirname(host clang)>/clang++ — without the
+# twin symlink configure dies with "Cannot find the host C++ compiler".
+if [ ! -e "$BAO_WIN_CROSS_ROOT/shim-bin/clang" ]; then
+    ln -s "$(command -v clang)" "$BAO_WIN_CROSS_ROOT/shim-bin/clang"
+fi
+if [ ! -e "$BAO_WIN_CROSS_ROOT/shim-bin/clang++" ]; then
+    ln -s "$(command -v clang++)" "$BAO_WIN_CROSS_ROOT/shim-bin/clang++"
+fi
 export WINSYSROOT="$WSROOT"
 export INCLUDE LIB
 export CFLAGS_x86_64_pc_windows_msvc="$_win_cross_cflags -Wno-incompatible-pointer-types"
 export CXXFLAGS_x86_64_pc_windows_msvc="$_win_cross_cflags -Wno-incompatible-pointer-types"
+# CC/CXX resolve to the shim via PATH (shim-bin is first); identical argv for
+# compile jobs, MSVC-mode lld-link translation for /LD link jobs.
 export CC_x86_64_pc_windows_msvc="$(command -v clang-cl)"
 export CXX_x86_64_pc_windows_msvc="$(command -v clang-cl)"
 export AR_x86_64_pc_windows_msvc="$BAO_WIN_CROSS_ROOT/shim-bin/llvm-lib"
 export LD_x86_64_pc_windows_msvc="$BAO_WIN_CROSS_ROOT/shim-bin/lld-link"
 
-unset _d _win_cross_cflags _vc _sdk _sdklib WSROOT
+unset _d _win_cross_cflags _vc _sdk _sdklib WSROOT _script_dir
 
 echo "win-cross env ready: root=$BAO_WIN_CROSS_ROOT target=x86_64-pc-windows-msvc"

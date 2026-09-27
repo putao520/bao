@@ -13,6 +13,27 @@
 //! `<file_name>/common.rs`, not this directory (the old root-target layout
 //! made the bare form work; the suite layout does not).
 
+// surfman embedder obligation (`declare_surfman!`, surfman src/macros.rs — the
+// upstream macro expanded verbatim because `surfman` is not a direct dep of
+// this harness): on Windows the GPU drivers look for the exported
+// `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance` symbols in the
+// executable to pick the discrete GPU; without the `.drectve` /export link args
+// surfman prints "Could not find the NVIDIA and/or AMD GPU selection symbols"
+// and the hybrid-GPU selection defaults to the wrong adapter. Must live in the
+// binary crate root so the linker sees the export directives. Linux: compiled
+// out.
+#[cfg(target_os = "windows")]
+#[used]
+#[link_section = ".drectve"]
+static BAO_SURFMAN_LINK_ARGS: [u8; 74] =
+    *b" /export:NvOptimusEnablement /export:AmdPowerXpressRequestHighPerformance ";
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut NvOptimusEnablement: i32 = 1;
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut AmdPowerXpressRequestHighPerformance: i32 = 1;
+
 mod anti_crawler_detection_tests;
 mod bao_api_json_stringify_tests;
 mod bao_api_method_routing_tests;
