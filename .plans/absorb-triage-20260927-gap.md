@@ -1,0 +1,49 @@
+# 吸收裁决积压:b820a9679..7ca99fe3f(143 commits)
+
+> 缺陷:2026-09-27 夜间波只吸收 6 颗 cherry-pick 却把 upstream-baseline.json bump 到 7ca99fe3f(基线语义=triage 收口边界,被虚假推进)。
+> 本台账 = 逐桶裁决 + 已执行动作。吸收方向恒为「向基线同步」;BAO 补丁文件(CLAUDE.md servo 清单 31+ 条)禁盲同步,走重放。
+
+## 已执行(本轮)
+
+| 动作 | 文件 | 状态 |
+|---|---|---|
+| webvtt 家族修复(含 cue/ 子目录+crate tests 递归补齐) | dom/webvtt/* 8 文件 + webvtt/src{,/cue} + tests | `cargo check -p bao-servo-webvtt` RC=0(36.5s) |
+| fonts freetype 双修(16.16 转换/average_advance 缩放) | fonts/platform/freetype/font.rs | 零 BAO 锚;回退验证 `cargo check -p bao-servo-fonts -p bao-servo-constellation` RC=0(13.7s) |
+| **paint timing 闭合实验(已回退)**:paint crate 预存断裂(HEAD 20 错:消费 PaintTimingInfo/PaintTimingReport 而 paint_api 无生产侧)。逐跳同步 paint-api→paint→embedder→shared/constellation 后单 crate 绿,但宽域验证爆出 BAO 补丁 constellation crate 期望 per-WebView 消息变体(FocusWebView/BlurWebView/SetWebViewThrottled 等)——**vendor 的 shared/constellation 本就超前于基线,基线同步=降级**。死线触发,全部回退至 HEAD(paint 回到预存断裂态,归本闭合波)。 | 实验集:paint/src 7 + shared/paint 3 + shared/embedder 7 + shared/constellation 5 + id.rs 增量 LCPCandidateID | 已回退;结论:**闭合集 ≥6 crate 且含 2 个 BAO 补丁 crate(paint 消费链+constellation),零散文件同步不可行,必须协调波**(同步集+补丁重放一体) |
+
+### paint 闭合波合同要素(给执行 E)
+- 同步集:paint、shared/paint(除 rendering_context.rs WGL 补丁)、shared/embedder、shared/constellation、shared/base/id.rs(增量 LCPCandidateID)
+- 重放集:components/constellation(per-instance RouterProxy 补丁,其消费的 per-WebView 消息族 FocusWebView/BlurWebView/SetWebViewThrottled/GetInternalAncestorOriginObjectsList/SetThrottledComplete/SetDocumentState 需与基线 shared/constellation 对齐——基线可能已含同名变体,需 API 面比对而非盲保留)、script 侧消费(PaintTiming* 生产链)
+- vendor 残岛:shared/paint/largest_contentful_paint_candidate.rs(上游 baseline 与 origin/main 均无此文件,vendor 独有迭代残岛,有消费者;迁基线面后删除)
+
+## 裁决(按桶)
+
+### ABSORB(向基线同步;已完成或随缺口闭合波)
+- webvtt 系列 5 颗:cfa8441bd(GetCueAsHTML)/78307842f(activeCues)/6bd06116e(cue order)/8dd2551cb(track URL)/8d51181ba(parsing tests)→ **已随家族同步完成**(8dd2551cb 的 htmltrackelement.rs 已含)。
+- fonts 三颗中两颗(b724f6f80/b9ed51223)已同步;694133bbc(lazy metrics)**defer**:触 BAO 补丁 canvas_state.rs(R53-A)+layout 文件,需重放。
+- 79eb20c15(paint 移除 closed WebView pipelines)→ 随 paint crate 整体同步(在联合 check 内验证)。
+
+### DEFER-重放波(触 BAO 补丁文件/结构性耦合;单独 E 合同)
+- **GC 根安全化系列 ~15 颗**(RootedPromise/TracedCallback/MaybeUnreflectedDom/safe conversions/stream callbacks/TrustedScript/useRcPromise 移除):高价值(正对 opt-only SIGSEGV GC 根治历史)+高碰撞(SM153 消费表 script_thread/codegen/principals/structuredclone 全在射程)。
+- 9d381ca6c(Sec-Fetch-* 用 current URL):http_loader.rs 重补丁(C19 S2b)。
+- 7256c05b1(cookie domain 匹配降 alloc):shared/net/lib.rs BAO 补丁 + 新 fn 在补丁文件内。
+- media-audio 两颗(AudioParam automation/clamping):audio/*.rs 是 C15 补丁区。
+- 346d5a9b3(constellation WebViewState):constellation 是 per-instance RouterProxy 补丁区,结构性。
+- 48123c17b(devtools Evaluate primitive throw args):script crate,依赖未同步邻居,随缺口闭合波。
+
+### 已有裁决维持(09-19 波 deferred 清单)
+- ae51d9785/39fd4909c/31f660d20(paint timing 三颗)维持 deferred——但注意 paint 消费侧已在树,撕裂已由本轮闭合生产侧;PaintTimingMixin 大件本体仍 deferred。
+
+### N-A-HOST(上游基础设施,不吸收)
+- android 7 颗 + Revert Android 1 颗;build 14;ci/cargo/tidy/bootstrap/etc;servoshell/libservo/webdriver 打包面;WPT meta/tests 同步(sync 类,tests 政策外);deps 2 颗(下次 lock 刷新时重估)。
+
+### 随缺口闭合波(script 71 主体 + script_bindings 系列)
+- 纯上游文件(零 BAO 锚)→ 文件级向基线同步;BAO 锚文件 → 逐文件重放(以 CLAUDE.md servo 表为图)。
+- ca37ad20f(SVG a/pattern/text/tspan DOM 元素):**等 E1 落地后**(dom/svg/ 是 E1 在途域)。
+- e814d42b5(IDBIndex openCursor/openKeyCursor):idbindex.rs 锚检查后同步(idbtransaction.rs 是 BCE-20260910-004b 补丁,注意邻接)。
+
+## 防复发(daily-ops 流程缺陷)
+吸收波 bump 基线前必须证明窗口全判定(bump = 收口声明);验收 check 的 crate 集必须覆盖被触碰 crate 的闭包(夜间波 8 crate 漏 paint 即本案)。
+
+## 基线诚实性
+143 颗全处置完成前,upstream-baseline.json 的 servo notes 必须显式记录「b820a9679..7ca99fe3f 缺口 triage 在案(本文件)」;全处置后维持 7ca99fe3f。
