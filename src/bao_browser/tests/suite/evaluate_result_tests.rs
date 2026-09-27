@@ -348,10 +348,12 @@ fn evaluate_in_node_realm_serializes_value_types() {
     let func_body_start = source[func_start..]
         .find('{')
         .expect("function body start not found");
+    // task#7: the error branch grew (real pending-exception text extraction),
+    // so the scan window tracks the function-end marker instead of a fixed
+    // byte cap that truncated the value-type serialization section.
     let search_limit = source[func_start + func_body_start..]
         .find("/// Bridge callback: create Node Realm")
-        .unwrap_or(3000)
-        .min(5000);
+        .unwrap_or(3000);
     let func_body =
         &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
@@ -385,5 +387,91 @@ fn evaluate_result_exported_from_crate() {
     assert!(
         source.contains("EvaluateResult"),
         "REQ-SEC-002 REGRESSION: EvaluateResult must be exported in lib.rs"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// task#7: evaluate error path carries the REAL pending exception text
+// (previously the wrapper discarded it into a generic
+// "evaluate_script returned Err (JS exception thrown)" string, leaving
+// callers — CDP Runtime.evaluate / CLI / tests — with no actionable text).
+// ═══════════════════════════════════════════════════════════════════════
+
+use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use std::time::{Duration, Instant};
+
+fn wait_for_load_and_drain(pool_page: &bao_browser::PageHandle, max_ms: u64) {
+    let start = Instant::now();
+    while start.elapsed().as_millis() < max_ms as u128 {
+        let _ = pool_page.evaluate_js("");
+        if matches!(
+            pool_page.get_state(),
+            bao_browser::PageState::Interactive | bao_browser::PageState::Idle
+        ) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+// @trace REQ-SEC-002 [level:e2e]
+fn evaluate_js_error_path_carries_real_exception_text() {
+    // servo Opts is a per-process singleton — single #[test] for all asserts.
+    let runtime = BaoRuntime::new(BaoConfig::default())
+        .expect("BaoRuntime::new failed");
+    let pool: &PagePool = runtime.page_pool();
+    let page = pool
+        .create_page(&PageConfig {
+            url: Some("data:text/html,<!DOCTYPE html><html><body></body></html>".into()),
+            ..Default::default()
+        })
+        .expect("pool.create_page failed");
+    wait_for_load_and_drain(&page, 20000);
+
+    // ① Runtime throw: the error text must carry the actual marker message
+    //    and the Error constructor name (not the generic wrapper string).
+    let error = page
+        .evaluate_js("throw new Error('marker-req7');")
+        .expect_err("a thrown JS exception must surface as Err");
+    let text = error.to_string();
+    assert!(
+        text.contains("marker-req7"),
+        "evaluate error text must contain the real exception message, got: {text}"
+    );
+    assert!(
+        text.contains("Error:"),
+        "evaluate error text must contain the Error subclass name, got: {text}"
+    );
+    assert!(
+        !text.contains("JS exception thrown"),
+        "generic wrapper text must be gone, got: {text}"
+    );
+
+    // ② Compile failure: the pending SyntaxError must stay distinguishable
+    //    from a plain runtime Error by name.
+    let error = page
+        .evaluate_js("const 1 = 2;")
+        .expect_err("a syntax-error script must surface as Err");
+    let text = error.to_string();
+    assert!(
+        text.contains("SyntaxError"),
+        "syntax-error text must be distinguishable by name, got: {text}"
+    );
+
+    // ③ Normal path zero-regression: successful evaluation still flows.
+    let value = page
+        .evaluate_js("6 * 7")
+        .expect("normal evaluation must succeed");
+    assert_eq!(value, "42");
+
+    // ④ Primitive throw: string payloads stringify (no generic wrapper text).
+    let error = page
+        .evaluate_js("throw 'primitive-marker';")
+        .expect_err("a thrown string must surface as Err");
+    let text = error.to_string();
+    assert!(
+        text.contains("primitive-marker"),
+        "thrown primitive must reach the error text, got: {text}"
     );
 }

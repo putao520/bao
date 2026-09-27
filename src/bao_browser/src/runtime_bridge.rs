@@ -554,9 +554,24 @@ pub unsafe fn evaluate_in_node_realm(
     );
 
     if eval_result.is_err() {
+        // task#7 (REQ-BRW-046 wave finding): surface the real pending exception
+        // instead of the generic string — callers (CDP/Runtime.evaluate, CLI,
+        // tests) need the actual JS error text to be actionable.
+        //
+        // SAFETY: `cx` is still mutably borrowed by `realm` here (its rooted
+        // guard lives to scope end), so rebuild the context wrapper from the
+        // same raw pointer — the established idiom in this file's rval
+        // serialization path below; raw_cx is the live script-thread context.
+        let mut exception_cx = {
+            let raw_cx = realm.raw_cx();
+            unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx)) }
+        };
+        let message = take_pending_exception_text(&mut exception_cx).unwrap_or_else(|| {
+            "evaluate_script returned Err (JS exception thrown)".into()
+        });
         let _ = result_out.set(EvaluateResult {
             value: None,
-            error: Some("evaluate_script returned Err (JS exception thrown)".into()),
+            error: Some(message),
         });
         return;
     }
@@ -604,6 +619,108 @@ pub unsafe fn evaluate_in_node_realm(
         Some("[JSValue:object]".into())
     };
     let _ = result_out.set(EvaluateResult { value, error: None });
+}
+
+/// Extract the pending JS exception from `cx` (clearing it) as human-readable
+/// text for the evaluate error path. task#7: the previous generic
+/// "JS exception thrown" string discarded everything callers needed.
+///
+/// Composition (reuse ladder — all extraction math/IO is mozjs-owned):
+/// * `error_info_from_exception_stack_safe` — message + filename + line from
+///   the live pending exception (must run BEFORE clearing),
+/// * `JS_GetProperty(cx, obj, "name")` — the Error subclass name
+///   ("SyntaxError"/"TypeError"/…), keeping compile-vs-runtime and
+///   error-class distinguishable,
+/// * primitive throws (`throw "str"` / `throw 42`) stringify directly.
+///
+/// Returns `None` when nothing is pending or nothing readable remains —
+/// callers keep their fail-closed fallback text in that case.
+fn take_pending_exception_text(cx: &mut mozjs::context::JSContext) -> Option<String> {
+    use mozjs::jsval::UndefinedValue;
+    use mozjs::rust::wrappers2::{JS_ClearPendingException, JS_GetPendingException};
+
+    rooted!(&in(cx) let mut exception_value = UndefinedValue());
+    // SAFETY: cx is the script thread's live context inside the entered realm;
+    // reading the pending exception is the SpiderMonkey-sanctioned error path.
+    if unsafe { !JS_GetPendingException(cx, exception_value.handle_mut()) } {
+        return None;
+    }
+    // Error info must be read from the live pending state (see
+    // error_info_from_exception_stack_safe), so clear only afterwards.
+    let error_info =
+        mozjs::rust::error_info_from_exception_stack_safe(cx, exception_value.handle_mut());
+    // SAFETY: the exception value has been read above; clear it so it cannot
+    // leak into later evaluations.
+    unsafe { JS_ClearPendingException(cx) };
+
+    let name = exception_name(cx, &exception_value);
+    let mut text = match (&name, &error_info) {
+        (Some(name), Some(info)) => format!("{name}: {}", info.message),
+        (None, Some(info)) => info.message.clone(),
+        (Some(name), None) => name.clone(),
+        (None, None) => primitive_js_value_text(cx, &exception_value)?,
+    };
+    if let Some(info) = error_info {
+        if !info.filename.is_empty() {
+            text.push_str(&format!(" ({}:{})", info.filename, info.line));
+        }
+    }
+    Some(text)
+}
+
+/// The `name` property of an Error object ("Error"/"SyntaxError"/…), if the
+/// exception is an object carrying a string name.
+fn exception_name(cx: &mut mozjs::context::JSContext, value: &mozjs::jsval::JSVal) -> Option<String> {
+    use mozjs::jsval::UndefinedValue;
+    use mozjs::rust::wrappers2::JS_GetProperty;
+
+    if !value.is_object() {
+        return None;
+    }
+    rooted!(&in(cx) let object = value.to_object());
+    rooted!(&in(cx) let mut name_value = UndefinedValue());
+    // SAFETY: object is a live JSObject rooted above; c"name" is
+    // NUL-terminated as the JSAPI C string convention requires.
+    if unsafe { !JS_GetProperty(cx, object.handle(), c"name".as_ptr(), name_value.handle_mut()) } {
+        return None;
+    }
+    js_string_value_to_string(cx, &name_value)
+}
+
+/// Serialize a string-valued JS value through mozjs's UTF-8 conversion
+/// (handles Latin1 and TwoByte JS string encodings).
+fn js_string_value_to_string(
+    cx: &mut mozjs::context::JSContext,
+    value: &mozjs::jsval::JSVal,
+) -> Option<String> {
+    if !value.is_string() {
+        return None;
+    }
+    // SAFETY: is_string() checked above, so to_string() returns the JSString.
+    let js_str = match NonNull::new(value.to_string()) {
+        Some(js_str) => js_str,
+        None => return Some(String::new()),
+    };
+    // SAFETY: js_str is a valid JSString (null checked above) and cx is the
+    // live context required by the UTF-8 conversion.
+    Some(unsafe { mozjs::conversions::jsstr_to_string(cx, js_str) })
+}
+
+/// Fallback text for non-Error primitive throws (`throw "str"` / `42` / bool).
+fn primitive_js_value_text(
+    cx: &mut mozjs::context::JSContext,
+    value: &mozjs::jsval::JSVal,
+) -> Option<String> {
+    if let Some(text) = js_string_value_to_string(cx, value) {
+        return Some(text);
+    }
+    if value.is_number() {
+        return Some(value.to_number().to_string());
+    }
+    if value.is_boolean() {
+        return Some(value.to_boolean().to_string());
+    }
+    None
 }
 
 /// Evaluate a script in the Node Realm via servo's script thread callback mechanism.
