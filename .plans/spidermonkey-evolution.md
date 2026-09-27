@@ -2458,3 +2458,13 @@ health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递
 ### spec-gov C-7 第 13 次计数触发闭环(2026-09-27,主会话)
 
 与第 10/11/12 次(计数器非活体)不同,本轮有**真实错误类事件**:gsc-spec runtime-server 重工具面活体降级——prd 写入两度 120s 超时(kues9jjos/k2frfvj8h)、spec_govern health 60s 超时(闭环取证探针本身即证)、Stop hook 400 ×2。轻面 cache_stats 应答(进程活,请求处理挂)。归因:计数由活体降级事件驱动,非陈旧噪声。处置:runtime 由宿主懒拉起(REQ-RUNTIME-1,无手动路径,主会话不可干预);#33 已排队(PRD 转录,runtime 恢复即执行);残留度量顺延至恢复后(health 自身挂起时无法测量=如实陈述)。机械证据(timeout 探针)优先于重开 LLM 审计——一个超时探针证明的东西不需要 architect 再推导一遍。用户方向裁决原文已在 git 台账(过渡载体),零丢失。
+
+### spec-gov C-7 第 14 次计数触发闭环(2026-09-27,主会话)
+
+计数源=本会话两次错误类失败链,均已完整 BCE 处置:
+1. **paint 闭合实验失败链**(20→16→4→0 错误逐跳收敛后宽域爆补丁 crate 期望)——归因:paint-timing 家族半吸收预存撕裂+vendor shared 面超前于基线(同步=降级);处置:死线全回退(commit 3cabe435 前后);防复发:吸收实验死线规则+「vendor 可超前于基线」判据入记忆。
+2. **webvtt dom 同步失败链**(5+3 错误→适配后更深消费者耦合)——归因:上游 crown 纪元形态进前 crown fork(NoGC/构造器/bytes/job_queue);处置:整体回退至 fork 自洽态(91c2c1a5),功能件并入 E3 打包合同;防复发:同步安全双查判据(BAO 锚+纪元形态)+打包禁零售,入记忆。
+
+残留实测:script check RC=0(E1+E3 双证)、webvtt crate 59/59、layout 已编(E3 e2e 在跑 13 PASS)——编译面零活体错误。**在途归因一项**:media_e2e audio_play_pause_statemachine 确定性失败(E3 域,3/3 复现,HEAD 对照私有 target worktree 进行中,历史基线数据已供二分)——BCE 流程正在执行,非残留。
+
+机械证据(错误文本/回退 commit/记忆条目)优先于重开 LLM 审计(第 13 次闭环先例)。
