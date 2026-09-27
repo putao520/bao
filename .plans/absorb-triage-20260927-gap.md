@@ -54,3 +54,9 @@
 - **桶 A(12 颗,直接重放)**+**桶 B(12 颗,先补 callback.rs ~50 行 pre-window delta:RootedCallback/TracedCallback)= 本波(口径 2 批准)**;2b71c3cc1 codegen 语义面按 SM153 表纪律逐处锚。
 - **桶 C(~20 颗,promise 重构前置:RootedPromise/TracedPromise+87 文件 Rc<Promise> 迁移)= 单独立项另波**(体量风险自成一波,枚举分析留作合同基础)。
 - **桶 D(3 颗 N/A 确认)**:hyper-rustls bump/activeCues(WebVTT 波已吸)/IDBIndex openCursor(特性候选非安全系列,记 backlog)。
+
+## 闭合波①战果(2026-09-28 落地,commit 95986e4e)
+- 落地:桶 A 7 颗 + 基础设施 2 件(callback.rs RootedCallback/TracedCallback pre-window delta + codegen fused getter no_gc 支持)。四门绿+主会话独立 V 3/3。
+- 死线停(如实):桶 B 13 颗——批量应用 1234 错爆炸;63/77 文件相对窗口基线漂移;与桶 C 前置纠缠(3596f53ad 依赖 resolve_or_wrap_promise/rooted_heap_handle)。回退一致绿态验证。
+- 重分类:**桶 B → script 协调大波**(与 script-71 主体合一,排在桶 C 之后);3596f53ad 并入桶 C;b4b6adf49 fork 已含等价(N/A)。
+- **队列终序**:paint 协调波(E1 在跑)→ 桶 C promise 重构波 → script 协调大波(71+B)→ task#8。
