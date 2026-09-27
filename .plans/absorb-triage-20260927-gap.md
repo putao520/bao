@@ -69,3 +69,11 @@
 
 ## 闭合波②可验部分收口(2026-09-28 00:43 窗口取证)
 completion 四项齐备:①链检查 RC=0(断裂=在途实验态误判,已澄清);②servo 聚合 RC=0(script+layout+paint+constellation 全链);③回归双绿(CSS 门 73/73+SVG 13/13);④BCE 根因陈述(双向互斥实现)。**迁移本体**(岛→基线 PaintTiming)按六点蓝图排队 script 协调大波后。
+
+## 预起草:script 协调大波合同(排队 promise③ 之后;E3 枚举+E1 波②侦察为基)
+前置双地基:①promise 重构(promise③ 在跑,7 文件同步集+87 文件迁移);②codegen callbackUsesRc/useRc/needTraced 决策端口(configuration.py+codegen.py 三站点,涟漪 107 处/22 文件 Option<Rc<XxxCallback>>)。
+主体:25 颗(桶 B 13 callback 转换+桶 C 直接相关 ~12:17b27476c/baa669709/8ac219068/9c9d02c2e/4bbb8ce78/5f1362851/6b03bc4e7/d6e83757a/531762343/b5a1f5e6e/2d63455e7/261725c76+3596f53ad 并入)+script-71 主体(纯上游零锚文件级同步+BAO 锚文件按 CLAUDE.md 表重放;含 ca37ad20f SVG 四元素——E1 已落地解锁)。
+分段:地基②先行(独立绿检查点)→25 颗按文件族分段→script-71 主体殿后。双门口径+回归三件套+113 级死线(按波实际面×1.3)。
+
+## 预起草:paint 岛→基线迁移波合同(队列终位;E1 六点蓝图)
+打包集=vendor 4 crate+script 3 面一次 PR:①直取基线 paint/{lib,painter,pipeline_details}.rs+shared/paint/{lib,display_list,viewport_description}.rs;②删双孤儿(largest_contentful_paint_candidate.rs+largest_contentful_paint_calculator.rs);③layout 同步 display_list/{mod,paint_timing_handler}.rs+layout_impl.rs(先 diff 定界);④script 同步 dom/performance/*+document.rs+window.rs+webidls×2(**须 script 协调大波后**);⑤shared/embedder 仅 3 文件 delta 待查性质;⑥shared/constellation+constellation 保留 vendor(per-WebView 消息族=RouterProxy 消费面,实证不同步);⑦servo/tests/largest_contentful_paint.rs 随面。
