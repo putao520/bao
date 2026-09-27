@@ -8,7 +8,7 @@ name = "bun_runtime"
 # so this patch release ships alone. runtime fix batch: atob/btoa binary fidelity, async_hooks promise identity, spawn watch, SC bridge + WHATWG URL parity, premature loop exit fetch teardown.
 # 0.1.2 (2026-08-19): stable-channel fix — http_client body handoff via
 # bun_core::vec::chan_vec_to_std (Bytes::From needs the std Vec).
-version = "0.4.0"
+version = "0.4.2"
 description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true
@@ -41,10 +41,10 @@ bun_install = { path = "../install", version = "^0.2.0" }
 bun_http = { path = "../http", version = "^0.2.0" }
 bun_http_types = { path = "../http_types", version = "^0.2.0" }
 bun_threading = { path = "../threading", version = "^0.2.0" }
-bun_core = { path = "../bun_core", version = "0.2.0" }
-bun_url = { path = "../url", version = "^0.2.0" }
-bun_uws = { path = "../uws", version = "^0.2.0" }
-bun_uws_sys = { path = "../uws_sys", version = "^0.2.0" }
+bun_core = { path = "../bun_core", version = "0.2.1" }
+bun_url = { path = "../url", version = "^0.2.1" }
+bun_uws = { path = "../uws", version = "^0.2.1" }
+bun_uws_sys = { path = "../uws_sys", version = "^0.2.1" }
 # @trace REQ-ENG-006 [api:Bun.semver.order] — Bun's own semver implementation
 # (parse + orderWithoutBuild), the same engine install/resolver use.
 bun_semver = { path = "../semver", version = "^0.2.0" }

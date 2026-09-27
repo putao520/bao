@@ -114,8 +114,8 @@ rust-version = "1.89"
 # BAO PATCH (W0b publish fork): dep keys stay `mozjs`/`mozjs_sys` (members use
 # `mozjs.workspace = true` and code does `use mozjs::`); packages are published
 # as bao-mozjs / bao-mozjs-sys with lib names mozjs / mozjs_sys unchanged.
-mozjs = { path = "vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.24" }
-mozjs_sys = { path = "vendor/mozjs/mozjs-sys", package = "bao-mozjs-sys", version = "^153.3.0-0" }
+mozjs = { path = "vendor/mozjs/mozjs", package = "bao-mozjs", version = "^0.24.1" }
+mozjs_sys = { path = "vendor/mozjs/mozjs-sys", package = "bao-mozjs-sys", version = "^153.3.0-1" }
 bao-core = { path = "src/bao", version = "0.2.0" }
 bao_crypto = { path = "src/bao_crypto", version = "0.1.0" }
 bao_boringssl_bridge = { path = "src/bao_boringssl_bridge", version = "0.2.0" }
@@ -207,15 +207,15 @@ bun_dispatch = { path = "src/dispatch", version = "0.1.0" }
 bun_brotli = { path = "src/brotli", version = "0.2.0" }
 bun_perf = { path = "src/perf", version = "0.2.0" }
 bun_resolve_builtins = { path = "src/resolve_builtins", version = "0.2.0" }
-bun_url = { path = "src/url", version = "0.2.0" }
+bun_url = { path = "src/url", version = "0.2.1" }
 bun_windows_sys = { path = "src/windows_sys", version = "0.1.0" }
 bun_ptr = { path = "src/ptr", version = "0.2.0" }
 bun_alloc = { path = "src/bun_alloc", version = "0.2.0" }
 bun_standalone_graph = { path = "src/standalone_graph", version = "0.2.0" }
-bun_uws = { path = "src/uws", version = "0.2.0" }
+bun_uws = { path = "src/uws", version = "0.2.1" }
 bun_wyhash = { path = "src/wyhash", version = "0.1.0" }
 bun_hash = { path = "src/hash", version = "0.1.0" }
-bun_core = { path = "src/bun_core", version = "0.2.0" }
+bun_core = { path = "src/bun_core", version = "0.2.1" }
 bun_core_macros = { path = "src/bun_core_macros", version = "0.1.0" }
 bun_output_tags = { path = "src/bun_output_tags", version = "0.1.0" }
 bun_router = { path = "src/router", version = "0.2.0" }
@@ -243,7 +243,7 @@ bun_libuv_sys = { path = "src/libuv_sys", version = "0.2.0" }
 bun_simdutf_sys = { path = "src/simdutf_sys", version = "0.1.0" }
 bun_spawn_sys = { path = "src/spawn_sys", version = "0.2.0" }
 bun_tcc_sys = { path = "src/tcc_sys", version = "0.1.0" }
-bun_uws_sys = { path = "src/uws_sys", version = "0.2.0" }
+bun_uws_sys = { path = "src/uws_sys", version = "0.2.1" }
 
 [profile.release]
 lto = "fat"
