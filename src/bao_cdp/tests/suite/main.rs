@@ -14,6 +14,7 @@ mod bridge_channel_timeout_clone_deep_tests;
 mod bridge_channel_timeout_edge_deep_tests;
 mod bridge_command_exhaustive_tests;
 mod cdp_types_deep_tests;
+mod devtools_dom_css_tests;
 mod domain_handler_response_field_boundary_tests;
 mod domain_stress_tests;
 mod network_schema_conformance_tests;

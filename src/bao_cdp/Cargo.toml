@@ -20,3 +20,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cdp-protocol = "0.3"
 log = "0.4"
+
+# REQ-BRW-048: the DOM/CSS DevTools query methods are verified against a
+# live servo page drained through the production bridge handler
+# (bao_browser::handle_bridge_command). Dev-only edge — the normal edge is
+# bao_browser → bao_cdp; cargo permits the dev-cycle so the e2e lives next
+# to the dispatch face it verifies.
+[dev-dependencies]
+# Package key is `bao-browser` (crates.io name); the lib target stays
+# `bao_browser`, so `use bao_browser::` is unchanged in test code.
+bao-browser = { path = "../bao_browser", version = "^0.3.0" }

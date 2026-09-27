@@ -206,16 +206,16 @@ mod tests {
         assert_eq!(result, serde_json::json!({}));
     }
 
-    // 4. DOM.getDocument returns ok with root node
+    // 4. DOM.getDocument — REQ-BRW-048 follow-up: the canned root node is
+    //    eradicated; the bridge-less internal backend answers -32603.
     #[test]
-    fn internal_backend_send_command_dom_get_document_returns_ok() {
+    fn internal_backend_send_command_dom_get_document_explicit_error() {
         let backend = InternalBackend::new();
-        let result = backend
+        let err = backend
             .send_command("DOM.getDocument", &None, "test-target")
-            .unwrap();
-        assert!(result.get("root").is_some());
-        assert_eq!(result["root"]["nodeId"], 1);
-        assert_eq!(result["root"]["nodeType"], 9);
+            .unwrap_err();
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
     // 5. Network.enable returns ok

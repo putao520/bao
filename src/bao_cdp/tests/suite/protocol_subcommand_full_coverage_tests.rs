@@ -117,18 +117,16 @@ fn test_invariant_all_ok_responses() {
         "Runtime.compileScript",
         "DOM.enable",
         "DOM.disable",
-        "DOM.getDocument",
-        "DOM.describeNode",
-        "DOM.querySelector",
-        "DOM.querySelectorAll",
-        "DOM.getBoxModel",
+        // NOTE (REQ-BRW-048 follow-up): DOM.getDocument/describeNode/
+        // querySelector/querySelectorAll/getBoxModel/resolveNode/
+        // pushNodesByBackendIdsToFrontend read the LIVE document through the
+        // servo bridge — explicit errors without one (pinned by the
+        // dedicated tests below), removed from this ok-sweep.
         "DOM.setAttributeValue",
         "DOM.removeAttribute",
         "DOM.setOuterHTML",
         "DOM.insertBefore",
         "DOM.removeNode",
-        "DOM.resolveNode",
-        "DOM.pushNodesByBackendIdsToFrontend",
         "Network.enable",
         "Network.disable",
         "Network.setCacheDisabled",
@@ -141,10 +139,13 @@ fn test_invariant_all_ok_responses() {
         "Network.setCookie",
         "CSS.enable",
         "CSS.disable",
-        "CSS.getComputedStyleForNode",
-        "CSS.getMatchedStylesForNode",
-        "CSS.getInlineStylesForNode",
-        "CSS.setStyleTexts",
+        // NOTE: CSS.getComputedStyleForNode/getMatchedStylesForNode/
+        // getInlineStylesForNode were removed from the ok-sweep (6983871b
+        // contract, REQ-BRW-048): they read the live page through the servo
+        // bridge — explicit errors without one (pinned below), never empty
+        // style lists.
+        // NOTE: CSS.setStyleTexts also left the ok-sweep (REQ-BRW-048
+        // follow-up): the write path requires edits + the live-page bridge.
         "Emulation.setDeviceMetricsOverride",
         "Emulation.clearDeviceMetricsOverride",
         "Emulation.setUserAgentOverride",
@@ -223,6 +224,21 @@ fn test_invariant_bridge_dependent_errors() {
         ("Page.getLayoutMetrics", NO_BRIDGE),
         ("Page.removeScriptToEvaluateOnNewDocument", INVALID_PARAMS),
         ("DOM.getOuterHTML", NO_BRIDGE),
+        // REQ-BRW-048: DOM/CSS query methods read the live document — never
+        // canned trees/style lists. This sweep dispatches without params, so
+        // the required-param check (-32602) fires first for the CSS methods;
+        // DOM.getFlattenedDocument has only optional params → -32603
+        // (no bridge) directly.
+        ("DOM.getFlattenedDocument", NO_BRIDGE),
+        ("DOM.getDocument", NO_BRIDGE),
+        ("DOM.getBoxModel", INVALID_PARAMS),
+        ("DOM.describeNode", INVALID_PARAMS),
+        ("DOM.resolveNode", INVALID_PARAMS),
+        ("DOM.pushNodesByBackendIdsToFrontend", INVALID_PARAMS),
+        ("CSS.setStyleTexts", INVALID_PARAMS),
+        ("CSS.getComputedStyleForNode", INVALID_PARAMS),
+        ("CSS.getMatchedStylesForNode", INVALID_PARAMS),
+        ("CSS.getInlineStylesForNode", INVALID_PARAMS),
         ("Network.getResponseBody", NO_BRIDGE),
         ("Network.setExtraHTTPHeaders", NO_BRIDGE),
     ] {
@@ -1048,91 +1064,73 @@ fn test_dom_disable() {
 
 #[test]
 fn test_dom_get_document() {
+    // REQ-BRW-048 follow-up: the canned root schema is eradicated — the
+    // bridge-less dispatch answers -32603 (live-document query).
     let r = dispatch("DOM.getDocument", None);
     assert_jsonrpc_invariant(&r, "DOM.getDocument");
-    let root = r.result.unwrap()["root"].clone();
-    assert_eq!(root["nodeType"], 9);
-    assert_eq!(root["nodeName"], "#document");
-    // Full root node schema (REQ-CDP-005-C1):
-    assert_eq!(root["nodeId"], 1);
-    assert_eq!(root["backendNodeId"], 1);
-    assert_eq!(root["localName"], "");
-    assert_eq!(root["nodeValue"], "");
-    assert!(
-        root["childNodeCount"].as_i64().unwrap_or(0) >= 1,
-        "document must have >=1 child"
-    );
-    let children = root["children"].as_array().expect("children must be array");
-    assert!(!children.is_empty());
-    let html = &children[0];
-    assert_eq!(html["nodeType"], 1);
-    assert_eq!(html["nodeName"], "HTML");
-    assert_eq!(html["localName"], "html");
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]
 fn test_dom_describe_node() {
+    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602.
     let r = dispatch("DOM.describeNode", None);
     assert_jsonrpc_invariant(&r, "DOM.describeNode");
-    let node = r.result.unwrap()["node"].clone();
-    assert!(node["nodeName"].is_string());
-    assert_eq!(node["nodeId"], 1);
-    assert_eq!(node["nodeType"], 1);
-    assert_eq!(node["nodeName"], "HTML");
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId or objectId"));
 }
 
 #[test]
 fn test_dom_query_selector_default() {
+    // REQ-BRW-048 follow-up: selector is required — -32602.
     let r = dispatch("DOM.querySelector", None);
     assert_jsonrpc_invariant(&r, "DOM.querySelector");
-    assert_eq!(r.result.unwrap()["nodeId"], 0);
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("selector"));
 }
 
 #[test]
 fn test_dom_query_selector_with_selector_no_bridge() {
-    // Adversarial: non-empty selector, no bridge → still nodeId:0 (stub).
+    // REQ-BRW-048 follow-up: non-empty selector + no bridge → -32603 (the
+    // canonical id comes from the live page, never a stub 0-success).
     let r = dispatch("DOM.querySelector", Some(json!({"selector":"div.active"})));
-    assert_eq!(r.result.unwrap()["nodeId"], 0);
+    assert_jsonrpc_invariant(&r, "DOM.querySelector");
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_dom_query_selector_all_default() {
+    // REQ-BRW-048 follow-up: selector is required — -32602.
     let r = dispatch("DOM.querySelectorAll", None);
     assert_jsonrpc_invariant(&r, "DOM.querySelectorAll");
-    assert!(r.result.unwrap()["nodeIds"].is_array());
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("selector"));
 }
 
 #[test]
 fn test_dom_query_selector_all_with_selector_no_bridge() {
-    // Adversarial: non-empty selector, no bridge → empty nodeIds.
+    // REQ-BRW-048 follow-up: non-empty selector + no bridge → -32603.
     let r = dispatch("DOM.querySelectorAll", Some(json!({"selector":"div"})));
-    let result = r.result.unwrap();
-    assert_eq!(result["nodeIds"], json!([]));
+    assert_jsonrpc_invariant(&r, "DOM.querySelectorAll");
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_dom_get_box_model() {
+    // REQ-BRW-048 follow-up: the canned 1920×1080 quad is eradicated —
+    // real geometry needs a node ref (-32602 without either id form).
     let r = dispatch("DOM.getBoxModel", None);
     assert_jsonrpc_invariant(&r, "DOM.getBoxModel");
-    let model = r.result.unwrap()["model"].clone();
-    assert!(model["width"].is_number());
-    assert_eq!(model["width"], 1920);
-    assert_eq!(model["height"], 1080);
-    let content = model["content"].as_array().expect("content must be array");
-    assert_eq!(
-        content.len(),
-        8,
-        "box model content has 8 coords (4 corners × 2)"
-    );
-    // Quad corners: (0,0) (1920,0) (1920,1080) (0,1080).
-    assert_eq!(content[0], 0);
-    assert_eq!(content[1], 0);
-    assert_eq!(content[2], 1920);
-    assert_eq!(content[3], 0);
-    assert_eq!(content[4], 1920);
-    assert_eq!(content[5], 1080);
-    assert_eq!(content[6], 0);
-    assert_eq!(content[7], 1080);
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId or objectId"));
 }
 
 #[test]
@@ -1189,17 +1187,22 @@ fn test_dom_get_outer_html_default() {
 
 #[test]
 fn test_dom_resolve_node() {
+    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602.
     let r = dispatch("DOM.resolveNode", None);
     assert_jsonrpc_invariant(&r, "DOM.resolveNode");
-    assert_eq!(r.result.unwrap()["object"]["type"], "node");
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId or objectId"));
 }
 
 #[test]
 fn test_dom_push_nodes() {
+    // REQ-BRW-048 follow-up: backendNodeIds is required — -32602.
     let r = dispatch("DOM.pushNodesByBackendIdsToFrontend", None);
     assert_jsonrpc_invariant(&r, "DOM.pushNodesByBackendIdsToFrontend");
-    // Default: empty nodeIds.
-    assert_eq!(r.result.unwrap()["nodeIds"], json!([]));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("backendNodeIds"));
 }
 
 #[test]
@@ -1326,39 +1329,76 @@ fn test_css_disable() {
 
 #[test]
 fn test_css_get_computed_style() {
+    // REQ-BRW-048: required nodeId, then the live-page bridge. Without
+    // params the -32602 param check fires; never an empty computedStyle.
     let r = dispatch("CSS.getComputedStyleForNode", None);
     assert_jsonrpc_invariant(&r, "CSS.getComputedStyleForNode");
-    let result = r.result.unwrap();
-    assert!(result["computedStyle"].is_array());
-    assert_eq!(result["computedStyle"], json!([]));
+    let err = r.error.expect("missing nodeId must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId"));
 }
 
 #[test]
 fn test_css_get_matched_styles() {
     let r = dispatch("CSS.getMatchedStylesForNode", None);
     assert_jsonrpc_invariant(&r, "CSS.getMatchedStylesForNode");
-    let result = r.result.unwrap();
-    assert!(result["matchedCSSRules"].is_array());
-    // Full schema (REQ-CDP-007-C1):
-    assert_eq!(result["matchedCSSRules"], json!([]));
-    assert_eq!(result["inlineStyle"], serde_json::Value::Null);
-    assert_eq!(result["attributesStyle"], serde_json::Value::Null);
+    let err = r.error.expect("missing nodeId must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId"));
 }
 
 #[test]
 fn test_css_get_inline_styles() {
     let r = dispatch("CSS.getInlineStylesForNode", None);
     assert_jsonrpc_invariant(&r, "CSS.getInlineStylesForNode");
-    assert!(r.result.unwrap()["inlineStyle"].is_null());
+    let err = r.error.expect("missing nodeId must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId"));
+}
+
+#[test]
+fn test_css_query_methods_no_bridge_with_node_id_error() {
+    // With a well-formed nodeId the no-bridge face answers -32603: the
+    // styles live on the page, and there is no page without a bridge.
+    for method in [
+        "CSS.getComputedStyleForNode",
+        "CSS.getMatchedStylesForNode",
+        "CSS.getInlineStylesForNode",
+    ] {
+        let r = dispatch(method, Some(json!({"nodeId": 1})));
+        assert_jsonrpc_invariant(&r, method);
+        let err = r.error.unwrap_or_else(|| panic!("[{method}] expected error"));
+        assert_eq!(err.code, -32603, "[{method}] {}", err.message);
+        assert!(err.message.contains("no servo bridge"), "[{method}]");
+    }
+}
+
+#[test]
+fn test_dom_get_flattened_document_no_bridge_error() {
+    let r = dispatch("DOM.getFlattenedDocument", Some(json!({"depth": -1})));
+    assert_jsonrpc_invariant(&r, "DOM.getFlattenedDocument");
+    let err = r.error.expect("no bridge must be an explicit error");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
+}
+
+#[test]
+fn test_dom_get_node_for_owner_requires_object_id() {
+    let r = dispatch("DOM.getNodeForOwner", None);
+    assert_jsonrpc_invariant(&r, "DOM.getNodeForOwner");
+    let err = r.error.expect("missing objectId must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("objectId"));
 }
 
 #[test]
 fn test_css_set_style_texts() {
+    // REQ-BRW-048 follow-up: the write path requires edits — -32602.
     let r = dispatch("CSS.setStyleTexts", None);
     assert_jsonrpc_invariant(&r, "CSS.setStyleTexts");
-    let result = r.result.as_ref().unwrap();
-    assert!(result["styles"].is_array());
-    assert_eq!(result["styles"], json!([]));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("edits"));
 }
 
 #[test]

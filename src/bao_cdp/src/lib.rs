@@ -48,6 +48,7 @@ pub use bun_uws::ws_handshake::{
 pub use bun_uws::ws_server::{self, ReplayStream, WsServerConnection};
 
 mod backend;
+mod devtools_dom;
 pub mod domains;
 mod protocol;
 mod router;

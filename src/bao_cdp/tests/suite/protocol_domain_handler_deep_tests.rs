@@ -429,69 +429,50 @@ fn test_dom_disable() {
 
 #[test]
 fn test_dom_get_document_no_bridge() {
+    // REQ-BRW-048 follow-up: the stub document tree is eradicated — the
+    // bridge-less dispatch answers the explicit -32603 envelope.
     let resp = dispatch(r#"{"id":41,"method":"DOM.getDocument"}"#);
-    let result = resp.result.unwrap();
-    let root = &result["root"];
-    // Full stub document tree contract — every field asserted.
-    assert_eq!(root["nodeId"], 1);
-    assert_eq!(root["backendNodeId"], 1);
-    assert_eq!(root["nodeType"], 9); // DOCUMENT_NODE
-    assert_eq!(root["nodeName"], "#document");
-    assert_eq!(root["localName"], "");
-    assert_eq!(root["nodeValue"], "");
-    assert_eq!(root["childNodeCount"], 1);
-    let children = root["children"].as_array().unwrap();
-    assert_eq!(children.len(), 1);
-    let html = &children[0];
-    assert_eq!(html["nodeId"], 2);
-    assert_eq!(html["backendNodeId"], 2);
-    assert_eq!(html["nodeType"], 1); // ELEMENT_NODE
-    assert_eq!(html["nodeName"], "HTML");
-    assert_eq!(html["localName"], "html");
-    assert_eq!(html["childNodeCount"], 2);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INTERNAL_ERROR);
+    assert!(err.message.contains("no servo bridge"));
+    assert!(resp.result.is_none(), "no canned root payload");
 }
 
 #[test]
 fn test_dom_describe_node() {
+    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602.
     let resp = dispatch(r#"{"id":42,"method":"DOM.describeNode"}"#);
-    let result = resp.result.unwrap();
-    let node = &result["node"];
-    assert_eq!(node["nodeId"], 1);
-    assert_eq!(node["nodeType"], 1);
-    assert_eq!(node["nodeName"], "HTML");
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
 fn test_dom_query_selector_no_bridge() {
-    // Empty selector + no bridge ⇒ nodeId 0 (not found).
+    // REQ-BRW-048 follow-up: empty selector ⇒ -32602 (required param).
     let resp = dispatch_with_params("DOM.querySelector", json!({"selector": ""}));
-    assert_eq!(resp.result.unwrap()["nodeId"], 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("selector"));
 }
 
 #[test]
 fn test_dom_query_selector_all_no_bridge() {
-    // Empty selector + no bridge ⇒ empty nodeIds array.
+    // REQ-BRW-048 follow-up: empty selector ⇒ -32602 (required param).
     let resp = dispatch_with_params("DOM.querySelectorAll", json!({"selector": ""}));
-    let result = resp.result.unwrap();
-    let arr = result["nodeIds"].as_array().unwrap();
-    assert_eq!(arr.len(), 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("selector"));
 }
 
 #[test]
 fn test_dom_get_box_model() {
+    // REQ-BRW-048 follow-up: the canned 1920×1080 quad is eradicated —
+    // real geometry needs a node ref (-32602 without either id form).
     let resp = dispatch(r#"{"id":43,"method":"DOM.getBoxModel"}"#);
-    let result = resp.result.unwrap();
-    let model = &result["model"];
-    // 1920×1080 viewport with 8-element content quad (clockwise from origin).
-    assert_eq!(model["width"], 1920);
-    assert_eq!(model["height"], 1080);
-    let content = model["content"].as_array().unwrap();
-    assert_eq!(content.len(), 8);
-    assert_eq!(content[0], 0);
-    assert_eq!(content[1], 0);
-    assert_eq!(content[2], 1920);
-    assert_eq!(content[6], 0);
-    assert_eq!(content[7], 1080);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
@@ -517,18 +498,20 @@ fn test_dom_get_outer_html_no_bridge() {
 
 #[test]
 fn test_dom_resolve_node() {
+    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602.
     let resp = dispatch(r#"{"id":45,"method":"DOM.resolveNode"}"#);
-    let result = resp.result.unwrap();
-    // RemoteObject type is "node", not arbitrary string.
-    assert_eq!(result["object"]["type"], "node");
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
 fn test_dom_push_nodes_by_backend_ids() {
+    // REQ-BRW-048 follow-up: backendNodeIds is required — -32602.
     let resp = dispatch(r#"{"id":451,"method":"DOM.pushNodesByBackendIdsToFrontend"}"#);
-    let result = resp.result.unwrap();
-    let arr = result["nodeIds"].as_array().unwrap();
-    assert_eq!(arr.len(), 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("backendNodeIds"));
 }
 
 #[test]
@@ -654,38 +637,37 @@ fn test_css_disable() {
 
 #[test]
 fn test_css_get_computed_style() {
+    // REQ-BRW-048: the params-less dispatch hits the required-nodeId check —
+    // explicit -32602, never an empty computedStyle list.
     let resp = dispatch(r#"{"id":61,"method":"CSS.getComputedStyleForNode"}"#);
-    let result = resp.result.unwrap();
-    let arr = result["computedStyle"].as_array().unwrap();
-    assert_eq!(arr.len(), 0);
+    let err = resp.error.expect("missing nodeId must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId"));
 }
 
 #[test]
 fn test_css_get_matched_styles() {
     let resp = dispatch(r#"{"id":62,"method":"CSS.getMatchedStylesForNode"}"#);
-    let result = resp.result.unwrap();
-    let rules = result["matchedCSSRules"].as_array().unwrap();
-    assert_eq!(rules.len(), 0);
-    // All three style fields must be present; inlineStyle + attributesStyle are null.
-    assert!(result.get("inlineStyle").is_some());
-    assert!(result["inlineStyle"].is_null());
-    assert!(result.get("attributesStyle").is_some());
-    assert!(result["attributesStyle"].is_null());
+    let err = resp.error.expect("missing nodeId must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId"));
 }
 
 #[test]
 fn test_css_get_inline_styles() {
     let resp = dispatch(r#"{"id":63,"method":"CSS.getInlineStylesForNode"}"#);
-    let result = resp.result.unwrap();
-    assert!(result["inlineStyle"].is_null());
+    let err = resp.error.expect("missing nodeId must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId"));
 }
 
 #[test]
 fn test_css_set_style_texts() {
+    // REQ-BRW-048 follow-up: the write path requires edits — -32602.
     let resp = dispatch(r#"{"id":64,"method":"CSS.setStyleTexts"}"#);
-    let result = resp.result.unwrap();
-    let arr = result["styles"].as_array().unwrap();
-    assert_eq!(arr.len(), 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_INVALID_PARAMS);
+    assert!(err.message.contains("edits"));
 }
 
 #[test]

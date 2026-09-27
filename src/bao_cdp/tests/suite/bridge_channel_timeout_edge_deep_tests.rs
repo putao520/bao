@@ -353,17 +353,29 @@ fn test_target_close_target_fire_and_forget() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     let closed = Arc::new(AtomicUsize::new(0));
     let closed2 = closed.clone();
+    // Drain-race hardening (sweep 2026-09-27): a bare drain() returns after
+    // one empty sweep, dropping the receiver before the dispatch's send
+    // arrives ("bridge channel closed"). Serve until the round-trip lands.
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
     std::thread::spawn(move || {
-        rx.drain(move |cmd| {
-            if matches!(cmd, BridgeCommand::ClosePage { .. }) {
-                closed2.fetch_add(1, Ordering::SeqCst);
+        while done2.load(Ordering::SeqCst) == 0 {
+            let got = rx.try_process(|cmd| {
+                if matches!(cmd, BridgeCommand::ClosePage { .. }) {
+                    closed2.fetch_add(1, Ordering::SeqCst);
+                }
+                BridgeResponse {
+                    result: Ok(json!({})),
+                }
+            });
+            if got {
+                return;
             }
-            BridgeResponse {
-                result: Ok(json!({})),
-            }
-        });
+            std::thread::sleep(Duration::from_millis(1));
+        }
     });
     let resp = dispatch_bridge("Target.closeTarget", None, "t1", &tx);
+    done.store(1, Ordering::SeqCst);
     assert!(resp.result.is_some());
     assert_eq!(resp.result.unwrap()["success"], true);
     std::thread::sleep(Duration::from_millis(50));
@@ -481,17 +493,28 @@ fn test_runtime_evaluate_no_params_no_bridge() {
 
 #[test]
 fn test_dom_query_selector_with_bridge() {
-    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    // REQ-BRW-048 follow-up: querySelector runs through the EvaluateJs
+    // channel and resolves the match to its canonical nodeId in-page; the
+    // fake responder mimics the cmd_evaluate response envelope.
+    let (tx, rx) = bridge_channel(Duration::from_millis(500));
+    let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+    let captured2 = captured.clone();
     let done = Arc::new(AtomicUsize::new(0));
     let done2 = done.clone();
     std::thread::spawn(move || {
         while done2.load(Ordering::Relaxed) == 0 {
             let got = rx.try_process(|cmd| match cmd {
-                BridgeCommand::QuerySelector { selector, .. } => BridgeResponse {
-                    result: Ok(json!({"nodeId": 42, "selector": selector})),
-                },
+                BridgeCommand::EvaluateJs { expression, .. } => {
+                    *captured2.lock().unwrap() = Some(expression);
+                    BridgeResponse {
+                        result: Ok(json!({
+                            "result": {"type": "object", "value": {"nodeId": 42}},
+                            "exceptionDetails": null
+                        })),
+                    }
+                }
                 _ => BridgeResponse {
-                    result: Ok(json!({})),
+                    result: Err("unexpected".into()),
                 },
             });
             if got {
@@ -507,16 +530,21 @@ fn test_dom_query_selector_with_bridge() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    assert!(resp.result.is_some());
-    let result = resp.result.unwrap();
+    let result = resp.result.expect("querySelector over the bridge succeeds");
     assert_eq!(result["nodeId"], 42);
+    let expr = captured.lock().unwrap().take().expect("EvaluateJs dispatched");
+    assert!(expr.contains("document.querySelector"), "selector evaluated in-page");
+    assert!(expr.contains("__baoCanonical"), "match mapped to canonical identity");
 }
 
 #[test]
 fn test_dom_query_selector_empty_no_bridge() {
+    // REQ-BRW-048 follow-up: selector is required — -32602 before any
+    // bridge round trip.
     let resp = dispatch("DOM.querySelector", Some(json!({"selector": ""})));
-    assert!(resp.result.is_some());
-    assert_eq!(resp.result.unwrap()["nodeId"], 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("selector"));
 }
 
 // ============================================================================
@@ -825,32 +853,33 @@ fn test_debugger_unknown_command() {
 
 #[test]
 fn test_css_get_computed_style_for_node() {
+    // REQ-BRW-048: live-page query — no bridge → explicit -32603.
     let resp = dispatch("CSS.getComputedStyleForNode", Some(json!({"nodeId": 1})));
-    let result = resp.result.unwrap();
-    assert!(result["computedStyle"].is_array());
+    let err = resp.error.expect("no bridge must yield an explicit error");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
 fn test_css_get_matched_styles_for_node() {
     let resp = dispatch("CSS.getMatchedStylesForNode", Some(json!({"nodeId": 1})));
-    let result = resp.result.unwrap();
-    assert!(result["matchedCSSRules"].is_array());
-    assert!(result["inlineStyle"].is_null());
-    assert!(result["attributesStyle"].is_null());
+    let err = resp.error.expect("no bridge must yield an explicit error");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
 fn test_css_get_inline_styles_for_node() {
     let resp = dispatch("CSS.getInlineStylesForNode", Some(json!({"nodeId": 1})));
-    let result = resp.result.unwrap();
-    assert!(result["inlineStyle"].is_null());
+    let err = resp.error.expect("no bridge must yield an explicit error");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
 fn test_css_set_style_texts() {
+    // REQ-BRW-048 follow-up: the real write path requires edits — -32602.
     let resp = dispatch("CSS.setStyleTexts", None);
-    let result = resp.result.unwrap();
-    assert!(result["styles"].is_array());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("edits"));
 }
 
 #[test]
@@ -1875,13 +1904,13 @@ fn test_dom_enable_disable_empty_result() {
 }
 
 #[test]
-fn test_dom_get_document_no_bridge_returns_default_tree() {
+fn test_dom_get_document_no_bridge_explicit_error() {
+    // REQ-BRW-048 follow-up: the canned default tree is eradicated —
+    // the bridge-less dispatch answers -32603.
     let resp = dispatch("DOM.getDocument", None);
-    let root = &resp.result.unwrap()["root"];
-    assert_eq!(root["nodeId"], 1);
-    assert_eq!(root["nodeName"], "#document");
-    assert_eq!(root["children"][0]["nodeName"], "HTML");
-    assert_eq!(root["children"][0]["nodeType"], 1);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
@@ -1941,17 +1970,21 @@ fn test_dom_query_selector_empty_selector_skips_bridge() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    assert_eq!(resp.result.unwrap()["nodeId"], 0);
+    // REQ-BRW-048 follow-up: the empty selector is rejected at param
+    // validation (-32602) — before any bridge round trip.
+    let err = resp.error.expect("empty selector must be an explicit error");
+    assert_eq!(err.code, -32602);
     std::thread::sleep(Duration::from_millis(30));
     assert_eq!(dispatched.load(Ordering::SeqCst), 0);
 }
 
 #[test]
 fn test_dom_query_selector_all_empty_selector_default_empty() {
+    // REQ-BRW-048 follow-up: selector is required — -32602.
     let resp = dispatch("DOM.querySelectorAll", Some(json!({"selector": ""})));
-    let result = resp.result.unwrap();
-    let node_ids = result["nodeIds"].as_array().unwrap();
-    assert_eq!(node_ids.len(), 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("selector"));
 }
 
 #[test]
@@ -1964,11 +1997,14 @@ fn test_dom_query_selector_all_with_bridge_routes() {
     std::thread::spawn(move || {
         while done2.load(Ordering::Relaxed) == 0 {
             let got = rx.try_process(|cmd| {
-                if let BridgeCommand::QuerySelectorAll { selector, .. } = cmd {
-                    *captured2.lock().unwrap() = Some(selector);
+                if let BridgeCommand::EvaluateJs { expression, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(expression);
                 }
                 BridgeResponse {
-                    result: Ok(json!({"nodeIds": [10, 20]})),
+                    result: Ok(json!({
+                        "result": {"type": "object", "value": {"nodeIds": [10, 20]}},
+                        "exceptionDetails": null
+                    })),
                 }
             });
             if got {
@@ -1984,29 +2020,36 @@ fn test_dom_query_selector_all_with_bridge_routes() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    let ids = resp.result.unwrap()["nodeIds"].as_array().unwrap().clone();
+    let ids = resp.result.expect("querySelectorAll over the bridge succeeds")["nodeIds"]
+        .as_array()
+        .unwrap()
+        .clone();
     assert_eq!(ids[0], 10);
     assert_eq!(ids[1], 20);
-    assert_eq!(captured.lock().unwrap().take().unwrap(), "li.item");
+    // REQ-BRW-048 follow-up: the dispatched command is EvaluateJs carrying
+    // the selector inside the in-page query (string form verified).
+    let expr = captured.lock().unwrap().take().expect("EvaluateJs dispatched");
+    assert!(expr.contains("\"li.item\""), "selector embedded in the page query: {expr}");
 }
 
 #[test]
-fn test_dom_describe_node_constant_shape() {
+fn test_dom_describe_node_requires_node_ref() {
+    // REQ-BRW-048 follow-up: the constant-shape response is eradicated —
+    // describeNode requires nodeId or objectId (-32602 without either).
     let resp = dispatch("DOM.describeNode", None);
-    let node = &resp.result.unwrap()["node"];
-    assert_eq!(node["nodeId"], 1);
-    assert_eq!(node["nodeType"], 1);
-    assert_eq!(node["nodeName"], "HTML");
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
-fn test_dom_get_box_model_constant_geometry() {
+fn test_dom_get_box_model_requires_node_ref() {
+    // REQ-BRW-048 follow-up: the constant 1920x1080 geometry is eradicated —
+    // real geometry needs a node ref (-32602 without either id form).
     let resp = dispatch("DOM.getBoxModel", None);
-    let model = &resp.result.unwrap()["model"];
-    assert_eq!(model["width"], 1920);
-    assert_eq!(model["height"], 1080);
-    let content = model["content"].as_array().unwrap();
-    assert_eq!(content.len(), 8, "content must be 8-element quad");
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
@@ -2150,11 +2193,17 @@ fn test_dom_misc_noop_commands_empty_result() {
 }
 
 #[test]
-fn test_dom_resolve_node_and_push_nodes_default_shapes() {
+fn test_dom_resolve_node_and_push_nodes_require_params() {
+    // REQ-BRW-048 follow-up: the default-shape responses are eradicated —
+    // resolveNode needs nodeId/objectId, pushNodes needs backendNodeIds.
     let resp = dispatch("DOM.resolveNode", None);
-    assert_eq!(resp.result.unwrap()["object"]["type"], "node");
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
     let resp = dispatch("DOM.pushNodesByBackendIdsToFrontend", None);
-    assert_eq!(resp.result.unwrap()["nodeIds"].as_array().unwrap().len(), 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("backendNodeIds"));
 }
 
 #[test]
@@ -2667,8 +2716,10 @@ fn test_css_enable_disable_empty_result() {
 
 #[test]
 fn test_css_get_inline_styles_for_node_null_inline_style() {
+    // REQ-BRW-048: no bridge → explicit -32603 (live-page query face).
     let resp = dispatch("CSS.getInlineStylesForNode", Some(json!({"nodeId": 1})));
-    assert!(resp.result.unwrap()["inlineStyle"].is_null());
+    let err = resp.error.expect("no bridge must yield an explicit error");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]

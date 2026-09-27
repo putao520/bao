@@ -32,6 +32,7 @@
 pub use cdp_server::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 use serde_json::Value;
 
+use crate::devtools_dom;
 use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 // JSON-RPC 2.0 error code: method not found (per spec §5.1).
@@ -39,9 +40,9 @@ const ERR_METHOD_NOT_FOUND: i64 = -32601;
 // JSON-RPC 2.0 error code: parse error (fallback on serialize failure).
 const ERR_PARSE_ERROR: i64 = -32700;
 // JSON-RPC 2.0 error code: invalid params.
-const ERR_INVALID_PARAMS: i64 = -32602;
+pub(crate) const ERR_INVALID_PARAMS: i64 = -32602;
 // Chrome DevTools "server error" code used for not-supported commands.
-const ERR_NOT_SUPPORTED: i64 = -32000;
+pub(crate) const ERR_NOT_SUPPORTED: i64 = -32000;
 
 /// Build a not-supported error for a command whose backing facility does not
 /// exist (servo/SM face absent). Explicit failure — never a canned success.
@@ -153,7 +154,7 @@ pub fn handle_command(
     }
 }
 
-type HandlerResult = Result<Value, CdpError>;
+pub(crate) type HandlerResult = Result<Value, CdpError>;
 
 /// Monotonic id source for CDP identifiers returned by the stateless face
 /// (script ids when no bridge is involved). Chrome semantics: fresh id per
@@ -196,7 +197,11 @@ fn ok_empty() -> HandlerResult {
 /// Evaluate a JS expression on the target and extract the JSON document it
 /// returns. The expression must produce `JSON.stringify(...)` output; the
 /// EvaluateJs bridge path parses it into `result.value` (an object).
-fn eval_json(bridge: Option<&BridgeSender>, tid: &str, expression: &str) -> HandlerResult {
+pub(crate) fn eval_json(
+    bridge: Option<&BridgeSender>,
+    tid: &str,
+    expression: &str,
+) -> HandlerResult {
     let resp = bridge_send(
         bridge,
         BridgeCommand::EvaluateJs {
@@ -737,63 +742,91 @@ fn handle_dom(
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
-        "getDocument" => {
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::GetDocument {
-                        target_id: tid.clone(),
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({
-                    "root": {
-                        "nodeId": 1, "backendNodeId": 1, "nodeType": 9,
-                        "nodeName": "#document", "localName": "", "nodeValue": "",
-                        "childNodeCount": 1,
-                        "children": [{
-                            "nodeId": 2, "backendNodeId": 2, "nodeType": 1,
-                            "nodeName": "HTML", "localName": "html", "nodeValue": "",
-                            "childNodeCount": 2
-                        }]
-                    }
-                }))
-            }
-        }
+        // REQ-BRW-048 follow-up: the document tree is read from the live
+        // page (the bridge walker emits the same canonical identity as
+        // devtools_dom). Without a bridge there is no document — explicit
+        // error, never a canned tree.
+        "getDocument" => bridge_send(
+            bridge,
+            BridgeCommand::GetDocument {
+                target_id: tid.clone(),
+            },
+        ),
+        // Real node data through the identity channel: resolved from the
+        // canonical nodeId or a registry objectId, children expanded to
+        // `depth` (CDP default 1; negative = full subtree).
         "describeNode" => {
-            Ok(serde_json::json!({ "node": { "nodeId": 1, "nodeType": 1, "nodeName": "HTML" } }))
+            let node_ref = devtools_dom::require_node_ref(params)?;
+            let depth = params
+                .as_ref()
+                .and_then(|p| p.get("depth"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1);
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::describe_node_body(&node_ref, depth),
+            )
         }
+        // The first match's real canonical nodeId (0 when nothing matches —
+        // the CDP convention). The former found?1:0 response collided with
+        // the document nodeId and was unusable by the style faces.
         "querySelector" => {
-            let selector = params_str(params, "selector");
-            if bridge.is_some() && !selector.is_empty() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::QuerySelector {
-                        target_id: tid.clone(),
-                        selector,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "nodeId": 0 }))
-            }
+            let selector = devtools_dom::require_selector(params)?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::query_selector_body(&selector),
+            )
         }
+        // Every match's real canonical nodeId in document order — the former
+        // 1..=count sequence fabricated ids that addressed wrong nodes.
         "querySelectorAll" => {
-            let selector = params_str(params, "selector");
-            if bridge.is_some() && !selector.is_empty() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::QuerySelectorAll {
-                        target_id: tid.clone(),
-                        selector,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "nodeIds": [] }))
-            }
+            let selector = devtools_dom::require_selector(params)?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::query_selector_all_body(&selector),
+            )
         }
-        "getBoxModel" => Ok(serde_json::json!({
-            "model": { "width": 1920, "height": 1080, "content": [0, 0, 1920, 0, 1920, 1080, 0, 1080] }
-        })),
+        // Real geometry: border box from getBoundingClientRect, the other
+        // boxes from the computed border/padding/margin widths.
+        "getBoxModel" => {
+            let node_ref = devtools_dom::require_node_ref(params)?;
+            devtools_dom::eval_dom(bridge, &tid, &devtools_dom::box_model_body(&node_ref))
+        }
+        // REQ-BRW-048: flattened tree query for the DevTools element panel —
+        // the live tree as a document-order node list with parentId links.
+        // depth follows the CDP contract (default 1 = root plus one level of
+        // children; negative = the entire subtree). pierce is accepted with no
+        // observable effect: the exposed DOM face has no shadow-root
+        // boundary, so the walk below IS the whole exposed tree. Without a
+        // bridge there is no document — explicit error, never a canned tree.
+        "getFlattenedDocument" => {
+            let depth = params
+                .as_ref()
+                .and_then(|p| p.get("depth"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1);
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::flattened_document_body(depth),
+            )
+        }
+        // REQ-BRW-048: RemoteObject → nodeId mapping (the half that closes
+        // the Runtime object protocol with the DOM face): an objectId minted
+        // by Runtime.evaluate(returnByValue:false) resolves to the canonical
+        // nodeId of the Node it references. Dead handles / non-Node values /
+        // detached nodes are explicit errors — never a fabricated id.
+        "getNodeForOwner" => {
+            let object_id = devtools_dom::require_object_id(params)?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::node_for_owner_body(&object_id),
+            )
+        }
         "setAttributeValue" => {
             let node_id = params
                 .as_ref()
@@ -832,8 +865,46 @@ fn handle_dom(
                 },
             )
         }
-        "resolveNode" => Ok(serde_json::json!({ "object": { "type": "node" } })),
-        "pushNodesByBackendIdsToFrontend" => Ok(serde_json::json!({ "nodeIds": [] })),
+        // REQ-BRW-048 follow-up: a real RemoteObject handle minted through
+        // the page-realm registry (the same table Runtime.evaluate uses —
+        // this face never mints a parallel registry; absent registry is an
+        // explicit error).
+        "resolveNode" => {
+            let node_ref = devtools_dom::require_node_ref(params)?;
+            let object_group = params
+                .as_ref()
+                .and_then(|p| p.get("objectGroup"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::resolve_node_body(&node_ref, object_group.as_deref()),
+            )
+        }
+        // backendNodeId ≡ canonical nodeId on this face (documented
+        // identity), so the push is a liveness check over real ids: resolved
+        // ids are returned, unknown ids are omitted — never fabricated.
+        "pushNodesByBackendIdsToFrontend" => {
+            let backend_ids = params
+                .as_ref()
+                .and_then(|p| p.get("backendNodeIds"))
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_i64())
+                        .collect::<Vec<i64>>()
+                })
+                .ok_or_else(|| CdpError {
+                    code: ERR_INVALID_PARAMS,
+                    message: "missing required parameter: backendNodeIds".into(),
+                })?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::push_nodes_body(&backend_ids),
+            )
+        }
         _ => Err(CdpError {
             code: -32601,
             message: format!("'DOM.{}' wasn't found", command),
@@ -1346,63 +1417,57 @@ fn handle_css(
     let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
+        // REQ-BRW-048: the CSS query methods read the live page through the
+        // EvaluateJs channel. The node id is resolved INSIDE the page with
+        // the canonical positional identity (see devtools_dom) — the same
+        // encoding DOM.getDocument/getFlattenedDocument emit — so the
+        // nodeIds DevTools obtained from the DOM face resolve to the right
+        // element. (The dedicated CssGet* bridge commands carried only a raw
+        // node id whose browser-side fallback resolution could not address
+        // real-document nodes; they are superseded on this dispatch face.)
+        // Missing nodeId → -32602; no bridge (no page) → -32603; unknown id /
+        // non-element → explicit -32000 from the page. Never an empty style
+        // list standing in for data.
         "getComputedStyleForNode" => {
-            let node_id = params
-                .as_ref()
-                .and_then(|p| p.get("nodeId"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::CssGetComputedStyleForNode {
-                        target_id: tid,
-                        node_id,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "computedStyle": [] }))
-            }
+            let node_id = devtools_dom::require_node_id(params)?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::computed_style_body(node_id),
+            )
         }
         "getMatchedStylesForNode" => {
-            let node_id = params
-                .as_ref()
-                .and_then(|p| p.get("nodeId"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::CssGetMatchedStylesForNode {
-                        target_id: tid,
-                        node_id,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({
-                    "matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null
-                }))
-            }
+            let node_id = devtools_dom::require_node_id(params)?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::matched_styles_body(node_id),
+            )
         }
         "getInlineStylesForNode" => {
-            let node_id = params
-                .as_ref()
-                .and_then(|p| p.get("nodeId"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::CssGetInlineStylesForNode {
-                        target_id: tid,
-                        node_id,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "inlineStyle": null }))
-            }
+            let node_id = devtools_dom::require_node_id(params)?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::inline_styles_body(node_id),
+            )
         }
-        "setStyleTexts" => Ok(serde_json::json!({ "styles": [] })),
+        // REQ-BRW-048 follow-up: the real write path. Addressing on this
+        // face: styleSheetId = document.styleSheets ordinal (the id
+        // getMatchedStylesForNode reports), range.startLine = the rule index
+        // within that sheet — Chrome's span model needs stylesheet-text
+        // bookkeeping this face never minted. The edit replaces the rule's
+        // declaration block via style.cssText (a real CSSOM write that
+        // restyles the page) and returns the resulting declarations for
+        // read-back. The former {"styles": []} shape-shell is eradicated.
+        "setStyleTexts" => {
+            let edits = devtools_dom::require_edits(params)?;
+            devtools_dom::eval_dom(
+                bridge,
+                &tid,
+                &devtools_dom::set_style_texts_body(&edits),
+            )
+        }
         _ => Err(CdpError {
             code: -32601,
             message: format!("'CSS.{}' wasn't found", command),
@@ -2734,25 +2799,26 @@ mod tests {
         assert_eq!(result["result"]["type"], "undefined");
     }
 
-    // 17. handle_command DOM.getDocument (no bridge) → ok with root node
+    // 17. handle_command DOM.getDocument (no bridge) → -32603 — REQ-BRW-048
+    //     follow-up: the canned root tree is eradicated; the document lives
+    //     on the page, and there is no page without a bridge.
     #[test]
     fn handle_command_dom_get_document() {
         let resp = dispatch_no_bridge(10, "DOM.getDocument", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        let root = result.get("root").unwrap();
-        assert_eq!(root["nodeId"], 1);
-        assert_eq!(root["nodeType"], 9);
-        assert_eq!(root["nodeName"], "#document");
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"));
     }
 
-    // 18. handle_command DOM.querySelector (no bridge) → ok nodeId:0
+    // 18. handle_command DOM.querySelector (no bridge, selector given) →
+    //     -32603 — REQ-BRW-048 follow-up: real canonical ids come from the
+    //     live page (the found?1:0 fake is eradicated; nodeId 0 now only
+    //     means "no match" on a live page).
     #[test]
     fn handle_command_dom_query_selector() {
         let resp = dispatch_no_bridge(11, "DOM.querySelector", Some(json!({"selector": "div"})));
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["nodeId"], 0);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32603);
     }
 
     // 20. handle_command Network.getCookies → ok with empty cookies
@@ -2764,13 +2830,16 @@ mod tests {
         assert_eq!(result["cookies"], json!([]));
     }
 
-    // 22. handle_command CSS.getComputedStyleForNode → ok empty computedStyle
+    // 22. handle_command CSS.getComputedStyleForNode (no bridge, no params)
+    //     → -32602 (required nodeId) — REQ-BRW-048: the empty computedStyle
+    //     list is eradicated; the style face reads the live page or fails
+    //     explicitly.
     #[test]
     fn handle_command_css_get_computed_style() {
         let resp = dispatch_no_bridge(15, "CSS.getComputedStyleForNode", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["computedStyle"], json!([]));
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId"));
     }
 
     // 27. handle_command Debugger.setBreakpointByUrl → ok with breakpointId
@@ -3332,42 +3401,44 @@ mod tests {
         assert!(err.message.contains("Runtime.unknownMethod"));
     }
 
-    // 103. handle_command DOM.describeNode → ok
+    // 103. handle_command DOM.describeNode → -32602 — REQ-BRW-048 follow-up:
+    //     real node data needs a node ref (canned HTML node eradicated).
     #[test]
     fn handle_command_dom_describe_node() {
         let resp = dispatch_no_bridge(32, "DOM.describeNode", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result.get("node").is_some());
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId or objectId"));
     }
 
-    // 104. handle_command DOM.getBoxModel → ok with model
+    // 104. handle_command DOM.getBoxModel → -32602 — REQ-BRW-048 follow-up:
+    //     the canned 1920×1080 geometry is eradicated.
     #[test]
     fn handle_command_dom_get_box_model() {
         let resp = dispatch_no_bridge(33, "DOM.getBoxModel", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result.get("model").is_some());
-        assert_eq!(result["model"]["width"], 1920);
-        assert_eq!(result["model"]["height"], 1080);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId or objectId"));
     }
 
-    // 111. handle_command DOM.resolveNode → ok
+    // 111. handle_command DOM.resolveNode → -32602 — REQ-BRW-048 follow-up:
+    //     the shape-shell RemoteObject is eradicated.
     #[test]
     fn handle_command_dom_resolve_node() {
         let resp = dispatch_no_bridge(40, "DOM.resolveNode", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["object"]["type"], "node");
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId or objectId"));
     }
 
-    // 112. handle_command DOM.pushNodesByBackendIdsToFrontend → ok
+    // 112. handle_command DOM.pushNodesByBackendIdsToFrontend → -32602 —
+    //     REQ-BRW-048 follow-up: backendNodeIds is required.
     #[test]
     fn handle_command_dom_push_nodes_by_backend_ids() {
         let resp = dispatch_no_bridge(41, "DOM.pushNodesByBackendIdsToFrontend", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["nodeIds"], json!([]));
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("backendNodeIds"));
     }
 
     // 119. handle_command Network.getAllCookies → ok with empty cookies
@@ -3389,32 +3460,58 @@ mod tests {
         assert_eq!(resp.result, Some(json!({ "success": true })));
     }
 
-    // 126. handle_command CSS.getMatchedStylesForNode → ok
+    // 126. handle_command CSS.getMatchedStylesForNode (no bridge, no params)
+    //     → -32602 (required nodeId) — REQ-BRW-048 fail-closed contract.
     #[test]
     fn handle_command_css_get_matched_styles() {
         let resp = dispatch_no_bridge(55, "CSS.getMatchedStylesForNode", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["matchedCSSRules"], json!([]));
-        assert_eq!(result["inlineStyle"], Value::Null);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId"));
     }
 
-    // 127. handle_command CSS.getInlineStylesForNode → ok
+    // 127. handle_command CSS.getInlineStylesForNode (no bridge, no params)
+    //     → -32602 (required nodeId) — REQ-BRW-048 fail-closed contract.
     #[test]
     fn handle_command_css_get_inline_styles() {
         let resp = dispatch_no_bridge(56, "CSS.getInlineStylesForNode", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["inlineStyle"], Value::Null);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId"));
     }
 
-    // 128. handle_command CSS.setStyleTexts → ok
+    // 127b. REQ-BRW-048: the CSS query methods with a valid nodeId still fail
+    //       explicitly without a bridge (no page → no styles), and the two
+    //       new DOM query methods carry the same contract (getFlattenedDocument
+    //       has only optional params → -32603 directly).
+    #[test]
+    fn handle_command_css_dom_query_methods_no_bridge_explicit_error() {
+        let node = Some(json!({ "nodeId": 1 }));
+        for (method, params, code) in [
+            ("CSS.getComputedStyleForNode", node.clone(), -32603),
+            ("CSS.getMatchedStylesForNode", node.clone(), -32603),
+            ("CSS.getInlineStylesForNode", node.clone(), -32603),
+            ("DOM.getFlattenedDocument", None, -32603),
+            ("DOM.getNodeForOwner", None, -32602),
+        ] {
+            let resp = dispatch_no_bridge(80, method, params);
+            let err = resp
+                .error
+                .unwrap_or_else(|| panic!("{method}: explicit error required"));
+            assert_eq!(err.code, code, "{method}: wrong error code");
+            assert!(resp.result.is_none(), "{method}: error must not carry result");
+        }
+    }
+
+    // 128. handle_command CSS.setStyleTexts → -32602 — REQ-BRW-048
+    //     follow-up: the write path requires edits ({"styles":[]} shell
+    //     eradicated).
     #[test]
     fn handle_command_css_set_style_texts() {
         let resp = dispatch_no_bridge(57, "CSS.setStyleTexts", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["styles"], json!([]));
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("edits"));
     }
 
     // 158. handle_command Debugger.evaluateOnCallFrame → ok

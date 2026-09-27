@@ -251,8 +251,14 @@ fn test_concurrent_send_with_sync_response() {
     // Start responder thread
     let rx2 = Arc::clone(&rx);
     let total2 = Arc::clone(&total_processed);
+    // Drain-race hardening (sweep 2026-09-27): the bounded attempt loop can
+    // exhaust before the concurrent blocking sends land under load, leaving
+    // them to time out. Serve until every sync send (4 threads × 5) is
+    // answered, bounded by a deadline.
+    let sync2 = Arc::clone(&sync_ok_count);
     let responder = std::thread::spawn(move || {
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while sync2.load(Ordering::SeqCst) < 20 && std::time::Instant::now() < deadline {
             let done = {
                 let rx_guard = rx2.lock().unwrap();
                 rx_guard.try_process(|cmd| {
@@ -270,10 +276,9 @@ fn test_concurrent_send_with_sync_response() {
                     }
                 })
             };
-            if done {
-                continue;
+            if !done {
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     });
 
@@ -383,8 +388,12 @@ fn test_slow_responder_still_succeeds() {
     let rx = Arc::new(std::sync::Mutex::new(rx));
 
     let rx2 = Arc::clone(&rx);
+    // Drain-race hardening (sweep 2026-09-27): 5 bounded attempts (~25ms)
+    // can exhaust before the sender's blocking send arrives under load.
+    // Serve until the command is processed, bounded by a deadline.
     let handler = std::thread::spawn(move || {
-        for _ in 0..5 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
             let processed = {
                 let rx_guard = rx2.lock().unwrap();
                 rx_guard.try_process(|_| {
@@ -394,9 +403,10 @@ fn test_slow_responder_still_succeeds() {
                     }
                 })
             };
-            if !processed {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            if processed {
+                break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     });
 
@@ -757,8 +767,11 @@ fn test_response_value_propagation() {
 
     let rx2 = Arc::clone(&rx);
     let done2 = Arc::clone(&done);
+    // Drain-race hardening (sweep 2026-09-27): serve until processed
+    // instead of a bounded attempt window that can expire before the send.
     std::thread::spawn(move || {
-        for _ in 0..100 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
             let processed = {
                 let rx_guard = rx2.lock().unwrap();
                 rx_guard.try_process(|cmd| match cmd {
@@ -809,8 +822,11 @@ fn test_response_error_propagation() {
 
     let rx2 = Arc::clone(&rx);
     let done2 = Arc::clone(&done);
+    // Drain-race hardening (sweep 2026-09-27): serve until processed
+    // instead of a bounded attempt window that can expire before the send.
     std::thread::spawn(move || {
-        for _ in 0..100 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
             let processed = {
                 let rx_guard = rx2.lock().unwrap();
                 rx_guard.try_process(|_| BridgeResponse {

@@ -311,63 +311,71 @@ fn test_dom_enable_disable_response_empty() {
 }
 
 #[test]
-fn test_dom_describe_node_has_node_object() {
+fn test_dom_describe_node_requires_node_ref() {
+    // REQ-BRW-048 follow-up: real node data needs a node ref — -32602
+    // without either id form (canned HTML node eradicated).
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session.send(&router, "DOM.describeNode", None).unwrap();
-    assert!(result.get("node").is_some());
-    assert_eq!(result["node"]["nodeName"], "HTML");
-    assert_eq!(result["node"]["nodeType"], 1);
-    assert!(result["node"]["nodeId"].is_number());
+    let err = session.send(&router, "DOM.describeNode", None).unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
-fn test_dom_get_box_model_fields() {
+fn test_dom_get_box_model_requires_node_ref() {
+    // REQ-BRW-048 follow-up: real geometry needs a node ref — -32602.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session.send(&router, "DOM.getBoxModel", None).unwrap();
-    assert!(result.get("model").is_some());
-    assert!(result["model"]["width"].is_number());
-    assert!(result["model"]["height"].is_number());
-    assert!(result["model"]["content"].is_array());
+    let err = session.send(&router, "DOM.getBoxModel", None).unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
 fn test_dom_query_selector_empty_selector() {
+    // REQ-BRW-048 follow-up: selector is required — -32602.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "DOM.querySelector", Some(json!({})))
-        .unwrap();
-    assert_eq!(result["nodeId"], 0);
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("selector"));
 }
 
 #[test]
 fn test_dom_query_selector_all_empty_selector() {
+    // REQ-BRW-048 follow-up: selector is required — -32602.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "DOM.querySelectorAll", Some(json!({})))
-        .unwrap();
-    assert_eq!(result["nodeIds"], json!([]));
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("selector"));
 }
 
 #[test]
-fn test_dom_resolve_node_response() {
+fn test_dom_resolve_node_requires_node_ref() {
+    // REQ-BRW-048 follow-up: -32602 without a node ref (shape-shell
+    // {"object":{"type":"node"}} eradicated).
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session.send(&router, "DOM.resolveNode", None).unwrap();
-    assert_eq!(result["object"]["type"], "node");
+    let err = session.send(&router, "DOM.resolveNode", None).unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
-fn test_dom_push_nodes_response() {
+fn test_dom_push_nodes_requires_backend_ids() {
+    // REQ-BRW-048 follow-up: backendNodeIds is required — -32602.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "DOM.pushNodesByBackendIdsToFrontend", None)
-        .unwrap();
-    assert_eq!(result["nodeIds"], json!([]));
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("backendNodeIds"));
 }
 
 #[test]
@@ -711,42 +719,44 @@ fn test_css_enable_disable_response_empty() {
 
 #[test]
 fn test_css_get_computed_style_returns_array() {
+    // REQ-BRW-048: live-page query — missing nodeId is an explicit -32602
+    // on the internal (bridge-less) session; never an empty array response.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "CSS.getComputedStyleForNode", None)
-        .unwrap();
-    assert!(result["computedStyle"].is_array());
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
 }
 
 #[test]
 fn test_css_get_matched_styles_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "CSS.getMatchedStylesForNode", None)
-        .unwrap();
-    assert!(result["matchedCSSRules"].is_array());
-    assert!(result.get("inlineStyle").is_some());
-    assert!(result.get("attributesStyle").is_some());
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
 }
 
 #[test]
 fn test_css_get_inline_styles_fields() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(&router, "CSS.getInlineStylesForNode", None)
-        .unwrap();
-    assert!(result.get("inlineStyle").is_some());
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
 }
 
 #[test]
-fn test_css_set_style_texts_returns_styles_array() {
+fn test_css_set_style_texts_requires_edits() {
+    // REQ-BRW-048 follow-up: the write path requires edits — -32602.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session.send(&router, "CSS.setStyleTexts", None).unwrap();
-    assert!(result["styles"].is_array());
+    let err = session.send(&router, "CSS.setStyleTexts", None).unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("edits"));
 }
 
 #[test]

@@ -498,47 +498,51 @@ fn test_dom_disable() {
 
 #[test]
 fn test_dom_get_document_no_bridge() {
-    let r = ok_result("DOM.getDocument", None);
-    let root = r["root"].as_object().unwrap();
-    assert_eq!(root["nodeId"], 1);
-    assert_eq!(root["nodeType"], 9);
-    assert_eq!(root["nodeName"], "#document");
-    let children = root["children"].as_array().unwrap();
-    assert_eq!(children[0]["nodeName"], "HTML");
+    // REQ-BRW-048 follow-up: live-document query — -32603 without a bridge
+    // (the canned document tree is eradicated).
+    let e = err_result("DOM.getDocument", None);
+    assert_eq!(e.code, -32603);
+    assert!(e.message.contains("no servo bridge"));
 }
 
 #[test]
 fn test_dom_describe_node() {
-    let r = ok_result("DOM.describeNode", None);
-    let node = r["node"].as_object().unwrap();
-    assert_eq!(node["nodeId"], 1);
-    assert_eq!(node["nodeName"], "HTML");
+    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602 without
+    // either (the canned HTML node is eradicated).
+    let e = err_result("DOM.describeNode", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId or objectId"));
 }
 
 #[test]
 fn test_dom_query_selector_no_bridge() {
-    let r = ok_result("DOM.querySelector", Some(json!({"selector": "div"})));
-    assert_eq!(r["nodeId"], 0);
+    // Real canonical ids come from the live page — -32603 without a bridge.
+    let e = err_result("DOM.querySelector", Some(json!({"selector": "div"})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_dom_query_selector_no_selector() {
-    let r = ok_result("DOM.querySelector", Some(json!({})));
-    assert_eq!(r["nodeId"], 0);
+    // REQ-BRW-048 follow-up: selector is required — -32602.
+    let e = err_result("DOM.querySelector", Some(json!({})));
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("selector"));
 }
 
 #[test]
 fn test_dom_query_selector_all_no_bridge() {
-    let r = ok_result("DOM.querySelectorAll", Some(json!({"selector": "div"})));
-    assert_eq!(r["nodeIds"].as_array().unwrap().len(), 0);
+    // Real canonical ids come from the live page — -32603 without a bridge.
+    let e = err_result("DOM.querySelectorAll", Some(json!({"selector": "div"})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_dom_get_box_model() {
-    let r = ok_result("DOM.getBoxModel", None);
-    let model = r["model"].as_object().unwrap();
-    assert_eq!(model["width"], 1920);
-    assert_eq!(model["height"], 1080);
+    // REQ-BRW-048 follow-up: real geometry needs a node ref — -32602
+    // without one (the canned 1920x1080 is eradicated).
+    let e = err_result("DOM.getBoxModel", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId or objectId"));
 }
 
 #[test]
@@ -582,14 +586,18 @@ fn test_dom_get_outer_html_no_bridge() {
 
 #[test]
 fn test_dom_resolve_node() {
-    let r = ok_result("DOM.resolveNode", None);
-    assert_eq!(r["object"]["type"], "node");
+    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602.
+    let e = err_result("DOM.resolveNode", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId or objectId"));
 }
 
 #[test]
 fn test_dom_push_nodes_by_backend_ids() {
-    let r = ok_result("DOM.pushNodesByBackendIdsToFrontend", None);
-    assert_eq!(r["nodeIds"].as_array().unwrap().len(), 0);
+    // REQ-BRW-048 follow-up: backendNodeIds is required — -32602.
+    let e = err_result("DOM.pushNodesByBackendIdsToFrontend", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("backendNodeIds"));
 }
 
 #[test]
@@ -694,28 +702,43 @@ fn test_css_disable() {
 
 #[test]
 fn test_css_get_computed_style() {
-    let r = ok_result("CSS.getComputedStyleForNode", None);
-    assert_eq!(r["computedStyle"].as_array().unwrap().len(), 0);
+    // REQ-BRW-048: live-page query — missing nodeId is -32602, no bridge
+    // with a node id is -32603. Empty style lists are eradicated.
+    let e = err_result("CSS.getComputedStyleForNode", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId"));
+    let e = err_result(
+        "CSS.getComputedStyleForNode",
+        Some(json!({"nodeId": 1})),
+    );
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_css_get_matched_styles() {
-    let r = ok_result("CSS.getMatchedStylesForNode", None);
-    assert!(r["matchedCSSRules"].is_array());
-    assert!(r["inlineStyle"].is_null());
-    assert!(r["attributesStyle"].is_null());
+    let e = err_result("CSS.getMatchedStylesForNode", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId"));
+    let e = err_result("CSS.getMatchedStylesForNode", Some(json!({"nodeId": 1})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_css_get_inline_styles() {
-    let r = ok_result("CSS.getInlineStylesForNode", None);
-    assert!(r["inlineStyle"].is_null());
+    let e = err_result("CSS.getInlineStylesForNode", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("nodeId"));
+    let e = err_result("CSS.getInlineStylesForNode", Some(json!({"nodeId": 1})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_css_set_style_texts() {
-    let r = ok_result("CSS.setStyleTexts", None);
-    assert_eq!(r["styles"].as_array().unwrap().len(), 0);
+    // REQ-BRW-048 follow-up: the real write path requires edits — -32602
+    // (the {"styles":[]} shape-shell is eradicated).
+    let e = err_result("CSS.setStyleTexts", None);
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("edits"));
 }
 
 #[test]
@@ -1346,13 +1369,14 @@ fn test_roundtrip_fetch_enable_with_patterns() {
 
 #[test]
 fn test_roundtrip_dom_get_document() {
+    // REQ-BRW-048 follow-up: the bridge-less roundtrip carries the explicit
+    // -32603 error envelope (canned tree eradicated).
     let raw = r#"{"id":50,"method":"DOM.getDocument"}"#;
     let msg = parse_message(raw).unwrap();
     let resp = handle_command(msg, "t-1", &None, None);
-    let r = resp.result.unwrap();
-    let root = r["root"].as_object().unwrap();
-    assert_eq!(root["nodeName"], "#document");
-    assert_eq!(root["children"][0]["nodeName"], "HTML");
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 // ---- CdpError Debug/Serialize ----

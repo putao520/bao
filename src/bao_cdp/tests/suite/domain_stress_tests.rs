@@ -59,7 +59,9 @@ fn test_mixed_domain_commands_interleaved() {
         ("DOM.enable", None, true),
         ("Page.navigate", Some(json!({"url": "https://example.com"})), false),
         ("Runtime.evaluate", Some(json!({"expression": "1+1"})), true),
-        ("DOM.getDocument", None, true),
+        // REQ-BRW-048 follow-up: live-document query — -32603 without a
+        // bridge (canned tree eradicated).
+        ("DOM.getDocument", None, false),
         ("Page.disable", None, true),
         ("Runtime.disable", None, true),
         ("DOM.disable", None, true),

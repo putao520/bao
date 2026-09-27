@@ -267,7 +267,13 @@ pub enum BridgeCommand {
     PerformanceGetMetrics {
         target_id: String,
     },
-    // CSS domain — computed/matched/inline style retrieval via JS evaluate
+    // CSS domain — computed/matched/inline style retrieval via JS evaluate.
+    // REQ-BRW-048: superseded on the CDP dispatch face — the CSS.* query
+    // methods now resolve nodeIds inside the page (canonical positional
+    // identity, devtools_dom) through EvaluateJs, because these
+    // id-only commands could not address real-document nodes. The variants
+    // stay (their browser-side handlers remain functional for direct
+    // callers; removing them would be a cross-crate break).
     CssGetComputedStyleForNode {
         target_id: String,
         node_id: i64,

@@ -201,12 +201,13 @@ fn test_session_send_with_params() {
 
 #[test]
 fn test_session_send_dom_describe_node() {
+    // REQ-BRW-048 follow-up: describeNode requires nodeId or objectId —
+    // -32602 without either on the bridge-less internal session.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session.send(&router, "DOM.describeNode", None);
-    assert!(result.is_ok());
-    let val = result.unwrap();
-    assert_eq!(val["node"]["nodeName"], "HTML");
+    let err = session.send(&router, "DOM.describeNode", None).unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]

@@ -146,10 +146,13 @@ fn test_send_command_target_get_targets() {
 
 #[test]
 fn test_send_command_dom_get_document() {
+    // REQ-BRW-048 follow-up: live-document query — -32603 without a bridge.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t-1");
-    let result = router.send_command(session.session_id(), "DOM.getDocument", None);
-    assert!(result.is_ok());
+    let err = router
+        .send_command(session.session_id(), "DOM.getDocument", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -162,10 +165,14 @@ fn test_send_command_network_enable() {
 
 #[test]
 fn test_send_command_css_get_computed_style() {
+    // REQ-BRW-048: live-page query — the bridge-less internal session
+    // answers the missing-nodeId -32602 explicitly; never an empty list.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t-1");
-    let result = router.send_command(session.session_id(), "CSS.getComputedStyleForNode", None);
-    assert!(result.is_ok());
+    let err = router
+        .send_command(session.session_id(), "CSS.getComputedStyleForNode", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32602);
 }
 
 #[test]
@@ -524,8 +531,12 @@ fn test_internal_dispatch_target_close_target() {
 
 #[test]
 fn test_internal_dispatch_dom_describe_node() {
-    let result = internal_dispatch("DOM.describeNode", None);
-    assert!(result.is_object());
+    // REQ-BRW-048 follow-up: describeNode requires nodeId or objectId —
+    // -32602 without either (canned HTML node eradicated).
+    let resp = internal_dispatch_raw("DOM.describeNode", None);
+    let err = resp.error.expect("missing node ref must be an explicit error");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nodeId or objectId"));
 }
 
 #[test]
@@ -538,8 +549,13 @@ fn test_internal_dispatch_network_get_response_body() {
 
 #[test]
 fn test_internal_dispatch_css_get_inline_styles() {
-    let result = internal_dispatch("CSS.getInlineStylesForNode", Some(json!({"nodeId": 1})));
-    assert!(result.is_object());
+    // REQ-BRW-048: live-page query — a well-formed nodeId without a bridge
+    // is an explicit -32603 (no servo bridge connected).
+    let resp = internal_dispatch_raw(
+        "CSS.getInlineStylesForNode",
+        Some(json!({"nodeId": 1})),
+    );
+    assert_eq!(resp.error.unwrap().code, -32603);
 }
 
 #[test]

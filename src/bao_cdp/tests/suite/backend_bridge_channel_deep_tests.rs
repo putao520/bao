@@ -73,8 +73,9 @@ fn test_internal_empty_method() {
 
 #[test]
 fn test_internal_dom_get_document() {
+    // REQ-BRW-048 follow-up: live-document query — -32603 without a bridge.
     let resp = dispatch("DOM.getDocument", None);
-    assert!(resp.result.is_some());
+    assert_eq!(resp.error.expect("explicit error required").code, -32603);
 }
 
 #[test]
@@ -451,9 +452,11 @@ fn test_bridge_response_debug() {
 fn test_channel_send_recv() {
     let (sender, receiver) = bridge_channel(Duration::from_secs(5));
 
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(10));
-        receiver.try_process(|cmd| match cmd {
+    // Drain-race hardening (sweep 2026-09-27): serve until the command is
+    // processed — a single-shot try_process behind a sleep can exit before
+    // the blocking send arrives (and under load, before its own wake-up).
+    std::thread::spawn(move || loop {
+        let got = receiver.try_process(|cmd| match cmd {
             BridgeCommand::Navigate { url, .. } => BridgeResponse {
                 result: Ok(json!({"navigated": url})),
             },
@@ -461,6 +464,10 @@ fn test_channel_send_recv() {
                 result: Err("unexpected".into()),
             },
         });
+        if got {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
     });
 
     let resp = sender.send(BridgeCommand::Navigate {
@@ -548,14 +555,22 @@ fn test_channel_sender_clone_shared() {
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter_clone = counter.clone();
 
+    // Drain-race hardening (sweep 2026-09-27): serve until both commands
+    // are counted instead of assuming the queue state at wake-up time.
+    let counter_loop = std::sync::Arc::clone(&counter_clone);
     let handle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        receiver.drain(|_cmd| {
-            counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            BridgeResponse {
-                result: Ok(json!({})),
-            }
-        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while counter_loop.load(std::sync::atomic::Ordering::SeqCst) < 2
+            && std::time::Instant::now() < deadline
+        {
+            receiver.try_process(|cmd| {
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                BridgeResponse {
+                    result: Ok(json!({})),
+                }
+            });
+            std::thread::sleep(Duration::from_millis(1));
+        }
     });
 
     sender.send_fire_and_forget(BridgeCommand::GetTitle {
@@ -881,22 +896,23 @@ fn test_runtime_domain_call_function_on_stub() {
 }
 
 #[test]
-fn test_dom_domain_get_document_no_bridge_structure() {
+fn test_dom_domain_get_document_no_bridge_explicit_error() {
+    // REQ-BRW-048 follow-up: the canned document tree is eradicated — the
+    // bridge-less dispatch answers -32603, never a fabricated root.
     let resp = dispatch("DOM.getDocument", None);
-    let root = resp.result.unwrap()["root"].clone();
-    assert_eq!(root["nodeId"], 1);
-    assert_eq!(root["nodeName"], "#document");
-    assert_eq!(root["nodeType"], 9); // Document node
-    let children = root["children"].as_array().expect("children array");
-    assert!(!children.is_empty());
-    assert_eq!(children[0]["nodeName"], "HTML");
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_dom_domain_query_selector_no_bridge_returns_zero() {
+fn test_dom_domain_query_selector_no_bridge_explicit_error() {
+    // REQ-BRW-048 follow-up: real canonical node ids come from the live
+    // page — without a bridge the query is -32603 (the found?1:0 fake is
+    // eradicated; nodeId 0 now only means "no match" on a live page).
     let resp = dispatch("DOM.querySelector", Some(json!({"selector":"div"})));
-    let result = resp.result.expect("querySelector without bridge succeeds");
-    assert_eq!(result["nodeId"], 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -931,9 +947,11 @@ fn test_network_domain_unknown_subcommand_error() {
 
 #[test]
 fn test_css_domain_get_computed_style() {
+    // REQ-BRW-048: styles are read from the live page — without a bridge
+    // the query is an explicit -32603, never an empty computedStyle list.
     let resp = dispatch("CSS.getComputedStyleForNode", Some(json!({"nodeId":1})));
-    let result = resp.result.expect("getComputedStyleForNode must succeed");
-    assert!(result["computedStyle"].is_array());
+    let err = resp.error.expect("no bridge must yield an explicit error");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -1663,15 +1681,24 @@ fn test_channel_send_then_drain_response_actually_delivered() {
     // This proves the responder oneshot channel is wired correctly end-to-end.
     let (sender, receiver) = bridge_channel(Duration::from_secs(5));
 
-    let h = std::thread::spawn(move || {
-        receiver.drain(|cmd| match cmd {
+    // Drain-race hardening (sweep 2026-09-27): a bare drain() returns after
+    // one empty sweep and drops the receiver before the blocking send below
+    // arrives ("bridge channel closed" under load). Serve until the
+    // round-trip lands, preserving the assertion's target: drain's handler
+    // response must reach the sender through the responder channel.
+    let h = std::thread::spawn(move || loop {
+        let got = receiver.try_process(|cmd| match cmd {
             BridgeCommand::GetUrl { .. } => BridgeResponse {
                 result: Ok(json!("http://drained-url")),
             },
             _ => BridgeResponse {
                 result: Err("unexpected".into()),
             },
-        })
+        });
+        if got {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
     });
 
     let resp = sender.send(BridgeCommand::GetUrl {

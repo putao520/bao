@@ -96,10 +96,12 @@ fn test_session_send_runtime_enable() {
 
 #[test]
 fn test_session_send_dom_get_document() {
+    // REQ-BRW-048 follow-up: live-document query — the bridge-less internal
+    // session surfaces -32603 (canned tree eradicated).
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
-    let result = session.send(&router, "DOM.getDocument", None);
-    assert!(result.is_ok());
+    let err = session.send(&router, "DOM.getDocument", None).unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
