@@ -82,3 +82,7 @@ completion 四项齐备:①链检查 RC=0(断裂=在途实验态误判,已澄清
 **死线停**(E3,证据链完整):promise 重构前置链持续展开(promise.rs 326 行→interfaces.rs 27 行→buffer_source.rs 1000 行新文件→refcounted 架构级 267 行)+codegen 语义半区+webcrypto 家族 34 文件+~15 可选依赖簇;实测单次编译 174 错爆炸。回退至 HEAD 绿态。
 **事故**:E3 整体回退扫掉 E1 已交付验收的 codegen 决策端口(=E3 提议的 ③a,E1 曾端到端实证)——未 commit 的交付物无法从 git 找回,E1 重放是唯一路。**新纪律**:回退限定自域路径,整体 checkout 禁用;E 交付物必须即时 commit(攒码纪律修正:写码零编译可以,交付即 commit 不可拖延——本次事故的直接教训)。
 **再分解**(E3 方案,立项排队):③a=codegen 语义端口(E1 重放中)/③b=webcrypto 家族同步+可选依赖 feature 化/③c=87 文件 RootedPromise 迁移(在 a+b 地板上分段)。
+
+## 波③第二轮死线+③a'插入(2026-09-28)
+二轮(顺序单颗)仍触死线:webcrypto 同步后 E0053 揭示 port False 路径不完整(单接口翻转 121→213 振荡)。本轮回退**域限执行**——E1 port 幸存(grep 验证),上轮教训已吸收。E3 侦察资产:codegen 三站点(1202/1654→1676)+configuration 决策位(240/337)+同步集 7 文件行级 delta+87 文件清单。
+**队列修订**:③a'(E1:False 路径补全+Callbacks 字典重建+生成码全量 diff 双证)→ ③b(E3:webcrypto 37,GO 已撤回待 ③a')→ ③c(87 文件)→ 协调大波 → paint 迁移。
