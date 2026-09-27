@@ -60,6 +60,11 @@ class Configuration:
         self.dictConfig = glbl['Dictionaries']
         self.unionConfig = glbl['Unions']
         self.sub_crates = glbl['SubCrates']
+        # BAO patch (fork-maintained, 2026-09-28): foundation ② — callback
+        # config section (safe-get: the fork's Bindings.conf carries no
+        # 'Callbacks' section yet; populated when the coordinated wave flips
+        # per-callback decisions).
+        self.callbackConfig = glbl.get('Callbacks', {})
 
         # Build descriptors for all the interfaces we have in the parse data.
         # This allows callers to specify a subset of interfaces by filtering
@@ -176,6 +181,11 @@ class Configuration:
     def getDictConfig(self, name: str) -> dict[str, Any]:
         return self.dictConfig.get(name, {})
 
+    # BAO patch (fork-maintained, 2026-09-28): foundation ② — per-callback
+    # decision config lookup (upstream b820a9679 form).
+    def getCallbackConfig(self, name: str) -> dict[str, Any]:
+        return self.callbackConfig.get(name, {})
+
     def getCallbacks(self, webIDLFile: str = "") -> list[IDLCallback]:
         return self._filterForFile(self.callbacks, webIDLFile=webIDLFile)
 
@@ -217,6 +227,17 @@ class DescriptorProvider:
         context of the current descriptor.
         """
         return self.config.getDescriptor(interfaceName)
+
+    # BAO patch (fork-maintained, 2026-09-28): REQ-BRW-046-wave foundation ② —
+    # callback storage decision ports (upstream b820a9679 mechanism). Fork
+    # default True = Rc form (zero behavior change); upstream default False =
+    # RootedCallback/StackRoot. Flip per-interface via Bindings.conf
+    # ('rc': False / 'useRcPromise': False) only in the coordinated wave.
+    def callbackUsesRc(self, callbackIdentifier: str) -> bool:
+        return self.config.getCallbackConfig(callbackIdentifier).get('rc', True)
+
+    def callbackUsesRcPromise(self, callbackIdentifier: str) -> bool:
+        return self.config.getCallbackConfig(callbackIdentifier).get('useRcPromise', True)
 
 
 def MemberIsLegacyUnforgeable(member: IDLAttribute | IDLMethod, descriptor: Descriptor) -> bool:
@@ -309,6 +330,12 @@ class Descriptor(DescriptorProvider):
                 assert first_set.isdisjoint(second_set), f"In {ifaceName} set {configurationMethods[i]} has overlap with {configurationMethods[j]}. Duplicates: {first_set.intersection(second_set)}"
 
         self.additionalTraits = [name for name in desc.get('additionalTraits', [])]
+        # BAO patch (fork-maintained, 2026-09-28): foundation ② decision ports —
+        # fork default True = Rc form (zero behavior change); upstream default
+        # False = RootedCallback/StackRoot. Flip via Bindings.conf only in the
+        # coordinated wave.
+        self.useRcPromise = desc.get('useRcPromise', True)
+        self.useRcCallback = self.interface.isCallback() and desc.get('useRcCallback', True)
         self.bindingPath = f"{getModuleFromObject(self.interface)}::{ifaceName}_Binding"
         self.outerObjectHook = desc.get('outerObjectHook', 'None')
         self.proxy = False

@@ -762,7 +762,10 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
                                 defaultValue: IDLValue | None = None,
                                 exceptionCode: str | None = None,
                                 allowTreatNonObjectAsNull: bool = False,
-                                sourceDescription: str = "value") -> JSToNativeConversionInfo:
+                                sourceDescription: str = "value",
+                                # BAO patch (fork-maintained, 2026-09-28): foundation ②
+                                # decision port — default True keeps the Rc promise form.
+                                useRcPromise: bool = True) -> JSToNativeConversionInfo:
     """
     Get a template for converting a JS value to a native object based on the
     given type and descriptor.  If failureCode is given, then we're actually
@@ -903,7 +906,8 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
         innerInfo = getJSToNativeConversionInfo(innerContainerType(type),
                                                 descriptorProvider,
                                                 isMember="Sequence",
-                                                isAutoRooted=isAutoRooted)
+                                                isAutoRooted=isAutoRooted,
+                                                useRcPromise=useRcPromise)
         assert innerInfo.declType is not None
         declType = wrapInNativeContainerType(type, innerInfo.declType)
         config = getConversionConfigForType(type, innerContainerType(type).hasEnforceRange(), isClamp, treatNullAs)
@@ -991,7 +995,10 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
         if isArgument:
             declType = CGGeneric("&D::Promise")
         else:
-            declType = CGGeneric("Rc<D::Promise>")
+            # BAO patch (fork-maintained, 2026-09-28): foundation ② decision
+            # port — default True keeps the Rc form (fork old state); False
+            # selects the StackRoot form (upstream).
+            declType = CGGeneric("Rc<D::Promise>") if useRcPromise else CGGeneric("<D::Promise as PromiseHelpers<D>>::StackRoot")
         return handleOptional(templateBody, declType, handleDefault("None"))
 
     if type.isGeckoInterface():
@@ -1208,9 +1215,21 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
         # pyrefly: ignore  # missing-attribute
         callback = type.unroll().callback
         declType = CGGeneric(f"{callback.identifier.name}<D>")
-        finalDeclType = CGTemplatedType("Rc", declType)
+        # BAO patch (fork-maintained, 2026-09-28): foundation ② decision port
+        # (upstream origin/main form). Fork default useRc=True keeps the Rc
+        # form (zero behavior change); needTraced only fires when useRc is
+        # disabled and the member is a dictionary (TracedCallback).
+        useRc = descriptorProvider.callbackUsesRc(callback.identifier.name)
+        needTraced = isMember == "Dictionary"
+        if useRc:
+            typeName = "Rc"
+        elif needTraced:
+            typeName = "TracedCallback"
+        else:
+            typeName = "RootedCallback"
+        finalDeclType = CGTemplatedType(typeName, declType)
 
-        conversion = CGCallbackTempRoot(declType.define())
+        conversion = CGCallbackTempRoot(declType.define(), useRc, needTraced)
 
         if type.nullable():
             declType = CGTemplatedType("Option", declType)
@@ -1616,7 +1635,7 @@ def builtin_return_type(returnType: IDLType) -> CGThing:
 
 
 # Returns a CGThing containing the type of the return value.
-def getRetvalDeclarationForType(returnType: IDLType | None, descriptorProvider: DescriptorProvider, isInnerType: bool =False) -> CGThing:
+def getRetvalDeclarationForType(returnType: IDLType | None, descriptorProvider: DescriptorProvider, isInnerType: bool =False, useRcPromise: bool = True) -> CGThing:
     if returnType is None or returnType.isUndefined():
         # Nothing to declare
         return CGGeneric("()")
@@ -1651,7 +1670,10 @@ def getRetvalDeclarationForType(returnType: IDLType | None, descriptorProvider: 
         return result
     if returnType.isPromise():
         assert not returnType.nullable()
-        return CGGeneric("Rc<D::Promise>")
+        # BAO patch (fork-maintained, 2026-09-28): foundation ② decision port —
+        # default True keeps the Rc form (fork old state); False selects the
+        # StackRoot form (upstream).
+        return CGGeneric("Rc<D::Promise>") if useRcPromise else CGGeneric("<D::Promise as PromiseHelpers<D>>::StackRoot")
     if returnType.isGeckoInterface():
         descriptor = descriptorProvider.getDescriptor(
             # pyrefly: ignore  # missing-attribute
@@ -2865,8 +2887,19 @@ class CGGeneric(CGThing):
 
 
 class CGCallbackTempRoot(CGGeneric):
-    def __init__(self, name: str) -> None:
-        CGGeneric.__init__(self, f"unsafe {{ {name.replace('<D>', '::<D>')}::new(cx, ${{val}}.get().to_object()) }}")
+    # BAO patch (fork-maintained, 2026-09-28): foundation ② — useRc/needTraced
+    # decision port (upstream origin/main form). useRc=True (fork default)
+    # reproduces the previous output byte-for-byte.
+    def __init__(self, name: str, useRc: bool, needTraced: bool) -> None:
+        inner = CGGeneric(f"unsafe {{ {name.replace('<D>', '::<D>')}::new(cx, ${{val}}.get().to_object()) }}")
+        pre = "RootedCallback::from(" if not useRc else ""
+        if not useRc:
+            post = ")"
+            if needTraced:
+                post += ".to_traced()"
+        else:
+            post = ""
+        CGGeneric.__init__(self, CGWrapper(inner, pre, post).define())
 
 
 def getAllTypes(
@@ -3004,10 +3037,10 @@ def DomTypes(descriptors: list[Descriptor],
         if iterableDecl:
             if iterableDecl.isMaplike():
                 keytype = fixupInterfaceTypeReferences(
-                    getRetvalDeclarationForType(iterableDecl.keyType, descriptor).define()
+                    getRetvalDeclarationForType(iterableDecl.keyType, descriptor, useRcPromise=descriptor.useRcPromise).define()
                 )
                 valuetype = fixupInterfaceTypeReferences(
-                    getRetvalDeclarationForType(iterableDecl.valueType, descriptor).define()
+                    getRetvalDeclarationForType(iterableDecl.valueType, descriptor, useRcPromise=descriptor.useRcPromise).define()
                 )
                 traits += [f"crate::like::Maplike<Key={keytype}, Value={valuetype}>"]
             if iterableDecl.isSetlike():
@@ -4255,7 +4288,7 @@ class CGCallGenerator(CGThing):
 
         isFallible = errorResult is not None
 
-        result = getRetvalDeclarationForType(returnType, descriptor)
+        result = getRetvalDeclarationForType(returnType, descriptor, useRcPromise=descriptor.useRcPromise)
         if returnType and returnTypeNeedsOutparam(returnType):
             outparamRootType = result
             result = CGGeneric("()")
