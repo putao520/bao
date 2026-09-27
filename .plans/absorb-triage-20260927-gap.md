@@ -7,7 +7,7 @@
 
 | 动作 | 文件 | 状态 |
 |---|---|---|
-| webvtt 家族修复(含 cue/ 子目录+crate tests 递归补齐) | dom/webvtt/* 8 文件 + webvtt/src{,/cue} + tests | `cargo check -p bao-servo-webvtt` RC=0(36.5s) |
+| **webvtt 家族吸收(已整体回退,终态=fork 旧自洽态)**:家族同步后暴露 crown 纪元耦合——new texttracklist 构造器变更耦合 htmlmediaelement(580 行 crown 结构漂移)、no_gc codegen 形态(fork 前 crown)、bytes::Bytes/job_queue 运行时形态(fork 已改 microtask+Vec<u8>)。逐项适配 5 错后又见更深消费者耦合,与 paint 同款螺旋,死线纪律全回退(dom 7 文件+crate+htmltrackelement;孤儿 cue/tests/collectors 一并移除)。**GetCueAsHTML/activeCues/cue-order 功能件归闭合波**(与 E3 REQ-BRW-047 合同一体:需同步 dom 家族+htmlmediaelement+fork 形态适配打包)。 | dom/webvtt/* + webvtt crate + htmltrackelement.rs | 回退后 `cargo check -p bao-servo-script` **RC=0 全绿**(E1 域内自修+回退自洽双因素);webvtt crate RC=0 |
 | fonts freetype 双修(16.16 转换/average_advance 缩放) | fonts/platform/freetype/font.rs | 零 BAO 锚;回退验证 `cargo check -p bao-servo-fonts -p bao-servo-constellation` RC=0(13.7s) |
 | **paint timing 闭合实验(已回退)**:paint crate 预存断裂(HEAD 20 错:消费 PaintTimingInfo/PaintTimingReport 而 paint_api 无生产侧)。逐跳同步 paint-api→paint→embedder→shared/constellation 后单 crate 绿,但宽域验证爆出 BAO 补丁 constellation crate 期望 per-WebView 消息变体(FocusWebView/BlurWebView/SetWebViewThrottled 等)——**vendor 的 shared/constellation 本就超前于基线,基线同步=降级**。死线触发,全部回退至 HEAD(paint 回到预存断裂态,归本闭合波)。 | 实验集:paint/src 7 + shared/paint 3 + shared/embedder 7 + shared/constellation 5 + id.rs 增量 LCPCandidateID | 已回退;结论:**闭合集 ≥6 crate 且含 2 个 BAO 补丁 crate(paint 消费链+constellation),零散文件同步不可行,必须协调波**(同步集+补丁重放一体) |
 

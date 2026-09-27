@@ -4,18 +4,16 @@
 
 use std::cell::Cell;
 
-use bytes::Bytes;
 use content_security_policy::Destination;
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
-use js::context::{JSContext, NoGC};
+use js::context::JSContext;
 use js::rust::HandleObject;
 use net_traits::request::RequestId;
 use net_traits::{FetchMetadata, NetworkError, ResourceFetchTiming};
 use script_bindings::cell::DomRefCell;
 use servo_url::ServoUrl;
-use servo_webvtt::cue::settings::WebVttCue;
-use servo_webvtt::{IncrementalWebVTTParser, WebVttParserSink};
+use servo_webvtt::{IncrementalWebVTTParser, WebVttCue, WebVttParserSink};
 
 use crate::dom::bindings::codegen::Bindings::HTMLMediaElementBinding::HTMLMediaElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLTrackElementBinding::{
@@ -26,7 +24,7 @@ use crate::dom::bindings::codegen::Bindings::TextTrackBinding::{TextTrackMethods
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{Dom, DomRoot, UnrootedDom};
+use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::csp::Violation;
 use crate::dom::document::Document;
@@ -45,12 +43,10 @@ use crate::dom::virtualmethods::VirtualMethods;
 use crate::dom::webvtt::vttcue::VTTCue;
 use crate::dom::{AttributeMutation, cors_setting_for_element};
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::{
-    FetchCanceller, RequestWithGlobalScope, create_a_potential_cors_request,
-};
+use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
-use crate::runtime::job_queue::MicrotaskRunnable;
+use crate::runtime::microtask::MicrotaskRunnable;
 
 #[derive(Clone, Copy, Default, JSTraceable, MallocSizeOf, PartialEq)]
 #[repr(u16)]
@@ -84,12 +80,6 @@ pub(crate) struct HTMLTrackElement {
     /// <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
     /// whether the algorithm is running or not.
     is_running_processing_model_algorithm: Cell<bool>,
-    /// Used as part of
-    /// <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
-    /// whether the algorithm has at least once progressed past step 5.
-    has_started_tracking_processing_model: Cell<bool>,
-    /// Used to cancel previous fetch request if a new one has been scheduled.
-    canceller: DomRefCell<Option<FetchCanceller>>,
 }
 
 impl HTMLTrackElement {
@@ -106,8 +96,6 @@ impl HTMLTrackElement {
             track_url: Default::default(),
             last_successful_load: Default::default(),
             is_running_processing_model_algorithm: Default::default(),
-            has_started_tracking_processing_model: Default::default(),
-            canceller: Default::default(),
         }
     }
 
@@ -167,10 +155,9 @@ impl HTMLTrackElement {
             return;
         };
         // Step 4. Run the remainder of these steps in parallel, allowing whatever caused these steps to run to continue.
-        self.has_started_tracking_processing_model.set(true);
         // Step 5. Top: Await a stable state.
         let task = TrackElementMicrotask::ProcessingModel {
-            element: Dom::from_ref(self),
+            elem: Dom::from_ref(self),
         };
         self.is_running_processing_model_algorithm.set(true);
 
@@ -190,55 +177,12 @@ impl HTMLTrackElement {
             // > given the media element to fire an event named addtrack at the media element's
             // > textTracks attribute's TextTrackList object, using TrackEvent,
             // > with the track attribute initialized to the text track's TextTrack object.
-            parent.TextTracks(cx).add(cx, &self.track);
+            parent.TextTracks(cx).add(&parent, &self.track);
 
             // https://html.spec.whatwg.org/multipage/#sourcing-out-of-band-text-tracks:start-the-track-processing-model
             // > The track element's parent element changes and the new parent is a media element.
             self.start_the_track_processing_model(cx);
         }
-    }
-
-    pub(crate) fn track<'a>(&self, no_gc: &'a NoGC) -> UnrootedDom<'a, TextTrack> {
-        self.track.as_unrooted(no_gc)
-    }
-
-    fn is_hidden_or_showing(&self) -> bool {
-        matches!(
-            self.track.Mode(),
-            TextTrackMode::Hidden | TextTrackMode::Showing
-        )
-    }
-
-    /// Step 10.4 of <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
-    fn cancel_ongoing_request(&self) {
-        if let Some(mut canceller) = self.canceller.take() {
-            // > If, while fetching is ongoing, either:
-            //     > the track URL changes so that it is no longer equal to URL,
-            //       > while the text track mode is set to hidden or showing; or
-            //     > the text track mode changes to hidden or showing,
-            //       > while the track URL is not equal to URL,
-            // > ...then the user agent must abort fetching,
-            // > discarding any pending tasks generated by that algorithm
-            // > (and in particular, not adding any cues to the text track
-            // > list of cues after the moment the URL changed),
-            // > and then queue an element task on the DOM manipulation task source
-            // > given the track element that first changes the text track readiness state
-            // > to failed to load and then fires an event named error at the track element.
-            canceller.abort();
-            self.fire_error_event_during_fetching();
-        }
-    }
-
-    fn fire_error_event_during_fetching(&self) {
-        let this = Trusted::new(self);
-        self.global()
-            .task_manager()
-            .dom_manipulation_task_source()
-            .queue(task!(failed_to_load: move |cx| {
-                let track = this.root();
-                track.readiness_state.set(TextTrackReadinessState::FailedToLoad);
-                track.upcast::<EventTarget>().fire_event(cx, atom!("error"));
-            }));
     }
 }
 
@@ -338,58 +282,13 @@ impl VirtualMethods for HTMLTrackElement {
                     } else {
                         None
                     };
-                } else {
-                    *self.track_url.borrow_mut() = None;
                 }
-
-                if mutation.old_value(attr) !=
-                    mutation.new_value(attr).map(|value| value.to_string())
-                {
-                    // https://html.spec.whatwg.org/multipage/#sourcing-out-of-band-text-tracks
-                    // > Whenever a track element has its src attribute set, changed, or removed,
-                    // > the user agent must immediately empty the element's text track's text track list of cues.
-                    // > (This also causes the algorithm above to stop adding cues from the resource
-                    // > being obtained using the previously given URL, if any.)
-                    self.track.empty_cue_list();
-
-                    if self.is_hidden_or_showing() {
-                        // Step 10.4 of https://html.spec.whatwg.org/multipage/#start-the-track-processing-model
-                        //
-                        // > If, while fetching is ongoing, either:
-                        //     > the track URL changes so that it is no longer equal to URL,
-                        //       > while the text track mode is set to hidden or showing; or
-                        //     > the text track mode changes to hidden or showing,
-                        //       > while the track URL is not equal to URL,
-                        // > ...then the user agent must abort fetching,
-                        // > discarding any pending tasks generated by that algorithm
-                        // > (and in particular, not adding any cues to the text track
-                        // > list of cues after the moment the URL changed),
-                        // > and then queue an element task on the DOM manipulation task source
-                        // > given the track element that first changes the text track readiness state
-                        // > to failed to load and then fires an event named error at the track element.
-                        self.cancel_ongoing_request();
-
-                        // https://html.spec.whatwg.org/multipage/#start-the-track-processing-model
-                        // Step 11. Wait until the text track readiness state is no longer set to loading.
-                        // Step 12. Wait until the track URL is no longer equal to URL,
-                        // at the same time as the text track mode is set to hidden or showing.
-                        //
-                        // These conditions have been checked above by the if-statements
-                        if self.has_started_tracking_processing_model.get() &&
-                            !self.is_running_processing_model_algorithm.get()
-                        {
-                            // Step 13. Jump to the step labeled top.
-                            let task = TrackElementMicrotask::ProcessingModel {
-                                element: Dom::from_ref(self),
-                            };
-                            self.is_running_processing_model_algorithm.set(true);
-
-                            // Step 5. Top: Await a stable state. The synchronous section consists
-                            // of the following steps. (The steps in the synchronous section are marked with ⌛.)
-                            ScriptThread::await_stable_state(cx, Box::new(task));
-                        }
-                    }
-                }
+                // https://html.spec.whatwg.org/multipage/#sourcing-out-of-band-text-tracks
+                // > Whenever a track element has its src attribute set, changed, or removed,
+                // > the user agent must immediately empty the element's text track's text track list of cues.
+                // > (This also causes the algorithm above to stop adding cues from the resource
+                // > being obtained using the previously given URL, if any.)
+                self.track.empty_cue_list();
             },
             local_name!("kind") |
             local_name!("label") |
@@ -454,29 +353,27 @@ impl VirtualMethods for HTMLTrackElement {
 
 #[derive(JSTraceable, MallocSizeOf)]
 pub(crate) enum TrackElementMicrotask {
-    ProcessingModel { element: Dom<HTMLTrackElement> },
+    ProcessingModel { elem: Dom<HTMLTrackElement> },
 }
 
 impl MicrotaskRunnable for TrackElementMicrotask {
     fn handler(&self, cx: &mut JSContext) {
         let _realm = match self {
-            TrackElementMicrotask::ProcessingModel { element, .. } => {
-                enter_auto_realm(cx, &**element)
-            },
+            TrackElementMicrotask::ProcessingModel { elem, .. } => enter_auto_realm(cx, &**elem),
         };
         match self {
             // https://html.spec.whatwg.org/multipage/#start-the-track-processing-model
-            TrackElementMicrotask::ProcessingModel { element } => {
+            TrackElementMicrotask::ProcessingModel { elem } => {
                 // Not specced, but required for browser compatibility:
                 // https://github.com/whatwg/html/issues/12796
-                if element.readiness_state.get() == TextTrackReadinessState::Loaded &&
-                    *element.track_url.borrow() == *element.last_successful_load.borrow()
+                if elem.readiness_state.get() == TextTrackReadinessState::Loaded &&
+                    *elem.track_url.borrow() == *elem.last_successful_load.borrow()
                 {
-                    element.is_running_processing_model_algorithm.set(false);
+                    elem.is_running_processing_model_algorithm.set(false);
                     return;
                 }
 
-                let media_parent = element
+                let media_parent = elem
                     .upcast::<Node>()
                     .GetParentNode()
                     .and_then(DomRoot::downcast::<HTMLMediaElement>);
@@ -484,11 +381,9 @@ impl MicrotaskRunnable for TrackElementMicrotask {
                 // The synchronous section consists of the following steps.
                 // (The steps in the synchronous section are marked with ⌛.)
                 // Step 6. ⌛ Set the text track readiness state to loading.
-                element
-                    .readiness_state
-                    .set(TextTrackReadinessState::Loading);
+                elem.readiness_state.set(TextTrackReadinessState::Loading);
                 // Step 7. ⌛ Let URL be the track URL of the track element.
-                let url = element.track_url.borrow().clone();
+                let url = elem.track_url.borrow().clone();
                 // Step 8. ⌛ If the track element's parent is a media element,
                 // then let corsAttributeState be the state of the parent media element's
                 // crossorigin content attribute. Otherwise, let corsAttributeState be No CORS.
@@ -500,8 +395,8 @@ impl MicrotaskRunnable for TrackElementMicrotask {
                 if let Some(url) = url {
                     // Step 10.1. Let request be the result of creating a potential-CORS request given URL,
                     // "track", and corsAttributeState, and with the same-origin fallback flag set.
-                    let global = element.global();
-                    let document = element.owner_document();
+                    let global = elem.global();
+                    let document = elem.owner_document();
                     let request = create_a_potential_cors_request(
                         Some(document.webview_id()),
                         url.clone(),
@@ -519,27 +414,13 @@ impl MicrotaskRunnable for TrackElementMicrotask {
 
                     // Step 10.4. Fetch request.
                     let listener = HTMLTrackElementFetchListener {
-                        element: Trusted::new(element),
+                        element: Trusted::new(elem),
                         url,
                         payload: vec![],
                     };
-                    element.cancel_ongoing_request();
-                    *element.canceller.borrow_mut() = Some(FetchCanceller::new(
-                        request.id,
-                        false,
-                        global.core_resource_thread(),
-                    ));
                     document.fetch_background(request, listener);
                 } else {
-                    // > If fetching fails for any reason (network error, the server returns an error code, CORS fails, etc.),
-                    // > or if URL is the empty string, then queue an element task on the DOM manipulation task source
-                    // > given the media element to first change the text track readiness state to failed to load
-                    // > and then fire an event named error at the track element.
-                    //
-                    // This is the "URL is the empty string" case
-                    element.is_running_processing_model_algorithm.set(false);
-                    *element.canceller.borrow_mut() = None;
-                    element.fire_error_event_during_fetching();
+                    elem.is_running_processing_model_algorithm.set(false);
                 }
                 // Step 11. Wait until the text track readiness state is no longer set to loading.
                 // TODO
@@ -564,7 +445,7 @@ impl WebVttParserSink<JSContext> for TextTrackCueSink {
         let text_track = &element.track;
 
         let cue = VTTCue::create_from_vtt(cx, cue, global.as_window(), Some(text_track));
-        text_track.text_track_cue_list(cx).add(cx, cue.upcast());
+        text_track.get_cues(cx).add(cue.upcast());
     }
 }
 
@@ -575,17 +456,6 @@ struct HTMLTrackElementFetchListener {
     url: ServoUrl,
     /// The payload received
     payload: Vec<u8>,
-}
-
-impl HTMLTrackElementFetchListener {
-    fn has_track_url_changed_since_fetch(&self) -> bool {
-        let element = self.element.root();
-        element
-            .track_url
-            .borrow()
-            .as_ref()
-            .is_none_or(|url| url != &self.url)
-    }
 }
 
 impl FetchResponseListener for HTMLTrackElementFetchListener {
@@ -599,28 +469,7 @@ impl FetchResponseListener for HTMLTrackElementFetchListener {
     ) {
     }
 
-    /// Step 10.4 of <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, payload: Bytes) {
-        // > If, while fetching is ongoing, either:
-        //     > the track URL changes so that it is no longer equal to URL,
-        //       > while the text track mode is set to hidden or showing; or
-        //     > the text track mode changes to hidden or showing,
-        //       > while the track URL is not equal to URL,
-        // > ...then the user agent must abort fetching,
-        // > discarding any pending tasks generated by that algorithm
-        // > (and in particular, not adding any cues to the text track
-        // > list of cues after the moment the URL changed),
-        // > and then queue an element task on the DOM manipulation task source
-        // > given the track element that first changes the text track readiness state
-        // > to failed to load and then fires an event named error at the track element.
-        //
-        // Note that we don't abort here, since we do that when we schedule the new fetch.
-        // We only bail out here to avoid adding new cues to the list of cues
-        let element = self.element.root();
-        if self.has_track_url_changed_since_fetch() && element.is_hidden_or_showing() {
-            return;
-        }
-
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, payload: Vec<u8>) {
         self.payload.extend_from_slice(&payload);
     }
 
@@ -634,12 +483,20 @@ impl FetchResponseListener for HTMLTrackElementFetchListener {
     ) {
         let track = self.element.clone();
         let element = self.element.root();
-        if status.is_err() || self.has_track_url_changed_since_fetch() {
+        if status.is_err() {
             // > If fetching fails for any reason (network error, the server returns an error code, CORS fails, etc.),
             // > or if URL is the empty string, then queue an element task on the DOM manipulation task source
             // > given the media element to first change the text track readiness state to failed to load
             // > and then fire an event named error at the track element.
-            element.fire_error_event_during_fetching();
+            element
+                .global()
+                .task_manager()
+                .dom_manipulation_task_source()
+                .queue(task!(failed_to_load: move |cx| {
+                    let track = track.root();
+                    track.readiness_state.set(TextTrackReadinessState::FailedToLoad);
+                    track.upcast::<EventTarget>().fire_event(cx, atom!("error"));
+                }));
         } else {
             // > The tasks queued by the fetching algorithm on the networking task source to
             // > process the data as it is being fetched must determine the type of the resource.
@@ -682,10 +539,17 @@ impl FetchResponseListener for HTMLTrackElementFetchListener {
                 // > and reported to the application), then the task that is queued on the networking task source
                 // > in which the aforementioned problem is found must change the text track readiness state
                 // > to failed to load and fire an event named error at the track element.
-                element.fire_error_event_during_fetching();
+                element
+                    .global()
+                    .task_manager()
+                    .networking_task_source()
+                    .queue(task!(failed_to_parse: move |cx| {
+                        let track = track.root();
+                        track.readiness_state.set(TextTrackReadinessState::FailedToLoad);
+                        track.upcast::<EventTarget>().fire_event(cx, atom!("error"));
+                    }));
             }
         }
-        *element.canceller.borrow_mut() = None;
         element.is_running_processing_model_algorithm.set(false);
         network_listener::submit_timing(cx, &self, &status, &timing);
     }
