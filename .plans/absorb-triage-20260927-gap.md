@@ -77,3 +77,8 @@ completion 四项齐备:①链检查 RC=0(断裂=在途实验态误判,已澄清
 
 ## 预起草:paint 岛→基线迁移波合同(队列终位;E1 六点蓝图)
 打包集=vendor 4 crate+script 3 面一次 PR:①直取基线 paint/{lib,painter,pipeline_details}.rs+shared/paint/{lib,display_list,viewport_description}.rs;②删双孤儿(largest_contentful_paint_candidate.rs+largest_contentful_paint_calculator.rs);③layout 同步 display_list/{mod,paint_timing_handler}.rs+layout_impl.rs(先 diff 定界);④script 同步 dom/performance/*+document.rs+window.rs+webidls×2(**须 script 协调大波后**);⑤shared/embedder 仅 3 文件 delta 待查性质;⑥shared/constellation+constellation 保留 vendor(per-WebView 消息族=RouterProxy 消费面,实证不同步);⑦servo/tests/largest_contentful_paint.rs 随面。
+
+## 闭合波③死线停+事故记录(2026-09-28)
+**死线停**(E3,证据链完整):promise 重构前置链持续展开(promise.rs 326 行→interfaces.rs 27 行→buffer_source.rs 1000 行新文件→refcounted 架构级 267 行)+codegen 语义半区+webcrypto 家族 34 文件+~15 可选依赖簇;实测单次编译 174 错爆炸。回退至 HEAD 绿态。
+**事故**:E3 整体回退扫掉 E1 已交付验收的 codegen 决策端口(=E3 提议的 ③a,E1 曾端到端实证)——未 commit 的交付物无法从 git 找回,E1 重放是唯一路。**新纪律**:回退限定自域路径,整体 checkout 禁用;E 交付物必须即时 commit(攒码纪律修正:写码零编译可以,交付即 commit 不可拖延——本次事故的直接教训)。
+**再分解**(E3 方案,立项排队):③a=codegen 语义端口(E1 重放中)/③b=webcrypto 家族同步+可选依赖 feature 化/③c=87 文件 RootedPromise 迁移(在 a+b 地板上分段)。
