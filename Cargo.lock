@@ -1903,6 +1903,7 @@ dependencies = [
  "k12",
  "keccak",
  "keyboard-types",
+ "kurbo",
  "libc",
  "log",
  "malloc_size_of_derive",
@@ -1943,6 +1944,7 @@ dependencies = [
  "stylo_dom",
  "stylo_malloc_size_of",
  "stylo_traits",
+ "svgtypes",
  "swapper",
  "tempfile",
  "tendril",
@@ -2282,6 +2284,7 @@ dependencies = [
 name = "bao_cdp"
 version = "0.3.1"
 dependencies = [
+ "bao-browser",
  "bao_engine",
  "bun_uws",
  "cdp-protocol",
@@ -10233,8 +10236,6 @@ dependencies = [
 [[package]]
 name = "stylo_atoms"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d448de89b7d18169a160ca258d2ee63efe79bd6cb20360654101835e9b80e386"
 dependencies = [
  "string_cache",
  "string_cache_codegen",

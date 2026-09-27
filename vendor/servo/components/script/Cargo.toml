@@ -98,6 +98,7 @@ jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstra
 k12 = {version = "0.5"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
 keccak = {version = "0.2"}
+kurbo = {version = "0.13.1", features = ["euclid"]}
 layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.10"}
 libc = {version = "0.2"}
 log = {version = "0.4.32"}
@@ -161,6 +162,7 @@ stylo_atoms = {version = "=0.20.0"}
 stylo_dom = {version = "=0.20.0"}
 stylo_malloc_size_of = {version = "=0.20.0"}
 stylo_traits = {version = "=0.20.0"}
+svgtypes = {version = "0.16.1"}
 swapper = {version = "0.1"}
 tempfile = {version = "3"}
 tendril = {version = "0.5", features = ["encoding_rs"]}
