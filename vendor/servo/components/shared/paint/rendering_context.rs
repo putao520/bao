@@ -136,6 +136,15 @@ impl SurfmanRenderingContext {
                 print_diagnostics_information_on_context_creation_failure(&device, gl_api, version)
             })?;
 
+        // BAO patch (fork-maintained, 2026-09-27): make the context current
+        // before any GL entry point loads. surfman's EGL/ANGLE backends
+        // leave the created context current inside create_context, but the
+        // WGL backend scopes a CurrentContextGuard and restores the
+        // previous (null) context on return — loading gleam/glow with no
+        // current context panics at glGetString(GL_VERSION) (glow
+        // native.rs:69). No-op on EGL/ANGLE; fixes the WGL path.
+        device.make_context_current(&context)?;
+
         #[expect(unsafe_code)]
         let gleam_gl = {
             match gl_api {
