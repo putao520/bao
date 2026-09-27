@@ -1174,18 +1174,31 @@ fn test_port_child_process_sync() {
             var r = cp.execSync('echo encoded', { encoding: 'utf8' });
             return typeof r === 'string' && r.trim() === 'encoded';
         });
+        // POSIX-utility probes skip cleanly when the platform provides no
+        // sh/echo on PATH (bare Windows without Git-for-Windows — the .200
+        // gate machine provides them via the documented PATH wrapper).
+        var HAS_POSIX_UTILS = (function() {
+            try {
+                var r = cp.spawnSync('sh', ['-c', 'true']);
+                return !!(r && !r.error && r.status === 0);
+            } catch (e) { return false; }
+        })();
         check('execSync-shell-pipe', function() {
+            if (!HAS_POSIX_UTILS) return true;
             var r = cp.execSync("sh -c 'echo a; echo b; echo c'").toString();
             return r.trim().split(/\n/).length === 3;
         });
         check('execSync-nonzero-exit-throws', function() {
+            if (!HAS_POSIX_UTILS) return true;
             try { cp.execSync('exit 7'); return false; } catch (e) { return true; }
         });
         check('spawnSync-shape', function() {
+            if (!HAS_POSIX_UTILS) return true;
             var r = cp.spawnSync('echo', ['spawn-ok']);
             return r.stdout.toString().trim() === 'spawn-ok' && r.status === 0;
         });
         check('spawnSync-nonzero-status', function() {
+            if (!HAS_POSIX_UTILS) return true;
             var r = cp.spawnSync('sh', ['-c', 'exit 3']);
             return r.status === 3;
         });
