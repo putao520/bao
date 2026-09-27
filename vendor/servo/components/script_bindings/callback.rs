@@ -129,6 +129,20 @@ impl<T> TracedCallback<T> {
     }
 }
 
+// BAO patch (fork-maintained, 2026-09-28): foundation ③a' — TracedCallback's
+// ToJSValConvertible, completing the conversion surface for the decision-port
+// needTraced form (dictionaries carrying callback members converted back to
+// JS). Upstream (b820a9679 / origin/main) ships no such impl; this fork adds
+// it in the same safe_to_jsval form as RootedCallback above (crown-era
+// conversions trait — the pre-window to_jsval form does not exist here).
+impl<T: js::conversions::ToJSValConvertible> js::conversions::ToJSValConvertible
+    for TracedCallback<T>
+{
+    fn safe_to_jsval(&self, cx: &mut JSContext, rval: MutableHandleValue) {
+        self.0.safe_to_jsval(cx, rval)
+    }
+}
+
 /// A common base class for representing IDL callback function and
 /// callback interface types.
 #[derive(JSTraceable, MallocSizeOf)]
