@@ -13,6 +13,7 @@ use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{RunJobs, SetJobQueue};
+use mozjs::rust::{HandleObject, HandleValue};
 
 static JOB_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -248,6 +249,15 @@ unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
     loop {
         let mut progress = false;
 
+        // (a0) ISSUE #25②: Node's nextTick queue — drains BEFORE the
+        // microtask sources at every checkpoint (Node semantics: the
+        // nextTick queue precedes the promise microtask queue, and
+        // nextTick callbacks enqueued from within the phase drain in the
+        // same phase). Capped per checkpoint (Node's tickDepth bound):
+        // the remainder stays queued for the next checkpoint, so a
+        // self-re-enqueueing callback cannot wedge the pump.
+        drain_next_ticks(cx);
+
         // (a) engine regular microtasks — promise reactions etc.
         while JS::HasRegularMicroTasks(cx) {
             progress = true;
@@ -482,4 +492,157 @@ unsafe extern "C" fn pop_interrupt_queue(_a: *mut c_void) -> *const c_void {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn drop_interrupt_queues(_a: *mut c_void) {
     INTERRUPT_QUEUES.with(|q| q.borrow_mut().clear());
+}
+
+// ── Node nextTick queue (ISSUE #25②) ────────────────────────────────────────
+//
+// `process.nextTick` previously degraded to `queueMicrotask` (a
+// `queueMicrotask(__nextTickCb)` eval), which put nextTick callbacks INTO
+// the promise microtask queue — breaking Node's ordering contract
+// (nextTick must precede Promise reactions within a checkpoint). This is
+// the real form: an INDEPENDENT queue drained at the head of every
+// checkpoint (the `run_jobs` (a0) arm above), recursive enqueues draining
+// within the same phase, capped per checkpoint at Node's tickDepth bound
+// (1000) so a self-re-enqueueing callback leaves the remainder for the
+// next checkpoint instead of wedging the pump.
+//
+// Entries are rooted per-field (`Heap` slots a moving GC updates in
+// place); a callback whose object was collected (its creation realm was
+// discarded) is skipped at drain. Same thread as the owning JSContext —
+// the queue is thread_local, never sent across threads.
+
+const NEXT_TICK_DEPTH_CAP: usize = 1000;
+
+struct NextTickEntry {
+    cb: Heap<*mut JSObject>,
+    global: Heap<*mut JSObject>,
+    args: Vec<Heap<JSVal>>,
+}
+
+thread_local! {
+    static NEXT_TICK_QUEUE: ::std::cell::RefCell<VecDeque<NextTickEntry>> =
+        const { ::std::cell::RefCell::new(VecDeque::new()) };
+}
+
+/// Enqueue a `process.nextTick(cb, ...args)` callback. Runs before the
+/// promise microtask queue at the next checkpoint (see `run_jobs` (a0)).
+pub fn next_tick_enqueue(
+    global: ::mozjs::jsapi::Handle<*mut JSObject>,
+    cb: ::mozjs::jsapi::Handle<*mut JSObject>,
+    args: &[::mozjs::jsapi::Handle<JSVal>],
+) {
+    let mut entry = NextTickEntry {
+        cb: Heap::default(),
+        global: Heap::default(),
+        args: Vec::with_capacity(args.len()),
+    };
+    entry.cb.set(unsafe { *cb.ptr });
+    entry.global.set(unsafe { *global.ptr });
+    for arg in args {
+        let mut slot = Heap::default();
+        slot.set(unsafe { *arg.ptr });
+        entry.args.push(slot);
+    }
+    NEXT_TICK_QUEUE.with(|q| q.borrow_mut().push_back(entry));
+}
+
+/// Number of callbacks waiting in the nextTick queue.
+pub fn next_tick_queue_len() -> usize {
+    NEXT_TICK_QUEUE.with(|q| q.borrow().len())
+}
+
+/// Drain the nextTick queue NOW (the `process._tickCallback` face). The
+/// checkpoint path goes through [`drain_next_ticks`] inside `run_jobs`.
+/// Returns the number of callbacks that ran.
+pub fn next_tick_drain(cx: &mut mozjs::context::JSContext) -> usize {
+    unsafe { drain_next_ticks(cx.raw_cx()) }
+}
+
+/// Checkpoint drain (the `run_jobs` (a0) arm). Runs up to
+/// [`NEXT_TICK_DEPTH_CAP`] callbacks; each callback runs in its captured
+/// realm; a throw routes to the uncaught-exception hook (Node: a nextTick
+/// throw is an uncaught exception), and a callback whose object was
+/// GC-collected (dead realm) is skipped.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn drain_next_ticks(cx: *mut JSContext) -> usize {
+    let mut ran = 0usize;
+    loop {
+        if ran >= NEXT_TICK_DEPTH_CAP {
+            return ran;
+        }
+        let Some(entry) = NEXT_TICK_QUEUE.with(|q| q.borrow_mut().pop_front()) else {
+            return ran;
+        };
+        ran += 1;
+
+        let cb = entry.cb.get();
+        let global = entry.global.get();
+        if cb.is_null() || global.is_null() {
+            // The callback or its realm was GC-collected (discarded realm):
+            // nothing to run, nothing to report.
+            continue;
+        }
+
+        let mut wrapped_cx =
+            mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let mut realm = AutoRealm::new(
+            &mut wrapped_cx,
+            ::std::ptr::NonNull::new_unchecked(global),
+        );
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+        rooted!(&in(realm_cx) let global_root = global);
+        rooted!(&in(realm_cx) let cb_root = cb);
+        let arg_roots: Vec<::mozjs::jsapi::Heap<JSVal>> = entry
+            .args
+            .iter()
+            .map(|slot| {
+                let h = ::mozjs::jsapi::Heap::default();
+                h.set(slot.get());
+                h
+            })
+            .collect();
+        // HandleValueArray::elements_ is a plain `const Value*`: it must
+        // point at the JSVal BODIES, contiguous. Heap<JSVal> is repr(C) over
+        // UnsafeCell<JSVal> — its slot array IS the value array. (Routing it
+        // through the Handle wrappers' bytes would feed SM pointer bit
+        // patterns as Values — the args arrive as garbage doubles.)
+        let argv = JS::HandleValueArray {
+            length_: arg_roots.len(),
+            elements_: arg_roots.as_ptr() as *const JSVal,
+        };
+
+        rooted!(&in(realm_cx) let cb_val = ::mozjs::jsval::ObjectValue(cb_root.get()));
+        let mut rval = UndefinedValue();
+        let ok = JS_CallFunctionValue(
+            cx,
+            global_root.handle().into(),
+            cb_val.handle().into(),
+            &argv,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            },
+        );
+        if !ok {
+            // Same throw contract as the stored-job path above: capture,
+            // clear, route to the uncaught-exception hook.
+            let mut exn = UndefinedValue();
+            JS_GetPendingException(
+                cx,
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut exn,
+                },
+            );
+            JS_ClearPendingException(cx);
+            rooted!(&in(realm_cx) let reason_root = exn);
+            if !exn.is_undefined() {
+                if let Some(&hook) = UNCAUGHT_HOOK.get() {
+                    // SAFETY: cx is live (trap contract); hook roots its
+                    // argument before running JS.
+                    unsafe { hook(cx, exn) };
+                }
+            }
+        }
+    }
 }
