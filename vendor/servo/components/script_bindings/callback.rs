@@ -404,13 +404,14 @@ pub(crate) fn call_setup<D: DomTypes, T: CallbackContainer<D>, R>(
 
 // BAO patch (fork-maintained, 2026-09-28): conditional malloc size for the
 // callback wrappers (dom_struct derive with #[conditional_malloc_size_of]).
-impl<T: MallocConditionalSizeOf> MallocConditionalSizeOf for RootedCallback<T> {
+impl<T: malloc_size_of::MallocSizeOf> MallocConditionalSizeOf for RootedCallback<T> {
     fn conditional_size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        // Rc's conditional impl dedups shared allocations.
         self.0.conditional_size_of(ops)
     }
 }
 
-impl<T: MallocConditionalSizeOf> MallocConditionalSizeOf for TracedCallback<T> {
+impl<T: malloc_size_of::MallocSizeOf> MallocConditionalSizeOf for TracedCallback<T> {
     fn conditional_size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         self.0.conditional_size_of(ops)
     }
