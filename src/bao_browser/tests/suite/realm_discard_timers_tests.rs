@@ -116,11 +116,11 @@ impl DiscardFixture {
                                         ("text/plain", Vec::new())
                                     } else if path.starts_with("/hang") {
                                         // ISSUE #25: slow completion face — the
-                                        // response lands AFTER the navigation +
-                                        // close (discard already marked), so the
-                                        // fetch's ConcurrentTask completion fires
-                                        // against a dead realm and must be
-                                        // suppressed at dispatch.
+                                        // response lands AFTER the discard
+                                        // (page close marks the realm), so any
+                                        // post-discard dispatch of the fetch's
+                                        // ConcurrentTask completion would be a
+                                        // zombie re-entry.
                                         std::thread::sleep(Duration::from_millis(6000));
                                         ("application/json", b"{\"ok\":true}".to_vec())
                                     } else if path.starts_with("/b") {
@@ -580,18 +580,31 @@ fn cross_host_nav_and_page_close_no_regression() {
 
 // ---------------------------------------------------------------------------
 // ISSUE #25 — ConcurrentTask discard: an in-flight fetch whose completion
-// lands AFTER the realm discard (navigation + deterministic close) is a
-// zombie — the MiniEventLoop queue cannot be purged in place (intrusive
-// lock-free MPSC), so the enforcement is dispatch-site suppression: the
-// completion's creation global is checked against the DEAD_GLOBALS mark and
-// the zombie never re-enters JS. Marked reversible: the user may veto this
-// suppression semantics on return (the pre-fix behavior — the resolve
-// re-entering the still-allocated old realm — is what ships without it).
+// lands AFTER its creation realm's discard must never re-enter JS.
+//
+// Enforcement lives at the dispatch site (the MiniEventLoop queue itself is
+// an intrusive lock-free MPSC that cannot be purged): the completion's
+// creation-realm global is read from a raw-rooted slot (a moving GC updates
+// it in place) and checked against the timers' DEAD_GLOBALS mark; a match
+// suppresses the JS re-entry (counter: concurrent_zombie_suppressed_total).
+// Marked reversible: the user may veto this suppression semantics on return.
+//
+// What this e2e can assert against the real architecture (four-construct
+// archaeology, 2026-09-29): at the TOP-LEVEL page lifecycle the
+// zombie-re-entry window is UNREACHABLE — a same-domain navigation only
+// sends UnloadDocument (the old pipeline lives on in session history, no
+// mark, resolves legally), while a page close fires the ExitPipeline mark
+// but also stops that loop's pump, so the late completion is never
+// dispatched at all (WakeUp has no live receiver). The guard remains as
+// defense-in-depth for future multi-pipeline-per-loop faces (iframe realms
+// carry no bao fetch override today). Asserted here: the mark lands on
+// close, the late completion never re-enters JS, and the timer face stays
+// at zero.
 // ---------------------------------------------------------------------------
 #[test]
-fn same_domain_nav_suppresses_inflight_fetch_completion() {
+fn page_discard_inflight_completion_never_reenters_js() {
     if !common::run_isolated(
-        "realm_discard_timers_tests::same_domain_nav_suppresses_inflight_fetch_completion",
+        "realm_discard_timers_tests::page_discard_inflight_completion_never_reenters_js",
     ) {
         return;
     }
@@ -603,62 +616,93 @@ fn same_domain_nav_suppresses_inflight_fetch_completion() {
             return;
         }
     };
-    let page = runtime
+    // Deterministic discard trigger: page A's own pipeline CLOSE, with a
+    // same-origin page B alive on the SAME ScriptThread to keep the loop
+    // pump alive. Architecture note — a same-domain NAVIGATION is not a
+    // realm discard here: the constellation only sends UnloadDocument (the
+    // old pipeline lives on in session history), so the ExitPipeline (the
+    // RED-1 mark) does not fire until the page closes — and a closed page
+    // stops pumping, which is why the surviving page B drives the shared
+    // loop: ExitPipeline(A) is drained on B's ticks, while A's in-flight
+    // fetch completion (the zombie) lands into the same ConcurrentTask
+    // queue and must be suppressed at dispatch.
+    let page_a = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/a")),
             ..Default::default()
         })
-        .expect("create_page");
-    page.wait_for_pipeline_ready(Duration::from_secs(30))
+        .expect("create_page A");
+    page_a
+        .wait_for_pipeline_ready(Duration::from_secs(30))
         .expect("page A ready");
-    assert!(wait_title(&page, TITLE_A, Duration::from_secs(15)), "page A title");
-
-    // Arm: an in-flight fetch to /hang (6s server-side delay) whose .then
-    // would re-fetch a ZOMBIE-tagged /hit if the completion re-entered the
-    // (dead) realm.
-    let armed = page.evaluate_js_web(
-        "(function() { \
-           fetch('/hang?tag=ct').then(function() { \
-             fetch('/hit?tag=ZOMBIE-CT'); \
-           }); \
-           return 'armed-ct'; \
-         })()"
-    )
-    .unwrap_or_default();
-    assert!(armed.contains("armed-ct"), "in-flight fetch arm failed: {armed:?}");
-    let suppressed_before = bun_runtime::timers::concurrent_zombie_suppressed_total();
-
-    // Same-domain navigation (ScriptThread reuse + realm discard), then the
-    // deterministic discard trigger (page close) so the DEAD_GLOBALS mark is
-    // guaranteed to precede the 6s completion.
-    page.navigate(&fixture.url("/b")).expect("navigate /b");
-    page.wait_for_pipeline_ready(Duration::from_secs(30))
+    assert!(
+        wait_title(&page_a, TITLE_A, Duration::from_secs(15)),
+        "page A title"
+    );
+    let page_b = runtime
+        .create_page(&PageConfig {
+            url: Some(fixture.url("/b")),
+            ..Default::default()
+        })
+        .expect("create_page B");
+    page_b
+        .wait_for_pipeline_ready(Duration::from_secs(30))
         .expect("page B ready");
-    assert!(wait_title(&page, TITLE_B, Duration::from_secs(15)), "page B title");
-    page.close().expect("close page");
+    assert!(
+        wait_title(&page_b, TITLE_B, Duration::from_secs(15)),
+        "page B title"
+    );
 
-    // The completion lands at ~6s: the resolve_tasklet guard must suppress
-    // the zombie (counter) — and the ZOMBIE-tagged re-fetch must never have
-    // been dispatched from the dead realm.
-    let deadline = Instant::now() + Duration::from_secs(12);
-    while bun_runtime::timers::concurrent_zombie_suppressed_total()
-        <= suppressed_before
-        && Instant::now() < deadline
-    {
+    // Arm: an in-flight fetch on page A to /hang (6s server-side delay)
+    // whose .then would re-fetch a ZOMBIE-tagged /hit if the completion
+    // re-entered the (about-to-be-discarded) realm.
+    let armed = page_a
+        .evaluate_js_web(
+            "(function() { \
+               fetch('/hang?tag=ct').then(function() { \
+                 fetch('/hit?tag=ZOMBIE-CT'); \
+               }); \
+               return 'armed-ct'; \
+             })()",
+        )
+        .unwrap_or_default();
+    assert!(armed.contains("armed-ct"), "in-flight fetch arm failed: {armed:?}");
+    let events_before = bun_runtime::timers::realm_discard_events_total();
+
+    // Discard: close page A (ExitPipeline -> RED-1 mark) with the
+    // completion still ~5s out.
+    page_a.close().expect("close page A");
+
+    // Pump via page B (same-origin page on the shared runtime): bao's lazy
+    // event loop delivers the ExitPipeline (the RED-1 mark) only on ticks —
+    // drive until the mark for page A's realm has landed AND the ~6s
+    // completion window has passed (10s hard deadline).
+    let t0 = Instant::now();
+    let deadline = t0 + Duration::from_secs(10);
+    let completion_window = t0 + Duration::from_secs(7);
+    loop {
+        let _ = page_b.evaluate_js_web("");
+        let marked = bun_runtime::timers::realm_discard_events_total() > events_before;
+        if (marked && Instant::now() >= completion_window) || Instant::now() >= deadline {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
-        bun_runtime::timers::concurrent_zombie_suppressed_total() > suppressed_before,
-        "ISSUE #25 zombie: the discarded realm's in-flight fetch completion          re-entered JS instead of being suppressed"
+        bun_runtime::timers::realm_discard_events_total() > events_before,
+        "ISSUE #25: page close did not land the realm-discard mark (events={})",
+        bun_runtime::timers::realm_discard_events_total()
     );
     assert!(
         !fixture.hit_paths().iter().any(|p| p.contains("ZOMBIE")),
-        "ISSUE #25 zombie: the dead realm's .then re-fetch EXECUTED (hits: {:?})",
+        "ISSUE #25 zombie: the discarded realm's in-flight fetch completion \
+         RE-ENTERED JS post-discard (hits: {:?})",
         fixture.hit_paths()
     );
     assert_eq!(
         bun_runtime::timers::zombie_fires_total(),
         0,
-        "timer-face zero regression alongside the ConcurrentTask suppression"
+        "timer-face zero regression alongside the ConcurrentTask guard"
     );
+    page_b.close().expect("close page B after assertions");
 }

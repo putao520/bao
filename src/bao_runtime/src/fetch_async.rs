@@ -489,10 +489,20 @@ pub struct PendingFetch {
     /// against the timers' DEAD_GLOBALS mark — a completion whose creating
     /// realm was navigation-discarded is a zombie and is suppressed before
     /// any JS re-entry (the MiniEventLoop queue itself cannot be purged).
+    ///
+    /// Snapshot fallback only: the LIVE identity anchor read by the guard is
+    /// `promise_root` slot 1 (a raw-rooted slot a moving GC updates in
+    /// place). A spawn-time bare pointer goes stale across any compacting
+    /// GC, while the DEAD_GLOBALS mark holds the discard-time address —
+    /// comparing the two would silently miss (timer face avoids this by
+    /// comparing against its raw-rooted `global_root` slot; same shape
+    /// here). This snapshot is used only when rooting failed at spawn.
     pub origin_global: *mut JSObject,
     /// RAII heap root (GUARD-A) keeping the pending Promise alive across the
     /// async window. `None` only when rooting failed at spawn (pre-existing
     /// degraded path: the unrooted `promise_val` snapshot below is used).
+    /// Slot 0 = the Promise value, slot 1 = the creation-realm global
+    /// identity anchor (see [`PendingFetch::origin_global`]).
     pub promise_root: Option<RawValueRootGuard>,
     /// Promise value snapshot taken at spawn. The live value is
     /// `promise_root.get(0)` (updated in place by a moving GC); this is the
@@ -825,11 +835,23 @@ unsafe fn start_with_kind(
     // macro (whose roots die with the frame) is unsound here -- the RAII
     // guard pins the value in a stable heap slot the GC updates in place and
     // unroots it when the PendingFetch Box drops (liveness-guarded Drop).
+    // Slot 1 roots the creation-global identity anchor for the same window:
+    // the resolve-time guard compares against the DEAD_GLOBALS mark, which
+    // holds the discard-time address, so the anchor must be read from a
+    // GC-updated rooted slot — a spawn-time bare pointer goes stale across
+    // any compacting GC and the comparison silently misses (the timer face
+    // avoids this by comparing against its raw-rooted `global_root` slot).
+    let origin_val = if origin_global.is_null() {
+        mozjs::jsval::NullValue()
+    } else {
+        ObjectValue(origin_global)
+    };
+    let root_vals = [promise_val, origin_val];
     let promise_root = unsafe {
         RawValueRootGuard::new(
             cx,
-            ::std::slice::from_ref(&promise_val),
-            c"FetchTasklet.promise",
+            &root_vals,
+            c"FetchTasklet.promise+origin",
         )
     };
     let rooted_val = promise_root.as_ref().map_or(promise_val, |g| g.get(0));
@@ -1770,7 +1792,17 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     // navigation-discarded is a zombie — suppress the JS re-entry entirely
     // (the MiniEventLoop queue cannot be purged in place; dispatch-site
     // suppression is the enforcement). Teardown still runs (no JS).
-    let origin_global = unsafe { &*this }.origin_global;
+    // The identity anchor is read from the rooted slot (slot 1), not the
+    // spawn-time snapshot: a moving GC updates rooted slots in place, so the
+    // mark-comparison pointer stays address-fresh across the async window
+    // (the snapshot is only the rooting-failed fallback).
+    let origin_global = unsafe { &*this }
+        .promise_root
+        .as_ref()
+        .map(|g| g.get(1))
+        .filter(|v| v.is_object() && !v.is_null())
+        .map(|v| unsafe { v.to_object() })
+        .unwrap_or_else(|| unsafe { &*this }.origin_global);
     if !origin_global.is_null() && crate::timers::is_global_discarded(origin_global) {
         crate::timers::concurrent_zombie_suppressed_fetch_add();
         unsafe { deref_tasklet(this) };
