@@ -298,8 +298,16 @@ pub enum ScriptThreadMessage {
     /// pipeline via the Constellation.
     SetScrollStates(PipelineId, ScrollStateUpdate),
     /// Evaluate the given JavaScript and return a result via a corresponding message
-    /// to the Constellation.
-    EvaluateJavaScript(WebViewId, PipelineId, JavaScriptEvaluationId, String),
+    /// to the Constellation. The optional timeout arms the engine-native
+    /// interrupt control around the evaluation (ISSUE #24 servo wiring);
+    /// `None` preserves the unbounded behavior.
+    EvaluateJavaScript(
+        WebViewId,
+        PipelineId,
+        JavaScriptEvaluationId,
+        String,
+        Option<std::time::Duration>,
+    ),
     /// A new batch of keys for the image cache for the specific pipeline.
     SendImageKeysBatch(PipelineId, Vec<ImageKey>),
     /// Preferences were updated in the parent process.

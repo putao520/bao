@@ -43,7 +43,8 @@ use devtools_traits::{
 use embedder_traits::user_contents::{UserContentManagerId, UserContents, UserScript};
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
-    InputEventOutcome, JavaScriptEvaluationError, JavaScriptEvaluationId, LoadStatus,
+    InputEventOutcome, JavaScriptErrorInfo, JavaScriptEvaluationError, JavaScriptEvaluationId,
+    JSValue, LoadStatus,
     MediaSessionActionType, Theme, ViewportDetails, WebDriverScriptCommand,
 };
 use encoding_rs::Encoding;
@@ -337,6 +338,65 @@ static BAO_REALM_DISCARD_CANCEL: std::sync::OnceLock<BaoRealmDiscardCancel> =
 /// embedder registries).
 pub fn register_bao_realm_discard_cancel(cancel: BaoRealmDiscardCancel) {
     let _ = BAO_REALM_DISCARD_CANCEL.set(cancel);
+}
+
+// BAO patch (ISSUE #24 servo wiring, 2026-09-29): engine-native evaluation
+// control bridge — the arming half of Bao's ExecutionControl
+// (`bao_engine::execution_control`: JS_AddInterruptCallback + owner-thread
+// armed stack + deadline watcher + stable termination messages). `script`
+// must not depend on `bao_engine` (vendor → src layering), so — mirroring the
+// realm-discard bridge above — the embedder (bao_browser ← bao_engine)
+// installs the armer once at runtime init and the servo evaluation paths
+// (embedder `handle_evaluate_javascript`, worker `on_complete` /
+// `importScripts`) hand it their owner-thread closure. `*mut c_void` keeps
+// the two mozjs crate instances decoupled.
+///
+/// Contract: the armer runs the closure synchronously ON THE CALLING THREAD
+/// under the armed control and returns its boxed output plus, when a control
+/// termination fired (deadline exceeded / cancelled), the stable diagnosable
+/// message (bao_engine `terminal_message` text).
+pub type BaoExecutionControlArmer = Box<
+    dyn for<'a> Fn(
+        *mut c_void,
+        Duration,
+        Box<dyn FnOnce() -> Box<dyn std::any::Any> + 'a>,
+    ) -> (Box<dyn std::any::Any>, Option<String>)
+        + Send
+        + Sync,
+>;
+
+static BAO_EXECUTION_CONTROL_ARMER: std::sync::OnceLock<BaoExecutionControlArmer> =
+    std::sync::OnceLock::new();
+
+/// Register the process-global execution-control armer (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init; the
+/// first registration wins (OnceLock semantics, matching the other embedder
+/// registries).
+pub fn register_bao_execution_control_armer(armer: BaoExecutionControlArmer) {
+    let _ = BAO_EXECUTION_CONTROL_ARMER.set(armer);
+}
+
+/// Run `run` under the registered execution-control armer with `timeout`.
+///
+/// Returns `None` when no armer is installed (embedder did not register one) —
+/// call sites decide the fail-closed policy for a timeout that cannot be
+/// honored. `Ok((output, None))` = the closure ran to completion without a
+/// control termination; `Ok((output, Some(message)))` = the control terminated
+/// the executing JS (the engine cleared the pending exception) and `message`
+/// carries the timeout/cancel semantics.
+pub(crate) fn run_under_bao_execution_control<'a, T: 'static>(
+    cx_raw: *mut js::jsapi::JSContext,
+    timeout: Duration,
+    run: impl FnOnce() -> T + 'a,
+) -> Option<(T, Option<String>)> {
+    let armer = BAO_EXECUTION_CONTROL_ARMER.get()?;
+    let payload: Box<dyn FnOnce() -> Box<dyn std::any::Any> + 'a> =
+        Box::new(move || Box::new(run()));
+    let (boxed, termination) = armer(cx_raw as *mut c_void, timeout, payload);
+    let typed = boxed
+        .downcast::<T>()
+        .expect("execution-control armer returned the wrong payload type");
+    Some((*typed, termination))
 }
 
 /// Invoke the registered realm-discard cancel for `global` — the JS
@@ -2393,8 +2453,16 @@ impl ScriptThread {
                 pipeline_id,
                 evaluation_id,
                 script,
+                timeout,
             ) => {
-                self.handle_evaluate_javascript(webview_id, pipeline_id, evaluation_id, script, cx);
+                self.handle_evaluate_javascript(
+                    webview_id,
+                    pipeline_id,
+                    evaluation_id,
+                    script,
+                    timeout,
+                    cx,
+                );
             },
             ScriptThreadMessage::SendImageKeysBatch(pipeline_id, image_keys) => {
                 if let Some(window) = self.documents.borrow().find_window(pipeline_id) {
@@ -3677,6 +3745,7 @@ impl ScriptThread {
         discard_browsing_context: DiscardBrowsingContext,
         cx: &mut js::context::JSContext,
     ) {
+        
         debug!("{pipeline_id}: Starting pipeline exit.");
 
         // Abort the parser, if any,
@@ -5036,6 +5105,7 @@ impl ScriptThread {
         pipeline_id: PipelineId,
         evaluation_id: JavaScriptEvaluationId,
         script: String,
+        timeout: Option<std::time::Duration>,
         cx: &mut js::context::JSContext,
     ) {
         let Some(window) = self.documents.borrow().find_window(pipeline_id) else {
@@ -5069,22 +5139,58 @@ impl ScriptThread {
         }
 
         rooted!(&in(cx) let mut return_value = UndefinedValue());
-        if let Err(err) = global_scope.evaluate_js_on_global(
-            cx,
-            script.into(),
-            "",
-            None, // No known `introductionType` for JS code from embedder
-            Some(return_value.handle_mut()),
-        ) {
-            _ = self.senders.pipeline_to_constellation_sender.send((
-                webview_id,
-                pipeline_id,
-                ScriptToConstellationMessage::FinishJavaScriptEvaluation(evaluation_id, Err(err)),
-            ));
-            return;
-        };
 
-        let result = jsval_to_webdriver(cx, global_scope, return_value.handle());
+        // BAO patch (ISSUE #24 servo wiring, 2026-09-29): optional engine-native
+        // timeout around the embedder evaluation (eval + WebDriver
+        // serialization). The arming itself lives in bao_engine's
+        // ExecutionControl and reaches this site through the registered
+        // embedder bridge (`run_under_bao_execution_control`); a timeout with
+        // no bridge installed is a fail-closed diagnosable error, never a
+        // silent unbounded eval.
+        // SAFETY: this ScriptThread's live owner context — derived before the
+        // armed closure takes its borrow of `cx`.
+        let cx_raw = unsafe { cx.raw_cx_no_gc() };
+        let eval_outcome = || -> Result<JSValue, JavaScriptEvaluationError> {
+            global_scope
+                .evaluate_js_on_global(
+                    cx,
+                    script.into(),
+                    "",
+                    None, // No known `introductionType` for JS code from embedder
+                    Some(return_value.handle_mut()),
+                )
+                .map(|()| jsval_to_webdriver(cx, global_scope, return_value.handle()))?
+        };
+        let result = match timeout {
+            None => eval_outcome(),
+            Some(timeout) => {
+                match run_under_bao_execution_control(cx_raw, timeout, eval_outcome) {
+                    None => Err(JavaScriptEvaluationError::EvaluationFailure(Some(
+                        JavaScriptErrorInfo {
+                            message:
+                                "timeout requested but no execution-control bridge is installed"
+                                    .to_string(),
+                            filename: "<execution-control>".to_string(),
+                            stack: None,
+                            line_number: 0,
+                            column: 0,
+                        },
+                    ))),
+                    Some((_outcome, Some(termination_message))) => {
+                        Err(JavaScriptEvaluationError::EvaluationFailure(Some(
+                            JavaScriptErrorInfo {
+                                message: termination_message,
+                                filename: "<execution-control>".to_string(),
+                                stack: None,
+                                line_number: 0,
+                                column: 0,
+                            },
+                        )))
+                    },
+                    Some((outcome, None)) => outcome,
+                }
+            },
+        };
         let _ = self.senders.pipeline_to_constellation_sender.send((
             webview_id,
             pipeline_id,

@@ -489,8 +489,7 @@ pub unsafe fn evaluate_in_node_realm(
     cx_ptr: *mut std::ffi::c_void,
     node_global: *mut mozjs::jsapi::JSObject,
     script: &str,
-    result_out: Arc<OnceLock<EvaluateResult>>,
-) {
+) -> EvaluateResult {
     use mozjs::context::JSContext;
     use mozjs::jsapi::JSContext as RawJSContext;
     use mozjs::jsval::UndefinedValue;
@@ -499,16 +498,14 @@ pub unsafe fn evaluate_in_node_realm(
     use mozjs::rust::CompileOptionsWrapper;
 
     if node_global.is_null() {
-        let _ = result_out.set(EvaluateResult::err("node_global is null".into()));
-        return;
+        return EvaluateResult::err("node_global is null".into());
     }
 
     let raw_cx = cx_ptr as *mut RawJSContext;
     let cx_nn = match NonNull::new(raw_cx) {
         Some(nn) => nn,
         None => {
-            let _ = result_out.set(EvaluateResult::err("JSContext pointer is null".into()));
-            return;
+            return EvaluateResult::err("JSContext pointer is null".into());
         }
     };
 
@@ -569,11 +566,10 @@ pub unsafe fn evaluate_in_node_realm(
         let message = take_pending_exception_text(&mut exception_cx).unwrap_or_else(|| {
             "evaluate_script returned Err (JS exception thrown)".into()
         });
-        let _ = result_out.set(EvaluateResult {
+        return EvaluateResult {
             value: None,
             error: Some(message),
-        });
-        return;
+        };
     }
 
     // Page WebSocket pump (async WS root fix): servo evaluates are one-shot
@@ -618,7 +614,7 @@ pub unsafe fn evaluate_in_node_realm(
         // Object / symbol / bigint — represent as debug string.
         Some("[JSValue:object]".into())
     };
-    let _ = result_out.set(EvaluateResult { value, error: None });
+    EvaluateResult { value, error: None }
 }
 
 /// Extract the pending JS exception from `cx` (clearing it) as human-readable
@@ -750,6 +746,20 @@ pub fn evaluate_js_via_node_realm(
     webview_id: servo::WebViewId,
     script: &str,
 ) -> Arc<OnceLock<EvaluateResult>> {
+    evaluate_js_via_node_realm_with_timeout(webview_id, script, None)
+}
+
+/// [`evaluate_js_via_node_realm`] with an optional engine-native execution
+/// timeout (ISSUE #24 servo wiring). When `timeout` is `Some`, the in-callback
+/// evaluation runs under [`bao_engine`]'s ExecutionControl (armed through the
+/// `ExecutionControl::for_context` owner-thread face): a runaway script is
+/// terminated at the next SM interrupt check (loop back-edges / JIT stack
+/// checks) and the shared result carries the stable timeout message.
+pub fn evaluate_js_via_node_realm_with_timeout(
+    webview_id: servo::WebViewId,
+    script: &str,
+    timeout: Option<std::time::Duration>,
+) -> Arc<OnceLock<EvaluateResult>> {
     let result = Arc::new(OnceLock::new());
     let result_clone = result.clone();
     let script_owned = script.to_string();
@@ -770,9 +780,41 @@ pub fn evaluate_js_via_node_realm(
                 unsafe { create_node_realm_native(webview_id, cx_ptr, page_global) };
                 node_global = get_node_realm_by_id(webview_id);
             }
-            unsafe {
-                evaluate_in_node_realm(cx_ptr, node_global, &script_owned, result_clone);
-            }
+
+            // ISSUE #24: arm the engine-native control around the Node Realm
+            // evaluation when a timeout is configured. This callback runs on
+            // the owner ScriptThread (servo routes by WebViewId), so the
+            // control is created on its owner thread per the ExecutionControl
+            // contract. A control termination wins over whatever the inner
+            // evaluation wrote (the engine cleared its pending exception — the
+            // raw fallback text would not carry the timeout semantics).
+            let raw_cx = cx_ptr as *mut mozjs::jsapi::JSContext;
+            let eval_result = match timeout {
+                None => unsafe { evaluate_in_node_realm(cx_ptr, node_global, &script_owned) },
+                Some(timeout) => {
+                    let control =
+                        bao_engine::execution_control::ExecutionControl::for_context(raw_cx);
+                    let (eval_result, state) =
+                        bao_engine::execution_control::run_raw_with_control(
+                            raw_cx,
+                            &control,
+                            Some(timeout),
+                            || unsafe {
+                                evaluate_in_node_realm(cx_ptr, node_global, &script_owned)
+                            },
+                        );
+                    match state {
+                        bao_engine::execution_control::TerminalState::TimedOut
+                        | bao_engine::execution_control::TerminalState::Cancelled => {
+                            EvaluateResult::err(
+                                bao_engine::execution_control::terminal_message(state),
+                            )
+                        },
+                        _ => eval_result,
+                    }
+                },
+            };
+            let _ = result_clone.set(eval_result);
         },
     );
 

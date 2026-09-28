@@ -12,6 +12,7 @@ mod from_script_message;
 mod structured_data;
 
 use std::collections::VecDeque;
+use std::time::Duration;
 use std::fmt;
 
 use embedder_traits::user_contents::{
@@ -101,7 +102,10 @@ pub enum EmbedderToConstellationMessage {
     PaintMetric(PipelineId, PaintMetricEvent),
     /// Evaluate a JavaScript string in the context of a `WebView`. When execution is complete or an
     /// error is encountered, a correpsonding message will be sent to the embedding layer.
-    EvaluateJavaScript(WebViewId, JavaScriptEvaluationId, String),
+    /// The optional timeout arms the engine-native interrupt control around the
+    /// evaluation (ISSUE #24 servo wiring): a runaway script is terminated and
+    /// reported as a timeout error. `None` preserves the unbounded behavior.
+    EvaluateJavaScript(WebViewId, JavaScriptEvaluationId, String, Option<Duration>),
     /// Create a memory report and return it via the [`GenericCallback`]
     CreateMemoryReport(GenericCallback<MemoryReportResult>),
     /// Sends the generated image key to the image cache associated with this pipeline.

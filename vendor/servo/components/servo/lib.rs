@@ -148,6 +148,24 @@ pub fn register_bao_realm_discard_cancel(cancel: script::BaoRealmDiscardCancel) 
     script::register_bao_realm_discard_cancel(cancel);
 }
 
+/// Register the process-global engine-native execution-control armer
+/// (Bao vendor patch, ISSUE #24 servo wiring): the embedder (bao_browser ←
+/// bao_engine) installs its `ExecutionControl` arming face once at runtime
+/// init; servo evaluation paths route armed evaluations through it.
+pub fn register_bao_execution_control_armer(armer: script::BaoExecutionControlArmer) {
+    script::register_bao_execution_control_armer(armer);
+}
+
+/// Set (or clear with `None`) the engine-native execution timeout applied to
+/// every worker-realm script evaluation belonging to `webview` (Bao vendor
+/// patch, ISSUE #24 servo wiring).
+pub fn set_worker_script_timeout(
+    webview: servo_base::id::WebViewId,
+    timeout: Option<std::time::Duration>,
+) {
+    script::set_worker_script_timeout(webview, timeout);
+}
+
 /// Run `f` with the calling ScriptThread's script settings stack pushed for
 /// `global_object`'s realm (Bao vendor patch — BCE-20260910-004, the
 /// settings-stack side of the pump bridge above).

@@ -18,6 +18,35 @@ use dom_struct::dom_struct;
 use encoding_rs::UTF_8;
 use fonts::FontContext;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
+
+// BAO patch (ISSUE #24 servo wiring, 2026-09-29): per-WebView worker-script
+// execution timeout. The embedder (Bao) arms a deadline for the worker realms
+// of a webview (`set_worker_script_timeout`); the worker JS evaluation paths
+// (`on_complete` initial script run, `importScripts`) consult it and route the
+// run through the registered execution-control bridge. Unset = unbounded
+// (upstream behavior, zero regression).
+static WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW: std::sync::LazyLock<
+    parking_lot::RwLock<rustc_hash::FxHashMap<servo_base::id::WebViewId, Duration>>,
+> = std::sync::LazyLock::new(|| parking_lot::RwLock::new(Default::default()));
+
+/// Set (or clear with `None`) the engine-native execution timeout applied to
+/// every worker-realm script evaluation belonging to `webview`.
+pub fn set_worker_script_timeout(webview: servo_base::id::WebViewId, timeout: Option<Duration>) {
+    let mut map = WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW.write();
+    match timeout {
+        Some(timeout) => {
+            map.insert(webview, timeout);
+        },
+        None => {
+            map.remove(&webview);
+        },
+    }
+}
+
+pub(crate) fn worker_script_timeout(webview: servo_base::id::WebViewId) -> Option<Duration> {
+    WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW.read().get(&webview).copied()
+}
+
 use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSContext as RawJSContext, Value};
@@ -36,9 +65,11 @@ use script_bindings::conversions::root_from_handlevalue;
 use script_bindings::reflector::DomObject;
 use script_bindings::root::rooted_heap_handle;
 use script_bindings::trace::CustomTraceable;
+use crate::dom::bindings::error::ErrorInfo;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::{GenericSend, GenericSender, RoutedReceiver};
 use servo_base::id::{PipelineId, PipelineNamespace};
+
 use servo_canvas_traits::webgl::WebGLChan;
 use servo_constellation_traits::WorkerGlobalScopeInit;
 use servo_url::{MutableOrigin, ServoUrl};
@@ -659,6 +690,7 @@ impl WorkerGlobalScope {
 
     /// onComplete algorithm defined inside <https://html.spec.whatwg.org/multipage/#run-a-worker>
     #[expect(unsafe_code)]
+    #[expect(unsafe_code)]
     pub(crate) fn on_complete(&self, cx: &mut JSContext, script: Option<Script>) {
         // Step 1. If script is null or if script's error to rethrow is non-null, then:
         let script = match script {
@@ -754,15 +786,115 @@ impl WorkerGlobalScope {
             self.execution_ready.store(true, Ordering::Relaxed);
             match script {
                 Script::Classic(script) => {
-                    _ = self.globalscope.run_a_classic_script(
-                        cx,
-                        script,
-                        RethrowErrors::No,
-                        None, // return_value
-                    );
+                    // BAO patch (ISSUE #24 servo wiring, 2026-09-29): optional
+                    // engine-native timeout for this worker realm's script run
+                    // (per-WebView registry + embedder execution-control
+                    // bridge). Unset = unbounded (upstream behavior).
+                    let timeout = self.globalscope.webview_id()
+                        .and_then(|webview| worker_script_timeout(webview));
+                    // SAFETY: the raw pointer targets this worker thread's
+                    // live owner realm context; the armer executes the closure
+                    // synchronously on this thread inside this frame, so the
+                    // pointer-derived reborrow never aliases a concurrent use.
+                    let started = std::time::Instant::now();
+                    let cx_ptr: *mut CurrentRealm = cx;
+                    let cx_raw = unsafe { cx.raw_cx_no_gc() };
+                    let (result, termination) = match timeout {
+                        None => (
+                            self.globalscope.run_a_classic_script(
+                                cx,
+                                script,
+                                RethrowErrors::No,
+                                None, // return_value
+                            ),
+                            None,
+                        ),
+                        Some(timeout) => {
+                            match crate::event_loop::script_thread::run_under_bao_execution_control(
+                                cx_raw,
+                                timeout,
+                                move || {
+                                    let cx = unsafe { &mut *cx_ptr };
+                                    self.globalscope.run_a_classic_script(
+                                        cx,
+                                        script,
+                                        RethrowErrors::No,
+                                        None, // return_value
+                                    )
+                                },
+                            ) {
+                                Some((result, termination)) => (result, termination),
+                                None => {
+                                    let message =
+                                        "timeout requested but no execution-control bridge is installed";
+                                    (
+                                        Err(Error::Type(
+                                            c"timeout requested but no execution-control bridge is installed"
+                                                .to_owned(),
+                                        )),
+                                        Some(message.to_string()),
+                                    )
+                                },
+                            }
+                        },
+                    };
+                    if let Some(message) = termination {
+                        error!("Worker script terminated by execution control: {message}");
+                        self.globalscope.report_an_error(
+                            cx,
+                            ErrorInfo {
+                                message: message.clone(),
+                                filename: "<execution-control>".to_string(),
+                                ..Default::default()
+                            },
+                            HandleValue::null(),
+                        );
+                    }
+                    _ = result;
                 },
                 Script::Module(module_tree) => {
-                    self.globalscope.run_a_module_script(cx, module_tree, false);
+                    // BAO patch (ISSUE #24 servo wiring): same optional
+                    // engine-native timeout as the Classic arm above.
+                    let timeout = self.globalscope.webview_id()
+                        .and_then(|webview| worker_script_timeout(webview));
+                    // SAFETY: see the Classic arm — live owner context, the
+                    // armer runs the closure synchronously inside this frame.
+                    let cx_ptr: *mut CurrentRealm = cx;
+                    let cx_raw = unsafe { cx.raw_cx_no_gc() };
+                    let termination = match timeout {
+                        None => {
+                            self.globalscope.run_a_module_script(cx, module_tree, false);
+                            None
+                        },
+                        Some(timeout) => {
+                            match crate::event_loop::script_thread::run_under_bao_execution_control(
+                                cx_raw,
+                                timeout,
+                                move || {
+                                    let cx = unsafe { &mut *cx_ptr };
+                                    self.globalscope.run_a_module_script(cx, module_tree, false)
+                                },
+                            ) {
+                                Some(((), termination)) => termination,
+                                None => Some(
+                                    "timeout requested but no execution-control bridge is installed"
+                                        .to_string(),
+                                ),
+                            }
+                        },
+                    };
+                    if let Some(message) = termination {
+                        error!("Worker script terminated by execution control: {message}");
+                        self.globalscope.report_an_error(
+                            cx,
+                            ErrorInfo {
+                                message: message.clone(),
+                                filename: "<execution-control>".to_string(),
+                                ..Default::default()
+                            },
+                            HandleValue::null(),
+                        );
+                    }
                 },
                 _ => unreachable!(),
             }
@@ -823,6 +955,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-workerglobalscope-importscripts>
+    #[expect(unsafe_code)]
     fn ImportScripts(
         &self,
         cx: &mut JSContext,
@@ -921,12 +1054,54 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
             );
 
             // Run the classic script script, with rethrow errors set to true.
-            let result = self.globalscope.run_a_classic_script(
-                cx,
-                script,
-                RethrowErrors::Yes,
-                None, // return_value
-            );
+            // BAO patch (ISSUE #24 servo wiring, 2026-09-29): optional
+            // engine-native timeout (same per-WebView registry + bridge as the
+            // initial script run in `on_complete`). A control termination (or a
+            // missing bridge under an armed timeout) surfaces as a diagnosable
+            // error to the calling worker script.
+            let timeout = self.globalscope.webview_id()
+                .and_then(|webview| worker_script_timeout(webview));
+            // SAFETY: the raw pointer targets this worker thread's live owner
+            // context; the armer executes the closure synchronously on this
+            // thread inside this frame, so the pointer-derived reborrow never
+            // aliases a concurrent use.
+            let cx_ptr: *mut JSContext = cx;
+            let cx_raw = unsafe { cx.raw_cx_no_gc() };
+            let result = match timeout {
+                None => self.globalscope.run_a_classic_script(
+                    cx,
+                    script,
+                    RethrowErrors::Yes,
+                    None, // return_value
+                ),
+                Some(timeout) => {
+                    match crate::event_loop::script_thread::run_under_bao_execution_control(
+                        cx_raw,
+                        timeout,
+                        move || {
+                            let cx = unsafe { &mut *cx_ptr };
+                            self.globalscope.run_a_classic_script(
+                                cx,
+                                script,
+                                RethrowErrors::Yes,
+                                None, // return_value
+                            )
+                        },
+                    ) {
+                        Some((result, Some(message))) => {
+                            error!("importScripts terminated by execution control: {message}");
+                            Err(Error::Type(
+                                c"Script terminated: deadline exceeded (timeout)".to_owned(),
+                            ))
+                        },
+                        Some((result, None)) => result,
+                        None => Err(Error::Type(
+                            c"timeout requested but no execution-control bridge is installed"
+                                .to_owned(),
+                        )),
+                    }
+                },
+            };
 
             if let Err(error) = result {
                 if self.is_closing() {

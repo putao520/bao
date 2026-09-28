@@ -78,6 +78,18 @@ const ST_ERRORED: u8 = 2;
 const ST_CANCELLED: u8 = 3;
 const ST_TIMED_OUT: u8 = 4;
 
+/// Stable, diagnosable message for a control-terminated execution (#24).
+/// Shared by the bao_runtime face ([`JsContext::run_with_control`]) and the
+/// servo ScriptThread/worker wiring so every timeout/cancel surfaces the same
+/// text regardless of which entry armed the control.
+pub fn terminal_message(state: TerminalState) -> String {
+    match state {
+        TerminalState::TimedOut => "Script terminated: deadline exceeded (timeout)".to_string(),
+        TerminalState::Cancelled => "Script terminated: execution cancelled".to_string(),
+        other => format!("Script terminated: {:?}", other),
+    }
+}
+
 impl TerminalState {
     fn from_u8(v: u8) -> Self {
         match v {
@@ -357,6 +369,23 @@ impl ExecutionControl {
         }
     }
 
+    /// Servo-side constructor (#24 servo wiring): bind to the ScriptThread /
+    /// worker thread's own JSContext (servo hosts its `RustRuntime`
+    /// thread-locally, so `Runtime::get()` is alive there — but the caller
+    /// hands us the same raw pointer it already holds, avoiding a redundant
+    /// thread-local lookup). Must be called on the owner thread with the
+    /// runtime alive; fail-closed binding is asserted by
+    /// [`run_raw_with_control`].
+    pub fn for_context(cx: *mut RawJSContext) -> Self {
+        ExecutionControl {
+            shared: Arc::new(ControlShared {
+                cancelled: AtomicBool::new(false),
+                terminal: AtomicU8::new(ST_RUNNING),
+                requester: InterruptRequester { cx },
+            }),
+        }
+    }
+
     /// Request cancellation from any thread. Atomic flag submission + the
     /// documented thread-safe `JS_RequestInterruptCallback`; never touches a
     /// JSObject / GC pointer. The owner thread's interrupt callback observes
@@ -385,11 +414,7 @@ impl ExecutionControl {
     /// pending exception itself — `reportUncatchableException` — so the
     /// generic "Unknown JS error" fallback must be replaced with this).
     fn termination_error(&self, state: TerminalState) -> JsError {
-        let message = match state {
-            TerminalState::TimedOut => "Script terminated: deadline exceeded (timeout)".to_string(),
-            TerminalState::Cancelled => "Script terminated: execution cancelled".to_string(),
-            other => format!("Script terminated: {:?}", other),
-        };
+        let message = terminal_message(state);
         JsError {
             message,
             filename: "<execution-control>".to_string(),
@@ -401,6 +426,59 @@ impl ExecutionControl {
 }
 
 // ── Controlled runner + eval entry ──────────────────────────────────────────
+
+/// Servo-side controlled runner (#24 servo wiring): arm `control` (+ optional
+/// deadline) around ANY owner-thread closure running on the raw ScriptThread /
+/// worker JSContext (servo has no [`crate::context::JsContext`] wrapper on
+/// those threads). Returns the closure's output plus the control's terminal
+/// state — `Running` means no control termination fired; `TimedOut` /
+/// `Cancelled` mean the interrupt callback latched a termination (the engine
+/// cleared the pending exception; map the caller's error shape with
+/// [`terminal_message`]).
+///
+/// Unlike [`JsContext::run_with_control`] this does NOT latch
+/// Completed/Errored — the servo caller owns its own result semantics; only
+/// the interrupt callback latches here.
+///
+/// Internal experimental surface — NOT a stable API commitment.
+#[doc(hidden)]
+pub fn run_raw_with_control<T>(
+    cx: *mut RawJSContext,
+    control: &ExecutionControl,
+    timeout: Option<Duration>,
+    run: impl FnOnce() -> T,
+) -> (T, TerminalState) {
+    // Fail-closed misuse guard: the control's requester must point at THIS
+    // context (created on this thread, same live runtime).
+    assert_eq!(
+        control.shared.requester.cx, cx,
+        "ExecutionControl is bound to a different JSContext than the eval target"
+    );
+
+    // 1. Install the engine callback (once per JSContext).
+    ensure_callback_installed(cx);
+
+    // 2. Pristine state for THIS execution — a stale Cancelled/TimedOut latch
+    //    from a previous eval must not terminate this one.
+    control.reset();
+
+    // 3. Arm (push onto the owner stack) + spawn the condvar-cancellable
+    //    deadline watcher; Drop pops + joins on EVERY exit path.
+    let _armed = ArmedExecutionGuard::new(
+        Arc::clone(&control.shared),
+        timeout.map(|t| Instant::now() + t),
+    );
+
+    // 4. Run the caller's path — the interrupt callback fires inside any JS
+    //    execution on loop back-edges.
+    let output = run();
+
+    // `_armed` dropped before this point would still be fine for `output`,
+    // but keep it alive until after `run` returns so the deadline covers the
+    // whole closure; read the latch now (the guard pops on scope exit).
+    let state = control.terminal_state();
+    (output, state)
+}
 
 impl JsContext {
     /// Generic controlled runner (#24 S1 wiring): arm `control` (+ optional

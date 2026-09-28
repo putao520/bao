@@ -250,6 +250,54 @@ impl PageInner {
         }
     }
 
+    /// [`Self::evaluate_js`] with an optional engine-native execution timeout
+    /// (ISSUE #24 servo wiring). When `timeout` is `Some`, a runaway script is
+    /// terminated via the SM interrupt mechanism and the returned error carries
+    /// the timeout semantics; `None` preserves the unbounded behavior.
+    pub fn evaluate_js_with_timeout(
+        &self,
+        script: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String, BrowserError> {
+        let _node_phase = crate::phase_watch::PhaseGuard::enter(
+            crate::phase_watch::phase::EVAL_NODE,
+            self.id as u64,
+        );
+        let webview_id = self.webview.id();
+
+        if self.webview_state.borrow().dom_proxies_dirty {
+            let old_pg = *self.page_global.borrow();
+            crate::runtime_bridge::register_refresh_dom_proxies(webview_id, old_pg);
+            self.drain_callbacks()?;
+            let new_pg = crate::runtime_bridge::get_page_global(webview_id);
+            let new_node = crate::runtime_bridge::get_node_realm_global(webview_id);
+            *self.page_global.borrow_mut() = new_pg;
+            *self.node_realm_global.borrow_mut() = new_node;
+            self.webview_state.borrow_mut().dom_proxies_dirty = false;
+        }
+
+        let node_global = crate::runtime_bridge::get_node_realm_global(webview_id);
+        if node_global.is_null() {
+            return Err(BrowserError::JavaScript(
+                "Node Realm not initialized — this is a bug, eager init failed".into(),
+            ));
+        }
+
+        let result = crate::runtime_bridge::evaluate_js_via_node_realm_with_timeout(
+            webview_id,
+            script,
+            timeout,
+        );
+        self.drain_callbacks()?;
+
+        let eval_result = result.get().expect("evaluate result not set after drain");
+        match (&eval_result.value, &eval_result.error) {
+            (Some(val), _) => Ok(val.clone()),
+            (_, Some(err)) => Err(BrowserError::JavaScript(err.clone())),
+            (None, None) => Ok(String::new()),
+        }
+    }
+
     /// Evaluate JavaScript without Node API injection — web-only mode.
     ///
     /// Executes directly in the Page Realm (Window global).
@@ -265,6 +313,32 @@ impl PageInner {
         let cb_saved = saved.clone();
         self.webview
             .evaluate_javascript(script.to_string(), move |result| {
+                *cb_saved.borrow_mut() = Some(result);
+            });
+
+        self.spin_servo(Duration::from_secs(15), || saved.borrow().is_none())?;
+
+        let result = saved
+            .borrow()
+            .clone()
+            .ok_or_else(|| BrowserError::JavaScript("no evaluation result".into()))?
+            .map_err(|e| BrowserError::JavaScript(format!("{e:?}")))?;
+
+        self.touch();
+        Ok(format_js_value(&result))
+    }
+
+    /// [`Self::evaluate_js_web`] with an optional engine-native execution
+    /// timeout (ISSUE #24 servo wiring) — the Page-Realm web-eval face.
+    pub fn evaluate_js_web_with_timeout(
+        &self,
+        script: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String, BrowserError> {
+        let saved = Rc::new(RefCell::new(None));
+        let cb_saved = saved.clone();
+        self.webview
+            .evaluate_javascript_with_timeout(script.to_string(), timeout, move |result| {
                 *cb_saved.borrow_mut() = Some(result);
             });
 
@@ -1228,6 +1302,36 @@ impl PageHandle {
         self.with_inner(|inner| inner.evaluate_js_web(script))
     }
 
+    /// [`Self::evaluate_js`] with an optional engine-native execution timeout
+    /// (ISSUE #24 servo wiring).
+    pub fn evaluate_js_with_timeout(
+        &self,
+        script: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String, BrowserError> {
+        self.with_inner(|inner| inner.evaluate_js_with_timeout(script, timeout))
+    }
+
+    /// [`Self::evaluate_js_web`] with an optional engine-native execution
+    /// timeout (ISSUE #24 servo wiring).
+    pub fn evaluate_js_web_with_timeout(
+        &self,
+        script: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String, BrowserError> {
+        self.with_inner(|inner| inner.evaluate_js_web_with_timeout(script, timeout))
+    }
+
+    /// Arm the engine-native execution timeout applied to every worker-realm
+    /// script evaluation (initial worker script, `importScripts`) belonging to
+    /// THIS page's webview (ISSUE #24 servo wiring). Clear with `None`.
+    pub fn set_worker_script_timeout(&self, timeout: Option<Duration>) {
+        let _ = self.with_inner(|inner| {
+            servo::set_worker_script_timeout(inner.webview.id(), timeout);
+            Ok::<(), BrowserError>(())
+        });
+    }
+
     /// Register a script that servo replays on every future document load of
     /// this page (CDP Page.addScriptToEvaluateOnNewDocument backing).
     ///
@@ -1526,6 +1630,10 @@ impl PageHandle {
                 // otherwise a closed page's injector (carrying its stealth
                 // profile clone) lingers in the vendor registry forever.
                 servo::unregister_worker_injectors(wid);
+                // ISSUE #24: same lifecycle discipline — drop this webview's
+                // worker execution-timeout entry so a closed page's deadline
+                // cannot linger in the vendor registry.
+                servo::set_worker_script_timeout(wid, None);
                 // R53-A net face: drop this webview's keyed stealth
                 // wire-config entries (same lifecycle discipline — the
                 // entries pin the profile's TLS/H2 config memory otherwise).

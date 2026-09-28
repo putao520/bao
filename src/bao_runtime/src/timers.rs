@@ -1116,6 +1116,39 @@ pub fn realm_discard_events_total() -> usize {
 static REALM_DISCARD_EVENTS: ::std::sync::atomic::AtomicUsize =
     ::std::sync::atomic::AtomicUsize::new(0);
 
+// ISSUE #25 ConcurrentTask discard (bounded companion to the timer purge
+// above): the MiniEventLoop's ConcurrentTask queue is an intrusive lock-free
+// MPSC of raw task pointers — it cannot be purged in place (no enumeration,
+// concurrent producers). The enforcement point is therefore the DISPATCH
+// site: each completion shim checks its creation global against the
+// DEAD_GLOBALS mark before re-entering JS, and suppressed zombies are
+// counted here.
+
+static CONCURRENT_ZOMBIE_SUPPRESSED: ::std::sync::atomic::AtomicUsize =
+    ::std::sync::atomic::AtomicUsize::new(0);
+
+/// Total ConcurrentTask completions suppressed because their creation global
+/// was realm-discarded (process-global probe; each suppression is a zombie
+/// dispatch that never re-entered JS).
+pub fn concurrent_zombie_suppressed_total() -> usize {
+    CONCURRENT_ZOMBIE_SUPPRESSED.load(::std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn concurrent_zombie_suppressed_fetch_add() {
+    CONCURRENT_ZOMBIE_SUPPRESSED.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether `global` was realm-discarded (the DEAD_GLOBALS mark set by
+/// [`cancel_timers_for_global`]). Dispatch sites use this as the
+/// ConcurrentTask suppression probe (ISSUE #25).
+pub fn is_global_discarded(global: *mut JSObject) -> bool {
+    !global.is_null()
+        && DEAD_GLOBALS
+            .lock()
+            .unwrap()
+            .contains(&(global as usize))
+}
+
 // RED-1 P-A companion probe: count timer fires whose registration global
 // was already discarded (a "zombie fire" — executing a dead realm's
 // callback). The purge is the enforcement; this counter only observes, so
@@ -2700,4 +2733,58 @@ mod bao_timeout_tests {
             "cancel with no firing timer must not latch flag"
         );
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// ISSUE #25 ConcurrentTask discard — probe/counter unit self-checks (the
+// e2e suppression assertion runs in bao_browser's realm_discard suite; these
+// pin the static-provable probe face).
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn is_global_discarded_tracks_only_marked_globals() {
+    let marked: *mut JSObject = 0xcc1000 as *mut JSObject;
+    let unmarked: *mut JSObject = 0xdd2000 as *mut JSObject;
+    let null: *mut JSObject = ::std::ptr::null_mut();
+
+    assert!(!is_global_discarded(marked), "pre-mark state must be false");
+    assert!(!is_global_discarded(unmarked));
+    assert!(!is_global_discarded(null), "null is never discarded");
+
+    // cancel_timers_for_global marks the global even when the dying realm
+    // held no timers (the discard still ran).
+    let before = realm_discard_events_total();
+    assert_eq!(
+        cancel_timers_for_global(::std::ptr::null_mut(), marked),
+        0,
+        "a marked global with no registered timers has nothing to purge"
+    );
+    assert_eq!(
+        realm_discard_events_total(),
+        before + 1,
+        "the discard event must be counted"
+    );
+    assert!(
+        is_global_discarded(marked),
+        "the discard must mark the global for the dispatch-site probe"
+    );
+    assert!(
+        !is_global_discarded(unmarked),
+        "an unrelated global must stay unmarked"
+    );
+    assert!(
+        !is_global_discarded(null),
+        "null must stay unmarked (guard treats it as not-discarded)"
+    );
+}
+
+#[test]
+fn concurrent_zombie_counter_round_trips() {
+    let before = concurrent_zombie_suppressed_total();
+    concurrent_zombie_suppressed_fetch_add();
+    assert_eq!(
+        concurrent_zombie_suppressed_total(),
+        before + 1,
+        "the suppression counter must count each fetch_add"
+    );
 }

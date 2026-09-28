@@ -114,6 +114,15 @@ impl DiscardFixture {
                                         // Record at REQUEST time — the observable.
                                         h3.lock().unwrap().push((path, Instant::now()));
                                         ("text/plain", Vec::new())
+                                    } else if path.starts_with("/hang") {
+                                        // ISSUE #25: slow completion face — the
+                                        // response lands AFTER the navigation +
+                                        // close (discard already marked), so the
+                                        // fetch's ConcurrentTask completion fires
+                                        // against a dead realm and must be
+                                        // suppressed at dispatch.
+                                        std::thread::sleep(Duration::from_millis(6000));
+                                        ("application/json", b"{\"ok\":true}".to_vec())
                                     } else if path.starts_with("/b") {
                                         ("text/html", (*bb).clone())
                                     } else {
@@ -566,5 +575,90 @@ fn cross_host_nav_and_page_close_no_regression() {
     assert!(
         probe.contains(TITLE_B),
         "runtime unusable after page close (title probe {probe:?})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ISSUE #25 — ConcurrentTask discard: an in-flight fetch whose completion
+// lands AFTER the realm discard (navigation + deterministic close) is a
+// zombie — the MiniEventLoop queue cannot be purged in place (intrusive
+// lock-free MPSC), so the enforcement is dispatch-site suppression: the
+// completion's creation global is checked against the DEAD_GLOBALS mark and
+// the zombie never re-enters JS. Marked reversible: the user may veto this
+// suppression semantics on return (the pre-fix behavior — the resolve
+// re-entering the still-allocated old realm — is what ships without it).
+// ---------------------------------------------------------------------------
+#[test]
+fn same_domain_nav_suppresses_inflight_fetch_completion() {
+    if !common::run_isolated(
+        "realm_discard_timers_tests::same_domain_nav_suppresses_inflight_fetch_completion",
+    ) {
+        return;
+    }
+    let fixture = DiscardFixture::spawn();
+    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[skip] runtime init failed: {e}");
+            return;
+        }
+    };
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(fixture.url("/a")),
+            ..Default::default()
+        })
+        .expect("create_page");
+    page.wait_for_pipeline_ready(Duration::from_secs(30))
+        .expect("page A ready");
+    assert!(wait_title(&page, TITLE_A, Duration::from_secs(15)), "page A title");
+
+    // Arm: an in-flight fetch to /hang (6s server-side delay) whose .then
+    // would re-fetch a ZOMBIE-tagged /hit if the completion re-entered the
+    // (dead) realm.
+    let armed = page.evaluate_js_web(
+        "(function() { \
+           fetch('/hang?tag=ct').then(function() { \
+             fetch('/hit?tag=ZOMBIE-CT'); \
+           }); \
+           return 'armed-ct'; \
+         })()"
+    )
+    .unwrap_or_default();
+    assert!(armed.contains("armed-ct"), "in-flight fetch arm failed: {armed:?}");
+    let suppressed_before = bun_runtime::timers::concurrent_zombie_suppressed_total();
+
+    // Same-domain navigation (ScriptThread reuse + realm discard), then the
+    // deterministic discard trigger (page close) so the DEAD_GLOBALS mark is
+    // guaranteed to precede the 6s completion.
+    page.navigate(&fixture.url("/b")).expect("navigate /b");
+    page.wait_for_pipeline_ready(Duration::from_secs(30))
+        .expect("page B ready");
+    assert!(wait_title(&page, TITLE_B, Duration::from_secs(15)), "page B title");
+    page.close().expect("close page");
+
+    // The completion lands at ~6s: the resolve_tasklet guard must suppress
+    // the zombie (counter) — and the ZOMBIE-tagged re-fetch must never have
+    // been dispatched from the dead realm.
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while bun_runtime::timers::concurrent_zombie_suppressed_total()
+        <= suppressed_before
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        bun_runtime::timers::concurrent_zombie_suppressed_total() > suppressed_before,
+        "ISSUE #25 zombie: the discarded realm's in-flight fetch completion          re-entered JS instead of being suppressed"
+    );
+    assert!(
+        !fixture.hit_paths().iter().any(|p| p.contains("ZOMBIE")),
+        "ISSUE #25 zombie: the dead realm's .then re-fetch EXECUTED (hits: {:?})",
+        fixture.hit_paths()
+    );
+    assert_eq!(
+        bun_runtime::timers::zombie_fires_total(),
+        0,
+        "timer-face zero regression alongside the ConcurrentTask suppression"
     );
 }

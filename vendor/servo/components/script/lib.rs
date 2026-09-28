@@ -40,7 +40,12 @@ pub use event_loop::script_thread::{
     register_worker_scope_callback, register_worker_scope_injector, unregister_worker_injectors,
     bao_run_in_script_settings, BaoEventLoopPump, EmbedderWorkerInjector,
     register_bao_realm_discard_cancel, BaoRealmDiscardCancel,
+    register_bao_execution_control_armer, BaoExecutionControlArmer,
 };
+// BAO patch (ISSUE #24 servo wiring, 2026-09-29): per-WebView worker-script
+// execution timeout registry (consumed by the worker JS evaluation paths via
+// the execution-control bridge).
+pub use crate::dom::workers::workerglobalscope::set_worker_script_timeout;
 // BAO PATCH (SM-EVOLUTION #28, verdict consumed 2026-09-10 — REQ-STL
 // identity consistency): engine-native identity sinks re-exported so the
 // `servo` crate / bao embedders reach them — realm forceUTC arming

@@ -242,15 +242,24 @@ fn evaluate_result_has_value_and_error_fields() {
     );
 }
 
-/// Verify evaluate_in_node_realm accepts EvaluateResult channel (REQ-SEC-002).
+/// Verify evaluate_in_node_realm returns EvaluateResult and the Node Realm
+/// evaluate channel is a single-write OnceLock (REQ-SEC-002).
 /// OnceLock is used instead of Mutex because the result is written exactly once
 /// (single-producer, single-consumer), making OnceLock both safer and more efficient.
+/// (ISSUE #24 wave: evaluate_in_node_realm now RETURNS the result — the
+/// OnceLock write lives in the registering callback, which also layers the
+/// execution-control timeout override on top.)
 #[test]
 fn evaluate_in_node_realm_accepts_result_channel() {
     let source = include_str!("../../src/runtime_bridge.rs");
     assert!(
-        source.contains("result_out: Arc<OnceLock<EvaluateResult>>"),
-        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must accept Arc<OnceLock<EvaluateResult>>"
+        source.contains("pub unsafe fn evaluate_in_node_realm(")
+            && source.contains(") -> EvaluateResult {"),
+        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must return EvaluateResult"
+    );
+    assert!(
+        source.contains("let _ = result_clone.set(eval_result);"),
+        "REQ-SEC-002 REGRESSION: the Node Realm evaluate callback must write the result via OnceLock::set"
     );
 }
 
@@ -283,8 +292,8 @@ fn evaluate_in_node_realm_does_not_discard_result() {
         "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must capture evaluate_script return value"
     );
     assert!(
-        func_body.contains("result_out") && func_body.contains("result_out.set"),
-        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must write result to result_out via OnceLock::set"
+        func_body.contains("return EvaluateResult"),
+        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must return the EvaluateResult (never discard it)"
     );
 }
 

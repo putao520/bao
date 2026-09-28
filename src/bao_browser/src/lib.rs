@@ -293,6 +293,14 @@ impl BaoRuntime {
                 global_ptr as *mut mozjs::jsapi::JSObject,
             );
         }));
+        // ISSUE #24 servo wiring (2026-09-29): install the engine-native
+        // execution-control armer — the servo evaluation paths
+        // (ScriptThread embedder eval, worker `on_complete` / `importScripts`)
+        // route armed (timeout) evaluations through this bridge into
+        // bao_engine's ExecutionControl (JS_AddInterruptCallback + owner-thread
+        // armed stack + deadline watcher). A named fn (not a closure literal)
+        // so the higher-ranked closure-parameter coercion is explicit.
+        servo::register_bao_execution_control_armer(Box::new(bao_execution_control_armer));
         // BCE-20260910-004 (settings-stack push — the missing half of the
         // pump bridge): the pump fires page-realm bao timers outside any
         // servo script settings-stack entry, so a page callback touching
@@ -758,6 +766,35 @@ fn register_worker_interfaces_ready_injector_native(
         }
     });
     servo::register_worker_interfaces_ready_injector(webview_id, injector);
+}
+
+/// The engine-native execution-control armer installed into servo
+/// (ISSUE #24 servo wiring; see the registration site in `BaoRuntime::new`).
+/// Contract: run the payload closure synchronously on the calling (owner JS)
+/// thread under bao_engine's `ExecutionControl` armed with `timeout`, and
+/// return its boxed output plus the stable termination message when a control
+/// termination fired. HRTB over the payload lifetime: servo call sites close
+/// over method-local borrows, while the payload VALUE stays `'static`.
+fn bao_execution_control_armer<'a>(
+    cx_ptr: *mut std::ffi::c_void,
+    timeout: Duration,
+    run: Box<dyn FnOnce() -> Box<dyn std::any::Any> + 'a>,
+) -> (Box<dyn std::any::Any>, Option<String>) {
+    let raw_cx = cx_ptr as *mut mozjs::jsapi::JSContext;
+    // Owner-thread face: this bridge runs on servo's ScriptThread / worker
+    // thread, which owns the context — the ExecutionControl ownership contract
+    // holds, and run_raw_with_control asserts the binding fail-closed.
+    let control = bao_engine::execution_control::ExecutionControl::for_context(raw_cx);
+    let (boxed, state) =
+        bao_engine::execution_control::run_raw_with_control(raw_cx, &control, Some(timeout), run);
+    let termination = match state {
+        bao_engine::execution_control::TerminalState::TimedOut
+        | bao_engine::execution_control::TerminalState::Cancelled => {
+            Some(bao_engine::execution_control::terminal_message(state))
+        },
+        _ => None,
+    };
+    (boxed, termination)
 }
 
 pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {

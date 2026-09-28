@@ -484,6 +484,12 @@ pub fn stream_phase(this: *mut PendingFetch) -> StreamPhase {
 pub struct PendingFetch {
     /// SpiderMonkey context that owns the Promise. Only touched on the JS thread.
     pub cx: *mut JSContext,
+    /// ISSUE #25 ConcurrentTask discard: the creation realm's global
+    /// (CurrentGlobalOrNull at spawn). The resolve-time guard checks it
+    /// against the timers' DEAD_GLOBALS mark — a completion whose creating
+    /// realm was navigation-discarded is a zombie and is suppressed before
+    /// any JS re-entry (the MiniEventLoop queue itself cannot be purged).
+    pub origin_global: *mut JSObject,
     /// RAII heap root (GUARD-A) keeping the pending Promise alive across the
     /// async window. `None` only when rooting failed at spawn (pre-existing
     /// degraded path: the unrooted `promise_val` snapshot below is used).
@@ -810,6 +816,9 @@ unsafe fn start_with_kind(
     tls: Option<FetchTlsInit>,
     streaming: bool,
 ) {
+    // ISSUE #25 ConcurrentTask discard: capture the creation realm's global
+    // (the resolve-time zombie guard's identity anchor).
+    let origin_global = JS::CurrentGlobalOrNull(cx);
     // GUARD-A (GC root): heap-root the pending Promise value across the async
     // window. The async window spans ticks AND frames (root lives from here
     // until resolve_tasklet drops the PendingFetch), so the stack-rooted!()
@@ -836,6 +845,7 @@ unsafe fn start_with_kind(
     // headers-resolve.
     let pending = Box::new(PendingFetch {
         cx,
+        origin_global,
         promise_root,
         promise_val: rooted_val,
         outcome: Arc::clone(&outcome),
@@ -1755,6 +1765,17 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     unsafe { &*this }
         .has_schedule_callback
         .store(false, AtomicOrdering::Release);
+
+    // ISSUE #25 ConcurrentTask discard: a completion whose creation realm was
+    // navigation-discarded is a zombie — suppress the JS re-entry entirely
+    // (the MiniEventLoop queue cannot be purged in place; dispatch-site
+    // suppression is the enforcement). Teardown still runs (no JS).
+    let origin_global = unsafe { &*this }.origin_global;
+    if !origin_global.is_null() && crate::timers::is_global_discarded(origin_global) {
+        crate::timers::concurrent_zombie_suppressed_fetch_add();
+        unsafe { deref_tasklet(this) };
+        return;
+    }
 
     if unsafe { &*this }.streaming.is_some() {
         // SAFETY: streaming dispatch on a live streaming PendingFetch.
@@ -3869,6 +3890,7 @@ mod tests {
     fn has_schedule_callback_atomic_roundtrip() {
         let pf = PendingFetch {
             cx: ::std::ptr::null_mut(),
+            origin_global: ::std::ptr::null_mut(),
             promise_root: None,
             promise_val: UndefinedValue(),
             outcome: Arc::new(Mutex::new(None)),
