@@ -86,3 +86,56 @@ fn test_event_loop_and_modules() {
     );
     bun_runtime::shutdown_thread_sm();
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE #25② — process.nextTick runs on an INDEPENDENT queue (Node
+// semantics), not degraded into the promise microtask queue. Ordering
+// contract pinned here:
+//   a) nextTick(A); Promise.resolve().then(B)  ->  A before B
+//   b) a nextTick callback enqueueing another nextTick drains within the
+//      same phase (still before the promise microtasks)
+//   c) nextTick(cb, ...args) passes the extra arguments through
+//   d) a throwing nextTick callback does not block later callbacks (the
+//      throw routes to the uncaught-exception hook)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_next_tick_independent_queue_ordering() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    eval_string(
+        &mut ctx,
+        r#"
+        globalThis.__order = [];
+        // (a) nextTick before the promise reaction
+        process.nextTick(function () { __order.push("t1"); });
+        Promise.resolve().then(function () { __order.push("p1"); });
+        // (b) recursive nextTick drains within the same phase
+        process.nextTick(function () {
+          __order.push("t2");
+          process.nextTick(function () { __order.push("t3"); });
+        });
+        // (c) extra arguments pass through
+        process.nextTick(function (a, b) { __order.push("args:" + a + b); }, 1, 2);
+        // (d) a throw does not block later callbacks
+        process.nextTick(function () { __order.push("t4-before-throw"); throw new Error("tick boom"); });
+        process.nextTick(function () { __order.push("t5-after-throw"); });
+        Promise.resolve().then(function () { __order.push("p2"); });
+        "#,
+    );
+
+    // The eval tail runs the checkpoint (run_jobs): nextTick phase first,
+    // then the promise microtasks (p1 p2). Within the nextTick phase the
+    // queue is FIFO (Node semantics): t3 is enqueued by t2 and lands behind
+    // args/t4/t5 — it does NOT jump the queue.
+    let order = eval_string(&mut ctx, "globalThis.__order.join(',')");
+
+    let expected = "t1,t2,args:12,t4-before-throw,t5-after-throw,t3,p1,p2";
+    assert_eq!(
+        order, expected,
+        "nextTick ordering contract: expected {expected:?}, got {order:?}"
+    );
+    bun_runtime::shutdown_thread_sm();
+}

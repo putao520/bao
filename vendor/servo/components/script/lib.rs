@@ -40,6 +40,7 @@ pub use event_loop::script_thread::{
     register_worker_scope_callback, register_worker_scope_injector, unregister_worker_injectors,
     bao_run_in_script_settings, BaoEventLoopPump, EmbedderWorkerInjector,
     register_bao_realm_discard_cancel, BaoRealmDiscardCancel,
+    register_bao_realm_liveness_probe, BaoRealmLivenessProbe,
     register_bao_execution_control_armer, BaoExecutionControlArmer,
 };
 // BAO patch (ISSUE #24 servo wiring, 2026-09-29): per-WebView worker-script

@@ -176,6 +176,21 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                 let _ = receiver.recv();
                 task_source.queue(task!(resolve: move |cx| {
                     let this = this.root();
+                    // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
+                    // render thread's completion may land after this realm's
+                    // pipeline was closed — resolving then would re-enter a
+                    // discarded realm's JS (the promise's reflector is
+                    // legally GC-swept). Drop the settle entirely (browser
+                    // navigation semantics: an offline render outliving its
+                    // document delivers nothing). Pure address probe —
+                    // MUST run before any JS deref below.
+                    if crate::event_loop::script_thread::bao_is_realm_discarded(
+                        script_bindings::reflector::DomObject::reflector(&*this.global())
+                            .get_jsobject()
+                            .get(),
+                    ) {
+                        return;
+                    }
                     let processed_audio = processed_audio.lock().unwrap();
                     let mut processed_audio: Vec<_> = processed_audio
                         .chunks(this.length as usize)

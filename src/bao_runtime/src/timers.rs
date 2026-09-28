@@ -1138,6 +1138,27 @@ pub(crate) fn concurrent_zombie_suppressed_fetch_add() {
     CONCURRENT_ZOMBIE_SUPPRESSED.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
 }
 
+// ISSUE #25 generalization (2026-09-29): the same drop-on-discard defense
+// for the servo-side external-thread resolve family (audio render/resume,
+// media play, image decode, gamepad haptics, XR, cookie store). Those
+// sites settle stored TracedPromises from queued tasks; the embedder's
+// liveness-probe registration (bao_browser → script's
+// `register_bao_realm_liveness_probe`) answers the DEAD_GLOBALS mark and
+// counts every answered-true query here — each count is a post-discard
+// resolve that never re-entered JS.
+static POST_DISCARD_RESOLVE_SUPPRESSED: ::std::sync::atomic::AtomicUsize =
+    ::std::sync::atomic::AtomicUsize::new(0);
+
+/// Total servo-side external-thread resolves suppressed because their
+/// creation global was realm-discarded (process-global probe).
+pub fn post_discard_resolve_suppressed_total() -> usize {
+    POST_DISCARD_RESOLVE_SUPPRESSED.load(::std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn post_discard_resolve_suppressed_fetch_add() {
+    POST_DISCARD_RESOLVE_SUPPRESSED.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Whether `global` was realm-discarded (the DEAD_GLOBALS mark set by
 /// [`cancel_timers_for_global`]). Dispatch sites use this as the
 /// ConcurrentTask suppression probe (ISSUE #25).

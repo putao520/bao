@@ -293,6 +293,22 @@ impl BaoRuntime {
                 global_ptr as *mut mozjs::jsapi::JSObject,
             );
         }));
+        // ISSUE #25 generalization (2026-09-29): liveness-probe half of the
+        // discard story — servo-side external-thread resolve sites (audio
+        // render/resume, media play, image decode, gamepad haptics, XR,
+        // cookie store) query this before re-entering a realm's JS and drop
+        // the settle when the realm was discarded. Each hit is counted
+        // (post_discard_resolve_suppressed_total) for the guard's e2e
+        // matrix.
+        servo::register_bao_realm_liveness_probe(Box::new(|global_ptr| {
+            let discarded = bun_runtime::timers::is_global_discarded(
+                global_ptr as *mut mozjs::jsapi::JSObject,
+            );
+            if discarded {
+                bun_runtime::timers::post_discard_resolve_suppressed_fetch_add();
+            }
+            discarded
+        }));
         // ISSUE #24 servo wiring (2026-09-29): install the engine-native
         // execution-control armer — the servo evaluation paths
         // (ScriptThread embedder eval, worker `on_complete` / `importScripts`)

@@ -148,6 +148,15 @@ pub fn register_bao_realm_discard_cancel(cancel: script::BaoRealmDiscardCancel) 
     script::register_bao_realm_discard_cancel(cancel);
 }
 
+/// Register the process-global realm-liveness probe (Bao vendor patch,
+/// ISSUE #25 generalization): the query half of the discard story —
+/// servo-side external-thread resolve sites (audio render/resume, media
+/// play, image decode, gamepad haptics, XR, cookie store) answer the
+/// DEAD_GLOBALS mark through this before re-entering a realm's JS.
+pub fn register_bao_realm_liveness_probe(probe: script::BaoRealmLivenessProbe) {
+    script::register_bao_realm_liveness_probe(probe);
+}
+
 /// Register the process-global engine-native execution-control armer
 /// (Bao vendor patch, ISSUE #24 servo wiring): the embedder (bao_browser ←
 /// bao_engine) installs its `ExecutionControl` arming face once at runtime

@@ -251,7 +251,21 @@ impl XRSystemMethods<crate::DomTypeHolder> for XRSystem {
                     return;
                 };
                 task_source.queue(task!(request_session: move |cx| {
-                    this.root().session_obtained(cx, message, &trusted.root(cx), mode, frame_receiver);
+                    let this = this.root();
+                    // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
+                    // XR device's session response may land after this
+                    // realm's pipeline was closed — settling then would
+                    // re-enter a discarded realm's JS. Drop the settle
+                    // entirely. Pure address probe — MUST run before any JS
+                    // deref below.
+                    if crate::event_loop::script_thread::bao_is_realm_discarded(
+                        script_bindings::reflector::DomObject::reflector(&*this.global())
+                            .get_jsobject()
+                            .get(),
+                    ) {
+                        return;
+                    }
+                    this.session_obtained(cx, message, &trusted.root(cx), mode, frame_receiver);
                 }));
             }),
         );

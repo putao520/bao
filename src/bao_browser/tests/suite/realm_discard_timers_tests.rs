@@ -123,6 +123,18 @@ impl DiscardFixture {
                                         // zombie re-entry.
                                         std::thread::sleep(Duration::from_millis(6000));
                                         ("application/json", b"{\"ok\":true}".to_vec())
+                                    } else if path.starts_with("/frame") {
+                                        // ISSUE #25 generalization: iframe page
+                                        // whose script arms a 300s-stereo
+                                        // offline render — its pipeline gets
+                                        // closed (removed) while the render is
+                                        // still in flight, and the settle must
+                                        // be dropped at dispatch.
+                                        (
+                                            "text/html",
+                                            b"<!doctype html><title>frame</title><script>new OfflineAudioContext(2, 44100 * 300, 44100).startRendering().then(function(){fetch('/hit?tag=AUDIO-DONE');});</script>"
+                                                .to_vec(),
+                                        )
                                     } else if path.starts_with("/b") {
                                         ("text/html", (*bb).clone())
                                     } else {
@@ -603,11 +615,6 @@ fn cross_host_nav_and_page_close_no_regression() {
 // ---------------------------------------------------------------------------
 #[test]
 fn page_discard_inflight_completion_never_reenters_js() {
-    if !common::run_isolated(
-        "realm_discard_timers_tests::page_discard_inflight_completion_never_reenters_js",
-    ) {
-        return;
-    }
     let fixture = DiscardFixture::spawn();
     let runtime = match BaoRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
@@ -616,16 +623,15 @@ fn page_discard_inflight_completion_never_reenters_js() {
             return;
         }
     };
+
     // Deterministic discard trigger: page A's own pipeline CLOSE, with a
-    // same-origin page B alive on the SAME ScriptThread to keep the loop
-    // pump alive. Architecture note — a same-domain NAVIGATION is not a
-    // realm discard here: the constellation only sends UnloadDocument (the
-    // old pipeline lives on in session history), so the ExitPipeline (the
-    // RED-1 mark) does not fire until the page closes — and a closed page
-    // stops pumping, which is why the surviving page B drives the shared
-    // loop: ExitPipeline(A) is drained on B's ticks, while A's in-flight
-    // fetch completion (the zombie) lands into the same ConcurrentTask
-    // queue and must be suppressed at dispatch.
+    // same-origin page B alive on the shared runtime: bao's lazy event loop
+    // delivers the ExitPipeline (the RED-1 mark) only on ticks, and the
+    // ConcurrentTask dispatch itself needs the same pump — a pure-sleep
+    // wait would leave BOTH undriven and the guard unexercised. (A closed
+    // page stops its own pump; the architecture note above explains why the
+    // zombie window is unreachable at the top-level lifecycle — this test
+    // pins the SAFE terminal state, not a suppression count.)
     let page_a = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/a")),
@@ -673,10 +679,8 @@ fn page_discard_inflight_completion_never_reenters_js() {
     // completion still ~5s out.
     page_a.close().expect("close page A");
 
-    // Pump via page B (same-origin page on the shared runtime): bao's lazy
-    // event loop delivers the ExitPipeline (the RED-1 mark) only on ticks —
-    // drive until the mark for page A's realm has landed AND the ~6s
-    // completion window has passed (10s hard deadline).
+    // Pump via page B: drive until the mark for page A's realm has landed
+    // AND the ~6s completion window has passed (10s hard deadline).
     let t0 = Instant::now();
     let deadline = t0 + Duration::from_secs(10);
     let completion_window = t0 + Duration::from_secs(7);
@@ -705,4 +709,120 @@ fn page_discard_inflight_completion_never_reenters_js() {
         "timer-face zero regression alongside the ConcurrentTask guard"
     );
     page_b.close().expect("close page B after assertions");
+}
+
+// ---------------------------------------------------------------------------
+// ISSUE #25 generalization — external-thread resolve guard (audio offline
+// render station, the largest settle window of the B-class family). The
+// offline render thread completes independently of the page lifecycle; when
+// the completion lands after the creating realm's pipeline close, the
+// resolve task must be dropped at dispatch (the
+// post_discard_resolve_suppressed counter) instead of re-entering the dead
+// realm's JS.
+//
+// Reachability: the discard trigger is an IFRAME pipeline close — the only
+// live "mark lands while a pump survives" window. Two same-origin top-level
+// pages are SEPARATE ScriptThreads (servo event-loop reuse applies to
+// navigation within one browsing context), so a top-level page close kills
+// its ScriptThread's task channel outright; a removed iframe closes its
+// pipeline (ExitPipeline -> mark) while the host page keeps the SHARED
+// ScriptThread pump alive, and the render settle (dom_manipulation task
+// source) drains on the host's ticks into the guard. The 300s render
+// outlasts every setup race by orders of magnitude.
+// ---------------------------------------------------------------------------
+#[test]
+fn offline_render_resolve_suppressed_after_discard() {
+    let fixture = DiscardFixture::spawn();
+    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[skip] runtime init failed: {e}");
+            return;
+        }
+    };
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(fixture.url("/a")),
+            ..Default::default()
+        })
+        .expect("create_page");
+    page.wait_for_pipeline_ready(Duration::from_secs(30))
+        .expect("page ready");
+    assert!(wait_title(&page, TITLE_A, Duration::from_secs(15)), "page title");
+
+    // Arm inside the iframe realm (the pipeline that will be discarded): a
+    // 300s-stereo offline render whose .then would re-enter JS
+    // (fetch /hit?tag=AUDIO-DONE) when the render completes.
+    let armed = page.evaluate_js_web(
+        "(function() { \
+           var f = document.createElement('iframe'); \
+           f.id = 'zframe'; \
+           f.src = '/frame'; \
+           document.body.appendChild(f); \
+           return 'framed'; \
+         })()",
+    )
+    .unwrap_or_default();
+    assert!(armed.contains("framed"), "iframe arm failed: {armed:?}");
+    // Let the iframe pipeline load and its script start the render.
+    let settle = Instant::now();
+    while settle.elapsed() < Duration::from_millis(1500) {
+        let _ = page.evaluate_js_web("");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let events_before = bun_runtime::timers::realm_discard_events_total();
+
+    // Discard: remove the iframe -> constellation close_pipeline ->
+    // ExitPipeline -> RED-1 mark, with the render still in flight on its
+    // audio thread.
+    let removed = page.evaluate_js_web(
+        "(function() { \
+           var f = document.getElementById('zframe'); \
+           if (!f) { return 'missing'; } \
+           f.remove(); \
+           return 'removed'; \
+         })()",
+    )
+    .unwrap_or_default();
+    assert!(removed.contains("removed"), "iframe removal failed: {removed:?}");
+
+    // Pump through the render's completion window: whatever the terminal
+    // path (servo's audio teardown short-circuits the eos chain, or a
+    // queued settle drains into the guard), the dead realm's JS must never
+    // be re-entered — no AUDIO-DONE, and the timer face stays at zero. The
+    // mark itself must land (pipeline close = ExitPipeline on the shared
+    // ScriptThread, drained by the host's ticks). The POSITIVE
+    // suppression-count assertion is NOT constructible here: the render
+    // time is unbounded from below by an API knob (servo-media throughput
+    // collapses non-linearly past ~13M samples) and the teardown races the
+    // mark — a guard hit was observed live once (discarded=true, DONE
+    // dropped), proving the mechanism, but not deterministically
+    // schedulable.
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let _ = page.evaluate_js_web("");
+        let marked = bun_runtime::timers::realm_discard_events_total() > events_before;
+        if (marked && Instant::now() >= deadline) || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        bun_runtime::timers::realm_discard_events_total() > events_before,
+        "ISSUE #25 B-class: iframe close did not land the realm-discard mark \
+         (events={})",
+        bun_runtime::timers::realm_discard_events_total()
+    );
+    assert!(
+        !fixture.hit_paths().iter().any(|p| p.contains("AUDIO-DONE")),
+        "ISSUE #25 B-class: the discarded realm's render settle RE-ENTERED JS \
+         (hits: {:?})",
+        fixture.hit_paths()
+    );
+    assert_eq!(
+        bun_runtime::timers::zombie_fires_total(),
+        0,
+        "timer-face zero regression alongside the external-thread resolve guard"
+    );
+    page.close().expect("close page after assertions");
 }

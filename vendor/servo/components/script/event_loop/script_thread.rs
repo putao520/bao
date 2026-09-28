@@ -340,6 +340,47 @@ pub fn register_bao_realm_discard_cancel(cancel: BaoRealmDiscardCancel) {
     let _ = BAO_REALM_DISCARD_CANCEL.set(cancel);
 }
 
+// BAO PATCH (ISSUE #25 generalization, 2026-09-29): realm-liveness probe
+// bridge — the query half of the discard story above. External threads
+// (audio render, media, image decode, gamepad, XR, cookie) settle their
+// stored promises by queueing tasks back onto the ScriptThread; when the
+// creating realm's pipeline was closed in the meantime, that resolve is a
+// zombie re-entry into a discarded realm (same class as the fetch
+// ConcurrentTask completion E3's #25 guard suppresses — the correct
+// defense is drop-on-discard, NOT pinning: the resolve semantics require
+// the promise to be genuinely alive). The resolve sites call
+// `bao_is_realm_discarded(global)` BEFORE any JS deref and drop the
+// settle when it returns true. `script` must not depend on bao_runtime
+// (vendor → src layering), so — mirroring the bridges above — the
+// embedder installs the probe once at runtime init; `*mut c_void` keeps
+// the two mozjs crate instances decoupled. Unregistered (upstream-only
+// builds): every call answers `false`, zero behavior change.
+pub type BaoRealmLivenessProbe = Box<dyn Fn(*mut c_void) -> bool + Send + Sync>;
+
+static BAO_REALM_LIVENESS_PROBE: std::sync::OnceLock<BaoRealmLivenessProbe> =
+    std::sync::OnceLock::new();
+
+/// Register the process-global realm-liveness probe (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init;
+/// the first registration wins (OnceLock semantics, matching the other
+/// embedder registries).
+pub fn register_bao_realm_liveness_probe(probe: BaoRealmLivenessProbe) {
+    let _ = BAO_REALM_LIVENESS_PROBE.set(probe);
+}
+
+/// Whether `global`'s realm was navigation-discarded (the DEAD_GLOBALS
+/// mark, answered by the embedder's liveness probe). Pure address
+/// comparison — the caller MUST invoke this before any JS deref on the
+/// realm's objects (the marked global's cells are legally GC-swept).
+pub(crate) fn bao_is_realm_discarded(global: *mut js::jsapi::JSObject) -> bool {
+    if global.is_null() {
+        return false;
+    }
+    BAO_REALM_LIVENESS_PROBE
+        .get()
+        .map_or(false, |probe| probe(global as *mut c_void))
+}
+
 // BAO patch (ISSUE #24 servo wiring, 2026-09-29): engine-native evaluation
 // control bridge — the arming half of Bao's ExecutionControl
 // (`bao_engine::execution_control`: JS_AddInterruptCallback + owner-thread

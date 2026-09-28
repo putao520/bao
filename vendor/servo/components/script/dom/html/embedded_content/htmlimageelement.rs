@@ -1085,6 +1085,7 @@ impl HTMLImageElement {
 
         // Step 2.3. If the decoding process completes successfully, then queue a global task on the
         // DOM manipulation task source with global to resolve promise with undefined.
+        let this = Trusted::new(self);
         let trusted_image_decode_promises: Vec<TrustedPromise> = self
             .image_decode_promises
             .borrow()
@@ -1098,6 +1099,19 @@ impl HTMLImageElement {
             .task_manager()
             .dom_manipulation_task_source()
             .queue(task!(fulfill_image_decode_promises: move |cx| {
+                let this = this.root();
+                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
+                // decode settle task may land after this realm's pipeline
+                // was closed — resolving then would re-enter a discarded
+                // realm's JS. Drop the settle entirely. Pure address probe —
+                // MUST run before any JS deref below.
+                if crate::event_loop::script_thread::bao_is_realm_discarded(
+                    script_bindings::reflector::DomObject::reflector(&*this.global())
+                        .get_jsobject()
+                        .get(),
+                ) {
+                    return;
+                }
                 for trusted_promise in trusted_image_decode_promises {
                     trusted_promise.root(cx).resolve_native(cx, &());
                 }
@@ -1112,6 +1126,7 @@ impl HTMLImageElement {
 
         // Step 2.3. Queue a global task on the DOM manipulation task source with global to reject
         // promise with an "EncodingError" DOMException.
+        let this = Trusted::new(self);
         let trusted_image_decode_promises: Vec<TrustedPromise> = self
             .image_decode_promises
             .borrow()
@@ -1125,6 +1140,16 @@ impl HTMLImageElement {
             .task_manager()
             .dom_manipulation_task_source()
             .queue(task!(reject_image_decode_promises: move |cx| {
+                let this = this.root();
+                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): same
+                // drop-on-discard face as the fulfill arm above.
+                if crate::event_loop::script_thread::bao_is_realm_discarded(
+                    script_bindings::reflector::DomObject::reflector(&*this.global())
+                        .get_jsobject()
+                        .get(),
+                ) {
+                    return;
+                }
                 for trusted_promise in trusted_image_decode_promises {
                     trusted_promise.root(cx).reject_error(cx, Error::Encoding(Some("Image could not be decoded".into())));
                 }

@@ -204,6 +204,20 @@ impl BaseAudioContext {
     where
         F: FnOnce(),
     {
+        // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the control
+        // thread's state change may land after this realm's pipeline was
+        // closed — settling then would re-enter a discarded realm's JS.
+        // Drop the settle (and the queue entry) entirely. Pure address
+        // probe — MUST run before any JS deref below.
+        if crate::event_loop::script_thread::bao_is_realm_discarded(
+            script_bindings::reflector::DomObject::reflector(&*self.global()).get_jsobject().get(),
+        ) {
+            let _ = self
+                .in_flight_resume_promises_queue
+                .borrow_mut()
+                .pop_front();
+            return;
+        }
         let (promises, result) = self
             .in_flight_resume_promises_queue
             .borrow_mut()
@@ -524,6 +538,23 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                 .eos(move || {
                     task_source.queue(task!(audio_decode_eos: move |cx| {
                         let this = this.root();
+                        // BAO PATCH (ISSUE #25 generalization, 2026-09-29):
+                        // the decode thread's completion may land after this
+                        // realm's pipeline was closed — settle/callback then
+                        // would re-enter a discarded realm's JS. Drop the
+                        // settle (and the resolver entry) entirely. Pure
+                        // address probe — MUST run before any JS deref below.
+                        if crate::event_loop::script_thread::bao_is_realm_discarded(
+                            script_bindings::reflector::DomObject::reflector(&*this.global())
+                                .get_jsobject()
+                                .get(),
+                        ) {
+                            let _ = this
+                                .decode_resolvers
+                                .safe_borrow_mut(cx.no_gc())
+                                .remove(&uuid_);
+                            return;
+                        }
                         let decoded_audio = decoded_audio__.lock().unwrap();
                         let length = if !decoded_audio.is_empty() {
                             decoded_audio[0].len()
@@ -554,6 +585,19 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                 .error(move |error| {
                     task_source_clone.queue(task!(audio_decode_eos: move |cx| {
                         let this = this_.root();
+                        // BAO PATCH (ISSUE #25 generalization, 2026-09-29):
+                        // same drop-on-discard face as the eos arm above.
+                        if crate::event_loop::script_thread::bao_is_realm_discarded(
+                            script_bindings::reflector::DomObject::reflector(&*this.global())
+                                .get_jsobject()
+                                .get(),
+                        ) {
+                            let _ = this
+                                .decode_resolvers
+                                .safe_borrow_mut(cx.no_gc())
+                                .remove(&uuid);
+                            return;
+                        }
                         // potential borrow hazard
                         let resolver = {
                             let mut resolvers = this.decode_resolvers.safe_borrow_mut(cx.no_gc());

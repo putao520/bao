@@ -38,6 +38,18 @@ impl HapticEffectListener {
         self.task_source
             .queue(task!(handle_haptic_effect_stopped: move |cx| {
                 let actuator = context.root();
+                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
+                // haptics callback may land after this realm's pipeline was
+                // closed — settling then would re-enter a discarded realm's
+                // JS. Drop the settle entirely. Pure address probe — MUST
+                // run before any JS deref below.
+                if crate::event_loop::script_thread::bao_is_realm_discarded(
+                    script_bindings::reflector::DomObject::reflector(&*actuator.global())
+                        .get_jsobject()
+                        .get(),
+                ) {
+                    return;
+                }
                 actuator.handle_haptic_effect_stopped(cx, stopped_successfully);
             }));
     }
@@ -47,6 +59,15 @@ impl HapticEffectListener {
         self.task_source
             .queue(task!(handle_haptic_effect_completed: move |cx| {
                 let actuator = context.root();
+                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): same
+                // drop-on-discard face as handle_stopped above.
+                if crate::event_loop::script_thread::bao_is_realm_discarded(
+                    script_bindings::reflector::DomObject::reflector(&*actuator.global())
+                        .get_jsobject()
+                        .get(),
+                ) {
+                    return;
+                }
                 actuator.handle_haptic_effect_completed(cx, completed_successfully);
             }));
     }

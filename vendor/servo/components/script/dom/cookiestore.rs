@@ -81,8 +81,24 @@ impl CookieListener {
     pub(crate) fn handle(&self, message: CookieAsyncResponse) {
         let context = self.context.clone();
         self.task_source.queue(task!(cookie_message: move |cx| {
-            let Some(promise) = context
-                .root()
+            let cookie_store = context.root();
+            // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the cookie
+            // thread's response may land after this realm's pipeline was
+            // closed — settling then would re-enter a discarded realm's JS.
+            // Drop the settle (and the in-flight entry) entirely. Pure
+            // address probe — MUST run before any JS deref below.
+            if crate::event_loop::script_thread::bao_is_realm_discarded(
+                script_bindings::reflector::DomObject::reflector(&*cookie_store.global())
+                    .get_jsobject()
+                    .get(),
+            ) {
+                let _ = cookie_store
+                    .in_flight
+                    .safe_borrow_mut(cx.no_gc())
+                    .pop_front();
+                return;
+            }
+            let Some(promise) = cookie_store
                 .in_flight
                 .safe_borrow_mut(cx.no_gc())
                 .pop_front()

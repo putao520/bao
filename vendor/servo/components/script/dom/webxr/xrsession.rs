@@ -282,6 +282,17 @@ impl XRSession {
                     .Navigator(cx)
                     .Xr(cx)
                     .end_session(self);
+                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
+                // session-end settle may land after this realm's pipeline
+                // was closed — drop it entirely (same drop-on-discard face
+                // as handle_frame_event above).
+                if crate::event_loop::script_thread::bao_is_realm_discarded(
+                    script_bindings::reflector::DomObject::reflector(&*self.global())
+                        .get_jsobject()
+                        .get(),
+                ) {
+                    return;
+                }
                 // Step 5: We currently do not have any such promises
                 // Step 6 is happening n the XR session
                 // https://immersive-web.github.io/webxr/#dom-xrsession-end step 3
@@ -587,6 +598,19 @@ impl XRSession {
     }
 
     fn handle_frame_event(&self, cx: &mut JSContext, event: FrameUpdateEvent) {
+        // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the XR device's
+        // frame events (hit-test add, reference-space, update-sync) may
+        // arrive after this realm's pipeline was closed — settling their
+        // stored promises then would re-enter a discarded realm's JS. Drop
+        // the whole frame batch. Pure address probe — MUST run before any
+        // JS deref below.
+        if crate::event_loop::script_thread::bao_is_realm_discarded(
+            script_bindings::reflector::DomObject::reflector(&*self.global())
+                .get_jsobject()
+                .get(),
+        ) {
+            return;
+        }
         match event {
             FrameUpdateEvent::HitTestSourceAdded(id) => {
                 rooted!(&in(cx) let promise = self.pending_hit_test_promises.borrow_mut().remove(&id));

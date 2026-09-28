@@ -2214,6 +2214,17 @@ impl HTMLMediaElement {
     where
         F: FnOnce(&mut JSContext),
     {
+        // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the settle task
+        // may land after this realm's pipeline was closed — settling then
+        // would re-enter a discarded realm's JS. Drop the settle (and the
+        // queue entry) entirely. Pure address probe — MUST run before any
+        // JS deref below.
+        if crate::event_loop::script_thread::bao_is_realm_discarded(
+            script_bindings::reflector::DomObject::reflector(&*self.global()).get_jsobject().get(),
+        ) {
+            let _ = self.in_flight_play_promises_queue.borrow_mut().pop_front();
+            return;
+        }
         let (promises, result) = self
             .in_flight_play_promises_queue
             .borrow_mut()
