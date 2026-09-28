@@ -41,7 +41,7 @@ use crate::dom::audio::iirfilternode::IIRFilterNode;
 use crate::dom::audio::oscillatornode::OscillatorNode;
 use crate::dom::audio::pannernode::PannerNode;
 use crate::dom::audio::stereopannernode::StereoPannerNode;
-use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::callback::{RootedCallback, ExceptionHandling};
 use crate::dom::bindings::codegen::Bindings::AnalyserNodeBinding::AnalyserOptions;
 use crate::dom::bindings::codegen::Bindings::AudioBufferSourceNodeBinding::AudioBufferSourceOptions;
 use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
@@ -80,9 +80,9 @@ struct DecodeResolver {
     #[conditional_malloc_size_of]
     pub(crate) promise: TracedPromise,
     #[conditional_malloc_size_of]
-    pub(crate) success_callback: Option<Rc<DecodeSuccessCallback>>,
+    pub(crate) success_callback: Option<RootedCallback<DecodeSuccessCallback>>,
     #[conditional_malloc_size_of]
-    pub(crate) error_callback: Option<Rc<DecodeErrorCallback>>,
+    pub(crate) error_callback: Option<RootedCallback<DecodeErrorCallback>>,
 }
 
 type BoxedSliceOfPromises = Box<[TracedPromise]>;
@@ -467,8 +467,8 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
         &self,
         cx: &mut CurrentRealm,
         audio_data: CustomAutoRooterGuard<ArrayBuffer>,
-        decode_success_callback: Option<Rc<DecodeSuccessCallback>>,
-        decode_error_callback: Option<Rc<DecodeErrorCallback>>,
+        decode_success_callback: Option<RootedCallback<DecodeSuccessCallback>>,
+        decode_error_callback: Option<RootedCallback<DecodeErrorCallback>>,
     ) -> RootedPromise {
         // Step 1.
         let promise = Promise::new_in_realm(cx);

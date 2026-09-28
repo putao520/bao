@@ -638,7 +638,7 @@ impl VirtualMethods for HTMLTextAreaElement {
                     AttributeMutation::Removed => {
                         el.set_disabled_state(false);
                         el.set_enabled_state(true);
-                        el.check_ancestors_disabled_state_for_form_control();
+                        el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
 
                         if !el.disabled_state() && !el.read_write_state() {
                             el.set_read_write_state(true);
@@ -712,7 +712,7 @@ impl VirtualMethods for HTMLTextAreaElement {
         }
 
         self.upcast::<Element>()
-            .check_ancestors_disabled_state_for_form_control();
+            .check_ancestors_disabled_state_for_form_control(cx.no_gc());
 
         self.handle_text_content_changed(cx);
     }
@@ -748,7 +748,7 @@ impl VirtualMethods for HTMLTextAreaElement {
             .ancestors()
             .any(|ancestor| ancestor.is::<HTMLFieldSetElement>())
         {
-            el.check_ancestors_disabled_state_for_form_control();
+            el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
         } else {
             el.check_disabled_attribute();
         }

@@ -230,7 +230,7 @@ impl VirtualMethods for HTMLFieldSetElement {
                         let element = field.downcast::<Element>().unwrap();
                         if element.disabled_state() {
                             element.check_disabled_attribute();
-                            element.check_ancestors_disabled_state_for_form_control();
+                            element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
                             // Fire callback only if this has actually enabled the custom element
                             if element.enabled_state() &&
                                 element

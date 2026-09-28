@@ -845,7 +845,7 @@ impl VirtualMethods for HTMLSelectElement {
                     AttributeMutation::Removed => {
                         el.set_disabled_state(false);
                         el.set_enabled_state(true);
-                        el.check_ancestors_disabled_state_for_form_control();
+                        el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
                     },
                 }
 
@@ -870,7 +870,7 @@ impl VirtualMethods for HTMLSelectElement {
         }
 
         self.upcast::<Element>()
-            .check_ancestors_disabled_state_for_form_control();
+            .check_ancestors_disabled_state_for_form_control(cx.no_gc());
     }
 
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
@@ -882,7 +882,7 @@ impl VirtualMethods for HTMLSelectElement {
             .ancestors()
             .any(|ancestor| ancestor.is::<HTMLFieldSetElement>())
         {
-            el.check_ancestors_disabled_state_for_form_control();
+            el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
         } else {
             el.check_disabled_attribute();
         }

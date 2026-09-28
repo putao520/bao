@@ -291,16 +291,12 @@ class Descriptor(DescriptorProvider):
         elif self.interface.isCallback():
             ty = 'crate::codegen::GenericBindings::%sBinding::%s' % (ifaceName, ifaceName)
             pathDefault = ty
-            # BAO patch (fork-maintained, 2026-09-28): terminal-state completion —
-            # this return-position declaration previously hardcoded Rc, diverging
-            # from the per-callback 'rc' decision consulted everywhere else
-            # (codegen.py callbackUsesRc sites). Default (unset/False) =
-            # RootedCallback (upstream end); conf `'rc': True` holds a specific
-            # callback interface at the fork's Rc form.
-            if self.config.getCallbackConfig(ifaceName).get('rc', False):
-                self.returnType = "Rc<%s<D>>" % ty
-            else:
-                self.returnType = "RootedCallback<%s<D>>" % ty
+            # BAO patch (fork-maintained, 2026-09-28): aligned to the upstream
+            # origin/main form (:284) — the return-position declaration reads the
+            # per-descriptor useRcCallback key, same channel as the argument
+            # conversion site (codegen.py S1). Default = RootedCallback.
+            callback_type = "Rc" if desc.get('useRcCallback', False) else "RootedCallback"
+            self.returnType = "%s<%s<D>>" % (callback_type, ty)
             self.argumentType = "???"
             self.nativeType = ty
         else:

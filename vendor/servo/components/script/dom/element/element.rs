@@ -5224,12 +5224,15 @@ impl Element {
 }
 
 impl Element {
-    pub(crate) fn check_ancestors_disabled_state_for_form_control(&self) {
+    // BAO patch (fork-maintained, 2026-09-28): TASK-9 P2 — flipped to the
+    // window-end unrooted-traversal form (ancestors_unrooted/children_unrooted),
+    // releasing the R13 disabled-state holdout.
+    pub(crate) fn check_ancestors_disabled_state_for_form_control(&self, no_gc: &NoGC) {
         let node = self.upcast::<Node>();
         if self.disabled_state() {
             return;
         }
-        for ancestor in node.ancestors() {
+        for ancestor in node.ancestors_unrooted(no_gc) {
             if !ancestor.is::<HTMLFieldSetElement>() {
                 continue;
             }
@@ -5241,9 +5244,15 @@ impl Element {
                 self.set_enabled_state(false);
                 return;
             }
-            if let Some(ref legend) = ancestor.children().find(|n| n.is::<HTMLLegendElement>()) {
+            if let Some(ref legend) = ancestor
+                .children_unrooted(no_gc)
+                .find(|n| n.is::<HTMLLegendElement>())
+            {
                 // XXXabinader: should we save previous ancestor to avoid this iteration?
-                if node.ancestors().any(|ancestor| ancestor == *legend) {
+                if node
+                    .ancestors_unrooted(no_gc)
+                    .any(|ancestor| ancestor == *legend)
+                {
                     continue;
                 }
             }

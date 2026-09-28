@@ -2040,7 +2040,7 @@ impl VirtualMethods for HTMLInputElement {
                 let el = self.upcast::<Element>();
                 el.set_disabled_state(disabled_state);
                 el.set_enabled_state(!disabled_state);
-                el.check_ancestors_disabled_state_for_form_control();
+                el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
 
                 if self.input_type().is_textual() {
                     let read_write = !(self.ReadOnly() || el.disabled_state());
@@ -2271,7 +2271,7 @@ impl VirtualMethods for HTMLInputElement {
             s.bind_to_tree(cx, context);
         }
         self.upcast::<Element>()
-            .check_ancestors_disabled_state_for_form_control();
+            .check_ancestors_disabled_state_for_form_control(cx.no_gc());
 
         self.input_type()
             .as_specific()
@@ -2295,7 +2295,7 @@ impl VirtualMethods for HTMLInputElement {
             .ancestors()
             .any(|ancestor| ancestor.is::<HTMLFieldSetElement>())
         {
-            el.check_ancestors_disabled_state_for_form_control();
+            el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
         } else {
             el.check_disabled_attribute();
         }
