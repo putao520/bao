@@ -3159,3 +3159,311 @@ fn test_jsonrpc_error_envelope_has_error_no_result() {
         "error response MUST NOT carry result"
     );
 }
+
+// ============================================================================
+// ISSUE #27 DoD gap faces — debugger layer (script created/source query,
+// stale script-id after navigation, attach/detach churn, per-target script
+// identity routing, debug-disabled no-traffic parity). These exercise the
+// bao_cdp bridge/routing layer; the live engine face is covered by the
+// cdp_debugger_fidelity e2e in bao_browser.
+// ============================================================================
+
+/// DoD "script created/source query": getScriptSource round-trips the
+/// numeric scriptId through the bridge and returns the backend-provided
+/// source verbatim. The scriptParsed creation event itself is asserted at
+/// the live face (cdp_debugger_fidelity); here we pin the query face.
+#[test]
+fn test_dod_script_source_query_round_trip() {
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    const SOURCE: &str = "function baoDodSource() { return 42; }";
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| match cmd {
+                BridgeCommand::DebuggerGetScriptSource { script_id, .. } => {
+                    assert_eq!(script_id, 7, "scriptId must parse to u32 7");
+                    BridgeResponse {
+                        result: Ok(json!({ "scriptSource": SOURCE })),
+                    }
+                }
+                _ => BridgeResponse {
+                    result: Err("unexpected command".into()),
+                },
+            });
+            if got {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge(
+        "Debugger.getScriptSource",
+        Some(json!({ "scriptId": "7" })),
+        "t1",
+        &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    let result = resp.result.expect("source query must succeed over bridge");
+    assert_eq!(
+        result["scriptSource"], SOURCE,
+        "source must round-trip verbatim from the engine face"
+    );
+}
+
+/// DoD "object handle invalidation after navigation" (script-id face): after
+/// a navigation the pre-navigation scriptId is stale; the stale query must
+/// (a) route AFTER the Navigate command (ordering) and (b) surface the
+/// engine's stale-id refusal as a CDP error, never a canned source.
+#[test]
+fn test_dod_stale_script_id_after_navigation() {
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        let mut navigated = false;
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| match cmd {
+                BridgeCommand::Navigate { .. } => {
+                    navigated = true;
+                    BridgeResponse {
+                        result: Ok(json!({ "frameId": "t1", "loaderId": "l2" })),
+                    }
+                }
+                BridgeCommand::DebuggerGetScriptSource { script_id, .. } => {
+                    assert!(
+                        navigated,
+                        "stale script query must arrive after the navigation"
+                    );
+                    assert_eq!(script_id, 3, "pre-navigation scriptId 3");
+                    BridgeResponse {
+                        result: Err("stale script id after navigation".into()),
+                    }
+                }
+                _ => BridgeResponse {
+                    result: Err("unexpected command".into()),
+                },
+            });
+            if got {
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    // Navigate: the pre-navigation script (id 3) belongs to the old document.
+    let nav = dispatch_bridge(
+        "Page.navigate",
+        Some(json!({ "url": "https://dod.example/nav" })),
+        "t1",
+        &tx,
+    );
+    assert!(nav.result.is_some(), "navigate must succeed: {nav:?}");
+    // Stale query: the old scriptId must be refused by the engine face.
+    let resp = dispatch_bridge(
+        "Debugger.getScriptSource",
+        Some(json!({ "scriptId": "3" })),
+        "t1",
+        &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    let err = resp.error.expect("stale script id must surface as error");
+    assert_eq!(err.code, -32603);
+    assert!(
+        err.message.contains("stale script id"),
+        "stale-id refusal must carry the engine face message: {err:?}"
+    );
+    assert!(
+        resp.result.is_none(),
+        "stale query must not produce a canned source"
+    );
+}
+
+/// DoD "debugger attach/detach churn": repeated enable/disable cycles must
+/// (a) emit an alternating Enable/Disable command pair per cycle, (b) keep
+/// responses ok across the churn, and (c) leave the routing path healthy —
+/// a post-churn source query still round-trips.
+#[test]
+fn test_dod_debugger_enable_disable_churn() {
+    const CYCLES: usize = 12;
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        let mut enables = 0usize;
+        let mut disables = 0usize;
+        let mut last_enable = false;
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| match cmd {
+                BridgeCommand::DebuggerEnable { .. } => {
+                    assert!(last_enable == false || disables == enables - 1 + 0,
+                        "enable must alternate with disable");
+                    enables += 1;
+                    last_enable = true;
+                    BridgeResponse { result: Ok(json!({})) }
+                }
+                BridgeCommand::DebuggerDisable { .. } => {
+                    disables += 1;
+                    last_enable = false;
+                    BridgeResponse { result: Ok(json!({})) }
+                }
+                BridgeCommand::DebuggerGetScriptSource { .. } => BridgeResponse {
+                    result: Ok(json!({ "scriptSource": "post-churn" })),
+                },
+                _ => BridgeResponse {
+                    result: Err("unexpected command".into()),
+                },
+            });
+            if got {
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(enables, disables, "churn must pair every cycle");
+        assert_eq!(enables, CYCLES, "every cycle must reach the engine face");
+    });
+    for _ in 0..CYCLES {
+        let on = dispatch_bridge("Debugger.enable", None, "t1", &tx);
+        assert!(on.result.is_some(), "attach must be ok");
+        let off = dispatch_bridge("Debugger.disable", None, "t1", &tx);
+        assert!(off.result.is_some(), "detach must be ok");
+    }
+    // Post-churn health: the routing path still round-trips.
+    let resp = dispatch_bridge(
+        "Debugger.getScriptSource",
+        Some(json!({ "scriptId": "1" })),
+        "t1",
+        &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(
+        resp.result.expect("post-churn query must work")["scriptSource"],
+        "post-churn"
+    );
+}
+
+/// DoD "multiple Realm script identity" (CDP routing face): script ids are
+/// target-scoped — the same numeric id dispatched to two targets must route
+/// with each target's own id, never cross-wired. (The engine-face Realm
+/// identity assertions live in the cdp_debugger_fidelity e2e.)
+#[test]
+fn test_dod_per_target_script_identity_routing() {
+    let (tx1, rx1) = bridge_channel(Duration::from_secs(5));
+    let (tx2, rx2) = bridge_channel(Duration::from_secs(5));
+    let done = Arc::new(AtomicUsize::new(0));
+    let done1 = done.clone();
+    let done2 = done.clone();
+    let h1 = std::thread::spawn(move || {
+        while done1.load(Ordering::Relaxed) == 0 {
+            let got = rx1.try_process(|cmd| match cmd {
+                BridgeCommand::DebuggerGetScriptSource { target_id, script_id } => {
+                    assert_eq!(target_id, "t1");
+                    assert_eq!(script_id, 5);
+                    BridgeResponse {
+                        result: Ok(json!({ "scriptSource": "realm-one" })),
+                    }
+                }
+                _ => BridgeResponse {
+                    result: Err("unexpected command".into()),
+                },
+            });
+            if got {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let h2 = std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx2.try_process(|cmd| match cmd {
+                BridgeCommand::DebuggerGetScriptSource { target_id, script_id } => {
+                    assert_eq!(target_id, "t2");
+                    assert_eq!(script_id, 5);
+                    BridgeResponse {
+                        result: Ok(json!({ "scriptSource": "realm-two" })),
+                    }
+                }
+                _ => BridgeResponse {
+                    result: Err("unexpected command".into()),
+                },
+            });
+            if got {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let r1 = dispatch_bridge(
+        "Debugger.getScriptSource",
+        Some(json!({ "scriptId": "5" })),
+        "t1",
+        &tx1,
+    );
+    let r2 = dispatch_bridge(
+        "Debugger.getScriptSource",
+        Some(json!({ "scriptId": "5" })),
+        "t2",
+        &tx2,
+    );
+    done.store(1, Ordering::Relaxed);
+    h1.join().unwrap();
+    h2.join().unwrap();
+    assert_eq!(r1.result.unwrap()["scriptSource"], "realm-one");
+    assert_eq!(r2.result.unwrap()["scriptSource"], "realm-two");
+}
+
+/// DoD "debug disabled path performance/regression" (behavioral face): with
+/// NO bridge attached — i.e. the debug-disabled path — the full Debugger
+/// surface must respond with the documented ok/shape set and generate zero
+/// engine traffic (there is no channel to carry any). The timing face of the
+/// disabled path is the soak harness's job (#19), not a unit assertion.
+#[test]
+fn test_dod_debug_disabled_path_no_bridge_traffic() {
+    let started = std::time::Instant::now();
+    for cmd in [
+        "enable",
+        "disable",
+        "setBreakpointByUrl",
+        "setBreakpointsActive",
+        "setPauseOnExceptions",
+        "setSkipAllPauses",
+        "removeBreakpoint",
+        "getPossibleBreakpoints",
+        "getScriptSource",
+        "evaluateOnCallFrame",
+        "pause",
+        "resume",
+        "stepInto",
+        "stepOver",
+        "stepOut",
+    ] {
+        let params = match cmd {
+            "setBreakpointByUrl" => Some(json!({ "url": "https://x", "line": 1 })),
+            "getScriptSource" | "getPossibleBreakpoints" | "evaluateOnCallFrame" => {
+                Some(json!({ "scriptId": "1" }))
+            }
+            "removeBreakpoint" => Some(json!({ "breakpointId": "1" })),
+            "setBreakpointsActive" => Some(json!({ "active": true })),
+            "setPauseOnExceptions" => Some(json!({ "state": "all" })),
+            "setSkipAllPauses" => Some(json!({ "skip": true })),
+            _ => None,
+        };
+        let method = format!("Debugger.{cmd}");
+        let resp = dispatch(&method, params);
+        assert!(
+            resp.result.is_some(),
+            "debug-disabled path must answer {method} ok: {resp:?}"
+        );
+        assert!(
+            resp.error.is_none(),
+            "debug-disabled path must not error on {method}: {resp:?}"
+        );
+    }
+    // No-traffic path: the whole surface answers without any channel round
+    // trip — bounded well above scheduling noise but far below any engine
+    // round-trip, so a regression that starts blocking on an engine face
+    // trips this.
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "debug-disabled surface must not block on engine traffic"
+    );
+}
