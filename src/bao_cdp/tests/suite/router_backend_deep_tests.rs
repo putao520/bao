@@ -189,14 +189,17 @@ fn test_send_command_emulation_set_device_metrics() {
 
 #[test]
 fn test_send_command_input_dispatch_mouse() {
+    // task #10: input delivery without a bridge → -32603.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t-1");
-    let result = router.send_command(
-        session.session_id(),
-        "Input.dispatchMouseEvent",
-        Some(json!({"type": "mousePressed", "x": 100, "y": 200})),
-    );
-    assert!(result.is_ok());
+    let err = router
+        .send_command(
+            session.session_id(),
+            "Input.dispatchMouseEvent",
+            Some(json!({"type": "mousePressed", "x": 100, "y": 200})),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -569,11 +572,12 @@ fn test_internal_dispatch_emulation_set_focus_emulation() {
 
 #[test]
 fn test_internal_dispatch_input_dispatch_key_event() {
-    let result = internal_dispatch(
+    // task #10: input delivery without a bridge → -32603 (raw response face).
+    let resp = internal_dispatch_raw(
         "Input.dispatchKeyEvent",
         Some(json!({"type": "keyDown", "key": "Enter"})),
     );
-    assert!(result.is_object());
+    assert_eq!(resp.error.expect("explicit error required").code, -32603);
 }
 
 #[test]

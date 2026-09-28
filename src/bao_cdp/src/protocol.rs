@@ -835,21 +835,27 @@ fn handle_dom(
                 .unwrap_or(0);
             let name = params_str(params, "name");
             let value = params_str(params, "value");
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::SetAttributeValue {
-                        target_id: tid.clone(),
-                        node_id,
-                        name,
-                        value,
-                    },
-                )
-            } else {
-                ok_empty()
-            }
+            // REQ-BRW-048 task #10: a node write with no bridge answers
+            // -32603 — an ok here was a silent no-op masquerading as a
+            // delivered mutation.
+            bridge_send(
+                bridge,
+                BridgeCommand::SetAttributeValue {
+                    target_id: tid.clone(),
+                    node_id,
+                    name,
+                    value,
+                },
+            )
         }
-        "removeAttribute" | "setOuterHTML" | "insertBefore" | "removeNode" => ok_empty(),
+        // REQ-BRW-048 task #10: these mutations have no delivery path on
+        // this face (no bridge command carries them) — an unconditional ok
+        // was a fake success on BOTH faces. Explicit unsupported, per the
+        // StopLoading/Profiler precedent in this file.
+        "removeAttribute" | "setOuterHTML" | "insertBefore" | "removeNode" => Err(not_supported(
+            &format!("DOM.{}", command),
+            "no mutation delivery path exists on this face (the servo embedder bridge carries no such write command)",
+        )),
         "getOuterHTML" => {
             let node_id = params
                 .as_ref()
@@ -1152,7 +1158,16 @@ fn handle_network(
                 .and_then(|p| p.get("platform"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            if bridge.is_some() && !ua.is_empty() {
+            // REQ-BRW-048 task #10: the UA/language/platform overrides are
+            // real navigator writes through the bridge — without a bridge
+            // the command is a -32603, never a silent no-op ok.
+            if bridge.is_none() {
+                return Err(CdpError {
+                    code: -32603,
+                    message: "no servo bridge connected".into(),
+                });
+            }
+            if !ua.is_empty() {
                 bridge_send(
                     bridge,
                     BridgeCommand::SetUserAgent {
@@ -1161,7 +1176,7 @@ fn handle_network(
                     },
                 )?;
             }
-            if bridge.is_some() && (accept_language.is_some() || platform.is_some()) {
+            if accept_language.is_some() || platform.is_some() {
                 let mut js = String::from("(function(){var d=Object.defineProperty;");
                 if let Some(lang) = &accept_language {
                     js.push_str(&format!(
@@ -1520,17 +1535,25 @@ fn handle_emulation(
         "clearDeviceMetricsOverride" => ok_empty(),
         "setUserAgentOverride" => {
             let ua = params_str(params, "userAgent");
-            if bridge.is_some() && !ua.is_empty() {
+            // REQ-BRW-048 task #10: the override is a real navigator write
+            // through the bridge — without a bridge it is a -32603, never a
+            // silent no-op ok. Empty ua stays a tolerated no-op ack.
+            if bridge.is_none() {
+                return Err(CdpError {
+                    code: -32603,
+                    message: "no servo bridge connected".into(),
+                });
+            }
+            if !ua.is_empty() {
                 bridge_send(
                     bridge,
                     BridgeCommand::SetUserAgent {
                         target_id: tid,
                         user_agent: ua,
                     },
-                )
-            } else {
-                ok_empty()
+                )?;
             }
+            ok_empty()
         }
         "setTouchEmulationEnabled" | "setScriptExecutionDisabled" => ok_empty(),
         "setFocusEmulationEnabled" | "setCPUThrottlingRate" => ok_empty(),
@@ -1570,21 +1593,19 @@ fn handle_input(
                 .as_ref()
                 .and_then(|p| p.get("clickCount"))
                 .and_then(|v| v.as_i64());
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::DispatchMouseEvent {
-                        target_id: tid.clone(),
-                        event_type,
-                        x,
-                        y,
-                        button,
-                        click_count,
-                    },
-                )
-            } else {
-                ok_empty()
-            }
+            // REQ-BRW-048 task #10: input delivery without a bridge is a
+            // -32603, never a silent no-op ok.
+            bridge_send(
+                bridge,
+                BridgeCommand::DispatchMouseEvent {
+                    target_id: tid.clone(),
+                    event_type,
+                    x,
+                    y,
+                    button,
+                    click_count,
+                },
+            )
         }
         "dispatchKeyEvent" => {
             let event_type = params_str(params, "type");
@@ -1595,35 +1616,40 @@ fn handle_input(
                 .and_then(|p| p.get("text"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::DispatchKeyEvent {
-                        target_id: tid.clone(),
-                        event_type,
-                        key,
-                        code,
-                        text,
-                    },
-                )
-            } else {
-                ok_empty()
-            }
+            // REQ-BRW-048 task #10: input delivery without a bridge is a
+            // -32603, never a silent no-op ok.
+            bridge_send(
+                bridge,
+                BridgeCommand::DispatchKeyEvent {
+                    target_id: tid.clone(),
+                    event_type,
+                    key,
+                    code,
+                    text,
+                },
+            )
         }
-        "dispatchTouchEvent" => ok_empty(),
+        // REQ-BRW-048 task #10: no touch delivery path exists on this face —
+        // explicit unsupported instead of a shape-only ok.
+        "dispatchTouchEvent" => Err(not_supported(
+            "Input.dispatchTouchEvent",
+            "no touch delivery path exists on this face (the servo embedder bridge carries no touch command)",
+        )),
         "insertText" => {
             let text = params_str(params, "text");
-            if bridge.is_some() && !text.is_empty() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::InsertText {
-                        target_id: tid,
-                        text,
-                    },
-                )
-            } else {
-                ok_empty()
+            // REQ-BRW-048 task #10: empty text is a Chrome-tolerated no-op
+            // ack (nothing to deliver); anything else without a bridge is a
+            // -32603 — never a silent no-op ok.
+            if text.is_empty() {
+                return ok_empty();
             }
+            bridge_send(
+                bridge,
+                BridgeCommand::InsertText {
+                    target_id: tid,
+                    text,
+                },
+            )
         }
         "setIgnoreInputEvents" | "setInterceptDrags" => ok_empty(),
         _ => Err(CdpError {
@@ -1690,20 +1716,19 @@ fn handle_debugger(
                 .and_then(|p| p.get("columnNumber"))
                 .and_then(|v| v.as_u64())
                 .map(|c| c as u32);
-            if bridge.is_some() {
-                bridge_send(
-                    bridge,
-                    BridgeCommand::DebuggerSetBreakpoint {
-                        target_id: tid,
-                        url,
-                        url_regex,
-                        line,
-                        column,
-                    },
-                )
-            } else {
-                Ok(serde_json::json!({ "breakpointId": "1", "locations": [] }))
-            }
+            // REQ-BRW-048 task #10: a breakpoint write without a bridge is a
+            // -32603 — the canned breakpointId "1" fabricated a success for
+            // a breakpoint that can never be hit.
+            bridge_send(
+                bridge,
+                BridgeCommand::DebuggerSetBreakpoint {
+                    target_id: tid,
+                    url,
+                    url_regex,
+                    line,
+                    column,
+                },
+            )
         }
         "removeBreakpoint" => {
             let breakpoint_id = params
@@ -2350,14 +2375,8 @@ mod tests {
                 "Emulation.setDeviceMetricsOverride",
                 Some(json!({"width": 800, "height": 600, "deviceScaleFactor": 2})),
             ),
-            // 24. Input.dispatchMouseEvent (no bridge) → ok empty
-            (
-                17,
-                "Input.dispatchMouseEvent",
-                Some(
-                    json!({"type": "mousePressed", "x": 100, "y": 200, "button": 0, "clickCount": 1}),
-                ),
-            ),
+            // 24. Input.dispatchMouseEvent left this matrix (task #10):
+            //     input delivery without a bridge is -32603.
             // 25. Overlay.enable → ok empty
             (18, "Overlay.enable", None),
             // 26. Debugger.enable → ok empty
@@ -2405,20 +2424,9 @@ mod tests {
             (30, "DOM.enable", None),
             // 102. DOM.disable → ok empty
             (31, "DOM.disable", None),
-            // 105. DOM.setAttributeValue (no bridge) → ok empty
-            (
-                34,
-                "DOM.setAttributeValue",
-                Some(json!({"nodeId": 1, "name": "class", "value": "active"})),
-            ),
-            // 106. DOM.removeAttribute → ok empty
-            (35, "DOM.removeAttribute", None),
-            // 107. DOM.setOuterHTML → ok empty
-            (36, "DOM.setOuterHTML", None),
-            // 108. DOM.insertBefore → ok empty
-            (37, "DOM.insertBefore", None),
-            // 109. DOM.removeNode → ok empty
-            (38, "DOM.removeNode", None),
+            // 105-109. DOM write faces left this matrix (task #10):
+            //     setAttributeValue without a bridge is -32603; the four
+            //     undeliverable mutations are -32000 on both faces.
             // 114. Network.disable → ok empty
             (43, "Network.disable", None),
             // 116. Network.setCacheDisabled → ok empty
@@ -2435,8 +2443,8 @@ mod tests {
             (54, "CSS.disable", None),
             // 130. Emulation.clearDeviceMetricsOverride → ok empty
             (59, "Emulation.clearDeviceMetricsOverride", None),
-            // 131. Emulation.setUserAgentOverride (no bridge, empty ua) → ok empty
-            (60, "Emulation.setUserAgentOverride", None),
+            // 131. Emulation.setUserAgentOverride left this matrix (task
+            //     #10): the override is a real bridge write — -32603.
             // 132. Emulation.setTouchEmulationEnabled → ok empty
             (61, "Emulation.setTouchEmulationEnabled", None),
             // 133. Emulation.setScriptExecutionDisabled → ok empty
@@ -2447,12 +2455,13 @@ mod tests {
             (64, "Emulation.setCPUThrottlingRate", None),
             // 136. Emulation.setDefaultBackgroundColorOverride → ok empty
             (65, "Emulation.setDefaultBackgroundColorOverride", None),
-            // 138. Input.dispatchKeyEvent (no bridge) → ok empty
-            (67, "Input.dispatchKeyEvent", None),
-            // 139. Input.dispatchTouchEvent → ok empty
-            (68, "Input.dispatchTouchEvent", None),
-            // 140. Input.insertText (no bridge, empty text) → ok empty
-            (69, "Input.insertText", None),
+            // 138. Input.dispatchKeyEvent left this matrix (task #10):
+            //     input delivery without a bridge is -32603.
+            // 139. Input.dispatchTouchEvent left this matrix (task #10):
+            //     no touch delivery path exists → -32000 on both faces.
+            // 140. Input.insertText with EMPTY text stays an ack (nothing
+            //     to deliver); non-empty without a bridge is -32603.
+            (69, "Input.insertText", Some(json!({"text": ""}))),
             // 141. Input.setIgnoreInputEvents → ok empty
             (70, "Input.setIgnoreInputEvents", None),
             // 142. Input.setInterceptDrags → ok empty
@@ -2842,13 +2851,13 @@ mod tests {
         assert!(err.message.contains("nodeId"));
     }
 
-    // 27. handle_command Debugger.setBreakpointByUrl → ok with breakpointId
+    // 27. handle_command Debugger.setBreakpointByUrl → -32603 (task #10:
+    //     a breakpoint write without a bridge can never be hit).
     #[test]
     fn handle_command_debugger_set_breakpoint_by_url() {
         let resp = dispatch_no_bridge(20, "Debugger.setBreakpointByUrl", None);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert_eq!(result["breakpointId"], "1");
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32603);
     }
 
     // 31. CdpError clone + debug format

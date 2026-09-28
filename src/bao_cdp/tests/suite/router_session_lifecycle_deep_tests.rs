@@ -135,14 +135,17 @@ fn test_session_send_emulation_set_metrics() {
 
 #[test]
 fn test_session_send_input_dispatch_mouse() {
+    // task #10: input delivery without a bridge → -32603.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
-    let result = session.send(
-        &router,
-        "Input.dispatchMouseEvent",
-        Some(serde_json::json!({"type":"mousePressed","x":100,"y":200})),
-    );
-    assert!(result.is_ok());
+    let err = session
+        .send(
+            &router,
+            "Input.dispatchMouseEvent",
+            Some(serde_json::json!({"type":"mousePressed","x":100,"y":200})),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]

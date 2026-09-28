@@ -801,13 +801,14 @@ fn test_log_unknown_command() {
 
 #[test]
 fn test_debugger_set_breakpoint_by_url() {
+    // task #10: a breakpoint write without a bridge → -32603 (the canned
+    // breakpointId "1" fabricated a hit-able breakpoint).
     let resp = dispatch(
         "Debugger.setBreakpointByUrl",
         Some(json!({"lineNumber": 10})),
     );
-    let result = resp.result.unwrap();
-    assert_eq!(result["breakpointId"], "1");
-    assert!(result["locations"].is_array());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -2419,12 +2420,13 @@ fn test_emulation_unknown_subcommand_method_not_found() {
 
 #[test]
 fn test_input_dispatch_mouse_event_no_bridge_empty_result() {
+    // task #10: input delivery without a bridge → -32603.
     let resp = dispatch(
         "Input.dispatchMouseEvent",
         Some(json!({"type": "mousePressed", "x": 10.0, "y": 20.0, "button": 0, "clickCount": 1})),
     );
-    assert!(resp.result.is_some());
-    assert!(resp.error.is_none());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -2558,9 +2560,10 @@ fn test_input_dispatch_key_event_with_bridge_propagates_fields() {
 
 #[test]
 fn test_input_dispatch_touch_event_empty_result() {
+    // task #10: no touch delivery path exists → -32000.
     let resp = dispatch("Input.dispatchTouchEvent", Some(json!({})));
-    assert!(resp.result.is_some());
-    assert!(resp.error.is_none());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32000);
 }
 
 #[test]
@@ -2753,8 +2756,9 @@ fn test_debugger_enable_and_misc_default_shapes() {
     // bridge path; without a bridge they must NOT be handled by the stub here
     // (the Debugger handler is a thin dispatch returning method-not-found for
     // unknown). Verify the documented Debugger.* stubs used by this layer.
+    // task #10: setBreakpointByUrl left this stub sweep — a breakpoint
+    // write without a bridge is -32603 (pinned by its dedicated test).
     for cmd in [
-        "setBreakpointByUrl",
         "getPossibleBreakpoints",
         "getScriptSource",
         "evaluateOnCallFrame",
@@ -3422,7 +3426,8 @@ fn test_dod_debug_disabled_path_no_bridge_traffic() {
     for cmd in [
         "enable",
         "disable",
-        "setBreakpointByUrl",
+        // task #10: setBreakpointByUrl left this stub sweep — a breakpoint
+        // write without a bridge is -32603 (pinned by its dedicated test).
         "setBreakpointsActive",
         "setPauseOnExceptions",
         "setSkipAllPauses",
@@ -3437,7 +3442,6 @@ fn test_dod_debug_disabled_path_no_bridge_traffic() {
         "stepOut",
     ] {
         let params = match cmd {
-            "setBreakpointByUrl" => Some(json!({ "url": "https://x", "line": 1 })),
             "getScriptSource" | "getPossibleBreakpoints" | "evaluateOnCallFrame" => {
                 Some(json!({ "scriptId": "1" }))
             }

@@ -1141,15 +1141,14 @@ fn test_emulation_unknown_command_error_code() {
 // ============================================================================
 
 #[test]
-fn test_input_dispatch_touch_event_response_empty() {
+fn test_input_dispatch_touch_event_explicit_error() {
+    // task #10: no touch delivery path exists → -32000.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session
-            .send(&router, "Input.dispatchTouchEvent", None)
-            .unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "Input.dispatchTouchEvent", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
 }
 
 #[test]

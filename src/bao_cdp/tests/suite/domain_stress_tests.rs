@@ -332,6 +332,7 @@ fn test_debugger_enable_disable_rapid() {
 fn test_debugger_set_breakpoint_by_url() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("dbg-bp");
+    // task #10: a breakpoint write without a bridge → -32603.
     let result = session.send(
         &router,
         "Debugger.setBreakpointByUrl",
@@ -341,9 +342,8 @@ fn test_debugger_set_breakpoint_by_url() {
             "condition": ""
         })),
     );
-    assert!(result.is_ok());
-    let val = result.unwrap();
-    assert!(val["breakpointId"].is_string());
+    let err = result.unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -393,6 +393,7 @@ fn test_emulation_set_device_metrics() {
 
 #[test]
 fn test_emulation_set_user_agent_override() {
+    // task #10: the UA override is a real bridge write — -32603 without one.
     let router = CdpRouter::new();
     let session = router.create_internal_session("emu-ua");
     let result = session.send(
@@ -402,7 +403,8 @@ fn test_emulation_set_user_agent_override() {
             "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
         })),
     );
-    assert!(result.is_ok());
+    let err = result.unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]

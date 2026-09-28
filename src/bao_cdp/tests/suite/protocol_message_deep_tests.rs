@@ -832,48 +832,43 @@ fn test_emulation_unknown_command() {
 
 #[test]
 fn test_input_dispatch_mouse_event_no_bridge() {
-    assert_eq!(
-        ok_result(
-            "Input.dispatchMouseEvent",
-            Some(json!({"type": "mousePressed", "x": 100.0, "y": 200.0}))
-        ),
-        json!({})
+    // REQ-BRW-048 task #10: input delivery without a bridge → -32603.
+    let e = err_result(
+        "Input.dispatchMouseEvent",
+        Some(json!({"type": "mousePressed", "x": 100.0, "y": 200.0})),
     );
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_input_dispatch_mouse_event_no_coords() {
-    assert_eq!(
-        ok_result(
-            "Input.dispatchMouseEvent",
-            Some(json!({"type": "mouseMoved"}))
-        ),
-        json!({})
-    );
+    // REQ-BRW-048 task #10: no-bridge input delivery → -32603.
+    let e = err_result("Input.dispatchMouseEvent", Some(json!({"type": "mouseMoved"})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_input_dispatch_key_event_no_bridge() {
-    assert_eq!(
-        ok_result(
-            "Input.dispatchKeyEvent",
-            Some(json!({"type": "keyDown", "key": "a", "code": "KeyA"}))
-        ),
-        json!({})
+    // REQ-BRW-048 task #10: no-bridge input delivery → -32603.
+    let e = err_result(
+        "Input.dispatchKeyEvent",
+        Some(json!({"type": "keyDown", "key": "a", "code": "KeyA"})),
     );
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_input_dispatch_key_event_minimal() {
-    assert_eq!(
-        ok_result("Input.dispatchKeyEvent", Some(json!({}))),
-        json!({})
-    );
+    // REQ-BRW-048 task #10: no-bridge input delivery → -32603.
+    let e = err_result("Input.dispatchKeyEvent", Some(json!({})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_input_dispatch_touch_event() {
-    assert_eq!(ok_result("Input.dispatchTouchEvent", None), json!({}));
+    // REQ-BRW-048 task #10: no touch delivery path exists → -32000.
+    let e = err_result("Input.dispatchTouchEvent", None);
+    assert_eq!(e.code, -32000);
 }
 
 #[test]
@@ -2055,26 +2050,27 @@ fn test_emulation_set_device_metrics_negative_width_no_panic() {
 
 #[test]
 fn test_input_dispatch_mouse_negative_coords() {
-    // Negative x/y are valid f64; no bridge → ok_empty, no panic.
-    let r = ok_result(
+    // Negative x/y are valid f64; no bridge → -32603, no panic.
+    let e = err_result(
         "Input.dispatchMouseEvent",
         Some(json!({"type": "mouseMoved", "x": -100.5, "y": -200.5})),
     );
-    assert_eq!(r, json!({}));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_input_dispatch_key_event_no_type() {
-    // Missing type → empty string, still ok_empty.
-    let r = ok_result("Input.dispatchKeyEvent", Some(json!({})));
-    assert_eq!(r, json!({}));
+    // Missing type → empty string parsed; no bridge → -32603.
+    let e = err_result("Input.dispatchKeyEvent", Some(json!({})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_dom_set_attribute_value_missing_name_value() {
-    // No name/value → both default to "" — still ok_empty (no bridge).
-    let r = ok_result("DOM.setAttributeValue", Some(json!({"nodeId": 5})));
-    assert_eq!(r, json!({}));
+    // REQ-BRW-048 task #10: a node write without a bridge → -32603
+    // (missing name/value defaults are irrelevant to the ladder).
+    let e = err_result("DOM.setAttributeValue", Some(json!({"nodeId": 5})));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]

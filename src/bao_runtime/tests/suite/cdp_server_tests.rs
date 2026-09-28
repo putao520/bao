@@ -541,12 +541,15 @@ fn req_cdp_003_debugger_domain_stateless_face() {
     ok_result(&dispatch("Debugger.enable", json!({})));
     ok_result(&dispatch("Debugger.disable", json!({})));
 
-    let r = ok_result(&dispatch(
-        "Debugger.setBreakpointByUrl",
-        json!({"url": "https://example.com/a.js", "lineNumber": 3, "columnNumber": 0}),
-    ));
-    assert!(r["breakpointId"].is_string(), "resp: {}", r);
-    assert_eq!(r["locations"], json!([]));
+    // REQ-BRW-048 task #10: a breakpoint write without a bridge → -32603
+    // (the canned breakpointId fabricated a hit-able breakpoint).
+    assert_eq!(
+        err_code(&dispatch(
+            "Debugger.setBreakpointByUrl",
+            json!({"url": "https://example.com/a.js", "lineNumber": 3, "columnNumber": 0}),
+        )),
+        -32603
+    );
 
     for m in ["pause", "resume", "stepOver", "stepInto", "stepOut"] {
         ok_result(&dispatch(&format!("Debugger.{}", m), json!({})));
@@ -637,10 +640,15 @@ fn req_cdp_005_dom_domain_stateless_face() {
     assert_eq!(err_code(&dispatch("DOM.getBoxModel", json!({"nodeId": 1}))), -32603);
     assert_eq!(err_code(&dispatch("DOM.describeNode", json!({"nodeId": 1}))), -32603);
 
-    ok_result(&dispatch(
-        "DOM.setAttributeValue",
-        json!({"nodeId": 1, "name": "id", "value": "x"}),
-    ));
+    // task #10: a node write without a bridge → -32603 (silent no-op ok
+    // eradicated — the write can never have been delivered).
+    assert_eq!(
+        err_code(&dispatch(
+            "DOM.setAttributeValue",
+            json!({"nodeId": 1, "name": "id", "value": "x"}),
+        )),
+        -32603
+    );
 
     // Real outerHTML needs the live document — explicit error, not canned html.
     assert_eq!(err_code(&dispatch("DOM.getOuterHTML", json!({"nodeId": 1}))), -32603);
@@ -687,15 +695,24 @@ fn req_cdp_007_css_input_emulation_overlay_domains() {
     ok_result(&dispatch("CSS.enable", json!({})));
     ok_result(&dispatch("CSS.disable", json!({})));
 
-    ok_result(&dispatch(
-        "Input.dispatchMouseEvent",
-        json!({"type": "mousePressed", "x": 1.0, "y": 2.0, "button": 0, "clickCount": 1}),
-    ));
-    ok_result(&dispatch(
-        "Input.dispatchKeyEvent",
-        json!({"type": "keyDown", "key": "a", "code": "KeyA"}),
-    ));
-    ok_result(&dispatch("Input.insertText", json!({"text": "hi"})));
+    // REQ-BRW-048 task #10: input delivery and the UA override are real
+    // bridge writes — the stateless face answers -32603, never a silent
+    // no-op ok.
+    assert_eq!(
+        err_code(&dispatch(
+            "Input.dispatchMouseEvent",
+            json!({"type": "mousePressed", "x": 1.0, "y": 2.0, "button": 0, "clickCount": 1}),
+        )),
+        -32603
+    );
+    assert_eq!(
+        err_code(&dispatch(
+            "Input.dispatchKeyEvent",
+            json!({"type": "keyDown", "key": "a", "code": "KeyA"}),
+        )),
+        -32603
+    );
+    assert_eq!(err_code(&dispatch("Input.insertText", json!({"text": "hi"}))), -32603);
     assert_eq!(err_code(&dispatch("Input.bogus", json!({}))), -32601);
 
     ok_result(&dispatch(
@@ -703,10 +720,14 @@ fn req_cdp_007_css_input_emulation_overlay_domains() {
         json!({"width": 800, "height": 600, "deviceScaleFactor": 1.0, "mobile": false}),
     ));
     ok_result(&dispatch("Emulation.clearDeviceMetricsOverride", json!({})));
-    ok_result(&dispatch(
-        "Emulation.setUserAgentOverride",
-        json!({"userAgent": "BaoTest/1.0"}),
-    ));
+    // task #10: the UA override is a real bridge write → -32603 stateless.
+    assert_eq!(
+        err_code(&dispatch(
+            "Emulation.setUserAgentOverride",
+            json!({"userAgent": "BaoTest/1.0"}),
+        )),
+        -32603
+    );
     ok_result(&dispatch(
         "Emulation.setEmulatedMedia",
         json!({"media": "light"}),

@@ -119,11 +119,13 @@ fn test_internal_overlay_enable() {
 
 #[test]
 fn test_internal_input_dispatch_mouse() {
+    // task #10: input delivery without a bridge → -32603.
     let resp = dispatch(
         "Input.dispatchMouseEvent",
         Some(json!({"type":"mousePressed","x":100,"y":200})),
     );
-    assert!(resp.result.is_some());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -967,11 +969,12 @@ fn test_log_domain_clear() {
 }
 
 #[test]
-fn test_debugger_domain_set_breakpoint_by_url_returns_id() {
+fn test_debugger_domain_set_breakpoint_by_url_explicit_error() {
+    // task #10: a breakpoint write without a bridge → -32603 (the canned
+    // breakpointId "1" fabricated a hit-able breakpoint).
     let resp = dispatch("Debugger.setBreakpointByUrl", None);
-    let result = resp.result.expect("setBreakpointByUrl must succeed");
-    assert_eq!(result["breakpointId"], "1");
-    assert!(result["locations"].is_array());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]
@@ -1576,16 +1579,15 @@ fn test_runtime_evaluate_with_expression_no_bridge_returns_stub_not_error() {
 }
 
 #[test]
-fn test_emulation_set_ua_empty_no_bridge_no_send() {
-    // Empty userAgent + no bridge → ok_empty (no send attempted).
+fn test_emulation_set_ua_empty_no_bridge_explicit_error() {
+    // task #10: the missing bridge dominates an empty ua → -32603 (the
+    // override is a real navigator write through the bridge).
     let resp = dispatch(
         "Emulation.setUserAgentOverride",
         Some(json!({"userAgent":""})),
     );
-    assert!(
-        resp.result.is_some(),
-        "empty UA without bridge returns ok_empty"
-    );
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]

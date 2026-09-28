@@ -516,18 +516,21 @@ fn test_dom_push_nodes_by_backend_ids() {
 
 #[test]
 fn test_dom_set_outer_html_insert_before_remove_node() {
-    // All three route to ok_empty.
+    // REQ-BRW-048 task #10: no mutation delivery path exists on this face —
+    // explicit -32000 instead of a shape-only ok on both faces.
     for m in &["setOuterHTML", "insertBefore", "removeNode"] {
         let resp = dispatch(&format!(r#"{{"id":1,"method":"DOM.{}"}}"#, m));
-        assert!(resp.result.unwrap().is_object());
+        let err = resp.error.unwrap_or_else(|| panic!("DOM.{m} must fail explicitly"));
+        assert_eq!(err.code, ERR_NOT_SUPPORTED, "DOM.{m}");
     }
 }
 
 #[test]
 fn test_dom_remove_attribute() {
+    // REQ-BRW-048 task #10: no mutation delivery path → -32000.
     let resp = dispatch(r#"{"id":46,"method":"DOM.removeAttribute"}"#);
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_NOT_SUPPORTED);
 }
 
 #[test]
@@ -700,10 +703,11 @@ fn test_emulation_clear_device_metrics() {
 
 #[test]
 fn test_emulation_set_user_agent_no_bridge_empty() {
-    // Empty userAgent ⇒ no bridge_send (would skip), ok_empty returned.
+    // REQ-BRW-048 task #10: the UA override is a real bridge write — the
+    // missing bridge dominates an empty ua: -32603.
     let resp = dispatch_with_params("Emulation.setUserAgentOverride", json!({"userAgent": ""}));
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_NO_BRIDGE);
 }
 
 #[test]
@@ -745,30 +749,32 @@ fn test_emulation_unknown() {
 
 #[test]
 fn test_input_dispatch_mouse_no_bridge() {
-    // Without bridge ⇒ ok_empty despite full params parsed.
+    // REQ-BRW-048 task #10: input delivery without a bridge ⇒ -32603.
     let resp = dispatch_with_params(
         "Input.dispatchMouseEvent",
         json!({"type": "mousePressed", "x": 0, "y": 0}),
     );
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_NO_BRIDGE);
 }
 
 #[test]
 fn test_input_dispatch_key_no_bridge() {
+    // REQ-BRW-048 task #10: input delivery without a bridge ⇒ -32603.
     let resp = dispatch_with_params(
         "Input.dispatchKeyEvent",
         json!({"type": "keyDown", "key": "", "code": ""}),
     );
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_NO_BRIDGE);
 }
 
 #[test]
 fn test_input_dispatch_touch_event() {
+    // REQ-BRW-048 task #10: no touch delivery path → -32000.
     let resp = dispatch(r#"{"id":80,"method":"Input.dispatchTouchEvent"}"#);
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_NOT_SUPPORTED);
 }
 
 #[test]
@@ -871,12 +877,11 @@ fn test_debugger_disable() {
 
 #[test]
 fn test_debugger_set_breakpoint_by_url() {
+    // REQ-BRW-048 task #10: a breakpoint write without a bridge → -32603
+    // (the canned breakpointId "1" fabricated a hit-able breakpoint).
     let resp = dispatch(r#"{"id":101,"method":"Debugger.setBreakpointByUrl"}"#);
-    let result = resp.result.unwrap();
-    assert_eq!(result["breakpointId"], "1");
-    // locations array must be present and empty.
-    let locs = result["locations"].as_array().unwrap();
-    assert_eq!(locs.len(), 0);
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, ERR_NO_BRIDGE);
 }
 
 #[test]

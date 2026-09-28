@@ -21,6 +21,10 @@ use bao_cdp::{
 };
 
 const TID: &str = "test-target";
+// Error-ladder codes (task #10 sweep): module-level so the per-method
+// no-bridge write-face tests and the sweep loops share one source.
+const NO_BRIDGE: i64 = -32603;
+const NOT_SUPPORTED: i64 = -32000;
 use serde_json::json;
 
 fn dispatch(method: &str, params: Option<serde_json::Value>) -> CdpResponse {
@@ -122,7 +126,8 @@ fn test_invariant_all_ok_responses() {
         // pushNodesByBackendIdsToFrontend read the LIVE document through the
         // servo bridge — explicit errors without one (pinned by the
         // dedicated tests below), removed from this ok-sweep.
-        "DOM.setAttributeValue",
+        // NOTE (task #10): DOM.setAttributeValue left the ok-sweep — a node
+        // write without a bridge is -32603 (silent no-op eradicated).
         "DOM.removeAttribute",
         "DOM.setOuterHTML",
         "DOM.insertBefore",
@@ -148,16 +153,14 @@ fn test_invariant_all_ok_responses() {
         // follow-up): the write path requires edits + the live-page bridge.
         "Emulation.setDeviceMetricsOverride",
         "Emulation.clearDeviceMetricsOverride",
-        "Emulation.setUserAgentOverride",
+        // NOTE (task #10): Emulation.setUserAgentOverride left the ok-sweep
+        // (real bridge write; -32603 without one). Input dispatch/insert
+        // faces ditto (pinned below).
         "Emulation.setTouchEmulationEnabled",
         "Emulation.setScriptExecutionDisabled",
         "Emulation.setFocusEmulationEnabled",
         "Emulation.setCPUThrottlingRate",
         "Emulation.setDefaultBackgroundColorOverride",
-        "Input.dispatchMouseEvent",
-        "Input.dispatchKeyEvent",
-        "Input.dispatchTouchEvent",
-        "Input.insertText",
         "Input.setIgnoreInputEvents",
         "Input.setInterceptDrags",
         "Overlay.enable",
@@ -168,7 +171,9 @@ fn test_invariant_all_ok_responses() {
         "Overlay.setPausedInDebuggerMessage",
         "Debugger.enable",
         "Debugger.disable",
-        "Debugger.setBreakpointByUrl",
+        // NOTE (task #10): Debugger.setBreakpointByUrl left the ok-sweep —
+        // a breakpoint write without a bridge is -32603 (the canned
+        // breakpointId "1" fabricated a hit-able breakpoint).
         "Debugger.removeBreakpoint",
         "Debugger.pause",
         "Debugger.resume",
@@ -209,8 +214,6 @@ fn test_invariant_bridge_dependent_errors() {
     // error (never a canned success) when dispatched without a bridge.
     // -32603: no servo bridge; -32000: facility does not exist;
     // -32602: required param missing/empty.
-    const NO_BRIDGE: i64 = -32603;
-    const NOT_SUPPORTED: i64 = -32000;
     const INVALID_PARAMS: i64 = -32602;
     for (method, code) in [
         ("Page.navigate", NO_BRIDGE),
@@ -237,6 +240,15 @@ fn test_invariant_bridge_dependent_errors() {
         ("DOM.pushNodesByBackendIdsToFrontend", INVALID_PARAMS),
         ("CSS.setStyleTexts", INVALID_PARAMS),
         ("CSS.getComputedStyleForNode", INVALID_PARAMS),
+        // task #10: no-bridge write faces answer -32603 (or -32000 when no
+        // delivery path exists at all) — silent no-op oks are eradicated.
+        ("DOM.setAttributeValue", NO_BRIDGE),
+        ("Input.dispatchMouseEvent", NO_BRIDGE),
+        ("Input.dispatchKeyEvent", NO_BRIDGE),
+        ("Input.insertText", NO_BRIDGE),
+        ("Input.dispatchTouchEvent", NOT_SUPPORTED),
+        ("Emulation.setUserAgentOverride", NO_BRIDGE),
+        ("Debugger.setBreakpointByUrl", NO_BRIDGE),
         ("CSS.getMatchedStylesForNode", INVALID_PARAMS),
         ("CSS.getInlineStylesForNode", INVALID_PARAMS),
         ("Network.getResponseBody", NO_BRIDGE),
@@ -1135,43 +1147,46 @@ fn test_dom_get_box_model() {
 
 #[test]
 fn test_dom_set_attribute_value() {
+    // task #10: a node write without a bridge → -32603.
     let r = dispatch(
         "DOM.setAttributeValue",
         Some(json!({"nodeId":1,"name":"class","value":"active"})),
     );
     assert_jsonrpc_invariant(&r, "DOM.setAttributeValue");
-    // No bridge → empty object ack.
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_dom_set_attribute_value_missing_node_id() {
-    // Adversarial: missing nodeId → defaults to 0, no panic.
+    // Adversarial: missing nodeId defaults to 0; no bridge → -32603, no panic.
     let r = dispatch(
         "DOM.setAttributeValue",
         Some(json!({"name":"class","value":"x"})),
     );
-    assert!(r.result.is_some());
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_dom_remove_attribute() {
-    assert!(ok_resp("DOM.removeAttribute", None));
+    // task #10: no mutation delivery path → -32000 (no shape-only ok).
+    assert_eq!(err_code("DOM.removeAttribute"), NOT_SUPPORTED);
 }
 
 #[test]
 fn test_dom_set_outer_html() {
-    assert!(ok_resp("DOM.setOuterHTML", None));
+    assert_eq!(err_code("DOM.setOuterHTML"), NOT_SUPPORTED);
 }
 
 #[test]
 fn test_dom_insert_before() {
-    assert!(ok_resp("DOM.insertBefore", None));
+    assert_eq!(err_code("DOM.insertBefore"), NOT_SUPPORTED);
 }
 
 #[test]
 fn test_dom_remove_node() {
-    assert!(ok_resp("DOM.removeNode", None));
+    assert_eq!(err_code("DOM.removeNode"), NOT_SUPPORTED);
 }
 
 #[test]
@@ -1448,21 +1463,23 @@ fn test_emulation_clear_device_metrics() {
 
 #[test]
 fn test_emulation_set_user_agent() {
+    // task #10: the UA override is a real bridge write — -32603 without one.
     let r = dispatch(
         "Emulation.setUserAgentOverride",
         Some(json!({"userAgent":"TestBot"})),
     );
     assert_jsonrpc_invariant(&r, "Emulation.setUserAgentOverride");
-    // No bridge → empty ack (UA is accepted but not forwarded).
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_emulation_set_user_agent_empty() {
+    // task #10: the missing bridge dominates an empty ua → -32603.
     let r = dispatch("Emulation.setUserAgentOverride", None);
     assert_jsonrpc_invariant(&r, "Emulation.setUserAgentOverride");
-    // Empty UA + no bridge → empty ack.
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
@@ -1504,66 +1521,76 @@ fn test_emulation_unknown() {
 
 #[test]
 fn test_input_dispatch_mouse() {
+    // task #10: input delivery without a bridge → -32603.
     let r = dispatch(
         "Input.dispatchMouseEvent",
         Some(json!({"type":"mousePressed","x":10,"y":20})),
     );
     assert_jsonrpc_invariant(&r, "Input.dispatchMouseEvent");
-    // No bridge → empty ack.
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_input_dispatch_mouse_default() {
+    // task #10: -32603 without a bridge.
     let r = dispatch("Input.dispatchMouseEvent", None);
     assert_jsonrpc_invariant(&r, "Input.dispatchMouseEvent");
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_input_dispatch_mouse_with_button_and_click_count() {
-    // Adversarial: full mouse event params — must not panic.
+    // Adversarial: full mouse event params — must not panic; -32603.
     let r = dispatch(
         "Input.dispatchMouseEvent",
         Some(json!({
             "type":"mouseReleased","x":100,"y":200,"button":1,"clickCount":2
         })),
     );
-    assert!(r.result.is_some());
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_input_dispatch_key() {
+    // task #10: -32603 without a bridge.
     let r = dispatch(
         "Input.dispatchKeyEvent",
         Some(json!({"type":"keyDown","key":"a","code":"KeyA"})),
     );
     assert_jsonrpc_invariant(&r, "Input.dispatchKeyEvent");
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_input_dispatch_key_with_text() {
-    // Adversarial: keyDown with text payload — must not panic.
+    // Adversarial: keyDown with text payload — must not panic; -32603.
     let r = dispatch(
         "Input.dispatchKeyEvent",
         Some(json!({
             "type":"char","key":"a","code":"KeyA","text":"a"
         })),
     );
-    assert!(r.result.is_some());
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
 fn test_input_dispatch_touch() {
-    assert!(ok_resp("Input.dispatchTouchEvent", None));
+    // task #10: no touch delivery path → -32000.
+    assert_eq!(err_code("Input.dispatchTouchEvent"), NOT_SUPPORTED);
 }
 
 #[test]
 fn test_input_insert_text() {
+    // task #10: non-empty text without a bridge → -32603.
     let r = dispatch("Input.insertText", Some(json!({"text":"hello"})));
     assert_jsonrpc_invariant(&r, "Input.insertText");
-    assert_eq!(r.result.unwrap(), json!({}));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
@@ -1649,14 +1676,11 @@ fn test_debugger_disable() {
 
 #[test]
 fn test_debugger_set_breakpoint_by_url() {
+    // task #10: a breakpoint write without a bridge → -32603.
     let r = dispatch("Debugger.setBreakpointByUrl", None);
     assert_jsonrpc_invariant(&r, "Debugger.setBreakpointByUrl");
-    let result = r.result.unwrap();
-    assert!(result["breakpointId"].is_string());
-    // Full schema (REQ-CDP-003-C2):
-    assert_eq!(result["breakpointId"], "1");
-    assert!(result["locations"].is_array());
-    assert_eq!(result["locations"], json!([]));
+    let e = r.error.expect("explicit error required");
+    assert_eq!(e.code, NO_BRIDGE);
 }
 
 #[test]
