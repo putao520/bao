@@ -607,24 +607,35 @@ fn req_cdp_004_page_domain_stateless_face() {
 fn req_cdp_005_dom_domain_stateless_face() {
     ok_result(&dispatch("DOM.enable", json!({})));
 
-    let r = ok_result(&dispatch("DOM.getDocument", json!({})));
-    let root = &r["root"];
-    assert_eq!(root["nodeId"], 1);
-    assert_eq!(root["nodeType"], 9);
-    assert_eq!(root["nodeName"], "#document");
-    assert_eq!(root["children"][0]["nodeName"], "HTML");
+    // REQ-BRW-048: every live-document query reads the real page through the
+    // servo bridge — the stateless (bridge-less) face answers the error
+    // ladder (missing param -32602 → no bridge -32603 → page-side -32000),
+    // never a canned tree, a fake nodeId sequence, or a constant quad.
+    assert_eq!(err_code(&dispatch("DOM.getDocument", json!({}))), -32603);
 
-    let r = ok_result(&dispatch("DOM.querySelector", json!({"selector": "#a"})));
-    assert_eq!(r["nodeId"], 0);
-    let r = ok_result(&dispatch("DOM.querySelectorAll", json!({"selector": "div"})));
-    assert_eq!(r["nodeIds"], json!([]));
+    // Selector-carrying queries reach the bridge boundary: -32603 without a
+    // bridge (the canonical nodeId comes from the live page).
+    assert_eq!(
+        err_code(&dispatch("DOM.querySelector", json!({"selector": "#a"}))),
+        -32603
+    );
+    assert_eq!(
+        err_code(&dispatch("DOM.querySelectorAll", json!({"selector": "div"}))),
+        -32603
+    );
 
-    let r = ok_result(&dispatch("DOM.getBoxModel", json!({})));
-    let content = r["model"]["content"].as_array().expect("content quad");
-    assert_eq!(content.len(), 8);
+    // Node-ref queries validate the required param before the bridge check.
+    assert_eq!(err_code(&dispatch("DOM.getBoxModel", json!({}))), -32602);
+    assert_eq!(err_code(&dispatch("DOM.describeNode", json!({}))), -32602);
+    assert_eq!(err_code(&dispatch("DOM.resolveNode", json!({}))), -32602);
+    assert_eq!(
+        err_code(&dispatch("DOM.pushNodesByBackendIdsToFrontend", json!({}))),
+        -32602
+    );
 
-    let r = ok_result(&dispatch("DOM.describeNode", json!({})));
-    assert_eq!(r["node"]["nodeName"], "HTML");
+    // With a node ref the missing piece is the bridge itself.
+    assert_eq!(err_code(&dispatch("DOM.getBoxModel", json!({"nodeId": 1}))), -32603);
+    assert_eq!(err_code(&dispatch("DOM.describeNode", json!({"nodeId": 1}))), -32603);
 
     ok_result(&dispatch(
         "DOM.setAttributeValue",
