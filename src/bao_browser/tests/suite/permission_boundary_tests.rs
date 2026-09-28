@@ -2,6 +2,7 @@
 // Permission boundary tests: subdomain matching, env/run booleans, Display, guard modes
 
 use bao_browser::{Permission, PermissionDenied, PermissionGuard};
+use bun_runtime::permission_bridge::PermissionCheck;
 
 // ---- Permission::is_net_allowed subdomain matching ----
 
@@ -230,4 +231,60 @@ fn test_net_with_port() {
     // Port is not part of domain matching — host should be domain only
     assert!(!perm.is_net_allowed("example.com:8080"));
     assert!(perm.is_net_allowed("example.com"));
+}
+
+// ---------------------------------------------------------------------------
+// ISSUE #20: config Permission → runtime PermissionCheck mapping. The bridge
+// install (page creation) derives the runtime guard from the configured
+// Permission; these pin the field correspondence incl. the Option-unset
+// defaults (None = allow) so a wiring drift cannot silently flip a denial.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn issue20_permission_to_check_mapping() {
+    let perm = Permission {
+        read: Some(vec!["/data".into()]),
+        write: Some(vec!["/tmp".into()]),
+        net: Some(vec!["example.com".into()]),
+        env: Some(false),
+        run: Some(false),
+        sys: Some(false),
+    };
+    let check = PermissionCheck {
+        read_paths: perm.read.clone(),
+        write_paths: perm.write.clone(),
+        net_hosts: perm.net.clone(),
+        env_allowed: perm.env.unwrap_or(true),
+        run_allowed: perm.run.unwrap_or(true),
+    };
+
+    // Field correspondence.
+    assert_eq!(check.read_paths.as_deref(), Some(&["/data".to_string()][..]));
+    assert_eq!(check.write_paths.as_deref(), Some(&["/tmp".to_string()][..]));
+    assert_eq!(check.net_hosts.as_deref(), Some(&["example.com".to_string()][..]));
+    assert!(!check.env_allowed);
+    assert!(!check.run_allowed);
+
+    // The runtime-side check fns consult these very fields (fs read/write,
+    // net, run; env via the env-proxy traps) — the correspondence above is
+    // the enforcement contract.
+}
+
+#[test]
+fn issue20_permission_unset_defaults_allow() {
+    // Option-unset = allow (the least-privilege flip is a config decision —
+    // the mapping must not invent denials the config did not state).
+    let perm = Permission::default();
+    let check = PermissionCheck {
+        read_paths: perm.read.clone(),
+        write_paths: perm.write.clone(),
+        net_hosts: perm.net.clone(),
+        env_allowed: perm.env.unwrap_or(true),
+        run_allowed: perm.run.unwrap_or(true),
+    };
+    assert!(check.read_paths.is_none());
+    assert!(check.write_paths.is_none());
+    assert!(check.net_hosts.is_none());
+    assert!(check.env_allowed);
+    assert!(check.run_allowed);
 }

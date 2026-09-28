@@ -137,6 +137,12 @@ fn security_sandbox_verification() {
     // Phase 14: REQ-SEC-003 full lifecycle integration (multi-module sandbox verification)
     scenario_sec003_full_lifecycle_sandbox(&runtime, &mut report);
 
+    // Phase 15 (ISSUE #20): permission-gate enforcement — a restricted
+    // PageConfig.permission must fail-closed the Node-realm host faces
+    // (env/process.env, run/spawn) with the stable denial. LAST phase: the
+    // guard install is last-install-wins on the shared ScriptThread.
+    scenario_permission_gate_enforcement(&runtime, &mut report);
+
     pool.close_all();
     report.finish();
 
@@ -2293,4 +2299,84 @@ fn scenario_sec003_full_lifecycle_sandbox(runtime: &BaoRuntime, report: &mut Rep
 
     let _ = page.close();
     let _ = page2.close();
+}
+
+/// Phase 15 (ISSUE #20): a restricted `PageConfig.permission` must reach the
+/// runtime enforcement points (the permission_bridge guard install) and
+/// fail-closed the Node-realm host faces with the stable "Permission denied"
+/// error — never a silent success or a generic crash.
+fn scenario_permission_gate_enforcement(runtime: &BaoRuntime, report: &mut Report) {
+    let name = "permission_gate";
+    let pool: &PagePool = runtime.page_pool();
+    let page = match pool.create_page(&PageConfig {
+        url: Some("data:text/html,<!DOCTYPE html><html><body></body></html>".into()),
+        permission: Some(bao_browser::Permission {
+            read: Some(vec![]),
+            write: Some(vec![]),
+            net: Some(vec![]),
+            env: Some(false),
+            run: Some(false),
+            sys: Some(false),
+        }),
+        ..Default::default()
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            report.skip(&format!("{}::create", name), &format!("create: {e}"));
+            return;
+        }
+    };
+    wait_for_load(&page, 5000);
+
+    // ① env exposure fail-closed: process.env access throws the stable
+    //    denial (the env proxy factory's denied branch), never silently
+    //    serves the real environment.
+    match page.evaluate_js("try { process.env.PATH; 'served' } catch (e) { 'denied: ' + e.message }") {
+        Ok(s) if s.contains("Permission denied") => {
+            report.pass(&format!("{}::env_denied", name))
+        },
+        Ok(s) => report.fail(
+            &format!("{}::env_denied", name),
+            &format!("env_allowed=false must deny env access, got: {s}"),
+        ),
+        Err(e) => report.skip(&format!("{}::env_denied", name), &format!("eval: {e}")),
+    }
+
+    // ② env proxy surface is the denial proxy (an object — not silently
+    //    undefined, which would be a shape-less fallback).
+    match page.evaluate_js("typeof process.env") {
+        Ok(s) if s == "object" => report.pass(&format!("{}::env_shape", name)),
+        Ok(s) => report.fail(
+            &format!("{}::env_shape", name),
+            &format!("denied env must still be a diagnosable object, got: {s}"),
+        ),
+        Err(e) => report.skip(&format!("{}::env_shape", name), &format!("eval: {e}")),
+    }
+
+    // ③ run/spawn fail-closed: spawnSync throws the stable denial.
+    match page.evaluate_js(
+        "try { require('child_process').spawnSync('true'); 'spawned' } catch (e) { 'denied: ' + e.message }",
+    ) {
+        Ok(s) if s.contains("Permission denied") => {
+            report.pass(&format!("{}::run_denied", name))
+        },
+        Ok(s) => report.fail(
+            &format!("{}::run_denied", name),
+            &format!("run_allowed=false must deny spawn, got: {s}"),
+        ),
+        Err(e) => report.skip(&format!("{}::run_denied", name), &format!("eval: {e}")),
+    }
+
+    // ④ the restricted page's own web face still works (the gate is
+    //    capability-scoped, not a page kill-switch).
+    match page.evaluate_js_web("1 + 1") {
+        Ok(s) if s == "2" => report.pass(&format!("{}::web_face_alive", name)),
+        Ok(s) => report.fail(
+            &format!("{}::web_face_alive", name),
+            &format!("web face must stay alive under restricted permission, got: {s}"),
+        ),
+        Err(e) => report.skip(&format!("{}::web_face_alive", name), &format!("eval: {e}")),
+    }
+
+    let _ = page.close();
 }

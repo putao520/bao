@@ -899,23 +899,23 @@ unsafe fn populate_process_object(
             // like the OS block (case-insensitive lookup, case-preserving
             // last write).
             #[cfg(windows)]
-            let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv)=>{const t=__bao_envTarget;const find=(k)=>{const ks=typeof k==='string'?k:String(k);if(Object.prototype.hasOwnProperty.call(t,ks))return ks;const lk=ks.toLowerCase();const names=Object.keys(t);for(let i=0;i<names.length;i++){if(names[i].toLowerCase()===lk)return names[i]}return undefined};return new Proxy(t,{
-                set(t,k,v){const ex=find(k);if(ex!==undefined&&ex!==k)delete t[ex];t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
-                deleteProperty(t,k){const ex=find(k);if(ex!==undefined)delete t[ex];try{__bao_delEnv(String(k))}catch(e){}return true},
-                get(t,k){const ex=find(k);if(ex===undefined)return undefined;const v=t[ex];return typeof v==='string'?v:undefined},
-                has(t,k){return find(k)!==undefined},
-                ownKeys(t){return Object.keys(t)},
-                getOwnPropertyDescriptor(t,k){const ex=find(k);return ex!==undefined?{configurable:true,enumerable:true,value:t[ex]}:undefined}
+            let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv,__bao_envAllowed)=>{const deny=()=>{throw new Error('Permission denied: env access (env_allowed=false)')};const ok=()=>__bao_envAllowed();const t=__bao_envTarget;const find=(k)=>{const ks=typeof k==='string'?k:String(k);if(Object.prototype.hasOwnProperty.call(t,ks))return ks;const lk=ks.toLowerCase();const names=Object.keys(t);for(let i=0;i<names.length;i++){if(names[i].toLowerCase()===lk)return names[i]}return undefined};return new Proxy(t,{
+                set(t,k,v){if(!ok())deny();const ex=find(k);if(ex!==undefined&&ex!==k)delete t[ex];t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
+                deleteProperty(t,k){if(!ok())deny();const ex=find(k);if(ex!==undefined)delete t[ex];try{__bao_delEnv(String(k))}catch(e){}return true},
+                get(t,k){if(!ok())deny();const ex=find(k);if(ex===undefined)return undefined;const v=t[ex];return typeof v==='string'?v:undefined},
+                has(t,k){if(!ok())deny();return find(k)!==undefined},
+                ownKeys(t){if(!ok())deny();return Object.keys(t)},
+                getOwnPropertyDescriptor(t,k){if(!ok())deny();const ex=find(k);return ex!==undefined?{configurable:true,enumerable:true,value:t[ex]}:undefined}
             })}"#;
             #[cfg(not(windows))]
-            let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv)=>new Proxy(__bao_envTarget,{
-                set(t,k,v){t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
-                deleteProperty(t,k){delete t[k];try{__bao_delEnv(String(k))}catch(e){}return true},
-                get(t,k){const v=t[k];return typeof v==='string'?v:undefined},
-                has(t,k){return k in t},
-                ownKeys(t){return Object.keys(t)},
-                getOwnPropertyDescriptor(t,k){return k in t?{configurable:true,enumerable:true,value:t[k]}:undefined}
-            })"#;
+            let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv,__bao_envAllowed)=>{const deny=()=>{throw new Error('Permission denied: env access (env_allowed=false)')};const ok=()=>__bao_envAllowed();return new Proxy(__bao_envTarget,{
+                set(t,k,v){if(!ok())deny();t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
+                deleteProperty(t,k){if(!ok())deny();delete t[k];try{__bao_delEnv(String(k))}catch(e){}return true},
+                get(t,k){if(!ok())deny();const v=t[k];return typeof v==='string'?v:undefined},
+                has(t,k){if(!ok())deny();return k in t},
+                ownKeys(t){if(!ok())deny();return Object.keys(t)},
+                getOwnPropertyDescriptor(t,k){if(!ok())deny();return k in t?{configurable:true,enumerable:true,value:t[k]}:undefined}
+            })}"#;
             let mut src = mozjs::rust::transform_str_to_source_text(proxy_src);
             let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<env>".as_ptr(), 1);
             if !opts.is_null() {
@@ -960,13 +960,28 @@ unsafe fn populate_process_object(
                     rooted!(&in(cx) let args_val = ObjectValue(env_target.get()));
                     rooted!(&in(cx) let set_env_root = set_env_val);
                     rooted!(&in(cx) let del_env_root = del_env_val);
+                    // ISSUE #20: env exposure policy — env_allowed=false
+                    // fail-closes the whole proxy surface at ACCESS time:
+                    // the factory's traps consult the live
+                    // `__bao_envAllowed` native (permission_bridge::check_env)
+                    // before every operation, instead of silently serving the
+                    // real environment.
+                    let allowed_fn = JS_NewFunction(
+                        cx.raw_cx(),
+                        Some(bao_env_allowed_native),
+                        0,
+                        0,
+                        ::std::ptr::null(),
+                    );
+                    let allowed_obj = JS_GetFunctionObject(allowed_fn);
                     let args = [
                         args_val.handle().get(),
                         set_env_root.handle().get(),
                         del_env_root.handle().get(),
+                        ObjectValue(allowed_obj),
                     ];
                     let args_arr = HandleValueArray {
-                        length_: 3,
+                        length_: 4,
                         elements_: args.as_ptr(),
                     };
                     rooted!(&in(cx) let null_obj = ::std::ptr::null_mut::<JSObject>());
@@ -1305,6 +1320,16 @@ unsafe fn populate_process_object(
         ::std::option::Option::Some(process_next_tick),
         1,
         JSPROP_ENUMERATE as u32,
+    );
+
+    // process._tickCallback() — Node internal nextTick-drain face (#25②)
+    JS_DefineFunction(
+        cx,
+        proc_obj,
+        c"_tickCallback".as_ptr(),
+        ::std::option::Option::Some(process_tick_callback),
+        0,
+        JSPROP_READONLY as u32,
     );
 
     // process.pid / process.ppid
@@ -8897,52 +8922,41 @@ unsafe extern "C" fn process_next_tick(cx: *mut JSContext, argc: u32, vp: *mut J
         return true;
     }
 
-    // Get queueMicrotask from global and call it with the callback
-    // This defers execution to the next microtask tick
-    let mut qmt_val = UndefinedValue();
-    let qmt_rv = MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &mut qmt_val,
-    };
-    let qmt_name = ZBox::from_bytes("queueMicrotask".as_bytes());
-    JS_GetProperty(cx, global.handle().into(), qmt_name.as_ptr(), qmt_rv);
+    // ISSUE #25②: the REAL Node form — an independent nextTick queue
+    // (bao_engine job_queue) drained at the head of every checkpoint, BEFORE
+    // the promise microtask queue. The old form degraded to a
+    // `queueMicrotask(__nextTickCb)` eval, which put nextTick callbacks INTO
+    // the microtask queue and broke Node's ordering contract
+    // (nextTick(A); Promise.resolve().then(B) must run A before B). Extra
+    // arguments are passed through to the callback (Node nextTick(cb, ...args)).
+    let extra: Vec<::mozjs::jsapi::Handle<::mozjs::jsval::JSVal>> = (1..argc as usize)
+        .map(|i| args.get(i as u32))
+        .collect();
+    // SAFETY: the pointers come from the rooted!() stack slots above, which
+    // outlive this call; the queue's Heap slots take over the rooting before
+    // the next GC point.
+    let global_ptr: *mut mozjs::jsapi::JSObject = global.get();
+    let cb_ptr: *mut mozjs::jsapi::JSObject = cb_obj.get();
+    let global_handle =
+        unsafe { ::mozjs::jsapi::JS::HandleObject::from_marked_location(&global_ptr) };
+    let cb_handle =
+        unsafe { ::mozjs::jsapi::JS::HandleObject::from_marked_location(&cb_ptr) };
+    bao_engine::job_queue::next_tick_enqueue(global_handle, cb_handle, &extra);
 
-    if qmt_val.is_object() {
-        // Store callback in a thread-local so the eval can pick it up
-        // Simpler approach: use JS::Call to invoke queueMicrotask(cb)
-        let _qmt_obj = qmt_val.to_object();
-        rooted!(&in(cx_ref) let cb_val_obj = mozjs::jsval::ObjectValue(cb_obj.get()));
+    args.rval().set(UndefinedValue());
+    true
+}
 
-        // Use JS_CallFunctionName-like pattern via direct property + call
-        // Safest: eval a minimal expression that calls queueMicrotask with the callback
-        // We pass the callback as a rooted value on the argument stack
-        let _empty_args = HandleValueArray::empty();
-
-        // Store cb in a global temporary, eval queueMicrotask to pick it up
-        let cb_name = ZBox::from_bytes("__nextTickCb".as_bytes());
-        JS_SetProperty(
-            cx,
-            global.handle().into(),
-            cb_name.as_ptr(),
-            cb_val_obj.handle().into(),
-        );
-
-        let eval_src = "queueMicrotask(__nextTickCb); delete globalThis.__nextTickCb;";
-        let _c_src = ZBox::from_bytes(eval_src.as_bytes());
-        let c_filename = ZBox::from_bytes("<nextTick>".as_bytes());
-        let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
-        if !opts.is_null() {
-            let mut src = mozjs::rust::transform_str_to_source_text(eval_src);
-            let mut eval_rval = UndefinedValue();
-            let eval_rval_h = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut eval_rval,
-            };
-            mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, eval_rval_h);
-            mozjs::glue::DeleteCompileOptions(opts);
-        }
-    }
-
+/// `process._tickCallback()`: Node's internal nextTick-drain face. The
+/// checkpoint path drains the queue automatically (run_jobs (a0) arm); this
+/// is the manual escape hatch Node's module loader calls between module
+/// evaluations.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_tick_callback(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let drained = bao_engine::job_queue::next_tick_drain(&mut wrapped_cx);
+    let _ = drained;
     args.rval().set(UndefinedValue());
     true
 }
@@ -9549,6 +9563,23 @@ unsafe extern "C" fn bun_nanoseconds(cx: *mut JSContext, _argc: u32, vp: *mut JS
     true
 }
 
+
+/// ISSUE #20: live env-permission consult for the process.env proxy traps —
+/// the traps call this before every operation so `env_allowed=false`
+/// fail-closes at ACCESS time (the guard may be installed after the proxy is
+/// built: the permission install rides the first-evaluate callback drain).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bao_env_allowed_native(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let allowed = crate::permission_bridge::check_env().is_ok();
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(BooleanValue(allowed));
+    let _ = cx;
+    true
+}
 /// Bun.env getter — resolves `process.env` off the current global at access
 /// time so both surfaces share one proxy (writes propagate to std::env).
 #[allow(unsafe_op_in_unsafe_fn)]
