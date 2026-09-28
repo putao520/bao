@@ -403,6 +403,172 @@ fn client_phase(ws_url: String, bridge: BridgeSender, page_id: usize, done: Arc<
     done.store(true, Ordering::Relaxed);
 }
 
+
+// ---------------------------------------------------------------------------
+// ISSUE #27 live extensions — three faces the audit verified but the e2e
+// never pinned: ① evaluate throw → exceptionDetails line/column; ② objectId
+// navigation invalidation; ③ hidden bootstrap scriptParsed negative.
+// ---------------------------------------------------------------------------
+
+fn client_phase_live_extensions(ws_url: String, done: Arc<AtomicBool>) {
+    let mut cdp = WsCdp::connect(&ws_url);
+
+    // 0. Navigate to a marker document and wait for it to run.
+    let html = "<html><body><script>window.__bao_ready = true;</script></body></html>";
+    let url = format!("data:text/html;charset=utf-8,{}", html.replace('\n', "%0A"));
+    let resp = cdp.send("Page.navigate", json!({ "url": url }));
+    assert!(resp.get("error").is_none(), "navigate must succeed: {resp}");
+    let mut ready = false;
+    for _ in 0..200 {
+        let r = cdp.send(
+            "Runtime.evaluate",
+            json!({ "expression": "window.__bao_ready === true", "returnByValue": true }),
+        );
+        if r["result"]["result"]["value"] == json!(true) {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready, "marker script never ran");
+
+    // ① exception injection: a throwing evaluate carries exceptionDetails
+    //    with 0-origin line/column (the thrown site) and the Error object.
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({
+            "expression": "function baoThrow27() { throw new Error('bao-27-marker'); } baoThrow27()",
+            "returnByValue": true,
+        }),
+    );
+    let details = &resp["exceptionDetails"];
+    assert!(
+        !details.is_null(),
+        "a thrown evaluate must carry exceptionDetails: {resp}"
+    );
+    let text = details["text"].as_str().unwrap_or_default();
+    assert!(!text.is_empty(), "exceptionDetails.text: {resp}");
+    let line = details["lineNumber"].as_i64().unwrap_or(-1);
+    let col = details["columnNumber"].as_i64().unwrap_or(-1);
+    assert!(line >= 0, "exceptionDetails.lineNumber (0-origin): {resp}");
+    assert!(col >= 0, "exceptionDetails.columnNumber: {resp}");
+    // The thrown Error object rides the `exception` RemoteObject.
+    let exc_value = &details["exception"];
+    assert!(
+        exc_value.is_object(),
+        "exceptionDetails.exception must carry the thrown Error: {resp}"
+    );
+    let exc_desc = exc_value["description"]
+        .as_str()
+        .or_else(|| exc_value["value"].as_str())
+        .unwrap_or_default();
+    assert!(
+        exc_desc.contains("bao-27-marker"),
+        "the thrown marker must ride the exception object: {resp}"
+    );
+    // The expression is single-line, so the throw site is 0-origin line 0;
+    // the column points into the throw statement.
+    assert_eq!(
+        line, 0,
+        "the throw site is line 0 (0-origin, single-line source): {resp}"
+    );
+    assert!(
+        col > 0,
+        "the throw column points into the throw statement: {resp}"
+    );
+    // stackTrace: parsed off Error.stack — frame 0 is the throwing function.
+    let frames = details["stackTrace"]["callFrames"].as_array();
+    assert!(
+        frames.is_some_and(|f| !f.is_empty()),
+        "exceptionDetails.stackTrace.callFrames must be parsed from Error.stack: {resp}"
+    );
+    assert_eq!(
+        frames.and_then(|f| f[0]["functionName"].as_str()),
+        Some("baoThrow27"),
+        "stack frame 0 is the thrower: {resp}"
+    );
+
+    // ② objectId navigation invalidation: a by-reference evaluate result
+    //    carries an objectId; after a navigation the object is gone and the
+    //    id must fail instead of resolving against the new document.
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({ "expression": "({ bao27: 'payload' })", "returnByValue": false }),
+    );
+    let object_id = resp["result"]["result"]["objectId"]
+        .as_str()
+        .expect("a by-reference object result must carry an objectId")
+        .to_string();
+    assert!(!object_id.is_empty(), "objectId non-empty: {resp}");
+
+    let html_b = "<html><body><script>window.__bao_b = true;</script></body></html>";
+    let url_b = format!("data:text/html;charset=utf-8,{}", html_b.replace('\n', "%0A"));
+    let resp = cdp.send("Page.navigate", json!({ "url": url_b }));
+    assert!(resp.get("error").is_none(), "navigate B must succeed: {resp}");
+    let mut ready_b = false;
+    for _ in 0..200 {
+        let r = cdp.send(
+            "Runtime.evaluate",
+            json!({ "expression": "window.__bao_b === true", "returnByValue": true }),
+        );
+        if r["result"]["result"]["value"] == json!(true) {
+            ready_b = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready_b, "page B marker never ran");
+
+    // The stale objectId must NOT resolve into page B's realm.
+    let resp = cdp.send(
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": object_id,
+            "functionDeclaration": "function() { return 41; }",
+            "returnByValue": true,
+        }),
+    );
+    let failed = resp.get("error").is_some()
+        || resp["result"]["result"]["value"].is_null();
+    assert!(
+        failed,
+        "a navigation-stale objectId must not resolve into the new document: {resp}"
+    );
+
+    // ③ hidden bootstrap scriptParsed negative: the embedder's bootstrap
+    //    evaluate (polyfills/Node-realm boot) must stay invisible to the
+    //    Debugger — every scriptParsed belongs to the page document, none is
+    //    the filename-less bootstrap evaluate.
+    let resp = cdp.send("Debugger.enable", json!({}));
+    assert!(resp.get("error").is_none(), "Debugger.enable: {resp}");
+    let mut seen = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        let Some(evt) = cdp.try_take_event("Debugger.scriptParsed", Duration::from_millis(300))
+        else {
+            break;
+        };
+        seen += 1;
+        let script_url = evt["params"]["url"].as_str().unwrap_or_default();
+        assert!(
+            !script_url.is_empty(),
+            "bootstrap evaluates must stay hidden from scriptParsed (empty url seen): {evt}"
+        );
+        assert!(
+            script_url.contains("bao-27") || script_url.contains("data:text/html"),
+            "scriptParsed must be a page document script, got: {evt}"
+        );
+    }
+    assert!(seen > 0, "the page document script must have been parsed");
+    assert!(
+        seen < 8,
+        "bootstrap/polyfill evaluates must not surface as scripts (saw {seen}): the hidden-bootstrap negative"
+    );
+
+    let _ = cdp.send("Debugger.disable", json!({}));
+    done.store(true, Ordering::Relaxed);
+}
+
 #[test]
 fn debugger_breakpoint_real_frames_and_locations_e2e() {
     let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
@@ -474,5 +640,68 @@ fn debugger_breakpoint_real_frames_and_locations_e2e() {
     assert!(
         done.load(Ordering::Relaxed),
         "debugger fidelity phase must have completed all assertions"
+    );
+}
+
+#[test]
+fn live_extensions_exception_objectid_bootstrap_e2e() {
+    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("initial page");
+
+    let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
+    let (console_tx, console_rx) = mpsc::channel::<cdp_server::ConsoleMessage>();
+    runtime.set_console_log_channel(console_tx);
+    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
+    runtime.set_event_channel(event_subscriber.sender());
+
+    let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let port = pick_free_port();
+    let server_config = ServerConfig::builder()
+        .host("127.0.0.1")
+        .port(port)
+        .build();
+    let mut server = CdpServer::with_registry(server_config, registry);
+    server.set_target_provider(Arc::new(ServoTargetProvider::new(
+        bridge_tx.clone(),
+        page.id().to_string(),
+        "127.0.0.1".into(),
+        port,
+    )));
+    server.set_console_receiver(console_rx);
+    let broadcaster = server.broadcaster();
+    std::thread::spawn(move || {
+        let _ = server.run();
+    });
+
+    let ws_url = format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+
+    let done = Arc::new(AtomicBool::new(false));
+    let client = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || client_phase_live_extensions(ws_url, done))
+    };
+
+    use bao_cdp_client::bridge::translate;
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !done.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+        runtime.spin_event_loop();
+        bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
+        while let Ok(servo_event) = servo_event_rx.try_recv() {
+            for cdp_event in translate(servo_event) {
+                broadcaster.send_event(&cdp_event.method, cdp_event.params);
+            }
+        }
+        std::thread::yield_now();
+    }
+
+    client.join().expect("live extensions phase must not panic");
+    assert!(
+        done.load(Ordering::Relaxed),
+        "live extensions phase must have completed all assertions"
     );
 }

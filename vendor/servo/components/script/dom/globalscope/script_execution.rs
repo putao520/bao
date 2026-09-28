@@ -333,6 +333,17 @@ pub(crate) fn fill_compile_options(
     options.set_is_run_once(true);
     options.set_no_script_rval(!script_options.contains(ScriptOptions::ReturnsAValue));
 
+    // BAO patch (fork-maintained, 2026-09-29, ISSUE #27 hidden-bootstrap):
+    // the filename-"" class IS the embedder-driven evaluate (CDP
+    // Runtime.evaluate, polyfill/Node boot — page and worker scripts always
+    // carry a real URL). Those evaluates must stay invisible to the Debugger
+    // (no onNewScript → no Debugger.scriptParsed leak of bootstrap internals);
+    // the same suppression the Node-realm evaluate path has had since
+    // BCE-20260622-004.
+    if filename.is_empty() {
+        options.set_hide_script_from_debugger(true);
+    }
+
     options
 }
 

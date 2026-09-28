@@ -680,20 +680,68 @@ fn cmd_evaluate(
     // page's DevTools console — it must run in the Page Realm WITHOUT Node
     // API injection. (The privileged evaluate_js face is bao-internal only
     // and additionally does not survive navigation.)
-    let result = page.evaluate_js_web(expression).map_err(to_browser_error)?;
     if return_by_value {
-        let parsed: Result<Value, _> = serde_json::from_str(&result);
-        let (value_type, value) = match parsed {
-            Ok(v) => (json_type(&v), v),
-            Err(_) => (json_type_string(&result), serde_json::json!(result)),
+        // Both branches run the user expression inside an in-page envelope:
+        // a throw is captured in-realm and reported as a CDP exceptionDetails
+        // (0-origin line/column + stackTrace parsed off Error.stack) instead
+        // of collapsing into a generic -32603 bridge error that buries the
+        // diagnostics in its message text.
+        let expr_json = serde_json::to_string(expression).unwrap_or_default();
+        let js = format!(
+            r#"(function() {{
+                try {{
+                    var r = eval({expr_json});
+                    return JSON.stringify({{ result: {{ value: r === undefined ? null : r, undefined_result: r === undefined }}, exceptionDetails: null }});
+                }} catch (e) {{
+                    var frames = [];
+                    if (e && e.stack) {{
+                        var lines = String(e.stack).split('\n');
+                        for (var i = 0; i < lines.length && frames.length < 32; i++) {{
+                            var m = lines[i].match(/^(.*?)@(?:.*?:)?(\d+):(\d+)$/);
+                            if (m) {{
+                                frames.push({{
+                                    functionName: m[1],
+                                    lineNumber: parseInt(m[2], 10) - 1,
+                                    columnNumber: parseInt(m[3], 10) - 1,
+                                    url: '',
+                                }});
+                            }}
+                        }}
+                    }}
+                    var first = frames.length > 0 ? frames[0] : {{ lineNumber: 0, columnNumber: 0 }};
+                    return JSON.stringify({{
+                        result: {{ type: 'undefined' }},
+                        exceptionDetails: {{
+                            exceptionId: 0,
+                            text: String((e && e.name) ? (e.name + ': ' + (e.message || '')) : e),
+                            lineNumber: first.lineNumber,
+                            columnNumber: first.columnNumber,
+                            exception: {{
+                                type: 'object',
+                                className: (e && e.name) || 'Error',
+                                description: String(e),
+                            }},
+                            stackTrace: {{ callFrames: frames }},
+                        }},
+                    }});
+                }}
+            }})()"#,
+        );
+        let out = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+        let mut envelope: Value = serde_json::from_str(&out).map_err(|e| {
+            format!("Runtime.evaluate: envelope unparseable: {e} (got: {out:.200})")
+        })?;
+        let undefined_result = envelope["result"]["undefined_result"]
+            .as_bool()
+            .unwrap_or(false);
+        let value = envelope["result"]["value"].take();
+        let (value_type, value) = if undefined_result {
+            ("undefined".to_string(), Value::Null)
+        } else {
+            (json_type(&value).to_string(), value)
         };
-        Ok(serde_json::json!({
-            "result": {
-                "type": value_type,
-                "value": value,
-            },
-            "exceptionDetails": null
-        }))
+        envelope["result"] = serde_json::json!({ "type": value_type, "value": value });
+        Ok(envelope)
     } else {
         // returnByValue=false: hand back a full RemoteObject with a
         // registry-pinned objectId. This is the Playwright evaluateHandle
@@ -1155,6 +1203,11 @@ const DEBUGGER_SETUP: &str = r#"
     function emitParsed(script) {
         var info;
         try {
+            // BAO patch (ISSUE #27 hidden-bootstrap): embedder-driven
+            // evaluates (polyfill/Node/boot plumbing) carry no url — they are
+            // debugger-internal and must never surface as scriptParsed. Page
+            // and worker scripts always carry a real URL.
+            if (!(script.url || '').length) return;
             // SM startLine/lineCount are 1-origin; CDP scriptParsed is 0-origin.
             var start = script.startLine || 1;
             info = JSON.stringify({
@@ -1877,6 +1930,7 @@ fn cmd_runtime_call_function_on(
         Some(oid) => resolve_object_by_id(oid),
         None => "undefined".to_string(),
     };
+    let oid_given = object_id.is_some();
 
     // CDP CallArgument materialization ({value} / {unserializableValue} /
     // {objectId}).
@@ -1909,7 +1963,16 @@ fn cmd_runtime_call_function_on(
                 if (typeof fn !== 'function') {{
                     return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: 'functionDeclaration did not evaluate to a function', exceptionId: 0 }} }});
                 }}
-                var r = fn.apply({this_expr}, {args_js});
+                // BAO patch (ISSUE #27): a registry objectId that fails to
+                // resolve in the CURRENT document (navigation discarded the
+                // minting realm's registry) must error — Chrome semantics —
+                // never silently call the function against an undefined
+                // target.
+                var __t = {this_expr};
+                if ({oid_given} && __t === undefined) {{
+                    return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: 'Cannot find object with objectId: the object does not exist in the current execution context (stale after navigation?)', exceptionId: 0 }} }});
+                }}
+                var r = fn.apply(__t, {args_js});
                 if ({await_js} && r !== null && typeof r === 'object' && typeof r.then === 'function') {{
                     window.__bao_async = {{ state: 'pending' }};
                     Promise.resolve(r).then(
@@ -1925,6 +1988,7 @@ fn cmd_runtime_call_function_on(
             }}
         }})()"#,
         this_expr = this_expr,
+        oid_given = oid_given,
         args_js = args_js,
         func_json = func_json,
         rbv = rbv,

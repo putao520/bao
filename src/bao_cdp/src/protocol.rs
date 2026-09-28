@@ -78,9 +78,16 @@ pub fn serialize_event(ev: &CdpEvent) -> String {
 }
 
 /// Build a success response carrying `result`.
-fn ok_response(id: Option<i64>, result: Value) -> CdpResponse {
+fn ok_response(id: Option<i64>, mut result: Value) -> CdpResponse {
+    // Chrome semantics: lift the handler-envelope exceptionDetails (when
+    // present and non-null) to the response top level.
+    let exception_details = result
+        .as_object_mut()
+        .and_then(|o| o.remove("exceptionDetails"))
+        .filter(|v| !v.is_null());
     CdpResponse {
         id,
+        exception_details,
         result: Some(result),
         error: None,
     }
@@ -91,6 +98,7 @@ fn error_response(id: Option<i64>, code: i64, message: impl Into<String>) -> Cdp
     CdpResponse {
         id,
         result: None,
+        exception_details: None,
         error: Some(CdpError {
             code,
             message: message.into(),
@@ -594,14 +602,25 @@ fn handle_runtime(
                 // evaluate pipeline omits the flag and needs the objectId.
                 .unwrap_or(false);
             if bridge.is_some() && !expression.is_empty() {
-                bridge_send(
+                // Chrome semantics: exceptionDetails is a TOP-LEVEL member of
+                // the evaluate response, not nested under `result`. The bridge
+                // handler returns the envelope { result, exceptionDetails };
+                // lift the members to the response top level (the pre-envelope
+                // callers read `result.result` — the lift preserves that path
+                // exactly).
+                let envelope = bridge_send(
                     bridge,
                     BridgeCommand::EvaluateJs {
                         target_id: tid,
                         expression,
                         return_by_value,
                     },
-                )
+                )?;
+                let mut out = serde_json::json!({ "result": envelope["result"] });
+                if let Some(details) = envelope.get("exceptionDetails") {
+                    out["exceptionDetails"] = details.clone();
+                }
+                Ok(out)
             } else {
                 Ok(
                     serde_json::json!({ "result": { "type": "undefined" }, "exceptionDetails": null }),

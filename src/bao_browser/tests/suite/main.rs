@@ -62,6 +62,7 @@ mod error_permission_screenshot_comprehensive_tests;
 mod error_permission_screenshot_deep_tests;
 mod evaluate_result_tests;
 mod interrupt_timeout_tests;
+mod worker_lifecycle_tests;
 mod fingerprint_website_eval_e2e_tests;
 mod h2_fetch_node_stack_e2e_tests;
 mod indexeddb_e2e_tests;
