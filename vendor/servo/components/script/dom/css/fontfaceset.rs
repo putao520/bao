@@ -51,6 +51,15 @@ pub(crate) struct FontFaceSet {
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-readypromise-slot>
     promise: DomRefCell<TracedPromise>,
 
+    // BAO patch (fork-maintained, 2026-09-29, ISSUE #23/#25 realm-discard
+    // class): storage-face pin — see the `Traceable for RootedPromise` impl in
+    // promise.rs. `TracedPromise` is unrooted by design (liveness = GC trace
+    // graph), but this holder can be dereferenced by the message pump while
+    // its creation realm has already lost JS reachability (bao's pipeline exit
+    // is pump-deferred) — the pin keeps the `PermanentRoot` alive for exactly
+    // the wrapper's lifetime so the deref stays legal.
+    ready_promise_pin: RootedPromise,
+
     set_entries: DomRefCell<Vec<Dom<FontFace>>>,
 }
 
@@ -59,6 +68,7 @@ impl FontFaceSet {
         FontFaceSet {
             target: EventTarget::new_inherited(),
             promise: DomRefCell::new(promise.to_traced()),
+            ready_promise_pin: promise.clone(),
             set_entries: Default::default(),
         }
     }

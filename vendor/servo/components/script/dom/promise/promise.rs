@@ -19,10 +19,10 @@ use std::rc::Rc;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::conversions::{ConversionResult, FromJSValConvertible, ToJSValConvertible};
-use js::gc::MutableHandleValue;
+use js::gc::{MutableHandleValue, Traceable};
 use js::jsapi::{
     CallArgs, GetFunctionNativeReserved, Heap, JS_GetFunctionObject, JSContext as RawJSContext,
-    JSObject, PromiseState, PromiseUserInputEventHandlingState, RemoveRawValueRoot,
+    JSObject, JSTracer, PromiseState, PromiseUserInputEventHandlingState, RemoveRawValueRoot,
     SetFunctionNativeReserved,
 };
 use js::jsval::{Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -136,6 +136,34 @@ impl std::cmp::PartialEq for TracedPromise {
 impl malloc_size_of::MallocConditionalSizeOf for TracedPromise {
     fn conditional_size_of(&self, ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
         self.0.conditional_size_of(ops)
+    }
+}
+
+// BAO patch (fork-maintained, 2026-09-29, ISSUE #23/#25 realm-discard class):
+// storage-face pin. ③'s `to_traced()` yields an *unrooted* twin
+// (`duplicate_unrooted` → `permanent_js_root: None`) whose liveness is purely
+// the GC trace graph. A holder whose storage can be dereferenced after its
+// creation realm lost JS reachability (FontFaceSet's ready promise: stored at
+// construction, never exposed to JS, dereferenced by the message pump even
+// while the owning pipeline's exit is still pump-deferred — by which time SM
+// has already collected the realm's cells; shape poison 0x4b4b4b4b,
+// RED-1-adjacent SIGSEGV in `fulfill_ready_promise_if_needed`) must therefore
+// pin the reflector. Holding the `RootedPromise` clone keeps the
+// `PermanentRoot` alive for exactly the wrapper's lifetime, restoring the
+// pre-③ self-root semantics at the storage face without changing the upstream
+// `TracedPromise` contract.
+//
+// Empty trace is sound: the pinned JSObject is kept alive by the
+// `PermanentRoot` (a true root), not by this edge — there is nothing for the
+// tracer to propagate.
+#[expect(unsafe_code)]
+unsafe impl Traceable for RootedPromise {
+    #[expect(unsafe_code)]
+    unsafe fn trace(&self, _tracer: *mut JSTracer) {}
+}
+impl malloc_size_of::MallocSizeOf for RootedPromise {
+    fn size_of(&self, ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+        self.0.size_of(ops)
     }
 }
 
