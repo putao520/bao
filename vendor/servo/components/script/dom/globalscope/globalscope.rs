@@ -60,7 +60,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 use script_bindings::callback::{RootedCallback, TracedCallback};
 use script_bindings::callback::OwnerWindow;
 use script_bindings::cell::{DomRefCell, RefMut};
-use script_bindings::interfaces::GlobalScopeHelpers;
+use script_bindings::interfaces::{GlobalScopeHelpers, StackRootPromiseHelpers, HeapTracedPromiseHelpers};
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
 use servo_base::generic_channel;
@@ -2276,12 +2276,12 @@ impl GlobalScope {
     pub(crate) fn read_file_async(
         &self,
         id: Uuid,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
         callback: FileListenerCallback,
     ) {
         let recv = self.send_msg(id);
 
-        let trusted_promise = TrustedPromise::new(promise);
+        let trusted_promise = TrustedPromise::from(promise);
         let mut file_listener = FileListener {
             state: Some(FileListenerState::Empty(FileListenerTarget::Promise(
                 trusted_promise,
@@ -3475,10 +3475,10 @@ impl GlobalScope {
         self.byte_length_queuing_strategy_size_function.get().cloned()
     }
 
-    pub(crate) fn set_count_queuing_strategy_size(&self, function: Rc<Function>) {
+    pub(crate) fn set_count_queuing_strategy_size(&self, function: RootedCallback<Function>) {
         if self
             .count_queuing_strategy_size_function
-            .set(function)
+            .set(function.native())
             .is_err()
         {
             warn!("count queuing strategy size function is set twice.");

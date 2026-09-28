@@ -23,6 +23,7 @@ use style_traits::{ParsingMode, ToCss};
 
 use crate::css::css::parser_context_for_document_with_reporter;
 use crate::dom::bindings::buffer_source::get_buffer_source_copy;
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::bindings::codegen::Bindings::FontFaceBinding::{
     FontFaceDescriptors, FontFaceLoadStatus, FontFaceMethods,
 };
@@ -37,7 +38,7 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::css::fontfaceset::FontFaceSet;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::node::NodeTraits;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::window::Window;
 
 /// <https://drafts.csswg.org/css-font-loading/#fontface-interface>
@@ -68,7 +69,7 @@ pub struct FontFace {
 
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontface-fontstatuspromise-slot>
     #[conditional_malloc_size_of]
-    font_status_promise: Rc<Promise>,
+    font_status_promise: TracedPromise,
 
     /// The `@font-face` rule that this `FontFace` object is [css-connected] to, if any.
     ///
@@ -215,7 +216,7 @@ impl FontFace {
             Box::new(Self {
                 reflector: Reflector::new(),
                 font_face_set: MutNullableDom::default(),
-                font_status_promise,
+                font_status_promise: font_status_promise.to_traced(),
                 family_name: DomRefCell::default(),
                 urls: Default::default(),
                 descriptors: DomRefCell::new(FontFaceDescriptors {
@@ -244,7 +245,7 @@ impl FontFace {
         family_name: DOMString,
         urls: Option<SourceList>,
         descriptors: &Descriptors,
-        font_status_promise: Rc<Promise>,
+        font_status_promise: &RootedPromise,
     ) -> Self {
         Self {
             reflector: Reflector::new(),
@@ -259,7 +260,7 @@ impl FontFace {
             family_name: DomRefCell::new(family_name),
             urls: DomRefCell::new(urls),
             template: RefCell::default(),
-            font_status_promise,
+            font_status_promise: font_status_promise.to_traced(),
             css_font_face_rule: Default::default(),
         }
     }
@@ -272,7 +273,7 @@ impl FontFace {
         font_family: DOMString,
         urls: Option<SourceList>,
         descriptors: &Descriptors,
-        font_status_promise: Rc<Promise>,
+        font_status_promise: &RootedPromise,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_proto(
             cx,
@@ -280,7 +281,7 @@ impl FontFace {
                 font_family,
                 urls,
                 descriptors,
-                font_status_promise,
+                &font_status_promise,
             )),
             global,
             proto,
@@ -292,7 +293,7 @@ impl FontFace {
         family_name: DOMString,
         descriptors: FontFaceDescriptors,
         src: Option<SourceList>,
-        font_status_promise: Rc<Promise>,
+        font_status_promise: &RootedPromise,
         font_face_rule: ServoArc<FontFaceRuleInfo>,
     ) -> Self {
         Self {
@@ -303,7 +304,7 @@ impl FontFace {
             family_name: DomRefCell::new(family_name),
             urls: DomRefCell::new(src),
             template: RefCell::default(),
-            font_status_promise,
+            font_status_promise: font_status_promise.to_traced(),
             css_font_face_rule: DomRefCell::new(Some(font_face_rule)),
         }
     }
@@ -337,7 +338,7 @@ impl FontFace {
                 family_name,
                 descriptors,
                 font_face_rule.descriptors.src.clone(),
-                font_status_promise,
+                &font_status_promise,
                 font_face_rule,
             )),
             global,
@@ -355,6 +356,10 @@ impl FontFace {
     /// <https://drafts.csswg.org/css-font-loading/#css-connected>
     pub(crate) fn is_css_connected(&self) -> bool {
         self.css_font_face_rule.borrow().is_some()
+    }
+
+    pub(crate) fn css_font_face_rule(&self) -> std::cell::Ref<'_, Option<ServoArc<FontFaceRuleInfo>>> {
+        self.css_font_face_rule.borrow()
     }
 
     /// Return true if the `FontFace` is [css-connected] *and* was created by the provided
@@ -608,15 +613,15 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
     /// load. For fonts constructed from a buffer source, or fonts that are already loading or
     /// loaded, it does nothing.
     /// <https://drafts.csswg.org/css-font-loading/#font-face-load>
-    fn Load(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn Load(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 2. If font face’s [[Urls]] slot is null, or its status attribute is anything
         // other than "unloaded", return font face’s [[FontStatusPromise]] and abort these
         // steps.
         let Some(sources) = self.urls.borrow_mut().take() else {
-            return self.font_status_promise.clone();
+            return self.font_status_promise.root(cx);
         };
         if self.status.get() != FontFaceLoadStatus::Unloaded {
-            return self.font_status_promise.clone();
+            return self.font_status_promise.root(cx);
         }
 
         let global = self.global();
@@ -698,12 +703,12 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
             font_face_set.handle_font_face_status_changed(cx, self);
         }
 
-        self.font_status_promise.clone()
+        self.font_status_promise.root(cx)
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontface-loaded>
-    fn Loaded(&self) -> Rc<Promise> {
-        self.font_status_promise.clone()
+    fn Loaded(&self, cx: &JSContext) -> RootedPromise {
+        self.font_status_promise.root(cx)
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#font-face-constructor>
@@ -750,7 +755,7 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
             family,
             sources,
             &parsed_font_face_rule.descriptors,
-            font_status_promise,
+            &font_status_promise,
         );
 
         // If font face’s status is "error", terminate this algorithm;

@@ -50,7 +50,8 @@ use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::window::Window;
 use crate::event_loop::script_thread::ScriptThread;
@@ -79,7 +80,7 @@ pub(crate) struct CustomElementRegistry {
     /// It is safe to use FxBuildHasher here as `LocalName` is an `Atom` in the string_cache.
     /// These get a u32 hashed instead of a string.
     /// <https://html.spec.whatwg.org/multipage/#when-defined-promise-map>
-    when_defined: DomRefCell<HashMapTracedValues<LocalName, Rc<Promise>, FxBuildHasher>>,
+    when_defined: DomRefCell<HashMapTracedValues<LocalName, TracedPromise, FxBuildHasher>>,
 
     /// <https://html.spec.whatwg.org/multipage/#element-definition-is-running>
     element_definition_is_running: Cell<bool>,
@@ -628,7 +629,11 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
 
         // Step 19: If this's when-defined promise map[name] exists:
         // Step 19.2: Remove this's when-defined promise map[name].
-        let promise = self.when_defined.borrow_mut().remove(&name);
+        let promise = self
+            .when_defined
+            .borrow_mut()
+            .remove(&name)
+            .map(|promise| promise.root(cx));
         if let Some(promise) = promise {
             rooted!(&in(cx) let mut constructor = UndefinedValue());
             definition
@@ -659,7 +664,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-whendefined>
-    fn WhenDefined(&self, realm: &mut CurrentRealm, name: DOMString) -> Rc<Promise> {
+    fn WhenDefined(&self, realm: &mut CurrentRealm, name: DOMString) -> RootedPromise {
         let name = LocalName::from(name);
 
         // Step 1
@@ -686,10 +691,16 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
         }
 
         // Steps 3, 4, 5, 6
-        let existing_promise = self.when_defined.borrow().get(&name).cloned();
+        let existing_promise = self
+            .when_defined
+            .borrow()
+            .get(&name)
+            .map(|promise| promise.root(realm));
         existing_promise.unwrap_or_else(|| {
             let promise = Promise::new_in_realm(realm);
-            self.when_defined.borrow_mut().insert(name, promise.clone());
+            self.when_defined
+                .borrow_mut()
+                .insert(name, promise.to_traced());
             promise
         })
     }

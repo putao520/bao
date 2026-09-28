@@ -15,7 +15,8 @@ use servo_url::ImmutableOrigin;
 use storage_traits::cache_storage::{CacheStorageThreadMessage, CacheStorageThreadResponse};
 use storage_traits::client_storage::{StorageIdentifier, StorageProxyMap, StorageType};
 
-use crate::dom::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
+use script_bindings::interfaces::StackRootPromiseHelpers;
 use crate::dom::bindings::codegen::Bindings::CacheStorageBinding::CacheStorageMethods;
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::refcounted::Trusted;
@@ -34,7 +35,7 @@ pub(crate) struct CacheStorage {
 
     // Dequeue of pending promises for backend operations.
     #[conditional_malloc_size_of]
-    pending_promises: RefCell<VecDeque<Rc<Promise>>>,
+    pending_promises: RefCell<VecDeque<TracedPromise>>,
 }
 
 impl CacheStorage {
@@ -148,7 +149,7 @@ fn relevant_name_to_cache_map(
 
 impl CacheStorageMethods<crate::DomTypeHolder> for CacheStorage {
     /// <https://w3c.github.io/ServiceWorker/#cache-storage-has>
-    fn Has(&self, cx: &mut JSContext, cache_name: DOMString) -> Rc<Promise> {
+    fn Has(&self, cx: &mut JSContext, cache_name: DOMString) -> RootedPromise {
         let global = self.global();
 
         // Step 1: Let promise be a new promise.
@@ -180,7 +181,7 @@ impl CacheStorageMethods<crate::DomTypeHolder> for CacheStorage {
 
         self.pending_promises
             .borrow_mut()
-            .push_back(promise.clone());
+            .push_back(promise.to_traced());
 
         promise
     }

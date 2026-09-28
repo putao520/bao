@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use net_traits::ReferrerPolicy;
 use script_bindings::cell::DomRefCell;
@@ -228,7 +228,7 @@ impl HTMLStyleElement {
             .add_owned_stylesheet(self.upcast(), s);
     }
 
-    pub(crate) fn will_modify_stylesheet(&self) {
+    pub(crate) fn will_modify_stylesheet(&self, _no_gc: &NoGC) {
         if let Some(stylesheet_with_owned_contents) = self.create_owned_contents_stylesheet() {
             self.remove_stylesheet();
             if let Some(cssom_stylesheet) = self.cssom_stylesheet.get() {

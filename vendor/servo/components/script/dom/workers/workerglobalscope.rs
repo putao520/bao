@@ -44,6 +44,7 @@ use timers::TimerScheduler;
 use uuid::Uuid;
 
 use crate::dom::Window;
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
     ImageBitmapOptions, ImageBitmapSource,
 };
@@ -111,7 +112,7 @@ pub(crate) fn prepare_workerscope_init(
     global: &GlobalScope,
     devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
     worker_id: Option<WorkerId>,
-    webgl_chan: Option<WebGLChan>,
+    #[cfg(feature = "webgl")] webgl_chan: Option<WebGLChan>,
 ) -> WorkerGlobalScopeInit {
     // An AnimationFrameProvider provider is considered supported if any of the following are true:
     // - provider is a Window.
@@ -140,6 +141,7 @@ pub(crate) fn prepare_workerscope_init(
         origin: global.origin().immutable().clone(),
         inherited_secure_context: Some(global.is_secure_context()),
         unminify_js: global.unminify_js(),
+        #[cfg(feature = "webgl")]
         webgl_chan,
     }
 }
@@ -386,6 +388,7 @@ pub(crate) struct WorkerGlobalScope {
     /// A handle for communicating messages to the WebGL thread, if available.
     /// (Bao) Inherited from the parent `Window` via `WorkerGlobalScopeInit.webgl_chan`
     /// so OffscreenCanvas WebGL contexts can be created in workers (REQ-BRW-004 C14).
+    #[cfg(feature = "webgl")]
     #[no_trace]
     webgl_chan: Option<WebGLChan>,
 }
@@ -462,6 +465,7 @@ impl WorkerGlobalScope {
             )),
             origin: MutableOrigin::new(init.origin),
             font_context,
+            #[cfg(feature = "webgl")]
             webgl_chan: init.webgl_chan,
         }
     }
@@ -470,6 +474,7 @@ impl WorkerGlobalScope {
         self.font_context.clone()
     }
 
+    #[cfg(feature = "webgl")]
     pub(crate) fn webgl_chan(&self) -> Option<WebGLChan> {
         self.webgl_chan.clone()
     }
@@ -1078,7 +1083,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         realm: &mut CurrentRealm,
         image: ImageBitmapSource,
         options: &ImageBitmapOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         ImageBitmap::create_image_bitmap(self.upcast(), image, 0, 0, None, None, options, realm)
     }
 
@@ -1092,7 +1097,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         sw: i32,
         sh: i32,
         options: &ImageBitmapOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         ImageBitmap::create_image_bitmap(
             self.upcast(),
             image,
@@ -1111,7 +1116,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         realm: &mut CurrentRealm,
         input: RequestOrUSVString,
         init: RootedTraceableBox<RequestInit>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         Fetch(self.upcast(), input, init, realm)
     }
 

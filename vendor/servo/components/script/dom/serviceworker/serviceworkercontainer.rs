@@ -4,7 +4,6 @@
 
 use std::collections::VecDeque;
 use std::default::Default;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -12,9 +11,8 @@ use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::generic_channel::GenericCallback;
-use servo_base::id::ServiceWorkerId;
 use servo_constellation_traits::{
     Job, JobError, JobResult, JobResultValue, JobType, ScriptToConstellationMessage,
     ServiceWorkerAlgorithm, ServiceWorkerAlgorithmResult, ServiceWorkerRegistrationInfo,
@@ -34,8 +32,9 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::serviceworker::ServiceWorker;
-use crate::dom::serviceworkerregistration::{ServiceWorkerRegistration, longest_prefix_match};
+use crate::dom::serviceworkerregistration::ServiceWorkerRegistration;
 use crate::dom::types::MessageEvent;
+use crate::dom::{RootedPromise, TracedPromise};
 
 #[dom_struct]
 pub(crate) struct ServiceWorkerContainer {
@@ -44,8 +43,7 @@ pub(crate) struct ServiceWorkerContainer {
 
     /// Pending results for
     /// <https://w3c.github.io/ServiceWorker/#algorithms>
-    #[conditional_malloc_size_of]
-    pending_algorithm_results: DomRefCell<VecDeque<Rc<Promise>>>,
+    pending_algorithm_results: DomRefCell<VecDeque<TracedPromise>>,
 
     /// Handler of algorithm results.
     #[no_trace]
@@ -63,16 +61,16 @@ impl ServiceWorkerContainer {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<ServiceWorkerContainer> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(ServiceWorkerContainer::new_inherited()),
             global,
-            cx,
         )
     }
 
     /// <https://w3c.github.io/ServiceWorker/#reject-job-promise>
     /// <https://w3c.github.io/ServiceWorker/#resolve-job-promise>
-    fn handle_job_result(&self, cx: &mut JSContext, result: JobResult, promise: Rc<Promise>) {
+    fn handle_job_result(&self, cx: &mut JSContext, result: JobResult, promise: &RootedPromise) {
         let global = self.global();
         match result {
             // <https://w3c.github.io/ServiceWorker/#reject-job-promise>
@@ -108,13 +106,6 @@ impl ServiceWorkerContainer {
                             scope_url,
                             script_url,
                         } = value;
-                        // BAO PATCH (REQ-BRW-004 C19 controller wave): the
-                        // manager resolves this job after the waiting→active
-                        // transitions, so `active_worker` below reflects the
-                        // post-activation state — assign the container's
-                        // controller in the same task that settles the
-                        // register() promise (see refresh_controller).
-                        self.refresh_controller(cx, &script_url, &scope_url, active_worker);
                         // Step 2.2: If equivalentJob’s job type is either register or update,
                         // set convertedValue to the result of getting the service worker registration object
                         // that represents value in equivalentJob’s client.
@@ -138,48 +129,13 @@ impl ServiceWorkerContainer {
         }
     }
 
-    /// BAO PATCH (REQ-BRW-004 C19 controller wave, user ruling 2026-09-09):
-    /// upstream never assigns the container's `controller` field (the getter
-    /// hardcoded `None`), so page JS had no way to observe that the document
-    /// sits in a registered scope with an active worker. Minimal
-    /// activated-assignment chain: whenever a registration answer reaching
-    /// this container (the register-job resolution, or a getRegistration
-    /// match) carries an active worker whose scope prefixes this global's
-    /// URL, store the page-side ServiceWorker object for that worker as this
-    /// container's controller.
-    /// Boundary (deliberately minimal — spec claim()/clients territory):
-    /// only the container that registered or queried is refreshed, since the
-    /// manager keeps a single client callback per registration; a page that
-    /// never touches the SW API keeps `controller === null` (navigation
-    /// SW-ification is not implemented upstream); the attribute is never
-    /// cleared — unregister leaves the stale object in place while
-    /// interception itself stops at the manager (which drops the
-    /// registration).
-    fn refresh_controller(
-        &self,
-        cx: &mut JSContext,
-        script_url: &ServoUrl,
-        scope_url: &ServoUrl,
-        active_worker: Option<ServiceWorkerId>,
-    ) {
-        let Some(worker_id) = active_worker else {
-            return;
-        };
-        let global = self.global();
-        if !longest_prefix_match(scope_url, &global.get_url()) {
-            return;
-        }
-        let worker = global.get_serviceworker(cx, script_url, scope_url, worker_id);
-        self.controller.set(Some(&*worker));
-    }
-
     /// Continuation of the parallel steps from
     /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkercontainer-getregistration>
     fn handle_match_registration_result(
         &self,
         cx: &mut JSContext,
         registration_info: Option<ServiceWorkerRegistrationInfo>,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         // Step 8.1 Let registration be the result of running Match Service Worker Registration given storage key and clientURL.
         // Note: the `registration_info` argument is the result from the parallel algorithm run.
@@ -192,11 +148,6 @@ impl ServiceWorkerContainer {
 
         // Step 8.3: Resolve promise with the result of getting the service worker registration object
         // that represents registration in promise’s relevant settings object.
-        // BAO PATCH (REQ-BRW-004 C19 controller wave): pull-path refresh — a
-        // page that queries getRegistration() gets its controller assigned
-        // from the matched registration's active worker (see
-        // refresh_controller).
-        self.refresh_controller(cx, &info.script_url, &info.scope_url, info.active_worker);
         let registration = self.global().get_serviceworker_registration(
             cx,
             &info.script_url,
@@ -212,18 +163,28 @@ impl ServiceWorkerContainer {
     fn handle_algorithm_result(&self, cx: &mut JSContext, result: ServiceWorkerAlgorithmResult) {
         match result {
             ServiceWorkerAlgorithmResult::Job(job_result) => {
-                let Some(promise) = self.pending_algorithm_results.borrow_mut().pop_front() else {
+                let promise = self
+                    .pending_algorithm_results
+                    .borrow_mut()
+                    .pop_front()
+                    .map(|promise| promise.root(cx));
+                let Some(promise) = promise else {
                     debug_assert!(false, "No pending algorithm result.");
                     return;
                 };
-                self.handle_job_result(cx, job_result, promise);
+                self.handle_job_result(cx, job_result, &promise);
             },
             ServiceWorkerAlgorithmResult::MatchServiceWorkerRegistration(registration_info) => {
-                let Some(promise) = self.pending_algorithm_results.borrow_mut().pop_front() else {
+                let promise = self
+                    .pending_algorithm_results
+                    .borrow_mut()
+                    .pop_front()
+                    .map(|promise| promise.root(cx));
+                let Some(promise) = promise else {
                     debug_assert!(false, "No pending algorithm result.");
                     return;
                 };
-                self.handle_match_registration_result(cx, registration_info, promise);
+                self.handle_match_registration_result(cx, registration_info, &promise);
             },
             ServiceWorkerAlgorithmResult::MessageFromWorker {
                 message,
@@ -259,7 +220,7 @@ impl ServiceWorkerContainer {
                         self.upcast(),
                         &global,
                         message_val.handle(),
-                        Some(&origin.ascii_serialization()),
+                        Some(origin.ascii_serialization().as_ref()),
                         None,
                         ports,
                     );
@@ -273,11 +234,11 @@ impl ServiceWorkerContainer {
     /// Setup the callback to the backend service, if this hasn't been done already.
     fn get_or_setup_callback(
         &self,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
     ) -> GenericCallback<ServiceWorkerAlgorithmResult> {
         self.pending_algorithm_results
             .borrow_mut()
-            .push_back(promise);
+            .push_back(promise.to_traced());
         if let Some(cb) = self.callback.borrow_mut().as_ref() {
             return cb.clone();
         }
@@ -320,7 +281,7 @@ impl ServiceWorkerContainer {
         storage_key: ImmutableOrigin,
         scope: ServoUrl,
         script_url: ServoUrl,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         let global = self.global();
         let result_handler = self.get_or_setup_callback(promise);
@@ -363,12 +324,8 @@ impl ServiceWorkerContainer {
 
 impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContainer {
     /// <https://w3c.github.io/ServiceWorker/#service-worker-container-controller-attribute>
-    /// BAO PATCH (REQ-BRW-004 C19 controller wave, user ruling 2026-09-09):
-    /// upstream hardcoded `None` here while the `controller` field sat
-    /// unassigned tree-wide. Return the field, which refresh_controller
-    /// populates from registration answers carrying an active worker.
     fn GetController(&self) -> Option<DomRoot<ServiceWorker>> {
-        self.controller.get()
+        None
     }
 
     /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkercontainer-register> - A
@@ -378,7 +335,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
         realm: &mut CurrentRealm,
         script_url: USVString,
         options: &RegistrationOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // A: Step 2.
         let global = self.global();
 
@@ -458,7 +415,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
             return promise;
         }
 
-        let result_handler = self.get_or_setup_callback(promise.clone());
+        let result_handler = self.get_or_setup_callback(&promise);
 
         let scope_things =
             ServiceWorkerRegistration::create_scope_things(&global, script_url.clone());
@@ -511,7 +468,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
     }
 
     /// <https://w3c.github.io/ServiceWorker/#navigator-service-worker-getRegistration>
-    fn GetRegistration(&self, realm: &mut CurrentRealm, client_url: USVString) -> Rc<Promise> {
+    fn GetRegistration(&self, realm: &mut CurrentRealm, client_url: USVString) -> RootedPromise {
         // Step 1: Let client be this’s service worker client.
         let global = self.global();
 
@@ -547,7 +504,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
             return promise;
         }
 
-        let result_handler = self.get_or_setup_callback(promise.clone());
+        let result_handler = self.get_or_setup_callback(&promise);
 
         // Step 8: Run the following substeps in parallel:
         // Note: continues in parallel in the service worker manager,

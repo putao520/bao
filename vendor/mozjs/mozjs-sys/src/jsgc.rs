@@ -111,6 +111,7 @@ pub trait Rootable: crate::trace::Traceable + Sized {
 }
 
 impl<T: Rootable> Rootable for Option<T> {}
+impl<T: crate::trace::Traceable> Rootable for Box<T> {}
 impl<T: crate::trace::Traceable> Rootable for Vec<T> {}
 impl<T: crate::trace::Traceable> Rootable for VecDeque<T> {}
 

@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use std::collections::HashSet;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -21,6 +20,7 @@ use storage_traits::indexeddb::{
 use stylo_atoms::Atom;
 use uuid::Uuid;
 
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::IDBFactoryBinding::{
     IDBDatabaseInfo, IDBFactoryMethods,
 };
@@ -214,7 +214,11 @@ impl IDBFactory {
             .task_manager()
             .database_access_task_source()
             .to_sendable();
-        let callback = GenericCallback::new(global.time_profiler_chan().clone(), move |message| {
+        let callback = GenericCallback::new(
+            // BAO patch (fork-maintained, 2026-09-28): fork profile_traits
+            // GenericCallback keeps the ProfilerChan parameter.
+            global.time_profiler_chan().clone(),
+            move |message| {
             let response_listener = response_listener.clone();
             let response = match message {
                 Ok(inner) => inner,
@@ -635,7 +639,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
     }
 
     /// <https://www.w3.org/TR/IndexedDB/#dom-idbfactory-databases>
-    fn Databases(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn Databases(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1: Let environment be this’s relevant settings object.
         let global = self.global();
 
@@ -655,7 +659,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
 
         // Note: the option is required to pass the promise to a task from within the generic callback,
         // see #41356
-        let mut trusted_promise: Option<TrustedPromise> = Some(TrustedPromise::new(p.clone()));
+        let mut trusted_promise: Option<TrustedPromise> = Some(TrustedPromise::from(&p));
 
         // Step 4: Run these steps in parallel:
         // Note implementing by communicating with the backend.
@@ -663,7 +667,9 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
             .task_manager()
             .database_access_task_source()
             .to_sendable();
-        let callback = GenericCallback::new(global.time_profiler_chan().clone(), move |message| {
+        let callback = GenericCallback::new(
+            global.time_profiler_chan().clone(),
+            move |message| {
             let result: BackendResult<Vec<DatabaseInfo>> = message.unwrap();
             let Some(trusted_promise) = trusted_promise.take() else {
                 return error!("Callback for `DataBases` called twice.");

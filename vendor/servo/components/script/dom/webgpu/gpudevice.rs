@@ -31,6 +31,7 @@ use super::gpuerror::AsWebGpu;
 use super::gpupipelineerror::GPUPipelineError;
 use super::gpusupportedlimits::GPUSupportedLimits;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventInit;
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::bindings::codegen::Bindings::WebGPUBinding::{
     GPUBindGroupDescriptor, GPUBindGroupLayoutDescriptor, GPUBufferDescriptor,
     GPUCommandEncoderDescriptor, GPUComputePipelineDescriptor, GPUDeviceLostReason,
@@ -50,7 +51,7 @@ use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::types::{GPUError, GPUQuerySet};
 use crate::dom::webgpu::gpuadapter::GPUAdapter;
 use crate::dom::webgpu::gpuadapterinfo::GPUAdapterInfo;
@@ -104,7 +105,7 @@ pub(crate) struct GPUDevice {
     default_queue: Dom<GPUQueue>,
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-lost>
     #[conditional_malloc_size_of]
-    lost_promise: DomRefCell<Rc<Promise>>,
+    lost_promise: DomRefCell<TracedPromise>,
     valid: Cell<bool>,
     droppable: DroppableGPUDevice,
 }
@@ -134,7 +135,7 @@ impl GPUDevice {
         device: WebGPUDevice,
         queue: &GPUQueue,
         label: String,
-        lost_promise: Rc<Promise>,
+        lost_promise: TracedPromise,
     ) -> Self {
         Self {
             eventtarget: EventTarget::new_inherited(),
@@ -180,7 +181,7 @@ impl GPUDevice {
                 device,
                 &queue,
                 label,
-                lost_promise,
+                lost_promise: lost_promise.to_traced(),
             )),
             global,
         );
@@ -406,7 +407,7 @@ impl GPUDevice {
             task!(resolve_device_lost: move |cx| {
                 let this = this.root();
 
-                let lost_promise = &(*this.lost_promise.borrow());
+                let lost_promise = this.lost_promise.borrow().root(cx);
                 let lost = GPUDeviceLostInfo::new(cx, &this.global(), msg.into(), reason);
                 lost_promise.resolve_native(cx, &*lost);
             }),
@@ -446,8 +447,8 @@ impl GPUDeviceMethods<crate::DomTypeHolder> for GPUDevice {
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-lost>
-    fn Lost(&self) -> Rc<Promise> {
-        self.lost_promise.borrow().clone()
+    fn Lost(&self) -> RootedPromise {
+        self.lost_promise.borrow().root(cx)
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer>
@@ -516,7 +517,7 @@ impl GPUDeviceMethods<crate::DomTypeHolder> for GPUDevice {
         &self,
         cx: &mut CurrentRealm<'_>,
         descriptor: &GPUComputePipelineDescriptor,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         let promise = Promise::new_in_realm(cx);
         let callback = callback_promise(
             &promise,
@@ -576,7 +577,7 @@ impl GPUDeviceMethods<crate::DomTypeHolder> for GPUDevice {
         &self,
         cx: &mut CurrentRealm<'_>,
         descriptor: &GPURenderPipelineDescriptor,
-    ) -> Fallible<Rc<Promise>> {
+    ) -> Fallible<RootedPromise> {
         let desc = self.parse_render_pipeline(descriptor)?;
         let promise = Promise::new_in_realm(cx);
         let callback = callback_promise(
@@ -632,7 +633,7 @@ impl GPUDeviceMethods<crate::DomTypeHolder> for GPUDevice {
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-poperrorscope>
-    fn PopErrorScope(&self, cx: &mut CurrentRealm<'_>) -> Rc<Promise> {
+    fn PopErrorScope(&self, cx: &mut CurrentRealm<'_>) -> RootedPromise {
         let promise = Promise::new_in_realm(cx);
         let callback = callback_promise(
             &promise,
@@ -674,12 +675,12 @@ impl GPUDeviceMethods<crate::DomTypeHolder> for GPUDevice {
     }
 }
 
-impl RoutedPromiseListener<WebGPUPoppedErrorScopeResponse> for GPUDevice {
+impl RoutedPromiseListener<crate::DomTypeHolder, WebGPUPoppedErrorScopeResponse> for GPUDevice {
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         response: WebGPUPoppedErrorScopeResponse,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         match response {
             Ok(None) | Err(PopError::Lost) => promise.resolve_native(cx, &None::<Option<GPUError>>),
@@ -692,12 +693,12 @@ impl RoutedPromiseListener<WebGPUPoppedErrorScopeResponse> for GPUDevice {
     }
 }
 
-impl RoutedPromiseListener<WebGPUComputePipelineResponse> for GPUDevice {
+impl RoutedPromiseListener<crate::DomTypeHolder, WebGPUComputePipelineResponse> for GPUDevice {
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         response: WebGPUComputePipelineResponse,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         match response {
             Ok(pipeline) => {
@@ -732,12 +733,12 @@ impl RoutedPromiseListener<WebGPUComputePipelineResponse> for GPUDevice {
     }
 }
 
-impl RoutedPromiseListener<WebGPURenderPipelineResponse> for GPUDevice {
+impl RoutedPromiseListener<crate::DomTypeHolder, WebGPURenderPipelineResponse> for GPUDevice {
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         response: WebGPURenderPipelineResponse,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         match response {
             Ok(pipeline) => {

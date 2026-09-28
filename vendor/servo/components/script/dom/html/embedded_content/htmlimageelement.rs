@@ -62,7 +62,8 @@ use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, MoveContext, Node, NodeDamage, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::srcset::SourceSet;
 use crate::dom::window::Window;
 use crate::event_loop::document_loader::{LoadBlocker, LoadType};
@@ -118,7 +119,7 @@ pub(crate) struct HTMLImageElement {
     /// <https://html.spec.whatwg.org/multipage/#last-selected-source>
     last_selected_source: DomRefCell<Option<USVString>>,
     #[conditional_malloc_size_of]
-    image_decode_promises: DomRefCell<Vec<Rc<Promise>>>,
+    image_decode_promises: DomRefCell<Vec<TracedPromise>>,
     /// Line number this element was created on
     line_number: u64,
     image_request: Cell<ImageRequestPhase>,
@@ -408,7 +409,7 @@ impl HTMLImageElement {
         LoadBlocker::terminate(&self.current_request.borrow().blocker, cx);
         // Mark the node dirty
         self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
-        self.resolve_image_decode_promises();
+        self.resolve_image_decode_promises(cx);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-image-data>
@@ -546,21 +547,31 @@ impl HTMLImageElement {
         request: ImageRequestPhase,
         cx: &mut js::context::JSContext,
     ) {
-        let request = match request {
-            ImageRequestPhase::Current => &self.current_request,
-            ImageRequestPhase::Pending => &self.pending_request,
+        match request {
+            ImageRequestPhase::Current => {
+                LoadBlocker::terminate(&self.current_request.borrow().blocker, cx);
+
+                let mut request = self.current_request.safe_borrow_mut(cx);
+                request.state = state;
+                request.image = None;
+                request.metadata = None;
+                request.current_pixel_density = None;
+            },
+            ImageRequestPhase::Pending => {
+                LoadBlocker::terminate(&self.pending_request.borrow().blocker, cx);
+
+                let mut request = self.pending_request.safe_borrow_mut(cx);
+                request.state = state;
+                request.image = None;
+                request.metadata = None;
+                request.current_pixel_density = None;
+            },
         };
-        LoadBlocker::terminate(&request.borrow().blocker, cx);
-        let mut request = request.safe_borrow_mut(cx);
-        request.state = state;
-        request.image = None;
-        request.metadata = None;
-        request.current_pixel_density = None;
 
         if matches!(state, State::Broken) {
-            self.reject_image_decode_promises();
+            self.reject_image_decode_promises(cx);
         } else if matches!(state, State::CompletelyAvailable) {
-            self.resolve_image_decode_promises();
+            self.resolve_image_decode_promises(cx);
         }
     }
 
@@ -653,7 +664,7 @@ impl HTMLImageElement {
                         );
                         self.current_request.borrow_mut().current_pixel_density =
                             Some(selected_pixel_density);
-                        self.reject_image_decode_promises();
+                        self.reject_image_decode_promises(cx);
                     },
                     (_, _) => {
                         // Step 18. If the current request's state is unavailable or broken, then
@@ -1031,7 +1042,7 @@ impl HTMLImageElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-img-decode>
-    fn react_to_decode_image_sync_steps(&self, cx: &mut JSContext, promise: Rc<Promise>) {
+    fn react_to_decode_image_sync_steps(&self, cx: &mut JSContext, promise: &RootedPromise) {
         // Step 2.2. If any of the following are true: this's node document is not fully active; or
         // this's current request's state is broken, then reject promise with an "EncodingError"
         // DOMException.
@@ -1059,12 +1070,14 @@ impl HTMLImageElement {
                 )),
             );
         } else {
-            self.image_decode_promises.borrow_mut().push(promise);
+            self.image_decode_promises
+                .borrow_mut()
+                .push(promise.to_traced());
         }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-img-decode>
-    fn resolve_image_decode_promises(&self) {
+    fn resolve_image_decode_promises(&self, cx: &mut JSContext) {
         if self.image_decode_promises.borrow().is_empty() {
             return;
         }
@@ -1075,7 +1088,7 @@ impl HTMLImageElement {
             .image_decode_promises
             .borrow()
             .iter()
-            .map(|promise| TrustedPromise::new(promise.clone()))
+            .map(|promise| TrustedPromise::from(&promise.root(cx)))
             .collect();
 
         self.image_decode_promises.borrow_mut().clear();
@@ -1091,7 +1104,7 @@ impl HTMLImageElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-img-decode>
-    fn reject_image_decode_promises(&self) {
+    fn reject_image_decode_promises(&self, cx: &mut JSContext) {
         if self.image_decode_promises.borrow().is_empty() {
             return;
         }
@@ -1102,7 +1115,7 @@ impl HTMLImageElement {
             .image_decode_promises
             .borrow()
             .iter()
-            .map(|promise| TrustedPromise::new(promise.clone()))
+            .map(|promise| TrustedPromise::from(&promise.root(cx)))
             .collect();
 
         self.image_decode_promises.borrow_mut().clear();
@@ -1328,7 +1341,7 @@ pub(crate) enum ImageElementMicrotask {
     Decode {
         elem: Dom<HTMLImageElement>,
         #[conditional_malloc_size_of]
-        promise: Rc<Promise>,
+        promise: TracedPromise,
     },
 }
 
@@ -1362,7 +1375,8 @@ impl MicrotaskRunnable for ImageElementMicrotask {
                 ref elem,
                 ref promise,
             } => {
-                elem.react_to_decode_image_sync_steps(cx, promise.clone());
+                let promise = promise.root(cx);
+                elem.react_to_decode_image_sync_steps(cx, &promise);
             },
         }
     }
@@ -1609,14 +1623,14 @@ impl HTMLImageElementMethods<crate::DomTypeHolder> for HTMLImageElement {
     make_setter!(SetReferrerPolicy, "referrerpolicy");
 
     /// <https://html.spec.whatwg.org/multipage/#dom-img-decode>
-    fn Decode(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn Decode(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1. Let promise be a new promise.
         let promise = Promise::new(cx, &self.global());
 
         // Step 2. Queue a microtask to perform the following steps:
         let task = ImageElementMicrotask::Decode {
             elem: Dom::from_ref(self),
-            promise: promise.clone(),
+            promise: promise.to_traced(),
         };
 
         ScriptThread::await_stable_state(cx, Box::new(task));

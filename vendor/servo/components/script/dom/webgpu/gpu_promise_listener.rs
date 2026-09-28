@@ -9,17 +9,18 @@ use script_bindings::str::DOMString;
 use webgpu_traits::WebGPUAdapterResponse;
 
 use crate::dom::bindings::reflector::DomGlobal;
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::gpu::GPU;
 use crate::dom::gpuadapter::GPUAdapter;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::routed_promise::RoutedPromiseListener;
 
-impl RoutedPromiseListener<WebGPUAdapterResponse> for GPU {
+impl RoutedPromiseListener<crate::DomTypeHolder, WebGPUAdapterResponse> for GPU {
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         response: WebGPUAdapterResponse,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         match response {
             Some(Ok(adapter)) => {

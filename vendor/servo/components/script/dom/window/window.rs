@@ -109,6 +109,7 @@ use webrender_api::ExternalScrollId;
 use webrender_api::units::{DeviceIntSize, DevicePixel, LayoutPixel, LayoutPoint};
 
 use crate::dom::StatelessWorkletThreadPool;
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
     DocumentMethods, DocumentReadyState, NamedPropertyValue,
@@ -1726,7 +1727,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         realm: &mut CurrentRealm,
         image: ImageBitmapSource,
         options: &ImageBitmapOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         ImageBitmap::create_image_bitmap(
             self.as_global_scope(),
             image,
@@ -1749,7 +1750,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         sw: i32,
         sh: i32,
         options: &ImageBitmapOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         ImageBitmap::create_image_bitmap(
             self.as_global_scope(),
             image,
@@ -2257,7 +2258,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         realm: &mut CurrentRealm,
         input: RequestOrUSVString,
         init: RootedTraceableBox<RequestInit>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         fetch::Fetch(self.upcast(), input, init, realm)
     }
 

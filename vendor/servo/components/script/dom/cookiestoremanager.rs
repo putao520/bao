@@ -19,7 +19,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::USVString;
 use crate::dom::cookiestore::CookieStore;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::serviceworker::serviceworkerregistration::{
     ServiceWorkerRegistration, longest_prefix_match,
 };
@@ -105,7 +105,7 @@ impl CookieStoreManagerMethods<crate::DomTypeHolder> for CookieStoreManager {
         &self,
         cx: &mut JSContext,
         subscriptions: Vec<CookieStoreGetOptions>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let settings be this's relevant settings object.
         // Step 2. Let registration be this's registration.
         // Step 3. Let p be a new promise.
@@ -142,7 +142,7 @@ impl CookieStoreManagerMethods<crate::DomTypeHolder> for CookieStoreManager {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestoremanager-getsubscriptions>
-    fn GetSubscriptions(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn GetSubscriptions(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1. Let registration be this's registration.
         // Step 2. Let p be a new promise.
         let promise = Promise::new(cx, &self.global());
@@ -162,7 +162,7 @@ impl CookieStoreManagerMethods<crate::DomTypeHolder> for CookieStoreManager {
         &self,
         cx: &mut JSContext,
         subscriptions: Vec<CookieStoreGetOptions>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let settings be this's relevant settings object.
         // Step 2. Let registration be this's registration.
         // Step 3. Let p be a new promise.

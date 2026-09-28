@@ -65,7 +65,7 @@ pub(crate) struct FetchEvent {
     request: Dom<Request>,
     /// The JS promise object registered through `respondWith`, held as a
     /// traced value. The binding hands `respondWith` a throwaway native
-    /// `Rc<Promise>` wrapper whose `AddRawValueRoot` anchor dies with the
+    /// promise wrapper whose `AddRawValueRoot` anchor dies with the
     /// binding frame, so a native handle cannot survive to the dispatcher —
     /// this GC-traced value is what bridges the promise across dispatch.
     /// Bao vendor patch (user ruling 2026-09-09, C19 SIGSEGV fix): the
@@ -192,7 +192,7 @@ impl FetchEvent {
             true => {
                 // Re-anchor the registered promise natively. The event's
                 // `respond_with_value` kept the JS promise object alive
-                // across dispatch; a fresh native `Rc<Promise>` (with its own
+                // across dispatch; a fresh rooted promise (with its own
                 // `AddRawValueRoot` anchor, pinned on the SW scope's pending
                 // list until settlement) is what the reactions attach to.
                 // The reactions run on this worker thread's event loop when
@@ -200,7 +200,7 @@ impl FetchEvent {
                 rooted!(&in(cx) let registered =
                     event.respond_with_value.get().to_object());
                 let anchored = Promise::new_with_js_promise(cx, registered.handle());
-                let pending_key = scope.add_pending_fetch_response(anchored.clone());
+                let pending_key = scope.add_pending_fetch_response(&anchored);
                 let handler = PromiseNativeHandler::new(
                     cx,
                     global,
@@ -227,7 +227,7 @@ struct FetchResponseResolveHandler {
     #[ignore_malloc_size_of = "Ipc channel sender"]
     response_sender: Option<IpcSender<Option<CustomResponse>>>,
     /// Key of this promise's entry on the SW scope's pending list; removed on
-    /// settlement so the native anchor (`Rc<Promise>` raw root) is bounded by
+    /// settlement so the native anchor is bounded by
     /// the promise's lifetime.
     pending_key: usize,
 }
@@ -378,7 +378,7 @@ impl FetchEventMethods<crate::DomTypeHolder> for FetchEvent {
         // Steps: remember the promise's JS object (GC-traced through this
         // event) so the dispatcher can re-anchor it natively and install the
         // settlement reactions once the event finished running (see
-        // `FetchEvent::handle_mediator`). The binding's native `Rc<Promise>`
+        // `FetchEvent::handle_mediator`). The binding's rooted promise
         // wrapper for `p` is throwaway — its GC root dies with the binding
         // frame — so a native handle cannot be kept across dispatch.
         self.respond_with_value.set(ObjectValue(*p.promise_obj()));

@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ptr::{self};
@@ -33,6 +35,7 @@ use crate::dom::domexception::{DOMErrorName, DOMException};
 use crate::dom::encoding::textdecoderstream::TextDecoderStream;
 use script_bindings::codegen::GenericBindings::TextDecoderStreamBinding::TextDecoderStreamMethods;
 use script_bindings::conversions::{is_array_like, StringificationBehavior};
+use crate::dom::bindings::callback::RootedCallback;
 use crate::dom::bindings::codegen::Bindings::QueuingStrategyBinding::QueuingStrategySize;
 use crate::dom::abortsignal::{AbortAlgorithm, AbortSignal};
 use crate::dom::bindings::codegen::Bindings::ReadableStreamDefaultReaderBinding::ReadableStreamDefaultReaderMethods;
@@ -51,8 +54,7 @@ use crate::dom::stream::byteteeunderlyingsource::{ByteTeeCancelAlgorithm, ByteTe
 use crate::dom::stream::countqueuingstrategy::{extract_high_water_mark, extract_size_algorithm};
 use crate::dom::stream::readablestreamgenericreader::ReadableStreamGenericReader;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::{wait_for_all_promise, Promise, TracedPromise};
-use script_bindings::interfaces::StackRootPromiseHelpers;
+use crate::dom::promise::{wait_for_all_promise, Promise, RootedPromise, TracedPromise};
 use crate::dom::stream::readablebytestreamcontroller::ReadableByteStreamController;
 use crate::dom::stream::readablestreambyobreader::ReadableStreamBYOBReader;
 use crate::dom::stream::readablestreamdefaultcontroller::ReadableStreamDefaultController;
@@ -128,7 +130,7 @@ pub(crate) struct PipeTo {
     /// Pending writes are needed when shutting down(with an action),
     /// because we can only finalize when all writes are finished.
     #[ignore_malloc_size_of = "nested Rc"]
-    pending_writes: Rc<RefCell<VecDeque<Rc<Promise>>>>,
+    pending_writes: Rc<RefCell<VecDeque<TracedPromise>>>,
 
     /// The state machine.
     #[conditional_malloc_size_of]
@@ -166,8 +168,7 @@ pub(crate) struct PipeTo {
 
     /// The promise resolved or rejected at
     /// <https://streams.spec.whatwg.org/#rs-pipeTo-finalize>
-    #[conditional_malloc_size_of]
-    result_promise: Rc<Promise>,
+    result_promise: TracedPromise,
 }
 
 impl PipeTo {
@@ -303,7 +304,7 @@ impl Callback for PipeTo {
             PipeToState::ShuttingDownWithPendingWrites(action) => {
                 // Wait until every chunk that has been read has been written
                 // (i.e. the corresponding promises have settled).
-                if let Some(write) = self.pending_writes.borrow_mut().front().cloned() {
+                if let Some(write) = self.pending_writes.borrow().front() {
                     self.wait_on_pending_write(cx, &global, write);
                     return;
                 }
@@ -375,7 +376,7 @@ impl PipeTo {
             *state = PipeToState::PendingReady;
         }
 
-        let ready_promise = self.writer.Ready();
+        let ready_promise = self.writer.Ready(cx);
         if ready_promise.is_fulfilled() {
             self.read_chunk(cx, global);
         } else {
@@ -390,7 +391,7 @@ impl PipeTo {
             // Note: if the writer is not ready,
             // in order to ensure progress we must
             // also react to the closure of the source(because source may close empty).
-            let closed_promise = self.reader.Closed();
+            let closed_promise = self.reader.Closed(cx);
             closed_promise.append_native_handler(cx, &handler);
         }
     }
@@ -409,7 +410,7 @@ impl PipeTo {
 
         // Note: in order to ensure progress we must
         // also react to the closure of the destination.
-        let ready_promise = self.writer.Closed();
+        let ready_promise = self.writer.Closed(cx);
         ready_promise.append_native_handler(cx, &handler);
     }
 
@@ -429,7 +430,9 @@ impl PipeTo {
 
             // Write the chunk.
             let write_promise = self.writer.write(cx, global, bytes.handle());
-            self.pending_writes.borrow_mut().push_back(write_promise);
+            self.pending_writes
+                .borrow_mut()
+                .push_back(write_promise.to_traced());
             return true;
         }
         false
@@ -442,7 +445,7 @@ impl PipeTo {
         &self,
         cx: &mut CurrentRealm,
         global: &GlobalScope,
-        promise: Rc<Promise>,
+        promise: &Promise,
     ) {
         let handler = PromiseNativeHandler::new(
             cx,
@@ -605,9 +608,9 @@ impl PipeTo {
 
                 // Wait until every chunk that has been read has been written
                 // (i.e. the corresponding promises have settled).
-                if let Some(write) = self.pending_writes.borrow_mut().front() {
+                if let Some(write) = self.pending_writes.borrow().front() {
                     *self.state.borrow_mut() = PipeToState::ShuttingDownWithPendingWrites(action);
-                    self.wait_on_pending_write(cx, global, write.clone());
+                    self.wait_on_pending_write(cx, global, write);
                     return;
                 }
             }
@@ -637,17 +640,17 @@ impl PipeTo {
         let promise = match action {
             ShutdownAction::WritableStreamAbort => {
                 let dest = self.writer.get_stream().expect("Stream must be set");
-                dest.abort(cx, global, error.handle()).duplicate(cx)
+                dest.abort(cx, global, error.handle())
             },
             ShutdownAction::ReadableStreamCancel => {
                 let source = self
                     .reader
                     .get_stream()
                     .expect("Reader should have a stream.");
-                source.cancel(cx, global, error.handle()).duplicate(cx)
+                source.cancel(cx, global, error.handle())
             },
             ShutdownAction::WritableStreamDefaultWriterCloseWithErrorPropagation => {
-                self.writer.close_with_error_propagation(cx, global).duplicate(cx)
+                self.writer.close_with_error_propagation(cx, global)
             },
             ShutdownAction::Abort => {
                 // Note: implementation of the `abortAlgorithm`
@@ -670,15 +673,10 @@ impl PipeTo {
                     // If dest.[[state]] is "writable",
                     let promise = if dest.is_writable() {
                         // return ! WritableStreamAbort(dest, error)
-                        dest.abort(cx, global, error.handle()).duplicate(cx)
+                        dest.abort(cx, global, error.handle())
                     } else {
                         // Otherwise, return a promise resolved with undefined.
-                        // BAO patch (fork-maintained, 2026-09-28): transitional
-                        // bridge — the not-yet-resynced stream family still
-                        // returns `Rc<Promise>` here; `duplicate(cx)` lifts it
-                        // to the rooted form. Removed with the ③c stream
-                        // family resync.
-                        Promise::new_resolved(cx, global, ()).duplicate(cx)
+                        Promise::new_resolved(cx, global, ())
                     };
                     actions.push(promise);
                 }
@@ -690,15 +688,10 @@ impl PipeTo {
                     // If source.[[state]] is "readable",
                     let promise = if source.is_readable() {
                         // return ! ReadableStreamCancel(source, error).
-                        source.cancel(cx, global, error.handle()).duplicate(cx)
+                        source.cancel(cx, global, error.handle())
                     } else {
                         // Otherwise, return a promise resolved with undefined.
-                        // BAO patch (fork-maintained, 2026-09-28): transitional
-                        // bridge — the not-yet-resynced stream family still
-                        // returns `Rc<Promise>` here; `duplicate(cx)` lifts it
-                        // to the rooted form. Removed with the ③c stream
-                        // family resync.
-                        Promise::new_resolved(cx, global, ()).duplicate(cx)
+                        Promise::new_resolved(cx, global, ())
                     };
                     actions.push(promise);
                 }
@@ -719,8 +712,6 @@ impl PipeTo {
             Some(Box::new(self.clone())),
         );
         promise.append_native_handler(cx, &handler);
-        // BAO patch (fork-maintained, 2026-09-28): traced storage for the
-        // shutdown action promise (upstream window-end form).
         *self.shutdown_action_promise.borrow_mut() = Some(promise.to_traced());
     }
 
@@ -760,9 +751,17 @@ impl PipeTo {
 /// The fulfillment handler for the reacting to sourceCancelPromise part of
 /// <https://streams.spec.whatwg.org/#readable-stream-cancel>.
 #[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct SourceCancelPromiseFulfillmentHandler {
-    #[conditional_malloc_size_of]
-    result: Rc<Promise>,
+    result: TracedPromise,
+}
+
+impl SourceCancelPromiseFulfillmentHandler {
+    fn new(promise: &RootedPromise) -> Box<Self> {
+        Box::new(Self {
+            result: promise.to_traced(),
+        })
+    }
 }
 
 impl Callback for SourceCancelPromiseFulfillmentHandler {
@@ -777,9 +776,17 @@ impl Callback for SourceCancelPromiseFulfillmentHandler {
 /// The rejection handler for the reacting to sourceCancelPromise part of
 /// <https://streams.spec.whatwg.org/#readable-stream-cancel>.
 #[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct SourceCancelPromiseRejectionHandler {
-    #[conditional_malloc_size_of]
-    result: Rc<Promise>,
+    result: TracedPromise,
+}
+
+impl SourceCancelPromiseRejectionHandler {
+    fn new(promise: &RootedPromise) -> Box<Self> {
+        Box::new(Self {
+            result: promise.to_traced(),
+        })
+    }
 }
 
 impl Callback for SourceCancelPromiseRejectionHandler {
@@ -839,7 +846,7 @@ pub(crate) fn create_readable_stream(
     cx: &mut JSContext,
     global: &GlobalScope,
     underlying_source_type: UnderlyingSourceType,
-    queuing_strategy: Option<Rc<QueuingStrategySize>>,
+    queuing_strategy: Option<RootedCallback<QueuingStrategySize>>,
     high_water_mark: Option<f64>,
 ) -> DomRoot<ReadableStream> {
     // If highWaterMark was not passed, set it to 1.
@@ -1360,7 +1367,7 @@ impl ReadableStream {
     /// and before `stop_reading`.
     /// Native call to
     /// <https://streams.spec.whatwg.org/#readable-stream-default-reader-read>
-    pub(crate) fn read_a_chunk(&self, cx: &mut JSContext) -> Rc<Promise> {
+    pub(crate) fn read_a_chunk(&self, cx: &mut JSContext) -> RootedPromise {
         match self.reader.borrow().as_ref() {
             Some(ReaderType::Default(reader)) => {
                 let Some(reader) = reader.get() else {
@@ -1504,7 +1511,7 @@ impl ReadableStream {
                 assert_ne!(reader.get_num_read_requests(), 0);
                 // step 4 & 5
                 // Let readRequest be reader.[[readRequests]][0]. & Remove readRequest from reader.[[readRequests]].
-                let request = reader.remove_read_request();
+                rooted!(&in(cx) let request = reader.remove_read_request());
 
                 if done {
                     // step 6 - If done is true, perform readRequest’s close steps.
@@ -1548,7 +1555,7 @@ impl ReadableStream {
 
                 // Let readIntoRequest be reader.[[readIntoRequests]][0].
                 // Remove readIntoRequest from reader.[[readIntoRequests]].
-                let read_into_request = reader.remove_read_into_request();
+                rooted!(&in(cx) let read_into_request = reader.remove_read_into_request());
 
                 // If done is true, perform readIntoRequest’s close steps, given chunk.
                 let result = RootedTraceableBox::new(Heap::default());
@@ -1617,7 +1624,7 @@ impl ReadableStream {
         cx: &mut JSContext,
         global: &GlobalScope,
         reason: SafeHandleValue,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Set stream.[[disturbed]] to true.
         self.disturbed.set(true);
 
@@ -1670,17 +1677,17 @@ impl ReadableStream {
         // and setup a handler in order to react to the fulfillment of sourceCancelPromise.
         let global = self.global();
         let result_promise = Promise::new(cx, &global);
-        let fulfillment_handler = Box::new(SourceCancelPromiseFulfillmentHandler {
-            result: result_promise.clone(),
-        });
-        let rejection_handler = Box::new(SourceCancelPromiseRejectionHandler {
-            result: result_promise.clone(),
-        });
+        rooted!(&in(cx) let mut fulfillment_handler = Some(SourceCancelPromiseFulfillmentHandler::new(&result_promise)));
+        rooted!(&in(cx) let mut rejection_handler = Some(SourceCancelPromiseRejectionHandler::new(&result_promise)));
         let handler = PromiseNativeHandler::new(
             cx,
             &global,
-            Some(fulfillment_handler),
-            Some(rejection_handler),
+            fulfillment_handler
+                .take()
+                .map(|handler| handler as Box<dyn Callback>),
+            rejection_handler
+                .take()
+                .map(|handler| handler as Box<dyn Callback>),
         );
         let mut realm = enter_auto_realm(cx, &*global);
         let cx = &mut realm.current_realm();
@@ -1744,7 +1751,7 @@ impl ReadableStream {
             canceled_2.clone(),
             reason_1.clone(),
             reason_2.clone(),
-            cancel_promise.clone(),
+            &cancel_promise,
             reader_version.clone(),
             ByteTeeCancelAlgorithm::Cancel1Algorithm,
             ByteTeePullAlgorithm::Pull1Algorithm,
@@ -1761,7 +1768,7 @@ impl ReadableStream {
             canceled_2,
             reason_1,
             reason_2,
-            cancel_promise,
+            &cancel_promise,
             reader_version,
             ByteTeeCancelAlgorithm::Cancel2Algorithm,
             ByteTeePullAlgorithm::Pull2Algorithm,
@@ -1835,7 +1842,7 @@ impl ReadableStream {
             clone_for_branch_2.clone(),
             reason_1.clone(),
             reason_2.clone(),
-            cancel_promise.clone(),
+            &cancel_promise,
             DefaultTeeCancelAlgorithm::Cancel1Algorithm,
         );
 
@@ -1852,7 +1859,7 @@ impl ReadableStream {
             clone_for_branch_2,
             reason_1,
             reason_2,
-            cancel_promise.clone(),
+            &cancel_promise,
             DefaultTeeCancelAlgorithm::Cancel2Algorithm,
         );
 
@@ -1887,7 +1894,7 @@ impl ReadableStream {
             &branch_2,
             canceled_1,
             canceled_2,
-            cancel_promise,
+            &cancel_promise,
         );
 
         // Return « branch_1, branch_2 ».
@@ -1905,7 +1912,7 @@ impl ReadableStream {
         prevent_abort: bool,
         prevent_cancel: bool,
         signal: Option<&AbortSignal>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Assert: source implements ReadableStream.
         // Assert: dest implements WritableStream.
         // Assert: prevent_close, prevent_abort, and prevent_cancel are all booleans.
@@ -1959,7 +1966,7 @@ impl ReadableStream {
             abort_reason: Default::default(),
             shutdown_error: Default::default(),
             shutdown_action_promise:  Default::default(),
-            result_promise: promise.clone(),
+            result_promise: promise.to_traced(),
         });
 
         // If signal is not undefined,
@@ -2025,7 +2032,7 @@ impl ReadableStream {
         &self,
         cx: &mut JSContext,
         global: &GlobalScope,
-        underlying_source_dict: JsUnderlyingSource,
+        underlying_source_dict: &JsUnderlyingSource,
         underlying_source_handle: SafeHandleObject,
         stream: &ReadableStream,
         strategy_hwm: f64,
@@ -2155,7 +2162,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
             stream.set_up_byte_controller(
                 cx,
                 global,
-                underlying_source_dict,
+                &underlying_source_dict,
                 underlying_source_obj.handle(),
                 &stream,
                 strategy_hwm,
@@ -2170,7 +2177,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
             let controller = ReadableStreamDefaultController::new(
                 cx,
                 global,
-                UnderlyingSourceType::Js(underlying_source_dict),
+                UnderlyingSourceType::Js(&underlying_source_dict),
                 high_water_mark,
                 size_algorithm,
             );
@@ -2192,7 +2199,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#rs-cancel>
-    fn Cancel(&self, cx: &mut JSContext, reason: SafeHandleValue) -> Rc<Promise> {
+    fn Cancel(&self, cx: &mut JSContext, reason: SafeHandleValue) -> RootedPromise {
         let global = self.global();
         if self.is_locked() {
             // If ! IsReadableStreamLocked(this) is true,
@@ -2239,7 +2246,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
         cx: &mut CurrentRealm,
         destination: &WritableStream,
         options: &StreamPipeOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         let global = self.global();
 
         // If ! IsReadableStreamLocked(this) is true,

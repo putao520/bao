@@ -7,16 +7,17 @@ use std::rc::Rc;
 use webgpu_traits::Mapping;
 use wgpu_core::resource::BufferAccessError;
 
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::types::GPUBuffer;
 use crate::routed_promise::RoutedPromiseListener;
 
-impl RoutedPromiseListener<Result<Mapping, BufferAccessError>> for GPUBuffer {
+impl RoutedPromiseListener<crate::DomTypeHolder, Result<Mapping, BufferAccessError>> for GPUBuffer {
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         response: Result<Mapping, BufferAccessError>,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         match response {
             Ok(mapping) => self.map_success(cx, promise, mapping),

@@ -549,6 +549,7 @@ pub struct WorkerGlobalScopeInit {
     /// Unminify Javascript.
     pub unminify_js: bool,
     /// Handle for communicating messages to the WebGL thread, if available.
+    #[cfg(feature = "webgl")]
     pub webgl_chan: Option<WebGLChan>,
 }
 

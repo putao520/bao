@@ -5,7 +5,6 @@
 use std::cell::Cell;
 use std::cmp::min;
 use std::collections::VecDeque;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -15,7 +14,7 @@ use js::realm::CurrentRealm;
 use js::rust::{HandleObject, HandleValue as SafeHandleValue, HandleValue};
 use js::typedarray::{ArrayBufferU8, ArrayBufferViewU8};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use super::readablestreambyobreader::ReadIntoRequest;
 use super::readablestreamdefaultreader::ReadRequest;
@@ -31,7 +30,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::stream::readablestream::ReadableStream;
 use crate::dom::stream::readablestreambyobrequest::ReadableStreamBYOBRequest;
@@ -252,13 +251,13 @@ impl ReadableByteStreamController {
     ) -> DomRoot<ReadableByteStreamController> {
         let underlying_source_container =
             UnderlyingSourceContainer::new(cx, global, underlying_source_type);
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(ReadableByteStreamController::new_inherited(
                 &underlying_source_container,
                 strategy_hwm,
             )),
             global,
-            cx,
         )
     }
 
@@ -1822,7 +1821,7 @@ impl ReadableByteStreamController {
         cx: &mut JSContext,
         global: &GlobalScope,
         reason: SafeHandleValue,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Perform ! ReadableByteStreamControllerClearPendingPullIntos(this).
         self.clear_pending_pull_intos();
 

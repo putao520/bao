@@ -12,7 +12,7 @@ use js::jsapi::{Heap, Value};
 use js::jsval::UndefinedValue;
 use js::rust::HandleValue as SafeHandleValue;
 use js::typedarray::ArrayBufferViewU8;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use super::byteteereadintorequest::ByteTeeReadIntoRequest;
 use super::readablestream::ReaderType;
@@ -22,7 +22,7 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::stream::byteteereadrequest::ByteTeeReadRequest;
 use crate::dom::stream::readablestreamdefaultreader::ReadRequest;
 use crate::dom::types::ReadableStream;
@@ -62,8 +62,7 @@ pub(crate) struct ByteTeeUnderlyingSource {
     reason_1: Rc<Heap<Value>>,
     #[ignore_malloc_size_of = "Mozjs"]
     reason_2: Rc<Heap<Value>>,
-    #[conditional_malloc_size_of]
-    cancel_promise: Rc<Promise>,
+    cancel_promise: TracedPromise,
     #[conditional_malloc_size_of]
     reader_version: Rc<Cell<u64>>,
     tee_cancel_algorithm: ByteTeeCancelAlgorithm,
@@ -84,12 +83,13 @@ impl ByteTeeUnderlyingSource {
         canceled_2: Rc<Cell<bool>>,
         reason_1: Rc<Heap<Value>>,
         reason_2: Rc<Heap<Value>>,
-        cancel_promise: Rc<Promise>,
+        cancel_promise: &RootedPromise,
         reader_version: Rc<Cell<u64>>,
         tee_cancel_algorithm: ByteTeeCancelAlgorithm,
         byte_tee_pull_algorithm: ByteTeePullAlgorithm,
     ) -> DomRoot<ByteTeeUnderlyingSource> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(ByteTeeUnderlyingSource {
                 reflector_: Reflector::new(),
                 reader,
@@ -103,13 +103,12 @@ impl ByteTeeUnderlyingSource {
                 canceled_2,
                 reason_1,
                 reason_2,
-                cancel_promise,
+                cancel_promise: cancel_promise.to_traced(),
                 reader_version,
                 tee_cancel_algorithm,
                 byte_tee_pull_algorithm,
             }),
             &*stream.global(),
-            cx,
         )
     }
 
@@ -141,7 +140,7 @@ impl ByteTeeUnderlyingSource {
                         &self.branch_2.get().expect("Branch 2 should be set."),
                         self.canceled_1.clone(),
                         self.canceled_2.clone(),
-                        self.cancel_promise.clone(),
+                        &self.cancel_promise.root(cx),
                         self.reader_version.clone(),
                         expected_version,
                     );
@@ -158,7 +157,7 @@ impl ByteTeeUnderlyingSource {
                         &self.branch_2.get().expect("Branch 2 should be set."),
                         self.canceled_1.clone(),
                         self.canceled_2.clone(),
-                        self.cancel_promise.clone(),
+                        &self.cancel_promise.root(cx),
                         self.reader_version.clone(),
                         expected_version,
                     );
@@ -209,14 +208,14 @@ impl ByteTeeUnderlyingSource {
                         self.reading.clone(),
                         self.canceled_1.clone(),
                         self.canceled_2.clone(),
-                        self.cancel_promise.clone(),
+                        &self.cancel_promise.root(cx),
                         self,
                         global,
                     );
 
-                    let read_request = ReadRequest::ByteTee {
+                    rooted!(&in(cx) let read_request = ReadRequest::ByteTee {
                         byte_tee_read_request: Dom::from_ref(&byte_tee_read_request),
-                    };
+                    });
 
                     reader
                         .get()
@@ -279,14 +278,14 @@ impl ByteTeeUnderlyingSource {
                         self.reading.clone(),
                         self.canceled_1.clone(),
                         self.canceled_2.clone(),
-                        self.cancel_promise.clone(),
+                        &self.cancel_promise.root(cx),
                         self,
                         global,
                     );
 
-                    let read_into_request = ReadIntoRequest::ByteTee {
+                    rooted!(&in(cx) let read_into_request = ReadIntoRequest::ByteTee {
                         byte_tee_read_into_request: Dom::from_ref(&byte_tee_read_into_request),
-                    };
+                    });
 
                     // Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest).
                     reader.get().expect("Reader should be set.").read(
@@ -346,7 +345,7 @@ impl ByteTeeUnderlyingSource {
         &self,
         cx: &mut JSContext,
         byte_tee_pull_algorithm: Option<ByteTeePullAlgorithm>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         let pull_algorithm =
             byte_tee_pull_algorithm.unwrap_or(self.byte_tee_pull_algorithm.clone());
 
@@ -440,7 +439,7 @@ impl ByteTeeUnderlyingSource {
         &self,
         cx: &mut JSContext,
         reason: SafeHandleValue,
-    ) -> Option<Result<Rc<Promise>, Error>> {
+    ) -> Option<Result<RootedPromise, Error>> {
         match self.tee_cancel_algorithm {
             ByteTeeCancelAlgorithm::Cancel1Algorithm => {
                 // Set canceled1 to true.
@@ -455,7 +454,7 @@ impl ByteTeeUnderlyingSource {
                 }
 
                 // Return cancelPromise.
-                Some(Ok(self.cancel_promise.clone()))
+                Some(Ok(self.cancel_promise.root(cx)))
             },
             ByteTeeCancelAlgorithm::Cancel2Algorithm => {
                 // Set canceled_2 to true.
@@ -469,7 +468,7 @@ impl ByteTeeUnderlyingSource {
                     self.resolve_cancel_promise(cx);
                 }
                 // Return cancelPromise.
-                Some(Ok(self.cancel_promise.clone()))
+                Some(Ok(self.cancel_promise.root(cx)))
             },
         }
     }

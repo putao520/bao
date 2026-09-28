@@ -230,15 +230,10 @@ class DescriptorProvider:
 
     # BAO patch (fork-maintained, 2026-09-28): REQ-BRW-046-wave foundation ② —
     # callback storage decision ports (upstream b820a9679 mechanism). Fork
-    # default True = Rc form (zero behavior change); upstream default False =
-    # RootedCallback/StackRoot. Flip per-interface via Bindings.conf
-    # ('rc': False / 'useRcPromise': False) only in the coordinated wave.
+    # default True = Rc form; upstream default False = RootedCallback. Flip
+    # per-interface via Bindings.conf ('rc': False) in the coordinated wave.
     def callbackUsesRc(self, callbackIdentifier: str) -> bool:
         return self.config.getCallbackConfig(callbackIdentifier).get('rc', True)
-
-    def callbackUsesRcPromise(self, callbackIdentifier: str) -> bool:
-        return self.config.getCallbackConfig(callbackIdentifier).get('useRcPromise', True)
-
 
 def MemberIsLegacyUnforgeable(member: IDLAttribute | IDLMethod, descriptor: Descriptor) -> bool:
     return ((member.isAttr() or member.isMethod())
@@ -330,11 +325,6 @@ class Descriptor(DescriptorProvider):
                 assert first_set.isdisjoint(second_set), f"In {ifaceName} set {configurationMethods[i]} has overlap with {configurationMethods[j]}. Duplicates: {first_set.intersection(second_set)}"
 
         self.additionalTraits = [name for name in desc.get('additionalTraits', [])]
-        # BAO patch (fork-maintained, 2026-09-28): foundation ② decision ports —
-        # fork default True = Rc form (zero behavior change); upstream default
-        # False = RootedCallback/StackRoot. Flip via Bindings.conf only in the
-        # coordinated wave.
-        self.useRcPromise = desc.get('useRcPromise', True)
         self.useRcCallback = self.interface.isCallback() and desc.get('useRcCallback', True)
         self.bindingPath = f"{getModuleFromObject(self.interface)}::{ifaceName}_Binding"
         self.outerObjectHook = desc.get('outerObjectHook', 'None')

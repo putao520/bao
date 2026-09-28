@@ -35,7 +35,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlmediaelement::HTMLMediaElement;
 use crate::dom::mediastream::MediaStream;
 use crate::dom::mediastreamtrack::MediaStreamTrack;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 
 #[dom_struct]
 pub(crate) struct AudioContext {
@@ -141,7 +141,7 @@ impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audiocontext-suspend>
-    fn Suspend(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+    fn Suspend(&self, cx: &mut CurrentRealm) -> RootedPromise {
         // Step 1.
         let promise = Promise::new_in_realm(cx);
 
@@ -158,7 +158,7 @@ impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
         }
 
         // Steps 4 and 5.
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         match self.context.audio_context_impl().lock().unwrap().suspend() {
             Some(_) => {
                 let base_context = Trusted::new(&self.context);
@@ -197,7 +197,7 @@ impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audiocontext-close>
-    fn Close(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+    fn Close(&self, cx: &mut CurrentRealm) -> RootedPromise {
         // Step 1.
         let promise = Promise::new_in_realm(cx);
 
@@ -214,7 +214,7 @@ impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
         }
 
         // Steps 4 and 5.
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         match self.context.audio_context_impl().lock().unwrap().close() {
             Some(_) => {
                 let base_context = Trusted::new(&self.context);

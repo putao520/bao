@@ -36,6 +36,7 @@ use servo_url::{MutableOrigin, ServoUrl};
 use style::thread_state::{self, ThreadState};
 
 use crate::dom::abstractworker::WorkerScriptMsg;
+use script_bindings::interfaces::StackRootPromiseHelpers;
 use crate::dom::abstractworkerglobalscope::{WorkerEventLoopMethods, run_worker_event_loop};
 use crate::dom::bindings::codegen::Bindings::ClientBinding::FrameType;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerGlobalScopeBinding;
@@ -58,7 +59,7 @@ use crate::dom::extendablemessageevent::ExtendableMessageEvent;
 use crate::dom::fetchevent::FetchEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::RethrowErrors;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::script_execution::ScriptOptions;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
@@ -195,8 +196,9 @@ pub(crate) struct ServiceWorkerGlobalScope {
 
     /// Settled-pending `respondWith` promises (Bao vendor patch, user ruling
     /// 2026-09-09, C19 SIGSEGV fix): every mediated fetch's registered
-    /// response promise is re-anchored here as a native `Rc<Promise>` so its
-    /// `AddRawValueRoot` GC anchor outlives the dispatching `FetchEvent`.
+    /// response promise is re-anchored here as a traced `TracedPromise` so it
+    /// outlives the dispatching `FetchEvent` (③c promise migration: the
+    /// traced form carries the same `AddRawValueRoot` permanent root).
     /// Entries are removed at settlement (`fetchevent.rs` settle callbacks),
     /// mirroring the `serviceworkercontainer` pending-promise pattern.
     #[ignore_malloc_size_of = "anchored promises are transient per fetch"]
@@ -226,7 +228,7 @@ struct PendingFetchResponse {
     #[ignore_malloc_size_of = "plain counter"]
     key: usize,
     #[conditional_malloc_size_of]
-    promise: Rc<Promise>,
+    promise: TracedPromise,
 }
 
 impl WorkerEventLoopMethods for ServiceWorkerGlobalScope {
@@ -729,12 +731,15 @@ impl ServiceWorkerGlobalScope {
     /// settlement (Bao vendor patch, user ruling 2026-09-09, C19 SIGSEGV fix).
     /// Returns the pending-list key the settler must hand back to
     /// `remove_pending_fetch_response`.
-    pub(crate) fn add_pending_fetch_response(&self, promise: Rc<Promise>) -> usize {
+    pub(crate) fn add_pending_fetch_response(&self, promise: &RootedPromise) -> usize {
         let key = self.pending_fetch_response_key.get();
         self.pending_fetch_response_key.set(key + 1);
         self.pending_fetch_responses
             .borrow_mut()
-            .push_back(PendingFetchResponse { key, promise });
+            .push_back(PendingFetchResponse {
+                key,
+                promise: promise.to_traced(),
+            });
         key
     }
 

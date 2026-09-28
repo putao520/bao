@@ -14,6 +14,7 @@ use webgpu_traits::{ShaderCompilationInfo, WebGPU, WebGPURequest, WebGPUShaderMo
 
 use super::gpucompilationinfo::GPUCompilationInfo;
 use crate::dom::bindings::codegen::Bindings::WebGPUBinding::{
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
     GPUShaderModuleDescriptor, GPUShaderModuleMethods,
 };
 use crate::dom::bindings::reflector::DomGlobal;
@@ -21,7 +22,7 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::USVString;
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::types::GPUDevice;
 use crate::routed_promise::{RoutedPromiseListener, callback_promise};
 
@@ -53,7 +54,7 @@ pub(crate) struct GPUShaderModule {
     reflector_: Reflector,
     label: DomRefCell<USVString>,
     #[ignore_malloc_size_of = "promise"]
-    compilation_info_promise: Rc<Promise>,
+    compilation_info_promise: TracedPromise,
     droppable: DroppableGPUShaderModule,
 }
 
@@ -62,12 +63,12 @@ impl GPUShaderModule {
         channel: WebGPU,
         shader_module: WebGPUShaderModule,
         label: USVString,
-        promise: Rc<Promise>,
+        promise: TracedPromise,
     ) -> Self {
         Self {
             reflector_: Reflector::new(),
             label: DomRefCell::new(label),
-            compilation_info_promise: promise,
+            compilation_info_promise: promise.to_traced(),
             droppable: DroppableGPUShaderModule {
                 channel,
                 shader_module,
@@ -81,14 +82,14 @@ impl GPUShaderModule {
         channel: WebGPU,
         shader_module: WebGPUShaderModule,
         label: USVString,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_cx(
             Box::new(GPUShaderModule::new_inherited(
                 channel,
                 shader_module,
                 label,
-                promise,
+                promise.to_traced(),
             )),
             global,
             cx,
@@ -152,17 +153,17 @@ impl GPUShaderModuleMethods<crate::DomTypeHolder> for GPUShaderModule {
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpushadermodule-getcompilationinfo>
-    fn GetCompilationInfo(&self) -> Rc<Promise> {
-        self.compilation_info_promise.clone()
+    fn GetCompilationInfo(&self, cx: &JSContext) -> RootedPromise {
+        self.compilation_info_promise.root(cx)
     }
 }
 
-impl RoutedPromiseListener<Option<ShaderCompilationInfo>> for GPUShaderModule {
+impl RoutedPromiseListener<crate::DomTypeHolder, Option<ShaderCompilationInfo>> for GPUShaderModule {
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         response: Option<ShaderCompilationInfo>,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         let info = GPUCompilationInfo::from(cx, &self.global(), response);
         promise.resolve_native(cx, &info);

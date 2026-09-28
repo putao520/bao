@@ -10,19 +10,20 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::GPUDeviceLostReaso
 use webgpu_traits::{RequestDeviceError, WebGPUDeviceResponse};
 
 use crate::dom::bindings::error::Error;
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::gpuadapter::GPUAdapter;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::types::GPUDevice;
 use crate::routed_promise::RoutedPromiseListener;
 
-impl RoutedPromiseListener<WebGPUDeviceResponse> for GPUAdapter {
+impl RoutedPromiseListener<crate::DomTypeHolder, WebGPUDeviceResponse> for GPUAdapter {
     /// <https://www.w3.org/TR/webgpu/#dom-gpuadapter-requestdevice>
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         response: WebGPUDeviceResponse,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         match response {
             // 3.1 Let device be a new device with the capabilities described by descriptor.

@@ -43,6 +43,7 @@ pub mod proxyhandler;
 pub mod realms;
 pub mod record;
 pub mod refcounted;
+pub mod routed_promise;
 pub mod reflector;
 pub mod root;
 pub mod script_runtime;

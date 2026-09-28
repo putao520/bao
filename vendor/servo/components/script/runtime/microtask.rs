@@ -108,11 +108,6 @@ fn microtask_from_jsval(val: JSVal) -> *mut Box<dyn MicrotaskRunnable> {
     val.to_private() as *const Box<dyn MicrotaskRunnable> as *mut Box<dyn MicrotaskRunnable>
 }
 
-// The dequeued servo runnable is kept GC-alive by rooting it in the checkpoint
-// loop; this makes `Box<Box<dyn MicrotaskRunnable>>` a `Rooted`-capable type
-// (Box<T: ?Sized + Traceable> is Traceable, Rootable only lacks the impl).
-impl js::gc::Rootable for Box<Box<dyn MicrotaskRunnable>> {}
-
 impl MicrotaskQueue {
     /// Add a new microtask to this queue. It will be invoked as part of the next
     /// microtask checkpoint.

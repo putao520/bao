@@ -212,7 +212,7 @@ pub(crate) fn Fetch(
     input: RequestInfo,
     init: RootedTraceableBox<RequestInit>,
     cx: &mut CurrentRealm,
-) -> Rc<Promise> {
+) -> RootedPromise {
     // Step 1. Let p be a new promise.
     let promise = Promise::new_in_realm(cx);
 
@@ -241,13 +241,7 @@ pub(crate) fn Fetch(
         // Step 4.1. Abort the fetch() call with p, request, null, and requestObject’s signal’s abort reason.
         rooted!(&in(cx) let mut abort_reason = UndefinedValue());
         signal.Reason(abort_reason.handle_mut());
-        abort_fetch_call(
-            // BAO patch (fork-maintained, 2026-09-28): transitional bridge —
-            // fetch's own promise is still the Rc form until the ③c fetch
-            // migration; duplicate(cx) lifts it to the rooted form expected
-            // by abort_fetch_call.
-            promise.clone().duplicate(cx),
-            &request_object,
+        abort_fetch_call(promise.clone(), &request_object,
             None,
             abort_reason.handle(),
             global,
@@ -275,7 +269,7 @@ pub(crate) fn Fetch(
     // Step 9. Let locallyAborted be false.
     // Step 10. Let controller be null.
     let fetch_context = FetchContext {
-        fetch_promise: Some(TrustedPromise::new(promise.clone())),
+        fetch_promise: Some(TrustedPromise::from(&promise)),
         response_object: Trusted::new(&*response),
         request: Trusted::new(&*request_object),
         global: Trusted::new(global),
@@ -602,7 +596,7 @@ impl FetchResponseListener for FetchContext {
 
     fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Vec<u8>) {
         let response = self.response_object.root();
-        response.stream_chunk(cx, chunk);
+        response.stream_chunk(cx, chunk.into());
     }
 
     fn process_response_eof(

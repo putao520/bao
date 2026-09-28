@@ -37,6 +37,7 @@ use webrender_api::ImageKey;
 
 use crate::canvas_context::{CanvasContext, HTMLCanvasElementOrOffscreenCanvas};
 use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_slice};
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::ANGLEInstancedArraysBinding::ANGLEInstancedArraysConstants;
 use crate::dom::bindings::codegen::Bindings::EXTBlendMinmaxBinding::EXTBlendMinmaxConstants;
 use crate::dom::bindings::codegen::Bindings::OESVertexArrayObjectBinding::OESVertexArrayObjectConstants;
@@ -204,6 +205,7 @@ pub(crate) struct WebGLRenderingContext {
 /// (Bao) Resolve the WebGL thread channel for a global scope: `Window`s carry their
 /// own handle, workers inherit the parent `Window`'s channel via
 /// `WorkerGlobalScopeInit.webgl_chan` (REQ-BRW-004 C14).
+#[cfg(feature = "webgl")]
 fn webgl_chan_from_global(global: &GlobalScope) -> Option<WebGLChan> {
     if let Some(window) = global.downcast::<Window>() {
         return window.webgl_chan();
@@ -211,6 +213,11 @@ fn webgl_chan_from_global(global: &GlobalScope) -> Option<WebGLChan> {
     global
         .downcast::<WorkerGlobalScope>()
         .and_then(|worker| worker.webgl_chan())
+}
+
+#[cfg(not(feature = "webgl"))]
+fn webgl_chan_from_global(_global: &GlobalScope) -> Option<WebGLChan> {
+    None
 }
 
 impl WebGLRenderingContext {
@@ -5031,7 +5038,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible>
     #[cfg(feature = "webxr")]
-    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         // XXXManishearth Fill in with compatibility checks when rust-webxr supports this
         Promise::new_resolved(cx, &self.global(), ())
     }

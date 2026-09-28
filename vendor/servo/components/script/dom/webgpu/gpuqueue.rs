@@ -20,6 +20,7 @@ use servo_base::generic_channel::GenericSharedMemory;
 use webgpu_traits::{WebGPU, WebGPUQueue, WebGPURequest};
 
 use crate::dom::bindings::buffer_source::get_buffer_source_slice;
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::bindings::codegen::Bindings::WebGPUBinding::{
     GPUCopyExternalImageDestInfo, GPUCopyExternalImageSourceInfo, GPUExtent3D, GPUQueueMethods,
     GPUSize64, GPUTexelCopyBufferLayout, GPUTexelCopyTextureInfo,
@@ -33,7 +34,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::webgpu::gpubuffer::GPUBuffer;
 use crate::dom::webgpu::gpucommandbuffer::GPUCommandBuffer;
 use crate::dom::webgpu::gpudevice::GPUDevice;
@@ -375,7 +376,7 @@ impl GPUQueueMethods<crate::DomTypeHolder> for GPUQueue {
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuqueue-onsubmittedworkdone>
-    fn OnSubmittedWorkDone(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn OnSubmittedWorkDone(&self, cx: &mut JSContext) -> RootedPromise {
         let global = self.global();
         let promise = Promise::new(cx, &global);
         let task_manager = global.task_manager();
@@ -396,12 +397,12 @@ impl GPUQueueMethods<crate::DomTypeHolder> for GPUQueue {
     }
 }
 
-impl RoutedPromiseListener<()> for GPUQueue {
+impl RoutedPromiseListener<crate::DomTypeHolder, ()> for GPUQueue {
     fn handle_response(
         &self,
         cx: &mut js::context::JSContext,
         _response: (),
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         promise.resolve_native(cx, &());
     }

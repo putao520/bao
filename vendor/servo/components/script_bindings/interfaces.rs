@@ -4,7 +4,6 @@
 
 use std::cell::RefCell;
 use std::ops::Deref;
-use std::rc::Rc;
 use std::thread::LocalKey;
 
 use js::context::JSContext;
@@ -113,12 +112,14 @@ pub trait PromiseHelpers<D: DomTypes> {
         + MallocSizeOf
         + Deref<Target = D::Promise>
         + HeapTracedPromiseHelpers<D, StackRoot = Self::StackRoot>;
-    fn new_in_realm(cx: &mut CurrentRealm) -> Rc<D::Promise>;
-    fn new_in_realm_rooted(cx: &mut CurrentRealm) -> Self::StackRoot;
+    fn new_in_realm(cx: &mut CurrentRealm) -> Self::StackRoot;
+    fn new(cx: &mut JSContext, global: &D::GlobalScope) -> Self::StackRoot;
     fn reject_error(&self, cx: &mut JSContext, error: Error);
     fn is_rejected(&self) -> bool;
     fn is_pending(&self) -> bool;
+    fn is_fulfilled(&self) -> bool;
     fn resolve_native<T: ToJSValConvertible>(&self, cx: &mut JSContext, val: &T);
+    fn reject_native<T: ToJSValConvertible>(&self, cx: &mut JSContext, val: &T);
 }
 
 pub trait DocumentHelpers {

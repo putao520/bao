@@ -72,6 +72,13 @@ impl<T> RootedCallback<T> {
     pub fn to_traced(&self) -> TracedCallback<T> {
         TracedCallback(self.0.clone())
     }
+
+    // BAO patch (fork-maintained, 2026-09-28): ③c transitional accessor —
+    // exposes the underlying `Rc<T>` for not-yet-flipped consumers until the
+    // coordinated wave flips the callback decision globally.
+    pub fn native(&self) -> Rc<T> {
+        self.0.clone()
+    }
 }
 
 impl<T> Clone for RootedCallback<T> {
@@ -105,8 +112,14 @@ impl<T: js::conversions::ToJSValConvertible> js::conversions::ToJSValConvertible
 }
 
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-#[derive(JSTraceable, MallocSizeOf)]
+#[derive(JSTraceable, MallocSizeOf, PartialEq)]
 pub struct TracedCallback<T>(#[conditional_malloc_size_of] Rc<T>);
+
+impl<T> From<Rc<T>> for TracedCallback<T> {
+    fn from(callback: Rc<T>) -> Self {
+        Self(callback)
+    }
+}
 
 impl<T: crate::JSTraceable> js::gc::Rootable for TracedCallback<T> {}
 

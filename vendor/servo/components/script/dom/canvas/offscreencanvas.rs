@@ -30,6 +30,7 @@ use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGL
 use crate::dom::bindings::codegen::UnionTypes::HTMLCanvasElementOrOffscreenCanvas as RootedHTMLCanvasElementOrOffscreenCanvas;
 use crate::dom::bindings::conversions::ConversionResult;
 use crate::dom::bindings::error::{Error, Fallible};
+use crate::dom::RootedPromise;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
@@ -510,7 +511,7 @@ impl OffscreenCanvasMethods<crate::DomTypeHolder> for OffscreenCanvas {
         &self,
         cx: &mut js::context::JSContext,
         options: &ImageEncodeOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 5. Let result be a new promise object.
         let mut realm = CurrentRealm::assert(cx);
         let promise = Promise::new_in_realm(&mut realm);
@@ -551,7 +552,7 @@ impl OffscreenCanvasMethods<crate::DomTypeHolder> for OffscreenCanvas {
         // Step 7.2. Queue a global task on the canvas blob serialization task
         // source given global to run these steps:
         let trusted_this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
 
         let image_type = EncodedImageType::from(&options.type_.str() as &str);
         let quality = options.quality;

@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 // other / missed cues, active flags, enter/exit/cuechange events), the
 // newly-introduced-cues list, and the active-cue render snapshot consumed by
 // layout (REQ-BRW-047). Orthogonal upstream evolution (RootedPromise play
-// promises, MediaElementWeakRef, download buffering) is intentionally NOT
-// synced: the fork keeps `Rc<Promise>` / `WeakRef<HTMLMediaElement>` forms.
+// promises) IS synced now (③c promise migration); MediaElementWeakRef /
+// download-buffering evolution stays unsynced.
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
@@ -57,6 +57,7 @@ use webrender_api::{
 };
 
 use crate::dom::audio::audiotrack::AudioTrack;
+use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::audio::audiotracklist::AudioTrackList;
 use crate::dom::bindings::codegen::Bindings::HTMLMediaElementBinding::{
     CanPlayTypeResult, HTMLMediaElementConstants, HTMLMediaElementMethods,
@@ -102,7 +103,7 @@ use crate::dom::mediastream::MediaStream;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeDamage, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::referrer_policy_for_element;
 use crate::dom::texttrack::TextTrack;
 use crate::dom::texttrackcue::TextTrackCue;
@@ -567,11 +568,11 @@ pub(crate) struct HTMLMediaElement {
     delaying_the_load_event_flag: DomRefCell<Option<LoadBlocker>>,
     /// <https://html.spec.whatwg.org/multipage/#list-of-pending-play-promises>
     #[conditional_malloc_size_of]
-    pending_play_promises: DomRefCell<Vec<Rc<Promise>>>,
+    pending_play_promises: DomRefCell<Vec<TracedPromise>>,
     /// Play promises which are soon to be fulfilled by a queued task.
     #[expect(clippy::type_complexity)]
     #[conditional_malloc_size_of]
-    in_flight_play_promises_queue: DomRefCell<VecDeque<(Box<[Rc<Promise>]>, ErrorResult)>>,
+    in_flight_play_promises_queue: DomRefCell<VecDeque<(Box<[TracedPromise]>, ErrorResult)>>,
     #[ignore_malloc_size_of = "servo_media"]
     #[no_trace]
     player: DomRefCell<Option<Arc<Mutex<dyn Player>>>>,
@@ -2177,10 +2178,10 @@ impl HTMLMediaElement {
     }
 
     /// Appends a promise to the list of pending play promises.
-    fn push_pending_play_promise(&self, promise: &Rc<Promise>) {
+    fn push_pending_play_promise(&self, promise: &RootedPromise) {
         self.pending_play_promises
             .borrow_mut()
-            .push(promise.clone());
+            .push(promise.to_traced());
     }
 
     /// Takes the pending play promises.
@@ -2216,9 +2217,14 @@ impl HTMLMediaElement {
             .in_flight_play_promises_queue
             .borrow_mut()
             .pop_front()
+            .map(|(promises, result)| {
+                let promises: Vec<RootedPromise> =
+                    promises.iter().map(|promise| promise.root(cx)).collect();
+                (promises, result)
+            })
             .expect("there should be at least one list of in flight play promises");
         f(cx);
-        for promise in &*promises {
+        for promise in &promises {
             match result {
                 Ok(ref value) => promise.resolve_native(cx, value),
                 Err(ref error) => promise.reject_error(cx, error.clone()),
@@ -3682,7 +3688,7 @@ impl HTMLMediaElementMethods<crate::DomTypeHolder> for HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-media-play>
-    fn Play(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+    fn Play(&self, cx: &mut CurrentRealm) -> RootedPromise {
         let promise = Promise::new_in_realm(cx);
 
         // TODO Step 1. If the media element is not allowed to play, then return a promise rejected

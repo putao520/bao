@@ -46,7 +46,7 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::dom::bindings::trace::{JSTraceable, RootedTraceableBox};
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::window::Window;
 use crate::dom::workletglobalscope::{
     WorkletGlobalScope, WorkletGlobalScopeInit, WorkletGlobalScopeType,
@@ -158,7 +158,7 @@ impl WorkletMethods<crate::DomTypeHolder> for Worklet {
         realm: &mut CurrentRealm,
         module_url: USVString,
         options: &WorkletOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         let promise = Promise::new_in_realm(realm);
 
         // Step 1. Let outsideSettings be the relevant settings object of this.
@@ -263,7 +263,7 @@ pub trait WorkletThreadPool: JSTraceable {
         policy_container: PolicyContainer,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
         inherited_secure_context: Option<bool>,
     );
     /// Request that the [`WorkletGlobalScope`] associated with the [`WorkletId`]
@@ -396,7 +396,7 @@ impl WorkletThreadPool for StatelessWorkletThreadPool {
         policy_container: PolicyContainer,
         credentials: RequestCredentials,
         pending_tasks_struct: PendingTasksStruct,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
         inherited_secure_context: Option<bool>,
     ) {
         // Send each thread a control message asking it to load the script.
@@ -415,7 +415,7 @@ impl WorkletThreadPool for StatelessWorkletThreadPool {
                 policy_container: policy_container.clone(),
                 credentials,
                 pending_tasks_struct: pending_tasks_struct.clone(),
-                promise: TrustedPromise::new(promise.clone()),
+                promise: TrustedPromise::from(promise),
                 inherited_secure_context,
             });
         }

@@ -34,7 +34,8 @@ use crate::dom::bindings::str::USVString;
 use crate::dom::document::get_registrable_domain_suffix_of_or_is_equal_to;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use script_bindings::interfaces::StackRootPromiseHelpers;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::window::Window;
 use crate::tasks::task_source::SendableTaskSource;
 
@@ -66,7 +67,7 @@ impl Drop for DroppableCookieStore {
 pub(crate) struct CookieStore {
     eventtarget: EventTarget,
     #[conditional_malloc_size_of]
-    in_flight: DomRefCell<VecDeque<Rc<Promise>>>,
+    in_flight: DomRefCell<VecDeque<TracedPromise>>,
     droppable: DroppableCookieStore,
 }
 
@@ -80,7 +81,13 @@ impl CookieListener {
     pub(crate) fn handle(&self, message: CookieAsyncResponse) {
         let context = self.context.clone();
         self.task_source.queue(task!(cookie_message: move |cx| {
-            let Some(promise) = context.root().in_flight.safe_borrow_mut(cx.no_gc()).pop_front() else {
+            let Some(promise) = context
+                .root()
+                .in_flight
+                .safe_borrow_mut(cx.no_gc())
+                .pop_front()
+                .map(|promise| promise.root(cx))
+            else {
                 warn!("No promise exists for cookie store response");
                 return;
             };
@@ -182,7 +189,7 @@ fn cookie_to_list_item(cookie: Cookie) -> CookieListItem {
 
 impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>
-    fn Get(&self, cx: &mut JSContext, name: USVString) -> Rc<Promise> {
+    fn Get(&self, cx: &mut JSContext, name: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -217,7 +224,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -225,7 +232,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-get-options>
-    fn Get_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> Rc<Promise> {
+    fn Get_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -299,14 +306,14 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         p
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-getall>
-    fn GetAll(&self, cx: &mut JSContext, name: USVString) -> Rc<Promise> {
+    fn GetAll(&self, cx: &mut JSContext, name: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -341,7 +348,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -349,7 +356,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-getall-options>
-    fn GetAll_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> Rc<Promise> {
+    fn GetAll_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -416,7 +423,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 8. Return p
@@ -424,7 +431,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-set>
-    fn Set(&self, cx: &mut JSContext, name: USVString, value: USVString) -> Rc<Promise> {
+    fn Set(&self, cx: &mut JSContext, name: USVString, value: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -472,7 +479,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -480,7 +487,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-set-options>
-    fn Set_(&self, cx: &mut JSContext, options: &CookieInit) -> Rc<Promise> {
+    fn Set_(&self, cx: &mut JSContext, options: &CookieInit) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -521,7 +528,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p
@@ -529,7 +536,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-delete>
-    fn Delete(&self, cx: &mut JSContext, name: USVString) -> Rc<Promise> {
+    fn Delete(&self, cx: &mut JSContext, name: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -559,7 +566,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -567,7 +574,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-delete-options>
-    fn Delete_(&self, cx: &mut JSContext, options: &CookieStoreDeleteOptions) -> Rc<Promise> {
+    fn Delete_(&self, cx: &mut JSContext, options: &CookieStoreDeleteOptions) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -597,7 +604,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.

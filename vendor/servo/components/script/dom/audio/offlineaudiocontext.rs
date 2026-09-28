@@ -32,7 +32,8 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
+use script_bindings::interfaces::StackRootPromiseHelpers;
 
 #[dom_struct]
 pub(crate) struct OfflineAudioContext {
@@ -41,7 +42,7 @@ pub(crate) struct OfflineAudioContext {
     length: u32,
     rendering_started: Cell<bool>,
     #[conditional_malloc_size_of]
-    pending_rendering_promise: DomRefCell<Option<Rc<Promise>>>,
+    pending_rendering_promise: DomRefCell<Option<TracedPromise>>,
 }
 
 impl OfflineAudioContext {
@@ -137,7 +138,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-startrendering>
-    fn StartRendering(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+    fn StartRendering(&self, cx: &mut CurrentRealm) -> RootedPromise {
         let promise = Promise::new_in_realm(cx);
         if self.rendering_started.get() {
             promise.reject_error(cx, Error::InvalidState(None));
@@ -145,7 +146,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
         }
         self.rendering_started.set(true);
 
-        *self.pending_rendering_promise.safe_borrow_mut(cx.no_gc()) = Some(promise.clone());
+        *self.pending_rendering_promise.safe_borrow_mut(cx.no_gc()) = Some(promise.to_traced());
 
         let processed_audio = Arc::new(Mutex::new(Vec::new()));
         let processed_audio_ = processed_audio.clone();

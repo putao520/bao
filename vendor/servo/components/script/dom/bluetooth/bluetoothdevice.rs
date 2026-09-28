@@ -4,14 +4,13 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
 use profile_traits::generic_channel;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::generic_channel::GenericSender;
 use servo_bluetooth_traits::{
     BluetoothCharacteristicMsg, BluetoothDescriptorMsg, BluetoothRequest, BluetoothResponse,
@@ -34,7 +33,7 @@ use crate::dom::bluetoothremotegattserver::BluetoothRemoteGATTServer;
 use crate::dom::bluetoothremotegattservice::BluetoothRemoteGATTService;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 #[derive(JSTraceable, MallocSizeOf)]
@@ -84,10 +83,10 @@ impl BluetoothDevice {
         name: Option<DOMString>,
         context: &Bluetooth,
     ) -> DomRoot<BluetoothDevice> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(BluetoothDevice::new_inherited(id, name, context)),
             global,
-            cx,
         )
     }
 
@@ -317,7 +316,7 @@ impl BluetoothDeviceMethods<crate::DomTypeHolder> for BluetoothDevice {
     }
 
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetoothdevice-watchadvertisements>
-    fn WatchAdvertisements(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+    fn WatchAdvertisements(&self, cx: &mut CurrentRealm) -> RootedPromise {
         let p = Promise::new_in_realm(cx);
         let sender = response_async(&p, self);
         // TODO: Step 1.
@@ -357,7 +356,7 @@ impl AsyncBluetoothListener for BluetoothDevice {
         &self,
         cx: &mut JSContext,
         response: BluetoothResponse,
-        promise: &Rc<Promise>,
+        promise: &RootedPromise,
     ) {
         match response {
             // https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetoothdevice-unwatchadvertisements

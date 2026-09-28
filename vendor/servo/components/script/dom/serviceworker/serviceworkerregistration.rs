@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::rc::Rc;
 
 use devtools_traits::WorkerId;
 use dom_struct::dom_struct;
@@ -12,12 +11,13 @@ use net_traits::request::Referrer;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::NavigatorBinding::NavigatorMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::id::ServiceWorkerRegistrationId;
 use servo_constellation_traits::{ScopeThings, WorkerScriptLoadOrigin};
 use servo_url::ServoUrl;
 use uuid::Uuid;
 
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerRegistrationBinding::{
     ServiceWorkerRegistrationMethods, ServiceWorkerUpdateViaCache,
 };
@@ -47,8 +47,10 @@ pub(crate) struct ServiceWorkerRegistration {
     cookie_manager: MutNullableDom<CookieStoreManager>,
     #[no_trace]
     scope: ServoUrl,
+    /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-enabled>
     navigation_preload_enabled: Cell<bool>,
-    navigation_preload_header_value: DomRefCell<Option<ByteString>>,
+    /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-header-value>
+    navigation_preload_header_value: DomRefCell<ByteString>,
     update_via_cache: ServiceWorkerUpdateViaCache,
     uninstalling: Cell<bool>,
     #[no_trace]
@@ -68,8 +70,14 @@ impl ServiceWorkerRegistration {
             navigation_preload: MutNullableDom::new(None),
             cookie_manager: MutNullableDom::new(None),
             scope,
+            // https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-enabled
+            // A service worker registration has an associated navigation preload enabled,
+            // which is a boolean. It is initially set to false.
             navigation_preload_enabled: Cell::new(false),
-            navigation_preload_header_value: DomRefCell::new(None),
+            // https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-header-value
+            // A service worker registration has an associated navigation preload header value,
+            // which is a byte sequence. It is initially set to `true`.
+            navigation_preload_header_value: DomRefCell::new(ByteString::new(b"true".to_vec())),
             update_via_cache: ServiceWorkerUpdateViaCache::Imports,
             uninstalling: Cell::new(false),
             registration_id,
@@ -82,13 +90,13 @@ impl ServiceWorkerRegistration {
         scope: ServoUrl,
         registration_id: ServiceWorkerRegistrationId,
     ) -> DomRoot<ServiceWorkerRegistration> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(ServiceWorkerRegistration::new_inherited(
                 scope,
                 registration_id,
             )),
             global,
-            cx,
         )
     }
 
@@ -107,13 +115,13 @@ impl ServiceWorkerRegistration {
         *self.installing.borrow_mut() = Some(Dom::from_ref(worker));
     }
 
-    pub(crate) fn get_navigation_preload_header_value(&self) -> Option<ByteString> {
+    pub(crate) fn get_navigation_preload_header_value(&self) -> ByteString {
         self.navigation_preload_header_value.borrow().clone()
     }
 
     pub(crate) fn set_navigation_preload_header_value(&self, value: ByteString) {
         let mut header_value = self.navigation_preload_header_value.borrow_mut();
-        *header_value = Some(value);
+        *header_value = value;
     }
 
     pub(crate) fn get_navigation_preload_enabled(&self) -> bool {
@@ -135,12 +143,19 @@ impl ServiceWorkerRegistration {
             pipeline_id: global.pipeline_id(),
         };
 
+        #[cfg(feature = "webgl")]
         let webgl_chan = global
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
         let worker_id = WorkerId(Uuid::new_v4());
         let devtools_chan = global.devtools_chan().cloned();
-        let init = prepare_workerscope_init(global, None, Some(worker_id), webgl_chan);
+        let init = prepare_workerscope_init(
+            global,
+            None,
+            Some(worker_id),
+            #[cfg(feature = "webgl")]
+            webgl_chan,
+        );
         let browsing_context_id = global
             .downcast::<Window>()
             .map(|w: &Window| w.window_proxy().browsing_context_id())
@@ -159,7 +174,7 @@ impl ServiceWorkerRegistration {
         }
     }
 
-    // https://w3c.github.io/ServiceWorker/#get-newest-worker-algorithm
+    /// <https://w3c.github.io/ServiceWorker/#get-newest-worker-algorithm>
     pub(crate) fn get_newest_worker(&self) -> Option<DomRoot<ServiceWorker>> {
         let installing = self.installing.borrow();
         let waiting = self.waiting.borrow();
@@ -199,7 +214,7 @@ impl ServiceWorkerRegistrationMethods<crate::DomTypeHolder> for ServiceWorkerReg
     }
 
     /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkerregistration-unregister>
-    fn Unregister(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn Unregister(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1: Let registration be the service worker registration.
         // Note: `self` is the registration.
 
@@ -236,7 +251,7 @@ impl ServiceWorkerRegistrationMethods<crate::DomTypeHolder> for ServiceWorkerReg
             storage_key,
             self.scope.clone(),
             worker.get_script_url(),
-            promise.clone(),
+            &promise,
         );
 
         // Set all workers to none.
