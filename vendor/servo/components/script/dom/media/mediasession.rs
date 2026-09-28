@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::rc::Rc;
+use script_bindings::callback::RootedCallback;
 
 use dom_struct::dom_struct;
 use embedder_traits::{
@@ -195,8 +196,9 @@ impl MediaSessionMethods<crate::DomTypeHolder> for MediaSession {
     fn SetActionHandler(
         &self,
         action: MediaSessionAction,
-        handler: Option<Rc<MediaSessionActionHandler>>,
+        handler: Option<RootedCallback<MediaSessionActionHandler>>,
     ) {
+        let handler = handler.map(|h| h.native());
         match handler {
             Some(handler) => self
                 .action_handlers

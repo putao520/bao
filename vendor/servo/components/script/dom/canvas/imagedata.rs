@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use servo_base::generic_channel::GenericSharedMemory;
 use std::borrow::Cow;
 use std::vec::Vec;
 
@@ -16,6 +17,7 @@ use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use rustc_hash::FxHashMap;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use script_bindings::trace::RootedTraceableBox;
+#[cfg(feature = "webgl")]
 use servo_base::generic_channel::GenericSharedMemory;
 use servo_base::id::{ImageDataId, ImageDataIndex};
 use servo_constellation_traits::SerializableImageData;
@@ -78,7 +80,7 @@ impl ImageData {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     /// <https://html.spec.whatwg.org/multipage/#initialize-an-imagedata-object>
     fn initialize(
         cx: &mut JSContext,

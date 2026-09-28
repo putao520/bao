@@ -2721,7 +2721,7 @@ impl ScriptThread {
             },
             DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, reply) => {
                 self.debugger_global
-                    .fire_eval(cx, code.into(), id, None, frame_actor_id, reply);
+                    .fire_eval(cx, code.into(), id, None, frame_actor_id, false, reply);
             },
             DevtoolScriptControlMsg::GetPossibleBreakpoints(spidermonkey_id, result_sender) => {
                 self.debugger_global.fire_get_possible_breakpoints(
@@ -3390,7 +3390,13 @@ impl ScriptThread {
         rooted!(&in(cx) let new_focus_chain = focusable_area.focus_chain());
         rooted!(&in(cx) let old_focus_chain = focus_handler.current_focus_chain());
 
-        focus_handler.focus_update_steps(cx, new_focus_chain, old_focus_chain, &focusable_area);
+        focus_handler.focus_update_steps(
+            cx,
+            new_focus_chain,
+            old_focus_chain,
+            &focusable_area,
+            false, /* for_system_focus_change */
+        );
     }
 
     fn handle_focus_document(
@@ -3448,6 +3454,7 @@ impl ScriptThread {
             new_focus_chain,
             old_focus_chain,
             &FocusableArea::Viewport,
+            false, /* for_system_focus_change */
         );
     }
 
@@ -4971,7 +4978,7 @@ impl ScriptThread {
     fn handle_reload(&self, pipeline_id: PipelineId, cx: &mut js::context::JSContext) {
         let window = self.documents.borrow().find_window(pipeline_id);
         if let Some(window) = window {
-            window.Location(cx).reload_without_origin_check(cx);
+            window.Location(cx).reload_without_origin_check(cx, &window);
         }
     }
 

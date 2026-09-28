@@ -22,6 +22,9 @@ extern crate stylo_atoms;
 
 #[macro_use]
 mod tasks;
+
+#[macro_use]
+extern crate script_bindings;
 // Bao embedder-callback API (vendor patch) lives on the upstream ScriptThread
 // in event_loop; re-exported here so `servo` crate / bao embedders can reach it.
 // register_worker_interfaces_ready_callback (REQ-BRW-004 C15, user ruling

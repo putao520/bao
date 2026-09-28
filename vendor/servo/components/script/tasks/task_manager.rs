@@ -135,6 +135,10 @@ impl TaskManager {
     task_source_functions!(self, bitmap_task_source, Bitmap);
     task_source_functions!(self, canvas_blob_task_source, Canvas);
     task_source_functions!(self, clipboard_task_source, Clipboard);
+    #[cfg(feature = "webcrypto")]
+    task_source_functions!(self, crypto_task_source, Crypto);
+    // BAO patch (fork-maintained, 2026-09-28): crypto task source is
+    // ungated here — the fork's webcrypto stack is always compiled in.
     task_source_functions!(self, crypto_task_source, Crypto);
     task_source_functions!(self, database_access_task_source, DatabaseAccess);
     task_source_functions!(self, deferred_fetch_task_source, DeferredFetch);

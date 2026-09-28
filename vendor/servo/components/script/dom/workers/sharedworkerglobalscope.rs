@@ -762,6 +762,7 @@ impl SharedWorkerGlobalScope {
                         id,
                         Some(self.upcast::<WorkerGlobalScope>().worker_id()),
                         frame_actor_id,
+                        false, /* fork devtools msg enum carries no eager flag */
                         reply,
                     );
                 },

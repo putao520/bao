@@ -103,3 +103,5 @@ pub(crate) use js::gc::Traceable as JSTraceable;
 pub use crate::codegen::DomTypes::DomTypes;
 pub(crate) use crate::reflector::{DomObject, MutDomObject, Reflector};
 pub(crate) use crate::trace::CustomTraceable;
+pub mod tasks;
+pub mod traits;

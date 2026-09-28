@@ -15,7 +15,7 @@ use js::rust::CustomAutoRooterGuard;
 use js::typedarray::{ArrayBuffer, ArrayBufferU8, ArrayBufferView};
 use script_bindings::cell::DomRefCell;
 use script_bindings::match_domstring_ascii;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use script_bindings::weakref::WeakRef;
 use servo_constellation_traits::BlobImpl;
 use servo_media::webrtc::{
@@ -129,7 +129,8 @@ impl RTCDataChannel {
         options: &RTCDataChannelInit,
         servo_media_id: Option<DataChannelId>,
     ) -> DomRoot<RTCDataChannel> {
-        let rtc_data_channel = reflect_dom_object_with_cx(
+        let rtc_data_channel = reflect_dom_object(
+            cx,
             Box::new(RTCDataChannel::new_inherited(
                 peer_connection,
                 label,
@@ -137,7 +138,6 @@ impl RTCDataChannel {
                 servo_media_id,
             )),
             global,
-            cx,
         );
 
         peer_connection
@@ -209,7 +209,7 @@ impl RTCDataChannel {
                         let blob = Blob::new(
                             cx,
                             &global,
-                            BlobImpl::new_from_bytes(data, "".to_owned()),
+                            BlobImpl::new_from_bytes(data, String::new()),
                         );
                         blob.safe_to_jsval(cx, message.handle_mut());
                     },
@@ -235,7 +235,7 @@ impl RTCDataChannel {
             self.upcast(),
             &global,
             message.handle(),
-            Some(&global.origin().immutable().ascii_serialization()),
+            Some(global.origin().immutable().ascii_serialization().as_ref()),
             None,
             vec![],
         );

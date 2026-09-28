@@ -14,6 +14,8 @@ use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::filelist::FileList;
+use script_bindings::cell::DomRefCell;
+use crate::dom::html::form_controls::input_type::text_input_widget::TextInputWidget;
 use crate::dom::html::form_controls::htmlinputelement::{
     HTMLInputElement, InputActivationState, ValueMode,
 };
@@ -362,6 +364,8 @@ impl TryFrom<&InputType> for InputMethodType {
 
 pub(crate) trait SpecificInputType {
     fn sanitize_value(&self, _input: &HTMLInputElement, _value: &mut DOMString) {}
+
+    fn text_input_widget(&self) -> Option<&DomRefCell<TextInputWidget>>;
 
     fn convert_string_to_number(&self, _value: &str) -> Option<f64> {
         None

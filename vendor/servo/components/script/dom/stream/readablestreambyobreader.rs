@@ -263,7 +263,7 @@ impl ReadableStreamBYOBReader {
         self.generic_release(cx).expect("Generic release failed");
         // Let e be a new TypeError exception.
         rooted!(&in(cx) let mut error = UndefinedValue());
-        Error::Type(c"Reader is released".to_owned()).to_jsval(
+        Error::Type(c"Reader is released".to_owned()).safe_to_jsval(
             cx,
             &self.global(),
             error.handle_mut(),

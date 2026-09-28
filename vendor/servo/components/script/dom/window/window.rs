@@ -71,7 +71,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::codegen::GenericBindings::WindowBinding::ScrollToOptions;
 use script_bindings::dom::UnrootedDom;
-use script_bindings::interfaces::{HasOrigin, WindowHelpers};
+use script_bindings::interfaces::{HasOrigin, WindowHelpers, StackRootPromiseHelpers};
 use script_bindings::like::Setlike;
 use script_bindings::principals::ServoJSPrincipals;
 use script_bindings::reflector::DomObject;
@@ -110,6 +110,7 @@ use webrender_api::units::{DeviceIntSize, DevicePixel, LayoutPixel, LayoutPoint}
 
 use crate::dom::StatelessWorkletThreadPool;
 use crate::dom::RootedPromise;
+use crate::dom::bindings::callback::RootedCallback;
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
     DocumentMethods, DocumentReadyState, NamedPropertyValue,
@@ -1711,11 +1712,11 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-queuemicrotask>
-    fn QueueMicrotask(&self, cx: &JSContext, callback: Rc<VoidFunction>) {
+    fn QueueMicrotask(&self, cx: &JSContext, callback: RootedCallback<VoidFunction>) {
         ScriptThread::enqueue_microtask(
             cx,
             Box::new(UserMicrotask {
-                callback,
+                callback: callback.to_traced(),
                 global: Dom::from_ref(&self.globalscope),
             }),
         );
@@ -1846,10 +1847,12 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-requestanimationframe>
-    fn RequestAnimationFrame(&self, callback: Rc<FrameRequestCallback>) -> Fallible<u32> {
+    fn RequestAnimationFrame(&self, callback: RootedCallback<FrameRequestCallback>) -> Fallible<u32> {
         Ok(self
             .Document()
-            .request_animation_frame(AnimationFrameCallback::FrameRequestCallback { callback }))
+            .request_animation_frame(AnimationFrameCallback::FrameRequestCallback {
+                callback: callback.to_traced(),
+            }))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-cancelanimationframe>
@@ -1879,7 +1882,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         &self,
         cx: &mut JSContext,
         message: HandleValue,
-        options: RootedTraceableBox<WindowPostMessageOptions>,
+        options: &WindowPostMessageOptions,
     ) -> ErrorResult {
         auto_root!(&in(cx) let transfer = options
             .parent
@@ -2257,7 +2260,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         &self,
         realm: &mut CurrentRealm,
         input: RequestOrUSVString,
-        init: RootedTraceableBox<RequestInit>,
+        init: &RequestInit,
     ) -> RootedPromise {
         fetch::Fetch(self.upcast(), input, init, realm)
     }
@@ -2267,7 +2270,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         &self,
         cx: &mut JSContext,
         input: RequestInfo,
-        init: RootedTraceableBox<DeferredRequestInit>,
+        init: &DeferredRequestInit,
     ) -> Fallible<DomRoot<FetchLaterResult>> {
         fetch::FetchLater(cx, self, input, init)
     }
@@ -2420,7 +2423,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         &self,
         cx: &mut JSContext,
         value: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
         retval: MutableHandleValue,
     ) -> Fallible<()> {
         self.as_global_scope()

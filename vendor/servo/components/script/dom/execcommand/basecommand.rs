@@ -33,6 +33,7 @@ use crate::dom::execcommand::commands::hilitecolor::execute_hilitecolor_command;
 use crate::dom::execcommand::commands::indent::execute_indent_command;
 use crate::dom::execcommand::commands::inserthorizontalrule::execute_insert_horizontal_rule_command;
 use crate::dom::execcommand::commands::insertimage::execute_insert_image_command;
+use crate::dom::execcommand::commands::insertlinebreak::execute_insert_line_break_command;
 use crate::dom::execcommand::commands::insertparagraph::execute_insert_paragraph_command;
 use crate::dom::execcommand::commands::inserttext::execute_insert_text_command;
 use crate::dom::execcommand::commands::italic::execute_italic_command;
@@ -377,7 +378,7 @@ impl CommandName {
         };
         let mut at_least_two_different_effective_values = false;
         let mut previous_effective_value: Option<DOMString> = None;
-        active_range.for_each_effectively_contained_child(|node| {
+        active_range.for_each_effectively_contained_child(cx, |cx, node| {
             if at_least_two_different_effective_values || !node.is_formattable(cx.no_gc()) {
                 return;
             }
@@ -426,7 +427,7 @@ impl CommandName {
                 let active_range = selection.active_range(cx)?;
                 let mut at_least_one_child_is_formattable = false;
                 let mut all_children_have_matching_command_values = true;
-                active_range.for_each_effectively_contained_child(|node| {
+                active_range.for_each_effectively_contained_child(cx, |cx, node| {
                     if !node.is_formattable(cx.no_gc()) {
                         return;
                     }
@@ -753,6 +754,9 @@ impl CommandName {
             },
             CommandName::InsertImage => {
                 execute_insert_image_command(cx, document, selection, value)
+            },
+            CommandName::InsertLineBreak => {
+                execute_insert_line_break_command(cx, document, selection)
             },
             CommandName::InsertParagraph => {
                 execute_insert_paragraph_command(cx, document, selection)

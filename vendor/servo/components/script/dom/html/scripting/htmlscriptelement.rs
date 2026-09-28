@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::CStr;
@@ -9,6 +11,7 @@ use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use bytes::{Bytes, BytesMut};
 use dom_struct::dom_struct;
 use encoding_rs::Encoding;
 use html5ever::{LocalName, Prefix, local_name};
@@ -281,7 +284,7 @@ struct ClassicContext {
     /// script" algorithm.
     character_encoding: &'static Encoding,
     /// The response body received to date.
-    data: Vec<u8>,
+    data: BytesMut,
     /// The response metadata received to date.
     metadata: Option<Metadata>,
     /// The initial URL requested.
@@ -338,10 +341,10 @@ impl FetchResponseListener for ClassicContext {
         &mut self,
         _: &mut js::context::JSContext,
         _: RequestId,
-        mut chunk: Vec<u8>,
+        chunk: Bytes,
     ) {
         if self.status.is_ok() {
-            self.data.append(&mut chunk);
+            self.data.extend_from_slice(&chunk);
         }
     }
 
@@ -535,7 +538,7 @@ fn fetch_a_classic_script(
         elem: Trusted::new(script),
         kind,
         character_encoding,
-        data: vec![],
+        data: BytesMut::new(),
         metadata: None,
         url,
         status: Ok(()),

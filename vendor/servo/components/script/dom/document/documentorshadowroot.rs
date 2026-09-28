@@ -394,7 +394,10 @@ impl DocumentOrShadowRoot {
             // > If value’s constructed flag is not set, or its constructor document is not equal
             // > to this DocumentOrShadowRoot’s node document, throw a "NotAllowedError" DOMException.
             if !sheet.constructor_document_matches(owner_doc) {
-                return Err(Error::NotAllowed(None));
+                return Err(Error::NotAllowed(Some(
+                    "Stylesheet is not constructed or its constructor document does not match"
+                        .into(),
+                )));
             }
         }
 
@@ -451,9 +454,8 @@ impl DocumentOrShadowRoot {
         incoming_value: HandleValue,
         owner: &StyleSheetListOwner,
     ) -> ErrorResult {
-        let maybe_stylesheets =
-            Vec::<DomRoot<CSSStyleSheet>>::safe_from_jsval(cx, incoming_value, ())
-                .map_err(|_| Error::JSFailed)?;
+        let maybe_stylesheets = Vec::<DomRoot<CSSStyleSheet>>::safe_from_jsval(cx, incoming_value, ())
+            .map_err(|_| Error::JSFailed)?;
 
         match maybe_stylesheets {
             ConversionResult::Success(stylesheets) => {

@@ -396,7 +396,7 @@ impl Promise {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
         rooted!(&in(cx) let mut v = UndefinedValue());
-        error.to_jsval(cx, &self.global(), v.handle_mut());
+        error.safe_to_jsval(cx, &self.global(), v.handle_mut());
         self.reject(cx, v.handle());
     }
 

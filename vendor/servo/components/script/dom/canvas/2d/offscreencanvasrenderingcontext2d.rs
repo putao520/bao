@@ -6,13 +6,14 @@ use dom_struct::dom_struct;
 use euclid::default::Size2D;
 use js::context::{JSContext, NoGC};
 use pixels::Snapshot;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_canvas_traits::canvas::CanvasCommand;
 
 use crate::canvas_context::{CanvasContext, HTMLCanvasElementOrOffscreenCanvas};
 use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::{
     CanvasDirection, CanvasFillRule, CanvasImageSource, CanvasLineCap, CanvasLineJoin,
-    CanvasRenderingContext2DMethods, CanvasTextAlign, CanvasTextBaseline,
+    CanvasRenderingContext2DMethods, CanvasRenderingContext2DSettings, CanvasTextAlign,
+    CanvasTextBaseline,
 };
 use crate::dom::bindings::codegen::Bindings::DOMMatrixBinding::DOMMatrix2DInit;
 use crate::dom::bindings::codegen::Bindings::OffscreenCanvasRenderingContext2DBinding::OffscreenCanvasRenderingContext2DMethods;
@@ -45,9 +46,10 @@ impl OffscreenCanvasRenderingContext2D {
         global: &GlobalScope,
         canvas: HTMLCanvasElementOrOffscreenCanvas,
         size: Size2D<u32>,
+        settings: &CanvasRenderingContext2DSettings,
     ) -> Option<OffscreenCanvasRenderingContext2D> {
         Some(OffscreenCanvasRenderingContext2D {
-            context: CanvasRenderingContext2D::new_inherited(global, canvas, size)?,
+            context: CanvasRenderingContext2D::new_inherited(global, canvas, size, settings)?,
         })
     }
 
@@ -56,14 +58,16 @@ impl OffscreenCanvasRenderingContext2D {
         global: &GlobalScope,
         canvas: &OffscreenCanvas,
         size: Size2D<u32>,
+        settings: &CanvasRenderingContext2DSettings,
     ) -> Option<DomRoot<OffscreenCanvasRenderingContext2D>> {
         OffscreenCanvasRenderingContext2D::new_inherited(
             global,
             HTMLCanvasElementOrOffscreenCanvas::OffscreenCanvas(Dom::from_ref(canvas)),
             size,
+            settings,
         )
         .map(|context| {
-            let context = reflect_dom_object_with_cx(Box::new(context), global, cx);
+            let context = reflect_dom_object(cx, Box::new(context), global);
             context.context.update_associated_memory_size();
             context
         })
@@ -107,6 +111,14 @@ impl CanvasContext for OffscreenCanvasRenderingContext2D {
 impl OffscreenCanvasRenderingContext2DMethods<crate::DomTypeHolder>
     for OffscreenCanvasRenderingContext2D
 {
+    /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-canvas-getcontextattributes>
+    fn GetContextAttributes(&self) -> CanvasRenderingContext2DSettings {
+        // The getContextAttributes() method steps are to return «[ "alpha" → this's alpha,
+        // "desynchronized" → this's desynchronized, "colorSpace" → this's color space,
+        // "colorType" → this's color type, "willReadFrequently" → this's will read frequently ]».
+        self.context.GetContextAttributes()
+    }
+
     /// <https://html.spec.whatwg.org/multipage/offscreencontext2d-canvas>
     fn Canvas(&self) -> DomRoot<OffscreenCanvas> {
         match self.context.canvas() {
@@ -423,7 +435,7 @@ impl OffscreenCanvasRenderingContext2DMethods<crate::DomTypeHolder>
         self.context.PutImageData(no_gc, imagedata, dx, dy)
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-context-2d-putimagedata
+    /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-putimagedata>
     fn PutImageData_(
         &self,
         no_gc: &NoGC,

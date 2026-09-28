@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::{f64, ptr};
 
 use dom_struct::dom_struct;
@@ -11,6 +11,7 @@ use encoding_rs::Encoding;
 use fonts::{ByteIndex, TextByteRange};
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::JSContext;
+use js::context::NoGC;
 use js::jsapi::{ClippedTime, JSObject, RegExpFlag_UnicodeSets, RegExpFlags};
 use js::jsval::UndefinedValue;
 use js::rust::wrappers2::{
@@ -20,7 +21,7 @@ use js::rust::wrappers2::{
 use js::rust::{HandleObject, MutableHandleObject};
 use layout_api::{ScriptSelection, SharedSelection};
 use num_traits::ToPrimitive;
-use script_bindings::cell::{DomRefCell, Ref};
+use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::domstring::parse_floating_point_number;
 use servo_base::generic_channel::GenericSender;
@@ -957,6 +958,15 @@ impl<'dom> LayoutDom<'dom, HTMLInputElement> {
 }
 
 impl TextControlElement for HTMLInputElement {
+    fn as_element(&self) -> &Element {
+        self.upcast::<Element>()
+    }
+    fn text_input<'a>(&'a self) -> Ref<'a, TextInput<EmbedderClipboardProvider>> {
+        self.textinput.borrow()
+    }
+    fn text_input_mut<'a>(&'a self) -> RefMut<'a, TextInput<EmbedderClipboardProvider>> {
+        self.textinput.borrow_mut()
+    }
     /// <https://html.spec.whatwg.org/multipage/#concept-input-apply>
     fn selection_api_applies(&self) -> bool {
         matches!(
@@ -1553,8 +1563,8 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-willvalidate>
-    fn WillValidate(&self) -> bool {
-        self.is_instance_validatable()
+    fn WillValidate(&self, no_gc: &NoGC) -> bool {
+        self.is_instance_validatable(no_gc)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validity>
@@ -2456,7 +2466,7 @@ impl Validatable for HTMLInputElement {
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
-    fn is_instance_validatable(&self) -> bool {
+    fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
         // https://html.spec.whatwg.org/multipage/#hidden-state-(type%3Dhidden)%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#button-state-(type%3Dbutton)%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#reset-button-state-(type%3Dreset)%3Abarred-from-constraint-validation
@@ -2468,7 +2478,7 @@ impl Validatable for HTMLInputElement {
             _ => {
                 !(self.upcast::<Element>().disabled_state() ||
                     self.ReadOnly() ||
-                    is_barred_by_datalist_ancestor(self.upcast()))
+                    is_barred_by_datalist_ancestor(no_gc, self.upcast()))
             },
         }
     }

@@ -4,7 +4,6 @@
 
 use std::cell::Cell;
 use std::ptr::{NonNull, null_mut};
-use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -23,6 +22,7 @@ use js::rust::wrappers2::{
 use js::rust::{HandleValue, MutableHandle};
 use net_traits::image_cache::ImageCache;
 use pixels::PixelFormat;
+use script_bindings::callback::RootedCallback;
 use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
 use script_bindings::reflector::DomObject;
@@ -50,7 +50,6 @@ use crate::dom::paintrenderingcontext2d::PaintRenderingContext2D;
 use crate::dom::paintsize::PaintSize;
 use crate::dom::worklet::WorkletExecutor;
 use crate::dom::workletglobalscope::{WorkletGlobalScope, WorkletGlobalScopeInit};
-use crate::runtime::microtask::MicrotaskQueue;
 
 /// <https://drafts.css-houdini.org/css-paint-api/#paintworkletglobalscope>
 #[dom_struct]
@@ -95,7 +94,6 @@ impl PaintWorkletGlobalScope {
         executor: WorkletExecutor,
         init: &WorkletGlobalScopeInit,
         closing: Arc<AtomicBool>,
-        microtask_queue: Rc<MicrotaskQueue>,
     ) -> DomRoot<PaintWorkletGlobalScope> {
         debug!(
             "Creating paint worklet global scope for pipeline {}.",
@@ -109,7 +107,6 @@ impl PaintWorkletGlobalScope {
                 executor,
                 init,
                 closing,
-                microtask_queue,
             ),
             image_cache: init.image_cache.clone(),
             paint_definitions: Default::default(),
@@ -575,7 +572,7 @@ impl PaintWorkletGlobalScopeMethods<crate::DomTypeHolder> for PaintWorkletGlobal
         &self,
         cx: &mut JSContext,
         name: DOMString,
-        paint_ctor: Rc<VoidFunction>,
+        paint_ctor: RootedCallback<VoidFunction>,
     ) -> Fallible<()> {
         let name = Atom::from(name);
         rooted!(&in(cx) let paint_obj = paint_ctor.callback_holder().get());

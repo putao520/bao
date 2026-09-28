@@ -15,6 +15,7 @@ use servo_url::ImmutableOrigin;
 use storage_traits::cache_storage::{CacheStorageThreadMessage, CacheStorageThreadResponse};
 use storage_traits::client_storage::{StorageIdentifier, StorageProxyMap, StorageType};
 
+use crate::dom::serviceworker::cache::Cache;
 use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use script_bindings::interfaces::StackRootPromiseHelpers;
 use crate::dom::bindings::codegen::Bindings::CacheStorageBinding::CacheStorageMethods;
@@ -116,6 +117,60 @@ impl CacheStorage {
                     error!("No pending promise for HasCacheResult response.");
                 }
             },
+            CacheStorageThreadResponse::OpenCacheResult { result, cache_name } => {
+                let Some(promise) = self
+                    .pending_promises
+                    .borrow_mut()
+                    .pop_front()
+                    .map(|promise| promise.root(cx))
+                else {
+                    debug_assert!(false, "No pending promise for OpenCacheResult response.");
+                    return;
+                };
+                if result.is_err() {
+                    promise.reject_error(
+                        cx,
+                        Error::Operation(Some(
+                            result
+                                .err()
+                                .unwrap_or_else(|| "OpenCacheResult error".to_string()),
+                        )),
+                    );
+                    return;
+                };
+                // Resolve promise with a new Cache object that represents value.
+                let cache = Cache::new(cx, &self.global(), DOMString::from(cache_name));
+                promise.resolve_native(cx, &cache);
+            },
+            // <https://w3c.github.io/ServiceWorker/#dom-cachestorage-delete>
+            CacheStorageThreadResponse::DeleteCacheResult(result) => {
+                let Some(promise) = self
+                    .pending_promises
+                    .borrow_mut()
+                    .pop_front()
+                    .map(|promise| promise.root(cx))
+                else {
+                    debug_assert!(false, "No pending promise for DeleteCacheResult response.");
+                    return;
+                };
+                let Ok(deleted) = result else {
+                    promise.reject_error(
+                        cx,
+                        Error::Operation(Some(
+                            result
+                                .err()
+                                .unwrap_or_else(|| "DeleteCacheResult error".to_string()),
+                        )),
+                    );
+                    return;
+                };
+                promise.resolve_native(cx, &deleted);
+            },
+            CacheStorageThreadResponse::KeysResult(_) => debug_assert!(
+                false,
+                "Unexpected KeysResult response in CacheStorage handle_response."
+            ),
+
         }
     }
 }

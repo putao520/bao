@@ -26,6 +26,7 @@ use crate::dom::bindings::codegen::Bindings::OffscreenCanvasBinding::{
     ImageEncodeOptions, OffscreenCanvasMethods,
     OffscreenRenderingContext as RootedOffscreenRenderingContext, OffscreenRenderingContextId,
 };
+use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasRenderingContext2DSettings;
 use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGLContextAttributes;
 use crate::dom::bindings::codegen::UnionTypes::HTMLCanvasElementOrOffscreenCanvas as RootedHTMLCanvasElementOrOffscreenCanvas;
 use crate::dom::bindings::conversions::ConversionResult;
@@ -160,8 +161,15 @@ impl OffscreenCanvas {
                 _ => None,
             };
         }
-        let context =
-            OffscreenCanvasRenderingContext2D::new(cx, &self.global(), self, self.get_size())?;
+        // BAO patch (fork-maintained, 2026-09-28): the fork's getContext face
+        // takes no options; webidl defaults == converting an empty dict.
+        let context = OffscreenCanvasRenderingContext2D::new(
+            cx,
+            &self.global(),
+            self,
+            self.get_size(),
+            &CanvasRenderingContext2DSettings::default(),
+        )?;
         *self.context.safe_borrow_mut(cx.no_gc()) = Some(OffscreenRenderingContext::Context2d(
             Dom::from_ref(&*context),
         ));

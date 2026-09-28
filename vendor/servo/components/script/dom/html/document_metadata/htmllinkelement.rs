@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::default::Default;
 use std::str::FromStr;
 
+use bytes::{Bytes, BytesMut};
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::{JSContext, NoGC};
@@ -186,7 +187,7 @@ impl HTMLLinkElement {
     // FIXME(emilio): These methods are duplicated with
     // HTMLStyleElement::set_stylesheet.
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    pub(crate) fn set_stylesheet(&self, new_stylesheet: Arc<Stylesheet>) {
+    pub(crate) fn set_stylesheet(&self, no_gc: &NoGC, new_stylesheet: Arc<Stylesheet>) {
         let owner = self.stylesheet_list_owner();
         if let Some(old_stylesheet) = self.stylesheet.borrow_mut().replace(new_stylesheet.clone()) {
             owner.remove_stylesheet(
@@ -194,7 +195,7 @@ impl HTMLLinkElement {
                 &old_stylesheet,
             );
         }
-        owner.add_owned_stylesheet(self.upcast(), new_stylesheet);
+        owner.add_owned_stylesheet(no_gc, self.upcast(), new_stylesheet);
     }
 
     pub(crate) fn get_stylesheet(&self) -> Option<Arc<Stylesheet>> {
@@ -675,7 +676,7 @@ impl HTMLLinkElement {
             link: Some(Trusted::new(self)),
             global: Trusted::new(&document.global()),
             type_: LinkFetchContextType::Prefetch,
-            response_body: vec![],
+            response_body: BytesMut::new(),
         };
 
         document.fetch_background(request, fetch_context);
@@ -991,9 +992,9 @@ impl HTMLLinkElement {
         let document = self.owner_document();
         let global = document.global();
 
-        // A module preload destination is "json", "style", or a script-like destination.
+        // A module preload destination is "json", "style", "text" or a script-like destination.
         let is_a_modulepreload_destination = match destination {
-            Destination::Json | Destination::Style => true,
+            Destination::Json | Destination::Style => true, // fork holdout: pinned csp has no Text destination
             // https://fetch.spec.whatwg.org/#ref-for-request-destination-script-like
             // While "xslt" can cause script execution, it is not relevant here.
             Destination::Xslt => false,
@@ -1317,7 +1318,7 @@ impl FetchResponseListener for FaviconFetchContext {
         &mut self,
         _: &mut js::context::JSContext,
         request_id: RequestId,
-        chunk: Vec<u8>,
+        chunk: Bytes,
     ) {
         self.image_cache.notify_pending_response(
             self.id,

@@ -14,6 +14,7 @@ use js::jsval::{JSVal, UndefinedValue};
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::JS_SetPendingException;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
+use script_bindings::callback::TracedCallback;
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
 use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
@@ -60,8 +61,7 @@ pub(crate) enum AbortAlgorithm {
 pub(crate) struct RemovableDomEventListener {
     pub(crate) event_target: Dom<EventTarget>,
     pub(crate) ty: DOMString,
-    #[conditional_malloc_size_of]
-    pub(crate) listener: Option<Rc<EventListener>>,
+    pub(crate) listener: Option<TracedCallback<EventListener>>,
     pub(crate) options: EventListenerOptions,
 }
 
@@ -132,7 +132,7 @@ impl AbortSignal {
             self.abort_reason.set(abort_reason);
         } else {
             rooted!(&in(cx) let mut rooted_error = UndefinedValue());
-            Error::Abort(None).to_jsval(cx, &global, rooted_error.handle_mut());
+            Error::Abort(None).safe_to_jsval(cx, &global, rooted_error.handle_mut());
             self.abort_reason.set(rooted_error.get())
         }
 
@@ -199,13 +199,14 @@ impl AbortSignal {
             },
             AbortAlgorithm::FetchLater(deferred_fetch_record_id) => {
                 global
+                    .fetch_group()
                     .deferred_fetch_record_for_id(deferred_fetch_record_id)
                     .abort();
             },
             AbortAlgorithm::DomEventListener(removable_listener) => {
                 removable_listener.event_target.remove_event_listener(
                     removable_listener.ty.clone(),
-                    &removable_listener.listener,
+                    removable_listener.listener.as_deref(),
                     &removable_listener.options,
                 );
             },
@@ -354,7 +355,7 @@ impl AbortSignalMethods<crate::DomTypeHolder> for AbortSignal {
             signal.abort_reason.set(abort_reason);
         } else {
             rooted!(&in(cx) let mut rooted_error = UndefinedValue());
-            Error::Abort(None).to_jsval(cx, global, rooted_error.handle_mut());
+            Error::Abort(None).safe_to_jsval(cx, global, rooted_error.handle_mut());
             signal.abort_reason.set(rooted_error.get())
         }
 
@@ -396,7 +397,7 @@ impl AbortSignalMethods<crate::DomTypeHolder> for AbortSignal {
                     let signal_for_task = signal_keepalive.root();
 
                     rooted!(&in(cx) let mut reason = UndefinedValue());
-                    Error::Timeout(None).to_jsval(
+                    Error::Timeout(None).safe_to_jsval(
                         cx,
                         &signal_for_task.global(),
                         reason.handle_mut(),

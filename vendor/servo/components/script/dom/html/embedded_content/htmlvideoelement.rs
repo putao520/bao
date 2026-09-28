@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use bytes::Bytes;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -520,7 +521,7 @@ impl FetchResponseListener for PosterFrameFetchContext {
         &mut self,
         _: &mut JSContext,
         request_id: RequestId,
-        payload: Vec<u8>,
+        payload: Bytes,
     ) {
         if self.cancelled {
             // An error was received previously, skip processing the payload.

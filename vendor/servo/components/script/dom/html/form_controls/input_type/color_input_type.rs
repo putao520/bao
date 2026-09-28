@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use std::cell::Ref;
 
-use cssparser::{Parser, ParserInput};
+use cssparser::Parser;
 use embedder_traits::{EmbedderControlRequest, RgbColor};
 use html5ever::{local_name, ns};
 use js::context::JSContext;
@@ -28,7 +28,9 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::form_controls::input_type::{SpecificInputActivationType, SpecificInputType};
 use crate::dom::htmlformelement::HTMLFormElement;
+use crate::dom::input_type::text_input_widget::TextInputWidget;
 use crate::dom::node::{Node, NodeTraits, UnbindContext};
+use crate::dom::text_control::TextControlElement;
 
 #[derive(Default, JSTraceable, MallocSizeOf, PartialEq)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -181,6 +183,10 @@ impl ColorInputType {
 }
 
 impl SpecificInputType for ColorInputType {
+    fn text_input_widget(&self) -> Option<&DomRefCell<TextInputWidget>> {
+        None
+    }
+
     fn sanitize_value(&self, input: &HTMLInputElement, value: &mut DOMString) {
         // > The value sanitization algorithm is as follows:
         // > Run update a color well control color for the element.
@@ -225,10 +231,10 @@ impl SpecificInputType for ColorInputType {
                 // https://html.spec.whatwg.org/multipage/#attr-input-colorspace
                 // > Whenever the element's alpha or colorspace attributes are changed,
                 // the user agent must run update a color well control color given the element.
-                let mut textinput = input.textinput_mut();
-                let mut value = textinput.get_content();
+                let mut text_input = input.text_input_mut();
+                let mut value = text_input.get_content();
                 Self::update_a_color_well_control_color(input, &mut value);
-                textinput.set_content(value);
+                text_input.set_content(value);
             },
             _ => {},
         }
@@ -270,8 +276,8 @@ fn parse_color_value(value: &str) -> AbsoluteColor {
         ParsingMode::DEFAULT,
         urlextradata,
     );
-    let mut input = ParserInput::new(value);
-    let mut input = Parser::new(&mut input);
+    let mut parser_input = cssparser::ParserInput::new(value);
+let mut input = Parser::new(&mut parser_input);
     Color::parse_and_compute(&context, &mut input, None)
         .map(|computed_color| computed_color.resolve_to_absolute(&AbsoluteColor::BLACK))
         .unwrap_or(AbsoluteColor::BLACK)

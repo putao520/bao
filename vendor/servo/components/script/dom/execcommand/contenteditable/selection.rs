@@ -846,7 +846,7 @@ impl Selection {
         };
         // Step 5. Let element list be all editable Elements effectively contained in the active range.
         // Step 6. For each element in element list, clear the value of element.
-        active_range.for_each_effectively_contained_child(|child| {
+        active_range.for_each_effectively_contained_child(cx, |cx, child: &Node| {
             if child.is_editable() &&
                 let Some(element_child) = child.downcast::<HTMLElement>()
             {
@@ -855,7 +855,7 @@ impl Selection {
         });
         // Step 7. Let node list be all editable nodes effectively contained in the active range.
         // Step 8. For each node in node list:
-        active_range.for_each_effectively_contained_child(|child| {
+        active_range.for_each_effectively_contained_child(cx, |cx, child: &Node| {
             if child.is_editable() {
                 // Step 8.1. Push down values on node.
                 child.push_down_values(cx, &command, new_value.clone());

@@ -3,10 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::cmp::{Ord, Ordering, PartialEq, PartialOrd};
+use std::cmp::{Ord, Ordering, PartialEq};
 
 use deny_public_fields::DenyPublicFields;
 use dom_struct::dom_struct;
+use js::context::NoGC;
 use script_bindings::reflector::Reflector;
 use servo_base::text::Utf16CodeUnits;
 
@@ -109,10 +110,8 @@ impl BoundaryPoint {
     pub(crate) fn node(&self) -> &MutDom<Node> {
         &self.node
     }
-}
 
-impl PartialOrd for BoundaryPoint {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    pub(crate) fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(bp_position(
             &self.node.get(),
             self.offset.get(),
@@ -131,7 +130,12 @@ impl PartialEq for BoundaryPoint {
 }
 
 /// <https://dom.spec.whatwg.org/#concept-range-bp-position>
-pub(crate) fn bp_position(a_node: &Node, a_offset: u32, b_node: &Node, b_offset: u32) -> Ordering {
+pub(crate) fn bp_position(
+    a_node: &Node,
+    a_offset: u32,
+    b_node: &Node,
+    b_offset: u32,
+) -> Ordering {
     // Step 1: Assert: nodeA and nodeB have the same root.
     debug_assert!(
         a_node.GetRootNode(&Default::default()) == b_node.GetRootNode(&Default::default())

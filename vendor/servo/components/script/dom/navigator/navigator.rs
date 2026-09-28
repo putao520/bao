@@ -8,6 +8,7 @@ use std::convert::TryInto;
 use std::ops::Deref;
 use std::sync::LazyLock;
 
+use bytes::Bytes;
 use dom_struct::dom_struct;
 use embedder_traits::{EmbedderMsg, ProtocolHandlerUpdateRegistration, RegisterOrUnregister};
 use headers::HeaderMap;
@@ -371,7 +372,7 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
         navigatorinfo::Language()
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-navigator-languages
+    /// <https://html.spec.whatwg.org/multipage/#dom-navigator-languages>
     fn Languages(&self, cx: &mut js::context::JSContext, retval: MutableHandleValue) {
         to_frozen_array(cx, &[self.Language()], retval)
     }
@@ -692,7 +693,7 @@ impl FetchResponseListener for BeaconFetchListener {
         &mut self,
         _: &mut js::context::JSContext,
         _: RequestId,
-        chunk: Vec<u8>,
+        chunk: Bytes,
     ) {
         _ = chunk;
     }

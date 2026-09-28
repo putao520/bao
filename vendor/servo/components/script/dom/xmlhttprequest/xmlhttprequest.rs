@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::borrow::ToOwned;
+use bytes::Bytes;
 use std::cell::Cell;
 use std::cmp;
 use std::default::Default;
@@ -125,10 +126,10 @@ impl FetchResponseListener for XHRContext {
         }
     }
 
-    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Bytes) {
         self.xhr
             .root()
-            .process_data_available(cx, self.gen_id, chunk);
+            .process_data_available(cx, self.gen_id, chunk.to_vec());
     }
 
     fn process_response_eof(

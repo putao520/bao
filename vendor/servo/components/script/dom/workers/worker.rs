@@ -240,7 +240,6 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             }
         }
 
-        #[cfg(feature = "webgl")]
         let webgl_chan = global
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
@@ -248,7 +247,6 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             global,
             Some(devtools_sender),
             Some(worker_id),
-            #[cfg(feature = "webgl")]
             webgl_chan,
         );
         let animation_frame_provider_supported = global
@@ -317,7 +315,7 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
         &self,
         cx: &mut JSContext,
         message: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
     ) -> ErrorResult {
         auto_root!(&in(cx) let guard = options
             .transfer

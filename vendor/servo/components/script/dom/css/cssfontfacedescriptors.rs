@@ -4,7 +4,7 @@
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use style::font_face::DescriptorId;
 
 use crate::dom::GlobalScope;
@@ -39,10 +39,10 @@ impl CSSFontFaceDescriptors {
         global: &GlobalScope,
         font_face_rule: &CSSFontFaceRule,
     ) -> DomRoot<CSSFontFaceDescriptors> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(CSSFontFaceDescriptors::new_inherited(font_face_rule)),
             global,
-            cx,
         )
     }
 
@@ -93,26 +93,22 @@ impl CSSFontFaceDescriptorsMethods<crate::DomTypeHolder> for CSSFontFaceDescript
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-fontstretch>
     fn FontStretch(&self) -> DOMString {
-        self.font_face_rule
-            .get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-font-stretch>
     fn Font_stretch(&self) -> DOMString {
-        self.font_face_rule
-            .get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-fontwidth>
     fn FontWidth(&self) -> DOMString {
-        self.font_face_rule
-            .get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-font-width>
     fn Font_width(&self) -> DOMString {
-        self.font_face_rule
-            .get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-unicoderange>

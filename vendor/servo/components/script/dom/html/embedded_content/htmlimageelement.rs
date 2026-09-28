@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use bytes::Bytes;
 use std::mem;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -226,7 +227,7 @@ impl FetchResponseListener for ImageContext {
         &mut self,
         _: &mut js::context::JSContext,
         request_id: RequestId,
-        payload: Vec<u8>,
+        payload: Bytes,
     ) {
         if self.status.is_ok() {
             self.image_cache.notify_pending_response(

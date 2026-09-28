@@ -26,7 +26,7 @@ use js::rust::wrappers2::{
 };
 use js::rust::{
     CapturedJSStack, HandleObject, HandleValue, IdVector, ToNumber, ToString,
-    describe_scripted_caller_safe, for_of,
+    describe_scripted_caller, for_of,
 };
 use script_bindings::conversions::get_dom_class;
 
@@ -47,13 +47,14 @@ const MAX_LOG_CHILDREN: usize = 15;
 pub(crate) struct Console;
 
 impl Console {
+    #[allow(unsafe_code)]
     fn build_message(
         cx: &mut JSContext,
         level: ConsoleLogLevel,
         arguments: Vec<DebuggerValue>,
         stacktrace: Option<Vec<StackFrame>>,
     ) -> ConsoleMessage {
-        let caller = describe_scripted_caller_safe(cx).unwrap_or_default();
+        let caller = unsafe { describe_scripted_caller(&*cx as *const _ as *mut _) }.unwrap_or_default();
 
         ConsoleMessage {
             fields: ConsoleMessageFields {
@@ -262,7 +263,7 @@ fn console_map_object_from_handle_value(
     }
 
     let mut entries = Vec::new();
-    for_of(cx, iterator.handle(), |cx: &mut JSContext, entry| {
+    for_of(cx, iterator.handle(), |cx, entry| {
         if !entry.is_object() {
             return Err(().into());
         }

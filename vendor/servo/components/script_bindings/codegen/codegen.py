@@ -1002,8 +1002,11 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
 
         if descriptor.interface.isCallback():
             name = descriptor.nativeType
-            declType = CGWrapper(CGGeneric(f"{name}<D>"), pre="Rc<", post=">")
+            pre = "Rc" if descriptor.useRcCallback else "RootedCallback"
+            declType = CGWrapper(CGGeneric(f"{name}<D>"), pre=f"{pre}<", post=">")
             template = f"{name}::new(cx, ${{val}}.get().to_object())"
+            if not descriptor.useRcCallback:
+                template = f"RootedCallback::from({template})"
             if type.nullable():
                 declType = CGWrapper(declType, pre="Option<", post=">")
                 template = wrapObjectTemplate(f"Some({template})", "None",
@@ -1250,8 +1253,10 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
                 failureCode)
 
         if defaultValue is not None:
-            assert allowTreatNonObjectAsNull
-            assert type.treatNonObjectAsNull()
+            # BAO patch (fork-maintained, 2026-09-28): 629cb3d31 parity — the
+            # fork-only asserts rejected nullable callbacks with `= null`
+            # defaults (e.g. Geolocation's errorCallback); upstream end keeps
+            # only the nullable assert here.
             assert type.nullable()
             assert isinstance(defaultValue, IDLNullValue)
             default = "None"
@@ -1332,7 +1337,7 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
         declType = CGGeneric(typeName)
         empty = f"{typeName.replace('<D>', '')}::empty()"
 
-        if type_needs_tracing(type):
+        if type_needs_tracing(type) and not isArgument:
             declType = CGTemplatedType("RootedTraceableBox", declType)
 
         template = fromJSValTemplate("()", failOrPropagate, exceptionCode)
@@ -1678,7 +1683,8 @@ def getRetvalDeclarationForType(returnType: IDLType | None, descriptorProvider: 
     if returnType.isCallback():
         # pyrefly: ignore  # missing-attribute
         callback = returnType.unroll().callback
-        result = CGGeneric(f'Rc<{getModuleFromObject(callback)}::{callback.identifier.name}<D>>')
+        typeName = "Rc" if descriptorProvider.callbackUsesRc(callback.identifier.name) else "RootedCallback"
+        result = CGGeneric(f'{typeName}<{getModuleFromObject(callback)}::{callback.identifier.name}<D>>')
         if returnType.nullable():
             result = CGWrapper(result, pre="Option<", post=">")
         return result
@@ -4294,7 +4300,7 @@ class CGCallGenerator(CGThing):
         args = CGList([CGGeneric(arg) for arg in argsPre], ", ")
         for (a, name) in arguments:
             # XXXjdm Perhaps we should pass all nontrivial types by borrowed pointer
-            if a.type.isDictionary() and not type_needs_tracing(a.type):
+            if a.type.isDictionary():
                 name = f"&{name}"
             args.append(CGGeneric(name))
 
@@ -5644,7 +5650,7 @@ impl{self.generic} Clone for {self.type}{self.genericSuffix} {{
             if type_needs_tracing(t):
                 return "RootedTraceableBox"
             if t.isCallback():
-                return "Rc"
+                return "Rc" if self.descriptorProvider.callbackUsesRc(t.name) else "RootedCallback"
             return ""
 
         assert self.type.flatMemberTypes is not None
@@ -5864,7 +5870,8 @@ class CGUnionConversionStruct(CGThing):
         if type_needs_tracing(t):
             actualType = f"RootedTraceableBox<{actualType}>"
         if t.isCallback():
-            actualType = f"Rc<{actualType}>"
+            typeName = "Rc" if self.descriptorProvider.callbackUsesRc(t.name) else "RootedCallback"
+            actualType = f"{typeName}<{actualType}>"
         returnType = f"Result<Option<{actualType}>, ()>"
         jsConversion = templateVars["jsConversion"]
 
@@ -8437,7 +8444,10 @@ def argument_type(descriptorProvider: DescriptorProvider,
     elif optional and not defaultValue:
         declType = CGWrapper(declType, pre="Option<", post=">")
 
-    if ty.isDictionary() and not type_needs_tracing(ty):
+    # BAO patch (fork-maintained, 2026-09-28): 7c4b7b9ff adopted — dictionaries
+    # always pass by reference (the fork's earlier `not type_needs_tracing`
+    # condition left traced dicts as owned values, mismatching end impls).
+    if ty.isDictionary():
         declType = CGWrapper(declType, pre="&")
 
     if type_needs_auto_root(ty):

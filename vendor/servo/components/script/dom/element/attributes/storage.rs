@@ -265,6 +265,12 @@ impl<'a> AttributesBorrow<'a> {
 }
 
 impl AttributeStorage {
+    // BAO patch (fork-maintained, 2026-09-28): window-end capacity hint,
+    // ported for the synced attribute-cloning path.
+    pub(crate) fn reserve_exact(&self, additional: usize) {
+        self.0.borrow_mut().reserve_exact(additional);
+    }
+
     /// Borrow the attributes for read access with convenient `AttrRef` iteration.
     #[inline]
     pub(crate) fn borrow(&self) -> AttributesBorrow<'_> {

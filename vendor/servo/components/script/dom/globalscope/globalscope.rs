@@ -397,6 +397,7 @@ pub(crate) struct GlobalScope {
 
     /// <https://fetch.spec.whatwg.org/#environment-settings-object-fetch-group>
     #[no_trace]
+    #[no_trace]
     fetch_group: RefCell<FetchGroup>,
 }
 
@@ -818,6 +819,7 @@ impl GlobalScope {
             indexeddb: Default::default(),
             worker_map: DomRefCell::new(HashMapTracedValues::new_fx()),
             console_timers: DomRefCell::new(Default::default()),
+            fetch_group: Default::default(),
             module_map: DomRefCell::new(Default::default()),
             devtools_chan,
             mem_profiler_chan,
@@ -849,12 +851,11 @@ impl GlobalScope {
             notification_permission_request_callback_map: Default::default(),
             import_map: Default::default(),
             resolved_module_set: Default::default(),
-            fetch_group: Default::default(),
         }
     }
 
     /// The message-port router Id of the global, if any
-    fn port_router_id(&self) -> Option<MessagePortRouterId> {
+    pub(crate) fn port_router_id(&self) -> Option<MessagePortRouterId> {
         if let MessagePortState::Managed(id, _message_ports) = &*self.message_port_state.borrow() {
             Some(*id)
         } else {
@@ -863,7 +864,7 @@ impl GlobalScope {
     }
 
     /// Is this global managing a given port?
-    fn is_managing_port(&self, port_id: &MessagePortId) -> bool {
+    pub(crate) fn is_managing_port(&self, port_id: &MessagePortId) -> bool {
         if let MessagePortState::Managed(_router_id, message_ports) =
             &*self.message_port_state.borrow()
         {
@@ -969,7 +970,7 @@ impl GlobalScope {
     }
 
     /// Complete the transfer of a message-port.
-    fn complete_port_transfer(
+    pub(crate) fn complete_port_transfer(
         &self,
         cx: &mut js::context::JSContext,
         port_id: MessagePortId,
@@ -1009,7 +1010,7 @@ impl GlobalScope {
 
     /// The closing of `otherPort`, if it is in a different global.
     /// <https://html.spec.whatwg.org/multipage/#disentangle>
-    fn try_complete_disentanglement(
+    pub(crate) fn try_complete_disentanglement(
         &self,
         cx: &mut js::context::JSContext,
         port_id: MessagePortId,
@@ -1495,7 +1496,7 @@ impl GlobalScope {
 
     /// Custom routing logic, followed by the task steps of
     /// <https://html.spec.whatwg.org/multipage/#message-port-post-message-steps>
-    fn route_task_to_port(
+    pub(crate) fn route_task_to_port(
         &self,
         cx: &mut js::context::JSContext,
         port_id: MessagePortId,
@@ -3394,7 +3395,7 @@ impl GlobalScope {
         &self,
         cx: &mut js::context::JSContext,
         value: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
         retval: MutableHandleValue,
     ) -> Fallible<()> {
         let mut rooted = CustomAutoRooter::new(
@@ -3421,7 +3422,7 @@ impl GlobalScope {
         context: Listener,
         task_source: SendableTaskSource,
     ) {
-        let network_listener = NetworkListener::new(context, task_source);
+        let network_listener = NetworkListener::new(context, task_source, self);
         self.fetch_with_network_listener(request_builder, network_listener);
     }
 
@@ -3548,6 +3549,14 @@ impl GlobalScope {
         for deferred_fetch in self.deferred_fetches() {
             deferred_fetch.process(self);
         }
+    }
+
+    pub(crate) fn fetch_group(&self) -> Ref<'_, FetchGroup> {
+        self.fetch_group.borrow()
+    }
+
+    pub(crate) fn fetch_group_mut(&self) -> RefMut<'_, FetchGroup> {
+        self.fetch_group.borrow_mut()
     }
 
     pub(crate) fn import_map(&self) -> Ref<'_, ImportMap> {

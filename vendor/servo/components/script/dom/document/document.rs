@@ -93,7 +93,7 @@ use crate::dom::RootedPromise;
 use crate::dom::animationtimeline::AnimationTimeline;
 use crate::dom::attr::Attr;
 use crate::dom::beforeunloadevent::BeforeUnloadEvent;
-use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEvent_Binding::BeforeUnloadEventMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
@@ -743,9 +743,14 @@ pub(crate) struct Document {
     /// <https://html.spec.whatwg.org/multipage/#concept-document-internal-ancestor-origin-objects-list>
     #[no_trace]
     internal_ancestor_origin_objects_list: RefCell<Option<Vec<ImmutableOrigin>>>,
+    default_language: DomRefCell<Option<String>>,
 }
 
 impl Document {
+    pub(crate) fn set_default_language(&self, new_language: Option<String>) {
+        *self.default_language.borrow_mut() = new_language;
+    }
+
     pub(crate) fn history(&self, cx: &mut JSContext) -> DomRoot<History> {
         self.history.or_init(|| History::new(cx, &self.window))
     }
@@ -1975,6 +1980,7 @@ impl Document {
                 .task_manager()
                 .networking_task_source()
                 .into(),
+            global_scope: Trusted::new(&*self.owner_global()),
         }
         .into_callback();
         self.loader_mut()
@@ -2003,6 +2009,7 @@ impl Document {
                 .task_manager()
                 .networking_task_source()
                 .into(),
+            global_scope: Trusted::new(&*self.owner_global()),
         }
         .into_callback();
         self.loader_mut().fetch_async_background(request, callback);
@@ -4031,6 +4038,7 @@ impl Document {
 
         Document {
             node: Node::new_document_node(),
+            default_language: Default::default(),
             document_or_shadow_root: DocumentOrShadowRoot::new(window),
             window: Dom::from_ref(window),
             has_browsing_context,
@@ -4777,7 +4785,12 @@ impl Document {
     ///
     /// <https://drafts.csswg.org/cssom/#documentorshadowroot-final-css-style-sheets>
     #[cfg_attr(crown, expect(crown::unrooted_must_root))] // Owner needs to be rooted already necessarily.
-    pub(crate) fn add_owned_stylesheet(&self, owner_node: &Element, sheet: Arc<Stylesheet>) {
+    pub(crate) fn add_owned_stylesheet(
+        &self,
+        _no_gc: &NoGC,
+        owner_node: &Element,
+        sheet: Arc<Stylesheet>,
+    ) {
         let insertion_point = {
             let stylesheets = &mut *self.stylesheets.borrow_mut();
 
@@ -6077,7 +6090,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         cx: &mut js::context::JSContext,
         root: &Node,
         what_to_show: u32,
-        filter: Option<Rc<NodeFilter>>,
+        filter: Option<RootedCallback<NodeFilter>>,
     ) -> DomRoot<NodeIterator> {
         NodeIterator::new(cx, self, root, what_to_show, filter)
     }
@@ -6088,7 +6101,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         cx: &mut JSContext,
         root: &Node,
         what_to_show: u32,
-        filter: Option<Rc<NodeFilter>>,
+        filter: Option<RootedCallback<NodeFilter>>,
     ) -> DomRoot<TreeWalker> {
         TreeWalker::new(cx, self, root, what_to_show, filter)
     }
@@ -6774,13 +6787,13 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             .upcast::<Node>()
             .traverse_preorder_non_rooting(cx.no_gc(), ShadowIncluding::Yes)
         {
-            node.upcast::<EventTarget>().remove_all_listeners();
+            node.upcast::<EventTarget>().remove_all_listeners(cx);
         }
 
         // Step 10. If document is the associated Document of document's relevant global object,
         // then erase all event listeners and handlers given document's relevant global object.
         if self.window.Document() == DomRoot::from_ref(self) {
-            self.window.upcast::<EventTarget>().remove_all_listeners();
+            self.window.upcast::<EventTarget>().remove_all_listeners(cx);
         }
 
         // Step 11. Replace all with null within document.
@@ -7016,10 +7029,10 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         &self,
         cx: &mut JSContext,
         expression: DOMString,
-        resolver: Option<Rc<XPathNSResolver>>,
+        resolver: Option<RootedCallback<XPathNSResolver>>,
     ) -> Fallible<DomRoot<crate::dom::types::XPathExpression>> {
         let parsed_expression =
-            parse_expression(cx, &expression.str(), resolver, self.is_html_document())?;
+            parse_expression(cx, &expression.str(), resolver.map(|r| r.native()), self.is_html_document())?;
         Ok(XPathExpression::new(
             cx,
             &self.window,
@@ -7040,12 +7053,12 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         cx: &mut JSContext,
         expression: DOMString,
         context_node: &Node,
-        resolver: Option<Rc<XPathNSResolver>>,
+        resolver: Option<RootedCallback<XPathNSResolver>>,
         result_type: u16,
         result: Option<&crate::dom::types::XPathResult>,
     ) -> Fallible<DomRoot<crate::dom::types::XPathResult>> {
         let parsed_expression =
-            parse_expression(cx, &expression.str(), resolver, self.is_html_document())?;
+            parse_expression(cx, &expression.str(), resolver.map(|r| r.native()), self.is_html_document())?;
         XPathExpression::new(cx, &self.window, None, parsed_expression).evaluate_internal(
             cx,
             context_node,
@@ -7104,7 +7117,7 @@ pub(crate) enum AnimationFrameCallback {
     },
     FrameRequestCallback {
         #[conditional_malloc_size_of]
-        callback: Rc<FrameRequestCallback>,
+        callback: TracedCallback<FrameRequestCallback>,
     },
 }
 

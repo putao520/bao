@@ -31,6 +31,7 @@ use layout_api::{
 };
 use net_traits::ReferrerPolicy;
 use net_traits::request::{CorsSettings, CredentialsMode};
+use script_bindings::callback::TracedCallback;
 use script_bindings::cell::{DomRefCell, Ref, RefMut};
 use script_bindings::codegen::GenericBindings::AnimationBinding::AnimationMethods;
 use script_bindings::codegen::GenericBindings::KeyframeEffectBinding::KeyframeEffectMethods;
@@ -490,7 +491,7 @@ impl Element {
     ) {
         self.ensure_rare_data(no_gc)
             .custom_element_reaction_queue
-            .push(CustomElementReaction::Callback(function, args));
+            .push(CustomElementReaction::Callback(TracedCallback::from(function), args));
     }
 
     pub(crate) fn push_upgrade_reaction(
@@ -5073,7 +5074,7 @@ impl Element {
                     .validity_state(cx)
                     .perform_validation_and_update(cx, ValidationFlags::all());
             }
-            return validatable.is_instance_validatable() && !validatable.satisfies_constraints(cx);
+            return validatable.is_instance_validatable(cx.no_gc()) && !validatable.satisfies_constraints(cx);
         }
 
         if let Some(internals) = self.get_element_internals() {
@@ -5082,12 +5083,12 @@ impl Element {
         false
     }
 
-    pub(crate) fn is_instance_validatable(&self) -> bool {
+    pub(crate) fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
         if let Some(validatable) = self.as_maybe_validatable() {
-            return validatable.is_instance_validatable();
+            return validatable.is_instance_validatable(no_gc);
         }
         if let Some(internals) = self.get_element_internals() {
-            return internals.is_instance_validatable();
+            return internals.is_instance_validatable(no_gc);
         }
         false
     }

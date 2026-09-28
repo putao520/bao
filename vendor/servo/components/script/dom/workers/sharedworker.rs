@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
@@ -588,7 +590,6 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             global,
             Some(devtools_sender),
             Some(worker_id),
-            #[cfg(feature = "webgl")]
             window.webgl_chan_value(),
         );
 

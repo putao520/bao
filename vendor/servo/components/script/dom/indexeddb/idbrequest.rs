@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 
 use dom_struct::dom_struct;
@@ -13,7 +15,7 @@ use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
 use script_bindings::reflector::{DomObject, reflect_dom_object_with_cx};
 use serde::{Deserialize, Serialize};
-use servo_base::generic_channel::GenericSend;
+use servo_base::generic_channel::{GenericSend, SendError};
 use storage_traits::indexeddb::{
     AsyncOperation, AsyncReadOnlyOperation, BackendError, BackendResult, IndexedDBKeyType,
     IndexedDBRecord, IndexedDBThreadMsg, IndexedDBTxnMode, PutItemResult, SyncOperation,
@@ -521,8 +523,11 @@ impl IDBRequest {
                 );
             }));
         };
-        let callback = GenericCallback::new(global.time_profiler_chan().clone(), closure)
-            .expect("Could not create callback");
+// BAO patch (fork-maintained, 2026-09-28): the fork's profile GenericCallback
+        // keeps the ProfilerChan parameter (fork holdout; window-end dropped it).
+        let callback =
+            GenericCallback::new(source.global().time_profiler_chan().clone(), closure)
+                .expect("Could not create callback");
         let operation = operation_fn(callback);
 
         if matches!(

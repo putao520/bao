@@ -6,6 +6,7 @@
 //! related to `type=module` for script thread or worker threads.
 
 use std::borrow::Cow;
+use bytes::Bytes;
 use std::cell::{OnceCell, RefCell};
 use std::collections::hash_map::Entry;
 use std::ffi::CStr;
@@ -84,7 +85,7 @@ pub(crate) fn gen_type_error(
     error: Error,
 ) -> RethrowError {
     rooted!(&in(cx) let mut thrown = UndefinedValue());
-    error.to_jsval(cx, global, thrown.handle_mut());
+    error.safe_to_jsval(cx, global, thrown.handle_mut());
 
     RethrowError(RootedTraceableBox::from_box(Heap::boxed(thrown.get())))
 }
@@ -581,10 +582,10 @@ impl FetchResponseListener for ModuleContext {
         &mut self,
         _: &mut js::context::JSContext,
         _: RequestId,
-        mut chunk: Vec<u8>,
+        mut chunk: Bytes,
     ) {
         if self.status.is_ok() {
-            self.data.append(&mut chunk);
+            self.data.extend_from_slice(&chunk);
         }
     }
 

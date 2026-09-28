@@ -2,8 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -21,7 +22,6 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::worklet::WorkletExecutor;
 use crate::dom::workletglobalscope::{WorkletGlobalScope, WorkletGlobalScopeInit};
-use crate::runtime::microtask::MicrotaskQueue;
 
 // check-tidy: no specs after this line
 
@@ -43,7 +43,6 @@ impl TestWorkletGlobalScope {
         init: &WorkletGlobalScopeInit,
         cx: &mut JSContext,
         closing: Arc<AtomicBool>,
-        microtask_queue: Rc<MicrotaskQueue>,
     ) -> DomRoot<TestWorkletGlobalScope> {
         debug!(
             "Creating test worklet global scope for pipeline {}.",
@@ -58,7 +57,6 @@ impl TestWorkletGlobalScope {
                 executor,
                 init,
                 closing,
-                microtask_queue,
             ),
             lookup_table: Default::default(),
         });

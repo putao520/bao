@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -15,7 +17,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use net_traits::ReferrerPolicy;
 use net_traits::request::Destination;
-use profile_traits::ipc as ProfiledIpc;
+use profile_traits::generic_channel::channel;
 use script_bindings::cell::DomRefCell;
 use script_traits::{NewPipelineInfo, UpdatePipelineIdReason};
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
@@ -93,7 +95,6 @@ pub(crate) struct HTMLIFrameElement {
     #[no_trace]
     sandboxing_flag_set: Cell<Option<SandboxingFlagSet>>,
     load_blocker: DomRefCell<Option<LoadBlocker>>,
-    throttled: Cell<bool>,
     #[conditional_malloc_size_of]
     script_window_proxies: Rc<ScriptWindowProxies>,
     /// <https://html.spec.whatwg.org/multipage/#current-navigation-was-lazy-loaded>
@@ -113,6 +114,7 @@ pub(crate) struct HTMLIFrameElement {
     /// on the initial creation of the iframe contents. If the iframe
     /// itself changes the `window.name`, that takes precedence.
     frozen_name: DomRefCell<Option<String>>,
+    throttled: Cell<bool>,
 }
 
 impl HTMLIFrameElement {
@@ -280,11 +282,11 @@ impl HTMLIFrameElement {
                 self.about_blank_pipeline_id.set(Some(new_pipeline_id));
 
                 let load_info = IFrameLoadInfoWithData {
+                    embedder_theme: window.embedder_theme(),
                     info: load_info,
                     load_data: load_data.clone(),
                     old_pipeline_id,
                     viewport_details,
-                    embedder_theme: window.embedder_theme(),
                 };
                 window
                     .as_global_scope()
@@ -293,15 +295,15 @@ impl HTMLIFrameElement {
                     .unwrap();
 
                 let new_pipeline_info = NewPipelineInfo {
+                    webview_id: window.webview_id(),
+                    embedder_theme: window.embedder_theme(),
                     parent_info: Some(window.pipeline_id()),
                     new_pipeline_id,
                     browsing_context_id,
-                    webview_id,
                     opener: None,
                     load_data,
                     viewport_details,
                     user_content_manager_id: None,
-                    embedder_theme: window.embedder_theme(),
                     target_snapshot_params,
                     frame_name: self.frozen_name.borrow().clone(),
                 };
@@ -313,11 +315,11 @@ impl HTMLIFrameElement {
             },
             PipelineType::Navigation => {
                 let load_info = IFrameLoadInfoWithData {
+                    embedder_theme: window.embedder_theme(),
                     info: load_info,
                     load_data,
                     old_pipeline_id,
                     viewport_details,
-                    embedder_theme: window.embedder_theme(),
                 };
                 window
                     .as_global_scope()
@@ -614,6 +616,14 @@ impl HTMLIFrameElement {
         }
     }
 
+    // BAO patch (fork-maintained, 2026-09-28): restored from the fork's
+    // throttling face (window-end caller in script_thread).
+    pub(crate) fn set_throttled(&self, throttled: bool) {
+        if self.throttled.get() != throttled {
+            self.throttled.set(throttled);
+        }
+    }
+
     fn destroy_nested_browsing_context(&self) {
         self.pipeline_id.set(None);
         self.pending_pipeline_id.set(None);
@@ -669,12 +679,12 @@ impl HTMLIFrameElement {
             browsing_context_id: Cell::new(None),
             webview_id: Cell::new(None),
             pipeline_id: Cell::new(None),
+            throttled: Cell::new(false),
             pending_pipeline_id: Cell::new(None),
             about_blank_pipeline_id: Cell::new(None),
             sandbox: Default::default(),
             sandboxing_flag_set: Cell::new(None),
             load_blocker: DomRefCell::new(None),
-            throttled: Cell::new(false),
             script_window_proxies: ScriptThread::window_proxies(),
             current_navigation_was_lazy_loaded: Default::default(),
             lazy_load_resumption_steps: Default::default(),
@@ -720,12 +730,6 @@ impl HTMLIFrameElement {
         self.sandboxing_flag_set
             .get()
             .unwrap_or_else(SandboxingFlagSet::empty)
-    }
-
-    pub(crate) fn set_throttled(&self, throttled: bool) {
-        if self.throttled.get() != throttled {
-            self.throttled.set(throttled);
-        }
     }
 
     /// Note a pending navigation.
@@ -837,7 +841,7 @@ impl HTMLIFrameElement {
                         .value()
                         .as_tokens()
                         .iter()
-                        .map(|atom| atom.to_string().to_ascii_lowercase())
+                        .map(|atom| atom.to_ascii_lowercase().to_string())
                         .collect();
                     parse_a_sandboxing_directive(&tokens)
                 });
@@ -883,8 +887,9 @@ impl HTMLIFrameElement {
         // TODO
 
         // Step 5. Destroy a document and its descendants given navigable's active document.
-        let (sender, receiver) =
-            ProfiledIpc::channel(self.global().time_profiler_chan().clone()).unwrap();
+        // BAO patch (fork-maintained, 2026-09-28): the fork's RemoveIFrame carries
+        // an IpcSender (generic_channel form not adopted).
+        let (sender, receiver) = ipc_channel::ipc::channel::<Vec<PipelineId>>().unwrap();
         let msg = ScriptToConstellationMessage::RemoveIFrame(browsing_context_id, sender);
         self.owner_window()
             .as_global_scope()

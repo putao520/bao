@@ -17,7 +17,7 @@ use http::header::{HeaderMap, HeaderValue, ValueIter};
 use hyper_serde::Serde;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
-use js::rust::describe_scripted_caller_safe;
+use js::rust::describe_scripted_caller;
 use log::warn;
 use servo_constellation_traits::{LoadData, LoadOrigin};
 use url::Url;
@@ -153,8 +153,8 @@ impl CspReporting for Option<CspList> {
             redirect_count: 0,
             destination: Destination::None,
             initiator: Initiator::None,
-            nonce: "".to_owned(),
-            integrity_metadata: "".to_owned(),
+            nonce: String::new(),
+            integrity_metadata: String::new(),
             parser_metadata: ParserMetadata::None,
         };
         // TODO: set correct navigation check type for form submission if applicable
@@ -202,10 +202,11 @@ impl CspReporting for Option<CspList> {
             if let Some(container_element) = window_proxy.frame_element() {
                 let container_document = container_element.owner_document();
                 let parent_origin = Url::parse(
-                    &container_document
+                    container_document
                         .origin()
                         .immutable()
-                        .ascii_serialization(),
+                        .ascii_serialization()
+                        .as_ref(),
                 )
                 .expect("Must always be able to parse document origin");
                 parent_navigable_origins.push(parent_origin);
@@ -214,6 +215,9 @@ impl CspReporting for Option<CspList> {
             }
             // Cross-origin parents go via the constellation (slower)
             if let Some(parent_proxy) = window_proxy.parent() {
+                // fork holdout: the fork windowproxy face exposes
+                // document_origin() (origin snapshot) — the internal ancestor
+                // origin objects list is a window-end constellation face.
                 let Some(parent_origin) = parent_proxy.document_origin() else {
                     break;
                 };
@@ -380,8 +384,9 @@ pub(crate) trait GlobalCspReporting {
     );
 }
 
+    #[allow(unsafe_code)]
 fn compute_scripted_caller_source_position(cx: &mut JSContext) -> SourcePosition {
-    match describe_scripted_caller_safe(cx) {
+    match unsafe { describe_scripted_caller(&*cx as *const _ as *mut _) } {
         Ok(scripted_caller) => SourcePosition {
             source_file: scripted_caller.filename,
             line_number: scripted_caller.line,

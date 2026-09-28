@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use bytes::Bytes;
 
 use content_security_policy::Destination;
 use dom_struct::dom_struct;
@@ -617,7 +618,7 @@ impl FetchResponseListener for HTMLTrackElementFetchListener {
     }
 
     /// Step 10.4 of <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, payload: Vec<u8>) {
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, payload: Bytes) {
         // > If, while fetching is ongoing, either:
         //     > the track URL changes so that it is no longer equal to URL,
         //       > while the text track mode is set to hidden or showing; or

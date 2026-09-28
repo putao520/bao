@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use cssparser::{Parser, ParserInput, serialize_identifier};
+use cssparser::{Parser, serialize_identifier};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::CSSBinding::PropertyDefinition;
@@ -54,8 +54,8 @@ impl CSSMethods<crate::DomTypeHolder> for CSS {
     /// <https://drafts.csswg.org/css-conditional/#dom-css-supports>
     fn Supports_(win: &Window, condition: DOMString) -> bool {
         let condition = condition.str();
-        let mut input = ParserInput::new(&condition);
-        let mut input = Parser::new(&mut input);
+        let mut parser_input = cssparser::ParserInput::new(&condition);
+let mut input = Parser::new(&mut parser_input);
         let cond = match parse_condition_or_declaration(&mut input) {
             Ok(c) => c,
             Err(..) => return false,
@@ -95,8 +95,12 @@ impl CSSMethods<crate::DomTypeHolder> for CSS {
             InvalidSyntax |
             InvalidInitialValue |
             NoInitialValue |
-            InitialValueNotComputationallyIndependent => Error::Syntax(None),
-            AlreadyRegistered => Error::InvalidModification(None),
+            InitialValueNotComputationallyIndependent => Error::Syntax(Some(
+                "CSS property value is not computationally independent".into(),
+            )),
+            AlreadyRegistered => {
+                Error::InvalidModification(Some("CSS property is already registered".into()))
+            },
         })
     }
 }

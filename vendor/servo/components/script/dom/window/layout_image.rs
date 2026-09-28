@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::image_cache::{ImageCache, PendingImageId};
 use net_traits::request::{Destination, InternalRequest, RequestBuilder, RequestId};
@@ -51,7 +52,7 @@ impl FetchResponseListener for LayoutImageContext {
         &mut self,
         _: &mut js::context::JSContext,
         request_id: RequestId,
-        payload: Vec<u8>,
+        payload: Bytes,
     ) {
         self.cache.notify_pending_response(
             self.id,

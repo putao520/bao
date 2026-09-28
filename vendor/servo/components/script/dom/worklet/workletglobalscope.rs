@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +16,7 @@ use js::context::JSContext;
 use net_traits::ResourceThreads;
 use net_traits::image_cache::ImageCache;
 use profile_traits::{mem, time};
+use script_bindings::cell::DomRefCell;
 use script_traits::Painter;
 use servo_base::generic_channel::GenericCallback;
 use servo_base::id::PipelineId;
@@ -22,10 +25,11 @@ use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
 use stylo_atoms::Atom;
 
+use crate::runtime::microtask::MicrotaskQueue;
 use crate::dom::Window;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::trace::CustomTraceable;
+use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues};
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::paintworkletglobalscope::PaintWorkletGlobalScope;
@@ -35,8 +39,8 @@ use crate::dom::testworkletglobalscope::TestWorkletGlobalScope;
 use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::worklet::WorkletExecutor;
 use crate::messaging::MainThreadScriptMsg;
+use crate::modules::script_module::{ModuleRequest, ModuleStatus};
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskQueue;
 use crate::tasks::task::TaskCanceller;
 use crate::tasks::task_manager::TaskManager;
 
@@ -64,13 +68,16 @@ pub(crate) struct WorkletGlobalScope {
     #[conditional_malloc_size_of]
     task_manager: Rc<TaskManager>,
 
-    /// The "microtask queue" for this WorkletGlobalScope's event loop.
-    /// <https://html.spec.whatwg.org/multipage/#microtask-queue>
-    #[conditional_malloc_size_of]
-    microtask_queue: Rc<MicrotaskQueue>,
-
     #[conditional_malloc_size_of]
     closing: Arc<AtomicBool>,
+
+    /// module map is used when importing JavaScript modules
+    /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
+    #[ignore_malloc_size_of = "mozjs"]
+    module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
+    /// <https://html.spec.whatwg.org/#microtask-queue>
+    #[conditional_malloc_size_of]
+    microtask_queue: Rc<MicrotaskQueue>,
 }
 
 impl WorkletGlobalScope {
@@ -85,7 +92,6 @@ impl WorkletGlobalScope {
         init: &WorkletGlobalScopeInit,
         cx: &mut JSContext,
         closing: Arc<AtomicBool>,
-        microtask_queue: Rc<MicrotaskQueue>,
     ) -> DomRoot<WorkletGlobalScope> {
         let scope: DomRoot<WorkletGlobalScope> = match scope_type {
             #[cfg(feature = "testbinding")]
@@ -97,7 +103,6 @@ impl WorkletGlobalScope {
                 init,
                 cx,
                 closing,
-                microtask_queue,
             )),
             WorkletGlobalScopeType::Paint => DomRoot::upcast(PaintWorkletGlobalScope::new(
                 cx,
@@ -107,7 +112,6 @@ impl WorkletGlobalScope {
                 executor,
                 init,
                 closing,
-                microtask_queue,
             )),
         };
 
@@ -126,11 +130,11 @@ impl WorkletGlobalScope {
         executor: WorkletExecutor,
         init: &WorkletGlobalScopeInit,
         closing: Arc<AtomicBool>,
-        microtask_queue: Rc<MicrotaskQueue>,
     ) -> Self {
         let script_event_loop_sender = executor.event_loop_sender();
 
         Self {
+            microtask_queue: crate::event_loop::script_thread::ScriptThread::microtask_queue(),
             globalscope: GlobalScope::new_inherited(
                 init.devtools_chan.clone(),
                 init.mem_profiler_chan.clone(),
@@ -158,9 +162,15 @@ impl WorkletGlobalScope {
                 }),
             )),
             origin: MutableOrigin::new(ImmutableOrigin::new_opaque()),
-            microtask_queue,
             closing,
+            module_map: Default::default(),
         }
+    }
+
+    pub(crate) fn module_map(
+        &self,
+    ) -> &DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>> {
+        &self.module_map
     }
 
     pub(crate) fn origin(&self) -> MutableOrigin {
@@ -204,6 +214,8 @@ impl WorkletGlobalScope {
 
     pub(crate) fn perform_a_microtask_checkpoint(&self, cx: &mut JSContext) {
         if !self.closing.load(Ordering::SeqCst) {
+            // (Bao) SM153: microtasks live in the engine-owned queue; drain via
+            // the fork's MicrotaskQueue (upstream end free-fn form not adopted).
             self.microtask_queue
                 .checkpoint(cx, vec![DomRoot::from_ref(&self.globalscope)]);
         }

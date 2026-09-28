@@ -10,6 +10,8 @@ use std::{fmt, mem, ptr};
 
 use js::gc::{Handle, Traceable as JSTraceable};
 use js::jsapi::{Heap, JSObject, JSTracer};
+use crate::dom::UnrootedDom;
+use js::context::NoGC;
 use js::rust::GCMethods;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 
@@ -210,6 +212,12 @@ impl<T: DomObject> Dom<T> {
     /// Return a rooted version of this DOM object ([`DomRoot<T>`]) suitable for use on the stack.
     pub fn as_rooted(&self) -> DomRoot<T> {
         DomRoot::from_ref(self)
+    }
+
+    // BAO patch (fork-maintained, 2026-09-28): window-end form, ported for the
+    // synced live-range/selection callers.
+    pub fn as_unrooted<'no_gc>(&self, no_gc: &'no_gc NoGC) -> UnrootedDom<'no_gc, T> {
+        UnrootedDom::from_dom(self.clone(), no_gc)
     }
 
     pub fn as_ptr(&self) -> *const T {

@@ -72,7 +72,7 @@ impl Request {
         }
     }
 
-    fn new(
+    pub(crate) fn new(
         cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
@@ -637,9 +637,9 @@ impl RequestMethods<crate::DomTypeHolder> for Request {
         global: &GlobalScope,
         proto: Option<HandleObject>,
         input: RequestInfo,
-        init: RootedTraceableBox<RequestInit>,
+        init: &RequestInit,
     ) -> Fallible<DomRoot<Request>> {
-        Self::constructor(cx, global, proto, input, &init)
+        Self::constructor(cx, global, proto, input, init)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-request-method>

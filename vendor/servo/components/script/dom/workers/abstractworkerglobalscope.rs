@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use crossbeam_channel::{Receiver, select};
 use devtools_traits::DevtoolScriptControlMsg;
 use rustc_hash::FxHashSet;
@@ -40,7 +42,7 @@ pub(crate) trait WorkerEventLoopMethods {
     fn control_receiver(&self) -> &Receiver<Self::ControlMsg>;
 }
 
-// https://html.spec.whatwg.org/multipage/#worker-event-loop
+/// <https://html.spec.whatwg.org/multipage/#worker-event-loop>
 pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
     worker_scope: &T,
     worker: Option<&TrustedWorkerAddress>,

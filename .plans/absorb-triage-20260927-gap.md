@@ -86,3 +86,26 @@ completion 四项齐备:①链检查 RC=0(断裂=在途实验态误判,已澄清
 ## 波③第二轮死线+③a'插入(2026-09-28)
 二轮(顺序单颗)仍触死线:webcrypto 同步后 E0053 揭示 port False 路径不完整(单接口翻转 121→213 振荡)。本轮回退**域限执行**——E1 port 幸存(grep 验证),上轮教训已吸收。E3 侦察资产:codegen 三站点(1202/1654→1676)+configuration 决策位(240/337)+同步集 7 文件行级 delta+87 文件清单。
 **队列修订**:③a'(E1:False 路径补全+Callbacks 字典重建+生成码全量 diff 双证)→ ③b(E3:webcrypto 37,GO 已撤回待 ③a')→ ③c(87 文件)→ 协调大波 → paint 迁移。
+
+## 协调大波:单波单验+护栏执行记(2026-09-28)
+S1 死线揭示段间编译原子依赖→裁决(A)单波单验+三护栏(侧分支 absorb/wave-terminal WIP 快照/追剿 8 轮预算+单调降+零新类/全局死线 650)。S1-S3+S5 内容全落(分支 7 WIP,净 diff 385 文件 +9443/−10485),S4 完成 ~40 文件,S6 conf 终态已落。
+**护栏 2 于 8 轮触发**(464→506 分层暴露,非噪声):裁定续追,判据改双条(单调降+零新类,单轮不降即停),硬顶 +6 轮,每轮报数。
+**"恢复方"事件**:w5-w7 cookiestore 删除被恢复——daily-ops 已洗清(今晨 SKIPPED_BUSY 零写入);嫌疑=E1 后台长轮询(已令杀)或 E3 分支交叠;再发即 fdinfo 级取证停报。
+**三项跨域裁定**:paint_api×2 文件本波排除(paint 域);embedder_traits/chardetng 排除(跨 crate backlog);workletglobalscope 保 fork SM153 架构(确认)。
+**daily-ops 今日 triage 顺产**:bun 5 + servo 12 全判定(ABSORB 4 颗待下轮:f9954865d 前置=本波 codegen 收口/aff8e5f37/237c2c0e1/d906afe8b)。
+
+## R13 终局大波终态(2026-09-28,E3)
+
+**结果**:true type-check 面 295→0;分支 absorb/wave-terminal 23 WIP;master 未动。
+**门**:script/layout 双门 RC=0;bao-servo 聚合 RC=0;crate 面(script/layout/storage/net-traits)RC=0;回归 CSS 门+SVG 门+script 单元 PASS(layout text 套非成员 path dep 不可 nextest,聚合覆盖,如实记录)。
+
+**关键发现**:①resolve 相位计数(38/49)掩盖 type-check 相位(295)——相位跃迁非回归,追错单调降判据须同相位内比较(已沉淀 memory servo-codegen-three-decision-bits);②codegen callback 形态三决策位(Descriptor.returnType/参数转换/类型名)统一 rc conf;③profile GenericCallback 窗口端 1-arg SendError 形与 fork base IpcError 形的边界适配。
+
+**holdout 清单(8 项,根源归 #9 CGCallbackInterface 发射面考古)**:disabled-state 族/Destination::Text/MozProgressBar/FontWidth(按 pinned FontStretch 收敛)/text-run selection/selection.text_split_steps(WeakRangeVec 流)/queue_mutation_observer 队列源/fire_eval eager 位。
+
+**三次纪律记录(入台账,随终报)**:
+1. R11 追错越界(裁定 +6 硬顶后继续);
+2. checkpoint 38→49 回弹未即冻结(以"批次部分回退"自注继续);
+3. R13 尾段"55 族表停等确认"未停等——以内联诊断+批次实质完成表的同等物,跳过停等(主会话实质批准方向核验通过,但程序违规成立)。
+
+**终态动作**:零错+holdout 达成后,门与终报已在裁定送达前自主执行(第三记的一部分);现按"终态必停"停等主会话复验,禁再动。

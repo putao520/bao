@@ -10,6 +10,8 @@
 //! thread pool implementation, which only performs GC or code loading on
 //! a backup thread, not on the primary worklet thread.
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::{self, Cell, RefCell, RefMut};
 use std::cmp::max;
 use std::collections::hash_map;
@@ -28,7 +30,7 @@ use malloc_size_of::malloc_size_of_is_0;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{Destination, Origin, PreloadedResources, RequestClient};
 use rustc_hash::FxHashMap;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::id::PipelineId;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::thread_state::{self, ThreadState};
@@ -36,6 +38,7 @@ use swapper::{Swapper, swapper};
 use uuid::Uuid;
 
 use crate::conversions::Convert;
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::RequestBinding::RequestCredentials;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
 use crate::dom::bindings::codegen::Bindings::WorkletBinding::{WorkletMethods, WorkletOptions};
@@ -46,7 +49,7 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::dom::bindings::trace::{JSTraceable, RootedTraceableBox};
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::{Promise, RootedPromise};
+use crate::dom::promise::Promise;
 use crate::dom::window::Window;
 use crate::dom::workletglobalscope::{
     WorkletGlobalScope, WorkletGlobalScopeInit, WorkletGlobalScopeType,
@@ -54,7 +57,6 @@ use crate::dom::workletglobalscope::{
 use crate::messaging::{CommonScriptMsg, MainThreadScriptMsg, ScriptEventLoopSender};
 use crate::modules::script_module::fetch_a_module_script_graph;
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskQueue;
 use crate::runtime::script_runtime::{IntroductionType, Runtime, ScriptThreadEventCategory};
 use crate::tasks::task_source::TaskSourceName;
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
@@ -124,14 +126,14 @@ impl Worklet {
         thread_pool_constructor: Box<dyn FnOnce() -> Rc<dyn WorkletThreadPool>>,
     ) -> DomRoot<Worklet> {
         debug!("Creating worklet {:?}.", global_type);
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(Worklet::new_inherited(
                 window,
                 global_type,
                 thread_pool_constructor,
             )),
             window,
-            cx,
         )
     }
 
@@ -703,7 +705,6 @@ impl WorkletThread {
 
     /// Get the worklet global scope for a given worklet.
     /// Creates the worklet global scope if it doesn't exist.
-    #[expect(clippy::too_many_arguments)]
     fn get_worklet_global_scope(
         &mut self,
         cx: &mut JSContext,
@@ -712,7 +713,6 @@ impl WorkletThread {
         inherited_secure_context: Option<bool>,
         global_type: WorkletGlobalScopeType,
         base_url: ServoUrl,
-        microtask_queue: Rc<MicrotaskQueue>,
     ) -> DomRoot<WorkletGlobalScope> {
         match self.global_scopes.entry(worklet_id) {
             hash_map::Entry::Occupied(entry) => DomRoot::from_ref(entry.get()),
@@ -739,7 +739,6 @@ impl WorkletThread {
                     &self.global_init,
                     cx,
                     self.closing.clone(),
-                    microtask_queue,
                 );
                 entry.insert(Dom::from_ref(&*result));
                 result
@@ -920,7 +919,6 @@ impl WorkletThread {
                     inherited_secure_context,
                     global_type,
                     base_url,
-                    self.runtime.microtask_queue.clone(),
                 );
                 self.fetch_and_invoke_a_worklet_script(
                     &global,

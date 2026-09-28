@@ -3,7 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use std::rc::Rc;
 use js::context::JSContext;
 use js::jsapi::CallArgs;
 use js::jsval::{Int32Value, JSVal};
@@ -62,12 +61,12 @@ impl CountQueuingStrategyMethods<crate::DomTypeHolder> for CountQueuingStrategy 
     }
 
     /// <https://streams.spec.whatwg.org/#cqs-size>
-    fn GetSize(&self, cx: &mut JSContext) -> Fallible<Rc<Function>> {
+    fn GetSize(&self, cx: &mut JSContext) -> Fallible<RootedCallback<Function>> {
         let global = self.global();
         // Return this's relevant global object's count queuing strategy
         // size function.
         if let Some(fun) = global.get_count_queuing_strategy_size() {
-            return Ok(fun);
+            return Ok(RootedCallback::from(fun));
         }
 
         // Step 1. Let steps be the following steps, given chunk
@@ -75,13 +74,11 @@ impl CountQueuingStrategyMethods<crate::DomTypeHolder> for CountQueuingStrategy 
 
         // Step 2. Let F be !CreateBuiltinFunction(steps, 1, "size", « »,
         // globalObject’s relevant Realm).
-        let fun = native_fn!(cx, count_queuing_strategy_size, c"size", 0, 0);
+        let fun = RootedCallback::from(native_fn!(cx, count_queuing_strategy_size, c"size", 0, 0));
         // Step 3. Set globalObject’s count queuing strategy size function to
         // a Function that represents a reference to F,
         // with callback context equal to globalObject’s relevant settings object.
-        global.set_count_queuing_strategy_size(RootedCallback::from(
-            fun.clone(),
-        ));
+        global.set_count_queuing_strategy_size(fun.clone());
         Ok(fun)
     }
 }

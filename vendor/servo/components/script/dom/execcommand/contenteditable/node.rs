@@ -8,6 +8,7 @@ use std::ops::Deref;
 use cssparser::color::OPAQUE;
 use html5ever::local_name;
 use js::context::{JSContext, NoGC};
+use script_bindings::codegen::GenericBindings::RangeBinding::RangeMethods;
 use script_bindings::inheritance::Castable;
 use style::attr::parse_legacy_color;
 use style::values::specified::box_::DisplayOutside;
@@ -20,7 +21,7 @@ use crate::dom::bindings::codegen::Bindings::HTMLAnchorElementBinding::HTMLAncho
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::inheritance::NodeTypeId;
-use crate::dom::bindings::root::{Dom, DomRoot, DomSlice, UnrootedDom};
+use crate::dom::bindings::root::{DomRoot, DomSlice, UnrootedDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::characterdata::CharacterData;
 use crate::dom::element::Element;
@@ -42,7 +43,7 @@ pub(crate) enum NodeOrString<'a> {
 
 impl<'a> NodeOrString<'a> {
     pub(crate) fn from_node(node: &Node, no_gc: &'a NoGC) -> NodeOrString<'a> {
-        NodeOrString::Node(UnrootedDom::from_dom(Dom::from_ref(node), no_gc))
+        NodeOrString::Node(UnrootedDom::from_ref(node, no_gc))
     }
 
     fn as_node(&self) -> Option<UnrootedDom<'a, Node>> {
@@ -231,8 +232,8 @@ where
     let (new_end_container, new_end_offset) =
         adjust_boundary_point(end_container, end_offset, should_adjust_end);
 
-    active_range.set_start(&new_start_container, new_start_offset);
-    active_range.set_end(&new_end_container, new_end_offset);
+    let _ = active_range.SetStart(&new_start_container, new_start_offset);
+    let _ = active_range.SetEnd(&new_end_container, new_end_offset);
 }
 
 /// <https://w3c.github.io/editing/docs/execCommand/#allowed-child>
@@ -673,14 +674,14 @@ where
             let start_offset = range.start_offset();
 
             if start_container == parent_of_new_parent && start_offset == new_parent.index() {
-                range.set_start(&start_container, start_offset + 1);
+                let _ = range.SetStart(&start_container, start_offset + 1);
             }
 
             let end_container = range.end_container();
             let end_offset = range.end_offset();
 
             if end_container == parent_of_new_parent && end_offset == new_parent.index() {
-                range.set_end(&end_container, end_offset + 1);
+                let _ = range.SetEnd(&end_container, end_offset + 1);
             }
         }
     }
@@ -1621,7 +1622,7 @@ impl Node {
         let Some(editing_host) = self.editing_host_of() else {
             return false;
         };
-        let self_unrooted = UnrootedDom::from_dom(Dom::from_ref(self), no_gc);
+        let self_unrooted = UnrootedDom::from_ref(self, no_gc);
         self.ancestors_unrooted(no_gc)
             .take_while(|ancestor| ancestor.editing_host_of().as_ref() == Some(&editing_host))
             .all(|ancestor| {
@@ -2022,7 +2023,9 @@ impl Node {
         // Step 8. If fix collapsed space is true, then while (start node, start offset)
         // is before (end node, end offset):
         if fix_collapsed_space {
-            while bp_position(&start_node, start_offset, &end_node, end_offset) == Ordering::Less {
+            while bp_position(&start_node, start_offset, &end_node, end_offset) ==
+                Ordering::Less
+            {
                 // Step 8.1. If end node has a child in the same editing host with index end offset − 1,
                 // set end node to that child, then set end offset to end node's length.
                 if end_offset > 0 &&
@@ -2082,7 +2085,9 @@ impl Node {
         );
         let mut replacement_whitespace_chars = replacement_whitespace.chars();
         // Step 10. While (start node, start offset) is before (end node, end offset):
-        while bp_position(&start_node, start_offset, &end_node, end_offset) == Ordering::Less {
+        while bp_position(&start_node, start_offset, &end_node, end_offset) ==
+            Ordering::Less
+        {
             // Step 10.1. If start node has a child with index start offset, set start node to that child, then set start offset to zero.
             if let Some(child) = start_node.children().nth(start_offset as usize) {
                 start_node = child;

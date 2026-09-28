@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 
 use dom_struct::dom_struct;
@@ -10,7 +12,7 @@ use js::jsapi::Heap;
 use js::jsval::{JSVal, UndefinedValue};
 use js::rust::MutableHandleValue;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use storage_traits::indexeddb::{IndexedDBKeyRange, IndexedDBKeyType, IndexedDBRecord};
 
 use crate::dom::bindings::codegen::Bindings::IDBCursorBinding::{
@@ -29,7 +31,6 @@ use crate::dom::indexeddb::idbtransaction::IDBTransaction;
 use crate::dom::indexeddb::key::key_type_to_jsval;
 
 #[derive(JSTraceable, MallocSizeOf)]
-#[expect(unused)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum ObjectStoreOrIndex {
     ObjectStore(Dom<IDBObjectStore>),
@@ -114,7 +115,8 @@ impl IDBCursor {
         range: IndexedDBKeyRange,
         key_only: bool,
     ) -> DomRoot<IDBCursor> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(IDBCursor::new_inherited(
                 transaction,
                 direction,
@@ -124,7 +126,6 @@ impl IDBCursor {
                 key_only,
             )),
             global,
-            cx,
         )
     }
 

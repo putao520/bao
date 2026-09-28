@@ -150,7 +150,7 @@ impl EnqueuedValue {
         }
     }
 
-    fn to_jsval(&self, cx: &mut JSContext, rval: MutableHandleValue) {
+    fn safe_to_jsval(&self, cx: &mut JSContext, rval: MutableHandleValue) {
         match self {
             EnqueuedValue::Native(chunk) => {
                 rooted!(&in(cx) let mut array_buffer_ptr = ptr::null_mut::<JSObject>());
@@ -211,7 +211,7 @@ impl QueueWithSizes {
             };
             self.total_size.set(self.total_size.get() - value.size());
             if let Some(rval) = rval {
-                value.to_jsval(cx, rval);
+                value.safe_to_jsval(cx, rval);
             } else {
                 assert_eq!(value, &EnqueuedValue::CloseSentinel);
             }
@@ -263,7 +263,7 @@ impl QueueWithSizes {
         }
 
         // Return valueWithSize’s value.
-        value_with_size.to_jsval(cx, rval);
+        value_with_size.safe_to_jsval(cx, rval);
         false
     }
 
@@ -527,7 +527,7 @@ impl ReadableStreamDefaultController {
         let promise = result.unwrap_or_else(|error| {
             rooted!(&in(cx) let mut rval = UndefinedValue());
             // TODO: check if `self.global()` is the right globalscope.
-            error.to_jsval(cx, &global, rval.handle_mut());
+            error.safe_to_jsval(cx, &global, rval.handle_mut());
             Promise::new_rejected(cx, &global, rval.handle())
         });
         promise.append_native_handler(cx, &handler);
@@ -558,7 +558,7 @@ impl ReadableStreamDefaultController {
         let promise = result.unwrap_or_else(|error| {
             rooted!(&in(cx) let mut rval = UndefinedValue());
 
-            error.to_jsval(cx, global, rval.handle_mut());
+            error.safe_to_jsval(cx, global, rval.handle_mut());
             let promise = Promise::new(cx, global);
             promise.reject_native(cx, &rval.handle());
             promise
@@ -712,7 +712,7 @@ impl ReadableStreamDefaultController {
             .expect("Controller must have a stream when a chunk is enqueued.");
         if stream.is_locked() && stream.get_num_read_requests() > 0 {
             rooted!(&in(cx) let mut rval = UndefinedValue());
-            EnqueuedValue::Native(chunk.into_boxed_slice()).to_jsval(cx, rval.handle_mut());
+            EnqueuedValue::Native(chunk.into_boxed_slice()).safe_to_jsval(cx, rval.handle_mut());
             stream.fulfill_read_request(cx, rval.handle(), false);
         } else {
             self.queue

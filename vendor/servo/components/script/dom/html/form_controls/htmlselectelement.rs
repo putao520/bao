@@ -221,7 +221,7 @@ impl HTMLSelectElement {
         }
     }
 
-    // https://html.spec.whatwg.org/multipage/#the-select-element:concept-form-reset-control
+    /// <https://html.spec.whatwg.org/multipage/#the-select-element:concept-form-reset-control>
     pub(crate) fn reset(&self, no_gc: &NoGC) {
         for opt in self.list_of_options(no_gc) {
             opt.set_selectedness(no_gc, opt.DefaultSelected());
@@ -230,7 +230,7 @@ impl HTMLSelectElement {
         self.ask_for_reset(no_gc);
     }
 
-    // https://html.spec.whatwg.org/multipage/#ask-for-a-reset
+    /// <https://html.spec.whatwg.org/multipage/#ask-for-a-reset>
     pub(crate) fn ask_for_reset(&self, no_gc: &NoGC) {
         if self.Multiple() {
             return;
@@ -275,7 +275,7 @@ impl HTMLSelectElement {
         }
     }
 
-    // https://html.spec.whatwg.org/multipage/#concept-select-pick
+    /// <https://html.spec.whatwg.org/multipage/#concept-select-pick>
     pub(crate) fn pick_option(&self, no_gc: &NoGC, picked: &HTMLOptionElement) {
         if !self.Multiple() {
             let picked = picked.upcast();
@@ -782,8 +782,8 @@ impl HTMLSelectElementMethods<crate::DomTypeHolder> for HTMLSelectElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-willvalidate>
-    fn WillValidate(&self) -> bool {
-        self.is_instance_validatable()
+    fn WillValidate(&self, no_gc: &NoGC) -> bool {
+        self.is_instance_validatable(no_gc)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validity>
@@ -946,10 +946,11 @@ impl Validatable for HTMLSelectElement {
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
-    fn is_instance_validatable(&self) -> bool {
+    fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
         // https://html.spec.whatwg.org/multipage/#enabling-and-disabling-form-controls%3A-the-disabled-attribute%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#the-datalist-element%3Abarred-from-constraint-validation
-        !self.upcast::<Element>().disabled_state() && !is_barred_by_datalist_ancestor(self.upcast())
+        !self.upcast::<Element>().disabled_state() &&
+            !is_barred_by_datalist_ancestor(no_gc, self.upcast())
     }
 
     fn perform_validation(

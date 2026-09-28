@@ -419,12 +419,15 @@ pub(crate) fn take_and_report_pending_exception_for_api(
 }
 
 pub(crate) trait ErrorToJsval {
-    fn to_jsval(self, cx: &mut JSContext, global: &GlobalScope, rval: MutableHandleValue);
+    // BAO patch (fork-maintained, 2026-09-28): renamed to the fork's
+    // safe-conversion surface (safe_to_jsval), matching every other
+    // conversion entry point and the synced callers.
+    fn safe_to_jsval(self, cx: &mut JSContext, global: &GlobalScope, rval: MutableHandleValue);
 }
 
 impl ErrorToJsval for Error {
     /// Convert this error value to a JS value, consuming it in the process.
-    fn to_jsval(self, cx: &mut JSContext, global: &GlobalScope, rval: MutableHandleValue) {
+    fn safe_to_jsval(self, cx: &mut JSContext, global: &GlobalScope, rval: MutableHandleValue) {
         match self {
             Error::JSFailed => (),
             _ => unsafe { assert!(!JS_IsExceptionPending(cx)) },

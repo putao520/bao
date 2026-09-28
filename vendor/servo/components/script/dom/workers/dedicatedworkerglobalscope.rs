@@ -37,8 +37,9 @@ use style::thread_state::{self, ThreadState};
 
 use crate::conversions::Convert;
 use crate::dom::abstractworker::{MessageData, SimpleWorkerErrorHandler, WorkerScriptMsg};
+use script_bindings::interfaces::StackRootPromiseHelpers;
 use crate::dom::abstractworkerglobalscope::{WorkerEventLoopMethods, run_worker_event_loop};
-use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback};
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::DedicatedWorkerGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::DedicatedWorkerGlobalScopeBinding::DedicatedWorkerGlobalScopeMethods;
@@ -810,7 +811,7 @@ impl DedicatedWorkerGlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#dom-animationframeprovider-requestanimationframe>
     pub(crate) fn request_animation_frame(
         &self,
-        callback: Rc<FrameRequestCallback>,
+        callback: RootedCallback<FrameRequestCallback>,
     ) -> Fallible<u32> {
         // Step 1. If this is not supported, then throw a "NotSupportedError" DOMException.
         if !self.animation_frame_provider_supported() {
@@ -831,7 +832,7 @@ impl DedicatedWorkerGlobalScope {
         // Step 5. Set callbacks[handle] to callback.
         self.animation_frame_list
             .borrow_mut()
-            .push_back((ident, callback));
+            .push_back((ident, callback.native()));
         log::debug!("Queued dedicated worker animation frame callback: handle={ident} ---->");
         self.set_animation_frame_callbacks_active(true);
 
@@ -1207,7 +1208,7 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
         &self,
         cx: &mut JSContext,
         message: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
     ) -> ErrorResult {
         auto_root!(&in(cx) let guard = options
             .transfer
@@ -1224,7 +1225,7 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-animationframeprovider-requestanimationframe>
-    fn RequestAnimationFrame(&self, callback: Rc<FrameRequestCallback>) -> Fallible<u32> {
+    fn RequestAnimationFrame(&self, callback: RootedCallback<FrameRequestCallback>) -> Fallible<u32> {
         self.request_animation_frame(callback)
     }
 

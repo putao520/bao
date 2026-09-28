@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use bytes::Bytes;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -143,6 +144,20 @@ pub(crate) struct FetchGroup {
     pub(crate) deferred_fetch_records: FxHashMap<DeferredFetchRecordId, QueuedDeferredFetchRecord>,
 }
 
+impl FetchGroup {
+    // BAO patch (fork-maintained, 2026-09-28): window-end accessor, ported
+    // with the FetchGroup architecture.
+    pub(crate) fn deferred_fetch_record_for_id(
+        &self,
+        deferred_fetch_record_id: &DeferredFetchRecordId,
+    ) -> QueuedDeferredFetchRecord {
+        self.deferred_fetch_records
+            .get(deferred_fetch_record_id)
+            .expect("Should always use a generated fetch_record_id instead of passing your own")
+            .clone()
+    }
+}
+
 fn request_init_from_request(request: NetTraitsRequest, global: &GlobalScope) -> RequestBuilder {
     let mut builder = RequestBuilder::new(
         request.target_webview_id,
@@ -210,7 +225,7 @@ fn abort_fetch_call(
 pub(crate) fn Fetch(
     global: &GlobalScope,
     input: RequestInfo,
-    init: RootedTraceableBox<RequestInit>,
+    init: &RequestInit,
     cx: &mut CurrentRealm,
 ) -> RootedPromise {
     // Step 1. Let p be a new promise.
@@ -280,6 +295,7 @@ pub(crate) fn Fetch(
     let network_listener = NetworkListener::new(
         fetch_context,
         global.task_manager().networking_task_source().to_sendable(),
+        global,
     );
     let fetch_context = network_listener.context.clone();
 
@@ -348,7 +364,7 @@ pub(crate) fn FetchLater(
     cx: &mut JSContext,
     window: &Window,
     input: RequestInfo,
-    init: RootedTraceableBox<DeferredRequestInit>,
+    init: &DeferredRequestInit,
 ) -> Fallible<DomRoot<FetchLaterResult>> {
     let global_scope = window.upcast();
     let document = window.Document();
@@ -594,7 +610,7 @@ impl FetchResponseListener for FetchContext {
         self.fetch_promise = Some(TrustedPromise::from(&promise));
     }
 
-    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Bytes) {
         let response = self.response_object.root();
         response.stream_chunk(cx, chunk.into());
     }
@@ -662,7 +678,7 @@ impl FetchResponseListener for FetchLaterListener {
         _ = fetch_metadata;
     }
 
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Bytes) {
         _ = chunk;
     }
 

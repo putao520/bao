@@ -143,7 +143,6 @@ impl ServiceWorkerRegistration {
             pipeline_id: global.pipeline_id(),
         };
 
-        #[cfg(feature = "webgl")]
         let webgl_chan = global
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
@@ -153,7 +152,6 @@ impl ServiceWorkerRegistration {
             global,
             None,
             Some(worker_id),
-            #[cfg(feature = "webgl")]
             webgl_chan,
         );
         let browsing_context_id = global

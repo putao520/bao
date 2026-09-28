@@ -2366,7 +2366,18 @@ impl DocumentEventHandler {
                 self.window
                     .Document()
                     .focus_handler()
-                    .sequential_focus_navigation_via_keyboard_event(cx, event);
+                    .sequential_focus_navigation_via_keyboard_event(
+                        cx,
+                        // fork holdout: the fork input path hands the DOM
+                        // KeyboardEvent; the fork focus face consumes the
+                        // keyboard_types shape, reconstructed from the event.
+                        &keyboard_types::KeyboardEvent {
+                            key: event.key().into(),
+                            code: Code::from_str(&event.Code().str()).unwrap_or_default(),
+                            modifiers: event.modifiers(),
+                            ..Default::default()
+                        },
+                    );
                 return;
             },
             _ => return,

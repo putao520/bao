@@ -683,7 +683,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
                         let error = map_backend_error_to_dom_error(err);
                         rooted!(&in(cx) let mut rval = UndefinedValue());
                         error
-                            .to_jsval(cx, &promise.global(), rval.handle_mut());
+                            .safe_to_jsval(cx, &promise.global(), rval.handle_mut());
                         promise.reject_native(cx, &rval.handle());
                     },
                     Ok(info_list) => {

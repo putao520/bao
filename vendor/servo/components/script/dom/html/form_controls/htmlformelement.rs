@@ -200,7 +200,7 @@ impl HTMLFormElement {
             .iter()
             .filter(|n| HTMLFormElement::filter_for_radio_list(mode, n, name))
             .nth(index as usize)
-            .map(|n| UnrootedDom::upcast(UnrootedDom::from_dom(n.clone(), no_gc)))
+            .map(|node| UnrootedDom::upcast(node.as_unrooted(no_gc)))
     }
 
     pub(crate) fn count_for_radio_list(&self, mode: RadioListMode, name: &Atom) -> u32 {
@@ -527,8 +527,8 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
         })
     }
 
-    // https://html.spec.whatwg.org/multipage/#the-form-element:supported-property-names
-    fn SupportedPropertyNames(&self, _: &NoGC) -> Vec<DOMString> {
+    /// <https://html.spec.whatwg.org/multipage/#the-form-element:supported-property-names>
+    fn SupportedPropertyNames(&self, no_gc: &NoGC) -> Vec<DOMString> {
         // Step 1
         #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
         enum SourcedNameSource {
@@ -1291,7 +1291,7 @@ impl HTMLFormElement {
                         let custom = child.downcast::<HTMLElement>().unwrap();
                         if custom.is_form_associated_custom_element() {
                             // https://html.spec.whatwg.org/multipage/#face-entry-construction
-                            let internals = custom.upcast::<Element>().ensure_element_internals(cx);
+                            let internals = custom.ensure_element_internals(cx);
                             internals.perform_entry_construction(&mut data_set);
                             // Otherwise no form value has been set so there is nothing to do.
                         }
@@ -1681,7 +1681,7 @@ impl FormSubmitterElement<'_> {
         }
     }
 
-    // https://html.spec.whatwg.org/multipage/#concept-submit-button
+    /// <https://html.spec.whatwg.org/multipage/#concept-submit-button>
     pub(crate) fn is_submit_button(&self) -> bool {
         match *self {
             // https://html.spec.whatwg.org/multipage/#image-button-state-(type=image)
@@ -1693,7 +1693,7 @@ impl FormSubmitterElement<'_> {
         }
     }
 
-    // https://html.spec.whatwg.org/multipage/#form-owner
+    /// <https://html.spec.whatwg.org/multipage/#form-owner>
     pub(crate) fn form_owner(&self) -> Option<DomRoot<HTMLFormElement>> {
         match *self {
             FormSubmitterElement::Button(button_el) => button_el.form_owner(),
@@ -1900,11 +1900,11 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#candidate-for-constraint-validation>
-    fn is_candidate_for_constraint_validation(&self) -> bool {
+    fn is_candidate_for_constraint_validation(&self, no_gc: &NoGC) -> bool {
         let element = self.to_element();
         let html_element = element.downcast::<HTMLElement>();
         if let Some(html_element) = html_element {
-            html_element.is_submittable_element() || element.is_instance_validatable()
+            html_element.is_submittable_element() || element.is_instance_validatable(no_gc)
         } else {
             false
         }

@@ -9,11 +9,14 @@ use std::thread::LocalKey;
 
 use js::context::JSContext;
 use js::glue::{IsWrapper, JSPrincipalsCallbacks, UnwrapObjectStatic};
-use js::jsapi::{CallArgs, DOMCallbacks, JSObject};
+use js::jsapi::{
+    CallArgs, DOMCallbacks, HandleObject as RawHandleObject, JSContext as RawJSContext, JSObject,
+    JSString, MutableHandle as RawMutableHandle,
+};
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject, get_object_class, is_dom_class};
 use script_bindings::interfaces::{DomHelpers, Interface};
-use script_bindings::reflector::{DomObject, DomObjectWrap, reflect_dom_object_with_cx};
+use script_bindings::reflector::{DomObject, DomObjectWrap, reflect_dom_object};
 use script_bindings::settings_stack::StackEntry;
 
 use crate::DomTypes;
@@ -98,11 +101,27 @@ unsafe extern "C" fn instance_class_is_error(clasp: *const js::jsapi::JSClass) -
     root_interface == PrototypeList::ID::DOMException as u32
 }
 
+unsafe extern "C" fn extract_exception_info(
+    _cx: *mut RawJSContext,
+    _obj: RawHandleObject,
+    is_exception: *mut bool,
+    _file_name: RawMutableHandle<*mut JSString>,
+    _line_number: *mut u32,
+    _column_number: *mut u32,
+    _message: RawMutableHandle<*mut JSString>,
+) -> bool {
+    // This is dummy impl as done in JSShell: https://phabricator.services.mozilla.com/D257487
+    // TODO: https://github.com/servo/servo/issues/47619
+    unsafe {
+        *is_exception = false;
+    }
+    true
+}
+
 pub(crate) const DOM_CALLBACKS: DOMCallbacks = DOMCallbacks {
     instanceClassMatchesProto: Some(instance_class_has_proto_at_depth),
     instanceClassIsError: Some(instance_class_is_error),
-    // SM153: new hook (exception-info extraction); unused by servo's DOM error face.
-    extractExceptionInfo: None,
+    extractExceptionInfo: Some(extract_exception_info),
 };
 
 /// Eagerly define all relevant WebIDL interface constructors on the
@@ -158,7 +177,7 @@ impl DomHelpers<crate::DomTypeHolder> for crate::DomTypeHolder {
         T: DomObject + DomObjectWrap<crate::DomTypeHolder>,
         U: DerivedFrom<GlobalScope>,
     {
-        reflect_dom_object_with_cx(obj, global, cx)
+        reflect_dom_object(cx, obj, global)
     }
 
     fn report_pending_exception(cx: &mut CurrentRealm) {

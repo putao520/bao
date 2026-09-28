@@ -7,7 +7,7 @@
 //!
 //! <https://html.spec.whatwg.org/multipage/#textFieldSelection>
 
-use std::cell::Ref;
+use std::cell::{Ref, RefMut};
 
 use script_bindings::cell::DomRefCell;
 use servo_base::text::Utf16CodeUnits;
@@ -24,9 +24,14 @@ use crate::dom::html::form_controls::text_input::{
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::types::Element;
 
+// BAO patch (fork-maintained, 2026-09-28): window-end trait face (as_element /
+// text_input accessors) restored for the synced text-input widget.
 pub(crate) trait TextControlElement:
     DerivedFrom<EventTarget> + DerivedFrom<Node> + DerivedFrom<Element>
 {
+    fn as_element(&self) -> &Element;
+    fn text_input<'a>(&'a self) -> Ref<'a, TextInput<EmbedderClipboardProvider>>;
+    fn text_input_mut<'a>(&'a self) -> RefMut<'a, TextInput<EmbedderClipboardProvider>>;
     fn selection_api_applies(&self) -> bool;
     fn has_selectable_text(&self) -> bool;
     fn has_uncollapsed_selection(&self) -> bool;

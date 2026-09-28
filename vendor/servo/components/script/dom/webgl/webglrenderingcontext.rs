@@ -205,7 +205,6 @@ pub(crate) struct WebGLRenderingContext {
 /// (Bao) Resolve the WebGL thread channel for a global scope: `Window`s carry their
 /// own handle, workers inherit the parent `Window`'s channel via
 /// `WorkerGlobalScopeInit.webgl_chan` (REQ-BRW-004 C14).
-#[cfg(feature = "webgl")]
 fn webgl_chan_from_global(global: &GlobalScope) -> Option<WebGLChan> {
     if let Some(window) = global.downcast::<Window>() {
         return window.webgl_chan();
@@ -213,11 +212,6 @@ fn webgl_chan_from_global(global: &GlobalScope) -> Option<WebGLChan> {
     global
         .downcast::<WorkerGlobalScope>()
         .and_then(|worker| worker.webgl_chan())
-}
-
-#[cfg(not(feature = "webgl"))]
-fn webgl_chan_from_global(_global: &GlobalScope) -> Option<WebGLChan> {
-    None
 }
 
 impl WebGLRenderingContext {

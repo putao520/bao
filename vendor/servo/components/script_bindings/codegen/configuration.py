@@ -228,12 +228,12 @@ class DescriptorProvider:
         """
         return self.config.getDescriptor(interfaceName)
 
-    # BAO patch (fork-maintained, 2026-09-28): REQ-BRW-046-wave foundation ② —
-    # callback storage decision ports (upstream b820a9679 mechanism). Fork
-    # default True = Rc form; upstream default False = RootedCallback. Flip
-    # per-interface via Bindings.conf ('rc': False) in the coordinated wave.
+    # BAO patch (fork-maintained, 2026-09-28): coordinated-wave terminal state —
+    # default flipped to upstream end behavior (False = RootedCallback/
+    # TracedCallback everywhere); the fork's transitional Rc default and the
+    # stream-callback conf overrides are removed with it.
     def callbackUsesRc(self, callbackIdentifier: str) -> bool:
-        return self.config.getCallbackConfig(callbackIdentifier).get('rc', True)
+        return self.config.getCallbackConfig(callbackIdentifier).get('rc', False)
 
 def MemberIsLegacyUnforgeable(member: IDLAttribute | IDLMethod, descriptor: Descriptor) -> bool:
     return ((member.isAttr() or member.isMethod())
@@ -291,7 +291,16 @@ class Descriptor(DescriptorProvider):
         elif self.interface.isCallback():
             ty = 'crate::codegen::GenericBindings::%sBinding::%s' % (ifaceName, ifaceName)
             pathDefault = ty
-            self.returnType = "Rc<%s<D>>" % ty
+            # BAO patch (fork-maintained, 2026-09-28): terminal-state completion —
+            # this return-position declaration previously hardcoded Rc, diverging
+            # from the per-callback 'rc' decision consulted everywhere else
+            # (codegen.py callbackUsesRc sites). Default (unset/False) =
+            # RootedCallback (upstream end); conf `'rc': True` holds a specific
+            # callback interface at the fork's Rc form.
+            if self.config.getCallbackConfig(ifaceName).get('rc', False):
+                self.returnType = "Rc<%s<D>>" % ty
+            else:
+                self.returnType = "RootedCallback<%s<D>>" % ty
             self.argumentType = "???"
             self.nativeType = ty
         else:
@@ -325,7 +334,7 @@ class Descriptor(DescriptorProvider):
                 assert first_set.isdisjoint(second_set), f"In {ifaceName} set {configurationMethods[i]} has overlap with {configurationMethods[j]}. Duplicates: {first_set.intersection(second_set)}"
 
         self.additionalTraits = [name for name in desc.get('additionalTraits', [])]
-        self.useRcCallback = self.interface.isCallback() and desc.get('useRcCallback', True)
+        self.useRcCallback = self.interface.isCallback() and desc.get('useRcCallback', False)
         self.bindingPath = f"{getModuleFromObject(self.interface)}::{ifaceName}_Binding"
         self.outerObjectHook = desc.get('outerObjectHook', 'None')
         self.proxy = False

@@ -4,10 +4,10 @@
 
 use std::cell::RefCell;
 
-use cssparser::{Parser, ParserInput};
+use cssparser::Parser;
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_arc::Arc;
 use style::media_queries::{MediaList as StyleMediaList, MediaQuery};
 use style::parser::ParserContext;
@@ -53,10 +53,10 @@ impl MediaList {
         parent_stylesheet: &CSSStyleSheet,
         media_queries: Arc<Locked<StyleMediaList>>,
     ) -> DomRoot<MediaList> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(MediaList::new_inherited(parent_stylesheet, media_queries)),
             window,
-            cx,
         )
     }
 
@@ -69,7 +69,7 @@ impl MediaList {
         if value.is_empty() {
             return StyleMediaList::empty();
         }
-        let mut input = ParserInput::new(value);
+        let mut input = cssparser::ParserInput::new(value);
         let mut parser = Parser::new(&mut input);
         let document = window.Document();
         let url_data = UrlExtraData(document.owner_global().api_base_url().get_arc());
@@ -86,11 +86,13 @@ impl MediaList {
     }
 
     /// <https://drafts.csswg.org/cssom/#parse-a-media-query>
-    pub(crate) fn parse_media_query<'i>(
-        value: &'i str,
-        window: &Window,
-    ) -> Result<MediaQuery, ParseError<'i>> {
-        let mut input = ParserInput::new(value);
+    // BAO patch (fork-maintained, 2026-09-28): stylo style_traits::ParseError
+    // is lifetime-carrying; bind it to the borrowed inputs.
+    pub(crate) fn parse_media_query<'a>(
+        value: &'a str,
+        window: &'a Window,
+    ) -> Result<MediaQuery, ParseError<'a>> {
+        let mut input = cssparser::ParserInput::new(value);
         let mut parser = Parser::new(&mut input);
         let document = window.Document();
         let url_data = UrlExtraData(document.owner_global().api_base_url().get_arc());
@@ -132,8 +134,8 @@ impl MediaList {
             None,
             /* attr_taint = */ Default::default(),
         );
-        let mut parser_input = ParserInput::new(media_query);
-        let mut parser = Parser::new(&mut parser_input);
+        let mut input = cssparser::ParserInput::new(media_query);
+        let mut parser = Parser::new(&mut input);
         let media_list = StyleMediaList::parse(&mut context, &mut parser);
         media_list.evaluate(
             document.window().layout().device(),

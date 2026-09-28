@@ -8,6 +8,8 @@ use std::default::Default;
 use std::ffi::CStr;
 use std::rc::Rc;
 
+use malloc_size_of::MallocConditionalSizeOf;
+use malloc_size_of::MallocSizeOfOps;
 use js::context::JSContext;
 use js::jsapi::{Heap, IsCallable, JSObject, RemoveRawValueRoot};
 use js::jsval::{JSVal, NullValue, ObjectValue, UndefinedValue};
@@ -398,4 +400,27 @@ pub(crate) fn call_setup<D: DomTypes, T: CallbackContainer<D>, R>(
             actual_callback()
         }
     }) // Step 14.2: Clean up after running script with relevant settings.
+}
+
+// BAO patch (fork-maintained, 2026-09-28): conditional malloc size for the
+// callback wrappers (dom_struct derive with #[conditional_malloc_size_of]).
+impl<T: MallocConditionalSizeOf> MallocConditionalSizeOf for RootedCallback<T> {
+    fn conditional_size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.0.conditional_size_of(ops)
+    }
+}
+
+impl<T: MallocConditionalSizeOf> MallocConditionalSizeOf for TracedCallback<T> {
+    fn conditional_size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.0.conditional_size_of(ops)
+    }
+}
+
+// BAO patch (fork-maintained, 2026-09-28): JS-backed callback wrapper — the
+// payload is GC-owned and measured by the JS heap, so the malloc-conditional
+// contribution is nil (mirrors the Heap<T> convention).
+impl<D: crate::DomTypes> MallocConditionalSizeOf for crate::codegen::GenericBindings::AnimationFrameProviderBinding::FrameRequestCallback<D> {
+    fn conditional_size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
+        0
+    }
 }

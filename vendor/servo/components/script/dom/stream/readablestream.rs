@@ -572,7 +572,7 @@ impl PipeTo {
             rooted!(&in(cx) let mut dest_closed = UndefinedValue());
             let error =
                 Error::Type(c"Destination is closed or has closed queued or in flight".to_owned());
-            error.to_jsval(cx, global, dest_closed.handle_mut());
+            error.safe_to_jsval(cx, global, dest_closed.handle_mut());
             self.set_shutdown_error(dest_closed.handle());
 
             // If preventCancel is false,
@@ -1237,7 +1237,7 @@ impl ReadableStream {
     /// Note: in other use cases this call happens via the controller.
     pub(crate) fn error_native(&self, cx: &mut JSContext, error: Error) {
         rooted!(&in(cx) let mut error_val = UndefinedValue());
-        error.to_jsval(cx, &self.global(), error_val.handle_mut());
+        error.safe_to_jsval(cx, &self.global(), error_val.handle_mut());
         self.error(cx, error_val.handle());
     }
 

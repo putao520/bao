@@ -275,6 +275,14 @@ pub enum FetchResponseMsg {
 #[derive(Deserialize, PartialEq, Serialize, MallocSizeOf)]
 pub struct DebugVec(pub Vec<u8>);
 
+// BAO patch (fork-maintained, 2026-09-28): bridge the pinned-bytes boundary —
+// window-end producers hand over bytes::Bytes, the fork stores Vec<u8>.
+impl From<bytes::Bytes> for DebugVec {
+    fn from(b: bytes::Bytes) -> Self {
+        DebugVec(b.to_vec())
+    }
+}
+
 impl From<Vec<u8>> for DebugVec {
     fn from(v: Vec<u8>) -> Self {
         Self(v)

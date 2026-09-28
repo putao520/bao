@@ -10,6 +10,7 @@ use embedder_traits::{EmbedderControlRequest, InputMethodRequest, InputMethodTyp
 use fonts::{ByteIndex, TextByteRange};
 use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::JSContext;
+use js::context::NoGC;
 use js::rust::HandleObject;
 use layout_api::{ScriptSelection, SharedSelection};
 use script_bindings::cell::DomRefCell;
@@ -263,6 +264,15 @@ impl HTMLTextAreaElement {
 }
 
 impl TextControlElement for HTMLTextAreaElement {
+    fn as_element(&self) -> &Element {
+        self.upcast::<Element>()
+    }
+    fn text_input<'a>(&'a self) -> Ref<'a, TextInput<EmbedderClipboardProvider>> {
+        self.textinput.borrow()
+    }
+    fn text_input_mut<'a>(&'a self) -> RefMut<'a, TextInput<EmbedderClipboardProvider>> {
+        self.textinput.borrow_mut()
+    }
     fn selection_api_applies(&self) -> bool {
         true
     }
@@ -527,8 +537,8 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-willvalidate>
-    fn WillValidate(&self) -> bool {
-        self.is_instance_validatable()
+    fn WillValidate(&self, no_gc: &NoGC) -> bool {
+        self.is_instance_validatable(no_gc)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validity>
@@ -904,13 +914,13 @@ impl Validatable for HTMLTextAreaElement {
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
-    fn is_instance_validatable(&self) -> bool {
+    fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
         // https://html.spec.whatwg.org/multipage/#enabling-and-disabling-form-controls%3A-the-disabled-attribute%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#the-textarea-element%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#the-datalist-element%3Abarred-from-constraint-validation
         !self.upcast::<Element>().disabled_state() &&
             !self.ReadOnly() &&
-            !is_barred_by_datalist_ancestor(self.upcast())
+            !is_barred_by_datalist_ancestor(no_gc, self.upcast())
     }
 
     fn perform_validation(

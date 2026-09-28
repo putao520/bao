@@ -597,7 +597,7 @@ impl PerformanceMethods<crate::DomTypeHolder> for Performance {
         &self,
         cx: &mut JSContext,
         mark_name: DOMString,
-        mark_options: RootedTraceableBox<PerformanceMarkOptions>,
+        mark_options: &PerformanceMarkOptions,
     ) -> Fallible<DomRoot<PerformanceMark>> {
         // Step 1. Run the PerformanceMark constructor and let entry be the newly created object.
         let entry =

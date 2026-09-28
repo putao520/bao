@@ -14,6 +14,7 @@
 // traps of SM140 no longer exist.
 
 use std::cell::Cell;
+use script_bindings::callback::TracedCallback;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -89,8 +90,7 @@ pub(crate) trait MicrotaskRunnable: JSTraceable + MallocSizeOf {
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct UserMicrotask {
-    #[conditional_malloc_size_of]
-    pub(crate) callback: Rc<VoidFunction>,
+    pub(crate) callback: TracedCallback<VoidFunction>,
     pub(crate) global: Dom<GlobalScope>,
 }
 

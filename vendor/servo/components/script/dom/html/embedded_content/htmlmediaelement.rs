@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, RefCell};
+use bytes::Bytes;
 use std::collections::VecDeque;
 // BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f for
 // the WebVTT cue-tracking face — `time_marches_on` full algorithm (current /
@@ -4412,7 +4413,7 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
         }
     }
 
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Bytes) {
         let element = self.element.root();
 
         self.fetched_content_length += chunk.len() as u64;
@@ -4437,7 +4438,7 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
                     return;
                 }
             } else {
-                chunk
+                chunk.to_vec()
             };
 
             if let Err(e) = {

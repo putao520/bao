@@ -7,7 +7,7 @@ use std::default::Default;
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
 use script_bindings::codegen::GenericBindings::DocumentFragmentBinding::DocumentFragmentMethods;
@@ -200,8 +200,8 @@ impl HTMLButtonElementMethods<crate::DomTypeHolder> for HTMLButtonElement {
     make_labels_getter!(Labels, labels_node_list);
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-willvalidate>
-    fn WillValidate(&self) -> bool {
-        self.is_instance_validatable()
+    fn WillValidate(&self, no_gc: &NoGC) -> bool {
+        self.is_instance_validatable(no_gc)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validity>
@@ -454,13 +454,13 @@ impl Validatable for HTMLButtonElement {
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
-    fn is_instance_validatable(&self) -> bool {
+    fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
         // https://html.spec.whatwg.org/multipage/#the-button-element%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#enabling-and-disabling-form-controls%3A-the-disabled-attribute%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#the-datalist-element%3Abarred-from-constraint-validation
         self.button_type.get() == ButtonType::Submit &&
             !self.upcast::<Element>().disabled_state() &&
-            !is_barred_by_datalist_ancestor(self.upcast())
+            !is_barred_by_datalist_ancestor(no_gc, self.upcast())
     }
 }
 

@@ -3,17 +3,20 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 pub(crate) mod accessibility_data;
-mod animations;
-#[allow(clippy::module_inception, reason = "The interface name is Document")]
+mod animation_manager;
+pub(crate) mod animations;
+#[expect(clippy::module_inception, reason = "The interface name is Document")]
 pub(crate) mod document;
 pub(crate) mod document_embedder_controls;
 pub(crate) mod document_event_handler;
 pub(crate) mod documentfragment;
 pub(crate) mod documentorshadowroot;
 pub(crate) mod documenttype;
+pub(crate) mod domimplementation;
+pub(crate) mod domparser;
 pub(crate) mod focus;
+pub(crate) mod image_animation;
 mod iframe_collection;
-mod image_animation;
 mod interactive_element_command;
 mod tree_ordered_index_map;
 pub(crate) mod visibilitystateentry;

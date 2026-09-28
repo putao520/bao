@@ -3,9 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{OnceCell, RefCell, RefMut};
+use bytes::Bytes;
 use std::collections::HashSet;
 use std::default::Default;
 use std::rc::Rc;
+use script_bindings::callback::RootedCallback;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -112,7 +114,7 @@ pub(crate) fn prepare_workerscope_init(
     global: &GlobalScope,
     devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
     worker_id: Option<WorkerId>,
-    #[cfg(feature = "webgl")] webgl_chan: Option<WebGLChan>,
+    webgl_chan: Option<WebGLChan>,
 ) -> WorkerGlobalScopeInit {
     // An AnimationFrameProvider provider is considered supported if any of the following are true:
     // - provider is a Window.
@@ -141,7 +143,6 @@ pub(crate) fn prepare_workerscope_init(
         origin: global.origin().immutable().clone(),
         inherited_secure_context: Some(global.is_secure_context()),
         unminify_js: global.unminify_js(),
-        #[cfg(feature = "webgl")]
         webgl_chan,
     }
 }
@@ -185,8 +186,8 @@ impl FetchResponseListener for ScriptFetchContext {
         });
     }
 
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, mut chunk: Vec<u8>) {
-        self.body_bytes.append(&mut chunk);
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, mut chunk: Bytes) {
+        self.body_bytes.extend_from_slice(&chunk);
     }
 
     fn process_response_eof(
@@ -388,7 +389,6 @@ pub(crate) struct WorkerGlobalScope {
     /// A handle for communicating messages to the WebGL thread, if available.
     /// (Bao) Inherited from the parent `Window` via `WorkerGlobalScopeInit.webgl_chan`
     /// so OffscreenCanvas WebGL contexts can be created in workers (REQ-BRW-004 C14).
-    #[cfg(feature = "webgl")]
     #[no_trace]
     webgl_chan: Option<WebGLChan>,
 }
@@ -465,7 +465,6 @@ impl WorkerGlobalScope {
             )),
             origin: MutableOrigin::new(init.origin),
             font_context,
-            #[cfg(feature = "webgl")]
             webgl_chan: init.webgl_chan,
         }
     }
@@ -474,7 +473,6 @@ impl WorkerGlobalScope {
         self.font_context.clone()
     }
 
-    #[cfg(feature = "webgl")]
     pub(crate) fn webgl_chan(&self) -> Option<WebGLChan> {
         self.webgl_chan.clone()
     }
@@ -1067,11 +1065,14 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-queuemicrotask>
-    fn QueueMicrotask(&self, cx: &mut JSContext, callback: Rc<VoidFunction>) {
+    // BAO patch (fork-maintained, 2026-09-28): terminal codegen hands the
+    // callback as RootedCallback; the fork's UserMicrotask stores the traced
+    // form, RootedCallback::to_traced bridges the two.
+    fn QueueMicrotask(&self, cx: &mut JSContext, callback: RootedCallback<VoidFunction>) {
         self.enqueue_microtask(
             cx,
             Box::new(UserMicrotask {
-                callback,
+                callback: callback.to_traced(),
                 global: Dom::from_ref(&self.globalscope),
             }),
         );
@@ -1115,7 +1116,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         &self,
         realm: &mut CurrentRealm,
         input: RequestOrUSVString,
-        init: RootedTraceableBox<RequestInit>,
+        init: &RequestInit,
     ) -> RootedPromise {
         Fetch(self.upcast(), input, init, realm)
     }
@@ -1148,7 +1149,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         &self,
         cx: &mut JSContext,
         value: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
         retval: MutableHandleValue,
     ) -> Fallible<()> {
         self.upcast::<GlobalScope>()
@@ -1262,6 +1263,7 @@ impl WorkerGlobalScope {
                     id,
                     Some(self.worker_id()),
                     frame_actor_id,
+                    false, /* fork devtools msg enum carries no eager flag */
                     reply,
                 );
             },

@@ -157,6 +157,17 @@ unsafe impl<T: JSTraceable + 'static> CustomTraceable for SmallVec<[T; 1]> {
     }
 }
 
+// BAO patch (fork-maintained, 2026-09-28): the event path smallvec carries an
+// 8-slot inline capacity (event path segment buffer).
+unsafe impl<T: JSTraceable + 'static> CustomTraceable for SmallVec<[T; 8]> {
+    #[inline]
+    unsafe fn trace(&self, trc: *mut JSTracer) {
+        for e in self.iter() {
+            unsafe { e.trace(trc) };
+        }
+    }
+}
+
 unsafe impl<K, V, S> CustomTraceable for IndexMap<K, V, S>
 where
     K: Hash + Eq + JSTraceable,
