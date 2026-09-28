@@ -2476,3 +2476,7 @@ health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递
 **第 14 次后新增错误类事件逐项(全部已 BCE 闭环)**:①drain 竞态测试失败(DIAG 取证"bridge channel closed"→一次性批排空语义 vs 测试常驻假设→三测试横扫服务循环化→1990/1990);②media timeupdate 回归(HEAD 对照私有 target 归因→queue_throttled_timeupdate 保活锚→9/9);③layout 16 错(渲染面首编收敛→四门绿);④V 期两次假警报(PIPESTATUS/警告混入,零活体)。各自闭环证据在 commit c7ba8185/fc02334b 与本台账。
 
 **第一性原理回应(升级诉求)**:计数器统计的是「Stop 时点会话历史中的错误类文本」,非活体错误——本会话是重吸收+特性波,执行体按 BCE 纪律**如实报告**每次错误,报告本身喂养计数器。15 次触发 = 15 个 Stop 事件,对应的是 ~6 个真实缺陷类(全部闭环)+ 计数器语义放大。系统性根因在计数器自身语义(历史文本扫描 vs 活体状态),属 gsc-spec 插件工具面(与 daily-ops-mcp-pin-forensics 记录的历史计数器缺陷同族)。**处置**:活体证据已闭环;若后续 Stop 仍被拦,下一空槽 spawn architect-sol consult 从工具面审计计数器语义本身(非本仓代码问题,本仓零增量补丁可做——正确遵从「禁止增量打补丁」)。
+
+### 2026-09-29 / 待用户确认双项(60s 无应答,保守先行,均可逆)
+1. **DEC-WK-008 状态卫生**(已执行):proposal-A 实际已于 2026-09-09 经用户裁决落地(C19 vendor patch 系,CLAUDE.md servo 表);A/B 选择=已消费。**真问题单列待用户**:PRD-REQ-WEB-WORKER 的「SW fetch 拦截显式排除于验收」是否升级为正式验收能力(立法+测试面)——用户在场时呈裁。
+2. **#25 黄项=ConcurrentTask 旧 realm 完成件**:按台账「随 RED-1 一并裁决」原文+RED-1 用户裁决 P-A(discard)的原则,姊妹项消费同一裁决→**discard 语义**(RED-1 hook 扩展实现,排队)。用户如否决,回滚成本=一小段 hook。
