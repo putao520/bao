@@ -131,6 +131,36 @@ impl PagePool {
         crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_INJECT, id as u64);
         crate::runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
 
+        // ISSUE #20: config → runtime enforcement wiring. The runtime-side
+        // enforcement points (fs read/write, net, run in bao_runtime) consult
+        // the permission_bridge thread-local guard; without this install the
+        // configured permission never reached them (audit finding: the guard
+        // was always None — every check_* site silently allowed). The
+        // script-thread callback drain (handle_evaluate_javascript, ahead of
+        // any user evaluate) installs it on the owning thread.
+        //
+        // Scope note (DoD-D): the guard is thread-local per ScriptThread and
+        // install is last-page-wins — per-page scoping on a shared thread is
+        // recorded as a known limitation, not silently claimed.
+        if let Some(permission) = &config.permission {
+            let check = bun_runtime::permission_bridge::PermissionCheck {
+                read_paths: permission.read.clone(),
+                write_paths: permission.write.clone(),
+                net_hosts: permission.net.clone(),
+                env_allowed: permission.env.unwrap_or(true),
+                run_allowed: permission.run.unwrap_or(true),
+            };
+            let webview_id = page
+                .webview_id()
+                .expect("created page must have a webview id");
+            servo::register_script_thread_callback(
+                webview_id,
+                Box::new(move |_, _| {
+                    bun_runtime::permission_bridge::set_permission(Some(check));
+                }),
+            );
+        }
+
         // PER-WORKER delivery tier (REQ-BRW-004, user ruling 2026-09-09
         // vendor patch — e43 multi-worker gap): the worker-scope callback
         // registered just above (inside inject_all_with_profile) is

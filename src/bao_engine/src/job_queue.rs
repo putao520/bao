@@ -506,17 +506,27 @@ unsafe extern "C" fn drop_interrupt_queues(_a: *mut c_void) {
 // (1000) so a self-re-enqueueing callback leaves the remainder for the
 // next checkpoint instead of wedging the pump.
 //
-// Entries are rooted per-field (`Heap` slots a moving GC updates in
-// place); a callback whose object was collected (its creation realm was
-// discarded) is skipped at drain. Same thread as the owning JSContext —
+// Entries are rooted through the SM raw-root table (see below); a callback
+// whose object was collected (its creation realm was discarded) is skipped
+// at drain. Same thread as the owning JSContext —
 // the queue is thread_local, never sent across threads.
 
 const NEXT_TICK_DEPTH_CAP: usize = 1000;
 
+// GC rooting contract: the queue entries hold their JS values in a
+// RawValueRootGuard (the SM raw-root TABLE, traced by Nursery::traceRoots),
+// NOT in bare Heap slots. A bare Heap slot on the Rust heap registers a
+// store-buffer edge for its address but has no trace channel of its own —
+// once the entry is popped and dropped, GC's tenuring pass dereferences the
+// freed slot (SIGSEGV in StoreBuffer::CellPtrEdge::trace, observed live).
+// The raw root table updates slots in place and keeps them alive until the
+// guard drops (with the entry), which is the same contract RootedPromise /
+// the fetch tasklet's promise_root use. Slot layout: 0 = the realm global
+// (as a Value), 1 = the callback function (as a Value), 2.. = the extra
+// arguments.
 struct NextTickEntry {
-    cb: Heap<*mut JSObject>,
-    global: Heap<*mut JSObject>,
-    args: Vec<Heap<JSVal>>,
+    root: Option<crate::context::RawValueRootGuard>,
+    n_args: usize,
 }
 
 thread_local! {
@@ -526,24 +536,37 @@ thread_local! {
 
 /// Enqueue a `process.nextTick(cb, ...args)` callback. Runs before the
 /// promise microtask queue at the next checkpoint (see `run_jobs` (a0)).
+/// Returns false when the raw-root registration failed (degraded host):
+/// the callback is NOT queued (fail-closed, no unrooted entry).
 pub fn next_tick_enqueue(
+    cx: &mut mozjs::context::JSContext,
     global: ::mozjs::jsapi::Handle<*mut JSObject>,
     cb: ::mozjs::jsapi::Handle<*mut JSObject>,
     args: &[::mozjs::jsapi::Handle<JSVal>],
-) {
-    let mut entry = NextTickEntry {
-        cb: Heap::default(),
-        global: Heap::default(),
-        args: Vec::with_capacity(args.len()),
-    };
-    entry.cb.set(unsafe { *cb.ptr });
-    entry.global.set(unsafe { *global.ptr });
+) -> bool {
+    let mut vals: Vec<JSVal> = Vec::with_capacity(2 + args.len());
+    vals.push(unsafe { ::mozjs::jsval::ObjectValue(*global.ptr) });
+    vals.push(unsafe { ::mozjs::jsval::ObjectValue(*cb.ptr) });
     for arg in args {
-        let mut slot = Heap::default();
-        slot.set(unsafe { *arg.ptr });
-        entry.args.push(slot);
+        vals.push(unsafe { *arg.ptr });
     }
-    NEXT_TICK_QUEUE.with(|q| q.borrow_mut().push_back(entry));
+    let root = unsafe {
+        crate::context::RawValueRootGuard::new(
+            cx.raw_cx(),
+            &vals,
+            c"NextTickQueue.entry",
+        )
+    };
+    let Some(root) = root else {
+        return false;
+    };
+    NEXT_TICK_QUEUE.with(|q| {
+        q.borrow_mut().push_back(NextTickEntry {
+            root: Some(root),
+            n_args: args.len(),
+        })
+    });
+    true
 }
 
 /// Number of callbacks waiting in the nextTick queue.
@@ -570,13 +593,37 @@ unsafe fn drain_next_ticks(cx: *mut JSContext) -> usize {
         if ran >= NEXT_TICK_DEPTH_CAP {
             return ran;
         }
-        let Some(entry) = NEXT_TICK_QUEUE.with(|q| q.borrow_mut().pop_front()) else {
+        let Some(mut entry) = NEXT_TICK_QUEUE.with(|q| q.borrow_mut().pop_front()) else {
             return ran;
         };
         ran += 1;
 
-        let cb = entry.cb.get();
-        let global = entry.global.get();
+        // The raw-root slots ARE the live copies (a moving GC updates them
+        // in place); read the global/callback/args back out of the guard.
+        let (global, cb, arg_vals) = match entry.root.as_ref() {
+            Some(guard) => {
+                let gval = guard.get(0);
+                let cval = guard.get(1);
+                let mut args_v = Vec::with_capacity(entry.n_args);
+                for i in 0..entry.n_args {
+                    args_v.push(guard.get(2 + i));
+                }
+                (
+                    if gval.is_object() && !gval.is_null() {
+                        unsafe { gval.to_object() }
+                    } else {
+                        ptr::null_mut()
+                    },
+                    if cval.is_object() && !cval.is_null() {
+                        unsafe { cval.to_object() }
+                    } else {
+                        ptr::null_mut()
+                    },
+                    args_v,
+                )
+            },
+            None => (ptr::null_mut(), ptr::null_mut(), Vec::new()),
+        };
         if cb.is_null() || global.is_null() {
             // The callback or its realm was GC-collected (discarded realm):
             // nothing to run, nothing to report.
@@ -592,12 +639,12 @@ unsafe fn drain_next_ticks(cx: *mut JSContext) -> usize {
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
         rooted!(&in(realm_cx) let global_root = global);
         rooted!(&in(realm_cx) let cb_root = cb);
-        let arg_roots: Vec<::mozjs::jsapi::Heap<JSVal>> = entry
-            .args
+        let arg_roots: Vec<::mozjs::jsapi::Heap<JSVal>> = arg_vals
             .iter()
-            .map(|slot| {
+            .copied()
+            .map(|v| {
                 let h = ::mozjs::jsapi::Heap::default();
-                h.set(slot.get());
+                h.set(v);
                 h
             })
             .collect();

@@ -8933,15 +8933,27 @@ unsafe extern "C" fn process_next_tick(cx: *mut JSContext, argc: u32, vp: *mut J
         .map(|i| args.get(i as u32))
         .collect();
     // SAFETY: the pointers come from the rooted!() stack slots above, which
-    // outlive this call; the queue's Heap slots take over the rooting before
-    // the next GC point.
+    // outlive this call; the queue's raw-root slots take over the rooting
+    // before the next GC point.
     let global_ptr: *mut mozjs::jsapi::JSObject = global.get();
     let cb_ptr: *mut mozjs::jsapi::JSObject = cb_obj.get();
     let global_handle =
         unsafe { ::mozjs::jsapi::JS::HandleObject::from_marked_location(&global_ptr) };
     let cb_handle =
         unsafe { ::mozjs::jsapi::JS::HandleObject::from_marked_location(&cb_ptr) };
-    bao_engine::job_queue::next_tick_enqueue(global_handle, cb_handle, &extra);
+    let queued = bao_engine::job_queue::next_tick_enqueue(
+        cx_ref,
+        global_handle,
+        cb_handle,
+        &extra,
+    );
+    if !queued {
+        JS_ReportErrorUTF8(
+            cx,
+            c"process.nextTick(): failed to root the callback (raw-root registration failed)".as_ptr(),
+        );
+        return false;
+    }
 
     args.rval().set(UndefinedValue());
     true
