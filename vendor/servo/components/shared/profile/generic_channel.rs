@@ -20,18 +20,6 @@ impl<T> GenericReceiver<T>
 where
     T: for<'de> Deserialize<'de> + Serialize,
 {
-    // BAO patch (fork-maintained, 2026-09-28): base-receiver wrapper ctor for
-    // the window-end GenericCallback::new_blocking face.
-    pub(crate) fn from_base(
-        receiver: generic_channel::GenericReceiver<T>,
-        time_profile_chan: ProfilerChan,
-    ) -> Self {
-        Self {
-            receiver,
-            time_profile_chan,
-        }
-    }
-
     pub fn recv(&self) -> Result<T, generic_channel::ReceiveError> {
         time_profile!(
             ProfilerCategory::IpcReceiver,

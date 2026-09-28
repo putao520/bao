@@ -27,7 +27,9 @@ use malloc_size_of::malloc_size_of_is_0;
 use malloc_size_of_derive::MallocSizeOf;
 use media::WindowGLContext;
 use net_traits::ResourceThreads;
-use paint_api::largest_contentful_paint_candidate::LCPCandidateID;
+// BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — LCPCandidateID
+// 源重指到 servo_base::id(基线形态,同型零行为变化)。
+use servo_base::id::LCPCandidateID;
 use paint_api::{CrossProcessPaintApi, PinchZoomInfos};
 use pixels::PixelFormat;
 use profile_traits::mem;

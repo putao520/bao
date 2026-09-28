@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 use embedder_traits::{
     ContextMenuAction, ContextMenuElementInformation, ContextMenuElementInformationFlags,
-    ContextMenuItem, ContextMenuRequest, EditingActionEvent, EmbedderControlId,
+    ClipboardAction, ContextMenuItem, ContextMenuRequest, EmbedderControlId,
     EmbedderControlRequest, EmbedderControlResponse, EmbedderMsg,
 };
 use euclid::{Point2D, Rect, Size2D};
@@ -518,21 +518,21 @@ impl ContextMenuNodes {
                 window.Document().event_handler().handle_editing_action(
                     cx,
                     self.text_input_element.as_deref().map(DomRoot::from_ref),
-                    EditingActionEvent::Cut,
+                    ClipboardAction::Cut,
                 );
             },
             ContextMenuAction::Copy => {
                 window.Document().event_handler().handle_editing_action(
                     cx,
                     self.text_input_element.as_deref().map(DomRoot::from_ref),
-                    EditingActionEvent::Copy,
+                    ClipboardAction::Copy,
                 );
             },
             ContextMenuAction::Paste => {
                 window.Document().event_handler().handle_editing_action(
                     cx,
                     self.text_input_element.as_deref().map(DomRoot::from_ref),
-                    EditingActionEvent::Paste,
+                    ClipboardAction::Paste,
                 );
             },
             ContextMenuAction::SelectAll => {

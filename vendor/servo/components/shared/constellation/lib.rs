@@ -24,14 +24,13 @@ use embedder_traits::{
 };
 pub use from_script_message::*;
 use malloc_size_of_derive::MallocSizeOf;
+use paint_api::display_list::PaintTimingInfo;
 use paint_api::PinchZoomInfos;
-use paint_api::largest_contentful_paint_candidate::LCPCandidateID;
 use profile_traits::mem::MemoryReportResult;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericCallback;
-use servo_base::id::{MessagePortId, PipelineId, ScriptEventLoopId, WebViewId};
+use servo_base::id::{LCPCandidateID, MessagePortId, PipelineId, ScriptEventLoopId, WebViewId};
 use servo_config::prefs::PrefValue;
 use servo_url::{ImmutableOrigin, ServoUrl};
 pub use structured_data::*;
@@ -89,6 +88,12 @@ pub enum EmbedderToConstellationMessage {
     MediaSessionAction(MediaSessionActionType),
     /// Set whether to use less resources, by stopping animations and running timers at a heavily limited rate.
     SetWebViewThrottled(WebViewId, bool),
+    // BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — 基线
+    // SetWebViewHidden 变体(可设 on/off;vendor SetWebViewThrottled 保留并存)。
+    /// Notify the Constellation that a WebView has been hidden. Hidden `WebView`s are throttled,
+    /// which means they use less resources, by stopping animations and running timers at a
+    /// heavily limited rate.
+    SetWebViewHidden(WebViewId, bool),
     /// The Servo renderer scrolled and is updating the scroll states of the nodes in the
     /// given pipeline via the constellation.
     SetScrollStates(PipelineId, ScrollStateUpdate),
@@ -128,14 +133,9 @@ pub enum UserContentManagerAction {
 /// constellation and then forwarded to the script thread.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum PaintMetricEvent {
-    FirstPaint(CrossProcessInstant, bool /* first_reflow */),
-    FirstContentfulPaint(CrossProcessInstant, bool /* first_reflow */),
-    LargestContentfulPaint(
-        CrossProcessInstant,
-        usize, /* area */
-        Option<ServoUrl>,
-        LCPCandidateID,
-    ),
+    FirstPaint(PaintTimingInfo, bool /* first_reflow */),
+    FirstContentfulPaint(PaintTimingInfo, bool /* first_reflow */),
+    LargestContentfulPaint(PaintTimingInfo, LCPCandidateID),
 }
 
 impl fmt::Debug for EmbedderToConstellationMessage {

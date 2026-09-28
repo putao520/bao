@@ -48,8 +48,24 @@ use net_traits::request::{
     InsecureRequestsPolicy, PreloadId, PreloadKey, PreloadedResources, RequestBuilder,
 };
 use net_traits::{ReferrerPolicy, ResourceFetchTiming};
-use paint_api::largest_contentful_paint_candidate::LCPCandidateID;
-use percent_encoding::percent_decode;
+use layout_api::LCPCandidate;
+use paint_api::display_list::PaintTimingInfo;
+use servo_base::id::LCPCandidateID;
+
+
+// BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — LCP 候选存储
+// (基线 7ca99fe3f 形态)。
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct LCPCandidateAndElement {
+    /// <https://www.w3.org/TR/largest-contentful-paint/#largest-contentful-paint-candidate-element>
+    element: Option<Dom<Element>>,
+    #[no_trace]
+    candidate: LCPCandidate,
+    /// The time the candidate's image became completely available, if any.
+    #[no_trace]
+    load_time: Option<CrossProcessInstant>,
+}use percent_encoding::percent_decode;
 use profile_traits::mem::{Report, ReportKind};
 use profile_traits::time::TimerMetadataFrameType;
 use profile_traits::{generic_channel as profile_generic_channel, path};
@@ -629,7 +645,11 @@ pub(crate) struct Document {
     /// The node that is currently highlighted by the devtools
     highlighted_dom_node: MutNullableDom<Node>,
     /// Resolved LCP candidate elements, keyed by their [LCPCandidateID].
-    lcp_candidates: DomRefCell<HashMapTracedValues<LCPCandidateID, Dom<Element>>>,
+    lcp_candidates: DomRefCell<HashMapTracedValues<LCPCandidateID, LCPCandidateAndElement>>,
+    /// The [`PaintTimingInfo`] for this document with [`rendering_update_end_time`] set.
+    /// <https://www.w3.org/TR/paint-timing/#paint-timing-info>
+    #[no_trace]
+    paint_timing_info: Cell<PaintTimingInfo>,
     /// The constructed stylesheet that is adopted by this [Document].
     /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
     adopted_stylesheets: DomRefCell<Vec<Dom<CSSStyleSheet>>>,
@@ -3604,42 +3624,86 @@ impl Document {
             }));
     }
 
-    pub(crate) fn store_lcp_candidate(&self, id: LCPCandidateID, element: &Element) {
-        self.lcp_candidates
-            .borrow_mut()
-            .insert(id, Dom::from_ref(element));
+    // BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — paint
+    // timing 资质与信息访问器(基线 7ca99fe3f 形态)。
+    /// <https://www.w3.org/TR/paint-timing/#paint-timing-eligible>
+    pub(crate) fn paint_timing_eligible(&self) -> bool {
+        // A browsing context ctx is paint-timing eligible when one of the
+        // following apply:
+        // > ctx is a top-level browsing context.
+        if self.window().is_top_level() {
+            return true;
+        }
+        // > ctx is a nested browsing context, and the user agent has
+        // > configured ctx to report paint timing.
+        if let Some(top_level_document) = self.window().top_level_document_if_local() {
+            // > > a user agent may decide to disable paint-timing for
+            // > > cross-origin iframes, as in some scenarios their
+            // > > paint-timing might reveal information about the main frame.
+            return self.origin().same_origin(&top_level_document.origin());
+        };
+        false
+    }
+
+    pub(crate) fn paint_timing_info(&self) -> PaintTimingInfo {
+        self.paint_timing_info.get()
+    }
+
+    pub(crate) fn store_lcp_candidate(&self, candidate: LCPCandidate, element: Option<&Element>) {
+        // BAO patch 边界注记:图片 load_time 追踪属上游 LCP 面,vendor
+        // HTMLImageElement 无此追踪,v1 迁移以 None 上报(数据质量边界)。
+        let load_time = None;
+        self.lcp_candidates.borrow_mut().insert(
+            candidate.id,
+            LCPCandidateAndElement {
+                element: element.map(Dom::from_ref),
+                candidate,
+                load_time,
+            },
+        );
     }
 
     pub(crate) fn handle_paint_metric(&self, cx: &mut JSContext, event: PaintMetricEvent) {
         let metrics = self.interactive_time.borrow();
         let entry = match event {
-            PaintMetricEvent::FirstPaint(metric_value, first_reflow) => {
-                metrics.set_first_paint(metric_value, first_reflow);
+            PaintMetricEvent::FirstPaint(paint_timing_info, first_reflow) => {
+                metrics.set_first_paint(paint_timing_info.default_paint_timestamp(), first_reflow);
                 DomRoot::upcast::<PerformanceEntry>(PerformancePaintTiming::new(
                     cx,
                     self.window.as_global_scope(),
                     ProgressiveWebMetricType::FirstPaint,
-                    metric_value,
+                    paint_timing_info,
                 ))
             },
-            PaintMetricEvent::FirstContentfulPaint(metric_value, first_reflow) => {
-                metrics.set_first_contentful_paint(metric_value, first_reflow);
+            PaintMetricEvent::FirstContentfulPaint(paint_timing_info, first_reflow) => {
+                metrics.set_first_contentful_paint(
+                    paint_timing_info.default_paint_timestamp(),
+                    first_reflow,
+                );
                 DomRoot::upcast::<PerformanceEntry>(PerformancePaintTiming::new(
                     cx,
                     self.window.as_global_scope(),
                     ProgressiveWebMetricType::FirstContentfulPaint,
-                    metric_value,
+                    paint_timing_info,
                 ))
             },
-            PaintMetricEvent::LargestContentfulPaint(metric_value, area, url, id) => {
-                metrics.set_largest_contentful_paint(id, metric_value, area);
+            PaintMetricEvent::LargestContentfulPaint(paint_timing_info, id) => {
+                let Some(stored_candidate) = self.lcp_candidates.borrow_mut().remove(&id) else {
+                    warn!("Received LCP paint metric for unknown candidate: {id:?}");
+                    return;
+                };
+                metrics.set_largest_contentful_paint(
+                    id,
+                    paint_timing_info.default_paint_timestamp(),
+                    stored_candidate.candidate.area,
+                );
                 DomRoot::upcast::<PerformanceEntry>(LargestContentfulPaint::new(
                     cx,
                     self.window.as_global_scope(),
-                    metric_value,
-                    area,
-                    url,
-                    self.lcp_candidates.borrow_mut().remove(&id).as_deref(),
+                    &stored_candidate.candidate,
+                    stored_candidate.element.as_deref(),
+                    stored_candidate.load_time,
+                    paint_timing_info,
                 ))
             },
         };
@@ -4140,6 +4204,7 @@ impl Document {
             intersection_observers: Default::default(),
             highlighted_dom_node: Default::default(),
             lcp_candidates: DomRefCell::new(Default::default()),
+            paint_timing_info: Cell::new(PaintTimingInfo::now()),
             adopted_stylesheets: Default::default(),
             adopted_stylesheets_frozen_types: CachedFrozenArray::new(),
             pending_scroll_events: Default::default(),

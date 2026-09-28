@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use embedder_traits::{
-    Cursor, EditingActionEvent, EmbedderMsg, ImeEvent, InputEvent, InputEventId, InputEventOutcome,
+    ClipboardAction, Cursor, EmbedderMsg, ImeEvent, InputEvent, InputEventId, InputEventOutcome,
     InputEventResult, KeyboardEvent as EmbedderKeyboardEvent, MouseButton, MouseButtonAction,
     MouseButtonEvent, MouseLeftViewportEvent, TouchEvent as EmbedderTouchEvent, TouchEventType,
     TouchId, TouchPointerType, UntrustedNodeAddress, WheelEvent as EmbedderWheelEvent,
@@ -1983,12 +1983,12 @@ impl DocumentEventHandler {
         &self,
         cx: &mut JSContext,
         element: Option<DomRoot<Element>>,
-        action: EditingActionEvent,
+        action: ClipboardAction,
     ) -> InputEventResult {
         let clipboard_event_type = match action {
-            EditingActionEvent::Copy => ClipboardEventType::Copy,
-            EditingActionEvent::Cut => ClipboardEventType::Cut,
-            EditingActionEvent::Paste => ClipboardEventType::Paste,
+            ClipboardAction::Copy => ClipboardEventType::Copy,
+            ClipboardAction::Cut => ClipboardEventType::Cut,
+            ClipboardAction::Paste => ClipboardEventType::Paste,
         };
 
         // The script_triggered flag is set if the action runs because of a script, e.g. document.execCommand()

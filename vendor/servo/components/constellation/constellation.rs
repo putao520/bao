@@ -307,7 +307,7 @@ pub struct Constellation<STF, SWF> {
     /// A channel for the constellation to receive messages from script threads.
     /// This is the constellation's view of `script_sender`.
     script_receiver:
-        Receiver<Result<(WebViewId, PipelineId, ScriptToConstellationMessage), IpcError>>,
+        Receiver<Result<(WebViewId, PipelineId, ScriptToConstellationMessage), SendError>>,
 
     /// A handle to register components for hang monitoring.
     /// None when in multiprocess mode.
@@ -1450,6 +1450,12 @@ where
             },
             EmbedderToConstellationMessage::SetWebViewThrottled(webview_id, throttled) => {
                 self.set_webview_throttled(webview_id, throttled);
+            },
+            // BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 —
+            // 基线 SetWebViewHidden 变体(语义同 vendor SetWebViewThrottled,
+            // 镜像处理臂;两变体并存为迁移过渡态)。
+            EmbedderToConstellationMessage::SetWebViewHidden(webview_id, hidden) => {
+                self.set_webview_throttled(webview_id, hidden);
             },
             EmbedderToConstellationMessage::SetScrollStates(pipeline_id, scroll_states) => {
                 self.handle_set_scroll_states(pipeline_id, scroll_states)

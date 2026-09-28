@@ -8,6 +8,9 @@
 
 #![deny(unsafe_code)]
 
+// BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — LCPCandidate
+// 面(基线 7ca99fe3f 形态,paint_timing_handler 消费)。
+mod largest_contentful_paint_candidate;
 mod layout_damage;
 mod layout_dom;
 mod layout_element;
@@ -29,6 +32,7 @@ use bitflags::bitflags;
 use embedder_traits::{Cursor, ScriptToEmbedderChan, Theme, UntrustedNodeAddress, ViewportDetails};
 use euclid::{Point2D, Rect};
 use fonts::{FontContext, TextByteRange, WebFontDocumentContext, WebFontSetDifference};
+pub use largest_contentful_paint_candidate::LCPCandidate;
 pub use layout_damage::{AccessibilityDamage, LayoutDamage};
 pub use layout_dom::{
     DangerousStyleElementOf, DangerousStyleNodeOf, LayoutDomTypeBundle, LayoutElementOf,
@@ -41,8 +45,8 @@ use malloc_size_of::{MallocSizeOf as MallocSizeOfTrait, MallocSizeOfOps, malloc_
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::{ImageCache, ImageCacheFactory, PendingImageId};
 use net_traits::request::InternalRequest;
+use paint_api::display_list::PaintTimingInfo;
 use paint_api::CrossProcessPaintApi;
-use paint_api::largest_contentful_paint_candidate::LCPCandidate;
 use parking_lot::RwLock;
 use pixels::{RasterImage, Repeat};
 use profile_traits::mem::Report;
@@ -698,8 +702,6 @@ pub struct ReflowResult {
     pub changed_web_fonts: WebFontSetDifference,
     /// The LCP candidate during this layout pass, if any.
     pub lcp_candidate: Option<LCPCandidate>,
-    /// The UntrustedNodeAddress for the LCP candidate if any.
-    pub lcp_node_address: Option<UntrustedNodeAddress>,
 }
 
 bitflags! {
@@ -789,6 +791,14 @@ pub struct ReflowRequest {
     /// From <https://www.w3.org/TR/largest-contentful-paint/#limitations>:
     /// > The LargestContentfulPaint ... algorithm halts ... inputs.
     pub halt_lcp: bool,
+    // BAO patch (fork-maintained, 2026-09-29): paint 岛→基线迁移波 — paint
+    // timing 路由字段(基线 7ca99fe3f 形态)。
+    /// Whether the document's browsing context is paint-timing eligible.
+    /// <https://www.w3.org/TR/paint-timing/#paint-timing-eligible>
+    pub paint_timing_eligible: bool,
+    /// The [`PaintTimingInfo`] for this reflow.
+    /// <https://www.w3.org/TR/paint-timing/#paint-timing-info>
+    pub paint_timing_info: PaintTimingInfo,
     /// The current font context.
     pub document_context: WebFontDocumentContext,
     /// Damage to the accessibility tree from DOM mutations.

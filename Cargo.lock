@@ -861,6 +861,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "smallvec",
  "time",
  "unicode-segmentation",
  "webrender_api",

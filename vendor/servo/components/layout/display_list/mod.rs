@@ -248,11 +248,11 @@ impl DisplayListBuilder<'_> {
     }
 
     fn mark_is_paintable(&mut self) {
-        self.paint_info.is_paintable = true;
+        self.paint_timing_handler.mark_document_is_paintable();
     }
 
     fn mark_is_contentful(&mut self) {
-        self.paint_info.is_contentful = true;
+        self.paint_timing_handler.mark_document_is_contentful();
     }
 
     fn spatial_id(&self, id: ScrollTreeNodeId) -> SpatialId {
@@ -627,25 +627,19 @@ impl DisplayListBuilder<'_> {
         }
     }
 
-    fn check_if_paintable(&mut self, bounds: LayoutRect, clip_rect: LayoutRect, opacity: f32) {
+    fn check_if_paintable(&mut self, bounds: LayoutRect, _clip_rect: LayoutRect, opacity: f32) {
         // From <https://www.w3.org/TR/paint-timing/#paintable>:
         // An element el is paintable when all of the following apply:
         // > el is being rendered.
         // > el’s used visibility is visible.
         // Above conditions are met, as we selectively call this API.
-
-        // > el and all of its ancestors' used opacity is greater than zero.
-        if opacity <= 0.0 {
-            return;
-        }
-
-        // > el’s paintable bounding rect intersects with the scrolling area of the document.
-        if self
-            .paint_timing_handler
-            .check_bounding_rect(bounds, clip_rect)
-        {
-            self.mark_is_paintable();
-        }
+        //
+        // BAO patch (fork-maintained, 2026-09-29): 基线 handler 自持滚动区域
+        // (构造期 layout_size),clip_rect 门槛由其内部 paintable_bounding_rect
+        // 承担;clip_rect 形参保留以维持调用面稳定。
+        self.paint_timing_handler
+            .check_if_paintable(bounds, opacity);
+        self.mark_is_paintable();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1215,7 +1209,7 @@ impl Fragment {
                 .cumulative_node_to_root_transform(state.spatial_id);
             builder
                 .paint_timing_handler
-                .accumulate_text_rect(tag, rect.to_webrender(), transform);
+                .accumulate_text_rect(tag, rect.to_webrender(), transform, &parent_style);
         }
 
         for text_decoration in state.text_decorations.iter() {

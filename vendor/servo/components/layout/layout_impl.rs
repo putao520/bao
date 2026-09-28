@@ -1083,18 +1083,13 @@ impl LayoutThread {
         let pending_svg_elements_for_serialization =
             std::mem::take(&mut *image_resolver.pending_svg_elements_for_serialization.lock());
 
-        let (lcp_candidate, lcp_node_address) = self
+        // BAO patch (fork-maintained, 2026-09-29): paint 岛→基线迁移波 —
+        // 单值 LCP 候选(基线形态;vendor 岛的 lcp_node_address 旁路删除)。
+        let lcp_candidate = self
             .paint_timing_handler
             .borrow()
             .as_ref()
-            .map(|handler| {
-                (
-                    handler.largest_contentful_paint_candidate(),
-                    handler
-                        .lcp_node()
-                        .map(|node| UntrustedNodeAddress(node.id() as *const c_void)),
-                )
-            })
+            .map(|handler| handler.largest_contentful_paint_candidate())
             .unwrap_or_default();
 
         Some(ReflowResult {
@@ -1106,7 +1101,6 @@ impl LayoutThread {
             reflow_statistics,
             changed_web_fonts,
             lcp_candidate,
-            lcp_node_address,
         })
     }
 
@@ -1537,23 +1531,25 @@ impl LayoutThread {
             paint_timing_handler,
             reflow_statistics,
         );
-        paint_timing_handler.mark_paint_timing(reflow_request.halt_lcp);
+        // BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 —
+        // paint timing 路由替换为基线形态(mark 双参 + paint_info 内嵌路由,
+        // 替换 vendor 岛的 did_update/send_lcp_candidate 旁路)。
+        paint_timing_handler.mark_paint_timing(
+            reflow_request.paint_timing_eligible,
+            reflow_request.halt_lcp,
+        );
         self.paint_api.send_display_list(
             self.webview_id,
             &stacking_context_tree.paint_info,
             built_display_list,
         );
 
-        if paint_timing_handler.did_lcp_candidate_update() &&
-            let Some(lcp_candidate) = paint_timing_handler.largest_contentful_paint_candidate()
-        {
-            self.paint_api.send_lcp_candidate(
-                lcp_candidate,
-                self.webview_id,
-                self.id,
-                stacking_context_tree.paint_info.epoch,
-            );
-            paint_timing_handler.unset_lcp_candidate_updated();
+        stacking_context_tree.paint_info.paint_timing_info = reflow_request.paint_timing_info;
+        if let Some(lcp_candidate) = paint_timing_handler.largest_contentful_paint_candidate() {
+            stacking_context_tree.paint_info.lcp_candidate =
+                Some((lcp_candidate.id, lcp_candidate.area));
+        } else {
+            stacking_context_tree.paint_info.lcp_candidate = None;
         }
 
         let (keys, instance_keys) = self
