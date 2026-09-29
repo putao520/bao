@@ -143,3 +143,29 @@ pub unsafe fn collect_runtime_stats(cx: *mut mozjs::jsapi::JSContext) -> Result<
         servo_non_heap: servo.nonHeap,
     })
 }
+
+
+// ── A-2 intentional-leak category counters (ISSUE #29-Eliminate) ──────────
+//
+// Per-category occurrence counters for the bounded/deliberate leaks formally
+// inventoried in .plans/gc-leak-ledger.md (S2 A-2). Observational only — the
+// leaks themselves are load-bearing (see the ledger for per-item bounds and
+// proofs). Read via `leak_counter` for soak/telemetry faces.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// A-2 #1: RawValueRootGuard dropped on a foreign thread / dead runtime —
+/// the rooted slots are forgotten (root table may still hold addresses).
+pub static LEAK_RAW_VALUE_ROOT_GUARD: AtomicUsize = AtomicUsize::new(0);
+/// A-2 #2: shutdown_engine forgot the thread's engine handle (once per
+/// process, at controlled engine shutdown).
+pub static LEAK_SHUTDOWN_ENGINE: AtomicUsize = AtomicUsize::new(0);
+
+/// Read a leak counter (soak/telemetry face).
+pub fn leak_counter(counter: &AtomicUsize) -> usize {
+    counter.load(Ordering::Relaxed)
+}
+
+pub(crate) fn bump(counter: &AtomicUsize) {
+    counter.fetch_add(1, Ordering::Relaxed);
+}

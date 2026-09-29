@@ -16,11 +16,12 @@ mod rss_bench;
 mod runtime_bench;
 mod soak_bench;
 mod stencil_bench;
+mod zone_bench;
 
 use std::collections::HashMap;
 
 fn usage() -> ! {
-    eprintln!("usage: bench-harness <runtime-create-drop|realm-create-drop|page-churn|fetch-small-payload|rss-sample|stencil-cost|soak> [--key value ...]");
+    eprintln!("usage: bench-harness <runtime-create-drop|realm-create-drop|zone-eval|page-churn|fetch-small-payload|rss-sample|stencil-cost|soak> [--key value ...]");
     std::process::exit(2);
 }
 
@@ -47,6 +48,7 @@ fn main() {
     let outcome = match bench.as_str() {
         "runtime-create-drop" => runtime_bench::run(&params),
         "realm-create-drop" => realm_bench::run(&params),
+        "zone-eval" => zone_bench::run(&params),
         "page-churn" => page_bench::run(&params),
         "fetch-small-payload" => fetch_bench::run(&params),
         "rss-sample" => rss_bench::run(&params),

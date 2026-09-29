@@ -201,6 +201,7 @@ impl RawValueRootGuard {
     pub fn into_inner(mut self) -> Option<Box<[mozjs::jsval::JSVal]>> {
         if !raw_cx_alive(self.cx) {
             // Leak instead of handing out rooted memory.
+            super::memory_stats::bump(&super::memory_stats::LEAK_RAW_VALUE_ROOT_GUARD);
             let leaked = ::std::mem::take(&mut self.vals);
             ::std::mem::forget(leaked);
             return None;
@@ -223,6 +224,7 @@ impl Drop for RawValueRootGuard {
             // Foreign thread / dead runtime: leak the rooted slots — the
             // root table may still hold their addresses, so the memory must
             // outlive it (a bounded leak beats a dangling GC scan address).
+            super::memory_stats::bump(&super::memory_stats::LEAK_RAW_VALUE_ROOT_GUARD);
             let leaked = ::std::mem::take(&mut self.vals);
             ::std::mem::forget(leaked);
         }
@@ -722,6 +724,7 @@ impl JsContext {
                     JS_ShutDown();
                 }
                 if let Some(engine) = tls.take() {
+                    super::memory_stats::bump(&super::memory_stats::LEAK_SHUTDOWN_ENGINE);
                     std::mem::forget(engine);
                 }
             }
