@@ -29,10 +29,11 @@ const GOLDEN_DIR: &str = "tests/golden/cli";
 /// explicit override → sibling-of-test-exe → config target-dir → manifest
 /// target tree; both OS spellings probed everywhere).
 fn find_bao_binary() -> std::path::PathBuf {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
         let p = std::path::PathBuf::from(p);
         if p.is_file() {
-            return p;
+            candidates.push(p);
         }
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -40,7 +41,7 @@ fn find_bao_binary() -> std::path::PathBuf {
             for name in ["bao", "bao.exe"] {
                 let candidate = profile_dir.join(name);
                 if candidate.is_file() {
-                    return candidate;
+                    candidates.push(candidate);
                 }
             }
         }
@@ -57,7 +58,7 @@ fn find_bao_binary() -> std::path::PathBuf {
                         for name in ["bao", "bao.exe"] {
                             let candidate = std::path::Path::new(dir).join(profile).join(name);
                             if candidate.is_file() {
-                                return candidate;
+                                candidates.push(candidate);
                             }
                         }
                     }
@@ -70,12 +71,43 @@ fn find_bao_binary() -> std::path::PathBuf {
         for name in ["bao", "bao.exe"] {
             let candidate = target.join(profile).join(name);
             if candidate.is_file() {
-                return candidate;
+                candidates.push(candidate);
             }
         }
     }
+
+    // ── Freshness canary (battery-v7 stale-binary lesson) ──────────────────
+    // A binary whose `compat --help` does not exit 0 predates the current
+    // command set (e.g. a pre-W14 leftover in the resolved target dir).
+    // Snapshot-comparing against it would fabricate a golden "drift" that is
+    // really staleness — fail LOUD with the fix instead.
+    let mut last: Option<(std::path::PathBuf, String)> = None;
+    for candidate in candidates {
+        let out = Command::new(&candidate)
+            .args(["compat", "--help"])
+            .output();
+        match out {
+            Ok(o) if o.status.code() == Some(0) && !o.stdout.is_empty() => return candidate,
+            Ok(o) => {
+                last = Some((
+                    candidate.clone(),
+                    format!("compat --help exited {:?} (stdout {}B)", o.status.code(), o.stdout.len()),
+                ));
+            }
+            Err(e) => {
+                last = Some((candidate.clone(), format!("spawn failed: {e}")));
+            }
+        }
+    }
+    let detail = last
+        .map(|(p, why)| format!("last candidate {} : {why}", p.display()))
+        .unwrap_or_else(|| "no candidate binary found".into());
     panic!(
-        "cannot locate the real `bao` binary — build it (cargo build -p bao_bin) or set BAO_TEST_BAO_BIN"
+        "stale or unusable `bao` binary — {detail}.\n\
+         Rebuild the binary for THIS profile (cargo build -p bao_bin --profile test-ci --jobs 4) \
+         or point BAO_TEST_BAO_BIN at a fresh one.\n\
+         (The snapshot tests must never compare golden faces against a binary \
+         that predates the current command set — that fabricates drift.)"
     );
 }
 
