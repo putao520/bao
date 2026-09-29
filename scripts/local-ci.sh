@@ -183,6 +183,18 @@ else
     echo "==> [10/10] publish-closure plan: skipped (set BAO_PUBLISH_PLAN=1 to enable)"
 fi
 
+# ================ [optional 11/11] bench regression gate (W41/#19-H) =================
+# bench 关键指标回归门(最新两 run-date 方向感知 20%,slope 类 advisory)——
+# 默认 skip;BAO_BENCH_REGRESSION=1 启用。阈值 BAO_BENCH_REGRESSION_PCT 可调。
+BENCH_REG_RC=0
+if [ "${BAO_BENCH_REGRESSION:-0}" = "1" ]; then
+    echo "==> [11/11] bench-regression (blocking when enabled): scripts/bench-regression-gate.sh"
+    bash "${REPO}/scripts/bench-regression-gate.sh" || BENCH_REG_RC=$?
+    if [ "${BENCH_REG_RC}" -eq 0 ]; then echo "PASS bench-regression"; else echo "FAIL bench-regression (exit=${BENCH_REG_RC})"; fi
+else
+    echo "==> [11/11] bench-regression: skipped (set BAO_BENCH_REGRESSION=1 to enable)"
+fi
+
 # ================================ 总表 ================================
 echo
 echo "==================== LOCAL-CI SUMMARY ===================="
@@ -201,6 +213,9 @@ if [ "${BAO_NATIVE_DEPS:-0}" = "1" ]; then
 fi
 if [ "${BAO_CONSUMER_GATE:-0}" = "1" ]; then
     echo "$(verdict "${CONSUMER_RC}")    consumer-gate (blocking when enabled)"
+fi
+if [ "${BAO_BENCH_REGRESSION:-0}" = "1" ]; then
+    echo "$(verdict "${BENCH_REG_RC}")    bench-regression (blocking when enabled)"
 fi
 echo "========================================================="
 

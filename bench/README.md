@@ -140,7 +140,7 @@ bench/
   harness/             (cargo workspace member `bench-harness`:独立进程 bench driver)
   run.sh               (编排:env 绑定(commit/host/日期)→ 构建 → 跑 → results/ 落盘)
   results/             (seed 基线数据,随仓库版本化;<date>-<commit>/<bench>.run-<k>.json)
-  REPORT.md            (未来:自动生成的完整报告,issue #19 I 节)
+  REPORT.md            (自动生成的完整报告,issue #19 I 节 — `python3 scripts/bench_report.py` 重建,`--check` 防 drift)
 ```
 
 后续维度(harness subcommand 扩展):fs / crypto / sqlite / spawn / bundler
