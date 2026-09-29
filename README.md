@@ -6,7 +6,7 @@ Bao combines SpiderMonkey, Rust-native Node.js/Bun-compatible system APIs, Servo
 
 **The browser is a capability of the runtime, not the product.** A task can stay in normal JS/TS for files, HTTP, crypto, SQLite, modules, and application logic, then enter a real Web/DOM runtime only when the job actually needs a page.
 
-**[中文文档](./README.zh-CN.md)** · Status: **0.x alpha** — Linux x86_64 · APIs may change · [CHANGELOG](./CHANGELOG.md)
+**[中文文档](./README.zh-CN.md)** · Status: **0.x alpha** — Linux x86_64 · Windows x86_64 · APIs may change · [CHANGELOG](./CHANGELOG.md)
 
 ---
 
@@ -75,7 +75,7 @@ The long-term direction is to make application capabilities programmable without
 
 ```toml
 [dependencies]
-bao-core = "0.1.5"
+bao-core = "0.3.1"
 ```
 
 ```rust

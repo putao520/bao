@@ -6,7 +6,7 @@ Bao 把 SpiderMonkey、Rust-native 的 Node.js/Bun 风格系统 API、Servo Web 
 
 **浏览器是 Runtime 的一种能力，不是 Bao 这个项目本身。** 一段任务可以一直用普通 JS/TS 处理文件、HTTP、crypto、SQLite、模块和业务逻辑，只有真的需要网页时才进入 Web/DOM Runtime。
 
-**[English](./README.md)** · 状态：**0.x alpha** — Linux x86_64 · API 可能变化 · [CHANGELOG](./CHANGELOG.md)
+**[English](./README.md)** · 状态：**0.x alpha** — Linux x86_64 · Windows x86_64 · API 可能变化 · [CHANGELOG](./CHANGELOG.md)
 
 ---
 
@@ -75,7 +75,7 @@ Bao 想成为的是**链接进 Rust 产品里的库**，而不是产品还需要
 
 ```toml
 [dependencies]
-bao-core = "0.1.5"
+bao-core = "0.3.1"
 ```
 
 ```rust
@@ -189,7 +189,7 @@ CDP 是兼容边界，不代表 Bao 在宣称自己就是 Chrome。method covera
 
 Bao 仍然是 **0.x alpha**。目前至少需要明确这些边界：
 
-- Linux x86_64 是唯一真正完成验证的平台。
+- 已完成完整验证的平台:Linux x86_64 与 Windows x86_64(自 Linux 交叉构建 + 真机电池验证);三档平台矩阵见 [docs/platform-support.md](docs/platform-support.md)。
 - Node/Bun、Web、CDP 的兼容面已经很大，但远未完成；“有 API / 有 handler”不等于行为兼容已经证明。
 - Realm 隔离**不等于**任意不可信代码沙箱已经完成；细粒度 capability、quota、audit 与更强隔离仍在建设。
 - `JSContext` 是线程局部的。`JSObject` / GC pointer 不能跨线程；跨线程只传 id、handle、owned message 或序列化数据，真正 JS 操作必须回 owner thread。

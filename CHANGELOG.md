@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Pending
-- Compatibility test suite (Web Platform / Node / Bun / CDP) — public pass rates.
-- Benchmark harness — public, reproducible baselines.
-- Playwright CDP integration smoke test in CI.
+- Compatibility pass-rate aggregation — the four inventories (Web / Node / Bun / CDP) are published under `compat/` with the `bao compat` command; measured pass rates follow per the honesty policy (no fabricated numbers).
+- First public bench REPORT.md — the harness is in under `bench/` (incl. mixed-soak and page-stress); the version-bound report is pending.
+- Playwright CDP integration smoke test in the local gate suite.
 
 ## [0.1.0-alpha.1] — 2026-08-12
 

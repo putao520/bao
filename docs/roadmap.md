@@ -22,9 +22,9 @@ Core runtime stack in place. APIs exist but not yet stable.
 - [x] Unified public library surface (`bao` package — full stack always linked, no Cargo feature split)
 - [x] EBUSY patch on mozjs (default multi-threaded `cargo test` no SIGSEGV)
 - [ ] Linux x86_64 production-quality (currently alpha — APIs may change)
-- [ ] API stability pass (public `bao` lib API audit, SemVer contract)
-- [ ] `bao compat` aggregation command (compat pass-rate reporting)
-- [ ] `bench` harness + first public REPORT.md
+- [x] API stability pass (public `bao` lib API audit, SemVer contract) — api-surface declaration gate (zero undeclared pub items, docs/api.md three-tier) + `docs/semver-gate.md`
+- [x] `bao compat` command + the four INVENTORY SSOTs (`compat/{node,bun,cdp,web}`; 72 Node modules inventoried vs the v24.19.0 anchor). Measured pass-rate aggregation is deliberately still TBD per the `compat/` honesty policy — no fabricated numbers.
+- [ ] `bench` harness + first public REPORT.md — the harness is in (`bench/`, incl. mixed-soak and page-stress scenarios); REPORT.md publication pending
 
 ## v0.2 — CDP compatibility
 
@@ -44,7 +44,7 @@ Publish Web Platform pass rates against servo WPT.
 - [ ] WPT subset (DOM / HTML / CSS / Fetch) public pass rates on Bao
 - [ ] Track divergence between Bao integration and servo upstream WPT
 - [ ] WebSocket completion (currently Partial)
-- [ ] Navigation lifecycle state machine (Created / Navigating / Interactive / Idle / Closed) hardened
+- [x] Navigation lifecycle state machine (Created / Navigating / Interactive / Idle / Closing, Closed) hardened — SPEC-mirrored transition table with centralized guarded writes, three test tiers (48-cell exhaustive matrix + e2e edges + shutdown)
 - [ ] Full-page render regression suite (pixel-level, not just DOM)
 
 ## v0.4 — Node / Bun compatibility
@@ -61,9 +61,9 @@ Publish Node / Bun API pass rates.
 
 Production-grade multi-page operation.
 
-- [ ] Concurrent page lifecycle stress (100+ pages, churn)
-- [ ] Memory leak elimination across page churn (BCE-004 residual = 0)
-- [ ] Cross-thread `JSObject` pointer discipline enforced (no SIGSEGV under PagePool chaos)
+- [x] Concurrent page lifecycle stress (100+ pages, churn) — page-stress bench gate met at N=100/300s (crash/hang/guard = 0, zero stranding, fd recovery); N=500 capacity probe crash = 0
+- [ ] Memory leak elimination across page churn — partial: soak steady-state slope −83% (realm-discard shrink hook); the residual per-realm chunk-byte retention is a documented known-limitation on the SM realm-discard face (upstream issue candidate, `.plans/gc-leak-ledger.md`)
+- [x] Cross-thread `JSObject` pointer discipline enforced (no SIGSEGV under PagePool chaos) — chaos fuzzer green; the 2026-09 crash classes (node-realm timer thread-kill, GC compaction move-staleness ×2) eradicated at root
 - [ ] Browser identity & privacy profile hardening (per-page StealthProfile independence)
 - [ ] Idle page reclamation tuning (`idle_ttl`, RSS ceiling)
 
@@ -71,9 +71,9 @@ Production-grade multi-page operation.
 
 First public, reproducible performance report.
 
-- [ ] `bench/` harness implemented (runtime / browser / automation / node_api dimensions)
+- [x] `bench/` harness implemented (runtime / browser / soak / mixed-soak / page-stress / stencil / realm / zone / rss / fetch dimensions)
 - [ ] Comparison baselines against Bun / Node / Chromium + Playwright
-- [ ] Performance regression CI (`bench.yml`, manual trigger)
+- [x] Performance regression gates (local suite; GitHub Actions was retired 2026-08 — gates run in the local equivalent, `scripts/local-ci.sh` optional stages)
 - [ ] `bench/REPORT.md` published (version-bound)
 
 ## v1.0 — Stable embedding API
@@ -82,10 +82,10 @@ Lock the surface, harden for production.
 
 - [ ] Locked public API (`bao` lib, SemVer)
 - [ ] Cross-platform: macOS real-machine verification (Windows landed — Supported since the 2026-09-29 ruling, cross build + real-machine battery 2026-09-26; see [platform-support.md](platform-support.md))
-- [ ] Production hardening (fuzzing, long-running soak tests)
+- [ ] Production hardening — partial: mixed soak green (2-min full-cycle with fail-closed verification) + soak streak ladder landed; 24h/72h runs pending
 - [ ] Documentation complete (API reference + embedding guide)
 - [ ] Public compat matrix + benchmark report covering v0.1–v0.6 milestones
-- [ ] Release process defined (CHANGELOG, semver bumps, artifact publishing)
+- [x] Release process defined (CHANGELOG, semver bumps, artifact publishing) — semver-gate + api-surface gate + consumer/nightly-bump gates; 49-crate closure precedent (2026-09-27); `bao-core` 0.3.1 published
 
 ---
 
