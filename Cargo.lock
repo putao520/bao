@@ -2481,6 +2481,7 @@ version = "0.1.0"
 dependencies = [
  "bao-browser",
  "bao-mozjs",
+ "bao_cdp",
  "bao_engine",
  "bao_stealth",
  "bun_runtime",

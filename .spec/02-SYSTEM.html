@@ -1005,6 +1005,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
             "initialState": "Created",
             "transitions": [
               { "from": "Created", "to": "Navigating", "on": "navigate" },
+              { "from": "Created", "to": "Closing", "on": "close" },
               { "from": "Navigating", "to": "Interactive", "on": "load_complete" },
               { "from": "Navigating", "to": "Closing", "on": "close_during_load" },
               { "from": "Interactive", "to": "Navigating", "on": "navigate" },
