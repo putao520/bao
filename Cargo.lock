@@ -2329,6 +2329,7 @@ dependencies = [
  "bun_options_types",
  "bun_runtime",
  "clap",
+ "serde_json",
 ]
 
 [[package]]
