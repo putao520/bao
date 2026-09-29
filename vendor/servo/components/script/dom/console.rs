@@ -24,9 +24,18 @@ use js::rust::wrappers2::{
     JS_GetOwnPropertyDescriptorById, JS_GetPropertyById, JS_IdToValue, JS_Stringify,
     JS_ValueToFunction, JS_ValueToSource, MapEntries, MapSize,
 };
+// BAO patch (fork-maintained, restored 2026-09-29, ISSUE #29/W12-B): this
+// face uses `describe_scripted_caller_safe` (wrappers2 path, returns Err on
+// inconsistency) instead of the deprecated raw `describe_scripted_caller`.
+// Regression: 7045fa57 coordinated wave swapped the call site to the raw fn
+// while converging to upstream terminal state; the raw FrameIter walk
+// SIGSEGVs under the opt-tier build when the cx activation stack holds a
+// stale CDP-wrapper eval frame (`FrameIter.cpp:326 settleOnActivation` —
+// cdp_debugger_fidelity/live_extensions e2e, battery v3). Restore =
+// call-site + import only; the safe wrapper in mozjs rust.rs was never lost.
 use js::rust::{
     CapturedJSStack, HandleObject, HandleValue, IdVector, ToNumber, ToString,
-    describe_scripted_caller, for_of,
+    describe_scripted_caller_safe, for_of,
 };
 use script_bindings::conversions::get_dom_class;
 
@@ -54,7 +63,16 @@ impl Console {
         arguments: Vec<DebuggerValue>,
         stacktrace: Option<Vec<StackFrame>>,
     ) -> ConsoleMessage {
-        let caller = unsafe { describe_scripted_caller(&*cx as *const _ as *mut _) }.unwrap_or_default();
+        // BAO patch (fork-maintained, restored 2026-09-29, ISSUE #29/W12-B):
+        // use the safe scripted-caller variant. The 7045fa57 coordinated wave
+        // swapped this call site to the deprecated raw
+        // `describe_scripted_caller`, whose FrameIter walk crashes under the
+        // opt-tier build when the cx activation stack contains a stale
+        // CDP-wrapper eval frame (FrameIter.cpp:326 settleOnActivation,
+        // SIGSEGV in cdp_debugger_fidelity/live_extensions e2e). The safe
+        // wrapper goes through wrappers2 and returns Err instead of walking
+        // the inconsistent activation.
+        let caller = describe_scripted_caller_safe(cx).unwrap_or_default();
 
         ConsoleMessage {
             fields: ConsoleMessageFields {

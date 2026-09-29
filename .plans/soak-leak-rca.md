@@ -61,4 +61,5 @@ heaptrack_print -f /tmp/w6_ht.zst -p 0 -a 0 -T 0 -l 1 -n 40
   - W6 投影:死 realm 内实例化的 JSScript 持 XDR SharedData 引用(malloc 侧可见部分,~484 B×6.4 hook evals/realm)+ ScriptSource 小件。
   - W5 zone-eval 的 zone_count 回落(102→2)只证明 zone **结构体**在 SM 内部重整;**chunk 字节与其中 malloc 对象不还**。
 - **处置(停止条款)**:修复需 SM realm-discard/zone-GC 面(每页 close 后对死 realm 触发 zone GC/discard,或 SM chunk 池上限)——vendor/SM 域 → **上游 issue 候选 + known-limitation 记录**(本文件+gc-leak-ledger W5 段)。72h 入场前置保持:该缺陷修复前,线性驻留 ~22 KiB/cycle 不可入场。
+- **W12-B 追记(2026-09-29,console SIGSEGV 双红,非本 RCA 主体但同域)**:7045fa57 把 console.rs build_message 的 caller 探测从 `describe_scripted_caller_safe` 换成裸 `describe_scripted_caller`——opt 档 FrameIter::settleOnActivation SIGSEGV。裁定=patch-replay 丢失(safe 包装仍在 rust.rs,只是调用点被置换),恢复 safe 调用点+三件登记,battery 双红转绿(test-ci 档)。
 - **W6 归因表其余结论不变**:glib/gstreamer init 一次性有界 ✓;Mesa 软渲染堆=xvfb 环境语义;glibc arena 非主因。
