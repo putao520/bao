@@ -1,0 +1,1 @@
+bao: no command given. Try `<BIN> --help`.

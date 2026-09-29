@@ -1,0 +1,8 @@
+Web platform family inventory (compat/web)
+
+Usage: <BIN> compat web [OPTIONS]
+
+Options:
+      --timeout <TIMEOUT>  Terminate a runaway script after <MS> milliseconds (engine-native interrupt; exit code 124, GNU-timeout convention). While a controlled script entry is in flight, SIGINT (Ctrl-C) cancels it gracefully (exit code 130) instead of killing the process. Applies only to script execution (`<BIN> run`, `bao -e`); without it nothing changes
+      --json               Machine-readable JSON output
+  -h, --help               Print help

@@ -1,0 +1,18 @@
+Bao Runtime â SpiderMonkey + Servo
+
+Usage: <BIN> [OPTIONS] [COMMAND]
+
+Commands:
+  run      
+  build    
+  test     
+  install  Install dependencies (delegates to bun_install via bao_runtime)
+  browser  
+  doctor   Diagnose the local environment (Rust, clang, SpiderMonkey, DISPLAY, CDP)
+  compat   Compatibility inventory reports over the four INVENTORY SSOTs (compat/{node,bun,cdp,web}). Informational only â always exits 0 on success; Partial/Unsupported rows are inventory facts, not failures (consumers that need a gate read --json)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -e, --eval <EVAL>        Evaluate the given code string (Bun-style top-level `-e`/`--eval`). When present, Bao runs the code and exits â no subcommand needed. Equivalent to `<BIN> run --eval <code>`
+      --timeout <TIMEOUT>  Terminate a runaway script after <MS> milliseconds (engine-native interrupt; exit code 124, GNU-timeout convention). While a controlled script entry is in flight, SIGINT (Ctrl-C) cancels it gracefully (exit code 130) instead of killing the process. Applies only to script execution (`<BIN> run`, `bao -e`); without it nothing changes
+  -h, --help               Print help

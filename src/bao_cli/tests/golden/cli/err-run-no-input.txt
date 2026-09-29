@@ -1,0 +1,1 @@
+<BIN> run: no input file

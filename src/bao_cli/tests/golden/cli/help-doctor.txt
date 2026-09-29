@@ -1,0 +1,12 @@
+Diagnose the local environment (Rust, clang, SpiderMonkey, DISPLAY, CDP).
+
+Walks the native toolchain Bao depends on and reports what's present or missing, so a failed build can be understood without reading the whole monorepo. Informational only â never exits non-zero.
+
+Usage: <BIN> doctor [OPTIONS]
+
+Options:
+      --timeout <TIMEOUT>
+          Terminate a runaway script after <MS> milliseconds (engine-native interrupt; exit code 124, GNU-timeout convention). While a controlled script entry is in flight, SIGINT (Ctrl-C) cancels it gracefully (exit code 130) instead of killing the process. Applies only to script execution (`<BIN> run`, `bao -e`); without it nothing changes
+
+  -h, --help
+          Print help (see a summary with '-h')
