@@ -24,6 +24,6 @@ malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_siz
 malloc_size_of_derive = {version = "0.1"}
 serde = {version = "1.0.228"}
 servo-allocator = {package = "bao-servo-allocator", path = "../../allocator", version = "=0.5.2"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.7"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 tracing = {version = "0.1.44", optional = true}

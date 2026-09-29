@@ -21,7 +21,7 @@ mime = {version = "0.3.13"}
 ohos-media-sys = {version = "0.1.1", features = ["api-21"]}
 ohos-sys-opaque-types = {version = "0.1.7"}
 ohos-window-sys = {version = "0.1.7", features = ["api-13"]}
-servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.7"}
 servo-media = {package = "bao-servo-media", path = "../../servo-media", version = "=0.5.6"}
 servo-media-audio = {package = "bao-servo-media-audio", path = "../../audio", version = "=0.5.6"}
 servo-media-player = {package = "bao-servo-media-player", path = "../../player", version = "=0.5.6"}

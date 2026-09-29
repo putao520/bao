@@ -17,4 +17,4 @@ path = "lib.rs"
 embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.6"}
 regex = {version = "1.12"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.7"}

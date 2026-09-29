@@ -17,6 +17,6 @@ path = "lib.rs"
 malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.6"}
 malloc_size_of_derive = {version = "0.1"}
 serde = {version = "1.0.228", features = ["derive"]}
-servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.7"}
 servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.5"}
 servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = "=0.5.5"}

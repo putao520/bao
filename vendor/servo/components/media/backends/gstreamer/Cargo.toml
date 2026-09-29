@@ -33,7 +33,7 @@ gstreamer-video = {version = "0.25"}
 gstreamer-webrtc = {version = "0.25", features = ["v1_18"]}
 log = {version = "0.4.32"}
 mime = {version = "0.3.13"}
-servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.7"}
 servo-media = {package = "bao-servo-media", path = "../../servo-media", version = "=0.5.6"}
 servo-media-audio = {package = "bao-servo-media-audio", path = "../../audio", version = "=0.5.6"}
 servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "render", version = "=0.5.6"}

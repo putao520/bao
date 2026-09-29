@@ -14,7 +14,7 @@ name = "servo_media_dummy"
 path = "lib.rs"
 
 [dependencies]
-servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../../../shared/base", version = "=0.5.7"}
 servo-media = {package = "bao-servo-media", path = "../../servo-media", version = "=0.5.6"}
 servo-media-audio = {package = "bao-servo-media-audio", path = "../../audio", version = "=0.5.6"}
 servo-media-player = {package = "bao-servo-media-player", path = "../../player", version = "=0.5.6"}

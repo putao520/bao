@@ -35,7 +35,7 @@ uuid = {version = "1.23.3", features = ["v4", "v5"]}
 selectors = {version = "=0.40.0"}
 serde = {version = "1.0.228"}
 background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../background_hang_monitor", version = "=0.5.6"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.7"}
 servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.6"}
 servo_arc = {version = "=0.4.3"}
 style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.20.2"}
