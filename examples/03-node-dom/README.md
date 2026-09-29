@@ -41,7 +41,7 @@ cargo run
 ## 预期输出
 
 ```
-[03-node-dom] BaoRuntime ready
+[03-node-dom] BrowserRuntime ready
 [03-node-dom] Writing a local file via Rust std::fs ...
 [03-node-dom] Page created (id=0)
 [03-node-dom] Navigating to https://example.com ...

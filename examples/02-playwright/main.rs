@@ -9,11 +9,11 @@
 //!
 //! 对应的 Node + Playwright 版本见同目录的 `example.js`。
 
-use bao::{Browser, ConnectError};
+use bao::{Browser, CdpError};
 
 const WS_URL: &str = "ws://127.0.0.1:9222";
 
-fn main() -> Result<(), ConnectError> {
+fn main() -> Result<(), CdpError> {
     println!("[02-playwright] Connecting to {WS_URL} ...");
 
     // Browser::connect 接受两种 URL:
@@ -21,7 +21,8 @@ fn main() -> Result<(), ConnectError> {
     //   "ws://host:port"        — 标准 WebSocket CDP(Playwright/Puppeteer 通用)
     //
     // 这里用 ws://,因为本示例演示「外部客户端连 Bao」的场景。
-    // 如果你还没启动 Bao,会得到 ConnectError(详见报错提示)。
+    // 如果你还没启动 Bao,会得到 ConnectError(W29:经 CdpError::Connect
+    // 变体携带,`source()` 可一路走到 io 根因)。
     let mut browser = Browser::connect(WS_URL)?;
     println!(
         "[02-playwright] Connected. in_memory={}, is_websocket={}",

@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use bao::{BaoConfig, BrowserError, PageConfig, PageState, ScreenshotFormat};
+use bao::{BrowserRuntime, BaoConfig, BrowserError, PageConfig, PageState, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
     // 1. 创建 Bao 浏览器 runtime(单进程 servo + SpiderMonkey + 内置 CDP/Node/Stealth)

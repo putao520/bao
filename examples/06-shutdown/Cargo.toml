@@ -1,11 +1,11 @@
 [package]
-name = "bao-example-04-crawler"
+name = "bao-example-06-shutdown"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "bao-example-04-crawler"
+name = "bao-example-06-shutdown"
 path = "main.rs"
 
 [dependencies]

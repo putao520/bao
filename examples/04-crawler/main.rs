@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use bao::{BaoConfig, BrowserError, PageConfig};
+use bao::{BrowserRuntime, BaoConfig, BrowserError, PageConfig};
 
 fn main() -> Result<(), BrowserError> {
     // 1. Runtime + page

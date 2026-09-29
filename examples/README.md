@@ -1,6 +1,6 @@
 # Bao Examples
 
-4 个独立可运行的示例,展示 Bao(Rust-native programmable browser runtime)的核心能力。
+8 个独立可运行的示例,展示 Bao(Rust-native programmable browser runtime)的核心能力。
 
 ## 运行方式
 
@@ -12,6 +12,10 @@ cd examples/01-browser && cargo run
 cd examples/02-playwright && cargo run
 cd examples/03-node-dom && cargo run
 cd examples/04-crawler && cargo run
+cd examples/05-multi-page && cargo run   # 零网络
+cd examples/06-shutdown && cargo run     # 零网络
+cd examples/07-timeout && cargo run      # 零网络
+cd examples/08-error && cargo run        # 零网络
 ```
 
 > 首次构建会从源码编译 SpiderMonkey + servo,耗时较长(几十分钟),后续增量很快。
@@ -24,6 +28,10 @@ cd examples/04-crawler && cargo run
 | 02 | [`02-playwright/`](02-playwright/) | CDP 自动化(Playwright/Puppeteer 连接 Bao) | `Browser::connect("ws://127.0.0.1:9222")` + Node.js `playwright` `connectOverCDP` |
 | 03 | [`03-node-dom/`](03-node-dom/) | Node.js API × DOM 同一 runtime 共存(双 Realm) | `evaluate_js`(Node Realm: `document.querySelector` + `require('fs')`) |
 | 04 | [`04-crawler/`](04-crawler/) | 服务端网页自动化 / 爬虫(导航 + 抽取 + 下载) | `navigate` + `evaluate_js` 抽链接 + `require('http').get` 下载 |
+| 05 | [`05-multi-page/`](05-multi-page/) | 多页面管理(PagePool 并发页 + idle 归还) | `create_page` ×2 + `page_pool().stats()/release_page/get_page` |
+| 06 | [`06-shutdown/`](06-shutdown/) | 优雅关闭(pending work drain + 有界 drop) | `wait_for_function` + `close_page` + `PageState::Closed` + W27 有界 drop |
+| 07 | [`07-timeout/`](07-timeout/) | 执行超时(引擎级中断,死循环可掐断) | `evaluate_js[_web]_with_timeout` |
+| 08 | [`08-error/`](08-error/) | 错误处理链(source() 因果链逐层打印) | `BrowserError`/`ConnectError` + `std::error::Error::source` |
 
 ## 关于 Bao 的核心卖点
 

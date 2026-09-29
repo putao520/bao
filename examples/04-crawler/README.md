@@ -20,7 +20,7 @@ cargo run
 ## 预期输出
 
 ```
-[04-crawler] BaoRuntime ready
+[04-crawler] BrowserRuntime ready
 [04-crawler] Navigating to https://example.com ...
 [04-crawler] Extracting page structure ...
 [04-crawler]   ↳ page title      = "Example Domain"

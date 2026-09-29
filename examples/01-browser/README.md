@@ -24,7 +24,7 @@ cargo run
 ## 核心 API 调用
 
 ```rust
-let runtime = BaoRuntime::new(BaoConfig::default())?;
+let runtime = BrowserRuntime::new(BaoConfig::default())?;
 let page = runtime.create_page(&PageConfig::default())?;
 page.navigate("https://example.com")?;
 page.wait_for_pipeline_ready(Duration::from_secs(30))?;

@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use bao::{BaoConfig, BrowserError, PageConfig};
+use bao::{BrowserRuntime, BaoConfig, BrowserError, PageConfig};
 
 fn main() -> Result<(), BrowserError> {
     // 1. 准备一个本地文件给 Node.js 的 fs 读

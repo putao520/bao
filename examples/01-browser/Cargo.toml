@@ -10,3 +10,11 @@ path = "main.rs"
 
 [dependencies]
 bao-core = { path = "../../src/bao" }
+# Mirror the ROOT workspace's [patch.crates-io] (examples/ is excluded from
+# the workspace, so patches do NOT propagate — without these the examples
+# resolve the registry `stylo_atoms`/`freetype` and fail against the vendored
+# servo source; caught by src/bao/tests/examples_compile_tests.rs #17-G).
+# Keep in sync with the root Cargo.toml patch section.
+[patch.crates-io]
+freetype = { path = "../../vendor/freetype-wrapper" }
+stylo_atoms = { path = "../../vendor/stylo_atoms" }
