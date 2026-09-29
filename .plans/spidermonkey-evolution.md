@@ -2488,3 +2488,8 @@ health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递
 1. **#25 ConcurrentTask discard=已决**(立法链完整:台账 S1-续原文「随 RED-1 一并裁决」+ 用户 RED-1 P-A 裁决(2026-09-10,timers discard)+ 姊妹项消费同一裁决原则 → 实现落地(7c880d40/a1dd36ca/6c0275d0 三 commit)+ 全门验证(8/8+151/151)。**终态=discard,可逆标注保留**,不再列为待裁决项。
 2. **SW fetch=维持现行 PRD 法**:PRD-REQ-WEB-WORKER 现行法「显式排除于验收」**继续生效**(能力已建成不改变法律状态);升级为验收能力=纯产品决策,唯用户可启,不阻塞任何在途工作。DEC-WK-008 记录卫生已闭环(A/B 已消费)。
 **终态:用户交办事项零残留**(全量开发+ISSUE 治理+边界修正全部交付;唯一开放项=SW fetch 升级与否的用户自选项,非待办)。
+
+### 2026-09-29 / 用户裁决三件(过渡载体,PRD 转录待专用工具;发起=用户 AskUserQuestion 直答)
+1. **BaoRuntime 双命名终裁(#15-H/#17-A)**:收口为 **BrowserRuntime**(bao_browser,浏览器运行时)/**NodeRuntime**(bun_runtime,Node.js 运行时);旧名 BaoRuntime 留 deprecated alias 过渡(0.x 允许 breaking,1.0 前收口)。
+2. **平台矩阵三态(#18-A)**:**Windows=Supported**(证据:交叉+真机 build/link/run+电池 12/12,StdArena 根治后)/ **macOS=Experimental**(证据:编译面+4-crate CI;无真机运行)。Linux=Supported 维持。24h soak 后再评 Windows 升档。
+3. **console 计时器/计数器作用域(#32 row21)**:**混合**——浏览器上下文 per-realm(页面/iframe/worker/SW 独立命名空间);CLI/Node-realm 进程全局。双语义文档明示。
