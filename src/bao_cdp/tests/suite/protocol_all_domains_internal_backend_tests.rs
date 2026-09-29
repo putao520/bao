@@ -101,6 +101,7 @@ fn test_serialize_response_ok() {
         id: Some(1),
         result: Some(json!({"status": "ok"})),
         error: None,
+        exception_details: None,
     };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":1"#));
@@ -117,6 +118,7 @@ fn test_serialize_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
+        exception_details: None,
     };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":2"#));
@@ -131,6 +133,7 @@ fn test_serialize_response_empty_result() {
         id: Some(3),
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":3"#));
@@ -142,6 +145,7 @@ fn test_serialize_response_null_result() {
         id: Some(4),
         result: Some(json!(null)),
         error: None,
+        exception_details: None,
     };
     let s = serialize_response(&resp);
     assert!(s.contains(r#""id":4"#));

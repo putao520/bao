@@ -1204,6 +1204,7 @@ fn test_serialize_ok_response() {
         id: Some(1),
         result: Some(json!({"value": 42})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1221,6 +1222,7 @@ fn test_serialize_error_response() {
             code: -32601,
             message: "not found".into(),
         }),
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1236,6 +1238,7 @@ fn test_serialize_empty_result() {
         id: Some(3),
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1248,6 +1251,7 @@ fn test_serialize_negative_id() {
         id: Some(-100),
         result: Some(json!(null)),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1260,6 +1264,7 @@ fn test_serialize_zero_id() {
         id: Some(0),
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     assert!(serde_json::from_str::<Value>(&raw).is_ok());
@@ -1702,6 +1707,7 @@ fn test_serialize_response_id_none_notification_echo() {
         id: None,
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1720,6 +1726,7 @@ fn test_serialize_response_success_excludes_error_key() {
         id: Some(1),
         result: Some(json!({"v": 1})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1740,6 +1747,7 @@ fn test_serialize_response_error_excludes_result_key() {
             code: -32601,
             message: "m".into(),
         }),
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1760,6 +1768,7 @@ fn test_serialize_response_neither_result_nor_error() {
         id: Some(7),
         result: None,
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1784,6 +1793,7 @@ fn test_serialize_response_output_is_compact_single_line() {
         id: Some(1),
         result: Some(json!({"a":1})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     assert!(
@@ -1799,6 +1809,7 @@ fn test_serialize_response_stable_under_reparse() {
         id: Some(1),
         result: Some(json!({"k": "v"})),
         error: None,
+        exception_details: None,
     };
     let s1 = serialize_response(&resp);
     let reparsed: Value = serde_json::from_str(&s1).unwrap();
@@ -2245,6 +2256,7 @@ fn test_serialize_response_idempotent_across_calls() {
         id: Some(42),
         result: Some(json!({"x": [1, 2, 3]})),
         error: None,
+        exception_details: None,
     };
     let s1 = serialize_response(&resp);
     let s2 = serialize_response(&resp);
@@ -2425,6 +2437,7 @@ fn test_cdp_response_debug_format_present() {
         id: Some(42),
         result: Some(json!({"a": 1})),
         error: None,
+        exception_details: None,
     };
     let dbg = format!("{:?}", resp);
     assert!(dbg.contains("42"));
@@ -2439,6 +2452,7 @@ fn test_cdp_response_field_access_without_clone() {
         id: Some(7),
         result: Some(json!({"v": 9})),
         error: None,
+        exception_details: None,
     };
     assert_eq!(resp.id, Some(7));
     let r = resp.result.unwrap();

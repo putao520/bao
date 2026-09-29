@@ -2266,7 +2266,7 @@ mod tests {
         let msg = cdp_msg(id, method, params);
         let params = msg.params.clone();
         handle_command(msg, "t1", &params, None)
-    }
+}
 
     // 1. parse_message valid JSON → Some(CdpMessage) with correct id/method/params
     #[test]
@@ -2316,6 +2316,7 @@ mod tests {
             id: Some(1),
             result: Some(json!({"key": "val"})),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -2334,6 +2335,7 @@ mod tests {
                 code: -32601,
                 message: "not found".into(),
             }),
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3063,6 +3065,7 @@ mod tests {
             id: Some(1),
             result: Some(Value::Null),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3077,6 +3080,7 @@ mod tests {
             id: Some(2),
             result: Some(json!({})),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3090,6 +3094,7 @@ mod tests {
             id: Some(3),
             result: Some(json!({"root": {"nodeId": 1, "children": [{"nodeId": 2}]}})),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3104,6 +3109,7 @@ mod tests {
             id: Some(0),
             result: Some(json!({"ok": true})),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3117,6 +3123,7 @@ mod tests {
             id: Some(-42),
             result: Some(json!({})),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3130,6 +3137,7 @@ mod tests {
             id: Some(i64::MAX),
             result: Some(json!({})),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3143,6 +3151,7 @@ mod tests {
             id: Some(5),
             result: Some(json!([1, 2, 3])),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3156,6 +3165,7 @@ mod tests {
             id: Some(6),
             result: Some(json!("hello world")),
             error: None,
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -3175,6 +3185,7 @@ mod tests {
                 code: -32700,
                 message: "Parse error".into(),
             }),
+            exception_details: None,
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();

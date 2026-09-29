@@ -1316,6 +1316,7 @@ fn test_serialize_response_success() {
         id: Some(1),
         result: Some(json!({"ok": true})),
         error: None,
+        exception_details: None,
     };
     let json_str = serialize_response(&resp);
     // Output must be valid JSON.
@@ -1335,6 +1336,7 @@ fn test_serialize_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
+        exception_details: None,
     };
     let json_str = serialize_response(&resp);
     let v: Value = serde_json::from_str(&json_str).unwrap();
@@ -1352,6 +1354,7 @@ fn test_serialize_response_null_id() {
         id: None,
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let v: Value = serde_json::from_str(&serialize_response(&resp)).unwrap();
     assert!(v["id"].is_null());

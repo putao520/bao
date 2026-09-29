@@ -2931,6 +2931,7 @@ fn test_serialize_response_with_none_id() {
         id: None,
         result: Some(json!({"ok": 1})),
         error: None,
+        exception_details: None,
     };
     let s = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -2950,6 +2951,7 @@ fn test_serialize_response_error_with_none_id() {
             code: -32601,
             message: "x".into(),
         }),
+        exception_details: None,
     };
     let s = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -2987,6 +2989,7 @@ fn test_serialize_response_round_trip_idempotent() {
         id: Some(42),
         result: Some(json!({"a": [1, 2, {"b": true}]})),
         error: None,
+        exception_details: None,
     };
     let s1 = serialize_response(&resp);
     let s2 = serialize_response(&resp);

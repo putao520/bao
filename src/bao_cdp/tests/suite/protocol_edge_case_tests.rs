@@ -281,6 +281,7 @@ fn serialize_response_both_none_fields() {
         id: Some(1),
         result: None,
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -296,6 +297,7 @@ fn serialize_response_result_is_null_value() {
         id: Some(2),
         result: Some(json!(null)),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -308,6 +310,7 @@ fn serialize_response_result_is_empty_object() {
         id: Some(3),
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -320,6 +323,7 @@ fn serialize_response_result_is_empty_array() {
         id: Some(4),
         result: Some(json!([])),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -332,6 +336,7 @@ fn serialize_response_result_is_false() {
         id: Some(5),
         result: Some(json!(false)),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -344,6 +349,7 @@ fn serialize_response_result_is_zero() {
         id: Some(6),
         result: Some(json!(0)),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -356,6 +362,7 @@ fn serialize_response_result_is_empty_string() {
         id: Some(7),
         result: Some(json!("")),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -371,6 +378,7 @@ fn serialize_response_error_with_empty_message() {
             code: -32600,
             message: String::new(),
         }),
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -386,6 +394,7 @@ fn serialize_response_error_with_unicode_message() {
             code: -32600,
             message: "エラー: 不正なリクエスト".into(),
         }),
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     assert!(raw.contains("エラー"));
@@ -401,6 +410,7 @@ fn serialize_response_error_with_very_long_message() {
             code: -32600,
             message: long_msg.clone(),
         }),
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -413,6 +423,7 @@ fn serialize_response_deterministic_output() {
         id: Some(42),
         result: Some(json!({"a": 1, "b": 2})),
         error: None,
+        exception_details: None,
     };
     let first = serialize_response(&resp);
     let second = serialize_response(&resp);
@@ -425,6 +436,7 @@ fn serialize_response_id_boundary_min() {
         id: Some(i64::MIN),
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -437,6 +449,7 @@ fn serialize_response_id_boundary_max() {
         id: Some(i64::MAX),
         result: Some(json!({})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -453,6 +466,7 @@ fn serialize_response_deeply_nested_result() {
         id: Some(1),
         result: Some(result),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -465,6 +479,7 @@ fn serialize_response_roundtrip_fidelity() {
         id: Some(99),
         result: Some(json!({"frameId": "0", "loaderId": "abc123"})),
         error: None,
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -615,6 +630,7 @@ fn cdp_error_roundtrip_through_response() {
             code: -32602,
             message: "Invalid params".into(),
         }),
+        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: Value = serde_json::from_str(&raw).unwrap();
