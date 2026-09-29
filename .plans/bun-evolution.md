@@ -520,3 +520,11 @@ ev4 增补:ipc lock git rm(1191 行)。C 裁定+房扫:①**crown 豁免**(vendo
 ### 2026-09-21 / B2 首批全量收口(console 族 12/12)
 
 微尾链闭:499bf323(2 迁移,全树 unsafe_jsstr_to_string=0,106-face 收口)+8c9bd65f(7 注释,console 族 12/12:ServoEvent 5+ConsoleMessage::Event 7,+21/-0 纯注释)。D5(c76775a2)/D3(06c76af6)/D2(d4eb7db1)三片+console 文档化全落。B2 收口余项=eb2s1 三组补面(em1 绿窗)入波门§①;期间揪出并移交:maybe_wrap_object servo bindings 4 错(em1 wrapper 域)。
+
+## 2026-09-29 / W17 rows 处置裁定(主会话,证据链 /tmp/w17-rows-analysis.md)
+- **row19 CLOSED**:NODE_REALM/PAGE_GLOBAL 键控已落地(NODE_REALM_BY_WEBVIEW/PAGE_GLOBAL_BY_WEBVIEW WebViewId 键控,LAST_PAGE_GLOBAL ELIMINATED,#23 闭 75db90a6 联动)
+- **row21 CLOSED**:用户裁决 2026-09-29 混合作用域已消费(W3b 23095349 双向测试锁定;node_console 进程级=CLI/Node-realm 正确形态,页面 per-realm=servo dom console 结构性)
+- **row17 维持 blocked**:vendor config/opts.rs:296 OPTIONS OnceLock 上游 own 面,零变化,等上游
+- **B2 gap table 终态**:D5/D3/D2 已 CLOSED;console 五站点 ACCEPT-by-documentation;worker unbounded join/wake pipes/socketpair ACCEPT/EXEMPT;唯一 open=eb2s1 三组补面尾(S,机械,排队);maybe_wrap_object 4 错移交 wrapper 波
+- **wss fallback 更正**:台账 :412 pending 行 stale——8ab7c381(R53-A keyed-per-Realm)已落地,已闭
+- **spawn_sys signal-reset**:真实 open 确认(S-M 切片立锚:Linux vfork shim BunSpawnRequest 缺 signal 字段,child.kill 无法终止;修复四步+回归判据在案)→W18 排队
