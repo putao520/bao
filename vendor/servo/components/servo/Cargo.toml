@@ -128,7 +128,7 @@ script = {package = "bao-servo-script", path = "../script", version = "=0.5.20"}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
 serde = {version = "1.0.228"}
 servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = "=0.5.6"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 servo-bluetooth = {package = "bao-servo-bluetooth", path = "../bluetooth", version = "=0.5.6", optional = true}
 servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.6", optional = true}
 servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.7"}

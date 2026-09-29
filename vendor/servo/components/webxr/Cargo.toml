@@ -33,7 +33,7 @@ log = {version = "0.4.32"}
 openxr = {version = "0.21", optional = true}
 profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
 raw-window-handle = {version = "0.6"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 surfman = {version = "0.13.0", features = ["chains", "sm-raw-window-handle-06"]}
 webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.6"}
 

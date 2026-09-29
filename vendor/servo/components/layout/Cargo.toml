@@ -53,7 +53,7 @@ script = {package = "bao-servo-script", path = "../script", version = "=0.5.20"}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
 selectors = {version = "=0.40.0"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.5"}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}

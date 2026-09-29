@@ -32,7 +32,7 @@ pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.6"}
 pollster = {version = "1.0", optional = true}
 profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.6"}
 rustc-hash = {version = "2.1.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.7"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}

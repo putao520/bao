@@ -88,7 +88,7 @@ rustls-pki-types = {version = "1.14"}
 rustls-platform-verifier = {version = "0.7.0"}
 rusqlite = {version = "0.38", features = ["bundled"]}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.6", optional = true}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}

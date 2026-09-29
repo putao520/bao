@@ -20,7 +20,7 @@ log = {version = "0.4.32"}
 malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
 malloc_size_of_derive = {version = "0.1"}
 serde = {version = "1.0.228", features = ["derive"]}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 webrender_api = {version = "0.70"}
 
 [dev-dependencies]

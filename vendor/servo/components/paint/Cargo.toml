@@ -45,7 +45,7 @@ profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profil
 rayon = {version = "1"}
 rustc-hash = {version = "2.1.2"}
 servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.7"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.8"}

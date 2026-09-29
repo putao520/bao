@@ -21,7 +21,7 @@ embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embe
 futures = {version = "0.3", default-features = false, features = ["executor"]}
 log = {version = "0.4.32"}
 rand = {version = "0.10"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.6"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
 servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.6"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 tokio = {version = "1", features = ["rt", "sync", "time"], optional = true}
