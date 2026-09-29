@@ -15,13 +15,14 @@ mod realm_bench;
 mod rss_bench;
 mod runtime_bench;
 mod soak_bench;
+mod stress_bench;
 mod stencil_bench;
 mod zone_bench;
 
 use std::collections::HashMap;
 
 fn usage() -> ! {
-    eprintln!("usage: bench-harness <runtime-create-drop|realm-create-drop|zone-eval|page-churn|fetch-small-payload|rss-sample|stencil-cost|soak> [--key value ...]");
+    eprintln!("usage: bench-harness <runtime-create-drop|realm-create-drop|zone-eval|page-churn|fetch-small-payload|rss-sample|stencil-cost|soak|page-stress> [--key value ...]");
     std::process::exit(2);
 }
 
@@ -56,6 +57,10 @@ fn main() {
         "stencil-cost" => stencil_bench::run(&params),
         // soak streams a per-cycle series to a sidecar derived from --out.
         "soak" => soak_bench::run(&params, out_path.as_deref()),
+        // page-stress (W21b, on-demand — never in the nightly default set):
+        // concurrent live-page farm/loop stress with stale detection,
+        // resource guards and a reclamation final audit.
+        "page-stress" => stress_bench::run(&params, out_path.as_deref()),
         _ => usage(),
     };
 

@@ -53,6 +53,10 @@ declare -A BENCH_RUNS=(
   [soak]="${RUNS_SOAK:-1}"
   # #26 SM-EVOLUTION judgment bench (not in ORDERED_BENCHES — on demand).
   [stencil-cost]="${RUNS:-3}"
+  # W21b concurrent live-page stress (NOT in ORDERED_BENCHES — on demand;
+  # gates via STRESS_CONCURRENCY/STRESS_DURATION_SECS, e.g. N=10 smoke then
+  # N=100 Gate B then N=500 capacity probe).
+  [page-stress]="${RUNS_STRESS:-1}"
 )
 
 ORDERED_BENCHES=(
@@ -89,6 +93,13 @@ run_one() {
       # streams to $out-derived .segments.jsonl inside the harness.
       # SOAK_SCENARIO: page-churn (default — byte-zero drift) | mixed (#19-F).
       xvfb-run -a "$BIN" "$bench" --duration-mins "${SOAK_DURATION_MINS:-60}" --scenario "${SOAK_SCENARIO:-page-churn}" --out "$out" >"$log" 2>&1
+      ;;
+    page-stress)
+      # W21b: on-demand concurrent live-page stress (xvfb). Tier via env:
+      #   STRESS_CONCURRENCY=10/100/500, STRESS_DURATION_SECS=60/300.
+      xvfb-run -a "$BIN" "$bench" --concurrency "${STRESS_CONCURRENCY:-10}" \
+        --duration-secs "${STRESS_DURATION_SECS:-60}" --mode "${STRESS_MODE:-farm}" \
+        --ramp "${STRESS_RAMP:-10}" --out "$out" >"$log" 2>&1
       ;;
     *)
       "$BIN" "$bench" --out "$out" >"$log" 2>&1
