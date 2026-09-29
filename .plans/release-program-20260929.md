@@ -56,3 +56,7 @@
 **次要根因(工具面)**:publish-closure.sh 三缺陷——①python3- stdin 挂(nohup 无 </dev/null)②execute 不按 topo 序(stealth 先于 bun_runtime)③closure 扫描漏 vendor servo+shared/media 深层路径。
 **横扫(系统性,替代增量)**:W42=按 pin 图('bao-servo-base=0.5.7' 全递归 grep)确定 S 集→全族 z+1→级联 pin→三验(metadata/check/plan needs-bump=0)→fixpoint 发布。脚本三缺陷修随发布后硬化合同。
 **残留=0 判据**:publish-closure --plan needs-bump=0 ∧ fixpoint 全 live(逐 crate curl 200)∧ bao-core 0.3.2 live。
+
+## 流程事故记录 2026-09-30(共享树纪律,同日双犯既有规则)
+1. **w24 误 checkout -- vendor/servo**(把主会话的 pin 扫尾残留当自己半状态清了;零损失实证但操作违规)——规则「回退限定自域路径,整体 checkout 禁用」(2026-09-28 立)再犯。强化:非我 M 禁 checkout,只能问归属。
+2. **主会话三次 pathspec 盲区**(-A 宽收卷入在途/`**` glob 不达深层/lock 非 toml 扩展名漏)——规则「多执行体在途期宽域 add 禁用」的自我违反。强化:add 后必 `git status --short` 复核 staged 面;深层树用 find -name 显式清单,禁 glob 猜。
