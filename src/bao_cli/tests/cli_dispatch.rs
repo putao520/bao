@@ -119,18 +119,21 @@ fn dispatch_subcommands_parse_correctly() {
         ("test", &["bao", "test", "--help"]),
         ("install", &["bao", "install", "--help"]),
         ("browser", &["bao", "browser", "--help"]),
+        ("doctor", &["bao", "doctor", "--help"]),
+        ("compat", &["bao", "compat", "--help"]),
     ];
 
-    // 断言 1: 命令面恰好覆盖 5 个子命令 + 1 个顶层 help (共 6 条)。
+    // 断言 1: 命令面恰好覆盖 7 个子命令 + 1 个顶层 help (共 8 条)。
+    // W14: compat 加入; 顺修既有 stale — Doctor 一直在枚举里却从未收录。
     // 若有人删掉某个子命令的 fixture, 数量对不上立即 fail。
     assert_eq!(
         COMMAND_SURFACE.len(),
-        6,
-        "command surface must cover exactly 5 subcommands + top-level help"
+        8,
+        "command surface must cover exactly 7 subcommands + top-level help"
     );
 
-    // 断言 2: 5 个必备子命令全部在 fixture 中出现 (对抗子命令缩水)。
-    let required_subcommands = ["run", "build", "test", "install", "browser"];
+    // 断言 2: 7 个必备子命令全部在 fixture 中出现 (对抗子命令缩水)。
+    let required_subcommands = ["run", "build", "test", "install", "browser", "doctor", "compat"];
     let surface_names: Vec<&str> = COMMAND_SURFACE.iter().map(|(name, _)| *name).collect();
     for required in &required_subcommands {
         assert!(
@@ -520,4 +523,188 @@ fn run_error_code_carries_process_exit_semantics() {
     }
     // 仅取函数地址证明类型签名编译通过, 不调用 (调用会 panic/exit)。
     let _: fn(i32) -> ! = _exit_code_compat;
+}
+
+
+// ============================================================================
+// §8 `bao compat` — W14 report command family (design: /tmp/w14-design.md)
+// ============================================================================
+
+use bao_cli::compat::{self, Domain};
+
+/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// 四域解析快照锁: sections/rows/status 计数 == INVENTORY SSOT 的实测值。
+/// INVENTORY 更新 → 本测试同步更新 = 契约锁 (防解析器静默破损,
+/// 与 COMMAND_SURFACE 同哲学)。数字来源: W14 实现波对四 SSOT 的逐行解析。
+#[test]
+fn compat_domain_reports_parse_with_locked_counts() {
+    // node: 单表 72 模块 (锚定段「72 builtin」互证), Supported 34 / Partial 38。
+    let r = compat::report(Domain::Node).expect("node parses");
+    assert_eq!(r.source, "compat/node/INVENTORY.md");
+    assert_eq!(r.sections.len(), 1, "node has one data table");
+    let (rows, c) = r.totals();
+    assert_eq!(rows, 72, "node: 72-module denominator");
+    assert_eq!(
+        (c.supported, c.partial, c.unsupported),
+        (34, 38, 0),
+        "node status tallies"
+    );
+    assert!(!r.anchors.is_empty(), "node anchors section parsed");
+
+    // bun: 3 张数据表 (静态面 / bun:* 模块 / CLI 子命令)。
+    let r = compat::report(Domain::Bun).expect("bun parses");
+    assert_eq!(r.sections.len(), 3, "bun: static face + bun:* + CLI");
+    let (rows, c) = r.totals();
+    assert_eq!(rows, 61, "bun data rows");
+    assert_eq!(
+        (c.supported, c.partial, c.unsupported),
+        (41, 4, 16),
+        "bun status tallies"
+    );
+
+    // cdp: 23 分派域 method 表 + 1 非分派域表 (叙述表按列契约排除; 合计行
+    // 无 status claim 不入分母)。注:文件自述「21 域」与其自身 ### 小节数
+    // (23)不一致——CLI 按表行计数、锚原样展示,差异自见 (设计文档 §1)。
+    let r = compat::report(Domain::Cdp).expect("cdp parses");
+    assert_eq!(
+        r.sections.len(),
+        24,
+        "cdp: 23 dispatched domains + non-dispatch table"
+    );
+    let (rows, c) = r.totals();
+    assert_eq!(rows, 519, "cdp method-level + non-dispatch rows");
+    assert_eq!(
+        (
+            c.supported,
+            c.supported_ack,
+            c.partial,
+            c.partial_ack_only,
+            c.explicitly_unsupported,
+            c.unsupported
+        ),
+        (66, 22, 19, 24, 27, 361),
+        "cdp five-class tallies"
+    );
+    assert_eq!(c.unclassified, 0, "no-claim rows are skipped, not flagged");
+
+    // web: 单一家族矩阵 (锚定 KV 表按列契约排除); 复合 status 行按 worst-of
+    // 保守归 Partial → Supported 9 / Partial 5 (文件内人工小结 10/4 与确定性
+    // 规则的已知 1 行差,见设计文档 §1 契约歧义消解)。
+    let r = compat::report(Domain::Web).expect("web parses");
+    assert_eq!(r.sections.len(), 1, "web: one family matrix");
+    let (rows, c) = r.totals();
+    assert_eq!(rows, 14, "web families");
+    assert_eq!(
+        (c.supported, c.partial, c.unsupported),
+        (9, 5, 0),
+        "web worst-of tallies"
+    );
+    assert!(!r.anchors.is_empty(), "web anchors table parsed");
+}
+
+/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// --json 合法性: 四域单域 + 无参根形态都是合法 JSON 且字段齐全。
+#[test]
+fn compat_json_output_is_valid_and_complete() {
+    for d in Domain::ALL {
+        let r = compat::report(d).expect("parses");
+        let v: serde_json::Value =
+            serde_json::from_str(&r.render_json()).expect("single-domain JSON parses");
+        assert_eq!(v["domain"], d.as_str());
+        assert!(v["source"].is_string());
+        assert!(v["anchors"].is_array());
+        assert!(v["sections"].as_array().expect("sections array").len() >= 1);
+        assert!(v["totals"]["rows"].is_u64());
+        for key in [
+            "supported",
+            "supported_ack",
+            "partial",
+            "partial_ack_only",
+            "explicitly_unsupported",
+            "unsupported",
+            "unclassified",
+        ] {
+            assert!(v["totals"]["status"][key].is_u64(), "totals.status.{key}");
+        }
+    }
+    // 无参根: {"domains": [4 域对象]}。
+    let reports: Vec<bao_cli::compat::DomainReport> =
+        Domain::ALL.iter().map(|&d| compat::report(d).unwrap()).collect();
+    let root = compat::render_json_root(&reports);
+    let v: serde_json::Value = serde_json::from_str(&root).expect("root JSON parses");
+    assert_eq!(
+        v["domains"].as_array().map(|a| a.len()),
+        Some(4),
+        "root JSON carries all four domains"
+    );
+}
+
+/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// 渲染无 panic 面: 四域 text+JSON 与无参 text 根全调一遍 (纯函数,毫秒级)。
+#[test]
+fn compat_render_never_panics() {
+    let mut reports = Vec::new();
+    for d in Domain::ALL {
+        let r = compat::report(d).expect("parses");
+        assert!(!r.render_text().is_empty());
+        assert!(!r.render_json().is_empty());
+        reports.push(r);
+    }
+    assert!(!compat::render_text_root(&reports).is_empty());
+}
+
+/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// 分类规则单元 (合成内容, 走 parse_content_for_test seam):
+/// 分隔行跳过 / cell 数违约响亮报错 / 未知 status 进 Unclassified 桶 /
+/// 复合 cell worst-of 归劣 / ack 形态优先于裸前缀 / cdp 非分派域加权。
+#[test]
+fn compat_parser_contract_rules() {
+    use compat::{parse_content_for_test as parse, Status};
+
+    // node 契约: header 含 module, status 列 index 4。
+    let src = "| module | upstream_exports | bao_impl | tests | status | note |\n|---|---|---|---|---|---|\n| fs | 1 | 1 | t | Supported | a |\n| path | 1 | 1 | — | Partial | b |\n| zlib | 1 | 0 | — | Unsupported | c |\n| v8 | 1 | 0 | — | serbantesque | d |\n";
+    let r = parse(src, Domain::Node).expect("synthetic node parses");
+    let (rows, c) = r.totals();
+    assert_eq!(rows, 4, "all data rows counted");
+    assert_eq!((c.supported, c.partial, c.unsupported), (1, 1, 1));
+    assert_eq!(c.unclassified, 1, "unknown token lands in the explicit bucket");
+
+    // cell 数违约 → ParseError (fail-closed, 行号定位)。
+    let bad = "| module | upstream_exports | bao_impl | tests | status | note |\n|---|---|---|---|---|---|\n| fs | 1 | 1 | t | Supported |\n";
+    let err = parse(bad, Domain::Node).expect_err("cell-count violation must fail loudly");
+    assert_eq!(err.line, 3, "error carries the offending data row");
+
+    // web 契约 (家族 header): 复合 cell worst-of → Partial; 纯 Supported 行不动。
+    let web = "| # | 家族 | servo | Bao 集成 | 证据 | 缺口 |\n|---|---|---|---|---|---|\n| 1 | DOM | x | **Supported** | t | — |\n| 2 | Workers | x | **Supported**(Dedicated/SW)/ **Partial**(Shared) | t | n |\n";
+    let r = parse(web, Domain::Web).expect("synthetic web parses");
+    let (_, c) = r.totals();
+    assert_eq!(c.supported, 1);
+    assert_eq!(c.partial, 1, "compound cell rolls up conservatively");
+
+    // cdp 契约: ack 形态优先于裸前缀; 非分派域表 (domain|methods|status) 进账。
+    let cdp = "### Browser(1 methods)\n\n| method | bao_impl | tests | status |\n|---|---|---|---|\n| B.x | — | — | Supported(ack) |\n| B.y | — | — | Explicitly-Unsupported |\n\n## 非分派域\n\n| domain | methods | status |\n|---|---:|---|\n| animation | 10 | Unsupported(域级未分派) |\n";
+    let r = parse(cdp, Domain::Cdp).expect("synthetic cdp parses");
+    assert_eq!(r.sections.len(), 2, "dispatch section + non-dispatch section");
+    let (_, c) = r.totals();
+    assert_eq!(c.supported_ack, 1, "Supported(ack) classified before bare prefix");
+    assert_eq!(c.explicitly_unsupported, 1);
+    assert_eq!(c.unsupported, 1, "non-dispatch domain-level rows counted");
+    let browser = r.sections.iter().find(|s| s.name.contains("Browser")).unwrap();
+    assert_eq!(browser.rows, 2);
+    assert_eq!(browser.status.supported_ack, 1);
+    assert_eq!(browser.status.explicitly_unsupported, 1);
+    let _ = Status::Supported; // type witness
+}
+
+/// @trace REQ-CLI-001 [test:TEST-CLI-001]
+/// 退出码契约: 报告命令成功恒 0 (观测面, bao doctor 同类);
+/// run() 签名固化 (mirror §1 函数指针手法)。
+#[test]
+fn compat_exit_code_and_entry_contract() {
+    // 签名固化: run 不得漂移成非 Result<(), i32> 形态。
+    let _runs: fn(Option<Domain>, bool) -> ::std::result::Result<(), i32> = compat::run;
+    // 成功臂恒 Ok(0): 单域 + 无参两种形态 (纯解析, 无副作用, 不打印到 stderr)。
+    assert_eq!(compat::run(Some(Domain::Node), false), Ok(()));
+    assert_eq!(compat::run(None, false), Ok(()));
+    assert_eq!(compat::run(Some(Domain::Cdp), true), Ok(()));
 }

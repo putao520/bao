@@ -90,8 +90,44 @@ enum Commands {
     /// or missing, so a failed build can be understood without reading the
     /// whole monorepo. Informational only — never exits non-zero.
     Doctor,
+    /// Compatibility inventory reports over the four INVENTORY SSOTs
+    /// (compat/{node,bun,cdp,web}). Informational only — always exits 0 on
+    /// success; Partial/Unsupported rows are inventory facts, not failures
+    /// (consumers that need a gate read --json).
+    Compat {
+        /// Report a single domain; omit for the four-domain summary.
+        #[command(subcommand)]
+        domain: Option<CompatDomain>,
+        /// Machine-readable JSON output.
+        #[arg(long, global = true)]
+        json: bool,
+    },
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// `bao compat` report domains (the four INVENTORY SSOTs).
+#[derive(clap::Subcommand)]
+enum CompatDomain {
+    /// Node.js API inventory (compat/node).
+    Node,
+    /// Bun API inventory (compat/bun).
+    Bun,
+    /// Chrome DevTools Protocol inventory (compat/cdp).
+    Cdp,
+    /// Web platform family inventory (compat/web).
+    Web,
+}
+
+impl From<CompatDomain> for crate::compat::Domain {
+    fn from(d: CompatDomain) -> Self {
+        match d {
+            CompatDomain::Node => crate::compat::Domain::Node,
+            CompatDomain::Bun => crate::compat::Domain::Bun,
+            CompatDomain::Cdp => crate::compat::Domain::Cdp,
+            CompatDomain::Web => crate::compat::Domain::Web,
+        }
+    }
 }
 
 /// Drain buffered JS-side output (console.*, process.stdout/stderr.write)
@@ -179,6 +215,9 @@ pub fn run() -> ::std::result::Result<(), i32> {
             stealth,
         }) => run_browser(url, cdp_port, headless, stealth),
         Some(Commands::Doctor) => crate::doctor::run(),
+        Some(Commands::Compat { domain, json }) => {
+            crate::compat::run(domain.map(crate::compat::Domain::from), json)
+        }
         Some(Commands::External(args)) => {
             eprintln!("bao: unknown command '{}'", args[0]);
             Err(1)
