@@ -82,3 +82,12 @@ heaptrack_print -f /tmp/w6_ht.zst -p 0 -a 0 -T 0 -l 1 -n 40
 - **RED→GREEN**:RED=上述 5/5 SIGSEGV;GREEN=3 连跑 13.7s PASS;族回归 realm_discard+node_realm_churn+pagestate+page_lifecycle+css_conformance **50/50**;`cargo check -p bao-servo-script` RC=0。
 - **范围外移交**:`media_e2e_tests::media_domain_e2e_suite` SIGSEGV(XHR finalize:`Reflector::drop_memory → JS::RemoveAssociatedMemory → zoneFromAnyThread` 于 freed cell)——HEAD 干净树 A/B 复现(非 W28 delta),疑 W15 压缩/shrink 类第 3 投影(finalize 面的 zone-after-free),需独立工单。
 - **登记三件**:vendor 注释块(3 文件 W28 块)/CLAUDE.md servo 表「W28 三文件」行/本段。
+
+## W30 修复记录(2026-09-29,media_e2e XHR finalize zone-after-free——压缩搬移盲区类根修)
+- **缺陷**:`media_e2e_tests::media_domain_e2e_suite` 确定性 SIGSEGV(~1.1-1.5s;W28 族回归首见,当时 HEAD 干净树 A/B 已排除 W28 delta)。gdb 全栈:`NonIncrementalGC(Shrink).gc → sweepPhase → foregroundFinalize → Arena::finalize(FinalizeKind=1) → JSObject::finalize → XMLHttpRequest_Binding::_finalize → finalize_common → Reflector::drop_memory → RemoveAssociatedMemory → zoneFromAnyThread` 于 freed chunk。毒值形态:被 sweep 的 cell 本体页**可读且有效**(fault 前已过其 header 读到 binding),`self.object.get()` 槽值指向**映射零页 + chunk base 未映射**(=已 decommit 源 chunk)——非 `JS_SWEPT_TENURED_PATTERN`(sweep 后毒),判**搬移后旧地址**非清扫序错。
+- **A/B 判别**:W15 shrink 钩子注释禁用 → GREEN(1.13s);恢复 → SIGSEGV 复现。W15 因果确证。
+- **归因(行号)**:`vendor/servo/components/script_bindings/reflector.rs:52-54` 上游终态 `Traceable for Reflector` **空 trace**——`object: Heap<*mut JSObject>` 回指针从不被 MovingTracer 更新。上游 libservo 嵌入从不对 script-thread runtime 跑压缩/shrink 收集,缺陷潜伏;W15 shrink(本 runtime 首个压缩收集)搬移可达 DOM wrapper 后回指针全部 stale,首个读者=finalize 记账面(`drop_memory` 3 调用点:finalize.rs ×2 + windowproxy.rs:1673 全走此槽)。
+- **修复(单点根修,+23 行)**:reflector.rs trace 该槽(`crate::trace::trace_object` → `CallObjectTracer`;MovingTracer 随搬移更新;自指边 mark 幂等安全;null 槽跳过未反射对象)。**与 W28 分工**:W28=不可达 wrapper 变体(trace 不跑,注册槽读+discard 守卫防御);W30=可达 wrapper 变体(补 trace 即根修)。**类纪律:持有 GC 指针槽的 native 结构 trace 不得为空——首个压缩 GC 即盲区**。
+- **类横扫**:DomRoot 空 trace=设计使然("Already traced",无自身 GC 槽)✓;`unsafe_no_jsmanaged_fields!` 宏类型无 GC 持有 ✓;script/script_bindings 其余空 trace 无 Heap 槽面 ✓;W28 的 TracedPromise 孪生(不可达 wrapper)不在本修范围,由 W28 防御层覆盖 ✓。
+- **RED→GREEN**:RED=确定性 SIGSEGV(gdb 3 次+nextest 4 次);GREEN=media_domain_e2e_suite 3 连跑 PASS(~1.1s)+ 族回归 media_e2e 全族+realm_discard+node_realm_churn+pagestate+page_lifecycle+css_conformance+bce004 **65/65**;`cargo check -p bao-servo-script` RC=0。
+- **登记三件**:reflector.rs W30 注释块/CLAUDE.md servo 表 reflector.rs 行/本段。

@@ -49,8 +49,30 @@ pub struct Reflector<T = ()> {
     proto_id: Cell<u16>,
 }
 
+// BAO PATCH (fork-maintained, 2026-09-29, W30): trace the self-pointer.
+// Upstream's empty trace never relocates `object: Heap<*mut JSObject>` —
+// sound only while no compacting collection ever runs, which held upstream
+// (libservo embedding never triggers shrinking GCs on script-thread
+// runtimes). W15's realm-discard `NonIncrementalGC(GCOptions::Shrink)` hook
+// is the first compacting collection here: every RELOCATED DOM wrapper's
+// back-pointer goes stale (the MovingTracer only updates traced slots), and
+// the first reader to crash is the finalizer's memory accounting —
+// `finalize_common → Reflector::drop_memory → RemoveAssociatedMemory(slot)`
+// → `zoneFromAnyThread` on the already-decommitted source chunk (media_e2e
+// XHR SIGSEGV; gdb evidence: the swept cell itself reads fine, the slot
+// value points into a decommitted/zeroed chunk). Tracing the slot lets the
+// MovingTracer keep it current; the traced edge is the owning object
+// itself, and marking is idempotent, so the self-edge is safe. Unreflected
+// (null-slot) objects are skipped. W28's TracedPromise face was the
+// UNREACHABLE-wrapper variant of this same untraced-slot class (trace never
+// runs there — that face keeps its registered-root guard + drop-on-discard).
 unsafe impl<T> js::gc::Traceable for Reflector<T> {
-    unsafe fn trace(&self, _: *mut js::jsapi::JSTracer) {}
+    unsafe fn trace(&self, tracer: *mut js::jsapi::JSTracer) {
+        if self.object.get().is_null() {
+            return;
+        }
+        unsafe { crate::trace::trace_object(tracer, "Reflector::object", &self.object) }
+    }
 }
 
 impl<T> PartialEq for Reflector<T> {
