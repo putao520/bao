@@ -91,3 +91,11 @@ heaptrack_print -f /tmp/w6_ht.zst -p 0 -a 0 -T 0 -l 1 -n 40
 - **类横扫**:DomRoot 空 trace=设计使然("Already traced",无自身 GC 槽)✓;`unsafe_no_jsmanaged_fields!` 宏类型无 GC 持有 ✓;script/script_bindings 其余空 trace 无 Heap 槽面 ✓;W28 的 TracedPromise 孪生(不可达 wrapper)不在本修范围,由 W28 防御层覆盖 ✓。
 - **RED→GREEN**:RED=确定性 SIGSEGV(gdb 3 次+nextest 4 次);GREEN=media_domain_e2e_suite 3 连跑 PASS(~1.1s)+ 族回归 media_e2e 全族+realm_discard+node_realm_churn+pagestate+page_lifecycle+css_conformance+bce004 **65/65**;`cargo check -p bao-servo-script` RC=0。
 - **登记三件**:reflector.rs W30 注释块/CLAUDE.md servo 表 reflector.rs 行/本段。
+
+## W27 修复记录(2026-09-29,ServoInner::drop join spin 有界化——含 W16 归因考古修正)
+- **考古修正(本波最重要发现)**:W16 定界的「in-flight fetch 悬挂 → ServoInner::drop 无限 spin」**被证伪**——本波 RED 载体复跑(runtime+页+永不应答 socket+close+drop)在未修复树上 **0.17s 通过**。回溯 W16 wedge 现场:同一 run 存在 `thread 'Script#2' panicked at globalscope.rs:3671`(= W28 font-promise panic)——**真根因是 panic 杀死的 ScriptThread 永不 join**(死线程不处理 Exit,通道不闭,spin_event_loop 恒 true);fetch 是伴生噪音。W26(node-timer panic)+W28(font-promise panic)根治两类 panic 后,挂死不复存在。
+- **修复(硬化,+23 行)**:servo.rs Drop spin 加 15s(仓库有界等待惯例)deadline;超时后放弃 spin、**泄漏 wedge 线程**(log::error 如实记录,禁 panic)、继续 teardown——liveness 优先于完美回收。理由:无超时 spin 是潜伏类危害(任何未来线程死亡/悬挂缺陷都重开「无限挂死」面),且配套测试把该类从 suite 无限挂死转为有界红灯。
+- **机制验证**:timeout=0 A/B——22/22 测试绿,每次 ServoInner::drop 第 1 轮即走 break 路径(全量 exercise,无下游不稳定,未触 stop 条款)。
+- **横扫**:servo.rs 其余 join/recv 无超时点=`run_content_process` 的 3× join(1395-1406)+ content-process bootstrap recv(1346)——沙盒子进程嵌入路径,bao 不走,登记未触碰;`try_recv` 循环非阻塞无病。
+- **回归**:GREEN=liveness pin `shutdown_drop_runtime_with_hanging_fetch_is_bounded`(HangingFixture 永不应答载体)+ 族 65/65(pagestate 全族+node_realm_churn+realm_discard+media_domain+page_lifecycle+bce004);`cargo check -p bao-servo` RC=0。
+- **登记三件**:servo.rs W27 注释块/CLAUDE.md servo 表 servo.rs 行/本段。

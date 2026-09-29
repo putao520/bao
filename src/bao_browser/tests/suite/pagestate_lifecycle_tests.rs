@@ -627,3 +627,94 @@ fn shutdown_drop_runtime_with_pending_timer_is_bounded() {
         "S3: runtime drop with live page + pending timer must not hang (took {elapsed:?})"
     );
 }
+
+/// A listener that NEVER responds — accepts, swallows the request, holds the
+/// connection open until shutdown. This is the adversarial carrier W16's
+/// `StalledFixture` deliberately is NOT (its delayed self-response exists
+/// precisely because `ServoInner::drop`'s join spin had no timeout and a
+/// forever-silent socket wedged teardown indefinitely — >13 min, W16
+/// evidence). With W27's bounded drop the harder carrier is testable again.
+struct HangingFixture {
+    port: u16,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl HangingFixture {
+    fn spawn() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind hanging fixture");
+        let port = listener.local_addr().unwrap().port();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&shutdown);
+        std::thread::Builder::new()
+            .name("hanging-fixture".into())
+            .spawn(move || {
+                listener.set_nonblocking(true).expect("nonblocking");
+                let mut held: Vec<std::net::TcpStream> = Vec::new();
+                while !flag.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut tcp, _)) => {
+                            let mut req = [0u8; 2048];
+                            let _ = tcp.read(&mut req);
+                            let _ = tcp.set_nonblocking(true);
+                            held.push(tcp); // never written to
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => return,
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+            .expect("spawn hanging fixture");
+        HangingFixture { port, shutdown }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}/", self.port)
+    }
+}
+
+impl Drop for HangingFixture {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+}
+
+/// W27: `ServoInner::drop`'s join spin had NO timeout upstream — an
+/// in-flight fetch parked on a never-responding socket kept a thread from
+/// joining and runtime teardown hung forever (W16: >13 min gdb evidence;
+/// `close()` does not cancel in-flight fetches). The bounded-drop fix
+/// abandons the join after a deadline (leaking the wedged thread, logged)
+/// so teardown completes — liveness over perfect reclamation.
+#[test]
+fn shutdown_drop_runtime_with_hanging_fetch_is_bounded() {
+    let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let hanging = HangingFixture::spawn();
+    let runtime = match make_runtime(BaoConfig::default()) {
+        Some(r) => r,
+        None => return,
+    };
+    let page = make_page(&runtime, Some("about:blank".into()));
+    page.navigate(&hanging.url())
+        .expect("navigate to never-responding fixture");
+    assert_eq!(page.get_state(), PageState::Navigating);
+
+    // Real-world shape: close the page with the fetch still in flight,
+    // then tear the runtime down.
+    page.close().expect("close page with in-flight fetch");
+    assert_eq!(page.get_state(), PageState::Closed);
+
+    let start = Instant::now();
+    drop(page);
+    drop(runtime);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(45),
+        "W27: runtime drop must be bounded even with a hanging in-flight fetch (took {elapsed:?})"
+    );
+
+    // Release the held sockets last: any thread leaked by the bounded drop
+    // unblocks on EOF and exits on its own from here.
+    drop(hanging);
+}
