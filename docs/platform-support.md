@@ -30,12 +30,15 @@ Ruled 2026-09-29 ([#18-A](https://github.com/putao520/bao/issues/18)).
 | Linux (`x86_64-unknown-linux-musl`) | **Supported (full)**(维持) | Decided 2026-09-01 under REQ-DEPLOY-1, maintained by the 2026-09-29 ruling; the native-closure cross-build work runs under the daily-ops long-task protocol — surface blockers tracked in [#10](https://github.com/putao520/bao/issues/10) (e.g. freetype-sys cross pkg-config). Cross toolchain/sysroot/env recipe: [`musl-cross.md`](musl-cross.md). | Cross-build surface + consumer gate; native closure under the long-task protocol. | —(维持) |
 | Windows (`x86_64-pc-windows-msvc`) | **Supported** | Ruled 2026-09-29. Cross build/link from the Linux host via `scripts/win-cross-env.sh` (xwin + clang-cl + lld-link; the assembled `WINSYSROOT` bypasses the moz `winreg` registry probe entirely — no patch needed) + real-machine build/link/run on the Windows host + v9 battery **12/12 RC=0** (2026-09-26, after the `StdArena` `Alignment(8)` root fix — see `.plans/spidermonkey-evolution.md` v9 section). | Cross-built full binary, real-machine run, 12-suite battery. Wave gates must not regress it. | 24h soak on real hardware, then re-evaluate for a further tier upgrade (ruling context). |
 | macOS (`x86_64`/`aarch64-apple-darwin`) | **Experimental** | Compile surfaces are landed (`bun_uws_sys` kqueue arm, `bao_uloop` kqueue backend, darwin root certs — see [`build-macos.md`](build-macos.md) §1/§2); darwin cross-probe (apple flag/link directives verified live 2026-09-10) + 4-crate CI slim matrix ([#36](https://github.com/putao520/bao/issues/36), [#37](https://github.com/putao520/bao/issues/37)). **No real-machine build/link/run has ever happened.** | Compile face only. | Upgrade to Supported requires a real-machine build/link/run pass plus the battery on mac hardware. |
+| Linux (`aarch64-unknown-linux-gnu` / `aarch64-unknown-linux-musl`) | **Unsupported** | No verification has ever been attempted (no cross probe, no hardware run); outside the 2026-09-29 ruling scope. Listed explicitly so the matrix has no silent grey area. | none. | Requires a cross-probe pass plus a real verification run before any tier claim. |
 
 “Supported” means the repository treats the target as part of the delivery
 contract (waves must not regress it). “Experimental” means code surfaces exist
 and are expected to work but nothing has been machine-verified. “Unsupported”
 means a build targeting it fails closed — loudly, at build time — rather than
-producing a broken artifact. (No current target is Unsupported.)
+producing a broken artifact. Targets not listed above (and not covered by the
+ruling) carry **Unsupported** by the same honesty rule: no evidence, no tier
+claim.
 
 ## 2. Native-crate platform state
 

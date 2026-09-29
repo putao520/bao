@@ -35,8 +35,10 @@ fn read_repo_file(rel: &str) -> String {
 }
 
 /// Criterion 7 — the target matrix is documented with explicit statuses and
-/// zero grey area: gnu + musl are Supported, and every other listed platform
-/// carries an explicit Unsupported instead of silence.
+/// zero grey area, pinned to the 2026-09-29 three-state ruling (#18-A):
+/// Windows = Supported, macOS = Experimental, Linux gnu/musl = Supported,
+/// and every target outside the ruling (e.g. linux-aarch64) carries an
+/// explicit Unsupported instead of silence.
 #[test]
 #[cfg(unix)]
 fn req_deploy_1_target_matrix_documented_no_grey_area() {
@@ -51,10 +53,19 @@ fn req_deploy_1_target_matrix_documented_no_grey_area() {
         "gnu + musl must both be declared Supported (found {} occurrences)",
         supported
     );
-    // No grey area: platforms that are not supported say so explicitly.
+    // The ruling's two named tiers are explicit (headline + matrix rows).
+    assert!(
+        doc.contains("Windows = Supported") && doc.contains("macOS = Experimental"),
+        "ruling matrix headline (Windows Supported / macOS Experimental) must be explicit"
+    );
+    assert!(
+        doc.contains("**Experimental**"),
+        "the Experimental tier must be declared explicitly (macOS)"
+    );
+    // No grey area: targets outside the ruling say Unsupported explicitly.
     assert!(
         doc.contains("**Unsupported**"),
-        "non-supported platforms must carry an explicit Unsupported status"
+        "non-ruled targets must carry an explicit Unsupported status"
     );
     // The musl row points at the cross recipe (criterion 1 linkage).
     assert!(
