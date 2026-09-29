@@ -53,6 +53,41 @@ fi
 
 command -v pkg-config >/dev/null 2>&1 || warn "pkg-config not found — some vendored crates may fail to locate system libs."
 
+# ─── 2.5 System libraries & tools the vendored chains hard-require ─────────
+# W37 (#18-E reproducibility closure): the clean-OS gap chain surfaced by
+# scripts/bootstrap-repro.sh (10 layers, 2026-09-29). gcc cannot substitute
+# for clang here — the vendored chains (boringssl_sys/uws_sys/lsquic_sys)
+# hardcode clang/clang++ (doctor.rs precedent); uws_sys's C face includes
+# <mimalloc.h>/<libdeflate.h>; the servo media stack resolves
+# gstreamer-play/webrtc via pkg-config (the play/webrtc .pc files ship in the
+# gstreamer1.0-plugins-bad RUNTIME package on Ubuntu 24.04 — measured, the
+# -dev package alone does not carry them); and bao-servo-script-bindings'
+# build.rs drives its codegen through `uv`.
+SUDO=""
+if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+if command -v apt-get >/dev/null 2>&1; then
+    say "Installing native build dependencies (clang, mimalloc, libdeflate, gstreamer faces)..."
+    export DEBIAN_FRONTEND=noninteractive
+    $SUDO apt-get update -qq
+    $SUDO apt-get install -y -qq \
+        clang pkg-config \
+        libmimalloc-dev libdeflate-dev \
+        libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+        gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev \
+        libasound2-dev libudev-dev libssl-dev \
+        libarchive-dev libc-ares-dev zlib1g-dev || \
+        warn "some native packages failed to install — the build may fail; see the messages above."
+    unset DEBIAN_FRONTEND
+fi
+
+# ─── 2.6 uv (bao-servo-script-bindings codegen driver) ─────────────────────
+if ! command -v uv >/dev/null 2>&1; then
+    say "Installing uv (required by bao-servo-script-bindings codegen)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+command -v uv >/dev/null 2>&1 || warn "uv still unavailable — bao-servo-script-bindings codegen may fail."
+
 # ─── 3. Build ────────────────────────────────────────────────────────────────
 cd "$(dirname "$0")/.."
 
@@ -62,6 +97,11 @@ say "Ensuring codegen stubs (build/debug/codegen)..."
 ./scripts/ensure-codegen.sh
 
 say "Building bao_bin ($BUILD_MODE). First build compiles SpiderMonkey — this is slow."
+# W37: the repo's .cargo/config.toml redirects [build] target-dir to a
+# host-specific absolute path (single-compile-universe shape). A clean machine
+# must be SELF-CONTAINED — bootstrap pins the target dir to the clone so the
+# verification below finds the binary where it looks.
+export CARGO_TARGET_DIR="$PWD/target"
 if [ "$BUILD_MODE" = "release" ]; then
     # --jobs 1 is NOT required for build (only for `cargo test` per the EBUSY patch).
     cargo build --release -p bao_bin

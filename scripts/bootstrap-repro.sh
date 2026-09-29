@@ -61,24 +61,37 @@ if [ "$MODE" != "--local" ]; then
         || { say "RED: rustup failed"; docker rm -f "$CONTAINER" >/dev/null; exit 1; }
     cexec 'git config --global --add safe.directory /host-repo && git config --global --add safe.directory /host-repo/.git && . $HOME/.cargo/env && cd /root && git clone /host-repo bao' \
         || { say "RED: clone failed"; docker rm -f "$CONTAINER" >/dev/null; exit 1; }
+    # BAO_BOOTSTRAP_OVERLAY=1: clone gives HEAD (committed recipe); overlay
+    # the WORKING-TREE bootstrap.sh to verify an uncommitted recipe patch
+    # before commit (labelled in output).
+    if [ "${BAO_BOOTSTRAP_OVERLAY:-0}" = "1" ]; then
+        docker cp "$REPO/scripts/bootstrap.sh" "$CONTAINER":/root/bao/scripts/bootstrap.sh
+        say "overlay: working-tree bootstrap.sh copied over HEAD (uncommitted-recipe mode)"
+    fi
     say "step 3: scripts/bootstrap.sh release (the recipe under test)"
     cexec '. $HOME/.cargo/env && export PATH=$HOME/.local/bin:$PATH && cd /root/bao && ./scripts/bootstrap.sh release' > /tmp/w23b-bootstrap.log 2>&1
     RC=$?
     DUR=$(( $(date +%s) - START ))
     tail -5 /tmp/w23b-bootstrap.log
     if [ "$RC" -ne 0 ]; then
-        say "RED: bootstrap failed inside clean container (log: /tmp/w23b-bootstrap.log)"
+        # Export the build log BEFORE tearing the container down (observability).
+        docker cp "$CONTAINER":/tmp/w23b-bootstrap.log /tmp/w23b-bootstrap.log 2>/dev/null || true
+        say "RED: bootstrap failed inside clean container (log exported: /tmp/w23b-bootstrap.log)"
         docker rm -f "$CONTAINER" >/dev/null
         exit 1
     fi
-    say "step 4: --version verdict"
-    V=$(cexec '. $HOME/.cargo/env && /root/bao/target/release/bao --version' 2>&1)
-    echo "$V" | grep -q '^bao [0-9]' || { say "RED: --version verdict failed (got: $V)"; docker rm -f "$CONTAINER" >/dev/null; exit 1; }
-    say "VERDICT PASS: clean-machine bootstrap green in ${DUR}s — $V"
+    say "step 4: doctor verdict (the CLI has no --version flag — the doctor subcommand is the health face)"
+    V=$(cexec '. $HOME/.cargo/env && /root/bao/target/release/bao doctor' 2>&1)
+    echo "$V" | grep -q 'Bao doctor' || { say "RED: doctor verdict failed (got: $V)"; docker rm -f "$CONTAINER" >/dev/null; exit 1; }
+    say "VERDICT PASS: clean-machine bootstrap green in ${DUR}s (doctor face OK)"
     say "step 5: cold vs incremental timing (baseline seeds)"
-    COLD=$(cexec '. $HOME/.cargo/env && cd /root/bao && rm -rf target && /usr/bin/time -f %e cargo build --release --jobs 4 2>&1 | tail -1' 2>/dev/null)
+    T0=$(date +%s)
+    cexec '. $HOME/.cargo/env && cd /root/bao && rm -rf target && cargo build --release --jobs 4 >/dev/null 2>&1'
+    COLD=$(( $(date +%s) - T0 ))
     say "cold rebuild (no cache): ${COLD}s"
-    INC=$(cexec '. $HOME/.cargo/env && cd /root/bao && /usr/bin/time -f %e cargo build --release --jobs 4 2>&1 | tail -1' 2>/dev/null)
+    T1=$(date +%s)
+    cexec '. $HOME/.cargo/env && cd /root/bao && cargo build --release --jobs 4 >/dev/null 2>&1'
+    INC=$(( $(date +%s) - T1 ))
     say "incremental (no-op): ${INC}s — expected near-0; a large value = cache/mtime regression probe"
     docker rm -f "$CONTAINER" >/dev/null
     exit 0
@@ -94,10 +107,10 @@ START=$(date +%s)
 RC=$?
 DUR=$(( $(date +%s) - START ))
 tail -3 /tmp/w23b-local.log
-V=$(cat "$SRC/target/release/bao --version" 2>/dev/null; "$SRC/target/release/bao" --version 2>/dev/null || echo "")
+V=$("$SRC/target/release/bao" doctor 2>/dev/null | head -1)
 if [ "$RC" -ne 0 ]; then say "RED: local bootstrap failed (log: /tmp/w23b-local.log)"; exit 1; fi
-echo "$V" | grep -q '^bao [0-9]' || { say "RED: --version verdict failed (got: $V)"; exit 1; }
-say "VERDICT PASS (degraded/local): bootstrap green in ${DUR}s — $V"
+echo "$V" | grep -q 'Bao doctor' || { say "RED: doctor verdict failed (got: $V)"; exit 1; }
+say "VERDICT PASS (degraded/local): bootstrap green in ${DUR}s (doctor face OK)"
 INC=$( cd "$SRC" && /usr/bin/time -f %e cargo build --release --jobs 4 2>&1 | tail -1)
 say "incremental (no-op): ${INC}s"
 exit 0
