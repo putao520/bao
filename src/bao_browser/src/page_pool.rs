@@ -219,6 +219,12 @@ impl PagePool {
             return Some(page.clone());
         }
         if let Some(entry) = self.idle_pages.borrow_mut().remove(&id) {
+            // G1 (W16 T6): leaving the idle map is the SPEC
+            // `Idle --handle_reacquired--> Interactive` transition. Same
+            // thread, synchronous with the map move — no observation window.
+            // A mid-load-released page (stored Navigating) never entered
+            // Idle and is left alone.
+            entry.page.lifecycle_handle_reacquired();
             self.active_pages
                 .borrow_mut()
                 .insert(id, entry.page.clone());
@@ -250,6 +256,13 @@ impl PagePool {
 
     pub fn release_page(&self, id: usize) {
         if let Some(page) = self.active_pages.borrow_mut().remove(&id) {
+            // G1 (W16 T5): entering the idle map materializes the SPEC
+            // `Interactive --handle_dropped--> Idle` transition for pages
+            // observably Interactive (the pool-level idle model and the
+            // page-level PageState stay in lockstep). Mid-load pages keep
+            // Navigating (no pseudo-Idle); their TTL reclaim later enters
+            // Closing via close_during_load.
+            page.lifecycle_handle_dropped();
             self.idle_pages.borrow_mut().insert(
                 id,
                 IdleEntry {

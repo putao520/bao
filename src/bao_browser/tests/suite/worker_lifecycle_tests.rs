@@ -16,11 +16,11 @@ use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use std::time::{Duration, Instant};
 
 fn wait_for_load_and_drain(pool_page: &bao_browser::PageHandle, max_ms: u64) {
-    // Key on document readiness, NOT PageState: a page created with a URL
-    // loads through the servo builder without ever writing the stored state
-    // out of `Created` (W16 design gap G0 — the Navigating→Interactive
-    // projection only fires from stored Navigating), so get_state() can
-    // never report Interactive here and the old form burned its whole cap.
+    // Key on document readiness (kept by choice, not necessity since W16
+    // fixed gap G0: create_page(url) now applies the initial Navigate
+    // transition, so get_state() also reaches Interactive here). The
+    // document signal stays the most direct readiness witness for this
+    // worker face and remains valid; the G0 workaround note is retired.
     let start = Instant::now();
     while start.elapsed().as_millis() < max_ms as u128 {
         if pool_page.evaluate_js_web("document.readyState").ok().as_deref() == Some("complete") {

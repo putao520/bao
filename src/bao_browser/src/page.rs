@@ -33,6 +33,51 @@ pub enum PageState {
     Closed,
 }
 
+/// Events of the SPEC 02-SYSTEM PageLifecycle state machine. One variant per
+/// matrix edge label; `transition` is the 1:1 table mirror.
+/// @trace REQ-BRW-001 [sm:PageLifecycle]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageEvent {
+    Navigate,
+    /// `Navigating → Interactive` — its production carrier is the
+    /// `get_state()` LoadStatus projection (single-writer discipline, BCE
+    /// 2026-08-19), never a direct `apply`. The table cell exists for matrix
+    /// completeness and unit verification.
+    LoadComplete,
+    CloseDuringLoad,
+    Close,
+    IdleTtlExpired,
+    HandleDropped,
+    HandleReacquired,
+    CleanupComplete,
+}
+
+/// SPEC 02-SYSTEM PageLifecycle transition table — the exhaustive
+/// (state, event) → state matrix. `None` = illegal transition.
+///
+/// Legal cells = the 9 matrix edges plus the `Created --close--> Closing`
+/// edge (W16 G3: closing a never-navigated page; SPEC matrix completed in
+/// the same wave). Note the table models observable state CHANGES — a
+/// navigation restart while observably `Navigating` (mid-load re-navigate)
+/// changes nothing observable and therefore has no cell; callers skip the
+/// apply for it (see `navigate`).
+// @trace REQ-BRW-001 [sm:PageLifecycle]
+pub(crate) fn transition(from: PageState, ev: PageEvent) -> Option<PageState> {
+    match (from, ev) {
+        (PageState::Created, PageEvent::Navigate) => Some(PageState::Navigating),
+        (PageState::Created, PageEvent::Close) => Some(PageState::Closing),
+        (PageState::Navigating, PageEvent::LoadComplete) => Some(PageState::Interactive),
+        (PageState::Navigating, PageEvent::CloseDuringLoad) => Some(PageState::Closing),
+        (PageState::Interactive, PageEvent::Navigate) => Some(PageState::Navigating),
+        (PageState::Interactive, PageEvent::HandleDropped) => Some(PageState::Idle),
+        (PageState::Interactive, PageEvent::Close) => Some(PageState::Closing),
+        (PageState::Idle, PageEvent::HandleReacquired) => Some(PageState::Interactive),
+        (PageState::Idle, PageEvent::IdleTtlExpired) => Some(PageState::Closing),
+        (PageState::Closing, PageEvent::CleanupComplete) => Some(PageState::Closed),
+        _ => None,
+    }
+}
+
 pub struct PageInner {
     pub id: usize,
     pub webview: WebView,
@@ -70,6 +115,39 @@ impl PageInner {
         *self.last_active_at.borrow_mut() = Instant::now();
     }
 
+    /// Apply a PageLifecycle event through the `transition` table — the
+    /// single guarded write point for the stored state (W16: all six former
+    /// bare `*state.borrow_mut() = X` writes route here).
+    ///
+    /// `from` is the OBSERVABLE state (`get_state()`, projection included):
+    /// the T2 `Navigating + LoadStatus::Complete → Interactive` projection
+    /// is part of the observable state contract, so a legitimate
+    /// re-navigation of a fully loaded page (stored still `Navigating`,
+    /// observably `Interactive`) maps to the legal `Interactive + Navigate`
+    /// edge instead of a false illegal-transition report.
+    ///
+    /// Guard semantics: an illegal transition is refused — the stored state
+    /// is left unchanged (fail-closed) and `log::error!` makes it
+    /// observable; `debug_assert!` turns it into a loud test failure in
+    /// debug builds.
+    // @trace REQ-BRW-001 [sm:PageLifecycle]
+    pub(crate) fn apply(&self, ev: PageEvent) {
+        let cur = self.get_state();
+        match transition(cur, ev) {
+            Some(next) => *self.state.borrow_mut() = next,
+            None => {
+                debug_assert!(
+                    false,
+                    "illegal PageLifecycle transition {cur:?} + {ev:?}"
+                );
+                log::error!(
+                    "[page:{}] illegal PageLifecycle transition {cur:?} + {ev:?} — write refused, state unchanged",
+                    self.id
+                );
+            }
+        }
+    }
+
     /// WebViewId of this page's servo WebView. Stable across navigation
     /// (servo ties the WebViewId to the WebView, not the pipeline).
     /// Used for all WebViewId-keyed runtime_bridge lookups (BCE-20260621-001).
@@ -89,7 +167,14 @@ impl PageInner {
         self.webview.load(parsed);
         drop(_nav_phase);
         self.touch();
-        *self.state.borrow_mut() = PageState::Navigating;
+        // SM PageLifecycle: T1 (Created→Navigating) / T4 (Interactive→Navigating)
+        // via the guarded apply. A restart while observably Navigating
+        // (mid-load re-navigate) changes nothing observable — the matrix has
+        // no self-edge because it models state changes — so the apply is
+        // skipped and the stored Navigating stands.
+        if self.get_state() != PageState::Navigating {
+            self.apply(PageEvent::Navigate);
+        }
         // BCE (stale Complete race): a second navigation to the same page
         // leaves the previous load's `Complete` in webview_state until
         // servo's async Started arrives — get_state's projection below would
@@ -379,7 +464,10 @@ impl PageInner {
     pub fn reload(&self) -> Result<(), BrowserError> {
         self.webview.reload();
         self.touch();
-        *self.state.borrow_mut() = PageState::Navigating;
+        // SM PageLifecycle T4 family — restart skip, see navigate().
+        if self.get_state() != PageState::Navigating {
+            self.apply(PageEvent::Navigate);
+        }
         // BCE (stale Complete race) — see navigate().
         self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         self.nav_seq.set(self.nav_seq.get() + 1);
@@ -390,7 +478,10 @@ impl PageInner {
     pub fn go_back(&self) -> Result<(), BrowserError> {
         self.webview.go_back(1);
         self.touch();
-        *self.state.borrow_mut() = PageState::Navigating;
+        // SM PageLifecycle T4 family — restart skip, see navigate().
+        if self.get_state() != PageState::Navigating {
+            self.apply(PageEvent::Navigate);
+        }
         // BCE (stale Complete race) — see navigate().
         self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         self.nav_seq.set(self.nav_seq.get() + 1);
@@ -401,7 +492,10 @@ impl PageInner {
     pub fn go_forward(&self) -> Result<(), BrowserError> {
         self.webview.go_forward(1);
         self.touch();
-        *self.state.borrow_mut() = PageState::Navigating;
+        // SM PageLifecycle T4 family — restart skip, see navigate().
+        if self.get_state() != PageState::Navigating {
+            self.apply(PageEvent::Navigate);
+        }
         // BCE (stale Complete race) — see navigate().
         self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         self.nav_seq.set(self.nav_seq.get() + 1);
@@ -1138,6 +1232,22 @@ impl PageHandle {
             page_global: RefCell::new(std::ptr::null_mut()),
         };
 
+        // G0 (W16 #15-B): the initial-URL load IS a Navigate transition —
+        // the page observably leaves Created the moment servo begins
+        // loading the builder URL. Pre-fix the stored state never left
+        // Created (config.url goes straight to the servo builder and no
+        // writer fires), so get_state() reported Created forever and the
+        // Navigating→Interactive projection never armed for initial pages.
+        // nav_seq stays 0 — `wait_for_pipeline_ready` keys its Phase-2 load
+        // driving on nav_seq > 0, so initial-URL pages keep the first-frame
+        // contract. That unbumped counter is the ONE divergence from an
+        // explicit navigate() and it is anchored here deliberately.
+        // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Created→Navigating on initial URL
+        if config.url.is_some() {
+            inner.apply(PageEvent::Navigate);
+            inner.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        }
+
         Ok(PageHandle {
             inner: Rc::new(RefCell::new(Some(inner))),
             id,
@@ -1379,6 +1489,39 @@ impl PageHandle {
         self.inner.borrow().is_some()
     }
 
+    /// G1 (W16 T5): the pool moved this page into its idle map. For a page
+    /// observably Interactive this materializes Idle in the stored state
+    /// (the projection has already made the load_complete step observable —
+    /// the single apply lands on the SPEC `Interactive --handle_dropped-->
+    /// Idle` edge; same-thread synchronous with the pool map move, no
+    /// observation window). Any other state is left untouched: a
+    /// mid-load-released page keeps Navigating (no pseudo-Idle) and its TTL
+    /// reclaim later enters Closing via close_during_load; a
+    /// never-navigated page keeps Created.
+    /// @trace REQ-BRW-001 [sm:PageLifecycle] criterion: handle_dropped
+    pub(crate) fn lifecycle_handle_dropped(&self) {
+        let borrow = self.inner.borrow();
+        if let Some(inner) = borrow.as_ref() {
+            if inner.get_state() == PageState::Interactive {
+                inner.apply(PageEvent::HandleDropped);
+            }
+        }
+    }
+
+    /// G1 (W16 T6): the pool moved this page back out of its idle map.
+    /// Only a stored Idle page transitions (`Idle --handle_reacquired-->
+    /// Interactive`); a mid-load-released page is still Navigating and was
+    /// never in Idle, so the T6 premise does not fire for it.
+    /// @trace REQ-BRW-001 [sm:PageLifecycle] criterion: handle_reacquired
+    pub(crate) fn lifecycle_handle_reacquired(&self) {
+        let borrow = self.inner.borrow();
+        if let Some(inner) = borrow.as_ref() {
+            if *inner.state.borrow() == PageState::Idle {
+                inner.apply(PageEvent::HandleReacquired);
+            }
+        }
+    }
+
     pub(crate) fn webview_id(&self) -> Option<servo::WebViewId> {
         self.inner.borrow().as_ref().map(|inner| inner.webview.id())
     }
@@ -1580,10 +1723,18 @@ impl PageHandle {
     pub fn close(&self) -> Result<(), BrowserError> {
         let mut borrow = self.inner.borrow_mut();
         if let Some(inner) = borrow.take() {
-            // SM PageLifecycle (SPEC 03-PROCESS): transition to Closing FIRST,
-            // before any cleanup. Covers: close_during_load / idle_ttl_expired / close.
-            // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state
-            *inner.state.borrow_mut() = PageState::Closing;
+            // SM PageLifecycle (SPEC 03-PROCESS): enter Closing FIRST, before
+            // any cleanup, via the guarded apply. The three SPEC entry events
+            // (close_during_load / close / idle_ttl_expired) all target
+            // Closing and are dispatched by the observable entry state; the
+            // never-navigated entry takes the Created--close--> Closing edge
+            // (W16 G3). @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Closing state
+            let entry_ev = match inner.get_state() {
+                PageState::Navigating => PageEvent::CloseDuringLoad,
+                PageState::Idle => PageEvent::IdleTtlExpired,
+                _ => PageEvent::Close,
+            };
+            inner.apply(entry_ev);
             // @trace REQ-BRW-004 [entity:Worker] [criterion:10]
             // SPEC criterion #10: "页面卸载时自动终止所有 Worker
             // (GlobalScope::track_worker + AutoCloseWorker)".
@@ -1664,7 +1815,7 @@ impl PageHandle {
             }
             // SM PageLifecycle: cleanup_complete → Closed
             // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: cleanup_complete transition
-            *inner.state.borrow_mut() = PageState::Closed;
+            inner.apply(PageEvent::CleanupComplete);
             drop(inner);
         }
         Ok(())
@@ -1931,6 +2082,93 @@ mod tests {
     #[test]
     fn page_state_created_not_equal_closed() {
         assert_ne!(PageState::Created, PageState::Closed);
+    }
+
+    // ── W16 #15-B: full PageLifecycle transition matrix (Tier U) ─────────
+    // Exhaustive 6 states × 8 events = 48 cells: every cell NOT in the legal
+    // table must be None (negative assertion), every legal cell must yield
+    // its SPEC target. The legal table is the SPEC 02-SYSTEM JSON-LD edge
+    // set plus the W16 G3 edge (Created --close--> Closing).
+    // @trace REQ-BRW-001 [sm:PageLifecycle] [level:unit]
+
+    /// (from, event, to) for every legal cell — keep in lockstep with
+    /// `transition` and the SPEC 02-SYSTEM PageLifecycle JSON-LD.
+    const LEGAL_TRANSITIONS: &[(PageState, PageEvent, PageState)] = &[
+        (PageState::Created, PageEvent::Navigate, PageState::Navigating),
+        (PageState::Created, PageEvent::Close, PageState::Closing), // G3
+        (PageState::Navigating, PageEvent::LoadComplete, PageState::Interactive),
+        (PageState::Navigating, PageEvent::CloseDuringLoad, PageState::Closing),
+        (PageState::Interactive, PageEvent::Navigate, PageState::Navigating),
+        (PageState::Interactive, PageEvent::HandleDropped, PageState::Idle),
+        (PageState::Interactive, PageEvent::Close, PageState::Closing),
+        (PageState::Idle, PageEvent::HandleReacquired, PageState::Interactive),
+        (PageState::Idle, PageEvent::IdleTtlExpired, PageState::Closing),
+        (PageState::Closing, PageEvent::CleanupComplete, PageState::Closed),
+    ];
+
+    #[test]
+    fn page_lifecycle_transition_matrix_exhaustive_48_cells() {
+        let states = [
+            PageState::Created,
+            PageState::Navigating,
+            PageState::Interactive,
+            PageState::Idle,
+            PageState::Closing,
+            PageState::Closed,
+        ];
+        let events = [
+            PageEvent::Navigate,
+            PageEvent::LoadComplete,
+            PageEvent::CloseDuringLoad,
+            PageEvent::Close,
+            PageEvent::IdleTtlExpired,
+            PageEvent::HandleDropped,
+            PageEvent::HandleReacquired,
+            PageEvent::CleanupComplete,
+        ];
+        assert_eq!(
+            states.len() * events.len(),
+            48,
+            "matrix shape drift: expected 6 states x 8 events"
+        );
+        // Sanity: no duplicate legal cells.
+        let mut sorted = LEGAL_TRANSITIONS.to_vec();
+        sorted.sort_by_key(|(f, e, _)| format!("{f:?}/{e:?}"));
+        for pair in sorted.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert_ne!(
+                (a.0, a.1),
+                (b.0, b.1),
+                "duplicate legal cell ({:?} + {:?})",
+                a.0,
+                a.1
+            );
+        }
+        for from in states {
+            for ev in events {
+                let got = transition(from, ev);
+                let expected = LEGAL_TRANSITIONS
+                    .iter()
+                    .find(|(f, e, _)| *f == from && *e == ev)
+                    .map(|(_, _, to)| *to);
+                assert_eq!(
+                    got, expected,
+                    "matrix cell ({from:?} + {ev:?}): got {got:?}, expected {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn page_lifecycle_legal_cell_count_is_10() {
+        // 9 SPEC matrix edges + 1 G3 edge. If this changes, the SPEC
+        // 02-SYSTEM JSON-LD must change in the same wave (R4: spec tool).
+        assert_eq!(LEGAL_TRANSITIONS.len(), 10);
+        // Every state is reachable-but-Closed-is-terminal sanity: Closed has
+        // no outgoing legal edge.
+        for (f, _, _) in LEGAL_TRANSITIONS {
+            assert_ne!(*f, PageState::Closed, "Closed must be terminal");
+        }
     }
 
     #[test]
