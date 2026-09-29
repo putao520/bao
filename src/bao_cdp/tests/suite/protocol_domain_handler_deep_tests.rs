@@ -477,13 +477,14 @@ fn test_dom_get_box_model() {
 
 #[test]
 fn test_dom_set_attribute_value_no_bridge() {
-    // Without bridge, setAttributeValue returns ok_empty (no servo routing).
+    // task #10: a node write without a bridge → -32603 (silent no-op ok
+    // eradicated; the write can never have been delivered).
     let resp = dispatch_with_params(
         "DOM.setAttributeValue",
         json!({"nodeId": 1, "name": "class", "value": "test"}),
     );
-    let result = resp.result.unwrap();
-    assert!(result.is_object());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
 }
 
 #[test]

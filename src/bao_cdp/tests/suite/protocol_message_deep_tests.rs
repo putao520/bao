@@ -169,6 +169,19 @@ fn dispatch(method: &str, params: Option<Value>) -> CdpResponse {
     handle_command(msg, "target-001", &params, None)
 }
 
+fn err_code(method: &str, params: Option<Value>) -> i64 {
+    let msg = CdpMessage {
+        id: Some(1),
+        method: method.to_string(),
+        params: params.clone(),
+        session_id: None,
+    };
+    handle_command(msg, "t1", &params, None)
+        .error
+        .map(|e| e.code)
+        .unwrap_or(0)
+}
+
 fn ok_result(method: &str, params: Option<Value>) -> Value {
     dispatch(method, params).result.unwrap()
 }
@@ -547,33 +560,33 @@ fn test_dom_get_box_model() {
 
 #[test]
 fn test_dom_set_attribute_value_no_bridge() {
-    assert_eq!(
-        ok_result(
-            "DOM.setAttributeValue",
-            Some(json!({"nodeId": 5, "name": "class", "value": "test"}))
-        ),
-        json!({})
+    // task #10: a node write without a bridge → -32603.
+    let e = err_result(
+        "DOM.setAttributeValue",
+        Some(json!({"nodeId": 5, "name": "class", "value": "test"})),
     );
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_dom_remove_attribute() {
-    assert_eq!(ok_result("DOM.removeAttribute", None), json!({}));
+    assert_eq!(err_code("DOM.removeAttribute", None), -32000);
 }
 
 #[test]
 fn test_dom_set_outer_html() {
-    assert_eq!(ok_result("DOM.setOuterHTML", None), json!({}));
+    assert_eq!(err_code("DOM.setOuterHTML", None), -32000);
 }
 
 #[test]
 fn test_dom_insert_before() {
-    assert_eq!(ok_result("DOM.insertBefore", None), json!({}));
+    // task #10: no mutation delivery path → -32000.
+    assert_eq!(err_code("DOM.insertBefore", None), -32000);
 }
 
 #[test]
 fn test_dom_remove_node() {
-    assert_eq!(ok_result("DOM.removeNode", None), json!({}));
+    assert_eq!(err_code("DOM.removeNode", None), -32000);
 }
 
 #[test]
@@ -777,13 +790,12 @@ fn test_emulation_clear_device_metrics() {
 
 #[test]
 fn test_emulation_set_user_agent_no_bridge() {
-    assert_eq!(
-        ok_result(
-            "Emulation.setUserAgentOverride",
-            Some(json!({"userAgent": ""}))
-        ),
-        json!({})
+    // task #10: the missing bridge dominates an empty ua → -32603.
+    let e = err_result(
+        "Emulation.setUserAgentOverride",
+        Some(json!({"userAgent": ""})),
     );
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
@@ -948,9 +960,9 @@ fn test_debugger_disable() {
 
 #[test]
 fn test_debugger_set_breakpoint_by_url() {
-    let r = ok_result("Debugger.setBreakpointByUrl", None);
-    assert_eq!(r["breakpointId"], "1");
-    assert!(r["locations"].is_array());
+    // task #10: a breakpoint write without a bridge → -32603.
+    let e = err_code("Debugger.setBreakpointByUrl", None);
+    assert_eq!(e, -32603);
 }
 
 #[test]
@@ -2026,12 +2038,12 @@ fn test_fetch_fail_request_missing_reason() {
 
 #[test]
 fn test_emulation_set_user_agent_empty_no_bridge() {
-    // Empty UA + no bridge → ok_empty (UA bridge_send only when non-empty).
-    let r = ok_result(
+    // task #10: the missing bridge dominates an empty ua → -32603.
+    let e = err_result(
         "Emulation.setUserAgentOverride",
         Some(json!({"userAgent": ""})),
     );
-    assert_eq!(r, json!({}));
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
@@ -2083,14 +2095,9 @@ fn test_dom_get_outer_html_missing_node_id() {
 
 #[test]
 fn test_debugger_set_breakpoint_returns_empty_locations_array() {
-    let r = ok_result("Debugger.setBreakpointByUrl", None);
-    assert_eq!(r["breakpointId"], "1");
-    let locs = r["locations"].as_array().unwrap();
-    assert_eq!(
-        locs.len(),
-        0,
-        "no-bridge breakpoint locations must be empty array"
-    );
+    // task #10: breakpoint write without a bridge → -32603.
+    let e = err_code("Debugger.setBreakpointByUrl", None);
+    assert_eq!(e, -32603);
 }
 
 #[test]
@@ -2193,7 +2200,7 @@ fn test_roundtrip_all_12_domains_success_have_no_error_key() {
         ("Network.enable", None),
         ("CSS.enable", None),
         ("Emulation.setDeviceMetricsOverride", Some(json!({}))),
-        ("Input.dispatchMouseEvent", Some(json!({"type": "x"}))),
+        ("Input.setIgnoreInputEvents", Some(json!({"ignore": true}))),
         ("Overlay.enable", None),
         ("Debugger.enable", None),
         ("Log.enable", None),

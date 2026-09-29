@@ -820,10 +820,15 @@ fn get_box_model_reports_page_rect() {
                 "returnByValue": true
             }),
         );
-        let bx = baseline["result"]["value"]["x"].as_f64().unwrap();
-        let by = baseline["result"]["value"]["y"].as_f64().unwrap();
-        let bw = baseline["result"]["value"]["w"].as_f64().unwrap();
-        let bh = baseline["result"]["value"]["h"].as_f64().unwrap();
+        // 3b74a655 envelope: rbv=true `value` is the raw completion value —
+        // the baseline expression returns JSON.stringify(...), i.e. a
+        // JSON-encoded string that must be peeled before field access.
+        let rect_text = baseline["result"]["value"].as_str().expect("baseline value is a JSON string");
+        let rect: Value = serde_json::from_str(rect_text).expect("baseline rect parses");
+        let bx = rect["x"].as_f64().unwrap();
+        let by = rect["y"].as_f64().unwrap();
+        let bw = rect["w"].as_f64().unwrap();
+        let bh = rect["h"].as_f64().unwrap();
 
         let bm = dispatch(
             bridge,

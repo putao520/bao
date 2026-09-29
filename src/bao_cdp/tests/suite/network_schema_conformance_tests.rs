@@ -1057,7 +1057,8 @@ fn network_set_cookies_bridge_sends_one_set_cookie_per_param() {
 }
 
 /// Network.setUserAgentOverride — userAgent 必填 + acceptLanguage/platform
-/// 可选,wire camelCase 自证;no-bridge 受理(空对象返回)。
+/// wire camelCase 自证;no-bridge 为显式 -32603(task #10:覆盖是真实
+/// navigator 写,禁止静默 no-op ok)。
 #[test]
 fn network_set_user_agent_override_params_round_trip() {
     // @trace TEST-CDP-037 [req:REQ-CDP-001] [level:unit]
@@ -1073,10 +1074,13 @@ fn network_set_user_agent_override_params_round_trip() {
         json!({"userAgent": "BaoTest/1.0", "acceptLanguage": "en-US", "platform": "Linux x86_64"})
     );
 
+    // task #10: the UA/language/platform override is a real navigator write
+    // through the bridge — no bridge is an explicit -32603, never a silent
+    // no-op ok. The params serde shape above stays the conformance face.
     let resp = dispatch_no_bridge("Network.setUserAgentOverride", Some(wire));
-    assert!(resp.error.is_none(), "spec-shaped params must be accepted");
-    let _: spec::SetUserAgentOverrideReturnObject =
-        serde_json::from_value(resp.result.unwrap()).unwrap();
+    let err = resp.error.expect("no-bridge override must fail explicitly");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 /// setUserAgentOverride 桥穿透(穿透断言):SetUserAgent 桥命令携带完整

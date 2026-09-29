@@ -379,43 +379,55 @@ fn test_dom_push_nodes_requires_backend_ids() {
 }
 
 #[test]
-fn test_dom_remove_attribute_response_empty() {
+fn test_dom_remove_attribute_explicit_unsupported() {
+    // task #10: no mutation delivery path on this face → explicit -32000,
+    // never a fake {} success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "DOM.removeAttribute", None).unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "DOM.removeAttribute", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no mutation delivery path"));
 }
 
 #[test]
-fn test_dom_set_outer_html_response_empty() {
+fn test_dom_set_outer_html_explicit_unsupported() {
+    // task #10: no mutation delivery path on this face → explicit -32000,
+    // never a fake {} success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "DOM.setOuterHTML", None).unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "DOM.setOuterHTML", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no mutation delivery path"));
 }
 
 #[test]
-fn test_dom_insert_before_response_empty() {
+fn test_dom_insert_before_explicit_unsupported() {
+    // task #10: no mutation delivery path on this face → explicit -32000,
+    // never a fake {} success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "DOM.insertBefore", None).unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "DOM.insertBefore", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no mutation delivery path"));
 }
 
 #[test]
-fn test_dom_remove_node_response_empty() {
+fn test_dom_remove_node_explicit_unsupported() {
+    // task #10: no mutation delivery path on this face → explicit -32000,
+    // never a fake {} success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "DOM.removeNode", None).unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "DOM.removeNode", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("no mutation delivery path"));
 }
 
 #[test]
@@ -566,17 +578,19 @@ fn test_debugger_enable_disable_response_empty() {
 
 #[test]
 fn test_debugger_set_breakpoint_by_url_fields() {
+    // task #10: a breakpoint write without a bridge is a -32603 — the canned
+    // breakpointId fabricated a success for a breakpoint that can never hit.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(
             &router,
             "Debugger.setBreakpointByUrl",
             Some(json!({"lineNumber": 0})),
         )
-        .unwrap();
-    assert!(result.get("breakpointId").is_some());
-    assert!(result["locations"].is_array());
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]

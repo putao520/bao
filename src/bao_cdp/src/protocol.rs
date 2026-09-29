@@ -210,9 +210,19 @@ pub(crate) fn eval_json(
             return_by_value: true,
         },
     )?;
-    resp.get("result")
-        .and_then(|r| r.get("value"))
-        .cloned()
+    let extracted = resp.get("result").and_then(|r| r.get("value")).cloned();
+    // W19a envelope adapter: since 3b74a655 the rbv bridge returns the raw
+    // completion value under `result.value` — stringify-style page queries
+    // arrive as a JSON-encoded STRING; peel it back to the document object
+    // (Chrome returnByValue semantic: value is the parsed structure).
+    let extracted = match extracted {
+        Some(Value::String(ref text)) => match serde_json::from_str::<Value>(text) {
+            Ok(v) => Some(v),
+            Err(_) => Some(Value::String(text.clone())),
+        },
+        other => other,
+    };
+    extracted
         .filter(|v| v.is_object())
         .ok_or_else(|| CdpError {
             code: ERR_NOT_SUPPORTED,

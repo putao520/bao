@@ -128,10 +128,8 @@ fn test_invariant_all_ok_responses() {
         // dedicated tests below), removed from this ok-sweep.
         // NOTE (task #10): DOM.setAttributeValue left the ok-sweep — a node
         // write without a bridge is -32603 (silent no-op eradicated).
-        "DOM.removeAttribute",
-        "DOM.setOuterHTML",
-        "DOM.insertBefore",
-        "DOM.removeNode",
+        // task #10: the four undeliverable DOM mutations → -32000 on both
+        // faces (pinned by dedicated tests); setAttributeValue → -32603.
         "Network.enable",
         "Network.disable",
         "Network.setCacheDisabled",
@@ -245,7 +243,6 @@ fn test_invariant_bridge_dependent_errors() {
         ("DOM.setAttributeValue", NO_BRIDGE),
         ("Input.dispatchMouseEvent", NO_BRIDGE),
         ("Input.dispatchKeyEvent", NO_BRIDGE),
-        ("Input.insertText", NO_BRIDGE),
         ("Input.dispatchTouchEvent", NOT_SUPPORTED),
         ("Emulation.setUserAgentOverride", NO_BRIDGE),
         ("Debugger.setBreakpointByUrl", NO_BRIDGE),

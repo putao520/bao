@@ -449,7 +449,13 @@ fn test_runtime_evaluate_with_bridge() {
         while done2.load(Ordering::Relaxed) == 0 {
             let got = rx.try_process(|cmd| match cmd {
                 BridgeCommand::EvaluateJs { expression, .. } => BridgeResponse {
-                    result: Ok(json!({"type": "number", "value": 42, "description": expression})),
+                    // 3b74a655 envelope: the bridge returns { result,
+                    // exceptionDetails }; dispatch lifts the members to the
+                    // response top level.
+                    result: Ok(json!({
+                        "result": {"type": "number", "value": 42, "description": expression},
+                        "exceptionDetails": null
+                    })),
                 },
                 _ => BridgeResponse {
                     result: Ok(json!({})),
@@ -470,7 +476,8 @@ fn test_runtime_evaluate_with_bridge() {
     done.store(1, Ordering::Relaxed);
     assert!(resp.result.is_some());
     let result = resp.result.unwrap();
-    assert_eq!(result["value"], 42);
+    assert_eq!(result["result"]["value"], 42, "envelope result lifts to top level");
+    assert!(result["exceptionDetails"].is_null());
 }
 
 #[test]
@@ -1768,7 +1775,11 @@ fn test_runtime_evaluate_nonempty_expression_uses_bridge_when_present() {
                     *captured2.lock().unwrap() = Some((expression, return_by_value));
                 }
                 BridgeResponse {
-                    result: Ok(json!({"type": "number", "value": 7})),
+                    // 3b74a655 envelope (see test_runtime_evaluate_with_bridge).
+                    result: Ok(json!({
+                        "result": {"type": "number", "value": 7},
+                        "exceptionDetails": null
+                    })),
                 }
             });
             if got {
@@ -1784,7 +1795,7 @@ fn test_runtime_evaluate_nonempty_expression_uses_bridge_when_present() {
         &tx,
     );
     done.store(1, Ordering::Relaxed);
-    assert_eq!(resp.result.unwrap()["value"], 7);
+    assert_eq!(resp.result.unwrap()["result"]["value"], 7, "envelope result lifts");
     let (expr, rbv) = captured.lock().unwrap().take().unwrap();
     assert_eq!(expr, "3+4");
     assert_eq!(rbv, false, "returnByValue=false must propagate to bridge");
@@ -2055,12 +2066,15 @@ fn test_dom_get_box_model_requires_node_ref() {
 
 #[test]
 fn test_dom_set_attribute_value_no_bridge_empty() {
+    // task #10: a node write without a bridge → -32603, even for an
+    // otherwise well-formed attribute payload.
     let resp = dispatch(
         "DOM.setAttributeValue",
         Some(json!({"nodeId": 5, "name": "class", "value": "x"})),
     );
-    assert!(resp.result.is_some());
-    assert!(resp.error.is_none());
+    let err = resp.error.expect("no-bridge write must fail explicitly");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
@@ -2180,7 +2194,9 @@ fn test_dom_get_outer_html_with_bridge_routes_command() {
 }
 
 #[test]
-fn test_dom_misc_noop_commands_empty_result() {
+fn test_dom_misc_noop_commands_explicit_error() {
+    // task #10: no mutation delivery path exists on this face → -32000
+    // (Explicitly-Unsupported), never a shape-only ok on either face.
     for cmd in [
         "removeAttribute",
         "setOuterHTML",
@@ -2188,8 +2204,10 @@ fn test_dom_misc_noop_commands_empty_result() {
         "removeNode",
     ] {
         let resp = dispatch(&format!("DOM.{cmd}"), None);
-        assert!(resp.result.is_some(), "{cmd} must return a result");
-        assert!(resp.error.is_none());
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("DOM.{cmd} must fail explicitly"));
+        assert_eq!(err.code, -32000, "DOM.{cmd}: {}", err.message);
     }
 }
 
