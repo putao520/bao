@@ -5,7 +5,7 @@ name = "bun_sm"
 # 0.1.18 (2026-09-17): dev-dep bun_runtime floor → ^0.2 (0.2.0 breaking wave).
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. spawn watch loop-alive + exit double-dispatch root fix.
-version = "0.3.2"
+version = "0.3.3"
 description = "SpiderMonkey-backed API compatibility layer replacing bun_jsc"
 edition.workspace = true
 license.workspace = true
@@ -47,7 +47,7 @@ bao_bundler = { path = "../bao_bundler", version = "^0.2.1" }
 # co-linking with bun_sm's own dispatch bodies is dual-def-free.
 bao_native_stubs = { path = "../bao_native_stubs", version = "^0.1" }
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
-bun_runtime = { path = "../bao_runtime", version = "^0.4" }
+bun_runtime = { path = "../bao_runtime", version = "^0.5" }
 # Type-alias sources for the lib-test seams (macro-context faces: bun_ast /
 # bun_js_parser; ProcessExit faces: bun_spawn; WindowsNamedPipe faces:
 # bun_uws_sys + bun_boringssl_sys — all below bun_sm, cycle-free).

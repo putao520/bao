@@ -21,7 +21,7 @@ vello = ["dep:vello", "dep:pollster", "dep:futures-intrusive"]
 bytemuck = {version = "1", features = ["extern_crate_alloc"]}
 crossbeam-channel = {version = "0.5"}
 euclid = {version = "0.22"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.9"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.10"}
 futures-intrusive = {version = "0.5", optional = true}
 kurbo = {version = "0.13.1", features = ["euclid"]}
 log = {version = "0.4.32"}

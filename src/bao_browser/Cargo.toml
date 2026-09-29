@@ -13,7 +13,7 @@ name = "bao-browser"
 # 0.1.21 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0
 # breaking wave); same-wave sibling bumps beneath (bun_core/bao_engine/
 # bao_stealth/bao_cdp_client).
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description.workspace = true
 license.workspace = true
@@ -24,7 +24,7 @@ readme = "README.md"
 name = "bao_browser"
 
 [dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.18", default-features = false, features = ["baked-in-resources"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.19", default-features = false, features = ["baked-in-resources"] }
 servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url", version = "=0.5.6" }
 dpi = "0.1"
 url = "2"
@@ -33,8 +33,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 base64 = "0.22"
 serde_json = "1"
 bao_cdp = { path = "../bao_cdp", version = "0.3.0" }
-bao_cdp_client = { path = "../bao_cdp_client", version = "^0.3.0" }
-bao_stealth = { path = "../bao_stealth", version = "^0.3.0" }
+bao_cdp_client = { path = "../bao_cdp_client", version = "^0.4.0" }
+bao_stealth = { path = "../bao_stealth", version = "^0.4.0" }
 # sibling 精确下限(用户裁决 2026-09-02):memory_stats/realm_policy 等消费 bao_engine 0.1.16
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 bun_runtime.workspace = true
@@ -52,7 +52,7 @@ euclid = "0.22"
 # 交叉构建路径 — windows target 不启用 servo 的 media-gstreamer 后端(baked-in-
 # resources 保持全 target);media 面=独立后续波。非 windows 维持 gstreamer 媒体栈。
 [target.'cfg(not(windows))'.dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.18", features = ["media-gstreamer"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.19", features = ["media-gstreamer"] }
 
 # win-cross GL backend selection (Windows GL context class root fix): surfman's
 # WGL backend restores the *previous* (null) context when `create_context`
@@ -72,7 +72,7 @@ servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", v
 # cfg(windows)-gated because mozangle's build.rs panics on non-Windows targets
 # when egl/build_dlls are on; Linux keeps its X11/EGL path byte-identical.
 [target.'cfg(windows)'.dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.18", default-features = false, features = ["baked-in-resources", "no-wgl"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.19", default-features = false, features = ["baked-in-resources", "no-wgl"] }
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }

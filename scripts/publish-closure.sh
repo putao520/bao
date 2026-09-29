@@ -55,6 +55,37 @@ mode = sys.argv[1]
 ref = sys.argv[2]
 crates = {p["name"]: p for p in meta["packages"]}
 
+# ── W39: vendored servo family (bao-servo-*) — non-member publishables ────
+# cargo metadata --no-deps lists workspace MEMBERS only; the vendored servo
+# components publish on the lockstep line via cargo publish --manifest-path
+# (CLAUDE.md release remap) and MUST appear in the closure scan. Gap found
+# by the W39 signed bump table: three touched servo crates (bindings/script/
+# servo) were invisible to --plan because the scan surface was src/ only.
+import re as _re, glob as _glob
+for _mf in sorted(_glob.glob("vendor/servo/components/*/Cargo.toml")):
+    _txt = open(_mf, encoding="utf-8", errors="ignore").read()
+    _m = _re.search(r'^name\s*=\s*"([^"]+)"', _txt, _re.M)
+    if not _m or not _m.group(1).startswith("bao-servo"):
+        continue
+    _v = _re.search(r'^version\s*=\s*"([^"]+)"', _txt, _re.M)
+    _pub = _re.search(r"^publish\s*=\s*(\[.*\]|false|true)", _txt, _re.M)
+    _deps = []
+    for _dm in _re.finditer(r'^([A-Za-z0-9_-]+)\s*=\s*\{([^}]*)\}', _txt, _re.M):
+        _key, _body = _dm.group(1), _dm.group(2)
+        if "path" not in _body:
+            continue
+        _pn = _re.search(r'package\s*=\s*"([^"]+)"', _body)
+        _deps.append({"name": _pn.group(1) if _pn else _key, "kind": "normal"})
+    crates[_m.group(1)] = {
+        "name": _m.group(1),
+        "version": _v.group(1) if _v else "0.0.0",
+        "manifest_path": os.path.join(os.getcwd(), _mf),
+        "publish": [] if (_pub and "false" in _pub.group(1)) else None,
+        "dependencies": _deps,
+    }
+SERVO_MANIFESTS = {n: p["manifest_path"] for n, p in crates.items()
+                   if n.startswith("bao-servo")}
+
 # ── touched crates since REF (manifest or source under src/<crate>) ────────
 diff = subprocess.run(["git", "diff", "--name-only", f"{ref}..HEAD"],
                       capture_output=True, text=True).stdout.splitlines()
@@ -67,6 +98,15 @@ for f in diff:
             # crate dir = src/<dir>; map dir → package name via manifest_path
             for mp, n in name_by_path.items():
                 if mp.startswith(f"src/{parts[1]}/"):
+                    touched.add(n)
+                    break
+    elif f.startswith("vendor/servo/components/"):
+        # W39: vendored servo family — dir → package by manifest_path prefix
+        parts = f.split("/")
+        if len(parts) >= 4:
+            prefix = "vendor/servo/components/" + parts[3] + "/"
+            for n, mp in SERVO_MANIFESTS.items():
+                if mp.replace(os.getcwd() + "/", "").startswith(prefix):
                     touched.add(n)
                     break
 
@@ -198,8 +238,10 @@ if mode == "--dry-run":
     print(f"[closure] DRY-RUN over {len(publish_list)} publish-ready crate(s), topo order")
     bad = 0
     for n in publish_list:
-        r = subprocess.run(["cargo", "publish", "--dry-run", "--locked", "-p", n],
-                           capture_output=True, text=True)
+        _cmd = (["cargo", "publish", "--dry-run", "--locked", "--manifest-path", SERVO_MANIFESTS[n]]
+                if n in SERVO_MANIFESTS else
+                ["cargo", "publish", "--dry-run", "--locked", "-p", n])
+        r = subprocess.run(_cmd, capture_output=True, text=True)
         ok = r.returncode == 0
         print(f"[closure]   {'OK ' if ok else 'RED'} {n}")
         if not ok:
@@ -220,7 +262,10 @@ if mode == "--execute":
     print(f"[closure] EXECUTE over {len(publish_list)} crate(s), single-flight topo order")
     for n in publish_list:
         print(f"[closure] publishing {n} …")
-        r = subprocess.run(["cargo", "publish", "--locked", "-p", n], capture_output=True, text=True)
+        _cmd = (["cargo", "publish", "--locked", "--manifest-path", SERVO_MANIFESTS[n]]
+                if n in SERVO_MANIFESTS else
+                ["cargo", "publish", "--locked", "-p", n])
+        r = subprocess.run(_cmd, capture_output=True, text=True)
         if r.returncode != 0:
             print(f"[closure] RED: publish {n} failed — SHORT CIRCUIT (no further publishes)\n{(r.stderr or r.stdout)[-800:]}")
             sys.exit(1)

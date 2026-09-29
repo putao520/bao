@@ -25,7 +25,7 @@ tracing = ["dep:tracing"]
 # bao_stealth: shared IANA→OpenSSL cipher/group/sigalg name mapping (single
 # source of truth — local mapping copies in connector.rs are forbidden).
 bao_boringssl_bridge = { path = "../../../../src/bao_boringssl_bridge", version = "^0.2.0" }
-bao_stealth = { path = "../../../../src/bao_stealth", version = "^0.3.0" }
+bao_stealth = { path = "../../../../src/bao_stealth", version = "^0.4.0" }
 # Shared per-host DNS cache (Bao fusion: usockets + node:dns + the WS loader
 # resolve through one cache). Low-tier, std-only surface.
 bun_dns = { path = "../../../../src/dns", version = "^0.2.0" }
@@ -53,7 +53,7 @@ data-url = {version = "0.3"}
 devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.6"}
 embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.6"}
 fst = {version = "0.4"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.9"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.10"}
 futures = {version = "0.3", default-features = false}
 futures-core = {version = "0.3", default-features = false}
 futures-util = {version = "0.3", default-features = false}
