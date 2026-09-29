@@ -87,7 +87,8 @@ run_one() {
     soak)
       # Browser stack (xvfb) + minutes-scale duration; the per-cycle series
       # streams to $out-derived .segments.jsonl inside the harness.
-      xvfb-run -a "$BIN" "$bench" --duration-mins "${SOAK_DURATION_MINS:-60}" --out "$out" >"$log" 2>&1
+      # SOAK_SCENARIO: page-churn (default — byte-zero drift) | mixed (#19-F).
+      xvfb-run -a "$BIN" "$bench" --duration-mins "${SOAK_DURATION_MINS:-60}" --scenario "${SOAK_SCENARIO:-page-churn}" --out "$out" >"$log" 2>&1
       ;;
     *)
       "$BIN" "$bench" --out "$out" >"$log" 2>&1

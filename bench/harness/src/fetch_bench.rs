@@ -20,13 +20,27 @@ use bao_engine::value::JsValue;
 use crate::common::{Metric, Params, ResultBuilder};
 
 /// Fixed small response served to every request (deterministic body).
-fn spawn_server(body: &str) -> std::io::Result<(u16, std::sync::Arc<std::sync::atomic::AtomicU64>)> {
+pub(crate) fn spawn_server(
+    body: &str,
+) -> std::io::Result<(u16, std::sync::Arc<std::sync::atomic::AtomicU64>)> {
+    spawn_server_with(body, false)
+}
+
+/// Variant with `Access-Control-Allow-Origin: *` — the Page-realm `fetch()`
+/// contract (a cross-origin GET from a page realm needs the ACAO header or
+/// the fetch rejects before the body is ever read; the Node-realm fetch of
+/// this bench has no origin, so `cors=false` keeps its wire bytes unchanged).
+pub(crate) fn spawn_server_with(
+    body: &str,
+    cors: bool,
+) -> std::io::Result<(u16, std::sync::Arc<std::sync::atomic::AtomicU64>)> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let served = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let served_thread = served.clone();
+    let cors_header = if cors { "Access-Control-Allow-Origin: *\r\n" } else { "" };
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n{cors_header}Connection: keep-alive\r\n\r\n{}",
         body.len(),
         body
     );
