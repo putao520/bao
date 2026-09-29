@@ -133,6 +133,43 @@ else
     echo "==> [6/6] api-surface: skipped (set BAO_API_SURFACE=1 to enable)"
 fi
 
+# ================ [optional 7/9] native-deps inventory (W23-③) =================
+# Native dependency single-source gate(doctor↔doc 双向差集)——秒级,BAO_NATIVE_DEPS=1 启用。
+NATIVE_DEPS_RC=0
+if [ "${BAO_NATIVE_DEPS:-0}" = "1" ]; then
+    echo "==> [7/9] native-deps (blocking when enabled): scripts/native-deps-inventory.sh --check"
+    bash "${REPO}/scripts/native-deps-inventory.sh" --check || NATIVE_DEPS_RC=$?
+    if [ "${NATIVE_DEPS_RC}" -eq 0 ]; then echo "PASS native-deps"; else echo "FAIL native-deps (exit=${NATIVE_DEPS_RC})"; fi
+else
+    echo "==> [7/9] native-deps: skipped (set BAO_NATIVE_DEPS=1 to enable)"
+fi
+
+# ================ [optional 8/9] api-surface gate (W22a stable-set) =================
+# API stable-set declaration gate(rustdoc JSON 枚举,分钟级)——默认 skip;
+# BAO_API_SURFACE=1 启用,启用时未声明顶层 pub / 未登记 doc(hidden) 计入退出
+# 码。语义见 scripts/api-surface.sh 与 docs/api.md。
+API_SURFACE_RC=0
+if [ "${BAO_API_SURFACE:-0}" = "1" ]; then
+    echo "==> [8/9] api-surface (blocking when enabled): scripts/api-surface.sh --check"
+    bash "${REPO}/scripts/api-surface.sh" --check
+    API_SURFACE_RC=$?
+    if [ "${API_SURFACE_RC}" -eq 0 ]; then echo "PASS api-surface"; else echo "FAIL api-surface (exit=${API_SURFACE_RC})"; fi
+else
+    echo "==> [8/9] api-surface: skipped (set BAO_API_SURFACE=1 to enable)"
+fi
+
+# ================ [optional 9/9] consumer gate (W23-②) =================
+# 发布面三路 consumer gate(registry 路 resolve 级秒-分钟级;git/source 需
+# 显式 opt-in 且大流量)——默认 registry 路 skip;BAO_CONSUMER_GATE=1 启用。
+CONSUMER_RC=0
+if [ "${BAO_CONSUMER_GATE:-0}" = "1" ]; then
+    echo "==> [9/9] consumer-gate (blocking when enabled): scripts/consumer-gate.sh --registry"
+    bash "${REPO}/scripts/consumer-gate.sh" --registry || CONSUMER_RC=$?
+    if [ "${CONSUMER_RC}" -eq 0 ]; then echo "PASS consumer-gate"; else echo "FAIL consumer-gate (exit=${CONSUMER_RC})"; fi
+else
+    echo "==> [9/9] consumer-gate: skipped (set BAO_CONSUMER_GATE=1 to enable)"
+fi
+
 # ================================ 总表 ================================
 echo
 echo "==================== LOCAL-CI SUMMARY ===================="
@@ -145,6 +182,12 @@ if [ "${BAO_SEMVER_GATE:-0}" = "1" ]; then
 fi
 if [ "${BAO_API_SURFACE:-0}" = "1" ]; then
     echo "$(verdict "${API_SURFACE_RC}")    api-surface (blocking when enabled)"
+fi
+if [ "${BAO_NATIVE_DEPS:-0}" = "1" ]; then
+    echo "$(verdict "${NATIVE_DEPS_RC}")    native-deps (blocking when enabled)"
+fi
+if [ "${BAO_CONSUMER_GATE:-0}" = "1" ]; then
+    echo "$(verdict "${CONSUMER_RC}")    consumer-gate (blocking when enabled)"
 fi
 echo "========================================================="
 
