@@ -361,6 +361,7 @@ fn test_response_serialization_success() {
         id: Some(1),
         result: Some(json!({ "value": 42 })),
         error: None,
+        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""result""#));
@@ -376,6 +377,7 @@ fn test_response_serialization_error() {
             code: -32601,
             message: "not found".into(),
         }),
+        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""error""#));

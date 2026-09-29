@@ -298,6 +298,7 @@ fn test_c8_dispatch_none_maps_to_method_not_found_response() {
             id,
             result: None,
             error: Some(e),
+            exception_details: None,
         },
         None => error_response(id, ERR_METHOD_NOT_FOUND, format!("'{method}' wasn't found")),
     };
@@ -694,6 +695,7 @@ fn test_cdp_response_success_serialization() {
         id: Some(1),
         result: Some(json!({"value": 42})),
         error: None,
+        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("\"result\""));
@@ -709,6 +711,7 @@ fn test_cdp_response_error_serialization() {
             code: -32601,
             message: "not found".into(),
         }),
+        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("\"error\""));

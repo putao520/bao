@@ -379,6 +379,7 @@ fn test_response_large_result() {
         id: Some(1),
         result: Some(json!({"data": large_array})),
         error: None,
+        exception_details: None,
     };
     let serialized = serde_json::to_string(&resp).unwrap();
     assert!(serialized.len() > 50000);

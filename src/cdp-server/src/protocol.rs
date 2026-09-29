@@ -90,7 +90,6 @@ pub fn ok_response(id: Option<i64>, mut result: Value) -> CdpResponse {
         .as_object_mut()
         .and_then(|o| o.remove("exceptionDetails"))
         .filter(|v| !v.is_null());
-    eprintln!("BAO-DIAG ok_response lifted={:?}", exception_details.is_some());
     CdpResponse {
         id,
         exception_details,

@@ -414,6 +414,7 @@ fn test_cdp_response_success_serialization() {
         id: Some(1),
         result: Some(json!({"frameId": "0"})),
         error: None,
+        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""result""#));
@@ -429,6 +430,7 @@ fn test_cdp_response_error_serialization() {
             code: -32000,
             message: "server error".into(),
         }),
+        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""error""#));
