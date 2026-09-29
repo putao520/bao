@@ -161,7 +161,6 @@ fn test_serialize_ok_response() {
         id: Some(42),
         result: Some(json!({"value": true})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -179,7 +178,6 @@ fn test_serialize_error_response() {
             code: -32601,
             message: "Method not found".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -198,7 +196,6 @@ fn test_serialize_response_null_id() {
             code: -32700,
             message: "Parse error".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -212,7 +209,6 @@ fn test_serialize_empty_result() {
         id: Some(1),
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -642,7 +638,6 @@ fn test_invalid_request_error_code_jsonrpc_32600() {
             code: ERR_INVALID_REQUEST,
             message: "Invalid Request".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -661,7 +656,6 @@ fn test_method_not_found_error_code_jsonrpc_32601() {
             code: ERR_METHOD_NOT_FOUND,
             message: "Method not found".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -679,7 +673,6 @@ fn test_parse_error_code_jsonrpc_32700() {
             code: ERR_PARSE_ERROR,
             message: "Parse error".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -697,7 +690,6 @@ fn test_invalid_params_error_code_jsonrpc_32602() {
             code: ERR_INVALID_PARAMS,
             message: "Invalid params".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -713,7 +705,6 @@ fn test_response_result_and_error_mutually_exclusive() {
         id: Some(1),
         result: Some(json!({"v": 1})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&ok).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -727,7 +718,6 @@ fn test_response_result_and_error_mutually_exclusive() {
             code: -1,
             message: "x".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&err).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -746,7 +736,6 @@ fn test_response_id_always_present_even_on_error() {
             code: -32600,
             message: "x".into(),
         }),
-        exception_details: None,
     };
     let v: Value = serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
     // "id" key must be present (None serializes to null, not omitted).
@@ -1010,7 +999,6 @@ fn test_ok_response_omits_error_key_via_skip() {
         id: Some(1),
         result: Some(json!({"ok": 1})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let obj: serde_json::Map<String, Value> = serde_json::from_str(&raw).unwrap();
@@ -1027,7 +1015,6 @@ fn test_error_response_omits_result_key_via_skip() {
             code: -1,
             message: "e".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let obj: serde_json::Map<String, Value> = serde_json::from_str(&raw).unwrap();

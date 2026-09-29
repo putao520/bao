@@ -316,7 +316,6 @@ fn test_cdp_response_null_id_serializes() {
         id: None,
         result: Some(json!({"ok": true})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -333,7 +332,6 @@ fn test_cdp_response_error_serializes() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&raw).unwrap();
@@ -618,7 +616,6 @@ fn test_cdp_response_result_and_error_mutually_exclusive_at_construction() {
         id: Some(1),
         result: Some(json!({"v": 1})),
         error: None,
-        exception_details: None,
     };
     assert!(ok.result.is_some() && ok.error.is_none());
 
@@ -629,7 +626,6 @@ fn test_cdp_response_result_and_error_mutually_exclusive_at_construction() {
             code: -32601,
             message: "x".into(),
         }),
-        exception_details: None,
     };
     assert!(err.result.is_none() && err.error.is_some());
 }
@@ -644,7 +640,6 @@ fn test_cdp_response_error_serializes_skip_result_when_none() {
             code: -32601,
             message: "Method not found".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -663,7 +658,6 @@ fn test_cdp_response_result_serializes_skip_error_when_none() {
         id: Some(7),
         result: Some(json!({"frameId": "f1"})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&raw).unwrap();

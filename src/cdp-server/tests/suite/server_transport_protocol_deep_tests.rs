@@ -305,7 +305,6 @@ fn test_serialize_response_ok() {
         id: Some(42),
         result: Some(json!({"success": true})),
         error: None,
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains("\"id\":42"));
@@ -322,7 +321,6 @@ fn test_serialize_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains("-32601"));
@@ -335,7 +333,6 @@ fn test_serialize_response_null_id() {
         id: None,
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains("\"id\":null"));
@@ -665,7 +662,6 @@ fn test_cdp_response_skip_result_when_error() {
             code: -32000,
             message: "custom".into(),
         }),
-        exception_details: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(!json.contains("result"));
@@ -678,7 +674,6 @@ fn test_cdp_response_skip_error_when_result() {
         id: Some(1),
         result: Some(json!({"ok": true})),
         error: None,
-        exception_details: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(json.contains("result"));
@@ -692,7 +687,6 @@ fn test_cdp_response_neither_result_nor_error() {
         id: Some(1),
         result: None,
         error: None,
-        exception_details: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(!json.contains("result"));
@@ -853,7 +847,6 @@ fn test_cdp_response_deterministic() {
         id: Some(1),
         result: Some(json!({"a": 1, "b": 2})),
         error: None,
-        exception_details: None,
     };
     let j1 = serde_json::to_string(&resp).unwrap();
     let j2 = serde_json::to_string(&resp).unwrap();
@@ -1244,7 +1237,6 @@ fn adversarial_response_none_id_serializes_as_explicit_null() {
         id: None,
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(
@@ -1270,7 +1262,6 @@ fn adversarial_response_id_roundtrip_preserves_value() {
             id,
             result: Some(json!({})),
             error: None,
-            exception_details: None,
         };
         let s = serde_json::to_string(&resp).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
@@ -1292,7 +1283,6 @@ fn adversarial_response_result_present_error_omitted_in_wire() {
             code: -1,
             message: "should not appear".into(),
         }),
-        exception_details: None,
     };
     // Even if both are set in-memory, serde emits both (no mutual-exclusion
     // enforcement at the type level). Document the actual behavior: both keys
@@ -1315,7 +1305,6 @@ fn adversarial_response_error_code_negative_jsonrpc_range() {
                 code,
                 message: "e".into(),
             }),
-            exception_details: None,
         };
         let s = serde_json::to_string(&resp).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
@@ -1558,7 +1547,6 @@ fn adversarial_response_some_null_result_present_on_wire() {
         id: Some(1),
         result: Some(Value::Null),
         error: None,
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     let v: Value = serde_json::from_str(&s).unwrap();

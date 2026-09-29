@@ -134,7 +134,6 @@ fn test_cdp_response_ok() {
         id: Some(1),
         result: Some(json!({"value": 42})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -152,7 +151,6 @@ fn test_cdp_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -166,7 +164,6 @@ fn test_cdp_response_null_id() {
         id: None,
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let p: Value = serde_json::from_str(&raw).unwrap();

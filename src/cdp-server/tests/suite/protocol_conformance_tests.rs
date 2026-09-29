@@ -179,7 +179,6 @@ fn test_cdp_response_ok() {
         id: Some(1),
         result: Some(json!({"value": 42})),
         error: None,
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains(r#""id":1"#));
@@ -196,7 +195,6 @@ fn test_cdp_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("-32601"));
@@ -213,7 +211,6 @@ fn test_cdp_response_null_id() {
         id: None,
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains(r#""id":null"#));
@@ -231,7 +228,6 @@ fn test_cdp_response_result_and_error_mutually_exclusive_when_none() {
             code: -32600,
             message: "bad".into(),
         }),
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(
@@ -250,7 +246,6 @@ fn test_cdp_response_ok_omits_error_key() {
         id: Some(10),
         result: Some(json!({"ok": true})),
         error: None,
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(!s.contains("error"));
@@ -266,7 +261,6 @@ fn test_cdp_response_id_preserved_i64_extremes() {
             id: Some(id),
             result: Some(json!({})),
             error: None,
-            exception_details: None,
         };
         let s = serde_json::to_string(&resp).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();

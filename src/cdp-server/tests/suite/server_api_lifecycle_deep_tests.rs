@@ -799,7 +799,6 @@ fn test_cdp_response_ok() {
         id: Some(1),
         result: Some(json!({"value": 42})),
         error: None,
-        exception_details: None,
     };
     let json = serde_json::to_value(&resp).unwrap();
     assert_eq!(json["id"], 1);
@@ -816,7 +815,6 @@ fn test_cdp_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let json = serde_json::to_value(&resp).unwrap();
     assert_eq!(json["id"], 2);
@@ -830,7 +828,6 @@ fn test_cdp_response_null_id() {
         id: None,
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let json = serde_json::to_value(&resp).unwrap();
     assert!(json["id"].is_null());
@@ -904,7 +901,6 @@ fn test_serialize_response_ok() {
         id: Some(1),
         result: Some(json!({"data": "ok"})),
         error: None,
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("\"id\":1"));
@@ -920,7 +916,6 @@ fn test_serialize_response_error() {
             code: -32600,
             message: "bad".into(),
         }),
-        exception_details: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("-32600"));

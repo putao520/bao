@@ -590,7 +590,6 @@ fn test_cdp_response_ok_fields() {
         id: Some(1),
         result: Some(json!({"data": 42})),
         error: None,
-        exception_details: None,
     };
     assert_eq!(resp.id, Some(1));
     assert!(resp.result.is_some());
@@ -606,7 +605,6 @@ fn test_cdp_response_error_fields() {
             code: -32601,
             message: "err".into(),
         }),
-        exception_details: None,
     };
     assert!(resp.result.is_none());
     assert!(resp.error.is_some());
@@ -618,7 +616,6 @@ fn test_cdp_response_debug() {
         id: Some(1),
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let debug = format!("{:?}", resp);
     assert!(debug.contains("1"));
@@ -630,7 +627,6 @@ fn test_cdp_response_none_id() {
         id: None,
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     assert!(resp.id.is_none());
 }

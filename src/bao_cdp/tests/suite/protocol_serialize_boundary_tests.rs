@@ -181,7 +181,6 @@ fn test_serialize_response_success() {
         id: Some(1),
         result: Some(json!({"ok": true})),
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -199,7 +198,6 @@ fn test_serialize_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -215,7 +213,6 @@ fn test_serialize_response_null_result() {
         id: Some(3),
         result: None,
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -228,7 +225,6 @@ fn test_serialize_response_empty_result() {
         id: Some(4),
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -241,7 +237,6 @@ fn test_serialize_response_nested_result() {
         id: Some(5),
         result: Some(json!({"data": {"nested": {"deep": true}}})),
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -254,7 +249,6 @@ fn test_serialize_response_array_result() {
         id: Some(6),
         result: Some(json!([1, 2, 3])),
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -267,7 +261,6 @@ fn test_serialize_response_negative_id() {
         id: Some(-100),
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -380,7 +373,6 @@ fn test_roundtrip_response_serialize() {
         id: Some(42),
         result: Some(json!({"frameId": "main", "loaderId": "l-1"})),
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -397,7 +389,6 @@ fn test_roundtrip_error_response() {
             code: -32601,
             message: "'Foo.bar' wasn't found".into(),
         }),
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -457,7 +448,6 @@ fn test_serialize_response_deterministic() {
         id: Some(1),
         result: Some(json!({"a": 1})),
         error: None,
-        exception_details: None,
     };
     let r1 = serialize_response(&resp);
     let r2 = serialize_response(&resp);
@@ -495,7 +485,6 @@ fn test_serialize_response_large_result() {
         id: Some(1),
         result: Some(json!({"data": data})),
         error: None,
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     assert!(raw.len() > 1000);
@@ -524,7 +513,6 @@ fn test_serialize_response_unicode_in_error() {
             code: -32000,
             message: "エラーが発生しました".into(),
         }),
-        exception_details: None,
     };
     let raw = serialize_response(&resp);
     assert!(raw.contains("エラー"));

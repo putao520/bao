@@ -346,7 +346,6 @@ fn test_cdp_response_success_serializes() {
         id: Some(1),
         result: Some(json!({"ok": true})),
         error: None,
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -363,7 +362,6 @@ fn test_cdp_response_error_serializes() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let raw = serde_json::to_string(&resp).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();

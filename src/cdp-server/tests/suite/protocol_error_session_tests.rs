@@ -244,7 +244,6 @@ fn test_serialize_response_success() {
         id: Some(1),
         result: Some(json!({"ok": true})),
         error: None,
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
@@ -262,7 +261,6 @@ fn test_serialize_response_error() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();
@@ -276,7 +274,6 @@ fn test_serialize_response_with_null_result() {
         id: Some(1),
         result: Some(Value::Null),
         error: None,
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains(r#""result":null"#));
@@ -288,7 +285,6 @@ fn test_serialize_response_deterministic() {
         id: Some(1),
         result: Some(json!({"a":1})),
         error: None,
-        exception_details: None,
     };
     let j1 = serde_json::to_string(&resp).unwrap();
     let j2 = serde_json::to_string(&resp).unwrap();
@@ -301,7 +297,6 @@ fn test_serialize_response_negative_id() {
         id: Some(-100),
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.contains("-100"));
@@ -314,7 +309,6 @@ fn test_serialize_response_large_result() {
         id: Some(1),
         result: Some(json!({"data": data})),
         error: None,
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     assert!(json_str.len() > 5000);
@@ -326,7 +320,6 @@ fn test_serialize_response_empty_result() {
         id: Some(1),
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let json_str = serde_json::to_string(&resp).unwrap();
     let parsed: Value = serde_json::from_str(&json_str).unwrap();

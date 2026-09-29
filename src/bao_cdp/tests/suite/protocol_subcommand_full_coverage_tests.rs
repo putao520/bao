@@ -2035,7 +2035,6 @@ fn test_serialize_ok_response() {
         id: Some(42),
         result: Some(json!({"ok":true})),
         error: None,
-        exception_details: None,
     };
     let s = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -2057,7 +2056,6 @@ fn test_serialize_error_response() {
             code: -32601,
             message: "not found".into(),
         }),
-        exception_details: None,
     };
     let s = serialize_response(&resp);
     assert!(s.contains("-32601"));
@@ -2104,7 +2102,6 @@ fn test_serialize_response_id_none() {
         id: None,
         result: Some(json!({})),
         error: None,
-        exception_details: None,
     };
     let s = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
