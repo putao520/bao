@@ -507,6 +507,18 @@ impl JsContext {
 
         let guard = SmRuntimeGuard { runtime };
 
+        // W10-impl (design §3-D 配套): drop the empty-chunk retention floor so
+        // Shrink-option collections归还 every empty chunk instead of keeping
+        // the default reserve. CLI/bench runtimes only — servo-mode runtimes
+        // would need a vendor-side hook (documented in the design doc).
+        unsafe {
+            mozjs::jsapi::JS_SetGCParameter(
+                cx.as_ptr(),
+                mozjs::jsapi::JSGCParamKey::JSGC_MIN_EMPTY_CHUNK_COUNT,
+                0,
+            );
+        }
+
         crate::dispatch_sm::BaoEventLoop::register_js_context(cx.as_ptr().cast());
 
         Ok((

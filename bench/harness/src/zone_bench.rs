@@ -85,13 +85,25 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
         .map_err(|e| format!("final for_test failed: {}", e.message))?;
     let pre_gc = unsafe { collect_runtime_stats(final_ctx.raw_cx()) }
         .map_err(|e| format!("pre-GC stats failed: {e}"))?;
+    // W10-impl: Shrink-options non-incremental collection — GCOptions::Shrink
+    // makes shouldDecommit() unconditionally true (chunk release) and runs the
+    // purge/compact tail; GCReason::API skipped the decommit pass entirely in
+    // high-frequency allocation modes (design /tmp/w10-zone-fix-design.md §4-B).
     unsafe {
-        mozjs::jsapi::JS_GC(final_ctx.raw_cx(), mozjs::jsapi::GCReason::API);
+        mozjs::jsapi::NonIncrementalGC(
+            final_ctx.raw_cx(),
+            mozjs::jsapi::GCOptions::Shrink,
+            mozjs::jsapi::GCReason::API,
+        );
     }
     // Second sweep: SM chunk release can lag the first collection by a slice;
-    // two full GCs bound the honest post-GC reading.
+    // two full collections bound the honest post-GC reading.
     unsafe {
-        mozjs::jsapi::JS_GC(final_ctx.raw_cx(), mozjs::jsapi::GCReason::API);
+        mozjs::jsapi::NonIncrementalGC(
+            final_ctx.raw_cx(),
+            mozjs::jsapi::GCOptions::Shrink,
+            mozjs::jsapi::GCReason::API,
+        );
     }
     let final_stats = unsafe { collect_runtime_stats(final_ctx.raw_cx()) }
         .map_err(|e| format!("final stats failed: {e}"))?;
@@ -192,6 +204,22 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
         final_stats.gc_heap_chunk_total,
         heap_delta,
     ));
+
+    // W10-impl chunk-fallout gate (design /tmp/w10-zone-fix-design.md §4):
+    // after a full collection the dead-realm chunk memory MUST fall back to
+    // within 1.5× of the pre-churn baseline. Under GCReason::API the
+    // decommit pass is skipped in high-frequency allocation modes and the
+    // chunk total stays parked near the churn peak — this gate is the RED
+    // half of the Shrink-GC RED→GREEN pair.
+    let chunk_gate = baseline.gc_heap_chunk_total.saturating_mul(3) / 2;
+    if final_stats.gc_heap_chunk_total > chunk_gate {
+        return Err(format!(
+            "W10 chunk-fallout gate RED: gc_heap_chunk_total_final ({}) > baseline×1.5 ({}) — dead-realm chunk memory not released (reason={}; Shrink wiring required)",
+            final_stats.gc_heap_chunk_total,
+            chunk_gate,
+            "API"
+        ));
+    }
 
     Ok(b)
 }

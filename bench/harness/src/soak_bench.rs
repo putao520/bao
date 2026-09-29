@@ -144,7 +144,8 @@ fn lsq_slope_kib_per_s(ts_s: &[f64], ys_kib: &[f64]) -> Option<f64> {
 }
 
 /// Forced-GC probe on the long-lived probe page. Two `Bun.gc()` passes
-/// (GCReason::API full GC; second pass sweeps finalized survivors), RSS read
+/// (W10-impl: GCOptions::Shrink non-incremental collection — decommit +
+/// purge tail; second pass sweeps finalized survivors), RSS read
 /// before the first and after a settle window following the second so malloc
 /// trim / mmap changes become visible in /proc. Engine-native heap samples
 /// (`JS::CollectRuntimeStats`, probe page's ScriptThread) bracket the GC —
@@ -865,7 +866,7 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
         "raw per-cycle/segment/probe series in {sidecar} (crash-safe append); in-doc per-cycle sample arrays are capped at 2000 (METHODOLOGY.md §7)"
     ));
     b.note(
-        "forced GC (Bun.gc x2, GCReason::API) covers the long-lived probe page's JSRuntime only — each JSContext owns its JSRuntime and churn-page heaps are reclaimed by ScriptThread exit on close; post-GC RSS delta is therefore a lower bound on reclaimable memory",
+        "forced GC (Bun.gc x2, GCOptions::Shrink non-incremental) covers the long-lived probe page's JSRuntime only — each JSContext owns its JSRuntime and churn-page heaps are reclaimed by ScriptThread exit on close; post-GC RSS delta is therefore a lower bound on reclaimable memory",
     );
     b.note(
         "engine metering (forced_gc_engine_*) is JS::CollectRuntimeStats on the SAME probe-page runtime the forced GC covers — engine-level GC-heap/live-things/malloc numbers, not process totals",

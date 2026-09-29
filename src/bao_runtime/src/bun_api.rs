@@ -6084,7 +6084,13 @@ fn status_line_for(code: i32) -> String {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn bun_gc(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    JS_GC(cx, JS::GCReason::API);
+    // W10-impl (design /tmp/w10-zone-fix-design.md §4-B): `Bun.gc` semantics =
+    // "return memory NOW" — SM 153 expresses that as GCOptions::Shrink (not a
+    // GCReason): shouldDecommit() is unconditionally true, the sweep tail runs
+    // purgeSourceURLs/relazify/propmap-purge and compacting moves survivors
+    // back so empty chunks decommit. GCReason::API skipped all of that in
+    // high-frequency allocation modes (GC.cpp:2280).
+    NonIncrementalGC(cx, JS::GCOptions::Shrink, JS::GCReason::API);
     args.rval().set(UndefinedValue());
     true
 }
