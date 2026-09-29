@@ -41,5 +41,11 @@ bao_cdp_client = { path = "../bao_cdp_client", version = "^0.3.0" }
 bao_stealth = { path = "../bao_stealth", version = "^0.3.0" }
 bao_uloop = { path = "../bao_uloop", version = "0.2.0" }
 
+[dev-dependencies]
+bao_crypto = { path = "../bao_crypto" }
+bun_sm = { path = "../bun_sm" }
+bun_transpiler = { path = "../transpiler" }
+serde_json = "1"
+
 [lints]
 workspace = true

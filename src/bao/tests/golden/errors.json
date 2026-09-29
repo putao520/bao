@@ -1,0 +1,74 @@
+{
+  "_comment": "W22d (#17-D) error-model golden — variant names + Display prefixes for the 7 pub error types. A variant added/removed/renamed or a Display prefix changed without updating this file = red (contract lock, COMMAND_SURFACE philosophy). Counts recorded as measured (w22d census): ConnectError 5 / CdpError 7 — the W22 design's 9/8 figures were estimates, the measured sets below are the contract.",
+  "BrowserError": {
+    "crate": "bao_browser",
+    "variants": ["Init", "Navigation", "Rendering", "JavaScript", "CDP"],
+    "display": {
+      "Init": "browser init error: ",
+      "Navigation": "navigation error: ",
+      "Rendering": "rendering error: ",
+      "JavaScript": "javascript error: ",
+      "CDP": "cdp error: "
+    },
+    "payload_style": "String (all variants)",
+    "source_chain": "none — all payloads are String; From<io::Error>-style conversions upstream materialize to_string()"
+  },
+  "ConnectError": {
+    "crate": "bao_cdp_client",
+    "variants": ["InvalidUrl", "InvalidScheme", "LaunchError", "ConnectionFailed", "Timeout"],
+    "display": {
+      "InvalidUrl": "invalid URL (empty or missing scheme)",
+      "InvalidScheme": "invalid URL scheme: ",
+      "LaunchError": "browser launch failed: ",
+      "ConnectionFailed": "connection failed: ",
+      "Timeout": "connect timeout: "
+    },
+    "payload_style": "unit + String",
+    "source_chain": "none — From<io::Error> materializes to_string() into ConnectionFailed (chain-loss finding #w22d-1)"
+  },
+  "CdpError": {
+    "crate": "bao_cdp_client",
+    "variants": ["ProtocolError", "JsonError", "IoError", "ConnectionClosed", "Timeout", "TransportError", "HandshakeError"],
+    "display": {
+      "ProtocolError": "CDP protocol error: ",
+      "JsonError": "JSON error: ",
+      "IoError": "I/O error: ",
+      "ConnectionClosed": "connection closed",
+      "Timeout": "timeout: ",
+      "TransportError": "transport error: ",
+      "HandshakeError": "WebSocket handshake error: "
+    },
+    "payload_style": "unit + String + one typed (IoError(io::Error))",
+    "source_chain": "IoError CARRIES io::Error but the hand-written `impl std::error::Error for CdpError {}` does not override source() — source() returns None (chain-loss finding #w22d-2)"
+  },
+  "ErrorCode": {
+    "crate": "bun_sm",
+    "variants": ["NoError", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "StackOverflow", "OutOfMemory", "URIError", "EvalError", "InternalError", "GenericError"],
+    "discriminants": { "NoError": 0, "TypeError": 1, "RangeError": 2, "SyntaxError": 3, "ReferenceError": 4, "StackOverflow": 5, "OutOfMemory": 6, "URIError": 7, "EvalError": 8, "InternalError": 9, "GenericError": 10 },
+    "payload_style": "C-style repr(u8) JS-error-kind classifier — not a std::error::Error by design"
+  },
+  "CryptoError": {
+    "crate": "bao_crypto",
+    "variants": ["InvalidKeyLength", "InvalidNonceLength", "InvalidKey", "InvalidCurve", "InvalidCertificate", "InvalidSignature", "InvalidLength", "InvalidFormat", "UnsupportedAlgorithm", "EncryptionFailed", "DecryptionFailed", "SignFailed", "VerifyFailed", "EncodingFailed", "DecodingFailed", "CertificateError", "KdfError", "KeyExchangeError", "KeyPairError", "KeyGenerationFailed", "SharedSecretFailed", "RandomFailed", "OperationFailed"],
+    "payload_style": "thiserror #[error] — struct fields (InvalidKeyLength{expected,got}) + String",
+    "source_chain": "none — all payloads String/usize"
+  },
+  "TranspileError": {
+    "crate": "bun_transpiler",
+    "shape": "struct { message: String }",
+    "display": "transpile_ts error: ",
+    "payload_style": "single-message struct",
+    "source_chain": "none"
+  },
+  "JsError": {
+    "crate": "bun_sm",
+    "shape": "struct { message, filename, line, column, stack: Option<String> }",
+    "display": "RUNTIME MAIN-ENTRY TYPED ERROR — `{filename}:{line}:{column}: {message}` + optional stack block",
+    "payload_style": "structured JS exception (location + stack) — the typed face of NodeRuntime::eval",
+    "source_chain": "none — JS exceptions have no lower Rust source by definition (JS-semantics keep-as-fact)",
+    "inner_tag_enum": {
+      "note": "bun_core::JsError is the INTERNAL 1-byte tag enum (Thrown/OutOfMemory/Terminated), not the runtime entry contract",
+      "variants": ["Thrown", "OutOfMemory", "Terminated"]
+    }
+  }
+}
