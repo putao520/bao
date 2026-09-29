@@ -6,6 +6,15 @@
 //! repeated parse+compile of unchanged payloads (the #26 bench: 79.6% of warm
 //! injection cost is compile; instantiate-vs-recompile 4.9×).
 //!
+//! ## Opt-in semantics (W31, REQ-ENG-012 stage2 mandate)
+//!
+//! The persistent layer is **disabled by default** — no disk IO of any kind
+//! unless `BAO_XDR_CACHE_DIR` names a directory (cold-start correctness
+//! first; a cache that is never written can never poison a startup). The
+//! in-memory stage1 layer is unaffected by this switch: with the layer
+//! disabled every load/store is a counted no-op and evaluation is
+//! byte-identical to stage1 (zero-drift contract — pinned by test).
+//!
 //! ## Addressing (SPEC REQ-ENG-012: "按源 hash + 编译选项寻址")
 //!
 //! Key = wyhash(source bytes, filename bytes, line NE) — the exact key of the
@@ -75,30 +84,35 @@ use mozjs::rust::wrappers2;
 
 use crate::stencil_cache::hash_key;
 
-/// Directory seam: production always uses the internal default (no user
-/// visible configuration surface); tests isolate via
-/// [`set_cache_dir_for_tests`].
+/// Directory seam. `None` in the RwLock = "no test override": production
+/// then derives the directory from `BAO_XDR_CACHE_DIR` — unset means the
+/// whole persistent layer is DISABLED (W31 opt-in: no default disk writes).
+/// Tests isolate via [`set_cache_dir_for_tests`].
 static CACHE_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-fn cache_dir() -> PathBuf {
-    CACHE_DIR
-        .read()
-        .expect("cache dir lock poisoned")
-        .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("bao-stencil-xdr-v1"))
+/// Env var naming the persistent cache directory (opt-in; unset = disabled).
+/// Direct-read key — inventory row in docs/env-vars.md §2.
+const CACHE_DIR_ENV: &str = "BAO_XDR_CACHE_DIR";
+
+fn cache_dir() -> Option<PathBuf> {
+    if let Some(dir) = CACHE_DIR.read().expect("cache dir lock poisoned").clone() {
+        return Some(dir); // test override wins
+    }
+    std::env::var_os(CACHE_DIR_ENV).map(PathBuf::from)
 }
 
-/// Override the cache directory (test seam — production uses the internal
-/// default).
+/// Override the cache directory (test seam). `None` restores the
+/// production derivation (env var; unset = disabled).
 #[doc(hidden)]
-pub fn set_cache_dir_for_tests(dir: PathBuf) {
-    *CACHE_DIR.write().expect("cache dir lock poisoned") = Some(dir);
+pub fn set_cache_dir_for_tests(dir: Option<PathBuf>) {
+    *CACHE_DIR.write().expect("cache dir lock poisoned") = dir;
 }
 
-/// Content-addressed entry path for (source, filename, line).
-fn cache_file(source: &str, filename: &CStr, line: u32) -> PathBuf {
+/// Content-addressed entry path for (source, filename, line); `None` when
+/// the persistent layer is disabled.
+fn cache_file(source: &str, filename: &CStr, line: u32) -> Option<PathBuf> {
     let key = hash_key(source, filename, line);
-    cache_dir().join(format!("{key:016x}.xdr"))
+    Some(cache_dir()?.join(format!("{key:016x}.xdr")))
 }
 
 // ─── Process build id (XDR version tag) ─────────────────────────────────────
@@ -342,7 +356,12 @@ pub unsafe fn load(
         DISABLED.fetch_add(1, Ordering::Relaxed);
         return None;
     };
-    let Ok(bytes) = std::fs::read(cache_file(source, filename, line)) else {
+    let Some(path) = cache_file(source, filename, line) else {
+        // W31 opt-in: no configured directory — the layer is a no-op.
+        DISABLED.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    let Ok(bytes) = std::fs::read(path) else {
         MISS_ABSENT.fetch_add(1, Ordering::Relaxed);
         return None;
     };
@@ -390,6 +409,11 @@ pub unsafe fn store(
         DISABLED.fetch_add(1, Ordering::Relaxed);
         return;
     };
+    let Some(path) = cache_file(source, filename, line) else {
+        // W31 opt-in: no configured directory — the layer is a no-op.
+        DISABLED.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
     if !unsafe { jsapi::IsStencilCacheable(stencil) } {
         // asm.js and other non-cacheable stencils: encode would fail anyway.
         return;
@@ -426,7 +450,6 @@ pub unsafe fn store(
     put_bytes(&mut entry, source.as_bytes());
     put_bytes(&mut entry, &xdr);
 
-    let path = cache_file(source, filename, line);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -476,7 +499,7 @@ mod tests {
             thread
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        set_cache_dir_for_tests(dir.clone());
+        set_cache_dir_for_tests(Some(dir.clone()));
         dir
     }
 
@@ -713,6 +736,227 @@ mod tests {
         assert!(
             failed + absent >= 1,
             "the failure path must be observable (store_failed={failed}, absent={absent})"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── W31: opt-in semantics, multi-realm equivalence, cold/warm bench ────
+
+    /// W31: with no configured directory the persistent layer is a counted
+    /// no-op — zero disk IO of any kind — and the in-memory stage1 layer
+    /// behaves exactly as before (miss→compile→cache, then hits).
+    /// Zero-drift contract: stage1 byte-identical when the layer is off.
+    #[test]
+    fn w31_default_disabled_layer_is_zero_disk_zero_drift() {
+        // Restore the production derivation (env var; unset in CI ⇒ disabled).
+        // If a developer machine exports BAO_XDR_CACHE_DIR this test still
+        // holds via the override=None + counters argument only when the env
+        // is unset — guard the assumption explicitly.
+        if std::env::var_os("BAO_XDR_CACHE_DIR").is_some() {
+            eprintln!("[w31] BAO_XDR_CACHE_DIR set in environment — skipping");
+            return;
+        }
+        set_cache_dir_for_tests(None);
+        let src = heavy_payload(11, 24);
+
+        let c0 = xdr_counters();
+        let first = make_jsvalue_fresh_realm(&src, "<w31-off>").unwrap();
+        let c1 = xdr_counters();
+        // One load attempt + one store attempt, both gated off = 2 disabled.
+        assert_eq!(
+            c1.disabled,
+            c0.disabled + 2,
+            "cold eval must exercise (and gate off) both load and store"
+        );
+        assert_eq!(c1.stores, c0.stores, "no disk store may happen");
+        assert_eq!(c1.miss_absent, c0.miss_absent, "no disk read may happen");
+
+        // Stage1 memory layer unchanged: entry cached, second eval hits it.
+        assert_eq!(thread_cache_len(), 1);
+        let hits_before = crate::stencil_cache::thread_cache_counters().0;
+        let second = make_jsvalue_fresh_realm(&src, "<w31-off>").unwrap();
+        let hits_after = crate::stencil_cache::thread_cache_counters().0;
+        assert!(hits_after > hits_before, "memory layer still hits");
+        assert_eq!(number_value(&first), number_value(&second));
+        // And the disabled gate keeps counting, nothing else moves.
+        let c2 = xdr_counters();
+        assert_eq!(c2.stores, c0.stores);
+        assert_eq!(c2.miss_absent, c0.miss_absent);
+    }
+
+    /// W31 correctness gate: a DISK-decoded stencil instantiated into MULTIPLE
+    /// fresh realms produces the same observable fingerprint as the plain
+    /// compile path in the same number of fresh realms (decode products are
+    /// behaviorally equivalent to fresh compilation — smoke-form extension).
+    #[test]
+    fn w31_decoded_stencil_matches_plain_compile_across_multiple_realms() {
+        let dir = fresh_test_dir("w31fp");
+        // Rich observable state: patched builtin, closure, sorted key census —
+        // completion value is a JSON fingerprint of everything installed.
+        let fp = r#"
+(function() {
+  function r5(t) { return Math.round(t / 5) * 5; }
+  var orig = Date.now;
+  Date.now = function() { return r5(orig()); };
+  globalThis.__fp = {
+    d: Date.now.toString().length > 0,
+    c: (function() { var v = 40; return function() { return v + 2; }; })()(),
+    n: Object.keys(globalThis).filter(function(k) { return k.indexOf('__fp') === 0; }).sort()
+  };
+})();
+globalThis.__fp2 = 11;
+JSON.stringify(globalThis.__fp)
+"#;
+        let mut src = String::new();
+        while src.len() + fp.len() < crate::stencil_cache::MIN_CACHED_SOURCE_BYTES {
+            src.push_str("var __pad_w31 = 1;\n");
+        }
+        src.push_str(fp);
+
+        // Warm the disk entry once, then forget the memory layer.
+        make_jsvalue_fresh_realm(&src, "<w31-fp>").unwrap();
+        assert_eq!(entry_files(&dir).len(), 1);
+
+        const REALMS: usize = 3;
+        let mut plain_prints = Vec::new();
+        for _ in 0..REALMS {
+            // Plain path via a direct (uncached) eval in a fresh realm.
+            let mut ctx = JsContext::for_test().unwrap();
+            let v = ctx.eval(&src, "<w31-fp").unwrap();
+            match v {
+                JsValue::String(s) => plain_prints.push(s),
+                other => panic!("plain returned {other:?}"),
+            }
+        }
+        let mut decoded_prints = Vec::new();
+        for _ in 0..REALMS {
+            // Memory-cold each time: the stencil MUST come from the disk
+            // decode path (xdr hit counter proves it for the first realm;
+            // the in-memory layer then serves the same decoded stencil).
+            clear_thread_cache();
+            let hits_before = xdr_counters().hits;
+            let v = make_jsvalue_fresh_realm(&src, "<w31-fp>").unwrap();
+            assert_eq!(xdr_counters().hits, hits_before + 1, "each round = disk hit");
+            match v {
+                JsValue::String(s) => decoded_prints.push(s),
+                other => panic!("decoded returned {other:?}"),
+            }
+        }
+        assert!(
+            plain_prints.windows(2).all(|w| w[0] == w[1]),
+            "plain path must be deterministic"
+        );
+        assert_eq!(
+            plain_prints[0], decoded_prints[0],
+            "W31: decode fingerprint must equal plain-compile fingerprint"
+        );
+        assert!(
+            decoded_prints.windows(2).all(|w| w[0] == w[1]),
+            "decoded stencil must instantiate identically in every realm"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Child-mode workload for the two-process bench (no-op when run as part
+    /// of the normal suite): evaluate the fixed bench payload once through
+    /// the cached API — cold child compiles + stores, warm child decodes —
+    /// and print the machine-parseable outcome + eval wall time (context and
+    /// realm setup are deliberately OUTSIDE the measured window: both
+    /// children pay identical startup, the reportable delta is
+    /// compile-vs-decode).
+    #[test]
+    fn xdr_bench_child() {
+        if std::env::var_os("BAO_XDR_BENCH_CHILD").is_none() {
+            return; // normal-suite no-op
+        }
+        set_cache_dir_for_tests(None); // exercise the ENV path, not the seam
+        use mozjs::jsval::UndefinedValue;
+        use mozjs::rooted;
+
+        let src = heavy_payload(13, 2000); // compile-heavy: clear delta
+        let mut ctx = JsContext::for_test().unwrap();
+        let mut cx = ctx.cx();
+        let global_ptr = ctx.ensure_realm_global(&mut cx, None).unwrap();
+        rooted!(&in(cx) let global = global_ptr);
+        let c_filename = CString::new("<w31-bench>").unwrap();
+        rooted!(&in(cx) let mut rval = UndefinedValue());
+
+        let c0 = xdr_counters();
+        let t0 = Instant::now();
+        evaluate_script_cached(
+            &mut cx,
+            global.handle(),
+            &src,
+            &c_filename,
+            1,
+            rval.handle_mut(),
+        )
+        .expect("bench eval");
+        let us = t0.elapsed().as_micros() as u64;
+        let c = xdr_counters();
+        let outcome = if c.hits > c0.hits {
+            "warm-hit"
+        } else if c.stores > c0.stores {
+            "cold-store"
+        } else {
+            "no-disk"
+        };
+        let v = unsafe { jsval_to_jsvalue(cx.raw_cx_no_gc(), rval.get()) };
+        assert!(number_value(&v) >= 0.0);
+        println!("XDRBENCH outcome={outcome} us={us}");
+    }
+
+    /// W31 benefit evidence (REQ-ENG-012 C2, cross-process form): two REAL
+    /// child processes evaluate the same blob against the same cache dir —
+    /// child A cold (compile + store), child B warm (disk decode). The
+    /// reported numbers are the completion criterion; the assertion is the
+    /// conservative one (warm beats cold — both children pay identical
+    /// process+context startup, so the delta is compile-vs-decode).
+    #[test]
+    fn w31_cold_warm_two_process_bench() {
+        let dir = fresh_test_dir("w31bench");
+        set_cache_dir_for_tests(None); // children drive everything via env
+        let exe = std::env::current_exe().unwrap();
+
+        let run_child = || -> (String, u64) {
+            let out = std::process::Command::new(&exe)
+                .args(["--exact", "xdr_cache::tests::xdr_bench_child", "--nocapture"])
+                .env("BAO_XDR_BENCH_CHILD", "1")
+                .env("BAO_XDR_CACHE_DIR", &dir)
+                .output()
+                .expect("spawn bench child");
+            assert!(
+                out.status.success(),
+                "child failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let line = stdout
+                .lines()
+                .find(|l| l.starts_with("XDRBENCH"))
+                .unwrap_or_else(|| panic!("no XDRBENCH line in child output:\n{stdout}"));
+            let outcome = line
+                .split(' ')
+                .find_map(|p| p.strip_prefix("outcome="))
+                .unwrap()
+                .to_string();
+            let us: u64 = line
+                .split(' ')
+                .find_map(|p| p.strip_prefix("us="))
+                .unwrap()
+                .parse()
+                .unwrap();
+            (outcome, us)
+        };
+
+        let (cold_outcome, cold_us) = run_child();
+        let (warm_outcome, warm_us) = run_child();
+        eprintln!("[w31] cold={cold_us}µs ({cold_outcome}) warm={warm_us}µs ({warm_outcome})");
+        assert_eq!(cold_outcome, "cold-store", "first child must compile+store");
+        assert_eq!(warm_outcome, "warm-hit", "second child must disk-hit");
+        assert!(
+            warm_us < cold_us,
+            "W31: warm decode ({warm_us}µs) must beat cold compile ({cold_us}µs)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -89,7 +89,7 @@ const MAX_ENTRIES: usize = 16;
 
 /// Sources below this size bypass the cache (tiny compiles are ~2 µs; the
 /// hash+lookup fixed cost would dominate — ledger #26 bench `tiny_1p1`).
-const MIN_CACHED_SOURCE_BYTES: usize = 1024;
+pub(crate) const MIN_CACHED_SOURCE_BYTES: usize = 1024;
 
 struct CacheEntry {
     /// Fast bucket locator; hits are verified by exact bytes below, so a

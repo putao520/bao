@@ -152,12 +152,13 @@ semantics; not covered by the accessor lock (documented for completeness).
 | `BUN_THREADPOOL_STATS` | 1 | `threading/ThreadPool.rs:42` |
 | `BUN_WHICH_IGNORE_CWD` | 1 | `install/PackageManager.rs:1355` |
 
-## 3. 产品契约 — `BAO_*` native readers (2 keys)
+## 3. 产品契约 — `BAO_*` native readers (3 keys)
 
 | Key | 引用数 | 引用点 |
 |---|---|---|
 | `BAO_PAGE_PHASE_BUDGET_MS` | 1 | `bao_browser/src/phase_watch.rs:156` |
 | `BAO_UWS_WITH_TLS` | 1 | `uws_sys/build.rs:28` |
+| `BAO_XDR_CACHE_DIR` | 1 | `bao_engine/src/xdr_cache.rs:97`(定义;REQ-ENG-012 stage2 持久 XDR 缓存 opt-in 开关——未设=层禁用零磁盘 IO) |
 
 ## 4. 测试 harness (non-contract) (15 keys)
 
