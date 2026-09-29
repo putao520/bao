@@ -165,6 +165,7 @@ mod runtime_api_boundary_tests;
 mod runtime_deep_tests;
 mod runtime_resource_cleanup_tests;
 mod rust_boundary_tests;
+mod spawn_sigterm_reset_tests;
 mod spawn_stdin_socket_write_syscall_tests;
 mod stealth_http_deep_tests;
 mod strdec_module_deep_tests;
