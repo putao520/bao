@@ -20850,3 +20850,4 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
     vm_rss_post_idle KiB: p50=1108432.0 p95=1110764.0 n=120
     vm_rss_slope_post KiB_per_s: p50=-24.70246129762605 p95=-24.70246129762605 n=1
 [soak-daily] done: verdict=completed streak=2/60 min
+[soak-daily] artifact self-collect: bench/ committed
