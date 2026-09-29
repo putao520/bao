@@ -29,7 +29,7 @@ use std::sync::Arc;
 // The documented consumer contract is `Browser::connect("memory://bao")` —
 // but the real InMemoryBridge lives host-side (the embedder that owns the
 // page pool / servo runtime; in this workspace that is bao_browser's
-// `MemoryCdpBridge`, installed by `BaoRuntime::new`). The registry is the
+// `MemoryCdpBridge`, installed by `BrowserRuntime::new`). The registry is the
 // decoupling point: the client crate stays independent of the host, and
 // `connect` gains a real in-process Connection whenever a host runtime is
 // alive in this process.
@@ -115,7 +115,7 @@ impl Browser {
         let parsed = Self::route(url)?;
         // memory:// is EAGER when a host runtime has installed the
         // process-global bridge (the documented consumer shape:
-        // `BaoRuntime::new(..)` then `Browser::connect("memory://bao")` →
+        // `BrowserRuntime::new(..)` then `Browser::connect("memory://bao")` →
         // `version()`/`pages()` work). Without an installed bridge the
         // legacy lazy shape is kept (route-only) for URL-parsing tests and
         // explicit `connect_with_bridge` callers.

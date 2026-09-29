@@ -31,7 +31,7 @@ thread_local! {
 }
 
 /// Set the VM loader context for the current thread.
-/// Called by `bun_runtime::BaoRuntime` during initialization.
+/// Called by `bun_runtime::NodeRuntime` during initialization.
 ///
 /// @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
 pub fn set_vm_loader_ctx(

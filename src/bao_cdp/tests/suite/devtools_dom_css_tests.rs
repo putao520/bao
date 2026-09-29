@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bao_browser::{handle_bridge_command, BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{handle_bridge_command, BaoConfig, BrowserRuntime, PageConfig};
 use bao_cdp::{bridge_channel, handle_command, BridgeSender, CdpMessage, CdpResponse};
 use serde_json::{json, Value};
 
@@ -142,7 +142,7 @@ fn find_flat<'a>(nodes: &'a [Value], name: &str) -> &'a Value {
 /// thread spins the servo event loop and drains the bridge with the
 /// production handler while the client thread drives CDP dispatches.
 fn with_styled_page(client: impl FnOnce(&BridgeSender, &str) + Send + 'static) {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: None,

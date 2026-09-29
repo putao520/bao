@@ -6,7 +6,7 @@
 //!
 //! 初始化路径：
 //!   - CLI 模式: `JsContext::init_runtime()` → JSEngine + Runtime + JobQueue
-//!     返回 `SmRuntimeGuard` 持有所有权，BaoRuntime 持有 guard。
+//!     返回 `SmRuntimeGuard` 持有所有权，NodeRuntime 持有 guard。
 //!   - Browser 模式: servo 初始化 Runtime → `JsContext::from_servo_runtime()` 寄生
 //!     servo 拥有 Runtime 生命周期，不需要 guard。
 //!   - 两者共享同一个 `mozjs::rust::Runtime::get()` TLS 全局
@@ -322,7 +322,7 @@ static ENGINE_HANDLE: OnceLock<mozjs::rust::JSEngineHandle> = OnceLock::new();
 ///
 /// `JSEngine` is a process-wide singleton (`JSEngine::init` may succeed only once).
 /// Concurrent callers of `ensure_engine_handle` / `init_runtime` / `for_test` /
-/// `BaoRuntime` must share this lock on the slow path so only one thread calls
+/// `NodeRuntime` must share this lock on the slow path so only one thread calls
 /// `JSEngine::init()`; others double-check `ENGINE_HANDLE` after acquiring the lock.
 /// Without this, two threads can both miss the `ENGINE_HANDLE` fast-path and the
 /// second hits `AlreadyInitialized`.
@@ -369,7 +369,7 @@ thread_local! {
 /// Worker threads call this to obtain the process-global JSEngine handle,
 /// then create their own `Runtime::new(handle)` on the worker thread.
 ///
-/// Concurrent `for_test` / `init_runtime` / `BaoRuntime` paths all go through
+/// Concurrent `for_test` / `init_runtime` / `NodeRuntime` paths all go through
 /// here and share [`ENGINE_INIT_LOCK`] on the slow path (see that static).
 pub fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
     // Fast path: engine already initialized, just clone the handle (no lock).

@@ -1648,7 +1648,7 @@ mod _event_loop_draft {
     fn on_start(opts: InitOpts, ready: Arc<ReadyPair>) {
         // Late bring-up instead of `configure_named_thread`: an embedding that
         // never initializes bun's Output subsystem (e.g. the servo-embedding
-        // `bao_browser::BaoRuntime`) used to die here on
+        // `bao_browser::BrowserRuntime`) used to die here on
         // `configure_thread`'s `STDOUT_STREAM_SET` debug_assert — the HTTP
         // thread panicked before signaling `ready`, so `init_once` blocked
         // forever on the condvar and every scheduled fetch hung (the U2
