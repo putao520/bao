@@ -305,6 +305,21 @@ fn get_page_global_by_id(webview_id: servo::WebViewId) -> *mut mozjs::jsapi::JSO
     }
 }
 
+/// W26 (BCE 2026-09-29, node-realm timer fire kills ScriptThread): is
+/// `global` a registered PAGE-realm global? Address-compare ONLY — no
+/// dereference, no realm entry. The timer settings-runner uses this to
+/// route the DOM-only `servo::bao_run_in_script_settings` away from
+/// NODE-realm globals (a plain JS global makes its
+/// `GlobalScope::from_object` unwrap panic, killing the whole ScriptThread
+/// and every page it hosts — the W21a "churn clears the registry" evidence
+/// was exactly this: the registry entry survives the thread, zeroed by the
+/// dying runtime's GC tracer, and the survivors report "Node Realm not
+/// initialized").
+pub(crate) fn is_known_page_global(global: *mut std::ffi::c_void) -> bool {
+    let addr = global as usize;
+    addr != 0 && page_global_by_webview().iter().any(|e| *e.value() == addr)
+}
+
 /// Remove Node Realm for a specific page (called on page close).
 pub fn remove_node_realm_by_id(webview_id: servo::WebViewId) {
     node_realm_by_webview().remove(&webview_id);

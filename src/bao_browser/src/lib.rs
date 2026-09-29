@@ -333,8 +333,24 @@ impl BrowserRuntime {
         // Zero-capture forwarder is load-bearing: `BaoSettingsRunner` is a
         // bare fn pointer, so every BrowserRuntime's registration compares equal
         // (first-writer-wins contract, see timers::register_bao_settings_runner).
+        //
+        // W26 (BCE 2026-09-29, node-realm timer fire kills ScriptThread):
+        // `fire_js` dispatches EVERY bao timer through this runner —
+        // including NODE-realm timers armed via `evaluate_js`. But
+        // `servo::bao_run_in_script_settings` is DOM-only
+        // (`GlobalScope::from_object` unwraps and panics on a plain JS
+        // global), and that panic KILLS the whole ScriptThread: every page
+        // it hosts loses its realms — W21a's "churn clears the registry"
+        // evidence was exactly this (the registry entry survives the dead
+        // thread with its pointer zeroed by the dying runtime's GC tracer,
+        // and the survivor's evaluate then reports "Node Realm not
+        // initialized"). Discriminate by the registry: the settings-stack
+        // push applies only to registered PAGE-realm globals; node-realm
+        // (and unknown) globals keep the bare dispatch — `fire_js`'s own
+        // documented contract ("unregistered node realms keep the bare
+        // dispatch") finally holds.
         bun_runtime::timers::register_bao_settings_runner(|cx, global, f| {
-            servo::bao_run_in_script_settings(
+            bao_timer_settings_runner(
                 cx as *mut std::ffi::c_void,
                 global as *mut std::ffi::c_void,
                 f,
@@ -787,6 +803,27 @@ fn register_worker_interfaces_ready_injector_native(
         }
     });
     servo::register_worker_interfaces_ready_injector(webview_id, injector);
+}
+
+/// W26 (BCE 2026-09-29): the bao timer settings-runner entry — see the
+/// registration site in [`BrowserRuntime::new`] for the full chain. Pushes
+/// servo's script settings stack only for registered PAGE-realm globals;
+/// NODE-realm globals (plain JS globals — timers armed via `evaluate_js`)
+/// keep the bare dispatch, because `GlobalScope::from_object` is DOM-only
+/// and panics otherwise, killing the hosting ScriptThread.
+fn bao_timer_settings_runner(
+    cx: *mut std::ffi::c_void,
+    global: *mut std::ffi::c_void,
+    f: &mut dyn FnMut(),
+) {
+    if crate::runtime_bridge::is_known_page_global(global) {
+        servo::bao_run_in_script_settings(cx, global, f);
+    } else {
+        // Node realm (or unregistered global): no servo settings-stack
+        // semantics exist for it — run the callback bare, the exact
+        // pre-BCE-20260910-004 node-timer behavior.
+        f();
+    }
 }
 
 /// The engine-native execution-control armer installed into servo

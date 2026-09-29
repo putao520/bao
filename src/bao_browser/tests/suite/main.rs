@@ -78,6 +78,7 @@ mod pagepool_chaos_memory_safety_tests;
 mod page_pool_delegate_deep_tests;
 mod page_screenshot_deep_tests;
 mod page_state_config_tests;
+mod node_realm_churn_tests;
 mod pagestate_lifecycle_tests;
 mod page_wss_bao_tls_e2e_tests;
 mod permission_boundary_tests;
