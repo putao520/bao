@@ -10,6 +10,6 @@
     "2_60min_nightly_timer": "landed — bao-soak.timer, OnCalendar 00:07 local (6h ahead of daily-ops 06:07), TimeoutStartSec=90min",
     "3_72h_tmux_shell": "blocked — entry needs streak>=3 && ratchet_resolution"
   },
-  "ratchet_resolution": "resolved 2026-09-29: LINEAR-BAD — 7.1 MiB/min, GC recovery ~0% (SM heap flat 5.0 MiB, threads stable 88 → malloc-side ~22 KiB/cycle retention, non-SM non-thread-leak). Same profile as 09-24/25/26 green runs (8.4-8.5 MiB/min); degradation window 09-10→09-24. 72h entry BLOCKED on leak RCA (heaptrack/massif attribution) — soak ladder hang-gate unaffected (streak counts proceed).",
+  "ratchet_resolution": "resolved+FIXED 2026-09-29: leak chain closed (W5 zone-eval isolation → W6 heaptrack attribution → W7 drain falsification → W10 shrinking-GC CLI face → W15 servo realm-discard shrink hook c513a5f4). Steady-state slope 2025→354 KiB/s (−83%, ratio 0.175 ≤ 1/3 gate); churn p50 −1.0%. Remaining entry condition: streak≥3 zero-hang 60min runs (streak=1, nightly timer continues).",
   "note": "streak 只计 duration_mins=60 的完整零挂死跑(BAO_SOAK_MINS override 的验证跑 counts_toward_entry=false,不计数也不清零);pending 标记存活至下次启动=上夜被 TimeoutStartSec 击杀/断电,streak 诚实清零;夜间跑按 run.sh 惯例以 UTC 日期归档 bench/results/<date>-<commit>/"
 }
