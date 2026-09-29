@@ -119,8 +119,16 @@ impl FontFaceSet {
         true
     }
 
+    // BAO PATCH (fork-maintained, 2026-09-29, W28): read through the pin's
+    // REGISTERED root slot (`is_fulfilled_from_root`) — the `promise` twin's
+    // reflector address goes stale after a compacting (Shrink) collection
+    // relocates the pinned object while this wrapper is unreachable from the
+    // JS heap and the pump still dereferences it (documents map,
+    // maybe_fulfill_font_ready_promises). Crash form pre-patch:
+    // waiting_to_fullfill_promise → promise_obj → IsPromiseObject on a
+    // freed/reused cell (SIGSEGV in Shape::getObjectClass).
     pub(crate) fn waiting_to_fullfill_promise(&self) -> bool {
-        !self.promise.borrow().is_fulfilled()
+        !self.ready_promise_pin.is_fulfilled_from_root()
     }
 
     fn contains_face(&self, target: &FontFace) -> bool {

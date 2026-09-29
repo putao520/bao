@@ -3370,6 +3370,24 @@ impl Document {
     ///
     /// Returns true if the promise was fulfilled.
     pub(crate) fn maybe_fulfill_font_ready_promise(&self, cx: &mut JSContext) -> bool {
+        // BAO PATCH (ISSUE #25 generalization / W28, 2026-09-29): the
+        // font-ready station is pumped for EVERY document in the thread's
+        // documents map — including documents whose realm was
+        // navigation-discarded (bao's pipeline exit is pump-deferred, so the
+        // Rust wrapper outlives the realm's JS reachability). Resolving (or
+        // even waiting-checking) then would re-enter a discarded realm's JS
+        // through addresses a compacting collection may have relocated.
+        // Drop the settle entirely — same drop-on-discard face as the other
+        // B-family stations. Pure address probe — MUST run before any JS
+        // deref below (W28 crash evidence: the stale deref was
+        // FontFaceSet::waiting_to_fullfill_promise on a freed cell).
+        if crate::event_loop::script_thread::bao_is_realm_discarded(
+            script_bindings::reflector::DomObject::reflector(&*self.global())
+                .get_jsobject()
+                .get(),
+        ) {
+            return false;
+        }
         if !self.is_fully_active() {
             return false;
         }

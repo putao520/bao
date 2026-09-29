@@ -79,6 +79,34 @@ impl RootedPromise {
     pub(crate) fn to_traced(&self) -> TracedPromise {
         TracedPromise(self.duplicate_unrooted())
     }
+
+    // BAO PATCH (fork-maintained, 2026-09-29, W28): promise-state read from
+    // the REGISTERED PermanentRoot slot. Registered raw-value roots are
+    // marked AND relocation-updated by every collection (including Shrink
+    // compaction); reflector copies inside DOM wrappers that the JS heap can
+    // no longer reach are neither. ae61880a pinned the stored promises'
+    // COLLECTION liveness; W28 closes the MOVE-staleness half — a compacting
+    // Shrink GC (W15 realm-discard hook) relocates the pinned object and
+    // pump-deferred deref faces must read the slot address, not the
+    // reflector (crash evidence: FontFaceSet::waiting_to_fullfill_promise →
+    // promise_obj → IsPromiseObject on a freed cell).
+    #[expect(unsafe_code)]
+    pub(crate) fn is_fulfilled_from_root(&self) -> bool {
+        let val = self.0.1.0.get();
+        if !val.is_object() || val.is_null() {
+            // Uninitialized/degenerate root — nothing to wait on; callers
+            // treat "fulfilled" as stop-waiting.
+            return true;
+        }
+        let mut obj_slot = val.to_object();
+        // SAFETY: the address was read from a GC-registered raw-value root
+        // slot (AddRawValueRoot at init — relocation-updated), copied into a
+        // plain local that GetPromiseState (a pure read, cannot GC) keeps
+        // stable for the duration of the call.
+        let state =
+            unsafe { GetPromiseState(HandleObject::from_marked_location(&obj_slot as *const _)) };
+        matches!(state, PromiseState::Rejected | PromiseState::Fulfilled)
+    }
 }
 
 impl From<&'_ RootedPromise> for TrustedPromise {
