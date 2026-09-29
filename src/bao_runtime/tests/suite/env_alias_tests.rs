@@ -372,3 +372,204 @@ fn w3b_console_counters_process_global_across_node_realms() {
         "console.count must be process-global across Node realms, got: {out:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W22c (#17-C config contract): alias behavior-matrix completion — the three
+// shapes the existing 8 tests did not cover — plus the accessor↔doc lock.
+// ---------------------------------------------------------------------------
+
+/// Matrix row "双无" (neither BUN_ nor BAO_ set): the read layer resolves to
+/// absence everywhere — `getenv_z`/`getenv_z_any_case` return None, the
+/// accessor returns None, and the JS `process.env` surface reports
+/// undefined. Pins the zero-value fallback (no fabricated defaults, no
+/// empty-string alias materialization).
+#[test]
+fn env_alias_both_unset_resolves_to_absent_everywhere() {
+    unsafe {
+        std::env::remove_var("BUN_ENVALIAS_BOTH_UNSET");
+        std::env::remove_var("BAO_ENVALIAS_BOTH_UNSET");
+    }
+
+    // Native primitives: None on both spellings (no alias fabrication).
+    assert_eq!(
+        bun_core::getenv_z(bun_core::zstr!("BUN_ENVALIAS_BOTH_UNSET")),
+        None,
+        "getenv_z must resolve to None when neither spelling is set"
+    );
+    assert_eq!(
+        bun_core::getenv_z_any_case(bun_core::zstr!("BUN_ENVALIAS_BOTH_UNSET")),
+        None,
+        "getenv_z_any_case must resolve to None when neither spelling is set"
+    );
+
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
+    eval_ok(&mut rt);
+
+    // JS surface: the snapshot must NOT contain the key at all.
+    let present = rt
+        .eval(
+            "'BUN_ENVALIAS_BOTH_UNSET' in process.env",
+            "<env-alias-both-unset>",
+        )
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    assert!(
+        !present,
+        "process.env must not contain the key when neither spelling is set"
+    );
+
+    drop(rt);
+    unsafe {
+        std::env::remove_var("BUN_ENVALIAS_BOTH_UNSET");
+        std::env::remove_var("BAO_ENVALIAS_BOTH_UNSET");
+    }
+}
+
+/// Matrix row "运行中 set_var/remove_var": the two read surfaces have
+/// DIFFERENT mutation visibility, and this test pins the actual contract:
+///   - `getenv_z` is a LIVE libc getenv on every call (BUN_ first, BAO_
+///     fallback) — a mid-runtime set_var becomes visible, a remove_var
+///     disappears.
+///   - the JS `process.env` snapshot is populated ONCE at runtime creation
+///     (bun_api `populate_process_object` enumerates `env::vars()` a single
+///     pass); mid-runtime host-env mutations are NOT re-enumerated onto it.
+/// Both halves are the contract — neither is a bug — but they must stay as
+/// documented, because a snapshot change silently flips observable behavior.
+#[test]
+fn env_alias_mid_runtime_mutation_live_getenv_vs_frozen_js_snapshot() {
+    unsafe {
+        std::env::remove_var("BUN_ENVALIAS_MIDRUN");
+        std::env::remove_var("BAO_ENVALIAS_MIDRUN");
+    }
+
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
+    eval_ok(&mut rt);
+
+    // Mid-runtime mutation.
+    unsafe {
+        std::env::set_var("BAO_ENVALIAS_MIDRUN", "late");
+    }
+
+    // LIVE layer: getenv_z sees the mutation immediately (BAO_ fallback).
+    assert_eq!(
+        bun_core::getenv_z(bun_core::zstr!("BUN_ENVALIAS_MIDRUN")),
+        Some(b"late".as_slice()),
+        "getenv_z must resolve a mid-runtime set_var immediately (live libc getenv, BAO_ fallback)"
+    );
+
+    // Frozen layer: the JS snapshot was populated at creation — the new key
+    // is not re-enumerated onto it.
+    let js_present = rt
+        .eval(
+            "'BUN_ENVALIAS_MIDRUN' in process.env || 'BAO_ENVALIAS_MIDRUN' in process.env",
+            "<env-alias-midrun>",
+        )
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    assert!(
+        !js_present,
+        "the JS process.env snapshot must stay frozen across a mid-runtime set_var \
+         (single enumeration pass at runtime creation — pinned contract)"
+    );
+
+    // Mid-runtime removal: the live layer drops it again.
+    unsafe {
+        std::env::remove_var("BAO_ENVALIAS_MIDRUN");
+    }
+    assert_eq!(
+        bun_core::getenv_z(bun_core::zstr!("BUN_ENVALIAS_MIDRUN")),
+        None,
+        "getenv_z must drop the key after a mid-runtime remove_var (live read)"
+    );
+
+    drop(rt);
+    unsafe {
+        std::env::remove_var("BUN_ENVALIAS_MIDRUN");
+        std::env::remove_var("BAO_ENVALIAS_MIDRUN");
+    }
+}
+
+/// The accessor↔doc lock (#17-C): the `bun_core::env_var` accessor module is
+/// the single enumeration point of the product-contract env keys; this test
+/// diff-checks it against §1 of `docs/env-vars.md` in BOTH directions (a key
+/// added/removed on either side without the other = red).
+///
+/// File-reading pattern (deploy_tests style): paths resolved from
+/// CARGO_MANIFEST_DIR so the test is cwd-independent.
+#[test]
+fn env_alias_doc_lock_accessor_set_matches_docs_env_vars() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let repo = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("repo root from src/bao_runtime")
+        .to_path_buf();
+    let accessor_rs = repo.join("src/bun_core/env_var.rs");
+    let doc = repo.join("docs/env-vars.md");
+    let accessor_src = std::fs::read_to_string(&accessor_rs)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", accessor_rs.display()));
+    let doc_src = std::fs::read_to_string(&doc)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e} — the config-contract document is part of the lock", doc.display()));
+
+    // Source side: every `"BUN_..."` string literal in the accessor module is
+    // an accessor key (macro forms: new! / new_feature_flag! /
+    // platform_specific_new! all take the key as a string literal).
+    let key_re = regex_lite_bun_keys(&accessor_src);
+    let mut src_keys: Vec<String> = key_re;
+    src_keys.sort();
+    src_keys.dedup();
+
+    // Doc side: §1 of docs/env-vars.md — rows between the "## 1." heading and
+    // the next "## " heading, keys in backticks.
+    let section = doc_src
+        .split("## 1.")
+        .nth(1)
+        .and_then(|s| s.split("\n## ").next())
+        .expect("docs/env-vars.md must carry a '## 1.' accessor section (the lock target)");
+    let mut doc_keys: Vec<String> = section
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("| `"))
+        .filter_map(|l| l.split('`').next().map(|s| s.to_string()))
+        .collect();
+    doc_keys.sort();
+    doc_keys.dedup();
+
+    let missing_in_doc: Vec<&String> = src_keys.iter().filter(|k| !doc_keys.contains(k)).collect();
+    let missing_in_src: Vec<&String> = doc_keys.iter().filter(|k| !src_keys.contains(k)).collect();
+    assert!(
+        missing_in_doc.is_empty() && missing_in_src.is_empty(),
+        "accessor↔doc drift (both directions must be zero):\n  in src/bun_core/env_var.rs but NOT in docs/env-vars.md §1: {missing_in_doc:?}\n  in docs/env-vars.md §1 but NOT in the accessor module: {missing_in_src:?}"
+    );
+    assert!(
+        !src_keys.is_empty(),
+        "the accessor module must yield a non-empty key set (lock degenerated)"
+    );
+}
+
+/// Extract `"BUN_<NAME>"`-shaped string literals from the accessor module
+/// source (the macro key argument). Hand-rolled scan: a regex crate dep is
+/// not warranted for one lock test.
+fn regex_lite_bun_keys(src: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i + 5 < bytes.len() {
+        if bytes[i] == b'"'
+            && &bytes[i + 1..i + 5] == b"BUN_"
+        {
+            let mut j = i + 5;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'"' && j > i + 5 {
+                keys.push(src[i + 1..j].to_string());
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    keys
+}
