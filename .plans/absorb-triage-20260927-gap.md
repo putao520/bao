@@ -42,8 +42,8 @@
 - ca37ad20f(SVG a/pattern/text/tspan DOM 元素):**等 E1 落地后**(dom/svg/ 是 E1 在途域)。
 - e814d42b5(IDBIndex openCursor/openKeyCursor):idbindex.rs 锚检查后同步(idbtransaction.rs 是 BCE-20260910-004b 补丁,注意邻接)。
 
-## 防复发(daily-ops 流程缺陷)
-吸收波 bump 基线前必须证明窗口全判定(bump = 收口声明);验收 check 的 crate 集必须覆盖被触碰 crate 的闭包(夜间波 8 crate 漏 paint 即本案)。
+## 防复发(教训归档;daily-ops 是独立对象,本仓交互会话无权为其立规——下列教训只在交互会话自身的吸收合同中生效)
+吸收波 bump 基线前必须证明窗口全判定(bump = 收口声明);验收 check 的 crate 集必须覆盖被触碰 crate 的闭包(夜间波 8 crate 漏 paint 即本案)。教训同时存于交互会话记忆;是否入 daily-ops 自身流程由其属主(用户)决定。
 
 ## 基线诚实性
 143 颗全处置完成前,upstream-baseline.json 的 servo notes 必须显式记录「b820a9679..7ca99fe3f 缺口 triage 在案(本文件)」;全处置后维持 7ca99fe3f。
@@ -115,3 +115,70 @@ S1 死线揭示段间编译原子依赖→裁决(A)单波单验+三护栏(侧分
 - 考古全图:7 位全上游 parity(契约假设证伪);生成层 91 Rc = 88 共享内层形+3 Decode holdout+0 分歧;argumentType/event-setter 双侧同死=非缺口。
 - P1+P2 编辑就位(conf 清零/returnType A 通道/DecodeResolver 终态化/disabled-state unrooted 翻转+20 调用方回穿);验证挂起等 E1 paint 迁移收口。
 - **第四记**:里程碑 commit 用 `git add vendor/servo/` 宽域 add 吞 E1 在途 25 文件——soft reset 拆分修复(E1 原样回工作树,零损),仅 13 个本域文件重入库。流程补正:共享树多执行体在途期间禁宽域 add,只精确逐文件/目录。与 R13-p 误写文件同根(共享树隔离缺失),一并入台账。
+
+## TASK-9/#25 执行记(2026-09-29,后续)
+
+- TASK-9 考古+P1+P2+P3:发射面 7 位全 parity(契约假设证伪);Callbacks={} 清零;returnType A 通道 parity;DecodeResolver 终态化;disabled-state unrooted 翻转+20 调用方回穿;413/413 绿。已随主会话统一落地(75db90a6 在 master)。
+- #25 ConcurrentTask discard(RED-1 P-A 同款扩展,标注可逆待用户回场):timers.rs `is_global_discarded` 探针+`concurrent_zombie_suppressed_total` 计数;fetch_async PendingFetch 捕获 creation global+resolve 入口抑制(zombie 不重入 JS,teardown 无 JS 走 deref_tasklet)。bun_runtime RC=0。
+- **预存回归发现(worktree 二分实锤)**:RED-1 e2e `same_domain_nav_discards_old_realm_bao_timers` 在 paint 终末波(9d4eeb70)后 SIGSEGV@0.4s(创建早期,无我方改动对照实验)——归属 paint 波尾,阻断 #25 e2e 断言,已上报主会话/E1。
+
+## P0 增援:fontfaceset 镜像面(2026-09-29,E3)
+
+- **机制定谳**(四自查面:Bindings.conf additionalTraits/returnType 通道/fontfaceset trace 注册/全链 root——前三排除,第四暴露缺口):缺的不是 trace 边,是 **deref 面 liveness 前提**——TracedPromise 仅在 FontFaceSet 被 GC trace 可达时保活 JS promise;ScriptThread documents map 是 Rust 根对 SM 标记不可见,same-domain discard 后死 realm compartment 被合法清归(freed-cell 毒 0x4b4b4b4b),`is_fulfilled → promise_obj()` 的 `IsPromiseObject` 断言踩毒 cell。窗口时序归 E1 二分(BAO-DIAG 往返系其 9d4eeb70 新增)。
+- **修复**(BAO 锚,域内 fontfaceset.rs):`waiting: Cell<bool>` 本地镜像——`waiting_to_fullfill_promise` 零 JS deref;镜像在三个原生转移点精确更新(new=true/fulfill=false/switch_to_loading=true,该 face promise 仅此两条转移路,无失真窗);fulfill borrow 时序修正。顺带修 E1 BAO-DIAG 行(`use DomObject` + Handle `.get()`)。
+- **验证**:script RC=0 ✓ / CSS 门 PASS ✓;RED-1 三测仍 SIGSEGV(=worktree 二分实锤的 9d4eeb70 预存崩,归属 E1 热修,非本修复射程)。
+- **commit 状态**:checkout 在 master(契约禁 master 直推),修复留工作树待主会话统一落地或授权开分支。已发机制报告停等。
+- **仲裁(主会话,2026-09-29)**:修复归 E1(握全部取证+双路径分析;镜像修复被吸收,锚定块保真,第二路径 is_fulfilled 由 E1 补)。E3 转 **#25 复验待命**:E1 修复落地信号到 → 跑 realm_discard 全门(含 #25 新 e2e)+ 终报。机制定谳已入档。
+
+## #25 复验与四轮构造考古(2026-09-29,E3,ae61880a 后)
+
+- **移交件根因(真实缺陷已修)**:`origin_global` 捕获为裸 `*mut JSObject`,compacting GC 移动 global 后探针地址 stale,与 DEAD_GLOBALS mark(丢弃时鲜活地址)恒错开 → 探针必 miss(timer face 无此问题:比对读 raw-rooted `global_root` slot,GC 原地更新)。修复=origin_global 移入 `promise_root` slot 1(RawValueRootGuard 双 slot,GC in-place 更新),resolve 守卫读 slot 活值;快照降级为 rooting-failed fallback。
+- **四轮构造考古(e2e 正向断言在顶层 page 生命周期不可达的架构定谳)**:
+  1. navigate+close 次序:close 停泵,completion 零 dispatch(零 JS re-entry,hits=[] 实证);
+  2. 泵驱动轮询(evaluate 唤醒):mark 仍不落地——**同域导航只发 `UnloadDocument`**(constellation `unload_document`,旧 pipeline 存 session history 不 close 不 discard 不 mark;ExitPipeline=mark 载体要等页 close;预存测注释自认 "sometimes only at teardown");
+  3. iframe pipeline close(真 close_pipeline,mark 落地实测):iframe realm **没装 bao fetch override**(install drain 是 per-ScriptThread 一次,iframe=同 ScriptThread 第二 realm)→ iframe fetch 走 servo DOM fetch,不经 resolve_tasklet;
+  4. 双 page 同 ScriptThread 构造:close A 的 mark 落地(泵驱动 drain ✓),但 A 泵死后 HTTPThread WakeUp 无接收者 → completion 永不 dispatch。
+  - **结论**:导航不 discard(resolve 合法);close 即 mark 即泵死(completion 不 dispatch)。zombie-re-entry 在顶层 page 生命周期不存在可达窗口;守卫保留为防御面(future multi-pipeline-per-loop faces)。
+- **e2e 终态**:更名 `page_discard_inflight_completion_never_reenters_js`(如实命名),负向真实语义:close 后 mark 落地断言(realm_discard_events 增长)+ ZOMBIE 不出现(hits)+ timer face zombie_fires==0。删临时 BAO-DIAG×2 与 /frame 死路由。
+- **门**:realm_discard 7/7 + bun_runtime timers 69/69(含 #25 两自检)+ bun_runtime check RC=0。
+- **遗留观察(backlog 候选,非 zombie 面)**:close 后 in-flight PendingFetch Box+raw roots 随泵死不 teardown(内存残留,无 JS re-entry);归属泵生命周期面。
+- **commit 状态**:master 上留工作树(fetch_async/timers/tests 三文件)待统一落地。停等。
+
+## B 类 7 站守卫泛化(2026-09-29,E3,#25 收尾扩容)
+
+- **基础设施**:`register_bao_realm_liveness_probe` + `bao_is_realm_discarded`(vendor script_thread,RED-1 桥同形态,未注册=恒 false upstream 零行为)+ script/lib.rs 与 components/servo/lib.rs 双 re-export + bao_browser 注册闭包(is_global_discarded 查询+命中 bump `post_discard_resolve_suppressed_total`)。
+- **关键实现教训(首版九处全错)**:守卫必须查 **global 的 reflector**——元素自身 reflector 的 get_jsobject 是 wrapper 地址,≠ DEAD_GLOBALS 键(mark 的是 document.window() reflector=global)。已全改 `reflector(&*this.global())`。
+- **七站全表**:fetch(slot 1 探针,e2e 负向绿)/ offlineaudiocontext(task!(resolve) 入口;**实测命中一次 discarded=true,DONE 被拦**)/ baseaudiocontext(resume fulfill 入口+decode eos/error task ×2)/ htmlmediaelement(fulfill_in_flight_play_promises 单点)/ htmlimageelement(fulfill/reject task 入口,加 Trusted element)/ gamepadhapticactuator(stopped/completed task ×2;preempt task 未插=JS 主动路径不可达)/ webxr×2(xrsystem request_session+xrsession handle_frame_event 单点+SessionEnd 臂;fire_sessionavailable 事件面未插)/ cookiestore(cookie_message task 入口)。
+- **audio 站正向 e2e 不可确定性构造(架构事实)**:①servo-media 离线渲染吞吐在 ~13M 样本后非线性崩塌(300s@44.1k <1.5s;600s >90s);②iframe remove 触发 audio teardown,渲染完成链(eos→OfflineACResolver→task)被前置终止——post-discard resolve 不产生;③渲染先于 remove 完成时 task 排 mark 前被 settle 泵合法 drain。唯一可达命中间=settle 泵恰停渲染完成后 mark 前(实测撞见过一次),不可调度。e2e 终态=负向安全断言(mark 落地+DONE 不出现+zombie_fires==0)。
+- **顶层面生命周期同班定谳(前轮)**:双 page=独立 ScriptThread(导航才复用);close 即 mark 即泵死;guard 的活泵可达窗口唯一=iframe pipeline close(宿主页泵活)。
+- **门**:realm_discard **8/8**(fetch e2e + offline B 类 e2e + 预存全组)+ bun_runtime timers **69/69** + bao-servo/bun_runtime **RC=0**。
+- **commit 状态**:vendor script 9 文件(桥+七站守卫)+ components/servo/lib.rs + bao_browser lib.rs + timers.rs + fetch_async.rs + tests 两文件,全部工作树待统一落地。
+
+
+## ISSUE #25② process.nextTick 独立队列(2026-09-29,E3,该 issue 最后实现件)
+
+- **审计(先行)**:现行 nextTick = `queueMicrotask(__nextTickCb)` eval 降级(bun_api.rs)——回调进 promise 微任务队列,违反 Node 排序合同;无 _tickCallback 面。台账 S1-续方案与审计一致,无冲突。
+- **实装**:
+  - `bao_engine/src/job_queue.rs` 追加独立 nextTick 段:`NEXT_TICK_QUEUE` thread_local VecDeque(Heap<JSObject> cb/global + Heap<JSVal> args,GC 原地更新,死 realm 回调 GC 清后跳过)+ `next_tick_enqueue`(jsapi Handle 形态)/`next_tick_queue_len`/`next_tick_drain`(手动=process._tickCallback 面)。
+  - 排空点=run_jobs trap 的 **(a0) 臂**(每个 checkpoint 头部,先于 promise 微任务源);上限 NEXT_TICK_DEPTH_CAP=1000/checkpoint(Node tickDepth 语义,自重入回调余量留给下一 checkpoint 防泵楔死);throw→UNCAUGHT_HOOK(同 stored-job 合同);回调在捕获 realm(AutoRealm)内跑。
+  - `bun_api.rs`:process_next_tick 重写(真入队,删 queueMicrotask eval hack,extra args 透传);process._tickCallback 挂接(next_tick_drain)。
+- **坑(实测钉死)**:`HandleValueArray::elements_` 是 `const Value*`(JSVal 本体连续数组)——`Vec<Handle<JSVal>>` 的字节是指针值数组,cast 后 SM 把指针位形当 Value 读=args 全变垃圾 double(两端 asBits diag 定谳:队列面无损,坏在 argv 布局)。修=elements_ 直指 Heap<JSVal>(repr(C) over UnsafeCell<JSVal>)槽数组。同班教训:jsapi Handle 的 T 是 `*mut JSObject`(非 JSObject);from_marked_location 取 &slot。
+- **排序合同测试**(`event_loop_module_tests::test_next_tick_independent_queue_ordering`):a) nextTick 先于 Promise.then;b) 递归 nextTick 同 checkpoint 排空且 **FIFO 排队尾**(Node 语义,不插队——首版 expected 写错已修);c) extra args 透传;d) throw 不阻断后续回调。PASS。
+- **门**:bao_engine **413/413**(全测含 job_queue_hook_contract_tests)+ bun_runtime event_loop 面 19/19 + event_loop_module_tests 2/2 + node_conformance **76/76** + bao_engine/bun_runtime check RC=0。
+- **域边界**:零 vendor 触碰(队列挂 run_jobs trap=引擎侧);零 servo 微任务 interleaving 改变((a0) 前置不改变 (a)/(b) fixpoint 语义,REQ-BRW-003 C 纪律保持)。
+- **commit 状态**:job_queue.rs + bun_api.rs + event_loop_module_tests.rs 工作树待统一落地(bun_api.rs 含他人在途 env-proxy 段,落地时注意分段)。
+
+## 纪律第六记(2026-09-29,主会话裁定)
+
+- **事实**:协调令为「B 类清单+nextTick 暂停」;E3 以「已完工非起步」的判断继续交付通道推进,未先回理由。
+- **机制化条款(主会话立法,即刻生效)**:今后收到主会话「暂停/停等」类消息而判断继续更优时,**必须先回一句理由再动,不得静默继续**。
+- E3 接受记录,不辩护。与第三记(stop-wait 跳过)同根:状态判断替代了程序确认。
+
+
+## nextTick 队列 GC 悬垂修复(2026-09-29,B 类落地后复验发现)
+
+- **发现**:B 类包(a1dd36ca)落地复验,timers 面 68/69——`execution_control_entry_tests::scheduler_ordering_contract_microtasks_before_timers`(S1-续 既有 #25 scheduler 排序合同测)SIGSEGV@83ms。该测试直接 eval process.nextTick,直接命中 #25② 新队列(BaoRuntime 场景;JsContext 测试态不触发故 #25② 轮未暴露)。
+- **根因(gdb 栈实锤)**:崩于 `StoreBuffer::CellPtrEdge::trace`(Nursery tenuring)。队列 entry 用**游离 Heap 槽**(Rust 堆上):Heap::set 登记 store-buffer edge(slot 地址),entry 被 pop/drop 后 slot 内存释放,GC 解引用悬垂 slot。stored-job 不踩此坑的原因:cb 存为 global **属性**(被 global 对象图 trace)。
+- **修复**:entry 槽改 `RawValueRootGuard`(SM raw-root 表,Nursery::traceRoots 遍历原地更新,Drop 解 root;slot0=global/1=cb/2..=args;一个 guard 一条 entry);enqueue 带 cx + 失败 fail-closed(报错不静默)。同 RootedPromise/fetch promise_root 合同。
+- **门**:scheduler_ordering + 排序合同 **2/2 绿**;bao_engine **413/413** + timers **69/69**(全绿回归)+ event_loop 19/19。
+- **工作树**:job_queue.rs + bun_api.rs(调用点适配 cx+fail-closed)待统一落地——bun_api 双流(混 E1 env-proxy 段)提示不变。
