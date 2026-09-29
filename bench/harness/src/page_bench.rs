@@ -34,12 +34,19 @@ pub(crate) struct CycleTiming {
 ///
 /// Fail-closed: any step failure or marker mismatch returns Err (carrying the
 /// iteration index) — no green numbers on wrong results.
-pub(crate) fn churn_cycle(runtime: &BrowserRuntime, i: usize) -> Result<CycleTiming, String> {
+pub(crate) fn churn_cycle(
+    runtime: &BrowserRuntime,
+    i: usize,
+    url_override: Option<&str>,
+) -> Result<CycleTiming, String> {
     let marker = format!("benchmark-{i}");
     // Space-free / quote-free HTML: the WHATWG URL parser percent-encodes
     // both inside a data: URL path, which would corrupt the markup — so
     // the attribute is unquoted (`id=b`) and the marker has no spaces.
-    let data_url = format!("data:text/html,<h1 id=b>{marker}</h1>");
+    let data_url = match url_override {
+        Some(u) => u.to_string(),
+        None => format!("data:text/html,<h1 id=b>{marker}</h1>"),
+    };
 
     let tc = Instant::now();
     let page = runtime
@@ -203,7 +210,7 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
             break;
         }
         executed += 1;
-        let t = churn_cycle(&runtime, i)?;
+        let t = churn_cycle(&runtime, i, None)?;
         if i >= warmup {
             create_ms.push(t.create_ms);
             ready_ms.push(t.ready_ms);

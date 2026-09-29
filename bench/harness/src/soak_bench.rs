@@ -234,6 +234,13 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
     let continue_on_fail = std::env::var("BAO_SOAK_CONTINUE_ON_FAIL")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    // W6 A/B knob: BAO_SOAK_URL=<url> makes every churn cycle navigate to
+    // <url> instead of the built-in data: marker (default: unset — byte-zero
+    // behavior change). An http:// URL turns the churn into a network-stack
+    // exercise (each cycle = fresh page + navigation + the page's own fetch
+    // traffic); used with an external static server for the leak A/B.
+    let soak_url = std::env::var("BAO_SOAK_URL").ok().filter(|v| !v.is_empty());
+
 
     let out_path = out_path.ok_or(
         "soak requires --out: the per-cycle series streams to a sidecar derived from the result path (stdout carries servo log noise)",
@@ -257,6 +264,9 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
         "cycle_shape",
         "page_bench::churn_cycle (shared with page-churn bench)".into(),
     );
+    if let Some(u) = &soak_url {
+        b.param("soak_url_override", serde_json::json!(u.clone()));
+    }
     b.param(
         "forced_gc",
         "Bun.gc() x2 via probe-page Node Realm (GCReason::API)".into(),
@@ -347,7 +357,7 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
     let mut i = 0usize;
 
     while start.elapsed().as_secs() < duration_secs {
-        let t = match churn_cycle(&runtime, i) {
+        let t = match churn_cycle(&runtime, i, soak_url.as_deref()) {
             Ok(t) => t,
             Err(e) => {
                 let _ = write_rec(
