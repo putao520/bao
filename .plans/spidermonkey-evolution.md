@@ -2493,3 +2493,36 @@ health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递
 1. **BaoRuntime 双命名终裁(#15-H/#17-A)**:收口为 **BrowserRuntime**(bao_browser,浏览器运行时)/**NodeRuntime**(bun_runtime,Node.js 运行时);旧名 BaoRuntime 留 deprecated alias 过渡(0.x 允许 breaking,1.0 前收口)。
 2. **平台矩阵三态(#18-A)**:**Windows=Supported**(证据:交叉+真机 build/link/run+电池 12/12,StdArena 根治后)/ **macOS=Experimental**(证据:编译面+4-crate CI;无真机运行)。Linux=Supported 维持。24h soak 后再评 Windows 升档。
 3. **console 计时器/计数器作用域(#32 row21)**:**混合**——浏览器上下文 per-realm(页面/iframe/worker/SW 独立命名空间);CLI/Node-realm 进程全局。双语义文档明示。
+
+### 2026-09-29 / #30 升级波首跑——SM140.14→153.3 drift 实测(纯工具轮,零产品代码改动)
+
+**from/to**:base `a3220511`(bao-mozjs 0.22.0 / bao-mozjs-sys 140.14.0-0,jsapi_md5=ffaa600241bbe90f7c49b9ce919bb3e3,1077 symbols)→ new `5388d9c4`(bao-mozjs 0.24.1 / bao-mozjs-sys 153.3.0-1,jsapi_md5=007b11db01e406b3d7e2a161362c1d53,**1106 symbols**,较 140 时代 +29)。
+
+**产物**(.claude/sm-audit/):`inventory-2026-09-29-5388d9c4.json` · `adoption-2026-09-29-5388d9c4.json` + `adoption-report-2026-09-29-5388d9c4.md` · `drift-2026-09-10-a3220511..2026-09-29-5388d9c4.json`;BASELINE 指针已推进;cap ledger `last_audited=2026-09-29` + 基线 ref 更新(7-patch 清单同步)。
+
+**extractor 自检(全部 PASS,rc=0)**:阳性对照 JS_NewContext / EnterRealm@root::JS / ReportOutOfMemory@root::js 三命中 + extern_block_count_matches(1106 fn + statics == 1221 块)+ min_volume。`jsapi_copies_uniform=false` 已取证消解:debug 与 test-ci 两档 jsapi.rs 同字节数(1441180),唯一差异为 bindgen 内部 ty_id 计数器偏移(`GCPolicy_open0__bindgen_ty_id_158508`↔`159065`),API 面等价——非源漂移;153-ness 旁证:GetRequestedModulesCount 零命中(153 移除)、SetModuleLoadHook/EncodeStencil 在位。
+
+**drift 计数**:added=62(50 public / 5 experimental / 7 friend;38 已 wrappers2 safe-wrapper、24 raw-only)· removed=33(20 wrappers2 / 13 raw-only)· renamed=5 · signature_changed=12 · stability_flip=0 · **removed_bao_used=3**(工具信号,按旧 adoption 计数)。
+
+**removed_bao_used=3 逐项消解(现场 grep 实证,live 引用全零→非阻断)**:
+1. `JS::FinishDynamicModuleImport`(旧计数 24 全为注释/测试字符串)——153 替代面已接线:`SetModuleLoadHook` 活用(module_loader.rs:324,340)+ `JS::FinishLoadingImportedModule` 在 `host_load_imported_module` 内驱动 SM 状态机(module_loader.rs:991);`FinishLoadingImportedModule`/`FinishLoadingDynamicImportedModule` 均在新 inventory(safe-wrapper)。
+2. `JS::SetModuleDynamicImportHook`(旧计数 2)——当前树零引用;153 三 hook 归一 SetModuleLoadHook(em1 已迁)。
+3. `JS::SetTimeResolutionUsec`(旧计数 6 全为注释)——当前树零代码引用;153 移除已由 realm_policy.rs SM153 parity 路径(RTP-callback sink)承接,注释明示"removed in SM 153.3"。
+
+方法学注记:usage_map 词边界计数含注释 token,旧 adoption 计数天然偏保守;阻断判定以 usage_files 人工复核为准(README 既有约定)。renamed 5 项中唯一有旧用量的是 `SetModuleResolveHook→SetModuleLoadHook`(旧 2→新活用,已迁),其余 4 项(GetModuleResolveHook→GetModuleLoadHook / SetReservedSlotWithBarrier→SetNativeObjectReservedSlotWithBarrier / JS_WriteUint32Pair→JS_WriteUint32PairUnchecked(structuredclone.rs 机械迁,CLAUDE.md SM153 面)/ RegisterContextProfilingEventMarker→RegisterContextProfilerMarkers)旧用量均 0。signature_changed 12 项仅 1 项有旧用量(`ReportBadValueTypeAndCrash`,注释引用);形态三类:Handle<T>→T 裸形(delazification 族)、TranscodeBuffer→Stencil(delazification API 重塑)、`-> !` never 型在 bindgen 归一化中消失(JS_Assert/ReportBadValueTypeAndCrash);`JS_ErrorFromException` → BorrowedErrorReport bool 形(em1 error.rs fork 已承接)。
+
+**adoption 刷新**:native-used=174(140 时代 154,+20)/ unused-pending-verdict=932(923,+9)/ low-confidence used=1;扫描面 1491→1533 文件。added=62 的逐项 adoption policy 分类(deliberately-unused 记因 / blocked / 开 issue / 波内吸收)属 capability 级人工裁决,不在本工具轮(auto 不裁定),留待 cap ledger 裁决轮。
+
+**7-patch supersession 对照(153 基线逐项符号/源码 grep,7/7 Survived,零 superseded)**:
+
+| # | patch | 153 基线证据 | 判定 |
+|---|---|---|---|
+| 1 | EBUSY(MutexImpl dtor) | `mozjs-sys/mozjs/mozglue/misc/Mutex_posix.cpp:84-92` 全 return 形在位;进程退出期 TLS unmap + libtest 线程池 EBUSY 为 embedder 侧风险,上游无对应机制 | Survived |
+| 2 | JSEngine init race | `mozjs/src/rust.rs:173-238` PROCESS_ENGINE_OUTSTANDING OnceLock + process_handle + BAO PATCH 注释在位;上游仍以 Err(AlreadyInitialized) 收敛 | Survived |
+| 3 | set_hide_script_from_debugger | `mozjs/src/rust.rs:605-622` `_base.hideScriptFromDebugger_` POD 写入 setter 在位,上游无此 setter | Survived |
+| 4 | BaselineFrame NULL activation guard | `src-js/mozjs/js/src/jit/BaselineFrame.cpp:132`(initForOsr 已 void)+ :155 BAO PATCH(BCE-20260621-002)含 SM153 re-anchor 注释——上游 153 自身改形已由重锚吸收,守卫本体仍必需 | Survived(re-anchored) |
+| 5 | JS_NewEmulatesUndefinedFunction | `src-js/mozjs/js/src/jsapi.h:541` + `jsapi.cpp:2385` 全局作用域声明+定义在位 | Survived |
+| 6 | BaoCollectRuntimeStats | `mozjs-sys/src/jsglue.cpp:1079-1102` BaoRuntimeStatsPOD + BaoRuntimeStats: JS::RuntimeStats + BaoCollectRuntimeStats 在位;上游 RuntimeStats 仍 C++-construct-only | Survived |
+| 7 | EncodeStencil XDR | `mozjs-sys/build.rs:1198` blacklist 解除+注释(上游仍 blacklist;SM140 四个 off-thread stencil API 在 153 已不存在,blacklist 条目随之删除)+ `jsglue.cpp:856-864` Create/Destroy/Begin/Length shim + `jsapi2_wrappers.in.rs:342` wrap 在位 | Survived |
+
+**升级波 DoD 状态**:阻断候选 live=0(3 信号全数消解);removed 33 中其余 30 项 bao 用量全 0;SM153 前移波(em1 系列,2026-09-21)已在 drift 首跑前完成消费面迁移——本首跑为事后基线补齐,结论与前移实证一致。

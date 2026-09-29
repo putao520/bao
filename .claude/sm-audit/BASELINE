@@ -1,7 +1,11 @@
 # SM capability inventory drift 基线指针(#30 UpstreamAudit)
 # 下次 mozjs 前移后:extract_inventory.py 生成新 inventory,再
 # drift.py <本基线> <新inventory> → 报告落盘 + 账本 §8 追加。
-inventory-2026-09-10-a3220511.json
-bao_commit=a3220511 (tree dirty at generation; scripts-only 后续提交不改 API 面)
-mozjs=bao-mozjs 0.22.0 / bao-mozjs-sys 140.14.0-0
-jsapi_md5=ffaa600241bbe90f7c49b9ce919bb3e3
+inventory-2026-09-29-5388d9c4.json
+bao_commit=5388d9c4 (tree dirty at generation; scripts/.claude/plans 产物不影响 API 面)
+mozjs=bao-mozjs 0.24.1 / bao-mozjs-sys 153.3.0-1
+jsapi_md5=007b11db01e406b3d7e2a161362c1d53
+jsapi_copies_uniform=false(debug/test-ci 两档 bindgen 输出仅内部 ty_id 计数器偏移
+GCPolicy_open0__bindgen_ty_id_158508↔159065,文件同字节数,API 面等价——非源漂移)
+上一基线:inventory-2026-09-10-a3220511.json(SM140.14.0-0,jsapi_md5=ffaa600241bbe90f7c49b9ce919bb3e3)
+140→153 drift 报告:drift-2026-09-10-a3220511..2026-09-29-5388d9c4.json

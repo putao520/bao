@@ -4,18 +4,18 @@
   "plan": ".plans/spidermonkey-evolution.md",
   "issue": "#30 (parent #22)",
   "mozjs_baseline": {
-    "crate": "bao-mozjs 0.22.0 (lib name mozjs)",
-    "sys_crate": "bao-mozjs-sys 140.14.0-0",
-    "upstream_ref": "servo/mozjs main eb36274 (23-file surgical transplant; bao commit 6b259cc2 2026-08-22)",
+    "crate": "bao-mozjs 0.24.1 (lib name mozjs)",
+    "sys_crate": "bao-mozjs-sys 153.3.0-1",
+    "upstream_ref": "SM 153.3.0esr — 2026-09-21 前移波 (em1 系列) 落地; 140→153 drift 首跑 2026-09-29 (inventory-2026-09-29-5388d9c4, jsapi_md5=007b11db01e406b3d7e2a161362c1d53)",
     "bao_fork_patches": {
-      "semantic": 5,
+      "semantic": 7,
       "build_rs": 2,
-      "list": "CLAUDE.md mozjs fork BAO patch 清单 (EBUSY / JSEngine init race / set_hide_script_from_debugger / BaselineFrame NULL activation guard / JS_NewEmulatesUndefinedFunction)"
+      "list": "CLAUDE.md mozjs fork BAO patch 清单 7 项 (EBUSY / JSEngine init race / set_hide_script_from_debugger / BaselineFrame NULL activation guard / JS_NewEmulatesUndefinedFunction / BaoCollectRuntimeStats / EncodeStencil XDR) — 2026-09-29 逐项 153 基线核验: 7/7 Survived, 见 .plans/spidermonkey-evolution.md §8"
     },
-    "public_headers_scanned": "vendor/mozjs/src-js/mozjs/js/public/** (105 headers) + experimental/ (11 headers)",
+    "public_headers_scanned": "vendor/mozjs/src-js/mozjs/js/public/** + experimental/ (SM153 提取布局)",
     "rust_binding_scanned": "vendor/mozjs/mozjs/src (rust.rs, jsapi2_wrappers.in.rs) + bindgen jsapi.rs (bao-mozjs-sys build out)"
   },
-  "last_audited": "2026-09-04",
+  "last_audited": "2026-09-29",
   "status_legend": {
     "used-native": "bao code calls the JSAPI/binding directly",
     "wrapped": "bao-level abstraction owns the capability (internal experimental surface)",

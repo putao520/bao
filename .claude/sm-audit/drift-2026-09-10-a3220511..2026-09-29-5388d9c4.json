@@ -1,0 +1,1064 @@
+{
+ "schema_version": 1,
+ "tool": "scripts/sm-audit/drift.py",
+ "old": {
+  "label": "2026-09-10-a3220511",
+  "bao_commit": "a3220511235e147de8080122f852b4ed657c77f7",
+  "mozjs": {
+   "crate": "bao-mozjs 0.22.0",
+   "sys_crate": "bao-mozjs-sys 140.14.0-0",
+   "jsapi_md5": "ffaa600241bbe90f7c49b9ce919bb3e3"
+  }
+ },
+ "new": {
+  "label": "2026-09-29-5388d9c4",
+  "bao_commit": "5388d9c47e267c7691bd86fc8d2f0d4aabf18c1e",
+  "mozjs": {
+   "crate": "bao-mozjs 0.24.1",
+   "sys_crate": "bao-mozjs-sys 153.3.0-1",
+   "jsapi_md5": "007b11db01e406b3d7e2a161362c1d53"
+  }
+ },
+ "summary": {
+  "added": 62,
+  "removed": 33,
+  "renamed": 5,
+  "signature_changed": 12,
+  "stability_flip": 0,
+  "removed_bao_used": 3
+ },
+ "added": [
+  {
+   "key": "root::JS::CancelAsyncTasks",
+   "rust_path": "root::JS",
+   "symbol": "CancelAsyncTasks",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> "
+  },
+  {
+   "key": "root::JS::CompileWasmModule",
+   "rust_path": "root::JS",
+   "symbol": "CompileWasmModule",
+   "category_guess": "wasm",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, ReadOnlyCompileOptions, *mut u8) -> *mut root::JSObject"
+  },
+  {
+   "key": "root::JS::CompileWasmModuleAsSource",
+   "rust_path": "root::JS",
+   "symbol": "CompileWasmModuleAsSource",
+   "category_guess": "wasm",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, ReadOnlyCompileOptions, *mut u8) -> *mut root::JSObject"
+  },
+  {
+   "key": "root::JS::CreateDefaultExportSyntheticModule",
+   "rust_path": "root::JS",
+   "symbol": "CreateDefaultExportSyntheticModule",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<root::JS::Value>) -> *mut root::JSObject"
+  },
+  {
+   "key": "root::JS::DequeueNextDebuggerMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "DequeueNextDebuggerMicroTask",
+   "category_guess": "debugger/profiling/memory",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> root::JS::GenericMicroTask"
+  },
+  {
+   "key": "root::JS::DequeueNextRegularMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "DequeueNextRegularMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> root::JS::GenericMicroTask"
+  },
+  {
+   "key": "root::JS::EncodeStencil",
+   "rust_path": "root::JS",
+   "symbol": "EncodeStencil",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "experimental",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Stencil, TranscodeBuffer) -> root::JS::TranscodeResult"
+  },
+  {
+   "key": "root::JS::EncodeStencil1",
+   "rust_path": "root::JS",
+   "symbol": "EncodeStencil1",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "experimental",
+   "binding": "raw-only",
+   "signature": "(FrontendContext, Stencil, TranscodeBuffer) -> root::JS::TranscodeResult"
+  },
+  {
+   "key": "root::JS::EnqueueDebugMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "EnqueueDebugMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, GenericMicroTask) -> bool"
+  },
+  {
+   "key": "root::JS::EnqueueMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "EnqueueMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, GenericMicroTask) -> bool"
+  },
+  {
+   "key": "root::JS::FinishLoadingDynamicImportedModule",
+   "rust_path": "root::JS",
+   "symbol": "FinishLoadingDynamicImportedModule",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<*mut root::JSScript>, Handle<*mut root::JSObject>, Handle<root::JS::Value>, Handle<*mut root::JSObject>) -> bool"
+  },
+  {
+   "key": "root::JS::FinishLoadingImportedModule",
+   "rust_path": "root::JS",
+   "symbol": "FinishLoadingImportedModule",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<*mut root::JSScript>, Handle<*mut root::JSObject>, Handle<root::JS::Value>, Handle<*mut root::JSObject>, bool) -> bool"
+  },
+  {
+   "key": "root::JS::FinishLoadingImportedModuleFailed",
+   "rust_path": "root::JS",
+   "symbol": "FinishLoadingImportedModuleFailed",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<root::JS::Value>, Handle<root::JS::Value>) -> bool"
+  },
+  {
+   "key": "root::JS::FinishLoadingImportedModuleFailedWithPendingException",
+   "rust_path": "root::JS",
+   "symbol": "FinishLoadingImportedModuleFailedWithPendingException",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<root::JS::Value>) -> bool"
+  },
+  {
+   "key": "root::JS::GetExecutionGlobalFromJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "GetExecutionGlobalFromJSMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSMicroTask) -> *mut root::JSObject"
+  },
+  {
+   "key": "root::JS::GetFlowIdFromJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "GetFlowIdFromJSMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSMicroTask, *mut u64) -> bool"
+  },
+  {
+   "key": "root::JS::GetOptimizedEncodingBuildId",
+   "rust_path": "root::JS",
+   "symbol": "GetOptimizedEncodingBuildId",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(BuildIdCharVector) -> bool"
+  },
+  {
+   "key": "root::JS::GetRegularMicroTaskCount",
+   "rust_path": "root::JS",
+   "symbol": "GetRegularMicroTaskCount",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> usize"
+  },
+  {
+   "key": "root::JS::GetScriptSourceLength",
+   "rust_path": "root::JS",
+   "symbol": "GetScriptSourceLength",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "experimental",
+   "binding": "raw-only",
+   "signature": "(Stencil) -> usize"
+  },
+  {
+   "key": "root::JS::GetScriptSourceText",
+   "rust_path": "root::JS",
+   "symbol": "GetScriptSourceText",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "experimental",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Stencil, MutableHandle<root::JS::Value>) -> bool"
+  },
+  {
+   "key": "root::JS::GetScriptTranscodingBuildId",
+   "rust_path": "root::JS",
+   "symbol": "GetScriptTranscodingBuildId",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(BuildIdCharVector) -> bool"
+  },
+  {
+   "key": "root::JS::HasAnyMicroTasks",
+   "rust_path": "root::JS",
+   "symbol": "HasAnyMicroTasks",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> bool"
+  },
+  {
+   "key": "root::JS::HasDebuggerMicroTasks",
+   "rust_path": "root::JS",
+   "symbol": "HasDebuggerMicroTasks",
+   "category_guess": "debugger/profiling/memory",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> bool"
+  },
+  {
+   "key": "root::JS::HasRealmInitializedGlobal",
+   "rust_path": "root::JS",
+   "symbol": "HasRealmInitializedGlobal",
+   "category_guess": "runtime/context/realm/compartment/zone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(Realm) -> bool"
+  },
+  {
+   "key": "root::JS::HasRegularMicroTasks",
+   "rust_path": "root::JS",
+   "symbol": "HasRegularMicroTasks",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> bool"
+  },
+  {
+   "key": "root::JS::InitAsyncTaskCallbacks",
+   "rust_path": "root::JS",
+   "symbol": "InitAsyncTaskCallbacks",
+   "category_guess": "embedding-hooks/callbacks",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, DispatchToEventLoopCallback, DelayedDispatchToEventLoopCallback, AsyncTaskStartedCallback, AsyncTaskFinishedCallback, c_void) -> "
+  },
+  {
+   "key": "root::JS::IsImmutableArrayBufferMaybeShared",
+   "rust_path": "root::JS",
+   "symbol": "IsImmutableArrayBufferMaybeShared",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSObject) -> bool"
+  },
+  {
+   "key": "root::JS::IsImmutableArrayBufferView",
+   "rust_path": "root::JS",
+   "symbol": "IsImmutableArrayBufferView",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "experimental",
+   "binding": "raw-only",
+   "signature": "(JSObject) -> bool"
+  },
+  {
+   "key": "root::JS::IsJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "IsJSMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(GenericMicroTask) -> bool"
+  },
+  {
+   "key": "root::JS::IsPlainObject",
+   "rust_path": "root::JS",
+   "symbol": "IsPlainObject",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSObject) -> bool"
+  },
+  {
+   "key": "root::JS::LoadRequestedModules",
+   "rust_path": "root::JS",
+   "symbol": "LoadRequestedModules",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<*mut root::JSObject>, Handle<root::JS::Value>, LoadModuleResolvedCallback, LoadModuleRejectedCallback) -> bool"
+  },
+  {
+   "key": "root::JS::LoadRequestedModules1",
+   "rust_path": "root::JS",
+   "symbol": "LoadRequestedModules1",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<*mut root::JSObject>, Handle<root::JS::Value>, MutableHandle<*mut root::JSObject>) -> bool"
+  },
+  {
+   "key": "root::JS::MapGetOrInsert",
+   "rust_path": "root::JS",
+   "symbol": "MapGetOrInsert",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, HandleObject, HandleValue, HandleValue, MutableHandleValue) -> bool"
+  },
+  {
+   "key": "root::JS::MaybeGetAllocationSiteFromJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "MaybeGetAllocationSiteFromJSMicroTask",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSMicroTask, MutableHandleObject) -> bool"
+  },
+  {
+   "key": "root::JS::MaybeGetHostDefinedDataFromJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "MaybeGetHostDefinedDataFromJSMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSMicroTask, MutableHandleObject, MutableHandleObject) -> bool"
+  },
+  {
+   "key": "root::JS::MaybeGetPromiseAllocationSiteFromPossiblyWrappedPromise",
+   "rust_path": "root::JS",
+   "symbol": "MaybeGetPromiseAllocationSiteFromPossiblyWrappedPromise",
+   "category_guess": "jobs/promise/event-loop",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(HandleObject) -> *mut root::JSObject"
+  },
+  {
+   "key": "root::JS::MaybeGetPromiseFromJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "MaybeGetPromiseFromJSMicroTask",
+   "category_guess": "jobs/promise/event-loop",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSMicroTask) -> *mut root::JSObject"
+  },
+  {
+   "key": "root::JS::ModuleRequestIsSourcePhase",
+   "rust_path": "root::JS",
+   "symbol": "ModuleRequestIsSourcePhase",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<*mut root::JSObject>) -> bool"
+  },
+  {
+   "key": "root::JS::PeekNextMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "PeekNextMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> root::JS::GenericMicroTask"
+  },
+  {
+   "key": "root::JS::PrependMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "PrependMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, GenericMicroTask) -> bool"
+  },
+  {
+   "key": "root::JS::ResetPreloadedModule",
+   "rust_path": "root::JS",
+   "symbol": "ResetPreloadedModule",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSObject) -> "
+  },
+  {
+   "key": "root::JS::RestoreMicroTaskQueue",
+   "rust_path": "root::JS",
+   "symbol": "RestoreMicroTaskQueue",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, u8) -> "
+  },
+  {
+   "key": "root::JS::RunJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "RunJSMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, Handle<*mut root::JS::JSMicroTask>) -> bool"
+  },
+  {
+   "key": "root::JS::SaveMicroTaskQueue",
+   "rust_path": "root::JS",
+   "symbol": "SaveMicroTaskQueue",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> u8"
+  },
+  {
+   "key": "root::JS::SetMeasuringExecutionTimeEnabled",
+   "rust_path": "root::JS",
+   "symbol": "SetMeasuringExecutionTimeEnabled",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, bool) -> "
+  },
+  {
+   "key": "root::JS::SetRealmLocaleOverride",
+   "rust_path": "root::JS",
+   "symbol": "SetRealmLocaleOverride",
+   "category_guess": "intl/locale/timezone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(Realm, c_char) -> "
+  },
+  {
+   "key": "root::JS::SetRealmTimezoneOverride",
+   "rust_path": "root::JS",
+   "symbol": "SetRealmTimezoneOverride",
+   "category_guess": "runtime/context/realm/compartment/zone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(Realm, c_char) -> "
+  },
+  {
+   "key": "root::JS::ToMaybeWrappedJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "ToMaybeWrappedJSMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(GenericMicroTask) -> *mut root::JS::JSMicroTask"
+  },
+  {
+   "key": "root::JS::ToUnwrappedJSMicroTask",
+   "rust_path": "root::JS",
+   "symbol": "ToUnwrappedJSMicroTask",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(GenericMicroTask) -> *mut root::JS::JSMicroTask"
+  },
+  {
+   "key": "root::JS_GetDefaultLocale",
+   "rust_path": "root",
+   "symbol": "JS_GetDefaultLocale",
+   "category_guess": "intl/locale/timezone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSContext) -> root::JS::UniqueChars"
+  },
+  {
+   "key": "root::JS_GetLastOOMStackTrace",
+   "rust_path": "root",
+   "symbol": "JS_GetLastOOMStackTrace",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> *const ::std::os::raw::c_char"
+  },
+  {
+   "key": "root::JS_GetLocaleCallbacks",
+   "rust_path": "root",
+   "symbol": "JS_GetLocaleCallbacks",
+   "category_guess": "intl/locale/timezone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSRuntime) -> *const root::JSLocaleCallbacks"
+  },
+  {
+   "key": "root::JS_ResetDefaultLocale",
+   "rust_path": "root",
+   "symbol": "JS_ResetDefaultLocale",
+   "category_guess": "intl/locale/timezone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSRuntime) -> "
+  },
+  {
+   "key": "root::JS_SetDefaultLocale",
+   "rust_path": "root",
+   "symbol": "JS_SetDefaultLocale",
+   "category_guess": "intl/locale/timezone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSRuntime, c_char) -> bool"
+  },
+  {
+   "key": "root::JS_SetLocaleCallbacks",
+   "rust_path": "root",
+   "symbol": "JS_SetLocaleCallbacks",
+   "category_guess": "intl/locale/timezone",
+   "stability_guess": "public",
+   "binding": "raw-only",
+   "signature": "(JSRuntime, JSLocaleCallbacks) -> "
+  },
+  {
+   "key": "root::js::CommitPendingWrapperPreservations",
+   "rust_path": "root::js",
+   "symbol": "CommitPendingWrapperPreservations",
+   "category_guess": "principals/security/options",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext) -> "
+  },
+  {
+   "key": "root::js::GetGCHeapSizeForZone",
+   "rust_path": "root::js",
+   "symbol": "GetGCHeapSizeForZone",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only",
+   "signature": "(Zone) -> usize"
+  },
+  {
+   "key": "root::js::GetJITHeapSizeForZone",
+   "rust_path": "root::js",
+   "symbol": "GetJITHeapSizeForZone",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only",
+   "signature": "(Zone) -> usize"
+  },
+  {
+   "key": "root::js::GetMallocHeapSizeForZone",
+   "rust_path": "root::js",
+   "symbol": "GetMallocHeapSizeForZone",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only",
+   "signature": "(Zone) -> usize"
+  },
+  {
+   "key": "root::js::GetMapObjectKeysAndValuesInterleaved",
+   "rust_path": "root::js",
+   "symbol": "GetMapObjectKeysAndValuesInterleaved",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, HandleObject, u8) -> bool"
+  },
+  {
+   "key": "root::js::GetSetObjectKeys",
+   "rust_path": "root::js",
+   "symbol": "GetSetObjectKeys",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)",
+   "signature": "(JSContext, HandleObject, u8) -> bool"
+  },
+  {
+   "key": "root::js::MaybeGetModuleFilename",
+   "rust_path": "root::js",
+   "symbol": "MaybeGetModuleFilename",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only",
+   "signature": "(JSObject) -> *const ::std::os::raw::c_char"
+  }
+ ],
+ "removed": [
+  {
+   "key": "root::JS::CreateModuleRequest",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "CreateModuleRequest",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::ExposeScriptToDebugger",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "ExposeScriptToDebugger",
+   "category_guess": "debugger/profiling/memory",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::FinishCollectingDelazifications2",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "FinishCollectingDelazifications2",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "experimental",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::FinishDynamicModuleImport",
+   "bao_usage_count": 24,
+   "rust_path": "root::JS",
+   "symbol": "FinishDynamicModuleImport",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::GetModuleDynamicImportHook",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "GetModuleDynamicImportHook",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::JS::GetRequestedModuleSourcePos",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "GetRequestedModuleSourcePos",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::GetRequestedModuleSpecifier",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "GetRequestedModuleSpecifier",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::GetRequestedModulesCount",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "GetRequestedModulesCount",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::InitDispatchsToEventLoop",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "InitDispatchsToEventLoop",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::SetDoCycleCollectionCallback",
+   "bao_usage_count": 0,
+   "rust_path": "root::JS",
+   "symbol": "SetDoCycleCollectionCallback",
+   "category_guess": "embedding-hooks/callbacks",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS::SetModuleDynamicImportHook",
+   "bao_usage_count": 2,
+   "rust_path": "root::JS",
+   "symbol": "SetModuleDynamicImportHook",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "stability_guess": "public",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::JS::SetTimeResolutionUsec",
+   "bao_usage_count": 6,
+   "rust_path": "root::JS",
+   "symbol": "SetTimeResolutionUsec",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::JS_CloneObject",
+   "bao_usage_count": 0,
+   "rust_path": "root",
+   "symbol": "JS_CloneObject",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS_CopyOwnPropertiesAndPrivateFields",
+   "bao_usage_count": 0,
+   "rust_path": "root",
+   "symbol": "JS_CopyOwnPropertiesAndPrivateFields",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS_SetGrayGCRootsTracer",
+   "bao_usage_count": 0,
+   "rust_path": "root",
+   "symbol": "JS_SetGrayGCRootsTracer",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS_SetObjectsTenuredCallback",
+   "bao_usage_count": 0,
+   "rust_path": "root",
+   "symbol": "JS_SetObjectsTenuredCallback",
+   "category_guess": "embedding-hooks/callbacks",
+   "stability_guess": "public",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::JS_TraceObjectGroupCycleCollectorChildren",
+   "bao_usage_count": 0,
+   "rust_path": "root",
+   "symbol": "JS_TraceObjectGroupCycleCollectorChildren",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "public",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::JS_TraceShapeCycleCollectorChildren",
+   "bao_usage_count": 0,
+   "rust_path": "root",
+   "symbol": "JS_TraceShapeCycleCollectorChildren",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "public",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::AllowNewWrapper",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "AllowNewWrapper",
+   "category_guess": "principals/security/options",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::AreGCGrayBitsValid",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "AreGCGrayBitsValid",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::EnqueueJob",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "EnqueueJob",
+   "category_guess": "jobs/promise/event-loop",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::js::IterateGrayObjects",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "IterateGrayObjects",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::MaybeGetScriptPrivate",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "MaybeGetScriptPrivate",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::NukeCrossCompartmentWrapper",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "NukeCrossCompartmentWrapper",
+   "category_guess": "runtime/context/realm/compartment/zone",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::js::NukeCrossCompartmentWrapperIfExists",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "NukeCrossCompartmentWrapperIfExists",
+   "category_guess": "runtime/context/realm/compartment/zone",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::js::NukeCrossCompartmentWrappers",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "NukeCrossCompartmentWrappers",
+   "category_guess": "runtime/context/realm/compartment/zone",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::js::NukeRemovedCrossCompartmentWrapper",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "NukeRemovedCrossCompartmentWrapper",
+   "category_guess": "runtime/context/realm/compartment/zone",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::js::NukedObjectRealm",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "NukedObjectRealm",
+   "category_guess": "runtime/context/realm/compartment/zone",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::RemapDeadWrapper",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "RemapDeadWrapper",
+   "category_guess": "principals/security/options",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::js::RemapWrapper",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "RemapWrapper",
+   "category_guess": "principals/security/options",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "safe-wrapper(wrappers2)"
+  },
+  {
+   "key": "root::js::TraceGrayWrapperTargets",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "TraceGrayWrapperTargets",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::TraceWeakMaps",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "TraceWeakMaps",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  },
+  {
+   "key": "root::js::ZoneGlobalsAreAllGray",
+   "bao_usage_count": 0,
+   "rust_path": "root::js",
+   "symbol": "ZoneGlobalsAreAllGray",
+   "category_guess": "core-value/object-surface",
+   "stability_guess": "friend(jsfriendapi)",
+   "binding": "raw-only"
+  }
+ ],
+ "renamed": [
+  {
+   "old_key": "root::JS::GetModuleResolveHook",
+   "new_key": "root::JS::GetModuleLoadHook",
+   "similarity": 0.757,
+   "old_symbol": "GetModuleResolveHook",
+   "new_symbol": "GetModuleLoadHook",
+   "rust_path": "root::JS",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "old_bao_usage_count": 0
+  },
+  {
+   "old_key": "root::JS::SetModuleResolveHook",
+   "new_key": "root::JS::SetModuleLoadHook",
+   "similarity": 0.757,
+   "old_symbol": "SetModuleResolveHook",
+   "new_symbol": "SetModuleLoadHook",
+   "rust_path": "root::JS",
+   "category_guess": "compile/stencil/module/xdr/cache",
+   "old_bao_usage_count": 2
+  },
+  {
+   "old_key": "root::JS::detail::SetReservedSlotWithBarrier",
+   "new_key": "root::JS::detail::SetNativeObjectReservedSlotWithBarrier",
+   "similarity": 0.812,
+   "old_symbol": "SetReservedSlotWithBarrier",
+   "new_symbol": "SetNativeObjectReservedSlotWithBarrier",
+   "rust_path": "root::JS::detail",
+   "category_guess": "GC/rooting/heap/weak-refs",
+   "old_bao_usage_count": 0
+  },
+  {
+   "old_key": "root::JS_WriteUint32Pair",
+   "new_key": "root::JS_WriteUint32PairUnchecked",
+   "similarity": 0.8,
+   "old_symbol": "JS_WriteUint32Pair",
+   "new_symbol": "JS_WriteUint32PairUnchecked",
+   "rust_path": "root",
+   "category_guess": "core-value/object-surface",
+   "old_bao_usage_count": 0
+  },
+  {
+   "old_key": "root::js::RegisterContextProfilingEventMarker",
+   "new_key": "root::js::RegisterContextProfilerMarkers",
+   "similarity": 0.862,
+   "old_symbol": "RegisterContextProfilingEventMarker",
+   "new_symbol": "RegisterContextProfilerMarkers",
+   "rust_path": "root::js",
+   "category_guess": "debugger/profiling/memory",
+   "old_bao_usage_count": 0
+  }
+ ],
+ "signature_changed": [
+  {
+   "key": "root::JS::AbortCollectingDelazifications",
+   "bao_usage_count": 0,
+   "old_signature": "(Handle<*mut root::JSScript>) -> ",
+   "new_signature": "(JSScript) -> ",
+   "category_guess": "compile/stencil/module/xdr/cache"
+  },
+  {
+   "key": "root::JS::AbortCollectingDelazifications1",
+   "bao_usage_count": 0,
+   "old_signature": "(Handle<*mut root::JSObject>) -> ",
+   "new_signature": "(JSObject) -> ",
+   "category_guess": "compile/stencil/module/xdr/cache"
+  },
+  {
+   "key": "root::JS::AddSizeOfTab",
+   "bao_usage_count": 0,
+   "old_signature": "(JSContext, HandleObject, MallocSizeOf, ObjectPrivateVisitor, TabSizes) -> bool",
+   "new_signature": "(JSContext, Zone, MallocSizeOf, ObjectPrivateVisitor, TabSizes, AutoRequireNoGC) -> bool",
+   "category_guess": "debugger/profiling/memory"
+  },
+  {
+   "key": "root::JS::FinishCollectingDelazifications",
+   "bao_usage_count": 0,
+   "old_signature": "(JSContext, Handle<*mut root::JSScript>, TranscodeBuffer) -> bool",
+   "new_signature": "(JSContext, Handle<*mut root::JSScript>, Stencil) -> bool",
+   "category_guess": "compile/stencil/module/xdr/cache"
+  },
+  {
+   "key": "root::JS::FinishCollectingDelazifications1",
+   "bao_usage_count": 0,
+   "old_signature": "(JSContext, Handle<*mut root::JSObject>, TranscodeBuffer) -> bool",
+   "new_signature": "(JSContext, Handle<*mut root::JSObject>, Stencil) -> bool",
+   "category_guess": "compile/stencil/module/xdr/cache"
+  },
+  {
+   "key": "root::JS::GetPromiseUserInputEventHandlingState",
+   "bao_usage_count": 0,
+   "old_signature": "(HandleObject) -> root::JS::PromiseUserInputEventHandlingState",
+   "new_signature": "(JSObject) -> root::JS::PromiseUserInputEventHandlingState",
+   "category_guess": "jobs/promise/event-loop"
+  },
+  {
+   "key": "root::JS::StartCollectingDelazifications",
+   "bao_usage_count": 0,
+   "old_signature": "(JSContext, Handle<*mut root::JSScript>, Stencil, *mut bool) -> bool",
+   "new_signature": "(JSContext, Handle<*mut root::JSScript>, Stencil, CollectDelazificationsResult) -> bool",
+   "category_guess": "compile/stencil/module/xdr/cache"
+  },
+  {
+   "key": "root::JS::StartCollectingDelazifications1",
+   "bao_usage_count": 0,
+   "old_signature": "(JSContext, Handle<*mut root::JSObject>, Stencil, *mut bool) -> bool",
+   "new_signature": "(JSContext, Handle<*mut root::JSObject>, Stencil, CollectDelazificationsResult) -> bool",
+   "category_guess": "compile/stencil/module/xdr/cache"
+  },
+  {
+   "key": "root::JS_Assert",
+   "bao_usage_count": 0,
+   "old_signature": "(c_char, c_char, c_int) -> !",
+   "new_signature": "(c_char, c_char, c_int) -> ",
+   "category_guess": "core-value/object-surface"
+  },
+  {
+   "key": "root::JS_ErrorFromException",
+   "bao_usage_count": 0,
+   "old_signature": "(JSContext, HandleObject) -> *mut root::JSErrorReport",
+   "new_signature": "(JSContext, HandleObject, BorrowedErrorReport) -> bool",
+   "category_guess": "core-value/object-surface"
+  },
+  {
+   "key": "root::js::GetMemoryUsageForZone",
+   "bao_usage_count": 0,
+   "old_signature": "(Zone) -> u64",
+   "new_signature": "(Zone) -> usize",
+   "category_guess": "core-value/object-surface"
+  },
+  {
+   "key": "root::js::ReportBadValueTypeAndCrash",
+   "bao_usage_count": 1,
+   "old_signature": "(Value) -> !",
+   "new_signature": "(Value) -> ",
+   "category_guess": "core-value/object-surface"
+  }
+ ],
+ "stability_flip": [],
+ "rollup_by_category": {
+  "added": {
+   "core-value/object-surface": 29,
+   "compile/stencil/module/xdr/cache": 14,
+   "intl/locale/timezone": 6,
+   "GC/rooting/heap/weak-refs": 3,
+   "wasm": 2,
+   "debugger/profiling/memory": 2,
+   "runtime/context/realm/compartment/zone": 2,
+   "jobs/promise/event-loop": 2,
+   "embedding-hooks/callbacks": 1,
+   "principals/security/options": 1
+  },
+  "removed": {
+   "compile/stencil/module/xdr/cache": 8,
+   "core-value/object-surface": 7,
+   "GC/rooting/heap/weak-refs": 6,
+   "runtime/context/realm/compartment/zone": 5,
+   "principals/security/options": 3,
+   "embedding-hooks/callbacks": 2,
+   "debugger/profiling/memory": 1,
+   "jobs/promise/event-loop": 1
+  },
+  "renamed": {
+   "compile/stencil/module/xdr/cache": 2,
+   "GC/rooting/heap/weak-refs": 1,
+   "core-value/object-surface": 1,
+   "debugger/profiling/memory": 1
+  },
+  "signature_changed": {
+   "compile/stencil/module/xdr/cache": 6,
+   "core-value/object-surface": 4,
+   "debugger/profiling/memory": 1,
+   "jobs/promise/event-loop": 1
+  }
+ }
+}
