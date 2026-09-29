@@ -18,7 +18,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool, PageState, ScreenshotFormat};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool, PageState, ScreenshotFormat};
 use bao_stealth::StealthProfile;
 use std::time::{Duration, Instant};
 
@@ -157,7 +157,7 @@ fn inject_stealth_js(
 // ---------------------------------------------------------------------------
 
 /// E2E test requiring servo headless environment.
-/// Graceful skip: BaoRuntime::new() SIGSEGVs in environments
+/// Graceful skip: BrowserRuntime::new() SIGSEGVs in environments
 /// without a display server (no X11/Wayland/virtual framebuffer).
 /// Run with `cargo test realworld_anti_scraping_e2e` when a display is available;
 /// otherwise the test detects the missing display and skips (eprintln + return).
@@ -172,9 +172,9 @@ fn realworld_anti_scraping_e2e() {
     }
 
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
     let mut report = Report::default();

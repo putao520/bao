@@ -11,10 +11,10 @@
 //   1. bao_stealth per-Realm profile store (the unconditional isolation primitive)
 //   2. bao_browser runtime_bridge registration points (install_all_native,
 //      create_node_realm_native, refresh_dom_proxies_native, PageHandle::close)
-//   3. BaoConfig / BaoRuntime documentation: force_isolate only governs
+//   3. BaoConfig / BrowserRuntime documentation: force_isolate only governs
 //      servo's event-loop multiplexing, NOT Compartment isolation
 //
-// Integration tests that drive BaoRuntime + servo WebView (verifying end-to-end
+// Integration tests that drive BrowserRuntime + servo WebView (verifying end-to-end
 // per-page Canvas noise) live in stealth_fingerprint_e2e_tests.rs and require
 // a working JSContext; these unit-level tests cover the contract surface that
 // does not need servo.

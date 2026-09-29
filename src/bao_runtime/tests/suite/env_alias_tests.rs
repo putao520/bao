@@ -3,13 +3,13 @@
 // (issue #32): the alias is resolved at the env read layer
 // (`bun_core::getenv_z` / `getenv_z_any_case` — a `BUN_<SUFFIX>` lookup that
 // misses falls back to `BAO_<SUFFIX>`, explicit `BUN_` wins), and
-// `BaoRuntime::new()` must NOT mutate the host process environment (the
+// `NodeRuntime::new()` must NOT mutate the host process environment (the
 // retired `init_env_aliases` `std::env::set_var` path is gone).
 //
 // Coverage:
 //   - positive: a real env_var consumer (BUN_CONFIG_HTTP_IDLE_TIMEOUT, read by
 //     src/http/HTTPThread.rs socket idle-timeout init) resolves the
-//     BAO_<suffix> spelling through BaoRuntime::new().
+//     BAO_<suffix> spelling through NodeRuntime::new().
 //   - precedence: explicit BUN_<suffix> wins over BAO_<suffix> (the retired
 //     `init_env_aliases` `is_err()` guard semantics).
 //   - direct `getenv_z` / `getenv_z_any_case` consumer classes
@@ -23,13 +23,13 @@
 
 /// eval a trivial script so the runtime completes its full init path
 /// (globals install, job queue, post-eval hook) exactly like real usage.
-fn eval_ok(rt: &mut bun_runtime::BaoRuntime) {
+fn eval_ok(rt: &mut bun_runtime::NodeRuntime) {
     rt.eval("0", "<env-alias-test>").expect("eval must succeed");
 }
 
 /// Positive: BAO_CONFIG_HTTP_IDLE_TIMEOUT=777 must be resolved by the real
 /// consumer accessor (`bun_core::env_var::BUN_CONFIG_HTTP_IDLE_TIMEOUT`, the
-/// same accessor src/http/HTTPThread.rs reads) after BaoRuntime::new(),
+/// same accessor src/http/HTTPThread.rs reads) after NodeRuntime::new(),
 /// while the host process env gains no BUN_ variable.
 #[test]
 fn env_alias_positive_real_env_var_consumer_resolves_bao_suffix() {
@@ -39,7 +39,7 @@ fn env_alias_positive_real_env_var_consumer_resolves_bao_suffix() {
         std::env::set_var("BAO_CONFIG_HTTP_IDLE_TIMEOUT", "777");
     }
 
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     eval_ok(&mut rt);
 
     assert_eq!(
@@ -50,7 +50,7 @@ fn env_alias_positive_real_env_var_consumer_resolves_bao_suffix() {
     );
     assert!(
         std::env::var("BUN_CONFIG_HTTP_IDLE_TIMEOUT").is_err(),
-        "BaoRuntime::new() must not inject BUN_CONFIG_HTTP_IDLE_TIMEOUT into the host env"
+        "NodeRuntime::new() must not inject BUN_CONFIG_HTTP_IDLE_TIMEOUT into the host env"
     );
 
     drop(rt);
@@ -71,7 +71,7 @@ fn env_alias_explicit_bun_wins_over_bao_alias() {
         std::env::set_var("BAO_CONFIG_DNS_TIME_TO_LIVE_SECONDS", "66");
     }
 
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     eval_ok(&mut rt);
 
     // Check via the JS surface (process.env) — the Rust-level OnceLock cache
@@ -138,7 +138,7 @@ fn env_alias_direct_getenv_z_primitives_resolve_bao_suffix() {
     }
 }
 
-/// Negative (issue #32 core): constructing BaoRuntime, evaluating, and
+/// Negative (issue #32 core): constructing NodeRuntime, evaluating, and
 /// dropping it must leave the host process env free of any injected
 /// BUN_<SUFFIX> derived from BAO_<SUFFIX>. Unique key so parallel/host env
 /// noise cannot mask the assertion.
@@ -160,13 +160,13 @@ fn env_alias_negative_host_env_not_mutated_by_runtime_constructor() {
         std::env::set_var(&unique, "alias_negative_proof");
     }
 
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     eval_ok(&mut rt);
     drop(rt);
 
     assert!(
         std::env::var(&bun_key).is_err(),
-        "host process env must not contain '{}' after BaoRuntime::new()+eval+drop \
+        "host process env must not contain '{}' after NodeRuntime::new()+eval+drop \
          (no std::env::set_var from the library constructor)",
         bun_key
     );
@@ -177,7 +177,7 @@ fn env_alias_negative_host_env_not_mutated_by_runtime_constructor() {
     }
 }
 
-/// Lifecycle (multi-runtime): two sequential BaoRuntime construct→use→drop
+/// Lifecycle (multi-runtime): two sequential NodeRuntime construct→use→drop
 /// cycles — each instance resolves its own BAO_* alias at read time, the
 /// first instance's reads leave no materialized BUN_* for the second, and
 /// neither leaves host-env residue.
@@ -190,7 +190,7 @@ fn env_alias_sequential_runtimes_no_cross_pollution_no_residue() {
     }
 
     {
-        let mut rt1 = bun_runtime::BaoRuntime::new().expect("rt1");
+        let mut rt1 = bun_runtime::NodeRuntime::new().expect("rt1");
         eval_ok(&mut rt1);
         assert_eq!(
             bun_core::getenv_z(bun_core::zstr!("BUN_ENVALIAS_LCY_A")),
@@ -207,7 +207,7 @@ fn env_alias_sequential_runtimes_no_cross_pollution_no_residue() {
         std::env::set_var("BAO_ENVALIAS_LCY_B", "rt2");
     }
     {
-        let mut rt2 = bun_runtime::BaoRuntime::new().expect("rt2");
+        let mut rt2 = bun_runtime::NodeRuntime::new().expect("rt2");
         eval_ok(&mut rt2);
         assert_eq!(
             bun_core::getenv_z(bun_core::zstr!("BUN_ENVALIAS_LCY_B")),
@@ -252,7 +252,7 @@ fn env_alias_js_process_env_snapshot_exposes_bun_spelling() {
         std::env::set_var("BAO_ENVALIAS_JS_B", "js_shadow");
     }
 
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     eval_ok(&mut rt);
 
     // Positive: property access through the Proxy get trap reads the BAO_

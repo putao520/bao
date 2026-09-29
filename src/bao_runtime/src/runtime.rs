@@ -1,4 +1,4 @@
-// @trace REQ-ENG-006 REQ-CLI-001 [entity:BaoRuntime]
+// @trace REQ-ENG-006 REQ-CLI-001 [entity:NodeRuntime]
 // @trace REQ-CLI-001: bao CLI entry point and runtime initialization
 use bao_engine::context::{JsContext, SmRuntimeGuard};
 use bao_engine::error::JsError;
@@ -20,19 +20,19 @@ use crate::require;
 // Every runtime-owned process resource (UDP sockets in node_dgram's
 // UDP_REGISTRY, Workers in node_worker_threads' WORKER_REGISTRY, and spawned
 // children in node_child_process' CP_ASYNC_STATES) is stamped
-// with the creating BaoRuntime's monotonic token. When the runtime drops,
+// with the creating NodeRuntime's monotonic token. When the runtime drops,
 // `cleanup_runtime_resources(token)` terminates every resource it owns —
 // "drop 时未 close 资源必须 close,防泄漏" (unreaped fd + port → EMFILE;
 // unwaited child → zombie).
 //
-// Token 0 is the sentinel for resources created OUTSIDE any BaoRuntime
+// Token 0 is the sentinel for resources created OUTSIDE any NodeRuntime
 // (process-shared): registration points stamp
 // `current_runtime_token().unwrap_or(0)` and cleanup never touches them.
 static NEXT_RUNTIME_TOKEN: ::std::sync::atomic::AtomicU64 =
     ::std::sync::atomic::AtomicU64::new(1);
 
 ::std::thread_local! {
-    /// Token of the BaoRuntime most recently created on this thread; `None`
+    /// Token of the NodeRuntime most recently created on this thread; `None`
     /// when no runtime is alive here (or the live one already dropped).
     static CURRENT_RUNTIME_TOKEN: ::std::cell::Cell<::std::option::Option<u64>> =
         ::std::cell::Cell::new(None);
@@ -71,7 +71,7 @@ pub(crate) fn cleanup_runtime_resources(token: u64) {
     crate::node_child_process::close_stdin_fds_for_current_thread();
 }
 
-pub struct BaoRuntime {
+pub struct NodeRuntime {
     ctx: JsContext,
     // Declared after ctx so it drops last: guard drop triggers
     // JS_DestroyContext + JS_ShutDown after all JS execution is done.
@@ -84,7 +84,7 @@ pub struct BaoRuntime {
     resolver_root: &'static [u8],
 }
 
-impl ::std::ops::Drop for BaoRuntime {
+impl ::std::ops::Drop for NodeRuntime {
     fn drop(&mut self) {
         // `Drop::drop` runs BEFORE the struct's fields are dropped (fields go
         // in declaration order: ctx, then _guard last). The contract noted on
@@ -118,7 +118,7 @@ impl ::std::ops::Drop for BaoRuntime {
     }
 }
 
-impl BaoRuntime {
+impl NodeRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
         // B1: claim this runtime's monotonic resource-cleanup token up front
         // (0 is the "no runtime" sentinel, so tokens start at 1); publish it
@@ -162,7 +162,7 @@ impl BaoRuntime {
         // realm. Node semantics: registration order, exit code argument,
         // exitCode set by a listener is respected by the CLI main loop.
         ctx.set_post_eval_hook(crate::bun_api::post_eval_drain_then_exit);
-        ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard, token, resolver_root })
+        ::std::result::Result::Ok(NodeRuntime { ctx, _guard: guard, token, resolver_root })
     }
 
     pub fn eval(
@@ -225,7 +225,7 @@ impl BaoRuntime {
 
     /// `eval` + engine-native control (#24 S1 wiring of the script entry —
     /// the `bao -e` / CJS `bao run` body). Behavior identical to
-    /// [`BaoRuntime::eval`] unless the deadline passes or the control is
+    /// [`NodeRuntime::eval`] unless the deadline passes or the control is
     /// cancelled, in which case the runaway script is terminated with an
     /// uncatchable interrupt and a stable termination error is returned.
     #[doc(hidden)]
@@ -274,7 +274,7 @@ impl BaoRuntime {
 
     /// `run_file` + engine-native control (#24 S1 wiring of the file entry —
     /// the `bao run <file>` body). Same source-read / require-dir /
-    /// file-globals / script-vs-module dispatch as [`BaoRuntime::run_file`];
+    /// file-globals / script-vs-module dispatch as [`NodeRuntime::run_file`];
     /// the chosen entry runs under `control` (+ optional deadline). The
     /// control covers the WHOLE entry incl. the post-eval event-loop pump —
     /// a runaway in module top level or a timer/job/pump callback is
@@ -373,7 +373,7 @@ impl BaoRuntime {
     /// via the module loader, so the report is empty — test files should use
     /// ESM/TS syntax.
     //
-    // @trace REQ-ENG-006 [entity:BaoRuntime] — bao test runner execution
+    // @trace REQ-ENG-006 [entity:NodeRuntime] — bao test runner execution
     pub fn run_test_file(
         &mut self,
         path: &str,
@@ -448,7 +448,7 @@ impl BaoRuntime {
     /// `bao test -e` evals directly here — so every entry path executes what
     /// it registered instead of reporting a vacuous 0/0.
     //
-    // @trace REQ-ENG-006 [entity:BaoRuntime] — bao test runner execution
+    // @trace REQ-ENG-006 [entity:NodeRuntime] — bao test runner execution
     pub fn run_registered_tests(&mut self) -> crate::bun_test::TestReport {
         let global_ptr = match self.ensure_realm() {
             Ok(g) => g,

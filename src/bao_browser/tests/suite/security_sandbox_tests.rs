@@ -3,7 +3,7 @@
 //
 // Architecture:
 //   - Single #[test] (mozjs Runtime + servo Opts are per-process singletons)
-//   - Uses BaoRuntime + PagePool
+//   - Uses BrowserRuntime + PagePool
 //   - Direct function-level API: page.evaluate_js() + page.evaluate_js_web()
 //   - Positive tests: verify correct behavior
 //   - Negative tests: deliberately inject malicious code to verify sandbox holds
@@ -16,7 +16,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool, PageState};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -78,9 +78,9 @@ fn wait_for_load(page: &bao_browser::PageHandle, max_ms: u64) {
 #[test]
 fn security_sandbox_verification() {
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
     let mut report = Report::default();
@@ -362,7 +362,7 @@ fn scenario_node_api_absent_from_page(pool: &PagePool, report: &mut Report) {
 // across threads (servo ScriptThread → main thread) via Mutex/AtomicUsize.
 // ---------------------------------------------------------------------------
 
-fn scenario_node_realm_diagnostic(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_node_realm_diagnostic(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "node_realm_diagnostic";
 
     let page = match runtime.create_page(&PageConfig {
@@ -462,7 +462,7 @@ fn scenario_node_realm_diagnostic(runtime: &BaoRuntime, report: &mut Report) {
 // Scenario: evaluate_js has Node APIs (REQ-SEC-002)
 // ---------------------------------------------------------------------------
 
-fn scenario_evaluate_js_has_node_apis(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_evaluate_js_has_node_apis(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "evaluate_js_privileged";
 
     let page = match runtime.create_page(&PageConfig {
@@ -952,7 +952,7 @@ fn scenario_malicious_global_escape(pool: &PagePool, report: &mut Report) {
 // Scenario: DOM access from privileged context (REQ-SEC-002)
 // ---------------------------------------------------------------------------
 
-fn scenario_privileged_dom_access(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_privileged_dom_access(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "privileged_dom_access";
 
     let page = match runtime.create_page(&PageConfig {
@@ -1044,7 +1044,7 @@ fn scenario_privileged_dom_access(runtime: &BaoRuntime, report: &mut Report) {
 // REQ-SEC-002: CommonJS parameter injection — Node APIs are function params, never globals
 // ---------------------------------------------------------------------------
 
-fn scenario_node_api_no_persistence_after_evaluate(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_node_api_no_persistence_after_evaluate(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "stealth_no_persistence";
 
     let page = match runtime.create_page(&PageConfig {
@@ -1208,7 +1208,7 @@ fn scenario_node_api_no_persistence_after_evaluate(runtime: &BaoRuntime, report:
 // REQ-SEC-002: Node APIs exist only as IIFE function parameters
 // ---------------------------------------------------------------------------
 
-fn scenario_scope_cleanup_after_evaluate(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_scope_cleanup_after_evaluate(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "scope_cleanup";
 
     let page = match runtime.create_page(&PageConfig {
@@ -1308,7 +1308,7 @@ fn scenario_scope_cleanup_after_evaluate(runtime: &BaoRuntime, report: &mut Repo
 // and Page Realm has zero references to Node Realm objects.
 // ---------------------------------------------------------------------------
 
-fn scenario_dual_realm_compartment_isolation(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_dual_realm_compartment_isolation(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "dual_realm_isolation";
 
     let page = match runtime.create_page(&PageConfig {
@@ -2189,10 +2189,10 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
 // ---------------------------------------------------------------------------
 // REQ-SEC-003 Integration: Full lifecycle Node API sandbox verification
 // @trace TEST-SEC-003 [req:REQ-SEC-003] [level:integration]
-// Tests multi-module collaboration: BaoRuntime → PagePool → PageHandle → evaluate_js/evaluate_js_web
+// Tests multi-module collaboration: BrowserRuntime → PagePool → PageHandle → evaluate_js/evaluate_js_web
 // ---------------------------------------------------------------------------
 
-fn scenario_sec003_full_lifecycle_sandbox(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_sec003_full_lifecycle_sandbox(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "sec003_lifecycle";
     let pool: &PagePool = runtime.page_pool();
 
@@ -2305,7 +2305,7 @@ fn scenario_sec003_full_lifecycle_sandbox(runtime: &BaoRuntime, report: &mut Rep
 /// runtime enforcement points (the permission_bridge guard install) and
 /// fail-closed the Node-realm host faces with the stable "Permission denied"
 /// error — never a silent success or a generic crash.
-fn scenario_permission_gate_enforcement(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_permission_gate_enforcement(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "permission_gate";
     let pool: &PagePool = runtime.page_pool();
     let page = match pool.create_page(&PageConfig {

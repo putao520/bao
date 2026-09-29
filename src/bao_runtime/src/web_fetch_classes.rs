@@ -1,4 +1,4 @@
-// @trace REQ-ENG-001 [entity:BaoRuntime] [api:fetch]
+// @trace REQ-ENG-001 [entity:NodeRuntime] [api:fetch]
 // Full WHATWG Fetch API classes: Headers, Request, Response.
 //
 // Pure-JS implementations installed via JS::Evaluate on the SpiderMonkey

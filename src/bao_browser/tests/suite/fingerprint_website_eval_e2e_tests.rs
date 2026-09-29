@@ -1,7 +1,7 @@
 // @trace TEST-STL-E2E-WEB-FINGERPRINT [req:REQ-STL-001,REQ-STL-002,REQ-STL-003,REQ-STL-004,REQ-STL-005,REQ-STL-006,REQ-STL-007] [level:e2e]
 // Real-world fingerprint website evaluation E2E.
 //
-// Launches BaoRuntime (servo), creates a Page with StealthProfile injected,
+// Launches BrowserRuntime (servo), creates a Page with StealthProfile injected,
 // and navigates to REAL fingerprint detection websites to evaluate Bao's
 // anti-fingerprinting efficacy:
 //   - bot.sannysoft.com         (webdriver / chrome object / plugins / permissions)
@@ -23,7 +23,7 @@
 // process-global *mut JSObject storage with per-WebViewId maps.
 //
 // A LATER residual claim said "the SECOND external navigation in the same
-// BaoRuntime still SIGSEGVs deterministically" — addressed by a temporary
+// BrowserRuntime still SIGSEGVs deterministically" — addressed by a temporary
 // subprocess-per-site workaround (one navigation per child process). That
 // workaround is now REMOVED. BCE-20260622-004 empirical verification (gdb
 // attached, see bce004_*_tests.rs) shows that with BCE-001 + BCE-002 patches
@@ -33,7 +33,7 @@
 // is non-reproducible in current code; the workaround was guarding a BUG
 // that BCE-001/002 had already eradicated.
 //
-// CURRENT strategy: ONE parent BaoRuntime creates one Page per fingerprint
+// CURRENT strategy: ONE parent BrowserRuntime creates one Page per fingerprint
 // site (via the shared PagePool), navigates externally, scrapes real
 // detection data via `evaluate_js_web`, evaluates, closes the page, and
 // moves to the next site. This mirrors the production usage pattern
@@ -42,7 +42,7 @@
 // Graceful strategy:
 //   - This test REQUIRES real network access to external fingerprint sites.
 //   - If BAO_TEST_NETWORK=1 is unset, OR no DISPLAY (no servo display server),
-//     OR BaoRuntime::new fails, OR a site is unreachable, that site is
+//     OR BrowserRuntime::new fails, OR a site is unreachable, that site is
 //     recorded as Report::skip (not fail). Only stealth-property regressions
 //     on the LOCAL data: pages are hard fails.
 //
@@ -55,7 +55,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState};
 use bao_stealth::StealthProfile;
 use std::time::{Duration, Instant};
 
@@ -191,7 +191,7 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
 /// Graceful skip conditions:
 ///   1. BAO_TEST_NETWORK != "1" — opt-in for external network access
 ///   2. No DISPLAY/WAYLAND_DISPLAY — servo requires a display server
-///   3. BaoRuntime::new fails — servo init in headless env
+///   3. BrowserRuntime::new fails — servo init in headless env
 ///
 /// All three trigger `eprintln!("[skip] ...") + return`, never fail.
 #[test]
@@ -215,11 +215,11 @@ fn fingerprint_website_eval_e2e() {
     // so a single parent process navigates all sites directly (mirroring the
     // production "browser visiting many pages" pattern).
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                "[skip] BrowserRuntime::new failed (likely missing servo runtime): {}",
                 e
             );
             return;
@@ -381,7 +381,7 @@ fn scenario_stealth_property_efficacy_firefox(pool: &PagePool, report: &mut Repo
 // ---------------------------------------------------------------------------
 //
 // Each site is evaluated IN-PARENT (no subprocess). The parent's single
-// BaoRuntime has its PagePool create a fresh Page per site, navigate it
+// BrowserRuntime has its PagePool create a fresh Page per site, navigate it
 // externally, scrape real detection data via `evaluate_js_web`, evaluate,
 // close the page, and move on.
 //

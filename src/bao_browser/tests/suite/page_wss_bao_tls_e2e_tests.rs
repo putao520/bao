@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use bun_http::websocket_http_client::TlsIoStream;
 use bun_uws::ws_codec::{FrameDecoder, FrameEncoder, Opcode};
 
@@ -127,9 +127,9 @@ fn page_wss_roundtrip_over_bao_tls() {
     let (wss_port, wss_shutdown) = spawn_wss_echo_server();
 
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
 

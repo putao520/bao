@@ -11,10 +11,10 @@
 //! ## Quick start
 //!
 //! ```no_run
-//! use bao::{BaoConfig, BaoRuntime, PageConfig, StealthProfile};
+//! use bao::{BaoConfig, BrowserRuntime, PageConfig, StealthProfile};
 //!
 //! fn main() -> Result<(), bao::BrowserError> {
-//!     let runtime = BaoRuntime::new(BaoConfig::default())?;
+//!     let runtime = BrowserRuntime::new(BaoConfig::default())?;
 //!     let _pool = runtime.page_pool();
 //!     let _ = StealthProfile::firefox_default();
 //!     let _ = PageConfig::default();
@@ -58,11 +58,16 @@ pub mod engine {
 
 /// Node.js / Bun API compatibility runtime (`bun_runtime` crate).
 ///
-/// Note: this module also defines a `BaoRuntime` type that is **not** the same
-/// as the top-level [`crate::BaoRuntime`] (browser coordinator). Prefer the
-/// top-level name for embedding; use `bao::runtime::` for Node/Bun host setup.
+/// Note: this module's runtime entry is [`crate::runtime::NodeRuntime`] (the
+/// Node.js/Bun host runtime) — distinct from the top-level
+/// [`crate::BrowserRuntime`] (browser coordinator). The pre-rename
+/// `BaoRuntime` name remains available as a deprecated alias on both faces
+/// and is removed in 1.0.
 pub mod runtime {
     pub use bun_runtime::*;
+
+    /// The Node.js/Bun host runtime entry (happy-path name).
+    pub use bun_runtime::NodeRuntime;
 }
 
 /// CDP server / router / WS codec surface.
@@ -88,12 +93,16 @@ pub mod uloop {
 // ── Stable top-level re-exports (consumer happy path) ─────────────────────
 // Prefer these over depending on internal crate paths.
 
-// Browser embedding (primary BaoRuntime)
+// Browser embedding (primary BrowserRuntime)
 pub use bao_browser::{
-    BaoConfig, BaoRuntime, BrowserConfig, BrowserError, PageConfig, PageHandle, PagePool,
+    BaoConfig, BrowserConfig, BrowserError, BrowserRuntime, PageConfig, PageHandle, PagePool,
     PageState, Permission, PermissionDenied, PermissionGuard, ScreenshotFormat, encode_image,
     run_browser,
 };
+
+/// Deprecated alias for [`BrowserRuntime`] (0.x transition; removed in 1.0).
+#[deprecated(since = "0.4.0", note = "renamed to `BrowserRuntime`; will be removed in 1.0")]
+pub type BaoRuntime = BrowserRuntime;
 
 // Stealth (always linked; enable via profile at runtime)
 pub use bao_stealth::{
@@ -175,9 +184,15 @@ mod tests {
         let cfg = BaoConfig::default();
         let page = PageConfig::default();
         let _ = (cfg, page, ScreenshotFormat::Png);
-        // Type identity: top-level BaoRuntime is the browser coordinator.
-        let _name = std::any::type_name::<BaoRuntime>();
-        assert!(_name.contains("BaoRuntime"));
+        // Type identity: top-level BrowserRuntime is the browser coordinator;
+        // the deprecated `BaoRuntime` alias still resolves to the same type.
+        let _name = std::any::type_name::<BrowserRuntime>();
+        assert!(_name.contains("BrowserRuntime"));
+        #[allow(deprecated)]
+        {
+            let alias = std::any::type_name::<BaoRuntime>();
+            assert_eq!(alias, _name);
+        }
     }
 
     /// CDP client Browser type is part of the public surface (connect needs runtime).

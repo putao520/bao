@@ -62,7 +62,7 @@ struct WorkerHandle {
     /// `worker_try_recv` (the main-side receive primitive). Mutex-wrapped:
     /// mpsc::Receiver is !Sync but the registry is a process-global static.
     main_rx: Option<::std::sync::Mutex<Receiver<WorkerToMainMessage>>>,
-    /// B1 (用户裁决 2026-09-17 A): creating BaoRuntime's cleanup token,
+    /// B1 (用户裁决 2026-09-17 A): creating NodeRuntime's cleanup token,
     /// stamped at registration via `crate::runtime::current_runtime_token()`.
     /// `0` = created outside any runtime = process-shared, exempt from the
     /// drop-time sweep. See `cleanup_for_token`.
@@ -77,7 +77,7 @@ struct WorkerHandle {
 ///
 /// A worker stuck in a synchronous JS task observes its `Terminate` signal
 /// only when the task yields; the unbounded `join()` the JS `terminate()`
-/// path uses would hang `BaoRuntime::drop` forever there. Cleanup therefore
+/// path uses would hang `NodeRuntime::drop` forever there. Cleanup therefore
 /// polls `JoinHandle::is_finished` for at most this long and detaches (drops
 /// the JoinHandle) on timeout — the signal still fires once the task yields,
 /// the exit is simply no longer observed.
@@ -113,16 +113,16 @@ fn join_worker_bounded(thread: &mut Option<::std::thread::JoinHandle<()>>) -> bo
 ///   (the worker's message loop breaks on it) and join the OS thread. Unlike
 ///   the JS path the join is bounded ([`CLEANUP_JOIN_TIMEOUT`]) so a worker
 ///   stuck in a synchronous JS task detaches instead of hanging
-///   `BaoRuntime::drop`.
+///   `NodeRuntime::drop`.
 /// - Entries are removed BEFORE terminating: no DashMap shard guard is held
 ///   across a thread join, and a racing JS `terminate()` on the same worker
 ///   becomes a benign no-op on the missing key.
-/// - `owner == 0` (created outside any BaoRuntime) is exempt; per-token
+/// - `owner == 0` (created outside any NodeRuntime) is exempt; per-token
 ///   isolation: only `token`'s workers are touched — other live runtimes'
 ///   workers keep running.
 ///
 /// Returns the number of workers swept (registry entries removed). Called
-/// from `crate::runtime::cleanup_runtime_resources` on `BaoRuntime::drop`.
+/// from `crate::runtime::cleanup_runtime_resources` on `NodeRuntime::drop`.
 pub(crate) fn cleanup_for_token(token: u64) -> usize {
     if token == 0 {
         // Process-shared sentinel can never own a worker; refuse to sweep
@@ -1044,7 +1044,7 @@ unsafe extern "C" fn worker_constructor(cx: *mut JSContext, argc: u32, vp: *mut 
             thread: Some(join_handle),
             main_rx: Some(::std::sync::Mutex::new(worker_to_main_rx)),
             // B1: stamp the creating runtime's cleanup token (0 = shared when
-            // no BaoRuntime is alive on this thread); swept by
+            // no NodeRuntime is alive on this thread); swept by
             // `cleanup_for_token` on that runtime's drop.
             owner: crate::runtime::current_runtime_token().unwrap_or(0),
         },

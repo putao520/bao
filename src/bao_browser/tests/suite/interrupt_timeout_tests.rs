@@ -14,7 +14,7 @@
 // engine clears the pending exception — the diagnosable text comes from
 // `terminal_message`, not the JS exception state).
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use std::time::{Duration, Instant};
 
 const TIMEOUT_TEXT_FRAGMENT: &str = "deadline exceeded";
@@ -58,7 +58,7 @@ fn wait_for_document_settled(pool_page: &bao_browser::PageHandle, max_ms: u64) {
     }
 }
 
-fn fresh_page<'a>(runtime: &'a BaoRuntime) -> bao_browser::PageHandle {
+fn fresh_page<'a>(runtime: &'a BrowserRuntime) -> bao_browser::PageHandle {
     let pool: &PagePool = runtime.page_pool();
     pool.create_page(&PageConfig {
         url: Some("data:text/html,<!DOCTYPE html><html><body></body></html>".into()),
@@ -74,7 +74,7 @@ fn fresh_page<'a>(runtime: &'a BaoRuntime) -> bao_browser::PageHandle {
 #[test]
 // @trace ISSUE-24 [level:e2e]
 fn node_realm_while_true_with_timeout_terminates_with_timeout_text() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new failed");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let page = fresh_page(&runtime);
     wait_for_load_and_drain(&page, 20000);
 
@@ -108,7 +108,7 @@ fn node_realm_while_true_with_timeout_terminates_with_timeout_text() {
 #[test]
 // @trace ISSUE-24 [level:e2e]
 fn web_realm_while_true_with_timeout_terminates_with_timeout_text() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new failed");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let page = fresh_page(&runtime);
     wait_for_load_and_drain(&page, 20000);
 
@@ -141,7 +141,7 @@ fn web_realm_while_true_with_timeout_terminates_with_timeout_text() {
 #[test]
 // @trace ISSUE-24 [level:e2e]
 fn worker_realm_while_true_with_timeout_terminates_and_reports() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new failed");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let page = fresh_page(&runtime);
     wait_for_load_and_drain(&page, 20000);
     wait_for_document_settled(&page, 20000);
@@ -202,7 +202,7 @@ fn worker_realm_while_true_with_timeout_terminates_and_reports() {
 #[test]
 // @trace ISSUE-24 [level:e2e]
 fn explicit_none_timeout_preserves_normal_evaluation() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new failed");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let page = fresh_page(&runtime);
     wait_for_load_and_drain(&page, 20000);
 

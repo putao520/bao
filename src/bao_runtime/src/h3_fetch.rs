@@ -57,7 +57,7 @@ static H3_DEFAULT_ENABLED: std::sync::Once = std::sync::Once::new();
 ///
 /// 幂等：多次调用安全（Once 保护）。
 ///
-/// 调用点：`BaoRuntime::new()`（runtime.rs）在 SpiderMonkey 初始化前调用，
+/// 调用点：`NodeRuntime::new()`（runtime.rs）在 SpiderMonkey 初始化前调用，
 /// 确保 HTTP 线程启动时 h3 开关已就绪。
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001]

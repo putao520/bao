@@ -67,7 +67,7 @@
 // 断言口径:精确匹配优先;序列化存在合法浮动/格式方差的面(matrix/字族
 // 列表)用 contains,均钉住真实计算值而非形状壳。
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use std::time::{Duration, Instant};
 
 /// CSS 能力探针 fixture:单页内嵌 <style> 全部探针规则 + 带探针 id 的元素。
@@ -226,7 +226,7 @@ fn conformance_page_url() -> String {
 #[test]
 // @trace REQ-BRW-049 [level:e2e]
 fn css_conformance_computed_style_gate() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new failed");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
     let page = pool
         .create_page(&PageConfig {

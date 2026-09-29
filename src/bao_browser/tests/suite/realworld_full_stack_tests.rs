@@ -6,7 +6,7 @@
 // Strategy:
 //   - All scenarios run inside a single #[test] (mozjs Runtime and servo's
 //     Opts are per-process singletons; multiple #[test]s collide).
-//   - Use `BaoRuntime::new(...).page_pool().create_page(...)` (NOT
+//   - Use `BrowserRuntime::new(...).page_pool().create_page(...)` (NOT
 //     `runtime.create_page(...)`) because the higher-level helper calls
 //     `runtime_bridge::inject_node_apis` which spins servo's script-thread
 //     callback drain — that path is fragile in the test harness. Direct
@@ -24,7 +24,7 @@
 
 #![allow(dead_code, unused_comparisons)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -342,9 +342,9 @@ fn parse_request(raw: &[u8]) -> ReceivedRequest {
 #[test]
 fn realworld_full_stack_e2e() {
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
     let mut report = Report::default();

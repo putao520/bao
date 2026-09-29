@@ -1,4 +1,4 @@
-// @trace REQ-ENG-001 [entity:BaoRuntime] REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05 REQ-PURE-010 [level:library] [entity:BaoRuntime]
+// @trace REQ-ENG-001 [entity:NodeRuntime] REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05 REQ-PURE-010 [level:library] [entity:NodeRuntime]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_imports)]
 // @trace REQ-PURE-010: bao_runtime (Rust) replaces deleted bun_runtime (Zig) — zero Zig deps, zero JSC refs
@@ -100,7 +100,7 @@ pub mod permission_bridge;
 pub mod require;
 pub mod resolver_bridge;
 pub mod runtime;
-// @trace REQ-CLI-001 [entity:BaoRuntime] — SIGINT→ExecutionControl::cancel
+// @trace REQ-CLI-001 [entity:NodeRuntime] — SIGINT→ExecutionControl::cancel
 // bridge (SM-EVOLUTION #24 S1 CLI wiring; ledger S1 legislation proposal
 // consumed by user ruling 2026-09-10). Internal experimental surface.
 pub mod interrupt_bridge;
@@ -118,7 +118,7 @@ pub mod web_api;
 // never declared, so CLI fell back to a broken inline polyfill whose
 // TransformStream hung the event loop (BCE-20260816-STREAM-WEB).
 pub mod web_streams;
-// @trace REQ-ENG-001 [entity:BaoRuntime] [api:fetch] — full WHATWG
+// @trace REQ-ENG-001 [entity:NodeRuntime] [api:fetch] — full WHATWG
 // Headers/Request/Response classes (installed on the global by
 // globals::install_web_apis; consumed by fetch_api::fetch_fn).
 pub mod web_fetch_classes;
@@ -135,11 +135,16 @@ pub mod webcore_faces;
 // @trace STUB-INVENTORY: Bun__linux_trace_* RealImpl (cross-platform; residual=0)
 pub mod linux_trace;
 
-pub use runtime::BaoRuntime;
+/// Deprecated alias for the Node.js runtime entry (0.x transition; removed
+/// in 1.0).
+#[deprecated(since = "0.5.0", note = "renamed to `NodeRuntime`; will be removed in 1.0")]
+pub type BaoRuntime = NodeRuntime;
+
+pub use runtime::NodeRuntime;
 
 // ── Orderly exit infrastructure ──
 // process.exit() / Bun.exit() set a flag instead of calling std::process::exit(),
-// so the CLI main loop can return naturally → BaoRuntime drops → SmRuntimeGuard
+// so the CLI main loop can return naturally → NodeRuntime drops → SmRuntimeGuard
 // drops (Runtime then Engine) → JS_ShutDown. No segfault from bypassed drop chain.
 
 thread_local! {

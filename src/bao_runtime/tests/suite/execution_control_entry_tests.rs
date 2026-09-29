@@ -1,11 +1,11 @@
 // @trace TEST-ENG-001-EXECCTRL-ENTRY [req:REQ-ENG-001 REQ-CLI-001] [level:integration]
 //
 // SM-EVOLUTION #24/#25 S1 — ExecutionControl wired to the REAL bao_runtime
-// script/module entries (`BaoRuntime::eval_with_control` /
+// script/module entries (`NodeRuntime::eval_with_control` /
 // `eval_module_with_control` — the exact bodies `bao -e` / `bao run` use) plus
 // the #25 scheduler ordering contract.
 //
-// Engine discipline: one BaoRuntime per #[test] (nextest runs each test in
+// Engine discipline: one NodeRuntime per #[test] (nextest runs each test in
 // its own process; the JSEngine/JSContext are thread/process singletons).
 //
 // Contracts under test (ledger S1, 2026-09-10):
@@ -31,9 +31,9 @@ use std::time::{Duration, Instant};
 use bao_engine::execution_control::TerminalState;
 use bao_engine::value::JsValue;
 
-use bun_runtime::BaoRuntime;
+use bun_runtime::NodeRuntime;
 
-fn eval_str(rt: &mut BaoRuntime, code: &str) -> String {
+fn eval_str(rt: &mut NodeRuntime, code: &str) -> String {
     match rt.eval(code, "<execctrl-verify>") {
         Ok(JsValue::String(s)) => s,
         Ok(JsValue::Number(n)) => format!("{}", n),
@@ -45,7 +45,7 @@ fn eval_str(rt: &mut BaoRuntime, code: &str) -> String {
 /// 1. Module entry (the `bao run *.mjs` body) + deadline → TimedOut.
 #[test]
 fn module_entry_runaway_deadline_deterministic_timeout() {
-    let mut rt = BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = NodeRuntime::new().expect("NodeRuntime");
     let ctrl = rt.execution_control();
     let start = Instant::now();
     // try/catch inside the loop: the interrupt termination is UNCATCHABLE —
@@ -88,7 +88,7 @@ fn module_entry_runaway_deadline_deterministic_timeout() {
 ///    cancel() → Cancelled.
 #[test]
 fn script_entry_runaway_external_thread_cancel() {
-    let mut rt = BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = NodeRuntime::new().expect("NodeRuntime");
     let ctrl = rt.execution_control();
     let remote = ctrl.clone();
 
@@ -145,7 +145,7 @@ fn script_entry_runaway_external_thread_cancel() {
 ///    is armed around the WHOLE module entry, not just ModuleEvaluate.
 #[test]
 fn module_entry_timer_callback_runaway_terminated() {
-    let mut rt = BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = NodeRuntime::new().expect("NodeRuntime");
     let ctrl = rt.execution_control();
     let start = Instant::now();
     let result = rt.eval_module_with_control(
@@ -185,7 +185,7 @@ fn module_entry_timer_callback_runaway_terminated() {
 /// afterwards (reset-on-arm semantics).
 #[test]
 fn module_entry_controlled_normal_and_control_reuse() {
-    let mut rt = BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = NodeRuntime::new().expect("NodeRuntime");
     let ctrl = rt.execution_control();
 
     let start = Instant::now();
@@ -251,7 +251,7 @@ fn module_entry_controlled_normal_and_control_reuse() {
 /// queue at each checkpoint).
 #[test]
 fn scheduler_ordering_contract_microtasks_before_timers() {
-    let mut rt = BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = NodeRuntime::new().expect("NodeRuntime");
 
     rt.eval(
         r#"

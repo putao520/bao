@@ -14,7 +14,7 @@
 //
 // **运行约束**: servo Opts 是 per-process 单例,所有断言合并到单个 #[test]。
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use std::time::{Duration, Instant};
 
 fn wait_for_load_and_drain(pool_page: &bao_browser::PageHandle, max_ms: u64) {
@@ -72,9 +72,9 @@ impl Report {
 #[test]
 // @trace REQ-BRW-046 [level:e2e]
 fn svg_dom_geometry_apis_return_real_values() {
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(runtime) => runtime,
-        Err(error) => panic!("BaoRuntime::new failed: {}", error),
+        Err(error) => panic!("BrowserRuntime::new failed: {}", error),
     };
     let pool: &PagePool = runtime.page_pool();
 

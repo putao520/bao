@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use bao_browser::{handle_bridge_command, BaoConfig, BaoRuntime, BaoWsRegistry, PageConfig};
+use bao_browser::{handle_bridge_command, BaoConfig, BrowserRuntime, BaoWsRegistry, PageConfig};
 use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeSender};
 use bun_uws::ws_client::{RecvOutcome, WebSocketClient};
@@ -571,7 +571,7 @@ fn client_phase_live_extensions(ws_url: String, done: Arc<AtomicBool>) {
 
 #[test]
 fn debugger_breakpoint_real_frames_and_locations_e2e() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: None,
@@ -645,7 +645,7 @@ fn debugger_breakpoint_real_frames_and_locations_e2e() {
 
 #[test]
 fn live_extensions_exception_objectid_bootstrap_e2e() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: None,

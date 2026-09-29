@@ -331,7 +331,7 @@ fn webvtt_render_e2e_suite() {
 
     let fixture = WebvttFixture::spawn();
 
-    let runtime = bao_browser::BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = bao_browser::BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let pool = runtime.page_pool();
 
     let mut page = None;

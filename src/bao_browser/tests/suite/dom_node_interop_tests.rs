@@ -24,7 +24,7 @@
 //
 // **运行约束**: servo Opts 是 per-process 单例,所有断言合并到单个 #[test]。
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use std::time::{Duration, Instant};
 
 // ─── 辅助 — 等待 Page 进入 Interactive/Idle 状态 ─────────────────────────────
@@ -97,12 +97,12 @@ impl Report {
 // @trace REQ-SEC-002 [level:e2e]
 fn dom_node_interop_full_chain() {
     // ── Arrange ────────────────────────────────────────────────────────
-    // 初始化 BaoRuntime(servo + JSContext 融合)。
+    // 初始化 BrowserRuntime(servo + JSContext 融合)。
     // 注:realworld_full_stack_tests.rs 已验证直接用 page_pool().create_page 是稳
     // 定路径(避免 runtime.create_page 内的 inject_node_apis drain 不稳定)。
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
     let mut report = Report::default();

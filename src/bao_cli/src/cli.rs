@@ -207,7 +207,7 @@ fn control_termination_exit_code(state: bun_runtime::runtime::TerminalState) -> 
 }
 
 fn run_eval(code: &str, timeout_ms: Option<u64>) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+    let mut rt = bun_runtime::NodeRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize SpiderMonkey");
         1
     })?;
@@ -285,7 +285,7 @@ fn run_file(
     force_module: bool,
     timeout_ms: Option<u64>,
 ) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+    let mut rt = bun_runtime::NodeRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize SpiderMonkey");
         1
     })?;
@@ -368,7 +368,7 @@ fn run_file(
 }
 
 fn run_module_eval(code: &str, timeout_ms: Option<u64>) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+    let mut rt = bun_runtime::NodeRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize SpiderMonkey");
         1
     })?;
@@ -520,7 +520,7 @@ fn parse_format(format: &str) -> bun_options_types::Format {
 }
 
 fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i32> {
-    let mut rt = bun_runtime::BaoRuntime::new().map_err(|_| {
+    let mut rt = bun_runtime::NodeRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize runtime");
         1
     })?;

@@ -7,7 +7,7 @@
 // REQ-BRW-004: Worker constructor bridging to Page Realm (DF-WK-11)
 // REQ-BRW-4: Worker/SharedWorker/ServiceWorker constructors on JS global object
 // REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
-// REQ-LIB-004: BaoRuntime top-level coordinator
+// REQ-LIB-004: BrowserRuntime top-level coordinator
 mod cdp_handler;
 pub mod cdp_memory;
 mod config;
@@ -70,9 +70,9 @@ use cdp_server::{CdpServer, EventBroadcaster, EventSender, ServerConfig};
 // config (force_isolate_event_loops=true) can never win.
 //
 // `BAO_SERVO_OPTS_INIT` is a `LazyLock` that runs `initialize_options` with bao's
-// config on first access. `BaoRuntime::new` forces it (`.clone()` triggers init)
+// config on first access. `BrowserRuntime::new` forces it (`.clone()` triggers init)
 // BEFORE constructing `Servo`, winning the OnceLock race process-wide. Multi-instance
-// safety: subsequent `BaoRuntime::new` calls hit the idempotent path in the patched
+// safety: subsequent `BrowserRuntime::new` calls hit the idempotent path in the patched
 // `initialize_options` (same bao config → no-op).
 static BAO_SERVO_OPTS_INIT: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
     servo::opts::initialize_options(Opts {
@@ -82,7 +82,12 @@ static BAO_SERVO_OPTS_INIT: std::sync::LazyLock<()> = std::sync::LazyLock::new(|
     });
 });
 
-pub struct BaoRuntime {
+/// Deprecated alias for the browser coordinator runtime (0.x transition;
+/// removed in 1.0).
+#[deprecated(since = "0.4.0", note = "renamed to `BrowserRuntime`; will be removed in 1.0")]
+pub type BaoRuntime = BrowserRuntime;
+
+pub struct BrowserRuntime {
     servo: Rc<Servo>,
     delegate: Rc<BaoServoDelegate>,
     page_pool: Rc<PagePool>,
@@ -97,7 +102,7 @@ pub struct BaoRuntime {
     cdp_bridge_token: Option<usize>,
 }
 
-impl BaoRuntime {
+impl BrowserRuntime {
     pub fn new(config: BaoConfig) -> Result<Self, BrowserError> {
         config.validate().map_err(BrowserError::Init)?;
 
@@ -107,7 +112,7 @@ impl BaoRuntime {
         //
         // Config-derived opts go in FIRST (initialize_options is
         // first-writer-wins): the static LazyLock below only exists to win the
-        // same race for code paths that never construct a BaoRuntime, so once
+        // same race for code paths that never construct a BrowserRuntime, so once
         // this call runs it is a no-op. `ignore_certificate_errors` is the one
         // field tests set non-default (WPT posture against local self-signed
         // TLS fixtures, e.g. the U2 h2 e2e matrix).
@@ -134,8 +139,8 @@ impl BaoRuntime {
         //
         // BAO PATCH (BCE-20260627-009): Idempotent servo config init.
         // servo's `opts::initialize_options` uses a process-global `OnceLock<Opts>`;
-        // re-initializing panics. Each `BaoRuntime::new` → `Servo::new` →
-        // `initialize_options`. Multiple BaoRuntime instances (production
+        // re-initializing panics. Each `BrowserRuntime::new` → `Servo::new` →
+        // `initialize_options`. Multiple BrowserRuntime instances (production
         // multi-tenant + concurrent integration tests) therefore collide.
         // Strategy:
         //   (1) Detect whether servo config is already initialized by reading
@@ -143,7 +148,7 @@ impl BaoRuntime {
         //       falls back to `Default` via `get_or_init`).
         //   (2) `force_isolate_event_loops` is `false` in `Opts::default` but
         //       `true` in our desired config, so it is a reliable sentinel for
-        //       "already initialized by a prior BaoRuntime".
+        //       "already initialized by a prior BrowserRuntime".
         //   (3) On the already-initialized path we skip `.opts(...)` — but
         //       `Servo::new` still calls `initialize_options` internally, so the
         //       vendor-side patch (idempotent `initialize_options`) is the real
@@ -174,7 +179,7 @@ impl BaoRuntime {
         // `opts::get()` is `get_or_init(Default::default)`: returns the
         // process-wide config if already set, otherwise `Default` (where
         // `force_isolate_event_loops == false`). Our config sets it `true`,
-        // so observing `true` here means a prior BaoRuntime already won.
+        // so observing `true` here means a prior BrowserRuntime already won.
         let servo_already_initialized = servo::opts::is_initialized();
 
         // Pref override surface (bao is the embedder; vendor defaults stay
@@ -183,7 +188,7 @@ impl BaoRuntime {
         // preferences resets every pref to `Preferences::default()`. So the
         // only durable injection point is `ServoBuilder::preferences`, on
         // BOTH branches (the already-initialized branch would otherwise wipe
-        // the flip below on the next BaoRuntime). Both branches start from
+        // the flip below on the next BrowserRuntime). Both branches start from
         // `Preferences::default()` — exactly what `Servo::new` would install
         // without a builder override — so the only delta is the flip.
         //
@@ -234,7 +239,7 @@ impl BaoRuntime {
             // `initialize_options(existing.clone())` then sees identical
             // bao fields and becomes a no-op. This is the only way to keep
             // `Servo::new`'s unconditional `initialize_options` call safe
-            // across multiple BaoRuntime instances.
+            // across multiple BrowserRuntime instances.
             //
             // NOTE: we use `is_initialized()` (pure read, no side effect),
             // NOT `opts::get()`. `opts::get()` uses `get_or_init(Default)`,
@@ -258,7 +263,7 @@ impl BaoRuntime {
 
         // BCE (page-realm async fetch black hole): wire the embedder
         // event-loop pump bridge — BOTH directions, process-globally (first
-        // registration wins, so a second BaoRuntime re-registers no-ops).
+        // registration wins, so a second BrowserRuntime re-registers no-ops).
         //
         // Page realms install the Node-stack `fetch` override (same stack,
         // same fingerprint — the page-net unification posture), whose resolve
@@ -326,7 +331,7 @@ impl BaoRuntime {
         // "prepare to run script" wrapper (`run_a_script`) to bao's timer
         // dispatch — the same contract every servo JS entry honors.
         // Zero-capture forwarder is load-bearing: `BaoSettingsRunner` is a
-        // bare fn pointer, so every BaoRuntime's registration compares equal
+        // bare fn pointer, so every BrowserRuntime's registration compares equal
         // (first-writer-wins contract, see timers::register_bao_settings_runner).
         bun_runtime::timers::register_bao_settings_runner(|cx, global, f| {
             servo::bao_run_in_script_settings(
@@ -389,7 +394,7 @@ impl BaoRuntime {
                 cdp_bridge.clone() as std::sync::Arc<dyn bao_cdp_client::transport::InMemoryBridge>,
             );
 
-        Ok(BaoRuntime {
+        Ok(BrowserRuntime {
             servo,
             delegate,
             page_pool,
@@ -652,12 +657,12 @@ impl BaoRuntime {
 
     /// Bounded single-thread CDP pump: spin the servo loop and drain the
     /// memory:// CDP bridge for `duration`. This is the single-threaded
-    /// consumer contract for in-process CDP — the `BaoRuntime` is `!Send`
+    /// consumer contract for in-process CDP — the `BrowserRuntime` is `!Send`
     /// (per-thread JSContext model), so the runtime thread pumps while a
     /// helper thread holds the `Browser` client whose dispatches arrive
     /// through the bridge channel this drain answers.
     ///
-    /// `BaoRuntime::run` is the unbounded version (it also drains).
+    /// `BrowserRuntime::run` is the unbounded version (it also drains).
     pub fn pump_cdp(&self, duration: std::time::Duration) {
         let start = std::time::Instant::now();
         while start.elapsed() < duration {
@@ -708,7 +713,7 @@ impl BaoRuntime {
     }
 }
 
-impl Drop for BaoRuntime {
+impl Drop for BrowserRuntime {
     fn drop(&mut self) {
         self.page_pool.close_all();
         // Remove this runtime's memory bridge unless a newer runtime has
@@ -785,7 +790,7 @@ fn register_worker_interfaces_ready_injector_native(
 }
 
 /// The engine-native execution-control armer installed into servo
-/// (ISSUE #24 servo wiring; see the registration site in `BaoRuntime::new`).
+/// (ISSUE #24 servo wiring; see the registration site in `BrowserRuntime::new`).
 /// Contract: run the payload closure synchronously on the calling (owner JS)
 /// thread under bao_engine's `ExecutionControl` armed with `timeout`, and
 /// return its boxed output plus the stable termination message when a control
@@ -819,7 +824,7 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
     let bao_config: BaoConfig = config.into();
     let cdp_port = bao_config.cdp_port;
 
-    let runtime = BaoRuntime::new(bao_config)?;
+    let runtime = BrowserRuntime::new(bao_config)?;
 
     // Create initial page
     let page_config = PageConfig {

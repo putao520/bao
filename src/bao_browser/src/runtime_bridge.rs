@@ -1970,7 +1970,7 @@ unsafe fn install_all_native(
 ///
 /// BCE (e36): this is the SINGLE page-injection entry of the crate, called
 /// exactly once per page from `PagePool::create_page`. The old bool-based
-/// `inject_all` wrapper plus the second call in `BaoRuntime::create_page`
+/// `inject_all` wrapper plus the second call in `BrowserRuntime::create_page`
 /// formed the double-install vector that dead-looped un-intercepted
 /// `getParameter` into literal `undefined` (evidence:
 /// `.claude/prompts/brw004-getparameter-evidence.md`).
@@ -2003,7 +2003,7 @@ pub fn inject_all_with_profile(
     // parent page's stealth profile) so the Worker inherits stealth
     // fingerprint noise.
     // No global-addr slot here: at page-init time no WorkerHandle exists yet.
-    // Workers created via BaoRuntime::create_worker_with_url register their own
+    // Workers created via BrowserRuntime::create_worker_with_url register their own
     // per-worker callback carrying the handle's addr slot (REQ-BRW-004
     // criterion #18 backfill); this page-init registration only covers workers
     // created by page script directly (`new Worker()` in page JS), which have
@@ -2055,7 +2055,7 @@ pub fn inject_all_with_profile(
 ///   (criteria #12-17), or None for a default (non-stealth) Worker scope.
 /// * `global_addr_slot` - Slot to backfill the Worker global's address into
 ///   (criterion #18). Pass `Some(handle.worker_global_addr_arc())` when
-///   registering per-worker (see `BaoRuntime::create_worker_with_url`); pass
+///   registering per-worker (see `BrowserRuntime::create_worker_with_url`); pass
 ///   `None` for the page-init registration covering page-script-created
 ///   Workers, which have no bao-side handle.
 ///

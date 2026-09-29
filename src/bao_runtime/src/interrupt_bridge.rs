@@ -1,4 +1,4 @@
-// @trace REQ-CLI-001 [entity:BaoRuntime] — SIGINT→cancel bridge wiring the
+// @trace REQ-CLI-001 [entity:NodeRuntime] — SIGINT→cancel bridge wiring the
 // SM-EVOLUTION #24 S1 ExecutionControl to the CLI product surface
 // (ledger S1 legislation proposal consumed by user ruling 2026-09-10).
 //!

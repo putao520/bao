@@ -1,7 +1,7 @@
 // @trace TEST-BRW-E2E-MULTIPAGE-SEC [req:REQ-BRW-003,REQ-LIB-001] [level:e2e]
 // Real-world multi-page / multi-context security E2E test.
 //
-// Launches BaoRuntime (servo), creates multiple pages with distinct
+// Launches BrowserRuntime (servo), creates multiple pages with distinct
 // StealthProfile (chrome / firefox / none), and verifies Realm isolation:
 //   - Each page's globalThis is isolated: setting `window.__id = 'A'` on one
 //     page does NOT leak to other pages.
@@ -13,12 +13,12 @@
 //
 // Graceful strategy:
 //   - Requires real servo runtime + display server. Absent either (or
-//     BaoRuntime::new fails) → `[skip]` + return.
+//     BrowserRuntime::new fails) → `[skip]` + return.
 //   - Local `data:text/html` test pages — NO external network required.
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState};
 use bao_stealth::StealthProfile;
 use std::time::{Duration, Instant};
 
@@ -130,13 +130,13 @@ fn multi_page_security_e2e() {
         eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
         return;
     }
-    // Guard 3: BaoRuntime::new may fail in environments lacking servo runtime deps
+    // Guard 3: BrowserRuntime::new may fail in environments lacking servo runtime deps
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                "[skip] BrowserRuntime::new failed (likely missing servo runtime): {}",
                 e
             );
             return;

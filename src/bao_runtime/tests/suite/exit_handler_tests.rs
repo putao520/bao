@@ -14,7 +14,7 @@ fn make_ctx() -> JsContext {
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bun_runtime::globals::install_all);
-    // Same wiring as BaoRuntime::new — drain loop, then 'exit' dispatch.
+    // Same wiring as NodeRuntime::new — drain loop, then 'exit' dispatch.
     ctx.set_post_eval_hook(bun_runtime::bun_api::post_eval_drain_then_exit);
     ctx
 }

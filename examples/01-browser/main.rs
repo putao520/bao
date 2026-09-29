@@ -1,7 +1,7 @@
 //! Example 01 — 最基本的 servo 浏览器嵌入。
 //!
 //! 展示 Bao 的最小编码路径:
-//!   BaoRuntime::new → create_page → navigate → evaluate_js_web → take_screenshot
+//!   BrowserRuntime::new → create_page → navigate → evaluate_js_web → take_screenshot
 //!
 //! 这个示例不调用 Node.js API(那是示例 03 的事),只用 Page Realm 的 Web API。
 //! Page Realm 上的 `document` / `navigator` 等同于 servo 原生浏览器环境。
@@ -12,8 +12,8 @@ use bao::{BaoConfig, BrowserError, PageConfig, PageState, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
     // 1. 创建 Bao 浏览器 runtime(单进程 servo + SpiderMonkey + 内置 CDP/Node/Stealth)
-    let runtime = BaoRuntime::new(BaoConfig::default())?;
-    println!("[01-browser] BaoRuntime ready");
+    let runtime = BrowserRuntime::new(BaoConfig::default())?;
+    println!("[01-browser] BrowserRuntime ready");
 
     // 2. 在 runtime 中创建一个 page(PagePool 会持有它的生命周期)
     let page = runtime.create_page(&PageConfig::default())?;

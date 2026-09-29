@@ -48,7 +48,7 @@ pub fn top_level_dir() -> &'static [u8] {
 
 // ──────────────────────────────────────────────────────────────────────────
 // Per-runtime resolver root overlay (BUN-EVOLUTION B1 census row 27). A
-// `BaoRuntime` installed on this thread re-seeds the overlay with its own
+// `NodeRuntime` installed on this thread re-seeds the overlay with its own
 // cwd at construction, so a second runtime created in a different directory
 // resolves against its own root instead of the first one's. Reads prefer the
 // overlay and fall back to the process-global above; `None` keeps the
@@ -57,7 +57,7 @@ pub fn top_level_dir() -> &'static [u8] {
 
 thread_local! {
     static CURRENT_TOP_LEVEL_DIR: Cell<Option<&'static [u8]>> = const { Cell::new(None) };
-    /// LIFO stack of resolver roots: each BaoRuntime pushes on creation
+    /// LIFO stack of resolver roots: each NodeRuntime pushes on creation
     /// and pops on drop. The overlay (CURRENT_TOP_LEVEL_DIR) mirrors the
     /// top of the stack. This supports nested/parasitic runtimes: when
     /// the newer drops, the older's root is restored.

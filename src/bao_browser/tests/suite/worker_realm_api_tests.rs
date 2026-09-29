@@ -59,7 +59,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
 
 // ---------------------------------------------------------------------------
 // Minimal H1 fixture: per-path JS worker scripts + hit log
@@ -521,7 +521,7 @@ fn worker_realm_api_c2_page_to_worker_postmessage_echo() {
         return;
     }
     let fixture = RealmApiFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -600,7 +600,7 @@ fn worker_realm_api_c6_structured_clone_roundtrip_five_types() {
         return;
     }
     let fixture = RealmApiFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -677,7 +677,7 @@ fn worker_realm_api_c6_import_scripts_helper_globals() {
         return;
     }
     let fixture = RealmApiFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -774,7 +774,7 @@ fn worker_realm_api_c8_crypto_performance_location() {
         return;
     }
     let fixture = RealmApiFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),

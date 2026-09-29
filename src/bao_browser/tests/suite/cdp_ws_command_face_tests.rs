@@ -1,5 +1,5 @@
 // REQ-CDP WS command-face e2e: real WebSocket round-trips against a live
-// BaoRuntime + CdpServer wired through BaoWsRegistry (the production wiring
+// BrowserRuntime + CdpServer wired through BaoWsRegistry (the production wiring
 // run_browser performs). Asserts the Playwright-direct-connect minimal face:
 // Target.getTargets / Target.attachToTarget(flatten) / Page.navigate /
 // Runtime.evaluate all reach the real servo PagePool via the bridge.
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use bao_browser::{handle_bridge_command, BaoConfig, BaoRuntime, BaoWsRegistry, PageConfig};
+use bao_browser::{handle_bridge_command, BaoConfig, BrowserRuntime, BaoWsRegistry, PageConfig};
 use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::bridge_channel;
 use bun_uws::ws_client::{RecvOutcome, WebSocketClient};
@@ -115,7 +115,7 @@ impl WsCdp {
 }
 
 /// The WS-client half of the e2e. Runs on a helper thread while the main
-/// thread drives the servo event loop (BaoRuntime holds Rc<Servo> — the loop
+/// thread drives the servo event loop (BrowserRuntime holds Rc<Servo> — the loop
 /// must stay on the thread that created it, exactly like run_browser).
 fn client_phase(ws_url: String, page_id: usize, done: Arc<AtomicBool>) {
     let mut cdp = WsCdp::connect(&ws_url);
@@ -415,7 +415,7 @@ fn object_protocol_phase(ws_url: String, done: Arc<AtomicBool>) {
 
 #[test]
 fn ws_command_face_page_navigate_and_evaluate_roundtrip() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: None,
@@ -481,7 +481,7 @@ fn ws_command_face_page_navigate_and_evaluate_roundtrip() {
 /// getProperties / releaseObject / releaseObjectGroup over live WS).
 #[test]
 fn ws_runtime_object_protocol_roundtrip() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: None,

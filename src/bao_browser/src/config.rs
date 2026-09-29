@@ -17,7 +17,7 @@ pub struct BaoConfig {
     /// certificate verification failures for page/network fetches. Production
     /// keeps `false` (fail closed); tests driving local self-signed TLS
     /// fixtures (e.g. the U2 h2 e2e matrix) enable it. Process-global
-    /// (first `BaoRuntime::new` wins — same first-writer-wins semantics as
+    /// (first `BrowserRuntime::new` wins — same first-writer-wins semantics as
     /// every other servo opt).
     pub ignore_certificate_errors: bool,
 }

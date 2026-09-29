@@ -2,7 +2,7 @@
 // indexedDB end-to-end over servo's REAL IDB implementation.
 //
 // Upstream `dom_indexeddb_enabled` defaults to false (experimental); bao is
-// a full browser runtime, so `BaoRuntime::new` flips it ON via the
+// a full browser runtime, so `BrowserRuntime::new` flips it ON via the
 // `ServoBuilder::preferences` override surface (vendor defaults untouched —
 // `Servo::new` ends with `prefs::set(preferences.unwrap_or_default())`, so
 // the builder is the only durable injection point). `GlobalScope::
@@ -111,8 +111,8 @@ fn indexeddb_open_put_get_roundtrip() {
 
     let fixture = PageFixture::spawn("<!DOCTYPE html><html><body><p>idb</p></body></html>");
 
-    let runtime = bao_browser::BaoRuntime::new(BaoConfig::default())
-        .expect("BaoRuntime::new");
+    let runtime = bao_browser::BrowserRuntime::new(BaoConfig::default())
+        .expect("BrowserRuntime::new");
     let pool = runtime.page_pool();
 
     let mut page = None;

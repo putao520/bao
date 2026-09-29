@@ -2,12 +2,12 @@
 //
 // B1 census row 27 (用户裁决 2026-09-18 B1「全部处理掉」): the resolver root
 // (top_level_dir) is per-runtime. It used to be a process-global written once
-// by the FIRST runtime's resolver install, so a second BaoRuntime created in
+// by the FIRST runtime's resolver install, so a second NodeRuntime created in
 // a different directory read the first runtime's root through every
 // consumption site (`bun_paths::fs::FileSystem::instance().top_level_dir()`
 // → resolve_path relative* joins, Path::init_top_level_dir, dotenv's
 // node/ccache lookup). The fix is a thread-local overlay in `bun_core`
-// (read order: overlay → process-global), seeded per `BaoRuntime::new()` by
+// (read order: overlay → process-global), seeded per `NodeRuntime::new()` by
 // `resolver_bridge::install_runtime_root()` and retired at drop with
 // clear-if-same (an older runtime's drop must not erase a newer runtime's
 // root — same parasitic-runtime shape as the CURRENT_RUNTIME_TOKEN discipline).
@@ -31,9 +31,9 @@ use std::fs;
 use std::path::Path;
 
 use bao_engine::value::JsValue;
-use bun_runtime::BaoRuntime;
+use bun_runtime::NodeRuntime;
 
-fn eval_str(rt: &mut BaoRuntime, code: &str) -> String {
+fn eval_str(rt: &mut NodeRuntime, code: &str) -> String {
     match rt.eval(code, "<resolver-root-test>") {
         Ok(JsValue::String(s)) => s,
         Ok(JsValue::Number(n)) => format!("{}", n),
@@ -79,7 +79,7 @@ fn dual_runtime_resolver_root_isolated_and_survives_newer_drop() {
 
     // Runtime A installs under root a.
     std::env::set_current_dir(dir_a.path()).expect("chdir a");
-    let mut rt_a = BaoRuntime::new().expect("runtime A");
+    let mut rt_a = NodeRuntime::new().expect("runtime A");
     // Single-runtime zero-delta: the overlay equals the creating cwd and the
     // bun_paths delegation layer serves the same root.
     assert_eq!(root_string(), dir_string(dir_a.path()), "overlay must follow runtime A's cwd");
@@ -92,7 +92,7 @@ fn dual_runtime_resolver_root_isolated_and_survives_newer_drop() {
     // Runtime B installs under root b — the overlay must move to B (the bug:
     // the process-global kept A's root for every later runtime).
     std::env::set_current_dir(dir_b.path()).expect("chdir b");
-    let mut rt_b = BaoRuntime::new().expect("runtime B");
+    let mut rt_b = NodeRuntime::new().expect("runtime B");
     assert_eq!(root_string(), dir_string(dir_b.path()), "overlay must follow runtime B's cwd");
     assert_eq!(
         paths_fs_root_string(),
@@ -165,7 +165,7 @@ fn runtime_reinstall_seeds_fresh_root_after_previous_drop() {
 
     // First lifecycle: root a live, probe resolves under it.
     std::env::set_current_dir(dir_a.path()).expect("chdir a");
-    let mut rt_a = BaoRuntime::new().expect("runtime A");
+    let mut rt_a = NodeRuntime::new().expect("runtime A");
     assert_eq!(root_string(), dir_string(dir_a.path()));
     assert_eq!(eval_str(&mut rt_a, "require('./probe.js')"), "A_PROBE_T2");
     drop(rt_a);
@@ -174,7 +174,7 @@ fn runtime_reinstall_seeds_fresh_root_after_previous_drop() {
     // Second lifecycle in a different directory: the overlay must be
     // re-seeded with b, not inherited from a.
     std::env::set_current_dir(dir_b.path()).expect("chdir b");
-    let mut rt_b = BaoRuntime::new().expect("runtime B");
+    let mut rt_b = NodeRuntime::new().expect("runtime B");
     assert_eq!(
         root_string(),
         dir_string(dir_b.path()),

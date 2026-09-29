@@ -1,7 +1,7 @@
 // @trace TEST-BRW-004 [req:REQ-BRW-004,REQ-BRW-4] [level:integration,acceptance]
 // TASK-10: 集成与验收测试
 //
-// Integration tests (require BaoRuntime):
+// Integration tests (require BrowserRuntime):
 // - ServiceWorker: type exports + handle lifecycle + stealth inheritance + fetch boundary (REQ-BRW-4 C6/C19)
 // - SharedWorker: handle lifecycle + connect/disconnect (REQ-BRW-4 C5/DF-WK-7)
 // - Crash-safe: concurrent Worker create-destroy loop (REQ-BRW-004 C18)

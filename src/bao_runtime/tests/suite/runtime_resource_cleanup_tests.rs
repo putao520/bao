@@ -1,11 +1,11 @@
 // @trace TEST-ENG-006-RUNTIME-CLEANUP [req:REQ-ENG-006] [level:integration]
 //
 // B1 slice 2 段一(用户裁决 2026-09-17 A「drop 时未 close 资源必须 close」):
-// BaoRuntime::drop must terminate every dgram UDP socket the runtime owns
+// NodeRuntime::drop must terminate every dgram UDP socket the runtime owns
 // (fd closed + port released), without touching sockets owned by other live
 // runtimes (per-token isolation).
 //
-// B1 slice 2 段二(same ruling): BaoRuntime::drop must also terminate every
+// B1 slice 2 段二(same ruling): NodeRuntime::drop must also terminate every
 // worker_threads Worker the runtime owns (OS thread joined — a leaked worker
 // thread pins its own JSContext + stack for the life of the process),
 // without touching workers owned by other live runtimes.
@@ -25,7 +25,7 @@
 //       (A's worker thread stays alive and still accepts postMessage);
 //       dropping A then joins A's worker too.
 //
-// B1 slice 2 段三(same ruling): BaoRuntime::drop must also kill + reap every
+// B1 slice 2 段三(same ruling): NodeRuntime::drop must also kill + reap every
 // child_process child it spawned (no zombie: /proc/<pid> disappears entirely),
 // take back its stdout/stderr pipe read-end fds, and drop its same-pid IPC
 // channel (parent socketpair end closed) — without touching children owned by
@@ -79,7 +79,7 @@ fn free_ephemeral_port() -> u16 {
     probe.local_addr().expect("probe local_addr").port()
 }
 
-fn eval_number(rt: &mut bun_runtime::BaoRuntime, src: &str) -> f64 {
+fn eval_number(rt: &mut bun_runtime::NodeRuntime, src: &str) -> f64 {
     match rt.eval(src, "<runtime-cleanup-test>").expect("eval must succeed") {
         bao_engine::value::JsValue::Number(n) => n,
         _ => panic!("eval returned a non-number: {}", src),
@@ -89,9 +89,9 @@ fn eval_number(rt: &mut bun_runtime::BaoRuntime, src: &str) -> f64 {
 /// Bind a fresh dgram socket to 127.0.0.1:`port` inside `rt`'s realm via the
 /// real user path (`require('node:dgram')` + `createSocket` + `bind`), stop
 /// the 1ms recv-poll interval the JS wrapper starts (a live interval keeps
-/// the post-eval event-loop drain in `BaoRuntime::eval` non-empty forever),
+/// the post-eval event-loop drain in `NodeRuntime::eval` non-empty forever),
 /// and return `(fd, actual bound port)`.
-fn bind_dgram(rt: &mut bun_runtime::BaoRuntime, port: u16, slot: &str) -> (i32, u16) {
+fn bind_dgram(rt: &mut bun_runtime::NodeRuntime, port: u16, slot: &str) -> (i32, u16) {
     rt.eval(
         &format!(
             r#"
@@ -125,7 +125,7 @@ fn fd_link_target(fd: i32) -> Option<String> {
 #[cfg(unix)]
 fn runtime_drop_closes_dgram_sockets_fd_and_port_released() {
     let port = free_ephemeral_port();
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     let (fd, bound) = bind_dgram(&mut rt, port, "__sock_t1");
     assert_eq!(bound, port, "dgram socket must bind the requested port");
 
@@ -171,7 +171,7 @@ fn runtime_drop_is_per_token_other_runtimes_sockets_untouched() {
     let recv_port = receiver.local_addr().expect("receiver local_addr").port();
 
     let port_a = free_ephemeral_port();
-    let mut rt_a = bun_runtime::BaoRuntime::new().expect("runtime A");
+    let mut rt_a = bun_runtime::NodeRuntime::new().expect("runtime A");
     let (fd_a, bound_a) = bind_dgram(&mut rt_a, port_a, "__sock_t2a");
     assert_eq!(bound_a, port_a);
 
@@ -180,7 +180,7 @@ fn runtime_drop_is_per_token_other_runtimes_sockets_untouched() {
     // (`JsContext::init_runtime` hands back a context without a new
     // SmRuntimeGuard) — exactly the multi-runtime shape the token slot must
     // keep isolated.
-    let mut rt_b = bun_runtime::BaoRuntime::new().expect("runtime B");
+    let mut rt_b = bun_runtime::NodeRuntime::new().expect("runtime B");
     let (fd_b, bound_b) = bind_dgram(&mut rt_b, port_b, "__sock_t2b");
     assert_eq!(bound_b, port_b);
 
@@ -254,7 +254,7 @@ fn runtime_drop_is_per_token_other_runtimes_sockets_untouched() {
 
 // ── B1 slice 2 段二: WORKER_REGISTRY drop sweep (row 24) ──────────────────
 
-fn eval_string(rt: &mut bun_runtime::BaoRuntime, src: &str) -> String {
+fn eval_string(rt: &mut bun_runtime::NodeRuntime, src: &str) -> String {
     match rt.eval(src, "<runtime-cleanup-test>").expect("eval must succeed") {
         bao_engine::value::JsValue::String(s) => s,
         _ => panic!("eval returned a non-string: {}", src),
@@ -347,7 +347,7 @@ fn wait_until(pred: impl Fn() -> bool, what: &str) {
 /// (`require('worker_threads')` + `new Worker`), wait until its OS thread is
 /// observable, and return the thread's name. The idle script keeps the
 /// worker in its message receive loop — nothing for the drop sweep to race.
-fn spawn_idle_worker(rt: &mut bun_runtime::BaoRuntime, slot: &str, tag: &str) -> String {
+fn spawn_idle_worker(rt: &mut bun_runtime::NodeRuntime, slot: &str, tag: &str) -> String {
     let worker_path = write_worker_file(tag, "self.onmessage = function() {};");
     let tid = eval_string(
         rt,
@@ -374,7 +374,7 @@ fn spawn_idle_worker(rt: &mut bun_runtime::BaoRuntime, slot: &str, tag: &str) ->
 /// JSContext + stack for the life of the process.
 #[test]
 fn runtime_drop_joins_owned_worker_threads() {
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     let w1 = spawn_idle_worker(&mut rt, "__wT3a", "t3a");
     let w2 = spawn_idle_worker(&mut rt, "__wT3b", "t3b");
     assert_ne!(w1, w2, "the two workers must be distinct OS threads");
@@ -392,11 +392,11 @@ fn runtime_drop_joins_owned_worker_threads() {
 /// live runtime's workers, and the survivor keeps working.
 #[test]
 fn runtime_drop_is_per_token_other_runtimes_workers_untouched() {
-    let mut rt_a = bun_runtime::BaoRuntime::new().expect("runtime A");
+    let mut rt_a = bun_runtime::NodeRuntime::new().expect("runtime A");
     let wa = spawn_idle_worker(&mut rt_a, "__wT4a", "t4a");
     // Second runtime on this thread parasitizes the live JSContext — the
     // same multi-runtime shape the token slot must keep isolated.
-    let mut rt_b = bun_runtime::BaoRuntime::new().expect("runtime B");
+    let mut rt_b = bun_runtime::NodeRuntime::new().expect("runtime B");
     let wb = spawn_idle_worker(&mut rt_b, "__wT4b", "t4b");
     assert_ne!(wa, wb);
 
@@ -494,7 +494,7 @@ fn fd_targets(prefix: &str) -> BTreeMap<i32, String> {
 /// link target (`pipe:[inode]`), not fd number, so fd reuse cannot fool it.
 /// `pipes_before` must be snapshotted before the spawn eval.
 fn spawn_sleeper(
-    rt: &mut bun_runtime::BaoRuntime,
+    rt: &mut bun_runtime::NodeRuntime,
     slot: &str,
     pipes_before: &BTreeMap<i32, String>,
 ) -> (i32, BTreeMap<i32, String>) {
@@ -520,7 +520,7 @@ fn spawn_sleeper(
 
 /// Warm the child_process module install so a surrounding pipe-fd diff
 /// captures only the spawn's own fds.
-fn warm_child_process(rt: &mut bun_runtime::BaoRuntime) {
+fn warm_child_process(rt: &mut bun_runtime::NodeRuntime) {
     rt.eval("require('child_process');", "<runtime-cleanup-test>")
         .expect("require child_process must succeed");
 }
@@ -531,7 +531,7 @@ fn warm_child_process(rt: &mut bun_runtime::BaoRuntime) {
 #[cfg(unix)]
 #[test]
 fn runtime_drop_kills_and_reaps_owned_children() {
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     warm_child_process(&mut rt);
     let pipes_before = fd_targets("pipe:");
     let (pid, child_pipes) = spawn_sleeper(&mut rt, "__cpT5", &pipes_before);
@@ -602,14 +602,14 @@ fn runtime_drop_is_per_token_other_runtimes_children_untouched() {
 
 fn runtime_drop_is_per_token_other_runtimes_children_untouched_body() {
 
-    let mut rt_a = bun_runtime::BaoRuntime::new().expect("runtime A");
+    let mut rt_a = bun_runtime::NodeRuntime::new().expect("runtime A");
     warm_child_process(&mut rt_a);
     let pipes_a = fd_targets("pipe:");
     let (pid_a, _) = spawn_sleeper(&mut rt_a, "__cpT6a", &pipes_a);
 
     // Second runtime on this thread parasitizes the live JSContext — the
     // same multi-runtime shape the token slot must keep isolated.
-    let mut rt_b = bun_runtime::BaoRuntime::new().expect("runtime B");
+    let mut rt_b = bun_runtime::NodeRuntime::new().expect("runtime B");
     warm_child_process(&mut rt_b);
     let pipes_b = fd_targets("pipe:");
     let (pid_b, _) = spawn_sleeper(&mut rt_b, "__cpT6b", &pipes_b);
@@ -644,7 +644,7 @@ fn runtime_drop_is_per_token_other_runtimes_children_untouched_body() {
 #[cfg(unix)] // parent-side IPC identity is observed via /proc/self/fd socket: links — POSIX mechanic
 #[test]
 fn runtime_drop_closes_child_ipc_channels() {
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     warm_child_process(&mut rt);
     let sockets_before = fd_targets("socket:");
     // The options MUST be the third argument to spawn(), not a comma-
@@ -1063,7 +1063,7 @@ fn runtime_drop_closes_piped_stdin_write_end_of_live_children() {
 
 fn runtime_drop_closes_piped_stdin_write_end_of_live_children_body() {
 
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     warm_child_process(&mut rt);
     rt.eval(
         &format!("globalThis.__cpT12 = {};", sleeper_cmd_js()),

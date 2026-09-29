@@ -74,7 +74,7 @@ struct AsyncChildState {
     stdout_handle: HANDLE, // null if not piped
     #[cfg(windows)]
     stderr_handle: HANDLE, // null if not piped
-    /// B1 (用户裁决 2026-09-17 A): creating BaoRuntime's cleanup token,
+    /// B1 (用户裁决 2026-09-17 A): creating NodeRuntime's cleanup token,
     /// stamped at spawn-registration via
     /// `crate::runtime::current_runtime_token()`. `0` = created outside any
     /// runtime = process-shared, exempt from the drop-time sweep. See
@@ -635,7 +635,7 @@ pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int,
         stderr_fd,
         stdin_fd,
         // Stamp the creating runtime's token (0 = process-shared when no
-        // BaoRuntime is alive on this thread); see AsyncChildState::owner.
+        // NodeRuntime is alive on this thread); see AsyncChildState::owner.
         owner: crate::runtime::current_runtime_token().unwrap_or(0),
         stdout_eof: stdout_fd < 0,
         stderr_eof: stderr_fd < 0,
@@ -1009,12 +1009,12 @@ fn cp_take_and_close_pipe_fds(state: &Mutex<AsyncChildState>) {
 ///    the child, so dropping the `Arc` closes the parent socketpair end (no
 ///    separate owner stamp needed).
 ///
-/// `owner == 0` (created outside any BaoRuntime) is exempt; per-token
+/// `owner == 0` (created outside any NodeRuntime) is exempt; per-token
 /// isolation: only `token`'s children are touched.
 ///
 /// Returns the number of children swept (reaped + entry removed); unkillable
 /// children are not counted. Called from
-/// `crate::runtime::cleanup_runtime_resources` on `BaoRuntime::drop`.
+/// `crate::runtime::cleanup_runtime_resources` on `NodeRuntime::drop`.
 pub(crate) fn cleanup_for_token(token: u64) -> usize {
     if token == 0 {
         // Process-shared sentinel can never own a child; refuse to sweep

@@ -64,7 +64,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use bao_stealth::StealthProfile;
 
 /// Serializes servo-touching phases inside one isolated test process.
@@ -632,8 +632,8 @@ fn c19_sub1_sw_forwarded_fetch_rides_page_tls_h2_profile_live() {
         port = sw_capture.port
     ));
 
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),
@@ -953,8 +953,8 @@ fn c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live() {
         .to_string(),
     );
 
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),
@@ -1224,8 +1224,8 @@ fn c19_sub3_sw_cross_page_inheritance_and_terminate_deregistration_live() {
         .to_string(),
     );
 
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page1 = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),
@@ -1508,8 +1508,8 @@ fn sw_scope_injector_starvation_after_dedicated_worker_live() {
         .to_string(),
     );
 
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),

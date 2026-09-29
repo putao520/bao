@@ -19,11 +19,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PageState};
 
 const TITLE: &str = "page-state-fixture";
 
-/// servo/BaoRuntime carry process-global slots (one JSContext per thread;
+/// servo/BrowserRuntime carry process-global slots (one JSContext per thread;
 /// embedder state) — two runtimes racing in one test binary deadlock one
 /// side. Serialize the tests in this suite.
 static RUNTIME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -101,7 +101,7 @@ fn poll_until(page: &PageHandle, timeout: Duration, cond: &dyn Fn() -> bool) -> 
 fn pagestate_reaches_interactive_in_step_with_title() {
     let _guard = RUNTIME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = Fixture::spawn();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -164,7 +164,7 @@ fn verbatim_readme_path1_no_external_pump() {
     // → evaluate must observe the NAVIGATED page. Pre-fix, wait returned at
     // the about:blank first frame and the pending load had no driver.
     let fixture = Fixture::spawn();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");

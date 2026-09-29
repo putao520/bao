@@ -23,7 +23,7 @@
 #![allow(dead_code)]
 
 use bao_browser::{
-    crash_safe_teardown_worker, BaoConfig, BaoRuntime, PageConfig, WorkerTeardownPath,
+    crash_safe_teardown_worker, BaoConfig, BrowserRuntime, PageConfig, WorkerTeardownPath,
 };
 use std::sync::Mutex;
 use std::time::Duration;
@@ -50,7 +50,7 @@ fn should_skip() -> bool {
 
 /// Acquire the global serializer lock. Hold for the full test duration.
 /// The servo idempotent patches (BCE-20260627-009) make repeated
-/// BaoRuntime::new safe; this lock only prevents concurrent servo instances.
+/// BrowserRuntime::new safe; this lock only prevents concurrent servo instances.
 fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: `TEST_SERIALIZER` is a `static`, so the lock's lifetime is
@@ -130,7 +130,7 @@ fn wait_for_js_condition(page: &bao_browser::PageHandle, expr: &str, timeout: Du
 /// @trace REQ-BRW-004 [criterion:18] concurrent create/destroy zero crash
 ///
 /// Creates N workers in parallel, each immediately self-closing, and verifies
-/// the BaoRuntime does not crash (no SIGSEGV/panic). This tests the crash-safe
+/// the BrowserRuntime does not crash (no SIGSEGV/panic). This tests the crash-safe
 /// teardown path under concurrent load.
 #[test]
 fn c18_concurrent_create_destroy_zero_crash() {
@@ -138,7 +138,7 @@ fn c18_concurrent_create_destroy_zero_crash() {
         return;
     }
     let _guard = lock_serializer();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -209,7 +209,7 @@ fn c18_concurrent_terminate_closing_flag_consistent() {
         return;
     }
     let _guard = lock_serializer();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -236,7 +236,7 @@ fn c18_concurrent_terminate_closing_flag_consistent() {
         return;
     }
 
-    // Create workers via BaoRuntime::create_worker (which returns WorkerHandle).
+    // Create workers via BrowserRuntime::create_worker (which returns WorkerHandle).
     let mut handles = Vec::new();
 
     for i in 0..3 {
@@ -299,7 +299,7 @@ fn c18_three_path_teardown_crash_free() {
         return;
     }
     let _guard = lock_serializer();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -460,7 +460,7 @@ fn c18_worker_global_addr_backfilled_and_unregistered() {
         return;
     }
     let _guard = lock_serializer();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");

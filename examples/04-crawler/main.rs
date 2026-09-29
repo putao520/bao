@@ -14,8 +14,8 @@ use bao::{BaoConfig, BrowserError, PageConfig};
 
 fn main() -> Result<(), BrowserError> {
     // 1. Runtime + page
-    let runtime = BaoRuntime::new(BaoConfig::default())?;
-    println!("[04-crawler] BaoRuntime ready");
+    let runtime = BrowserRuntime::new(BaoConfig::default())?;
+    println!("[04-crawler] BrowserRuntime ready");
     let page = runtime.create_page(&PageConfig::default())?;
 
     // 2. 导航

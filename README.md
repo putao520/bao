@@ -79,8 +79,11 @@ bao-core = "0.1.5"
 ```
 
 ```rust
-use bao::{BaoConfig, BaoRuntime};
+use bao::{BaoConfig, BrowserRuntime};
 ```
+
+The Node/Bun host runtime entry is `bao::runtime::NodeRuntime` (the old
+`BaoRuntime` name remains as a deprecated alias on both faces through 0.x).
 
 ### Entry 1 — Node/Bun-style system runtime without a page
 
@@ -92,18 +95,18 @@ bao::runtime::*
 
 This is the path for Node/Bun-style modules and system APIs when Web/DOM is not part of the task.
 
-> **Two `BaoRuntime` types currently exist:** `bao::runtime::BaoRuntime` is the Node/Bun API host, while top-level `bao::BaoRuntime` is the unified browser coordinator. This naming is an alpha-era API constraint and may evolve.
+> **Naming (resolved 2026-09-29):** `bao::runtime::NodeRuntime` is the Node/Bun API host; top-level `bao::BrowserRuntime` is the unified browser coordinator. The old `BaoRuntime` name exists only as a deprecated alias and is removed in 1.0.
 
 ### Entry 2 — add Web/DOM when the task needs it
 
-Top-level `BaoRuntime` gives the Rust host access to Servo pages. The important point is that Web capability stays inside the same Bao stack rather than requiring a Node → Playwright → Chromium sidecar chain.
+Top-level `BrowserRuntime` gives the Rust host access to Servo pages. The important point is that Web capability stays inside the same Bao stack rather than requiring a Node → Playwright → Chromium sidecar chain.
 
 ```rust,no_run
 use std::time::Duration;
-use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig, PageState, ScreenshotFormat};
+use bao::{BaoConfig, BrowserRuntime, BrowserError, PageConfig, PageState, ScreenshotFormat};
 
 fn main() -> Result<(), BrowserError> {
-    let runtime = BaoRuntime::new(BaoConfig::default())?;
+    let runtime = BrowserRuntime::new(BaoConfig::default())?;
     let page = runtime.create_page(&PageConfig::default())?;
 
     page.navigate("https://example.com")?;
@@ -126,9 +129,9 @@ fn main() -> Result<(), BrowserError> {
 
 ```rust,no_run
 # use std::time::Duration;
-# use bao::{BaoConfig, BaoRuntime, BrowserError, PageConfig};
+# use bao::{BaoConfig, BrowserRuntime, BrowserError, PageConfig};
 # fn main() -> Result<(), BrowserError> {
-#     let runtime = BaoRuntime::new(BaoConfig::default())?;
+#     let runtime = BrowserRuntime::new(BaoConfig::default())?;
 #     let page = runtime.create_page(&PageConfig::default())?;
 #     page.navigate("https://example.com")?;
 #     page.wait_for_pipeline_ready(Duration::from_secs(30))?;
@@ -152,10 +155,10 @@ The page's own JavaScript does **not** get those system capabilities. Bao separa
 Bao also exposes a CDP server and a Playwright-style Rust client. The same client abstraction can connect in-process through `memory://bao` or over WebSocket.
 
 ```rust,no_run
-use bao::{BaoConfig, BaoRuntime, Browser, BrowserError, ConnectError};
+use bao::{BaoConfig, BrowserRuntime, Browser, BrowserError, ConnectError};
 
 fn start_runtime_with_cdp() -> Result<(), BrowserError> {
-    let _runtime = BaoRuntime::new(BaoConfig {
+    let _runtime = BrowserRuntime::new(BaoConfig {
         cdp_port: Some(9222),
         ..BaoConfig::default()
     })?;
@@ -218,7 +221,7 @@ The first SpiderMonkey build is cached afterwards. See repository build document
 | `bao-engine` / `bun-sm` | SpiderMonkey engine layer |
 | `bun-runtime` | Node.js/Bun-style system runtime host |
 | `bun-*` | Rust-native base layers: HTTP, resolver, install, crypto-related plumbing, bundler pieces, etc. |
-| `bao-browser` | Servo embedding: `BaoRuntime`, `PagePool`, `PageHandle` |
+| `bao-browser` | Servo embedding: `BrowserRuntime`, `PagePool`, `PageHandle` |
 | `bao-cdp` / `bao-cdp-client` | CDP server surface / Playwright-style Rust client |
 | `bao-stealth` | Stealth engine + `StealthProfile` |
 | `bao-mozjs`, `bao-mozjs-sys`, `bao-mozjs-src-*`, `bao-servo-*`, `bao-stylo`, `bao-ipc-channel` | Maintained runtime/browser dependency family |

@@ -353,7 +353,7 @@ impl core::ops::Deref for ZStr {
 /// BAO_* alias (bao-specific, no Bun counterpart): a `BUN_<SUFFIX>` lookup
 /// that misses the host environment falls back to `BAO_<SUFFIX>`. An explicit
 /// `BUN_<SUFFIX>` always wins — the precedence of the retired
-/// `BaoRuntime::init_env_aliases` `set_var` guard that this read-time
+/// `NodeRuntime::init_env_aliases` `set_var` guard that this read-time
 /// resolution replaces (issue #32 / B0 census row 16): a library constructor
 /// must not mutate the host process environment, so the alias is resolved
 /// here, at the single read primitive every keyed `BUN_*` consumer funnels

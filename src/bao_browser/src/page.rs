@@ -1400,7 +1400,7 @@ impl PageHandle {
 
     /// Access the page's BaoWebViewState for Worker lifecycle management.
     ///
-    /// Used by BaoRuntime::create_worker to access Worker tracking,
+    /// Used by BrowserRuntime::create_worker to access Worker tracking,
     /// channel bridges, and scope states.
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]

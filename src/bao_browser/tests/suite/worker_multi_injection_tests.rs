@@ -41,7 +41,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use bao_stealth::StealthProfile;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -105,10 +105,10 @@ fn unquote_bridge(mut s: String) -> String {
     s
 }
 
-/// Create a live BaoRuntime + one stealth page.
-fn live_page(profile: StealthProfile) -> (BaoRuntime, bao_browser::PageHandle) {
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+/// Create a live BrowserRuntime + one stealth page.
+fn live_page(profile: StealthProfile) -> (BrowserRuntime, bao_browser::PageHandle) {
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some("about:blank".into()),

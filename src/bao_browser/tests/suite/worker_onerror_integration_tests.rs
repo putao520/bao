@@ -8,7 +8,7 @@
 //   error, servo dispatches a DOM `ErrorEvent` to the Worker's owner (the main
 //   thread), carrying `message` / `filename` / `lineno` / `colno`.
 //
-//   These tests exercise that path end-to-end against a live `BaoRuntime` +
+//   These tests exercise that path end-to-end against a live `BrowserRuntime` +
 //   `PageHandle`. They register a Worker (via `data:` URL script) that throws,
 //   then capture the resulting `ErrorEvent` on the main thread and assert all
 //   four SPEC-mandated fields are present and well-formed.
@@ -27,14 +27,14 @@
 // Runtime sharing (BCE-20260627-009): Servo is a single-instance architecture
 // with process-global OnceLock singletons. Even with the idempotent servo
 // patches (async_runtime / PipelineNamespace / fetch_thread / opts), running
-// multiple tests concurrently each spawning their own BaoRuntime would still
+// multiple tests concurrently each spawning their own BrowserRuntime would still
 // race on servo's thread-local state and resource threads. We serialize all
 // servo-touching tests in this binary via a global Mutex so only ONE runs at
-// a time; the servo patches make BaoRuntime::new safe to call repeatedly.
+// a time; the servo patches make BrowserRuntime::new safe to call repeatedly.
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -59,7 +59,7 @@ fn should_skip() -> bool {
 
 /// Acquire the global serializer lock. Hold for the full test duration.
 /// The servo idempotent patches (BCE-20260627-009) make repeated
-/// BaoRuntime::new safe; this lock only prevents concurrent servo instances.
+/// BrowserRuntime::new safe; this lock only prevents concurrent servo instances.
 fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     // The Mutex is a static, so the guard is tied to the process lifetime
     // for soundness of the transmute; we keep it 'static to allow returning it.
@@ -251,7 +251,7 @@ fn servo_native_worker_executes_probe() {
     }
     let _guard = lock_serializer();
 
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -324,7 +324,7 @@ fn servo_native_onerror_fires_on_script_error() {
     }
     let _guard = lock_serializer();
 
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -380,7 +380,7 @@ fn servo_native_onerror_error_event_fields() {
     }
     let _guard = lock_serializer();
 
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -446,7 +446,7 @@ fn servo_native_onerror_message_contains_error_text() {
     }
     let _guard = lock_serializer();
 
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");

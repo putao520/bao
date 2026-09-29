@@ -19,8 +19,8 @@
 //   - WorkerMessageDirection / WorkerMessageEvent
 //   - WorkerDrainResult (crash-safe drain)
 //
-// NOTE: These are pure data-type and channel tests — no servo/BaoRuntime required.
-// Integration tests that require a live BaoRuntime are in bce004_repro_tests.rs / bce004_stress_tests.rs.
+// NOTE: These are pure data-type and channel tests — no servo/BrowserRuntime required.
+// Integration tests that require a live BrowserRuntime are in bce004_repro_tests.rs / bce004_stress_tests.rs.
 
 #![allow(dead_code)]
 

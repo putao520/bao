@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PageState};
 use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::bridge_channel;
 use bao_stealth::StealthProfile;
@@ -28,7 +28,7 @@ use bun_uws::ws_client::{RecvOutcome, WebSocketClient};
 use cdp_server::{CdpServer, ServerConfig};
 use serde_json::{json, Value};
 
-/// Browser boots are serialized within this binary: two servo BaoRuntimes
+/// Browser boots are serialized within this binary: two servo BrowserRuntimes
 /// racing in one process competes for the single embedder slot — the failure
 /// would be flaky infra, not the class under test.
 static BOOT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -73,7 +73,7 @@ fn wait_thread_alive(page: &PageHandle, max_ms: u64) -> bool {
 }
 
 fn create_opaque_page(
-    runtime: &BaoRuntime,
+    runtime: &BrowserRuntime,
     url: &str,
 ) -> Result<PageHandle, String> {
     // Retries mirror the established e2e harness: WebView creation can
@@ -117,7 +117,7 @@ fn opaque_origin_startup_survives_throwing_accessors() {
     let _guard = boot_lock();
     bun_core::Output::init_test();
 
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
 
     let data_url = "data:text/html,<html><body><p>opaque</p></body></html>";
     let urls: [&str; 6] = [
@@ -199,7 +199,7 @@ fn cdp_answers_on_opaque_origin_page() {
     let _guard = boot_lock();
     bun_core::Output::init_test();
 
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = create_opaque_page(&runtime, "data:text/html,<html><body><p>cdp</p></body></html>")
         .expect("create_page(data:)");
     assert!(

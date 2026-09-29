@@ -1,7 +1,7 @@
 // @trace TEST-STL-E2E-CLICK-HUMAN [req:REQ-STL-006] [level:e2e]
 // Real-world human-like click timing E2E test.
 //
-// Launches BaoRuntime (servo), opens a local test page that records mousedown
+// Launches BrowserRuntime (servo), opens a local test page that records mousedown
 // and mouseup event timestamps, uses `BehaviorSimulator::generate_click_sequence`
 // to compute multiple human-like clicks, dispatches each event sequence into
 // the real servo page, and reads back the recorded timestamps to assert:
@@ -12,12 +12,12 @@
 //
 // Graceful strategy:
 //   - Requires real servo runtime + display server. Absent either (or
-//     BaoRuntime::new fails) → `[skip]` + return.
+//     BrowserRuntime::new fails) → `[skip]` + return.
 //   - Local `data:text/html` test page — NO external network required.
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState};
 use bao_stealth::{BehaviorConfig, BehaviorSimulator};
 use std::time::{Duration, Instant};
 
@@ -175,13 +175,13 @@ fn click_human_e2e() {
         eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
         return;
     }
-    // Guard 3: BaoRuntime::new may fail in environments lacking servo runtime deps
+    // Guard 3: BrowserRuntime::new may fail in environments lacking servo runtime deps
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                "[skip] BrowserRuntime::new failed (likely missing servo runtime): {}",
                 e
             );
             return;

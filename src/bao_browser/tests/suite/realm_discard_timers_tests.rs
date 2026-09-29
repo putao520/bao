@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
 
 const TITLE_A: &str = "realm-discard-a";
 const TITLE_B: &str = "realm-discard-b";
@@ -249,7 +249,7 @@ fn same_domain_nav_discards_old_realm_bao_timers() {
         return;
     }
     let fixture = DiscardFixture::spawn();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -375,7 +375,7 @@ fn same_domain_nav_churn_no_timer_accumulation() {
         return;
     }
     let fixture = DiscardFixture::spawn();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -489,7 +489,7 @@ fn cross_host_nav_and_page_close_no_regression() {
         return;
     }
     let fixture = DiscardFixture::spawn();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -616,7 +616,7 @@ fn cross_host_nav_and_page_close_no_regression() {
 #[test]
 fn page_discard_inflight_completion_never_reenters_js() {
     let fixture = DiscardFixture::spawn();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");
@@ -733,7 +733,7 @@ fn page_discard_inflight_completion_never_reenters_js() {
 #[test]
 fn offline_render_resolve_suppressed_after_discard() {
     let fixture = DiscardFixture::spawn();
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");

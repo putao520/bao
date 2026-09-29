@@ -4,7 +4,7 @@
 //   - R52 `fetch_async::THREAD_WAKEUP_BRIDGE` (thread-wakeup lookup)
 // Both are process-global `OnceLock<fn>` registries whose setters enforce:
 // a re-registration with the SAME fn pointer is an idempotent no-op (the
-// documented multi-runtime shape — every BaoRuntime registers the same
+// documented multi-runtime shape — every NodeRuntime registers the same
 // zero-capture forwarder), while a re-registration with a DIFFERENT fn
 // pointer is real semantic drift and fails closed under `debug_assertions`.
 //

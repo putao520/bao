@@ -261,7 +261,7 @@ nt.test('cjs-fails', function() { throw new Error('boom-cjs'); });
     )
     .expect("write temp CJS test file");
 
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     let report = rt
         .run_test_file(path.to_str().unwrap())
         .expect("run_test_file must succeed");
@@ -282,8 +282,8 @@ nt.test('cjs-fails', function() { throw new Error('boom-cjs'); });
 #[test]
 fn runner_eval_then_run_registered_tests_executes() {
     // Same primitives as `bao test -e` (cli.rs): eval the code, then drive
-    // the registered suites via BaoRuntime::run_registered_tests.
-    let mut rt = bun_runtime::BaoRuntime::new().expect("BaoRuntime");
+    // the registered suites via NodeRuntime::run_registered_tests.
+    let mut rt = bun_runtime::NodeRuntime::new().expect("NodeRuntime");
     rt.eval(
         r#"
 process.argv[1] = 'test';

@@ -14,7 +14,7 @@
 //! Strategy: seeded PRNG for deterministic reproduction.
 //! Each "round" picks a random action and executes it.
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool, PageState};
 use bao_stealth::StealthProfile;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -216,7 +216,7 @@ const CHAOS_ROUNDS: usize = 150;
 
 #[test]
 fn pagepool_chaos_memory_safety() {
-    // Graceful skip: this test exercises the full servo runtime via BaoRuntime::new(),
+    // Graceful skip: this test exercises the full servo runtime via BrowserRuntime::new(),
     // which requires a display server (X11/Wayland/Xvfb) and the real servo backend.
     // Skip silently-but-visibly when the environment is unavailable so that the test
     // never fails in headless CI sandboxes, yet still runs the full chaos loop when
@@ -236,9 +236,9 @@ fn pagepool_chaos_memory_safety() {
         idle_ttl: Duration::from_secs(5),
         ..Default::default()
     };
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
     let mut rng = Rng::seed(0xDEADBEEFCAFEBABEu64);

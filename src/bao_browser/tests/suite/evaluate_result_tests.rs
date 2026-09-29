@@ -406,7 +406,7 @@ fn evaluate_result_exported_from_crate() {
 // callers — CDP Runtime.evaluate / CLI / tests — with no actionable text).
 // ═══════════════════════════════════════════════════════════════════════
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use std::time::{Duration, Instant};
 
 fn wait_for_load_and_drain(pool_page: &bao_browser::PageHandle, max_ms: u64) {
@@ -427,8 +427,8 @@ fn wait_for_load_and_drain(pool_page: &bao_browser::PageHandle, max_ms: u64) {
 // @trace REQ-SEC-002 [level:e2e]
 fn evaluate_js_error_path_carries_real_exception_text() {
     // servo Opts is a per-process singleton — single #[test] for all asserts.
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("BaoRuntime::new failed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("BrowserRuntime::new failed");
     let pool: &PagePool = runtime.page_pool();
     let page = pool
         .create_page(&PageConfig {

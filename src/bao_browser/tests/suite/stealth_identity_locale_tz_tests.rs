@@ -41,7 +41,7 @@ mod common;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use bao_stealth::StealthProfile;
 
 /// Serializes servo-touching phases inside one isolated test process.
@@ -114,8 +114,8 @@ fn stealth_identity_locale_tz_precision_live() {
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
     // ── ① Profiled page: default identity en-US / UTC / 100µs ──────────
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page_a = runtime
         .create_page(&PageConfig {
             url: None,

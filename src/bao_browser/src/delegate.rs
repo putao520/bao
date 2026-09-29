@@ -1875,7 +1875,7 @@ impl From<&bao_stealth::StealthProfile> for SharedWorkerScopeConfig {
 // AutoCloseWorker is an RAII guard that ensures a Worker is terminated
 // when the guard is dropped. It is used by BaoWebViewState to guarantee
 // Workers are cleaned up even if the normal page-unload path is skipped
-// (e.g., during BaoRuntime::drop or panic unwinding).
+// (e.g., during BrowserRuntime::drop or panic unwinding).
 
 /// RAII guard that terminates a Worker when dropped.
 ///
@@ -1938,7 +1938,7 @@ impl Drop for AutoCloseWorker {
         // @trace REQ-BRW-004 [entity:Worker] [criterion:10] [criterion:18]
         // Crash-safe teardown on drop (RAII guarantee).
         //
-        // When AutoCloseWorker is dropped (page unload, BaoRuntime::drop,
+        // When AutoCloseWorker is dropped (page unload, BrowserRuntime::drop,
         // or panic unwinding), we perform crash-safe teardown:
         // 1. Set the closing flag (signals worker event loop to exit)
         // 2. Unregister the Worker's stealth profile from REALM_PROFILES
@@ -1969,7 +1969,7 @@ impl Drop for AutoCloseWorker {
         // @trace REQ-BRW-004 [criterion:18] mark terminated (RAII guarantee)
         // Mark terminated as RAII guarantee — the guard is the last line of defense.
         // In the normal terminate_all_workers() flow, this runs after thread join.
-        // In the RAII Drop path (panic/BaoRuntime::drop), this is the final cleanup.
+        // In the RAII Drop path (panic/BrowserRuntime::drop), this is the final cleanup.
         self.handle.mark_terminated();
     }
 }

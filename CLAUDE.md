@@ -78,7 +78,7 @@ Bun workspace 中 ~85 个纯 Rust crate(零 JSC)是经过生产验证的高性�
 | 用户品牌 | `bao`(`bao run` / `bao test` / `bao browser`) |
 | JS 全局对象 | `Bun.*`(保留) + `Bao.*`(别名,同一对象) |
 | 内部 Rust crate | `bun_*` 不改(保持上游兼容);`bao_*` 是新建层 |
-| 环境变量 | `BUN_*`(保留) + `BAO_*`(新增别名,`BaoRuntime::new()` 调用 `init_env_aliases()` 把 `BAO_<SUFFIX>` 复制到 `BUN_<SUFFIX>`) |
+| 环境变量 | `BUN_*`(保留) + `BAO_*`(新增别名,`NodeRuntime::new()` 调用 `init_env_aliases()` 把 `BAO_<SUFFIX>` 复制到 `BUN_<SUFFIX>`) |
 | 代码引用 | 保留所有 Bun 内部引用 |
 
 原则:用户输入 `bao`,代码里还是 `bun`。最小化与上游 Bun 的 diff。
@@ -114,8 +114,8 @@ Bun workspace 中 ~85 个纯 Rust crate(零 JSC)是经过生产验证的高性�
 |-------|------|------|
 | `bao` | `src/bao` | **对外唯一公共 lib**：整栈 re-export（引擎+浏览器+runtime+CDP+Stealth 始终链接，无产品 feature 拆分） |
 | `bao_engine` | `src/bao_engine` | SpiderMonkey 引擎封装,re-export `bun_sm` 核心类型;`context` + `job_queue` 自有模块 |
-| `bao_runtime` | `src/bao_runtime`(crate 名 `bun_runtime`) | Node.js/Bun API 兼容层;`BaoRuntime`(Node.js 运行时入口) |
-| `bao_browser` | `src/bao_browser` | servo 集成桥;`BaoRuntime`(浏览器运行时) + `PagePool` + `PageHandle` + `BaoServoDelegate` |
+| `bao_runtime` | `src/bao_runtime`(crate 名 `bun_runtime`) | Node.js/Bun API 兼容层;`NodeRuntime`(Node.js 运行时入口;旧名 `BaoRuntime` deprecated alias) |
+| `bao_browser` | `src/bao_browser` | servo 集成桥;`BrowserRuntime`(浏览器运行时;旧名 `BaoRuntime` deprecated alias) + `PagePool` + `PageHandle` + `BaoServoDelegate` |
 | `bao_cdp` | `src/bao_cdp` | CDP Server(`cdp-server` crate)+ servo 桥(`ServoTargetProvider` / `CDPRdpBridge`) |
 | `bao_cdp_client` | `src/bao_cdp_client` | Playwright 风格高层 API(`Browser::connect("memory://bao" | "ws://...")`) |
 | `bao_stealth` | `src/bao_stealth` | 反指纹引擎;`StealthProfile` + `StealthEngine`(TLS/HTTP2/Canvas/Navigator/WebGL/Audio/Behavior) |

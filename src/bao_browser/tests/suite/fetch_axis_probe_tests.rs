@@ -46,7 +46,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
 
 // ---------------------------------------------------------------------------
 // Minimal H1 fixture: per-path responder + server-side hit log
@@ -191,7 +191,7 @@ fn fetch_axis_probe_b_absolute() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -244,7 +244,7 @@ fn fetch_axis_probe_b_relative() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -291,7 +291,7 @@ fn fetch_axis_probe_t_settimeout() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -332,7 +332,7 @@ fn fetch_axis_probe_urlshape_double_slash() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -388,7 +388,7 @@ fn fetch_axis_probe_query_string_xhr() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),
@@ -447,7 +447,7 @@ fn fetch_axis_probe_c_worker_realm() {
         return;
     }
     let fixture = H1ProbeFixture::spawn();
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(fixture.url("/")),

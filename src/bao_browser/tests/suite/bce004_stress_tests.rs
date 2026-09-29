@@ -1,4 +1,4 @@
-// BCE-20260622-004 — STRESS: aggressive multi-nav within ONE BaoRuntime
+// BCE-20260622-004 — STRESS: aggressive multi-nav within ONE BrowserRuntime
 // to disprove (or reproduce) the "second nav SIGSEGV" claim with high confidence.
 //
 // 10 sequential navigations, mix of fingerprint + non-fingerprint sites,
@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, WorkerHandle};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, WorkerHandle};
 use bao_stealth::StealthProfile;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -62,7 +62,7 @@ fn bce004_stress_ten_navigations() {
         eprintln!("[skip] no DISPLAY");
         return;
     }
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init: {e}");

@@ -1,4 +1,4 @@
-// @trace REQ-ENG-007 [entity:BaoRuntime]
+// @trace REQ-ENG-007 [entity:NodeRuntime]
 use ::std::cell::RefCell;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
@@ -1723,7 +1723,7 @@ unsafe extern "C" fn crypto_get_random_values(
 }
 
 // --- createCipheriv / createDecipheriv ---
-// @trace REQ-ENG-007 [entity:BaoRuntime] [api:node:crypto createCipheriv/createDecipheriv]
+// @trace REQ-ENG-007 [entity:NodeRuntime] [api:node:crypto createCipheriv/createDecipheriv]
 // Real BoringSSL ciphers via bao_crypto::cipher. Per-instance state stored in a
 // thread-local registry keyed by a serial-number hidden on the JS object, so two
 // concurrent cipher objects have independent state (required by test_crypto_cipher.js).

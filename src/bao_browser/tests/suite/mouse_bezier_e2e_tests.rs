@@ -1,7 +1,7 @@
 // @trace TEST-STL-E2E-MOUSE-BEZIER [req:REQ-STL-006] [level:e2e]
 // Real-world mouse Bezier path E2E test.
 //
-// Launches BaoRuntime (servo), opens a local test page that records mousemove
+// Launches BrowserRuntime (servo), opens a local test page that records mousemove
 // events, uses `BehaviorSimulator::generate_human_mouse_path` to compute a
 // cubic-Bezier trajectory, dispatches each point into the real servo page, and
 // then reads back the recorded path from the page to assert that:
@@ -11,7 +11,7 @@
 //
 // Graceful strategy:
 //   - This test requires a real servo runtime (and DISPLAY server). If either
-//     is absent (BAO_TEST_REAL_SERVO != 1, no DISPLAY, BaoRuntime::new fails),
+//     is absent (BAO_TEST_REAL_SERVO != 1, no DISPLAY, BrowserRuntime::new fails),
 //     the test prints `[skip]` and returns without fail.
 //   - The local `data:text/html` test page is fully self-contained — NO external
 //     network access required.
@@ -21,7 +21,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState};
 use bao_stealth::{BehaviorConfig, BehaviorSimulator};
 use std::time::{Duration, Instant};
 
@@ -166,13 +166,13 @@ fn mouse_bezier_e2e() {
         eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
         return;
     }
-    // Guard 3: BaoRuntime::new may fail in environments lacking servo runtime deps
+    // Guard 3: BrowserRuntime::new may fail in environments lacking servo runtime deps
     let config = BaoConfig::default();
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "[skip] BaoRuntime::new failed (likely missing servo runtime): {}",
+                "[skip] BrowserRuntime::new failed (likely missing servo runtime): {}",
                 e
             );
             return;

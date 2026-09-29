@@ -56,11 +56,11 @@ fn create_resolver() -> Resolver<'static> {
 
 /// Install THIS runtime's resolver root (B1 census row 27): re-seed the
 /// thread's top-level-dir overlay with the constructing runtime's own cwd, so
-/// a second BaoRuntime created in a different directory reads its own root
+/// a second NodeRuntime created in a different directory reads its own root
 /// instead of the first runtime's (`install()` itself stays thread-once for
 /// the thread-local `Resolver`, so the per-runtime reseed lives here).
 ///
-/// Called once per `BaoRuntime::new()` AFTER engine init succeeds — same
+/// Called once per `NodeRuntime::new()` AFTER engine init succeeds — same
 /// publish discipline as `CURRENT_RUNTIME_TOKEN` — and returns the interned
 /// root for the drop-side `clear_current_top_level_dir(dir)` (clear-if-same,
 /// so an older runtime's drop never erases a newer runtime's root).

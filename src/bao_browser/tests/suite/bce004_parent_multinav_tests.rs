@@ -2,7 +2,7 @@
 // sites directly with NO subprocess workaround, NO inject_stealth_js-avoidance.
 //
 // This exercises the precise scenario the BCE-002-residual comment claimed was
-// SIGSEGV-deterministic: a single BaoRuntime, multi-page, multi-external-nav,
+// SIGSEGV-deterministic: a single BrowserRuntime, multi-page, multi-external-nav,
 // inject_stealth_js (full implementation), and post-nav evaluate_js_web.
 //
 // PASS = no SIGSEGV. If this passes, the BCE-002-residual SIGSEGV claim has
@@ -14,7 +14,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool};
 use bao_stealth::StealthProfile;
 use std::time::{Duration, Instant};
 
@@ -103,14 +103,14 @@ fn env_ok() -> bool {
     true
 }
 
-/// Single BaoRuntime, single page, ALL fingerprint sites navigated sequentially
+/// Single BrowserRuntime, single page, ALL fingerprint sites navigated sequentially
 /// (the precise "second navigation SIGSEGV" scenario from the original comment).
 #[test]
 fn bce004_parent_multisite_inplace() {
     if !env_ok() {
         return;
     }
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init: {e}");
@@ -181,7 +181,7 @@ fn bce004_parent_multi_page() {
     if !env_ok() {
         return;
     }
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init: {e}");

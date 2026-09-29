@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool, PageState};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool, PageState};
 use common::h2_server::H2Server;
 
 // ---------------------------------------------------------------------------
@@ -263,9 +263,9 @@ fn page_net_bun_full_destination_matrix() {
         ignore_certificate_errors: true,
         ..BaoConfig::default()
     };
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
 

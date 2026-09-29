@@ -19,8 +19,8 @@ fn main() -> Result<(), BrowserError> {
     println!("[03-node-dom] Writing a local file via Rust std::fs ...");
 
     // 2. 创建 runtime + page
-    let runtime = BaoRuntime::new(BaoConfig::default())?;
-    println!("[03-node-dom] BaoRuntime ready");
+    let runtime = BrowserRuntime::new(BaoConfig::default())?;
+    println!("[03-node-dom] NodeRuntime ready");
     let page = runtime.create_page(&PageConfig::default())?;
     println!("[03-node-dom] Page created (id={})", page.id());
 

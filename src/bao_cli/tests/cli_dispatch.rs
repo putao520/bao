@@ -237,15 +237,15 @@ fn internal_crate_names_remain_bun_prefixed() {
     // 这行 use 立即编译失败, 阻断违约。
     use bun_runtime as _proof_bun_runtime_dep;
 
-    // 进一步: 证明 BaoRuntime 类型仍由 bun_runtime 提供 (而非 bao_runtime)。
+    // 进一步: 证明 NodeRuntime 类型仍由 bun_runtime 提供 (而非 bao_runtime)。
     // 这固化了「bao 是用户品牌, bun 是内部 crate」的契约。
-    fn _type_witness(_: &bun_runtime::BaoRuntime) {}
+    fn _type_witness(_: &bun_runtime::NodeRuntime) {}
     let _ = _type_witness;
 
     // 模块路径证据: install.rs 里 `use bun_runtime::force_link_bun_install;`
     // 也依赖 bun_runtime。我们无法从测试直接验证 install.rs 的 use (private),
     // 但 bao_cli 整体编译通过即证明 bun_runtime 依赖链完整。
-    let _ = _proof_bun_runtime_dep::BaoRuntime::new;
+    let _ = _proof_bun_runtime_dep::NodeRuntime::new;
 }
 
 /// @trace REQ-CLI-001 [test:TEST-CLI-001]
@@ -316,14 +316,14 @@ fn bao_bin_can_forward_to_cli_run() {
 ///
 /// 别名在读取层解析 (issue #32 / B0 census row 16): `bun_core::getenv_z`
 /// 对未命中的 `BUN_<SUFFIX>` 回退读 `BAO_<SUFFIX>` (显式 BUN_ 恒胜);
-/// `BaoRuntime::new()` 不再把 BAO_* 经 `init_env_aliases` 物化进宿主 env
+/// `NodeRuntime::new()` 不再把 BAO_* 经 `init_env_aliases` 物化进宿主 env
 /// (该 set_var 机制已删除 — 库构造器禁止改写宿主进程 env)。
 /// JS 枚举面 (process.env 快照, bun_api.rs `populate_process_object`) 对每个
 /// 无显式 `BUN_<SUFFIX>` 的 `BAO_<SUFFIX>` 额外以 `BUN_<SUFFIX>` 为名定义
 /// JS 属性取 BAO_ 值 (纯 JS 对象操作, 零宿主 env 写入)。
 ///
 /// 对抗意图: 端到端验证「消费者读到值」。设置唯一的 BAO_TEST_xxx env,
-/// 构造 BaoRuntime, 然后断言 JS 消费者 (`process.env.BUN_TEST_xxx`) 读到
+/// 构造 NodeRuntime, 然后断言 JS 消费者 (`process.env.BUN_TEST_xxx`) 读到
 /// 别名值 — 这是 BUN_* 上游生态消费路径 (CLAUDE.md: BUN_* 保留 +
 /// BAO_* 新增别名) 的可执行证据 (而非主观声明)。
 ///
@@ -360,11 +360,11 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
         std::env::set_var(&unique, value);
     }
 
-    // 构造 BaoRuntime — 新语义下构造器零宿主 env 写入, 别名在读取层
+    // 构造 NodeRuntime — 新语义下构造器零宿主 env 写入, 别名在读取层
     // (getenv_z) + JS 枚举面 (process.env 快照) 解析。
     // 若 SpiderMonkey 初始化失败 (环境缺库), skip 而非 fail —
     // 本测试验证的是 env 别名机制, 不是 SpiderMonkey 可用性。
-    let mut rt = match bun_runtime::BaoRuntime::new() {
+    let mut rt = match bun_runtime::NodeRuntime::new() {
         Ok(rt) => rt,
         Err(_) => {
             // 清理后跳过: 无法证明别名机制, 但也不应误报 fail。
@@ -373,7 +373,7 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
                 std::env::remove_var(&bun_key);
             }
             eprintln!(
-                "skip: BaoRuntime::new() failed (SpiderMonkey init), \
+                "skip: NodeRuntime::new() failed (SpiderMonkey init), \
                        cannot verify BAO_*→BUN_* alias at runtime"
             );
             return;
@@ -399,7 +399,7 @@ fn bao_env_vars_aliased_to_bun_at_runtime_init() {
     // 负向: 宿主进程 env 未被物化 (库构造器零 set_var)。
     assert!(
         std::env::var(&bun_key).is_err(),
-        "BaoRuntime::new() must NOT materialize '{}' into the host process env",
+        "NodeRuntime::new() must NOT materialize '{}' into the host process env",
         bun_key
     );
 
@@ -444,14 +444,14 @@ fn bao_env_vars_do_not_override_existing_bun_vars() {
         std::env::set_var(&unique, "bao_alias_value");
     }
 
-    let mut rt = match bun_runtime::BaoRuntime::new() {
+    let mut rt = match bun_runtime::NodeRuntime::new() {
         Ok(rt) => rt,
         Err(_) => {
             unsafe {
                 std::env::remove_var(&unique);
                 std::env::remove_var(&bun_key);
             }
-            eprintln!("skip: BaoRuntime::new() failed, cannot verify no-override");
+            eprintln!("skip: NodeRuntime::new() failed, cannot verify no-override");
             return;
         }
     };

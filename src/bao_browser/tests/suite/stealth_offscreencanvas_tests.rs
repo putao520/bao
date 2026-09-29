@@ -38,7 +38,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use bao_stealth::StealthProfile;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -106,11 +106,11 @@ fn unquote_bridge(mut s: String) -> String {
     s
 }
 
-/// Create a live BaoRuntime + one page with the given stealth profile.
+/// Create a live BrowserRuntime + one page with the given stealth profile.
 /// Fails the test (not skip) once the gated environment has been established.
-fn live_page(profile: Option<StealthProfile>) -> (BaoRuntime, bao_browser::PageHandle) {
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+fn live_page(profile: Option<StealthProfile>) -> (BrowserRuntime, bao_browser::PageHandle) {
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some("about:blank".into()),
@@ -694,7 +694,7 @@ fn c14_window_realm_webgl2_control_probe_works() {
 
 // ═══════════════════════════════════════════════════════════════════════
 // §6 e36 BCE regression — double stealth injection dead-loop. Root cause:
-// PagePool::create_page AND BaoRuntime::create_page each injected, so the
+// PagePool::create_page AND BrowserRuntime::create_page each injected, so the
 // second install_webgl_override stored the FIRST pass's JS hook into
 // __originalGetParameter__; every un-intercepted getParameter (0x1F02
 // VERSION, 0x8B8C GLSL_ES_VERSION, and ALL other non-intercepted enums)

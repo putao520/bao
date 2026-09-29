@@ -17,7 +17,7 @@ use crate::require::cache_builtin;
 // UDP socket registry: fd -> (owner runtime token, UdpSocket)
 //
 // Owner stamping (B1, 用户裁决 2026-09-17 A): sockets bound while a
-// BaoRuntime is alive on this thread are stamped with that runtime's token
+// NodeRuntime is alive on this thread are stamped with that runtime's token
 // (`crate::runtime::current_runtime_token()`) and are terminated — fd closed,
 // registry entry removed — by `cleanup_for_token` when the runtime drops.
 // `owner == 0` = created outside any runtime = process-shared, exempt from
@@ -40,12 +40,12 @@ fn registry(
 ///   the JS `socket.close()` → `__dgram_close` → registry-remove → drop
 ///   sequence uses; UDP is connectionless, so remove+drop IS the graceful
 ///   close (there is no separate shutdown state to run first).
-/// - `owner == 0` entries (created outside any BaoRuntime) are exempt.
+/// - `owner == 0` entries (created outside any NodeRuntime) are exempt.
 /// - Per-token isolation: only `token`'s entries are touched — sockets
 ///   registered by other live runtimes stay open and usable.
 ///
 /// Returns the number of sockets terminated. Called from
-/// `crate::runtime::cleanup_runtime_resources` on `BaoRuntime::drop`.
+/// `crate::runtime::cleanup_runtime_resources` on `NodeRuntime::drop`.
 pub(crate) fn cleanup_for_token(token: u64) -> usize {
     let mut reg = registry().lock().unwrap();
     let before = reg.len();
@@ -87,7 +87,7 @@ unsafe extern "C" fn dgram_bind(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
                     .unwrap()
             });
             // Stamp the creating runtime's token (0 = process-shared when no
-            // BaoRuntime is alive on this thread); see UDP_REGISTRY doc.
+            // NodeRuntime is alive on this thread); see UDP_REGISTRY doc.
             let owner = crate::runtime::current_runtime_token().unwrap_or(0);
             registry().lock().unwrap().insert(fd, (owner, sock));
             let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));

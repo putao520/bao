@@ -54,7 +54,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -262,8 +262,8 @@ fn c19_sw_mediates_page_fetch_end_to_end_live() {
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_script(SW_SCRIPT_JS.to_owned());
 
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some(origin.clone()),

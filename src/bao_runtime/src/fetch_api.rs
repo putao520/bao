@@ -1,4 +1,4 @@
-// @trace REQ-ENG-001 [entity:BaoRuntime] [api:fetch]
+// @trace REQ-ENG-001 [entity:NodeRuntime] [api:fetch]
 // @trace REQ-ENG-006 REQ-STL-001
 // fetch() entry point. The WHATWG Headers/Request/Response classes live in
 // web_fetch_classes.rs (full JS implementations installed by

@@ -25,7 +25,7 @@
 // 网络 navigate(https://example.com)用 graceful skip + BAO_TEST_NETWORK=1 启用。
 
 use bao_browser::{
-    BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState, ScreenshotFormat,
+    BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState, ScreenshotFormat,
 };
 use std::time::{Duration, Instant};
 
@@ -89,9 +89,9 @@ fn wait_for_load(page: &PageHandle, max_ms: u64) {
 // @trace REQ-BRW-002 [level:e2e]
 fn servo_render_pipeline_data_url_default_run() {
     // ── Arrange ────────────────────────────────────────────────────────
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
-        Err(e) => panic!("BaoRuntime::new failed: {}", e),
+        Err(e) => panic!("BrowserRuntime::new failed: {}", e),
     };
     let pool: &PagePool = runtime.page_pool();
     let mut report = Report::default();
@@ -260,7 +260,7 @@ fn servo_render_pipeline_network_example_com() {
     }
 
     // Arrange
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let pool = runtime.page_pool();
 
     // Act

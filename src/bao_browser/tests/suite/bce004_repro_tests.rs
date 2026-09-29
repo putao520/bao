@@ -1,5 +1,5 @@
 // BCE-20260622-004 SIGSEGV reproducer.
-// Minimal: single BaoRuntime, two consecutive external HTTPS navigations.
+// Minimal: single BrowserRuntime, two consecutive external HTTPS navigations.
 // Crashes deterministically (per BCE-002-residual notes) on the SECOND navigation.
 //
 // Usage: cargo test --package bao_browser --test bce004_repro_tests -- --nocapture
@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use std::time::Duration;
 
 fn wait_for_load(page: &bao_browser::PageHandle, max_ms: u64) {
@@ -33,8 +33,8 @@ fn bce004_double_external_navigation() {
         eprintln!("[skip] no DISPLAY");
         return;
     }
-    eprintln!("[bce004] step 1: BaoRuntime::new");
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    eprintln!("[bce004] step 1: BrowserRuntime::new");
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] runtime init failed: {e}");

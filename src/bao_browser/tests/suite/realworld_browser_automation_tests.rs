@@ -3,7 +3,7 @@
 // form interaction, screenshot capture, stealth defaults, page lifecycle.
 //
 // Tests reflect how a real library consumer would use Bao as a drop-in Servo/Bun
-// replacement: high-level `BaoRuntime::new(BaoConfig::default())` setup, then
+// replacement: high-level `BrowserRuntime::new(BaoConfig::default())` setup, then
 // `runtime.page_pool().create_page(&PageConfig { url: Some(...), ..Default::default() })`
 // for one-line page creation with sensible defaults.
 //
@@ -13,7 +13,7 @@
 // in one scenario logs a skip and continues, so partial-environment issues don't
 // mask the scenarios that do work.
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageState, ScreenshotFormat};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageState, ScreenshotFormat};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -399,7 +399,7 @@ fn scenario_screenshot_capture(pool: &bao_browser::PagePool, report: &mut Report
 // expects navigator.webdriver === false and a Firefox UA out of the box.
 //
 // Per CLAUDE.md: "Stealth defaults are ON — install_all() sets stealth defaults
-// automatically." `BaoRuntime::create_page()` calls inject_all_with_profile
+// automatically." `BrowserRuntime::create_page()` calls inject_all_with_profile
 // which is the integration point. We test that integration here.
 //
 // NOTE: this scenario requires the servo event loop to actually execute the
@@ -407,7 +407,7 @@ fn scenario_screenshot_capture(pool: &bao_browser::PagePool, report: &mut Report
 // in this test harness, the scenario is "skipped" not "failed" — the contract
 // is documented and tested in stealth_fingerprint_e2e_tests.rs via JsContext.
 
-fn scenario_stealth_defaults(runtime: &BaoRuntime, report: &mut Report) {
+fn scenario_stealth_defaults(runtime: &BrowserRuntime, report: &mut Report) {
     let name = "scenario_5_stealth_defaults";
 
     let page = match runtime.create_page(&PageConfig {
@@ -601,12 +601,12 @@ fn realworld_browser_automation_e2e() {
         panic!("BaoConfig::default().validate() failed: {e}");
     }
 
-    let runtime = match BaoRuntime::new(config) {
+    let runtime = match BrowserRuntime::new(config) {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("[realworld-e2e] BaoRuntime::new failed: {e}");
+            eprintln!("[realworld-e2e] BrowserRuntime::new failed: {e}");
             eprintln!("[realworld-e2e] (servo init may not be available in this environment)");
-            report.skip("runtime_init", &format!("BaoRuntime::new failed: {e}"));
+            report.skip("runtime_init", &format!("BrowserRuntime::new failed: {e}"));
             report.print();
             // Skip all scenarios — don't fail the test harness.
             // CI environments without a display server may not be able to init servo.

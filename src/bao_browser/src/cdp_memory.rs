@@ -8,8 +8,8 @@
 //! - Pure-protocol domains (`Browser.getVersion`, …) answer instantly.
 //! - Servo-touching commands (`Runtime.evaluate`, `Target.getTargets`
 //!   listing, …) ride the bridge channel to whoever drains it — the
-//!   runtime's event loop (`BaoRuntime::run`) drains it on its own thread.
-//!   When nothing drains (a bare `BaoRuntime::new` consumer that never
+//!   runtime's event loop (`BrowserRuntime::run`) drains it on its own thread.
+//!   When nothing drains (a bare `BrowserRuntime::new` consumer that never
 //!   pumps), those commands fail FAST with an honest timeout error (the
 //!   channel is created with a short timeout) instead of returning
 //!   fabricated results — the bridge-less protocol fallback fabricates
@@ -31,7 +31,7 @@ use bao_cdp_client::transport::in_memory::{InMemoryBridge, InMemoryBridgeRespons
 const UNDRAINED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The host-side bridge installed into `bao_cdp_client`'s process registry
-/// by [`crate::BaoRuntime::new`].
+/// by [`crate::BrowserRuntime::new`].
 pub struct MemoryCdpBridge {
     sender: BridgeSender,
     /// Target used when the client sends no sessionId (flat/single-target
@@ -43,7 +43,7 @@ pub struct MemoryCdpBridge {
 
 impl MemoryCdpBridge {
     /// Create the bridge pair: the sender side for the client registry, and
-    /// the receiver the runtime must drain (`BaoRuntime::run` does).
+    /// the receiver the runtime must drain (`BrowserRuntime::run` does).
     pub fn new(
         default_target: impl Into<String>,
     ) -> (Arc<Self>, bao_cdp::servo_bridge::BridgeReceiver) {
@@ -58,7 +58,7 @@ impl MemoryCdpBridge {
     }
 
     /// Point the flat (sessionId-less) client face at a live page. Called by
-    /// [`crate::BaoRuntime::create_page`] so `memory://` clients without an
+    /// [`crate::BrowserRuntime::create_page`] so `memory://` clients without an
     /// explicit target route to the newest page.
     pub fn set_default_target(&self, target: impl Into<String>) {
         *self.default_target.lock().unwrap() = target.into();

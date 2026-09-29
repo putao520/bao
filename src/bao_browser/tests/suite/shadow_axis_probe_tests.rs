@@ -52,7 +52,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
 
 fn should_skip() -> bool {
     if std::env::var("DISPLAY").unwrap_or_default().is_empty() {
@@ -98,7 +98,7 @@ fn shadow_axis_probe_i_set_immediate_page_realm() {
     if should_skip() {
         return;
     }
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some("data:text/html;charset=utf-8,<html><body>shadow</body></html>".into()),
@@ -172,7 +172,7 @@ fn shadow_axis_probe_q_queue_microtask_order() {
     if should_skip() {
         return;
     }
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some("data:text/html;charset=utf-8,<html><body>shadow</body></html>".into()),
@@ -235,7 +235,7 @@ fn shadow_axis_probe_c_crypto_page_realm() {
     if should_skip() {
         return;
     }
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
             url: Some("data:text/html;charset=utf-8,<html><body>shadow</body></html>".into()),

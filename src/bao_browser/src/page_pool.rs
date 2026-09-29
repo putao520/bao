@@ -121,7 +121,7 @@ impl PagePool {
         // SINGLE injection point for the whole crate (e36 BCE): engine/Web
         // APIs + stealth props + the servo-native Worker-scope callback
         // (page-script `new Worker()` stealth inheritance), exactly ONCE per
-        // page. BaoRuntime::create_page used to run a SECOND
+        // page. BrowserRuntime::create_page used to run a SECOND
         // inject_all_with_profile on the already-injected page; the second
         // install_webgl_override stored the first pass's JS hook into
         // __originalGetParameter__, so every un-intercepted getParameter

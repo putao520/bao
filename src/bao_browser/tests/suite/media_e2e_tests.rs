@@ -1,7 +1,7 @@
 // @trace TEST-BRW-MEDIA-E2E [req:REQ-BRW-001,REQ-BRW-002] [level:e2e]
 // Media domain end-to-end over the REAL servo-media stack: HTMLMediaElement
 // (audio + video semantics) and WebAudio (AudioContext / decodeAudioData /
-// OfflineAudioContext), all through a real page in a real BaoRuntime.
+// OfflineAudioContext), all through a real page in a real BrowserRuntime.
 //
 // Real-path contract under test (no mocks anywhere):
 //
@@ -398,7 +398,7 @@ fn media_domain_e2e_suite() {
 
     let fixture = MediaFixture::spawn();
 
-    let runtime = bao_browser::BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = bao_browser::BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let pool = runtime.page_pool();
 
     let mut page = None;

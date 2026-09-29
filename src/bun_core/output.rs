@@ -271,7 +271,7 @@ thread_local! {
 // Guarded by STDOUT_STREAM_SET (write-once at startup before threads).
 //
 // Contract (B1 census row 29 — documented-accept): the stream targets are
-// process-owned output state, deliberately NOT per-runtime. Every BaoRuntime
+// process-owned output state, deliberately NOT per-runtime. Every NodeRuntime
 // writes to the host process's stdout/stderr (the Node/embedded-runtime
 // convention: `console.log` goes to fd 1/2 of the embedding process). A
 // per-runtime output sink would be a NEW product capability (embedder-captured

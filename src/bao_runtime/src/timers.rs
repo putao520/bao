@@ -369,7 +369,7 @@ pub fn pump_embedder_thread(cx: *mut JSContext) {
 /// Process-global settings-stack runner.
 ///
 /// Contract (B1, first-writer-wins by design): the runner is a **bare `fn`
-/// pointer**, not a boxed closure. Every `BaoRuntime` registers the same
+/// pointer**, not a boxed closure. Every `NodeRuntime` registers the same
 /// zero-capture forwarder (`servo::bao_run_in_script_settings`), so fn
 /// pointers from every runtime compare equal and re-registration is
 /// detectably idempotent. The type is the structural half of the
@@ -381,7 +381,7 @@ static BAO_SETTINGS_RUNNER: ::std::sync::OnceLock<BaoSettingsRunner> =
     ::std::sync::OnceLock::new();
 
 /// Register the process-global settings-stack runner (see the block comment
-/// above). Called by the embedder at runtime init — once per `BaoRuntime`,
+/// above). Called by the embedder at runtime init — once per `NodeRuntime`,
 /// always the same zero-capture forwarder.
 ///
 /// Contract (first-writer-wins by design):
@@ -408,7 +408,7 @@ pub fn register_bao_settings_runner(runner: BaoSettingsRunner) {
         debug_assert!(
             !diverged,
             "BAO_SETTINGS_RUNNER re-registration diverged: contract expects \
-             every BaoRuntime to register the SAME zero-capture \
+             every NodeRuntime to register the SAME zero-capture \
              `servo::bao_run_in_script_settings` forwarder \
              (first-writer-wins by design); a differing fn pointer is real \
              semantic drift, not an idempotent re-register"

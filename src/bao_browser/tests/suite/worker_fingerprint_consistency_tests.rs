@@ -35,7 +35,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use bao_stealth::StealthProfile;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -222,13 +222,13 @@ fn field_diffs(a: &str, b: &str) -> Vec<String> {
     diffs
 }
 
-/// Create a live BaoRuntime + one page with the given stealth profile.
+/// Create a live BrowserRuntime + one page with the given stealth profile.
 /// Fails the test (not skip) once the gated environment has been established.
 fn live_page(
     profile: Option<StealthProfile>,
-) -> (BaoRuntime, bao_browser::PageHandle) {
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+) -> (BrowserRuntime, bao_browser::PageHandle) {
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
     let page = runtime
         .create_page(&PageConfig {
             url: Some("about:blank".into()),
@@ -449,8 +449,8 @@ fn c16_worker_surface_differs_from_no_stealth_baseline() {
     let _guard = lock_serializer();
 
     let profile = StealthProfile::firefox_default();
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .expect("gated live test: BaoRuntime::new must succeed");
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
 
     // ── Phase 1: no-stealth baseline worker (created before any stealth
     //    install runs in this process).

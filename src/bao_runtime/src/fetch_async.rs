@@ -418,7 +418,7 @@ static THREAD_WAKEUP_BRIDGE: ::std::sync::OnceLock<fn() -> Option<ThreadWakeup>>
 /// Register the process-global thread-wakeup LOOKUP fn (called on the
 /// fetch-creating thread; returns that thread's wake closure, if any).
 /// Called by the embedder (bao_browser) at runtime init — once per
-/// `BaoRuntime`, always the same zero-capture lookup.
+/// `NodeRuntime`, always the same zero-capture lookup.
 ///
 /// Contract (first-writer-wins by design):
 /// - the first registration installs (release semantics unchanged);
@@ -441,7 +441,7 @@ pub fn set_thread_wakeup_bridge(lookup: fn() -> Option<ThreadWakeup>) {
         debug_assert!(
             !diverged,
             "THREAD_WAKEUP_BRIDGE re-registration diverged: contract expects \
-             every BaoRuntime to register the SAME zero-capture wake lookup \
+             every NodeRuntime to register the SAME zero-capture wake lookup \
              (first-writer-wins by design); a differing fn pointer is real \
              semantic drift, not an idempotent re-register"
         );

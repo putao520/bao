@@ -12,7 +12,7 @@
 // bao-suite pattern). Each round-trip is observed through a window-side
 // flag set by the page's onmessage, polled via evaluate_js_web.
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool};
 use std::time::{Duration, Instant};
 
 fn wait_for_load_and_drain(pool_page: &bao_browser::PageHandle, max_ms: u64) {
@@ -51,7 +51,7 @@ fn poll_until(
 #[test]
 // @trace ISSUE-23 [level:e2e]
 fn worker_create_postmessage_shutdown_recreate_lifecycle() {
-    let runtime = BaoRuntime::new(BaoConfig::default()).expect("BaoRuntime::new");
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let pool: &PagePool = runtime.page_pool();
     let page = pool
         .create_page(&PageConfig {

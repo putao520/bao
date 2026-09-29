@@ -216,7 +216,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     // `global_setup` runs; without this define, that fallback — which routes
     // error/warn to stdout and drops timer/count output into the `log` crate
     // — shadows this full Node-semantics implementation on every
-    // `BaoRuntime` global. Defining here overrides it (the fallback property
+    // `NodeRuntime` global. Defining here overrides it (the fallback property
     // is writable) so the runtime's single console reaches script code.
     let global = unsafe { CurrentGlobalOrNull(cx.raw_cx()) };
     if !global.is_null() {

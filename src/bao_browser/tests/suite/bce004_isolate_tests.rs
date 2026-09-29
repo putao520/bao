@@ -4,7 +4,7 @@
 // Test 3: single page, evaluate + nav + evaluate (the original sequence)
 
 // @trace BCE-20260627-004 [criterion:REQ-BRW-004-C18] [nfr:NFR-MEMSAF-001]
-// EBUSY regression anchor: this file exercises the BaoRuntime/Servo lifecycle
+// EBUSY regression anchor: this file exercises the BrowserRuntime/Servo lifecycle
 // (create → eval → nav → close) under a single thread. When run with
 // BAO_TEST_NETWORK=1 + DISPLAY, it confirms the mozjs Mutex_posix.cpp EBUSY
 // patch tolerates pthread_mutex_destroy returning EBUSY during libtest
@@ -14,7 +14,7 @@
 
 #![allow(dead_code)]
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, WorkerHandle};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, WorkerHandle};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -49,7 +49,7 @@ fn bce004_iso_multi_eval_no_nav() {
     if !env_ok() {
         return;
     }
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] init: {e}");
@@ -82,7 +82,7 @@ fn bce004_iso_multi_nav_no_eval() {
     if !env_ok() {
         return;
     }
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] init: {e}");
@@ -119,7 +119,7 @@ fn bce004_iso_eval_nav_eval() {
     if !env_ok() {
         return;
     }
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] init: {e}");
@@ -158,7 +158,7 @@ fn bce004_iso_create_close_create() {
     if !env_ok() {
         return;
     }
-    let runtime = match BaoRuntime::new(BaoConfig::default()) {
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[skip] init: {e}");
@@ -197,7 +197,7 @@ fn bce004_iso_create_close_create() {
 //
 // Companion to bce004_stress_tests.rs. WorkerHandle is Arc<AtomicBool>-backed
 // and fully Send+Sync, so we can exercise the C18 closing-flag consistency
-// invariant without a live BaoRuntime. This test covers the gap that the
+// invariant without a live BrowserRuntime. This test covers the gap that the
 // SIGSEGV-isolating E2E tests above leave when BAO_TEST_NETWORK/DISPLAY are
 // unset — it runs unconditionally.
 
