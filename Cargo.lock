@@ -529,10 +529,14 @@ dependencies = [
  "bao-browser",
  "bao_cdp",
  "bao_cdp_client",
+ "bao_crypto",
  "bao_engine",
  "bao_stealth",
  "bao_uloop",
  "bun_runtime",
+ "bun_sm",
+ "bun_transpiler",
+ "serde_json",
 ]
 
 [[package]]

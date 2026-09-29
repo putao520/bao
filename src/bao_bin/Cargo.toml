@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "Bao CLI binary"
 edition.workspace = true
 license.workspace = true
+# The registry `bao-bin` name (0.13.1) is an unrelated third-party crate —
+# the CLI binary crate is never published (crates-io naming decision: no CLI
+# package; user ruling 2026-08-17).
+publish = false
 
 [[bin]]
 name = "bao"

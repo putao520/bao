@@ -170,6 +170,19 @@ else
     echo "==> [9/9] consumer-gate: skipped (set BAO_CONSUMER_GATE=1 to enable)"
 fi
 
+# ================ [optional 10/10] publish-closure plan (W23-⑥) =================
+# Release-closure plan generator(版本三角+bump 表+topo 序,零网络发布)——
+# 默认 skip;BAO_PUBLISH_PLAN=1 启用(--dry-run/--execute 永不在此自动跑,
+# 属人工发布窗口操作,见 scripts/publish-closure.sh)。
+PUBLISH_PLAN_RC=0
+if [ "${BAO_PUBLISH_PLAN:-0}" = "1" ]; then
+    echo "==> [10/10] publish-closure --plan (advisory): scripts/publish-closure.sh --plan"
+    bash "${REPO}/scripts/publish-closure.sh" --plan || PUBLISH_PLAN_RC=$?
+    if [ "${PUBLISH_PLAN_RC}" -eq 0 ]; then echo "PASS publish-closure plan"; else echo "FAIL publish-closure plan (exit=${PUBLISH_PLAN_RC})"; fi
+else
+    echo "==> [10/10] publish-closure plan: skipped (set BAO_PUBLISH_PLAN=1 to enable)"
+fi
+
 # ================================ 总表 ================================
 echo
 echo "==================== LOCAL-CI SUMMARY ===================="
