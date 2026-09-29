@@ -2,13 +2,23 @@
 //!
 // @trace REQ-SPEC-001
 //
-//! 扫描 `.spec/*.html`,定位带 `data-api=` 属性的 `<section>`/`<div>` 元素,
+//! 扫描 `.spec/*.html`,定位带 `data-api=` 属性的 `<section>` 元素,
 //! 校验其 `id` 属性是否符合 `API-{DOMAIN}-{N}` 格式。命中以下「method-path」
 //! 退化形态即报错违规:
 //!   - `id="post-/..."` / `id="get-/..."` / `id="put-/..."` / `id="delete-/..."`
 //!     / `id="patch-/..."`  (HTTP 方法 + 路径开头)
 //!   - `id="/vm/sandbox"`                                 (纯路径开头)
-//!   - 缺失 `id` 属性的 `data-api=` 元素
+//!   - 缺失 `id` 属性的 `data-api=` `<section>` 元素
+//!
+//! 约束面 = `<section>`(立法原文,02-SYSTEM REQ-SPEC-001 正文):
+//! 「SPEC 中所有 API 元素(<section data-api=...>)的 id 属性必须严格遵守
+//! API-{DOMAIN}-{N} 格式」——法条只约束 section;`<div>` 即便携带
+//! `data-api=` 元数据也不在本 REQ 范围(例:文档型 artifact
+//! `<div id="artifact-interface-protocol-2" data-type="document"
+//! data-api="GET /api/...">` 的 data-api 是接口文档的元数据标注,不是
+//! API 元素声明)。本检测器曾把 `<div>` 一并扫中(W36 收窄前),对
+//! 02-SYSTEM:196/267 的 artifact div 误报——检测器宽于其立法,现已
+//! 对齐:只扫 `<section data-api=...>`。
 //!
 //! 例外(REQ-SPEC-001 明确豁免,不算违规):
 //!   - `id="bao-cdp-client::..."`  —— 子系统 section(`data-module=`),非 API 元素
@@ -163,7 +173,9 @@ fn iter_api_elements(src: &str) -> Vec<ApiElement> {
         if !raw_line.contains("data-api=") {
             continue;
         }
-        // 在该行内找所有 `<section` / `<div` 起始位置,逐一截取开标签。
+        // 在该行内找所有 `<section` 起始位置,逐一截取开标签(约束面 =
+        // REQ-SPEC-001 立法原文的 `<section data-api=...>`;div 携
+        // data-api 元数据不在范围,见模块头注 W36 收窄说明)。
         let mut search_from = 0usize;
         while let Some(rel_idx) = find_tag_start(raw_line, search_from) {
             let abs_idx = rel_idx;
@@ -182,15 +194,12 @@ fn iter_api_elements(src: &str) -> Vec<ApiElement> {
     out
 }
 
-/// 在 `line[search_from..]` 中查找下一个 `<section` 或 `<div` 起始位置,
-/// 返回相对于整行的字节偏移。未找到返回 `None`。
+/// 在 `line[search_from..]` 中查找下一个 `<section` 起始位置(REQ-SPEC-001
+/// 的约束面只有 section 元素),返回相对于整行的字节偏移。未找到返回
+/// `None`。
 fn find_tag_start(line: &str, search_from: usize) -> Option<usize> {
     let tail = line.get(search_from..)?;
-    let rel = tail
-        .find("<section")
-        .into_iter()
-        .chain(tail.find("<div"))
-        .min()?;
+    let rel = tail.find("<section")?;
     Some(search_from + rel)
 }
 
@@ -399,13 +408,46 @@ mod tests {
     fn scan_html_does_not_chase_closing_tags_or_non_api_sections() {
         let html = r#"
 <section id="req-spec-001" data-req="REQ-SPEC-001"><h3>REQ</h3></section>
-<div data-api="GET /x" id="get-/x">bad</div>
+<div data-api="GET /x" id="get-/x">out of scope (div)</div>
 <section data-api="POST /y" id="API-CDP-9">good</section>
 "#;
         let findings = scan_html(Path::new("t.html"), html);
-        // 只报 get-/x;req-spec-001 没有 data-api= 不算,API-CDP-9 合规。
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].id, "get-/x");
+        // W36 收窄:REQ-SPEC-001 只约束 <section data-api=...>;div 即便带
+        // data-api= 也不报。req-spec-001 没有 data-api= 不算,API-CDP-9
+        // 合规——零违规。
+        assert!(
+            findings.is_empty(),
+            "div is outside REQ-SPEC-001's scope, got {:?}",
+            findings
+        );
+    }
+
+    // ─── W36:约束面收窄到 section(div+data-api = 立法范围外) ────────────
+
+    #[test]
+    fn scan_html_ignores_document_artifact_div_with_data_api() {
+        // 02-SYSTEM:196/267 的真实形态:文档型 artifact div 携 data-api
+        // 元数据(接口文档标注,不是 API 元素声明)——收窄前的误报源。
+        let html = r#"<div id="artifact-interface-protocol-2" data-type="document" data-api="GET /api/bao-runtime-js" data-artifact-type="interface-protocol"><h3>JS 公共 API 接口</h3></div>"#;
+        let findings = scan_html(Path::new("t.html"), html);
+        assert!(
+            findings.is_empty(),
+            "document artifact div with data-api metadata is out of scope, got {:?}",
+            findings
+        );
+    }
+
+    #[test]
+    fn scan_html_ignores_div_method_path_form() {
+        // 即便是 method-path 形态的 id,长在 <div> 上也超出 REQ-SPEC-001
+        // 的约束面(法条原文只约束 <section data-api=...>)。
+        let html = r#"<div data-api="POST /vm/sandbox" id="post-/vm/sandbox"></div>"#;
+        let findings = scan_html(Path::new("t.html"), html);
+        assert!(
+            findings.is_empty(),
+            "div method-path form is out of scope (section-only surface), got {:?}",
+            findings
+        );
     }
 
     #[test]
