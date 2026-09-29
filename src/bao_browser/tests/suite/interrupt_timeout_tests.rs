@@ -225,3 +225,79 @@ fn explicit_none_timeout_preserves_normal_evaluation() {
         "real exception text must survive the None path, got: {error}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE #32 row21 / W3b: browser contexts are PER-REALM for console
+// time/count (servo's GlobalScope maps — vendor
+// script/dom/console.rs Count → global.increment_console_count), unlike the
+// CLI/Node-realm process-global face. Two pages counting the same label must
+// not interfere: page A counts twice (logs w3b: 1, w3b: 2) and page B counts
+// once (logs w3b: 1 again) — a shared map would log w3b: 3 instead.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w3b_console_counters_per_realm_across_pages() {
+    use std::sync::mpsc;
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let (console_tx, console_rx) = mpsc::channel::<cdp_server::ConsoleMessage>();
+    runtime.set_console_log_channel(console_tx);
+
+    let pool: &PagePool = runtime.page_pool();
+    let page_a = pool
+        .create_page(&PageConfig {
+            url: Some("data:text/html,<!DOCTYPE html><html><body>A</body></html>".into()),
+            ..Default::default()
+        })
+        .expect("page A");
+    let page_b = pool
+        .create_page(&PageConfig {
+            url: Some("data:text/html,<!DOCTYPE html><html><body>B</body></html>".into()),
+            ..Default::default()
+        })
+        .expect("page B");
+    wait_for_load_and_drain(&page_a, 20000);
+    wait_for_load_and_drain(&page_b, 20000);
+
+    page_a
+        .evaluate_js_web("console.count('w3b'); console.count('w3b');")
+        .expect("page A count eval");
+    page_b
+        .evaluate_js_web("console.count('w3b');")
+        .expect("page B count eval");
+
+    // Drain the console channel (bounded) and collect the count log lines.
+    let mut texts: Vec<String> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match console_rx.try_recv() {
+            Ok(cdp_server::ConsoleMessage::Log { text, .. }) => {
+                if text.contains("w3b:") {
+                    texts.push(text);
+                }
+            },
+            Ok(_) => {},
+            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(50)),
+            Err(mpsc::TryRecvError::Disconnected) => break,
+        }
+        if texts.len() >= 3 {
+            break;
+        }
+    }
+
+    let ones = texts.iter().filter(|t| t.contains("w3b: 1")).count();
+    let twos = texts.iter().filter(|t| t.contains("w3b: 2")).count();
+    let threes = texts.iter().filter(|t| t.contains("w3b: 3")).count();
+    assert_eq!(
+        ones, 2,
+        "each page's counter must start at 1 (per-realm maps), got: {texts:?}"
+    );
+    assert_eq!(
+        twos, 1,
+        "page A's second count must be 2, got: {texts:?}"
+    );
+    assert_eq!(
+        threes, 0,
+        "a shared counter would produce w3b: 3 — cross-page interference, got: {texts:?}"
+    );
+}

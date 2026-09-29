@@ -305,3 +305,70 @@ fn env_alias_js_process_env_snapshot_exposes_bun_spelling() {
         std::env::remove_var("BAO_ENVALIAS_JS_B");
     }
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE #32 row21 / W3b: CLI/Node-realm console time/count semantics —
+// PROCESS-GLOBAL by user ruling (unlike the browser contexts, which are
+// per-realm via servo's GlobalScope maps). Two consecutive NodeRuntimes
+// (two realms, same process) share the counter namespace.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w3b_console_counters_process_global_across_node_realms() {
+    use std::fs::File;
+
+    // Capture the CLI console output: publish global output slots backed by
+    // temp files BEFORE the first console write (ensure_output_source adopts
+    // the published slots on first use).
+    let out_path = std::env::temp_dir().join(format!(
+        "bao_w3b_console_out_{}.txt",
+        std::process::id()
+    ));
+    let err_path = std::env::temp_dir().join(format!(
+        "bao_w3b_console_err_{}.txt",
+        std::process::id()
+    ));
+    let out_std = File::create(&out_path).expect("stdout capture file");
+    let err_std = File::create(&err_path).expect("stderr capture file");
+    // Publish the RAW fds and leak the std handles: the published slots must
+    // stay valid for the test process lifetime (dropping the std File would
+    // close the fd under the writer).
+    use std::os::fd::AsRawFd;
+    let (out_fd, err_fd) = (out_std.as_raw_fd(), err_std.as_raw_fd());
+    std::mem::forget(out_std);
+    std::mem::forget(err_std);
+    bun_core::output::Source::set_init(
+        bun_core::output::File(bun_core::Fd(out_fd as i32)),
+        bun_core::output::File(bun_core::Fd(err_fd as i32)),
+    );
+
+    // Realm 1: count twice.
+    let mut rt1 = bun_runtime::NodeRuntime::new().expect("rt1");
+    rt1
+        .eval("console.count('w3b'); console.count('w3b');", "<w3b-r1>")
+        .expect("rt1 eval");
+
+    // Realm 2: a fresh NodeRuntime continues the SAME process-global counter.
+    let mut rt2 = bun_runtime::NodeRuntime::new().expect("rt2");
+    rt2
+        .eval("console.count('w3b');", "<w3b-r2>")
+        .expect("rt2 eval");
+
+    drop(rt1);
+    drop(rt2);
+
+    // Console output is buffered by the Output subsystem — flush before
+    // reading the captured files.
+    bun_core::output::flush();
+
+    let out = std::fs::read_to_string(&out_path).expect("read captured stdout");
+    let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(&err_path);
+
+    // Process-global: 1, 2, then the fresh realm continues at 3. A per-realm
+    // map would print a second "w3b: 1" instead.
+    assert!(
+        out.contains("w3b: 1") && out.contains("w3b: 2") && out.contains("w3b: 3"),
+        "console.count must be process-global across Node realms, got: {out:?}"
+    );
+}
