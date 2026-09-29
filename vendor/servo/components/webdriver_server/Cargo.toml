@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-webdriver-server"
-version = "0.5.5"
+version = "0.5.6"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -18,7 +18,7 @@ base64 = {version = "0.23.0"}
 bytes = {version = "1.0"}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.6"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.7"}
 euclid = {version = "0.22"}
 http = {version = "1.4"}
 http02 = {package = "http", version = "0.2"}

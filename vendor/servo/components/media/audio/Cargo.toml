@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-audio"
-version = "0.5.6"
+version = "0.5.7"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -26,7 +26,7 @@ rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228", features = ["derive"]}
 servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.7"}
 servo-media-derive = {package = "bao-servo-media-derive", path = "../servo-media-derive", version = "=0.5.2"}
-servo-media-player = {package = "bao-servo-media-player", path = "../player", version = "=0.5.6"}
+servo-media-player = {package = "bao-servo-media-player", path = "../player", version = "=0.5.7"}
 servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.5"}
 servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = "=0.5.5"}
 smallvec = {version = "1.15", features = ["serde", "union"]}

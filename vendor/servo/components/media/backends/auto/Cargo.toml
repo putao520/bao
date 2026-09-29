@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-auto"
-version = "0.5.5"
+version = "0.5.6"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -14,7 +14,7 @@ name = "servo_media_auto"
 path = "lib.rs"
 
 [target.'cfg(any(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")), target_arch = "x86_64",target_arch = "aarch64"))'.dependencies]
-servo-media-gstreamer = {package = "bao-servo-media-gstreamer", path = "../gstreamer", version = "=0.5.6"}
+servo-media-gstreamer = {package = "bao-servo-media-gstreamer", path = "../gstreamer", version = "=0.5.7"}
 
 [target.'cfg(not(any(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")), target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
-servo-media-dummy = {package = "bao-servo-media-dummy", path = "../dummy", version = "=0.5.6"}
+servo-media-dummy = {package = "bao-servo-media-dummy", path = "../dummy", version = "=0.5.7"}
