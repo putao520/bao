@@ -443,10 +443,12 @@ map_identity = "allow"
 [patch.crates-io]
 freetype = { path = "vendor/freetype-wrapper" }
 
+# BAO PATCH (REQ-BRW-047): vendored stylo_atoms with WebVTT enter/exit/cuechange atoms (workspace-local optimization; published script uses dynamic Atom::from)
+stylo_atoms = { path = "vendor/stylo_atoms" }
+
 # BAO PATCH (REQ-BRW-047, fork-maintained, 2026-09-27): vendored
 # `stylo_atoms` (0.20.0, code unchanged, `static_atoms.txt` extended with the
 # `cuechange` / `enter` / `exit` event atoms). Upstream 7ca99fe3f's
 # `time_marches_on` fires these events; the registry crate's closed atom
 # table predates them, so the `atom!` macro fails to compile. Atoms are
 # append-only (no existing entry is touched).
-stylo_atoms = { path = "vendor/stylo_atoms" }

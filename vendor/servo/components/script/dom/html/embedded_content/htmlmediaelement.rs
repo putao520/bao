@@ -980,7 +980,7 @@ impl HTMLMediaElement {
         for text_track_cue in &missed_cues {
             prepare_an_event(
                 text_track_cue.start_time(),
-                atom!("enter"),
+                Atom::from("enter"),
                 text_track_cue.clone(),
             );
         }
@@ -993,7 +993,7 @@ impl HTMLMediaElement {
             if text_track_cue.is_active() || missed_cues.iter().any(|cue| cue == text_track_cue) {
                 prepare_an_event(
                     text_track_cue.start_time().max(text_track_cue.end_time()),
-                    atom!("exit"),
+                    Atom::from("exit"),
                     text_track_cue.clone(),
                 );
             }
@@ -1006,7 +1006,7 @@ impl HTMLMediaElement {
             if !text_track_cue.is_active() {
                 prepare_an_event(
                     text_track_cue.start_time(),
-                    atom!("enter"),
+                    Atom::from("enter"),
                     text_track_cue.clone(),
                 );
             }
@@ -1045,10 +1045,10 @@ impl HTMLMediaElement {
                 .media_element_task_source()
                 .queue(task!(queue_event: move |cx| {
                     let text_track = text_track.root();
-                    text_track.upcast::<EventTarget>().fire_event(cx, atom!("cuechange"));
+                    text_track.upcast::<EventTarget>().fire_event(cx, Atom::from("cuechange"));
 
                     if let Some(track_element) = text_track.associated_track() {
-                        track_element.upcast::<EventTarget>().fire_event(cx, atom!("cuechange"));
+                        track_element.upcast::<EventTarget>().fire_event(cx, Atom::from("cuechange"));
                     }
                 }));
         }
