@@ -2,7 +2,7 @@
 //! per-iteration resource probes (RSS / fd / threads — issue #19 G-section
 //! observability seed).
 //!
-//! One browser `BaoRuntime` (servo stack, xvfb DISPLAY required — run under
+//! One browser `BrowserRuntime` (servo stack, xvfb DISPLAY required — run under
 //! `xvfb-run`) hosts the whole churn loop; the churn unit is the page:
 //! create(about:blank) → pipeline ready → navigate(data: URL) → load complete
 //! → verified evaluate → close. Iteration 0 doubles as the cold observation
@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 
 use crate::common::{self, Metric, Params, ResultBuilder};
 
@@ -34,7 +34,7 @@ pub(crate) struct CycleTiming {
 ///
 /// Fail-closed: any step failure or marker mismatch returns Err (carrying the
 /// iteration index) — no green numbers on wrong results.
-pub(crate) fn churn_cycle(runtime: &BaoRuntime, i: usize) -> Result<CycleTiming, String> {
+pub(crate) fn churn_cycle(runtime: &BrowserRuntime, i: usize) -> Result<CycleTiming, String> {
     let marker = format!("benchmark-{i}");
     // Space-free / quote-free HTML: the WHATWG URL parser percent-encodes
     // both inside a data: URL path, which would corrupt the markup — so
@@ -134,8 +134,8 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
 
     // ── Cold: browser runtime init + first page ────────────────────────────
     let t0 = Instant::now();
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .map_err(|e| format!("BaoRuntime::new failed: {e}"))?;
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .map_err(|e| format!("BrowserRuntime::new failed: {e}"))?;
     let rt_init_ms = t0.elapsed().as_secs_f64() * 1e3;
     b.metric(Metric::single(
         "browser_runtime_init",

@@ -1,4 +1,4 @@
-//! Bench ⑤: RSS three-phase sampling on a live `bun_runtime::BaoRuntime`.
+//! Bench ⑤: RSS three-phase sampling on a live `bun_runtime::NodeRuntime`.
 //!
 //! Phases: idle (post-init steady state) → synchronous JS allocation churn
 //! (blocking eval; allocation pressure with periodic drops) → post (idle
@@ -73,8 +73,8 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
 
     // Runtime init (cold, n=1) + a warm eval.
     let ti = Instant::now();
-    let mut rt = bun_runtime::BaoRuntime::new()
-        .map_err(|e| format!("BaoRuntime::new failed: {}", e.message))?;
+    let mut rt = bun_runtime::NodeRuntime::new()
+        .map_err(|e| format!("NodeRuntime::new failed: {}", e.message))?;
     let init_ms = ti.elapsed().as_secs_f64() * 1e3;
     let v = rt
         .eval("1+1", "<bench>")

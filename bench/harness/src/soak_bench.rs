@@ -32,7 +32,7 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle};
+use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
 use serde_json::json;
 
 use crate::common::{self, Metric, Params, ResultBuilder};
@@ -278,8 +278,8 @@ pub fn run(p: &Params, out_path: Option<&str>) -> Result<ResultBuilder, String> 
 
     // ── Cold: browser runtime init + long-lived probe page ─────────────────
     let t0 = Instant::now();
-    let runtime = BaoRuntime::new(BaoConfig::default())
-        .map_err(|e| format!("BaoRuntime::new failed: {e}"))?;
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .map_err(|e| format!("BrowserRuntime::new failed: {e}"))?;
     let rt_init_ms = t0.elapsed().as_secs_f64() * 1e3;
     b.metric(Metric::single(
         "browser_runtime_init",

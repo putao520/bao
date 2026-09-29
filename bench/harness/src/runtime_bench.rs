@@ -1,4 +1,4 @@
-//! Bench ①: `bun_runtime::BaoRuntime` create / first-eval / drop latency.
+//! Bench ①: `bun_runtime::NodeRuntime` create / first-eval / drop latency.
 //!
 //! Each iteration builds the FULL production runtime (env aliasing layer,
 //! resolver bridge, Node/Bun globals setup hook, JsContext + SmRuntimeGuard)
@@ -43,8 +43,8 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
         executed += 1;
 
         let t0 = Instant::now();
-        let mut rt = bun_runtime::BaoRuntime::new()
-            .map_err(|e| format!("iter {i}: BaoRuntime::new failed: {}", e.message))?;
+        let mut rt = bun_runtime::NodeRuntime::new()
+            .map_err(|e| format!("iter {i}: NodeRuntime::new failed: {}", e.message))?;
         let t_create = t0.elapsed().as_secs_f64() * 1e3;
 
         let t1 = Instant::now();
