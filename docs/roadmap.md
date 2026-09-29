@@ -81,7 +81,7 @@ First public, reproducible performance report.
 Lock the surface, harden for production.
 
 - [ ] Locked public API (`bao` lib, SemVer)
-- [ ] Cross-platform: macOS / Windows (event loop not yet proven)
+- [ ] Cross-platform: macOS real-machine verification (Windows landed — Supported since the 2026-09-29 ruling, cross build + real-machine battery 2026-09-26; see [platform-support.md](platform-support.md))
 - [ ] Production hardening (fuzzing, long-running soak tests)
 - [ ] Documentation complete (API reference + embedding guide)
 - [ ] Public compat matrix + benchmark report covering v0.1–v0.6 milestones

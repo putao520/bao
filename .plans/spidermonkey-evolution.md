@@ -2491,7 +2491,7 @@ health 实测 **0 errors**(与第 10/11 次归因一致:计数按 Stop 调用递
 
 ### 2026-09-29 / 用户裁决三件(过渡载体,PRD 转录待专用工具;发起=用户 AskUserQuestion 直答)
 1. **BaoRuntime 双命名终裁(#15-H/#17-A)**:收口为 **BrowserRuntime**(bao_browser,浏览器运行时)/**NodeRuntime**(bun_runtime,Node.js 运行时);旧名 BaoRuntime 留 deprecated alias 过渡(0.x 允许 breaking,1.0 前收口)。
-2. **平台矩阵三态(#18-A)**:**Windows=Supported**(证据:交叉+真机 build/link/run+电池 12/12,StdArena 根治后)/ **macOS=Experimental**(证据:编译面+4-crate CI;无真机运行)。Linux=Supported 维持。24h soak 后再评 Windows 升档。
+2. **平台矩阵三态(#18-A)**:**Windows=Supported**(证据:交叉+真机 build/link/run+电池 12/12,StdArena 根治后)/ **macOS=Experimental**(证据:编译面+4-crate CI;无真机运行)。Linux=Supported 维持。24h soak 后再评 Windows 升档。→ **W3a 已落地(2026-09-29)**:docs/platform-support.md 三态矩阵重写(档位/证据/验证口径/升档条件四列)+ README/roadmap 对齐,#18 状态评论已发。
 3. **console 计时器/计数器作用域(#32 row21)**:**混合**——浏览器上下文 per-realm(页面/iframe/worker/SW 独立命名空间);CLI/Node-realm 进程全局。双语义文档明示。
 
 ### 2026-09-29 / #30 升级波首跑——SM140.14→153.3 drift 实测(纯工具轮,零产品代码改动)

@@ -7,26 +7,35 @@
 > 其余平台显式列出状态禁灰区”.
 > Every non-listed platform state below is explicit; there are no gray zones.
 >
+> Platform tier ruling (2026-09-29, [#18-A](https://github.com/putao520/bao/issues/18)):
+> **Windows = Supported · macOS = Experimental · Linux = Supported(维持)**.
+> The formal PRD legislation (`PRD-REQ-TARGET-MATRIX`) is queued for the PRD
+> dedicated-tool transcription; the transitional carrier of the ruling lives in
+> `.plans/spidermonkey-evolution.md` (2026-09-29 section).
+>
 > Companion documents: [`build-macos.md`](build-macos.md) (macOS layer-by-layer
 > map, real-machine checklist), [`musl-cross.md`](musl-cross.md) (musl cross
-> toolchain/sysroot/env recipe) and the issues linked throughout.
+> toolchain/sysroot/env recipe), `scripts/win-cross-env.sh` (Windows cross
+> toolchain/env recipe) and the issues linked throughout.
 >
-> Last updated: 2026-09-10.
+> Last updated: 2026-09-29.
 
 ## 1. Target matrix
 
-| Target | Status | Notes |
-|---|---|---|
-| `x86_64-unknown-linux-gnu` | **Supported** | The daily-driver platform; full stack (SpiderMonkey, servo, boringssl, uWS) built and tested in-repo every wave. |
-| `x86_64-unknown-linux-musl` | **Supported** | Decided 2026-09-01 under REQ-DEPLOY-1; the native-closure cross-build work runs under the daily-ops long-task protocol — surface blockers tracked in [#10](https://github.com/putao520/bao/issues/10) (e.g. freetype-sys cross pkg-config). Cross toolchain/sysroot/env recipe: [`musl-cross.md`](musl-cross.md). |
-| macOS (`x86_64`/`aarch64-apple-darwin`) | **Experimental** | Compile surfaces are landed (`bun_uws_sys` kqueue arm, `bao_uloop` kqueue backend, darwin root certs — see [`build-macos.md`](build-macos.md) §1/§2). No real-machine build/link/test pass has ever run: [#36](https://github.com/putao520/bao/issues/36) (test surface), [#37](https://github.com/putao520/bao/issues/37) (mozjs source build). |
-| Windows (`x86_64-pc-windows-msvc` / `-gnu`) | **Unsupported** | Fail-closed by construction at three native points (§3): [#33](https://github.com/putao520/bao/issues/33) mimalloc MSVC arm, [#34](https://github.com/putao520/bao/issues/34) `uv_*` symbol closure, [#35](https://github.com/putao520/bao/issues/35) `bao_uloop` IOCP arm. See §4 for the open-item list. |
+Ruled 2026-09-29 ([#18-A](https://github.com/putao520/bao/issues/18)).
+
+| Platform / target | Tier | Evidence | Verification scope | Upgrade condition |
+|---|---|---|---|---|
+| Linux (`x86_64-unknown-linux-gnu`) | **Supported**(维持) | The daily-driver platform; full stack (SpiderMonkey, servo, boringssl, uWS) built and tested in-repo every wave. | Full battery, every wave. | —(维持) |
+| Linux (`x86_64-unknown-linux-musl`) | **Supported (full)**(维持) | Decided 2026-09-01 under REQ-DEPLOY-1, maintained by the 2026-09-29 ruling; the native-closure cross-build work runs under the daily-ops long-task protocol — surface blockers tracked in [#10](https://github.com/putao520/bao/issues/10) (e.g. freetype-sys cross pkg-config). Cross toolchain/sysroot/env recipe: [`musl-cross.md`](musl-cross.md). | Cross-build surface + consumer gate; native closure under the long-task protocol. | —(维持) |
+| Windows (`x86_64-pc-windows-msvc`) | **Supported** | Ruled 2026-09-29. Cross build/link from the Linux host via `scripts/win-cross-env.sh` (xwin + clang-cl + lld-link; the assembled `WINSYSROOT` bypasses the moz `winreg` registry probe entirely — no patch needed) + real-machine build/link/run on the Windows host + v9 battery **12/12 RC=0** (2026-09-26, after the `StdArena` `Alignment(8)` root fix — see `.plans/spidermonkey-evolution.md` v9 section). | Cross-built full binary, real-machine run, 12-suite battery. Wave gates must not regress it. | 24h soak on real hardware, then re-evaluate for a further tier upgrade (ruling context). |
+| macOS (`x86_64`/`aarch64-apple-darwin`) | **Experimental** | Compile surfaces are landed (`bun_uws_sys` kqueue arm, `bao_uloop` kqueue backend, darwin root certs — see [`build-macos.md`](build-macos.md) §1/§2); darwin cross-probe (apple flag/link directives verified live 2026-09-10) + 4-crate CI slim matrix ([#36](https://github.com/putao520/bao/issues/36), [#37](https://github.com/putao520/bao/issues/37)). **No real-machine build/link/run has ever happened.** | Compile face only. | Upgrade to Supported requires a real-machine build/link/run pass plus the battery on mac hardware. |
 
 “Supported” means the repository treats the target as part of the delivery
 contract (waves must not regress it). “Experimental” means code surfaces exist
 and are expected to work but nothing has been machine-verified. “Unsupported”
 means a build targeting it fails closed — loudly, at build time — rather than
-producing a broken artifact.
+producing a broken artifact. (No current target is Unsupported.)
 
 ## 2. Native-crate platform state
 
@@ -36,13 +45,18 @@ Rust or upstream Bun crates that already carry macOS arms.
 
 | Crate | Linux | macOS | Windows | Fail-closed mechanism |
 |---|---|---|---|---|
-| `bun_mimalloc_sys` | **Supported** — `MI_MALLOC_OVERRIDE` arm active | Compile surface only: C++17 build of vendored mimalloc needs Apple SDK libc++ headers; blocked for *cross*-compile, untested native ([#37](https://github.com/putao520/bao/issues/37), [`build-macos.md`](build-macos.md) §3) | **Unsupported** — `build.rs` `panic!`s for `CARGO_CFG_TARGET_OS=windows` ([#33](https://github.com/putao520/bao/issues/33)) | Explicit panic in `src/mimalloc_sys/build.rs` |
-| `bun_uws_sys` | **Supported** — `LIBUS_USE_EPOLL` (full linux TLS regression green: fetch TLS e2e, SNI server, p0 https client, tls deep/link suites) | Compile surface ready — `LIBUS_USE_KQUEUE`, darwin root certs | **Supported** — the usockets tree is absorbed (oven-sh/bun `4af1842c8c`, csrc replay-reconciled): `LIBUS_USE_LIBUV` compiles over the vendored libuv supply under clang-cl (`/std:c++17` driver forms — clang-cl ignores GNU spellings; `WIN32_LEAN_AND_MEAN` against wincrypt X509 poisoning; `<uv.h>` face on the TLS C++ TUs too); `cargo check -p bun_uws_sys --target x86_64-pc-windows-msvc` RC=0 ([#34](https://github.com/putao520/bao/issues/34)) | tripwire in `build.rs` (refuses if the absorbed `eventing/libuv.c` is partially reverted) |
+| `bun_uws_sys` | **Supported** — `LIBUS_USE_EPOLL` (full linux TLS regression green: fetch TLS e2e, SNI server, p0 https client, tls deep/link suites) | Compile surface ready — `LIBUS_USE_KQUEUE`, darwin root certs | **Supported** — the usockets tree is absorbed (oven-sh/bun `4af1842c8c`, csrc replay-reconciled): `LIBUS_USE_LIBUV` compiles over the vendored libuv supply under clang-cl (`/std:c++17` driver forms — clang-cl ignores GNU spellings; `WIN32_LEAN_AND_MEAN` against wincrypt X509 poisoning; `<uv.h>` face on the TLS C++ TUs too); `cargo check -p bun_uws_sys --target x86_64-pc-windows-msvc` RC=0 ([#34](https://github.com/putao520/bao/issues/34)); linked and exercised by the 2026-09-26 real-machine battery | tripwire in `build.rs` (refuses if the absorbed `eventing/libuv.c` is partially reverted) |
 | `bun_libuv_sys` | n/a (crate root is `#[cfg(windows)]`) | n/a | **Symbol supplier** — build script compiles the vendored oven-sh/libuv fork (`vendor/libuv`, `bun` branch @ `8023581113`, uv 1.51.1-dev, two upstream win-poll patches) into a static `uv` library (`links = "uv"`); declarations side mirrors uv 1.51.0, FFI-face reconciliation pending ([#34](https://github.com/putao520/bao/issues/34)) | needs WinSDK/UCRT headers (xwin/farm) for the C compile |
-| `bao_uloop` | **Supported** — epoll tick | Compile surface ready — kqueue eventing | **Gate lifted** — the crate-level `compile_error!` is removed: the loop ABI (`us_*`/`uws_*` extern imports, `us_dispatch_*` vtable routing, DNS seam) is platform-neutral and resolves from the C archives on windows too (the `LIBUS_USE_LIBUV` eventing backend); the posix FilePoll graft (`poll` module) stays linux/macos — windows FilePoll is the absorbed `bun_io::windows_event_loop` face over libuv ([#35](https://github.com/putao520/bao/issues/35)); the usockets absorb landed, `cargo check` on the windows target is green | — |
-| `bao-mozjs-sys` (SpiderMonkey) | **Supported** — the only target with real build/link/test history | Apple TARGET-gated branches **verified live** by the 2026-09-10 Linux cross probe ([#37](https://github.com/putao520/bao/issues/37)): `-stdlib=libc++` CXXFLAGS injection (`build.rs:459-461`), `cpp_set_stdlib("c++")` (`build.rs:797-803`), `rustc-link-lib=c++` (`build.rs:692-693`); a real configure run proceeds through vsrc synthesis + virtualenv and **fails closed** demanding a macOS SDK (`--with-macos-sdk`, fed by `MACOS_SDK_PATH`). Still unverified on real hardware: the SM C++ compile under mac clang/Xcode CLT + link + bindgen `CLANG_PATH` arm | TARGET-gated branches **verified live** by the same probe: CRT `-MD` override and `--target=x86_64-pc-windows-msvc` reach the real configure invocation, and configure requires Windows-hosted Python (`winreg` import in `moz.build`'s `windows.configure`) — **Linux→Windows cross is impossible at the configure layer, Windows builds require a Windows host**; the host-gated `#[cfg(windows)]` layer typechecks against current deps and its `find_moztools` 4-tier chain ran live under forced cfg ([#37](https://github.com/putao520/bao/issues/37)) | make-failure assert (`build.rs:490`) + `js_static_lib.list` unwrap (`build.rs:496`) + `find_moztools` panic (all four resolution tiers verified 2026-09-10) |
+| `bao_uloop` | **Supported** — epoll tick | Compile surface ready — kqueue eventing | **Supported** — the crate-level `compile_error!` gate is removed: the loop ABI (`us_*`/`uws_*` extern imports, `us_dispatch_*` vtable routing, DNS seam) is platform-neutral and resolves from the C archives on windows too (the `LIBUS_USE_LIBUV` eventing backend); the posix FilePoll graft (`poll` module) stays linux/macos — windows FilePoll is the absorbed `bun_io::windows_event_loop` face over libuv ([#35](https://github.com/putao520/bao/issues/35)); proven by the 2026-09-26 real-machine battery 12/12 | — |
+| `bao-mozjs-sys` (SpiderMonkey) | **Supported** — the longest real build/link/test history | Apple TARGET-gated branches **verified live** by the 2026-09-10 Linux cross probe ([#37](https://github.com/putao520/bao/issues/37)): `-stdlib=libc++` CXXFLAGS injection (`build.rs:459-461`), `cpp_set_stdlib("c++")` (`build.rs:797-803`), `rustc-link-lib=c++` (`build.rs:692-693`); a real configure run proceeds through vsrc synthesis + virtualenv and **fails closed** demanding a macOS SDK (`--with-macos-sdk`, fed by `MACOS_SDK_PATH`). Still unverified on real hardware: the SM C++ compile under mac clang/Xcode CLT + link + bindgen `CLANG_PATH` arm | **Supported** — the 2026-09-10 finding “Linux→Windows cross is impossible at the configure layer (`winreg`)” is **superseded**: the assembled `WINSYSROOT` exported by `scripts/win-cross-env.sh` bypasses the winreg registry probe entirely (no patch), and the full SM153 C++ cross configure/compile/link under clang-cl/lld-link is proven by the 2026-09-26 wave (real-machine run + battery 12/12). The `find_moztools` 4-tier chain verified 2026-09-10 remains the moztools resolution path. | make-failure assert (`build.rs:490`) + `js_static_lib.list` unwrap (`build.rs:496`) + `find_moztools` panic (all four resolution tiers verified 2026-09-10) |
 
-The five BAO mozjs patches and the eleven servo customization files listed in
+`bun_mimalloc_sys` was **retired from the stack** (#45, e2542105, 2026-09-20 —
+`bun_alloc` 0.2.0 dropped the mimalloc face; the allocator path is the system
+allocator via `StdArena`). Its former per-platform row — including the
+[#33](https://github.com/putao520/bao/issues/33) MSVC fail-closed panic — is
+historical.
+
+The seven BAO mozjs fork patches and the servo customization files listed in
 the repository `CLAUDE.md` are platform-neutral (C++/Rust logic, boringssl TLS
 at the connector layer) — they are not additional per-platform risk.
 
@@ -79,8 +93,9 @@ existing archive machinery (`MOZJS_CREATE_ARCHIVE` to produce,
 the correct future channel if Bao ever publishes its *own* patched artifacts
 from verified platforms; until such artifacts exist there is nothing to fall
 back to, so building from source everywhere is the only fail-closed choice.
-Linux is the only platform with that verification today (§1), which is also
-why macOS/Windows remain Experimental/Unsupported at the `bao-mozjs-sys` layer.
+Linux and Windows (2026-09-26 real-machine wave, §1) carry that verification
+today; macOS remains the unverified remainder at the `bao-mozjs-sys` layer,
+which is why macOS stays Experimental.
 
 ### macOS (branch behavior verified by the 2026-09-10 Linux cross probe; real-machine compile still open — [#37](https://github.com/putao520/bao/issues/37))
 
@@ -89,7 +104,7 @@ why macOS/Windows remain Experimental/Unsupported at the `bao-mozjs-sys` layer.
 | Xcode Command Line Tools (`clang`/`clang++`, SDK) | apple targets link `c++` (`build.rs:697`, **verified live**: `cargo:rustc-link-lib=c++` emitted under `--target aarch64-apple-darwin`); bindgen special-cases the `c++` driver path on macos (`build.rs:600-603`, static-verified — only reachable after a successful make); `bun_mimalloc_sys` additionally needs the SDK's libc++ headers ([`build-macos.md`](build-macos.md) §3). |
 | macOS SDK (cross builds only) | The real configure run fails closed without one: `ERROR: Need a macOS SDK when targeting macOS. Please use --with-macos-sdk` — fed by the `MACOS_SDK_PATH` env hook (`makefile.cargo:56-58`). Native mac builds use the CLT SDK implicitly. |
 
-### Windows (host required: configure imports `winreg` — Windows-only Python stdlib — so Linux→Windows cross fails at `moz.build`'s `windows.configure:54` before any compiler probe; all resolution/propagation logic verified 2026-09-10 under forced cfg, real-machine build still open — [#37](https://github.com/putao520/bao/issues/37))
+### Windows (cross-verified: the `WINSYSROOT` exported by `scripts/win-cross-env.sh` feeds moz `windows-toolchain` directly and bypasses the `winreg` registry probe — no patch needed; resolution/propagation logic verified 2026-09-10 under forced cfg; full cross build/link + real-machine run proven 2026-09-26 — [#37](https://github.com/putao520/bao/issues/37))
 
 | Tool | Evidence in `build.rs` |
 |---|---|
@@ -97,18 +112,29 @@ why macOS/Windows remain Experimental/Unsupported at the `bao-mozjs-sys` layer.
 | `mozmake` | The make driver on windows is hard-coded to `mozmake` (`build.rs:354`, **verified live**: `mozmake -R -f makefile.cargo` invocation captured). |
 | clang-cl (LLVM ≥ 14) + lld-link | Upstream `servo/mozjs` README (the target of the `find_moztools` panic instructions) requires `CC=clang-cl CXX=clang-cl LD=lld-link`; cc-rs `is_like_msvc` branches for the cc build and bindgen clang-args (`build.rs:583-595`). |
 | Visual Studio 2019/2022 (C++ workload + Windows 10/11 SDK + ATL) | Required by clang-cl/lld-link for headers + libs; windows links `winmm`/`psapi`/`user32`/`Dbghelp`/`advapi32` (`build.rs:682-688`, static-verified — same TARGET gate as the live-verified branches). |
-| Python 3.11 (`PYTHON`/`PYTHON3` env) | Drives configure; on Windows the `winreg`-importing SDK probe makes a Windows-hosted Python mandatory. |
+| Python 3.11 (`PYTHON`/`PYTHON3` env) | Drives configure. The `winreg`-importing SDK probe (a Windows-hosted-Python requirement in the 2026-09-10 reading) is bypassed by the `WINSYSROOT` export in `scripts/win-cross-env.sh`, so the Linux-hosted Python drives the cross configure. |
 
 ## 4. Open items (explicit, no gray zones)
 
 | Item | Scope | Status |
 |---|---|---|
 | [#10](https://github.com/putao520/bao/issues/10) | musl cross surface: freetype-sys pkg-config and the rest of the native closure | REQ-DEPLOY-1 long-task protocol, in progress |
-| [#33](https://github.com/putao520/bao/issues/33) | `bun_mimalloc_sys` MSVC arm (proper clang-cl/MSVC flags) | Open — registered as a follow-up wave once a Windows CI baseline exists; today the build fails closed |
-| [#34](https://github.com/putao520/bao/issues/34) | `uv_*` symbol closure for the uWS windows arm | **Closed (compile face)** — supply landed (`bun_libuv_sys` compiles the vendored oven-sh/libuv fork; 9595dbae) and the usockets@`4af1842c8c` absorb landed with the crypto/TLS signature migration; `cargo check -p bun_uws_sys --target x86_64-pc-windows-msvc` RC=0 |
-| [#35](https://github.com/putao520/bao/issues/35) | `bao_uloop` IOCP arm | **Gate lifted, windows check green** — windows routes to the absorbed `LIBUS_USE_LIBUV` backend + `bun_io::windows_event_loop` FilePoll; remaining = real link/E2E on windows hardware |
-| [#36](https://github.com/putao520/bao/issues/36) | macOS test-surface verification on real hardware | Open |
-| [#37](https://github.com/putao520/bao/issues/37) | `bao-mozjs-sys` source build: every reachable branch verified 2026-09-10 (apple flag/link directives, windows configure arm, `find_moztools` chain, toolchain + moztools-4.0 availability, `should_build_from_source` verdict — §3.1); remainder = one real SM C++ compile on native macOS and Windows hardware | Open (narrowed to the real-hardware remainder) |
+| [#33](https://github.com/putao520/bao/issues/33) | `bun_mimalloc_sys` MSVC arm (proper clang-cl/MSVC flags) | **Moot** — the crate was retired from the stack (#45, e2542105, 2026-09-20); no MSVC arm exists to build |
+| [#34](https://github.com/putao520/bao/issues/34) | `uv_*` symbol closure for the uWS windows arm | **Closed (compile + real-machine face)** — supply landed (`bun_libuv_sys` compiles the vendored oven-sh/libuv fork; 9595dbae) and the usockets@`4af1842c8c` absorb landed with the crypto/TLS signature migration; `cargo check -p bun_uws_sys --target x86_64-pc-windows-msvc` RC=0, and the 2026-09-26 real-machine run + battery 12/12 exercised the linked result |
+| [#35](https://github.com/putao520/bao/issues/35) | `bao_uloop` IOCP arm | **Closed (real-machine face)** — windows routes to the absorbed `LIBUS_USE_LIBUV` backend + `bun_io::windows_event_loop` FilePoll; the 2026-09-26 real-machine run + battery 12/12 covers the former “real link/E2E on windows hardware” remainder |
+| [#36](https://github.com/putao520/bao/issues/36) | macOS test-surface verification on real hardware | Open — this is the macOS Supported upgrade gate (§1) |
+| [#37](https://github.com/putao520/bao/issues/37) | `bao-mozjs-sys` source build: every reachable branch verified 2026-09-10 (apple flag/link directives, windows configure arm, `find_moztools` chain, toolchain + moztools-4.0 availability, `should_build_from_source` verdict — §3.1); Windows real-machine half proven 2026-09-26 (cross build/link + real run) | Open — narrowed to the native-macOS SM compile/link remainder |
 
 CI coverage of these targets is governed by its own issue and is intentionally
 not promised anywhere in this document.
+
+## 5. Ruling provenance
+
+- 2026-09-01 — musl = Supported (full) under REQ-DEPLOY-1 (maintainer ruling,
+  recorded in [#18](https://github.com/putao520/bao/issues/18)).
+- 2026-09-29 — three-tier platform ruling ([#18-A](https://github.com/putao520/bao/issues/18)):
+  Windows = Supported · macOS = Experimental · Linux = Supported (maintained);
+  Windows re-evaluation for a further upgrade after a 24h real-machine soak.
+  Formal PRD legislation (`PRD-REQ-TARGET-MATRIX`) is queued for the PRD
+  dedicated-tool transcription; the transitional carrier lives in
+  `.plans/spidermonkey-evolution.md` (2026-09-29 section).
