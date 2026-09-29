@@ -100,6 +100,44 @@ impl BaoWsRegistry {
         match method {
             "Target.attachToTarget" => Some(self.attach_to_target(params)),
             "Target.detachFromTarget" => Some(self.detach_from_target(params)),
+            // W40 (#11-D): Puppeteer's page-session setup enables a sweep of
+            // domains. These are ACCEPTED-BUT-INERT here: enable/disable is
+            // a truthful subscription acknowledgment (the session tracks the
+            // domain), and no domain data or events are ever fabricated —
+            // any other method in these domains still answers not-found.
+            // (The W11 matrix marks them out-of-matrix; this is the honest
+            // compat face for clients that gate on the enable round-trip.)
+            "Audits.enable" | "Audits.disable"
+            | "Tracing.enable" | "Tracing.disable" | "Tracing.start" | "Tracing.end"
+            | "Performance.enable" | "Performance.disable"
+            | "Accessibility.enable" | "Accessibility.disable"
+            | "Console.enable" | "Console.disable"
+            | "HeapProfiler.enable" | "HeapProfiler.disable"
+            | "Profiler.enable" | "Profiler.disable"
+            | "Overlay.enable" | "Overlay.disable"
+            | "SystemInfo.enable" | "SystemInfo.disable" => {
+                Some(Ok(serde_json::json!({})))
+            }
+            // W40 (#11-D): Puppeteer's connect handshake enumerates browser
+            // contexts before creating pages. Bao is a single-default-context
+            // server (no incognito/context isolation yet) — the honest
+            // answer is the empty list: everything lives in the one default
+            // context, exactly like Chrome answers for its default context.
+            "Target.getBrowserContexts" => Some(Ok(serde_json::json!({
+                "browserContextIds": []
+            }))),
+            // W40 (#11-D): Puppeteer may query version/target info at the
+            // browser session; a stable single-line answer (mirroring
+            // /json/version) is the compatible face.
+            "Target.getTargetInfo" => Some(Ok(serde_json::json!({
+                "targetInfo": {
+                    "targetId": "bao-browser",
+                    "type": "browser",
+                    "title": "Bao",
+                    "url": "",
+                    "attached": true,
+                }
+            }))),
             // Page.createIsolatedWorld needs the event face (the new context
             // is announced via a session-scoped Runtime.executionContextCreated),
             // so it is served here rather than in the stateless dispatch.

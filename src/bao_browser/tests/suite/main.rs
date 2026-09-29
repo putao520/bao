@@ -80,6 +80,8 @@ mod page_screenshot_deep_tests;
 mod page_state_config_tests;
 mod node_realm_churn_tests;
 mod pagestate_lifecycle_tests;
+mod puppeteer_e2e_tests;
+mod playwright_full_flow_loop_tests;
 mod page_wss_bao_tls_e2e_tests;
 mod permission_boundary_tests;
 mod permission_guard_error_deep_tests;

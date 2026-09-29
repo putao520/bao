@@ -638,13 +638,29 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
             target_id,
             frame_id,
         } => {
-            vec![CdpEvent {
-                method: "Page.frameStoppedLoading".into(),
-                params: json!({
-                    "frameId": frame_id,
-                }),
-                session_id: Some(target_id),
-            }]
+            // W40 (#11-D Puppeteer compat): servo's frame-stopped-loading IS
+            // the load-complete signal for that frame — Chrome emits both
+            // Page.frameStoppedLoading AND Page.loadEventFired for it, and
+            // clients (Puppeteer's goto waitUntil:'load', Playwright's
+            // 'load') gate on loadEventFired. Emit the paired event from
+            // the same truth (no fabricated timing — same instant).
+            vec![
+                CdpEvent {
+                    method: "Page.frameStoppedLoading".into(),
+                    params: json!({
+                        "frameId": frame_id,
+                    }),
+                    session_id: Some(target_id.clone()),
+                },
+                CdpEvent {
+                    method: "Page.loadEventFired".into(),
+                    params: json!({
+                        "frameId": frame_id,
+                        "timestamp": 0.0,
+                    }),
+                    session_id: Some(target_id),
+                },
+            ]
         }
 
         // ────────────────────────────────────────────────────────────────
