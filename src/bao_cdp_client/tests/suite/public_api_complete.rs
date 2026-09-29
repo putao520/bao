@@ -65,7 +65,7 @@ fn top_level_errors() {
 
     // CdpError 变体
     let _: CdpError = CdpError::ProtocolError("err".to_string());
-    let _: CdpError = CdpError::JsonError("err".to_string());
+    let _: CdpError = CdpError::JsonError(serde_json::from_str::<serde_json::Value>("{bad").unwrap_err());
     let _: CdpError = CdpError::IoError(std::io::Error::new(std::io::ErrorKind::Other, "boom"));
     let _: CdpError = CdpError::ConnectionClosed;
     let _: CdpError = CdpError::Timeout("err".to_string());

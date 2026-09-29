@@ -12,29 +12,28 @@ source-chain state).
 | Type | Crate | Shape | Variants | Notes |
 |---|---|---|---|---|
 | `BrowserError` | bao_browser | enum | 5 (Init/Navigation/Rendering/JavaScript/CDP) | all-String payloads; Display prefixes locked |
-| `ConnectError` | bao_cdp_client | enum | **5** (design doc said 9 — measured set is the contract) | InvalidUrl unit; rest String |
-| `CdpError` | bao_cdp_client | enum | **7** (design doc said 8 — measured) | IoError carries typed `io::Error` |
+| `ConnectError` | bao_cdp_client | enum | 6 (5 measured w22d + `Io` added W29) | `Io(io::Error)` carries the typed source |
+| `CdpError` | bao_cdp_client | enum | 8 (7 measured w22d + `Connect` added W29) | IoError/JsonError/Connect carry typed sources |
 | `ErrorCode` | bun_sm | C-style `repr(u8)` | 11 discriminants (NoError=0 … GenericError=10) | JS-kind classifier, NOT a std Error by design |
 | `CryptoError` | bao_crypto | thiserror enum | 23 (measured; mixed struct/String payloads) | Display via `#[error]` |
 | `TranspileError` | bun_transpiler | struct | `{message}` | prefix `transpile_ts error: ` |
 | `JsError` | bun_sm | struct | `{message, filename, line, column, stack?}` | **runtime main-entry typed error**; `bun_core::JsError` is the internal 1-byte tag enum (Thrown/OutOfMemory/Terminated), a different face |
 
-## 2. Source-chain findings (REPORTED, NOT FIXED)
+## 2. Source-chain findings — ALL FIXED (W29)
 
-Locked as-is by `error_taxonomy_error_trait_and_source_chain` — a fix flips
-the test loudly and must update this ledger.
+The four chain-loss findings from the w22d audit are fixed at the impl layer
+(variant set grew ONLY where the From conversion needed a typed carrier —
+that growth IS the fix, locked in the golden). The source-chain test now
+asserts Some(source) + iterable root cause; a regression flips it loudly.
 
-| # | Finding | Where | Effect |
+| # | Finding (w22d state) | Fix (W29) | Where |
 |---|---|---|---|
-| w22d-1 | `From<io::Error> for ConnectError` materializes `to_string()` into `ConnectionFailed(String)` | bao_cdp_client/src/error.rs | typed io source unrecoverable from the value (text survives in Display) |
-| w22d-2 | `impl std::error::Error for CdpError {}` has no `source()` arm although `IoError(io::Error)` carries the typed source | bao_cdp_client/src/error.rs | `.source()` returns None on the ONE variant that has a real cause — chain terminates prematurely |
-| w22d-3 | `From<serde_json::Error> for CdpError` materializes to `JsonError(String)` | bao_cdp_client/src/error.rs | serde source text survives; typed source lost (lower severity — serde errors are self-describing strings) |
-| w22d-4 | `From<ConnectError> for CdpError` flattens to `ProtocolError(other.to_string())` | bao_cdp_client/src/error.rs | connect/protocol phases become indistinguishable by variant after conversion |
+| w22d-1 | `From<io::Error> for ConnectError` stringified into `ConnectionFailed(String)` | **`ConnectError::Io(std::io::Error)` variant added**; From keeps the typed source; `source()` returns it | bao_cdp_client/src/error.rs |
+| w22d-2 | `CdpError` hand-written empty Error impl — `IoError(io::Error)` had `source() == None` | **`source()` match arm added**: IoError/JsonError/Connect → Some | bao_cdp_client/src/error.rs |
+| w22d-3 | `From<serde_json::Error>` stringified into `JsonError(String)` | **`JsonError(serde_json::Error)` payload retyped** (zero external construction sites — census-verified); From keeps the typed source | bao_cdp_client/src/error.rs |
+| w22d-4 | `From<ConnectError>` flattened to `ProtocolError(String)` — phases indistinguishable | **`CdpError::Connect(ConnectError)` variant added**; nested typed carrier, chain walks Connect → ConnectError → io root cause | bao_cdp_client/src/error.rs |
 
-Backlog shape if fixed: give `CdpError` a real `source()` match arm (w22d-2),
-add `ConnectError::Io(std::io::Error)`-style typed carriers or accept the
-String face as the documented contract (w22d-1/3/4 are also defensible as
-is — the ledger exists so the decision is explicit, not accidental).
+Still open (NOT error-chain work): the BridgeChannel `String` backlog below.
 
 ## 3. String-guess surface ledger (33 pub fns, 12 files)
 

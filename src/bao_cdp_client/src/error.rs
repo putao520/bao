@@ -16,6 +16,7 @@ use std::fmt;
 /// - [`ConnectError::LaunchError`]: 外部浏览器进程拉起失败
 /// - [`ConnectError::ConnectionFailed`]: TCP/WebSocket 握手失败
 /// - [`ConnectError::Timeout`]: 连接超时
+/// - [`ConnectError::Io`]: 底层 I/O 错误(typed 源保留,可经 [`std::error::Error::source`] 迭代)
 ///
 /// @trace REQ-BAO-API-001 [level:library]
 #[derive(Debug)]
@@ -30,6 +31,8 @@ pub enum ConnectError {
     ConnectionFailed(String),
     /// 连接超时。
     Timeout(String),
+    /// 底层 I/O 错误(W29 w22d-1 修复:From&lt;io::Error&gt; 保型,不再字符串化)。
+    Io(std::io::Error),
 }
 
 impl fmt::Display for ConnectError {
@@ -46,15 +49,23 @@ impl fmt::Display for ConnectError {
             ConnectError::LaunchError(msg) => write!(f, "browser launch failed: {}", msg),
             ConnectError::ConnectionFailed(msg) => write!(f, "connection failed: {}", msg),
             ConnectError::Timeout(msg) => write!(f, "connect timeout: {}", msg),
+            ConnectError::Io(err) => write!(f, "connection I/O error: {}", err),
         }
     }
 }
 
-impl std::error::Error for ConnectError {}
+impl std::error::Error for ConnectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConnectError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 impl From<std::io::Error> for ConnectError {
     fn from(err: std::io::Error) -> Self {
-        ConnectError::ConnectionFailed(err.to_string())
+        ConnectError::Io(err)
     }
 }
 
@@ -68,14 +79,16 @@ impl From<std::io::Error> for ConnectError {
 /// - [`CdpError::Timeout`]: 命令调用或 recv_event 超时(TimeoutError)
 /// - [`CdpError::TransportError`]: Transport 实现内部错误(TransportError)
 /// - [`CdpError::HandshakeError`]: WebSocket 握手失败
+/// - [`CdpError::Connect`]: 连接阶段错误(嵌套 [`ConnectError`],相位可分且
+///   source 链走到底 — W29 w22d-4)
 ///
 /// @trace REQ-BAO-API-002 [interface:Transport]
 #[derive(Debug)]
 pub enum CdpError {
     /// 协议层错误(JSON-RPC error object / unknown method 等)。
     ProtocolError(String),
-    /// 序列化/反序列化失败。
-    JsonError(String),
+    /// 序列化/反序列化失败(typed serde 源保留 — W29 w22d-3)。
+    JsonError(serde_json::Error),
     /// I/O 错误。
     IoError(std::io::Error),
     /// 连接已关闭。
@@ -86,6 +99,8 @@ pub enum CdpError {
     TransportError(String),
     /// WebSocket 握手失败。
     HandshakeError(String),
+    /// 连接阶段错误(W29 w22d-4:From&lt;ConnectError&gt; 保型嵌套,不再展平)。
+    Connect(ConnectError),
 }
 
 impl fmt::Display for CdpError {
@@ -98,11 +113,21 @@ impl fmt::Display for CdpError {
             CdpError::Timeout(msg) => write!(f, "timeout: {}", msg),
             CdpError::TransportError(msg) => write!(f, "transport error: {}", msg),
             CdpError::HandshakeError(msg) => write!(f, "WebSocket handshake error: {}", msg),
+            CdpError::Connect(err) => write!(f, "connect error: {}", err),
         }
     }
 }
 
-impl std::error::Error for CdpError {}
+impl std::error::Error for CdpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CdpError::IoError(err) => Some(err),
+            CdpError::JsonError(err) => Some(err),
+            CdpError::Connect(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 impl From<std::io::Error> for CdpError {
     fn from(err: std::io::Error) -> Self {
@@ -112,13 +137,13 @@ impl From<std::io::Error> for CdpError {
 
 impl From<serde_json::Error> for CdpError {
     fn from(err: serde_json::Error) -> Self {
-        CdpError::JsonError(err.to_string())
+        CdpError::JsonError(err)
     }
 }
 
 impl From<ConnectError> for CdpError {
     fn from(err: ConnectError) -> Self {
-        CdpError::ProtocolError(err.to_string())
+        CdpError::Connect(err)
     }
 }
 

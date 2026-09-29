@@ -10,13 +10,9 @@
 //   1. every pub error type is `impl std::error::Error` (dyn-compatible);
 //   2. kind discrimination is by VARIANT, not by parsing a String payload —
 //      pinned by asserting distinct variants for distinct failure kinds;
-//   3. source chain: the CURRENT state is locked honestly. FINDINGS recorded
-//      (reported, not fixed — w22d scope is observational):
-//      - #w22d-2: CdpError::IoError carries io::Error but source() is None
-//        (the hand-written `impl Error for CdpError {}` has no source match);
-//      - #w22d-1: ConnectError's From<io::Error> materializes to_string()
-//        into ConnectionFailed — the io source is unrecoverable.
-//      Both are asserted AS-IS so a future fix flips this test loudly.
+//   3. source chain: FIXED in W29 — CdpError::IoError/JsonError/Connect and
+//      ConnectError::Io all expose Some(source) with the root cause iterable;
+//      the chain-walk assertions below would fail loudly on any regression.
 
 use std::error::Error as StdError;
 
@@ -65,18 +61,20 @@ fn connect_cases() -> Vec<(Box<dyn StdError>, &'static str, &'static str)> {
         (Box::new(ConnectError::LaunchError("x".into())), "LaunchError", "browser launch failed: x"),
         (Box::new(ConnectError::ConnectionFailed("x".into())), "ConnectionFailed", "connection failed: x"),
         (Box::new(ConnectError::Timeout("x".into())), "Timeout", "connect timeout: x"),
+        (Box::new(ConnectError::Io(std::io::Error::other("root-cause"))), "Io", "connection I/O error: root-cause"),
     ]
 }
 
 fn cdp_cases() -> Vec<(Box<dyn StdError>, &'static str, &'static str)> {
     vec![
         (Box::new(CdpError::ProtocolError("x".into())), "ProtocolError", "CDP protocol error: x"),
-        (Box::new(CdpError::JsonError("x".into())), "JsonError", "JSON error: x"),
+        (Box::new(CdpError::JsonError(serde_json::from_str::<serde_json::Value>("{bad").unwrap_err())), "JsonError", "JSON error:"),
         (Box::new(CdpError::IoError(std::io::Error::other("boom"))), "IoError", "I/O error: boom"),
         (Box::new(CdpError::ConnectionClosed), "ConnectionClosed", "connection closed"),
         (Box::new(CdpError::Timeout("x".into())), "Timeout", "timeout: x"),
         (Box::new(CdpError::TransportError("x".into())), "TransportError", "transport error: x"),
         (Box::new(CdpError::HandshakeError("x".into())), "HandshakeError", "WebSocket handshake error: x"),
+        (Box::new(CdpError::Connect(ConnectError::InvalidUrl)), "Connect", "connect error: invalid URL (empty or missing scheme)"),
     ]
 }
 
@@ -251,32 +249,56 @@ fn error_taxonomy_error_trait_and_source_chain() {
         assert!(!e.to_string().is_empty(), "{name} must render non-empty Display");
     }
 
-    // FINDING #w22d-2 (locked as-is): CdpError::IoError carries the io::Error
-    // in its payload, but source() is None — the hand-written Error impl has
-    // no source() arm. A fix must flip this to Some.
+    // FIXED (W29 w22d-2): CdpError::IoError exposes its io source, and the
+    // root cause is iterable from the value.
     let io_err = CdpError::IoError(std::io::Error::other("root-cause"));
+    let src = io_err
+        .source()
+        .expect("CdpError::IoError must expose its io::Error source (W29 w22d-2)");
     assert!(
-        io_err.source().is_none(),
-        "#w22d-2 flipped: CdpError::IoError now EXPOSES a source — update the \
-         finding and docs/error-model.md (chain-loss no longer holds)"
-    );
-    // The payload at least renders the root cause (Display keeps the text).
-    assert!(
-        io_err.to_string().contains("root-cause"),
-        "IoError Display must retain the cause text even while source() is None"
+        src.to_string().contains("root-cause"),
+        "the exposed source must carry the root cause: {src}"
     );
 
-    // FINDING #w22d-1 (locked as-is): ConnectError's From<io::Error>
-    // materializes the source to_string() into ConnectionFailed — the typed
-    // source is unrecoverable from the value.
+    // FIXED (W29 w22d-1): From<io::Error> keeps the TYPED source —
+    // ConnectError::Io, whose own source() walks one more level.
     let conn: ConnectError = std::io::Error::other("root-cause").into();
-    match conn {
-        ConnectError::ConnectionFailed(msg) => assert!(
-            msg.contains("root-cause"),
-            "From<io::Error> must at least keep the cause TEXT: {msg:?}"
+    match &conn {
+        ConnectError::Io(err) => assert!(
+            err.to_string().contains("root-cause"),
+            "the typed io source must survive: {err}"
         ),
-        other => panic!("From<io::Error> must build ConnectionFailed, got {other:?}"),
+        other => panic!("From<io::Error> must build ConnectError::Io (W29), got {other:?}"),
     }
+    assert!(
+        conn.source().is_some(),
+        "ConnectError::Io must expose its source"
+    );
+
+    // FIXED (W29 w22d-4): From<ConnectError> nests — the phase survives as a
+    // VARIANT and the chain walks Connect -> ConnectError -> io root cause.
+    let nested: CdpError = ConnectError::Io(std::io::Error::other("root-cause")).into();
+    let level1 = nested
+        .source()
+        .expect("CdpError::Connect must expose the nested ConnectError");
+    assert!(
+        format!("{level1:?}").contains("Io"),
+        "level 1 must be the ConnectError (phase preserved): {level1:?}"
+    );
+    let level2 = level1
+        .source()
+        .expect("the nested ConnectError::Io must expose its io source");
+    assert!(
+        level2.to_string().contains("root-cause"),
+        "level 2 must carry the root cause: {level2}"
+    );
+
+    // FIXED (W29 w22d-3): JsonError carries the typed serde source.
+    let json_err: CdpError = serde_json::from_str::<serde_json::Value>("{bad").unwrap_err().into();
+    assert!(
+        json_err.source().is_some(),
+        "CdpError::JsonError must expose its serde_json source (W29 w22d-3)"
+    );
 
     // String-payload variants structurally have no source (pinned: distinct
     // kinds are distinct VARIANTS, never String parsing).
