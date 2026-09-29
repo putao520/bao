@@ -230,7 +230,6 @@ impl CdpSession {
                 protocol::ok_response(msg.id, result)
             }
             Some(Err(err)) => CdpResponse {
-                exception_details: None,
                 id: msg.id,
                 result: None,
                 error: Some(err),

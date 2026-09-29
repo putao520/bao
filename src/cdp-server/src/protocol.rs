@@ -23,14 +23,6 @@ pub struct CdpResponse {
     pub id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
-    // Chrome semantics: exceptionDetails is a TOP-LEVEL response member for
-    // every method that can report an evaluation exception — never nested
-    // under `result`.
-    #[serde(
-        rename = "exceptionDetails",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub exception_details: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<CdpError>,
 }
@@ -83,16 +75,9 @@ pub fn serialize_event(ev: &CdpEvent) -> String {
     serde_json::to_string(ev).unwrap_or_else(|_| "{}".into())
 }
 
-pub fn ok_response(id: Option<i64>, mut result: Value) -> CdpResponse {
-    // Lift the handler-envelope exceptionDetails (when present and non-null)
-    // to the response top level.
-    let exception_details = result
-        .as_object_mut()
-        .and_then(|o| o.remove("exceptionDetails"))
-        .filter(|v| !v.is_null());
+pub fn ok_response(id: Option<i64>, result: Value) -> CdpResponse {
     CdpResponse {
         id,
-        exception_details,
         result: Some(result),
         error: None,
     }
@@ -102,7 +87,6 @@ pub fn error_response(id: Option<i64>, code: i64, message: impl Into<String>) ->
     CdpResponse {
         id,
         result: None,
-        exception_details: None,
         error: Some(CdpError {
             code,
             message: message.into(),

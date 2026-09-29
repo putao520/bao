@@ -78,16 +78,9 @@ pub fn serialize_event(ev: &CdpEvent) -> String {
 }
 
 /// Build a success response carrying `result`.
-fn ok_response(id: Option<i64>, mut result: Value) -> CdpResponse {
-    // Chrome semantics: lift the handler-envelope exceptionDetails (when
-    // present and non-null) to the response top level.
-    let exception_details = result
-        .as_object_mut()
-        .and_then(|o| o.remove("exceptionDetails"))
-        .filter(|v| !v.is_null());
+fn ok_response(id: Option<i64>, result: Value) -> CdpResponse {
     CdpResponse {
         id,
-        exception_details,
         result: Some(result),
         error: None,
     }
@@ -98,7 +91,6 @@ fn error_response(id: Option<i64>, code: i64, message: impl Into<String>) -> Cdp
     CdpResponse {
         id,
         result: None,
-        exception_details: None,
         error: Some(CdpError {
             code,
             message: message.into(),

@@ -441,7 +441,9 @@ fn client_phase_live_extensions(ws_url: String, done: Arc<AtomicBool>) {
             "returnByValue": true,
         }),
     );
-    let details = &resp["exceptionDetails"];
+    // CDP spec: exceptionDetails rides INSIDE the protocol-level result
+    // object (Chrome wire: {"result": {"result": …, "exceptionDetails": …}}).
+    let details = &resp["result"]["exceptionDetails"];
     assert!(
         !details.is_null(),
         "a thrown evaluate must carry exceptionDetails: {resp}"

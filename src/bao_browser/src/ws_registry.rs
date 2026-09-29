@@ -331,19 +331,7 @@ impl RegistryDispatch for BaoWsRegistry {
         let response =
             bao_cdp::handle_command(msg.clone(), &target_id, &msg.params, Some(&self.bridge));
         let result = match (response.result, response.error) {
-            (Some(mut result), _) => {
-                // Chrome semantics: the lifted top-level exceptionDetails must
-                // survive the registry's bare-Value return face — re-attach it
-                // so cdp-server's response framing lifts it to the frame top
-                // level (dropping it here silently buried evaluation
-                // exceptions under `result`).
-                if let Some(details) = response.exception_details {
-                    if let Some(obj) = result.as_object_mut() {
-                        obj.insert("exceptionDetails".to_string(), details);
-                    }
-                }
-                Ok(result)
-            },
+            (Some(result), _) => Ok(result),
             (None, Some(err)) => Err(err),
             (None, None) => Ok(json!({})),
         };
