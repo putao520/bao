@@ -29,7 +29,6 @@ testbinding = ["script_bindings/testbinding"]
 tracing = ["dep:tracing", "script_bindings/tracing"]
 webgl_backtrace = ["servo-canvas-traits/webgl_backtrace"]
 webgpu = [
-    "dep:script_webgpu",
     "dep:webgpu_traits",
     "dep:wgpu-core",
     "dep:wgpu-types",
@@ -137,7 +136,6 @@ rustc-hash = {version = "2.1.2"}
 # synced with the upstream 7ca99fe3f subtlecrypto.rs end-state (REQ-BRW-047 wave ③).
 x-wing = { version = "0.1.0", features = ["zeroize"] }
 script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.15"}
-script_webgpu = {package = "bao-servo-script-webgpu", path = "../script_webgpu", version = "=0.5.14", optional = true}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.8"}
 selectors = {version = "=0.40.0"}
 serde = {version = "1.0.228", features = ["derive"]}
