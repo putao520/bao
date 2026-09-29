@@ -50,3 +50,9 @@
 1. BrowserRuntime/NodeRuntime 收口(7af9efe1)
 2. Win=Supported/macOS=Experimental 矩阵(7af9efe1+docs commit)
 3. console 混合作用域(7af9efe1)
+
+## BCE-20260930-PUBLISH-CLOSURE(发布链 5 失败类·第一性归因+横扫)
+**根因(非增量症状)**:闭包集按**本地增量**(source-changed-since-baseline)计算,而 cargo publish 按 **registry 侧依赖图**解析——servo 族 lockstep 的真发布集由「registry 上仍 pin 旧 base 的全部 traits 族」决定,本地 touched 集只是其子集。逐 crate 补发=对系统性集合缺陷打增量补丁。
+**次要根因(工具面)**:publish-closure.sh 三缺陷——①python3- stdin 挂(nohup 无 </dev/null)②execute 不按 topo 序(stealth 先于 bun_runtime)③closure 扫描漏 vendor servo+shared/media 深层路径。
+**横扫(系统性,替代增量)**:W42=按 pin 图('bao-servo-base=0.5.7' 全递归 grep)确定 S 集→全族 z+1→级联 pin→三验(metadata/check/plan needs-bump=0)→fixpoint 发布。脚本三缺陷修随发布后硬化合同。
+**残留=0 判据**:publish-closure --plan needs-bump=0 ∧ fixpoint 全 live(逐 crate curl 200)∧ bao-core 0.3.2 live。
