@@ -605,3 +605,122 @@ fn ws_registry_fetch_explicit_error_and_target_routing_unit() {
     assert_eq!(err.code, -32000);
     assert!(err.message.contains("no request interception facility"));
 }
+
+/// ISSUE #20 (B: "CDP page evaluate 默认遵循 Page Realm 权限"): a
+/// Runtime.evaluate issued through the CDP WS face must execute in the
+/// PAGE realm — the Node/Bun host capability names must NOT be reachable,
+/// while the web face is provably alive (so the "undefined" answers cannot
+/// come from an empty/broken realm). Same dual-thread harness as the
+/// navigate/evaluate roundtrip above.
+// @trace REQ-CDP-005 [req:REQ-CDP-005] [level:e2e] [issue:20]
+#[test]
+fn ws_cdp_evaluate_stays_in_page_realm() {
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("initial page");
+
+    let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
+    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
+    runtime.set_event_channel(event_subscriber.sender());
+
+    let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let port = pick_free_port();
+    let server_config = ServerConfig::builder()
+        .host("127.0.0.1")
+        .port(port)
+        .build();
+    let mut server = CdpServer::with_registry(server_config, registry);
+    server.set_target_provider(Arc::new(ServoTargetProvider::new(
+        bridge_tx,
+        page.id().to_string(),
+        "127.0.0.1".into(),
+        port,
+    )));
+    let broadcaster = server.broadcaster();
+    std::thread::spawn(move || {
+        let _ = server.run();
+    });
+
+    let ws_url = format!("ws://127.0.0.1:{port}/devtools/page/{}", page.id());
+
+    let done = Arc::new(AtomicBool::new(false));
+    let client = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || page_realm_evaluate_phase(ws_url, done))
+    };
+
+    use bao_cdp_client::bridge::translate;
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !done.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+        runtime.spin_event_loop();
+        bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
+        while let Ok(servo_event) = servo_event_rx.try_recv() {
+            for cdp_event in translate(servo_event) {
+                broadcaster.send_event(&cdp_event.method, cdp_event.params);
+            }
+        }
+        std::thread::yield_now();
+    }
+
+    client.join().expect("page-realm evaluate phase must not panic");
+    assert!(
+        done.load(Ordering::Relaxed),
+        "page-realm evaluate phase must have completed all assertions"
+    );
+}
+
+/// WS-client half: every CDP-issued typeof probe for a host capability must
+/// answer "undefined" on the page realm, while the web face answers.
+fn page_realm_evaluate_phase(ws_url: String, done: Arc<AtomicBool>) {
+    let mut cdp = WsCdp::connect(&ws_url);
+
+    // Wait for a live web face first (same poll shape as the roundtrip's
+    // title poll): proves the realm answers at all before pinning denials.
+    let mut web_alive = false;
+    for _ in 0..200 {
+        let resp = cdp.send(
+            "Runtime.evaluate",
+            json!({ "expression": "typeof document", "returnByValue": true }),
+        );
+        if resp["result"]["result"]["value"] == json!("object") {
+            web_alive = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(web_alive, "CDP evaluate must reach a live page realm (typeof document)");
+
+    // The capability denials: Node/Bun host names unreachable via CDP.
+    for expr in ["require", "process", "Buffer", "Bun", "module", "__dirname"] {
+        let resp = cdp.send(
+            "Runtime.evaluate",
+            json!({ "expression": format!("typeof {expr}"), "returnByValue": true }),
+        );
+        assert!(
+            resp.get("error").is_none(),
+            "typeof {expr} must evaluate cleanly: {resp}"
+        );
+        assert_eq!(
+            resp["result"]["result"]["value"],
+            json!("undefined"),
+            "CDP evaluate must NOT expose host capability '{expr}' on the page realm"
+        );
+    }
+
+    // The web face stays functional under the same CDP session.
+    let resp = cdp.send(
+        "Runtime.evaluate",
+        json!({ "expression": "typeof fetch", "returnByValue": true }),
+    );
+    assert_eq!(
+        resp["result"]["result"]["value"],
+        json!("function"),
+        "page web face must stay reachable via CDP evaluate"
+    );
+
+    done.store(true, Ordering::Relaxed);
+}

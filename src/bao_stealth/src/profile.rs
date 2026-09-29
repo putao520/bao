@@ -722,4 +722,111 @@ mod tests {
         let profile = StealthProfile::chrome_default();
         assert_eq!(profile.navigator.language, profile.locale.locale);
     }
+
+    #[test]
+    fn firefox_navigator_language_and_engine_locale_agree() {
+        // Firefox column of the two-locale-surface agreement above (that
+        // test pins only the chrome column; the shipped firefox column is a
+        // distinct NavigatorProfile literal, so the agreement must be pinned
+        // on its own — the live engine test drives only the chrome column).
+        let ff = StealthProfile::firefox_default();
+        assert_eq!(ff.navigator.language, ff.locale.locale);
+        assert_eq!(ff.navigator.languages[0], ff.locale.locale);
+    }
+
+    // ── Transport/JS same-family anti-regression (identity-matrix weak cell:
+    //    "Firefox JS + Chrome transport" mixed identity must be structurally
+    //    impossible in shipped profiles; custom mixes stay an explicit user
+    //    path) ──────────────────────────────────────────────────────────────
+
+    fn assert_tls_matches_family(actual: &TlsFingerprint, expected: &TlsFingerprint, what: &str) {
+        assert_eq!(actual.cipher_suites, expected.cipher_suites, "{what}: cipher_suites");
+        assert_eq!(actual.extensions, expected.extensions, "{what}: extensions");
+        assert_eq!(
+            actual.signature_algorithms, expected.signature_algorithms,
+            "{what}: signature_algorithms"
+        );
+        assert_eq!(actual.supported_groups, expected.supported_groups, "{what}: supported_groups");
+        assert_eq!(actual.alpn_protocols, expected.alpn_protocols, "{what}: alpn_protocols");
+        assert_eq!(actual.ja3_hash, expected.ja3_hash, "{what}: ja3_hash");
+        assert_eq!(actual.tls_version, expected.tls_version, "{what}: tls_version");
+        assert_eq!(
+            actual.record_size_limit, expected.record_size_limit,
+            "{what}: record_size_limit"
+        );
+        assert_eq!(
+            actual.compress_certificate_algos, expected.compress_certificate_algos,
+            "{what}: compress_certificate_algos"
+        );
+        assert_eq!(
+            actual.application_settings_protocol, expected.application_settings_protocol,
+            "{what}: application_settings_protocol"
+        );
+    }
+
+    fn assert_http2_matches_family(
+        actual: &Http2Fingerprint,
+        expected: &Http2Fingerprint,
+        what: &str,
+    ) {
+        assert_eq!(
+            actual.header_table_size, expected.header_table_size,
+            "{what}: header_table_size"
+        );
+        assert_eq!(actual.enable_push, expected.enable_push, "{what}: enable_push");
+        assert_eq!(
+            actual.max_concurrent_streams, expected.max_concurrent_streams,
+            "{what}: max_concurrent_streams"
+        );
+        assert_eq!(
+            actual.initial_window_size, expected.initial_window_size,
+            "{what}: initial_window_size"
+        );
+        assert_eq!(actual.max_frame_size, expected.max_frame_size, "{what}: max_frame_size");
+        assert_eq!(
+            actual.max_header_list_size, expected.max_header_list_size,
+            "{what}: max_header_list_size"
+        );
+        assert_eq!(
+            actual.window_update_size, expected.window_update_size,
+            "{what}: window_update_size"
+        );
+        assert_eq!(
+            actual.pseudo_header_order, expected.pseudo_header_order,
+            "{what}: pseudo_header_order"
+        );
+        assert_eq!(
+            actual.priority_frame_mode, expected.priority_frame_mode,
+            "{what}: priority_frame_mode"
+        );
+        assert_eq!(actual.priority_frames, expected.priority_frames, "{what}: priority_frames");
+    }
+
+    #[test]
+    fn shipped_profiles_transport_face_matches_declared_family() {
+        let ff = StealthProfile::firefox_default();
+        let ch = StealthProfile::chrome_default();
+        assert_tls_matches_family(&ff.tls, &TlsFingerprint::firefox(), "firefox_default().tls");
+        assert_tls_matches_family(&ch.tls, &TlsFingerprint::chrome(), "chrome_default().tls");
+        assert_http2_matches_family(
+            &ff.http2,
+            &Http2Fingerprint::firefox(),
+            "firefox_default().http2",
+        );
+        assert_http2_matches_family(
+            &ch.http2,
+            &Http2Fingerprint::chrome(),
+            "chrome_default().http2",
+        );
+        // Family-distinguishable: the two shipped transports must not collide,
+        // or "differ across shipped profiles" loses its meaning.
+        assert_ne!(
+            ff.tls.ja3_hash, ch.tls.ja3_hash,
+            "shipped TLS families must be distinguishable"
+        );
+        assert_ne!(
+            ff.http2.pseudo_header_order, ch.http2.pseudo_header_order,
+            "shipped H2 families must be distinguishable"
+        );
+    }
 }
