@@ -11,7 +11,7 @@
 - bao 实现面:`src/bao_cdp/src/protocol.rs` 21 域分派(170 arms;机械抽取+人工校准)
 - 测试佐证:`src/bao_cdp/tests/suite/`(24 文件,`"Domain.method"` 字符串断言面)
 
-## 分派域矩阵(21 域,method 级)
+## 分派域矩阵(21 域,method 级;含 Console/Inspector 两张未分派域的 method 级全 Unsupported 表——共 23 张表 = 21 分派 + 2 未分派)
 
 
 ### Browser(20 methods:S 0+ack0 / Partial 0+ackonly2 / EU 0 / Unsupported 18)
