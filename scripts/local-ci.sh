@@ -105,6 +105,20 @@ make bce-check
 BCE_RC=$?
 if [ "${BCE_RC}" -eq 0 ]; then echo "PASS bce-gate"; else echo "FAIL bce-gate (exit=${BCE_RC})"; fi
 
+# ================ [optional 5/5] semver-gate (W4 Gate C) =================
+# API break-detection (cargo-semver-checks)。默认 skip(逐 crate semver
+# 检查分钟-十分钟级,避免日常 CI 长时);BAO_SEMVER_GATE=1 启用,启用时
+# 硬 fail(major-required)计入退出码。语义见 scripts/semver-gate.sh。
+SEMVER_RC=0
+if [ "${BAO_SEMVER_GATE:-0}" = "1" ]; then
+    echo "==> [5/5] semver-gate (blocking when enabled): scripts/semver-gate.sh --run"
+    bash "${REPO}/scripts/semver-gate.sh" --run
+    SEMVER_RC=$?
+    if [ "${SEMVER_RC}" -eq 0 ]; then echo "PASS semver-gate"; else echo "FAIL semver-gate (exit=${SEMVER_RC})"; fi
+else
+    echo "==> [5/5] semver-gate: skipped (set BAO_SEMVER_GATE=1 to enable)"
+fi
+
 # ================================ 总表 ================================
 echo
 echo "==================== LOCAL-CI SUMMARY ===================="
@@ -112,10 +126,16 @@ echo "$(verdict "${FMT_RC}")     fmt       (non-blocking)"
 echo "$(verdict "${CHECK_RC}")    check     (blocking)"
 echo "$(verdict "${CLIPPY_RC}")   clippy    (blocking)"
 echo "$(verdict "${BCE_RC}")      bce-gate  (blocking)"
+if [ "${BAO_SEMVER_GATE:-0}" = "1" ]; then
+    echo "$(verdict "${SEMVER_RC}")    semver-gate (blocking when enabled)"
+fi
 echo "========================================================="
 
 OVERALL_RC=0
 if [ "${CHECK_RC}" -ne 0 ] || [ "${CLIPPY_RC}" -ne 0 ] || [ "${BCE_RC}" -ne 0 ]; then
+    OVERALL_RC=1
+fi
+if [ "${BAO_SEMVER_GATE:-0}" = "1" ] && [ "${SEMVER_RC}" -ne 0 ]; then
     OVERALL_RC=1
 fi
 
