@@ -27,7 +27,7 @@
 1. **电池 v3**(e2 后,主会话 V):xvfb nextest test-ci 全量 → 绿后链 msvc cross check(task #14)
 2. **W3b console 混合作用域**(e1 后,bao_runtime 域空出):实证页面 realm console.time 路由(servo dom console per-global vs node_console 进程全局)→ 按裁决实现/验证+跨 realm 隔离测试+CLI 全局测试
 3. **W4 #17-3 semver gate**:cargo-semver-checks 安装+workspace 接入(发布前自动 break 检测)——✅ 已落地(2026-09-29,e2):工具 0.50.0 入 ~/.cargo/bin;scripts/semver-gate.sh(发布面 crate 集动态探测+离线回退;major-required=硬 fail,0.x 语义;minor/patch=advisory;超时 SKIP 标注);local-ci 第 5 可选段(BAO_SEMVER_GATE=1 启用,默认 skip);docs/semver-gate.md;首跑报告 .claude/semver-gate-report-2026-09-29.md
-4. **W5 #29 尾**:Zone reclamation 评估(M)+intentional leak ledger 正式化(M)——**已落地(2026-09-29,E1)**:`bench-harness zone-eval` 新模式(N≥100 实测:zone_count GC 后 102→2/302→2 全量回收 ✓;chunk 字节线性驻留 ~2.1 MB/realm 双 GC 不回落=**待裁决新发现**)→ `.plans/gc-leak-ledger.md` 七项正式表 + `LEAK_RAW_VALUE_ROOT_GUARD`/`LEAK_SHUTDOWN_ENGINE` 计数器(bao_engine)
+4. **W5 #29 尾**:Zone reclamation 评估(M)+intentional leak ledger 正式化(M)——**已落地(2026-09-29,E1)**:`bench-harness zone-eval` 新模式(N≥100 实测:zone_count GC 后 102→2/302→2 全量回收 ✓;chunk 字节线性驻留 ~2.1 MB/realm 双 GC 不回落=**待裁决新发现**)→ `.plans/gc-leak-ledger.md` 七项正式表 + `LEAK_RAW_VALUE_ROOT_GUARD`/`LEAK_SHUTDOWN_ENGINE` 计数器(bao_engine);W7(heaptrack RCA)XDR SharedData 泄漏修复尝试无效已回退——**根因上移:死 realm zone 从不 GC(W5/W6 同源),SM realm-discard 面待上游 issue/裁决**,`.plans/soak-leak-rca.md` 全量归因
 5. **W6 G1-Node inventory**(XL):锚 node v24.19.0 本地(72 builtin)逐模块 exports diff vs bao 面;分类矩阵+聚合+`bao compat node` 报告
 6. **W7 G1-Bun inventory**(XL):锚 ~/code/rust/bun/src/js+Bun.* 全表面 diff;四高优先项(file/serve/spawn/write)量化+分类
 7. **W8 G1-CDP/Web 矩阵**:CDP 12 域 method 矩阵+`bao compat cdp`;Web WPT 子集首跑+`bao compat web`

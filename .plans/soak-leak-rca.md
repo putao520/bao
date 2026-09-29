@@ -51,3 +51,14 @@ BAO_SOAK_URL=http://127.0.0.1:8731/page.html xvfb-run -a bench-harness soak --du
 xvfb-run -a heaptrack -o /tmp/w6_ht bench-harness soak --duration-mins 2 --out /tmp/soak_ht.json
 heaptrack_print -f /tmp/w6_ht.zst -p 0 -a 0 -T 0 -l 1 -n 40
 ```
+
+
+## W7 修复尝试记录(2026-09-29)——**修复无效,已回退;根因上移 STOP**
+- **尝试**:stencil-cache drain 桥(RED-1 同点 exit-processing 调用 + worker clear_js_runtime 同调,bao_engine `drain_thread_cache` 释放 cache-held stencils)。
+- **结果**:heaptrack 复测 2min 窗 → codeSharedData 泄漏 **3.17M/6736 调用(每 cycle 反而升)**——drain 只对真正退出的线程生效;churn 的 ScriptThread 是**池化复用不退出**(threads 恒 88),exit-processing 根本不触达。已按审计诚实原则回退全部接线(vendor 桥/install/worker 调用/stencil_cache drain fn)。
+- **根因统一(W5+W6 同一缺陷的两个投影)**:死 realm 的 zone 从不 GC——
+  - W5 投影:zone chunk 内存驻留(~2.1 MB/realm 线性,GC 后不回落,decommitted=0);
+  - W6 投影:死 realm 内实例化的 JSScript 持 XDR SharedData 引用(malloc 侧可见部分,~484 B×6.4 hook evals/realm)+ ScriptSource 小件。
+  - W5 zone-eval 的 zone_count 回落(102→2)只证明 zone **结构体**在 SM 内部重整;**chunk 字节与其中 malloc 对象不还**。
+- **处置(停止条款)**:修复需 SM realm-discard/zone-GC 面(每页 close 后对死 realm 触发 zone GC/discard,或 SM chunk 池上限)——vendor/SM 域 → **上游 issue 候选 + known-limitation 记录**(本文件+gc-leak-ledger W5 段)。72h 入场前置保持:该缺陷修复前,线性驻留 ~22 KiB/cycle 不可入场。
+- **W6 归因表其余结论不变**:glib/gstreamer init 一次性有界 ✓;Mesa 软渲染堆=xvfb 环境语义;glibc arena 非主因。
