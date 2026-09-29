@@ -63,3 +63,14 @@ heaptrack_print -f /tmp/w6_ht.zst -p 0 -a 0 -T 0 -l 1 -n 40
 - **处置(停止条款)**:修复需 SM realm-discard/zone-GC 面(每页 close 后对死 realm 触发 zone GC/discard,或 SM chunk 池上限)——vendor/SM 域 → **上游 issue 候选 + known-limitation 记录**(本文件+gc-leak-ledger W5 段)。72h 入场前置保持:该缺陷修复前,线性驻留 ~22 KiB/cycle 不可入场。
 - **W12-B 追记(2026-09-29,console SIGSEGV 双红,非本 RCA 主体但同域)**:7045fa57 把 console.rs build_message 的 caller 探测从 `describe_scripted_caller_safe` 换成裸 `describe_scripted_caller`——opt 档 FrameIter::settleOnActivation SIGSEGV。裁定=patch-replay 丢失(safe 包装仍在 rust.rs,只是调用点被置换),恢复 safe 调用点+三件登记,battery 双红转绿(test-ci 档)。
 - **W6 归因表其余结论不变**:glib/gstreamer init 一次性有界 ✓;Mesa 软渲染堆=xvfb 环境语义;glibc arena 非主因。
+
+## W15 修复记录(2026-09-29,servo 侧 shrink 钩子——泄漏链最后半边)
+- **机制**:churn 页的 per-ScriptThread runtime 不被 probe 页 forced-GC 覆盖(W10 后 soak 斜率不变的根因);W15 在 `vendor/servo/components/script/event_loop/script_thread.rs` 的 `handle_exit_pipeline_msg` 尾部加 30s 时间窗节流的 `NonIncrementalGC(cx, GCOptions::Shrink, GCReason::API)`(进程级 `LAST_SHRINK_MS: AtomicU64` CAS 单胜者;设计 /tmp/w15-servo-shrink-design.md §4 候选 A,已批)。死 realm 不可达后其 chunk 由 Shrink 收集的 decommit/compact 归还——W5(chunk 驻留)+ W6(死 realm JSScript 持 XDR SharedData/ScriptSource)同根投影。
+- **soak A/B(xvfb 2min 双跑,同机同命令,W10 形态)**:
+  - 稳态斜率(harness `vm_rss_slope_steady` 同语义=segment 0 后 OLS,sidecar 实算;2min 默认 segment-mins=10 不闭合故 harness 内未打印):**PRE 2025.4 KiB/s(121,524 KiB/min)→ POST 353.6 KiB/s(21,215 KiB/min),降幅 83%,比值 0.175 ≤ 1/3 判据 PASS**;
+  - harness 端点指标 `vm_rss_slope_over_soak`(warm-up dominated):PRE 1613.0 → POST 1094.7 KiB/s(-32%);全 run OLS 876.2→511.9(-42%);
+  - 形态:run 尾 RSS 498→438 MiB;最后 1/4 段爬升 PRE +79 MiB → POST +2 MiB(近持平);
+  - 注:本机当日并行 agent 高负载,绝对值与设计期参考(+27,143 KiB/min)漂移(PRE 稳态 121k vs 设计参考 27k KiB/min),比值判据(≤1/3)为实际判别面,双侧同条件暴露。
+- **回归三件**:cargo check -p bao-servo-script RC=0;zone-eval N=100 GREEN 保持(heap-chunk baseline=final=2,097,152 delta **+0**,W10 面零漂移);churn pause 抽查 churn_cycle p50 84.96→84.11 ms(**-1.0%**,≤ W10 参照 +5.4% 同量级;p95 99.78→91.22 ms;吞吐 7.17→7.40 pages/s)。
+- **登记三件**:vendor hunk(BAO PATCH 注释块)/CLAUDE.md servo 定制表 script_thread.rs 行 W15 段/本文件本段。
+- **共享脏区注记**:验证期间 `.spec/.id-registry.json`、`src/bao_stealth/src/profile.rs`、`bench/harness/*`(soak_bench.rs +837 行等)为他 agent 在途改动(非本合同域,未触碰);A/B 有效性证据=pre/post run 参数仅 `executed_cycles`(860/888)不同、metric 名单/sidecar record shape/notes 框架全同(harness 语义同版)。

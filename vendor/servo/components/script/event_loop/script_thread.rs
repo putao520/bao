@@ -25,7 +25,7 @@ use std::option::Option;
 use std::rc::{Rc, Weak};
 use std::result::Result;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -55,10 +55,12 @@ use hyper_serde::Serde;
 use ipc_channel::router::ROUTER;
 use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
-use js::jsapi::{GCReason, JSContext as UnsafeJSContext};
+use js::jsapi::{GCOptions, GCReason, JSContext as UnsafeJSContext};
 use js::jsval::UndefinedValue;
 use js::rust::ParentRuntime;
-use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, SetWindowProxyClass};
+use js::rust::wrappers2::{
+    JS_AddInterruptCallback, JS_GC, NonIncrementalGC, SetWindowProxyClass,
+};
 use layout_api::{LayoutConfig, LayoutFactory, RestyleReason, ScriptThreadFactory};
 use media::WindowGLContext;
 use metrics::MAX_TASK_NS;
@@ -3872,6 +3874,36 @@ impl ScriptThread {
             .pipeline_exited(webview_id, pipeline_id, PipelineExitSource::Script);
 
         self.devtools_state.notify_pipeline_exited(pipeline_id);
+
+        // BAO PATCH (W15, soak leak-chain closure — design
+        // /tmp/w15-servo-shrink-design.md §4): after pipeline teardown the
+        // discarded realm is unreachable (RED-1 post-state), but its chunk
+        // memory stays committed — this runtime's collections run with
+        // API/Normal options whose sweep tail skips decommit (SM
+        // shouldDecommit). A Shrink-options collection releases it (W10
+        // face: CLI/bench runtimes already use NonIncrementalGC +
+        // GCOptions::Shrink; servo per-ScriptThread runtimes are the other
+        // half of the W5/W6/W7 leak chain). Time-window throttled: churn
+        // closes ~7.5/s, unthrottled would serialize this event loop on
+        // back-to-back full collections. The static is process-global on
+        // purpose — one shrink per window process-wide, whichever
+        // ScriptThread exits a pipeline first claims it.
+        static LAST_SHRINK_MS: AtomicU64 = AtomicU64::new(0);
+        const SHRINK_WINDOW_MS: u64 = 30_000;
+        let now_ms = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let last = LAST_SHRINK_MS.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) >= SHRINK_WINDOW_MS &&
+            LAST_SHRINK_MS
+                .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            unsafe {
+                NonIncrementalGC(cx, GCOptions::Shrink, GCReason::API);
+            }
+        }
 
         debug!("{pipeline_id}: Finished pipeline exit");
     }
