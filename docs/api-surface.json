@@ -1,0 +1,107 @@
+{
+  "_comment": "W22a (#17) API stable-set archive — the gate (scripts/api-surface.sh) diffs the live rustdoc enumeration against this file. Stable = the umbrella top-level re-export list (the consumer happy path; breaking = semver-gate major). Experimental = the 7 namespaced module entries + every public item in the 7 transit crates (minor changelog only). Internal = #[doc(hidden)] pub items (grep census — rustdoc JSON does not serialize the marker); every entry must carry a deliberate-hidden rationale at its definition.",
+  "generated_by": "scripts/api-surface.sh --update",
+  "stable_top_level": [
+    "AudioProfile",
+    "BackendKind",
+    "BaoConfig",
+    "BehaviorConfig",
+    "BehaviorSimulator",
+    "Browser",
+    "BrowserConfig",
+    "BrowserError",
+    "BrowserRuntime",
+    "CanvasNoise",
+    "CdpError",
+    "CdpRouter",
+    "CdpServer",
+    "CdpSession",
+    "ConnectError",
+    "Connection",
+    "ConnectionConfig",
+    "Cookie",
+    "DeviceDescriptor",
+    "FontConfig",
+    "Http2Fingerprint",
+    "NavigatorProfile",
+    "PageConfig",
+    "PageHandle",
+    "PagePool",
+    "PageState",
+    "Permission",
+    "PermissionDenied",
+    "PermissionGuard",
+    "ScreenProfile",
+    "ScreenshotFormat",
+    "StealthEngine",
+    "StealthHooks",
+    "StealthProfile",
+    "StealthTlsWireConfig",
+    "TlsFingerprint",
+    "Viewport",
+    "WaitUntilState",
+    "WebGLProfile",
+    "encode_image",
+    "run_browser"
+  ],
+  "stable_deprecated_alias": [
+    "BaoRuntime"
+  ],
+  "experimental_modules": [
+    "browser",
+    "cdp",
+    "cdp_client",
+    "engine",
+    "runtime",
+    "stealth",
+    "uloop"
+  ],
+  "experimental_crate_pub_counts": {
+    "bao-browser": 73,
+    "bao_engine": 61,
+    "bun_runtime": 448,
+    "bao_cdp": 43,
+    "bao_cdp_client": 434,
+    "bao_stealth": 54,
+    "bao_uloop": 67
+  },
+  "hidden_manifest": {
+    "bao-browser": [
+      "bao_browser/src/page.rs:1394:collect_engine_memory_stats",
+      "bao_browser/src/page.rs:246:collect_engine_memory_stats"
+    ],
+    "bao_engine": [
+      "bao_engine/src/context.rs:580:for_test",
+      "bao_engine/src/context.rs:650:shutdown_test_runtime",
+      "bao_engine/src/context.rs:664:shutdown_thread_sm",
+      "bao_engine/src/execution_control.rs:351:?",
+      "bao_engine/src/execution_control.rs:444:run_raw_with_control",
+      "bao_engine/src/execution_control.rs:501:run_with_control",
+      "bao_engine/src/execution_control.rs:566:eval_with_control",
+      "bao_engine/src/memory_stats.rs:97:?",
+      "bao_engine/src/stencil_cache.rs:380:clear_thread_cache",
+      "bao_engine/src/stencil_cache.rs:392:thread_cache_len",
+      "bao_engine/src/stencil_cache.rs:399:thread_cache_counters",
+      "bao_engine/src/xdr_cache.rs:162:XdrCounters",
+      "bao_engine/src/xdr_cache.rs:202:xdr_counters",
+      "bao_engine/src/xdr_cache.rs:93:set_cache_dir_for_tests"
+    ],
+    "bun_runtime": [
+      "bao_runtime/src/interrupt_bridge.rs:198:?",
+      "bao_runtime/src/runtime.rs:221:execution_control",
+      "bao_runtime/src/runtime.rs:231:eval_with_control",
+      "bao_runtime/src/runtime.rs:250:eval_module_with_control",
+      "bao_runtime/src/runtime.rs:284:run_file_with_control",
+      "bao_runtime/src/runtime.rs:8:bao_engine"
+    ],
+    "bao_cdp": [],
+    "bao_cdp_client": [
+      "bao_cdp_client/src/api/browser.rs:247:new_context_for_test",
+      "bao_cdp_client/src/api/browser_context.rs:281:new_page_for_test"
+    ],
+    "bao_stealth": [
+      "bao_stealth/src/engine_props.rs:419:canvas_seed_for_test"
+    ],
+    "bao_uloop": []
+  }
+}

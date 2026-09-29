@@ -119,6 +119,20 @@ else
     echo "==> [5/5] semver-gate: skipped (set BAO_SEMVER_GATE=1 to enable)"
 fi
 
+# ================ [optional 6/6] api-surface gate (W22a stable-set) =================
+# API stable-set declaration gate(rustdoc JSON 枚举,分钟级)——默认 skip;
+# BAO_API_SURFACE=1 启用,启用时未声明顶层 pub / 未登记 doc(hidden) 计入退出
+# 码。语义见 scripts/api-surface.sh 与 docs/api.md。
+API_SURFACE_RC=0
+if [ "${BAO_API_SURFACE:-0}" = "1" ]; then
+    echo "==> [6/6] api-surface (blocking when enabled): scripts/api-surface.sh --check"
+    bash "${REPO}/scripts/api-surface.sh" --check
+    API_SURFACE_RC=$?
+    if [ "${API_SURFACE_RC}" -eq 0 ]; then echo "PASS api-surface"; else echo "FAIL api-surface (exit=${API_SURFACE_RC})"; fi
+else
+    echo "==> [6/6] api-surface: skipped (set BAO_API_SURFACE=1 to enable)"
+fi
+
 # ================================ 总表 ================================
 echo
 echo "==================== LOCAL-CI SUMMARY ===================="
@@ -128,6 +142,9 @@ echo "$(verdict "${CLIPPY_RC}")   clippy    (blocking)"
 echo "$(verdict "${BCE_RC}")      bce-gate  (blocking)"
 if [ "${BAO_SEMVER_GATE:-0}" = "1" ]; then
     echo "$(verdict "${SEMVER_RC}")    semver-gate (blocking when enabled)"
+fi
+if [ "${BAO_API_SURFACE:-0}" = "1" ]; then
+    echo "$(verdict "${API_SURFACE_RC}")    api-surface (blocking when enabled)"
 fi
 echo "========================================================="
 
