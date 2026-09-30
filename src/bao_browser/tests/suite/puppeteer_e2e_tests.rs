@@ -101,9 +101,11 @@ function ok(name, cond, extra) {
   // Tiny loopback origin so the network face is a REAL http exchange.
   const body = '<!DOCTYPE html><html><head><title>w40-puppeteer</title></head><body><input id=in placeholder=type><div id=mark></div></body></html>';
   const srv = http.createServer((req, res) => {
+    console.error('W40-SRV-REQ ' + req.url);
     res.writeHead(200, { 'Content-Type': 'text/html', 'Content-Length': Buffer.byteLength(body) });
     res.end(body);
   });
+  srv.on('connection', () => console.error('W40-SRV-CONN'));
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const port = srv.address().port;
 
@@ -117,8 +119,19 @@ function ok(name, cond, extra) {
   let sawResponse = false;
   page.on('response', r => { if (r.url().includes('127.0.0.1')) sawResponse = true; });
 
-  const resp = await page.goto('http://127.0.0.1:' + port + '/', { waitUntil: 'load', timeout: 30000 });
-  ok('goto-network', resp && resp.status() === 200, 'status=' + (resp && resp.status()));
+  let resp = null;
+  try {
+    resp = await page.goto('http://127.0.0.1:' + port + '/', { waitUntil: 'load', timeout: 8000 });
+    ok('goto-network', resp && resp.status() === 200, 'status=' + (resp && resp.status()));
+  } catch (e) {
+    const diag = await Promise.all([
+      page.url(),
+      page.evaluate(() => document.readyState).catch(er => 'EVAL-FAIL ' + er.message),
+      page.evaluate(() => performance.timing ? performance.timing.loadEventEnd : -1).catch(() => 'NA'),
+    ]);
+    console.error('W40-DIAG url=' + diag[0] + ' readyState=' + diag[1] + ' loadEnd=' + diag[2]);
+    throw e;
+  }
 
   const title = await page.title();
   ok('title', title === 'w40-puppeteer', 'title=' + title);
@@ -152,8 +165,6 @@ function ok(name, cond, extra) {
 "#;
 
 #[test]
-#[ignore = "W45a: product face landed; goto blocked on fixture reachability — integration window pending"]
-
 fn puppeteer_real_lifecycle_e2e() {
     let Some((node, dir)) = prepare_node_workspace() else {
         return; // honest skip with printed reason (no fake green)
@@ -232,6 +243,7 @@ fn puppeteer_real_lifecycle_e2e() {
         runtime.spin_event_loop();
         bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
         while let Ok(servo_event) = servo_event_rx.try_recv() {
+            eprintln!("[w49-pump] -> {} cdp", translate(servo_event.clone()).len());
             for cdp_event in translate(servo_event) {
                 match cdp_event.session_id.clone() {
                     Some(target) if !target.is_empty() => event_router

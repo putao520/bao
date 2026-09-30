@@ -340,7 +340,22 @@ impl BaoWsRegistry {
             .unwrap_or_default();
 
         if sessions.is_empty() {
-            event_sender.send_event(method, params);
+            // W49: the delegate emits lifecycle events tagged with the legacy
+            // placeholder target ("0"). In flat-session mode (Puppeteer/
+            // Playwright) the attached page session only routes TAGGED events,
+            // so the untagged fallback alone silently drops loadEventFired et
+            // al. Deliver the untagged broadcast (pre-W43 contract, zero
+            // drift) AND a tagged copy to every attached session.
+            event_sender.send_event(method, params.clone());
+            let all: Vec<String> = self
+                .attached_sessions
+                .lock()
+                .ok()
+                .map(|table| table.keys().cloned().collect())
+                .unwrap_or_default();
+            for sid in all {
+                event_sender.send_session_event(&sid, method, params.clone());
+            }
             return;
         }
         for sid in sessions {

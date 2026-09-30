@@ -652,6 +652,17 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
                     }),
                     session_id: Some(target_id.clone()),
                 },
+                // W49: Puppeteer's goto(waitUntil:'load') gates on the
+                // lifecycle protocol (Page.lifecycleEvent name='load'), not
+                // the legacy loadEventFired — Chrome emits both; so do we.
+                CdpEvent {
+                    method: "Page.lifecycleEvent".into(),
+                    params: json!({
+                        "frameId": frame_id,
+                        "name": "load",
+                    }),
+                    session_id: Some(target_id.clone()),
+                },
                 CdpEvent {
                     method: "Page.loadEventFired".into(),
                     params: json!({
