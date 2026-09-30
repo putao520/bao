@@ -22,7 +22,7 @@ doctest = false
 
 [dependencies]
 encoding_rs = {version = "0.8", features = ["serde"]}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.6"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.7"}
 malloc_size_of_derive = {version = "0.1"}
 serde = {version = "1.0.228", features = ["derive"]}
 servo_arc = {version = "=0.4.3"}

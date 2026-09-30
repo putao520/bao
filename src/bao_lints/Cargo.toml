@@ -1,6 +1,6 @@
 [package]
 name = "bao_lints"
-version = "0.2.0" # explicit: bumps independent of workspace-inherited 0.1.0 (W39)
+version = "0.2.1" # explicit: bumps independent of workspace-inherited 0.1.0 (W39)
 edition.workspace = true
 repository.workspace = true
 readme = "README.md"

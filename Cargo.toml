@@ -197,7 +197,7 @@ bun_http_types = { path = "src/http_types", version = "0.2.0" }
 bun_install_types = { path = "src/install_types", version = "0.2.0" }
 bun_js_parser = { path = "src/js_parser", version = "0.2.0" }
 bun_js_printer = { path = "src/js_printer", version = "0.2.0" }
-bun_ast = { path = "src/ast", version = "0.2.0" }
+bun_ast = { path = "src/ast", version = "0.2.1" }
 bun_picohttp = { path = "src/picohttp", version = "0.2.0" }
 bun_s3_signing = { path = "src/s3_signing", version = "0.2.0" }
 bun_zlib = { path = "src/zlib", version = "0.2.0" }
@@ -243,7 +243,7 @@ bun_libuv_sys = { path = "src/libuv_sys", version = "0.2.0" }
 bun_simdutf_sys = { path = "src/simdutf_sys", version = "0.1.0" }
 bun_spawn_sys = { path = "src/spawn_sys", version = "0.2.0" }
 bun_tcc_sys = { path = "src/tcc_sys", version = "0.1.0" }
-bun_uws_sys = { path = "src/uws_sys", version = "0.2.1" }
+bun_uws_sys = { path = "src/uws_sys", version = "0.2.2" }
 
 [profile.release]
 lto = "fat"
