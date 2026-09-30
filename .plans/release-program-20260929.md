@@ -68,3 +68,9 @@
 3. **吸收波集成涟漪**(SW 类型/webgl 死臂/weakref assert):波门全数捕获(battery v10 11238/11238 全绿=网有效);6 错类=**门的命中数,非逃逸数**。
 **残留=0 判据**:battery v10 全绿(已达)+发布闭包 residual=0(W46 后验)。
 - **增补(发布链第 7-8 错类)**:四轮 straggler 的统一根因定谳=**同号漂移对账盲区**——W39/W42/W47 各轮对账均核「本地 pin↔本地 manifest」,漏「本地↔registry 已发布 manifest」;same-version 内容漂移(default-resources 0.5.8 embedder pin 差异=典型)不触发 bump→发布期解析冲突连环。横扫=W48(registry-manifest diff 全集扫描,漂移者 z+1,迭代至复扫零)。残留=0 判据=registry-diff 零+publish converge ALL-DONE。
+
+## 2026-09-30 / 并行写者事故+裁决(吸收波发布段)
+- **事故**:registry 版本线被第二写者推进(net 0.5.22-27/core 0.3.5-0.3.8,18:34-19:15 窗口;疑 gsc-0d 交互 peer 从含本会话工作的树上推线);本会话 e1 按双写者纪律停手,主会话冻结发布线。
+- **用户裁决 A**:registry 线=权威。执行:9 crate 版本回拨 registry 锚+双形 pin 级联(target/ 毒源排除+command grep 教训)+registry-diff 零漂移+五 crate check 绿。
+- **exact-pin 环死锁**(layout-api⟷script-traits 家族固有拓扑):裁方案 A 三步引导(临时针→对侧→恢复针,公开瞬态自愈)。
+- 教训沉淀:①并行会话同 registry 命名空间=协调事故级,冻结+事实+用户裁②script/target/package/ 打包副本会毒化版本映射③ugrep 桥再犯(command grep 铁律)。
