@@ -196,7 +196,7 @@ rustls = {version = "0.23", default-features = false, features = ["logging", "st
 # resolution of the self-pin would fail pre-upload); restored after publishing
 # (same strip→publish→restore protocol the 0.5.16 wave used — registry
 # bao-servo manifests carry no self dev-dep).
-bao-servo = { path = ".", version = "=0.5.19", features = ["testbinding", "tracing"] }
+bao-servo = { path = ".", features = ["testbinding", "tracing"] }
 tracing = {version = "0.1.44"}
 winit = {version = "0.30.13"}
 
