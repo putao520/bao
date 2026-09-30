@@ -26,14 +26,14 @@ futures-intrusive = {version = "0.5", optional = true}
 kurbo = {version = "0.13.1", features = ["euclid"]}
 log = {version = "0.4.32"}
 malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.7"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.7"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.8"}
 peniko = {version = "0.6"}
 pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.8"}
 pollster = {version = "1.0", optional = true}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.7"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.8"}
 rustc-hash = {version = "2.1.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
-servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.8"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.8"}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.9"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
 style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}

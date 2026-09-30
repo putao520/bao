@@ -17,4 +17,4 @@ doctest = false
 
 [dependencies]
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.7"}
+servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.8"}

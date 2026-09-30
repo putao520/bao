@@ -27,4 +27,4 @@ gstreamer-gl-wayland = {version = "0.25", optional = true}
 gstreamer-gl-x11 = {version = "0.25", optional = true}
 gstreamer-video = {version = "0.25"}
 servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "../render", version = "=0.5.7"}
-servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.7"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.8"}

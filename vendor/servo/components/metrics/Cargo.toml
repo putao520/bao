@@ -16,9 +16,9 @@ path = "lib.rs"
 [dependencies]
 malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.7"}
 malloc_size_of_derive = {version = "0.1"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.7"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.7"}
-script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.9"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.7"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.8"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.8"}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.10"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.8"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.6"}
+servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}

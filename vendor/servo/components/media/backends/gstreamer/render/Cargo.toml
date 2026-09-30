@@ -15,4 +15,4 @@ path = "lib.rs"
 
 [dependencies]
 gstreamer = {version = "0.25", features = ["v1_18"]}
-servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.7"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.8"}

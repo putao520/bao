@@ -14,9 +14,9 @@ name = "servo_media"
 path = "lib.rs"
 
 [dependencies]
-servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.7"}
-servo-media-audio = {package = "bao-servo-media-audio", path = "../audio", version = "=0.5.7"}
-servo-media-player = {package = "bao-servo-media-player", path = "../player", version = "=0.5.7"}
-servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.5"}
-servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = "=0.5.5"}
+servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.8"}
+servo-media-audio = {package = "bao-servo-media-audio", path = "../audio", version = "=0.5.8"}
+servo-media-player = {package = "bao-servo-media-player", path = "../player", version = "=0.5.8"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.6"}
+servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = "=0.5.6"}
 servo-media-webrtc = {package = "bao-servo-media-webrtc", path = "../webrtc", version = "=0.5.5"}
