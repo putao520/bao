@@ -207,7 +207,10 @@ private:
             if (httpResponseData->socketData && httpContextData->onSocketData) {
                 httpContextData->onSocketData(httpResponseData->socketData, SSL, s, "", 0, true);
             }
-            if(httpResponseData->inStream) {
+            /* node:http (upstream 8e6cc91513 #44205): the body of a tunnel
+             * that started has had its last chunk from the parser. This
+             * close can come from inside that call. */
+            if(httpResponseData->inStream && (!IsNodeHttp || !nodeHttpTunnelAfterBody)) {
                 httpResponseData->inStream(reinterpret_cast<HttpResponse<SSL> *>(s), "", 0, true, httpResponseData->userData);
                 httpResponseData->inStream = nullptr;
             }
@@ -418,6 +421,14 @@ private:
 
                 /* We absolutely have to terminate parsing if shutdown */
                 if (us_socket_is_shut_down((us_socket_t *) user)) {
+                    /* node:http (upstream 8e6cc91513 #44205): this socket can
+                     * be a tunnel that still reads. Its bytes are not for a
+                     * body that ended. */
+                    if constexpr (IsNodeHttp) {
+                        if (fin) {
+                            httpResponseData->inStream = nullptr;
+                        }
+                    }
                     return nullptr;
                 }
 
