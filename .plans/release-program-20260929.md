@@ -74,3 +74,4 @@
 - **用户裁决 A**:registry 线=权威。执行:9 crate 版本回拨 registry 锚+双形 pin 级联(target/ 毒源排除+command grep 教训)+registry-diff 零漂移+五 crate check 绿。
 - **exact-pin 环死锁**(layout-api⟷script-traits 家族固有拓扑):裁方案 A 三步引导(临时针→对侧→恢复针,公开瞬态自愈)。
 - 教训沉淀:①并行会话同 registry 命名空间=协调事故级,冻结+事实+用户裁②script/target/package/ 打包副本会毒化版本映射③ugrep 桥再犯(command grep 铁律)。
+- **归因修正(22:47 覆写)**:gsc-75 实证清白(全程零 bao 路径写);当前 layout 针=0.5.9 临时态+mtime 22:50=e1 防覆写重放生效中。22:47 的 =0.5.10 疑=e1 自身早前 reconcile 迭代自碰撞(僵尸进程检查只覆盖活进程,串行队列内迟到迭代不可见)。历史线推手(18:34-19:15)仍未识别(机上多 claude 实例),裁决 A 下已无实际影响(registry=权威)。e1 继续独占执行。
