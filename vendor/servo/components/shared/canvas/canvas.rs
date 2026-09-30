@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::default::Default;
+use std::f64::consts::{FRAC_PI_2, PI};
 use std::str::FromStr;
 
 use euclid::Angle;
@@ -30,6 +31,19 @@ impl MallocSizeOf for Path {
 }
 
 pub struct IndexSizeError;
+
+#[derive(Clone, Copy, Debug)]
+pub struct RoundRectRadius {
+    pub x: f64,
+    pub y: f64,
+}
+
+pub enum RangeError {
+    /// `radii` was not a list of size one, two, three, or four.
+    InvalidSize,
+    /// A radius was negative.
+    NegativeRadius,
+}
 
 impl Path {
     pub fn new() -> Self {
@@ -313,24 +327,13 @@ impl Path {
             },
         };
 
-        let arc = kurbo::Arc::new(
+        self.append_ellipse_arc(
             (x, y),
             (radius_x, radius_y),
             start.radians,
             sweep.radians,
             rotation_angle,
         );
-
-        let mut iter = arc.path_elements(0.01);
-        let kurbo::PathEl::MoveTo(start_point) = iter.next().unwrap() else {
-            unreachable!()
-        };
-
-        self.line_to(start_point.x, start_point.y);
-
-        if sweep.radians.abs() > 1e-3 {
-            self.0.extend(iter);
-        }
 
         Ok(())
     }
@@ -355,6 +358,182 @@ impl Path {
 
         // Step 4. Create a new subpath with the point (x, y) as the only point in the subpath.
         self.0.move_to((x, y));
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-roundrect>
+    pub fn round_rect(
+        &mut self,
+        mut x: f64,
+        mut y: f64,
+        mut w: f64,
+        mut h: f64,
+        radii: &[RoundRectRadius],
+    ) -> Result<(), RangeError> {
+        // Step 1. If any of x, y, w, or h are infinite or NaN, then return.
+        if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
+            return Ok(());
+        }
+
+        // Step 3. If radii is not a list of size one, two, three, or four, then throw a
+        // RangeError.
+        if radii.is_empty() || radii.len() > 4 {
+            return Err(RangeError::InvalidSize);
+        }
+
+        // Steps 4 - 5. If any radius is infinite or NaN, then return; if any radius is negative,
+        // then throw a RangeError.
+        for radius in radii {
+            if !(radius.x.is_finite() && radius.y.is_finite()) {
+                return Ok(());
+            }
+            if radius.x < 0.0 || radius.y < 0.0 {
+                return Err(RangeError::NegativeRadius);
+            }
+        }
+        // From now on, radii is called normalizedRadii in spec.
+        let normalized_radii = radii;
+        // Steps 6 - 10. Assign upperLeft, upperRight, lowerRight and lowerLeft.
+        let (mut upper_left, mut upper_right, mut lower_right, mut lower_left) =
+            match normalized_radii {
+                // If normalizedRadii's size is 1, then set upperLeft, upperRight, lowerRight,
+                // and lowerLeft to normalizedRadii[0].
+                [a] => (*a, *a, *a, *a),
+                // If normalizedRadii's size is 2, then set upperLeft and lowerRight to
+                // normalizedRadii[0] and set upperRight and lowerLeft to normalizedRadii[1].
+                [a, b] => (*a, *b, *a, *b),
+                // If normalizedRadii's size is 3, then set upperLeft to normalizedRadii[0],
+                // set upperRight and lowerLeft to normalizedRadii[1],
+                // and set lowerRight to normalizedRadii[2].
+                [a, b, c] => (*a, *b, *c, *b),
+                // If normalizedRadii's size is 4, then set upperLeft to normalizedRadii[0],
+                // set upperRight to normalizedRadii[1], set lowerRight to normalizedRadii[2],
+                // and set lowerLeft to normalizedRadii[3].
+                [a, b, c, d] => (*a, *b, *c, *d),
+                _ => unreachable!(),
+            };
+
+        // Not explicitly stated in steps. See non-normative part of `roundRect` in
+        // <https://html.spec.whatwg.org/multipage/#building-paths>
+        // When w is negative, the rounded rectangle is flipped horizontally, which means that
+        // the radius values that normally apply to the left corners are used on the right and
+        // vice versa. Similarly, when h is negative, the rounded rect is flipped vertically.
+        let (orig_x, orig_y) = (x, y);
+        let counterclockwise = (w < 0.0) != (h < 0.0);
+        use std::mem::swap;
+        if w < 0.0 {
+            swap(&mut upper_left, &mut upper_right);
+            swap(&mut lower_left, &mut lower_right);
+            x += w;
+            w = -w;
+        }
+        if h < 0.0 {
+            swap(&mut upper_left, &mut lower_left);
+            swap(&mut upper_right, &mut lower_right);
+            y += h;
+            h = -h;
+        }
+
+        // Step 11. Corner curves must not overlap. Scale all radii to prevent this.
+        let top = upper_left.x + upper_right.x;
+        let right = upper_right.y + lower_right.y;
+        let bottom = lower_right.x + lower_left.x;
+        let left = upper_left.y + lower_left.y;
+        let scale = (w / top).min(h / right).min(w / bottom).min(h / left);
+        if scale < 1.0 {
+            upper_left.x *= scale;
+            upper_left.y *= scale;
+            upper_right.x *= scale;
+            upper_right.y *= scale;
+            lower_right.x *= scale;
+            lower_right.y *= scale;
+            lower_left.x *= scale;
+            lower_left.y *= scale;
+        }
+
+        // Step 12. Create a new subpath.
+        let mut subpath = Path::new();
+        // Step 12.1. Move to the point (x + upperLeft["x"], y).
+        subpath.0.move_to((x + upper_left.x, y));
+        // Step 12.2. Draw a straight line to the point (x + w − upperRight["x"], y).
+        subpath.0.line_to((x + w - upper_right.x, y));
+        // Step 12.3. Draw an arc to the point (x + w, y + upperRight["y"]).
+        subpath.round_rect_arc(
+            x + w - upper_right.x,
+            y + upper_right.y,
+            upper_right.x,
+            upper_right.y,
+            -FRAC_PI_2,
+        );
+        // Step 12.4. Draw a straight line to the point (x + w, y + h − lowerRight["y"]).
+        subpath.0.line_to((x + w, y + h - lower_right.y));
+        // Step 12.5. Draw an arc to the point (x + w − lowerRight["x"], y + h).
+        subpath.round_rect_arc(
+            x + w - lower_right.x,
+            y + h - lower_right.y,
+            lower_right.x,
+            lower_right.y,
+            0.0,
+        );
+        // Step 12.6. Draw a straight line to the point (x + lowerLeft["x"], y + h).
+        subpath.0.line_to((x + lower_left.x, y + h));
+        // Step 12.7. Draw an arc to the point (x, y + h − lowerLeft["y"]).
+        subpath.round_rect_arc(
+            x + lower_left.x,
+            y + h - lower_left.y,
+            lower_left.x,
+            lower_left.y,
+            FRAC_PI_2,
+        );
+        // Step 12.8. Draw a straight line to the point (x, y + upperLeft["y"]).
+        subpath.0.line_to((x, y + upper_left.y));
+        // Step 12.9. Draw an arc to the point (x + upperLeft["x"], y).
+        subpath.round_rect_arc(
+            x + upper_left.x,
+            y + upper_left.y,
+            upper_left.x,
+            upper_left.y,
+            PI,
+        );
+
+        // Step 13. Mark the subpath as closed.
+        subpath.0.close_path();
+
+        if counterclockwise {
+            subpath.0 = subpath.0.reverse_subpaths();
+        }
+        self.0.extend(subpath.0.elements().iter().cloned());
+
+        // Step 14. Create a new subpath with the original point (x, y) as the only point in the
+        // subpath.
+        self.0.move_to((orig_x, orig_y));
+
+        Ok(())
+    }
+
+    fn append_ellipse_arc(
+        &mut self,
+        center: (f64, f64),
+        radii: (f64, f64),
+        start_angle: f64,
+        sweep: f64,
+        rotation: f64,
+    ) {
+        let arc = kurbo::Arc::new(center, radii, start_angle, sweep, rotation);
+        let mut iter = arc.path_elements(0.01);
+
+        let Some(PathEl::MoveTo(start_point)) = iter.next() else {
+            unreachable!()
+        };
+        self.line_to(start_point.x, start_point.y);
+        if sweep.abs() > 1e-3 {
+            self.0.extend(iter);
+        }
+    }
+
+    /// Appends a quarter arc, sweeping clockwise by [`FRAC_PI_2`], for a `roundRect` corner.
+    #[inline]
+    fn round_rect_arc(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, start_angle: f64) {
+        self.append_ellipse_arc((cx, cy), (rx, ry), start_angle, FRAC_PI_2, 0.0);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-context-2d-ispointinpath>
@@ -815,5 +994,157 @@ impl std::fmt::Debug for TextRun {
             .field("glyphs_and_positions", &self.glyphs_and_positions)
             .field("size", &self.bounds)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod round_rect_tests {
+    use super::{Path, RangeError, RoundRectRadius};
+    use kurbo::PathEl;
+
+    fn r(x: f64, y: f64) -> RoundRectRadius {
+        RoundRectRadius { x, y }
+    }
+
+    fn els(p: &Path) -> Vec<PathEl> {
+        p.0.elements().to_vec()
+    }
+
+    // Step 3: `radii` must be a list of size one..=four — 0 and 5 are RangeErrors.
+    #[test]
+    fn rejects_empty_and_oversized_radii() {
+        let mut p = Path::new();
+        assert!(matches!(
+            p.round_rect(0.0, 0.0, 10.0, 10.0, &[]),
+            Err(RangeError::InvalidSize)
+        ));
+        let five = [r(1.0, 1.0); 5];
+        assert!(matches!(
+            p.round_rect(0.0, 0.0, 10.0, 10.0, &five),
+            Err(RangeError::InvalidSize)
+        ));
+        assert!(els(&p).is_empty(), "failed calls must not touch the path");
+    }
+
+    // Step 5: a negative radius is a RangeError.
+    #[test]
+    fn rejects_negative_radius() {
+        let mut p = Path::new();
+        let radii = [r(1.0, -1.0)];
+        assert!(matches!(
+            p.round_rect(0.0, 0.0, 10.0, 10.0, &radii),
+            Err(RangeError::NegativeRadius)
+        ));
+        assert!(els(&p).is_empty());
+    }
+
+    // Step 1: non-finite x/y/w/h returns Ok without touching the path.
+    #[test]
+    fn ignores_non_finite_rect() {
+        let mut p = Path::new();
+        let radii = [r(1.0, 1.0)];
+        for (x, y, w, h) in [
+            (f64::NAN, 0.0, 10.0, 10.0),
+            (0.0, f64::INFINITY, 10.0, 10.0),
+            (0.0, 0.0, f64::NAN, 10.0),
+            (0.0, 0.0, 10.0, f64::NEG_INFINITY),
+        ] {
+            assert!(p.round_rect(x, y, w, h, &radii).is_ok());
+        }
+        assert!(els(&p).is_empty());
+    }
+
+    // Step 5: a non-finite radius returns Ok without touching the path.
+    #[test]
+    fn ignores_non_finite_radius() {
+        let mut p = Path::new();
+        let radii = [r(f64::NAN, 1.0)];
+        assert!(p.round_rect(0.0, 0.0, 10.0, 10.0, &radii).is_ok());
+        assert!(els(&p).is_empty());
+    }
+
+    // Happy path: 1..=4 radii all draw one closed subpath (12.3-12.9 = 4 arcs
+    // + 4 lines + 1 move + 1 close) and re-anchor at the original point (step 14).
+    #[test]
+    fn draws_closed_subpath_for_radii_arity_one_to_four() {
+        for arity in 1..=4usize {
+            let radii: Vec<RoundRectRadius> = (0..arity).map(|i| r(i as f64 + 1.0, i as f64 + 1.0)).collect();
+            let mut p = Path::new();
+            p.round_rect(0.0, 0.0, 100.0, 50.0, &radii)
+                .map_err(|_| "round_rect failed").unwrap();
+            let els = els(&p);
+            assert_eq!(
+                els.iter().filter(|e| matches!(e, PathEl::ClosePath)).count(),
+                1,
+                "arity {arity}: exactly one closed subpath"
+            );
+            // move (12.1) + 4 lines (12.2/12.4/12.6/12.8) + 4 arcs (kurbo Curves)
+            assert!(
+                matches!(els.first(), Some(PathEl::MoveTo(_))),
+                "arity {arity}: subpath starts with a move"
+            );
+            // 4 straight edges + 1 entry connector per corner arc (the
+            // `append_ellipse_arc` line_to to the arc's start point).
+            assert_eq!(
+                els.iter().filter(|e| matches!(e, PathEl::LineTo(_))).count(),
+                8,
+                "arity {arity}: four edges + four arc-entry connectors"
+            );
+            assert!(
+                els.iter().filter(|e| matches!(e, PathEl::CurveTo(..))).count() >= 4,
+                "arity {arity}: four quarter-arc corners (>= 1 bezier each)"
+            );
+            // Step 14: a fresh subpath anchored at (orig x, y) follows the close.
+            let last_move = els
+                .iter()
+                .rposition(|e| matches!(e, PathEl::MoveTo(_)))
+                .expect("at least two moves");
+            assert!(
+                matches!(els[last_move], PathEl::MoveTo(pt) if pt.x == 0.0 && pt.y == 0.0),
+                "arity {arity}: trailing move re-anchors the original point"
+            );
+        }
+    }
+
+    // Non-normative flip: negative w and/or h must not error and must draw the
+    // same closed subpath shape (radii corners swap, winding reverses).
+    #[test]
+    fn negative_width_height_flip_still_draws() {
+        let radii = [r(5.0, 5.0)];
+        for (w, h) in [(-100.0, 50.0), (100.0, -50.0), (-100.0, -50.0)] {
+            let mut p = Path::new();
+            p.round_rect(0.0, 0.0, w, h, &radii)
+                .map_err(|_| "round_rect failed").unwrap();
+            let els = els(&p);
+            assert_eq!(els.iter().filter(|e| matches!(e, PathEl::ClosePath)).count(), 1);
+        }
+    }
+
+    // Step 11: oversized corners are scaled down, never overlapping — a huge
+    // radius on a small rect still produces exactly one closed 4-corner subpath.
+    #[test]
+    fn oversized_radii_are_scaled_not_rejected() {
+        let radii = [r(1000.0, 1000.0)];
+        let mut p = Path::new();
+        p.round_rect(0.0, 0.0, 10.0, 10.0, &radii)
+            .map_err(|_| "round_rect failed").unwrap();
+        let els = els(&p);
+        assert_eq!(els.iter().filter(|e| matches!(e, PathEl::ClosePath)).count(), 1);
+        assert_eq!(els.iter().filter(|e| matches!(e, PathEl::CurveTo(..))).count(), 4);
+    }
+
+    // Regression guard: the `arc` face now routes through `append_ellipse_arc`
+    // (shared with roundRect corners) — a full circle must survive the refactor.
+    #[test]
+    fn arc_refactor_still_draws_full_circle() {
+        let mut p = Path::new();
+        p.arc(0.0, 0.0, 10.0, 0.0, std::f64::consts::TAU, false)
+            .map_err(|_| "arc failed").unwrap();
+        let els = els(&p);
+        assert!(
+            els.iter().filter(|e| matches!(e, PathEl::CurveTo(..))).count() >= 4,
+            "a full circle approximates to >= 4 bezier segments: {:?}",
+            els.len()
+        );
     }
 }
