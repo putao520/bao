@@ -24,6 +24,10 @@ use serde_json::{json, Value};
 /// (Chrome: "Session with given id not found").
 const ERR_SESSION_NOT_FOUND: i64 = -32001;
 
+/// JSON-RPC error code for a target that does not resolve to a live page
+/// (Chrome: "No target with given id found" / "Target closed").
+const ERR_TARGET_NOT_FOUND: i64 = -32000;
+
 /// The browser-endpoint pseudo target — target id of WS connections to
 /// `/devtools/browser` (see cdp-server `handle_connection`).
 const BROWSER_TARGET: &str = "__browser__";
@@ -56,12 +60,11 @@ const SERVED_DOMAINS: [&str; 21] = [
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// W55 (#14-C): `Page.addScriptToEvaluateOnNewDocument` registration table.
-/// Sources are drained by the runtime's event pump on each target's
-/// frame-started-loading (new-document creation) and evaluated on the page's
-/// web face — the standard CDP "run before any page script" contract, mapped
-/// onto the bao browser's web-face injection channel.
-static PENDING_INJECTION_SCRIPTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Identifier minting for `Page.addScriptToEvaluateOnNewDocument` (fresh per
+/// registration, Chrome shape). The source itself is registered against the
+/// servo vendor new-document registry keyed by the session target's
+/// WebViewId — servo evaluates it on every new document of that webview,
+/// before any page script (REQ-CDP-004, W55 vendor realm entry injection).
 static INJECTION_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn next_session_id() -> String {
@@ -103,6 +106,7 @@ impl BaoWsRegistry {
         method: &str,
         params: &Option<Value>,
         msg: &CdpMessage,
+        ws_target_id: &str,
         event_sender: &dyn EventSender,
     ) -> Option<Result<Value, CdpError>> {
         if method == "Page.addScriptToEvaluateOnNewDocument" {
@@ -112,10 +116,45 @@ impl BaoWsRegistry {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Resolve the command's target: flattened sessionId wins, else
+            // the WS session's own target (/devtools/page/<id>). The browser
+            // pseudo-target is not a page — Chrome answers such a
+            // registration from a browser session with an error, and so do
+            // we (fail-closed: an unresolvable target must not silently
+            // widen the script to every page).
+            let target_id = match &msg.session_id {
+                Some(sid) => self
+                    .attached_sessions
+                    .lock()
+                    .ok()
+                    .and_then(|t| t.get(sid).cloned()),
+                None => Some(ws_target_id.to_string()),
+            };
+            let Some(target_id) = target_id else {
+                let sid = msg.session_id.as_deref().unwrap_or_default();
+                return Some(Err(CdpError {
+                    code: ERR_SESSION_NOT_FOUND,
+                    message: format!("Session with given id not found: {sid}"),
+                }));
+            };
+            let Some(page_id) = target_id.parse::<usize>().ok() else {
+                return Some(Err(CdpError {
+                    code: ERR_TARGET_NOT_FOUND,
+                    message: format!("No target with given id found: {target_id}"),
+                }));
+            };
+            let Some(webview_id) = crate::page::webview_id_for_page(page_id) else {
+                return Some(Err(CdpError {
+                    code: ERR_TARGET_NOT_FOUND,
+                    message: format!("Target closed: {target_id}"),
+                }));
+            };
             let id = INJECTION_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-            if let Ok(mut table) = PENDING_INJECTION_SCRIPTS.lock() {
-                table.push(source);
-            }
+            // Vendor realm entry injection (REQ-CDP-004): servo evaluates
+            // the script on every new document of this webview BEFORE any
+            // page script — replacing the former pump-timed dispatch that
+            // fired after parsing began (0/40 NO-HARVEST).
+            servo::register_embedder_new_document_script(webview_id, source);
             return Some(Ok(json!({ "identifier": id.to_string() })));
         }
         self.dispatch_session_command_inner(method, params, msg, event_sender)
@@ -395,26 +434,6 @@ impl BaoWsRegistry {
     }
 }
 
-impl BaoWsRegistry {
-    /// W55: drain the pending new-document injection sources (the runtime
-    /// event pump calls this on frame-started-loading and evaluates each
-    /// source on the target page's web face).
-    pub fn drain_injection_sources() -> Vec<String> {
-        PENDING_INJECTION_SCRIPTS
-            .lock()
-            .map(|mut v| std::mem::take(&mut *v))
-            .unwrap_or_default()
-    }
-
-    /// Peek without draining (pump fast-path: nothing pending → skip).
-    pub fn has_pending_injection_sources() -> bool {
-        PENDING_INJECTION_SCRIPTS
-            .lock()
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    }
-}
-
 impl RegistryDispatch for BaoWsRegistry {
     fn dispatch_command(
         &self,
@@ -441,7 +460,7 @@ impl RegistryDispatch for BaoWsRegistry {
     ) -> Option<Result<Value, CdpError>> {
         // Session-table commands first (they mint/remove routing entries).
         if let Some(result) =
-            self.dispatch_session_command(&msg.method, &msg.params, msg, event_sender)
+            self.dispatch_session_command(&msg.method, &msg.params, msg, ws_target_id, event_sender)
         {
             return Some(result);
         }

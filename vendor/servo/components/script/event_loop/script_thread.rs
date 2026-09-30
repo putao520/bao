@@ -57,6 +57,7 @@ use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
 use js::jsapi::{GCOptions, GCReason, JSContext as UnsafeJSContext};
 use js::jsval::UndefinedValue;
+use js::realm::CurrentRealm;
 use js::rust::ParentRuntime;
 use js::rust::wrappers2::{
     JS_AddInterruptCallback, JS_GC, NonIncrementalGC, SetWindowProxyClass,
@@ -696,6 +697,70 @@ pub fn unregister_worker_injectors(webview_id: WebViewId) {
         .unwrap()
         .retain(|(wid, _)| *wid != webview_id);
     EMBEDDER_WORKER_INTERFACES_READY_INJECTORS
+        .lock()
+        .unwrap()
+        .retain(|(wid, _)| *wid != webview_id);
+}
+
+// ============================================================================
+// Embedder New-Document Scripts — realm entry injection (Bao vendor patch -
+// REQ-CDP-004, CDP Page.addScriptToEvaluateOnNewDocument; user ruling "W55
+// vendor realm entry injection", 2026-10-01)
+// ============================================================================
+// CDP semantics: every registered script is evaluated on EVERY new document
+// created for the webview, after the document object exists and BEFORE the
+// HTML parser writes any page script into it — drained in
+// `ScriptThread::load` right before the `ServoParser::parse_*` call, the
+// converging point of both window-creation arms (fresh `Window::new` AND
+// same-origin `window_for_replacement` reuse).
+//
+// The per-Worker injector tier above is the structural template: entries are
+// NON-consuming (every new document replays them all, registration order
+// preserved), keyed per WebViewId, and removed at page close by the embedder
+// (`unregister_embedder_new_document_scripts`). Re-registering the SAME
+// source for the same webview is a no-op (dedup by identical source — the
+// CDP face keeps minting fresh identifiers even for idempotent re-runs), so
+// distinct sources stack instead of overwriting each other.
+//
+// This replaces bao's former pump-timed dispatch (FrameStartedLoading →
+// `evaluate_js_web` from the embedder event loop), which fired after parsing
+// began: synchronously-completing pages finished before the injection landed
+// and never observed it (W55 0/40 NO-HARVEST evidence).
+static EMBEDDER_NEW_DOCUMENT_SCRIPTS: std::sync::Mutex<Vec<(WebViewId, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register an embedder script evaluated on every new document of
+/// `webview_id` (CDP `Page.addScriptToEvaluateOnNewDocument` carrier).
+/// Re-registering the same source for the same webview is a no-op; distinct
+/// sources stack and replay in registration order.
+pub fn register_embedder_new_document_script(webview_id: WebViewId, source: String) {
+    let mut guard = EMBEDDER_NEW_DOCUMENT_SCRIPTS.lock().unwrap();
+    if guard
+        .iter()
+        .any(|(wid, src)| *wid == webview_id && *src == source)
+    {
+        return;
+    }
+    guard.push((webview_id, source));
+}
+
+/// Snapshot the new-document scripts for `webview_id` (NON-consuming — every
+/// new document replays them all, in registration order).
+pub(crate) fn embedder_new_document_scripts(webview_id: WebViewId) -> Vec<String> {
+    EMBEDDER_NEW_DOCUMENT_SCRIPTS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(wid, _)| *wid == webview_id)
+        .map(|(_, source)| source.clone())
+        .collect()
+}
+
+/// Remove every new-document script registered for `webview_id`. Called by
+/// the embedder when the page closes so a closed page's init scripts do not
+/// linger in the registry.
+pub fn unregister_embedder_new_document_scripts(webview_id: WebViewId) {
+    EMBEDDER_NEW_DOCUMENT_SCRIPTS
         .lock()
         .unwrap()
         .retain(|(wid, _)| *wid != webview_id);
@@ -4446,6 +4511,44 @@ impl ScriptThread {
                 incomplete.webview_id,
             ),
         );
+
+        // BAO PATCH (REQ-CDP-004, W55 vendor realm entry injection, user
+        // ruling 2026-10-01): CDP `Page.addScriptToEvaluateOnNewDocument` —
+        // evaluate every embedder script registered for this webview HERE:
+        // the new document is fully constructed (window + document + window
+        // proxy) and the parser has not written any page script into it yet.
+        // This is the CDP-mandated injection point ("after the document was
+        // created but before any of its scripts were written into it"), on
+        // the converging path of both window-creation arms. Bao's former
+        // FrameStartedLoading pump fired after parsing began, so
+        // synchronously-completing pages never observed the injected script
+        // (0/40 NO-HARVEST evidence). We are already inside the window's
+        // auto realm, so `CurrentRealm::assert` resolves to it. A failing
+        // init script is logged and skipped — it must not fail the load.
+        for source in embedder_new_document_scripts(incomplete.webview_id) {
+            let global_scope = window.as_global_scope();
+            // Spec "check if we can run script": a Document that is not fully
+            // active (backgrounded page, inactive iframe) or has scripting
+            // sandboxed ABORTS the script silently — `evaluate_js_on_global`
+            // hard-asserts this precondition, so probe it first and skip (the
+            // scripts stay registered and replay on the next document).
+            if !global_scope.can_run_script() {
+                continue;
+            }
+            let mut current_realm = CurrentRealm::assert(cx);
+            if let Err(error) = global_scope.evaluate_js_on_global(
+                &mut current_realm,
+                source.into(),
+                "",
+                None, // No known `introductionType` for embedder init scripts
+                None,
+            ) {
+                warn!(
+                    "Embedder new-document script failed for webview {}: {error:?}",
+                    incomplete.webview_id
+                );
+            }
+        }
 
         if !incomplete.load_data.is_initial_about_blank {
             if is_html_document == IsHTMLDocument::NonHTMLDocument {

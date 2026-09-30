@@ -287,6 +287,28 @@ pub fn unregister_worker_injectors(webview_id: WebViewId) {
     script::unregister_worker_injectors(webview_id);
 }
 
+/// Register an embedder script to be evaluated on EVERY new document created
+/// for `webview_id` (Bao vendor patch — REQ-CDP-004, CDP
+/// `Page.addScriptToEvaluateOnNewDocument`, user ruling 2026-10-01).
+///
+/// servo evaluates the script inside `ScriptThread::load` after the new
+/// document (window + document + window proxy) is fully constructed and
+/// BEFORE the HTML parser writes any page script into it — the CDP-mandated
+/// point. Entries are non-consuming: every later document of the webview
+/// (fresh OR same-origin replacement window) replays them all in
+/// registration order. Re-registering the same source is a no-op; distinct
+/// sources stack.
+pub fn register_embedder_new_document_script(webview_id: WebViewId, source: String) {
+    script::register_embedder_new_document_script(webview_id, source);
+}
+
+/// Remove every new-document script registered for `webview_id` (page close;
+/// same lifecycle discipline as [`unregister_worker_injectors`] — a closed
+/// page's init scripts must not linger in the registry).
+pub fn unregister_embedder_new_document_scripts(webview_id: WebViewId) {
+    script::unregister_embedder_new_document_scripts(webview_id);
+}
+
 /// The per-Worker injector type behind
 /// [`register_worker_scope_injector`] /
 /// [`register_worker_interfaces_ready_injector`]: a shared closure receiving

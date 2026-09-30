@@ -737,39 +737,18 @@
         <p>实现 CDP Page domain，映射到 servo WebView（导航 + 截图）。</p>
         <h4>验收标准</h4>
         <ul>
-          <li id="page.navigate-导航到指定-url" data-criterion="Page.navigate 导航到指定 URL" data-criterion-id="REQ-CDP-004-C1">
-            Page.navigate 导航到指定 URL
-          </li>
-          <li id="page.capturescreenshot-截图并返回-base64" data-criterion="Page.captureScreenshot 截图并返回 base64" data-criterion-id="REQ-CDP-004-C2">
-            Page.captureScreenshot 截图并返回 base64
-          </li>
-          <li id="page.reload-重新加载页面" data-criterion="Page.reload 重新加载页面" data-criterion-id="REQ-CDP-004-C3">
-            Page.reload 重新加载页面
-          </li>
-          <li id="page.setcontent-设置页面-html" data-criterion="Page.setContent 设置页面 HTML" data-criterion-id="REQ-CDP-004-C4">
-            Page.setContent 设置页面 HTML
-          </li>
-          <li id="page.getframetree-返回帧树" data-criterion="Page.getFrameTree 返回帧树" data-criterion-id="REQ-CDP-004-C5">
-            Page.getFrameTree 返回帧树
-          </li>
-          <li id="page.loadeventfired-发送加载完成通知" data-criterion="Page.loadEventFired 发送加载完成通知" data-criterion-id="REQ-CDP-004-C6">
-            Page.loadEventFired 发送加载完成通知
-          </li>
+          
+          
+          
+          
+          
+          
         </ul>
 
         <p data-xref-type="req" data-xref-id="REQ-CDP-004">关联实体: <a data-xref-type="entity" data-xref-id="cdprouter" href="./04-DATA-MODEL#cdprouter">CdpRouter</a>, <a data-xref-type="entity" data-xref-id="pixelbuffer" href="./04-DATA-MODEL#pixelbuffer">PixelBuffer</a>, <a data-xref-type="entity" data-xref-id="viewport" href="./04-DATA-MODEL#viewport">Viewport</a></p>
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-004"></span></p>
-        <div data-criteria="">
-          <strong>验收标准（客观可验证）：</strong>
-          <ol>
-            <li>cargo test -p bao_cdp_client --test cdp_conformance -- page_conformance 通过</li>
-            <li>Page.navigate 导航测试通过</li>
-            <li>Page.captureScreenshot 截图 base64 测试通过</li>
-            <li>Page.reload/Page.setContent/Page.getFrameTree 测试通过</li>
-            <li>Page.loadEventFired 加载完成通知测试通过</li>
-          </ol>
-        </div>
-      </div>
+        
+      <div data-criterion-id="REQ-CDP-004-C1" data-criterion="Page.navigate 导航到指定 URL">Page.navigate 导航到指定 URL</div><div data-criterion-id="REQ-CDP-004-C2" data-criterion="Page.captureScreenshot 截图并返回 base64">Page.captureScreenshot 截图并返回 base64</div><div data-criterion-id="REQ-CDP-004-C3" data-criterion="Page.reload 重新加载页面">Page.reload 重新加载页面</div><div data-criterion-id="REQ-CDP-004-C4" data-criterion="Page.setContent 设置页面 HTML">Page.setContent 设置页面 HTML</div><div data-criterion-id="REQ-CDP-004-C5" data-criterion="Page.getFrameTree 返回帧树">Page.getFrameTree 返回帧树</div><div data-criterion-id="REQ-CDP-004-C6" data-criterion="Page.loadEventFired 发送加载完成通知">Page.loadEventFired 发送加载完成通知</div><div data-criterion-id="REQ-CDP-004-AC01" data-criterion="Page.addScriptToEvaluateOnNewDocument 注册的脚本在每个新 document 创建后、任何页面脚本执行前求值（CDP 规范时点；vendor script_thread realm 入口载体 EMBEDDER_NEW_DOCUMENT_SCRIPTS，W55）">Page.addScriptToEvaluateOnNewDocument 注册的脚本在每个新 document 创建后、任何页面脚本执行前求值（CDP 规范时点；vendor script_thread realm 入口载体 EMBEDDER_NEW_DOCUMENT_SCRIPTS，W55）</div></div>
 
       <div id="req-cdp-005" data-req="REQ-CDP-005" data-req-status="implemented" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter,CdpCommand" data-req-api="POST /cdp/dom" data-groundedin="PRD-REQ-CDP-CONNECT">
         <h3>REQ-CDP-005: DOM Domain</h3>

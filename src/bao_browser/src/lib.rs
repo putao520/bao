@@ -715,30 +715,7 @@ impl BrowserRuntime {
             // Drain ServoEvent from EventSubscriber (Path B) and broadcast
             // as CDP events via the shared EventBroadcaster.
             // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-            let mut injection_seen_targets: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
             while let Ok(servo_event) = servo_event_rx.try_recv() {
-                // W55 (#14-C): on frame-started-loading (new-document creation),
-                // evaluate every pending new-document injection source on the
-                // page's web face BEFORE the page's own scripts settle — the
-                // standard CDP "run before any page script" contract, mapped
-                // onto the FrameStartedLoading signal.
-                if matches!(servo_event, bao_cdp_client::bridge::ServoEvent::FrameStartedLoading { .. })
-                    && BaoWsRegistry::has_pending_injection_sources()
-                {
-                    let target_id_inject = servo_event.target_id().to_string();
-                    if injection_seen_targets.insert(target_id_inject.clone()) {
-                        let sources = BaoWsRegistry::drain_injection_sources();
-                        if let Some(page) = self
-                            .page_pool
-                            .get_page(target_id_inject.parse().unwrap_or(0))
-                        {
-                            for src in &sources {
-                                let _ = page.evaluate_js_web(src);
-                            }
-                        }
-                    }
-                }
                 // W43 flat-session demux: ServoEvents are target-scoped —
                 // route to every CDP session attached to that target (tagged),
                 // falling back to the untagged broadcast with no attachments.

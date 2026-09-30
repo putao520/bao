@@ -78,6 +78,39 @@ pub(crate) fn transition(from: PageState, ev: PageEvent) -> Option<PageState> {
     }
 }
 
+// ============================================================================
+// CDP target-face resolution: decimal page id → servo WebViewId
+// (REQ-CDP-004, W55 vendor realm entry injection, user ruling 2026-10-01)
+// ============================================================================
+// The CDP command face (`ws_registry`) runs on the CDP server thread and can
+// never touch the !Send `Rc<PagePool>`/`Rc<Servo>` to resolve a target id,
+// yet `Page.addScriptToEvaluateOnNewDocument` now needs the target's
+// WebViewId at command time (servo's new-document script registry is
+// WebViewId-keyed). This registry is written at page creation and removed at
+// page close; the value is a plain `Copy` id — no `JSObject` pointers cross
+// threads here (BCE-20260621-001 discipline). Page ids are monotonic
+// (PagePool `next_id` never resets), so a removed entry cannot alias a later
+// page.
+static WEBVIEW_ID_BY_PAGE: std::sync::OnceLock<dashmap::DashMap<usize, servo::WebViewId>> =
+    std::sync::OnceLock::new();
+
+fn webview_id_by_page() -> &'static dashmap::DashMap<usize, servo::WebViewId> {
+    WEBVIEW_ID_BY_PAGE.get_or_init(dashmap::DashMap::new)
+}
+
+/// Resolve a decimal CDP target id (page id) to its servo WebViewId.
+pub(crate) fn webview_id_for_page(page_id: usize) -> Option<servo::WebViewId> {
+    webview_id_by_page().get(&page_id).map(|e| *e)
+}
+
+fn register_page_webview(page_id: usize, webview_id: servo::WebViewId) {
+    webview_id_by_page().insert(page_id, webview_id);
+}
+
+fn unregister_page_webview(page_id: usize) {
+    webview_id_by_page().remove(&page_id);
+}
+
 pub struct PageInner {
     pub id: usize,
     pub webview: WebView,
@@ -1210,6 +1243,11 @@ impl PageHandle {
 
         let webview = builder.build();
 
+        // CDP target-face resolution registry (see WEBVIEW_ID_BY_PAGE): let
+        // the CDP command face resolve this page's decimal id to its
+        // WebViewId without touching the !Send PagePool.
+        register_page_webview(id, webview.id());
+
         let inner = PageInner {
             id,
             webview,
@@ -1450,14 +1488,18 @@ impl PageHandle {
     /// thread when each new document is created. Takes effect from the next
     /// navigation (servo applies user-content updates on reload/navigation).
     pub fn add_script_to_evaluate_on_new_document(&self, source: &str) -> Result<(), BrowserError> {
-        self.with_inner(|inner| {
-            let ucm = inner
-                .user_content_manager
-                .clone()
-                .ok_or_else(|| BrowserError::Init("page has no UserContentManager".into()))?;
-            ucm.add_script(Rc::new(servo::UserScript::new(source.to_string(), None)));
-            Ok(())
-        })
+        // Single carrier (REQ-CDP-004): every face of this command (WS
+        // registry intercept and the memory/bridge handler alike) must land
+        // in the vendor realm-entry registry — the servo UserContentManager
+        // path delivered scripts after parsing began (pump-era timing).
+        let Some(webview_id) = webview_id_for_page(self.id()) else {
+            return Err(BrowserError::Init(format!(
+                "page {} has no webview mapping for new-document script registration",
+                self.id()
+            )));
+        };
+        servo::register_embedder_new_document_script(webview_id, source.to_string());
+        Ok(())
     }
 
     pub fn take_screenshot(&self, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {
@@ -1781,6 +1823,15 @@ impl PageHandle {
                 // otherwise a closed page's injector (carrying its stealth
                 // profile clone) lingers in the vendor registry forever.
                 servo::unregister_worker_injectors(wid);
+                // REQ-CDP-004 (W55 vendor realm entry injection): same
+                // lifecycle discipline — drop this page's CDP
+                // Page.addScriptToEvaluateOnNewDocument entries (servo's
+                // new-document script registry is non-consuming by design,
+                // so a closed page's init scripts would otherwise linger in
+                // the vendor registry forever) and the CDP target-face id
+                // mapping.
+                servo::unregister_embedder_new_document_scripts(wid);
+                unregister_page_webview(inner.id);
                 // ISSUE #24: same lifecycle discipline — drop this webview's
                 // worker execution-timeout entry so a closed page's deadline
                 // cannot linger in the vendor registry.
