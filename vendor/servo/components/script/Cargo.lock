@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "bao-mozjs"
-version = "0.24.1"
+version = "0.24.2"
 dependencies = [
  "bao-mozjs-sys",
  "bindgen",
@@ -514,7 +514,7 @@ version = "153.3.0-0"
 
 [[package]]
 name = "bao-mozjs-sys"
-version = "153.3.0-1"
+version = "153.3.0-2"
 dependencies = [
  "bao-mozjs-collator-glue",
  "bao-mozjs-locale-glue",
