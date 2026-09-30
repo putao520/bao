@@ -3,22 +3,44 @@
 Regenerate with `python3 scripts/bench-report.py` (gate: `--check` fails on drift).
 Good-and-bad side by side: failed runs are first-class rows below (§4), never dropped.
 
-- run-dates: 19  ·  distinct benches: 7
+- run-dates: 20  ·  distinct benches: 13
 - sources: `bench/results/<date>-<commit>/<bench>.run-<k>.json` (schema v1)
 
 ## 1. Coverage matrix (bench × run-date)
 
-| bench | 2026-09-10-03396a13 | 2026-09-10-27dbb606 | 2026-09-10-a4a6738c | 2026-09-10-b8d8f5e5 | 2026-09-10-ec4a0e5a | 2026-09-11-508502de | 2026-09-12-508502de | 2026-09-13-508502de | 2026-09-14-508502de | 2026-09-15-508502de | 2026-09-16-d61f26f1 | 2026-09-17-3e2d5a6f | 2026-09-19-66bdb414 | 2026-09-20-1a2670e5 | 2026-09-24-0f731b93 | 2026-09-25-d4aa9e51 | 2026-09-26-6f74d61a | 2026-09-29-5388d9c4 | 2026-09-29-7e22a1fe |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| fetch-small-payload | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| page-churn | — | — | — | ✓ ×1 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| realm-create-drop | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| rss-sample | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| runtime-create-drop | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| soak | ✓ ×1 | — | ✓ ×1 | — | ERROR | ✓ ×1 | ERROR | ✓ ×1 | ERROR | ERROR | ERROR | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 |
-| stencil-cost | ✓ ×3 | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| bench | 2026-09-10-03396a13 | 2026-09-10-27dbb606 | 2026-09-10-a4a6738c | 2026-09-10-b8d8f5e5 | 2026-09-10-ec4a0e5a | 2026-09-11-508502de | 2026-09-12-508502de | 2026-09-13-508502de | 2026-09-14-508502de | 2026-09-15-508502de | 2026-09-16-d61f26f1 | 2026-09-17-3e2d5a6f | 2026-09-19-66bdb414 | 2026-09-20-1a2670e5 | 2026-09-24-0f731b93 | 2026-09-25-d4aa9e51 | 2026-09-26-6f74d61a | 2026-09-29-5388d9c4 | 2026-09-29-7e22a1fe | 2026-09-30-c106f6b6 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| bundler-bench | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ ×3 |
+| crypto-bench | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ ×3 |
+| fetch-small-payload | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| fs-bench | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ ×3 |
+| http-bench | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ ×3 |
+| page-churn | — | — | — | ✓ ×1 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| realm-create-drop | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| rss-sample | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| runtime-create-drop | — | — | — | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
+| soak | ✓ ×1 | — | ✓ ×1 | — | ERROR | ✓ ×1 | ERROR | ✓ ×1 | ERROR | ERROR | ERROR | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | ✓ ×1 | — |
+| spawn-bench | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ ×3 |
+| sqlite-bench | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ ×3 |
+| stencil-cost | ✓ ×3 | ✓ ×3 | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — |
 
 ## 2. Latest key metrics (per bench, newest run-date)
+
+### bundler-bench — 2026-09-30-c106f6b6 (environment: pt-worker)
+
+| metric | value | unit | direction |
+|---|---|---|---|
+| n/a (no known key metric) | — |  |  |
+
+parameters: `{'iterations': 20}`
+
+### crypto-bench — 2026-09-30-c106f6b6 (environment: pt-worker)
+
+| metric | value | unit | direction |
+|---|---|---|---|
+| n/a (no known key metric) | — |  |  |
+
+parameters: `{'requests': 200}`
 
 ### fetch-small-payload — 2026-09-10-b8d8f5e5 (environment: pt-worker)
 
@@ -28,6 +50,22 @@ Good-and-bad side by side: failed runs are first-class rows below (§4), never d
 | throughput | 1,041.21 | ops_per_s | higher-better |
 
 parameters: `{'concurrency': 1, 'requests': 400}`
+
+### fs-bench — 2026-09-30-c106f6b6 (environment: pt-worker)
+
+| metric | value | unit | direction |
+|---|---|---|---|
+| n/a (no known key metric) | — |  |  |
+
+parameters: `{'requests': 200}`
+
+### http-bench — 2026-09-30-c106f6b6 (environment: pt-worker)
+
+| metric | value | unit | direction |
+|---|---|---|---|
+| n/a (no known key metric) | — |  |  |
+
+parameters: `{'requests': 300}`
 
 ### page-churn — 2026-09-10-b8d8f5e5 (environment: pt-worker)
 
@@ -70,6 +108,22 @@ parameters: `{'iterations': 50}`
 
 parameters: `{'duration_mins': 60, 'executed_cycles': 30480, 'scenario': 'page-churn'}`
 
+### spawn-bench — 2026-09-30-c106f6b6 (environment: pt-worker)
+
+| metric | value | unit | direction |
+|---|---|---|---|
+| n/a (no known key metric) | — |  |  |
+
+parameters: `{'requests': 100}`
+
+### sqlite-bench — 2026-09-30-c106f6b6 (environment: pt-worker)
+
+| metric | value | unit | direction |
+|---|---|---|---|
+| n/a (no known key metric) | — |  |  |
+
+parameters: `{'requests': 60}`
+
 ### stencil-cost — 2026-09-10-27dbb606 (environment: pt-worker)
 
 | metric | value | unit | direction |
@@ -82,13 +136,19 @@ parameters: `{'iterations': 60}`
 
 | bench | metric | prev | latest | Δ | note |
 |---|---|---|---|---|---|
+| bundler-bench | — | — | — | — | single run-date |
+| crypto-bench | — | — | — | — | single run-date |
 | fetch-small-payload | — | — | — | — | single run-date |
+| fs-bench | — | — | — | — | single run-date |
+| http-bench | — | — | — | — | single run-date |
 | page-churn | — | — | — | — | single run-date |
 | realm-create-drop | — | — | — | — | single run-date |
 | rss-sample | — | — | — | — | single run-date |
 | runtime-create-drop | — | — | — | — | single run-date |
 | soak | pages/s | 8.52 | 8.47 | -0.7% | ~ |
 | soak | steady slope | 115.10 | 218.91 | +90.2% | ⚠ worse |
+| spawn-bench | — | — | — | — | single run-date |
+| sqlite-bench | — | — | — | — | single run-date |
 | stencil-cost | first compile p50 | — | — | — | metric absent on one side |
 
 ## 4. Failures & notes (verbatim, never dropped)
@@ -118,6 +178,9 @@ parameters: `{'iterations': 60}`
 - 2026-09-15-508502de/soak.run-1 note: bench failed — fail-closed; this document carries the error, not a partial baseline
 - **2026-09-16-d61f26f1/soak.run-1: ERROR** — soak aborted after 25013 cycles / 4 full segments at cycle 25013: iter 25013: marker verification failed (got "null") — fail-closed, no green numbers on wrong results [#41 diag: embedder-url=data:text/html,<h1 id=b>benchmark-25013</h1> realm={"url":"data:text/html,<h1 id=b>benchmark-25013</h1>","rs"
 - 2026-09-16-d61f26f1/soak.run-1 note: bench failed — fail-closed; this document carries the error, not a partial baseline
+- 2026-09-30-c106f6b6/sqlite-bench.run-1 note: bun:sqlite: 10 prepared inserts + 1 indexed select per op (file DB, not :memory:) — synchronous face
+- 2026-09-30-c106f6b6/sqlite-bench.run-2 note: bun:sqlite: 10 prepared inserts + 1 indexed select per op (file DB, not :memory:) — synchronous face
+- 2026-09-30-c106f6b6/sqlite-bench.run-3 note: bun:sqlite: 10 prepared inserts + 1 indexed select per op (file DB, not :memory:) — synchronous face
 
 ## 5. Regression gate
 
