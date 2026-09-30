@@ -700,6 +700,7 @@ impl BrowserRuntime {
         bridge_rx: bao_cdp::servo_bridge::BridgeReceiver,
         servo_event_rx: std::sync::mpsc::Receiver<ServoEvent>,
         broadcaster: Arc<EventBroadcaster>,
+        event_demux: Option<Arc<BaoWsRegistry>>,
     ) -> Result<(), BrowserError> {
         let max_wait = Duration::from_secs(3600);
         let start = std::time::Instant::now();
@@ -715,9 +716,27 @@ impl BrowserRuntime {
             // as CDP events via the shared EventBroadcaster.
             // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
             while let Ok(servo_event) = servo_event_rx.try_recv() {
+                // W43 flat-session demux: ServoEvents are target-scoped —
+                // route to every CDP session attached to that target (tagged),
+                // falling back to the untagged broadcast with no attachments.
+                let target_id = servo_event.target_id().to_string();
                 let cdp_events = translate(servo_event);
-                for cdp_event in cdp_events {
-                    broadcaster.send_event(&cdp_event.method, cdp_event.params);
+                match event_demux.as_ref() {
+                    Some(registry) => {
+                        for cdp_event in cdp_events {
+                            registry.broadcast_for_target(
+                                broadcaster.as_ref(),
+                                &target_id,
+                                &cdp_event.method,
+                                cdp_event.params,
+                            );
+                        }
+                    }
+                    None => {
+                        for cdp_event in cdp_events {
+                            broadcaster.send_event(&cdp_event.method, cdp_event.params);
+                        }
+                    }
                 }
             }
 
@@ -902,7 +921,7 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         // The default target is the initial page's real id (cdp_handler parses
         // decimal page ids — a timestamp hex would never resolve to a page).
         let target_id = page.id().to_string();
-        let mut server = CdpServer::with_registry(config, registry);
+        let mut server = CdpServer::with_registry(config, registry.clone());
         let provider = Arc::new(ServoTargetProvider::new(
             bridge_tx,
             target_id,
@@ -922,7 +941,7 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
             let _ = server.run();
         });
 
-        let result = runtime.run_with_bridge(bridge_rx, servo_event_rx, broadcaster);
+        let result = runtime.run_with_bridge(bridge_rx, servo_event_rx, broadcaster, Some(registry.clone()));
         // Deterministic CDP shutdown (B0 census #3): signal the cooperative
         // stop and join the server thread so the listener port, registry and
         // sessions are released before run_browser returns. Bounded: run()

@@ -733,7 +733,9 @@ async fn invoke_handle_fetch(request: &Request, context: &FetchContext) -> Optio
         response_chan,
         load_url: load_url.clone(),
     };
-    manager_chan.send(mediator).ok()?;
+    if manager_chan.send(mediator).is_err() {
+        return None;
+    }
 
     let answer = tokio::task::spawn_blocking(move || {
         response_port.try_recv_timeout(HANDLE_FETCH_TIMEOUT).ok()

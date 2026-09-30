@@ -56,6 +56,10 @@ const MAX_LOG_CHILDREN: usize = 15;
 pub(crate) struct Console;
 
 impl Console {
+
+    pub(crate) fn internal_error(cx: &mut JSContext, global: &GlobalScope, message: String) {
+        Console::send_string_message(cx, global, ConsoleLogLevel::Error, message);
+    }
     #[allow(unsafe_code)]
     fn build_message(
         cx: &mut JSContext,

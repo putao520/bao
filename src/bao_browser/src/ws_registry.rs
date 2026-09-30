@@ -313,6 +313,42 @@ fn require_param(params: &Option<Value>, key: &str) -> Result<String, CdpError> 
         })
 }
 
+impl BaoWsRegistry {
+    /// W43 flat-session event demux: route a servo-target-scoped CDP event to
+    /// every CDP session attached to `target_id` (each tagged with its
+    /// sessionId via `send_session_event`). With NO attached sessions this
+    /// degrades to the untagged broadcast (the pre-W43 page-endpoint
+    /// contract, zero drift).
+    pub fn broadcast_for_target(
+        &self,
+        event_sender: &dyn EventSender,
+        target_id: &str,
+        method: &str,
+        params: Value,
+    ) {
+        let sessions: Vec<String> = self
+            .attached_sessions
+            .lock()
+            .ok()
+            .map(|table| {
+                table
+                    .iter()
+                    .filter(|(_, tid)| tid.as_str() == target_id)
+                    .map(|(sid, _)| sid.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if sessions.is_empty() {
+            event_sender.send_event(method, params);
+            return;
+        }
+        for sid in sessions {
+            event_sender.send_session_event(&sid, method, params.clone());
+        }
+    }
+}
+
 impl RegistryDispatch for BaoWsRegistry {
     fn dispatch_command(
         &self,

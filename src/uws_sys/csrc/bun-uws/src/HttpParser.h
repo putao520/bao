@@ -1331,7 +1331,15 @@ struct HttpResponseData;
              * to break here as we either have upgraded to
              * WebSockets or otherwise closed the socket. */
             /* Store any remaining data as head for Node.js compat (connect/upgrade events) */
-            req->head = std::span<const char>(data, length);
+            /* Upstream 6fe95efae9 (#44210): under ConsumeMinimally+IsNodeHttp,
+             * consumePostPadded set head to the part of the read that is not
+             * in this buffer; the bytes behind the request head here are
+             * copies of the bytes of the read right in front of that part. */
+            if constexpr (ConsumeMinimally && IsNodeHttp) {
+                req->head = std::span<const char>(req->head.data() - length, req->head.size() + length);
+            } else {
+                req->head = std::span<const char>(data, length);
+            }
             /* Same verdict that selects chunked framing below, so the handler's
              * has-body decision cannot disagree with how the body is consumed. */
             req->hasTransferEncoding = transferEncoding.has;
@@ -1531,12 +1539,24 @@ public:
 
             size_t maxCopyDistance = std::min<size_t>(maxFallbackSize - fallback.length(), (size_t) length);
 
-            /* We don't want fallback to be short string optimized, since we want to move it */
-            fallback.reserve(fallback.length() + maxCopyDistance + std::max<unsigned int>(MINIMUM_HTTP_POST_PADDING, sizeof(std::string)));
-            fallback.append(data, maxCopyDistance);
+            /* Upstream 6fe95efae9 (#44210): this frame owns the bytes for the
+             * dispatch — the handler can destroy this parser while the
+             * request views them, and a parser that lives on must not keep a
+             * head that was dispatched. */
+            std::string reassembled = std::move(fallback);
+            fallback.clear();
+
+            /* The parser reads and writes behind the bytes it is given: the block has room for that padding. */
+            reassembled.reserve(reassembled.length() + maxCopyDistance + std::max<unsigned int>(MINIMUM_HTTP_POST_PADDING, sizeof(std::string)));
+            reassembled.append(data, maxCopyDistance);
+
+            if constexpr (IsNodeHttp) {
+                /* The part of this read that is not in the buffer. The dispatch extends it to the whole rest of the read. */
+                req.head = std::span<const char>(data + maxCopyDistance, length - maxCopyDistance);
+            }
 
             // break here on break
-            HttpParserResult consumed = fenceAndConsumePostPadded<true, IsNodeHttp>(maxHeaderSize, isConnectRequest, requireHostHeader, useStrictMethodValidation, useInsecureHTTPParser, useLenientTransferEncoding, nodeHttpRequestTrailers, chunkedExtensionsByteCount, fallback.data(), (unsigned int) fallback.length(), user, &req, requestHandler, dataHandler);
+            HttpParserResult consumed = fenceAndConsumePostPadded<true, IsNodeHttp>(maxHeaderSize, isConnectRequest, requireHostHeader, useStrictMethodValidation, useInsecureHTTPParser, useLenientTransferEncoding, nodeHttpRequestTrailers, chunkedExtensionsByteCount, reassembled.data(), (unsigned int) reassembled.length(), user, &req, requestHandler, dataHandler);
             /* Return data will be different than user if we are upgraded to WebSocket or have an error */
             if (consumed.returnedData != user) {
                 /* The count is in fallback bytes, and the first `had` of them came from
@@ -1559,7 +1579,10 @@ public:
 
                 if (remainingStreamingBytes) {
                     if(isConnectRequest) {
-                        dataHandler(user, std::string_view(data, length), false);
+                        /* Upstream 6fe95efae9 (#44210): node:http got the whole rest of this read as the head of the request. */
+                        if constexpr (!IsNodeHttp) {
+                            dataHandler(user, std::string_view(data, length), false);
+                        }
                         return HttpParserResult::success(0, user);
                     } else if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                         /* It's either chunked or with a content-length */
@@ -1616,6 +1639,8 @@ public:
                 }
 
             } else {
+                /* Upstream 6fe95efae9 (#44210): the head is not complete — nothing was dispatched, and the parser keeps what it has of it. */
+                fallback = std::move(reassembled);
                 if (fallback.length() == maxFallbackSize) {
                     return HttpParserResult::error(HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, HTTP_PARSER_ERROR_REQUEST_HEADER_FIELDS_TOO_LARGE);
                 }

@@ -440,7 +440,7 @@ fn e2e_seven_classes_each_route_to_correct_method() {
         methods.push(ev.method);
     }
 
-    // 验证 7 类全覆盖(13 events)
+    // 验证 7 类全覆盖(14 events——frameStoppedLoading 按 Chrome 语义配对 loadEventFired)
     let expected: &[&str] = &[
         "Log.entryAdded",
         "Runtime.exceptionThrown",
@@ -453,6 +453,7 @@ fn e2e_seven_classes_each_route_to_correct_method() {
         "Debugger.scriptParsed",
         "Page.frameNavigated",
         "Page.frameStartedLoading",
+        "Page.loadEventFired",
         "Page.frameStoppedLoading",
         "Performance.metrics",
     ];
@@ -593,6 +594,7 @@ fn all_seven_classes_zero_omission() {
         "Page.frameNavigated",
         "Page.frameStartedLoading",
         "Page.frameStoppedLoading", // FrameInfo
+        "Page.loadEventFired",      // FrameInfo(W40 配对:Chrome 双发语义)
         "Performance.metrics",      // TimelineMarker
     ];
     for m in expected {

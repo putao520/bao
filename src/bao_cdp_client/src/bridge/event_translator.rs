@@ -1744,11 +1744,15 @@ mod tests {
             frame_id: "FRAME3".into(),
         };
         let out = translate(ev);
-        assert_eq!(out.len(), 1);
-        let e = &out[0];
-        assert_eq!(e.method, "Page.frameStoppedLoading");
-        assert_eq!(e.session_id.as_deref(), Some("T13"));
-        assert_eq!(e.params["frameId"], "FRAME3");
+        // W40 (#11-D): servo's frame-stopped-loading pairs with
+        // Page.loadEventFired (Chrome semantics) — two events, same tag.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].method, "Page.frameStoppedLoading");
+        assert_eq!(out[0].session_id.as_deref(), Some("T13"));
+        assert_eq!(out[0].params["frameId"], "FRAME3");
+        assert_eq!(out[1].method, "Page.loadEventFired");
+        assert_eq!(out[1].session_id.as_deref(), Some("T13"));
+        assert_eq!(out[1].params["frameId"], "FRAME3");
     }
 
     // ── §7.7 TimelineMarker → Performance.metrics ────────────────────

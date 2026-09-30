@@ -232,8 +232,6 @@ class DescriptorProvider:
     # default flipped to upstream end behavior (False = RootedCallback/
     # TracedCallback everywhere); the fork's transitional Rc default and the
     # stream-callback conf overrides are removed with it.
-    def callbackUsesRc(self, callbackIdentifier: str) -> bool:
-        return self.config.getCallbackConfig(callbackIdentifier).get('rc', False)
 
 def MemberIsLegacyUnforgeable(member: IDLAttribute | IDLMethod, descriptor: Descriptor) -> bool:
     return ((member.isAttr() or member.isMethod())

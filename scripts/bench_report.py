@@ -37,6 +37,17 @@ KEY_METRICS = {
     "soak": [("churn_pages_per_s_wall", "pages/s", "ops_per_s"),
              ("vm_rss_slope_steady", "steady slope", "KiB_per_s")],
     "page-stress": [("pages_completed_per_s", "pages/s", "ops_per_s")],
+    "fs-rw-1mib": [("fs_rw_1mib", "rw 1MiB p50", "ms"), ("fs_rw_1mib_throughput", "rw throughput", "ops_per_s"),
+                   ("fs_mb_per_s", "mb/s", "MB_per_s")],
+    "crypto-throughput": [("crypto_sha256_1mib", "sha256 1MiB p50", "ms"),
+                          ("crypto_mb_per_s", "mb/s", "MB_per_s")],
+    "http-serve-echo": [("http_serve_echo", "echo p50", "ms"), ("http_serve_echo_throughput", "req/s", "ops_per_s")],
+    "sqlite-insert-select": [("sqlite_insert10_select", "ins10+sel p50", "ms"),
+                             ("sqlite_insert10_select_throughput", "ops/s", "ops_per_s")],
+    "spawn-echo-sync": [("spawn_echo_sync", "spawnSync p50", "ms"),
+                        ("spawn_echo_sync_throughput", "spawns/s", "ops_per_s")],
+    "bundler-mini": [("bundler_mini_build", "mini build p50", "ms"),
+                     ("bundler_mini_throughput", "builds/s", "ops_per_s")],
 }
 FALLBACK = [("churn_cycle", "cycle p50", "ms")]
 

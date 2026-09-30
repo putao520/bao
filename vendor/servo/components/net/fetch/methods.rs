@@ -39,7 +39,7 @@ use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
-use servo_base::generic_channel::CallbackSetter;
+use servo_base::generic_channel::{CallbackSetter, GenericSender};
 use servo_base::id::PipelineId;
 use servo_url::{Host, ImmutableOrigin, ServoUrl};
 use tokio::sync::Mutex as TokioMutex;
@@ -102,7 +102,7 @@ pub type SharedInflightKeepAliveRecords =
 /// share (resource thread writes, tokio fetch workers read), which is the
 /// allowed exception in the去锁化 principle.
 pub type SwManagers =
-    Arc<Mutex<FxHashMap<ImmutableOrigin, IpcSender<CustomResponseMediator>>>>;
+    Arc<Mutex<FxHashMap<ImmutableOrigin, GenericSender<CustomResponseMediator>>>>;
 
 #[derive(Clone)]
 pub struct FetchContext {

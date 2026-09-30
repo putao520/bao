@@ -43,6 +43,9 @@ pub struct Scope {
     // inside that scope can be renamed. We conservatively assume that the
     // evaluated code might reference anything that it has access to.
     pub contains_direct_eval: bool,
+    /// Upstream 50c68aeafe (#41174): set on a "with" scope and every scope
+    /// that encloses it, for compute_reserved_names_for_scope.
+    pub contains_with: bool,
 
     // This is to help forbid "arguments" inside class body scopes
     pub forbid_arguments: bool,
@@ -76,6 +79,7 @@ impl Scope {
         label_ref: None,
         label_stmt_is_loop: false,
         contains_direct_eval: false,
+        contains_with: false,
         forbid_arguments: false,
         strict_mode: StrictModeKind::SloppyMode,
         is_after_const_local_prefix: false,
@@ -135,6 +139,7 @@ impl Scope {
         self.label_ref = None;
         self.label_stmt_is_loop = false;
         self.contains_direct_eval = false;
+        self.contains_with = false;
         self.strict_mode = StrictModeKind::SloppyMode;
         self.kind = Kind::Block;
     }

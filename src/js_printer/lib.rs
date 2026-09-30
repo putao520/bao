@@ -8093,9 +8093,32 @@ pub fn print_ast<'a, W: WriterTrait, const ASCII_ONLY: bool, const GENERATE_SOUR
             child.parent = Some(NonNull::from(module_scope).into());
         }
 
-        rename::compute_reserved_names_for_scope(module_scope, &symbols, &mut reserved_names);
-        minify_renamer =
-            rename::MinifyRenamer::init(symbols, &tree.nested_scope_slot_counts, reserved_names)?;
+        // Upstream 50c68aeafe (#41174): pin the export/module/require refs
+        // BEFORE the reserved names are computed, so no slot can take one of
+        // these names; and follow symbol links — `export var t; var t`
+        // exports a linked ref and the renamer names what it links to.
+        {
+            let mut symbols = symbols;
+            let dont_break_the_code = [tree.module_ref, tree.exports_ref, tree.require_ref]
+                .into_iter()
+                .chain(tree.named_exports.values().iter().map(|export| export.ref_));
+            for mut ref_ in dont_break_the_code {
+                while let Some(symbol) = symbols.get_mut(ref_) {
+                    symbol.must_not_be_renamed = true;
+                    if !symbol.has_link() {
+                        break;
+                    }
+                    ref_ = symbol.link.get();
+                }
+            }
+            rename::compute_reserved_names_for_scope(
+                module_scope,
+                &symbols,
+                &mut reserved_names,
+            );
+            minify_renamer =
+                rename::MinifyRenamer::init(symbols, &tree.nested_scope_slot_counts, reserved_names)?;
+        }
         // `symbols` is owned here (transpiler path) — let Drop free it.
         minify_renamer.owns_symbols = true;
 

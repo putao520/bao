@@ -8,6 +8,7 @@
 //! Benches: runtime-create-drop | realm-create-drop | page-churn |
 //!          fetch-small-payload | rss-sample | soak
 
+mod api_benches;
 mod common;
 mod fetch_bench;
 mod page_bench;
@@ -61,6 +62,13 @@ fn main() {
         // concurrent live-page farm/loop stress with stale detection,
         // resource guards and a reclamation final audit.
         "page-stress" => stress_bench::run(&params, out_path.as_deref()),
+        // W44 (#19-C): Node/Bun API baseline family.
+        "fs-bench" => api_benches::fs_bench(&params),
+        "crypto-bench" => api_benches::crypto_bench(&params),
+        "http-bench" => api_benches::http_bench(&params),
+        "sqlite-bench" => api_benches::sqlite_bench(&params),
+        "spawn-bench" => api_benches::spawn_bench(&params),
+        "bundler-bench" => api_benches::bundler_bench(&params),
         _ => usage(),
     };
 

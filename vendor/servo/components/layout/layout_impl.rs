@@ -21,11 +21,12 @@ use fonts::{FontContext, FontContextWebFontMethods};
 use fonts_traits::{StylesheetWebFontLoadFinishedCallback, WebFontSetDifference};
 use icu_locid::subtags::Language;
 use layout_api::{
-    AxesOverflow, BoxAreaType, CSSPixelRectVec, DangerousStyleNode, HitTestFlags, HitTestResult,
-    IFrameSizes, Layout, LayoutConfig, LayoutDamage, LayoutElement, LayoutFactory, LayoutNode,
-    NodeRenderingType, OffsetParentResponse, PhysicalSides, QueryMsg, ReflowGoal, ReflowPhasesRun,
-    ReflowRequest, ReflowRequestRestyle, ReflowResult, ReflowStatistics, ScrollContainerQueryFlags,
-    ScrollContainerResponse, TrustedNodeAddress, with_layout_state,
+    AccessibilityDamage, AxesOverflow, BoxAreaType, CSSPixelRectVec, DangerousStyleNode,
+    HitTestFlags, HitTestResult, IFrameSizes, Layout, LayoutConfig, LayoutDamage, LayoutElement,
+    LayoutFactory, LayoutNode, NodeRenderingType, OffsetParentResponse, PhysicalSides, QueryMsg,
+    ReflowGoal, ReflowPhasesRun, ReflowRequest, ReflowRequestRestyle, ReflowResult,
+    ReflowStatistics, ScrollContainerQueryFlags, ScrollContainerResponse, TrustedNodeAddress,
+    with_layout_state,
 };
 use log::{debug, warn};
 use malloc_size_of::{MallocConditionalSizeOf, MallocSizeOf, MallocSizeOfOps};
@@ -38,7 +39,7 @@ use profile_traits::time::{
     self as profile_time, TimerMetadata, TimerMetadataFrameType, TimerMetadataReflowType,
 };
 use profile_traits::{path, time_profile};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use script::layout_dom::{
     ServoDangerousStyleDocument, ServoDangerousStyleElement, ServoLayoutElement, ServoLayoutNode,
 };
@@ -82,7 +83,7 @@ use url::Url;
 use webrender_api::ExternalScrollId;
 use webrender_api::units::{DevicePixel, LayoutVector2D};
 
-use crate::accessibility_tree::{AccessibilityContext, AccessibilityDamageMap, AccessibilityTree};
+use crate::accessibility::{AccessibilityContext, AccessibilityDamageMap, AccessibilityTree};
 use crate::context::{CachedImageOrError, ImageResolver, LayoutContext};
 use crate::display_list::{DisplayListBuilder, HitTest, PaintTimingHandler, StackingContextTree};
 use crate::dom::NodeExt;
@@ -938,14 +939,14 @@ impl LayoutThread {
     fn handle_accessibility_tree_update(
         &self,
         root_element: &ServoLayoutNode,
-        reflow_request: &mut ReflowRequest,
+        accessibility_damage: Option<AccessibilityDamageMap>,
+        rooted_nodes: Option<FxHashSet<OpaqueNode>>,
         reflow_statistics: &mut ReflowStatistics,
     ) -> bool {
-        let Some(accessibility_damage) = std::mem::take(&mut reflow_request.accessibility_damage)
-        else {
+        let Some(damage) = accessibility_damage else {
             return false;
         };
-        if !self.force_accessibility_update() && accessibility_damage.is_empty() {
+        if !self.force_accessibility_update() && damage.is_empty() {
             return false;
         }
 
@@ -964,17 +965,6 @@ impl LayoutThread {
             return false;
         };
         debug_assert!(!self.need_new_stacking_context_tree.get());
-
-        let rooted_nodes =
-            std::mem::take(&mut reflow_request.rooted_nodes_for_accessibility_integrity_check);
-
-        let damage: AccessibilityDamageMap = accessibility_damage
-            .into_iter()
-            .map(|(address, damage)| {
-                let node = unsafe { ServoLayoutNode::new(&address) };
-                (node.opaque(), (node, damage))
-            })
-            .collect();
 
         let accessibility_context = AccessibilityContext {
             layout_thread: self,
@@ -1051,8 +1041,17 @@ impl LayoutThread {
         });
         let mut reflow_statistics = Default::default();
 
+        let mut accessibility_damage =
+            to_accessibility_damage_map(std::mem::take(&mut reflow_request.accessibility_damage));
+
         let (mut reflow_phases_run, iframe_sizes, changed_web_fonts) = self
-            .restyle_and_build_trees(&mut reflow_request, document, root_element, &image_resolver);
+            .restyle_and_build_trees(
+                &mut reflow_request,
+                document,
+                root_element,
+                &image_resolver,
+                accessibility_damage.as_mut(),
+            );
         if self.build_stacking_context_tree_for_reflow(&reflow_request) {
             reflow_phases_run.insert(ReflowPhasesRun::BuiltStackingContextTree);
         }
@@ -1064,7 +1063,8 @@ impl LayoutThread {
         }
         if self.handle_accessibility_tree_update(
             &root_element.as_node(),
-            &mut reflow_request,
+            accessibility_damage,
+            reflow_request.rooted_nodes_for_accessibility_integrity_check,
             &mut reflow_statistics,
         ) {
             reflow_phases_run.insert(ReflowPhasesRun::UpdatedAccessibilityTree);
@@ -1172,12 +1172,13 @@ impl LayoutThread {
     }
 
     #[servo_tracing::instrument(skip_all)]
-    fn restyle_and_build_trees(
+    fn restyle_and_build_trees<'dom>(
         &mut self,
         reflow_request: &mut ReflowRequest,
         document: ServoDangerousStyleDocument<'_>,
-        root_element: ServoLayoutElement<'_>,
+        root_element: ServoLayoutElement<'dom>,
         image_resolver: &Arc<ImageResolver>,
+        mut accessibility_damage: Option<&mut AccessibilityDamageMap<'dom>>,
     ) -> (ReflowPhasesRun, IFrameSizes, WebFontSetDifference) {
         let mut snapshot_map = SnapshotMap::new();
         let _snapshot_setter = match reflow_request.restyle.as_mut() {
@@ -1337,6 +1338,20 @@ impl LayoutThread {
             }
 
             debug_assert!(!layout_roots.is_empty());
+
+            let mut insert_accessibility_damage_if_necessary = |node: ServoLayoutNode<'dom>| {
+                if let Some(map) = accessibility_damage.as_mut() {
+                    map.entry(node.opaque())
+                        .or_insert((node, AccessibilityDamage::empty()))
+                        .1
+                        .insert(AccessibilityDamage::Layout);
+                }
+            };
+
+            for layout_root in &layout_roots {
+                insert_accessibility_damage_if_necessary(layout_root.node());
+            }
+
             if layout_roots
                 .iter()
                 .all(|layout_root| layout_root.try_layout(&layout_context))
@@ -1671,6 +1686,19 @@ impl LayoutThread {
         );
         self.need_containing_block_calculation.set(false)
     }
+}
+
+fn to_accessibility_damage_map<'dom>(
+    damage_from_dom: Option<Vec<(TrustedNodeAddress, AccessibilityDamage)>>,
+) -> Option<AccessibilityDamageMap<'dom>> {
+    damage_from_dom.map(|vec| {
+        vec.into_iter()
+            .map(|(address, damage)| {
+                let node = unsafe { ServoLayoutNode::new(&address) };
+                (node.opaque(), (node, damage))
+            })
+            .collect()
+    })
 }
 
 fn get_ua_stylesheets(shared_lock: &SharedRwLock) -> Rc<UserAgentStylesheets> {

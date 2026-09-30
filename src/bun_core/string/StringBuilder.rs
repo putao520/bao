@@ -281,7 +281,9 @@ impl StringBuilder {
 
     pub fn allocated_slice(&mut self) -> &mut [u8] {
         let Some(ptr) = self.ptr else { return &mut [] };
-        debug_assert!(self.cap > 0);
+        // upstream 9f70da0741 (#44169): a zero-capacity buffer is a legal
+        // allocation (allocate() after counting zero bytes) — the views must
+        // be empty, not panic.
         // SAFETY: ptr was allocated with self.cap bytes.
         unsafe { slice::from_raw_parts_mut(ptr.as_ptr(), self.cap) }
     }
@@ -301,7 +303,7 @@ impl StringBuilder {
 
     pub fn writable(&mut self) -> &mut [u8] {
         let Some(ptr) = self.ptr else { return &mut [] };
-        debug_assert!(self.cap > 0);
+        debug_assert!(self.len <= self.cap);
         // SAFETY: ptr was allocated with self.cap bytes; len <= cap.
         unsafe { slice::from_raw_parts_mut(ptr.as_ptr().add(self.len), self.cap - self.len) }
     }
@@ -347,3 +349,26 @@ impl Drop for StringBuilder {
 }
 
 // ported from: src/string/StringBuilder.zig
+
+// upstream 9f70da0741 regression: zero-capacity views must be empty, not panic.
+#[cfg(test)]
+mod w43_tests {
+    use super::*;
+
+    fn assert_views_are_empty(builder: &mut StringBuilder) {
+        assert!(builder.ptr.is_some());
+        assert!(builder.writable().is_empty());
+        assert!(builder.allocated_slice().is_empty());
+        assert!(builder.append(b"").is_empty());
+        assert!(builder.written_slice().is_empty());
+        assert!(builder.move_to_slice().is_empty());
+    }
+
+    #[test]
+    fn views_are_empty_after_allocate_with_nothing_counted() {
+        let mut builder = StringBuilder::default();
+        builder.count(b"");
+        builder.allocate().unwrap();
+        assert_views_are_empty(&mut builder);
+    }
+}

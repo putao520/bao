@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "benchmark": "bundler-mini",
+  "date_utc": "2026-09-30T05:07:52Z",
+  "environment": {
+    "host": "pt-worker",
+    "kernel": "Linux version 7.0.0-28-generic (buildd@lcy02-amd64-004) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #28~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Wed Jul  1 15:50:57 UTC 2",
+    "cpu_model": "Intel(R) Core(TM) i9-10900KF CPU @ 3.70GHz",
+    "cpu_cores": 20,
+    "mem_total_kib": 131813264,
+    "loadavg": [
+      4.09,
+      4.41,
+      6.22
+    ],
+    "git_commit": "unknown",
+    "git_dirty": false,
+    "rustc": "unknown",
+    "cargo_profile": "unknown",
+    "display": null,
+    "date_utc": "2026-09-30T05:07:52Z"
+  },
+  "parameters": {
+    "iterations": 20,
+    "warmup": 3,
+    "output_bytes": 112
+  },
+  "metrics": [
+    {
+      "name": "bundler_mini_build",
+      "unit": "ms",
+      "kind": "latency",
+      "higher_is_better": false,
+      "phase": "warm",
+      "n": 20,
+      "min": 0.065189,
+      "p50": 0.066445,
+      "p90": 0.075041,
+      "p95": 0.075816,
+      "p99": 0.10380700000000001,
+      "max": 0.10380700000000001,
+      "mean": 0.06968455000000001,
+      "cv": 0.12149873313957825,
+      "unstable": false,
+      "samples": [
+        0.066747,
+        0.075816,
+        0.066427,
+        0.06793400000000001,
+        0.065718,
+        0.075041,
+        0.066678,
+        0.066791,
+        0.069082,
+        0.065189,
+        0.06606000000000001,
+        0.066445,
+        0.06521099999999999,
+        0.068791,
+        0.065508,
+        0.066111,
+        0.074535,
+        0.0662,
+        0.06559999999999999,
+        0.10380700000000001
+      ]
+    },
+    {
+      "name": "bundler_mini_throughput",
+      "unit": "ops_per_s",
+      "kind": "throughput",
+      "higher_is_better": true,
+      "n": 1,
+      "min": 11150.155238036303,
+      "p50": 11150.155238036303,
+      "p90": 11150.155238036303,
+      "p95": 11150.155238036303,
+      "p99": 11150.155238036303,
+      "max": 11150.155238036303,
+      "mean": 11150.155238036303,
+      "cv": 0.0,
+      "unstable": false,
+      "samples": [
+        11150.155238036303
+      ]
+    }
+  ],
+  "notes": [
+    "bao_bundler::build over a deterministic 2-module TS entry (import + typed export) — Rust-face transpiler+bundler pipeline, no I/O beyond the temp entry"
+  ]
+}

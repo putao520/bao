@@ -27,6 +27,7 @@ indexmap = {version = "2.14.0", features = ["std"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
 markup5ever = {version = "0.39"}
+memmap2 = "0.9.10"
 mime = {version = "0.3.13"}
 once_cell = {version = "1.21.4"}
 parking_lot = {version = "0.12", features = ["serde"]}

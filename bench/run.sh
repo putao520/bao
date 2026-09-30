@@ -53,6 +53,13 @@ declare -A BENCH_RUNS=(
   [soak]="${RUNS_SOAK:-1}"
   # #26 SM-EVOLUTION judgment bench (not in ORDERED_BENCHES — on demand).
   [stencil-cost]="${RUNS:-3}"
+  # W44 (#19-C) Node/Bun API baseline family (R=3 process-level reruns).
+  [fs-bench]="${RUNS:-3}"
+  [crypto-bench]="${RUNS:-3}"
+  [http-bench]="${RUNS:-3}"
+  [sqlite-bench]="${RUNS:-3}"
+  [spawn-bench]="${RUNS:-3}"
+  [bundler-bench]="${RUNS:-3}"
   # W21b concurrent live-page stress (NOT in ORDERED_BENCHES — on demand;
   # gates via STRESS_CONCURRENCY/STRESS_DURATION_SECS, e.g. N=10 smoke then
   # N=100 Gate B then N=500 capacity probe).

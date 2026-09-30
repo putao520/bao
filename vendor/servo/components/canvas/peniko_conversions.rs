@@ -10,10 +10,14 @@ use style::color::AbsoluteColor;
 use crate::backend::Convert;
 use crate::canvas_data::Filter;
 
-impl Convert<peniko::FontData> for fonts::FontDataAndIndex {
+use fonts::FontDataAndIndex;
+
+impl Convert<peniko::FontData> for FontDataAndIndex {
     fn convert(self) -> peniko::FontData {
-        use std::sync::Arc;
-        peniko::FontData::new(peniko::Blob::new(Arc::new(self.data)), self.index)
+        peniko::FontData::new(
+            peniko::Blob::new(std::sync::Arc::new(self.data)),
+            self.index,
+        )
     }
 }
 

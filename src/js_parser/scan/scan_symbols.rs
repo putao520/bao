@@ -150,7 +150,17 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         // property on the target object of the "with" statement. We must not rename
         // it or we risk changing the behavior of the code.
         if is_inside_with_scope {
-            self.symbols[ref_.inner_index() as usize].must_not_be_renamed = true;
+            // Upstream 50c68aeafe (#41174): the renamer follows links
+            // before it reads the flag, so pin the whole chain.
+            let mut r = ref_;
+            loop {
+                let symbol = &mut self.symbols[r.inner_index() as usize];
+                symbol.must_not_be_renamed = true;
+                if !symbol.has_link() {
+                    break;
+                }
+                r = symbol.link.get();
+            }
         }
 
         // Track how many times we've referenced this symbol

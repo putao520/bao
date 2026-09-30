@@ -45,7 +45,9 @@ use style::values::computed::{
     FontVariantLigatures, FontVariantNumeric, FontWeight,
 };
 use unicode_script::Script;
-use webrender_api::{FontInstanceFlags, FontInstanceKey, FontVariation};
+use webrender_api::{
+    FontInstanceFlags, FontInstanceKey, FontInstancePlatformOptions, FontVariation,
+};
 
 use crate::font_feature_values::ResolvedFontVariantAlternates;
 use crate::platform::font::{FontTable, PlatformFont};
@@ -172,6 +174,11 @@ pub trait PlatformFontMethods: Sized {
 
     /// Get the necessary [`FontInstanceFlags`]` for this font.
     fn webrender_font_instance_flags(&self) -> FontInstanceFlags;
+
+    /// Get the necessary [`FontInstancePlatformOptions`] for this font.
+    fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        Default::default()
+    }
 
     /// Return all the variation values that the font was instantiated with.
     fn variations(&self) -> &[FontVariation];
@@ -396,6 +403,10 @@ impl Font {
     /// A unique identifier for the font, allowing comparison.
     pub fn identifier(&self) -> AtomicRef<'_, FontIdentifier> {
         self.template.identifier()
+    }
+
+    pub(crate) fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        self.handle.webrender_font_instance_platform_options()
     }
 
     pub(crate) fn webrender_font_instance_flags(&self) -> FontInstanceFlags {

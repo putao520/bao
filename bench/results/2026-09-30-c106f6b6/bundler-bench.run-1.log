@@ -1,0 +1,139 @@
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+error: Unexpected token `{`. Expected identifier or string
+ --> /tmp/bao-bench-bundler/entry.ts:1:9
+  |
+1 | import {{ helper }} from './util';
+  |         ^
+
+[bench-harness] result written to bench/results/2026-09-30-c106f6b6/bundler-bench.run-1.json

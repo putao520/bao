@@ -1349,6 +1349,7 @@ dependencies = [
  "indexmap",
  "keyboard-types",
  "markup5ever",
+ "memmap2",
  "mime",
  "once_cell",
  "parking_lot",
@@ -2485,6 +2486,7 @@ version = "0.1.0"
 dependencies = [
  "bao-browser",
  "bao-mozjs",
+ "bao_bundler",
  "bao_cdp",
  "bao_engine",
  "bao_stealth",

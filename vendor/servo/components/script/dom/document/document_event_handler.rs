@@ -23,7 +23,7 @@ use embedder_traits::{
 use euclid::{Point2D, Vector2D};
 use js::context::{JSContext, NoGC};
 use keyboard_types::{Code, Key, KeyState, Modifiers, NamedKey};
-use layout_api::{HitTestFlags, ScrollContainerQueryFlags, node_id_from_scroll_id};
+use layout_api::{HitTestFlags, QueryMsg, ScrollContainerQueryFlags, node_id_from_scroll_id};
 use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
@@ -1985,6 +1985,18 @@ impl DocumentEventHandler {
         element: Option<DomRoot<Element>>,
         action: ClipboardAction,
     ) -> InputEventResult {
+        // A previous event listener, such as keydown or beforeinput, might have
+        // hidden the event target. Re-check layout and skip the action entirely
+        // when the target is no longer being rendered (upstream #48165 semantic;
+        // bao's equivalent landing face for EditingContext::perform_editing_action).
+        if let Some(element) = element.as_ref() {
+            let node = element.upcast::<Node>();
+            self.window.layout_reflow(QueryMsg::StyleQuery);
+            if !node.is_being_rendered_or_delegates_rendering(None) {
+                return InputEventResult::empty();
+            }
+        }
+
         let clipboard_event_type = match action {
             ClipboardAction::Copy => ClipboardEventType::Copy,
             ClipboardAction::Cut => ClipboardEventType::Cut,

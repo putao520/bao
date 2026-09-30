@@ -86,6 +86,8 @@ impl<
         + IteratorDerives,
 > IDLInterface for IterableIterator<D, T>
 {
+    const PROTO_ID: crate::codegen::PrototypeList::ID = crate::codegen::PrototypeList::ID::Last;
+
     fn derives(class: &'static DOMClass) -> bool {
         <T as IteratorDerives>::derives(class)
     }

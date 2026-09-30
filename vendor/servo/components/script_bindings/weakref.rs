@@ -16,6 +16,7 @@ use std::rc::{Rc, Weak};
 use std::{mem, ptr};
 
 use js::jsapi::JSTracer;
+use crate::conversions::IDLInterface;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 
 use crate::JSTraceable;
@@ -28,9 +29,19 @@ use crate::root::DomRoot;
 pub struct WeakRef<T: WeakReferenceable>(Weak<T>);
 
 /// Trait implemented by weak-referenceable interfaces.
-pub trait WeakReferenceable: DomObject + Sized {
+pub trait WeakReferenceable: IDLInterface + DomObject + Sized {
+    ///
+    /// Panics if the object is not of the interface or one of its descendants
+    /// (base-typed downgrade of a leaf instance is legitimate — e.g. the media
+    /// base class holds `HTMLAudioElement`/`HTMLVideoElement` instances).
     /// Downgrade a DOM object reference to a weak one.
     fn downgrade(&self) -> WeakRef<Self> {
+        let proto_id = self.reflector().proto_id();
+        assert!(
+            proto_id >= Self::PROTO_FIRST && proto_id <= Self::PROTO_LAST,
+            "cannot downgrade an object of proto id {proto_id} as {:?}",
+            Self::PROTO_ID,
+        );
         let rc = unsafe { Rc::from_raw(self as *const Self) };
         let weak = WeakRef(Rc::downgrade(&rc));
         mem::forget(rc);

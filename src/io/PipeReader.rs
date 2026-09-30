@@ -213,6 +213,12 @@ bitflags::bitflags! {
         const MEMFD                    = 1 << 7;
         const USE_PREAD                = 1 << 8;
         const IS_PAUSED                = 1 << 9;
+        /// Upstream dc3660dea6 (#43900): a read failed with a non-retry
+        /// errno. Set before the bytes read ahead of the failure are
+        /// delivered, so a pull from inside that delivery cannot read the fd
+        /// past the error. Never cleared: `start()`, `unpause()` and
+        /// `from()` keep it, and only a reader from `init()` reads again.
+        const READ_FAILED              = 1 << 11;
     }
 }
 
@@ -539,8 +545,13 @@ impl PosixBufferedReader {
     }
 
     pub fn read(&mut self) {
-        // Don't initiate new reads if paused
-        if self.flags.contains(PosixFlags::IS_PAUSED) {
+        // Don't initiate new reads if paused, or after a failed read
+        // (upstream dc3660dea6: reading past a fatal error loses the error
+        // or delivers it late — libuv clears UV_HANDLE_READABLE first too).
+        if self
+            .flags
+            .intersects(PosixFlags::IS_PAUSED | PosixFlags::READ_FAILED)
+        {
             return;
         }
 
@@ -736,6 +747,9 @@ impl PosixBufferedReader {
                     }
                     sys::Result::Err(err) => {
                         if !err.is_retry() {
+                            // upstream dc3660dea6: latch the failure so no
+                            // later read of this fd runs past the error.
+                            parent.flags.insert(PosixFlags::READ_FAILED);
                             parent.on_error(err);
                             return;
                         }
@@ -801,6 +815,9 @@ impl PosixBufferedReader {
                         }
                         sys::Result::Err(err) => {
                             if !err.is_retry() {
+                                // upstream dc3660dea6: latch the failure so no
+                                // later read of this fd runs past the error.
+                                parent.flags.insert(PosixFlags::READ_FAILED);
                                 parent.on_error(err);
                                 return;
                             }

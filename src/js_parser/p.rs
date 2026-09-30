@@ -3694,6 +3694,17 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             if self.options.features.commonjs_at_runtime {
                 self.has_with_scope = true;
             }
+            // Upstream 50c68aeafe (#41174): mark this scope and every
+            // enclosing one, like contains_direct_eval, for
+            // compute_reserved_names_for_scope.
+            let mut scope_iter = Some(scope);
+            while let Some(mut sc) = scope_iter {
+                if sc.contains_with {
+                    break;
+                }
+                sc.contains_with = true;
+                scope_iter = sc.parent;
+            }
         }
 
         if cfg!(debug_assertions) {

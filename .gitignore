@@ -84,3 +84,4 @@ src/bao_browser/bottles/
 /src/bao_engine/tdf.log
 /.claude/commit-gate-results/
 /.claude/last-commit-gate.json
+__pycache__/
