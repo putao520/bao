@@ -56,6 +56,14 @@ const SERVED_DOMAINS: [&str; 21] = [
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// W55 (#14-C): `Page.addScriptToEvaluateOnNewDocument` registration table.
+/// Sources are drained by the runtime's event pump on each target's
+/// frame-started-loading (new-document creation) and evaluated on the page's
+/// web face — the standard CDP "run before any page script" contract, mapped
+/// onto the bao browser's web-face injection channel.
+static PENDING_INJECTION_SCRIPTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static INJECTION_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn next_session_id() -> String {
     let n = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("bao-session-{n:016x}")
@@ -91,6 +99,29 @@ impl BaoWsRegistry {
     /// (it owns the sessionId→target table). Returns None when `method` is
     /// not a session-table command.
     fn dispatch_session_command(
+        &self,
+        method: &str,
+        params: &Option<Value>,
+        msg: &CdpMessage,
+        event_sender: &dyn EventSender,
+    ) -> Option<Result<Value, CdpError>> {
+        if method == "Page.addScriptToEvaluateOnNewDocument" {
+            let source = params
+                .as_ref()
+                .and_then(|p| p.get("source"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let id = INJECTION_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Ok(mut table) = PENDING_INJECTION_SCRIPTS.lock() {
+                table.push(source);
+            }
+            return Some(Ok(json!({ "identifier": id.to_string() })));
+        }
+        self.dispatch_session_command_inner(method, params, msg, event_sender)
+    }
+
+    fn dispatch_session_command_inner(
         &self,
         method: &str,
         params: &Option<Value>,
@@ -361,6 +392,26 @@ impl BaoWsRegistry {
         for sid in sessions {
             event_sender.send_session_event(&sid, method, params.clone());
         }
+    }
+}
+
+impl BaoWsRegistry {
+    /// W55: drain the pending new-document injection sources (the runtime
+    /// event pump calls this on frame-started-loading and evaluates each
+    /// source on the target page's web face).
+    pub fn drain_injection_sources() -> Vec<String> {
+        PENDING_INJECTION_SCRIPTS
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+
+    /// Peek without draining (pump fast-path: nothing pending → skip).
+    pub fn has_pending_injection_sources() -> bool {
+        PENDING_INJECTION_SCRIPTS
+            .lock()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
     }
 }
 
