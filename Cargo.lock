@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.3.4"
+version = "0.3.11"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-background-hang-monitor-api"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "bao-servo-base",
  "serde",
@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.21"
+version = "0.5.22"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.20"
+version = "0.5.25"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.20"
+version = "0.5.25"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout-api"
-version = "0.5.12"
+version = "0.5.15"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media"
-version = "0.5.7"
+version = "0.5.9"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media-audio",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-audio"
-version = "0.5.8"
+version = "0.5.10"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-dummy"
-version = "0.5.7"
+version = "0.5.9"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer"
-version = "0.5.7"
+version = "0.5.9"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render"
-version = "0.5.7"
+version = "0.5.9"
 dependencies = [
  "bao-servo-media-player",
  "gstreamer",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-android"
-version = "0.5.7"
+version = "0.5.9"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1485,7 +1485,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-unix"
-version = "0.5.7"
+version = "0.5.9"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-ohos"
-version = "0.5.7"
+version = "0.5.9"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1520,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-player"
-version = "0.5.8"
+version = "0.5.10"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-streams"
-version = "0.5.6"
+version = "0.5.8"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-thread"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-traits"
-version = "0.5.6"
+version = "0.5.8"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-webrtc"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "bao-servo-media-streams",
  "log",
@@ -1576,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-metrics"
-version = "0.5.11"
+version = "0.5.13"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.21"
+version = "0.5.30"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.22"
+version = "0.5.25"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2017,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",

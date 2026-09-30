@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-thread"
-version = "0.5.8"
+version = "0.5.9"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -24,5 +24,5 @@ rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228"}
 servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.8"}
 servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.2"}
-servo-media = {package = "bao-servo-media", path = "../servo-media", version = "=0.5.7"}
+servo-media = {package = "bao-servo-media", path = "../servo-media", version = "=0.5.9"}
 webrender_api = {version = "0.70"}

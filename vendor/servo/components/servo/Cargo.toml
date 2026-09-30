@@ -99,7 +99,7 @@ accesskit = {version = "0.24.0", features = ["serde"]}
 bitflags = {version = "2.11"}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
-devtools = {package = "bao-servo-devtools", path = "../devtools", version = "=0.5.20"}
+devtools = {package = "bao-servo-devtools", path = "../devtools", version = "=0.5.25"}
 devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.8"}
 dpi = {version = "0.1"}
 embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.8"}
@@ -111,36 +111,36 @@ http = {version = "1.4"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
-layout = {package = "bao-servo-layout", path = "../layout", version = "=0.5.20"}
-layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.12"}
+layout = {package = "bao-servo-layout", path = "../layout", version = "=0.5.25"}
+layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.15"}
 log = {version = "0.4.32"}
-media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.8"}
+media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.9"}
 mozangle = {version = "0.6"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.21"}
+net = {package = "bao-servo-net", path = "../net", version = "=0.5.30"}
 net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.9"}
-paint = {package = "bao-servo-paint", path = "../paint", version = "=0.5.11"}
+paint = {package = "bao-servo-paint", path = "../paint", version = "=0.5.12"}
 paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.8"}
 parking_lot = {version = "0.12", features = ["serde"]}
 profile = {package = "bao-servo-profile", path = "../profile", version = "=0.5.9"}
 profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.8"}
 rustc-hash = {version = "2.1.2"}
-script = {package = "bao-servo-script", path = "../script", version = "=0.5.22"}
-script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.10"}
+script = {package = "bao-servo-script", path = "../script", version = "=0.5.25"}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.11"}
 serde = {version = "1.0.228"}
 servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = "=0.5.9"}
 servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.8"}
 servo-bluetooth = {package = "bao-servo-bluetooth", path = "../bluetooth", version = "=0.5.9", optional = true}
-servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.7", optional = true}
+servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.8", optional = true}
 servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.9"}
 # Bao vendor dep: canvas noise (REQ-STL-003) re-exported via set_canvas_noise_seed
 servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = "=0.5.11"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
-servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = "=0.5.21"}
+servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = "=0.5.22"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.10"}
 servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.6"}
-servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = "=0.5.7"}
-servo-media-dummy = {package = "bao-servo-media-dummy", path = "../media/backends/dummy", version = "=0.5.7"}
-servo-media-gstreamer = {package = "bao-servo-media-gstreamer", path = "../media/backends/gstreamer", version = "=0.5.7", optional = true}
+servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = "=0.5.9"}
+servo-media-dummy = {package = "bao-servo-media-dummy", path = "../media/backends/dummy", version = "=0.5.9"}
+servo-media-gstreamer = {package = "bao-servo-media-gstreamer", path = "../media/backends/gstreamer", version = "=0.5.9", optional = true}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
 servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
 servo-wakelock = {package = "bao-servo-wakelock", path = "../wakelock", version = "=0.5.9"}
@@ -178,7 +178,7 @@ gaol = {version = "0.2.1"}
 webxr = {package = "bao-servo-webxr", path = "../webxr", version = "=0.5.9", features = ["glwindow", "headless", "openxr-api"], optional = true}
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-servo-media-ohos = {package = "bao-servo-media-ohos", path = "../media/backends/ohos", version = "=0.5.7"}
+servo-media-ohos = {package = "bao-servo-media-ohos", path = "../media/backends/ohos", version = "=0.5.9"}
 ohos-pasteboard = {version = "0.1.0", optional = true}
 
 [dev-dependencies]
@@ -188,7 +188,7 @@ http = {version = "1.4"}
 http-body-util = {version = "0.1"}
 hyper = {version = "1.10"}
 itertools = {version = "0.15"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.21", features = ["test-util"]}
+net = {package = "bao-servo-net", path = "../net", version = "=0.5.30", features = ["test-util"]}
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
