@@ -131,6 +131,7 @@ def add_css_properties_attributes(css_properties_json: str, parser: Parser) -> N
             ["layout.unimplemented", "layout_unimplemented"],
             ["layout.threads", "layout_threads"],
             ["layout.columns.enabled", "layout_columns_enabled"],
+            ["layout.flexbox.balance", "layout_flexbox_balance"],
             ["layout.grid.enabled", "layout_grid_enabled"],
             ["layout.css.alpha-color-function.enabled", "layout_css_alpha_color_function_enabled"],
             ["layout.css.attr.enabled", "layout_css_attr_enabled"],

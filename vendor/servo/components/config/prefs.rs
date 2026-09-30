@@ -46,6 +46,7 @@ pub fn set(preferences: Preferences) {
     stylo_static_prefs::set_pref!("layout.unimplemented", preferences.layout_unimplemented);
     stylo_static_prefs::set_pref!("layout.threads", preferences.layout_threads as i32);
     stylo_static_prefs::set_pref!("layout.columns.enabled", preferences.layout_columns_enabled);
+    stylo_static_prefs::set_pref!("layout.flexbox.balance", preferences.layout_flexbox_balance);
     stylo_static_prefs::set_pref!("layout.grid.enabled", preferences.layout_grid_enabled);
     // BAO (W54): `layout.css.attr.enabled` was REMOVED from stylo 0.22's
     // static pref table — no stylo side to set anymore (the servo-side
@@ -279,6 +280,7 @@ pub struct Preferences {
     // feature: CSS Grid | #34479 | Web/CSS/Guides/Grid_layout
     pub layout_grid_enabled: bool,
     pub layout_container_queries_enabled: bool,
+    pub layout_flexbox_balance: bool,
     pub layout_css_attr_enabled: bool,
     pub layout_style_sharing_cache_enabled: bool,
     pub layout_threads: i64,
@@ -509,6 +511,7 @@ impl Preferences {
             layout_threads: 3,
             layout_unimplemented: false,
             layout_variable_fonts_enabled: false,
+            layout_flexbox_balance: false,
             layout_writing_mode_enabled: false,
             media_glvideo_enabled: false,
             media_testing_enabled: false,
