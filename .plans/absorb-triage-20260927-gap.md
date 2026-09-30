@@ -182,3 +182,11 @@ S1 死线揭示段间编译原子依赖→裁决(A)单波单验+三护栏(侧分
 - **修复**:entry 槽改 `RawValueRootGuard`(SM raw-root 表,Nursery::traceRoots 遍历原地更新,Drop 解 root;slot0=global/1=cb/2..=args;一个 guard 一条 entry);enqueue 带 cx + 失败 fail-closed(报错不静默)。同 RootedPromise/fetch promise_root 合同。
 - **门**:scheduler_ordering + 排序合同 **2/2 绿**;bao_engine **413/413** + timers **69/69**(全绿回归)+ event_loop 19/19。
 - **工作树**:job_queue.rs + bun_api.rs(调用点适配 cx+fail-closed)待统一落地——bun_api 双流(混 E1 env-proxy 段)提示不变。
+
+
+## W53 stylo calc-typed-arithmetic 停报(2026-10-01,E3,stop 条款触发)
+
+- **合同预设证伪**:PR #468 真身=servo/stylo `preferences.toml` **单行翻转**(calc-typed-arithmetic false→true,merged 2026-09-28,changed_files=1);但 **bao-stylo 0.20.2 源无 calc-typed 实现面**(62 个 pref! 引用零 calc 命中;static_prefs 0.20.0/0.21.0 表也无此行)——**仅翻 pref 无处生效**。实现面在 crates.io stylo 0.21/0.22 源(calc.rs 单文件 diff 1380 行;**全 crate 212 文件 differ**)。
+- **servo 消费面断裂(撞禁令)**:0.22 pref 表删除/改动 20 个 bao-stylo 引用的 pref;其中 ≥4 个被 **servo 组件直接引用**(attr=5 文件/contrast-color=3/relative-color-syntax=3/inverted-colors=1,≥12 文件)——升 0.22 必须联动 servo pref 消费面,**直接撞本合同"禁 servo 文件重放"红线**。
+- **已证实可行锚点**(给后续立项):crates.io stylo_static_prefs **0.22.0(2026-09-30)已含 PR #468**(calc-typed=true;0.21.0 无);stylo crate 0.22.0 同日发布含实现。升级锚=0.22.0 全家(bao-stylo 源 212 文件+static_prefs+servo pref 消费联动)。
+- **stop 裁定请求**:目标(#48338 calc 单位代数可用)最小实现路径=**stylo 源大波(212 文件级联波,协调波规格)**+servo pref 消费面联动(需解除"禁 servo 重放"授权)——超出本合同"W53 fork 面,禁 servo"边界,按 stop 条款停报。建议:①单独立项 stylo 0.22 升级协调波(附本证据);②或暂缓至上游稳定期。三路径待裁定,已停,未动 vendor。
