@@ -60,3 +60,10 @@
 ## 流程事故记录 2026-09-30(共享树纪律,同日双犯既有规则)
 1. **w24 误 checkout -- vendor/servo**(把主会话的 pin 扫尾残留当自己半状态清了;零损失实证但操作违规)——规则「回退限定自域路径,整体 checkout 禁用」(2026-09-28 立)再犯。强化:非我 M 禁 checkout,只能问归属。
 2. **主会话三次 pathspec 盲区**(-A 宽收卷入在途/`**` glob 不达深层/lock 非 toml 扩展名漏)——规则「多执行体在途期宽域 add 禁用」的自我违反。强化:add 后必 `git status --short` 复核 staged 面;深层树用 find -name 显式清单,禁 glob 猜。
+
+## BCE-20260930-WAVE-CLOSE(波末 6 错类·第一性归因)
+**根因三类(机械证据)**:
+1. **共享树竞态**(W43 产品面丢失/两次 battery 撞在途编辑):验证链与 E 编辑并发=中间态捕获。已制度化:验证只在树静点。
+2. **commit pathspec 盲区**(×4:Cargo.lock×2/packages 双树/examples/.github):根因=「多执行体期禁宽域 add」纪律在**单会话收尾期被错误延续**——树全属己时 scoped add 反而是 bug。**机制修正:波末树静点一律 `git add -A`+staged 面复核;scoped pathspec 仅限并发期**。
+3. **吸收波集成涟漪**(SW 类型/webgl 死臂/weakref assert):波门全数捕获(battery v10 11238/11238 全绿=网有效);6 错类=**门的命中数,非逃逸数**。
+**残留=0 判据**:battery v10 全绿(已达)+发布闭包 residual=0(W46 后验)。
