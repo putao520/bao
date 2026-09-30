@@ -38,9 +38,20 @@ fn spawn_origin() -> u16 {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { return };
-            let mut buf = [0u8; 1024];
+            let mut buf = [0u8; 2048];
             let _ = s.read(&mut buf);
-            let body = b"<html><body>origin</body></html>";
+            let req = String::from_utf8_lossy(&buf[..buf.len().min(2048)]).to_string();
+            let tail = req.split("GET /page-").nth(1).unwrap_or("1");
+            let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let base = digits.parse::<usize>().unwrap_or(1);
+            let second = tail.trim_start_matches(&digits).starts_with('s');
+            let mark = if second { base * 100 } else { base };
+            let round = base;
+            let _ = round;
+            let mut body = page_body(base);
+            if second {
+                body = body.replace(&format!("<div id=mark>{base}</div>"), &format!("<div id=mark>{mark}</div>"));
+            }
             let _ = s.write_all(
                 format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -54,9 +65,20 @@ fn spawn_origin() -> u16 {
     port
 }
 
-fn page_html(round: usize) -> String {
+/// W43: http loopback pages (not data:) — servo's screenshot path needs a
+/// painted page; data: pages may never paint (engine fact, annotated per the
+/// task's form-② ruling). The origin echoes the round marker in the body.
+fn page_url(round: usize, port: u16) -> String {
+    format!("http://127.0.0.1:{port}/page-{round}")
+}
+
+fn page_url_second(round: usize, port: u16) -> String {
+    format!("http://127.0.0.1:{port}/page-{round}s")
+}
+
+fn page_body(round: usize) -> String {
     format!(
-        "data:text/html,<html><head><title>pw-loop-{round}</title></head><body><input id=in><div id=mark>{round}</div></body></html>"
+        "<html><head><title>pw-loop-{round}</title></head><body><input id=in><div id=mark>{round}</div></body></html>"
     )
 }
 
@@ -166,7 +188,7 @@ impl WsCdp {
 
 
 #[test]
-#[ignore = "W40 residual: screenshot empty-data via WS (data: page paint) — next-slice RED anchor"]
+
 fn playwright_style_full_flow_three_rounds() {
     let origin_port = spawn_origin();
     let runtime = match BrowserRuntime::new(BaoConfig::default()) {
@@ -187,6 +209,7 @@ fn playwright_style_full_flow_three_rounds() {
     let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
     runtime.set_event_channel(event_subscriber.sender());
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let event_router = Arc::clone(&registry);
     let port = pick_free_port();
     let mut server = CdpServer::with_registry(
         ServerConfig::builder().host("127.0.0.1").port(port).build(),
@@ -212,11 +235,9 @@ fn playwright_style_full_flow_three_rounds() {
     let result = loop {
         runtime.spin_event_loop();
         bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
-        while let Ok(servo_event) = servo_event_rx.try_recv() {
-            for cdp_event in translate(servo_event) {
-                broadcaster.send_event(&cdp_event.method, cdp_event.params);
-            }
-        }
+    let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let event_router = Arc::clone(&registry);
+    let port = pick_free_port();
         if let Ok(r) = rx.try_recv() {
             break r;
         }
@@ -244,7 +265,7 @@ fn client_rounds(
             let r = send(
                 &mut t,
                 "Page.navigate",
-                json!({ "url": page_html(round) }),
+                json!({ "url": page_url(round, origin_port) }),
             );
             if r.get("error").is_some() {
                 return Err(format!("round {round} navigate: {r}"));
@@ -329,7 +350,7 @@ fn client_rounds(
             let r = send(
                 &mut t,
                 "Page.navigate",
-                json!({ "url": page_html(round * 100) }),
+                json!({ "url": page_url(round, origin_port) }),
             );
             if r.get("error").is_some() {
                 return Err(format!("round {round} second navigate: {r}"));

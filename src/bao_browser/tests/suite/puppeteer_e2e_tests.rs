@@ -152,7 +152,7 @@ function ok(name, cond, extra) {
 "#;
 
 #[test]
-#[ignore = "W40 residual: flat-session browser-endpoint routing — next-slice RED anchor"]
+
 fn puppeteer_real_lifecycle_e2e() {
     let Some((node, dir)) = prepare_node_workspace() else {
         return; // honest skip with printed reason (no fake green)
@@ -179,6 +179,7 @@ fn puppeteer_real_lifecycle_e2e() {
     runtime.set_event_channel(event_subscriber.sender());
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let event_router = Arc::clone(&registry);
     let port = pick_free_port();
     let server_config = ServerConfig::builder()
         .host("127.0.0.1")
@@ -231,7 +232,16 @@ fn puppeteer_real_lifecycle_e2e() {
         bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
         while let Ok(servo_event) = servo_event_rx.try_recv() {
             for cdp_event in translate(servo_event) {
-                broadcaster.send_event(&cdp_event.method, cdp_event.params);
+                match cdp_event.session_id.clone() {
+                    Some(target) if !target.is_empty() => event_router
+                        .broadcast_for_target(
+                            broadcaster.as_ref(),
+                            &target,
+                            &cdp_event.method,
+                            cdp_event.params,
+                        ),
+                    _ => broadcaster.send_event(&cdp_event.method, cdp_event.params),
+                }
             }
         }
         if let Ok(out) = rx.try_recv() {
