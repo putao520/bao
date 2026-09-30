@@ -62,4 +62,4 @@ uuid = {version = "1.23.3", features = ["v4", "v5"]}
 webrender_api = {version = "0.70"}
 
 [dev-dependencies]
-servo-default-resources = {package = "bao-servo-default-resources", path = "../../default-resources", version = "=0.5.8"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../../default-resources", version = "=0.5.9"}

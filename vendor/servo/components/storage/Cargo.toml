@@ -36,7 +36,7 @@ uuid = {version = "1.23.3", features = ["v4", "v5"]}
 
 [dev-dependencies]
 profile = {package = "bao-servo-profile", path = "../profile", version = "=0.5.9"}
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.8"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.9"}
 url = {version = "2.5"}
 
 [[test]]

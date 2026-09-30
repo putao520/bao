@@ -90,7 +90,7 @@ rusqlite = {version = "0.38", features = ["bundled"]}
 serde = {version = "1.0.228"}
 servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.8"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.8", optional = true}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.9", optional = true}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
 servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
 servo_arc = {version = "=0.4.3"}
@@ -125,7 +125,7 @@ hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "htt
 # crates.io version of ourselves - we want to enable a feature of ourselves.
 net = { package = "bao-servo-net", path = ".", features = ["test-util"] }
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws-lc-rs"]}
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.8"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.9"}
 
 [[test]]
 name = "main"

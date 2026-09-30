@@ -55,7 +55,7 @@ selectors = {version = "=0.40.0"}
 serde = {version = "1.0.228"}
 servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.8"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.5"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.6"}
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
 servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
 servo_arc = {version = "=0.4.3"}

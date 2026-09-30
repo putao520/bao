@@ -30,7 +30,7 @@ serde = {version = "1.0.228"}
 serde_json = {version = "1.0"}
 servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.8"}
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.5"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.6"}
 servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
 stylo_traits = {version = "=0.20.0"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}

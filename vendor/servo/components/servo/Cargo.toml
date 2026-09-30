@@ -137,7 +137,7 @@ servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = "=0.
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = "=0.5.21"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.10"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.5"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.6"}
 servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = "=0.5.7"}
 servo-media-dummy = {package = "bao-servo-media-dummy", path = "../media/backends/dummy", version = "=0.5.7"}
 servo-media-gstreamer = {package = "bao-servo-media-gstreamer", path = "../media/backends/gstreamer", version = "=0.5.7", optional = true}
@@ -162,7 +162,7 @@ webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version 
 # In the future we might want to use this approach also for the other platforms.
 # If the feature is turned off, a resource reader must be injected into the build via `inventory::submit!()`.
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.8", optional = true}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.9", optional = true}
 
 [target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
 webxr = {package = "bao-servo-webxr", path = "../webxr", version = "=0.5.9", optional = true}
