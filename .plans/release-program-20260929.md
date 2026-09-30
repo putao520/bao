@@ -67,3 +67,4 @@
 2. **commit pathspec 盲区**(×4:Cargo.lock×2/packages 双树/examples/.github):根因=「多执行体期禁宽域 add」纪律在**单会话收尾期被错误延续**——树全属己时 scoped add 反而是 bug。**机制修正:波末树静点一律 `git add -A`+staged 面复核;scoped pathspec 仅限并发期**。
 3. **吸收波集成涟漪**(SW 类型/webgl 死臂/weakref assert):波门全数捕获(battery v10 11238/11238 全绿=网有效);6 错类=**门的命中数,非逃逸数**。
 **残留=0 判据**:battery v10 全绿(已达)+发布闭包 residual=0(W46 后验)。
+- **增补(发布链第 7-8 错类)**:四轮 straggler 的统一根因定谳=**同号漂移对账盲区**——W39/W42/W47 各轮对账均核「本地 pin↔本地 manifest」,漏「本地↔registry 已发布 manifest」;same-version 内容漂移(default-resources 0.5.8 embedder pin 差异=典型)不触发 bump→发布期解析冲突连环。横扫=W48(registry-manifest diff 全集扫描,漂移者 z+1,迭代至复扫零)。残留=0 判据=registry-diff 零+publish converge ALL-DONE。
