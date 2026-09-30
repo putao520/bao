@@ -25,10 +25,10 @@ parking_lot = {version = "0.12", features = ["serde"]}
 profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.8"}
 read-fonts = {version = "0.41.0"}
 serde = {version = "1.0.228"}
-servo_arc = {version = "=0.4.3"}
+servo_arc = {version = "=0.5.0", features = ["servo"]}
 servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.8"}
 servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.7"}
-style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.20.2"}
+style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.22.0"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}
 webrender_api = {version = "0.70"}
 

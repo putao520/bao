@@ -25,7 +25,7 @@ use log::debug;
 use servo_base::text::{UnicodeBlock, UnicodeBlockMethod};
 use style::Atom;
 use style::values::computed::font::GenericFontFamily;
-use style::values::computed::{FontStretch, FontStyle, FontWeight};
+use style::values::computed::{FontWidth, FontStyle, FontWeight};
 use unicode_script::Script;
 
 use crate::font::map_platform_values_to_style_values;
@@ -138,7 +138,7 @@ where
             let Some(weight) = font_weight_from_fontconfig_pattern(*font) else {
                 continue;
             };
-            let Some(stretch) = font_stretch_from_fontconfig_pattern(*font) else {
+            let Some(stretch) = font_width_from_fontconfig_pattern(*font) else {
                 continue;
             };
             let Some(style) = font_style_from_fontconfig_pattern(*font) else {
@@ -289,7 +289,7 @@ fn font_style_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontSty
     })
 }
 
-fn font_stretch_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontStretch> {
+fn font_width_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontWidth> {
     let mut width: c_int = 0;
     unsafe {
         if FcResultMatch != FcPatternGetInteger(pattern, FC_WIDTH.as_ptr(), 0, &mut width) {
@@ -309,7 +309,7 @@ fn font_stretch_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontS
     ];
 
     let mapped_width = map_platform_values_to_style_values(&mapping, width as f64);
-    Some(FontStretch::from_percentage(mapped_width as f32))
+    Some(FontWidth::from_percentage(mapped_width as f32))
 }
 
 fn font_weight_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontWeight> {

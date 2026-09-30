@@ -28,7 +28,7 @@ dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version 
 serde = { version = "1.0" }
 encoding_rs = {version = "0.8", features = ["serde"]}
 rustc-hash = {version = "2.1.2"}
-html5ever = {version = "0.39"}
+html5ever = {version = "0.40.1"}
 indexmap = {version = "2.14.0", features = ["std"]}
 js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.24", default-features = false, features = ["intl", "libz-sys"]}
 jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = "=0.5.2"}
@@ -46,15 +46,15 @@ servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0
 servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.10"}
 servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
-servo_arc = {version = "=0.4.3"}
+servo_arc = {version = "=0.5.0", features = ["servo"]}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
-stylo_atoms = {version = "=0.20.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0"}
 tendril = {version = "0.5", features = ["encoding_rs"]}
 tracing = {version = "0.1.44", optional = true}
 webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.8", optional = true}
-xml5ever = {version = "0.39"}
+xml5ever = {version = "0.40"}
 zeroize = {version = "1.8", features = ["zeroize_derive"]}
 
 [build-dependencies]

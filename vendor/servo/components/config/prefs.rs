@@ -47,10 +47,9 @@ pub fn set(preferences: Preferences) {
     stylo_static_prefs::set_pref!("layout.threads", preferences.layout_threads as i32);
     stylo_static_prefs::set_pref!("layout.columns.enabled", preferences.layout_columns_enabled);
     stylo_static_prefs::set_pref!("layout.grid.enabled", preferences.layout_grid_enabled);
-    stylo_static_prefs::set_pref!(
-        "layout.css.attr.enabled",
-        preferences.layout_css_attr_enabled
-    );
+    // BAO (W54): `layout.css.attr.enabled` was REMOVED from stylo 0.22's
+    // static pref table — no stylo side to set anymore (the servo-side
+    // Preferences field stays; it is now inert).
     stylo_static_prefs::set_pref!(
         "layout.writing-mode.enabled",
         preferences.layout_writing_mode_enabled

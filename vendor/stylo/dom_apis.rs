@@ -5,6 +5,7 @@
 //! Generic implementations of some DOM APIs so they can be shared between Servo
 //! and Gecko.
 
+use crate::bloom::AtomExt as _;
 use crate::context::QuirksMode;
 use crate::dom::{TDocument, TElement, TNode, TShadowRoot};
 use crate::invalidation::element::invalidation_map::Dependency;
@@ -78,7 +79,7 @@ where
         current = element.parent_element();
     }
 
-    return None;
+    None
 }
 
 /// A selector query abstraction, in order to be generic over QuerySelector and
@@ -201,8 +202,8 @@ where
         for dependency in self.dependencies.iter() {
             target_vector.push(Invalidation::new(
                 dependency,
-                self.matching_context.current_host.clone(),
-                self.matching_context.scope_element.clone(),
+                self.matching_context.current_host,
+                self.matching_context.scope_element,
             ))
         }
 
@@ -219,7 +220,7 @@ where
 
     fn should_process_descendants(&mut self, _: E) -> bool {
         if Q::should_stop_after_first_match() {
-            return Q::is_empty(&self.results);
+            return Q::is_empty(self.results);
         }
 
         true
@@ -401,13 +402,13 @@ fn collect_elements_with_id<E, Q, F>(
 
 fn get_attr_name(component: &Component<SelectorImpl>) -> Option<&crate::LocalName> {
     let (name, name_lower) = match component {
-        Component::AttributeInNoNamespace { ref local_name, .. } => return Some(local_name),
+        Component::AttributeInNoNamespace { local_name, .. } => return Some(local_name),
         Component::AttributeInNoNamespaceExists {
-            ref local_name,
-            ref local_name_lower,
+            local_name,
+            local_name_lower,
             ..
         } => (local_name, local_name_lower),
-        Component::AttributeOther(ref attr) => {
+        Component::AttributeOther(attr) => {
             if attr.namespace.is_some() {
                 return None;
             }
@@ -424,11 +425,11 @@ fn get_attr_name(component: &Component<SelectorImpl>) -> Option<&crate::LocalNam
 fn get_id(component: &Component<SelectorImpl>) -> Option<&AtomIdent> {
     use selectors::attr::AttrSelectorOperator;
     Some(match component {
-        Component::ID(ref id) => id,
+        Component::ID(id) => id,
         Component::AttributeInNoNamespace {
-            ref operator,
-            ref local_name,
-            ref value,
+            operator,
+            local_name,
+            value,
             ..
         } => {
             if *local_name != local_name!("id") {
@@ -461,7 +462,7 @@ where
         Component::Class(ref class) => {
             // Bloom filter can only be used when case sensitive.
             let bloom_hash = if class_and_id_case_sensitivity == CaseSensitivity::CaseSensitive {
-                Some(E::hash_for_bloom_filter(class.0.get_hash()))
+                Some(E::hash_for_bloom_filter(class.0.get_hash32()))
             } else {
                 None
             };
@@ -474,11 +475,11 @@ where
             });
         },
         Component::LocalName(ref local_name) => {
-            let hash = E::hash_for_bloom_filter(local_name.name.0.get_hash());
+            let hash = E::hash_for_bloom_filter(local_name.name.0.get_hash32());
             let hash_lower = if local_name.name == local_name.lower_name {
                 hash
             } else {
-                E::hash_for_bloom_filter(local_name.lower_name.0.get_hash())
+                E::hash_for_bloom_filter(local_name.lower_name.0.get_hash32())
             };
             collect_all_elements::<E, Q, _>(root, results, |element| {
                 if !element.bloom_may_have_hash(hash)
@@ -502,11 +503,11 @@ where
         } => {
             // For HTML elements: C++ hashes lowercase
             // For XUL/SVG/MathML elements: C++ hashes original case
-            let hash_original = E::hash_for_bloom_filter(local_name.0.get_hash());
+            let hash_original = E::hash_for_bloom_filter(local_name.0.get_hash32());
             let hash_lower = if local_name.0 == local_name_lower.0 {
                 hash_original
             } else {
-                E::hash_for_bloom_filter(local_name_lower.0.get_hash())
+                E::hash_for_bloom_filter(local_name_lower.0.get_hash32())
             };
 
             collect_all_elements::<E, Q, _>(root, results, |element| {
@@ -546,7 +547,7 @@ where
             let namespace_constraint = NamespaceConstraint::Specific(&empty_namespace);
 
             // Only use bloom filter to check for attribute name existence.
-            let bloom_hash = E::hash_for_bloom_filter(local_name.0.get_hash());
+            let bloom_hash = E::hash_for_bloom_filter(local_name.0.get_hash32());
 
             collect_all_elements::<E, Q, _>(root, results, |element| {
                 if !element.bloom_may_have_hash(bloom_hash) {
@@ -619,17 +620,16 @@ where
     let selector = &selector_list.slice()[0];
     let class_and_id_case_sensitivity = matching_context.classes_and_ids_case_sensitivity();
     // Let's just care about the easy cases for now.
-    if selector.len() == 1 {
-        if query_selector_single_query::<E, Q>(
+    if selector.len() == 1
+        && query_selector_single_query::<E, Q>(
             root,
             selector.iter().next().unwrap(),
             results,
             class_and_id_case_sensitivity,
         )
         .is_ok()
-        {
-            return Ok(());
-        }
+    {
+        return Ok(());
     }
 
     let mut iter = selector.iter();
@@ -641,7 +641,7 @@ where
     let mut simple_filter = None;
 
     'selector_loop: loop {
-        debug_assert!(combinator.map_or(true, |c| !c.is_sibling()));
+        debug_assert!(combinator.is_none_or(|c| !c.is_sibling()));
 
         'component_loop: for component in &mut iter {
             match *component {
@@ -721,7 +721,7 @@ where
                                 matching_context,
                             );
 
-                            if Q::should_stop_after_first_match() && !Q::is_empty(&results) {
+                            if Q::should_stop_after_first_match() && !Q::is_empty(results) {
                                 break;
                             }
                         }
@@ -765,10 +765,10 @@ where
     };
 
     match simple_filter {
-        SimpleFilter::Class(ref class) => {
+        SimpleFilter::Class(class) => {
             // Bloom filter can only be used when case sensitive.
             let bloom_hash = if class_and_id_case_sensitivity == CaseSensitivity::CaseSensitive {
-                Some(E::hash_for_bloom_filter(class.0.get_hash()))
+                Some(E::hash_for_bloom_filter(class.0.get_hash32()))
             } else {
                 None
             };
@@ -786,12 +786,12 @@ where
                 )
             });
         },
-        SimpleFilter::LocalName(ref local_name) => {
-            let hash = E::hash_for_bloom_filter(local_name.name.0.get_hash());
+        SimpleFilter::LocalName(local_name) => {
+            let hash = E::hash_for_bloom_filter(local_name.name.0.get_hash32());
             let hash_lower = if local_name.name == local_name.lower_name {
                 hash
             } else {
-                E::hash_for_bloom_filter(local_name.lower_name.0.get_hash())
+                E::hash_for_bloom_filter(local_name.lower_name.0.get_hash32())
             };
             collect_all_elements::<E, Q, _>(root, results, |element| {
                 if !element.bloom_may_have_hash(hash)
@@ -811,8 +811,8 @@ where
                 ))
             });
         },
-        SimpleFilter::Attr(ref local_name) => {
-            let hash = E::hash_for_bloom_filter(local_name.0.get_hash());
+        SimpleFilter::Attr(local_name) => {
+            let hash = E::hash_for_bloom_filter(local_name.0.get_hash32());
             collect_all_elements::<E, Q, _>(root, results, |element| {
                 if !element.bloom_may_have_hash(hash) {
                     return Operation::RejectSkippingChildren;

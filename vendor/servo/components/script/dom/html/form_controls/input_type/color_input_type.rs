@@ -276,8 +276,7 @@ fn parse_color_value(value: &str) -> AbsoluteColor {
         ParsingMode::DEFAULT,
         urlextradata,
     );
-    let mut parser_input = cssparser::ParserInput::new(value);
-let mut input = Parser::new(&mut parser_input);
+    let mut input = Parser::new(value);
     Color::parse_and_compute(&context, &mut input, None)
         .map(|computed_color| computed_color.resolve_to_absolute(&AbsoluteColor::BLACK))
         .unwrap_or(AbsoluteColor::BLACK)

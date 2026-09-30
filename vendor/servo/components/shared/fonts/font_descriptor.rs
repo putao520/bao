@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 use style::computed_values::font_optical_sizing::T as FontOpticalSizing;
 use style::computed_values::font_variant_caps;
 use style::font_face::{
-    ComputedFontStretchRange, ComputedFontStyleRange, ComputedFontWeightRange, Descriptors,
-    FontStretchRange, FontStyleRange, FontWeightRange,
+    ComputedFontWidthRange, ComputedFontStyleRange, ComputedFontWeightRange, Descriptors,
+    FontWidthRange, FontStyleRange, FontWeightRange,
 };
 use style::properties::style_structs::Font as FontStyleStruct;
 use style::stylesheets::FontFaceRule;
-use style::values::computed::{Au, FontStretch, FontStyle, FontSynthesis, FontWeight};
+use style::values::computed::{Au, FontWidth, FontStyle, FontSynthesis, FontWeight};
 use webrender_api::FontVariation;
 
 /// `FontDescriptor` describes the parameters of a `Font`. It represents rendering a given font
@@ -24,7 +24,7 @@ use webrender_api::FontVariation;
 #[derive(Clone, Debug, Deserialize, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub struct FontDescriptor {
     pub weight: FontWeight,
-    pub stretch: FontStretch,
+    pub stretch: FontWidth,
     pub style: FontStyle,
     pub variant: font_variant_caps::T,
     pub pt_size: Au,
@@ -51,7 +51,7 @@ impl<'a> From<&'a FontStyleStruct> for FontDescriptor {
             .collect();
         FontDescriptor {
             weight: style.font_weight,
-            stretch: style.font_stretch,
+            stretch: style.font_width,
             style: style.font_style,
             variant: style.font_variant_caps,
             pt_size: Au::from_f32_px(style.font_size.computed_size().px()),
@@ -71,7 +71,7 @@ impl<'a> From<&'a FontStyleStruct> for FontDescriptor {
 pub struct CSSFontFaceDescriptors {
     pub family_name: LowercaseFontFamilyName,
     pub weight: Option<ComputedFontWeightRange>,
-    pub stretch: Option<ComputedFontStretchRange>,
+    pub stretch: Option<ComputedFontWidthRange>,
     pub style: Option<ComputedFontStyleRange>,
     pub unicode_range: Option<Vec<RangeInclusive<u32>>>,
 }
@@ -98,9 +98,9 @@ impl From<&Descriptors> for CSSFontFaceDescriptors {
             .as_ref()
             .and_then(FontWeightRange::compute);
         let stretch = descriptors
-            .font_stretch
+            .font_width
             .as_ref()
-            .and_then(FontStretchRange::compute);
+            .and_then(FontWidthRange::compute);
         let style = descriptors
             .font_style
             .as_ref()

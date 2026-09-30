@@ -54,7 +54,7 @@ serde_bytes = {version = "0.11"}
 servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.8"}
 servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.2"}
 servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.7"}
-servo_arc = {version = "=0.4.3"}
+servo_arc = {version = "=0.5.0", features = ["servo"]}
 sys-locale = {version = "0.3"}
 tokio = {version = "1"}
 url = {version = "2.5"}

@@ -92,23 +92,26 @@ impl CSSFontFaceDescriptorsMethods<crate::DomTypeHolder> for CSSFontFaceDescript
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-fontstretch>
+    // BAO (W54): stylo 0.22 renamed the stretch descriptor to FontWidth — the
+    // WebIDL accessor keeps the CSS name `FontStretch`, backed by the width
+    // descriptor.
     fn FontStretch(&self) -> DOMString {
-        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontWidth)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-font-stretch>
     fn Font_stretch(&self) -> DOMString {
-        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontWidth)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-fontwidth>
     fn FontWidth(&self) -> DOMString {
-        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontWidth)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-font-width>
     fn Font_width(&self) -> DOMString {
-        self.font_face_rule.get_descriptor(DescriptorId::FontStretch)
+        self.font_face_rule.get_descriptor(DescriptorId::FontWidth)
     }
 
     /// <https://drafts.csswg.org/css-fonts/#dom-cssfontfacedescriptors-unicoderange>

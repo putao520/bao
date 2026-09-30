@@ -17,10 +17,15 @@
 #     semantics with and without serde_fmt.
 # [lib] name stays `stylo_derive` — bao-stylo consumes this via dep key
 # `style_derive` (`use style_derive::...`), independent of the lib name.
+# BAO PATCH (issue #44, W54 rebase onto stylo_derive 0.22.0): the 3 pinned
+# `Ok::<(), ::std::fmt::Error>` tails in to_css.rs (see to_css.rs BAO comments).
+# Upstream stylo_derive 0.22.0 still emits bare `Ok(())` — the E0282/E0283
+# ambiguity with serde_fmt's `impl From<serde_fmt::Error> for fmt::Error`
+# persists whenever serde_fmt is in the graph.
 [package]
 edition = "2021"
 name = "bao-stylo-derive"
-version = "0.20.1"
+version = "0.22.0"
 authors = ["The Servo Project Developers"]
 description = "Derive crate for Stylo CSS engine (bao fork of stylo_derive)"
 license = "MPL-2.0"

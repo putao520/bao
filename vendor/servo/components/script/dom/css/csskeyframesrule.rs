@@ -83,8 +83,7 @@ impl CSSKeyframesRule {
     /// Given a keyframe selector, finds the index of the first corresponding rule if any
     fn find_rule(&self, selector: &DOMString) -> Option<usize> {
         let selector = selector.str();
-        let mut parser_input = cssparser::ParserInput::new(&selector);
-let mut input = Parser::new(&mut parser_input);
+        let mut input = Parser::new(&selector);
         if let Ok(sel) = KeyframeSelectors::parse(&mut input) {
             let guard = self.css_rule.shared_lock().read();
             // This finds the *last* element matching a selector

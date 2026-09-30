@@ -17,7 +17,7 @@ use servo_base::text::{UnicodeBlock, UnicodeBlockMethod};
 use style::Atom;
 use style::values::computed::font::GenericFontFamily;
 use style::values::computed::{
-    FontStretch as StyleFontStretch, FontStyle as StyleFontStyle, FontWeight as StyleFontWeight,
+    FontWidth as StyleFontWidth, FontStyle as StyleFontStyle, FontWeight as StyleFontWeight,
 };
 use unicode_script::Script;
 
@@ -48,7 +48,7 @@ enum FontWidth {
     Normal,
 }
 
-impl From<FontWidth> for StyleFontStretch {
+impl From<FontWidth> for StyleFontWidth {
     fn from(value: FontWidth) -> Self {
         match value {
             FontWidth::Condensed => Self::CONDENSED,

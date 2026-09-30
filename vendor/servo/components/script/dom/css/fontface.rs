@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use cssparser::{Parser, ParserInput};
+use cssparser::{Parser};
 use dom_struct::dom_struct;
 use fonts::{
     FontContext, FontContextWebFontMethods, FontFaceRuleInfo, FontTemplate, LowercaseFontFamilyName,
@@ -136,9 +136,8 @@ fn parse_font_face_descriptors(
     );
 
     // TODO: Should this be the source location in the script that invoked the font face API?
-    let location = cssparser::SourceLocation { line: 0, column: 0 };
-    let mut input = ParserInput::new(&font_face_rule);
-    let mut parser = Parser::new(&mut input);
+    let location = style::values::SourceLocation { line: 0, column: 0 };
+        let mut parser = Parser::new(&font_face_rule);
     let mut parsed_font_face_rule =
         style::font_face::parse_font_face_block(&parser_context, &mut parser, location);
 
@@ -173,7 +172,7 @@ fn serialize_parsed_descriptors(descriptors: &Descriptors) -> FontFaceDescriptor
         display: descriptors.font_display.to_css_string().into(),
         featureSettings: descriptors.font_feature_settings.to_css_string().into(),
         lineGapOverride: descriptors.line_gap_override.to_css_string().into(),
-        stretch: descriptors.font_stretch.to_css_string().into(),
+        stretch: descriptors.font_width.to_css_string().into(),
         style: descriptors.font_style.to_css_string().into(),
         unicodeRange: descriptors.unicode_range.to_css_string().into(),
         variationSettings: descriptors.font_variation_settings.to_css_string().into(),
@@ -189,7 +188,7 @@ impl ParseErrorReporter for FontFaceErrorReporter {
     fn report_error(
         &self,
         _url: &UrlExtraData,
-        _location: cssparser::SourceLocation,
+        _location: style::values::SourceLocation,
         _error: style::error_reporting::ContextualParseError,
     ) {
         self.not_encountered_error.set(false);

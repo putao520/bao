@@ -60,8 +60,8 @@ servo-constellation-traits = {package = "bao-servo-constellation-traits", path =
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
 servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
 storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.8"}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
-stylo_traits = {version = "=0.20.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+stylo_traits = {version = "=0.22.0"}
 tracing = {version = "0.1.44", optional = true}
 webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = "=0.5.8", optional = true}
 webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.8", optional = true}

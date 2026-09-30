@@ -16,8 +16,8 @@ name = "servo_webvtt"
 test-util = []
 
 [dependencies]
-html5ever = {version = "0.39"}
-markup5ever = {version = "0.39"}
+html5ever = {version = "0.40.1"}
+markup5ever = {version = "0.40"}
 regex = {version = "1.12"}
 
 [dev-dependencies]

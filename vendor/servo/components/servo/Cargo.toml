@@ -146,8 +146,8 @@ servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
 servo-wakelock = {package = "bao-servo-wakelock", path = "../wakelock", version = "=0.5.9"}
 storage = {package = "bao-servo-storage", path = "../storage", version = "=0.5.10"}
 storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.8"}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
-stylo_traits = {version = "=0.20.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+stylo_traits = {version = "=0.22.0"}
 surfman = {version = "0.13.0", features = ["chains"]}
 tokio = {version = "1", features = ["sync"]}
 tracing = {version = "0.1.44", optional = true}

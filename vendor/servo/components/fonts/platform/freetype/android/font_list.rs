@@ -10,7 +10,7 @@ use servo_base::text::{UnicodeBlock, UnicodeBlockMethod, is_cjk};
 use style::Atom;
 use style::values::computed::font::GenericFontFamily;
 use style::values::computed::{
-    FontStretch as StyleFontStretch, FontStyle as StyleFontStyle, FontWeight as StyleFontWeight,
+    FontWidth as StyleFontWidth, FontStyle as StyleFontStyle, FontWeight as StyleFontWeight,
 };
 
 use super::xml::{Attribute, Node};
@@ -435,7 +435,7 @@ where
             face_index: 0,
             named_instance_index: 0,
         };
-        let stretch = StyleFontStretch::NORMAL;
+        let stretch = StyleFontWidth::NORMAL;
         let weight = font
             .weight
             .map(|w| StyleFontWeight::from_float(w as f32))

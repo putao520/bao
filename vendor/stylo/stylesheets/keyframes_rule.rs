@@ -6,24 +6,27 @@
 
 use crate::derives::*;
 use crate::error_reporting::ContextualParseError;
-use crate::parser::ParserContext;
+use crate::parser::{Parse, ParserContext};
+#[cfg(feature = "servo")]
+use crate::properties::PropertyDeclarationIdSet;
 use crate::properties::{
     longhands::{
         animation_composition::single_value::SpecifiedValue as SpecifiedComposition,
         transition_timing_function::single_value::SpecifiedValue as SpecifiedTimingFunction,
     },
     parse_property_declaration_list, LonghandId, PropertyDeclaration, PropertyDeclarationBlock,
-    PropertyDeclarationId, PropertyDeclarationIdSet,
+    PropertyDeclarationId,
 };
 use crate::shared_lock::{DeepCloneWithLock, SharedRwLock, SharedRwLockReadGuard};
 use crate::shared_lock::{Locked, ToCssWithGuard};
 use crate::stylesheets::rule_parser::VendorPrefix;
 use crate::stylesheets::{CssRuleType, StylesheetContents};
 use crate::values::specified::animation::TimelineRangeName;
+use crate::values::specified::{Number, Percentage};
 use crate::values::{serialize_percentage, KeyframesName};
 use cssparser::{
-    parse_one_rule, AtRuleParser, DeclarationParser, Parser, ParserInput, ParserState,
-    QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, SourceLocation, Token,
+    parse_one_rule, AtRuleParser, DeclarationParser, Parser, ParserState, QualifiedRuleParser,
+    RuleBodyItemParser, RuleBodyParser, SourceLocation, Token,
 };
 use servo_arc::Arc;
 use std::borrow::Cow;
@@ -56,7 +59,7 @@ impl ToCssWithGuard for KeyframesRule {
         let iter = self.keyframes.iter();
         for lock in iter {
             dest.write_str("\n")?;
-            let keyframe = lock.read_with(&guard);
+            let keyframe = lock.read_with(guard);
             keyframe.to_css(guard, dest)?;
         }
         dest.write_str("\n}")
@@ -70,8 +73,7 @@ impl KeyframesRule {
     /// Related spec:
     /// <https://drafts.csswg.org/css-animations-1/#interface-csskeyframesrule-findrule>
     pub fn find_rule(&self, guard: &SharedRwLockReadGuard, selector: &str) -> Option<usize> {
-        let mut input = ParserInput::new(selector);
-        if let Ok(selector) = Parser::new(&mut input).parse_entirely(KeyframeSelectors::parse) {
+        if let Ok(selector) = Parser::new(selector).parse_entirely(KeyframeSelectors::parse) {
             for (i, keyframe) in self.keyframes.iter().enumerate().rev() {
                 if keyframe.read_with(guard).selector == selector {
                     return Some(i);
@@ -92,7 +94,7 @@ impl DeepCloneWithLock for KeyframesRule {
                 .map(|x| Arc::new(lock.wrap(x.read_with(guard).deep_clone_with_lock(lock, guard))))
                 .collect(),
             vendor_prefix: self.vendor_prefix.clone(),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }
@@ -128,7 +130,7 @@ impl KeyframePercentage {
         KeyframePercentage(value)
     }
 
-    fn parse<'i, 't>(input: &mut Parser<'i, 't>) -> Result<KeyframePercentage, ParseError<'i>> {
+    fn parse(input: &mut Parser) -> Result<KeyframePercentage, ParseError> {
         let token = input.next()?.clone();
         match token {
             Token::Ident(ref identifier) if identifier.as_ref().eq_ignore_ascii_case("from") => {
@@ -140,8 +142,8 @@ impl KeyframePercentage {
             Token::Percentage {
                 unit_value: percentage,
                 ..
-            } if percentage >= 0. && percentage <= 1. => Ok(KeyframePercentage::new(percentage)),
-            _ => Err(input.new_unexpected_token_error(token)),
+            } if (0. ..=1.).contains(&percentage) => Ok(KeyframePercentage::new(percentage)),
+            _ => Err(ParseError::unexpected_token()),
         }
     }
 }
@@ -172,16 +174,15 @@ impl KeyframeSelector {
     }
 
     /// Parse a keyframe selector from CSS input.
-    pub fn parse<'i, 't>(input: &mut Parser<'i, 't>) -> Result<Self, ParseError<'i>> {
+    pub fn parse_internal(input: &mut Parser) -> Result<Self, ParseError> {
         // `from | to | <percentage [0,100]>`
         if let Ok(percentage) = input.try_parse(KeyframePercentage::parse) {
             return Ok(Self::from_percentage(percentage));
         }
 
         // We parse the the extension of keyframe selector for scroll-driven animation.
-        if !static_prefs::pref!("layout.css.scroll-driven-animations.enabled") {
-            let location = input.current_source_location();
-            return Err(location.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        if !crate::pref!("layout.css.scroll-driven-animations.enabled") {
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
         }
 
         // `<timeline-range-name> <percentage>`
@@ -190,6 +191,12 @@ impl KeyframeSelector {
             range_name: TimelineRangeName::parse(input)?,
             percentage: KeyframePercentage::new(input.expect_percentage()?),
         })
+    }
+}
+
+impl Parse for KeyframeSelector {
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        KeyframeSelector::parse_internal(input)
     }
 }
 
@@ -210,9 +217,9 @@ impl KeyframeSelectors {
     }
 
     /// Parse the keyframe selectors from CSS input.
-    pub fn parse<'i, 't>(input: &mut Parser<'i, 't>) -> Result<Self, ParseError<'i>> {
+    pub fn parse(input: &mut Parser) -> Result<Self, ParseError> {
         input
-            .parse_comma_separated(KeyframeSelector::parse)
+            .parse_comma_separated(KeyframeSelector::parse_internal)
             .map(KeyframeSelectors)
     }
 }
@@ -245,30 +252,29 @@ impl ToCssWithGuard for Keyframe {
 
 impl Keyframe {
     /// Parse a CSS keyframe.
-    pub fn parse<'i>(
-        css: &'i str,
+    pub fn parse(
+        css: &str,
         parent_stylesheet_contents: &StylesheetContents,
         lock: &SharedRwLock,
-    ) -> Result<Arc<Locked<Self>>, ParseError<'i>> {
+    ) -> Result<Arc<Locked<Self>>, ParseError> {
         let url_data = &parent_stylesheet_contents.url_data;
         let namespaces = &parent_stylesheet_contents.namespaces;
         let mut context = ParserContext::new(
             parent_stylesheet_contents.origin,
-            &url_data,
+            url_data,
             Some(CssRuleType::Keyframe),
             ParsingMode::DEFAULT,
             parent_stylesheet_contents.quirks_mode,
-            Cow::Borrowed(&*namespaces),
+            Cow::Borrowed(namespaces),
             None,
             None,
             /* attr_taint */ Default::default(),
         );
-        let mut input = ParserInput::new(css);
-        let mut input = Parser::new(&mut input);
+        let mut input = Parser::new(css);
 
         let mut rule_parser = KeyframeListParser {
             context: &mut context,
-            shared_lock: &lock,
+            shared_lock: lock,
         };
         parse_one_rule(&mut input, &mut rule_parser)
     }
@@ -280,7 +286,7 @@ impl DeepCloneWithLock for Keyframe {
         Keyframe {
             selector: self.selector.clone(),
             block: Arc::new(lock.wrap(self.block.read_with(guard).clone())),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }
@@ -424,7 +430,7 @@ impl KeyframesStep {
                 match *decl {
                     PropertyDeclaration::AnimationComposition(ref value) => {
                         // Use the first value
-                        value.0[0].clone()
+                        value.0[0]
                     },
                     _ => unreachable!("Unexpected PropertyDeclaration"),
                 }
@@ -449,21 +455,63 @@ pub struct KeyframesAnimation {
     /// https://github.com/w3c/csswg-drafts/issues/8507
     pub steps_with_range_name: Vec<KeyframesStep>,
     /// The properties that change in this animation.
+    #[cfg(feature = "servo")]
     pub properties_changed: PropertyDeclarationIdSet,
     /// Vendor prefix type the @keyframes has.
     pub vendor_prefix: Option<VendorPrefix>,
 }
 
-/// Get all the animated properties in a keyframes animation.
+#[cfg(feature = "servo")]
+type AnimatedPropertiesInner = PropertyDeclarationIdSet;
+#[cfg(feature = "gecko")]
+type AnimatedPropertiesInner = bool;
+
+#[derive(Default)]
+struct AnimatedProperties(AnimatedPropertiesInner);
+
+#[cfg(feature = "servo")]
+impl AnimatedProperties {
+    const CAN_STOP_AFTER_FINDING_PROPERTY: bool = false;
+
+    #[inline]
+    fn insert_animated_property(&mut self, declaration_id: PropertyDeclarationId) {
+        self.0.insert(declaration_id);
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+#[cfg(feature = "gecko")]
+impl AnimatedProperties {
+    const CAN_STOP_AFTER_FINDING_PROPERTY: bool = true;
+
+    #[inline]
+    fn insert_animated_property(&mut self, _: PropertyDeclarationId) {
+        self.0 = true;
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        !self.0
+    }
+}
+
+/// Returns an `AnimatedProperties` for the animated properties in a keyframes animation.
+/// In Gecko that only has a bool tracking if there is any such property, while Servo
+/// tracks the set of all these properties.
 fn get_animated_properties(
     keyframes: &[Arc<Locked<Keyframe>>],
     guard: &SharedRwLockReadGuard,
-) -> PropertyDeclarationIdSet {
-    let mut ret = PropertyDeclarationIdSet::default();
+) -> AnimatedProperties {
+    let mut animated_properties = AnimatedProperties::default();
+
     // NB: declarations are already deduplicated, so we don't have to check for
     // it here.
     for keyframe in keyframes {
-        let keyframe = keyframe.read_with(&guard);
+        let keyframe = keyframe.read_with(guard);
         let block = keyframe.block.read_with(guard);
         // CSS Animations spec clearly defines that properties with !important
         // in keyframe rules are invalid and ignored, but it's still ambiguous
@@ -474,7 +522,9 @@ fn get_animated_properties(
         for declaration in block.normal_declaration_iter() {
             let declaration_id = declaration.id();
 
-            if declaration_id == PropertyDeclarationId::Longhand(LonghandId::Display) {
+            if declaration_id == PropertyDeclarationId::Longhand(LonghandId::Display)
+                && !crate::pref!("layout.css.display-animations.enabled")
+            {
                 continue;
             }
 
@@ -482,19 +532,22 @@ fn get_animated_properties(
                 continue;
             }
 
-            ret.insert(declaration_id);
+            animated_properties.insert_animated_property(declaration_id);
+            if AnimatedProperties::CAN_STOP_AFTER_FINDING_PROPERTY {
+                return animated_properties;
+            }
         }
     }
 
-    ret
+    animated_properties
 }
 
 impl KeyframesAnimation {
     /// Create a keyframes animation from a given list of keyframes.
     ///
-    /// This will return a keyframe animation with empty steps and
-    /// properties_changed if the list of keyframes is empty, or there are no
-    /// animated properties obtained from the keyframes.
+    /// This will return a keyframe animation with empty steps if the list of
+    /// keyframes is empty, or there are no animated properties obtained from
+    /// the keyframes.
     ///
     /// Otherwise, this will compute and sort the steps used for the animation,
     /// and return the animation object.
@@ -506,6 +559,7 @@ impl KeyframesAnimation {
         let mut result = KeyframesAnimation {
             steps: vec![],
             steps_with_range_name: vec![],
+            #[cfg(feature = "servo")]
             properties_changed: PropertyDeclarationIdSet::default(),
             vendor_prefix,
         };
@@ -514,16 +568,19 @@ impl KeyframesAnimation {
             return result;
         }
 
-        result.properties_changed = get_animated_properties(keyframes, guard);
-        if result.properties_changed.is_empty() {
+        let animated_properties = get_animated_properties(keyframes, guard);
+        if animated_properties.is_empty() {
             return result;
+        }
+        #[cfg(feature = "servo")] {
+            result.properties_changed = animated_properties.0;
         }
 
         // The steps with percentage only.
         let mut steps = vec![];
 
         for keyframe in keyframes {
-            let keyframe = keyframe.read_with(&guard);
+            let keyframe = keyframe.read_with(guard);
             for selector in keyframe.selector.0.iter() {
                 let step = KeyframesStep::new(
                     *selector,
@@ -547,31 +604,24 @@ impl KeyframesAnimation {
         steps.sort_by_key(|step| step.start_offset.percentage);
 
         // Prepend autogenerated keyframes if appropriate.
-        //
-        // FIXME: Bug 2037642. For animation-timeline: none or auto, if all the keyframes use
-        // `<timeline-range-name>`, we shouldn't generate 0% and 100% keyframes. The better way is
-        // to fill the implicit keyframes lazily, in getKeyframes() or when using them, after they
-        // have `computedOffset` set.
-        //
-        // https://github.com/w3c/csswg-drafts/issues/13872
-        // https://drafts.csswg.org/css-animations-2/#keyframe-processing
-        if steps.is_empty() || steps[0].start_offset.percentage.0 != 0. {
-            steps.insert(
-                0,
-                KeyframesStep::new(
-                    KeyframeSelector::from_percentage(KeyframePercentage::new(0.)),
+        #[cfg(feature = "servo")] {
+            if steps.is_empty() || steps[0].start_offset.percentage.0 != 0. {
+                steps.insert(
+                    0,
+                    KeyframesStep::new(
+                        KeyframeSelector::from_percentage(KeyframePercentage::new(0.)),
+                        KeyframesStepValue::ComputedValues,
+                        guard,
+                    ),
+                );
+            }
+            if steps.last().unwrap().start_offset.percentage.0 != 1. {
+                steps.push(KeyframesStep::new(
+                    KeyframeSelector::from_percentage(KeyframePercentage::new(1.)),
                     KeyframesStepValue::ComputedValues,
                     guard,
-                ),
-            );
-        }
-
-        if steps.last().unwrap().start_offset.percentage.0 != 1. {
-            steps.push(KeyframesStep::new(
-                KeyframeSelector::from_percentage(KeyframePercentage::new(1.)),
-                KeyframesStepValue::ComputedValues,
-                guard,
-            ));
+                ));
+            }
         }
 
         result.steps = steps;
@@ -610,43 +660,39 @@ pub fn parse_keyframe_list<'a>(
 impl<'a, 'b, 'i> AtRuleParser<'i> for KeyframeListParser<'a, 'b> {
     type Prelude = ();
     type AtRule = Arc<Locked<Keyframe>>;
-    type Error = StyleParseErrorKind<'i>;
+    type Error = StyleParseErrorKind;
 }
 
 impl<'a, 'b, 'i> DeclarationParser<'i> for KeyframeListParser<'a, 'b> {
     type Declaration = Arc<Locked<Keyframe>>;
-    type Error = StyleParseErrorKind<'i>;
+    type Error = StyleParseErrorKind;
 }
 
 impl<'a, 'b, 'i> QualifiedRuleParser<'i> for KeyframeListParser<'a, 'b> {
     type Prelude = KeyframeSelectors;
     type QualifiedRule = Arc<Locked<Keyframe>>;
-    type Error = StyleParseErrorKind<'i>;
+    type Error = StyleParseErrorKind;
 
-    fn parse_prelude<'t>(
-        &mut self,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self::Prelude, ParseError<'i>> {
+    fn parse_prelude(&mut self, input: &mut Parser<'i>) -> Result<Self::Prelude, ParseError> {
         let start_position = input.position();
-        KeyframeSelectors::parse(input).map_err(|e| {
-            let location = e.location;
+        let start_location = input.current_source_location();
+        KeyframeSelectors::parse(input).inspect_err(|e| {
             let error = ContextualParseError::InvalidKeyframeRule(
                 input.slice_from(start_position),
                 e.clone(),
             );
-            self.context.log_css_error(location, error);
-            e
+            self.context.log_css_error(start_location, error);
         })
     }
 
-    fn parse_block<'t>(
+    fn parse_block(
         &mut self,
         selector: Self::Prelude,
         start: &ParserState,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self::QualifiedRule, ParseError<'i>> {
+        input: &mut Parser<'i>,
+    ) -> Result<Self::QualifiedRule, ParseError> {
         let block = self.context.nest_for_rule(CssRuleType::Keyframe, |p| {
-            parse_property_declaration_list(&p, input, &[])
+            parse_property_declaration_list(p, input, &[])
         });
         Ok(Arc::new(self.shared_lock.wrap(Keyframe {
             selector,
@@ -656,7 +702,7 @@ impl<'a, 'b, 'i> QualifiedRuleParser<'i> for KeyframeListParser<'a, 'b> {
     }
 }
 
-impl<'a, 'b, 'i> RuleBodyItemParser<'i, Arc<Locked<Keyframe>>, StyleParseErrorKind<'i>>
+impl<'a, 'b, 'i> RuleBodyItemParser<'i, Arc<Locked<Keyframe>>, StyleParseErrorKind>
     for KeyframeListParser<'a, 'b>
 {
     fn parse_qualified(&self) -> bool {
@@ -665,4 +711,23 @@ impl<'a, 'b, 'i> RuleBodyItemParser<'i, Arc<Locked<Keyframe>>, StyleParseErrorKi
     fn parse_declarations(&self) -> bool {
         false
     }
+}
+
+/// The Keyframe offset for Web Animations. Since we support double value from JS, so we need to
+/// include a number for it as well.
+// Note: we don't do the range check at parse time for Web animations.
+// Per spec (step 7 in [1]), we check the range of the offset in a separate step and throw a
+// TypeError if needed. That's why we would like to handle Percentage separately and we don't check
+// the range of Number and Percentage.
+//
+// [1] https://drafts.csswg.org/web-animations-1/#process-a-keyframes-argument
+#[derive(Debug, Parse)]
+pub enum KeyframeOffset {
+    /// The double value, e.g. 0.5.
+    Number(Number),
+    /// The percentage (including calc() percentage), e.g. 10%, calc(50%).
+    // FIXME: Bug 2007780. Support length and percentage.
+    Percentage(Percentage),
+    /// The pair of TimelineRangeName and percentage.
+    KeyframeSelector(KeyframeSelector),
 }

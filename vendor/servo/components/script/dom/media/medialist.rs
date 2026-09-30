@@ -69,8 +69,7 @@ impl MediaList {
         if value.is_empty() {
             return StyleMediaList::empty();
         }
-        let mut input = cssparser::ParserInput::new(value);
-        let mut parser = Parser::new(&mut input);
+                let mut parser = Parser::new(value);
         let document = window.Document();
         let url_data = UrlExtraData(document.owner_global().api_base_url().get_arc());
         // FIXME(emilio): This looks somewhat fishy, since we use the context
@@ -88,12 +87,11 @@ impl MediaList {
     /// <https://drafts.csswg.org/cssom/#parse-a-media-query>
     // BAO patch (fork-maintained, 2026-09-28): stylo style_traits::ParseError
     // is lifetime-carrying; bind it to the borrowed inputs.
-    pub(crate) fn parse_media_query<'a>(
-        value: &'a str,
-        window: &'a Window,
-    ) -> Result<MediaQuery, ParseError<'a>> {
-        let mut input = cssparser::ParserInput::new(value);
-        let mut parser = Parser::new(&mut input);
+    pub(crate) fn parse_media_query(
+        value: &str,
+        window: &Window,
+    ) -> Result<MediaQuery, ParseError> {
+                let mut parser = Parser::new(value);
         let document = window.Document();
         let url_data = UrlExtraData(document.owner_global().api_base_url().get_arc());
         let context = parser_context_for_document(
@@ -134,8 +132,7 @@ impl MediaList {
             None,
             /* attr_taint = */ Default::default(),
         );
-        let mut input = cssparser::ParserInput::new(media_query);
-        let mut parser = Parser::new(&mut input);
+                let mut parser = Parser::new(media_query);
         let media_list = StyleMediaList::parse(&mut context, &mut parser);
         media_list.evaluate(
             document.window().layout().device(),

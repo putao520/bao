@@ -30,6 +30,6 @@ profile_traits = {package = "bao-servo-profile-traits", path = "../profile", ver
 serde = {version = "1.0.228"}
 servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.8"}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.20.2"}
+style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.22.0"}
 webrender_api = {version = "0.70"}
 webxr-api = {package = "bao-servo-webxr-api", path = "../webxr", version = "=0.5.8"}

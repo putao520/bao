@@ -1378,7 +1378,7 @@ malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_decoration_
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_decoration_thickness::T);
 malloc_size_of_is_stylo_malloc_size_of!(style::computed_values::text_rendering::T);
 malloc_size_of_is_stylo_malloc_size_of!(style::dom::OpaqueNode);
-malloc_size_of_is_stylo_malloc_size_of!(style::font_face::ComputedFontStretchRange);
+malloc_size_of_is_stylo_malloc_size_of!(style::font_face::ComputedFontWidthRange);
 malloc_size_of_is_stylo_malloc_size_of!(style::font_face::ComputedFontStyleRange);
 malloc_size_of_is_stylo_malloc_size_of!(style::font_face::ComputedFontWeightRange);
 malloc_size_of_is_stylo_malloc_size_of!(style::font_face::Source);
@@ -1404,7 +1404,7 @@ malloc_size_of_is_stylo_malloc_size_of!(style::stylist::Stylist);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::BorderStyle);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::ContentDistribution);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontFeatureSettings);
-malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontStretch);
+malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontWidth);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontStyle);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontWeight);
 malloc_size_of_is_stylo_malloc_size_of!(style::values::computed::FontVariantAlternates);

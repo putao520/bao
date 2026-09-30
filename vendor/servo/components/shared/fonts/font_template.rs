@@ -10,9 +10,9 @@ use atomic_refcell::{AtomicRef, AtomicRefCell};
 use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 use servo_arc::Arc as ServoArc;
-use style::computed_values::font_stretch::T as FontStretch;
+use style::computed_values::font_width::T as FontWidth;
 use style::computed_values::font_style::T as FontStyle;
-use style::font_face::{ComputedFontStretchRange, ComputedFontStyleRange, ComputedFontWeightRange};
+use style::font_face::{ComputedFontWidthRange, ComputedFontStyleRange, ComputedFontWeightRange};
 use style::values::computed::font::FontWeight;
 
 use crate::{CSSFontFaceDescriptors, FontDescriptor, FontFaceRuleInfo, FontIdentifier};
@@ -41,7 +41,7 @@ impl Deref for FontTemplateRef {
 #[derive(Clone, Debug, Deserialize, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub struct FontTemplateDescriptor {
     pub weight: ComputedFontWeightRange,
-    pub stretch: ComputedFontStretchRange,
+    pub stretch: ComputedFontWidthRange,
     pub style: ComputedFontStyleRange,
     #[ignore_malloc_size_of = "MallocSizeOf does not yet support RangeInclusive"]
     pub unicode_range: Option<Vec<RangeInclusive<u32>>>,
@@ -49,16 +49,16 @@ pub struct FontTemplateDescriptor {
 
 impl Default for FontTemplateDescriptor {
     fn default() -> Self {
-        Self::new(FontWeight::normal(), FontStretch::NORMAL, FontStyle::NORMAL)
+        Self::new(FontWeight::normal(), FontWidth::NORMAL, FontStyle::NORMAL)
     }
 }
 
 impl FontTemplateDescriptor {
     #[inline]
-    pub fn new(weight: FontWeight, stretch: FontStretch, style: FontStyle) -> Self {
+    pub fn new(weight: FontWeight, stretch: FontWidth, style: FontStyle) -> Self {
         Self {
             weight: ComputedFontWeightRange(weight, weight),
-            stretch: ComputedFontStretchRange(stretch, stretch),
+            stretch: ComputedFontWidthRange(stretch, stretch),
             style: ComputedFontStyleRange(style, style),
             unicode_range: None,
         }
@@ -261,8 +261,8 @@ trait FontMatchDistanceMethod<T>: Sized {
     fn to_float(&self) -> f32;
 }
 
-impl FontMatchDistanceMethod<ComputedFontStretchRange> for FontStretch {
-    fn match_distance(&self, range: &ComputedFontStretchRange) -> f32 {
+impl FontMatchDistanceMethod<ComputedFontWidthRange> for FontWidth {
+    fn match_distance(&self, range: &ComputedFontWidthRange) -> f32 {
         // stretch distance ==> [0,2000]
         const REVERSE_DISTANCE: f32 = 1000.0;
 
@@ -275,14 +275,14 @@ impl FontMatchDistanceMethod<ComputedFontStretchRange> for FontStretch {
         // If aTargetStretch is >100, we prefer larger values if available;
         // if <=100, we prefer smaller values if available.
         if *self < min_stretch {
-            if *self > FontStretch::NORMAL {
+            if *self > FontWidth::NORMAL {
                 return min_stretch.to_float() - self.to_float();
             }
             return (min_stretch.to_float() - self.to_float()) + REVERSE_DISTANCE;
         }
 
         if *self > max_stretch {
-            if *self <= FontStretch::NORMAL {
+            if *self <= FontWidth::NORMAL {
                 return self.to_float() - max_stretch.to_float();
             }
             return (self.to_float() - max_stretch.to_float()) + REVERSE_DISTANCE;

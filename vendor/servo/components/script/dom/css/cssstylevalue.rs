@@ -49,8 +49,7 @@ impl CSSStyleValue {
     /// return relative URLs for computed values, so we pass in a base.
     /// <https://github.com/servo/servo/issues/17625>
     pub(crate) fn get_url(&self, base_url: ServoUrl) -> Option<ServoUrl> {
-        let mut input = cssparser::ParserInput::new(&self.value);
-let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new(&self.value);
         parser
             .expect_url()
             .ok()

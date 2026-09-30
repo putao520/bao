@@ -167,8 +167,7 @@ impl CSSStyleRuleMethods<crate::DomTypeHolder> for CSSStyleRule {
                 url_data: &contents.url_data,
                 for_supports_rule: false,
             };
-            let mut css_parser_input = cssparser::ParserInput::new(&value);
-let mut css_parser = CssParser::new(&mut css_parser_input);
+            let mut css_parser = CssParser::new(&value);
 
             let parse_relative = match self
                 .upcast::<CSSRule>()

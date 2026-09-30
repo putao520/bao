@@ -54,8 +54,7 @@ impl CSSMethods<crate::DomTypeHolder> for CSS {
     /// <https://drafts.csswg.org/css-conditional/#dom-css-supports>
     fn Supports_(win: &Window, condition: DOMString) -> bool {
         let condition = condition.str();
-        let mut parser_input = cssparser::ParserInput::new(&condition);
-let mut input = Parser::new(&mut parser_input);
+        let mut input = Parser::new(&condition);
         let cond = match parse_condition_or_declaration(&mut input) {
             Ok(c) => c,
             Err(..) => return false,

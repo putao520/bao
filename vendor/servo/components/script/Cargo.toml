@@ -65,7 +65,7 @@ cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
 crypto-bigint = {version = "0.7"}
 cshake = {version = "0.2"}
-cssparser = {version = "0.37", features = ["serde"]}
+cssparser = {version = "0.38", features = ["serde"]}
 ctr = {version = "0.10", features = ["zeroize"]}
 ctutils = {version = "0.4"}
 data-url = {version = "0.3"}
@@ -85,7 +85,7 @@ fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", ve
 glow = {version = "0.17.0"}
 headers = {version = "0.4"}
 hkdf = {version = "0.13"}
-html5ever = {version = "0.39"}
+html5ever = {version = "0.40.1"}
 http = {version = "1.4"}
 httparse = {version = "1.9"}
 hyper_serde = {package = "bao-servo-hyper-serde", path = "../hyper_serde", version = "=0.5.2"}
@@ -104,7 +104,7 @@ libc = {version = "0.2"}
 log = {version = "0.4.32"}
 malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.7"}
 malloc_size_of_derive = {version = "0.1"}
-markup5ever = {version = "0.39"}
+markup5ever = {version = "0.40"}
 media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.9"}
 metrics = {package = "bao-servo-metrics", path = "../metrics", version = "=0.5.13"}
 mime = {version = "0.3.13"}
@@ -137,7 +137,7 @@ rustc-hash = {version = "2.1.2"}
 x-wing = { version = "0.1.0", features = ["zeroize"] }
 script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.17"}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.11"}
-selectors = {version = "=0.40.0"}
+selectors = {version = "=0.41.0"}
 serde = {version = "1.0.228", features = ["derive"]}
 serde_json = {version = "1.0", features = ["preserve_order"]}
 background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = "=0.5.8"}
@@ -151,7 +151,7 @@ servo-media = {package = "bao-servo-media", path = "../media/servo-media", versi
 servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
 servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.7"}
 servo-webvtt = {package = "bao-servo-webvtt", path = "../webvtt", version = "=0.5.5"}
-servo_arc = {version = "=0.4.3"}
+servo_arc = {version = "=0.5.0", features = ["servo"]}
 sha1 = {version = "0.11"}
 sha2 = {version = "0.11"}
 sha3 = {version = "0.12"}
@@ -159,11 +159,11 @@ smallvec = {version = "1.15", features = ["serde", "union"]}
 sponge-cursor = {version = "0.1"}
 storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.8"}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
-stylo_atoms = {version = "=0.20.0"}
-stylo_dom = {version = "=0.20.0"}
-stylo_malloc_size_of = {version = "=0.20.0"}
-stylo_traits = {version = "=0.20.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+stylo_atoms = {version = "=0.22.0"}
+stylo_dom = {version = "=0.22.0"}
+stylo_malloc_size_of = {version = "=0.22.0"}
+stylo_traits = {version = "=0.22.0"}
 svgtypes = {version = "0.16.1"}
 swapper = {version = "0.1"}
 tempfile = {version = "3"}
@@ -176,7 +176,7 @@ unicode-script = {version = "0.5"}
 url = {version = "2.5"}
 urlpattern = {version = "0.3"}
 uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}
-web_atoms = {version = "0.2.6"}
+web_atoms = {version = "0.3.0"}
 webdriver = {version = "0.53.0", default-features = false}
 webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.8", optional = true}
 webrender_api = {version = "0.70"}
@@ -185,7 +185,7 @@ wgpu-core = {version = "30", optional = true}
 wgpu-types = {version = "30", optional = true}
 x25519-dalek = {version = "3.0", features = ["getrandom", "static_secrets", "zeroize"]}
 x448 = {version = "=0.14.0-pre.12", features = ["static_secrets"]}
-xml5ever = {version = "0.39"}
+xml5ever = {version = "0.40"}
 xpath = {package = "bao-servo-xpath", path = "../xpath", version = "=0.5.7"}
 zeroize = {version = "1.8", features = ["zeroize_derive"]}
 

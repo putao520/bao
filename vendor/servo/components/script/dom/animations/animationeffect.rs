@@ -152,8 +152,7 @@ impl AnimationEffect {
             .as_ref()
             .map(|easing| {
                 let easing = easing.str();
-                let mut input = cssparser::ParserInput::new(&easing);
-let mut parser = Parser::new(&mut input);
+                let mut parser = Parser::new(&easing);
 
                 // None of these values should matter
                 let document = self.window.Document();

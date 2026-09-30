@@ -57,7 +57,7 @@ fn derive_bitflags(input: &syn::DeriveInput, bitflags: &CssBitflagAttrs) -> Toke
     }
 
     body.append_all(quote! {
-        Ok(())
+        Ok::<(), ::std::fmt::Error>(())
     });
 
     quote! {
@@ -246,17 +246,10 @@ fn derive_variant_fields_expr(
         derive_single_field_expr(binding, attrs, where_clause, bindings).to_tokens(&mut expr)
     }
 
-    // BAO PATCH (issue #44): anchor the block's error type. This block is
-    // emitted with a trailing `?` by the `#[css(function)]` template
-    // (`#expr?;`); a bare `Ok(())` tail leaves the error type inferred from
-    // `std::fmt::Error: From<_>`, which is ambiguous once serde_fmt (pulled in
-    // by log's "kv_unstable_serde" via value-bag-serde1) contributes its
-    // `impl From<serde_fmt::Error> for std::fmt::Error` next to core's
-    // reflexive impl.
     quote! {{
         let mut writer = style_traits::values::SequenceWriter::new(dest, #separator);
         #expr
-        Ok::<(), ::std::fmt::Error>(())
+        Ok(())
     }}
 }
 

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use app_units::Au;
 use cssparser::color::clamp_unit_f32;
-use cssparser::{Parser, ParserInput};
+use cssparser::{Parser};
 use euclid::default::{Point2D, Rect, Size2D, Transform2D};
 use euclid::{Vector2D, vec2};
 use fonts::{
@@ -2712,8 +2712,7 @@ pub(super) fn parse_color(
     string: &DOMString,
 ) -> Result<AbsoluteColor, ()> {
     let string = string.str();
-    let mut input = ParserInput::new(&string);
-    let mut parser = Parser::new(&mut input);
+        let mut parser = Parser::new(&string);
     let context = parser_context_for_anonymous_content(
         CssRuleType::Style,
         ParsingMode::DEFAULT,

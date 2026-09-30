@@ -476,7 +476,7 @@ fn sanitize_core(
                     let attribute_name = SanitizerAttribute::SanitizerAttributeNamespace(
                         SanitizerAttributeNamespace {
                             name: DOMString::from(attribute_local_name.as_ref()),
-                            namespace: if attribute_namespace.as_ref().is_empty() {
+                            namespace: if AsRef::<str>::as_ref(&attribute_namespace).is_empty() {
                                 None
                             } else {
                                 Some(DOMString::from(attribute_namespace.as_ref()))
@@ -3228,16 +3228,16 @@ thread_local! {
         LazyCell::new(|| {
             vec![
                 SanitizerElement::SanitizerElementNamespace(SanitizerElementNamespace {
-                    name: local_name!("html").as_ref().into(),
-                    namespace: Some(ns!(html).as_ref().into()),
+                    name: AsRef::<str>::as_ref(&local_name!("html")).into(),
+                    namespace: Some(AsRef::<str>::as_ref(&ns!(html)).into()),
                 }),
                 SanitizerElement::SanitizerElementNamespace(SanitizerElementNamespace {
-                    name: local_name!("svg").as_ref().into(),
-                    namespace: Some(ns!(svg).as_ref().into()),
+                    name: AsRef::<str>::as_ref(&local_name!("svg")).into(),
+                    namespace: Some(AsRef::<str>::as_ref(&ns!(svg)).into()),
                 }),
                 SanitizerElement::SanitizerElementNamespace(SanitizerElementNamespace {
-                    name: local_name!("math").as_ref().into(),
-                    namespace: Some(ns!(mathml).as_ref().into()),
+                    name: AsRef::<str>::as_ref(&local_name!("math")).into(),
+                    namespace: Some(AsRef::<str>::as_ref(&ns!(mathml)).into()),
                 }),
             ]
         });

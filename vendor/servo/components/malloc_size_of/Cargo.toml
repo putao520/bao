@@ -26,19 +26,19 @@ icu_locid = {version = "1.5.0"}
 indexmap = {version = "2.14.0", features = ["std"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
-markup5ever = {version = "0.39"}
+markup5ever = {version = "0.40"}
 memmap2 = "0.9.10"
 mime = {version = "0.3.13"}
 once_cell = {version = "1.21.4"}
 parking_lot = {version = "0.12", features = ["serde"]}
 resvg = {version = "0.48.1"}
 servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
-servo_arc = {version = "=0.4.3"}
+servo_arc = {version = "=0.5.0", features = ["servo"]}
 smallvec = {version = "1.15", features = ["serde", "union"]}
-string_cache = {version = "0.9"}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.20.2"}
-stylo_dom = {version = "=0.20.0"}
-stylo_malloc_size_of = {version = "=0.20.0"}
+string_cache = {version = "0.11"}
+style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+stylo_dom = {version = "=0.22.0"}
+stylo_malloc_size_of = {version = "=0.22.0"}
 taffy = {version = "0.13.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"]}
 tendril = {version = "0.5", features = ["encoding_rs"]}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}

@@ -41,7 +41,7 @@ use style::values::computed::font::{
     FamilyName, FontFamilyNameSyntax, GenericFontFamily, SingleFontFamily,
 };
 use style::values::computed::{
-    FontFeatureSettings, FontStretch, FontStyle, FontSynthesis, FontVariantEastAsian,
+    FontFeatureSettings, FontWidth, FontStyle, FontSynthesis, FontVariantEastAsian,
     FontVariantLigatures, FontVariantNumeric, FontWeight,
 };
 use unicode_script::Script;
@@ -191,16 +191,16 @@ pub trait PlatformFontMethods: Sized {
 
         let weight = FontWeight::from_float(os2.us_weight_class() as f32);
         let stretch = match os2.us_width_class() {
-            1 => FontStretch::ULTRA_CONDENSED,
-            2 => FontStretch::EXTRA_CONDENSED,
-            3 => FontStretch::CONDENSED,
-            4 => FontStretch::SEMI_CONDENSED,
-            5 => FontStretch::NORMAL,
-            6 => FontStretch::SEMI_EXPANDED,
-            7 => FontStretch::EXPANDED,
-            8 => FontStretch::EXTRA_EXPANDED,
-            9 => FontStretch::ULTRA_EXPANDED,
-            _ => FontStretch::NORMAL,
+            1 => FontWidth::ULTRA_CONDENSED,
+            2 => FontWidth::EXTRA_CONDENSED,
+            3 => FontWidth::CONDENSED,
+            4 => FontWidth::SEMI_CONDENSED,
+            5 => FontWidth::NORMAL,
+            6 => FontWidth::SEMI_EXPANDED,
+            7 => FontWidth::EXPANDED,
+            8 => FontWidth::EXTRA_EXPANDED,
+            9 => FontWidth::ULTRA_EXPANDED,
+            _ => FontWidth::NORMAL,
         };
 
         FontTemplateDescriptor::new(weight, stretch, style)

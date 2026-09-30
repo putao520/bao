@@ -42,8 +42,8 @@ servo-tracing = {package = "bao-servo-tracing", path = "../../servo_tracing", ve
 servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.7"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.20.2"}
-stylo_traits = {version = "=0.20.0"}
+style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.22.0"}
+stylo_traits = {version = "=0.22.0"}
 surfman = {version = "0.13.0", features = ["chains", "sm-x11"]}
 tracing = {version = "0.1.44", optional = true}
 webrender_api = {version = "0.70"}

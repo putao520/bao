@@ -9,26 +9,22 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
-# BAO PATCH (W3/#35 publish fork): package renamed stylo -> bao-stylo.
-# Base = registry stylo 0.20.0 + 5-file delta from stylo git rev
-# cc499a88513045823fc66c2b67492271023d98b2 (see #29 spike: 10/11 family
-# crates are byte-identical on the registry; only `stylo` drifted):
-#   - values/specified/source_size_list.rs: SourceSize/SourceSizeList +Clone
-#     (only compile break vs registry; consumed by servo
-#     components/script/dom/srcset.rs SourceSet derive Clone)
-#   - device/servo.rs: is_dark_color_scheme real impl (registry stubs false)
-#   - servo/selector_parser.rs: PseudoElement repr(u8)
-#   - selector_parser.rs / servo/shadow_parts.rs: test-only diffs
-# [lib] name stays `style` — servo code does `use style::` via the lib name,
-# independent of the package name. Upstream sync: re-copy the drifted files
-# and refresh the delta list above.
+# BAO PATCH (W54, 2026-10-01): fork of registry stylo 0.22.0 (package renamed
+# stylo -> bao-stylo). Base = registry stylo 0.22.0 — the ENTIRE W3-era fork
+# delta (7 files) was natively absorbed upstream by 0.22.0 (verified hunk by
+# hunk: source_size_list Clone, device/servo.rs is_dark_color_scheme real impl,
+# selector_parser repr(u8), shadow_parts test, longhands clip-path
+# rebuild_stacking_context, text.rs math-auto servo face) — zero replay needed.
+# W54 delta vs upstream 0.22.0:
+#   - Cargo.toml: package name/version, style_derive -> bao-stylo-derive
+#     (issue #44 fork rebased onto stylo_derive 0.22.0), Cargo.toml.orig exclude.
+#   - stylo_atoms resolves through the workspace [patch] to the vendored
+#     0.22.0 fork (0.22 atom set + the 3 WebVTT event atoms).
+# Upstream sync: re-copy the crate, re-check the delta list above.
 [package]
-edition = "2021"
+edition = "2024"
 name = "bao-stylo"
-# 0.20.2 = 0.20.1 + style_derive -> bao-stylo-derive fork swap (#44 publish
-# closure); 0.20.1 was the last version published against registry
-# stylo_derive and is retained there for the =0.20.1 pins.
-version = "0.20.2"
+version = "0.22.0"
 authors = ["The Servo Project Developers"]
 build = "build.rs"
 links = "servo_style_crate"
@@ -41,6 +37,7 @@ description = "The Stylo CSS engine"
 readme = "README.md"
 license = "MPL-2.0"
 repository = "https://github.com/servo/stylo"
+resolver = "2"
 # BAO PATCH (#35): Cargo.toml.orig ships inside the registry package this fork
 # was based on; it is a reserved file name cargo refuses to package.
 exclude = ["Cargo.toml.orig"]
@@ -99,7 +96,7 @@ version = "2"
 version = "1.0"
 
 [dependencies.cssparser]
-version = "0.37"
+version = "0.38"
 
 [dependencies.derive_more]
 version = "2"
@@ -112,7 +109,7 @@ features = [
 ]
 
 [dependencies.dom]
-version = "0.20.0"
+version = "0.22.0"
 package = "stylo_dom"
 
 [dependencies.encoding_rs]
@@ -144,7 +141,7 @@ version = "1.0"
 version = "0.4"
 
 [dependencies.malloc_size_of]
-version = "0.20.0"
+version = "0.22.0"
 features = ["servo"]
 package = "stylo_malloc_size_of"
 
@@ -153,6 +150,10 @@ version = "0.1"
 
 [dependencies.mime]
 version = "0.3.13"
+optional = true
+
+[dependencies.mozbuild]
+version = "0.1"
 optional = true
 
 [dependencies.new_debug_unreachable]
@@ -186,7 +187,7 @@ version = "1"
 version = "2.1.1"
 
 [dependencies.selectors]
-version = "0.40.0"
+version = "0.41.0"
 
 [dependencies.serde]
 version = "1.0"
@@ -194,7 +195,7 @@ features = ["derive"]
 optional = true
 
 [dependencies.servo_arc]
-version = "0.4.3"
+version = "0.5.0"
 
 [dependencies.smallbitvec]
 version = "2.3.0"
@@ -206,11 +207,11 @@ version = "1.0"
 version = "1.1"
 
 [dependencies.static_prefs]
-version = "0.20.0"
+version = "0.22.0"
 package = "stylo_static_prefs"
 
 [dependencies.string_cache]
-version = "0.9"
+version = "0.11"
 optional = true
 
 [dependencies.strum]
@@ -219,39 +220,34 @@ version = "0.28"
 [dependencies.strum_macros]
 version = "0.28"
 
+# BAO PATCH (issue #44): forked in-tree as bao-stylo-derive (W54: rebased onto
+# stylo_derive 0.22.0; delta = 3 pinned `Ok::<(), ::std::fmt::Error>` tails in
+# to_css.rs). Fixes E0282/E0283 `fmt::Error: From<_>` ambiguity when serde_fmt
+# is in the graph. Dep key stays `style_derive` (lib code does `use
+# style_derive::...`).
 [dependencies.style_derive]
-# BAO PATCH (issue #44): forked in-tree as bao-stylo-derive (delta = 3 pinned
-# `Ok::<(), ::std::fmt::Error>(())` tails in to_css.rs; see the fork's
-# Cargo.toml). Fixes E0282/E0283 `fmt::Error: From<_>` ambiguity (core
-# reflexive impl vs serde_fmt's `impl From<serde_fmt::Error> for fmt::Error`)
-# in #[css(function)] ToCss derive output when serde_fmt is in the graph
-# (log "kv_unstable_serde" -> value-bag-serde1 -> serde_fmt, GPUI/egui stacks).
-# Dep key stays `style_derive` (lib code does `use style_derive::...`).
-# NOTE (publish): registry stylo_derive is servo-owned; the registry side of
-# this swap shipped as bao-stylo-derive 0.20.1 (2026-09-20), republished
-# against by bao-stylo 0.20.2.
-version = "0.20.1"
+version = "0.22.0"
 path = "bao-stylo-derive"
 package = "bao-stylo-derive"
 
 [dependencies.style_traits]
-version = "0.20.0"
+version = "0.22.0"
 features = ["servo"]
 package = "stylo_traits"
 
 [dependencies.stylo_atoms]
-version = "0.20.0"
+version = "0.22.0"
 optional = true
 
 [dependencies.thin-vec]
 version = "0.2.1"
 
 [dependencies.to_shmem]
-version = "0.5.0"
+version = "0.6.0"
 features = ["servo"]
 
 [dependencies.to_shmem_derive]
-version = "0.1.0"
+version = "0.2.0"
 
 [dependencies.uluru]
 version = "3.0"
@@ -265,7 +261,7 @@ optional = true
 version = "1.0.2"
 
 [dependencies.web_atoms]
-version = "0.2.0"
+version = "0.3.0"
 optional = true
 
 [build-dependencies.bindgen]

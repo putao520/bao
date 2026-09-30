@@ -285,7 +285,10 @@ impl<'a> TextTransformationIterator<'a> {
         // > preserved white space.
 
         let case_map_iterator = match text_transform.case() {
-            TextTransformCase::None => {
+            // `math-auto` (stylo 0.22) italicizes math variables per CSS Math;
+            // servo layout has no math-italic mapping yet, so it renders
+            // untransformed for now.
+            TextTransformCase::None | TextTransformCase::MathAuto => {
                 Box::new(iterator) as Box<dyn Iterator<Item = CharacterTransformIteration>>
             },
             TextTransformCase::Lowercase => {

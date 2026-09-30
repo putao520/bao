@@ -16,4 +16,4 @@ name = "servo_xpath"
 log = {version = "0.4.32"}
 malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.7"}
 malloc_size_of_derive = {version = "0.1"}
-markup5ever = {version = "0.39"}
+markup5ever = {version = "0.40"}

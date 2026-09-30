@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use cssparser::{Parser, UnicodeRange, ParserInput};
+use cssparser::{Parser, UnicodeRange};
 use dom_struct::dom_struct;
 use fonts::FontFaceRuleInfo;
 use js::context::JSContext;
@@ -528,8 +528,7 @@ impl FontQueryParameters {
         // BAO patch (fork-maintained, 2026-09-28): the fork pins cssparser
         // 0.37, whose `Parser::new` takes `&mut ParserInput` (upstream window
         // end pins an older cssparser accepting `&str` directly).
-        let mut parser_input = ParserInput::new(font);
-        let mut parser = Parser::new(&mut parser_input);
+                let mut parser = Parser::new(font);
         let Ok(font_shorthand) =
             parser.parse_entirely(|parser| font::parse_value(&parser_context, parser))
         else {
