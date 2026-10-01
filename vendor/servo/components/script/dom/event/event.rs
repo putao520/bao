@@ -1372,14 +1372,19 @@ fn invoke(
             atom!("transitionrun") => atom!("webkitTransitionRun"),
             _ => return,
         };
+        // Look the renamed type's listeners up before the type move below. The
+        // spec filters listeners per-listener inside inner-invoke (step 2.1),
+        // so reusing `listeners` is sound there; this implementation pre-filters
+        // the list by the event type at step 6 instead, so the legacy invocation
+        // must look the renamed type's listeners up again.
+        let legacy_listeners = segment
+            .invocation_target
+            .get_listeners_for(&legacy_type);
         *event.type_.borrow_mut() = legacy_type;
-
-        // Step 9.3 Inner invoke with event, listeners, phase, invocationTargetInShadowTree,
-        // and legacyOutputDidListenersThrowFlag if given.
         inner_invoke(
             cx,
             event,
-            &listeners,
+            &legacy_listeners,
             phase,
             invocation_target_in_shadow_tree,
             timeline_window,

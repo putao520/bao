@@ -513,6 +513,34 @@ macro_rules! event_handler(
     )
 );
 
+/// Same as `event_handler!`, but the event type is given verbatim instead of
+/// stringified from an identifier. Required for the legacy webkit-prefixed
+/// handlers, whose event handler event types are camelCase per the HTML
+/// spec's "event handler event types" table (onwebkitanimationiteration →
+/// "webkitAnimationIteration", ...); the identifier form keys the handler
+/// under the all-lowercase name, which never matches the dispatched type.
+macro_rules! prefixed_event_handler(
+    ($event_type: expr, $getter: ident, $setter: ident) => (
+        fn $getter(&self, cx: &mut js::context::JSContext) -> Option<script_bindings::callback::RootedCallback<
+            crate::dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull,
+        >> {
+            use crate::dom::bindings::inheritance::Castable;
+            use crate::dom::eventtarget::EventTarget;
+            let eventtarget = self.upcast::<EventTarget>();
+            eventtarget.get_event_handler_common(cx, $event_type)
+        }
+
+        fn $setter(&self, cx: &mut js::context::JSContext, listener: Option<script_bindings::callback::RootedCallback<
+            crate::dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull,
+        >>) {
+            use crate::dom::bindings::inheritance::Castable;
+            use crate::dom::eventtarget::EventTarget;
+            let eventtarget = self.upcast::<EventTarget>();
+            eventtarget.set_event_handler_common(cx, $event_type, listener);
+        }
+    )
+);
+
 /// Similar to `event_handler!`, but also registers/unregisters a [`ConstellationInterest`]
 /// with the global scope when the handler is set or cleared.
 /// Use this macro for event handlers whose corresponding events are sent by the constellation
@@ -696,10 +724,10 @@ macro_rules! global_event_handlers(
         event_handler!(transitionrun, GetOntransitionrun, SetOntransitionrun);
         event_handler!(volumechange, GetOnvolumechange, SetOnvolumechange);
         event_handler!(waiting, GetOnwaiting, SetOnwaiting);
-        event_handler!(webkitanimationend, GetOnwebkitanimationend, SetOnwebkitanimationend);
-        event_handler!(webkitanimationiteration, GetOnwebkitanimationiteration, SetOnwebkitanimationiteration);
-        event_handler!(webkitanimationstart, GetOnwebkitanimationstart, SetOnwebkitanimationstart);
-        event_handler!(webkittransitionend, GetOnwebkittransitionend, SetOnwebkittransitionend);
+        prefixed_event_handler!("webkitAnimationEnd", GetOnwebkitanimationend, SetOnwebkitanimationend);
+        prefixed_event_handler!("webkitAnimationIteration", GetOnwebkitanimationiteration, SetOnwebkitanimationiteration);
+        prefixed_event_handler!("webkitAnimationStart", GetOnwebkitanimationstart, SetOnwebkitanimationstart);
+        prefixed_event_handler!("webkitTransitionEnd", GetOnwebkittransitionend, SetOnwebkittransitionend);
         event_handler!(wheel, GetOnwheel, SetOnwheel);
     )
 );
