@@ -132,7 +132,7 @@ fn test_bridge_dispatch_mouse_event() {
         event_type: "mousePressed".into(),
         x: 100.0,
         y: 200.0,
-        button: Some(0),
+        button: Some("left".into()),
         click_count: Some(1),
     };
     let _ = format!("{:?}", cmd);
@@ -159,6 +159,9 @@ fn test_bridge_dispatch_key_event() {
         key: "Enter".into(),
         code: "Enter".into(),
         text: None,
+        modifiers: 0,
+        location: 0,
+        repeat: false,
     };
     let _ = format!("{:?}", cmd);
 }
@@ -171,6 +174,9 @@ fn test_bridge_dispatch_key_event_with_text() {
         key: "a".into(),
         code: "KeyA".into(),
         text: Some("a".into()),
+        modifiers: 0,
+        location: 0,
+        repeat: false,
     };
     let _ = format!("{:?}", cmd);
 }

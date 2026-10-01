@@ -601,7 +601,7 @@ fn test_all_bridge_command_variants_serializable() {
             event_type: "click".into(),
             x: 100.0,
             y: 200.0,
-            button: Some(0),
+            button: Some("left".into()),
             click_count: Some(1),
         },
         BridgeCommand::DispatchKeyEvent {
@@ -610,6 +610,9 @@ fn test_all_bridge_command_variants_serializable() {
             key: "a".into(),
             code: "KeyA".into(),
             text: Some("a".into()),
+            modifiers: 0,
+            location: 0,
+            repeat: false,
         },
         BridgeCommand::InsertText {
             target_id: TID.into(),

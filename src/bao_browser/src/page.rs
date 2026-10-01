@@ -1762,6 +1762,23 @@ impl PageHandle {
         })
     }
 
+    /// Dispatch a keyboard event with full parameters (CDP Input face:
+    /// modifiers / location / auto-replace repeat reach the servo carrier).
+    pub fn dispatch_key_event_full(
+        &self,
+        state: KeyState,
+        key: Key,
+        code: Code,
+        location: Location,
+        modifiers: Modifiers,
+        repeat: bool,
+    ) -> Result<(), BrowserError> {
+        self.with_inner(|inner| {
+            inner.dispatch_key_event_full(state, key, code, location, modifiers, repeat);
+            Ok(())
+        })
+    }
+
     pub fn close(&self) -> Result<(), BrowserError> {
         let mut borrow = self.inner.borrow_mut();
         if let Some(inner) = borrow.take() {

@@ -240,7 +240,7 @@ fn test_bridge_cmd_mouse_event_debug() {
         event_type: "mousePressed".into(),
         x: 100.0,
         y: 200.0,
-        button: Some(0),
+        button: Some("left".into()),
         click_count: Some(1),
     };
     assert!(format!("{:?}", cmd).contains("DispatchMouseEvent"));
@@ -254,6 +254,9 @@ fn test_bridge_cmd_key_event_debug() {
         key: "a".into(),
         code: "KeyA".into(),
         text: Some("a".into()),
+        modifiers: 0,
+        location: 0,
+        repeat: false,
     };
     assert!(format!("{:?}", cmd).contains("DispatchKeyEvent"));
 }
@@ -1297,6 +1300,9 @@ fn test_bridge_cmd_dispatch_key_no_text() {
         key: "Shift".into(),
         code: "ShiftLeft".into(),
         text: None,
+        modifiers: 0,
+        location: 0,
+        repeat: false,
     };
     assert!(format!("{:?}", cmd).contains("DispatchKeyEvent"));
 }

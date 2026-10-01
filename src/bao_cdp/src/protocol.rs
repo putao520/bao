@@ -1626,10 +1626,13 @@ fn handle_input(
                 .and_then(|p| p.get("y"))
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
+            // CDP `button` is a string enum ("none"|"left"|"middle"|"right"|
+            // "back"|"forward") — not a number.
             let button = params
                 .as_ref()
                 .and_then(|p| p.get("button"))
-                .and_then(|v| v.as_i64());
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let click_count = params
                 .as_ref()
                 .and_then(|p| p.get("clickCount"))
@@ -1657,6 +1660,25 @@ fn handle_input(
                 .and_then(|p| p.get("text"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            // CDP `modifiers` bitmask: Alt=1, Ctrl=2, Meta/Command=4, Shift=8.
+            let modifiers = params
+                .as_ref()
+                .and_then(|p| p.get("modifiers"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0);
+            // CDP `location`: 0=default, 1=left, 2=right, 3=numpad.
+            let location = params
+                .as_ref()
+                .and_then(|p| p.get("location"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            // CDP `autoRepeat`.
+            let repeat = params
+                .as_ref()
+                .and_then(|p| p.get("autoRepeat"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             // REQ-BRW-048 task #10: input delivery without a bridge is a
             // -32603, never a silent no-op ok.
             bridge_send(
@@ -1667,6 +1689,9 @@ fn handle_input(
                     key,
                     code,
                     text,
+                    modifiers,
+                    location,
+                    repeat,
                 },
             )
         }

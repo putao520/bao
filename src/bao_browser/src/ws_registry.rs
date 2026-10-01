@@ -531,6 +531,56 @@ impl RegistryDispatch for BaoWsRegistry {
         if result.is_ok() {
             let sid = msg.session_id.as_deref();
             match msg.method.as_str() {
+                // Chrome close semantics: Target.closeTarget must be followed
+                // by Target.targetDestroyed (to everyone who saw the target)
+                // and Target.detachedFromTarget (per attached session) —
+                // clients resolve page.close() on the session-detach signal
+                // and hang forever without it (puppeteer W40 S11 stall).
+                "Target.closeTarget" => {
+                    let closed_tid = msg
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("targetId"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&target_id)
+                        .to_string();
+                    self.emit(
+                        event_sender,
+                        None,
+                        "Target.targetDestroyed",
+                        json!({ "targetId": closed_tid }),
+                    );
+                    // Detach every CDP session bound to the closed target
+                    // (Chrome closes them) — tagged per-session events plus
+                    // table purge.
+                    if let Ok(mut table) = self.attached_sessions.lock() {
+                        let bound: Vec<String> = table
+                            .iter()
+                            .filter(|(_, t)| **t == closed_tid)
+                            .map(|(s, _)| s.clone())
+                            .collect();
+                        for s in bound {
+                            table.remove(&s);
+                            // Chrome shape: detachedFromTarget arrives untagged
+                            // on the parent connection (mirroring how the
+                            // matching attachedToTarget was delivered) —
+                            // puppeteer's Connection routes by the message
+                            // sessionId tag to find the parent session, and a
+                            // dying-session tag points at the wrong object.
+                            // params.sessionId names the closed session.
+                            self.emit(
+                                event_sender,
+                                None,
+                                "Target.detachedFromTarget",
+                                json!({
+                                    "sessionId": s,
+                                    "targetId": closed_tid,
+                                }),
+                            );
+                        }
+                    }
+                }
                 // Playwright's page-session init: Runtime.enable must be
                 // followed by executionContextCreated or evaluate() has no
                 // context to bind to.

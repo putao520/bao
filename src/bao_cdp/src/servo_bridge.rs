@@ -79,7 +79,10 @@ pub enum BridgeCommand {
         event_type: String,
         x: f64,
         y: f64,
-        button: Option<i64>,
+        /// CDP `button`: "none" | "left" | "middle" | "right" | "back" | "forward".
+        /// Transcribed verbatim — the servo enum mapping lives in bao_browser
+        /// (the servo-aware layer), not here.
+        button: Option<String>,
         click_count: Option<i64>,
     },
     DispatchKeyEvent {
@@ -88,6 +91,12 @@ pub enum BridgeCommand {
         key: String,
         code: String,
         text: Option<String>,
+        /// CDP `modifiers` bitmask: Alt=1, Ctrl=2, Meta/Command=4, Shift=8.
+        modifiers: u32,
+        /// CDP `location`: 0=default, 1=left, 2=right, 3=numpad.
+        location: i64,
+        /// CDP `autoRepeat`.
+        repeat: bool,
     },
     InsertText {
         target_id: String,
@@ -717,7 +726,7 @@ mod tests {
             event_type: "mouseMoved".into(),
             x: 100.0,
             y: 200.0,
-            button: Some(0),
+            button: Some("left".into()),
             click_count: Some(2),
         };
         let debug_str = format!("{:?}", cmd);
@@ -733,6 +742,9 @@ mod tests {
             key: "Enter".into(),
             code: "Enter".into(),
             text: Some("\r".into()),
+            modifiers: 0,
+            location: 0,
+            repeat: false,
         };
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("DispatchKeyEvent"));

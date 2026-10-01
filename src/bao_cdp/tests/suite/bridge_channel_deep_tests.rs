@@ -236,7 +236,7 @@ fn test_send_dispatch_mouse_event() {
                 assert_eq!(event_type, "mousePressed");
                 assert_eq!(x, 100.0);
                 assert_eq!(y, 200.0);
-                assert_eq!(button, Some(0));
+                assert_eq!(button, Some("left".into()));
                 assert_eq!(click_count, Some(1));
                 BridgeResponse {
                     result: Ok(json!({})),
@@ -250,7 +250,7 @@ fn test_send_dispatch_mouse_event() {
         event_type: "mousePressed".into(),
         x: 100.0,
         y: 200.0,
-        button: Some(0),
+        button: Some("left".into()),
         click_count: Some(1),
     });
     assert!(resp.result.is_ok());
@@ -285,6 +285,9 @@ fn test_send_dispatch_key_event() {
         key: "a".into(),
         code: "KeyA".into(),
         text: Some("a".into()),
+        modifiers: 0,
+        location: 0,
+        repeat: false,
     });
     assert!(resp.result.is_ok());
 }

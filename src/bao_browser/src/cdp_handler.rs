@@ -5,8 +5,12 @@ use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, MAIN_FRAME_ID};
 use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
 use serde_json::Value;
-use servo::{CookieSource, StorageType};
+use servo::{
+    Code, CookieSource, Key, KeyState, Location, Modifiers, MouseButton, MouseButtonAction,
+    NamedKey, StorageType,
+};
 use std::collections::HashSet;
+use std::str::FromStr;
 
 use crate::config::PageConfig;
 use crate::delegate::{
@@ -71,9 +75,9 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             x,
             y,
             button,
-            click_count,
+            click_count: _,
         } => with_page(pool, &target_id, |page| {
-            cmd_mouse_event(page, &event_type, x, y, button, click_count)
+            cmd_mouse_event(page, &event_type, x, y, button)
         }),
         BridgeCommand::DispatchKeyEvent {
             target_id,
@@ -81,8 +85,20 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             key,
             code,
             text,
+            modifiers,
+            location,
+            repeat,
         } => with_page(pool, &target_id, |page| {
-            cmd_key_event(page, &event_type, &key, &code, text.as_deref())
+            cmd_key_event(
+                page,
+                &event_type,
+                &key,
+                &code,
+                text.as_deref(),
+                modifiers,
+                location,
+                repeat,
+            )
         }),
         BridgeCommand::InsertText { target_id, text } => {
             with_page(pool, &target_id, |page| cmd_insert_text(page, &text))
@@ -861,36 +877,191 @@ fn cmd_set_attribute(page: &PageHandle, name: &str, value: &str) -> Result<Value
     Ok(serde_json::json!({}))
 }
 
+/// Input.dispatchMouseEvent — real servo input delivery.
+///
+/// CDP x/y are viewport-relative CSS pixels; servo's
+/// `WebViewPoint::Page(CSSPixel)` is the same coordinate space. `clickCount`
+/// has no servo carrier (`MouseButtonEvent` carries no click count), so
+/// double-click synthesis is out of this face's expressible range.
 fn cmd_mouse_event(
-    _page: &PageHandle,
-    _event_type: &str,
-    _x: f64,
-    _y: f64,
-    _button: Option<i64>,
-    _click_count: Option<i64>,
+    page: &PageHandle,
+    event_type: &str,
+    x: f64,
+    y: f64,
+    button: Option<String>,
 ) -> Result<Value, String> {
-    // Mouse event dispatch through servo requires InputEvent API
-    // For now, acknowledge the command
+    let (x, y) = (x as f32, y as f32);
+    match event_type {
+        "mousePressed" => page
+            .dispatch_mouse_event(MouseButtonAction::Down, cdp_mouse_button(button), x, y)
+            .map_err(to_browser_error)?,
+        "mouseReleased" => page
+            .dispatch_mouse_event(MouseButtonAction::Up, cdp_mouse_button(button), x, y)
+            .map_err(to_browser_error)?,
+        "mouseMoved" => page.dispatch_mouse_move(x, y).map_err(to_browser_error)?,
+        other => {
+            return Err(format!(
+                "Input.dispatchMouseEvent: unsupported type '{other}' (servo carries pressed/released/moved)"
+            ))
+        }
+    }
     Ok(serde_json::json!({}))
 }
 
+/// Input.dispatchKeyEvent — real servo keyboard delivery.
+///
+/// The ok answer means the event was handed to the servo input pipeline
+/// (`webview.notify_input_event`), not merely received: servo's keydown on a
+/// focused editable runs its real text-input engine (character insertion,
+/// Enter/Tab/Backspace semantics, Ctrl/Meta shortcuts) and fires trusted
+/// keydown/keypress/keyup DOM events.
 fn cmd_key_event(
-    _page: &PageHandle,
-    _event_type: &str,
-    _key: &str,
-    _code: &str,
-    _text: Option<&str>,
+    page: &PageHandle,
+    event_type: &str,
+    key: &str,
+    code: &str,
+    text: Option<&str>,
+    modifiers: u32,
+    location: i64,
+    repeat: bool,
 ) -> Result<Value, String> {
+    let state = match event_type {
+        // CDP: rawKeyDown/keyDown are key-down states. "char" is text without
+        // a physical key — servo has a single keyboard carrier, so it rides
+        // the same trusted keydown plus a pairing keyUp below.
+        "keyDown" | "rawKeyDown" | "char" => KeyState::Down,
+        "keyUp" => KeyState::Up,
+        other => {
+            return Err(format!(
+                "Input.dispatchKeyEvent: unsupported type '{other}' (CDP carries keyDown/rawKeyDown/keyUp/char)"
+            ))
+        }
+    };
+    let key = cdp_key(key, text);
+    let code = cdp_code(code);
+    let modifiers = cdp_modifiers(modifiers);
+    let location = cdp_location(location);
+    page.dispatch_key_event_full(
+        state,
+        key.clone(),
+        code.clone(),
+        location,
+        modifiers,
+        repeat,
+    )
+    .map_err(to_browser_error)?;
+    // "char": the Down half alone leaves the synthetic key pressed — pair it
+    // with a release so key-state bookkeeping stays honest.
+    if event_type == "char" {
+        page
+            .dispatch_key_event_full(KeyState::Up, key, code, location, modifiers, repeat)
+            .map_err(to_browser_error)?;
+    }
     Ok(serde_json::json!({}))
 }
 
+/// Input.insertText — real insertion path.
+///
+/// CDP semantics: insert text that does not come from a physical key press.
+/// The servo carrier is a real trusted keyboard Down/Up pair per character
+/// with `Key::Character` (servo's text-input engine inserts it and fires the
+/// real `input` event); the code is `Unidentified` because there is no
+/// physical key. No `el.value` JS shortcut — the value changes through the
+/// text-input engine, observable to page script exactly as a real keystroke.
 fn cmd_insert_text(page: &PageHandle, text: &str) -> Result<Value, String> {
-    let js = format!(
-        "(function() {{ var el = document.activeElement; if (el && 'value' in el) el.value += {}; }})()",
-        serde_json::to_string(text).unwrap_or_default(),
-    );
-    let _ = page.evaluate_js(&js).map_err(to_browser_error)?;
+    for ch in text.chars() {
+        let key = Key::Character(ch.to_string());
+        page.dispatch_key_event_full(
+            KeyState::Down,
+            key.clone(),
+            Code::Unidentified,
+            Location::Standard,
+            Modifiers::empty(),
+            false,
+        )
+        .map_err(to_browser_error)?;
+        page.dispatch_key_event_full(
+            KeyState::Up,
+            key,
+            Code::Unidentified,
+            Location::Standard,
+            Modifiers::empty(),
+            false,
+        )
+        .map_err(to_browser_error)?;
+    }
     Ok(serde_json::json!({}))
+}
+
+// ─── CDP → servo input-enum mapping (REQ-CDP-004) ──────────────────────────
+
+/// CDP modifiers bitmask → servo `Modifiers`.
+/// CDP: Alt=1, Ctrl=2, Meta/Command=4, Shift=8.
+fn cdp_modifiers(bits: u32) -> Modifiers {
+    let mut m = Modifiers::empty();
+    if bits & 0b0001 != 0 {
+        m |= Modifiers::ALT;
+    }
+    if bits & 0b0010 != 0 {
+        m |= Modifiers::CONTROL;
+    }
+    if bits & 0b0100 != 0 {
+        m |= Modifiers::META;
+    }
+    if bits & 0b1000 != 0 {
+        m |= Modifiers::SHIFT;
+    }
+    m
+}
+
+/// CDP `location` int → servo `Location` (0=default, 1=left, 2=right,
+/// 3=numpad; out-of-range falls back to Standard — servo has no unknown arm).
+fn cdp_location(location: i64) -> Location {
+    match location {
+        1 => Location::Left,
+        2 => Location::Right,
+        3 => Location::Numpad,
+        _ => Location::Standard,
+    }
+}
+
+/// CDP `key`/`text` strings → servo `Key`.
+///
+/// `keyboard_types::Key::FromStr` is the DOM-`key` authority: named keys
+/// ("Enter", "ArrowLeft", …) become `Key::Named`, printable strings become
+/// `Key::Character`. Within Character, the CDP `text` is the authoritative
+/// insertion payload (`key` the identity fallback) — except for named keys,
+/// whose servo semantics (Enter submits / newline, Tab focus, Backspace
+/// deletes) must win over Chrome's legacy `text` transcription ("\r", "\t").
+fn cdp_key(key: &str, text: Option<&str>) -> Key {
+    let text = text.filter(|t| !t.is_empty());
+    match Key::from_str(key) {
+        Ok(Key::Named(named)) => Key::Named(named),
+        Ok(Key::Character(_)) => Key::Character(text.unwrap_or(key).to_string()),
+        Err(_) => Key::Named(NamedKey::Unidentified),
+    }
+}
+
+/// CDP `code` string → servo `Code` (`keyboard_types::Code::FromStr` accepts
+/// the DOM code vocabulary — "KeyA", "Digit4", "NumpadSubtract", …;
+/// unparseable falls back to `Unidentified`).
+fn cdp_code(code: &str) -> Code {
+    Code::from_str(code).unwrap_or(Code::Unidentified)
+}
+
+/// CDP `button` string → servo `MouseButton`.
+/// CDP vocabulary: none/left/middle/right/back/forward; servo arms:
+/// None/Primary/Auxiliary/Secondary/Back/Forward. Absent falls back to the
+/// CDP default ("none").
+fn cdp_mouse_button(button: Option<String>) -> MouseButton {
+    match button.as_deref() {
+        Some("left") => MouseButton::Primary,
+        Some("middle") => MouseButton::Auxiliary,
+        Some("right") => MouseButton::Secondary,
+        Some("back") => MouseButton::Back,
+        Some("forward") => MouseButton::Forward,
+        _ => MouseButton::None,
+    }
 }
 
 fn cmd_set_viewport(_page: &PageHandle, _width: u32, _height: u32) -> Result<Value, String> {
@@ -1789,7 +1960,16 @@ const CDP_REGISTRY_PRELUDE: &str = r#"(function() {
       }
     }
     if (byValue && v !== null && v !== undefined && (typeof v === 'object' || typeof v === 'function')) {
-      try { ro.value = v; } catch (e) {}
+      // Chrome: returnByValue results are pure-value RemoteObjects —
+      // objectId and value are mutually exclusive (puppeteer asserts
+      // "Cannot extract value when objectId is given"), and value must be
+      // a deep JSON serialization, never a live object reference.
+      var deep;
+      try { deep = JSON.parse(JSON.stringify(typeof v === 'function' ? {} : v)); }
+      catch (e3) { deep = {}; }
+      ro = (typeof v === 'function')
+        ? { type: 'function', className: 'Function', description: ro.description || 'function ()', value: deep }
+        : { type: ro.type, subtype: ro.subtype, className: ro.className, description: ro.description, value: deep };
     }
     return ro;
   }
@@ -2875,32 +3055,146 @@ mod tests {
         assert!(json_value.contains("\\\""));
     }
 
-    // ─── cmd_insert_text JS construction (pure logic) ──────────────────
-    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+    // ─── CDP → servo input mapping (REQ-CDP-004; replaces the stub-era
+    // cmd_insert_text JS-construction tests, which pinned the deleted
+    // el.value shortcut shape rather than any delivery behavior) ─────────
+    // @trace REQ-CDP-004 [req:REQ-CDP-004] [level:unit]
 
     #[test]
-    fn cmd_insert_text_js_construction() {
-        let text = "hello";
-        let js = format!(
-            "(function() {{ var el = document.activeElement; if (el && 'value' in el) el.value += {}; }})()",
-            serde_json::to_string(text).unwrap_or_default(),
+    fn cdp_modifiers_bitmask_maps_to_servo_flags() {
+        // CDP: Alt=1, Ctrl=2, Meta=4, Shift=8.
+        assert_eq!(super::cdp_modifiers(0), servo::Modifiers::empty());
+        assert!(super::cdp_modifiers(1).contains(servo::Modifiers::ALT));
+        assert!(super::cdp_modifiers(2).contains(servo::Modifiers::CONTROL));
+        assert!(super::cdp_modifiers(4).contains(servo::Modifiers::META));
+        assert!(super::cdp_modifiers(8).contains(servo::Modifiers::SHIFT));
+        // Combined mask keeps every bit independently.
+        let all = super::cdp_modifiers(1 | 2 | 4 | 8);
+        assert!(all.contains(servo::Modifiers::ALT));
+        assert!(all.contains(servo::Modifiers::CONTROL));
+        assert!(all.contains(servo::Modifiers::META));
+        assert!(all.contains(servo::Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn cdp_location_int_maps_to_servo_location() {
+        // CDP: 0=default, 1=left, 2=right, 3=numpad.
+        assert_eq!(super::cdp_location(0), servo::Location::Standard);
+        assert_eq!(super::cdp_location(1), servo::Location::Left);
+        assert_eq!(super::cdp_location(2), servo::Location::Right);
+        assert_eq!(super::cdp_location(3), servo::Location::Numpad);
+        // Out-of-range falls back to Standard (servo has no unknown arm).
+        assert_eq!(super::cdp_location(9), servo::Location::Standard);
+        assert_eq!(super::cdp_location(-1), servo::Location::Standard);
+    }
+
+    #[test]
+    fn cdp_key_named_keys_win_over_legacy_text() {
+        // Enter arrives with text="\r" — the Named arm must win so servo's
+        // handle_return (newline/submit) runs instead of inserting "\r".
+        assert_eq!(
+            super::cdp_key("Enter", Some("\r")),
+            servo::Key::Named(servo::NamedKey::Enter)
         );
-        assert!(js.contains("document.activeElement"));
-        assert!(js.contains("el.value"));
+        assert_eq!(
+            super::cdp_key("Tab", Some("\t")),
+            servo::Key::Named(servo::NamedKey::Tab)
+        );
+        assert_eq!(
+            super::cdp_key("ArrowDown", None),
+            servo::Key::Named(servo::NamedKey::ArrowDown)
+        );
     }
 
     #[test]
-    fn cmd_insert_text_js_empty_string() {
-        let text = "";
-        let json_str = serde_json::to_string(text).unwrap_or_default();
-        assert_eq!(json_str, "\"\"");
+    fn cdp_key_character_uses_text_as_insertion_payload() {
+        // Printable key: CDP `text` is the authoritative insertion payload.
+        assert_eq!(
+            super::cdp_key("b", Some("b")),
+            servo::Key::Character("b".into())
+        );
+        // Shifted letter: key="B" (identity), text="B" (payload).
+        assert_eq!(
+            super::cdp_key("B", Some("B")),
+            servo::Key::Character("B".into())
+        );
+        // No text: the key string itself is the payload.
+        assert_eq!(
+            super::cdp_key("x", None),
+            servo::Key::Character("x".into())
+        );
+        // Empty text is treated as absent.
+        assert_eq!(
+            super::cdp_key("x", Some("")),
+            servo::Key::Character("x".into())
+        );
     }
 
     #[test]
-    fn cmd_insert_text_js_newline_escaped() {
-        let text = "line1\nline2";
-        let json_str = serde_json::to_string(text).unwrap_or_default();
-        assert!(json_str.contains("\\n"));
+    fn cdp_key_unparseable_falls_back_to_unidentified() {
+        assert_eq!(
+            super::cdp_key("NotARealKeyName", None),
+            servo::Key::Named(servo::NamedKey::Unidentified)
+        );
+    }
+
+    #[test]
+    fn cdp_code_parses_dom_vocabulary_with_unidentified_fallback() {
+        assert_eq!(super::cdp_code("KeyB"), servo::Code::KeyB);
+        assert_eq!(super::cdp_code("Digit4"), servo::Code::Digit4);
+        assert_eq!(
+            super::cdp_code("NumpadSubtract"),
+            servo::Code::NumpadSubtract
+        );
+        assert_eq!(super::cdp_code("Enter"), servo::Code::Enter);
+        // Empty / unknown codes fall back to Unidentified, never panic.
+        assert_eq!(super::cdp_code(""), servo::Code::Unidentified);
+        assert_eq!(super::cdp_code("NotACode"), servo::Code::Unidentified);
+    }
+
+    #[test]
+    fn cdp_mouse_button_string_maps_to_servo_arms() {
+        use servo::MouseButton;
+        assert_eq!(
+            super::cdp_mouse_button(Some("left".into())),
+            MouseButton::Primary
+        );
+        assert_eq!(
+            super::cdp_mouse_button(Some("middle".into())),
+            MouseButton::Auxiliary
+        );
+        assert_eq!(
+            super::cdp_mouse_button(Some("right".into())),
+            MouseButton::Secondary
+        );
+        assert_eq!(
+            super::cdp_mouse_button(Some("back".into())),
+            MouseButton::Back
+        );
+        assert_eq!(
+            super::cdp_mouse_button(Some("forward".into())),
+            MouseButton::Forward
+        );
+        // CDP default: absent or "none".
+        assert_eq!(super::cdp_mouse_button(None), MouseButton::None);
+        assert_eq!(
+            super::cdp_mouse_button(Some("none".into())),
+            MouseButton::None
+        );
+    }
+
+    #[test]
+    fn cmd_insert_text_real_path_no_js_shortcut() {
+        // The stub-era JS shortcut is deleted: the real carrier is trusted
+        // keyboard events, so no page-level JS string is built. The needle is
+        // assembled via concat! so this assertion itself never contains the
+        // contiguous form it guards against.
+        let source = include_str!("cdp_handler.rs");
+        let shortcut = concat!("el.", "value", " +");
+        assert!(
+            !source.contains(shortcut),
+            "insertText must not regress to the el.value JS shortcut"
+        );
     }
 
     // ─── cmd_set_user_agent JS construction (pure logic) ───────────────

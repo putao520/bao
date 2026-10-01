@@ -399,7 +399,11 @@ impl Preferences {
             dom_geolocation_enabled: false,
             dom_wakelock_enabled: false,
             dom_indexeddb_enabled: false,
-            dom_intersection_observer_enabled: false,
+            // BAO: on by default — Chrome feature parity (real Chrome ships
+            // IntersectionObserver; withholding a completed W3C API is itself a
+            // fingerprinting signal). Same default posture as
+            // dom_resize_observer_enabled above.
+            dom_intersection_observer_enabled: true,
             dom_microdata_testing_enabled: false,
             dom_navigator_protocol_handlers_enabled: false,
             dom_notification_enabled: false,

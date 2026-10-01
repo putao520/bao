@@ -2441,7 +2441,8 @@ fn test_input_dispatch_mouse_event_no_bridge_empty_result() {
     // task #10: input delivery without a bridge → -32603.
     let resp = dispatch(
         "Input.dispatchMouseEvent",
-        Some(json!({"type": "mousePressed", "x": 10.0, "y": 20.0, "button": 0, "clickCount": 1})),
+        // CDP `button` is a string enum (stub-era numeric fixture corrected).
+        Some(json!({"type": "mousePressed", "x": 10.0, "y": 20.0, "button": "left", "clickCount": 1})),
     );
     let err = resp.error.expect("explicit error required");
     assert_eq!(err.code, -32603);
@@ -2482,7 +2483,7 @@ fn test_input_dispatch_mouse_event_with_bridge_propagates_fields() {
     });
     let _ = dispatch_bridge(
         "Input.dispatchMouseEvent",
-        Some(json!({"type": "mouseReleased", "x": 12.5, "y": -3.0, "button": 2, "clickCount": 3})),
+        Some(json!({"type": "mouseReleased", "x": 12.5, "y": -3.0, "button": "right", "clickCount": 3})),
         "t1",
         &tx,
     );

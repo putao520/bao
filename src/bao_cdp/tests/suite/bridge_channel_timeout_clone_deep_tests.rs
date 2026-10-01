@@ -442,7 +442,7 @@ fn test_bridge_command_dispatch_mouse_debug() {
         event_type: "mousePressed".into(),
         x: 100.0,
         y: 200.0,
-        button: Some(0),
+        button: Some("left".into()),
         click_count: Some(1),
     };
     let debug = format!("{:?}", cmd);
@@ -457,6 +457,9 @@ fn test_bridge_command_dispatch_key_debug() {
         key: "Enter".into(),
         code: "Enter".into(),
         text: None,
+        modifiers: 0,
+        location: 0,
+        repeat: false,
     };
     let debug = format!("{:?}", cmd);
     assert!(debug.contains("DispatchKeyEvent"));
@@ -853,6 +856,9 @@ fn test_all_bridge_commands_constructible() {
             key: String::new(),
             code: String::new(),
             text: None,
+            modifiers: 0,
+            location: 0,
+            repeat: false,
         },
         BridgeCommand::InsertText {
             target_id: TID.into(),
@@ -1029,7 +1035,7 @@ fn test_all_bridge_commands_clone_round_trip() {
             event_type: "mouseMoved".into(),
             x: 1.5,
             y: 2.5,
-            button: Some(1),
+            button: Some("middle".into()),
             click_count: Some(2),
         },
         BridgeCommand::DispatchKeyEvent {
@@ -1038,6 +1044,9 @@ fn test_all_bridge_commands_clone_round_trip() {
             key: "a".into(),
             code: "KeyA".into(),
             text: Some("a".into()),
+            modifiers: 0,
+            location: 0,
+            repeat: false,
         },
         BridgeCommand::InsertText {
             target_id: TID.into(),
