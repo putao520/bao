@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-gstreamer-render"
-version = "0.5.11"
+version = "0.5.16"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -15,4 +15,4 @@ path = "lib.rs"
 
 [dependencies]
 gstreamer = {version = "0.25", features = ["v1_18"]}
-servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.13"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.19"}

@@ -162,27 +162,32 @@ impl WsCdp {
         panic!("timeout waiting for {method} response");
     }
 
-    /// Send a raw message object (carrying a sessionId) and wait for the
-    /// matching response id.
-    fn send_raw(&mut self, msg: Value) -> Value {
-        let id = msg["id"].as_i64().unwrap();
-        self.client
-            .send_text(&serde_json::to_string(&msg).unwrap())
-            .expect("ws send");
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    /// Event-face helper: read frames until a `Page.frameNavigated` event for
+    /// a frame whose url contains `url_hint` arrives on the wire (bounded).
+    /// Other events, stale events from earlier navigations, and command
+    /// responses seen along the way are skipped. This is the proof that the
+    /// harness event pump (servo_event_rx → translate → broadcaster/
+    /// event_router) actually reaches WS clients — command responses alone
+    /// cannot evidence that path.
+    fn wait_frame_navigated_to(&mut self, url_hint: &str) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while std::time::Instant::now() < deadline {
             match self.client.recv().expect("ws recv") {
                 RecvOutcome::Message(_op, payload) => {
                     let v: Value = serde_json::from_slice(&payload).expect("valid json frame");
-                    if v.get("id").and_then(|i| i.as_i64()) == Some(id) {
-                        return v;
+                    if v.get("method").and_then(|m| m.as_str()) == Some("Page.frameNavigated")
+                        && v["params"]["frame"]["url"]
+                            .as_str()
+                            .is_some_and(|url| url.contains(url_hint))
+                    {
+                        return true;
                     }
                 }
                 RecvOutcome::Timeout => continue,
-                RecvOutcome::Closed => panic!("ws closed waiting for raw response"),
+                RecvOutcome::Closed => return false,
             }
         }
-        panic!("timeout waiting for raw response");
+        false
     }
 }
 
@@ -234,6 +239,24 @@ fn playwright_style_full_flow_three_rounds() {
     let result = loop {
         runtime.spin_event_loop();
         bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
+        // Event pump (same pathway as puppeteer_e2e): servo events → CDP
+        // events → session-tagged targets through the registry's
+        // broadcast_for_target, untagged ones broadcast to every WS session.
+        // Without this drain the WS wire carries command responses only and
+        // any event-based settle face reads nothing.
+        while let Ok(servo_event) = servo_event_rx.try_recv() {
+            for cdp_event in translate(servo_event) {
+                match cdp_event.session_id.clone() {
+                    Some(target) if !target.is_empty() => event_router.broadcast_for_target(
+                        broadcaster.as_ref(),
+                        &target,
+                        &cdp_event.method,
+                        cdp_event.params,
+                    ),
+                    _ => broadcaster.send_event(&cdp_event.method, cdp_event.params),
+                }
+            }
+        }
         match rx.try_recv() {
             Ok(r) => break r,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -266,6 +289,13 @@ fn client_rounds(
     let mut t = WsCdp::connect(ws_url);
 
     let run = (|| -> Result<(), String> {
+        // CDP semantics: Page.* events reach a page session only after it
+        // enabled the domain (the CdpServer session pump gates the outbox on
+        // has_domain_enabled) — real clients (Playwright) enable first too.
+        let r = send(&mut t, "Page.enable", json!({}));
+        if r.get("error").is_some() {
+            return Err(format!("Page.enable: {r}"));
+        }
         // Screenshot channel availability (probe-gated face). The GL composite
         // channel is environment-sensitive on headless workers (#40 family):
         // when the bridge errors instead of delivering a frame, the face is
@@ -273,6 +303,7 @@ fn client_rounds(
         // webvtt_render probe+skip) instead of burning the 15s bridge timeout
         // 20 times per round. On a GL-capable host the assertion below is hard.
         let mut screenshots_usable = true;
+        let mut frame_navigated_events = 0usize;
         for round in 1..=3usize {
             // 1. navigate
             let r = send(
@@ -283,6 +314,15 @@ fn client_rounds(
             if r.get("error").is_some() {
                 return Err(format!("round {round} navigate: {r}"));
             }
+            // 1b. event face: the wire must deliver Page.frameNavigated for
+            // this navigation — the event-pump proof (servo_event_rx →
+            // translate → broadcaster/event_router → WS client).
+            if !t.wait_frame_navigated_to(&format!("page-{round}")) {
+                return Err(format!(
+                    "round {round} no Page.frameNavigated event on the wire"
+                ));
+            }
+            frame_navigated_events += 1;
             // 2. load settle (poll the round marker)
             let probe = format!(
                 "(function(){{ var m = document.getElementById('mark'); return m ? m.textContent : 'none'; }})()"
@@ -406,7 +446,20 @@ fn client_rounds(
             if !settled2 {
                 return Err(format!("round {round} second navigation never settled"));
             }
+            // 7b. the second navigation must have delivered its
+            // Page.frameNavigated too (same event-pump proof; the `s` suffix
+            // pins it to the second page).
+            if !t.wait_frame_navigated_to(&format!("page-{round}s")) {
+                return Err(format!(
+                    "round {round} no Page.frameNavigated event for the second navigation"
+                ));
+            }
+            frame_navigated_events += 1;
         }
+        assert_eq!(
+            frame_navigated_events, 6,
+            "every one of the 6 navigations must have delivered Page.frameNavigated"
+        );
         Ok(())
     })();
     let _ = tx.send(run);

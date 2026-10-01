@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-base"
-version = "0.5.10"
+version = "0.5.17"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -31,7 +31,7 @@ regex = {version = "1.12"}
 serde = {version = "1.0.228"}
 serde_json = {version = "1.0"}
 smallvec = {version = "1"}
-servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.4"}
+servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.12"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 unicode-segmentation = {version = "1.13.3"}
 webrender_api = {version = "0.70"}

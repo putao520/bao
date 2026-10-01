@@ -909,8 +909,36 @@ impl TimerListener {
                         global.downcast::<WorkerGlobalScope>().expect("Window timer delivered to worker");
                     },
                     TimerSource::FromWindow(pipeline) => {
-                        assert_eq!(pipeline, global.pipeline_id());
                         global.downcast::<Window>().expect("Worker timer delivered to window");
+                        // BAO PATCH (timers × window_for_replacement reuse arm,
+                        // 2026-10-01, REQ-BRW-002; upstream-base fix, replay on
+                        // servo absorption): the frozen `FromWindow(pipeline)` is
+                        // the pipeline that scheduled the timer, but the event is
+                        // delivered to the Trusted **Window**. Same-origin
+                        // navigation into an initial about:blank document reuses
+                        // the Window ("initialise the document object" step 6) via
+                        // `Window::init_document`, so after the swap
+                        // `global.pipeline_id()` (= `Document().pipeline_id()`)
+                        // reports the NEW pipeline and can never match a pending
+                        // timer of the superseded document. The former
+                        // `assert_eq!` here turned that legitimate state into a
+                        // ScriptThread panic (probe evidence: `left: (2,3)`
+                        // frozen blank-doc pipeline vs `right: (2,4)` post-swap).
+                        // Per HTML the superseded document is not fully active
+                        // and its tasks are skipped, not fatal: drop the stale
+                        // event. Firing it would be a zombie fire anyway — the
+                        // old document's OneshotTimers (own expected_event_id
+                        // state) are unreachable through the reused window, so
+                        // `fire_timer` below would run against the wrong
+                        // document's timer map.
+                        if pipeline != global.pipeline_id() {
+                            debug!(
+                                "ignoring timer fire event for superseded pipeline \
+                                 {pipeline:?} (window active on {:?})",
+                                global.pipeline_id()
+                            );
+                            return;
+                        }
                     },
                 };
                 global.fire_timer(id, cx);

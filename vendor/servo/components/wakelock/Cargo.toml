@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-wakelock"
-version = "0.5.12"
+version = "0.5.16"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -14,5 +14,5 @@ name = "servo_wakelock"
 path = "lib.rs"
 
 [dependencies]
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.11"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
 serde = {version = "1.0.228"}
