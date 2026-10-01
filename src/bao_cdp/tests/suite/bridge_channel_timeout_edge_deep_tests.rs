@@ -2218,7 +2218,9 @@ fn test_dom_resolve_node_and_push_nodes_require_params() {
     let resp = dispatch("DOM.resolveNode", None);
     let err = resp.error.expect("explicit error required");
     assert_eq!(err.code, -32602);
-    assert!(err.message.contains("nodeId or objectId"));
+    // v7: backendNodeId accepted as a third node-ref shape — the empty-params
+    // error now names all three.
+    assert!(err.message.contains("nodeId, objectId or backendNodeId"));
     let resp = dispatch("DOM.pushNodesByBackendIdsToFrontend", None);
     let err = resp.error.expect("explicit error required");
     assert_eq!(err.code, -32602);
@@ -2452,7 +2454,7 @@ fn test_input_dispatch_mouse_event_no_bridge_empty_result() {
 fn test_input_dispatch_mouse_event_with_bridge_propagates_fields() {
     let (tx, rx) = bridge_channel(Duration::from_millis(200));
     let captured = Arc::new(std::sync::Mutex::new(
-        None::<(String, f64, f64, Option<i64>, Option<i64>)>,
+        None::<(String, f64, f64, Option<String>, Option<i64>)>,
     ));
     let captured2 = captured.clone();
     let done = Arc::new(AtomicUsize::new(0));
@@ -2492,7 +2494,7 @@ fn test_input_dispatch_mouse_event_with_bridge_propagates_fields() {
     assert_eq!(et, "mouseReleased");
     assert_eq!(x, 12.5);
     assert_eq!(y, -3.0);
-    assert_eq!(b, Some(2));
+    assert_eq!(b, Some("right".to_string()));
     assert_eq!(c, Some(3));
 }
 
