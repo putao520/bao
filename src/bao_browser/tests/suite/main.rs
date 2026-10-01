@@ -95,6 +95,7 @@ mod runtime_bridge_deep_tests;
 mod screenshot_permission_error_tests;
 mod security_sandbox_tests;
 mod servo_render_pipeline_tests;
+mod timer_window_replacement_tests;
 mod stealth_diagnostic_detection_tests;
 mod stealth_fingerprint_e2e_tests;
 mod stealth_per_page_wire_tests;

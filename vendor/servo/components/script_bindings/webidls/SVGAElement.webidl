@@ -9,7 +9,7 @@ interface SVGAElement : SVGGraphicsElement {
   //attribute DOMString download;
   //attribute USVString ping;
   //attribute DOMString rel;
-  //[SameObject, PutForwards=value] readonly attribute DOMTokenList relList;
+  [SameObject, PutForwards=value] readonly attribute DOMTokenList relList;
   //attribute DOMString hreflang;
   //attribute DOMString type;
 

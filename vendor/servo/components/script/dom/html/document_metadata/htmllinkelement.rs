@@ -121,6 +121,8 @@ pub(crate) struct HTMLLinkElement {
     source_set: DomRefCell<SourceSet>,
     /// <https://html.spec.whatwg.org/multipage/#dom-link-blocking>
     blocking: MutNullableDom<DOMTokenList>,
+    /// <https://html.spec.whatwg.org/multipage/#dom-link-sizes>
+    sizes: MutNullableDom<DOMTokenList>,
 }
 
 impl HTMLLinkElement {
@@ -146,6 +148,7 @@ impl HTMLLinkElement {
             line_number: creator.return_line_number(),
             source_set: DomRefCell::new(SourceSet::new()),
             blocking: Default::default(),
+            sizes: Default::default(),
         }
     }
 
@@ -1263,6 +1266,12 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
                 Some(vec![Atom::from("render")]),
             )
         })
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-link-sizes>
+    fn Sizes(&self, cx: &mut js::context::JSContext) -> DomRoot<DOMTokenList> {
+        self.sizes
+            .or_init(|| DOMTokenList::new(cx, self.upcast(), &local_name!("sizes"), None))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-link-crossorigin>

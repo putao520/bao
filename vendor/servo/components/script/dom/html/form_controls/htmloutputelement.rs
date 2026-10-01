@@ -13,6 +13,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::document::Document;
+use crate::dom::domtokenlist::DOMTokenList;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::html::htmlelement::HTMLElement;
@@ -30,6 +31,8 @@ pub(crate) struct HTMLOutputElement {
     labels_node_list: MutNullableDom<NodeList>,
     default_value_override: DomRefCell<Option<DOMString>>,
     validity_state: MutNullableDom<ValidityState>,
+    /// <https://html.spec.whatwg.org/multipage/#dom-output-htmlfor>
+    html_for: MutNullableDom<DOMTokenList>,
 }
 
 impl HTMLOutputElement {
@@ -44,6 +47,7 @@ impl HTMLOutputElement {
             labels_node_list: Default::default(),
             default_value_override: DomRefCell::new(None),
             validity_state: Default::default(),
+            html_for: Default::default(),
         }
     }
 
@@ -78,6 +82,12 @@ impl HTMLOutputElementMethods<crate::DomTypeHolder> for HTMLOutputElement {
 
     // https://html.spec.whatwg.org/multipage/#dom-lfe-labels
     make_labels_getter!(Labels, labels_node_list);
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-output-htmlfor>
+    fn HtmlFor(&self, cx: &mut JSContext) -> DomRoot<DOMTokenList> {
+        self.html_for
+            .or_init(|| DOMTokenList::new(cx, self.upcast(), &local_name!("for"), None))
+    }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-output-defaultvaleu>
     fn DefaultValue(&self) -> DOMString {
