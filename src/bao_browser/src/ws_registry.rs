@@ -563,10 +563,13 @@ impl RegistryDispatch for BaoWsRegistry {
                 // navigation promise from frameStartedLoading/frameNavigated.
                 "Page.navigate" => {
                     if let Ok(ref r) = result {
+                        // The response frameId is authoritative; the tolerance
+                        // fallback stays in the frame namespace (never the
+                        // PageId — that is the targetId namespace).
                         let fid = r
                             .get("frameId")
                             .and_then(|v| v.as_str())
-                            .unwrap_or(&target_id)
+                            .unwrap_or(MAIN_FRAME_ID)
                             .to_string();
                         let loader = r
                             .get("loaderId")

@@ -17,6 +17,7 @@ use servo::{
     PermissionRequest, ScreenGeometry, ServoDelegate, ServoError, WebView, WebViewDelegate,
 };
 
+use bao_cdp::servo_bridge::MAIN_FRAME_ID;
 use bao_cdp::{BaoEvent, ConsoleMessage};
 use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
 
@@ -4803,7 +4804,10 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 &tx,
                 ServoEvent::FrameNavigated {
                     target_id: "0".to_string(),
-                    frame_id: "0".to_string(),
+                    // The single main-frame id every CDP face reports
+                    // (REQ-CDP-004) — servo's delegate surface carries no
+                    // frame id, this constant IS the frame namespace source.
+                    frame_id: MAIN_FRAME_ID.to_string(),
                     url: url_str,
                     name: None,
                 },
@@ -4814,7 +4818,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
             // send only fails once the consumer is dropped; never stall the
             // servo script thread on CDP event delivery.
             let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
-                frame_id: "0".to_string(),
+                frame_id: MAIN_FRAME_ID.to_string(),
                 url: url_str,
                 loader_id,
             }));
@@ -4864,7 +4868,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
                         &tx,
                         ServoEvent::FrameStartedLoading {
                             target_id: "0".to_string(),
-                            frame_id: "0".to_string(),
+                            frame_id: MAIN_FRAME_ID.to_string(),
                         },
                     );
                 }
@@ -4887,7 +4891,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
                         &tx,
                         ServoEvent::FrameStoppedLoading {
                             target_id: "0".to_string(),
-                            frame_id: "0".to_string(),
+                            frame_id: MAIN_FRAME_ID.to_string(),
                         },
                     );
                 } else if let Some(ref tx) = self.state.borrow().console_log_tx {
@@ -5276,7 +5280,7 @@ mod tests {
         let loader_id = format!("{:016x}", url_str.len() as u64);
         if let Some(ref tx) = state.borrow().console_log_tx {
             tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
-                frame_id: "0".to_string(),
+                frame_id: MAIN_FRAME_ID.to_string(),
                 url: url_str.clone(),
                 loader_id: loader_id.clone(),
             }))
@@ -5290,7 +5294,7 @@ mod tests {
                 url,
                 loader_id: lid,
             }) => {
-                assert_eq!(frame_id, "0");
+                assert_eq!(frame_id, MAIN_FRAME_ID);
                 assert!(url.starts_with("https://example.com"));
                 assert_eq!(lid, loader_id);
             }
@@ -5432,7 +5436,7 @@ mod tests {
         if let Some(ref tx) = state.event_tx {
             tx.try_send(ServoEvent::FrameNavigated {
                 target_id: "0".to_string(),
-                frame_id: "0".to_string(),
+                frame_id: MAIN_FRAME_ID.to_string(),
                 url: "https://example.com/".to_string(),
                 name: None,
             })
@@ -5492,7 +5496,7 @@ mod tests {
         if let Some(ref tx) = state.borrow().event_tx {
             tx.try_send(ServoEvent::FrameStartedLoading {
                 target_id: "0".to_string(),
-                frame_id: "0".to_string(),
+                frame_id: MAIN_FRAME_ID.to_string(),
             })
             .unwrap();
         }
@@ -5504,7 +5508,7 @@ mod tests {
                 frame_id,
             } => {
                 assert_eq!(target_id, "0");
-                assert_eq!(frame_id, "0");
+                assert_eq!(frame_id, MAIN_FRAME_ID);
             }
             _ => panic!("expected FrameStartedLoading event"),
         }

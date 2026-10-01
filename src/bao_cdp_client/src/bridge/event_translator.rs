@@ -1247,7 +1247,9 @@ pub fn from_console_message(
                 headers: json_to_headers(&headers),
                 post_data: None,
                 resource_type,
-                frame_id: "0".to_string(),
+                // 单一 frame 命名空间真源(REQ-CDP-004)——与事件流/响应面
+                // 同值,禁本地字面量。
+                frame_id: bao_cdp::servo_bridge::MAIN_FRAME_ID.to_string(),
             }),
             BaoEvent::NetworkResponseReceived {
                 request_id,
@@ -1320,7 +1322,8 @@ pub fn from_console_message(
                 // semantically, "page load event fired" means loading is done.
                 Some(ServoEvent::FrameStoppedLoading {
                     target_id,
-                    frame_id: "0".to_string(),
+                    // 单一 frame 命名空间真源(REQ-CDP-004)。
+                    frame_id: bao_cdp::servo_bridge::MAIN_FRAME_ID.to_string(),
                 })
             }
             BaoEvent::PageFrameNavigated {
