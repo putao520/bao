@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bao_browser::{handle_bridge_command, BaoConfig, BrowserRuntime, BaoWsRegistry, PageConfig};
 use bao_cdp::domains::ServoTargetProvider;
-use bao_cdp::servo_bridge::bridge_channel;
+use bao_cdp::servo_bridge::{bridge_channel, MAIN_FRAME_ID};
 use bun_uws::ws_client::{RecvOutcome, WebSocketClient};
 use cdp_server::{CdpServer, EventSender, ServerConfig};
 use serde_json::{json, Value};
@@ -139,8 +139,20 @@ fn client_phase(ws_url: String, page_id: usize, done: Arc<AtomicBool>) {
     let url = format!("data:text/html;charset=utf-8,{html}");
     let resp = cdp.send("Page.navigate", json!({ "url": url }));
     assert!(resp.get("error").is_none(), "navigate must succeed: {resp}");
+    // REQ-CDP-004: the response frameId is the servo event stream's
+    // main-frame id — the same value every frame event carries — never the
+    // PageId (targetId namespace).
     let frame_id = resp["result"]["frameId"].as_str().expect("frameId");
-    assert_eq!(frame_id, page_id.to_string(), "frameId = real page id");
+    assert_eq!(
+        frame_id,
+        MAIN_FRAME_ID,
+        "frameId = event-stream main-frame id"
+    );
+    assert_ne!(
+        frame_id,
+        page_id.to_string(),
+        "frameId must not be the PageId (targetId namespace)"
+    );
 
     // 3. Runtime.evaluate — poll until the navigation landed, then assert
     //    the document title genuinely reflects the navigated document.

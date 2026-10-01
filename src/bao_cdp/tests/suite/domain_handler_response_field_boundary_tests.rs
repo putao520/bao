@@ -357,13 +357,14 @@ fn test_dom_query_selector_all_empty_selector() {
 
 #[test]
 fn test_dom_resolve_node_requires_node_ref() {
-    // REQ-BRW-048 follow-up: -32602 without a node ref (shape-shell
+    // REQ-BRW-048 follow-up + CDP spec: accepts nodeId / objectId /
+    // backendNodeId — none is -32602 (shape-shell
     // {"object":{"type":"node"}} eradicated).
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session.send(&router, "DOM.resolveNode", None).unwrap_err();
     assert_eq!(err.code, -32602);
-    assert!(err.message.contains("nodeId or objectId"));
+    assert!(err.message.contains("nodeId, objectId or backendNodeId"));
 }
 
 #[test]

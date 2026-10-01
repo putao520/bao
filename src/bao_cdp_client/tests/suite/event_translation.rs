@@ -364,10 +364,13 @@ fn e2e_full_chain_multiple_events_in_order() {
     let ev1 = transport.recv_event().unwrap().unwrap();
     let ev2 = transport.recv_event().unwrap().unwrap();
     let ev3 = transport.recv_event().unwrap().unwrap();
-    // Assert
+    let ev4 = transport.recv_event().unwrap().unwrap();
+    // Assert(translate 一对多保序:frameStartedLoading → lifecycleEvent init)
     assert_eq!(ev1.method, "Log.entryAdded");
     assert_eq!(ev2.method, "Runtime.exceptionThrown");
     assert_eq!(ev3.method, "Page.frameStartedLoading");
+    assert_eq!(ev4.method, "Page.lifecycleEvent");
+    assert_eq!(ev4.params["name"], "init");
 }
 
 #[test]
@@ -440,7 +443,10 @@ fn e2e_seven_classes_each_route_to_correct_method() {
         methods.push(ev.method);
     }
 
-    // 验证 7 类全覆盖(14 events——frameStoppedLoading 按 Chrome 语义配对 loadEventFired)
+    // 验证 7 类全覆盖(16 events——FrameStartedLoading 开 Chrome lifecycle
+    // 协议 name='init'+新鲜 loaderId(REQ-CDP-004 loader 身份层);
+    // frameStoppedLoading 按 Chrome 语义配对 lifecycleEvent name='load' +
+    // loadEventFired)
     let expected: &[&str] = &[
         "Log.entryAdded",
         "Runtime.exceptionThrown",
@@ -453,8 +459,10 @@ fn e2e_seven_classes_each_route_to_correct_method() {
         "Debugger.scriptParsed",
         "Page.frameNavigated",
         "Page.frameStartedLoading",
-        "Page.loadEventFired",
+        "Page.lifecycleEvent", // init(新鲜 loaderId)
         "Page.frameStoppedLoading",
+        "Page.lifecycleEvent", // load(与 init 配对同值)
+        "Page.loadEventFired",
         "Performance.metrics",
     ];
     // Assert
@@ -580,7 +588,7 @@ fn all_seven_classes_zero_omission() {
         }
     }
 
-    // 7 类的 13 个目标 CDP method 全部覆盖
+    // 7 类的 14 个目标 CDP method 全部覆盖
     let expected: &[&str] = &[
         "Log.entryAdded",          // Console
         "Runtime.exceptionThrown", // PageError
@@ -593,9 +601,10 @@ fn all_seven_classes_zero_omission() {
         "Debugger.scriptParsed",     // SourceInfo
         "Page.frameNavigated",
         "Page.frameStartedLoading",
-        "Page.frameStoppedLoading", // FrameInfo
-        "Page.loadEventFired",      // FrameInfo(W40 配对:Chrome 双发语义)
-        "Performance.metrics",      // TimelineMarker
+        "Page.frameStoppedLoading",  // FrameInfo
+        "Page.lifecycleEvent",       // FrameInfo(W49/REQ-CDP-004: init+load lifecycle)
+        "Page.loadEventFired",       // FrameInfo(W40 配对:Chrome 双发语义)
+        "Performance.metrics",       // TimelineMarker
     ];
     for m in expected {
         // Assert

@@ -14,6 +14,21 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+/// CDP `frameId` of a WebView's main frame — the single truth source for
+/// every face that reports a frame id (REQ-CDP-004).
+///
+/// CDP semantics: one frame carries exactly one stable id, so the
+/// `Page.navigate` / `Page.reload` / history-traversal responses, the frame
+/// event stream (`frameNavigated` / `frameStartedLoading` /
+/// `frameStoppedLoading` / `lifecycleEvent` / `loadEventFired` /
+/// `Network.requestWillBeSent`) and `Page.getFrameTree` must all report the
+/// same value. That value is the servo event stream's main-frame id — the one
+/// the bao_browser delegate emits for every frame event — and every response
+/// face consumes this constant instead of minting its own. It is deliberately
+/// NOT the PageId: PageId lives in the targetId namespace (Target domain) and
+/// the two namespaces must never mix.
+pub const MAIN_FRAME_ID: &str = "0";
+
 /// Commands that the CDP server sends to the main thread for servo execution.
 /// Each command carries a `target_id` identifying which page/target to route to.
 #[derive(Debug, Clone)]

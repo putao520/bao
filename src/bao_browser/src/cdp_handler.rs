@@ -1,7 +1,7 @@
 // @trace REQ-CDP-001  REQ-CDP-003: Bridge handler — routes BridgeCommand to servo WebView operations
 // Runs on the main thread during the event loop to process CDP commands.
 
-use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse};
+use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, MAIN_FRAME_ID};
 use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
 use serde_json::Value;
@@ -616,7 +616,9 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
                     headers: headers.into_iter().collect(),
                     post_data: None,
                     resource_type,
-                    frame_id: "0".to_string(),
+                    // The frame the request belongs to — the main-frame id the
+                    // event stream reports (REQ-CDP-004), not the PageId.
+                    frame_id: MAIN_FRAME_ID.to_string(),
                 },
             );
         }
@@ -654,9 +656,10 @@ fn to_browser_error(e: BrowserError) -> String {
 
 /// Monotonic id source for CDP loaderId / script identifiers.
 ///
-/// Chrome semantics: frameId is stable across navigations (we use the page id),
-/// loaderId is fresh per load. A monotonic counter yields genuinely unique,
-/// non-repeating ids — never a hardcoded constant.
+/// Chrome semantics: frameId is stable across navigations (the servo event
+/// stream's main-frame id, `MAIN_FRAME_ID` — the same value every frame event
+/// carries), loaderId is fresh per load. A monotonic counter yields genuinely
+/// unique, non-repeating ids — never a hardcoded constant.
 fn next_cdp_id(prefix: &str) -> String {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -666,7 +669,9 @@ fn next_cdp_id(prefix: &str) -> String {
 fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     page.navigate(url).map_err(to_browser_error)?;
     Ok(serde_json::json!({
-        "frameId": page.id().to_string(),
+        // Same frame identity the event stream reports (REQ-CDP-004) — never
+        // the PageId, which lives in the targetId namespace.
+        "frameId": MAIN_FRAME_ID,
         "loaderId": next_cdp_id("loader"),
     }))
 }
@@ -920,7 +925,7 @@ fn cmd_add_script(page: &PageHandle, source: &str) -> Result<Value, String> {
 fn cmd_reload(page: &PageHandle) -> Result<Value, String> {
     page.reload().map_err(to_browser_error)?;
     Ok(serde_json::json!({
-        "frameId": page.id().to_string(),
+        "frameId": MAIN_FRAME_ID,
         "loaderId": next_cdp_id("loader"),
     }))
 }
@@ -931,7 +936,7 @@ fn cmd_go_back(page: &PageHandle) -> Result<Value, String> {
         return Err("cannot go back: no previous entry in session history".into());
     }
     page.go_back().map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "frameId": page.id().to_string() }))
+    Ok(serde_json::json!({ "frameId": MAIN_FRAME_ID }))
 }
 
 /// Page.goForward — real servo session-history traversal (WebView::go_forward).
@@ -940,7 +945,7 @@ fn cmd_go_forward(page: &PageHandle) -> Result<Value, String> {
         return Err("cannot go forward: no forward entry in session history".into());
     }
     page.go_forward().map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "frameId": page.id().to_string() }))
+    Ok(serde_json::json!({ "frameId": MAIN_FRAME_ID }))
 }
 
 /// HeapProfiler.collectGarbage / Memory.forciblyPurgeJavaScriptMemory —
@@ -2627,13 +2632,18 @@ mod tests {
     }
 
     #[test]
-    fn cmd_navigate_uses_page_id_frame_and_generated_loader() {
-        // frameId = real page id (stable across navigations), loaderId =
-        // generated per load — no hardcoded "0" constants remain.
+    fn cmd_navigate_uses_event_stream_frame_and_generated_loader() {
+        // REQ-CDP-004: frameId is the servo event stream's main-frame id
+        // (MAIN_FRAME_ID — the same value every frame event carries), never
+        // the PageId (targetId namespace). loaderId is generated per load.
         let source = include_str!("cdp_handler.rs");
         assert!(
-            source.contains("\"frameId\": page.id().to_string()"),
-            "cmd_navigate/cmd_reload must return the real page id as frameId"
+            source.contains("\"frameId\": MAIN_FRAME_ID"),
+            "navigate/reload/goBack/goForward must report MAIN_FRAME_ID"
+        );
+        assert!(
+            !source.contains("\"frameId\": page.id()"),
+            "no PageId-as-frameId may remain (PageId is the targetId namespace)"
         );
         assert!(
             source.contains("\"loaderId\": next_cdp_id(\"loader\")"),

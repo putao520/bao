@@ -33,7 +33,7 @@ pub use cdp_server::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 use serde_json::Value;
 
 use crate::devtools_dom;
-use crate::servo_bridge::{BridgeCommand, BridgeSender};
+use crate::servo_bridge::{BridgeCommand, BridgeSender, MAIN_FRAME_ID};
 
 // JSON-RPC 2.0 error code: method not found (per spec §5.1).
 const ERR_METHOD_NOT_FOUND: i64 = -32601;
@@ -399,8 +399,9 @@ fn handle_page(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or("about:blank");
-            // The bridge handler returns the real frameId (page id) and a
-            // freshly generated loaderId — its response is the truth.
+            // The bridge handler's response is the truth: frameId is the servo
+            // event stream's main-frame id (same value every frame event
+            // carries, REQ-CDP-004) plus a freshly generated loaderId.
             bridge_send(
                 bridge,
                 BridgeCommand::Navigate {
@@ -415,7 +416,8 @@ fn handle_page(
                 .and_then(|p| p.get("ignoreCache"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            // Real servo reload; response carries real frameId + fresh loaderId.
+            // Real servo reload; response carries the event-stream frameId +
+            // a fresh loaderId.
             bridge_send(
                 bridge,
                 BridgeCommand::Reload {
@@ -426,9 +428,10 @@ fn handle_page(
         }
         "getFrameTree" => {
             // Real main-frame data: url/mimeType/name/securityOrigin read from
-            // the live document via evaluate; frameId = the page's stable id
-            // (same identifier navigate/reload report). Child frames are not
-            // enumerable from the embedder — none are fabricated.
+            // the live document via evaluate; frame id = MAIN_FRAME_ID — the
+            // same identifier navigate/reload report and the frame events
+            // carry (REQ-CDP-004). Child frames are not enumerable from the
+            // embedder — none are fabricated.
             let mut frame = eval_json(
                 bridge,
                 &tid,
@@ -440,7 +443,7 @@ fn handle_page(
                 }); })()"#,
             )?;
             if let Some(obj) = frame.as_object_mut() {
-                obj.insert("id".into(), serde_json::json!(tid));
+                obj.insert("id".into(), serde_json::json!(MAIN_FRAME_ID));
             }
             Ok(serde_json::json!({ "frameTree": { "frame": frame } }))
         }
@@ -897,7 +900,24 @@ fn handle_dom(
         // this face never mints a parallel registry; absent registry is an
         // explicit error).
         "resolveNode" => {
-            let node_ref = devtools_dom::require_node_ref(params)?;
+            // CDP spec: DOM.resolveNode accepts nodeId / objectId /
+            // backendNodeId (+ executionContextId). Clients resolve elements
+            // through the last shape (Puppeteer's isolated-realm adoption
+            // sends exactly {backendNodeId, executionContextId});
+            // backendNodeId ≡ canonical nodeId on this face (same documented
+            // identity as pushNodesByBackendIdsToFrontend below).
+            let node_ref = devtools_dom::require_node_ref(params).or_else(|_| {
+                let backend = params
+                    .as_ref()
+                    .and_then(|p| p.get("backendNodeId"))
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| CdpError {
+                        code: ERR_INVALID_PARAMS,
+                        message: "missing required parameter: nodeId, objectId or backendNodeId"
+                            .into(),
+                    })?;
+                Ok(devtools_dom::NodeRef::NodeId(backend))
+            })?;
             let object_group = params
                 .as_ref()
                 .and_then(|p| p.get("objectGroup"))
@@ -3458,7 +3478,9 @@ mod tests {
         let resp = dispatch_no_bridge(40, "DOM.resolveNode", None);
         let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
         assert_eq!(err.code, -32602);
-        assert!(err.message.contains("nodeId or objectId"));
+        // CDP spec: nodeId / objectId / backendNodeId — none present is
+        // -32602 (the message pins all three accepted shapes).
+        assert!(err.message.contains("nodeId, objectId or backendNodeId"));
     }
 
     // 112. handle_command DOM.pushNodesByBackendIdsToFrontend → -32602 —

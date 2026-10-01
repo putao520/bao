@@ -263,10 +263,14 @@ impl Transport for InMemoryTransport {
                 Ok(se) => {
                     // translate ServoEvent → Vec<CdpEvent>
                     let mut cdp_events = translate(se);
-                    // 第一个直接返回,剩余存 pending
-                    if let Some(first) = cdp_events.pop() {
-                        for ev in cdp_events.into_iter().rev() {
-                            self.pending_cdp_events.push_front(ev);
+                    // 第一个直接返回,剩余按 translate 原序存 pending
+                    // (一对多必须保序:frameStartedLoading → lifecycleEvent
+                    // init、frameStoppedLoading → lifecycleEvent load →
+                    // loadEventFired 与 translate 的产出序一致)
+                    if !cdp_events.is_empty() {
+                        let first = cdp_events.remove(0);
+                        for ev in cdp_events {
+                            self.pending_cdp_events.push_back(ev);
                         }
                         return Ok(Some(first));
                     }

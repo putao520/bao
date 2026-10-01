@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use bao_cdp::servo_bridge::{BridgeCommand, BridgeSender};
+use bao_cdp::servo_bridge::{BridgeCommand, BridgeSender, MAIN_FRAME_ID};
 use cdp_server::{CdpError, CdpMessage, EventSender, RegistryDispatch};
 use serde_json::{json, Value};
 
@@ -84,6 +84,12 @@ pub struct BaoWsRegistry {
     bridge: BridgeSender,
     /// Flattened-session routing table: CDP sessionId → target id.
     attached_sessions: Mutex<HashMap<String, String>>,
+    /// Created isolated-world names per session — re-announced per document
+    /// after navigation. Chrome re-announces every existing world's context
+    /// when a navigation destroys the old document's contexts; clients bind
+    /// their isolated realms (Puppeteer's utility world) to the new context
+    /// and hang on the next evaluate without it.
+    session_worlds: Mutex<HashMap<String, Vec<String>>>,
     /// Whether the browser session asked for auto-attach (Target.setAutoAttach
     /// with autoAttach=true) — new targets emit Target.attachedToTarget.
     auto_attach: Mutex<bool>,
@@ -94,6 +100,7 @@ impl BaoWsRegistry {
         BaoWsRegistry {
             bridge,
             attached_sessions: Mutex::new(HashMap::new()),
+            session_worlds: Mutex::new(HashMap::new()),
             auto_attach: Mutex::new(false),
         }
     }
@@ -326,8 +333,29 @@ impl BaoWsRegistry {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        // Chrome shape: the created context's auxData carries the frame the
+        // world was created in (clients bind the world to that frame through
+        // it — Puppeteer's isolated realm resolution requires it). The
+        // requesting frameId when the client named one, else the main frame.
+        let frame_id = params
+            .as_ref()
+            .and_then(|p| p.get("frameId"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(MAIN_FRAME_ID)
+            .to_string();
         let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
         if let Some(sid) = msg.session_id.as_deref() {
+            // Remember the world so navigations re-announce its context
+            // (Chrome keeps isolated worlds alive across documents).
+            if !world_name.is_empty() {
+                if let Some(mut m) = self.session_worlds.lock().ok() {
+                    let worlds = m.entry(sid.to_string()).or_default();
+                    if !worlds.contains(&world_name) {
+                        worlds.push(world_name.clone());
+                    }
+                }
+            }
             event_sender.send_session_event(
                 sid,
                 "Runtime.executionContextCreated",
@@ -336,7 +364,10 @@ impl BaoWsRegistry {
                         "id": context_id,
                         "origin": "-",
                         "name": world_name,
-                        "auxData": { "isDefault": false },
+                        "auxData": {
+                            "isDefault": false,
+                            "frameId": frame_id,
+                        },
                     }
                 }),
             );
@@ -505,8 +536,10 @@ impl RegistryDispatch for BaoWsRegistry {
                 // context to bind to.
                 "Runtime.enable" => {
                     // Chrome shape: auxData carries the owning frameId —
-                    // clients (Playwright) bind the default context to the
-                    // frame through it. Our frame id IS the page target id.
+                    // clients (Playwright/Puppeteer) bind the default context
+                    // to the frame through it. Same frame identity the
+                    // navigate response and every frame event carry
+                    // (REQ-CDP-004) — never the PageId (targetId namespace).
                     let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
                     self.emit(
                         event_sender,
@@ -520,7 +553,7 @@ impl RegistryDispatch for BaoWsRegistry {
                                 "auxData": {
                                     "isDefault": true,
                                     "type": "default",
-                                    "frameId": target_id,
+                                    "frameId": MAIN_FRAME_ID,
                                 },
                             }
                         }),
@@ -596,6 +629,37 @@ impl RegistryDispatch for BaoWsRegistry {
                                 }
                             }),
                         );
+                        // Chrome keeps isolated worlds alive across documents:
+                        // re-announce each created world's context for the new
+                        // document (clients bound their realms to contexts the
+                        // navigation just destroyed and would hang without it).
+                        let worlds = sid
+                            .and_then(|sid| {
+                                self.session_worlds
+                                    .lock()
+                                    .ok()
+                                    .and_then(|m| m.get(sid).cloned())
+                            })
+                            .unwrap_or_default();
+                        for world_name in worlds {
+                            let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+                            self.emit(
+                                event_sender,
+                                sid,
+                                "Runtime.executionContextCreated",
+                                json!({
+                                    "context": {
+                                        "id": context_id,
+                                        "origin": "-",
+                                        "name": world_name,
+                                        "auxData": {
+                                            "isDefault": false,
+                                            "frameId": fid,
+                                        },
+                                    }
+                                }),
+                            );
+                        }
                     }
                 }
                 // Auto-attach for programmatically created targets:

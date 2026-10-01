@@ -1199,12 +1199,12 @@ fn test_dom_get_outer_html_default() {
 
 #[test]
 fn test_dom_resolve_node() {
-    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602.
+    // CDP spec: accepts nodeId / objectId / backendNodeId — none is -32602.
     let r = dispatch("DOM.resolveNode", None);
     assert_jsonrpc_invariant(&r, "DOM.resolveNode");
     let e = r.error.expect("explicit error required");
     assert_eq!(e.code, -32602);
-    assert!(e.message.contains("nodeId or objectId"));
+    assert!(e.message.contains("nodeId, objectId or backendNodeId"));
 }
 
 #[test]

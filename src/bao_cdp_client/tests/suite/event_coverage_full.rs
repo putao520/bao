@@ -161,12 +161,13 @@ fn full_e2e_event_mixed_classes_order_preserved() {
     while let Ok(Some(ev)) = transport.recv_event() {
         methods.push(ev.method);
     }
-    // Assert
-    assert_eq!(methods.len(), 4);
+    // Assert(frameStartedLoading 一对多保序:尾随 lifecycleEvent name='init')
+    assert_eq!(methods.len(), 5);
     assert_eq!(methods[0], "Log.entryAdded");
     assert_eq!(methods[1], "Runtime.exceptionThrown");
     assert_eq!(methods[2], "Page.frameStartedLoading");
-    assert_eq!(methods[3], "Performance.metrics");
+    assert_eq!(methods[3], "Page.lifecycleEvent");
+    assert_eq!(methods[4], "Performance.metrics");
 }
 
 // ════════════════════════════════════════════════════════════════════

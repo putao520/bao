@@ -599,10 +599,11 @@ fn test_dom_get_outer_html_no_bridge() {
 
 #[test]
 fn test_dom_resolve_node() {
-    // REQ-BRW-048 follow-up: requires nodeId or objectId — -32602.
+    // REQ-BRW-048 follow-up + CDP spec: accepts nodeId / objectId /
+    // backendNodeId — none present is -32602.
     let e = err_result("DOM.resolveNode", None);
     assert_eq!(e.code, -32602);
-    assert!(e.message.contains("nodeId or objectId"));
+    assert!(e.message.contains("nodeId, objectId or backendNodeId"));
 }
 
 #[test]

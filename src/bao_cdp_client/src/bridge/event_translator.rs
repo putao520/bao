@@ -41,7 +41,7 @@
 //! @trace REQ-BAO-API-003 [event:TimelineMarker]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -313,6 +313,33 @@ impl ServoEvent {
 }
 
 // ---------------------------------------------------------------------------
+// §2.5 文档加载 serial — `Page.lifecycleEvent` 的 loaderId 载体(REQ-CDP-004)
+// ---------------------------------------------------------------------------
+
+/// 最近一次 mint 的加载 serial(mint/latest 共享)。
+static LATEST_LOAD: AtomicU64 = AtomicU64::new(0);
+
+/// mint 一个新的文档加载 loaderId(Chrome 语义:`Page.lifecycleEvent
+/// name='init'` 携带本次加载的新 loader id;客户端(Puppeteer)以
+/// `frame._loaderId` 是否变化判定 new-document navigation 完成,因此该值
+/// 必须每次加载都新鲜——常量会让第二次导航永远无法 resolve)。
+fn mint_load_id() -> String {
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    let n = SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+    LATEST_LOAD.store(n, Ordering::Relaxed);
+    format!("loader-{n:016x}")
+}
+
+/// 最近一次 mint 的 loaderId(`name='load'` 与同一次加载的 `name='init'`
+/// 配对同值)。事件泵单线程,且每个 frame 的 Started 恒先于其 Stopped,同
+/// frame 配对成立;仅多页并发加载在泵上交错时 Stopped 可能读到别页的
+/// serial——'load' 的 loaderId 无客户端消费(Puppeteer 只在 name='init' 时
+/// 读取 loaderId,'load' 只按 name 入集合),无行为影响。
+fn latest_load_id() -> String {
+    format!("loader-{:016x}", LATEST_LOAD.load(Ordering::Relaxed))
+}
+
+// ---------------------------------------------------------------------------
 // §3 translate — ServoEvent → Vec<CdpEvent>
 // ---------------------------------------------------------------------------
 
@@ -423,11 +450,26 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
                 // 兼容 std-only 路径:直接用 bun_base64 crate。
                 request["postData"] = json!(base64_encode(&post));
             }
+            // CDP/Chrome: a navigation's main-resource request carries
+            // `requestId == loaderId` (the id of the load it starts), and
+            // clients (Puppeteer LifecycleWatcher.isNavigationRequest =
+            // `requestId === loaderId && type === "Document"`) gate the
+            // navigation request — and with it the Response object goto()
+            // resolves with — on exactly that equality. Document-type
+            // requests therefore adopt their requestId as loaderId. For
+            // sub-resources the owning document loader is not tracked here
+            // (translate stays stateless) and no client matches on loaderId
+            // when type !== "Document", so the frame id remains the stand-in.
+            let loader_id = if resource_type == "Document" {
+                request_id.clone()
+            } else {
+                frame_id.clone()
+            };
             vec![CdpEvent {
                 method: "Network.requestWillBeSent".into(),
                 params: json!({
                     "requestId": request_id,
-                    "loaderId": frame_id,
+                    "loaderId": loader_id,
                     "documentURL": url,
                     "request": request,
                     "timestamp": current_timestamp_s(),
@@ -625,13 +667,29 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
             target_id,
             frame_id,
         } => {
-            vec![CdpEvent {
-                method: "Page.frameStartedLoading".into(),
-                params: json!({
-                    "frameId": frame_id,
-                }),
-                session_id: Some(target_id),
-            }]
+            // Chrome lifecycle protocol: every document load opens with
+            // Page.lifecycleEvent name='init' carrying the NEW loader id —
+            // clients stamp frame._loaderId from it and resolve
+            // new-document navigation when that id changes across loads.
+            let loader_id = mint_load_id();
+            vec![
+                CdpEvent {
+                    method: "Page.frameStartedLoading".into(),
+                    params: json!({
+                        "frameId": frame_id,
+                    }),
+                    session_id: Some(target_id.clone()),
+                },
+                CdpEvent {
+                    method: "Page.lifecycleEvent".into(),
+                    params: json!({
+                        "frameId": frame_id,
+                        "loaderId": loader_id,
+                        "name": "init",
+                    }),
+                    session_id: Some(target_id),
+                },
+            ]
         }
         // @trace REQ-BAO-API-003 [event:FrameInfo]
         ServoEvent::FrameStoppedLoading {
@@ -655,10 +713,12 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
                 // W49: Puppeteer's goto(waitUntil:'load') gates on the
                 // lifecycle protocol (Page.lifecycleEvent name='load'), not
                 // the legacy loadEventFired — Chrome emits both; so do we.
+                // loaderId pairs with the load's 'init' (same mint).
                 CdpEvent {
                     method: "Page.lifecycleEvent".into(),
                     params: json!({
                         "frameId": frame_id,
+                        "loaderId": latest_load_id(),
                         "name": "load",
                     }),
                     session_id: Some(target_id.clone()),
@@ -1740,30 +1800,63 @@ mod tests {
             frame_id: "FRAME2".into(),
         };
         let out = translate(ev);
-        assert_eq!(out.len(), 1);
+        // REQ-CDP-004 loader-identity layer: load start also opens the Chrome
+        // lifecycle protocol with name='init' + a fresh loaderId (clients
+        // stamp frame._loaderId from it; a constant would break the second
+        // navigation's new-document resolution).
+        assert_eq!(out.len(), 2);
         let e = &out[0];
         assert_eq!(e.method, "Page.frameStartedLoading");
         assert_eq!(e.session_id.as_deref(), Some("T12"));
         assert_eq!(e.params["frameId"], "FRAME2");
+        let init = &out[1];
+        assert_eq!(init.method, "Page.lifecycleEvent");
+        assert_eq!(init.session_id.as_deref(), Some("T12"));
+        assert_eq!(init.params["frameId"], "FRAME2");
+        assert_eq!(init.params["name"], "init");
+        let loader = init.params["loaderId"].as_str().expect("loaderId");
+        assert!(loader.starts_with("loader-"), "fresh loader id: {loader}");
+        // A second load must mint a DIFFERENT loader id (new-document gate).
+        let out2 = translate(ServoEvent::FrameStartedLoading {
+            target_id: "T12".into(),
+            frame_id: "FRAME2".into(),
+        });
+        assert_ne!(
+            out2[1].params["loaderId"], init.params["loaderId"],
+            "loaderId must be fresh per load"
+        );
     }
 
     // @trace REQ-BAO-API-003 [event:FrameInfo]
     #[test]
     fn translate_frame_stopped_loading() {
+        // The 'load' lifecycle pairs with the latest minted loader id (the
+        // Started/'init' of the same load) — same value, no re-mint.
+        let started = translate(ServoEvent::FrameStartedLoading {
+            target_id: "T13".into(),
+            frame_id: "FRAME3".into(),
+        });
+        let minted = started[1].params["loaderId"].clone();
         let ev = ServoEvent::FrameStoppedLoading {
             target_id: "T13".into(),
             frame_id: "FRAME3".into(),
         };
         let out = translate(ev);
         // W40 (#11-D): servo's frame-stopped-loading pairs with
-        // Page.loadEventFired (Chrome semantics) — two events, same tag.
-        assert_eq!(out.len(), 2);
+        // Page.loadEventFired; W49 adds the lifecycle protocol
+        // (Page.lifecycleEvent name='load') — three events, same tag.
+        assert_eq!(out.len(), 3);
         assert_eq!(out[0].method, "Page.frameStoppedLoading");
         assert_eq!(out[0].session_id.as_deref(), Some("T13"));
         assert_eq!(out[0].params["frameId"], "FRAME3");
-        assert_eq!(out[1].method, "Page.loadEventFired");
+        assert_eq!(out[1].method, "Page.lifecycleEvent");
         assert_eq!(out[1].session_id.as_deref(), Some("T13"));
         assert_eq!(out[1].params["frameId"], "FRAME3");
+        assert_eq!(out[1].params["name"], "load");
+        assert_eq!(out[1].params["loaderId"], minted, "load pairs with init");
+        assert_eq!(out[2].method, "Page.loadEventFired");
+        assert_eq!(out[2].session_id.as_deref(), Some("T13"));
+        assert_eq!(out[2].params["frameId"], "FRAME3");
     }
 
     // ── §7.7 TimelineMarker → Performance.metrics ────────────────────
