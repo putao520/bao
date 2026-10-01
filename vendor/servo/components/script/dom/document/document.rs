@@ -241,7 +241,7 @@ use crate::event_loop::script_thread::{ScriptThread, SharedRwLocks};
 use crate::event_loop::timers::{OneshotTimerCallback, OneshotTimers};
 use crate::fetch::fetch::{DeferredFetchRecordInvokeState, FetchCanceller};
 use crate::fetch::network_listener::{FetchResponseListener, NetworkListener};
-use crate::mime::{APPLICATION, CHARSET};
+use crate::mime::{APPLICATION, CHARSET, HTML, TEXT};
 use crate::navigation::navigate;
 use crate::runtime::script_runtime::compute_size;
 use crate::tasks::task::NonSendTaskBox;
@@ -5825,11 +5825,23 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             return Err(Error::InvalidCharacter(None));
         }
 
-        if self.is_html_document {
+        // Step 2. If this is an HTML document, then set localName to localName
+        //      in ASCII lowercase.
+        // Step 3. Let namespace be the HTML namespace, if this is an HTML
+        //      document or this's content type is application/xhtml+xml;
+        //      otherwise null.
+        // An HTML document is one whose content type is text/html or
+        // application/xhtml+xml. The is_html_document flag alone diverges for
+        // image/svg+xml documents (servo parses them with the HTML parser as
+        // foreign content, but they are XML documents), so decide from the
+        // content type.
+        let is_html_document =
+            self.content_type.matches(TEXT, HTML) || self.is_xhtml_document();
+        if is_html_document {
             local_name.make_ascii_lowercase();
         }
 
-        let ns = if self.is_html_document || self.is_xhtml_document() {
+        let ns = if is_html_document {
             ns!(html)
         } else {
             ns!()

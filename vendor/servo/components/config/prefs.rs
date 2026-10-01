@@ -386,7 +386,11 @@ impl Preferences {
             dom_canvas_capture_enabled: false,
             dom_canvas_text_enabled: true,
             dom_canvas_backend: String::new(),
-            dom_composition_event_enabled: false,
+            // BAO: on by default — Chrome feature parity (real Chrome ships
+            // CompositionEvent; withholding a completed W3C API is itself a
+            // fingerprinting signal). Same default posture as
+            // dom_intersection_observer_enabled above.
+            dom_composition_event_enabled: true,
             dom_cookiestore_enabled: false,
             dom_credential_management_enabled: false,
             dom_crypto_subtle_enabled: true,

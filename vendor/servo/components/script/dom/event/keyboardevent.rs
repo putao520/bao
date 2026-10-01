@@ -108,7 +108,7 @@ impl KeyboardEvent {
         can_bubble: bool,
         cancelable: bool,
         view: Option<&Window>,
-        _detail: i32,
+        detail: i32,
         key: Key,
         code: DOMString,
         original_code: Option<Code>,
@@ -125,6 +125,7 @@ impl KeyboardEvent {
             can_bubble,
             cancelable,
             view,
+            detail,
             DOMString::from(key.to_string()),
             location,
             repeat,
@@ -162,6 +163,7 @@ impl KeyboardEvent {
         can_bubble_arg: bool,
         cancelable_arg: bool,
         view_arg: Option<&Window>,
+        detail: i32,
         key_arg: DOMString,
         location_arg: u32,
         repeat: bool,
@@ -175,7 +177,7 @@ impl KeyboardEvent {
             can_bubble_arg,
             cancelable_arg,
             view_arg,
-            0,
+            detail,
         );
         *self.key.borrow_mut() = key_arg;
         self.location.set(location_arg);
@@ -238,6 +240,7 @@ impl KeyboardEventMethods<crate::DomTypeHolder> for KeyboardEvent {
             can_bubble_arg,
             cancelable_arg,
             view_arg,
+            0, /* initKeyboardEvent has no detailArg */
             key_arg,
             location_arg,
             repeat,
