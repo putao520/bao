@@ -25,3 +25,4 @@
 {"date":"2026-09-30","started_at":"2026-09-30T19:33:11Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":2,"note":"zero-hang 60min — entry condition 2/3"}
 {"date":"2026-09-30","started_at":"2026-09-30T21:58:29Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":3,"note":"zero-hang 60min — entry condition 3/3"}
 {"date":"2026-10-01","started_at":"2026-10-01T09:20:42Z","duration_mins":360,"verdict":"failed","zero_hang":false,"counts_toward_entry":false,"streak_after":3,"note":"verification run (BAO_SOAK_MINS=360), not counted toward the 60min entry streak; run.sh rc=2 (see /home/putao/code/rust/bao/bench/results/2026-10-01-cfa4ca41/soak.run-1.log)"}
+{"date":"2026-10-01","started_at":"2026-10-01T16:12:20Z","duration_mins":60,"verdict":"completed","zero_hang":true,"counts_toward_entry":true,"streak_after":4,"note":"zero-hang 60min — entry condition 4/3"}
