@@ -13,7 +13,7 @@ name = "bao-browser"
 # 0.1.21 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0
 # breaking wave); same-wave sibling bumps beneath (bun_core/bao_engine/
 # bao_stealth/bao_cdp_client).
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 description.workspace = true
 license.workspace = true

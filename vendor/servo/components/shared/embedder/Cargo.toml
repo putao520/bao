@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-embedder-traits"
-version = "0.5.17"
+version = "0.5.18"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"

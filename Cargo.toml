@@ -182,7 +182,7 @@ bun_resolver = { path = "src/resolver", version = "0.2.0" }
 bun_safety = { path = "src/safety", version = "0.2.0" }
 bun_semver = { path = "src/semver", version = "0.2.0" }
 bun_sourcemap = { path = "src/sourcemap", version = "0.2.0" }
-bun_sys = { path = "src/sys", version = "0.2.0" }
+bun_sys = { path = "src/sys", version = "0.2.1" }
 bun_threading = { path = "src/threading", version = "0.2.0" }
 bun_watcher = { path = "src/watcher", version = "0.2.0" }
 bun_clap = { path = "src/clap", version = "0.2.0" }
