@@ -763,6 +763,11 @@ pub unsafe fn spawn_process_posix(
                 }
             }
             PosixStdio::Inherit => {
+                // process.stdout/stderr put O_NONBLOCK on the shared open file
+                // description; libuv clears it for child fds 0-2 too (upstream
+                // ba3f27d1d1 — an inherit child that runs a blocking writer
+                // would otherwise see EAGAIN and drop output).
+                let _ = bun_sys::update_nonblocking(fileno, false);
                 actions.inherit(fileno)?;
             }
             PosixStdio::Ipc | PosixStdio::Ignore => {
@@ -880,6 +885,10 @@ pub unsafe fn spawn_process_posix(
                 set_spawned_stdio(&mut spawned, i, fds[0]);
             }
             PosixStdio::Pipe(fd) => {
+                // The caller-supplied pipe becomes the child's stdio: clear
+                // O_NONBLOCK on the shared description so the child's
+                // blocking writes do not fail EAGAIN (upstream ba3f27d1d1).
+                let _ = bun_sys::update_nonblocking(*fd, false);
                 actions.dup2(*fd, fileno)?;
                 set_spawned_stdio(&mut spawned, i, *fd);
             }

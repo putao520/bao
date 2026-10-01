@@ -886,9 +886,14 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
         return templateBody
 
     # A helper function for types that implement FromJSValConvertible trait
-    def fromJSValTemplate(config: str, errorHandler: str, exceptionCode: str) -> str:
-        return f"""match FromJSValConvertible::safe_from_jsval(cx, ${{val}}, {config}) {{
-    Ok(ConversionResult::Success(value)) => value,
+    # BAO patch (fork-maintained, 2026-09-27): fork conversions trait uses
+    # the `safe_from_jsval` form.
+    def fromJSValTemplate(config: str, errorHandler: str, exceptionCode: str, type_name: str = "FromJSValConvertible",
+                          needsToBeTraced: bool = False) -> str:
+        returnValue = "value.to_traced()" if needsToBeTraced else "value"
+
+        return f"""match {type_name}::safe_from_jsval(cx, ${{val}}, {config}) {{
+    Ok(ConversionResult::Success(value)) => {returnValue},
     Ok(ConversionResult::Failure(error)) => {{
         {errorHandler}
     }}
@@ -989,10 +994,13 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
         #    once again be providing a Promise to signal completion of an
         #    operation, which would then not be exposed to anyone other than
         #    our own implementation code.
-        templateBody = fromJSValTemplate("()", failOrPropagate, exceptionCode)
+        needsToBeTraced = isMember == "Dictionary"
+        templateBody = fromJSValTemplate("()", failOrPropagate, exceptionCode, "<<D::Promise as PromiseHelpers<D>>::StackRoot>", needsToBeTraced)
 
         if isArgument:
             declType = CGGeneric("&D::Promise")
+        elif needsToBeTraced:
+            declType = CGGeneric("<D::Promise as PromiseHelpers<D>>::HeapTraced")
         else:
             declType = CGGeneric("<D::Promise as PromiseHelpers<D>>::StackRoot")
         return handleOptional(templateBody, declType, handleDefault("None"))
@@ -8337,17 +8345,17 @@ class CGBindingRoot(CGThing):
         return stripTrailingWhitespace(self.root.define())
 
 
-def type_needs_tracing(t: IDLObject) -> bool:
+def type_needs_tracing(t: IDLObject, isMember: Optional[str] = None) -> bool:
     assert isinstance(t, IDLObject), (t, type(t))
 
     if t.isType():
         assert isinstance(t, IDLType)
         if isinstance(t, IDLWrapperType):
-            return type_needs_tracing(t.inner)
+            return type_needs_tracing(t.inner, isMember)
 
         if t.nullable():
             assert isinstance(t, IDLNullableType)
-            return type_needs_tracing(t.inner)
+            return type_needs_tracing(t.inner, isMember)
 
         if t.isAny():
             return True
@@ -8357,23 +8365,26 @@ def type_needs_tracing(t: IDLObject) -> bool:
 
         if t.isSequence() :
             assert isinstance(t, IDLSequenceType)
-            return type_needs_tracing(t.inner)
+            return type_needs_tracing(t.inner, isMember)
 
         if t.isUnion():
             assert isinstance(t, IDLUnionType) and t.flatMemberTypes is not None
-            return any(type_needs_tracing(member) for member in t.flatMemberTypes)
+            return any(type_needs_tracing(member, isMember) for member in t.flatMemberTypes)
 
         if is_typed_array(t):
             return True
+
+        if t.isCallback() or t.isPromise():
+            return isMember == "Dictionary"
 
         return False
 
     if t.isDictionary():
         assert isinstance(t, IDLDictionary)
-        if t.parent and type_needs_tracing(t.parent):
+        if t.parent and type_needs_tracing(t.parent, isMember):
             return True
 
-        if any(type_needs_tracing(member.type) for member in t.members):
+        if any(type_needs_tracing(member.type, 'Dictionary') for member in t.members):
             return True
 
         return False

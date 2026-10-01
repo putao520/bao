@@ -2553,7 +2553,21 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         // Zig: `const prev = p.react_refresh.hook_ctx_storage; defer ... = prev; ... = &react_hook_data;`
         let mut react_hook_data: Option<crate::parser::HookContext> = None;
         let prev_hook_ctx = p.react_refresh.hook_ctx_storage;
-        p.react_refresh.hook_ctx_storage = Some(core::ptr::NonNull::from(&mut react_hook_data));
+        // A method cannot be wrapped in a call. Like react-refresh/babel, ignore
+        // its hook calls (upstream 9d9fdbe862): the function of a method is a
+        // function expression to this visitor too, but wrapping it in its
+        // signature (`_s(function () { ... }, "hash")`) is invalid there — a
+        // method cannot hold a call. `parse_property` sets
+        // `Function::IsUniqueFormalParameters` on exactly those functions.
+        let is_method = e_
+            .func
+            .flags
+            .contains(Flags::Function::IsUniqueFormalParameters);
+        p.react_refresh.hook_ctx_storage = if is_method {
+            None
+        } else {
+            Some(core::ptr::NonNull::from(&mut react_hook_data))
+        };
 
         // Spec (visitExpr.zig e_function): visitFunc(e_.func, expr.loc) — for function
         // *expressions* the .function_args scope is pushed at the `function` keyword loc

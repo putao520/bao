@@ -303,6 +303,11 @@ impl FilePoll {
         if flags.contains(Flags::Socket) {
             return FileType::Socket;
         }
+        // A TTY is written synchronously (as in Node), whatever O_NONBLOCK
+        // says (upstream ba3f27d1d1).
+        if flags.contains(Flags::Tty) {
+            return FileType::File;
+        }
         if flags.contains(Flags::Nonblocking) {
             return FileType::NonblockingPipe;
         }

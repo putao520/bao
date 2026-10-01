@@ -797,6 +797,11 @@ fn minify_style_arm<R: for<'b> css::generics::DeepClone<'b>>(
                 && merge_style_rules(last, prev, context)
             {
                 rules.pop();
+                // The popped slot can be reused by a later push; purge its
+                // (now stale) index from the dedup table so a new rule taking
+                // that slot cannot be erased as a "duplicate" of it
+                // (upstream 6212450fc0).
+                style_rules.truncate(rules.len());
                 continue;
             }
             break;
@@ -951,6 +956,11 @@ impl StyleRuleKey {
 #[derive(Default)]
 pub(crate) struct StyleRuleKeyMap {
     buckets: bun_collections::HashMap<u64, Vec<usize>>,
+    /// Inserted keys in index order. A popped rule may no longer hash to the
+    /// bucket that holds it (a later merge can change the hash of the rule),
+    /// so `truncate` looks entries up by the key stored at insertion
+    /// (upstream 6212450fc0).
+    keys: Vec<StyleRuleKey>,
 }
 
 impl StyleRuleKeyMap {
@@ -978,11 +988,31 @@ impl StyleRuleKeyMap {
 
     /// Zig `style_rules.put(ctx.arena, key, idx)`.
     pub(crate) fn insert(&mut self, key: StyleRuleKey) {
+        debug_assert!(self.keys.last().is_none_or(|last| last.index < key.index));
         self.buckets.entry(key.hash).or_default().push(key.index);
+        self.keys.push(key);
+    }
+
+    /// Forget the rules at `len..`: the caller popped them, and other rules
+    /// can take their slots. Uses the key stored at insertion, because a
+    /// later merge can change the hash of the popped rule (upstream
+    /// 6212450fc0 — the merge-with-previous cascade pops merged rules, and a
+    /// stale index left in a bucket can alias the slot a later rule is pushed
+    /// into, erasing it as a "duplicate").
+    pub(crate) fn truncate(&mut self, len: usize) {
+        while self.keys.last().is_some_and(|key| key.index >= len) {
+            let key = self.keys.pop().expect("length checked above");
+            if let Some(bucket) = self.buckets.get_mut(&key.hash)
+                && let Some(pos) = bucket.iter().rposition(|&index| index == key.index)
+            {
+                bucket.swap_remove(pos);
+            }
+        }
     }
 
     pub(crate) fn clear(&mut self) {
         self.buckets.clear();
+        self.keys.clear();
     }
 }
 

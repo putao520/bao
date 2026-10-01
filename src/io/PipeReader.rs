@@ -190,6 +190,9 @@ impl Drop for ReadScratchClaim {
 
 pub struct PosixBufferedReader {
     pub handle: PollOrFd,
+    /// Set once `preadv2(RWF_NOWAIT)` said this fd's file type does not
+    /// support it (tty), so we stop asking (upstream ba3f27d1d1).
+    rwf_unsupported: core::cell::Cell<bool>,
     pub _buffer: Vec<u8>,
     pub _offset: usize,
     pub vtable: BufferedReaderVTable,
@@ -229,10 +232,47 @@ impl PosixFlags {
     }
 }
 
+/// One non-blocking pipe read (upstream ba3f27d1d1): `preadv2(RWF_NOWAIT)`
+/// first — a free per-call nonblocking read, so the pipe stays async even
+/// after a spawn cleared `O_NONBLOCK` on the shared open file description —
+/// then, once `RWF_NOWAIT` is known unsupported for this fd
+/// (`rwf_unsupported` set from `sys::read_nowait`'s `Ok(None)`), a
+/// poll-guarded blocking read.
+fn read_pipe_nowait(
+    rwf_unsupported: &core::cell::Cell<bool>,
+    fd: Fd,
+    buf: &mut [u8],
+) -> sys::Result<usize> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        if !rwf_unsupported.get() {
+            match sys::read_nowait(fd, buf) {
+                Ok(None) => rwf_unsupported.set(true),
+                Ok(Some(n)) => return Ok(n),
+                Err(e) => return Err(e),
+            }
+        }
+        // Poll first even when labelled nonblocking: some callers
+        // (FileResponseStream) label by fd kind, not by O_NONBLOCK.
+        match bun_core::is_readable(fd) {
+            bun_core::Pollable::Ready | bun_core::Pollable::Hup => sys::read(fd, buf),
+            bun_core::Pollable::NotReady => Err(sys::Error::retry().with_fd(fd)),
+        }
+    }
+    // macOS poll(2) is unreliable on FIFOs; the kqueue registration drives
+    // readiness there.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = rwf_unsupported;
+        sys::read(fd, buf)
+    }
+}
+
 impl PosixBufferedReader {
     pub fn init<T: BufferedReaderParent>() -> PosixBufferedReader {
         PosixBufferedReader {
             handle: PollOrFd::Closed,
+            rwf_unsupported: core::cell::Cell::new(false),
             _buffer: Vec::new(),
             _offset: 0,
             vtable: BufferedReaderVTable::init::<T>(),
@@ -269,6 +309,7 @@ impl PosixBufferedReader {
         let kind = self.vtable.kind;
         *self = PosixBufferedReader {
             handle: mem::replace(&mut other.handle, PollOrFd::Closed),
+            rwf_unsupported: other.rwf_unsupported.clone(),
             _buffer: mem::take(other.buffer()),
             _offset: other._offset,
             flags: other.flags,
@@ -651,13 +692,20 @@ impl PosixBufferedReader {
     }
 
     fn read_pipe(parent: &mut PosixBufferedReader, fd: Fd, size_hint: isize, received_hup: bool) {
+        // SAFETY: `rwf` points at an intrusive field of `parent`, which
+        // `read_with_fn` keeps live for the whole call (the reader is an
+        // inline field of its owner and is never freed mid-call — the same
+        // liveness argument as the `&mut parent` re-bind inside
+        // `read_with_fn`). The Cell is only written between `sys_fn`
+        // invocations, never across a re-entrant vtable dispatch.
+        let rwf: *const core::cell::Cell<bool> = &parent.rwf_unsupported;
         Self::read_with_fn(
             parent,
             FileType::NonblockingPipe,
             fd,
             size_hint,
             received_hup,
-            |fd, buf, _| sys::read_nonblocking(fd, buf),
+            |fd, buf, _| unsafe { read_pipe_nowait(&*rwf, fd, buf) },
         );
     }
 
@@ -712,7 +760,7 @@ impl PosixBufferedReader {
                 // single-threaded event loop (see `EventLoopCtx::pipe_read_buffer_mut`).
                 let stack_buffer = parent.vtable.event_loop().pipe_read_buffer_mut();
 
-                match sys::read_nonblocking(fd, stack_buffer) {
+                match read_pipe_nowait(&parent.rwf_unsupported, fd, stack_buffer) {
                     sys::Result::Ok(bytes_read) => {
                         if let Some(l) = parent.maxbuf {
                             if MaxBuf::on_read_bytes(l, bytes_read as u64) {
@@ -760,11 +808,12 @@ impl PosixBufferedReader {
             } else {
                 parent._buffer.reserve(16 * 1024);
                 let buf_len = {
-                    // SAFETY: sys::read_nonblocking writes only initialized bytes into
-                    // the prefix it reports; commit_spare exposes exactly that prefix.
+                    // SAFETY: the nonblocking pipe read writes only initialized
+                    // bytes into the prefix it reports; commit_spare exposes
+                    // exactly that prefix.
                     let buf = unsafe { bun_core::vec::spare_bytes_mut(&mut parent._buffer) };
                     let buf_len = buf.len();
-                    match sys::read_nonblocking(fd, buf) {
+                    match read_pipe_nowait(&parent.rwf_unsupported, fd, buf) {
                         sys::Result::Ok(bytes_read) => {
                             if let Some(l) = parent.maxbuf {
                                 if MaxBuf::on_read_bytes(l, bytes_read as u64) {

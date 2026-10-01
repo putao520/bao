@@ -74,10 +74,13 @@ extern void __attribute__((__noreturn__)) Bun__panic(const char *message, size_t
 #ifdef _WIN32
 #define IS_EINTR(rc) (rc == SOCKET_ERROR && WSAGetLastError() == WSAEINTR)
 #define LIBUS_ERR WSAGetLastError()
+/* What libuv translates to UV_ECANCELED (uv_translate_sys_error). */
+#define LIBUS_ECANCELED WSAEINTR
 #else
 #include <errno.h>
 #define IS_EINTR(rc) (rc == -1 && errno == EINTR)
 #define LIBUS_ERR errno
+#define LIBUS_ECANCELED ECANCELED
 #endif
 #include <stdbool.h>
 /* Poll type and what it polls for */
@@ -163,6 +166,8 @@ void us_internal_group_maybe_unlink(struct us_socket_group_t *group);
  * close_notify, may defer) when s->ssl. These are the underlying halves: the
  * SSL path calls _raw once it's actually time to drop the fd. */
 struct us_socket_t *us_internal_socket_close_raw(us_socket_r s, int code, void *reason);
+/* The connect `s` was made for failed with `error`. */
+void us_internal_socket_connect_failed(us_socket_r s, int error);
 struct us_socket_t *us_internal_ssl_close(us_socket_r s, int code, void *reason);
 void us_internal_loop_data_init(struct us_loop_t *loop,
                                 void (*wakeup_cb)(us_loop_r loop),

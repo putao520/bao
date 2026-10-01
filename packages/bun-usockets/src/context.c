@@ -95,34 +95,22 @@ void us_socket_group_close_all_ex(struct us_socket_group_t *group, int also_list
     }
 
     struct us_socket_t *s = group->head_sockets;
+    /* A socket a handler opens links in at the head, behind this walk: it is
+     * not this call's to close, so a handler that always dials again cannot
+     * keep the walk going (upstream f4d755a9cf — the old force-drain below
+     * closed exactly such sockets with no notification at all, which was the
+     * `bun test --isolate` UAF). */
     while (s) {
         struct us_socket_t *nextS = s->next;
-        if (us_internal_poll_type(&s->p) & POLL_TYPE_SEMI_SOCKET) {
-            /* In-flight connect — close_raw skips dispatch for SEMI_SOCKET
-             * (on_close without on_open is wrong), so the Zig wrapper's
-             * `socket = .connected` would never detach and finalize() UAFs
-             * after drainClosedSockets(). Deliver the same on_connect_error
-             * the natural failure path would have, which detaches the
-             * wrapper. The handler then closes; if it doesn't, the
-             * force-drain below catches it. */
-            us_dispatch_connect_error(s, ECONNABORTED);
-            if (!us_socket_is_closed(s)) {
-                us_internal_socket_close_raw(s, LIBUS_SOCKET_CLOSE_CODE_CONNECTION_RESET, 0);
-            }
-        } else {
-            us_socket_close(s, LIBUS_SOCKET_CLOSE_CODE_CLEAN_SHUTDOWN, 0);
+        us_socket_close(s, LIBUS_SOCKET_CLOSE_CODE_CLEAN_SHUTDOWN, 0);
+        /* A TLS socket may have *deferred* that: us_internal_ssl_close with
+         * code==0 sends close_notify and, on WANT_READ, waits for the peer's
+         * reply. Callers (e.g. Listener.deinit) free the embedding storage
+         * next, which would leave s->group dangling. */
+        if (!us_socket_is_closed(s)) {
+            us_internal_socket_close_raw(s, LIBUS_SOCKET_CLOSE_CODE_CONNECTION_RESET, 0);
         }
         s = nextS;
-    }
-
-    /* TLS sockets may have *deferred* the close above: us_internal_ssl_close
-     * with code==0 sends close_notify and, on WANT_READ, leaves the socket
-     * open in head_sockets waiting for the peer's reply. Callers of close_all
-     * (e.g. Listener.deinit) free the embedding storage immediately after, so
-     * any survivor's s->group becomes a dangling pointer. The graceful walk
-     * already flushed close_notify; force-drain the rest synchronously now. */
-    while (group->head_sockets) {
-        us_internal_socket_close_raw(group->head_sockets, LIBUS_SOCKET_CLOSE_CODE_CONNECTION_RESET, 0);
     }
 
     /* Sockets parked in the loop-wide low-prio queue aren't in head_sockets
@@ -733,8 +721,7 @@ void us_internal_socket_after_open(struct us_socket_t *s, int error) {
                 }
             }
         } else {
-            us_dispatch_connect_error(s, error);
-            // It's expected that close is called by the caller
+            us_internal_socket_connect_failed(s, error);
         }
     } else {
         us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE);
