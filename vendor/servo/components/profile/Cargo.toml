@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-profile"
-version = "0.5.9"
+version = "0.5.12"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -15,12 +15,12 @@ path = "lib.rs"
 
 [dependencies]
 log = {version = "0.4.32"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.8"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.10"}
 serde = {version = "1.0.228"}
 serde_json = {version = "1.0"}
 servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.8"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.2"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.10"}
+servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.4"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 
 [target.'cfg(target_os = "macos")'.dependencies]

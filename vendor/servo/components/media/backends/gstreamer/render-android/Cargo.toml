@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-gstreamer-render-android"
-version = "0.5.9"
+version = "0.5.11"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -19,5 +19,5 @@ gstreamer = {version = "0.25", features = ["v1_18"]}
 gstreamer-gl = {version = "0.25"}
 gstreamer-gl-egl = {version = "0.25"}
 gstreamer-video = {version = "0.25"}
-servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "../render", version = "=0.5.9"}
-servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.10"}
+servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "../render", version = "=0.5.11"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.13"}

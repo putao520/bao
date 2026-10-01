@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-streams"
-version = "0.5.8"
+version = "0.5.11"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -14,6 +14,6 @@ name = "servo_media_streams"
 path = "lib.rs"
 
 [dependencies]
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.7"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
 malloc_size_of_derive = {version = "0.1"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}

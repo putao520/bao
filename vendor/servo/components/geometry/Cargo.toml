@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-geometry"
-version = "0.5.6"
+version = "0.5.9"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -16,7 +16,7 @@ path = "lib.rs"
 [dependencies]
 app_units = {version = "0.7"}
 euclid = {version = "0.22"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.7"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
 malloc_size_of_derive = {version = "0.1"}
 webrender = {version = "0.70", features = ["serde"]}
 webrender_api = {version = "0.70"}

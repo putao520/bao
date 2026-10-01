@@ -1,6 +1,6 @@
 [package]
 name = "servo-media-examples"
-version = "0.5.4"
+version = "0.5.5"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -13,7 +13,7 @@ description = "A component of the servo web-engine."
 euclid = {version = "0.22"}
 rand = {version = "0.10"}
 serde = {version = "1.0.228"}
-servo = {package = "bao-servo", path = "../../servo", version = "=0.5.21", default-features = true}
-servo-media = {package = "bao-servo-media", path = "../servo-media", version = "=0.5.9"}
-servo-media-auto = {package = "bao-servo-media-auto", path = "../backends/auto", version = "=0.5.6"}
-servo-media-dummy = {package = "bao-servo-media-dummy", path = "../backends/dummy", version = "=0.5.9"}
+servo = {package = "bao-servo", path = "../../servo", version = "=0.5.22", default-features = true}
+servo-media = {package = "bao-servo-media", path = "../servo-media", version = "=0.5.11"}
+servo-media-auto = {package = "bao-servo-media-auto", path = "../backends/auto", version = "=0.5.8"}
+servo-media-dummy = {package = "bao-servo-media-dummy", path = "../backends/dummy", version = "=0.5.11"}

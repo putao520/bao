@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-gstreamer-render-unix"
-version = "0.5.9"
+version = "0.5.11"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -26,5 +26,5 @@ gstreamer-gl-egl = {version = "0.25", optional = true}
 gstreamer-gl-wayland = {version = "0.25", optional = true}
 gstreamer-gl-x11 = {version = "0.25", optional = true}
 gstreamer-video = {version = "0.25"}
-servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "../render", version = "=0.5.9"}
-servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.10"}
+servo-media-gstreamer-render = {package = "bao-servo-media-gstreamer-render", path = "../render", version = "=0.5.11"}
+servo-media-player = {package = "bao-servo-media-player", path = "../../../player", version = "=0.5.13"}
