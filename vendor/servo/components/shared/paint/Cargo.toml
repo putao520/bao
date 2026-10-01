@@ -21,28 +21,28 @@ tracing = ["dep:tracing"]
 bitflags = {version = "2.11"}
 crossbeam-channel = {version = "0.5"}
 dpi = {version = "0.1"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = ">=0.5.17, <0.6.0"}
 euclid = {version = "0.22"}
 gleam = {version = "0.15"}
 glow = {version = "0.17.0"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../../ipc-channel", version = "0.22.0"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 parking_lot = {version = "0.12", features = ["serde"]}
-profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = ">=0.5.16, <0.6.0"}
 raw-window-handle = {version = "0.6"}
 rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228"}
 serde_bytes = {version = "0.11"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
-servo-geometry = {package = "bao-servo-geometry", path = "../../geometry", version = "=0.5.9"}
-servo-tracing = {package = "bao-servo-tracing", path = "../../servo_tracing", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-geometry = {package = "bao-servo-geometry", path = "../../geometry", version = ">=0.5.9, <0.6.0"}
+servo-tracing = {package = "bao-servo-tracing", path = "../../servo_tracing", version = ">=0.5.2, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.22.0"}
+style = {package = "bao-stylo", path = "../../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_traits = {version = "=0.22.0"}
 surfman = {version = "0.13.0", features = ["chains", "sm-x11"]}
 tracing = {version = "0.1.44", optional = true}

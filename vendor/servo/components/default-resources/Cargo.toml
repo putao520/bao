@@ -14,4 +14,4 @@ name = "servo_default_resources"
 path = "lib.rs"
 
 [dependencies]
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}

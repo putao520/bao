@@ -31,41 +31,41 @@ backtrace = {version = "0.3"}
 base64 = {version = "0.23.0"}
 content-security-policy = {version = "=0.8.1", features = ["serde"]}
 crossbeam-channel = {version = "0.5"}
-devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.13"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 euclid = {version = "0.22"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.17"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.17, <0.6.0"}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
-layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.18"}
+layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = ">=0.5.18, <0.6.0"}
 log = {version = "0.4.32"}
-media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.16"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.35"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.15"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
+media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = ">=0.5.16, <0.6.0"}
+net = {package = "bao-servo-net", path = "../net", version = ">=0.5.35, <0.6.0"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 rand = {version = "0.10"}
 rustc-hash = {version = "2.1.2"}
-script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.14"}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = ">=0.5.14, <0.6.0"}
 serde = {version = "1.0.228"}
-servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = "=0.5.18"}
-background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = "=0.5.16"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.16", optional = true}
-servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = "=0.5.16"}
-servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.16"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.14"}
-servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
-storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.16"}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = ">=0.5.18, <0.6.0"}
+background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = ">=0.5.16, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = ">=0.5.16, <0.6.0", optional = true}
+servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = ">=0.5.16, <0.6.0"}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = ">=0.5.16, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = ">=0.5.16, <0.6.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_traits = {version = "=0.22.0"}
 tracing = {version = "0.1.44", optional = true}
-webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = "=0.5.14", optional = true}
-webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.17", optional = true}
-webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.15"}
+webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = ">=0.5.14, <0.6.0", optional = true}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = ">=0.5.17, <0.6.0", optional = true}
+webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = ">=0.5.15, <0.6.0"}
 
 [target.'cfg(any(target_os="macos", all(not(target_os = "windows"), not(target_os = "ios"), not(target_os="android"), not(target_env="ohos"), not(target_arch="arm"), not(target_arch="aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64"))))'.dependencies]
 gaol = {version = "0.2.1"}

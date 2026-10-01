@@ -24,8 +24,8 @@ readme = "README.md"
 name = "bao_browser"
 
 [dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.23", default-features = false, features = ["baked-in-resources"] }
-servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url", version = "=0.5.9" }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.23, <0.6.0", default-features = false, features = ["baked-in-resources"] }
+servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url", version = ">=0.5.9, <0.6.0" }
 dpi = "0.1"
 url = "2"
 dashmap.workspace = true
@@ -52,7 +52,7 @@ euclid = "0.22"
 # 交叉构建路径 — windows target 不启用 servo 的 media-gstreamer 后端(baked-in-
 # resources 保持全 target);media 面=独立后续波。非 windows 维持 gstreamer 媒体栈。
 [target.'cfg(not(windows))'.dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.23", features = ["media-gstreamer"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.23, <0.6.0", features = ["media-gstreamer"] }
 
 # win-cross GL backend selection (Windows GL context class root fix): surfman's
 # WGL backend restores the *previous* (null) context when `create_context`
@@ -72,7 +72,7 @@ servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", v
 # cfg(windows)-gated because mozangle's build.rs panics on non-Windows targets
 # when egl/build_dlls are on; Linux keeps its X11/EGL path byte-identical.
 [target.'cfg(windows)'.dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = "=0.5.23", default-features = false, features = ["baked-in-resources", "no-wgl"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.23, <0.6.0", default-features = false, features = ["baked-in-resources", "no-wgl"] }
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
@@ -89,7 +89,7 @@ bun_boringssl_sys.workspace = true
 bun_uws.workspace = true
 # page_net_bun_fingerprint_e2e_tests: drives servo-net's bun_bridge flag /
 # request counter from the e2e harness (same path dep servo uses — unified).
-servo-net = { path = "../../vendor/servo/components/net", package = "bao-servo-net", version = "=0.5.35" }
+servo-net = { path = "../../vendor/servo/components/net", package = "bao-servo-net", version = ">=0.5.35, <0.6.0" }
 # h2_fetch_node_stack_e2e_tests: bun_url::URL + bun_threading Batch for the
 # AsyncHTTP harness (the exact wire path window.fetch drives —
 # fetch_async::start).

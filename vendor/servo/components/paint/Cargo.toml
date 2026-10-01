@@ -33,35 +33,35 @@ panic = "deny"
 bitflags = {version = "2.11"}
 crossbeam-channel = {version = "0.5"}
 dpi = {version = "0.1"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 euclid = {version = "0.22"}
 gleam = {version = "0.15"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
-media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.16"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
+media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = ">=0.5.16, <0.6.0"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 rayon = {version = "1"}
 rustc-hash = {version = "2.1.2"}
-servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.16"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.14"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.9"}
-servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
+servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = ">=0.5.2, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = ">=0.5.16, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 stylo_traits = {version = "=0.22.0"}
 surfman = {version = "0.13.0", features = ["chains"]}
-timers = {package = "bao-servo-timers", path = "../timers", version = "=0.5.9"}
+timers = {package = "bao-servo-timers", path = "../timers", version = ">=0.5.9, <0.6.0"}
 tracing = {version = "0.1.44", optional = true}
-webgl = {package = "bao-servo-webgl", path = "../webgl", version = "=0.5.15", default-features = false, optional = true}
-webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = "=0.5.14", optional = true}
+webgl = {package = "bao-servo-webgl", path = "../webgl", version = ">=0.5.15, <0.6.0", default-features = false, optional = true}
+webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = ">=0.5.14, <0.6.0", optional = true}
 webrender = {version = "0.70", features = ["serde"]}
 webrender_api = {version = "0.70"}
-webxr = {package = "bao-servo-webxr", path = "../webxr", version = "=0.5.17", optional = true}
-webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.15", optional = true}
+webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", optional = true}
+webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = ">=0.5.15, <0.6.0", optional = true}
 wr_malloc_size_of = {version = "0.2.2"}
 
 [dev-dependencies]

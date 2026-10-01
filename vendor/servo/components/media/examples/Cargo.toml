@@ -13,7 +13,7 @@ description = "A component of the servo web-engine."
 euclid = {version = "0.22"}
 rand = {version = "0.10"}
 serde = {version = "1.0.228"}
-servo = {package = "bao-servo", path = "../../servo", version = "=0.5.23", default-features = true}
-servo-media = {package = "bao-servo-media", path = "../servo-media", version = "=0.5.17"}
-servo-media-auto = {package = "bao-servo-media-auto", path = "../backends/auto", version = "=0.5.12"}
-servo-media-dummy = {package = "bao-servo-media-dummy", path = "../backends/dummy", version = "=0.5.17"}
+servo = {package = "bao-servo", path = "../../servo", version = ">=0.5.23, <0.6.0", default-features = true}
+servo-media = {package = "bao-servo-media", path = "../servo-media", version = ">=0.5.17, <0.6.0"}
+servo-media-auto = {package = "bao-servo-media-auto", path = "../backends/auto", version = ">=0.5.12, <0.6.0"}
+servo-media-dummy = {package = "bao-servo-media-dummy", path = "../backends/dummy", version = ">=0.5.17, <0.6.0"}

@@ -14,6 +14,6 @@ name = "servo_media_streams"
 path = "lib.rs"
 
 [dependencies]
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}

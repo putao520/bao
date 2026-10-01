@@ -15,12 +15,12 @@ path = "lib.rs"
 
 [dependencies]
 log = {version = "0.4.32"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 serde = {version = "1.0.228"}
 serde_json = {version = "1.0"}
-servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
+servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = ">=0.5.2, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 
 [target.'cfg(target_os = "macos")'.dependencies]

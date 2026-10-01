@@ -14,13 +14,13 @@ name = "devtools_traits"
 path = "lib.rs"
 
 [dependencies]
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = ">=0.5.17, <0.6.0"}
 http = {version = "1.4"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
-net_traits = {package = "bao-servo-net-traits", path = "../net", version = "=0.5.15"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.16"}
+net_traits = {package = "bao-servo-net-traits", path = "../net", version = ">=0.5.15, <0.6.0"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = ">=0.5.16, <0.6.0"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
-servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}

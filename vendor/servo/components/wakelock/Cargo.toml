@@ -14,5 +14,5 @@ name = "servo_wakelock"
 path = "lib.rs"
 
 [dependencies]
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 serde = {version = "1.0.228"}

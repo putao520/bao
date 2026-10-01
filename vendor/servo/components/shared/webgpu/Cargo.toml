@@ -15,11 +15,11 @@ path = "lib.rs"
 
 [dependencies]
 arrayvec = {version = "0.7"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
-pixels = {package = "bao-servo-pixels", path = "../../pixels", version = "=0.5.17"}
+pixels = {package = "bao-servo-pixels", path = "../../pixels", version = ">=0.5.17, <0.6.0"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
 webrender_api = {version = "0.70"}
 wgpu-core = {version = "30", features = ["serde", "wgsl"]}
 wgpu-types = {version = "30"}

@@ -15,5 +15,5 @@ path = "lib.rs"
 
 [dependencies]
 log = {version = "0.4.32"}
-servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.11"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = ">=0.5.11, <0.6.0"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}

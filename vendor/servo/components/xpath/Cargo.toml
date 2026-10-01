@@ -14,6 +14,6 @@ description = "A component of the servo web-engine."
 name = "servo_xpath"
 [dependencies]
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 markup5ever = {version = "0.40"}

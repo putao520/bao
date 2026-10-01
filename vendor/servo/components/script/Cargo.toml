@@ -69,49 +69,49 @@ cssparser = {version = "0.38", features = ["serde"]}
 ctr = {version = "0.10", features = ["zeroize"]}
 ctutils = {version = "0.4"}
 data-url = {version = "0.3"}
-deny_public_fields = {package = "bao-servo-deny-public-fields", path = "../deny_public_fields", version = "=0.5.2"}
-devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.13"}
-dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version = "=0.5.2"}
+deny_public_fields = {package = "bao-servo-deny-public-fields", path = "../deny_public_fields", version = ">=0.5.2, <0.6.0"}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
+dom_struct = {package = "bao-servo-dom-struct", path = "../dom_struct", version = ">=0.5.2, <0.6.0"}
 ecdsa = {version = "0.17"}
 ed25519-dalek = {version = "3.0", features = ["alloc", "pkcs8", "rand_core", "zeroize"]}
 ed448-goldilocks = {version = "=0.14.0-pre.15"}
 elliptic-curve = {version = "0.14", features = ["pkcs8"]}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 encoding_rs = {version = "0.8", features = ["serde"]}
 euclid = {version = "0.22"}
 flate2 = {version = "1.1"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.17"}
-fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = "=0.5.17"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.17, <0.6.0"}
+fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = ">=0.5.17, <0.6.0"}
 glow = {version = "0.17.0"}
 headers = {version = "0.4"}
 hkdf = {version = "0.13"}
 html5ever = {version = "0.40.1"}
 http = {version = "1.4"}
 httparse = {version = "1.9"}
-hyper_serde = {package = "bao-servo-hyper-serde", path = "../hyper_serde", version = "=0.5.2"}
+hyper_serde = {package = "bao-servo-hyper-serde", path = "../hyper_serde", version = ">=0.5.2, <0.6.0"}
 icu_locid = {version = "1.5.0"}
 indexmap = {version = "2.14.0", features = ["std"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 itertools = {version = "0.15"}
 js = {package = "bao-mozjs", path = "../../../mozjs/mozjs", version = "^0.24", default-features = false, features = ["intl", "libz-sys"]}
-jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = "=0.5.2"}
+jstraceable_derive = {package = "bao-servo-jstraceable-derive", path = "../jstraceable_derive", version = ">=0.5.2, <0.6.0"}
 k12 = {version = "0.5"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
 keccak = {version = "0.2"}
 kurbo = {version = "0.13.1", features = ["euclid"]}
-layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.18"}
+layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = ">=0.5.18, <0.6.0"}
 libc = {version = "0.2"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 markup5ever = {version = "0.40"}
-media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.16"}
-metrics = {package = "bao-servo-metrics", path = "../metrics", version = "=0.5.16"}
+media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = ">=0.5.16, <0.6.0"}
+metrics = {package = "bao-servo-metrics", path = "../metrics", version = ">=0.5.16, <0.6.0"}
 mime = {version = "0.3.13"}
 mime_guess = {version = "2.0.5"}
 ml-dsa = {version = "0.1", features = ["zeroize"]}
 ml-kem = {version = "0.3", features = ["getrandom", "pkcs8", "zeroize"]}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.15"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
 nom-rfc8288 = {version = "0.4.0"}
 num-traits = {version = "0.2"}
 num_cpus = {version = "1.17.0"}
@@ -119,14 +119,14 @@ ocb3 = {version = "=0.2.0-rc.3", features = ["zeroize"]}
 p256 = {version = "0.14", features = ["ecdh"]}
 p384 = {version = "0.14", features = ["ecdh"]}
 p521 = {version = "0.14", features = ["ecdh"]}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
 percent-encoding = {version = "2.3"}
 phf = {version = "0.13"}
-pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.17"}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = ">=0.5.17, <0.6.0"}
 pkcs8 = {version = "0.11"}
 postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 rand = {version = "0.10"}
 regex = {version = "1.12"}
 resvg = {version = "0.48.1"}
@@ -135,31 +135,31 @@ rustc-hash = {version = "2.1.2"}
 # BAO patch (fork-maintained, 2026-09-28): webcrypto hybrid-KEM dependency,
 # synced with the upstream 7ca99fe3f subtlecrypto.rs end-state (REQ-BRW-047 wave ③).
 x-wing = { version = "0.1.0", features = ["zeroize"] }
-script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = "=0.5.21"}
-script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.14"}
+script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = ">=0.5.21, <0.6.0"}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = ">=0.5.14, <0.6.0"}
 selectors = {version = "=0.41.0"}
 serde = {version = "1.0.228", features = ["derive"]}
 serde_json = {version = "1.0", features = ["preserve_order"]}
-background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = "=0.5.16"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.16", optional = true}
-servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.16"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.14"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.9"}
-servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = "=0.5.17"}
-servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
-servo-webvtt = {package = "bao-servo-webvtt", path = "../webvtt", version = "=0.5.7"}
+background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = ">=0.5.16, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = ">=0.5.16, <0.6.0", optional = true}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = ">=0.5.16, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
+servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = ">=0.5.17, <0.6.0"}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
+servo-webvtt = {package = "bao-servo-webvtt", path = "../webvtt", version = ">=0.5.7, <0.6.0"}
 servo_arc = {version = "=0.5.0", features = ["servo"]}
 sha1 = {version = "0.11"}
 sha2 = {version = "0.11"}
 sha3 = {version = "0.12"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 sponge-cursor = {version = "0.1"}
-storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.16"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = ">=0.5.16, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_atoms = {version = "=0.22.0"}
 stylo_dom = {version = "=0.22.0"}
 stylo_malloc_size_of = {version = "=0.22.0"}
@@ -169,7 +169,7 @@ swapper = {version = "0.1"}
 tempfile = {version = "3"}
 tendril = {version = "0.5", features = ["encoding_rs"]}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
-timers = {package = "bao-servo-timers", path = "../timers", version = "=0.5.9"}
+timers = {package = "bao-servo-timers", path = "../timers", version = ">=0.5.9, <0.6.0"}
 tracing = {version = "0.1.44", optional = true}
 unicode-bidi = {version = "0.3.18"}
 unicode-script = {version = "0.5"}
@@ -178,15 +178,15 @@ urlpattern = {version = "0.3"}
 uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}
 web_atoms = {version = "0.3.0"}
 webdriver = {version = "0.53.0", default-features = false}
-webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.17", optional = true}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = ">=0.5.17, <0.6.0", optional = true}
 webrender_api = {version = "0.70"}
-webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.15", optional = true}
+webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = ">=0.5.15, <0.6.0", optional = true}
 wgpu-core = {version = "30", optional = true}
 wgpu-types = {version = "30", optional = true}
 x25519-dalek = {version = "3.0", features = ["getrandom", "static_secrets", "zeroize"]}
 x448 = {version = "=0.14.0-pre.12", features = ["static_secrets"]}
 xml5ever = {version = "0.40"}
-xpath = {package = "bao-servo-xpath", path = "../xpath", version = "=0.5.9"}
+xpath = {package = "bao-servo-xpath", path = "../xpath", version = ">=0.5.9, <0.6.0"}
 zeroize = {version = "1.8", features = ["zeroize_derive"]}
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]

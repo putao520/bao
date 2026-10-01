@@ -17,6 +17,6 @@ path = "lib.rs"
 num_enum = {version = "0.7"}
 serde = {version = "1.0.228", features = ["derive"]}
 serde_json = {version = "1.0"}
-servo-config-macro = {package = "bao-servo-config-macro", path = "macro", version = "=0.5.4"}
+servo-config-macro = {package = "bao-servo-config-macro", path = "macro", version = ">=0.5.4, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
 stylo_static_prefs = {version = "=0.22.0"}

@@ -14,7 +14,7 @@ name = "servo_bluetooth_traits"
 path = "lib.rs"
 
 [dependencies]
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = ">=0.5.17, <0.6.0"}
 regex = {version = "1.12"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}

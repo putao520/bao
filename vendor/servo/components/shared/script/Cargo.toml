@@ -21,32 +21,32 @@ webgpu = ["dep:webgpu_traits"]
 accesskit = {version = "0.24.0", features = ["serde"]}
 bitflags = {version = "2.11"}
 crossbeam-channel = {version = "0.5"}
-devtools_traits = {package = "bao-servo-devtools-traits", path = "../devtools", version = "=0.5.13"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = "=0.5.17"}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../devtools", version = ">=0.5.13, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = ">=0.5.17, <0.6.0"}
 # Bao patch: RouterProxy field in BaoPatches struct references ipc_channel
 ipc-channel = {package = "bao-ipc-channel", path = "../../../../ipc-channel", version = "0.22.0"}
 euclid = {version = "0.22"}
-fonts_traits = {package = "bao-servo-fonts-traits", path = "../fonts", version = "=0.5.17"}
+fonts_traits = {package = "bao-servo-fonts-traits", path = "../fonts", version = ">=0.5.17, <0.6.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
-media = {package = "bao-servo-media-thread", path = "../../media/media-thread", version = "=0.5.16"}
-net_traits = {package = "bao-servo-net-traits", path = "../net", version = "=0.5.15"}
-paint_api = {package = "bao-servo-paint-api", path = "../paint", version = "=0.5.15"}
-pixels = {package = "bao-servo-pixels", path = "../../pixels", version = "=0.5.17"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.16"}
+media = {package = "bao-servo-media-thread", path = "../../media/media-thread", version = ">=0.5.16, <0.6.0"}
+net_traits = {package = "bao-servo-net-traits", path = "../net", version = ">=0.5.15, <0.6.0"}
+paint_api = {package = "bao-servo-paint-api", path = "../paint", version = ">=0.5.15, <0.6.0"}
+pixels = {package = "bao-servo-pixels", path = "../../pixels", version = ">=0.5.17, <0.6.0"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = ">=0.5.16, <0.6.0"}
 rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
-servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../bluetooth", version = "=0.5.16", optional = true}
-servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../canvas", version = "=0.5.16"}
-servo-config = {package = "bao-servo-config", path = "../../config", version = "=0.5.12"}
-servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../constellation", version = "=0.5.14"}
-servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.9"}
-storage_traits = {package = "bao-servo-storage-traits", path = "../storage", version = "=0.5.16"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../bluetooth", version = ">=0.5.16, <0.6.0", optional = true}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../canvas", version = ">=0.5.16, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../../config", version = ">=0.5.12, <0.6.0"}
+servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../constellation", version = ">=0.5.14, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../storage", version = ">=0.5.16, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
 stylo_atoms = {version = "=0.22.0"}
 stylo_traits = {version = "=0.22.0"}
-webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../webgpu", version = "=0.5.17", optional = true}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../webgpu", version = ">=0.5.17, <0.6.0", optional = true}
 webrender_api = {version = "0.70"}
-webxr-api = {package = "bao-servo-webxr-api", path = "../webxr", version = "=0.5.15"}
+webxr-api = {package = "bao-servo-webxr-api", path = "../webxr", version = ">=0.5.15, <0.6.0"}

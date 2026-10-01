@@ -14,10 +14,10 @@ name = "storage_traits"
 path = "lib.rs"
 
 [dependencies]
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = ">=0.5.16, <0.6.0"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
-servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}

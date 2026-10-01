@@ -16,19 +16,19 @@ path = "lib.rs"
 [dependencies]
 atomic_refcell = {version = "0.1.14"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 memmap2 = {version = "0.9.10"}
 num-derive = {version = "0.4.2"}
 num-traits = {version = "0.2"}
 parking_lot = {version = "0.12", features = ["serde"]}
-profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = ">=0.5.16, <0.6.0"}
 read-fonts = {version = "0.41.0"}
 serde = {version = "1.0.228"}
 servo_arc = {version = "=0.5.0", features = ["servo"]}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
-servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.9"}
-style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.22.0"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
+style = {package = "bao-stylo", path = "../../../../stylo", version = ">=0.22.0, <0.23.0"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}
 webrender_api = {version = "0.70"}
 

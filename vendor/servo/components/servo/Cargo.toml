@@ -99,86 +99,86 @@ accesskit = {version = "0.24.0", features = ["serde"]}
 bitflags = {version = "2.11"}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
-devtools = {package = "bao-servo-devtools", path = "../devtools", version = "=0.5.31"}
-devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.13"}
+devtools = {package = "bao-servo-devtools", path = "../devtools", version = ">=0.5.31, <0.6.0"}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
 dpi = {version = "0.1"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 env_logger = {version = "0.11"}
 euclid = {version = "0.22"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.17"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.17, <0.6.0"}
 gstreamer = {version = "0.25", features = ["v1_18"], optional = true}
 http = {version = "1.4"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
-layout = {package = "bao-servo-layout", path = "../layout", version = "=0.5.27"}
-layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.18"}
+layout = {package = "bao-servo-layout", path = "../layout", version = ">=0.5.27, <0.6.0"}
+layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = ">=0.5.18, <0.6.0"}
 log = {version = "0.4.32"}
-media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = "=0.5.16"}
+media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = ">=0.5.16, <0.6.0"}
 mozangle = {version = "0.6"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.35"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.15"}
-paint = {package = "bao-servo-paint", path = "../paint", version = "=0.5.15"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
+net = {package = "bao-servo-net", path = "../net", version = ">=0.5.35, <0.6.0"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
+paint = {package = "bao-servo-paint", path = "../paint", version = ">=0.5.15, <0.6.0"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
-profile = {package = "bao-servo-profile", path = "../profile", version = "=0.5.18"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+profile = {package = "bao-servo-profile", path = "../profile", version = ">=0.5.18, <0.6.0"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 rustc-hash = {version = "2.1.2"}
-script = {package = "bao-servo-script", path = "../script", version = "=0.5.27"}
-script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.14"}
+script = {package = "bao-servo-script", path = "../script", version = ">=0.5.27, <0.6.0"}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = ">=0.5.14, <0.6.0"}
 serde = {version = "1.0.228"}
-servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = "=0.5.18"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-bluetooth = {package = "bao-servo-bluetooth", path = "../bluetooth", version = "=0.5.17", optional = true}
-servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = "=0.5.16", optional = true}
-servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.16"}
+servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = ">=0.5.18, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-bluetooth = {package = "bao-servo-bluetooth", path = "../bluetooth", version = ">=0.5.17, <0.6.0", optional = true}
+servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = ">=0.5.16, <0.6.0", optional = true}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = ">=0.5.16, <0.6.0"}
 # Bao vendor dep: canvas noise (REQ-STL-003) re-exported via set_canvas_noise_seed
-servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = "=0.5.16"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = "=0.5.25"}
-servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = "=0.5.14"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.9"}
-servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = "=0.5.17"}
-servo-media-dummy = {package = "bao-servo-media-dummy", path = "../media/backends/dummy", version = "=0.5.17"}
-servo-media-gstreamer = {package = "bao-servo-media-gstreamer", path = "../media/backends/gstreamer", version = "=0.5.15", optional = true}
-servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
-servo-wakelock = {package = "bao-servo-wakelock", path = "../wakelock", version = "=0.5.16"}
-storage = {package = "bao-servo-storage", path = "../storage", version = "=0.5.16"}
-storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.16"}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = ">=0.5.16, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = ">=0.5.25, <0.6.0"}
+servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
+servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = ">=0.5.17, <0.6.0"}
+servo-media-dummy = {package = "bao-servo-media-dummy", path = "../media/backends/dummy", version = ">=0.5.17, <0.6.0"}
+servo-media-gstreamer = {package = "bao-servo-media-gstreamer", path = "../media/backends/gstreamer", version = ">=0.5.15, <0.6.0", optional = true}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
+servo-wakelock = {package = "bao-servo-wakelock", path = "../wakelock", version = ">=0.5.16, <0.6.0"}
+storage = {package = "bao-servo-storage", path = "../storage", version = ">=0.5.16, <0.6.0"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = ">=0.5.16, <0.6.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_traits = {version = "=0.22.0"}
 surfman = {version = "0.13.0", features = ["chains"]}
 tokio = {version = "1", features = ["sync"]}
 tracing = {version = "0.1.44", optional = true}
 url = {version = "2.5"}
-webgl = {package = "bao-servo-webgl", path = "../webgl", version = "=0.5.15", default-features = false}
-webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = "=0.5.14", optional = true}
+webgl = {package = "bao-servo-webgl", path = "../webgl", version = ">=0.5.15, <0.6.0", default-features = false}
+webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = ">=0.5.14, <0.6.0", optional = true}
 webrender = {version = "0.70", features = ["serde"]}
 webrender_api = {version = "0.70"}
-webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.15", optional = true}
+webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = ">=0.5.15, <0.6.0", optional = true}
 
 # On most platforms we bake in the resources for simplicity. On ohos we load resources via the filesystem.
 # In the future we might want to use this approach also for the other platforms.
 # If the feature is turned off, a resource reader must be injected into the build via `inventory::submit!()`.
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.17", optional = true}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = ">=0.5.17, <0.6.0", optional = true}
 
 [target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
-webxr = {package = "bao-servo-webxr", path = "../webxr", version = "=0.5.17", optional = true}
+webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", optional = true}
 
 [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
 arboard = {version = "3", features = ["wayland-data-control"], optional = true}
-webxr = {package = "bao-servo-webxr", path = "../webxr", version = "=0.5.17", features = ["glwindow", "headless"], optional = true}
+webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", features = ["glwindow", "headless"], optional = true}
 
 [target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
 gaol = {version = "0.2.1"}
 
 [target.'cfg(target_os = "windows")'.dependencies]
-webxr = {package = "bao-servo-webxr", path = "../webxr", version = "=0.5.17", features = ["glwindow", "headless", "openxr-api"], optional = true}
+webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", features = ["glwindow", "headless", "openxr-api"], optional = true}
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-servo-media-ohos = {package = "bao-servo-media-ohos", path = "../media/backends/ohos", version = "=0.5.16"}
+servo-media-ohos = {package = "bao-servo-media-ohos", path = "../media/backends/ohos", version = ">=0.5.16, <0.6.0"}
 ohos-pasteboard = {version = "0.1.0", optional = true}
 
 [dev-dependencies]
@@ -188,7 +188,7 @@ http = {version = "1.4"}
 http-body-util = {version = "0.1"}
 hyper = {version = "1.10"}
 itertools = {version = "0.15"}
-net = {package = "bao-servo-net", path = "../net", version = "=0.5.35", features = ["test-util"]}
+net = {package = "bao-servo-net", path = "../net", version = ">=0.5.35, <0.6.0", features = ["test-util"]}
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.

@@ -17,17 +17,17 @@ path = "lib.rs"
 byte-slice-cast = {version = "1.2.3"}
 euclid = {version = "0.22"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 num-complex = {version = "0.4.6"}
 num-traits = {version = "0.2"}
 petgraph = {version = "0.8.3", features = ["stable_graph"]}
 rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228", features = ["derive"]}
-servo-base = {package = "bao-servo-base", path = "../../shared/base", version = "=0.5.17"}
-servo-media-derive = {package = "bao-servo-media-derive", path = "../servo-media-derive", version = "=0.5.2"}
-servo-media-player = {package = "bao-servo-media-player", path = "../player", version = "=0.5.19"}
-servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = "=0.5.11"}
-servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = "=0.5.11"}
+servo-base = {package = "bao-servo-base", path = "../../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-media-derive = {package = "bao-servo-media-derive", path = "../servo-media-derive", version = ">=0.5.2, <0.6.0"}
+servo-media-player = {package = "bao-servo-media-player", path = "../player", version = ">=0.5.19, <0.6.0"}
+servo-media-streams = {package = "bao-servo-media-streams", path = "../streams", version = ">=0.5.11, <0.6.0"}
+servo-media-traits = {package = "bao-servo-media-traits", path = "../traits", version = ">=0.5.11, <0.6.0"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 speexdsp-resampler = {version = "0.1.0"}

@@ -27,13 +27,13 @@ half = {version = "2"}
 itertools = {version = "0.15"}
 log = {version = "0.4.32"}
 num-traits = {version = "0.2"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
-pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.17"}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = ">=0.5.17, <0.6.0"}
 rustc-hash = {version = "2.1.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = "=0.5.16"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = ">=0.5.16, <0.6.0"}
 surfman = {version = "0.13.0", features = ["chains"]}
 webrender_api = {version = "0.70"}
-webxr = {package = "bao-servo-webxr", path = "../webxr", version = "=0.5.17", optional = true}
-webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = "=0.5.15", optional = true}
+webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", optional = true}
+webxr-api = {package = "bao-servo-webxr-api", path = "../shared/webxr", version = ">=0.5.15, <0.6.0", optional = true}

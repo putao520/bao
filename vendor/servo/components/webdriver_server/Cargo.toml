@@ -18,7 +18,7 @@ base64 = {version = "0.23.0"}
 bytes = {version = "1.0"}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 euclid = {version = "0.22"}
 http = {version = "1.4"}
 http02 = {package = "http", version = "0.2"}
@@ -28,10 +28,10 @@ log = {version = "0.4.32"}
 rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228"}
 serde_json = {version = "1.0"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.9"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
 stylo_traits = {version = "=0.22.0"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 tokio = {version = "1"}

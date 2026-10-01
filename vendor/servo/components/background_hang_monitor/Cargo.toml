@@ -23,8 +23,8 @@ log = {version = "0.4.32"}
 rustc-demangle = {version = "0.1", optional = true}
 rustc-hash = {version = "2.1.2"}
 serde_json = {version = "1.0"}
-background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = "=0.5.16"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
+background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../shared/background_hang_monitor", version = ">=0.5.16, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = {version = "0.6", optional = true}

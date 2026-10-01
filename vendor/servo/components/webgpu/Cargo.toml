@@ -17,12 +17,12 @@ path = "lib.rs"
 arrayvec = {version = "0.7", features = ["serde"]}
 euclid = {version = "0.22"}
 log = {version = "0.4.32"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
-pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.17"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = ">=0.5.17, <0.6.0"}
 rustc-hash = {version = "2.1.2"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = "=0.5.17"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+webgpu_traits = {package = "bao-servo-webgpu-traits", path = "../shared/webgpu", version = ">=0.5.17, <0.6.0"}
 webrender_api = {version = "0.70"}
 wgpu-core = {version = "30", features = ["serde", "wgsl"]}
 wgpu-types = {version = "30"}

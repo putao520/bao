@@ -17,10 +17,10 @@ path = "lib.rs"
 euclid = {version = "0.22"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 serde = {version = "1.0.228", features = ["derive"]}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
 webrender_api = {version = "0.70"}
 
 [dev-dependencies]

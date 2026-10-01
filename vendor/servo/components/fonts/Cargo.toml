@@ -30,7 +30,7 @@ bitflags = {version = "2.11"}
 content-security-policy = {version = "=0.8.1", features = ["serde"]}
 euclid = {version = "0.22"}
 font-types = {version = "0.12"}
-fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = "=0.5.17"}
+fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = ">=0.5.17, <0.6.0"}
 fontsan = {version = "0.7", default-features = false, features = ["libz-sys", "wuff"]}
 # FIXME (#34517): macOS only needs this when building servo without `--features media-gstreamer`
 harfbuzz-sys = {version = "0.8", default-features = false, features = ["bundled"]}
@@ -39,27 +39,27 @@ icu_properties = {version = "1.5.0", features = ["compiled_data"]}
 itertools = {version = "0.15"}
 libc = {version = "0.2"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 memmap2 = {version = "0.9.10"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.15"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
 num-traits = {version = "0.2"}
 ohos-deviceinfo-sys = {version = "0.1.7"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
 postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 read-fonts = {version = "0.41.0"}
 rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
 servo_arc = {version = "=0.5.0", features = ["servo"]}
 skrifa = {version = "0.44.0"}
 smallvec = {version = "1.15", features = ["serde", "union"]}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_atoms = {version = "=0.22.0"}
 tracing = {version = "0.1.44", optional = true}
 unicode-properties = {version = "0.1.4", features = ["emoji"]}
@@ -81,7 +81,7 @@ freetype-sys = {version = ">=0.20.1, <0.24"}
 # issue #43: 不启用 harfbuzz-sys "freetype" feature——死激活(servo shaper 零 hb_ft_* 消费),
 # 且 harfbuzz-sys 0.8 该 feature 强制 freetype-sys ^0.23,阻断 GPUI 链的 0.20.x 统一
 harfbuzz-sys = {version = "0.8", default-features = false}
-servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = "=0.5.2"}
+servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = ">=0.5.2, <0.6.0"}
 
 [target.'cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))'.dependencies]
 fontconfig_sys = {package = "yeslogic-fontconfig-sys", version = "6"}

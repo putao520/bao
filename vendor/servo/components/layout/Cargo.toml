@@ -25,43 +25,43 @@ arrayvec = {version = "0.7"}
 atomic_refcell = {version = "0.1.14"}
 bitflags = {version = "2.11"}
 data-url = {version = "0.3"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 euclid = {version = "0.22"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.17"}
-fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = "=0.5.17"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.17, <0.6.0"}
+fonts_traits = {package = "bao-servo-fonts-traits", path = "../shared/fonts", version = ">=0.5.17, <0.6.0"}
 icu_locid = {version = "1.5.0"}
 icu_properties = {version = "1.5.0", features = ["compiled_data"]}
 icu_segmenter = {version = "1.5.0"}
 itertools = {version = "0.15"}
 kurbo = {version = "0.13.1", features = ["euclid"]}
-layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = "=0.5.18"}
+layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = ">=0.5.18, <0.6.0"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.15"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
 num-derive = {version = "0.4.2"}
 num-traits = {version = "0.2"}
 once_cell = {version = "1.21.4"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
 phf = {version = "0.13", features = ["macros"]}
-pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.17"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = ">=0.5.17, <0.6.0"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 rayon = {version = "1"}
 rustc-hash = {version = "2.1.2"}
-script = {package = "bao-servo-script", path = "../script", version = "=0.5.27"}
-script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = "=0.5.14"}
+script = {package = "bao-servo-script", path = "../script", version = ">=0.5.27, <0.6.0"}
+script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = ">=0.5.14, <0.6.0"}
 selectors = {version = "=0.41.0"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = "=0.5.9"}
-servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
 servo_arc = {version = "=0.5.0", features = ["servo"]}
 smallvec = {version = "1.15", features = ["serde", "union"]}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../stylo", version = "=0.22.0"}
+style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_atoms = {version = "=0.22.0"}
 stylo_traits = {version = "=0.22.0"}
 taffy = {version = "0.13.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"]}

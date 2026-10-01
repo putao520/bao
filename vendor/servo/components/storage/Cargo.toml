@@ -17,26 +17,26 @@ path = "lib.rs"
 [dependencies]
 libc = {version = "0.2"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.15"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
 postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 rusqlite = {version = "0.38", features = ["bundled"]}
 rustc-hash = {version = "2.1.2"}
 sea-query = {version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"]}
 sea-query-rusqlite = {version = "0.8.0"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
-storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = "=0.5.16"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
+storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = ">=0.5.16, <0.6.0"}
 tempfile = {version = "3"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}
 
 [dev-dependencies]
-profile = {package = "bao-servo-profile", path = "../profile", version = "=0.5.18"}
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.17"}
+profile = {package = "bao-servo-profile", path = "../profile", version = ">=0.5.18, <0.6.0"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = ">=0.5.17, <0.6.0"}
 url = {version = "2.5"}
 
 [[test]]

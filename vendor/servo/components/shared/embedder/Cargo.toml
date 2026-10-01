@@ -24,21 +24,21 @@ cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
 euclid = {version = "0.22"}
 http = {version = "1.4"}
-hyper_serde = {package = "bao-servo-hyper-serde", path = "../../hyper_serde", version = "=0.5.2"}
+hyper_serde = {package = "bao-servo-hyper-serde", path = "../../hyper_serde", version = ">=0.5.2, <0.6.0"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
 inventory = {version = "0.3.24"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
-pixels = {package = "bao-servo-pixels", path = "../../pixels", version = "=0.5.17"}
+pixels = {package = "bao-servo-pixels", path = "../../pixels", version = ">=0.5.17, <0.6.0"}
 rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../base", version = "=0.5.17"}
-servo-geometry = {package = "bao-servo-geometry", path = "../../geometry", version = "=0.5.9"}
-servo-url = {package = "bao-servo-url", path = "../../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-geometry = {package = "bao-servo-geometry", path = "../../geometry", version = ">=0.5.9, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 strum = {version = "0.28", features = ["derive"]}
-style = {package = "bao-stylo", path = "../../../../stylo", version = "=0.22.0"}
+style = {package = "bao-stylo", path = "../../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_traits = {version = "=0.22.0"}
 url = {version = "2.5"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}

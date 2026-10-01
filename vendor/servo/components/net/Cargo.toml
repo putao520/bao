@@ -50,10 +50,10 @@ content-security-policy = {version = "=0.8.1", features = ["serde"]}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
 data-url = {version = "0.3"}
-devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = "=0.5.13"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = "=0.5.17"}
+devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 fst = {version = "0.4"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = "=0.5.17"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.17, <0.6.0"}
 futures = {version = "0.3", default-features = false}
 futures-core = {version = "0.3", default-features = false}
 futures-util = {version = "0.3", default-features = false}
@@ -62,21 +62,21 @@ http = {version = "1.4"}
 http-body-util = {version = "0.1"}
 hyper = {version = "1.10", features = ["http1", "http2"]}
 hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "http2", "tokio", "http1"]}
-hyper_serde = {package = "bao-servo-hyper-serde", path = "../hyper_serde", version = "=0.5.2"}
+hyper_serde = {package = "bao-servo-hyper-serde", path = "../hyper_serde", version = ">=0.5.2, <0.6.0"}
 imsz = {version = "0.4"}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 itertools = {version = "0.15"}
 log = {version = "0.4.32"}
-malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = "=0.5.9"}
+malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_of", version = ">=0.5.9, <0.6.0"}
 malloc_size_of_derive = {version = "0.1"}
 mime = {version = "0.3.13"}
 mime_guess = {version = "2.0.5"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = "=0.5.15"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
 nom = {version = "8.0.0"}
-paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = "=0.5.15"}
+paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
-pixels = {package = "bao-servo-pixels", path = "../pixels", version = "=0.5.17"}
-profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = "=0.5.16"}
+pixels = {package = "bao-servo-pixels", path = "../pixels", version = ">=0.5.17, <0.6.0"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 postcard = {version = "1.1.3", default-features = false, features = ["use-std"]}
 quick_cache = {version = "0.6.18", default-features = false, features = ["ahash"]}
 rand = {version = "0.10"}
@@ -88,11 +88,11 @@ rustls-pki-types = {version = "1.14"}
 rustls-platform-verifier = {version = "0.7.0"}
 rusqlite = {version = "0.38", features = ["bundled"]}
 serde = {version = "1.0.228"}
-servo-base = {package = "bao-servo-base", path = "../shared/base", version = "=0.5.17"}
-servo-config = {package = "bao-servo-config", path = "../config", version = "=0.5.12"}
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.17", optional = true}
-servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = "=0.5.2"}
-servo-url = {package = "bao-servo-url", path = "../url", version = "=0.5.9"}
+servo-base = {package = "bao-servo-base", path = "../shared/base", version = ">=0.5.17, <0.6.0"}
+servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = ">=0.5.17, <0.6.0", optional = true}
+servo-tracing = {package = "bao-servo-tracing", path = "../servo_tracing", version = ">=0.5.2, <0.6.0"}
+servo-url = {package = "bao-servo-url", path = "../url", version = ">=0.5.9, <0.6.0"}
 servo_arc = {version = "=0.5.0", features = ["servo"]}
 sea-query = {version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"]}
 sea-query-rusqlite = {version = "0.8.0"}
@@ -125,7 +125,7 @@ hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "htt
 # crates.io version of ourselves - we want to enable a feature of ourselves.
 net = { package = "bao-servo-net", path = ".", features = ["test-util"] }
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws-lc-rs"]}
-servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = "=0.5.17"}
+servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = ">=0.5.17, <0.6.0"}
 
 [[test]]
 name = "main"
