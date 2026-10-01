@@ -120,6 +120,12 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id, source } => {
             with_page(pool, &target_id, |page| cmd_add_script(page, &source))
         }
+        BridgeCommand::RemoveScriptToEvaluateOnNewDocument {
+            target_id,
+            identifier,
+        } => {
+            with_page(pool, &target_id, |page| cmd_remove_script(page, &identifier))
+        }
         BridgeCommand::Reload {
             target_id,
             ignore_cache: _,
@@ -1079,17 +1085,37 @@ fn cmd_set_user_agent(page: &PageHandle, ua: &str) -> Result<Value, String> {
 }
 
 fn cmd_add_script(page: &PageHandle, source: &str) -> Result<Value, String> {
-    // Real navigation replay: the script is registered on the page's servo
-    // UserContentManager and re-executed by the script thread on every future
-    // document load. Additionally applied to the current document so it is
-    // observable without a reload (a superset of Chrome's new-documents-only
-    // semantics — both executions are real).
-    page.add_script_to_evaluate_on_new_document(source)
+    // Single carrier (REQ-CDP-004): the script is registered in the vendor
+    // realm-entry registry — re-executed by the script thread on every future
+    // document load — and the response identifier IS the vendor-minted id
+    // (the single id source both CDP faces return; self-minting here would
+    // desynchronize the remove face). Additionally applied to the current
+    // document so it is observable without a reload (a superset of Chrome's
+    // new-documents-only semantics — both executions are real).
+    let script_id = page
+        .add_script_to_evaluate_on_new_document(source)
         .map_err(to_browser_error)?;
     // Web-scope for the immediate application (REQ-SEC-002/003): the script
     // is a page-level init script, not privileged bao code.
     let _ = page.evaluate_js_web(source).map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "identifier": next_cdp_id("script") }))
+    Ok(serde_json::json!({ "identifier": script_id.to_string() }))
+}
+
+fn cmd_remove_script(page: &PageHandle, identifier: &str) -> Result<Value, String> {
+    // Chrome (content/browser/devtools/protocol/page_handler.cc): the
+    // identifier is looked up in the page's script map; unknown →
+    // ServerError "Script not found" (an error, never a silent ok — a
+    // client that believes a script is armed must learn it is not).
+    let Ok(script_id) = identifier.parse::<u64>() else {
+        return Err("Script not found".into());
+    };
+    let removed = page
+        .remove_script_to_evaluate_on_new_document(script_id)
+        .map_err(to_browser_error)?;
+    if !removed {
+        return Err("Script not found".into());
+    }
+    Ok(serde_json::json!({}))
 }
 
 /// Page.reload — real servo reload (WebView::reload), not a re-navigate.
@@ -3272,16 +3298,6 @@ mod tests {
         let js = "document.documentElement.outerHTML";
         assert!(js.contains("document.documentElement"));
         assert!(js.contains("outerHTML"));
-    }
-
-    // ─── cmd_add_script response structure (pure logic) ────────────────
-    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
-
-    #[test]
-    fn cmd_add_script_response_has_generated_identifier() {
-        // identifier comes from the monotonic counter — never "1".
-        let resp = json!({ "identifier": super::next_cdp_id("script") });
-        assert!(resp["identifier"].as_str().unwrap().starts_with("script-"));
     }
 
     // ─── cmd_reload response structure (pure logic) ────────────────────

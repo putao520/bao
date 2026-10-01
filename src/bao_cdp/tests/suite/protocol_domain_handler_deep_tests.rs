@@ -264,30 +264,30 @@ fn test_page_get_layout_metrics() {
 
 #[test]
 fn test_page_add_script() {
-    // Chrome-compatible: an empty init script (Playwright's placeholder
-    // registration) registers as a no-op with a fresh identifier — the
-    // deterministic "1" stub stays eradicated (fresh monotonic id).
+    // REQ-CDP-004: registration (and the vendor-minted identifier it
+    // returns) lives behind the servo bridge — no bridge, no handle. No
+    // face-local mint may fabricate a handle that maps to nothing.
     let resp = dispatch_with_params(
         "Page.addScriptToEvaluateOnNewDocument",
         json!({"source": ""}),
     );
-    let result = resp.result.expect("empty source registers as a no-op");
-    let id = result["identifier"].as_str().unwrap();
-    assert!(id.starts_with("script-"), "fresh prefixed identifier: {id}");
-    assert_ne!(id, "1", "the hardcoded \"1\" stub must never return");
+    let err = resp.error.expect("no bridge = no registration possible");
+    assert_eq!(err.code, -32603);
+    assert!(resp.result.is_none(), "no fabricated identifier");
 }
 
 #[test]
 fn test_page_remove_script() {
-    // With an identifier the facility itself is absent — explicit -32000
-    // (no removable script registry exists).
+    // REQ-CDP-004: real removal lives behind the servo bridge (the vendor
+    // registry is per-page state) — no bridge is -32603, never a silent ok
+    // and never the retired -32000 not-supported.
     let resp = dispatch_with_params(
         "Page.removeScriptToEvaluateOnNewDocument",
         json!({"identifier": "1"}),
     );
     let err = resp.error.expect("removeScript must fail loudly");
-    assert_eq!(err.code, ERR_NOT_SUPPORTED);
-    assert!(err.message.contains("not supported"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]

@@ -156,15 +156,6 @@ pub fn handle_command(
 
 pub(crate) type HandlerResult = Result<Value, CdpError>;
 
-/// Monotonic id source for CDP identifiers returned by the stateless face
-/// (script ids when no bridge is involved). Chrome semantics: fresh id per
-/// registration — never a hardcoded constant.
-fn next_cdp_identifier(prefix: &str) -> String {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("{prefix}-{n:016x}")
-}
-
 fn params_str(params: &Option<Value>, key: &str) -> String {
     params
         .as_ref()
@@ -537,18 +528,13 @@ fn handle_page(
             }))
         }
         "addScriptToEvaluateOnNewDocument" => {
+            // Every source — the empty placeholder Playwright registers
+            // included — is registered in the vendor realm-entry registry via
+            // the bridge, and the bridge response's identifier IS the
+            // vendor-minted id (the single id source, REQ-CDP-004): the same
+            // value removes the script later. A face-local mint would
+            // fabricate a handle that maps to nothing.
             let source = params_str(params, "source");
-            if source.is_empty() {
-                // Chrome-compatible: clients (Playwright) register an empty
-                // placeholder init script for later binding injection — an
-                // empty script registers nothing and runs nothing, so an ok
-                // with a fresh identifier is the truthful response.
-                return Ok(serde_json::json!({
-                    "identifier": next_cdp_identifier("script")
-                }));
-            }
-            // The bridge handler returns a genuinely generated identifier —
-            // its response is the truth (no hardcoded "1").
             bridge_send(
                 bridge,
                 BridgeCommand::AddScriptToEvaluateOnNewDocument {
@@ -566,10 +552,18 @@ fn handle_page(
                         .into(),
                 });
             }
-            Err(not_supported(
-                "Page.removeScriptToEvaluateOnNewDocument",
-                "added scripts are not kept in a removable registry",
-            ))
+            // Real removal from the vendor registry (REQ-CDP-004): later
+            // documents of the page replay only the remaining entries. The
+            // bridge answers an unknown identifier with "Script not found"
+            // (Chrome page_handler.cc behavior — an error, never a silent
+            // ok).
+            bridge_send(
+                bridge,
+                BridgeCommand::RemoveScriptToEvaluateOnNewDocument {
+                    target_id: tid,
+                    identifier,
+                },
+            )
         }
         _ => Err(CdpError {
             code: -32601,
@@ -2811,14 +2805,15 @@ mod tests {
             // 85. Page.captureScreenshot (no bridge) → -32603 (no renderer
             //     without the bridge — never empty image data)
             (14, "Page.captureScreenshot", None, -32603, "no servo bridge"),
-            // 87. Page.removeScriptToEvaluateOnNewDocument → -32000 (no
-            //     removable script registry exists)
+            // 87. Page.removeScriptToEvaluateOnNewDocument (no bridge) →
+            //     -32603 (real removal lives behind the servo bridge — the
+            //     vendor registry is per-page state)
             (
                 16,
                 "Page.removeScriptToEvaluateOnNewDocument",
-                Some(json!({"identifier": "script-1"})),
-                -32000,
-                "not supported",
+                Some(json!({"identifier": "3"})),
+                -32603,
+                "no servo bridge",
             ),
             // 88. Page.setContent (no html param) → -32602 invalid params
             (17, "Page.setContent", None, -32602, "html"),
@@ -3437,15 +3432,15 @@ mod tests {
         assert!(result.get("targetInfos").unwrap().as_array().unwrap().len() > 0);
     }
 
-    // 86. handle_command Page.addScriptToEvaluateOnNewDocument (empty source)
-    //     → invalid-params error (identifier generation lives behind the bridge)
+    // 86. handle_command Page.addScriptToEvaluateOnNewDocument (no bridge)
+    //     → -32603: registration (and the vendor-minted identifier it
+    //     returns) lives behind the servo bridge — no bridge, no handle.
     #[test]
     fn handle_command_page_add_script_empty_source() {
         let resp = dispatch_no_bridge(15, "Page.addScriptToEvaluateOnNewDocument", None);
-        // Chrome-compatible: an empty init script (Playwright's placeholder
-        // registration) is a no-op success with a fresh identifier.
-        let result = resp.result.expect("empty source registers as a no-op");
-        assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
+        let err = resp.error.expect("no bridge = no registration possible");
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge"), "{err:?}");
     }
 
     // 93. handle_command Runtime.callFunctionOn → ok

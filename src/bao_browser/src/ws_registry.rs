@@ -60,13 +60,6 @@ const SERVED_DOMAINS: [&str; 21] = [
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Identifier minting for `Page.addScriptToEvaluateOnNewDocument` (fresh per
-/// registration, Chrome shape). The source itself is registered against the
-/// servo vendor new-document registry keyed by the session target's
-/// WebViewId — servo evaluates it on every new document of that webview,
-/// before any page script (REQ-CDP-004, W55 vendor realm entry injection).
-static INJECTION_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 fn next_session_id() -> String {
     let n = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("bao-session-{n:016x}")
@@ -156,13 +149,16 @@ impl BaoWsRegistry {
                     message: format!("Target closed: {target_id}"),
                 }));
             };
-            let id = INJECTION_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
             // Vendor realm entry injection (REQ-CDP-004): servo evaluates
             // the script on every new document of this webview BEFORE any
             // page script — replacing the former pump-timed dispatch that
-            // fired after parsing began (0/40 NO-HARVEST).
-            servo::register_embedder_new_document_script(webview_id, source);
-            return Some(Ok(json!({ "identifier": id.to_string() })));
+            // fired after parsing began (0/40 NO-HARVEST). The identifier is
+            // minted by the vendor registry itself (the single id source for
+            // both CDP faces — self-minting here would desynchronize the
+            // remove face) and returned verbatim to the client; the same
+            // value removes the script via the memory-bridge face.
+            let script_id = servo::register_embedder_new_document_script(webview_id, source);
+            return Some(Ok(json!({ "identifier": script_id.to_string() })));
         }
         self.dispatch_session_command_inner(method, params, msg, event_sender)
     }

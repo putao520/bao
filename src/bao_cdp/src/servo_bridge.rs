@@ -139,6 +139,13 @@ pub enum BridgeCommand {
         target_id: String,
         source: String,
     },
+    /// Remove one new-document script by the identifier the vendor registry
+    /// minted at add time (REQ-CDP-004; Chrome answers an unknown identifier
+    /// with a "Script not found" server error).
+    RemoveScriptToEvaluateOnNewDocument {
+        target_id: String,
+        identifier: String,
+    },
     Reload {
         target_id: String,
         ignore_cache: bool,

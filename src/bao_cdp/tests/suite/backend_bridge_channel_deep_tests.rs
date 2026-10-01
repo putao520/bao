@@ -1606,15 +1606,16 @@ fn test_input_insert_text_empty_no_bridge_ok() {
 }
 
 #[test]
-fn test_page_add_script_empty_source_rejected_invalid_params() {
-    // Chrome-compatible: an empty init script (Playwright's placeholder
-    // registration) is a no-op success with a fresh identifier.
+fn test_page_add_script_empty_source_requires_bridge() {
+    // REQ-CDP-004: an empty source registers like any other source — through
+    // the servo bridge, where the vendor registry mints the identifier. No
+    // bridge = no registration, no fabricated handle.
     let resp = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source": ""})),
     );
-    let result = resp.result.expect("empty source registers as a no-op");
-    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
+    let e = resp.error.expect("no bridge = no registration possible");
+    assert_eq!(e.code, -32603);
 }
 
 // ---- handle_command: CdpMessage.params field is ignored (params passed separately) ----

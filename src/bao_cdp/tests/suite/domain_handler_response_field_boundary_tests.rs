@@ -91,19 +91,20 @@ fn test_page_add_script_requires_bridge_for_identifier() {
 }
 
 #[test]
-fn test_page_add_script_empty_source() {
-    // Chrome-compatible: an empty init script (Playwright's placeholder
-    // registration) registers as a no-op with a fresh identifier.
+fn test_page_add_script_empty_source_requires_bridge() {
+    // REQ-CDP-004: registration (and the vendor-minted identifier it
+    // returns) lives behind the servo bridge — no bridge, no handle. A
+    // face-local mint would fabricate a handle that maps to nothing.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    let result = session
+    let err = session
         .send(
             &router,
             "Page.addScriptToEvaluateOnNewDocument",
             Some(json!({"source": ""})),
         )
-        .unwrap();
-    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
 }
 
 #[test]

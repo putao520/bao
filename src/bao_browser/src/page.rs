@@ -1483,23 +1483,45 @@ impl PageHandle {
     /// Register a script that servo replays on every future document load of
     /// this page (CDP Page.addScriptToEvaluateOnNewDocument backing).
     ///
-    /// Real navigation replay through servo's UserContentManager: the script
-    /// is added to the page's user-content set and executed by the script
-    /// thread when each new document is created. Takes effect from the next
-    /// navigation (servo applies user-content updates on reload/navigation).
-    pub fn add_script_to_evaluate_on_new_document(&self, source: &str) -> Result<(), BrowserError> {
-        // Single carrier (REQ-CDP-004): every face of this command (WS
-        // registry intercept and the memory/bridge handler alike) must land
-        // in the vendor realm-entry registry — the servo UserContentManager
-        // path delivered scripts after parsing began (pump-era timing).
+    /// Single carrier (REQ-CDP-004): every face of this command (WS registry
+    /// intercept and the memory/bridge handler alike) lands in the vendor
+    /// realm-entry registry, which mints the identifier this method returns
+    /// (the single id source — the CDP client's `identifier` and the
+    /// `removeScriptToEvaluateOnNewDocument` handle).
+    pub fn add_script_to_evaluate_on_new_document(
+        &self,
+        source: &str,
+    ) -> Result<u64, BrowserError> {
         let Some(webview_id) = webview_id_for_page(self.id()) else {
             return Err(BrowserError::Init(format!(
                 "page {} has no webview mapping for new-document script registration",
                 self.id()
             )));
         };
-        servo::register_embedder_new_document_script(webview_id, source.to_string());
-        Ok(())
+        Ok(servo::register_embedder_new_document_script(
+            webview_id,
+            source.to_string(),
+        ))
+    }
+
+    /// Unregister one new-document script by identifier (CDP
+    /// Page.removeScriptToEvaluateOnNewDocument backing). Returns whether the
+    /// script existed and was removed; later documents of this page replay
+    /// only the remaining entries.
+    pub fn remove_script_to_evaluate_on_new_document(
+        &self,
+        script_id: u64,
+    ) -> Result<bool, BrowserError> {
+        let Some(webview_id) = webview_id_for_page(self.id()) else {
+            return Err(BrowserError::Init(format!(
+                "page {} has no webview mapping for new-document script removal",
+                self.id()
+            )));
+        };
+        Ok(servo::unregister_embedder_new_document_script(
+            webview_id,
+            script_id,
+        ))
     }
 
     pub fn take_screenshot(&self, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {

@@ -904,24 +904,23 @@ fn test_page_add_script() {
 
 #[test]
 fn test_page_add_script_empty_source() {
-    // Chrome-compatible: an empty init script (Playwright's placeholder
-    // registration) registers as a no-op with a fresh identifier.
+    // REQ-CDP-004: registration (and the vendor-minted identifier it
+    // returns) lives behind the servo bridge — no bridge, no handle.
     let resp = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source": ""})),
     );
-    let result = resp.result.expect("empty source registers as a no-op");
-    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
-
+    let e = resp.error.expect("no bridge = no registration possible");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
 fn test_page_add_script_no_source_key() {
-    // Chrome-compatible: a missing/empty source registers as a no-op with a
-    // fresh identifier (Playwright's placeholder registration).
+    // REQ-CDP-004: a missing source key is an empty registration — same
+    // bridge path, same -32603 without a bridge.
     let r = dispatch("Page.addScriptToEvaluateOnNewDocument", None);
-    let id = r.result.unwrap()["identifier"].as_str().unwrap().to_string();
-    assert!(id.starts_with("script-"));
+    let e = r.error.expect("no bridge = no registration possible");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]

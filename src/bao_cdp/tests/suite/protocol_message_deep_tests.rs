@@ -397,14 +397,14 @@ fn test_page_add_script_to_evaluate_no_bridge() {
 #[test]
 fn test_page_add_script_empty_source_no_bridge() {
     // Chrome-compatible: an empty init script (Playwright's placeholder
-    // registration) registers as a no-op with a fresh identifier.
+    // REQ-CDP-004: registration (and the vendor-minted identifier it
+    // returns) lives behind the servo bridge — no bridge, no handle.
     let resp = dispatch(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(json!({"source": ""})),
     );
-    let result = resp.result.expect("empty source registers as a no-op");
-    assert!(result["identifier"].as_str().unwrap().starts_with("script-"));
-
+    let e = resp.error.expect("no bridge = no registration possible");
+    assert_eq!(e.code, -32603);
 }
 
 #[test]
