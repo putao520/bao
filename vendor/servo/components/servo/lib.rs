@@ -298,8 +298,21 @@ pub fn unregister_worker_injectors(webview_id: WebViewId) {
 /// (fresh OR same-origin replacement window) replays them all in
 /// registration order. Re-registering the same source is a no-op; distinct
 /// sources stack.
-pub fn register_embedder_new_document_script(webview_id: WebViewId, source: String) {
-    script::register_embedder_new_document_script(webview_id, source);
+///
+/// Returns the script's identifier — minted by the vendor registry (the
+/// single id source, REQ-CDP-004) and returned to the CDP client as
+/// `Page.addScriptToEvaluateOnNewDocument`'s `identifier`; the same value
+/// unregisters via [`unregister_embedder_new_document_script`].
+pub fn register_embedder_new_document_script(webview_id: WebViewId, source: String) -> u64 {
+    script::register_embedder_new_document_script(webview_id, source)
+}
+
+/// Remove ONE new-document script by identifier (CDP
+/// `Page.removeScriptToEvaluateOnNewDocument` carrier). Returns whether the
+/// entry existed and was removed; later documents of the webview replay only
+/// the remaining entries.
+pub fn unregister_embedder_new_document_script(webview_id: WebViewId, script_id: u64) -> bool {
+    script::unregister_embedder_new_document_script(webview_id, script_id)
 }
 
 /// Remove every new-document script registered for `webview_id` (page close;

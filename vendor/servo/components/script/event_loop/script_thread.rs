@@ -717,31 +717,57 @@ pub fn unregister_worker_injectors(webview_id: WebViewId) {
 // The per-Worker injector tier above is the structural template: entries are
 // NON-consuming (every new document replays them all, registration order
 // preserved), keyed per WebViewId, and removed at page close by the embedder
-// (`unregister_embedder_new_document_scripts`). Re-registering the SAME
-// source for the same webview is a no-op (dedup by identical source — the
-// CDP face keeps minting fresh identifiers even for idempotent re-runs), so
+// (`unregister_embedder_new_document_scripts`). Each entry carries the
+// identifier minted here (`register_embedder_new_document_script` return
+// value): re-registering the SAME source for the same webview is a no-op
+// returning the EXISTING identifier (one registry entry is one CDP handle —
+// a second id for a dedup'd entry would dangle after a remove), while
 // distinct sources stack instead of overwriting each other.
 //
 // This replaces bao's former pump-timed dispatch (FrameStartedLoading →
 // `evaluate_js_web` from the embedder event loop), which fired after parsing
 // began: synchronously-completing pages finished before the injection landed
 // and never observed it (W55 0/40 NO-HARVEST evidence).
-static EMBEDDER_NEW_DOCUMENT_SCRIPTS: std::sync::Mutex<Vec<(WebViewId, String)>> =
+static EMBEDDER_NEW_DOCUMENT_SCRIPTS: std::sync::Mutex<Vec<(WebViewId, u64, String)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Process-global identifier source for new-document scripts (REQ-CDP-004):
+/// every CDP `Page.addScriptToEvaluateOnNewDocument` identifier is minted
+/// HERE — the single id source both CDP faces (WS registry and memory
+/// bridge) return to clients, and the key `Page.removeScriptToEvaluateOnNewDocument`
+/// unregisters by.
+static EMBEDDER_NEW_DOCUMENT_SCRIPT_NEXT_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
 /// Register an embedder script evaluated on every new document of
-/// `webview_id` (CDP `Page.addScriptToEvaluateOnNewDocument` carrier).
-/// Re-registering the same source for the same webview is a no-op; distinct
-/// sources stack and replay in registration order.
-pub fn register_embedder_new_document_script(webview_id: WebViewId, source: String) {
+/// `webview_id` (CDP `Page.addScriptToEvaluateOnNewDocument` carrier) and
+/// return its identifier. Re-registering the same source for the same
+/// webview is a no-op returning the existing identifier; distinct sources
+/// stack and replay in registration order.
+pub fn register_embedder_new_document_script(webview_id: WebViewId, source: String) -> u64 {
     let mut guard = EMBEDDER_NEW_DOCUMENT_SCRIPTS.lock().unwrap();
-    if guard
+    if let Some((_, id, _)) = guard
         .iter()
-        .any(|(wid, src)| *wid == webview_id && *src == source)
+        .find(|(wid, _, src)| *wid == webview_id && *src == source)
     {
-        return;
+        return *id;
     }
-    guard.push((webview_id, source));
+    let id = EMBEDDER_NEW_DOCUMENT_SCRIPT_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    guard.push((webview_id, id, source));
+    id
+}
+
+/// Unregister one new-document script by identifier (CDP
+/// `Page.removeScriptToEvaluateOnNewDocument` carrier). Returns whether the
+/// entry existed and was removed. Scoped to `webview_id`: one page cannot
+/// remove another page's script even if it learned its identifier. Later
+/// documents of the webview replay only the remaining entries (drain order
+/// and non-consuming semantics unchanged).
+pub fn unregister_embedder_new_document_script(webview_id: WebViewId, script_id: u64) -> bool {
+    let mut guard = EMBEDDER_NEW_DOCUMENT_SCRIPTS.lock().unwrap();
+    let before = guard.len();
+    guard.retain(|(wid, id, _)| !(*wid == webview_id && *id == script_id));
+    guard.len() != before
 }
 
 /// Snapshot the new-document scripts for `webview_id` (NON-consuming — every
@@ -751,8 +777,8 @@ pub(crate) fn embedder_new_document_scripts(webview_id: WebViewId) -> Vec<String
         .lock()
         .unwrap()
         .iter()
-        .filter(|(wid, _)| *wid == webview_id)
-        .map(|(_, source)| source.clone())
+        .filter(|(wid, _, _)| *wid == webview_id)
+        .map(|(_, _, source)| source.clone())
         .collect()
 }
 
@@ -763,7 +789,7 @@ pub fn unregister_embedder_new_document_scripts(webview_id: WebViewId) {
     EMBEDDER_NEW_DOCUMENT_SCRIPTS
         .lock()
         .unwrap()
-        .retain(|(wid, _)| *wid != webview_id);
+        .retain(|(wid, _, _)| *wid != webview_id);
 }
 
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
@@ -5525,4 +5551,111 @@ fn obtain_a_browsing_context(
     // Step 15. Return newBrowsingContext.
     // TODO
     Some(browsing_context)
+}
+
+// BAO PATCH (REQ-CDP-004): registry-level unit coverage for the new-document
+// script carrier — identifier single-sourcing, idempotent re-registration
+// (same webview + same source = the SAME identifier), removal by identifier,
+// per-webview scoping, and the drain snapshot a new document replays. Pure
+// registry logic: no engine, no JSContext.
+#[cfg(test)]
+mod embedder_new_document_script_registry_tests {
+    use servo_base::id::{PainterId, PipelineNamespace, PipelineNamespaceId, WebViewId};
+
+    fn webview() -> WebViewId {
+        // Id minting needs the thread's pipeline namespace (BAO-patched
+        // idempotent install); test threads have no constellation to request
+        // one from, so install a fixed local namespace.
+        PipelineNamespace::install(PipelineNamespaceId(1));
+        WebViewId::new(PainterId::next())
+    }
+
+    #[test]
+    fn register_mints_stable_incrementing_identifiers() {
+        let w = webview();
+        let id1 = super::register_embedder_new_document_script(w, "a".into());
+        let id2 =
+            super::register_embedder_new_document_script(w, "b".into());
+        assert_ne!(id1, id2, "distinct sources must stack under distinct ids");
+        assert!(id1 >= 1 && id2 >= 1, "identifiers are 1-based positive");
+        super::unregister_embedder_new_document_scripts(w);
+    }
+
+    #[test]
+    fn same_source_reregistration_is_idempotent_same_id() {
+        let w = webview();
+        let id1 = super::register_embedder_new_document_script(w, "x".into());
+        let id2 =
+            super::register_embedder_new_document_script(w, "x".into());
+        assert_eq!(id1, id2, "one registry entry is one CDP handle");
+        // Still exactly one entry: the drain replays it once.
+        assert_eq!(super::embedder_new_document_scripts(w), vec!["x"]);
+        super::unregister_embedder_new_document_scripts(w);
+    }
+
+    #[test]
+    fn same_source_other_webview_gets_distinct_id() {
+        let w1 = webview();
+        let w2 = webview();
+        let id1 = super::register_embedder_new_document_script(w1, "x".into());
+        let id2 =
+            super::register_embedder_new_document_script(w2, "x".into());
+        assert_ne!(id1, id2, "registration is scoped per webview");
+        super::unregister_embedder_new_document_scripts(w1);
+        super::unregister_embedder_new_document_scripts(w2);
+    }
+
+    #[test]
+    fn unregister_by_id_removes_only_that_entry() {
+        let w = webview();
+        let id_a = super::register_embedder_new_document_script(w, "a".into());
+        let id_b = super::register_embedder_new_document_script(w, "b".into());
+        let id_c = super::register_embedder_new_document_script(w, "c".into());
+
+        assert!(
+            super::unregister_embedder_new_document_script(w, id_b),
+            "removing a live identifier must report removal"
+        );
+        assert!(
+            !super::unregister_embedder_new_document_script(w, id_b),
+            "double remove is a false, not a panic"
+        );
+        assert!(
+            !super::unregister_embedder_new_document_script(w, u64::MAX),
+            "unknown identifier is a false, not an error"
+        );
+
+        // REQ-CDP-004 remove-then-zero-injection: the removed source never
+        // reaches a new document; the survivors keep registration order.
+        assert_eq!(
+            super::embedder_new_document_scripts(w),
+            vec!["a", "c"],
+            "ids {id_a} and {id_c} survive, {id_b} is gone"
+        );
+        super::unregister_embedder_new_document_scripts(w);
+        assert!(
+            super::embedder_new_document_scripts(w).is_empty(),
+            "page-close sweep clears the webview's entries"
+        );
+    }
+
+    #[test]
+    fn remove_is_scoped_to_the_owning_webview() {
+        let w1 = webview();
+        let w2 = webview();
+        let id1 = super::register_embedder_new_document_script(w1, "x".into());
+        super::register_embedder_new_document_script(w2, "x".into());
+        // w2 cannot remove w1's script even with the identifier in hand.
+        assert!(
+            !super::unregister_embedder_new_document_script(w2, id1),
+            "cross-webview remove must not report success"
+        );
+        assert_eq!(
+            super::embedder_new_document_scripts(w1),
+            vec!["x"],
+            "w1's entry is untouched by w2's remove"
+        );
+        super::unregister_embedder_new_document_scripts(w1);
+        super::unregister_embedder_new_document_scripts(w2);
+    }
 }

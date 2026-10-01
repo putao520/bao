@@ -64,14 +64,14 @@ FAIL 明细(subtest 级断言输出在 driver 运行产物 `/tmp/wpt-first-run-f
 3. **终态 INJECT 形**:零 timer——`install()`(document-start 同步)+ `DOMContentLoaded` + `load` 双事件钩子。DCL 在 parser 终任务内同步触发,先于 testharness 的 timer 延迟 completion 派发,同步完成型文件必赶上注册;无 timer 即无 pending 跨界,复用臂安全。
 4. 中间轮 `layout.flexbox.balance` guard panic(已闭环):servo codegen `run.py` 的 `map_preference_name` 手写 MAPPING 表缺 `layout_flexbox_balance` 行(docstring 自述须与 prefs.rs 运行时映射双端同步,W54 只补了 stylo 侧)→ codegen 漏点号名 → 运行时 `Preferences::get_value` 查表 panic,任意 `.style` 触碰杀 ScriptThread(裸浏览器零注入复现 + backtrace 实证;修复四点 = run.py MAPPING +1 行 + Preferences struct 字段/const_default + stylo_static_prefs set 桥,横扫确认 toml servo_pref 7 名差集仅此一条,05:33 二进制重发后消失)。
 
-## 偏差注记(user ruling 2026-10-01)
+## 偏差注记(user ruling 2026-10-01;remove-按-id 闭环 2026-10-01 同日)
 
-- servo 侧注册表按 `(WebViewId, source)` **同文去重**:与 CDP 规范"同文两注册是两条 entry、remove 按 identifier"有偏差。当前 CDP 面无 removeScriptToEvaluateOnNewDocument 接线、无重复注册同文用例,不返工;未来接 remove 命令时注册表按 id 化(identifier → (WebViewId, source) 映射)。
+- ~~servo 侧注册表按 `(WebViewId, source)` **同文去重**:与 CDP 规范"同文两注册是两条 entry、remove 按 identifier"有偏差~~ **已由 removeScript 按 id 合同闭环**:注册表升 `(WebViewId, u64, String)` 三元,vendor 自铸进程级单调 identifier(register 返回值 = CDP `identifier`,唯一 id 源),同文同页重注册幂等返回同一 id(一个 registry entry = 一个 CDP handle),`Page.removeScriptToEvaluateOnNewDocument` 按 id 注销(页内作用域,他页持 id 删不动;未知 id 按 Chromium page_handler.cc 实测语义回 "Script not found" 错误)。与 CDP 规范的残余差异仅:同文两注册在 Chrome 产生两条 entry 两个 id,本实现幂等合一(合同裁决 ③,消除双 handle 悬垂)。
 
 ## 遗留清单
 
 - [WPT 收敛波] 5 FAIL 文件(Document-createElement-namespace / webkit-animation-iteration-event / Event-dispatch-redispatch / Event-subclasses-constructors / NodeIterator-removal / NodeList-static-length-getter-tampered-2 / DOMTokenList-coverage-for-attributes)为真实引擎缺口,harness 首次可测。
 - [NO-HARVEST 3 文件] 均为 crash 型/子框架型测试(inactive-document-crash / null-browsing-context-crash / subframe incumbent-global),非时点问题,单独立项定位。
 - [servo vendor 候选] pending window timer 跨同源 `window_for_replacement` 导航触发 `timers.rs:912` 断言 panic(上游不变量对 init-script 定时器不健壮;本波以 INJECT 零 timer 化规避,引擎侧加固待另立裁决)。
-- [CDP 面] `removeScriptToEvaluateOnNewDocument` 未接线;接线时注册表按 identifier 化(见偏差注记)。
-- [bao_cdp 直派面] `BridgeCommand::AddScriptToEvaluateOnNewDocument` → page `UserContentManager` 路径仍为 head 插入延迟任务时点(晚于 CDP 规范位),WS 面已被本载体取代;非 WS 派发面(bao_cdp_client memory bridge 等)待后续统一裁决。
+- ~~[CDP 面] `removeScriptToEvaluateOnNewDocument` 未接线;接线时注册表按 identifier 化~~ **已闭环(2026-10-01 removeScript 按 id 合同)**:注册表按 identifier 化落地,remove 按 id 真删(见偏差注记)。
+- ~~[bao_cdp 直派面] `BridgeCommand::AddScriptToEvaluateOnNewDocument` → page `UserContentManager` 路径仍为 head 插入延迟任务时点~~ **已闭环(2026-10-01)**:memory bridge 面与 WS 面同落 vendor realm-entry 注入载体(CDP 规范时点),且 add 返回 vendor 自铸 identifier、remove 按其注销——双 CDP 面单源。保留面:cmd_add_script 另对当前 document 立即应用一次(evaluate_js_web,Chrome new-documents-only 的超集,行为自 W55 未变)。
