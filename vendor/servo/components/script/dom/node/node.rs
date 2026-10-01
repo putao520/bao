@@ -127,6 +127,7 @@ use crate::dom::{
     ChildrenMutation, Range, live_range_insert_steps, live_range_normalization_steps,
     live_range_pre_remove_steps_for_parent, live_range_pre_remove_steps_for_removed_subtree,
 };
+use crate::dom::node::nodeiterator::node_iterator_pre_remove;
 use crate::drag::document_selection_drag::DocumentSelectionDragHandler;
 use crate::drag::drag_gesture::{DragGesture, DragHandler};
 use crate::event_loop::document_loader::DocumentLoader;
@@ -1464,6 +1465,7 @@ impl Node {
 
         // TODO Step 10. For each NodeIterator object iterator whose root’s node document is node’s
         // node document: run the NodeIterator pre-remove steps given node and iterator.
+        node_iterator_pre_remove(node);
 
         // Step 11. Let oldPreviousSibling be node’s previous sibling.
         let old_previous_sibling = node.prev_sibling.get();
@@ -2979,7 +2981,10 @@ impl Node {
         let mut cached_index = None;
         live_range_pre_remove_steps_for_parent(node, parent, &mut cached_index);
 
-        // TODO: Step 4. Pre-removing steps for node iterators
+        // Step 4. For each NodeIterator object iterator whose root's node
+        // document is node's node document: run the NodeIterator pre-remove
+        // steps given node and iterator.
+        node_iterator_pre_remove(node);
 
         // Step 5.
         let old_previous_sibling = node.GetPreviousSibling();

@@ -207,6 +207,7 @@ use crate::dom::location::Location;
 use crate::dom::messageevent::MessageEvent;
 use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::focus::FocusTrigger;
+use crate::dom::node::nodeiterator::WeakNodeIteratorVec;
 use crate::dom::node::treewalker::TreeWalker;
 use crate::dom::node::virtualmethods::vtable_for;
 use crate::dom::node::{Node, NodeDamage, NodeFlags, NodeTraits};
@@ -414,6 +415,9 @@ pub(crate) struct Document {
     encoding: Cell<&'static Encoding>,
     has_browsing_context: bool,
     is_html_document: bool,
+    /// The weak list of live NodeIterators whose root's node document is this
+    /// document, driven by the NodeIterator pre-remove steps.
+    node_iterators: WeakNodeIteratorVec,
     #[no_trace]
     activity: Cell<DocumentActivity>,
     /// <https://html.spec.whatwg.org/multipage/#the-document%27s-address>
@@ -1032,6 +1036,12 @@ impl Document {
     #[inline]
     pub(crate) fn is_html_document(&self) -> bool {
         self.is_html_document
+    }
+
+    /// The registry of live iterators whose root's node document is this
+    /// document, consumed by the NodeIterator pre-remove steps.
+    pub(crate) fn node_iterators(&self) -> &WeakNodeIteratorVec {
+        &self.node_iterators
     }
 
     pub(crate) fn is_xhtml_document(&self) -> bool {
@@ -4132,6 +4142,7 @@ impl Document {
             // https://dom.spec.whatwg.org/#concept-document-encoding
             encoding: Cell::new(encoding),
             is_html_document: is_html_document == IsHTMLDocument::HTMLDocument,
+            node_iterators: Default::default(),
             activity: Cell::new(activity),
             tag_map: DomRefCell::new(HashMapTracedValues::new_fx()),
             tagns_map: DomRefCell::new(HashMapTracedValues::new_fx()),
