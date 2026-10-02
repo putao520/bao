@@ -127,7 +127,7 @@ use crate::dom::{
     ChildrenMutation, Range, live_range_insert_steps, live_range_normalization_steps,
     live_range_pre_remove_steps_for_parent, live_range_pre_remove_steps_for_removed_subtree,
 };
-use crate::dom::node::nodeiterator::node_iterator_pre_remove;
+use crate::dom::node::nodeiterator::{node_iterator_pre_remove, node_iterators_migrate_on_adopt};
 use crate::drag::document_selection_drag::DocumentSelectionDragHandler;
 use crate::drag::drag_gesture::{DragGesture, DragHandler};
 use crate::event_loop::document_loader::DocumentLoader;
@@ -2352,6 +2352,12 @@ impl Node {
         // of node’s shadow-including inclusive descendants, in shadow-including
         // tree order:
         if &*old_doc != document {
+            // The node iterator pre-removing steps are scoped to iterators
+            // "whose root's node document is node's node document"
+            // (node_iterator_pre_remove), so live iterators rooted in this
+            // subtree follow it into `document` before the loop below swaps
+            // the node documents.
+            node_iterators_migrate_on_adopt(node, &old_doc, document);
             for descendant in node.traverse_preorder(ShadowIncluding::Yes) {
                 // Step 3.1. Set inclusiveDescendant’s node document to document.
                 descendant.set_owner_doc(document);

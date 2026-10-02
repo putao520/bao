@@ -274,6 +274,32 @@ pub(crate) fn node_iterator_pre_remove(node: &Node) {
     }
 }
 
+/// <https://dom.spec.whatwg.org/#concept-node-adopt> bookkeeping for the
+/// pre-remove scope: the node iterator pre-removing steps
+/// ([node_iterator_pre_remove]) run for every iterator "whose root's node
+/// document is node's node document", so a live iterator's registration must
+/// follow its root's node document. When adoption moves `node` (and its
+/// subtree) from `old_document` to `new_document`, re-register every live
+/// iterator rooted at `node` or at one of its descendants.
+///
+/// Must run before the adoption loop swaps the subtree's node documents (the
+/// caller passes `old_document` explicitly). No user code runs here — the
+/// filter is not consulted and adoption holds both documents' script and
+/// layout blockers — so the remove+push pair is atomic as observed.
+pub(crate) fn node_iterators_migrate_on_adopt(
+    node: &Node,
+    old_document: &Document,
+    new_document: &Document,
+) {
+    let old_registry = old_document.node_iterators();
+    for iterator in old_registry.live_node_iterators() {
+        let root: &Node = &iterator.root_node;
+        if root == node || node.is_inclusive_ancestor_of(root) {
+            new_document.node_iterators().push(old_registry.remove(&iterator));
+        }
+    }
+}
+
 impl NodeIterator {
     /// <https://dom.spec.whatwg.org/#nodeiterator-pre-removing-steps>
     fn pre_remove_step(&self, removed: &Node) {
@@ -391,6 +417,18 @@ impl WeakNodeIteratorVec {
 
     pub(crate) fn push(&self, ref_: WeakRef<NodeIterator>) {
         self.cell.borrow_mut().push(ref_);
+    }
+
+    /// Remove an iterator from this vector, returning the removed weak
+    /// reference (mirrors [`crate::dom::range::WeakRangeVec::remove`]). The
+    /// caller keeps the iterator alive across the call.
+    fn remove(&self, iterator: &NodeIterator) -> WeakRef<NodeIterator> {
+        let mut iterators = self.cell.borrow_mut();
+        let position = iterators
+            .iter()
+            .position(|ref_| ref_ == iterator)
+            .expect("live iterator must be registered in its root's node document");
+        iterators.swap_remove(position)
     }
 }
 
