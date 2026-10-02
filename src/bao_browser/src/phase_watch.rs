@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 /// Phase ids are indices into this table — the atomic slot carries the id,
 /// never a pointer or String (lock-free + allocation-free hot path).
-const PHASE_NAMES: [&str; 10] = [
+const PHASE_NAMES: [&str; 11] = [
     "idle",
     "create:webview_new",
     "create:wait_ready",
@@ -40,6 +40,7 @@ const PHASE_NAMES: [&str; 10] = [
     "eval_web",
     "eval_node",
     "close",
+    "paint:composite",
 ];
 
 const PHASE_IDLE: u32 = 0;
@@ -52,6 +53,7 @@ const PHASE_WAIT_NAV: u32 = 6;
 const PHASE_EVAL_WEB: u32 = 7;
 const PHASE_EVAL_NODE: u32 = 8;
 const PHASE_CLOSE: u32 = 9;
+const PHASE_PAINT: u32 = 10;
 
 static PHASE_ID: AtomicU32 = AtomicU32::new(PHASE_IDLE);
 static PHASE_PAGE: AtomicU64 = AtomicU64::new(0);
@@ -145,6 +147,11 @@ pub(crate) mod phase {
     pub(crate) const EVAL_WEB: u32 = 7;
     pub(crate) const EVAL_NODE: u32 = 8;
     pub(crate) const CLOSE: u32 = 9;
+    /// The latched repaint composite (`PageInner::paint_if_needed` →
+    /// `WebView::paint`). Composites are the one GL primitive on the embedder
+    /// thread — the llvmpipe lost-fence wedge class (#40) lands here; the
+    /// watchdog breadcrumb keeps it attributable.
+    pub(crate) const PAINT: u32 = 10;
 }
 
 /// Default stall budget per phase: a healthy churn cycle is ~150 ms end to

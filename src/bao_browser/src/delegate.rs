@@ -3186,6 +3186,21 @@ pub struct BaoWebViewState {
     pub title: Option<String>,
     pub load_status: LoadStatus,
     pub frame_ready: bool,
+    /// Latched repaint request from servo (`WebViewDelegate::notify_new_frame_ready`).
+    /// This is servo's embedder contract for "a new frame is ready — repaint now"
+    /// (servoshell's `RunningAppState::notify_new_frame_ready` latches
+    /// `set_needs_repaint()` the same way, then paints on the event loop's redraw
+    /// tick). The GL composite (`WebView::paint`) is the heartbeat of the whole
+    /// render pipeline: `Painter::render` → `refresh_driver.notify_will_paint` →
+    /// `frame_started` → `TickAnimation` is the ONLY recurring rAF/animation tick
+    /// source, and `maybe_take_screenshots` only fires at the end of a render.
+    /// Without this latch (pre-2026-10-02) bao headless produced exactly one
+    /// frame's worth of activity per webview (the one-shot
+    /// `ChangeRunningAnimationsState` kick) — boot-once frames, dead rAF gate,
+    /// dead captureScreenshot. Cleared by `PageInner::paint_if_needed` after the
+    /// composite.
+    /// @trace REQ-BRW-002 [entity:PageHandle]
+    pub repaint_pending: bool,
     /// Set to true after navigation completes (LoadStatus::Complete).
     /// evaluate_js checks this flag and refreshes stale DOM proxies before executing scripts.
     pub dom_proxies_dirty: bool,
@@ -3264,6 +3279,7 @@ impl Default for BaoWebViewState {
             title: None,
             load_status: LoadStatus::Started,
             frame_ready: false,
+            repaint_pending: false,
             dom_proxies_dirty: false,
             console_log_tx: None,
             event_tx: None,
@@ -3283,6 +3299,16 @@ impl Default for BaoWebViewState {
 }
 
 impl BaoWebViewState {
+    /// Single write point for the frame-ready pair: servo's
+    /// `notify_new_frame_ready` means "a new frame is ready — repaint now"
+    /// (see the `repaint_pending` field docs for why the composite is the
+    /// pipeline heartbeat).
+    /// @trace REQ-BRW-002 [entity:PageHandle]
+    pub fn latch_frame_ready(&mut self) {
+        self.frame_ready = true;
+        self.repaint_pending = true;
+    }
+
     // ─── Worker Lifecycle (REQ-BRW-004) ──────────────────────────────
 
     /// Track a newly created Worker for this webview.
@@ -4912,7 +4938,11 @@ impl WebViewDelegate for BaoWebViewDelegate {
     }
 
     fn notify_new_frame_ready(&self, _webview: WebView) {
-        self.state.borrow_mut().frame_ready = true;
+        // Latch the repaint request; the composite itself is deferred to the
+        // embedder's pump loops (`paint_pages_needing_repaint` / spin_servo) —
+        // never re-entrant inside servo message handling (servoshell defers to
+        // winit's RedrawRequested the same way).
+        self.state.borrow_mut().latch_frame_ready();
     }
 
     fn request_navigation(&self, _webview: WebView, request: NavigationRequest) {
@@ -5044,6 +5074,28 @@ mod tests {
         assert!(!state.frame_ready);
         state.frame_ready = true;
         assert!(state.frame_ready);
+    }
+
+    /// REQ-BRW-002: the frame-ready latch — the headless redraw leg
+    /// (boot-once-frame root cause fix). `notify_new_frame_ready` writes both
+    /// flags via `latch_frame_ready`; `PageInner::paint_if_needed` drains
+    /// `repaint_pending` with `mem::take` so a composite runs exactly once per
+    /// servo frame request.
+    // @trace REQ-BRW-002 [req:REQ-BRW-002] [level:unit]
+    #[test]
+    fn test_repaint_pending_latch_and_drain() {
+        let mut state = BaoWebViewState::default();
+        assert!(!state.frame_ready);
+        assert!(!state.repaint_pending);
+
+        state.latch_frame_ready();
+        assert!(state.frame_ready);
+        assert!(state.repaint_pending);
+
+        // Drain semantics: `mem::take` clears the latch so the next composite
+        // only runs when servo asks for another frame.
+        assert!(std::mem::take(&mut state.repaint_pending));
+        assert!(!state.repaint_pending);
     }
 
     // ─── BaoServoDelegate ──────────────────────────────────────────

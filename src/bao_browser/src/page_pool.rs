@@ -294,6 +294,47 @@ impl PagePool {
         reclaimed
     }
 
+    /// Drain every page's servo repaint latch and run the pending composites.
+    ///
+    /// This is the headless redraw leg of servo's embedder contract: servo
+    /// latches "a new frame is ready" per webview (`notify_new_frame_ready`),
+    /// the embedder composites on its event loop (servoshell does it on winit's
+    /// `RedrawRequested`). `Painter::render` is the render pipeline's heartbeat
+    /// — refresh-driver ticks (rAF/animation) and screenshot capture only
+    /// advance inside it — so skipping the composite stalls the whole pipeline
+    /// after the per-webview boot kick (the boot-once-frame root cause,
+    /// BCE-20260910-003 premise correction). Called from the steady-state pump
+    /// loops (`run` / `pump_cdp` / `run_with_bridge`).
+    ///
+    /// @trace REQ-BRW-002 [entity:PageHandle] [entity:PagePool]
+    pub fn paint_pages_needing_repaint(&self) {
+        // Fast path (the pump loops call this every iteration): no page has a
+        // latch → zero allocation, zero servo traffic.
+        let any_pending = {
+            let active = self.active_pages.borrow();
+            let idle = self.idle_pages.borrow();
+            active
+                .values()
+                .chain(idle.values().map(|entry| &entry.page))
+                .any(|page| page.repaint_pending())
+        };
+        if !any_pending {
+            return;
+        }
+        let handles: Vec<PageHandle> = {
+            let active = self.active_pages.borrow();
+            let idle = self.idle_pages.borrow();
+            active
+                .values()
+                .cloned()
+                .chain(idle.values().map(|entry| entry.page.clone()))
+                .collect()
+        };
+        for page in handles {
+            page.paint_if_needed();
+        }
+    }
+
     pub fn stats(&self) -> PoolStats {
         PoolStats {
             active: self.active_pages.borrow().len(),

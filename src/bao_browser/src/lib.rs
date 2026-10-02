@@ -655,6 +655,9 @@ impl BrowserRuntime {
 
         while start.elapsed() < max_wait {
             self.servo.spin_event_loop();
+            // Headless redraw leg: composite any webview servo requested a frame
+            // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
+            self.page_pool.paint_pages_needing_repaint();
             self.page_pool.check_idle_pages();
             // memory:// CDP commands (process-registry bridge) execute here:
             // the drain answers every in-process client command that routed
@@ -683,6 +686,9 @@ impl BrowserRuntime {
         let start = std::time::Instant::now();
         while start.elapsed() < duration {
             self.servo.spin_event_loop();
+            // Headless redraw leg: composite any webview servo requested a frame
+            // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
+            self.page_pool.paint_pages_needing_repaint();
             self.page_pool.check_idle_pages();
             if let Some(rx) = &self.cdp_bridge_rx {
                 rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
@@ -707,6 +713,11 @@ impl BrowserRuntime {
 
         while start.elapsed() < max_wait {
             self.servo.spin_event_loop();
+            // Headless redraw leg: composite any webview servo requested a frame
+            // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
+            // Without this the pipeline is boot-once: rAF ticks and screenshot
+            // capture only advance inside `Painter::render`.
+            self.page_pool.paint_pages_needing_repaint();
             self.page_pool.check_idle_pages();
 
             // Process pending CDP bridge commands

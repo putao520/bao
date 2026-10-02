@@ -148,6 +148,52 @@ impl PageInner {
         *self.last_active_at.borrow_mut() = Instant::now();
     }
 
+    /// Drain the servo repaint latch for this page: if servo signalled
+    /// `notify_new_frame_ready` since the last composite, run the GL composite
+    /// (`WebView::paint` → `Painter::render`).
+    ///
+    /// This completes the embedder redraw contract (servoshell: latch in
+    /// `notify_new_frame_ready`, composite on the event loop's redraw tick) and
+    /// with it the whole render pipeline: `Painter::render` is where the refresh
+    /// driver advances (`notify_will_paint` → `frame_started` → `TickAnimation`
+    /// → script rAF ticks) and where pending screenshots are captured
+    /// (`maybe_take_screenshots`). The latch keeps composites per-FRAME, never
+    /// per-loop-iteration — strictly lower frequency than the pre-BCE-20260910-003
+    /// code that painted on every spin.
+    ///
+    /// #40 (BCE-20260910-003) premise correction: that BCE removed all
+    /// composites from the embedder loops on the documented rationale "the
+    /// composite is output-only and belongs to take_screenshot". That premise is
+    /// false — the composite drives the refresh-driver tick chain (the sole
+    /// recurring rAF source once a page keeps rAF pending over rebuilt display
+    /// lists; the script side explicitly defers to the renderer:
+    /// `maybe_schedule_rendering_opportunity_after_ipc_message` early-returns
+    /// "rely on the renderer") and is the only place screenshot callbacks fire.
+    /// Removing it entirely produced the boot-once frame phenomenon (one
+    /// `ChangeRunningAnimationsState` kick per webview, then starvation) and the
+    /// dead captureScreenshot channel. The llvmpipe lost-fence hang that BCE
+    /// escaped remains a Mesa-side defect with unchanged per-paint probability;
+    /// this latch minimizes exposure (composite only when servo actually asks
+    /// for a frame) instead of eliminating composites (impossible without
+    /// killing the pipeline).
+    // @trace REQ-BRW-002 [entity:PageHandle]
+    pub fn paint_if_needed(&self) {
+        let pending = {
+            let mut state = self.webview_state.borrow_mut();
+            std::mem::take(&mut state.repaint_pending)
+        };
+        if pending {
+            // #40 watchdog breadcrumb: the composite is the embedder thread's
+            // one GL primitive; a wedged llvmpipe fence must surface as
+            // phase=paint:composite in the stall dump.
+            let _paint_phase = crate::phase_watch::PhaseGuard::enter(
+                crate::phase_watch::phase::PAINT,
+                self.id as u64,
+            );
+            self.webview.paint();
+        }
+    }
+
     /// Apply a PageLifecycle event through the `transition` table — the
     /// single guarded write point for the stored state (W16: all six former
     /// bare `*state.borrow_mut() = X` writes route here).
@@ -1137,16 +1183,14 @@ impl PageInner {
     /// Spin servo's event loop until the callback returns false or timeout.
     /// Uses yield_now instead of sleep to avoid blocking the thread.
     ///
-    /// #40 (BCE-20260910-003): this loop MUST stay free of GL composites.
-    /// The historical `webview.paint()` per iteration put the Mesa llvmpipe
-    /// render path (`Painter::render` → `renderer.render()` → llvmpipe fence
-    /// `pthread_cond_wait`) on the embedder thread inside ONE iteration —
-    /// where a lost fence wakeup (all rasterizer workers idle, ~1/17k
-    /// headless cycles) blocks forever and NO caller timeout can fire,
-    /// because the timeout check only runs between iterations. All state
-    /// this loop drives (eval results, load status, frame-ready flags)
-    /// arrives through servo messages that `spin_event_loop` pumps; the
-    /// composite is output-only and belongs to take_screenshot.
+    /// GL composites run here ONLY through the latched repaint drain
+    /// (`paint_if_needed`): one composite per servo frame request, never per
+    /// loop iteration. See `PageInner::paint_if_needed` for the full
+    /// BCE-20260910-003 premise correction — the unbounded-hang hazard that BCE
+    /// removed (unconditional `webview.paint()` on every iteration, where a
+    /// Mesa llvmpipe lost fence wakeup blocks forever with no caller timeout
+    /// able to fire) is bounded here by latching; the composite itself is the
+    /// refresh-driver heartbeat and cannot be omitted.
     // @trace REQ-BRW-001 [entity:PageHandle]
     fn spin_servo(
         &self,
@@ -1156,6 +1200,7 @@ impl PageInner {
         let start = Instant::now();
         while callback() {
             self.servo.spin_event_loop();
+            self.paint_if_needed();
             if start.elapsed() > timeout {
                 return Err(BrowserError::Init("operation timed out".into()));
             }
@@ -1617,6 +1662,25 @@ impl PageHandle {
             .as_ref()
             .map(|inner| inner.webview_state.clone())
             .unwrap_or_else(|| Rc::new(RefCell::new(BaoWebViewState::default())))
+    }
+
+    /// Drain this page's servo repaint latch (no-op on a closed page).
+    /// See [`PageInner::paint_if_needed`] for why the composite is the
+    /// render-pipeline heartbeat and why it is latch-driven.
+    // @trace REQ-BRW-002 [entity:PageHandle]
+    pub(crate) fn paint_if_needed(&self) {
+        self.with_inner_opt(|inner| {
+            inner.paint_if_needed();
+            Some(())
+        });
+    }
+
+    /// Peek (without taking) the servo repaint latch — the pump loops' fast
+    /// path avoids touching servo when no page has a pending frame request.
+    // @trace REQ-BRW-002 [entity:PageHandle]
+    pub(crate) fn repaint_pending(&self) -> bool {
+        self.with_inner_opt(|inner| Some(inner.webview_state.borrow().repaint_pending))
+            .unwrap_or(false)
     }
 
     // ── High-level PageHandle API (REQ-LIB-001, REQ-LIB-004) ──────────────
