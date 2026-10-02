@@ -1,13 +1,13 @@
 # WPT First Run — Bao (subset, #14-C)
 
-## 结果总表(2026-10-02 final · test-ci 档 + 载具三面)
+## 结果总表(2026-10-02 final · test-ci 档 + 载具三面 + crash-test face)
 
-- date: 2026-10-02 · driver: bao browser (headless CDP) + python ws,**每文件独立浏览器实例 + rAF 就绪门 + Shape A 输入合成**(`/tmp/wpt_first_run.py`)
+- date: 2026-10-02 · driver: bao browser (headless CDP) + python ws,**每文件独立浏览器实例 + rAF 就绪门 + Shape A 输入合成 + crash-test face**(`/tmp/wpt_first_run.py`)
 - suite root: upstream tests/wpt/tests (`dom/` subset), static http server (127.0.0.1)
 - binary: /var/cargo-builds/3c/6184ceb77072ba/test-ci/bao(mtime 2026-10-02 16:52,bao farm 产物,钉当前 master:W55/W54/absorb 波全含)
-- manifest: 40 files · **PASS: 37** · FAIL: **0** · NO-HARVEST: 3(crash 型/子框架型)
-- subtest 总量(已 harvest 37 文件):**PASS 1535 / FAIL 0**
-- 3 NO-HARVEST 均为 crash 型/子框架型(inactive-document-crash ×2 / subframe incumbent-global),非时点问题,单独立项定位。
+- manifest: 40 files · **PASS(harness): 37** · FAIL: **0** · OK(crash-survival): **3** · NO-HARVEST: **0**
+- subtest 总量(harness 面 37 文件):**PASS 1535 / FAIL 0**(crash-test face 落地后全量复跑,37 文件子测试数与载具三面基线逐字节一致,零回归)
+- 3 个 harness-less 文件经 crash-test face 判 `OK(crash-survival)`(判据 = readyState=complete + 进程存活 + stderr 零 panic 签名,三判据全真才判,~3.1s/文件)。**注意:subframe-1 的 OK(crash-survival) 仅是存活判定**——其真实语义(incumbent-global 断言)依赖 wptserve 多主机,维持定性(见 crash 型专节③),不计入 harness PASS。
 
 ### 2026-10-01 → 2026-10-02 差异对照(7 文件翻转)
 
@@ -118,15 +118,15 @@ Shape A 单文件首航 4/4 后,全量复跑中 redispatch 仍 2/4 且无 tap �
 - **进程内语义验证(同构探针,同源 iframe 替代跨域)**:父 realm 在子框 body 上注册「绑定到子框 window.postMessage」的 click listener → click → `postMessage` 正确投递到子框 window(`this` 目标面正确);process 全程存活零 panic。
 - **引擎邻域发现(非本三文件崩溃点,报告挂账待裁决)**:WebIDL stored callback context(incumbent)在回调期间未胜过 JS 引擎 scripted caller——`settings_stack.rs:56 incumbent_global()` 先取 `GetScriptedCallerGlobal`(JS 栈顶 scripted 帧),后回退显式 settings 栈;而 `call_setup`(script_bindings/callback.rs:365)已按规范 push stored incumbent(`run_a_callback`)。判别探针:listener 在 iframe realm 创建、click 自 top realm 派发 → `e.source === top`(spec 应为 iframe window)。**该偏差在上游真实测试中被掩蔽**(双侧 document.domain 松弛到同源后 `e.origin === parent.location.origin` 恒真,故上游 servo 同样 PASS、无 .ini override);但 e.source/e.origin 的规范语义在跨 realm 回调场景偏离。修复面 = incumbent 解析优先级(settings_stack 层,全体 WebIDL 回调共面),超窄修范畴,挂账不擅动。
 
-### 载具面前进建议(未实施,主会话裁决)
+### 载具面前进建议(已获批实施,2026-10-02 同日)
 
-crash 型文件的三态判定可在载具面诚实给出:harness-less 文件若 `readyState===complete` + 进程存活 + stderr 零 panic(探针 `/tmp/wpt_crash_probe.py` 已具备全部判据)→ 判 OK。可作 driver 第四面(crash-test face)并入 `wpt_first_run.py`,本合同不混改共享 driver。
+~~crash 型文件的三态判定可在载具面诚实给出:harness-less 文件若 `readyState===complete` + 进程存活 + stderr 零 panic(探针 `/tmp/wpt_crash_probe.py` 已具备全部判据)→ 判 OK。可作 driver 第四面(crash-test face)并入 `wpt_first_run.py`,本合同不混改共享 driver。~~ **[已获批实施,2026-10-02 同日]** driver 第四面(crash-test face)落地(`wpt_first_run.py`):python 侧静态读文件源判 harness-less(不可读文件永不走 crash 面);判定时点重确认三判据(responsive re-eval + process alive + panic 签名扫描 `panicked at|MOZ_CRASH|SIGSEGV|SIGABRT|SIGBUS`),任一不满足照旧 NO-HARVEST/FAIL;判定状态用独立名 `OK(crash-survival)` 与 harness OK 区分(不隐藏判定通道、不计入 PASS(harness) 桶)。全量 40 复跑:**PASS(harness) 37 零回归(子测试数与基线逐字节一致)+ OK(crash-survival) 3 + NO-HARVEST 0**;三个 crash-face stderr 日志 0 字节。
 
 ## 遗留清单
 
 - ~~[WPT 收敛波] 7 FAIL 文件为真实引擎缺口~~ **2026-10-02 载具波后全部翻转,0 FAIL 残留**:5 文件系引擎缺口,已由 10-02 absorb 波修复(createElement-namespace 51/51 / webkit-animation 13/13 / subclasses-constructors 49/49 / NodeIterator-removal 25/25 / DOMTokenList 175/175);2 文件系载具限,已根治(redispatch:Shape A + rAF 就绪门 → 4/4;NodeList-tampered-2:test-ci 档 8.3s → 1/1)。现行基线 = 2026-10-02 总表(37 PASS / 0 FAIL / 3 NO-HARVEST)。
 - [载具面 · bao headless 帧生产] 帧生产为启动期一次性(boot frame),此后无帧 → rAF 门类测试在第 2+ 页面永挂。当前以每文件独立浏览器 + 就绪门在载具面规避;引擎侧连续产帧(如 headless 恒常 composite 或 CDP 可触发产帧面)属产品码域候选,未立项。
-- ~~[NO-HARVEST 3 文件] 均为 crash 型/子框架型测试,单独立项定位~~ **2026-10-02 定性收口(见「NO-HARVEST 3 文件定性收口」专节):三文件均无引擎崩溃,NO-HARVEST 系测试面/载具自限(harness-less crash tests 收割通道结构性打不通 + subframe 型需 wptserve 多主机)。引擎面阴性 + 1 个邻域发现(postMessage source 的 incumbent 解析)报告挂账。**
+- ~~[NO-HARVEST 3 文件] 均为 crash 型/子框架型测试,单独立项定位~~ **2026-10-02 全闭环(见「NO-HARVEST 3 文件定性收口」专节 + crash-test face)**:三文件均无引擎崩溃(vendor 零变更);NO-HARVEST 根因 = harness-less 收割通道结构性打不通。crash-test face 落地后现行终表 = **37 PASS(harness) / 3 OK(crash-survival) / 0 NO-HARVEST**。残留:subframe-1 全语义(incumbent-global 断言)依赖 wptserve 多主机,维持定性,挂账 wptserve 载具面;引擎邻域发现(WebIDL 回调期 incumbent 解析优先级,settings_stack.rs:56)已立项挂账后续专波。
 - [servo vendor 候选] pending window timer 跨同源 `window_for_replacement` 导航触发 `timers.rs:912` 断言 panic(上游不变量对 init-script 定时器不健壮;本波以 INJECT 零 timer 化规避,引擎侧加固待另立裁决)。
 - ~~[CDP 面] `removeScriptToEvaluateOnNewDocument` 未接线;接线时注册表按 identifier 化~~ **已闭环(2026-10-01 removeScript 按 id 合同)**:注册表按 identifier 化落地,remove 按 id 真删(见偏差注记)。
 - ~~[bao_cdp 直派面] `BridgeCommand::AddScriptToEvaluateOnNewDocument` → page `UserContentManager` 路径仍为 head 插入延迟任务时点~~ **已闭环(2026-10-01)**:memory bridge 面与 WS 面同落 vendor realm-entry 注入载体(CDP 规范时点),且 add 返回 vendor 自铸 identifier、remove 按其注销——双 CDP 面单源。保留面:cmd_add_script 另对当前 document 立即应用一次(evaluate_js_web,Chrome new-documents-only 的超集,行为自 W55 未变)。
