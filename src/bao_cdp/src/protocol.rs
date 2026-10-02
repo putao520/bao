@@ -33,7 +33,7 @@ pub use cdp_server::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 use serde_json::Value;
 
 use crate::devtools_dom;
-use crate::servo_bridge::{BridgeCommand, BridgeSender, MAIN_FRAME_ID};
+use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 // JSON-RPC 2.0 error code: method not found (per spec §5.1).
 const ERR_METHOD_NOT_FOUND: i64 = -32601;
@@ -419,10 +419,10 @@ fn handle_page(
         }
         "getFrameTree" => {
             // Real main-frame data: url/mimeType/name/securityOrigin read from
-            // the live document via evaluate; frame id = MAIN_FRAME_ID — the
-            // same identifier navigate/reload report and the frame events
-            // carry (REQ-CDP-004). Child frames are not enumerable from the
-            // embedder — none are fabricated.
+            // the live document via evaluate; frame id = the per-target main
+            // frame id (REQ-CDP-004) — the same identifier navigate/reload
+            // report and the frame events carry. Child frames are not
+            // enumerable from the embedder — none are fabricated.
             let mut frame = eval_json(
                 bridge,
                 &tid,
@@ -434,7 +434,10 @@ fn handle_page(
                 }); })()"#,
             )?;
             if let Some(obj) = frame.as_object_mut() {
-                obj.insert("id".into(), serde_json::json!(MAIN_FRAME_ID));
+                obj.insert(
+                    "id".into(),
+                    serde_json::json!(crate::servo_bridge::main_frame_id_for_target(&tid)),
+                );
             }
             Ok(serde_json::json!({ "frameTree": { "frame": frame } }))
         }

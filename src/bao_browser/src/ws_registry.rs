@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use bao_cdp::servo_bridge::{BridgeCommand, BridgeSender, MAIN_FRAME_ID};
+use bao_cdp::servo_bridge::{BridgeCommand, BridgeSender, main_frame_id_for_target};
 use cdp_server::{CdpError, CdpMessage, EventSender, RegistryDispatch};
 use serde_json::{json, Value};
 
@@ -160,7 +160,7 @@ impl BaoWsRegistry {
             let script_id = servo::register_embedder_new_document_script(webview_id, source);
             return Some(Ok(json!({ "identifier": script_id.to_string() })));
         }
-        self.dispatch_session_command_inner(method, params, msg, event_sender)
+        self.dispatch_session_command_inner(method, params, msg, ws_target_id, event_sender)
     }
 
     fn dispatch_session_command_inner(
@@ -168,6 +168,7 @@ impl BaoWsRegistry {
         method: &str,
         params: &Option<Value>,
         msg: &CdpMessage,
+        ws_target_id: &str,
         event_sender: &dyn EventSender,
     ) -> Option<Result<Value, CdpError>> {
         match method {
@@ -215,7 +216,7 @@ impl BaoWsRegistry {
             // is announced via a session-scoped Runtime.executionContextCreated),
             // so it is served here rather than in the stateless dispatch.
             "Page.createIsolatedWorld" => {
-                Some(self.create_isolated_world(params, msg, event_sender))
+                Some(self.create_isolated_world(params, msg, ws_target_id, event_sender))
             }
             "Target.setAutoAttach" => {
                 // Only the browser session's setAutoAttach enumerates existing
@@ -321,6 +322,7 @@ impl BaoWsRegistry {
         &self,
         params: &Option<Value>,
         msg: &CdpMessage,
+        ws_target_id: &str,
         event_sender: &dyn EventSender,
     ) -> Result<Value, CdpError> {
         let world_name = params
@@ -332,14 +334,27 @@ impl BaoWsRegistry {
         // Chrome shape: the created context's auxData carries the frame the
         // world was created in (clients bind the world to that frame through
         // it — Puppeteer's isolated realm resolution requires it). The
-        // requesting frameId when the client named one, else the main frame.
+        // requesting frameId when the client named one, else the owning
+        // target's main frame (REQ-CDP-004 per-target derivation; the
+        // command's target resolves exactly like
+        // Page.addScriptToEvaluateOnNewDocument: flattened session wins, else
+        // the WS session's own page target).
+        let command_target = match &msg.session_id {
+            Some(sid) => self
+                .attached_sessions
+                .lock()
+                .ok()
+                .and_then(|t| t.get(sid).cloned())
+                .unwrap_or_else(|| ws_target_id.to_string()),
+            None => ws_target_id.to_string(),
+        };
         let frame_id = params
             .as_ref()
             .and_then(|p| p.get("frameId"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .unwrap_or(MAIN_FRAME_ID)
-            .to_string();
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| main_frame_id_for_target(&command_target));
         let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
         if let Some(sid) = msg.session_id.as_deref() {
             // Remember the world so navigations re-announce its context
@@ -411,11 +426,21 @@ fn require_param(params: &Option<Value>, key: &str) -> Result<String, CdpError> 
 }
 
 impl BaoWsRegistry {
-    /// W43 flat-session event demux: route a servo-target-scoped CDP event to
-    /// every CDP session attached to `target_id` (each tagged with its
-    /// sessionId via `send_session_event`). With NO attached sessions this
-    /// degrades to the untagged broadcast (the pre-W43 page-endpoint
-    /// contract, zero drift).
+    /// W43 flat-session event demux + Target 路由波 tightening: route a
+    /// servo-target-scoped CDP event to every CDP session attached to
+    /// `target_id` (each tagged with its sessionId via `send_session_event`).
+    ///
+    /// No attached session for this target → the event is DROPPED with a
+    /// debug log (Chrome semantics: no subscriber, no delivery —
+    /// REQ-CDP-004). This replaces the W49 miss fallback (untagged broadcast
+    /// + tagged copy to every attached session), which existed only because
+    /// the delegate tagged events with the placeholder target "0" so real
+    /// lookups always missed; the same wave switched every emitter to the
+    /// page's real CDP target, making the fallback a cross-page pollution
+    /// channel (one page's `frameNavigated` landing in every other attached
+    /// page's FrameManager — the phantom-frame class) instead of a delivery
+    /// mechanism. Removed in the same batch as the placeholder emission so
+    /// no intermediate state drops all placeholder-target events.
     pub fn broadcast_for_target(
         &self,
         event_sender: &dyn EventSender,
@@ -437,22 +462,19 @@ impl BaoWsRegistry {
             .unwrap_or_default();
 
         if sessions.is_empty() {
-            // W49: the delegate emits lifecycle events tagged with the legacy
-            // placeholder target ("0"). In flat-session mode (Puppeteer/
-            // Playwright) the attached page session only routes TAGGED events,
-            // so the untagged fallback alone silently drops loadEventFired et
-            // al. Deliver the untagged broadcast (pre-W43 contract, zero
-            // drift) AND a tagged copy to every attached session.
-            event_sender.send_event(method, params.clone());
-            let all: Vec<String> = self
-                .attached_sessions
-                .lock()
-                .ok()
-                .map(|table| table.keys().cloned().collect())
-                .unwrap_or_default();
-            for sid in all {
-                event_sender.send_session_event(&sid, method, params.clone());
-            }
+            // No flattened session attached to this target — but a
+            // `/devtools/page/<id>` connection IS a subscription to that
+            // page (Chrome delivers the page's events on its endpoint
+            // untagged), so the event goes to the page-endpoint subscribers
+            // of exactly this target. The broadcaster keeps the tightened
+            // semantics on its side: browser-endpoint sessions receive
+            // nothing and zero page subscribers → the event is dropped
+            // (no-subscriber-no-deliver — the placeholder-target
+            // broadcast-everywhere fallback is NOT resurrected).
+            log::debug!(
+                "[cdp-route] {method}: no flattened session attached to target {target_id} — routing to page-endpoint subscribers"
+            );
+            event_sender.send_page_event(target_id, method, params);
             return;
         }
         for sid in sessions {
@@ -583,8 +605,8 @@ impl RegistryDispatch for BaoWsRegistry {
                 "Runtime.enable" => {
                     // Chrome shape: auxData carries the owning frameId —
                     // clients (Playwright/Puppeteer) bind the default context
-                    // to the frame through it. Same frame identity the
-                    // navigate response and every frame event carry
+                    // to the frame through it. Same per-target frame identity
+                    // the navigate response and every frame event carry
                     // (REQ-CDP-004) — never the PageId (targetId namespace).
                     let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
                     self.emit(
@@ -599,7 +621,7 @@ impl RegistryDispatch for BaoWsRegistry {
                                 "auxData": {
                                     "isDefault": true,
                                     "type": "default",
-                                    "frameId": MAIN_FRAME_ID,
+                                    "frameId": main_frame_id_for_target(&target_id),
                                 },
                             }
                         }),
@@ -610,12 +632,13 @@ impl RegistryDispatch for BaoWsRegistry {
                 "Page.navigate" => {
                     if let Ok(ref r) = result {
                         // The response frameId is authoritative; the tolerance
-                        // fallback stays in the frame namespace (never the
-                        // PageId — that is the targetId namespace).
+                        // fallback derives the same per-target main frame id
+                        // the real face reports (never the PageId — that is
+                        // the targetId namespace).
                         let fid = r
                             .get("frameId")
                             .and_then(|v| v.as_str())
-                            .unwrap_or(MAIN_FRAME_ID)
+                            .unwrap_or(&main_frame_id_for_target(&target_id))
                             .to_string();
                         let loader = r
                             .get("loaderId")
@@ -813,7 +836,10 @@ mod tests {
                     ])),
                 },
                 BridgeCommand::Navigate { .. } => BridgeResponse {
-                    result: Ok(json!({ "frameId": "1", "loaderId": "loader-1" })),
+                    result: Ok(json!({
+                        "frameId": main_frame_id_for_target("1"),
+                        "loaderId": "loader-1"
+                    })),
                 },
                 BridgeCommand::EvaluateJs { expression, .. } => BridgeResponse {
                     result: Ok(json!({ "result": { "type": "string", "value": expression } })),
@@ -926,7 +952,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(nav["frameId"], "1");
+        assert_eq!(nav["frameId"], main_frame_id_for_target("1"));
     }
 
     #[test]
@@ -1119,6 +1145,13 @@ mod tests {
             .collect();
         assert_eq!(ctx_events.len(), 1);
         assert!(ctx_events[0].2["context"]["id"].as_u64().is_some());
+        // REQ-CDP-004 (v7 path B): auxData.frameId is the per-target main
+        // frame id — the same value the navigate response and every frame
+        // event for this target carry, never the bare PageId.
+        assert_eq!(
+            ctx_events[0].2["context"]["auxData"]["frameId"],
+            main_frame_id_for_target("1")
+        );
     }
 
     #[test]
@@ -1167,6 +1200,117 @@ mod tests {
             .find(|(_, m, _)| m == "Page.frameNavigated")
             .unwrap();
         assert_eq!(nav.2["frame"]["url"], "https://example.com");
-        assert_eq!(nav.2["frame"]["id"], "1");
+        assert_eq!(nav.2["frame"]["id"], main_frame_id_for_target("1"));
+    }
+
+    // ── Target 路由波 pins (REQ-CDP-004): targeted delivery ────────────
+
+    // @trace TEST-CDP-004 [req:REQ-CDP-004] [level:unit]
+    #[test]
+    fn broadcast_for_target_delivers_only_to_sessions_attached_to_the_target() {
+        let (tx, _rx) = bridge_channel(Duration::from_millis(100));
+        let reg = BaoWsRegistry::new(tx);
+        let sender = CapturingSender::new();
+
+        // Two flattened sessions: s1 attached to target "1", s2 to "2".
+        let s1 = reg
+            .dispatch_message(
+                &msg(
+                    "Target.attachToTarget",
+                    json!({"targetId": "1", "flatten": true}),
+                    None,
+                ),
+                BROWSER_TARGET,
+                &*sender,
+            )
+            .unwrap()
+            .unwrap()["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let s2 = reg
+            .dispatch_message(
+                &msg(
+                    "Target.attachToTarget",
+                    json!({"targetId": "2", "flatten": true}),
+                    None,
+                ),
+                BROWSER_TARGET,
+                &*sender,
+            )
+            .unwrap()
+            .unwrap()["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // A target-"1" event must reach ONLY s1 (tagged), never s2 and never
+        // the untagged broadcast face.
+        reg.broadcast_for_target(
+            &*sender,
+            "1",
+            "Page.frameNavigated",
+            json!({"frame": {"id": "main-1"}}),
+        );
+        let session_events = sender.session_events.lock().unwrap();
+        assert_eq!(session_events.len(), 1, "exactly one tagged delivery");
+        assert_eq!(session_events[0].0, s1);
+        assert_eq!(session_events[0].1, "Page.frameNavigated");
+        assert!(sender.events.lock().unwrap().is_empty(), "no untagged broadcast");
+        drop(session_events);
+
+        // Same for target "2".
+        reg.broadcast_for_target(
+            &*sender,
+            "2",
+            "Page.frameStartedLoading",
+            json!({"frameId": "main-2"}),
+        );
+        let session_events = sender.session_events.lock().unwrap();
+        assert_eq!(session_events.len(), 2);
+        assert_eq!(session_events[1].0, s2);
+        assert_eq!(session_events[1].1, "Page.frameStartedLoading");
+    }
+
+    // @trace TEST-CDP-004 [req:REQ-CDP-004] [level:unit]
+    #[test]
+    fn broadcast_for_target_miss_is_dropped_not_broadcast() {
+        // Target 路由波: the W49 fallback (untagged broadcast + tagged copy
+        // to every attached session) is replaced by Chrome semantics — no
+        // subscriber, no delivery. An event for a target nobody attached to
+        // must reach NOTHING (this is the phantom-frame containment pin: a
+        // page-B session never receives page-A frame events).
+        let (tx, _rx) = bridge_channel(Duration::from_millis(100));
+        let reg = BaoWsRegistry::new(tx);
+        let sender = CapturingSender::new();
+
+        // s1 attached to "1"; the event is for unrelated target "9".
+        reg.dispatch_message(
+            &msg(
+                "Target.attachToTarget",
+                json!({"targetId": "1", "flatten": true}),
+                None,
+            ),
+            BROWSER_TARGET,
+            &*sender,
+        )
+        .unwrap()
+        .unwrap();
+
+        reg.broadcast_for_target(
+            &*sender,
+            "9",
+            "Page.frameNavigated",
+            json!({"frame": {"id": "main-9"}}),
+        );
+
+        assert!(
+            sender.session_events.lock().unwrap().is_empty(),
+            "unsubscribed target events must not reach attached sessions"
+        );
+        assert!(
+            sender.events.lock().unwrap().is_empty(),
+            "unsubscribed target events must not degrade to the untagged broadcast"
+        );
     }
 }

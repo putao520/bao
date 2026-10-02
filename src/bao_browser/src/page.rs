@@ -1239,6 +1239,14 @@ impl PageHandle {
         );
 
         let webview_state = Rc::new(RefCell::new(BaoWebViewState::default()));
+        // CDP target identity (REQ-CDP-004): every ServoEvent this webview's
+        // delegate emits is tagged with the page's decimal id — the same
+        // namespace the command face lists via Target.getTargets and
+        // flattened sessions attach against — so the event pump routes each
+        // event to exactly the sessions subscribed to this page. Stamped at
+        // creation, before `builder.build()` can deliver any delegate
+        // callback.
+        webview_state.borrow_mut().cdp_target_id = Some(id.to_string());
         // Propagate console log channel from servo delegate to per-webview state
         if let Some(tx) = servo_delegate.console_log_tx() {
             webview_state.borrow_mut().console_log_tx = Some(tx);

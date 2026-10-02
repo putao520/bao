@@ -86,13 +86,26 @@ pub struct OutboxEvent {
 pub struct SessionHandle {
     pub session: Mutex<CdpSession>,
     pub outbox: Mutex<VecDeque<OutboxEvent>>,
+    /// The page this connection is subscribed to (its endpoint target id, the
+    /// `/devtools/page/<id>` path segment), snapshotted at construction —
+    /// `None` for browser-endpoint connections (not page subscribers).
+    /// Cached OUTSIDE the session mutex so `EventBroadcaster::send_page_event`
+    /// can route by target without ever taking the session lock (the outbox
+    /// design constraint: enqueue must never lock the session).
+    pub page_target: Option<String>,
 }
 
 impl SessionHandle {
     pub fn new(session: CdpSession) -> Arc<Self> {
+        let page_target = if session.is_browser_session() {
+            None
+        } else {
+            Some(session.target_id().to_string())
+        };
         Arc::new(SessionHandle {
             session: Mutex::new(session),
             outbox: Mutex::new(VecDeque::new()),
+            page_target,
         })
     }
 }

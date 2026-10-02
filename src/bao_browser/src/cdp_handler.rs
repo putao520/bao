@@ -1,7 +1,7 @@
 // @trace REQ-CDP-001  REQ-CDP-003: Bridge handler — routes BridgeCommand to servo WebView operations
 // Runs on the main thread during the event loop to process CDP commands.
 
-use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, MAIN_FRAME_ID};
+use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, main_frame_id_for_target};
 use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
 use serde_json::Value;
@@ -615,6 +615,15 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
                 .into(),
         );
     };
+    // Attribution (REQ-CDP-004): the tap is the process-wide single Network
+    // event channel and `Network.enable` is the subscription that installed
+    // it — events route to the enabling page's CDP target, exactly like
+    // Chrome attributes network events to the session that enabled the
+    // domain. (The net layer's own `webview_id` is the servo WebViewId in
+    // its Display form — a different namespace from the decimal CDP target
+    // ids; resolving it would need a reverse registry for no behavioral
+    // gain over owner attribution.)
+    let page_target = page.id().to_string();
 
     let tap: servo::BaoNetworkTap = std::sync::Arc::new(move |event| match event {
         servo::BaoNetworkTapEvent::Request {
@@ -623,24 +632,25 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
             method,
             headers,
             resource_type,
-            webview_id,
+            webview_id: _,
         } => {
             send_servo_event(
                 &event_tx,
                 ServoEvent::NetworkRequest {
-                    // Attribution: the webview that issued the request when the
-                    // net layer knows it (delivery is broadcast-gated by session
-                    // domain enablement, not by this field).
-                    target_id: webview_id.unwrap_or_else(|| "0".to_string()),
+                    // Attribution: the page whose Network.enable installed
+                    // this tap (see above) — a real CDP target id, never a
+                    // placeholder.
+                    target_id: page_target.clone(),
                     request_id,
                     url,
                     method,
                     headers: headers.into_iter().collect(),
                     post_data: None,
                     resource_type,
-                    // The frame the request belongs to — the main-frame id the
-                    // event stream reports (REQ-CDP-004), not the PageId.
-                    frame_id: MAIN_FRAME_ID.to_string(),
+                    // The frame the request belongs to — the per-target
+                    // main-frame id the event stream reports
+                    // (REQ-CDP-004), not the PageId.
+                    frame_id: main_frame_id_for_target(&page_target),
                 },
             );
         }
@@ -651,12 +661,12 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
             status_text,
             headers,
             mime_type,
-            webview_id,
+            webview_id: _,
         } => {
             send_servo_event(
                 &event_tx,
                 ServoEvent::NetworkResponse {
-                    target_id: webview_id.unwrap_or_else(|| "0".to_string()),
+                    target_id: page_target.clone(),
                     request_id,
                     url,
                     status,
@@ -678,10 +688,11 @@ fn to_browser_error(e: BrowserError) -> String {
 
 /// Monotonic id source for CDP loaderId / script identifiers.
 ///
-/// Chrome semantics: frameId is stable across navigations (the servo event
-/// stream's main-frame id, `MAIN_FRAME_ID` — the same value every frame event
-/// carries), loaderId is fresh per load. A monotonic counter yields genuinely
-/// unique, non-repeating ids — never a hardcoded constant.
+/// Chrome semantics: frameId is stable across navigations (the per-target
+/// main-frame id from `main_frame_id_for_target` — the same value every
+/// frame event for that target carries), loaderId is fresh per load. A
+/// monotonic counter yields genuinely unique, non-repeating ids — never a
+/// hardcoded constant.
 fn next_cdp_id(prefix: &str) -> String {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -691,9 +702,10 @@ fn next_cdp_id(prefix: &str) -> String {
 fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     page.navigate(url).map_err(to_browser_error)?;
     Ok(serde_json::json!({
-        // Same frame identity the event stream reports (REQ-CDP-004) — never
-        // the PageId, which lives in the targetId namespace.
-        "frameId": MAIN_FRAME_ID,
+        // Same frame identity the event stream reports (REQ-CDP-004, derived
+        // per target) — never the PageId, which lives in the targetId
+        // namespace.
+        "frameId": main_frame_id_for_target(&page.id().to_string()),
         "loaderId": next_cdp_id("loader"),
     }))
 }
@@ -1122,7 +1134,7 @@ fn cmd_remove_script(page: &PageHandle, identifier: &str) -> Result<Value, Strin
 fn cmd_reload(page: &PageHandle) -> Result<Value, String> {
     page.reload().map_err(to_browser_error)?;
     Ok(serde_json::json!({
-        "frameId": MAIN_FRAME_ID,
+        "frameId": main_frame_id_for_target(&page.id().to_string()),
         "loaderId": next_cdp_id("loader"),
     }))
 }
@@ -1133,7 +1145,9 @@ fn cmd_go_back(page: &PageHandle) -> Result<Value, String> {
         return Err("cannot go back: no previous entry in session history".into());
     }
     page.go_back().map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "frameId": MAIN_FRAME_ID }))
+    Ok(serde_json::json!({
+        "frameId": main_frame_id_for_target(&page.id().to_string())
+    }))
 }
 
 /// Page.goForward — real servo session-history traversal (WebView::go_forward).
@@ -1142,7 +1156,9 @@ fn cmd_go_forward(page: &PageHandle) -> Result<Value, String> {
         return Err("cannot go forward: no forward entry in session history".into());
     }
     page.go_forward().map_err(to_browser_error)?;
-    Ok(serde_json::json!({ "frameId": MAIN_FRAME_ID }))
+    Ok(serde_json::json!({
+        "frameId": main_frame_id_for_target(&page.id().to_string())
+    }))
 }
 
 /// HeapProfiler.collectGarbage / Memory.forciblyPurgeJavaScriptMemory —
@@ -2839,13 +2855,18 @@ mod tests {
 
     #[test]
     fn cmd_navigate_uses_event_stream_frame_and_generated_loader() {
-        // REQ-CDP-004: frameId is the servo event stream's main-frame id
-        // (MAIN_FRAME_ID — the same value every frame event carries), never
-        // the PageId (targetId namespace). loaderId is generated per load.
+        // REQ-CDP-004 (v7 path B): frameId is the per-target main-frame id —
+        // `main_frame_id_for_target(page id)`, the same value every frame
+        // event for that target carries — never the bare PageId (targetId
+        // namespace). loaderId is generated per load.
         let source = include_str!("cdp_handler.rs");
         assert!(
-            source.contains("\"frameId\": MAIN_FRAME_ID"),
-            "navigate/reload/goBack/goForward must report MAIN_FRAME_ID"
+            source.contains("main_frame_id_for_target(&page.id().to_string())"),
+            "navigate/reload/goBack/goForward must derive the per-target main frame id"
+        );
+        assert!(
+            !source.contains("\"frameId\": MAIN_FRAME_ID"),
+            "the retired global MAIN_FRAME_ID emission form must not survive in cdp_handler"
         );
         assert!(
             !source.contains("\"frameId\": page.id()"),

@@ -78,6 +78,15 @@ pub trait EventSender: Send + Sync {
     fn send_session_event(&self, session_id: &str, method: &str, params: Value) {
         let _ = (session_id, method, params);
     }
+
+    /// Target-scoped page-endpoint delivery (REQ-CDP-004): deliver an
+    /// UNTAGGED event to every page-endpoint session bound to `target_id` —
+    /// a `/devtools/page/<id>` connection IS a subscription to that page
+    /// (Chrome delivers the page's events on its endpoint untagged).
+    /// Browser-endpoint sessions are not page subscribers and receive
+    /// nothing here. Default impl is a no-op: plain senders have no session
+    /// model, so there is nothing to deliver to.
+    fn send_page_event(&self, _target_id: &str, _method: &str, _params: Value) {}
 }
 
 // ---------------------------------------------------------------------------

@@ -1239,18 +1239,21 @@ pub fn from_console_message(
                 timestamp: _,
                 resource_type,
                 ..
-            } => Some(ServoEvent::NetworkRequest {
-                target_id,
-                request_id,
-                url,
-                method,
-                headers: json_to_headers(&headers),
-                post_data: None,
-                resource_type,
-                // 单一 frame 命名空间真源(REQ-CDP-004)——与事件流/响应面
-                // 同值,禁本地字面量。
-                frame_id: bao_cdp::servo_bridge::MAIN_FRAME_ID.to_string(),
-            }),
+            } => {
+                // per-target 主 frame id 真源(REQ-CDP-004)——与事件流/响应面
+                // 同源派生,禁本地字面量。
+                let frame_id = bao_cdp::servo_bridge::main_frame_id_for_target(&target_id);
+                Some(ServoEvent::NetworkRequest {
+                    target_id,
+                    request_id,
+                    url,
+                    method,
+                    headers: json_to_headers(&headers),
+                    post_data: None,
+                    resource_type,
+                    frame_id,
+                })
+            }
             BaoEvent::NetworkResponseReceived {
                 request_id,
                 url,
@@ -1320,10 +1323,11 @@ pub fn from_console_message(
             BaoEvent::PageLoadEventFired { timestamp: _ } => {
                 // PageLoadEventFired maps to FrameStoppedLoading —
                 // semantically, "page load event fired" means loading is done.
+                // per-target 主 frame id 真源(REQ-CDP-004)。
+                let frame_id = bao_cdp::servo_bridge::main_frame_id_for_target(&target_id);
                 Some(ServoEvent::FrameStoppedLoading {
                     target_id,
-                    // 单一 frame 命名空间真源(REQ-CDP-004)。
-                    frame_id: bao_cdp::servo_bridge::MAIN_FRAME_ID.to_string(),
+                    frame_id,
                 })
             }
             BaoEvent::PageFrameNavigated {
@@ -2163,7 +2167,8 @@ mod tests {
                 frame_id,
             } => {
                 assert_eq!(target_id, "T");
-                assert_eq!(frame_id, "0");
+                // per-target 主 frame id 派生(REQ-CDP-004 v7 路径 B)。
+                assert_eq!(frame_id, "main-T");
             }
             _ => panic!("expected FrameStoppedLoading"),
         }

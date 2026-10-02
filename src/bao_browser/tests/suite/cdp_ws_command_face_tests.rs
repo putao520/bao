@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bao_browser::{handle_bridge_command, BaoConfig, BrowserRuntime, BaoWsRegistry, PageConfig};
 use bao_cdp::domains::ServoTargetProvider;
-use bao_cdp::servo_bridge::{bridge_channel, MAIN_FRAME_ID};
+use bao_cdp::servo_bridge::{bridge_channel, main_frame_id_for_target};
 use bun_uws::ws_client::{RecvOutcome, WebSocketClient};
 use cdp_server::{CdpServer, EventSender, ServerConfig};
 use serde_json::{json, Value};
@@ -139,14 +139,14 @@ fn client_phase(ws_url: String, page_id: usize, done: Arc<AtomicBool>) {
     let url = format!("data:text/html;charset=utf-8,{html}");
     let resp = cdp.send("Page.navigate", json!({ "url": url }));
     assert!(resp.get("error").is_none(), "navigate must succeed: {resp}");
-    // REQ-CDP-004: the response frameId is the servo event stream's
-    // main-frame id — the same value every frame event carries — never the
-    // PageId (targetId namespace).
+    // REQ-CDP-004 (v7 path B): the response frameId is the per-target
+    // main-frame id — the same value every frame event for this target
+    // carries — never the bare PageId (targetId namespace).
     let frame_id = resp["result"]["frameId"].as_str().expect("frameId");
     assert_eq!(
         frame_id,
-        MAIN_FRAME_ID,
-        "frameId = event-stream main-frame id"
+        main_frame_id_for_target(&page_id.to_string()),
+        "frameId = per-target event-stream main-frame id"
     );
     assert_ne!(
         frame_id,
@@ -735,4 +735,244 @@ fn page_realm_evaluate_phase(ws_url: String, done: Arc<AtomicBool>) {
     );
 
     done.store(true, Ordering::Relaxed);
+}
+
+// ─── Target 路由波 probe (REQ-CDP-004): multi-page phantom-frame containment ──
+//
+// v7 波实证的幻影帧类缺陷:先切 per-target frame id 而事件仍全广播时,
+// puppeteer 的 FrameManager 会把 A 页的 frameNavigated 误读为 B 页主 frame
+// (isMainFrame-unknown-id 分支造出幻影帧)。本探针是它的机械判据:两页各
+// attach 一个 flattened session(真实 connect 形态),真实导航 A 页后,B
+// session 的 tagged 事件流(FrameManager 的全部输入)必须零收 A 的任何
+// frame 事件,同时 A session 收到的 frame 事件携带 per-target 主 frame id。
+
+/// Event sender that records every delivery face separately: untagged
+/// broadcasts, and per-flattened-session tagged events (the stream a
+/// client-side FrameManager consumes for that target).
+#[derive(Default)]
+struct RecordingSender {
+    untagged: std::sync::Mutex<Vec<(String, Value)>>,
+    tagged: std::sync::Mutex<Vec<(String, String, Value)>>,
+}
+
+impl RecordingSender {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+impl EventSender for RecordingSender {
+    fn send_event(&self, method: &str, params: Value) {
+        self.untagged
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params));
+    }
+    fn send_session_event(&self, session_id: &str, method: &str, params: Value) {
+        self.tagged.lock().unwrap().push((
+            session_id.to_string(),
+            method.to_string(),
+            params,
+        ));
+    }
+}
+
+// @trace TEST-CDP-004 [req:REQ-CDP-004] [level:e2e]
+#[test]
+fn multi_page_target_routing_phantom_frame_probe() {
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    // Two real pages — each stamps its own CDP target at creation.
+    let page_a = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page a");
+    let page_b = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page b");
+    let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
+    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
+    runtime.set_event_channel(event_subscriber.sender());
+
+    let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
+    let recorder = RecordingSender::new();
+    let browser_target = "__browser__";
+    use cdp_server::{CdpMessage, RegistryDispatch};
+
+    // One flattened session per page (the Puppeteer/Playwright connect
+    // shape: browser-endpoint attach, one session per target).
+    let attach = |target: usize| -> String {
+        registry
+            .dispatch_message(
+                &CdpMessage {
+                    id: Some(1),
+                    method: "Target.attachToTarget".into(),
+                    params: Some(json!({
+                        "targetId": target.to_string(),
+                        "flatten": true
+                    })),
+                    session_id: None,
+                },
+                browser_target,
+                &*recorder,
+            )
+            .expect("attach dispatch")
+            .expect("attach ok")["sessionId"]
+            .as_str()
+            .expect("minted sessionId")
+            .to_string()
+    };
+    let sid_a = attach(page_a.id());
+    let sid_b = attach(page_b.id());
+    assert_ne!(sid_a, sid_b, "each page attaches its own session");
+
+    // Navigate page A through ITS session — a real servo navigation. The
+    // command's bridge round-trip is answered by the pump loop below, so the
+    // dispatch itself runs on a helper thread (the anchor-test shape: the
+    // !Send runtime stays on the main thread, the dispatch waits on the
+    // bridge concurrently).
+    let marker_a = "probe-page-a-marker";
+    let nav_url = format!(
+        "data:text/html;charset=utf-8,<html><head><title>{marker_a}</title></head><body>{marker_a}</body></html>"
+    );
+    let nav_thread = {
+        let registry = Arc::clone(&registry);
+        let recorder = Arc::clone(&recorder);
+        let sid_a = sid_a.clone();
+        std::thread::spawn(move || {
+            registry
+                .dispatch_message(
+                    &CdpMessage {
+                        id: Some(2),
+                        method: "Page.navigate".into(),
+                        params: Some(json!({ "url": nav_url })),
+                        session_id: Some(sid_a),
+                    },
+                    "__browser__",
+                    &*recorder,
+                )
+                .expect("navigate dispatch")
+                .expect("navigate ok")
+        })
+    };
+
+    // Pump loop (the run_with_bridge shape): the pump answers the navigate's
+    // bridge round-trip while it runs, and real delegate events route through
+    // broadcast_for_target with their real target tags. Wait until page A's
+    // load completes (frameStoppedLoading only comes from the real delegate
+    // path — the synthetic navigate emission never emits it).
+    use bao_cdp_client::bridge::translate;
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        runtime.spin_event_loop();
+        bridge_rx.drain(|cmd| handle_bridge_command(cmd, runtime.page_pool()));
+        while let Ok(servo_event) = servo_event_rx.try_recv() {
+            let target = servo_event.target_id().to_string();
+            for cdp_event in translate(servo_event) {
+                registry.broadcast_for_target(
+                    recorder.as_ref(),
+                    &target,
+                    &cdp_event.method,
+                    cdp_event.params,
+                );
+            }
+        }
+        let a_loaded = recorder
+            .tagged
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(sid, m, _)| sid == &sid_a && m == "Page.frameStoppedLoading");
+        if a_loaded && nav_thread.is_finished() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "page A never completed its load (no real delegate frameStoppedLoading routed to its session)"
+        );
+        std::thread::yield_now();
+    }
+    let nav = nav_thread.join().expect("navigate thread must not panic");
+    assert_eq!(
+        nav["frameId"],
+        main_frame_id_for_target(&page_a.id().to_string()),
+        "navigate response carries A's per-target main frame id"
+    );
+
+    let tagged = recorder.tagged.lock().unwrap();
+    let a_events: Vec<&(String, String, Value)> =
+        tagged.iter().filter(|(s, _, _)| s == &sid_a).collect();
+
+    // 1. A received the navigation's frame lifecycle on its own session,
+    //    carrying A's per-target main frame id.
+    let a_nav = a_events
+        .iter()
+        .find(|(_, m, _)| m == "Page.frameNavigated")
+        .expect("A session must receive Page.frameNavigated");
+    assert_eq!(
+        a_nav.2["frame"]["id"],
+        main_frame_id_for_target(&page_a.id().to_string()),
+        "frame id is A's per-target main frame id"
+    );
+    assert!(
+        a_events
+            .iter()
+            .any(|(_, m, _)| m == "Page.frameStoppedLoading"),
+        "A session receives its real delegate load-complete events"
+    );
+
+    // 2. CONTAINMENT (the phantom-frame mechanical criterion): B's tagged
+    //    stream — everything its FrameManager could consume — carries ZERO
+    //    events carrying A's identity (A's frame id / A's navigation URL).
+    //    B legitimately receives ITS OWN frame events (its initial
+    //    about:blank load) — those are targeted delivery working, not
+    //    pollution; every frame event on B's stream must carry B's own
+    //    per-target frame id.
+    let frame_methods = [
+        "Page.frameNavigated",
+        "Page.frameStartedLoading",
+        "Page.frameStoppedLoading",
+        "Page.lifecycleEvent",
+        "Page.loadEventFired",
+    ];
+    let a_frame_id = main_frame_id_for_target(&page_a.id().to_string());
+    let b_frame_id = main_frame_id_for_target(&page_b.id().to_string());
+    let leaked: Vec<&(String, String, Value)> = tagged
+        .iter()
+        .filter(|(s, m, p)| {
+            s == &sid_b
+                && frame_methods.contains(&m.as_str())
+                && (p["frameId"].as_str() == Some(a_frame_id.as_str())
+                    || p["frame"]["id"].as_str() == Some(a_frame_id.as_str())
+                    || p["params"]["frameId"].as_str() == Some(a_frame_id.as_str()))
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "B session (FrameManager intake) must receive ZERO frame events carrying A's identity; leaked: {leaked:?}"
+    );
+    // Positive face: every frame event B receives carries B's own frame id.
+    let foreign: Vec<&(String, String, Value)> = tagged
+        .iter()
+        .filter(|(s, m, p)| {
+            s == &sid_b
+                && frame_methods.contains(&m.as_str())
+                && p["frameId"].as_str().is_some_and(|f| f != b_frame_id)
+                && p["frame"]["id"].as_str().is_none()
+        })
+        .collect();
+    assert!(
+        foreign.is_empty(),
+        "B session frame events must carry B's own per-target frame id; foreign: {foreign:?}"
+    );
+
+    // 3. No untagged broadcast degradation either (miss branch is a drop).
+    assert!(
+        recorder.untagged.lock().unwrap().is_empty(),
+        "targeted routing must never degrade to the untagged broadcast"
+    );
 }

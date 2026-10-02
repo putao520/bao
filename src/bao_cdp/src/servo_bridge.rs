@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-/// CDP `frameId` of a WebView's main frame — the single truth source for
+/// CDP `frameId` of a target's main frame — the single truth source for
 /// every face that reports a frame id (REQ-CDP-004).
 ///
 /// CDP semantics: one frame carries exactly one stable id, so the
@@ -22,12 +22,17 @@ use serde_json::Value;
 /// event stream (`frameNavigated` / `frameStartedLoading` /
 /// `frameStoppedLoading` / `lifecycleEvent` / `loadEventFired` /
 /// `Network.requestWillBeSent`) and `Page.getFrameTree` must all report the
-/// same value. That value is the servo event stream's main-frame id — the one
-/// the bao_browser delegate emits for every frame event — and every response
-/// face consumes this constant instead of minting its own. It is deliberately
-/// NOT the PageId: PageId lives in the targetId namespace (Target domain) and
-/// the two namespaces must never mix.
-pub const MAIN_FRAME_ID: &str = "0";
+/// same value for the same target. The value is derived from the target
+/// identity (v7 path B): `main-<targetId>` — per-target unique, so frames of
+/// concurrently-attached pages can never collide inside a client-side
+/// FrameManager (the phantom-frame class the v7 wave proved: a shared
+/// cross-target frame id lets one page's `frameNavigated` be misread as the
+/// other page's main frame). It is deliberately NOT the bare PageId: PageId
+/// lives in the targetId namespace (Target domain) and the two namespaces
+/// must never mix — hence the `main-` prefix.
+pub fn main_frame_id_for_target(target_id: &str) -> String {
+    format!("main-{target_id}")
+}
 
 /// Commands that the CDP server sends to the main thread for servo execution.
 /// Each command carries a `target_id` identifying which page/target to route to.

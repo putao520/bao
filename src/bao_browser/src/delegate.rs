@@ -17,7 +17,7 @@ use servo::{
     PermissionRequest, ScreenGeometry, ServoDelegate, ServoError, WebView, WebViewDelegate,
 };
 
-use bao_cdp::servo_bridge::MAIN_FRAME_ID;
+use bao_cdp::servo_bridge::main_frame_id_for_target;
 use bao_cdp::{BaoEvent, ConsoleMessage};
 use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
 
@@ -3210,6 +3210,18 @@ pub struct BaoWebViewState {
     /// When set, events are also pushed here in addition to console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub event_tx: Option<SyncSender<ServoEvent>>,
+    /// CDP target identity of the owning page (its decimal page id, the same
+    /// namespace the command face lists via Target.getTargets and flattens
+    /// sessions against — REQ-CDP-004). Stamped once at page creation
+    /// (PageHandle::new, the same point `register_page_webview` runs) so every
+    /// ServoEvent emitted from this webview — frame lifecycle, console,
+    /// worker observability — routes to exactly the sessions attached to this
+    /// target. `None` = the state has no page behind it (pre-registration or
+    /// the closed-page default in `PageHandle::webview_state`): targeted
+    /// routing is impossible, so emitters drop the event with a debug log
+    /// (no-target-no-deliver, the same Chrome semantics the tightened
+    /// `broadcast_for_target` miss branch enforces downstream).
+    pub cdp_target_id: Option<String>,
     /// Active Workers spawned from this webview's page.
     /// Keyed by WorkerId for O(1) lookup. On page unload (new navigation
     /// after LoadStatus::Complete), all Workers are auto-terminated
@@ -3283,6 +3295,7 @@ impl Default for BaoWebViewState {
             dom_proxies_dirty: false,
             console_log_tx: None,
             event_tx: None,
+            cdp_target_id: None,
             active_workers: Vec::new(),
             worker_scope_config: WorkerScopeConfig::default(),
             shared_worker_ports: Vec::new(),
@@ -3307,6 +3320,26 @@ impl BaoWebViewState {
     pub fn latch_frame_ready(&mut self) {
         self.frame_ready = true;
         self.repaint_pending = true;
+    }
+
+    /// The CDP target this webview's events route to, or None when the
+    /// owning page carries no CDP identity (pre-registration / closed-page
+    /// default state). Emitters fail closed on None: the event is dropped
+    /// with a debug log instead of being tagged with a placeholder target
+    /// (REQ-CDP-004 — placeholder targets were the root of the W49
+    /// broadcast-everywhere fallback this wave removes).
+    pub(crate) fn cdp_target(&self) -> Option<String> {
+        self.cdp_target_id.clone()
+    }
+
+    /// Log-and-drop face for emitters with no routeable target. Returns
+    /// false so call sites can early-return.
+    pub(crate) fn log_unroutable_event(&self, event_kind: &str) -> bool {
+        log::debug!(
+            "[cdp-route] {event_kind} dropped: webview state has no CDP target \
+             identity (page unregistered or closed)"
+        );
+        false
     }
 
     // ─── Worker Lifecycle (REQ-BRW-004) ──────────────────────────────
@@ -3703,6 +3736,10 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] [DF-WK-4] [DF-WK-5]
     pub fn forward_worker_message_event(&self, event: WorkerMessageEvent) {
+        let Some(target_id) = self.cdp_target() else {
+            self.log_unroutable_event("[Worker] postMessage observability");
+            return;
+        };
         if let Some(ref tx) = self.event_tx {
             let direction = match event.direction {
                 WorkerMessageDirection::PageToWorker => "page→worker",
@@ -3715,7 +3752,9 @@ impl BaoWebViewState {
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
-                    target_id: "0".to_string(),
+                    // REQ-CDP-004: real target identity — routes to exactly
+                    // the sessions attached to this page.
+                    target_id,
                     level: ConsoleLevel::Debug,
                     text: format!("[Worker] postMessage {}: {}", direction, event.worker_id.0),
                     url: None,
@@ -3734,6 +3773,10 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] [DF-WK-4] [DF-WK-5]
     pub fn forward_worker_structured_message(&self, msg: &WorkerStructuredMessage) {
+        let Some(target_id) = self.cdp_target() else {
+            self.log_unroutable_event("[Worker] structured postMessage observability");
+            return;
+        };
         if let Some(ref tx) = self.event_tx {
             let direction = match msg.direction {
                 WorkerMessageDirection::PageToWorker => "page→worker",
@@ -3754,7 +3797,9 @@ impl BaoWebViewState {
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
-                    target_id: "0".to_string(),
+                    // REQ-CDP-004: real target identity — routes to exactly
+                    // the sessions attached to this page.
+                    target_id,
                     level: ConsoleLevel::Debug,
                     text: format!(
                         "[Worker] postMessage #{} {}: {} [{}]",
@@ -3777,11 +3822,17 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:9]
     pub fn forward_worker_error_event(&self, event: WorkerErrorEvent) {
+        let Some(target_id) = self.cdp_target() else {
+            self.log_unroutable_event("[Worker] error observability");
+            return;
+        };
         if let Some(ref tx) = self.event_tx {
             send_servo_event(
                 &tx,
                 ServoEvent::PageError {
-                    target_id: "0".to_string(),
+                    // REQ-CDP-004: real target identity — routes to exactly
+                    // the sessions attached to this page.
+                    target_id,
                     text: format!("[Worker] {}: {}", event.worker_id.0, event.message),
                     url: Some(event.filename.clone()),
                     line: Some(event.lineno),
@@ -3974,6 +4025,10 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:SharedWorker] [entity:SharedWorkerGlobalScope] DF-WK-7
     pub fn forward_shared_worker_connect_event(&self, event: SharedWorkerConnectEvent) {
+        let Some(target_id) = self.cdp_target() else {
+            self.log_unroutable_event("[SharedWorker] connect observability");
+            return;
+        };
         if let Some(ref tx) = self.event_tx {
             // Lossy by design: fire-and-forget console observability — the
             // send never stalls the servo script thread: saturation drops
@@ -3982,7 +4037,9 @@ impl BaoWebViewState {
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
-                    target_id: "0".to_string(),
+                    // REQ-CDP-004: real target identity — routes to exactly
+                    // the sessions attached to this page.
+                    target_id,
                     level: ConsoleLevel::Debug,
                     text: format!(
                         "[SharedWorker] connect: {} (name={}) from {}",
@@ -4743,36 +4800,17 @@ impl ServoDelegate for BaoServoDelegate {
                 }
             }
         }
-        // When event_tx is set, push structured ServoEvent::Console (Path B) as the primary
-        // event path. Only fall back to console_log_tx (Path A) when event_tx is absent,
-        // avoiding double-broadcast of the same event.
-        let event_tx = self.event_tx.borrow();
-        if let Some(ref tx) = *event_tx {
-            let servo_level = match level {
-                ConsoleLogLevel::Debug => ConsoleLevel::Debug,
-                ConsoleLogLevel::Log => ConsoleLevel::Info,
-                ConsoleLogLevel::Info => ConsoleLevel::Info,
-                ConsoleLogLevel::Warn => ConsoleLevel::Warning,
-                ConsoleLogLevel::Error => ConsoleLevel::Error,
-                ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
-                ConsoleLogLevel::Dir => ConsoleLevel::Info,
-            };
-            // Lossy by design: fire-and-forget console observability — the
-            // send never stalls the servo script thread: saturation drops
-            // (drop-newest) are counted and debug-logged (throttled) via
-            // send_servo_event; a dropped receiver just fails the send.
-            send_servo_event(
-                &tx,
-                ServoEvent::Console {
-                    target_id: "0".to_string(),
-                    level: servo_level,
-                    text: message,
-                    url: None,
-                    line: None,
-                    column: None,
-                },
-            );
-        } else if let Some(ref tx) = *self.console_log_tx.borrow() {
+        // REQ-CDP-004 target routing: this ServoDelegate arm serves console
+        // content NOT associated with any WebView (servo.rs routes
+        // `EmbedderMsg::ShowConsoleApiMessage` here only when the message
+        // carries no webview id — page content goes through the per-webview
+        // delegate, which stamps its real CDP target). With no target there
+        // is nothing to route against: the targeted event path (Path B) has
+        // no subscriber for an unknown target and the former placeholder
+        // "0" tag was the broadcast-everywhere pollution this wave removes,
+        // so webview-less messages stay on the console_log_tx (Path A)
+        // broadcast face only.
+        if let Some(ref tx) = *self.console_log_tx.borrow() {
             let msg = match BaoEvent::from_console_text(&message) {
                 Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
                 _ => ConsoleMessage::Log {
@@ -4824,16 +4862,21 @@ impl WebViewDelegate for BaoWebViewDelegate {
         // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
         // Dual-path: event_tx (Path B) primary for FrameNavigated,
         // console_log_tx (Path A) fallback for PageFrameNavigated.
+        // Both paths carry the page's real CDP target (REQ-CDP-004) and the
+        // per-target main frame id derived from it (v7 path B) — a state
+        // without CDP identity has no route, so the event is dropped.
+        let Some(target_id) = self.state.borrow().cdp_target() else {
+            self.state.borrow().log_unroutable_event("Page.frameNavigated");
+            return;
+        };
+        let frame_id = main_frame_id_for_target(&target_id);
         let event_tx = self.state.borrow().event_tx.clone();
         if let Some(ref tx) = event_tx {
             send_servo_event(
                 &tx,
                 ServoEvent::FrameNavigated {
-                    target_id: "0".to_string(),
-                    // The single main-frame id every CDP face reports
-                    // (REQ-CDP-004) — servo's delegate surface carries no
-                    // frame id, this constant IS the frame namespace source.
-                    frame_id: MAIN_FRAME_ID.to_string(),
+                    target_id: target_id.clone(),
+                    frame_id,
                     url: url_str,
                     name: None,
                 },
@@ -4844,7 +4887,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
             // send only fails once the consumer is dropped; never stall the
             // servo script thread on CDP event delivery.
             let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
-                frame_id: MAIN_FRAME_ID.to_string(),
+                frame_id,
                 url: url_str,
                 loader_id,
             }));
@@ -4887,14 +4930,22 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
                 // Dual-path: event_tx (Path B) primary for FrameStartedLoading,
                 // console_log_tx (Path A) fallback — no direct ConsoleMessage equivalent,
-                // so we use a lightweight log entry.
+                // so we use a lightweight log entry. Path B carries the page's
+                // real CDP target + per-target main frame id (REQ-CDP-004).
                 let event_tx = self.state.borrow().event_tx.clone();
                 if let Some(ref tx) = event_tx {
+                    let Some(target_id) = self.state.borrow().cdp_target() else {
+                        self.state
+                            .borrow()
+                            .log_unroutable_event("Page.frameStartedLoading");
+                        return;
+                    };
+                    let frame_id = main_frame_id_for_target(&target_id);
                     send_servo_event(
                         &tx,
                         ServoEvent::FrameStartedLoading {
-                            target_id: "0".to_string(),
-                            frame_id: MAIN_FRAME_ID.to_string(),
+                            target_id,
+                            frame_id,
                         },
                     );
                 }
@@ -4911,13 +4962,22 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
                 // Dual-path: event_tx (Path B) primary for FrameStoppedLoading,
                 // console_log_tx (Path A) fallback for PageLoadEventFired.
+                // Path B carries the page's real CDP target + per-target main
+                // frame id (REQ-CDP-004).
                 let event_tx = self.state.borrow().event_tx.clone();
                 if let Some(ref tx) = event_tx {
+                    let Some(target_id) = self.state.borrow().cdp_target() else {
+                        self.state
+                            .borrow()
+                            .log_unroutable_event("Page.frameStoppedLoading");
+                        return;
+                    };
+                    let frame_id = main_frame_id_for_target(&target_id);
                     send_servo_event(
                         &tx,
                         ServoEvent::FrameStoppedLoading {
-                            target_id: "0".to_string(),
-                            frame_id: MAIN_FRAME_ID.to_string(),
+                            target_id,
+                            frame_id,
                         },
                     );
                 } else if let Some(ref tx) = self.state.borrow().console_log_tx {
@@ -4988,6 +5048,14 @@ impl WebViewDelegate for BaoWebViewDelegate {
         }
         let event_tx = self.state.borrow().event_tx.clone();
         if let Some(ref tx) = event_tx {
+            // REQ-CDP-004: this per-webview arm always has an owning page —
+            // stamp the event with its real CDP target so it routes to
+            // exactly the sessions attached to this page. No identity
+            // (unregistered/closed state) → no route → drop.
+            let Some(target_id) = self.state.borrow().cdp_target() else {
+                self.state.borrow().log_unroutable_event("console message");
+                return;
+            };
             let servo_level = match level {
                 ConsoleLogLevel::Debug => ConsoleLevel::Debug,
                 ConsoleLogLevel::Log => ConsoleLevel::Info,
@@ -5004,7 +5072,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
-                    target_id: "0".to_string(),
+                    target_id,
                     level: servo_level,
                     text: message,
                     url: None,
@@ -5321,18 +5389,23 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         let state = Rc::new(RefCell::new(BaoWebViewState {
             console_log_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         }));
         let viewport = PhysicalSize::new(800, 600);
         let _delegate = BaoWebViewDelegate::new(state.clone(), viewport);
 
-        // Simulate notify_url_changed by sending the same message the method sends
+        // Simulate notify_url_changed by sending the same message the method
+        // sends — frame id derived from the stamped target (REQ-CDP-004).
         let url = url::Url::parse("https://example.com").unwrap();
         let url_str = url.to_string();
         let loader_id = format!("{:016x}", url_str.len() as u64);
+        let frame_id = main_frame_id_for_target(
+            &state.borrow().cdp_target().expect("stamped target"),
+        );
         if let Some(ref tx) = state.borrow().console_log_tx {
             tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
-                frame_id: MAIN_FRAME_ID.to_string(),
+                frame_id: frame_id.clone(),
                 url: url_str.clone(),
                 loader_id: loader_id.clone(),
             }))
@@ -5346,7 +5419,8 @@ mod tests {
                 url,
                 loader_id: lid,
             }) => {
-                assert_eq!(frame_id, MAIN_FRAME_ID);
+                assert_eq!(frame_id, "main-7");
+                assert_ne!(frame_id, "7", "frameId is never the PageId");
                 assert!(url.starts_with("https://example.com"));
                 assert_eq!(lid, loader_id);
             }
@@ -5404,7 +5478,7 @@ mod tests {
     fn test_event_tx_clone_face_full_observed_lossy() {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1);
         tx.try_send(ServoEvent::Console {
-            target_id: "0".to_string(),
+            target_id: "7".to_string(),
             level: ConsoleLevel::Info,
             text: "fill".to_string(),
             url: None,
@@ -5418,7 +5492,7 @@ mod tests {
         send_servo_event(
             &tx,
             ServoEvent::Console {
-                target_id: "0".to_string(),
+                target_id: "7".to_string(),
                 level: ConsoleLevel::Info,
                 text: "overflow".to_string(),
                 url: None,
@@ -5433,7 +5507,7 @@ mod tests {
         send_servo_event(
             &tx,
             ServoEvent::Console {
-                target_id: "0".to_string(),
+                target_id: "7".to_string(),
                 level: ConsoleLevel::Info,
                 text: "after-drop".to_string(),
                 url: None,
@@ -5453,7 +5527,7 @@ mod tests {
         // When event_tx is set, show_console_message pushes ServoEvent::Console
         if let Some(ref tx) = delegate.event_tx() {
             tx.try_send(ServoEvent::Console {
-                target_id: "0".to_string(),
+                target_id: "7".to_string(),
                 level: ConsoleLevel::Info,
                 text: "hello".to_string(),
                 url: None,
@@ -5484,11 +5558,14 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let mut state = BaoWebViewState::default();
         state.event_tx = Some(tx);
-        // Simulate what notify_url_changed does with event_tx
+        state.cdp_target_id = Some("7".to_string());
+        // Emit through the real state identity: the frame id is derived from
+        // the target (REQ-CDP-004 v7 path B).
+        let target = state.cdp_target().expect("stamped target");
         if let Some(ref tx) = state.event_tx {
             tx.try_send(ServoEvent::FrameNavigated {
-                target_id: "0".to_string(),
-                frame_id: MAIN_FRAME_ID.to_string(),
+                target_id: target.clone(),
+                frame_id: main_frame_id_for_target(&target),
                 url: "https://example.com/".to_string(),
                 name: None,
             })
@@ -5496,8 +5573,16 @@ mod tests {
         }
         let event = rx.try_recv().unwrap();
         match event {
-            ServoEvent::FrameNavigated { url, .. } => {
+            ServoEvent::FrameNavigated {
+                target_id,
+                frame_id,
+                url,
+                ..
+            } => {
                 assert_eq!(url, "https://example.com/");
+                assert_eq!(target_id, "7");
+                assert_eq!(frame_id, "main-7");
+                assert_ne!(frame_id, target_id, "frameId is never the PageId");
             }
             _ => panic!("expected FrameNavigated event"),
         }
@@ -5535,20 +5620,24 @@ mod tests {
     #[test]
     fn test_notify_load_started_emits_frame_started_loading() {
         // When event_tx is set and LoadStatus::Started is received,
-        // the delegate should emit ServoEvent::FrameStartedLoading.
+        // the delegate should emit ServoEvent::FrameStartedLoading —
+        // tagged with the page's real CDP target and its per-target main
+        // frame id (REQ-CDP-004).
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = Rc::new(RefCell::new(BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         }));
         let viewport = PhysicalSize::new(800, 600);
         let _delegate = BaoWebViewDelegate::new(state.clone(), viewport);
 
         // Simulate what notify_load_status_changed does on LoadStatus::Started
+        let target = state.borrow().cdp_target().expect("stamped target");
         if let Some(ref tx) = state.borrow().event_tx {
             tx.try_send(ServoEvent::FrameStartedLoading {
-                target_id: "0".to_string(),
-                frame_id: MAIN_FRAME_ID.to_string(),
+                frame_id: main_frame_id_for_target(&target),
+                target_id: target.clone(),
             })
             .unwrap();
         }
@@ -5559,11 +5648,45 @@ mod tests {
                 target_id,
                 frame_id,
             } => {
-                assert_eq!(target_id, "0");
-                assert_eq!(frame_id, MAIN_FRAME_ID);
+                assert_eq!(target_id, "7");
+                assert_eq!(frame_id, "main-7");
+                assert_ne!(frame_id, target_id, "frameId is never the PageId");
             }
             _ => panic!("expected FrameStartedLoading event"),
         }
+    }
+
+    #[test]
+    fn forward_worker_error_routes_to_stamped_target_and_drops_without_one() {
+        // Real emission path (no WebView needed): with a stamped CDP target
+        // the worker error carries it; without one the event is dropped
+        // (no-target-no-deliver — never a placeholder tag).
+        let worker_error = WorkerErrorEvent {
+            worker_id: WorkerId("w.js".into()),
+            message: "boom".into(),
+            filename: "w.js".into(),
+            lineno: 1,
+            colno: 2,
+        };
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(16);
+        let mut state = BaoWebViewState::default();
+        state.event_tx = Some(tx);
+        state.cdp_target_id = Some("42".to_string());
+        state.forward_worker_error_event(worker_error.clone());
+        match rx.try_recv().expect("routed event") {
+            ServoEvent::PageError { target_id, .. } => assert_eq!(target_id, "42"),
+            other => panic!("expected PageError, got {other:?}"),
+        }
+
+        let (tx2, rx2) = std::sync::mpsc::sync_channel::<ServoEvent>(16);
+        let mut unstamp = BaoWebViewState::default();
+        unstamp.event_tx = Some(tx2);
+        unstamp.forward_worker_error_event(worker_error);
+        assert!(
+            rx2.try_recv().is_err(),
+            "no CDP target identity → the event must be dropped, not tagged"
+        );
     }
 
     // ─── Worker Lifecycle (REQ-BRW-004) ──────────────────────────────
@@ -5722,6 +5845,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         };
         let msg = WorkerMessageEvent {
@@ -5801,6 +5925,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         };
         let error = WorkerErrorEvent {
@@ -6566,6 +6691,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         };
         let event = SharedWorkerConnectEvent {
@@ -6923,6 +7049,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         };
         let msg = WorkerStructuredMessage::with_payload(
@@ -6950,6 +7077,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let state = BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         };
         let msg = WorkerStructuredMessage::metadata_only(
@@ -6971,6 +7099,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         };
         let endpoints = state.create_worker_channel(WorkerId("worker1.js".to_string()));
@@ -8346,6 +8475,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
+            cdp_target_id: Some("7".to_string()),
             ..Default::default()
         };
         let id = SharedWorkerId {
