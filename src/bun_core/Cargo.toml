@@ -14,7 +14,10 @@ name = "bun_core"
 # 0.1.5 (2026-08-21): +pub backpressure::BackpressureValve — the shared
 # watermark/park-latch core of the fetch staging + servo bridge response-body
 # backpressure templates (transport levers stay at the integration sites).
-version = "0.2.3"
+# 0.2.4 (2026-10-03): +pub strings::utf8_codepoint_with_fffd — UTF-8
+# continuation-byte validation for glob directory-entry stepping (upstream
+# bc7a813b10; bun_glob 0.2.2 consumes it).
+version = "0.2.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

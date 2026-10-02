@@ -1,7 +1,10 @@
 [package]
 name = "bun_http"
 # 0.1.1 (2026-08-19): 15-station ChanVec facade conversion — dual-channel green (e54bfb47).
-version = "0.2.4"
+# 0.2.5 (2026-10-03): fetch deflate RFC 1950 zlib-vs-raw autodetect
+# (has_zlib_header CM=8/CINFO<=7/x31; one-byte-wait before decoder creation;
+# upstream faac63e6d4).
+version = "0.2.5"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

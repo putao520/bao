@@ -2,7 +2,9 @@
 name = "bun_options_types"
 # 0.1.1 (2026-08-19): explicit version — breaks workspace inheritance
 # so this patch release ships alone. adt_const_params eradicated (vestigial ConstParamTy derive removed).
-version = "0.2.1"
+# 0.2.2 (2026-10-03): dead dump_environment_variables DebugOptions field
+# removed (upstream 468efacace; bao CLI never declared the flag, zero refs).
+version = "0.2.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true

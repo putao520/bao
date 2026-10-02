@@ -1,6 +1,9 @@
 [package]
 name = "bun_glob"
-version = "0.2.1"
+# 0.2.2 (2026-10-03): UTF-8 continuation-byte validation when stepping over
+# directory entry names — consumes bun_core 0.2.4's utf8_codepoint_with_fffd
+# (upstream bc7a813b10).
+version = "0.2.2"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
@@ -24,7 +27,9 @@ enumset.workspace = true
 libc.workspace = true
 bitflags.workspace = true
 bun_alloc.workspace = true
-bun_core.workspace = true
+# sibling 精确下限(用户裁决 2026-09-02):matcher 消费 bun_core 0.2.4 新增的
+# strings::utf8_codepoint_with_fffd,req 下限=引入该 API 的版本。
+bun_core = { path = "../bun_core", version = "0.2.4" }
 bun_collections.workspace = true
 bun_paths.workspace = true
 bun_sys.workspace = true

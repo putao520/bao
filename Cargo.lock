@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.28"
+version = "0.5.29"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.28"
+version = "0.5.29"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2128,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgl"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -2816,7 +2816,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -2955,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3142,7 +3142,7 @@ dependencies = [
 
 [[package]]
 name = "bun_glob"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -3177,7 +3177,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bao_boringssl_bridge",
  "bao_native_stubs",
@@ -3460,7 +3460,7 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_options_types"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bstr",
  "bun_ast",
