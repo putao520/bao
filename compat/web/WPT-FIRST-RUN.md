@@ -1,58 +1,83 @@
 # WPT First Run — Bao (subset, #14-C)
 
-- date: 2026-10-01 · driver: bao browser (headless CDP) + python ws (`/tmp/wpt_first_run.py` + `/tmp/wpt-manifest.txt`)
-- suite root: upstream tests/wpt/tests (`dom/` subset), static http server (127.0.0.1:8944)
-- binary: /var/cargo-builds/3c/6184ceb77072ba/debug/bao · mtime 2026-10-01 05:33(含 W55 vendor realm 入口注入 patch + e4 `layout_flexbox_balance` Preferences 字段)
-- manifest: 40 files · **PASS: 35** · FAIL: 5(真实引擎缺口,subtest 级可测) · NO-HARVEST: 3(crash 型/子框架型)
-- subtest 总量(已 harvest 37 文件):PASS 子测试 ≈ 2167,FAIL 子测试 ≈ 37
-- **载体验收(REQ-CDP-004,W55 closure)**:realm 入口注入生效——`Page.addScriptToEvaluateOnNewDocument` 的注入时点修到 CDP 规范位(`ScriptThread::load` 的 ServoParser 启动块之前:新 document 建成后、任何页面脚本写入前),同步完成型 testharness 文件全部可 harvest。前基线 0/40 NO-HARVEST → **35/40 PASS**,NO-HARVEST 40 → 3。
+## 结果总表(2026-10-02 final · test-ci 档 + 载具三面)
 
-## 结果总表(2026-10-01 final run)
+- date: 2026-10-02 · driver: bao browser (headless CDP) + python ws,**每文件独立浏览器实例 + rAF 就绪门 + Shape A 输入合成**(`/tmp/wpt_first_run.py`)
+- suite root: upstream tests/wpt/tests (`dom/` subset), static http server (127.0.0.1)
+- binary: /var/cargo-builds/3c/6184ceb77072ba/test-ci/bao(mtime 2026-10-02 16:52,bao farm 产物,钉当前 master:W55/W54/absorb 波全含)
+- manifest: 40 files · **PASS: 37** · FAIL: **0** · NO-HARVEST: 3(crash 型/子框架型)
+- subtest 总量(已 harvest 37 文件):**PASS 1535 / FAIL 0**
+- 3 NO-HARVEST 均为 crash 型/子框架型(inactive-document-crash ×2 / subframe incumbent-global),非时点问题,单独立项定位。
 
-| test file | status | subtests pass/fail |
+### 2026-10-01 → 2026-10-02 差异对照(7 文件翻转)
+
+| test file | 10-01(debug 档,旧载具) | 10-02(test-ci 档,载具三面) | 翻转归因 |
+|---|---|---|---|
+| dom/nodes/Document-createElement-namespace.html | FAIL 41/10 | **OK 51/51** | 引擎修复(10-02 absorb 波,adoptNode 系) |
+| dom/events/webkit-animation-iteration-event.html | FAIL 8/5 | **OK 13/13** | 引擎修复(absorb 波) |
+| dom/events/Event-subclasses-constructors.html | FAIL 42/7 | **OK 49/49** | 引擎修复(absorb 波) |
+| dom/traversal/NodeIterator-removal.html | FAIL 0/25 | **OK 25/25** | 引擎修复(absorb 波) |
+| dom/lists/DOMTokenList-coverage-for-attributes.html | FAIL 172/3 | **OK 175/175** | 引擎修复(absorb 波) |
+| dom/events/Event-dispatch-redispatch.html | FAIL 2/2 | **OK 4/4** | 载具根治(Shape A 输入合成 + rAF 就绪门;引擎语义面实证全绿,详见下节②) |
+| dom/nodes/NodeList-static-length-getter-tampered-2.html | TIMEOUT 1/0 | **OK 1/1** | 载具根治(test-ci 档 8.3s < testharness 60s long-timeout,详见下节①) |
+| dom/events/EventTarget-dispatchEvent-returnvalue.html | OK 766/0 | OK 2/2 | 10-01 数字系收割竞态伪影(与前行 NodeIterator 766 同值、manifest 相邻——单浏览器顺序导航下首探针读到上一页 realm 的 `__wpt_results__`;文件真实子测试数=2。每文件独立浏览器实例后该竞态结构性消失) |
+
+3 NO-HARVEST 两轮一致(非本波范围)。
+
+## 历史基线(2026-10-01 debug 档 final run,数字保留作对照)
+
+- driver: bao browser (headless CDP) + python ws(单浏览器顺序导航,无载具三面)
+- binary: debug 档 mtime 2026-10-01 05:33(含 W55 vendor realm 入口注入 patch + e4 `layout_flexbox_balance` Preferences 字段)
+- manifest: 40 files · PASS: 30 · FAIL: 7 · NO-HARVEST: 3
+- **载体验收(REQ-CDP-004,W55 closure)**:realm 入口注入生效——`Page.addScriptToEvaluateOnNewDocument` 的注入时点修到 CDP 规范位(`ScriptThread::load` 的 ServoParser 启动块之前:新 document 建成后、任何页面脚本写入前),同步完成型 testharness 文件全部可 harvest。前基线 0/40 NO-HARVEST → 30/40 PASS,NO-HARVEST 40 → 3。
+- 完整旧总表见 git 历史(本次改写以 10-02 表为现行;上表差异对照已承载全部翻转行)。
+
+## 载具波定性(2026-10-02,收割窗复跑 + testdriver 空白件)
+
+driver 已参数化(`/tmp/wpt_first_run.py`:env `WPT_HARVEST_S` / `WPT_BAO` / `WPT_HTTP_PORT` / `WPT_CDP_PORT`,缺省值与原行为逐字节一致;三态判定逻辑零改动)。
+
+### ① NodeList-static-length-getter-tampered-2 收割复跑 — 约束重归因,已闭环
+
+实证 probe(debug 二进制 10-01 18:52,收割窗 300s):
+
+| 文件 | 结果 | 耗时 |
 |---|---|---|
-| dom/nodes/Element-hasAttribute.html | OK | 2/0 |
-| dom/events/event-global-is-still-set-when-coercing-beforeunload-result.html | OK | 1/0 |
-| dom/events/Event-dispatch-multiple-stopPropagation.html | OK | 1/0 |
-| dom/events/remove-all-listeners.html | OK | 2/0 |
-| dom/events/Event-dispatch-order-at-target.html | OK | 1/0 |
-| dom/events/event-disabled-dynamic.html | OK | 1/0 |
-| dom/events/Event-dispatch-target-removed.html | OK | 1/0 |
-| dom/ranges/Range-mutations-removeChild.html | OK | 20/0 |
-| dom/nodes/CharacterData-insertData.html | OK | 18/0 |
-| dom/nodes/Document-createElement-namespace.html | FAIL | 41/10 |
-| dom/events/EventListener-incumbent-global-subframe-1.sub.html | NO-HARVEST(子框架型) | -/- |
-| dom/events/webkit-animation-iteration-event.html | FAIL | 8/5 |
-| dom/events/Event-dispatch-redispatch.html | FAIL | 2/2 |
-| dom/events/Event-defaultPrevented-after-dispatch.html | OK | 2/0 |
-| dom/events/Event-subclasses-constructors.html | FAIL | 42/7 |
-| dom/events/Event-returnValue.html | OK | 7/0 |
-| dom/collections/HTMLCollection-empty-name.html | OK | 7/0 |
-| dom/traversal/NodeIterator-removal.html | FAIL | 0/25 |
-| dom/events/label-default-action.html | OK | 1/0 |
-| dom/nodes/Node-cloneNode-on-inactive-document-crash.html | NO-HARVEST(crash 型) | -/- |
-| dom/ranges/Range-attributes.html | OK | 1/0 |
-| dom/nodes/MutationObserver-inner-outer.html | OK | 3/0 |
-| dom/nodes/NodeList-static-length-getter-tampered-2.html | FAIL(harness status 非 OK) | 1/0 |
-| dom/nodes/CharacterData-deleteData.html | OK | 18/0 |
-| dom/events/Event-stopImmediatePropagation.html | OK | 1/0 |
-| dom/events/event-src-element-nullable.html | OK | 1/0 |
-| dom/collections/namednodemap-supported-property-names.html | OK | 3/0 |
-| dom/lists/DOMTokenList-coverage-for-attributes.html | FAIL | 172/3 |
-| dom/nodes/ParentNode-querySelectorAll-removed-elements.html | OK | 1/0 |
-| dom/nodes/DOMImplementation-createDocument-with-null-browsing-context-crash.html | NO-HARVEST(crash 型) | -/- |
-| dom/ranges/StaticRange-constructor.html | OK | 17/0 |
-| dom/ranges/Range-collapse.html | OK | 186/0 |
-| dom/nodes/Document-createComment.html | OK | 6/0 |
-| dom/ranges/Range-commonAncestorContainer.html | OK | 63/0 |
-| dom/events/Event-dispatch-bubble-canceled.html | OK | 1/0 |
-| dom/historical.html | OK | 80/0 |
-| dom/traversal/NodeIterator.html | OK | 766/0 |
-| dom/events/EventTarget-dispatchEvent-returnvalue.html | OK | 766/0 |
-| dom/window-extends-event-target.html | OK | 3/0 |
-| dom/abort/abort-signal-timeout.html | OK | 1/0 |
+| dom/nodes/Element-hasAttribute.html | PASS 2/2 | 0.5s |
+| dom/nodes/NodeList-static-length-getter-tampered-2.html | 子测试 1/0 PASS,harness status **TIMEOUT** | **70.7s** |
 
-FAIL 明细(subtest 级断言输出在 driver 运行产物 `/tmp/wpt-first-run-final.md`,临时件;重跑即再生)——这 5+2 个 FAIL 文件是本 harness 首次给出的真实引擎缺口测量,转入后续 WPT 收敛波,不属本合同范围。
+- **约束重归因(修正 e10 "driver 20s 收割窗"归因)**:引擎本体 70.7s 完成(子测试 1/0 已 harvest),超的是 **testharness 自身 long-timeout 60s**(`<meta name=timeout content=long>`)——超时定时器在主线程被同步测试阻塞期间无法触发,测试函数返回后补触发,harness 以 status=TIMEOUT 收官(携带已 PASS 的子测试,即观察到的 "TIMEOUT + 1/0" 形态)。**driver 收割窗从来不是约束**(阻塞的 Runtime.evaluate 使窗口自然伸长,probe 70.7s 照常收割)——**收割窗延长无法修复,唯一诚实解 = 更快的二进制**。
+- 工作量本质:`indexOfNodeList` = 50 调用 × 5 万×100 = **2.5 亿次 live NodeList 索引**(每次经引擎 binding getter 进 Rust DOM),debug 档 ~70.7s,opt-level 2 预期 <15s → 稳落 60s 内。
+- **现有 test-ci 二进制不可用**:9-30 02:21 构建,早于 W55 realm-entry 注入(0e172001,10-01 05:58)与 W54 layout_flexbox codegen 修复——其上同步完成型文件 NO-HARVEST(0/40 前基线已实证该形态)。
+- **[已闭环,2026-10-02]**:主会话经 bao farm 重发 test-ci 档二进制(mtime 10-02 16:52,钉当时 master)→ 全量复跑 **NodeList-tampered-2 TIMEOUT→OK 1/1 [8.3s]**(debug 70.7s → test-ci 8.3s,~8.5x)。连带收获:absorb 波修掉 5 个 FAIL 文件引擎缺口(见总表差异对照)。
+
+### ② Event-dispatch-redispatch testdriver-vendor 空白件 — 载具限定性:已获批实施,根治
+
+机制(source 级核实):
+
+- `resources/testdriver-vendor.js` = 单行空白注释(上游 vendored stub,非 bao 缺陷)。
+- testdriver.js 外层 `click(element)`:scrollIntoView → paint-tree 检查 → `getClientRects` 取中心坐标 → **直接调 `window.test_driver_internal.click(element, {x, y})`**,无 postMessage / wptrunner 依赖。
+- 空白 vendor 下 `in_automation:false` 的缺省 internal click = `new Promise(resolve => element.addEventListener("click", resolve))`——**等待该元素收到任意 click,永不 reject**。
+- ⇒ 挂死的 2 条(`test_mouseup_redispatching` / `test_redispatching_of_dispatching_event`,后者仅在前者 done() 后闭合)是**纯输入合成缺失**:按钮从未被点击,promise 恒 pending,harness 60s 超时判 FAIL("Test timed out")。引擎语义面 2/2(contentLoaded redispatch + trivial)已过,与 2026-10-01 定性一致。
+
+最小合成路径(**Shape A,可行**):
+
+- driver 侧在导航完成后经现有 CDP 连接读 `button.getBoundingClientRect()` 并发 `Input.dispatchMouseEvent`(mousePressed→mouseReleased @ 中心坐标)。引擎输入管线交付 **trusted** mouseup+click → ①测试自身的 mouseup/click 监听器照常跑全部引擎语义断言(isTrusted 转移 / redispatch InvalidStateError / 默认动作 click 不触发);②internal 缺省 promise 收到 click 即 resolve → done() 链闭合。
+- **测试文件零改动 · vendor 文件零改动(空白 vendor 的缺省 internal click 本就是"等真点击"的合法钩子)· 三态判定逻辑零改动**——载具只供给 testdriver 存在的意义本身:一次真实用户输入。
+- 防假三态自证:任何"页面内合成 dispatch 假点击"变体必被 isTrusted 断言诚实红灯("First mouseup event should be trusted"),假绿构造不可能。
+- 依赖面(已落地):CDP `Input.dispatchMouseEvent` 端到端(master:`protocol.rs:1611` 路由 → `BridgeCommand::DispatchMouseEvent`(`servo_bridge.rs:77`)→ `bao_browser/src/cdp_handler.rs` 真实交付;1ae8dd4a 10-01 13:06 puppeteer full lifecycle GREEN 为正证据)。
+- 运行时 contingency(实现时验证):①trusted click 由 mousedown+mouseup 对的合成语义面;②headless 面 button 布局坐标(CSS px/viewport)映射。
+- **[已获批实施,2026-10-02 用户侧裁决「Shape A 批准,实施」] 实测验证通过**:`[shape-a] serviced testdriver click @ (43.0, 20.76)` → **Event-dispatch-redispatch 2/4 FAIL(TIMEOUT)→ 4/4 PASS(OK,1.1s)**。两项 contingency 双双实证:①trusted 语义——测试自身断言 "First mouseup event should be trusted" 通过(CDP Down/Up 经 servo 输入管线合成 trusted mouseup+click);②坐标映射——点击精确落 button,事件在目标上触发。引擎面全绿:redispatch InvalidStateError×4、isTrusted 转移、默认动作不触发、click 仍 trusted 全部通过——**该文件此前「2 条真实引擎缺口」假设证伪,纯载具限,引擎语义 4/4 正确**。
+- 实施形态(零语义替换):INJECT 增 `test_driver_internal` 定义器包装(记录测试显式发起的 click 请求坐标到 `__wpt_pending_click__`,缺省 internal promise 原样保留);driver 收割循环内检测到待偿请求即发 CDP `Input.dispatchMouseEvent`(mousePressed+mouseReleased @ 请求坐标)。无请求=零输入,对无 testdriver 文件零行为变化。
+
+### ③ 载具第二层:headless 帧生产停摆(rAF 门)——发现、否定性结果与终态载具
+
+Shape A 单文件首航 4/4 后,全量复跑中 redispatch 仍 2/4 且无 tap 记录——追出**第二层载具限**:
+
+- **现象**:`await waitForLoad`(load → `requestAnimationFrame(resolve)`)在多页顺序导航的第 2+ 页面上永不解——rAF 回调根本不触发,`new test_driver.click(...)` 未被执行,2 条 pending 到 harness 10s 默认超时。诊断三锚:2nd+ 导航 `readyState:"complete"` 且布局活性正常(`getClientRects().length===1`)但 rAF 探针不翻转;首导航必翻(3/3);新开 tab 亦不翻。
+- **定性**:bao headless 的帧生产是**启动期一次性**的(boot frame 落点对首导航有竞态)——此后 CDP 载具面无法再产帧。rAF 门在 servo 由 compositor 帧 Tick 驱动,无帧即永挂。此属产品码域(帧生产策略),本合同不越界。
+- **否定性结果(全部实测)**:①`Page.captureScreenshot`(→ `webview.paint()` + 15s spin,`page.rs:475`)在 2nd+ 导航上 spin 满超时无帧,且强帧推进 servo 动画时钟——animation 文件 13/13 → 7/13 扰动实锤,弃用;②`Input.dispatchMouseEvent` mouseMoved;③`Emulation.setDeviceMetricsOverride`;④`Target.createTarget` 新 tab——三者均不产帧。
+- **终态载具(每文件独立浏览器实例 + rAF 就绪门)**:每文件起独立浏览器(首导航带 boot frame),INJECT 装 rAF 探针;`readyState===complete` 后 2s 探针仍未翻 → 判本实例 boot frame 未落该页 → 换新实例重试(bounded 3,env `WPT_ATTEMPTS`)。三重收益:redispatch 全量面 4/4(引擎语义全绿);所有文件获得同等「有帧载具」;顺带结构性消除 10-01 的 stale-results 收割竞态(EventTarget-dispatchEvent-returnvalue 766/0 伪影,见总表注)。终验:`[shape-a] serviced @ (43.0, 20.76)` → **4/4 PASS [1.1s]**,animation 13/13 零扰动。
+- **残留**:若某文件 3 次尝试均未获帧,如实报 NO-HARVEST(attempts exhausted)——本轮 40 文件零触发;3 NO-HARVEST 为 crash/subframe 型(readyState 永不 complete,门不触发),与本载具面无关。
 
 ## 载体时点判定史(2026-10-01 当日,五轮实测收敛)
 
@@ -70,7 +95,8 @@ FAIL 明细(subtest 级断言输出在 driver 运行产物 `/tmp/wpt-first-run-f
 
 ## 遗留清单
 
-- [WPT 收敛波] 5 FAIL 文件(Document-createElement-namespace / webkit-animation-iteration-event / Event-dispatch-redispatch / Event-subclasses-constructors / NodeIterator-removal / NodeList-static-length-getter-tampered-2 / DOMTokenList-coverage-for-attributes)为真实引擎缺口,harness 首次可测。
+- ~~[WPT 收敛波] 7 FAIL 文件为真实引擎缺口~~ **2026-10-02 载具波后全部翻转,0 FAIL 残留**:5 文件系引擎缺口,已由 10-02 absorb 波修复(createElement-namespace 51/51 / webkit-animation 13/13 / subclasses-constructors 49/49 / NodeIterator-removal 25/25 / DOMTokenList 175/175);2 文件系载具限,已根治(redispatch:Shape A + rAF 就绪门 → 4/4;NodeList-tampered-2:test-ci 档 8.3s → 1/1)。现行基线 = 2026-10-02 总表(37 PASS / 0 FAIL / 3 NO-HARVEST)。
+- [载具面 · bao headless 帧生产] 帧生产为启动期一次性(boot frame),此后无帧 → rAF 门类测试在第 2+ 页面永挂。当前以每文件独立浏览器 + 就绪门在载具面规避;引擎侧连续产帧(如 headless 恒常 composite 或 CDP 可触发产帧面)属产品码域候选,未立项。
 - [NO-HARVEST 3 文件] 均为 crash 型/子框架型测试(inactive-document-crash / null-browsing-context-crash / subframe incumbent-global),非时点问题,单独立项定位。
 - [servo vendor 候选] pending window timer 跨同源 `window_for_replacement` 导航触发 `timers.rs:912` 断言 panic(上游不变量对 init-script 定时器不健壮;本波以 INJECT 零 timer 化规避,引擎侧加固待另立裁决)。
 - ~~[CDP 面] `removeScriptToEvaluateOnNewDocument` 未接线;接线时注册表按 identifier 化~~ **已闭环(2026-10-01 removeScript 按 id 合同)**:注册表按 identifier 化落地,remove 按 id 真删(见偏差注记)。
