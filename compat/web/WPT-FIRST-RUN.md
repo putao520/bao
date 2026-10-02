@@ -93,11 +93,40 @@ Shape A 单文件首航 4/4 后,全量复跑中 redispatch 仍 2/4 且无 tap �
 
 - ~~servo 侧注册表按 `(WebViewId, source)` **同文去重**:与 CDP 规范"同文两注册是两条 entry、remove 按 identifier"有偏差~~ **已由 removeScript 按 id 合同闭环**:注册表升 `(WebViewId, u64, String)` 三元,vendor 自铸进程级单调 identifier(register 返回值 = CDP `identifier`,唯一 id 源),同文同页重注册幂等返回同一 id(一个 registry entry = 一个 CDP handle),`Page.removeScriptToEvaluateOnNewDocument` 按 id 注销(页内作用域,他页持 id 删不动;未知 id 按 Chromium page_handler.cc 实测语义回 "Script not found" 错误)。与 CDP 规范的残余差异仅:同文两注册在 Chrome 产生两条 entry 两个 id,本实现幂等合一(合同裁决 ③,消除双 handle 悬垂)。
 
+## NO-HARVEST 3 文件定性收口(2026-10-02,crash 型专节)
+
+三文件逐一定位结论:**零引擎崩溃,零引擎修复**——工作树 vendor/servo 零变更(定位系阴性结论,非跳过)。全部证据来自独立探针 `/tmp/wpt_crash_probe.py`(每文件独立浏览器 + stderr 全量捕获 + RUST_BACKTRACE)与进程内语义探针(CDP Runtime.evaluate 直测,二进制 = test-ci 档 master)。
+
+### ① dom/nodes/Node-cloneNode-on-inactive-document-crash.html — 引擎面阴性,载具自限
+
+- **测试语义**:取 `i.contentDocument` → `i.remove()`(嵌套 browsing context 被 discard,文档进入 inactive 态)→ `doc.cloneNode()`。Blink 官方防崩溃回归用例;WPT 判定 = 浏览器存活即 PASS。
+- **inactive 态实证**:`i.contentDocument === null`(BC 已 discard)、`window.closed === true`、doc 仍可完全查询——即测试目标状态真实到达。
+- **探针结果(3 轮独立浏览器)**:零 stderr、零 panic、readyState=complete、ScriptThread 存活(load 后仍可 evaluate);进程内 10× 重复(建 iframe→detach→cloneNode)返回 spec 形态 Document(nodeType 9、`!==` 原 doc、跨 realm `instanceof Document` false 系标准 realm 语义)。
+- **根因定位(为什么上游这么写)**:`Node::clone` 的 Document 臂(`components/script/dom/node/node.rs:3125` 附近)以 `document.window()` + `HasBrowsingContext::No` 构造克隆——不触碰 `browsing_context()`,死文档面无 unwrap/expect。servo 现行实现天然免疫该崩溃类。
+- **NO-HARVEST 根因(结构性)**:该文件**不含 testharness.js**(全 manifest 唯三),收割通道 `add_completion_callback → __wpt_results__` 永不注册 → 载具无论引擎健康与否都收不到数字。测试面自限,非引擎、非时点。
+
+### ② dom/nodes/DOMImplementation-createDocument-with-null-browsing-context-crash.html — 引擎面阴性,载具自限
+
+- **测试语义**:同①的死文档面,改调 `doc.implementation.createDocument("", "")`(Chromium crbug 1086801 回归用例)。
+- **探针结果(3 轮独立浏览器)**:零 stderr、零 panic、ScriptThread 存活;进程内 10× 重复返回 spec 形态 XMLDocument(nodeType 9、`documentElement === null`(qname 空)、`contentType === "application/xml"`)。
+- **根因定位**:`DOMImplementationMethods::CreateDocument`(`components/script/dom/domimplementation.rs:84`)同样以 `self.document.window()` + `HasBrowsingContext::No` 构造,零 browsing-context 解引用。上游同形态。
+- **NO-HARVEST 根因**:同①,harness-less 结构性。
+
+### ③ dom/events/EventListener-incumbent-global-subframe-1.sub.html — 载具自限(wptserve 多主机依赖)+ 引擎邻域发现(报告挂账)
+
+- **真实结构(上游)**:manifest 里的 subframe-1 **不是 harness 本体**——真正的 async_test/assert_equals 在 `EventListener-incumbent-global-1.sub.html`(不在 manifest),四层 relay:global-1(www1, harness)→ subframe-1(www1)→ subsubframe(www2)→ wptrunner wrapper。依赖 wptserve 替换(`{{domains[www2]}}`/`{{host}}`=browser_host)+ www1/www2 双主机 + `document.domain` 双侧松弛到同一注册域。裸静态 http server 下 iframe src 是未替换的模板串,文件结构性不可运行。
+- **进程内语义验证(同构探针,同源 iframe 替代跨域)**:父 realm 在子框 body 上注册「绑定到子框 window.postMessage」的 click listener → click → `postMessage` 正确投递到子框 window(`this` 目标面正确);process 全程存活零 panic。
+- **引擎邻域发现(非本三文件崩溃点,报告挂账待裁决)**:WebIDL stored callback context(incumbent)在回调期间未胜过 JS 引擎 scripted caller——`settings_stack.rs:56 incumbent_global()` 先取 `GetScriptedCallerGlobal`(JS 栈顶 scripted 帧),后回退显式 settings 栈;而 `call_setup`(script_bindings/callback.rs:365)已按规范 push stored incumbent(`run_a_callback`)。判别探针:listener 在 iframe realm 创建、click 自 top realm 派发 → `e.source === top`(spec 应为 iframe window)。**该偏差在上游真实测试中被掩蔽**(双侧 document.domain 松弛到同源后 `e.origin === parent.location.origin` 恒真,故上游 servo 同样 PASS、无 .ini override);但 e.source/e.origin 的规范语义在跨 realm 回调场景偏离。修复面 = incumbent 解析优先级(settings_stack 层,全体 WebIDL 回调共面),超窄修范畴,挂账不擅动。
+
+### 载具面前进建议(未实施,主会话裁决)
+
+crash 型文件的三态判定可在载具面诚实给出:harness-less 文件若 `readyState===complete` + 进程存活 + stderr 零 panic(探针 `/tmp/wpt_crash_probe.py` 已具备全部判据)→ 判 OK。可作 driver 第四面(crash-test face)并入 `wpt_first_run.py`,本合同不混改共享 driver。
+
 ## 遗留清单
 
 - ~~[WPT 收敛波] 7 FAIL 文件为真实引擎缺口~~ **2026-10-02 载具波后全部翻转,0 FAIL 残留**:5 文件系引擎缺口,已由 10-02 absorb 波修复(createElement-namespace 51/51 / webkit-animation 13/13 / subclasses-constructors 49/49 / NodeIterator-removal 25/25 / DOMTokenList 175/175);2 文件系载具限,已根治(redispatch:Shape A + rAF 就绪门 → 4/4;NodeList-tampered-2:test-ci 档 8.3s → 1/1)。现行基线 = 2026-10-02 总表(37 PASS / 0 FAIL / 3 NO-HARVEST)。
 - [载具面 · bao headless 帧生产] 帧生产为启动期一次性(boot frame),此后无帧 → rAF 门类测试在第 2+ 页面永挂。当前以每文件独立浏览器 + 就绪门在载具面规避;引擎侧连续产帧(如 headless 恒常 composite 或 CDP 可触发产帧面)属产品码域候选,未立项。
-- [NO-HARVEST 3 文件] 均为 crash 型/子框架型测试(inactive-document-crash / null-browsing-context-crash / subframe incumbent-global),非时点问题,单独立项定位。
+- ~~[NO-HARVEST 3 文件] 均为 crash 型/子框架型测试,单独立项定位~~ **2026-10-02 定性收口(见「NO-HARVEST 3 文件定性收口」专节):三文件均无引擎崩溃,NO-HARVEST 系测试面/载具自限(harness-less crash tests 收割通道结构性打不通 + subframe 型需 wptserve 多主机)。引擎面阴性 + 1 个邻域发现(postMessage source 的 incumbent 解析)报告挂账。**
 - [servo vendor 候选] pending window timer 跨同源 `window_for_replacement` 导航触发 `timers.rs:912` 断言 panic(上游不变量对 init-script 定时器不健壮;本波以 INJECT 零 timer 化规避,引擎侧加固待另立裁决)。
 - ~~[CDP 面] `removeScriptToEvaluateOnNewDocument` 未接线;接线时注册表按 identifier 化~~ **已闭环(2026-10-01 removeScript 按 id 合同)**:注册表按 identifier 化落地,remove 按 id 真删(见偏差注记)。
 - ~~[bao_cdp 直派面] `BridgeCommand::AddScriptToEvaluateOnNewDocument` → page `UserContentManager` 路径仍为 head 插入延迟任务时点~~ **已闭环(2026-10-01)**:memory bridge 面与 WS 面同落 vendor realm-entry 注入载体(CDP 规范时点),且 add 返回 vendor 自铸 identifier、remove 按其注销——双 CDP 面单源。保留面:cmd_add_script 另对当前 document 立即应用一次(evaluate_js_web,Chrome new-documents-only 的超集,行为自 W55 未变)。
