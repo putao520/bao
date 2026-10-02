@@ -194,6 +194,60 @@ check('transfer_arraylike_typeerror', function() {
   }
 });
 
+// ── serialization failure ⇒ transfer list ZERO-detach (upstream 49c076eb9e
+//    semantics: StructuredSerializeWithTransfer detaches only AFTER the
+//    value serializes; an uncloneable value must leave every transfer
+//    object attached). SpiderMonkey enforces this at the engine choke point
+//    both bao carriers ride: JSStructuredCloneWriter::write() serializes the
+//    value first and calls transferOwnership() — the only site that
+//    detaches ArrayBuffers / fires the writeTransfer callback — at its very
+//    end, so any startWrite failure returns before a single detach. ──
+check('clone_fail_transfer_zero_detach_fn', function() {
+  var ab = new ArrayBuffer(8);
+  var view = new Uint8Array(ab);
+  view.set([9, 8, 7, 6, 5, 4, 3, 2]);
+  try { structuredClone(function() {}, { transfer: [ab] }); return false; }
+  catch (e) {
+    return (e.message || '').indexOf('could not be cloned') >= 0 &&
+           ab.byteLength === 8 &&          // not detached
+           view.length === 8 && view[0] === 9 && view[7] === 2; // bytes intact
+  }
+});
+check('clone_fail_transfer_zero_detach_nested', function() {
+  // Failure discovered DEEP in the graph (nested function) with a
+  // multi-entry transfer list: every entry stays attached.
+  var a1 = new ArrayBuffer(4);
+  var a2 = new ArrayBuffer(8);
+  new Uint8Array(a1).set([1, 2, 3, 4]);
+  new Uint8Array(a2).set([5, 6, 7, 8, 9, 10, 11, 12]);
+  try { structuredClone({ cb: function() {} }, { transfer: [a1, a2] }); return false; }
+  catch (e) {
+    return (e.message || '').indexOf('could not be cloned') >= 0 &&
+           a1.byteLength === 4 && a2.byteLength === 8 &&
+           new Uint8Array(a1)[3] === 4 && new Uint8Array(a2)[7] === 12;
+  }
+});
+check('clone_fail_transfer_zero_detach_symbol', function() {
+  var ab = new ArrayBuffer(2);
+  try { structuredClone(Symbol('x'), { transfer: [ab] }); return false; }
+  catch (e) {
+    return (e.message || '').indexOf('could not be cloned') >= 0 && ab.byteLength === 2;
+  }
+});
+check('clone_fail_then_buffer_still_transferable', function() {
+  // Strongest form: after a failed clone-with-transfer the SAME buffer must
+  // still be REALLY transferable by a subsequent successful clone — the
+  // failure left no zombie detach state in the engine's transfer map.
+  // Bytes arrive at the clone; the source detaches only on this success.
+  var ab = new ArrayBuffer(4);
+  new Uint8Array(ab).set([42, 43, 44, 45]);
+  var threw = false;
+  try { structuredClone(function() {}, { transfer: [ab] }); } catch (e) { threw = true; }
+  if (!threw || ab.byteLength !== 4) return false;
+  var c = structuredClone(ab, { transfer: [ab] });
+  return c.byteLength === 4 && new Uint8Array(c)[0] === 42 && ab.byteLength === 0;
+});
+
 globalThis.__r.all = results.join('|');
 "#;
 
@@ -214,5 +268,5 @@ fn test_structured_clone_engine_fidelity() {
     }
     // Sanity: the battery actually ran every check (no silent empty result).
     let count = all.split('|').count();
-    assert_eq!(count, 27, "expected 27 checks, got {}: {}", count, all);
+    assert_eq!(count, 31, "expected 31 checks, got {}: {}", count, all);
 }

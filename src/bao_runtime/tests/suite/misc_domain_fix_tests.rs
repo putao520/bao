@@ -618,3 +618,72 @@ fn test_inspector_session_explicit_throw() {
     bun_runtime::shutdown_thread_sm();
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// Item 16 — asymmetric matcher vs missing array element: the assertion must
+//           FAIL, not end the runner (upstream Bun e196cd6abb semantics)
+// ══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_bun_test_asymmetric_missing_element_fails_not_crashes() {
+    let mut ctx = setup_ctx();
+
+    // The two crash repros from the upstream commit message, run through the
+    // REAL runner: each must be recorded as a test failure and the runner
+    // must keep going (upstream 1.4.2 ended the whole test runner with a
+    // SIGSEGV at address 0x5 on these inputs).
+    let setup = r#"
+      var t = __bun_test_module;
+      t.it('asym-hole-any', function() {
+        t.expect([,]).toEqual([t.expect.any(String)]);
+      });
+      t.it('asym-matchobject-arrayContaining', function() {
+        t.expect({ a: [['x']] }).toMatchObject({
+          a: t.expect.arrayContaining([['x', t.expect.stringContaining('y')]]),
+        });
+      });
+      t.it('sentinel-after-failures', function() {
+        t.expect(1).toBe(1);
+      });
+      'registered';
+    "#;
+    assert_eq!(eval_string(&mut ctx, setup), "registered");
+
+    // Same drain pattern as Item 7: the runner chain is pure microtasks, so
+    // ctx.eval's job-queue drain settles it. A runner-level crash (the class
+    // upstream fixed) would abort the process here instead of producing a
+    // report; a recorded [passed, failed] pair is the post-fix contract.
+    let start = r#"
+      globalThis.__rep = null;
+      globalThis.__run_bun_tests().then(
+        function(r) { globalThis.__rep = r; },
+        function(e) { globalThis.__rep = { passed: 0, failed: -1 }; }
+      );
+      'started';
+    "#;
+    assert_eq!(eval_string(&mut ctx, start), "started");
+
+    let report = eval_string(
+        &mut ctx,
+        "JSON.stringify(globalThis.__rep && [globalThis.__rep.passed, globalThis.__rep.failed])",
+    );
+    assert_eq!(
+        report, "[1,2]",
+        "both asymmetric-matcher-vs-missing-element tests must be recorded as failures \
+         (runner survived; sentinel after them passed): {}",
+        report
+    );
+
+    // The failures must be NAMED — an assertion that fails prints its diff,
+    // it does not vanish into a runner abort.
+    let failing = eval_string(
+        &mut ctx,
+        "JSON.stringify((globalThis.__rep && globalThis.__rep.failures || []).map(function(f) { return f.name; }))",
+    );
+    assert!(
+        failing.contains("asym-hole-any") && failing.contains("asym-matchobject-arrayContaining"),
+        "failure list must name both asymmetric tests: {}",
+        failing
+    );
+    bun_runtime::shutdown_thread_sm();
+}
+

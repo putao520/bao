@@ -345,7 +345,6 @@ pub fn try_get<'a>() -> Option<&'a ContextData> {
 }
 
 pub struct DebugOptions {
-    pub dump_environment_variables: bool,
     pub dump_limits: bool,
     pub fallback_only: bool,
     pub silent: bool,
@@ -371,7 +370,6 @@ impl Default for DebugOptions {
     #[inline(always)]
     fn default() -> Self {
         Self {
-            dump_environment_variables: false,
             dump_limits: false,
             fallback_only: false,
             silent: false,

@@ -514,6 +514,93 @@ fn test_bun_test_deep() {
             return true;
         });
 
+        // ---- asymmetric matcher vs missing array element (upstream e196cd6abb) ----
+        // Upstream Bun 1.4.2 segfaulted when an expected asymmetric matcher met
+        // an array element that is not there (a hole, or an index past the end
+        // of a shorter actual array): the JSC fast-path element read returned
+        // the empty JSValue and the matcher's cell-type dispatch dereferenced
+        // a null cell. The fix feeds matchers the ORDINARY element read —
+        // undefined for a hole or past-the-end — so the comparison fails like
+        // Jest instead of ending the runner. Bao's expect shim is pure JS:
+        // a missing element IS undefined by language semantics and every
+        // comparison below degrades to a graceful assertion Error. These
+        // checks lock that contract for the whole matcher family bao ships.
+        check("asym_missing_element_reads_undefined", function() {
+            // Premise the safety rests on: holes and past-the-end indices
+            // read as undefined (the JS-level equivalent of upstream's
+            // getIndex fix).
+            var holey = [,];
+            var short = [1];
+            return holey[0] === undefined && !(0 in holey) &&
+                   short[5] === undefined && !(5 in short);
+        });
+        check("asym_hole_any_fails", function() {
+            try {
+                __bun_test_module.expect([,]).toEqual([__bun_test_module.expect.any(String)]);
+                return false; // must NOT pass: Jest post-fix fails this
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_hole_anything_fails", function() {
+            try {
+                __bun_test_module.expect([,]).toEqual([__bun_test_module.expect.anything()]);
+                return false; // upstream 1.4.2 passed this; Jest and post-fix Bun fail
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_hole_stringContaining_fails", function() {
+            try {
+                __bun_test_module.expect([,]).toEqual([__bun_test_module.expect.stringContaining("y")]);
+                return false;
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_hole_stringMatching_fails", function() {
+            try {
+                __bun_test_module.expect([,]).toEqual([__bun_test_module.expect.stringMatching(/y/)]);
+                return false;
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_hole_objectContaining_fails", function() {
+            try {
+                __bun_test_module.expect([,]).toEqual([__bun_test_module.expect.objectContaining({ a: 1 })]);
+                return false;
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_hole_arrayContaining_fails", function() {
+            try {
+                __bun_test_module.expect([,]).toEqual([__bun_test_module.expect.arrayContaining([1])]);
+                return false;
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_short_actual_stringContaining_fails", function() {
+            // actual shorter than expected: index 1 is past the end of
+            // ["x"], so the matcher meets a missing element.
+            try {
+                __bun_test_module.expect(["x"]).toEqual(["x", __bun_test_module.expect.stringContaining("y")]);
+                return false;
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_hole_toStrictEqual_fails", function() {
+            try {
+                __bun_test_module.expect([,]).toStrictEqual([__bun_test_module.expect.any(String)]);
+                return false;
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_matchobject_arrayContaining_repro_fails", function() {
+            // The exact repro from the upstream commit message: a segfault
+            // shape that must instead fail the assertion.
+            try {
+                __bun_test_module.expect({ a: [["x"]] }).toMatchObject({
+                    a: __bun_test_module.expect.arrayContaining([["x", __bun_test_module.expect.stringContaining("y")]]),
+                });
+                return false;
+            } catch (err) { return err instanceof Error; }
+        });
+        check("asym_runner_still_alive_after_failures", function() {
+            // Liveness sentinel: after all the graceful failures above, the
+            // matcher machinery still works for ordinary assertions.
+            __bun_test_module.expect({ a: 1 }).toEqual({ a: 1 });
+            return true;
+        });
+
         results.join("|")
     "#,
     );

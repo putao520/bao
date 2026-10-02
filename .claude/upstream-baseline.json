@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-10-02",
-  "updated_by": "daily-ops-absorb-wave-20261002",
+  "updated_at": "2026-10-03",
+  "updated_by": "daily-ops-absorb-wave-20261003",
   "upstreams": {
     "bun": {
       "repo": "oven-sh/bun",
       "local_path": "/home/putao/code/rust/bun",
-      "baseline": "f4d755a9cf",
-      "baseline_date": "2026-10-02",
-      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..367d939d9a 全判定(triage 09-08..09-19);09-19 波吸收 13 项落地(install 六连+libarchive/yarn/npm-alias/css view-transition/uws WS-early-frames 双树/url authority/h2-h3 strip/h3 retry),SEMANTIC-PORT backlog 10(09-18 8+09-19 fetch framing 大件与 node:net GC retention);HTMLRewriter/SSLWrapper/GC-controller N-A-HOST 证伪;FetchSession 新 API 面排除(须 PRD/SPEC 立法)| 2026-10-02 daily-ops 波:dc3660dea6..f4d755a9cf 21 颗判定 ABSORB 4/N-A 17;4 落地(6212450fc0 css 规则索引/9d9fdbe862 js_parser visit panic/ba3f27d1d1 spawn O_NONBLOCK+f4d755a9cf usockets 双树);N-A 17 依据 triage-bun-2026-10-02.md"
+      "baseline": "e196cd6abb",
+      "baseline_date": "2026-10-03",
+      "notes": "工作树脏是常态;只 fetch,禁 clean/reset/推进 HEAD/改 remote。基线=triage 收口边界(吸收 backlog 另记 state.json pending_absorb)。窗口 3f2610e24a..367d939d9a 全判定(triage 09-08..09-19);09-19 波吸收 13 项落地(install 六连+libarchive/yarn/npm-alias/css view-transition/uws WS-early-frames 双树/url authority/h2-h3 strip/h3 retry),SEMANTIC-PORT backlog 10(09-18 8+09-19 fetch framing 大件与 node:net GC retention);HTMLRewriter/SSLWrapper/GC-controller N-A-HOST 证伪;FetchSession 新 API 面排除(须 PRD/SPEC 立法)| 2026-10-02 daily-ops 波:dc3660dea6..f4d755a9cf 21 颗判定 ABSORB 4/N-A 17;4 落地(6212450fc0 css 规则索引/9d9fdbe862 js_parser visit panic/ba3f27d1d1 spawn O_NONBLOCK+f4d755a9cf usockets 双树);N-A 17 依据 triage-bun-2026-10-02.md | 2026-10-03 daily-ops 波:f4d755a9cf..e196cd6abb 7 颗判定 ABSORB 3 落地(468efacace 死旗标/bc7a813b10 glob UTF-8/faac63e6d4 fetch RFC1950)/SEMANTIC 2 即期闭环(e196cd6abb expect 已安全实证+测试锁/49c076eb9e structuredClone 引擎级时序已正确+测试锁)/N-A 2(fa467dcae2 pretty_format 无载体/76cf78c58a runMain 无载体);依据 triage-bun-2026-10-03.md"
     },
     "servo": {
       "repo": "servo/servo",
       "local_path": "/home/putao/code/tools/servo",
-      "baseline": "58fee6d54",
-      "baseline_date": "2026-10-02",
-      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..b820a9679 全判定(triage 09-08..09-19);09-19 波吸收 6 项落地(ByteLengthQueuingStrategy root/InputEventsHandled/FileReader safe/webxr cast_unit/Document.dir/FontData shrink+from_vec shim);deferred 6(selection images=layout 布局漂移族/PaintTimingMixin 大件/ClipboardItem+SW cache promise 基座沿袭 463b9e444/user-select 大项/moz-progress-bar=stylo#434 前置缺);rustls TlsSecurityInfo N-A-HOST(boringssl 栈零承载);2026-09-21 ev4 归一:vendor/servo [workspace] 根/Cargo.lock/rust-toolchain.toml 已删(70 manifest 继承内联,commit 5a2d85bc+a4a3b942)——验证一律主根 cargo check|nt -p bao-servo-*(禁 cd vendor/servo),servo crate 发布走组件目录 --manifest-path。【诚实性闭环 2026-09-29】b820a9679..7ca99fe3f 缺口已全量处置:143 颗全 triage+全执行波落地(coordinated wave 7045fa57 448 文件/paint 终末 9d4eeb70/task#9 holdout 解锁 d649dde1+70211820),维持 holdout 5 项依据在台账(.plans/absorb-triage-20260927-gap.md);forward 窗口 12 颗待下轮吸收(4 ABSORB 已判)| 2026-10-02 daily-ops 波:57a307695..58fee6d54 38 颗判定 ABSORB 22 落地/DEFERRED 3(41274f671 a11y 大件+1683cde5e stylo rev bump+3b07503bc EditingContext 基建缺位)/N-A 13;依据 triage-servo-2026-10-02.md"
+      "baseline": "d735c4566",
+      "baseline_date": "2026-10-03",
+      "notes": "vendor/servo 快照裁剪源(tests/docs/ffi 不吸收;组件内 tests/ 吸收);BCE 清单 30 条目(CLAUDE.md)。窗口 478bb535b..b820a9679 全判定(triage 09-08..09-19);09-19 波吸收 6 项落地(ByteLengthQueuingStrategy root/InputEventsHandled/FileReader safe/webxr cast_unit/Document.dir/FontData shrink+from_vec shim);deferred 6(selection images=layout 布局漂移族/PaintTimingMixin 大件/ClipboardItem+SW cache promise 基座沿袭 463b9e444/user-select 大项/moz-progress-bar=stylo#434 前置缺);rustls TlsSecurityInfo N-A-HOST(boringssl 栈零承载);2026-09-21 ev4 归一:vendor/servo [workspace] 根/Cargo.lock/rust-toolchain.toml 已删(70 manifest 继承内联,commit 5a2d85bc+a4a3b942)——验证一律主根 cargo check|nt -p bao-servo-*(禁 cd vendor/servo),servo crate 发布走组件目录 --manifest-path。【诚实性闭环 2026-09-29】b820a9679..7ca99fe3f 缺口已全量处置:143 颗全 triage+全执行波落地(coordinated wave 7045fa57 448 文件/paint 终末 9d4eeb70/task#9 holdout 解锁 d649dde1+70211820),维持 holdout 5 项依据在台账(.plans/absorb-triage-20260927-gap.md);forward 窗口 12 颗待下轮吸收(4 ABSORB 已判)| 2026-10-02 daily-ops 波:57a307695..58fee6d54 38 颗判定 ABSORB 22 落地/DEFERRED 3(41274f671 a11y 大件+1683cde5e stylo rev bump+3b07503bc EditingContext 基建缺位)/N-A 13;依据 triage-servo-2026-10-02.md | 2026-10-03 daily-ops 波:58fee6d54..d735c4566 18 颗判定落地 6(0ce2ebfef IO disconnect/14ccc5315 webgl clippy/8bdd959d6 blitFramebuffer[W3b 锚保全]/a67617460 layout rewind[30/30 hunk]/d735c4566 JSContext 收敛[EMBEDDER 56 锚不变]/c9c293c6b UA shadow roots[W28 锚不变])/DEFERRED 4(e4ab7ad82 RootedTraceableBox→rooting 基座波/12bd2ae9a DelayNode C15 大件/e21d2e4d5 svg data model 与 REQ-BRW-046 关系待裁/1a6ef53a2 constellation 重构归 re-baseline 批)/N-A 8;依据 triage-servo-2026-10-03.md"
     }
   }
 }

@@ -587,19 +587,31 @@ fn req_cdp_004_page_domain_stateless_face() {
         -32602
     );
 
-    // Empty init-script registration is Chrome-compatible: fresh ids, no echo.
-    let r = ok_result(&dispatch(
-        "Page.addScriptToEvaluateOnNewDocument",
-        json!({"source": ""}),
-    ));
-    let id1 = r["identifier"].as_str().expect("identifier").to_string();
-    assert!(id1.starts_with("script"), "id: {}", id1);
-    let r = ok_result(&dispatch(
-        "Page.addScriptToEvaluateOnNewDocument",
-        json!({"source": ""}),
-    ));
-    let id2 = r["identifier"].as_str().expect("identifier").to_string();
-    assert_ne!(id1, id2, "identifiers must be fresh per registration");
+    // Init-script registration (empty placeholder included) is single-sourced
+    // through the vendor realm-entry registry via the bridge (ade76bd7,
+    // REQ-CDP-004): the stateless face fails closed with the no-bridge error —
+    // never a face-local identifier that maps to nothing.
+    assert_eq!(
+        err_code(&dispatch(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({"source": ""})
+        )),
+        -32603
+    );
+    assert_eq!(
+        err_code(&dispatch(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({"source": "console.log(1)"})
+        )),
+        -32603
+    );
+    assert_eq!(
+        err_code(&dispatch(
+            "Page.removeScriptToEvaluateOnNewDocument",
+            json!({"identifier": "script1"})
+        )),
+        -32603
+    );
 
     assert_eq!(err_code(&dispatch("Page.getNavigationHistory", json!({}))), -32000);
     assert_eq!(err_code(&dispatch("Page.bogus", json!({}))), -32601);

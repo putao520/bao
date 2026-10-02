@@ -3,6 +3,7 @@ use core::ptr::NonNull;
 use bun_core::MutableString;
 use bun_core::{Error, Output};
 
+use crate::decompressor::has_zlib_header;
 use crate::{
     CertificateInfo, Decompressor, EXTREMELY_VERBOSE, Encoding, HTTPRequestBody,
     HTTPResponseMetadata,
@@ -235,12 +236,14 @@ impl<'a> InternalState<'a> {
     }
 
     // TODO(port): narrow error set
+    /// Returns `false` (and keeps the bytes) while a deflate body start is
+    /// too short to tell zlib from raw deflate and the body has not ended.
     pub fn decompress_bytes(
         &mut self,
         buffer: &[u8],
         body_out_str: &mut MutableString,
         is_final_chunk: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         // PORT NOTE: Zig `defer this.compressed_body.reset()` runs on every exit. scopeguard would
         // hold &mut self.compressed_body across the body and conflict with &mut self.decompressor,
         // so each early-return below calls `self.compressed_body.reset()` explicitly.
@@ -263,15 +266,19 @@ impl<'a> InternalState<'a> {
                 {
                     break 'libdeflate;
                 }
-                self.flags.is_libdeflate_fast_path_disabled = true;
-
-                log!("Decompressing {} bytes with pure Rust flate2\n", buffer.len());
-
                 let window_bits: core::ffi::c_int = match self.encoding {
                     Encoding::Gzip => 31, // 15 + 16 = gzip
+                    // The streaming zlib decoder alone judges a zlib-wrapped
+                    // body: the one-shot inflate accepts more streams than the
+                    // RFC 1950 header check, so whole-body and split
+                    // deliveries must agree here.
+                    Encoding::Deflate if has_zlib_header(buffer) => break 'libdeflate,
                     Encoding::Deflate => -15, // raw deflate
                     _ => break 'libdeflate,
                 };
+                self.flags.is_libdeflate_fast_path_disabled = true;
+
+                log!("Decompressing {} bytes with pure Rust flate2\n", buffer.len());
 
                 if let Some(decompressed) = bun_zlib::inflate_decompress(buffer, window_bits) {
                     body_out_str.list.clear();
@@ -305,12 +312,25 @@ impl<'a> InternalState<'a> {
             // bun_zstd::ZstdReaderArrayList — `Decompressor::update_buffers` is re-gated until
             // those reader types are reshaped to not carry an `'a` borrow of the output Vec.
 
-            if let Err(err) = self
-                .decompressor
-                .update_buffers(self.encoding, buffer, body_out_str)
-            {
-                self.compressed_body.reset();
-                return Err(err);
+            let decoder_ready = match self.decompressor.update_buffers(
+                self.encoding,
+                buffer,
+                body_out_str,
+                self.is_done(),
+            ) {
+                Ok(ready) => ready,
+                Err(err) => {
+                    self.compressed_body.reset();
+                    return Err(err);
+                }
+            };
+            if !decoder_ready {
+                // Held: the deflate body start is too short to tell zlib
+                // from raw and the body has not ended. No decoder was
+                // created; keep the bytes — `process_body_buffer` returns
+                // them to `compressed_body` un-cleared so the next delivery
+                // re-presents the pair.
+                return Ok(false);
             }
             // While `update_buffers` is gated, `read_all` on Decompressor::None is a silent
             // no-op (Decompressor.rs:148). Surface an error instead of pretending the body
@@ -340,7 +360,7 @@ impl<'a> InternalState<'a> {
         }
 
         self.compressed_body.reset();
-        Ok(())
+        Ok(true)
     }
 
     // TODO(port): narrow error set
@@ -349,7 +369,7 @@ impl<'a> InternalState<'a> {
         buffer: &MutableString,
         body_out_str: &mut MutableString,
         is_final_chunk: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         // PORT NOTE: reshaped for borrowck — Zig passed MutableString by value; we borrow the inner slice.
         self.decompress_bytes(buffer.list.as_slice(), body_out_str, is_final_chunk)
     }
@@ -381,7 +401,14 @@ impl<'a> InternalState<'a> {
 
         match self.encoding {
             Encoding::Brotli | Encoding::Gzip | Encoding::Deflate | Encoding::Zstd => {
-                self.decompress_bytes(&buffer, body_out_str, is_final_chunk)?;
+                let consumed = self.decompress_bytes(&buffer, body_out_str, is_final_chunk)?;
+                if !consumed {
+                    // Held deflate start: retain the bytes un-cleared; the
+                    // next delivery appends after them and the accumulated
+                    // pair is re-presented to the zlib/raw classifier.
+                    self.compressed_body.list = buffer;
+                    return Ok(false);
+                }
                 // Zig's `defer compressed_body.reset()` retained capacity; mirror that by
                 // returning the (cleared) allocation to compressed_body instead of dropping it.
                 buffer.clear();

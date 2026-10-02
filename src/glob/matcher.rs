@@ -204,9 +204,7 @@ fn glob_match_impl(
                             state.wildcard.glob_index = state.glob_index;
                             state.wildcard.path_index = state.path_index
                                 + if (state.path_index as usize) < path.len() {
-                                    u32::from(strings::wtf8_byte_sequence_length(
-                                        path[state.path_index as usize],
-                                    ))
+                                    u32::from(rune_len_at(path, state.path_index as usize))
                                 } else {
                                     1
                                 };
@@ -261,9 +259,7 @@ fn glob_match_impl(
                                 if !is_separator(path[state.path_index as usize]) {
                                     state.glob_index += 1;
                                     state.path_index +=
-                                        u32::from(strings::wtf8_byte_sequence_length(
-                                            path[state.path_index as usize],
-                                        ));
+                                        u32::from(rune_len_at(path, state.path_index as usize));
                                     continue 'main_loop;
                                 }
                                 break 'fallthrough;
@@ -288,7 +284,7 @@ fn glob_match_impl(
                                 let mut is_match = false;
 
                                 // source unicode char to match against the target + its byte length in `path`
-                                let (c, len) = decode_wtf8_rune_at(path, state.path_index as usize);
+                                let (c, len) = decode_rune_at(path, state.path_index as usize);
 
                                 while (state.glob_index as usize) < glob.len()
                                     && (first || glob[state.glob_index as usize] != b']')
@@ -602,17 +598,22 @@ fn unescape(c: &mut u8, glob: &[u8], glob_index: &mut u32) -> bool {
     true
 }
 
-/// Decodes the WTF-8 codepoint at `bytes[idx]`, returning `(codepoint, byte_len)`.
-///
-/// Mirrors the open-coded triple in matcher.zig (`wtf8ByteSequenceLength` + `decodeWTF8RuneT`).
+/// Byte length of the codepoint at `bytes[idx]`; see [`decode_rune_at`].
 #[inline(always)]
-fn decode_wtf8_rune_at(bytes: &[u8], idx: usize) -> (u32, u8) {
-    let len = strings::wtf8_byte_sequence_length(bytes[idx]);
-    let mut buf = [0u8; 4];
-    let n = (bytes.len() - idx).min(4);
-    buf[..n].copy_from_slice(&bytes[idx..idx + n]);
-    let cp = strings::decode_wtf8_rune_t::<u32>(buf, len, 0xFFFD);
-    (cp, len)
+fn rune_len_at(bytes: &[u8], idx: usize) -> u8 {
+    decode_rune_at(bytes, idx).1
+}
+
+/// `(codepoint, byte_len)` at `bytes[idx]`, which need not be valid UTF-8 (a directory entry).
+#[inline(always)]
+fn decode_rune_at(bytes: &[u8], idx: usize) -> (u32, u8) {
+    // Runs per path character: ASCII must not pay for the out-of-line decoder.
+    let lead = bytes[idx];
+    if lead < 0x80 {
+        return (u32::from(lead), 1);
+    }
+    let r = strings::utf8_codepoint_with_fffd(&bytes[idx..]);
+    (r.code_point, r.len)
 }
 
 /// Unescapes the character if needed
@@ -644,7 +645,7 @@ fn get_unicode(c: &mut u32, clen: &mut u8, glob: &[u8], glob_index: &mut u32) ->
                 b'r' => b'\r' as u32,
                 b't' => b'\t' as u32,
                 _ => 'brk: {
-                    let (cp, len) = decode_wtf8_rune_at(glob, *glob_index as usize);
+                    let (cp, len) = decode_rune_at(glob, *glob_index as usize);
                     *clen = len;
                     break 'brk cp;
                 }
@@ -652,7 +653,7 @@ fn get_unicode(c: &mut u32, clen: &mut u8, glob: &[u8], glob_index: &mut u32) ->
         }
         // multi-byte sequences
         _ => {
-            let (cp, len) = decode_wtf8_rune_at(glob, *glob_index as usize);
+            let (cp, len) = decode_rune_at(glob, *glob_index as usize);
             *clen = len;
             *c = cp;
         }
@@ -678,6 +679,79 @@ fn skip_globstars(glob: &[u8], glob_index: &mut u32) {
     }
 
     *glob_index -= 2;
+}
+
+#[cfg(test)]
+mod tests {
+    // Upstream bc7a813b10: `?`, `*` and `[...]` must step over directory
+    // entry names by validated UTF-8 codepoint lengths (one U+FFFD per
+    // ill-formed maximal subpart), never by the length the lead byte
+    // promises — a Linux file name need not be valid UTF-8. These rows pin
+    // the matcher level of upstream `test/js/bun/glob/scan.test.ts`:
+    // `scan(p)` equals `scan("*")` filtered by `Glob.match(p)` for
+    // wildcards and classes.
+    use super::r#match;
+
+    fn matches(glob: &[u8], path: &[u8]) -> bool {
+        r#match(glob, path).matches()
+    }
+
+    #[test]
+    fn wildcards_step_by_maximal_subpart_over_ill_formed_names() {
+        // The directory from the upstream note: t\xc3x, t\xe4\xb8.js,
+        // t\xc3\xa9\xc3, t\xf0\x9f\x98\x80js (emoji), tx\x80.
+        let names: [&[u8]; 5] = [
+            b"t\xc3x",
+            b"t\xe4\xb8.js",
+            b"t\xc3\xa9\xc3",
+            b"t\xf0\x9f\x98\x80js",
+            b"tx\x80",
+        ];
+        // (pattern, expected match count over `names`)
+        let cases: &[(&[u8], usize)] = &[
+            (b"*", 5),
+            (b"t*", 5),
+            (b"t?", 0),
+            (b"t??", 3),
+            (b"t???", 1),
+            (b"t*.js", 1),
+            (b"t*s", 2),
+        ];
+        for &(glob, expected) in cases {
+            let count = names.iter().filter(|&&name| matches(glob, name)).count();
+            assert_eq!(count, expected, "pattern {:?}", bstr::BStr::new(glob));
+        }
+    }
+
+    #[test]
+    fn wildcard_does_not_swallow_separator_or_end_of_ill_formed_name() {
+        // .npmignore repro rows (`*.pem`, `secret/*`): a stray lead byte at
+        // the end of a name is ONE character; `*` must neither step past the
+        // end nor swallow the byte that follows a truncated sequence.
+        assert!(matches(b"*.pem", b"caf\xe9.pem"));
+        assert!(matches(b"secret/*", b"secret/key\xc3"));
+        assert!(matches(b"secret/*", b"secret/key"));
+        assert!(!matches(b"*.js", b"caf\xe9.pem"));
+    }
+
+    #[test]
+    fn valid_multibyte_names_still_match_by_bytes() {
+        assert!(matches(b"t\xc3\xa9x", b"t\xc3\xa9x"));
+        assert!(matches(b"????-??-??.log", b"2024-09-08.log"));
+        assert!(matches(
+            b"*\xe6\x96\x87*.txt",
+            b"\xe4\xb8\xad\xe6\x96\x87\xe5\xad\x97.txt"
+        ));
+    }
+
+    #[test]
+    fn class_members_compare_against_decoded_codepoints() {
+        // A literal U+FFFD in a class matches an ill-formed piece on disk
+        // (upstream limit: `t�*` compares bytes and misses it, the
+        // class form compares decoded codepoints and matches).
+        assert!(matches(b"t[\xef\xbf\xbd]x", b"t\xc3x"));
+        assert!(!matches(b"t[\xef\xbf\xbd]x", b"t\xc3\xa9x"));
+    }
 }
 
 // ported from: src/glob/matcher.zig
