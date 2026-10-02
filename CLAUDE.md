@@ -178,6 +178,20 @@ systemd timer 每日 06:07±10min 运行 `.claude/skills/daily-ops/`(全自主:�
 
 ## 构建与测试
 
+### 远程农场(bao 自有槽,用户裁决 2026-10-02 项目自有化)
+
+| 项 | 值 |
+|---|---|
+| 主机 | 16.18.0.1(putao@) |
+| 远程项目根 | `/home/putao/build-farm/bao`(src/ + outbox/ + Dockerfile + docker-compose.yml) |
+| 本地脚本入口 | `~/.local/bin/bao-remote-build <check\|test\|build\|run\|raw> [args...]`(JOBS 默认 8) |
+| 同步 | rsync -a --delete 工作树(含 .git,**未提交改动可达**——farm 增量 mtime 保留);排除 target/.claude/bench/results/.venv/node_modules/__pycache__ |
+| 镜像 | 自有 `bao-build:ubuntu24`(compose build 现场);依赖含 uv/llvm-18-tools/xvfb 等 mozjs+servo 构建面 |
+| 卷 | 私有 `bao-target`;共享 farm-rustup/farm-cargo/farm-sccache(farm 标准语言级卷,external) |
+| 回退 | farm 不可达时本机直跑同命令(小 jobs) |
+
+历史教训(2026-10-01):借用 frog 槽(git fetch+reset --hard origin/main 同步)导致未提交树结构性不可达,E 的 farm 证据全体无效——bao 槽 rsync 同步根治。容器内 root 会在 /src 生成 .venv(wrapper 已排除,勿手动同步该面)。
+
 ```bash
 # 构建(首次构建 mozjs 从源码编译,耗时较长)
 cargo build
