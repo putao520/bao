@@ -167,3 +167,18 @@ C 面另有 FAIL ×3978 与 unexpected-PASS ×417(两桶见 C6/C8)。
 7. 特性缺口 backlog:C3 container-queries、C4 Typed OM 工厂、H7 Sec-Fetch-* 头值、compression-dictionary
 8. 布局 backlog: C6 按目录族立项(writing-modes/multicol/ruby/text-box-trim/run-in/zoom…)
 9. 登记类: C8/H6 正向漂移(吸收波 ini)、H3 SharedWorker pref(既有 L2)
+
+
+## 桶 3 重定性修正(2026-10-04,e36 归因终局)
+
+**XDR stencil cache 证伪(无罪)**:
+- A/B 四格:cache off(磁盘层 disabled)与 on(真实激活,层内落 1 条 .xdr entry)下样本错误文本字节一致
+- 结构性证明(更硬,无论 A/B 如何不可能变绿):WPT 页面 classic 脚本走 servo 自有 compile+instantiate(htmlscriptelement.rs:402 create_a_classic_script),`evaluate_script_cached` 全仓唯一消费者=stealth blob 注入(bao_stealth engine_props.rs:1488)——页面脚本与 bao stencil/XDR cache 零交集
+- REQ-ENG-012 涉嫌解除,AC01 无违背,xdr_cache/stencil_cache 零改动
+
+**真机制(live 探针 /tmp/tdz-probe/,错误序完整捕获)**:
+testsuite.js:44-60 的 `const gCssWideKeywordsExamples = [{ input: new CSSKeywordValue('initial') }, ...]` —— line 44 的 const 初始化表达式本身是可执行代码,bao servo 无 CSSKeywordValue → ReferenceError 于初始化器求值 → 脚本中止于 body 中段(const 绑定已建但槽位 TDZ sentinel)→ 下一 classic 脚本读该 const → spec 正确的 TDZ 报错。台账原前提「line 1-43 纯函数声明→不可能 TDZ」漏了 line 44-60 的可执行初始化器。隔离对照(同页双臂,非抛/抛初始化器)精确复现错误对。
+
+**爆炸半径(横扫修订)**:452 错误块=226 独立文件(原「≈243」为约数),全部 css/css-typed-om/the-stylepropertymap/properties/*。
+
+**桶 3 终定性**:真缺陷候选 → **上游共同特性缺口**(Typed OM value 族:CSSKeywordValue/CSSUnparsedValue/CSSVariableReferenceValue/CSSUnitValue/CSSMathSum/CSSStylePropertyMap 全 MISSING;上游 servo 快照 4842b770e 同缺)→ 归 BRW/dom 特性 backlog。注意:只补 CSSKeywordValue 不够——line 69 `gVarReferenceExamples` 初始化器 `new CSSUnparsedValue(...)` 是下一个中止点,226 条解锁需整个 value 族(需求候选,待用户裁定立项)。
