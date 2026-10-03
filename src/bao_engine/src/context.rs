@@ -232,24 +232,46 @@ impl Drop for RawValueRootGuard {
 }
 
 thread_local! {
-    /// The current thread's JsContext persistent realm global. Set the first
-    /// time a JsContext on this thread creates its realm. Read by async
-    /// dispatch sites (node:http route handlers, Bun.serve, timers, ...) that
-    /// must `AutoRealm` into the persistent realm before touching JS — they
-    /// only have a raw `*mut JSContext`, not a `&JsContext`.
-    static THREAD_REALM_GLOBAL: ::std::cell::Cell<*mut mozjs::jsapi::JSObject> =
-        const { ::std::cell::Cell::new(::std::ptr::null_mut()) };
+    /// The current thread's JsContext persistent realm global slot —
+    /// RAW-ROOTED. The historical shape was a bare `Cell<*mut JSObject>`:
+    /// a copy taken at realm creation that no GC ever updates, so the first
+    /// compacting collection (`Bun.gc(true)` = NonIncrementalGC Shrink)
+    /// that moved the global left every `thread_realm_global()` consumer
+    /// `AutoRealm`-ing a stale cell — SIGSEGV on the moved/decommitted
+    /// chunk (latent since the accessor existed; exposed 2026-10-03 by the
+    /// fetch unread-body retention locks, which shrink-GC between the
+    /// settle and the pump). Read by async dispatch sites (node:http route
+    /// handlers, Bun.serve, timers, ...) that must `AutoRealm` into the
+    /// persistent realm before touching JS — they only have a raw
+    /// `*mut JSContext`, not a `&JsContext`.
+    static THREAD_REALM_GLOBAL: NeverDrop<ThreadRealmGlobalSlot> = NeverDrop::new();
+}
+
+/// Raw-rooted realm-global carrier. The `Box<[JSVal]>` pins the slot's
+/// address — `AddRawValueRoot` registers the ADDRESS, which must stay valid
+/// and identical for the root's whole life (the RawValueRootGuard
+/// discipline). Never dropped: at thread exit the rooted memory must
+/// outlive the TLS slot (the GC root table may still hold the address — a
+/// bounded leak beats a dangling scan address).
+struct ThreadRealmGlobalSlot {
+    cx: *mut RawJSContext,
+    vals: Box<[mozjs::jsval::JSVal]>,
 }
 
 /// The current thread's persistent realm global, if a JsContext on this
 /// thread has created its realm. Used by dispatch sites to `AutoRealm`.
+///
+/// The returned pointer is the LIVE (GC-updated) slot value — a moving GC
+/// updates it in place, so it stays safe to `AutoRealm` across any number
+/// of compacting collections.
 pub fn thread_realm_global() -> Option<*mut mozjs::jsapi::JSObject> {
     THREAD_REALM_GLOBAL.with(|c| {
-        let p = c.get();
-        if p.is_null() {
-            None
+        let g = c.peek()?;
+        let v = g.vals[0];
+        if v.is_object() && !v.is_null() {
+            Some(unsafe { v.to_object() })
         } else {
-            Some(p)
+            None
         }
     })
 }
@@ -276,6 +298,16 @@ impl<T> NeverDrop<T> {
 
     fn is_some(&self) -> bool {
         self.0.borrow().is_some()
+    }
+
+    /// Shared borrow of the content, if any.
+    fn peek(&self) -> Option<::std::cell::Ref<'_, T>> {
+        let borrow = self.0.borrow();
+        if borrow.is_some() {
+            Some(::std::cell::Ref::map(borrow, |v| v.as_ref().unwrap()))
+        } else {
+            None
+        }
     }
 
     fn set(&self, val: Option<T>) {
@@ -900,8 +932,43 @@ impl JsContext {
             });
         }
         // Publish to the thread-local so async dispatch (route handlers,
-        // timers, ...) can AutoRealm into this realm.
-        THREAD_REALM_GLOBAL.with(|c| c.set(global_ptr));
+        // timers, ...) can AutoRealm into this realm. The slot is
+        // raw-rooted: consumers read the GC-updated copy, never a
+        // stale-from-publication snapshot (a compacting GC relocates the
+        // global; a bare Cell<*mut JSObject> copy went stale under it).
+        THREAD_REALM_GLOBAL.with(|c| {
+            // Re-registration: release the previous root first (exact when
+            // its cx is alive; a dead cx's root table is already gone and
+            // the old rooted Box leaks per the NeverDrop discipline).
+            if let Some(mut old) = c.take() {
+                if raw_cx_alive(old.cx) {
+                    unsafe {
+                        mozjs::jsapi::RemoveRawValueRoot(old.cx, old.vals.as_mut_ptr());
+                    }
+                } else {
+                    super::memory_stats::bump(&super::memory_stats::LEAK_RAW_VALUE_ROOT_GUARD);
+                    ::std::mem::forget(old.vals);
+                }
+            }
+            let mut vals: Box<[mozjs::jsval::JSVal]> =
+                Box::new([mozjs::jsval::ObjectValue(global_ptr)]);
+            let rooted = unsafe {
+                mozjs::jsapi::AddRawValueRoot(
+                    self.cx.as_ptr(),
+                    vals.as_mut_ptr(),
+                    b"thread_realm_global\0".as_ptr() as *const ::std::os::raw::c_char,
+                )
+            };
+            if !rooted {
+                // Fail closed: publish nothing rather than a copy no GC will
+                // ever update (consumers read None and skip the AutoRealm).
+                return;
+            }
+            c.set(Some(ThreadRealmGlobalSlot {
+                cx: self.cx.as_ptr(),
+                vals,
+            }));
+        });
         self.realm_global = Some(pg);
         Ok(global_ptr)
     }

@@ -23,6 +23,18 @@
 //    reaches the in-flight fetch. (Bun.spawn has no signal option in bao —
 //    no carrier to lock.)
 //
+// 3. bao-local (per-request unread-body GC leak, no upstream carrier):
+//    the native promise root is a spawn→settle contract. Past the settle
+//    it was the anchor of a root → Response → stream-source-holder ring:
+//    the holder stays GC-reachable through the root, so its finalizer —
+//    the unread body's only native release path for the stream reference —
+//    could never fire while the tasklet held that reference, and the
+//    settled promise + Response of every body-never-read fetch stayed
+//    rooted forever. The locks below assert the full shape matrix: unread
+//    plain / unread signal-wired / mid-stream unread / buffered delivery
+//    all collect once JS drops them; the read-body, failed-connect and
+//    abort faces above stay locked as-is.
+//
 // Wire-level: real loopback servers; per-test forced GCs via `Bun.gc`
 // (SM NonIncrementalGC Shrink). Test 3 parks the HTTPThread — it
 // dispatches through exit_isolation like the other fetch e2e files.
@@ -238,17 +250,33 @@ fn start_retention_server() -> u16 {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let mut buf = [0u8; 4096];
-                    let slow = loop {
+                    let (slow, drip) = loop {
                         match stream.read(&mut buf) {
-                            Ok(0) => break false,
+                            Ok(0) => break (false, false),
                             Ok(_) => {
                                 if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                                    break buf.windows(7).any(|w| w == b"/r-slow");
+                                    break (
+                                        buf.windows(7).any(|w| w == b"/r-slow"),
+                                        buf.windows(7).any(|w| w == b"/r-drip"),
+                                    );
                                 }
                             }
-                            Err(_) => break false,
+                            Err(_) => break (false, false),
                         }
                     };
+                    if drip {
+                        // Headers now, body ~1.2s later: the fetch Promise
+                        // settles at the header block while the body is
+                        // still in flight (the mid-stream unread window).
+                        let head =
+                            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n";
+                        stream.write_all(head.as_bytes()).ok();
+                        let _ = stream.flush();
+                        std::thread::sleep(Duration::from_millis(1200));
+                        stream.write_all(b"ok").ok();
+                        let _ = stream.flush();
+                        continue;
+                    }
                     if slow {
                         std::thread::sleep(Duration::from_millis(800));
                     }
@@ -339,7 +367,9 @@ fn fetch_abort_retention_body() {
             }})();
             // Phase B: in-flight abort with nothing alive but the signal
             var slowController = new AbortController();
-            fetch('http://127.0.0.1:{port}/r-slow', {{ signal: slowController.signal }})
+            var slowChain = fetch('http://127.0.0.1:{port}/r-slow', {{ signal: slowController.signal }});
+            probe.slow = new WeakRef(slowChain);
+            slowChain
                 .then(function (r) {{
                     out.settled = 'SLOW-RESOLVED:' + r.status; // must NOT happen
                 }})
@@ -365,7 +395,8 @@ fn fetch_abort_retention_body() {
                     '|bare=' + (probe.bare ? String(probe.bare.deref() !== undefined) : 'pending') +
                     '|settled=' + out.settled +
                     '|gcDone=' + out.gcDone +
-                    '|leaked=' + (out.leaked || 'no');
+                    '|leaked=' + (out.leaked || 'no') +
+                    '|slow=' + (probe.slow ? String(probe.slow.deref() !== undefined) : 'pending');
             }};
             return 'scheduled';
         }})()
@@ -420,6 +451,12 @@ fn fetch_abort_retention_body() {
          the response was still rooted: {}",
         poll
     );
+    assert_eq!(
+        parts[8], "slow=false",
+        "the aborted mid-flight chain must collect once rejected (its native \
+         root ends at the settle): {}",
+        poll
+    );
 
     eprintln!(
         "[PASS] TEST-ENG-RETENTION fetch/abort: response-only-via-listener collects, \
@@ -428,6 +465,339 @@ fn fetch_abort_retention_body() {
 
     // Exit strategy of every fetch e2e file: the parked HTTPThread is a
     // non-daemon thread; force-exit inside the exit-isolated process.
+    bun_http::http_thread::shutdown_for_exit();
+    bun_runtime::shutdown_thread_sm();
+    std::process::exit(0);
+}
+
+// ─── 3. fetch — the unread body: the settled chain must not stay rooted ────
+
+/// The unread-body retention lock (per-request GC leak root fix): a
+/// streaming fetch whose body is NEVER read must still let the settled
+/// Promise + Response collect once JS drops them. Reachability must follow
+/// JS semantics: the native heap root that protects the PENDING promise
+/// across the async window ends AT THE SETTLE — past settle it would anchor
+/// root → Response → stream-source holder and block the source finalizer
+/// (the unread body's only native release path) with the tasklet's own
+/// stream reference: root alive ⟺ tasklet alive ⟺ finalizer blocked.
+/// Matrix here: unread plain + unread signal-wired (upstream b4315fa551
+/// unread arm), with a bare-promise discriminator (GC really reclaims) and
+/// a referenced control (the window is not a blanket sweep).
+#[test]
+fn fetch_unread_body_chain_collects_after_gc() {
+    crate::exit_isolation::dispatch(
+        "net_tls_fetch_retention_tests::fetch_unread_body_chain_collects_after_gc",
+        fetch_unread_body_retention_body,
+    );
+}
+
+fn fetch_unread_body_retention_body() {
+    let port = start_retention_server();
+    std::thread::sleep(Duration::from_millis(50));
+    let mut ctx = new_ctx();
+
+    let setup = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+        (function() {{
+            var out = {{ a: "PENDING", b: "PENDING" }};
+            var probe = {{}};
+            // Cell 1: signal-less unread fetch — settle at headers, body
+            // never read, every JS reference dies with this closure.
+            (function () {{
+                var chain = fetch('http://127.0.0.1:{port}/r-fast');
+                probe.chain = new WeakRef(chain);
+                chain.then(function (response) {{
+                    probe.resp = new WeakRef(response);
+                    out.a = 'A';
+                }});
+            }})();
+            // Cell 2: signal-wired unread fetch, never aborted — the abort
+            // wiring must not pin the settled chain either.
+            (function () {{
+                var controller = new AbortController();
+                var chain = fetch('http://127.0.0.1:{port}/r-fast', {{ signal: controller.signal }});
+                probe.sigChain = new WeakRef(chain);
+                chain.then(function (response) {{
+                    probe.sigResp = new WeakRef(response);
+                    out.b = 'B';
+                }});
+                probe.sig = new WeakRef(controller.signal);
+            }})();
+            // Discriminators: a bare resolved promise must collect (GC ran,
+            // no fetch involvement) and a referenced control must survive
+            // (the GC window is real, not a blanket sweep).
+            (function () {{
+                var bare = Promise.resolve(1);
+                bare.then(function () {{}});
+                probe.bare = new WeakRef(bare);
+            }})();
+            globalThis.__ctrl = {{ kept: true }};
+            probe.ctrl = new WeakRef(globalThis.__ctrl);
+            globalThis.__pollUnread = function () {{
+                return 'chain=' + String(probe.chain.deref() !== undefined) +
+                    '|resp=' + (probe.resp ? String(probe.resp.deref() !== undefined) : 'pending') +
+                    '|sigChain=' + (probe.sigChain ? String(probe.sigChain.deref() !== undefined) : 'pending') +
+                    '|sigResp=' + (probe.sigResp ? String(probe.sigResp.deref() !== undefined) : 'pending') +
+                    '|sig=' + (probe.sig ? String(probe.sig.deref() !== undefined) : 'pending') +
+                    '|bare=' + (probe.bare ? String(probe.bare.deref() !== undefined) : 'pending') +
+                    '|ctrl=' + String(probe.ctrl.deref() !== undefined) +
+                    '|a=' + out.a + '|b=' + out.b;
+            }};
+            globalThis.__gcUnread = function () {{
+                Bun.gc(true); Bun.gc(true);
+                return 'gced';
+            }};
+            return 'scheduled';
+        }})()
+        "#
+        ),
+    );
+    assert_eq!(setup, "scheduled", "unread retention setup failed");
+
+    let poll = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(15));
+    assert!(
+        !poll.contains("PENDING"),
+        "both unread fetches must settle within the pump window: {}",
+        poll
+    );
+    // extra drain rounds: the transport-side tasklet handoff may land on a
+    // ConcurrentTask after the settle marker the pump stopped at
+    let _ = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(3));
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(3));
+
+    let gced = eval_string(&mut ctx, "globalThis.__gcUnread()");
+    assert_eq!(gced, "gced");
+    let poll = eval_string(&mut ctx, "globalThis.__pollUnread()");
+    let parts: Vec<&str> = poll.split('|').collect();
+    assert_eq!(
+        parts[0], "chain=false",
+        "the settled promise of an unread fetch must collect: {}", poll
+    );
+    assert_eq!(
+        parts[1], "resp=false",
+        "the unread Response must collect with its promise — the native root \
+         must not outlive the settle (per-request leak root fix): {}",
+        poll
+    );
+    assert_eq!(
+        parts[2], "sigChain=false",
+        "the signal-wired unread chain must collect: {}", poll
+    );
+    assert_eq!(
+        parts[3], "sigResp=false",
+        "the signal-wired unread Response must collect: {}", poll
+    );
+    assert_eq!(
+        parts[4], "sig=false",
+        "the never-aborted signal must collect with its chain: {}", poll
+    );
+    assert_eq!(
+        parts[5], "bare=false",
+        "the bare-promise discriminator must collect (the GCs really \
+         reclaim): {}",
+        poll
+    );
+    assert_eq!(
+        parts[6], "ctrl=true",
+        "the referenced control must survive the same GCs: {}", poll
+    );
+    assert_eq!(parts[7], "a=A", "cell 1 must have settled: {}", poll);
+    assert_eq!(parts[8], "b=B", "cell 2 must have settled: {}", poll);
+
+    eprintln!(
+        "[PASS] TEST-ENG-RETENTION fetch/unread: settled chains of unread \
+         bodies collect; discriminators hold"
+    );
+
+    // Pump the release round-trips out (finalizer → ConcurrentTask →
+    // cancel/release → tasklet free) before the force-exit.
+    let _ = pump_until_settled(&mut ctx, "globalThis.__pollUnread()", Duration::from_secs(3));
+
+    bun_http::http_thread::shutdown_for_exit();
+    bun_runtime::shutdown_thread_sm();
+    std::process::exit(0);
+}
+
+/// The mid-stream unread lock: a fetch whose body is still in flight when
+/// JS drops it (headers settled the Promise, body ~1.2s behind) must
+/// collect at GC — the source finalizer routes the abandon-cancel through
+/// the ConcurrentTask (Parked+GC ⇒ Canceled) and the settled chain must not
+/// be held by any native root while that lands.
+#[test]
+fn fetch_streaming_unread_body_collects_midflight_after_gc() {
+    crate::exit_isolation::dispatch(
+        "net_tls_fetch_retention_tests::fetch_streaming_unread_body_collects_midflight_after_gc",
+        fetch_midstream_retention_body,
+    );
+}
+
+fn fetch_midstream_retention_body() {
+    let port = start_retention_server();
+    std::thread::sleep(Duration::from_millis(50));
+    let mut ctx = new_ctx();
+
+    let setup = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+        (function() {{
+            var out = {{ a: "PENDING" }};
+            var probe = {{}};
+            (function () {{
+                var chain = fetch('http://127.0.0.1:{port}/r-drip');
+                probe.chain = new WeakRef(chain);
+                chain.then(function (response) {{
+                    probe.resp = new WeakRef(response);
+                    out.a = 'A'; // headers settled; body still in flight
+                }});
+            }})();
+            globalThis.__ctrl = {{ kept: true }};
+            probe.ctrl = new WeakRef(globalThis.__ctrl);
+            globalThis.__pollMid = function () {{
+                return 'chain=' + String(probe.chain.deref() !== undefined) +
+                    '|resp=' + (probe.resp ? String(probe.resp.deref() !== undefined) : 'pending') +
+                    '|ctrl=' + String(probe.ctrl.deref() !== undefined) +
+                    '|a=' + out.a;
+            }};
+            globalThis.__gcMid = function () {{
+                Bun.gc(true); Bun.gc(true);
+                return 'gced';
+            }};
+            return 'scheduled';
+        }})()
+        "#
+        ),
+    );
+    assert_eq!(setup, "scheduled", "midstream retention setup failed");
+
+    let poll = pump_until_settled(&mut ctx, "globalThis.__pollMid()", Duration::from_secs(15));
+    assert!(
+        !poll.contains("PENDING"),
+        "the drip fetch must settle (headers) within the pump window: {}",
+        poll
+    );
+
+    // GC inside the ~1.2s mid-stream window: the body has not been read and
+    // has not fully arrived.
+    let gced = eval_string(&mut ctx, "globalThis.__gcMid()");
+    assert_eq!(gced, "gced");
+    let poll = eval_string(&mut ctx, "globalThis.__pollMid()");
+    let parts: Vec<&str> = poll.split('|').collect();
+    assert_eq!(
+        parts[0], "chain=false",
+        "the mid-stream settled chain must collect: {}", poll
+    );
+    assert_eq!(
+        parts[1], "resp=false",
+        "the mid-stream unread Response must collect (the finalizer's \
+         abandon-cancel owns the native release): {}",
+        poll
+    );
+    assert_eq!(
+        parts[2], "ctrl=true",
+        "the referenced control must survive the same GCs: {}", poll
+    );
+    assert_eq!(parts[3], "a=A", "the fetch must have settled: {}", poll);
+
+    eprintln!(
+        "[PASS] TEST-ENG-RETENTION fetch/midstream: unread mid-flight chain \
+         collects; abandon-cancel owns the transport"
+    );
+
+    // Drain the abandon-cancel round-trip before the force-exit.
+    let _ = pump_until_settled(&mut ctx, "globalThis.__pollMid()", Duration::from_secs(3));
+
+    bun_http::http_thread::shutdown_for_exit();
+    bun_runtime::shutdown_thread_sm();
+    std::process::exit(0);
+}
+
+/// The non-streaming (buffered) delivery lock: Node-API-style buffered
+/// fetches resolve at the terminal delivery with no stream source — the
+/// settled chain collects once the tasklet drops the root at its own settle.
+#[test]
+fn fetch_buffered_unread_body_collects_after_gc() {
+    crate::exit_isolation::dispatch(
+        "net_tls_fetch_retention_tests::fetch_buffered_unread_body_collects_after_gc",
+        fetch_buffered_retention_body,
+    );
+}
+
+fn fetch_buffered_retention_body() {
+    let port = start_retention_server();
+    std::thread::sleep(Duration::from_millis(50));
+    // Pin the legacy buffered delivery for this isolated process.
+    let _guard = bun_runtime::fetch_api::set_fetch_streaming_override(false);
+    let mut ctx = new_ctx();
+
+    let setup = eval_string(
+        &mut ctx,
+        &format!(
+            r#"
+        (function() {{
+            var out = {{ a: "PENDING" }};
+            var probe = {{}};
+            (function () {{
+                var chain = fetch('http://127.0.0.1:{port}/r-fast');
+                probe.chain = new WeakRef(chain);
+                chain.then(function (response) {{
+                    probe.resp = new WeakRef(response);
+                    out.a = 'A';
+                }});
+            }})();
+            globalThis.__ctrl = {{ kept: true }};
+            probe.ctrl = new WeakRef(globalThis.__ctrl);
+            globalThis.__pollBuf = function () {{
+                return 'chain=' + String(probe.chain.deref() !== undefined) +
+                    '|resp=' + (probe.resp ? String(probe.resp.deref() !== undefined) : 'pending') +
+                    '|ctrl=' + String(probe.ctrl.deref() !== undefined) +
+                    '|a=' + out.a;
+            }};
+            globalThis.__gcBuf = function () {{
+                Bun.gc(true); Bun.gc(true);
+                return 'gced';
+            }};
+            return 'scheduled';
+        }})()
+        "#
+        ),
+    );
+    assert_eq!(setup, "scheduled", "buffered retention setup failed");
+
+    let poll = pump_until_settled(&mut ctx, "globalThis.__pollBuf()", Duration::from_secs(15));
+    assert!(
+        !poll.contains("PENDING"),
+        "the buffered fetch must settle within the pump window: {}",
+        poll
+    );
+    let _ = pump_until_settled(&mut ctx, "globalThis.__pollBuf()", Duration::from_secs(3));
+
+    let gced = eval_string(&mut ctx, "globalThis.__gcBuf()");
+    assert_eq!(gced, "gced");
+    let poll = eval_string(&mut ctx, "globalThis.__pollBuf()");
+    let parts: Vec<&str> = poll.split('|').collect();
+    assert_eq!(
+        parts[0], "chain=false",
+        "the buffered settled chain must collect: {}", poll
+    );
+    assert_eq!(
+        parts[1], "resp=false",
+        "the buffered unread Response must collect: {}", poll
+    );
+    assert_eq!(
+        parts[2], "ctrl=true",
+        "the referenced control must survive the same GCs: {}", poll
+    );
+    assert_eq!(parts[3], "a=A", "the buffered fetch must have settled: {}", poll);
+
+    eprintln!(
+        "[PASS] TEST-ENG-RETENTION fetch/buffered: buffered delivery settles \
+         and collects with no residual root"
+    );
+
     bun_http::http_thread::shutdown_for_exit();
     bun_runtime::shutdown_thread_sm();
     std::process::exit(0);

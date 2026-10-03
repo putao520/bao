@@ -209,7 +209,7 @@ pub fn new_abort_id() -> u32 {
 //     headers-resolve; released by explicit stream cancel or the source
 //     object's GC finalizer (Parked+GC ⇒ Canceled).
 // The last deref runs the full teardown (registries, keepalive, lifted
-// buffers, the RAII promise_root Drop, deallocation).
+// buffers, the RAII origin_root/pending_pull Drops, deallocation).
 //
 // Threading: the HTTP thread touches ONLY `signals_store`, `async_http_id`,
 // `shared` (Mutex), `phase` and the backpressure valve's parked latch
@@ -471,8 +471,11 @@ pub fn stream_phase(this: *mut PendingFetch) -> StreamPhase {
 ///
 /// Invariants (FetchTaskletLifecycle SM):
 /// - `promise_root` holds the heap root while the Promise is outstanding;
-///   it is released RAII-style when the PendingFetch Box drops (the last
-///   `deref_tasklet` — every terminal path ends in that drop).
+///   it ends AT THE SETTLE (streaming step-1 release; buffered mode drops
+///   it with the tasklet Box at its own settle) — a settled Promise is
+///   never natively rooted. `origin_root` lives until the PendingFetch Box
+///   drops (the last `deref_tasklet` — every terminal path ends in that
+///   drop).
 /// - `has_schedule_callback` prevents duplicate ConcurrentTask scheduling.
 /// - `outcome` is written by `on_http_done` (HTTPThread) and consumed by
 ///   `resolve_tasklet` (JS thread via ConcurrentTask).
@@ -491,19 +494,33 @@ pub struct PendingFetch {
     /// any JS re-entry (the MiniEventLoop queue itself cannot be purged).
     ///
     /// Snapshot fallback only: the LIVE identity anchor read by the guard is
-    /// `promise_root` slot 1 (a raw-rooted slot a moving GC updates in
-    /// place). A spawn-time bare pointer goes stale across any compacting
-    /// GC, while the DEAD_GLOBALS mark holds the discard-time address —
-    /// comparing the two would silently miss (timer face avoids this by
-    /// comparing against its raw-rooted `global_root` slot; same shape
-    /// here). This snapshot is used only when rooting failed at spawn.
+    /// `origin_root` (a raw-rooted slot a moving GC updates in place). A
+    /// spawn-time bare pointer goes stale across any compacting GC, while
+    /// the DEAD_GLOBALS mark holds the discard-time address — comparing the
+    /// two would silently miss (timer face avoids this by comparing against
+    /// its raw-rooted `global_root` slot; same shape here). This snapshot is
+    /// used only when rooting failed at spawn.
     pub origin_global: *mut JSObject,
-    /// RAII heap root (GUARD-A) keeping the pending Promise alive across the
-    /// async window. `None` only when rooting failed at spawn (pre-existing
-    /// degraded path: the unrooted `promise_val` snapshot below is used).
-    /// Slot 0 = the Promise value, slot 1 = the creation-realm global
-    /// identity anchor (see [`PendingFetch::origin_global`]).
+    /// RAII heap root (GUARD-A) keeping the *pending* Promise alive across
+    /// the async window. Lifetime = spawn → settle, BY DESIGN: a settled
+    /// fetch Promise must not stay natively rooted. The root is the leak
+    /// anchor of the unread-body ring otherwise — rooted Promise → Response
+    /// → stream-source holder keeps the source GC-reachable forever, so the
+    /// finalizer that releases stream ref C can never fire while the
+    /// tasklet holds ref C (root alive ⟺ tasklet alive ⟺ finalizer
+    /// blocked). Released at the streaming settle (step 1 of
+    /// [`process_stream_event`]); buffered mode drops it with the tasklet
+    /// Box at its own settle. `None` only when rooting failed at spawn
+    /// (pre-existing degraded path: the unrooted `promise_val` snapshot
+    /// below is used) or after the settle-time release.
     pub promise_root: Option<RawValueRootGuard>,
+    /// RAII heap root on the creation-realm global identity anchor
+    /// (zombie-discard guard). Lifetime = spawn → tasklet free: unlike the
+    /// promise root above, the anchor serves EVERY dispatch (including
+    /// post-settle stream events), so it is not released at settle.
+    /// `None` only when rooting failed at spawn (the snapshot fallback
+    /// above is used).
+    pub origin_root: Option<RawValueRootGuard>,
     /// Promise value snapshot taken at spawn. The live value is
     /// `promise_root.get(0)` (updated in place by a moving GC); this is the
     /// fallback when rooting failed.
@@ -575,7 +592,8 @@ pub struct PendingFetch {
 // thread-safe subset of `StreamingState` (`signals_store`, `async_http_id`,
 // `shared` under its Mutex, `phase`/`parked` atomics). The JS-thread
 // exclusive fields (`pending_pull` root, `promise_settled`,
-// `keepalive_held`) are never touched off-thread. Sending the struct across
+// `keepalive_held`, both `promise_root`/`origin_root` guards) are never
+// touched off-thread. Sending the struct across
 // threads is sound as long as no SM API is called off the JS thread --
 // enforced by keeping all SM access behind `resolve_tasklet` and the
 // JS-thread pull/cancel/finalize paths.
@@ -831,27 +849,36 @@ unsafe fn start_with_kind(
     let origin_global = JS::CurrentGlobalOrNull(cx);
     // GUARD-A (GC root): heap-root the pending Promise value across the async
     // window. The async window spans ticks AND frames (root lives from here
-    // until resolve_tasklet drops the PendingFetch), so the stack-rooted!()
-    // macro (whose roots die with the frame) is unsound here -- the RAII
-    // guard pins the value in a stable heap slot the GC updates in place and
-    // unroots it when the PendingFetch Box drops (liveness-guarded Drop).
-    // Slot 1 roots the creation-global identity anchor for the same window:
-    // the resolve-time guard compares against the DEAD_GLOBALS mark, which
-    // holds the discard-time address, so the anchor must be read from a
-    // GC-updated rooted slot — a spawn-time bare pointer goes stale across
-    // any compacting GC and the comparison silently misses (the timer face
-    // avoids this by comparing against its raw-rooted `global_root` slot).
+    // until the settle releases it / the buffered tasklet free drops it), so
+    // the stack-rooted!() macro (whose roots die with the frame) is unsound
+    // here -- the RAII guard pins the value in a stable heap slot the GC
+    // updates in place and unroots it on Drop (liveness-guarded Drop).
+    // GUARD-B roots the creation-global identity anchor for a LONGER window
+    // (spawn → tasklet free): the resolve-time guard compares against the
+    // DEAD_GLOBALS mark, which holds the discard-time address, so the anchor
+    // must be read from a GC-updated rooted slot — a spawn-time bare pointer
+    // goes stale across any compacting GC and the comparison silently misses
+    // (the timer face avoids this by comparing against its raw-rooted
+    // `global_root` slot). Two separate guards, not one two-slot guard: the
+    // promise root ends at settle (the unread-body ring — see
+    // `promise_root`), the anchor does not.
+    let promise_root = unsafe {
+        RawValueRootGuard::new(
+            cx,
+            ::std::slice::from_ref(&promise_val),
+            c"FetchTasklet.promise",
+        )
+    };
     let origin_val = if origin_global.is_null() {
         mozjs::jsval::NullValue()
     } else {
         ObjectValue(origin_global)
     };
-    let root_vals = [promise_val, origin_val];
-    let promise_root = unsafe {
+    let origin_root = unsafe {
         RawValueRootGuard::new(
             cx,
-            &root_vals,
-            c"FetchTasklet.promise+origin",
+            ::std::slice::from_ref(&origin_val),
+            c"FetchTasklet.origin",
         )
     };
     let rooted_val = promise_root.as_ref().map_or(promise_val, |g| g.get(0));
@@ -869,6 +896,7 @@ unsafe fn start_with_kind(
         cx,
         origin_global,
         promise_root,
+        origin_root,
         promise_val: rooted_val,
         outcome: Arc::clone(&outcome),
         kind,
@@ -1775,8 +1803,8 @@ fn resolve_tasklet_shim(ctx: *mut PendingFetch, _parent: *mut ()) {
 ///   3. Builds the Response/error JS object and resolves/rejects the Promise.
 ///   4. Derefs the tasklet reference — the last deref performs the full
 ///      teardown (PENDING removal, keepalive decrement, lifted-buffer
-///      reclaims, deallocation; the RAII `promise_root` Drop releases the
-///      heap root on every exit path).
+///      reclaims, deallocation; the RAII `promise_root`/`origin_root`
+///      Drops release the heap roots on every exit path).
 ///
 /// Streaming mode: [`process_stream_event`] owns the flow (headers-resolve,
 /// chunk delivery, park, terminal close-out, finalize-cancel).
@@ -1792,14 +1820,14 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     // navigation-discarded is a zombie — suppress the JS re-entry entirely
     // (the MiniEventLoop queue cannot be purged in place; dispatch-site
     // suppression is the enforcement). Teardown still runs (no JS).
-    // The identity anchor is read from the rooted slot (slot 1), not the
+    // The identity anchor is read from the rooted slot, not the
     // spawn-time snapshot: a moving GC updates rooted slots in place, so the
     // mark-comparison pointer stays address-fresh across the async window
     // (the snapshot is only the rooting-failed fallback).
     let origin_global = unsafe { &*this }
-        .promise_root
+        .origin_root
         .as_ref()
-        .map(|g| g.get(1))
+        .map(|g| g.get(0))
         .filter(|v| v.is_object() && !v.is_null())
         .map(|v| unsafe { v.to_object() })
         .unwrap_or_else(|| unsafe { &*this }.origin_global);
@@ -1914,8 +1942,8 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     //    the old numbering — free_tasklet) removes the PENDING entry, the
     //    abort-registry entry, reclaims the lifted URL/body/headers buffers,
     //    unrefs the keepalive and deallocates the Box (the RAII
-    //    `promise_root` Drop unroots with the correct registered address on
-    //    every exit path).
+    //    `promise_root`/`origin_root` Drops unroot with the correct
+    //    registered addresses on every exit path).
     // SAFETY: this pointer was allocated by Box::into_raw in start_with_kind;
     // buffered mode holds exactly this one reference.
     unsafe {
@@ -1952,7 +1980,8 @@ unsafe fn deref_tasklet(this: *mut PendingFetch) {
 /// Final tasklet teardown (JS thread, exactly once — the last deref):
 /// keepalive balance, PENDING/STREAM_REGISTRY/ABORT_REGISTRY removals,
 /// lifted-buffer reclaims, and the PendingFetch deallocation (the RAII
-/// `promise_root` / `pending_pull` Drops unroot).
+/// `origin_root` / `pending_pull` Drops unroot; `promise_root` was already
+/// released at the settle).
 ///
 /// SAFETY: `this` must be the last live reference; hands off ownership.
 unsafe fn free_tasklet(this: *mut PendingFetch) {
@@ -2022,7 +2051,7 @@ unsafe fn free_tasklet(this: *mut PendingFetch) {
         }
     }
 
-    // Deallocate. The RAII `promise_root` Drop unroots (liveness-guarded);
+    // Deallocate. The RAII `origin_root` Drop unroots (liveness-guarded);
     // a still-parked `pending_pull` root unroots here too (its awaiters
     // died with the stream — the finalize path guarantees this runs on the
     // JS thread, never in a GC finalizer).
@@ -2179,6 +2208,29 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
         unsafe {
             (*this).streaming.as_mut().unwrap().promise_settled = true;
         }
+        // Terminal-state root release (per-request GC leak root fix): the
+        // fetch Promise has settled — its native heap root must not outlive
+        // the settle. Past settle the root is a leak anchor, not protection:
+        // rooted Promise → resolution (Response) → `_bodyStreamSource`
+        // holder keeps the source object GC-reachable forever, so the
+        // finalizer that releases stream ref C can never fire while ref C
+        // holds the tasklet alive — and the tasklet is exactly what holds
+        // the root. Root alive ⟺ tasklet alive ⟺ finalizer blocked: the
+        // settled promise + Response of every body-never-read fetch stayed
+        // rooted forever (upstream closes the same ring by relying on
+        // Response finalization; bao's native root made finalization
+        // unreachable). With the root gone at settle, JS dropping the
+        // settled chain lets the GC collect the promise → Response → source
+        // holder → finalizer → finalize-cancel → stream-ref release →
+        // tasklet free — reachability again follows JS semantics
+        // (REQ-ENG-007). The origin anchor is a SEPARATE guard
+        // (`origin_root`) and stays rooted until tasklet free: the
+        // zombie-discard guard reads it on every later dispatch.
+        // SAFETY: JS thread, live entry; the guard Drop unroots with the
+        // registered address (cx alive on this thread).
+        unsafe {
+            (*this).promise_root = None;
+        }
         // Release the promise/fetch reference (ref A).
         // SAFETY: JS thread; live entry.
         unsafe { deref_tasklet(this) };
@@ -2300,9 +2352,10 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
     //    otherwise only clears at `free_tasklet` — which a completed
     //    streaming fetch never reaches on its own (the stream-source
     //    reference's release paths — reader cancel / GC finalize of the
-    //    source — never fire for a fully-received body: the source stays
-    //    reachable through the rooted fetch Promise → Response → source
-    //    cycle while the tasklet lives). A fully-received-but-unread body
+    //    source — are reader- or collector-timed, neither deterministic at
+    //    the terminal event: an unread body's source is dropped by JS but
+    //    its finalizer release only lands when a GC happens to run). A
+    //    fully-received-but-unread body
     //    therefore pinned `bao -e` / `bao run` in the post-eval drain
     //    forever (issue #39; the embedder-pump shape never consults the
     //    verdict for exit, which is why only the CLI arm wedged). Staged
@@ -3139,14 +3192,12 @@ unsafe extern "C" fn fetch_body_pull_native(
                 // the reader drained the stream to done — the last
                 // deterministic consumer milestone. The stream-source
                 // reference must be released (a closed stream's controller
-                // never pulls again, and the alternative release paths —
-                // reader cancel; GC finalize of the source — never fire on
-                // this path: the source stays reachable through the fetch
-                // Promise (`promise_root`) → Response → source cycle for
-                // exactly as long as the tasklet lives, so without this
-                // release every fully-read streaming fetch leaked the
-                // whole PendingFetch cluster, promise root included,
-                // forever). But NOT here: a JS-native call site may free
+                // never pulls again, and the remaining release paths are
+                // not deterministic here: reader cancel may never be
+                // called, and GC finalize of the source waits for a
+                // collection this read path cannot assume — the release
+                // must follow the read, not the collector). But NOT here:
+                // a JS-native call site may free
                 // the PendingFetch while its embedded ConcurrentTask node
                 // is still linked in the MiniEventLoop queue (a late
                 // re-enqueue) — the next tick then pops a dangling node
@@ -3924,6 +3975,7 @@ mod tests {
             cx: ::std::ptr::null_mut(),
             origin_global: ::std::ptr::null_mut(),
             promise_root: None,
+            origin_root: None,
             promise_val: UndefinedValue(),
             outcome: Arc::new(Mutex::new(None)),
             kind: ResolveKind::Response,
