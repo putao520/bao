@@ -206,6 +206,8 @@ cargo test --test-threads=1
 make bce-check
 ```
 
+StyleThread 栈 8MiB(上游 parity):bao 不走上游 mach,`.cargo/config.toml` [env] 持久化 `SERVO_STYLE_THREAD_STACK_SIZE_KB=8192`(上游 PR #43888 于 command_base.py:441 编译期注入 8MiB,"match the recursion depth of Chromium");缺省 512KB(vendor/stylo/parallel.rs:40)使 layout 2020 box-tree 深度成比例递归(dom_traversal.rs↔flow/construct.rs,每 DOM 层 8-13 帧)在 StyleThread worker 溢出——WPT scope-deep/inline-crash/outline-scrollIntoView 三条即此。option_env! 无 rebuild 追踪:改值后必须 `cargo clean -p bao-stylo`。
+
 ### cargo 宇宙拓扑(2026-09-21 归一后,用户裁决「全部立即归一」)
 
 单一宇宙:全仓唯一 `[workspace]` 根 / `Cargo.lock` / `[patch.crates-io]`(freetype 1 条,主根)/ `rust-toolchain.toml`(nightly pin)。vendor 四仓形态:

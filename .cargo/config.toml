@@ -32,6 +32,12 @@ target-dir = "/var/cargo-builds/3c/6184ceb77072ba"
 [env]
 CFLAGS = "-g1"
 CXXFLAGS = "-g1"
+# ── StyleThread 栈 8MiB(上游 parity,上游 PR #43888 command_base.py:441 编译期注入
+# 同值——"match the recursion depth of Chromium")──。bao 不走 mach,缺省 512KB
+# (vendor/stylo/parallel.rs:40)在 layout 深嵌套递归溢出(WPT scope-deep/inline-crash/
+# outline-scrollIntoView)。option_env! 无 rebuild 追踪:改值后必须 `cargo clean -p bao-stylo`
+# 再构建(force=true 钉死,防宿主杂散 env 分叉)。
+SERVO_STYLE_THREAD_STACK_SIZE_KB = { value = "8192", force = true }
 # ── musl 交叉工具链(issue #10 / REQ-DEPLOY-1;p3.5 起 clang-musl wrapper 形态)──
 # p1(musl.cc GCC 11.2.1,~/musl-cross/)的 per-target env 已被 p3-fix(FCFEC13B)的
 # build.rs env-first 选型接通。p3.5 发现 GCC 路线在 uWS C 源撞 always_inline
