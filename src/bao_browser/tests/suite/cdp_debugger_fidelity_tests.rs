@@ -584,8 +584,8 @@ fn debugger_breakpoint_real_frames_and_locations_e2e() {
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
     let (console_tx, console_rx) = mpsc::channel::<cdp_server::ConsoleMessage>();
     runtime.set_console_log_channel(console_tx);
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let port = pick_free_port();
@@ -658,8 +658,8 @@ fn live_extensions_exception_objectid_bootstrap_e2e() {
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
     let (console_tx, console_rx) = mpsc::channel::<cdp_server::ConsoleMessage>();
     runtime.set_console_log_channel(console_tx);
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let port = pick_free_port();

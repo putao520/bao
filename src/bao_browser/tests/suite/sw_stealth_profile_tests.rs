@@ -970,8 +970,8 @@ fn c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live() {
     use cdp_server::{CdpServer, EventSender, ServerConfig};
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let port = {
@@ -1151,7 +1151,7 @@ fn c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live() {
         "② the mediated body must be the SW's synthetic response: {mediated}"
     );
     // Control probe: a page console.log marker. If Log.entryAdded for it
-    // reaches the WS client, the event channel (delegate → EventSubscriber
+    // reaches the WS client, the event channel (delegate → real event queue
     // → translate → broadcaster → WS) is PROVEN live, isolating the red to
     // the missing Network emitter rather than a dead event channel.
     let _ = page.evaluate_js_web("console.log('c19-sub2-channel-marker')");

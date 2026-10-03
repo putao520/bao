@@ -627,8 +627,15 @@ impl RegistryDispatch for BaoWsRegistry {
                         }),
                     );
                 }
-                // Frame lifecycle for page.goto: Playwright resolves the
-                // navigation promise from frameStartedLoading/frameNavigated.
+                // Page.navigate command face: Chrome emits NO frame lifecycle
+                // events from the command path — the browser process event
+                // stream is the sole source (REQ-CDP-004). The real face
+                // (servo delegate → event queue → pump) delivers
+                // frameStartedLoading / frameNavigated / frameStoppedLoading
+                // with real load timing; the former command-face synth pair
+                // was retired once real-path delivery was probe-proven
+                // lossless. What stays here is the execution-context
+                // semantics the real path has no equivalent for.
                 "Page.navigate" => {
                     if let Ok(ref r) = result {
                         // The response frameId is authoritative; the tolerance
@@ -640,24 +647,6 @@ impl RegistryDispatch for BaoWsRegistry {
                             .and_then(|v| v.as_str())
                             .unwrap_or(&main_frame_id_for_target(&target_id))
                             .to_string();
-                        let loader = r
-                            .get("loaderId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let url = msg
-                            .params
-                            .as_ref()
-                            .and_then(|p| p.get("url"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("about:blank")
-                            .to_string();
-                        self.emit(
-                            event_sender,
-                            sid,
-                            "Page.frameStartedLoading",
-                            json!({ "frameId": fid }),
-                        );
                         // Cross-document navigation replaces the document's
                         // execution contexts (Chrome semantics): clear the old
                         // ones and announce a fresh default context bound to
@@ -668,20 +657,6 @@ impl RegistryDispatch for BaoWsRegistry {
                             sid,
                             "Runtime.executionContextsCleared",
                             json!({}),
-                        );
-                        self.emit(
-                            event_sender,
-                            sid,
-                            "Page.frameNavigated",
-                            json!({
-                                "frame": {
-                                    "id": fid,
-                                    "loaderId": loader,
-                                    "url": url,
-                                    "mimeType": "text/html",
-                                    "securityOrigin": "",
-                                },
-                            }),
                         );
                         let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
                         self.emit(
@@ -1155,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn navigate_emits_frame_lifecycle_events_on_session() {
+    fn navigate_command_face_emits_no_synth_frame_events() {
         let (tx, rx) = bridge_channel(Duration::from_secs(2));
         let _keeper = page_responder(rx);
         let reg = BaoWsRegistry::new(tx);
@@ -1188,19 +1163,35 @@ mod tests {
         .unwrap();
 
         let session_events = sender.session_events.lock().unwrap();
-        let methods: Vec<&str> = session_events
-            .iter()
-            .filter(|(s, _, _)| s == &sid)
-            .map(|(_, m, _)| m.as_str())
-            .collect();
-        assert!(methods.contains(&"Page.frameStartedLoading"));
-        assert!(methods.contains(&"Page.frameNavigated"));
-        let nav = session_events
-            .iter()
-            .find(|(_, m, _)| m == "Page.frameNavigated")
-            .unwrap();
-        assert_eq!(nav.2["frame"]["url"], "https://example.com");
-        assert_eq!(nav.2["frame"]["id"], main_frame_id_for_target("1"));
+        // REQ-CDP-004 synth retirement: the command face emits NO frame
+        // lifecycle events — the real event path (servo delegate → event
+        // queue → pump → broadcast) is the sole frame-event source.
+        assert!(
+            !session_events
+                .iter()
+                .any(|(_, m, _)| m == "Page.frameStartedLoading"),
+            "command face must not synth frameStartedLoading"
+        );
+        assert!(
+            !session_events
+                .iter()
+                .any(|(_, m, _)| m == "Page.frameNavigated"),
+            "command face must not synth frameNavigated"
+        );
+        // The execution-context semantics the real path has no equivalent
+        // for stay on the command face.
+        assert!(
+            session_events
+                .iter()
+                .any(|(_, m, _)| m == "Runtime.executionContextsCleared"),
+            "executionContextsCleared synth must survive retirement"
+        );
+        assert!(
+            session_events
+                .iter()
+                .any(|(_, m, _)| m == "Runtime.executionContextCreated"),
+            "executionContextCreated synth must survive retirement"
+        );
     }
 
     // ── Target 路由波 pins (REQ-CDP-004): targeted delivery ────────────

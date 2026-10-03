@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, Sender};
 
 use dpi::PhysicalSize;
 use servo::{
@@ -21,43 +21,49 @@ use bao_cdp::servo_bridge::main_frame_id_for_target;
 use bao_cdp::{BaoEvent, ConsoleMessage};
 use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
 
-// ─── ServoEvent clone-face 投递观测(REQ-CDP-006) ───────────────────
+// ─── ServoEvent real 路径可靠投递(REQ-CDP-004 / REQ-CDP-006) ───────
 //
-// `SyncSender` 裸克隆直推面(delegate/cdp_handler 站点)的满容丢弃在
-// `EventSubscriber::dropped_count()` 计数域之外(裸 sender 无计数器通道)。
-// 本节是站点侧观测补口:Full(drop-newest)累计计数 + 节流 debug 日志;
-// Disconnected(接收端已 drop)维持 lossy-by-design 静默。零语义影响——
-// 投递行为与 `let _ = tx.try_send(..)` 等价,仅多观测,永不阻塞调用线程。
+// 通道形态:**无界可靠队列**(`std::sync::mpsc::channel`)——`send` 永不
+// 阻塞、永不丢弃(drop-newest 已根除),单队列 FIFO 天然保序。
+//
+// 为什么不是「有界 + 满时阻塞泵侧」:producer(delegate 回调)与 consumer
+// (泵 drain)同线程——servo 以 `Rc<dyn WebViewDelegate>` 持有委托
+// (结构性 !Send,回调只可能发生在持有 WebView 的 embedder 线程上),即
+// `run_with_bridge` 里调 `spin_event_loop()` 的泵线程自身;而 drain 点在
+// `spin_event_loop()` 返回之后。回调内阻塞 send = 泵无法回到 drain 点 =
+// 自死锁。阻塞形态被线程模型排除,可靠队列是唯一无丢弃且无死锁的诚实形态。
+// 内存上界由泵节奏保证:每次 loop 迭代产生的的事件在下一段 `try_recv`
+// 循环内被全量排空,持续积压仅存在于「接了通道但从不 drain」的配置
+// (`run` / `pump_cdp` 不接线 `set_event_channel`,零事件,不构成积压面)。
+//
+// 探针:投递计数三面对账——`servo_event_emitted_total()`(本面,producer)
+// == `servo_event_pumped_total()`(lib.rs 泵面,consumer)。REQ-CDP-004
+// 的 delivery 断言即等式成立;分歧只可能来自接收端 teardown(Disconnected)。
 
-/// clone-face(SyncSender 直推面)满容丢弃累计数。观测用途,只增不减;
-/// 与 `EventSubscriber::dropped_count()`(on_* push 面)互不重叠。
-static CLONE_FACE_DROPPED: AtomicUsize = AtomicUsize::new(0);
+/// real 路径投递探针(producer 腿):经 `send_servo_event` 进入通道的
+/// ServoEvent 累计数。与 lib.rs 泵面 `servo_event_pumped_total()` 对账。
+static SERVO_EVENT_EMITTED: AtomicU64 = AtomicU64::new(0);
 
-/// 节流首投闩:首次丢弃记 debug,此后每 `CLONE_FACE_LOG_INTERVAL` 条一条。
-static CLONE_FACE_LOGGED: AtomicBool = AtomicBool::new(false);
+/// Disconnected 首次警告闩:接收端已 drop 是 teardown 面,不是投递丢失,
+/// 只告警一次避免关停期刷屏。
+static SEND_FAILED_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// 节流间隔(与 EventSubscriber 饱和日志的 1024 先例同形)。
-const CLONE_FACE_LOG_INTERVAL: usize = 1024;
-
-/// clone-face 满容丢弃累计数(观测用途)。
-pub(crate) fn clone_face_dropped_count() -> usize {
-    CLONE_FACE_DROPPED.load(Ordering::Relaxed)
+/// real 路径投递探针(producer 腿)累计数。suite 级 delivery 断言消费。
+pub fn servo_event_emitted_total() -> u64 {
+    SERVO_EVENT_EMITTED.load(Ordering::Relaxed)
 }
 
-/// 经 `SyncSender` 直推一个 ServoEvent:`try_send` 满容(drop-newest)时
-/// 累计计数并按节流记 debug 日志;接收端已 drop 时静默(lossy-by-design,
-/// 与既有 `let _ = tx.try_send(..)` 语义等价)。
-pub(crate) fn send_servo_event(tx: &SyncSender<ServoEvent>, event: ServoEvent) {
-    if let Err(TrySendError::Full(_)) = tx.try_send(event) {
-        let total = CLONE_FACE_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
-        if !CLONE_FACE_LOGGED.swap(true, Ordering::Relaxed) {
-            log::debug!(
-                "servo event channel saturated, clone-face send dropped (drop-newest); dropped={total} total"
-            );
-        } else if total % CLONE_FACE_LOG_INTERVAL == 0 {
-            log::debug!(
-                "servo event channel still saturated, clone-face send dropped; dropped={total} total"
-            );
+/// 向 real 事件通道投递一个 ServoEvent:无界可靠队列 `send`,永不丢弃、
+/// 永不阻塞;接收端已 drop 时记一次性 warn(teardown 面,非投递丢失)。
+pub(crate) fn send_servo_event(tx: &Sender<ServoEvent>, event: ServoEvent) {
+    match tx.send(event) {
+        Ok(()) => {
+            SERVO_EVENT_EMITTED.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            if !SEND_FAILED_LOGGED.swap(true, Ordering::Relaxed) {
+                log::warn!("servo event receiver dropped, event not delivered (teardown)");
+            }
         }
     }
 }
@@ -3206,10 +3212,10 @@ pub struct BaoWebViewState {
     pub dom_proxies_dirty: bool,
     /// Channel for forwarding per-webview console messages to CDP Log domain.
     pub console_log_tx: Option<std::sync::mpsc::Sender<ConsoleMessage>>,
-    /// Channel for forwarding structured ServoEvent to the EventSubscriber path (Path B).
+    /// Real event queue sender (Path B): reliable unbounded mpsc to the pump.
     /// When set, events are also pushed here in addition to console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub event_tx: Option<SyncSender<ServoEvent>>,
+    pub event_tx: Option<Sender<ServoEvent>>,
     /// CDP target identity of the owning page (its decimal page id, the same
     /// namespace the command face lists via Target.getTargets and flattens
     /// sessions against — REQ-CDP-004). Stamped once at page creation
@@ -3745,10 +3751,9 @@ impl BaoWebViewState {
                 WorkerMessageDirection::PageToWorker => "page→worker",
                 WorkerMessageDirection::WorkerToPage => "worker→page",
             };
-            // Lossy by design: fire-and-forget console observability — the
-            // send never stalls the servo script thread: saturation drops
-            // (drop-newest) are counted and debug-logged (throttled) via
-            // send_servo_event; a dropped receiver just fails the send.
+            // Reliable delivery: the event queue is unbounded — send neither
+            // stalls the servo script thread nor drops; a dropped receiver
+            // (teardown) fails the send and is warn-logged once.
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
@@ -3790,10 +3795,9 @@ impl BaoWebViewState {
                 ),
                 None => "metadata-only (servo handles clone)".to_string(),
             };
-            // Lossy by design: fire-and-forget console observability — the
-            // send never stalls the servo script thread: saturation drops
-            // (drop-newest) are counted and debug-logged (throttled) via
-            // send_servo_event; a dropped receiver just fails the send.
+            // Reliable delivery: the event queue is unbounded — send neither
+            // stalls the servo script thread nor drops; a dropped receiver
+            // (teardown) fails the send and is warn-logged once.
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
@@ -4030,10 +4034,9 @@ impl BaoWebViewState {
             return;
         };
         if let Some(ref tx) = self.event_tx {
-            // Lossy by design: fire-and-forget console observability — the
-            // send never stalls the servo script thread: saturation drops
-            // (drop-newest) are counted and debug-logged (throttled) via
-            // send_servo_event; a dropped receiver just fails the send.
+            // Reliable delivery: the event queue is unbounded — send neither
+            // stalls the servo script thread nor drops; a dropped receiver
+            // (teardown) fails the send and is warn-logged once.
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
@@ -4389,10 +4392,10 @@ pub struct BaoServoDelegate {
     /// Channel for forwarding console messages to CDP Log domain.
     /// Set via `set_console_log_tx` when CDP server starts.
     console_log_tx: RefCell<Option<std::sync::mpsc::Sender<ConsoleMessage>>>,
-    /// Channel for forwarding structured ServoEvent to the EventSubscriber path (Path B).
+    /// Real event queue sender (Path B): reliable unbounded mpsc to the pump.
     /// When set, console/url/load callbacks also push structured events here.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    event_tx: RefCell<Option<SyncSender<ServoEvent>>>,
+    event_tx: RefCell<Option<Sender<ServoEvent>>>,
     /// Global SharedWorker registry — keyed by (script_url, name).
     /// SharedWorkers span pages (DF-WK-7), so they must be tracked at the
     /// delegate level rather than per-page. When a page creates a SharedWorker,
@@ -4447,14 +4450,14 @@ impl BaoServoDelegate {
     /// Set the channel for forwarding structured ServoEvent to EventSubscriber (Path B).
     /// Called when CDP server starts alongside set_console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub fn set_event_tx(&self, tx: SyncSender<ServoEvent>) {
+    pub fn set_event_tx(&self, tx: Sender<ServoEvent>) {
         *self.event_tx.borrow_mut() = Some(tx);
     }
 
     /// Get a clone of the event sender, if one has been set.
     /// Used to propagate the channel to per-webview state.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub fn event_tx(&self) -> Option<SyncSender<ServoEvent>> {
+    pub fn event_tx(&self) -> Option<Sender<ServoEvent>> {
         self.event_tx.borrow().clone()
     }
 
@@ -5065,10 +5068,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
                 ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
                 ConsoleLogLevel::Dir => ConsoleLevel::Info,
             };
-            // Lossy by design: fire-and-forget console observability — the
-            // send never stalls the servo script thread: saturation drops
-            // (drop-newest) are counted and debug-logged (throttled) via
-            // send_servo_event; a dropped receiver just fails the send.
+            // Reliable delivery: the event queue is unbounded — send neither
+            // stalls the servo script thread nor drops; a dropped receiver
+            // (teardown) fails the send and is warn-logged once.
             send_servo_event(
                 &tx,
                 ServoEvent::Console {
@@ -5469,64 +5471,82 @@ mod tests {
     fn test_servo_delegate_event_tx_set_and_get() {
         let delegate = BaoServoDelegate::new();
         assert!(delegate.event_tx().is_none());
-        let (tx, _rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, _rx) = std::sync::mpsc::channel::<ServoEvent>();
         delegate.set_event_tx(tx);
         assert!(delegate.event_tx().is_some());
     }
 
     #[test]
-    fn test_event_tx_clone_face_full_observed_lossy() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1);
-        tx.try_send(ServoEvent::Console {
-            target_id: "7".to_string(),
-            level: ConsoleLevel::Info,
-            text: "fill".to_string(),
-            url: None,
-            line: None,
-            column: None,
-        })
-        .unwrap();
-        let before = clone_face_dropped_count();
+    fn test_event_tx_reliable_under_saturation() {
+        // REQ-CDP-004 real 路径可靠投递:远超旧有界容量(1024)的突发负载下
+        // 零丢弃——send_servo_event 每发必达,且保序(探针 delta == 消费数,
+        // 消费序 == 发射序)。
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        const BURST: usize = 5000;
+        let emitted_before = servo_event_emitted_total();
 
-        // 满容:Full 被观测计数,事件 lossy 丢弃,不阻塞不 panic
-        send_servo_event(
-            &tx,
-            ServoEvent::Console {
-                target_id: "7".to_string(),
-                level: ConsoleLevel::Info,
-                text: "overflow".to_string(),
-                url: None,
-                line: None,
-                column: None,
-            },
+        for i in 0..BURST {
+            send_servo_event(
+                &tx,
+                ServoEvent::Console {
+                    target_id: "7".to_string(),
+                    level: ConsoleLevel::Info,
+                    text: format!("burst-{i}"),
+                    url: None,
+                    line: None,
+                    column: None,
+                },
+            );
+        }
+        assert_eq!(
+            servo_event_emitted_total(),
+            emitted_before + BURST as u64,
+            "probe must count every send"
         );
-        assert_eq!(clone_face_dropped_count(), before + 1);
 
-        // Disconnected:接收端已 drop,静默维持原状(lossy-by-design),不计数
+        // Pump-shape drain: every event arrives, in emission order.
+        let mut consumed = Vec::with_capacity(BURST);
+        while let Ok(event) = rx.try_recv() {
+            if let ServoEvent::Console { text, .. } = event {
+                consumed.push(text);
+            }
+        }
+        assert_eq!(consumed.len(), BURST, "reliable queue must not drop");
+        for (i, text) in consumed.iter().enumerate() {
+            assert_eq!(text, &format!("burst-{i}"), "FIFO order must hold");
+        }
+    }
+
+    #[test]
+    fn test_event_tx_send_survives_dropped_receiver() {
+        // Disconnected(接收端已 drop)是 teardown 面:send 不 panic,
+        // 探针不计数(未进入通道 ≠ 已投递)。
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         drop(rx);
+        let emitted_before = servo_event_emitted_total();
         send_servo_event(
             &tx,
             ServoEvent::Console {
                 target_id: "7".to_string(),
                 level: ConsoleLevel::Info,
-                text: "after-drop".to_string(),
+                text: "after-teardown".to_string(),
                 url: None,
                 line: None,
                 column: None,
             },
         );
-        assert_eq!(clone_face_dropped_count(), before + 1);
+        assert_eq!(servo_event_emitted_total(), emitted_before);
     }
 
     #[test]
     fn test_servo_delegate_event_tx_sends_console_event() {
         let delegate = BaoServoDelegate::new();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         delegate.set_event_tx(tx);
 
         // When event_tx is set, show_console_message pushes ServoEvent::Console
         if let Some(ref tx) = delegate.event_tx() {
-            tx.try_send(ServoEvent::Console {
+            tx.send(ServoEvent::Console {
                 target_id: "7".to_string(),
                 level: ConsoleLevel::Info,
                 text: "hello".to_string(),
@@ -5555,7 +5575,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_event_tx_propagation() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let mut state = BaoWebViewState::default();
         state.event_tx = Some(tx);
         state.cdp_target_id = Some("7".to_string());
@@ -5563,7 +5583,7 @@ mod tests {
         // the target (REQ-CDP-004 v7 path B).
         let target = state.cdp_target().expect("stamped target");
         if let Some(ref tx) = state.event_tx {
-            tx.try_send(ServoEvent::FrameNavigated {
+            tx.send(ServoEvent::FrameNavigated {
                 target_id: target.clone(),
                 frame_id: main_frame_id_for_target(&target),
                 url: "https://example.com/".to_string(),
@@ -5623,7 +5643,7 @@ mod tests {
         // the delegate should emit ServoEvent::FrameStartedLoading —
         // tagged with the page's real CDP target and its per-target main
         // frame id (REQ-CDP-004).
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let state = Rc::new(RefCell::new(BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -5635,7 +5655,7 @@ mod tests {
         // Simulate what notify_load_status_changed does on LoadStatus::Started
         let target = state.borrow().cdp_target().expect("stamped target");
         if let Some(ref tx) = state.borrow().event_tx {
-            tx.try_send(ServoEvent::FrameStartedLoading {
+            tx.send(ServoEvent::FrameStartedLoading {
                 frame_id: main_frame_id_for_target(&target),
                 target_id: target.clone(),
             })
@@ -5669,7 +5689,7 @@ mod tests {
             colno: 2,
         };
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(16);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let mut state = BaoWebViewState::default();
         state.event_tx = Some(tx);
         state.cdp_target_id = Some("42".to_string());
@@ -5679,7 +5699,7 @@ mod tests {
             other => panic!("expected PageError, got {other:?}"),
         }
 
-        let (tx2, rx2) = std::sync::mpsc::sync_channel::<ServoEvent>(16);
+        let (tx2, rx2) = std::sync::mpsc::channel::<ServoEvent>();
         let mut unstamp = BaoWebViewState::default();
         unstamp.event_tx = Some(tx2);
         unstamp.forward_worker_error_event(worker_error);
@@ -5842,7 +5862,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_forward_worker_message_to_event_tx() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -5922,7 +5942,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_forward_worker_error_to_event_tx() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -6688,7 +6708,7 @@ mod tests {
 
     #[test]
     fn test_forward_shared_worker_connect_event() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -7046,7 +7066,7 @@ mod tests {
 
     #[test]
     fn test_forward_worker_structured_message_with_payload() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -7074,7 +7094,7 @@ mod tests {
 
     #[test]
     fn test_forward_worker_structured_message_metadata_only() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -7096,7 +7116,7 @@ mod tests {
 
     #[test]
     fn test_drain_and_forward_worker_messages() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),
@@ -8472,7 +8492,7 @@ mod tests {
 
     #[test]
     fn test_webview_state_drain_and_forward_shared_worker_messages() {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<ServoEvent>(1024);
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
         let mut state = BaoWebViewState {
             event_tx: Some(tx),
             cdp_target_id: Some("7".to_string()),

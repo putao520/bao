@@ -436,8 +436,8 @@ fn ws_command_face_page_navigate_and_evaluate_roundtrip() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let port = pick_free_port();
@@ -502,8 +502,8 @@ fn ws_runtime_object_protocol_roundtrip() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let port = pick_free_port();
@@ -636,8 +636,8 @@ fn ws_cdp_evaluate_stays_in_page_realm() {
         .expect("initial page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let port = pick_free_port();
@@ -795,8 +795,8 @@ fn multi_page_target_routing_phantom_frame_probe() {
         })
         .expect("page b");
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let recorder = RecordingSender::new();

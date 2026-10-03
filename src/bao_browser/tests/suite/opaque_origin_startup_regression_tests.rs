@@ -208,8 +208,8 @@ fn cdp_answers_on_opaque_origin_page() {
     );
 
     let (bridge_tx, bridge_rx) = bridge_channel(std::time::Duration::from_secs(30));
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let registry = Arc::new(bao_browser::BaoWsRegistry::new(bridge_tx.clone()));
     let port = std::net::TcpListener::bind("127.0.0.1:0")

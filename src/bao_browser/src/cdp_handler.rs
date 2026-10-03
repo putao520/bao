@@ -590,7 +590,7 @@ fn worker_target_json(target_id: &str, target_type: &str) -> Value {
 /// (REQ-BRW-004 criterion #19 subclause ②: "CDP Network 域可观测 SW 发起的
 /// 请求/响应").
 ///
-/// The tap is the reuse of the existing EventSubscriber (Path B) channel:
+/// The tap is the reuse of the existing real event queue (Path B):
 /// events become `ServoEvent::NetworkRequest` / `NetworkResponse`, which the
 /// runtime's event loop (`run_with_bridge` / the harness spin shape) already
 /// drains → `translate` → `Network.requestWillBeSent` / `responseReceived` on

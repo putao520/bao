@@ -27,19 +27,19 @@ pub use config::{BaoConfig, BrowserConfig, PageConfig};
 // Public for e2e tests that drive the same loop shape as run_browser.
 pub use cdp_handler::handle_bridge_command;
 pub use delegate::{
-    crash_safe_teardown_worker, is_javascript_mime_type, AutoCloseWorker, BaoServoDelegate,
-    BaoWebViewDelegate, BaoWebViewState, DedicatedWorkerGlobalScopeState,
-    ServiceWorkerFetchInterceptMode, ServiceWorkerGlobalScopeState, ServiceWorkerHandle,
-    ServiceWorkerRegistrationId, ServiceWorkerRegistrationState, ServiceWorkerRegistrationTracking,
-    ServiceWorkerScopeConfig, SharedWorkerChannelBridge, SharedWorkerConnectEvent,
-    SharedWorkerGlobalScopeState, SharedWorkerHandle, SharedWorkerId, SharedWorkerPortChannel,
-    SharedWorkerPortEndpoints, SharedWorkerPortRef, SharedWorkerScopeConfig,
-    StructuredClonePayload, WorkerChannelBridge, WorkerChannelEndpoints, WorkerErrorEvent,
-    WorkerGlobalScopeState, WorkerHandle, WorkerId, WorkerLifecycleState, WorkerLocation,
-    WorkerMessageDirection, WorkerMessageEvent, WorkerNavigator, WorkerNetworkInformation,
-    WorkerScopeConfig, WorkerScriptLoadError, WorkerScriptLoadResult, WorkerScriptLoadState,
-    WorkerScriptLoader, WorkerScriptSource, WorkerScriptType, WorkerStructuredMessage,
-    WorkerTeardownPath, WorkerTeardownResult,
+    crash_safe_teardown_worker, is_javascript_mime_type, servo_event_emitted_total,
+    AutoCloseWorker, BaoServoDelegate, BaoWebViewDelegate, BaoWebViewState,
+    DedicatedWorkerGlobalScopeState, ServiceWorkerFetchInterceptMode,
+    ServiceWorkerGlobalScopeState, ServiceWorkerHandle, ServiceWorkerRegistrationId,
+    ServiceWorkerRegistrationState, ServiceWorkerRegistrationTracking, ServiceWorkerScopeConfig,
+    SharedWorkerChannelBridge, SharedWorkerConnectEvent, SharedWorkerGlobalScopeState,
+    SharedWorkerHandle, SharedWorkerId, SharedWorkerPortChannel, SharedWorkerPortEndpoints,
+    SharedWorkerPortRef, SharedWorkerScopeConfig, StructuredClonePayload, WorkerChannelBridge,
+    WorkerChannelEndpoints, WorkerErrorEvent, WorkerGlobalScopeState, WorkerHandle, WorkerId,
+    WorkerLifecycleState, WorkerLocation, WorkerMessageDirection, WorkerMessageEvent,
+    WorkerNavigator, WorkerNetworkInformation, WorkerScopeConfig, WorkerScriptLoadError,
+    WorkerScriptLoadResult, WorkerScriptLoadState, WorkerScriptLoader, WorkerScriptSource,
+    WorkerScriptType, WorkerStructuredMessage, WorkerTeardownPath, WorkerTeardownResult,
 };
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};
@@ -81,6 +81,39 @@ static BAO_SERVO_OPTS_INIT: std::sync::LazyLock<()> = std::sync::LazyLock::new(|
         ..Opts::default()
     });
 });
+
+// ─── ServoEvent real 路径投递探针(REQ-CDP-004) ─────────────────────
+//
+// consumer 腿计数:泵在 `run_with_bridge` drain 循环里每消费一个 ServoEvent
+// 计一。producer 腿是 delegate.rs 的 `servo_event_emitted_total()`;可靠队列
+// 语义下 drain 通过后两腿相等。suite 级 delivery 断言消费(nextest 每 test
+// 独立进程,进程内取 delta 即可)。
+
+/// 泵消费腿累计数。
+static SERVO_EVENT_PUMPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// real 路径投递探针(consumer 腿)累计数。suite 级 delivery 断言消费。
+pub fn servo_event_pumped_total() -> u64 {
+    use std::sync::atomic::Ordering;
+    SERVO_EVENT_PUMPED.load(Ordering::Relaxed)
+}
+
+/// Drain every currently-queued ServoEvent from the real event queue,
+/// invoking `handle` per event. This is THE pump-consumption face — the
+/// delivery probe (`servo_event_pumped_total`) counts here, so every drain
+/// site built on this helper participates in the emitted==pumped assertion
+/// (`run_with_bridge` and the suite pump-shape harnesses alike).
+///
+/// @trace REQ-CDP-004 [req:REQ-CDP-004] [level:library]
+pub fn drain_servo_events(
+    servo_event_rx: &std::sync::mpsc::Receiver<ServoEvent>,
+    mut handle: impl FnMut(ServoEvent),
+) {
+    while let Ok(servo_event) = servo_event_rx.try_recv() {
+        SERVO_EVENT_PUMPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        handle(servo_event);
+    }
+}
 
 /// Deprecated alias for the browser coordinator runtime (0.x transition;
 /// removed in 1.0).
@@ -639,7 +672,7 @@ impl BrowserRuntime {
     /// per-webview delegate, which reads `state.event_tx`, so the channel
     /// must live on each state, not only the runtime-level delegate.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-    pub fn set_event_channel(&self, tx: std::sync::mpsc::SyncSender<ServoEvent>) {
+    pub fn set_event_channel(&self, tx: std::sync::mpsc::Sender<ServoEvent>) {
         self.delegate.set_event_tx(tx.clone());
         let stats = self.page_pool.stats();
         for id in 1..=(stats.active + stats.idle) {
@@ -698,8 +731,9 @@ impl BrowserRuntime {
     }
 
     /// Run with a CDP bridge that processes commands during the event loop.
-    /// Also drains ServoEvent from the EventSubscriber path (Path B) and
-    /// broadcasts translated CdpEvents via the shared EventBroadcaster.
+    /// Also drains ServoEvent from the real event queue (Path B — unbounded
+    /// reliable mpsc) and broadcasts translated CdpEvents via the shared
+    /// EventBroadcaster.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn run_with_bridge(
         &self,
@@ -723,10 +757,10 @@ impl BrowserRuntime {
             // Process pending CDP bridge commands
             bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
 
-            // Drain ServoEvent from EventSubscriber (Path B) and broadcast
+            // Drain ServoEvent from the real event queue (Path B) and broadcast
             // as CDP events via the shared EventBroadcaster.
             // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-            while let Ok(servo_event) = servo_event_rx.try_recv() {
+            drain_servo_events(&servo_event_rx, |servo_event| {
                 // W43 flat-session demux: ServoEvents are target-scoped —
                 // route to every CDP session attached to that target (tagged),
                 // falling back to the untagged broadcast with no attachments.
@@ -749,7 +783,7 @@ impl BrowserRuntime {
                         }
                     }
                 }
-            }
+            });
 
             // Yield instead of sleep — check bridge commands more frequently.
             std::thread::yield_now();
@@ -912,10 +946,14 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         let (console_tx, console_rx) = std::sync::mpsc::channel::<cdp_server::ConsoleMessage>();
         runtime.set_console_log_channel(console_tx);
 
-        // Create EventSubscriber pair for structured ServoEvent path (Path B).
-        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
-        let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-        runtime.set_event_channel(event_subscriber.sender());
+        // Real event queue (Path B): unbounded reliable mpsc — the servo
+        // delegate pushes ServoEvents that `run_with_bridge` drains and
+        // translates. Delivery is lossless by construction (REQ-CDP-004);
+        // the emitted/pumped probe pair (delegate.rs / the pump loop below)
+        // asserts it.
+        // @trace REQ-CDP-006
+        let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<ServoEvent>();
+        runtime.set_event_channel(event_tx);
 
         // Build CdpServer and extract the shared broadcaster BEFORE moving the
         // server into its thread. The broadcaster is Arc<EventBroadcaster> which

@@ -122,6 +122,7 @@ mod realm_discard_timers_tests;
 mod css_conformance_tests;
 mod svg_dom_geometry_tests;
 mod webvtt_render_tests;
+mod servo_event_delivery_tests;
 
 
 // Higher-tier soft-link providers are dev-deps nothing else `use`s in this

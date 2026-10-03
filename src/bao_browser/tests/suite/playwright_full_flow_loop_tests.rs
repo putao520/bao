@@ -210,8 +210,8 @@ fn playwright_style_full_flow_three_rounds() {
         .expect("create_page");
 
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(60));
-    let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
-    runtime.set_event_channel(event_subscriber.sender());
+    let (event_tx, servo_event_rx) = std::sync::mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
     let registry = Arc::new(BaoWsRegistry::new(bridge_tx.clone()));
     let event_router = Arc::clone(&registry);
     let port = pick_free_port();
