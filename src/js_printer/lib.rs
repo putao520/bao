@@ -2739,10 +2739,15 @@ pub mod __gated_printer {
                 // However, they could also be signed or unsigned int 32 (when doing bit shifts)
                 // In this case, it's always going to unsigned since that conversion has already happened.
                 let val = float as u64;
-                if let Some(e) = bun_core::fmt::pow10_exp_1e4_to_1e9(val) {
-                    self.print(b"1e");
-                    self.print(&[b'0' + e]);
-                    return;
+                // upstream dcd85697ac (#41184): JSON.stringify prints every integer
+                // below 1e21 as plain digits — skip the JS-only `1eN` shortening
+                // when printing JSON (pm pkg / pack / publish rewrite package.json).
+                if !IS_JSON {
+                    if let Some(e) = bun_core::fmt::pow10_exp_1e4_to_1e9(val) {
+                        self.print(b"1e");
+                        self.print(&[b'0' + e]);
+                        return;
+                    }
                 }
                 let mut buf = bun_core::fmt::ItoaBuf::new();
                 self.print(bun_core::fmt::itoa(&mut buf, val));
@@ -8635,3 +8640,58 @@ pub fn serialize_module_info(
 }
 
 // ported from: src/js_printer/js_printer.zig
+
+// upstream dcd85697ac (#41184) semantic lock: the JSON printer must print
+// integers as plain digits (`10000`, not `1e4`) — `JSON.stringify` prints every
+// integer below 1e21 as plain digits, and every package.json rewrite face
+// (pm pkg / pm version / pack / publish) goes through `print_json`. The JS
+// printer keeps the `1e4`..`1e9` shortening (`IS_JSON = false` arm).
+#[cfg(test)]
+mod json_integer_plain_digits_tests {
+    use super::*;
+    use bun_ast::{Loc, Source};
+
+    fn print_json_number(value: f64) -> String {
+        let source = Source::default();
+        let expr = js_ast::Expr {
+            loc: Loc::default(),
+            data: js_ast::ExprData::ENumber(js_ast::E::Number { value }),
+        };
+        let buffer_writer = BufferWriter::init();
+        let mut writer = BufferPrinter::init(buffer_writer);
+        let written = print_json(
+            &mut writer,
+            expr,
+            &source,
+            PrintJsonOptions {
+                indent: Default::default(),
+                mangled_props: None,
+                minify_whitespace: false,
+            },
+        )
+        .expect("print_json");
+        String::from_utf8(writer.ctx.buffer.list[0..written].to_vec())
+            .expect("printer output is utf8")
+    }
+
+    #[test]
+    fn json_prints_1e4_to_1e9_integers_as_plain_digits() {
+        for value in [10_000.0f64, 160_000.0, 1_000_000.0, 1_000_000_000.0] {
+            let out = print_json_number(value);
+            assert_eq!(
+                out,
+                format!("{}", value as u64),
+                "1e4..1e9 shortening leaked into JSON output for {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn js_shortener_still_recognizes_powers_of_ten() {
+        // Negative control: the shortener itself is untouched — only the JSON
+        // gate skips it. The JS printer (`IS_JSON = false`) still uses it.
+        assert_eq!(bun_core::fmt::pow10_exp_1e4_to_1e9(10_000), Some(4));
+        assert_eq!(bun_core::fmt::pow10_exp_1e4_to_1e9(1_000_000_000), Some(9));
+        assert_eq!(bun_core::fmt::pow10_exp_1e4_to_1e9(160_000), None);
+    }
+}

@@ -974,6 +974,9 @@ impl<'a> LinkerContext<'a> {
         let entry_points: *const [crate::IndexInt] = self.graph.entry_points.items_source_index();
         let distances: *mut [u32] = self.graph.files.items_distance_from_entry_point_mut();
         let file_entry_bits: *mut [AutoBitSet] = self.graph.files.items_entry_bits_mut();
+        // upstream 747e8b40af (#41xxx): HTML files have no parts — the
+        // code-split walk follows every import record for them.
+        let loaders: *const [Loader] = self.parse_graph().input_files.items_loader();
 
         // SAFETY: see block comment above — disjoint SoA columns, stable slabs
         // (no reallocation during tree-shaking). All column derefs share that
@@ -989,6 +992,7 @@ impl<'a> LinkerContext<'a> {
             parts_live,
             distances,
             file_entry_bits,
+            loaders,
         ) = unsafe {
             (
                 &*entry_points,
@@ -999,6 +1003,7 @@ impl<'a> LinkerContext<'a> {
                 &mut *parts_live,
                 &mut *distances,
                 &mut *file_entry_bits,
+                &*loaders,
             )
         };
         let entry_points_len = entry_points.len();
@@ -1048,6 +1053,7 @@ impl<'a> LinkerContext<'a> {
                 import_records,
                 file_entry_bits,
                 css_reprs,
+                loaders,
             };
 
             // Code splitting: Determine which entry points can reach which files. This
@@ -2766,6 +2772,8 @@ pub struct CodeSplitCtx<'a, 'r> {
     pub import_records: &'r [bun_ast::import_record::List<'a>],
     pub file_entry_bits: &'r mut [AutoBitSet],
     pub css_reprs: &'r [crate::bundled_ast::CssCol],
+    // upstream 747e8b40af (#41xxx): HTML files follow every import record.
+    pub loaders: &'r [Loader],
 }
 
 impl<'a> LinkerContext<'a> {
@@ -2814,12 +2822,14 @@ impl<'a> LinkerContext<'a> {
             );
         }
 
-        if ctx.css_reprs[source_index as usize].is_some() {
+        // upstream 747e8b40af (#41xxx): CSS and HTML files have no parts:
+        // follow every import record.
+        if ctx.css_reprs[source_index as usize].is_some()
+            || ctx.loaders[source_index as usize] == Loader::Html
+        {
             for ri in 0..ctx.import_records[source_index as usize].len() {
                 let record = &ctx.import_records[source_index as usize][ri];
-                if record.source_index.is_valid()
-                    && !self.is_external_dynamic_import(record, source_index)
-                {
+                if record.source_index.is_valid() {
                     let other = record.source_index.get();
                     self.mark_file_reachable_for_code_splitting(
                         ctx,
@@ -2832,12 +2842,39 @@ impl<'a> LinkerContext<'a> {
             return;
         }
 
-        for ri in 0..ctx.import_records[source_index as usize].len() {
-            let record = &ctx.import_records[source_index as usize][ri];
-            if record.source_index.is_valid()
-                && !self.is_external_dynamic_import(record, source_index)
-            {
+        // upstream 747e8b40af (#41xxx): a dead part prints nothing, so only
+        // live parts reach other files. Walk each live part's own import
+        // records and part dependencies — not every import record of the file
+        // (a `sideEffects: false` barrel's lazy-only modules must not be pulled
+        // into the entry chunk).
+        let part_count = ctx.parts[source_index as usize].len();
+        for pi in 0..part_count {
+            // Inline read: the borrow must not be held across the `&mut self`
+            // recursion below.
+            if !self.graph.parts_live[source_index as usize].is_set(pi) {
+                continue;
+            }
+
+            let import_indices_len = ctx.parts[source_index as usize].as_slice()[pi]
+                .import_record_indices
+                .len();
+            for ii in 0..import_indices_len {
+                let import_index = ctx.parts[source_index as usize].as_slice()[pi]
+                    .import_record_indices
+                    .slice()[ii as usize];
+                let record = &ctx.import_records[source_index as usize][import_index as usize];
+                if !record.source_index.is_valid()
+                    || self.is_external_dynamic_import(record, source_index)
+                {
+                    continue;
+                }
                 let other = record.source_index.get();
+
+                // Prints nothing; its bindings are the part dependencies below.
+                if record.kind == ImportKind::Stmt && self.file_has_no_side_effects(other) {
+                    continue;
+                }
+
                 self.mark_file_reachable_for_code_splitting(
                     ctx,
                     other,
@@ -2845,13 +2882,8 @@ impl<'a> LinkerContext<'a> {
                     out_dist,
                 );
             }
-        }
 
-        let part_count = ctx.parts[source_index as usize].len();
-        for pi in 0..part_count {
-            let deps_len = ctx.parts[source_index as usize].as_slice()[pi]
-                .dependencies
-                .len();
+            let deps_len = ctx.parts[source_index as usize].as_slice()[pi].dependencies.len();
             for di in 0..deps_len {
                 let dependency = ctx.parts[source_index as usize].as_slice()[pi].dependencies[di];
                 if dependency.source_index.get() != source_index {

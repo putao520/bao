@@ -225,6 +225,22 @@ pub fn generate(c: &mut LinkerContext, chunks: &mut [Chunk]) -> Result<Box<[u8]>
         }
     }
 
+    // upstream 290c2163e2 (#42423): a split `import()` / `require()` record
+    // names its target's chunk (`compute_cross_chunk_dependencies` rewrites
+    // `path.text` to the chunk's unique key and invalidates `source_index`);
+    // "entryPoint" adds the input that chunk was built from. Built once per
+    // metafile, only when a metafile is requested.
+    let mut entry_of_chunk: StringHashMap<u32> = StringHashMap::default();
+    for chunk in chunks.iter() {
+        if chunk.entry_point.is_entry_point() && !chunk.unique_key.is_empty() {
+            // StringHashMap keys are `Box<[u8]>`; `.put` dupes the borrowed key.
+            let _ = entry_of_chunk.put(
+                chunk.unique_key,
+                chunk.entry_point.source_index() as u32,
+            );
+        }
+    }
+
     // Write inputs
     let mut source_index: u32 = 0;
     while (source_index as usize) < sources.len() {
@@ -322,6 +338,26 @@ pub fn generate(c: &mut LinkerContext, chunks: &mut [Chunk]) -> Result<Box<[u8]>
                     j.push_owned(
                         buf.into_boxed_slice(),
                       );
+                }
+
+                // upstream 290c2163e2 (#42423): a record rewritten to point at
+                // a chunk (`source_index` invalidated, `path.text` == unique
+                // key) also carries the input path that chunk was built from.
+                // A real external (`node:fs`) never hits the map. Additive:
+                // `path` / `kind` / `original` / `external` are unchanged.
+                if !record.source_index.is_valid()
+                    && let Some(&entry_point) = entry_of_chunk.get(record.path.text)
+                    && let Some(entry_source) = sources.get(entry_point as usize)
+                    && !entry_source.path.pretty.is_empty()
+                {
+                    j.push_static(b",\n          \"entryPoint\": ");
+                    let mut buf: Vec<u8> = Vec::new();
+                    write!(
+                        buf,
+                        "{}",
+                        bfmt::format_json_string_utf8(entry_source.path.pretty, Default::default())
+                    )?;
+                    j.push_owned(buf.into_boxed_slice());
                 }
 
                 // Add "external": true for external imports
