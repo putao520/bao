@@ -114,6 +114,33 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
     forced_gc(final_ctx.raw_cx());
     let final_stats = unsafe { collect_runtime_stats(final_ctx.raw_cx()) }
         .map_err(|e| format!("final stats failed: {e}"))?;
+    // W31 decomposition: total chunks = empty-chunk POOL + chunks attached to
+    // surviving zones (full/available/current). The pool half is what a
+    // chunk-pool cap can bound; the attached half is not pool-resident at all.
+    let pool_chunks_final = unsafe {
+        mozjs::jsapi::JS_GetGCParameter(
+            final_ctx.raw_cx(),
+            mozjs::jsapi::JSGCParamKey::JSGC_UNUSED_CHUNKS,
+        )
+    };
+    b.metric(Metric::single(
+        "empty_pool_chunks_final",
+        "count",
+        "gauge",
+        true,
+        None,
+        pool_chunks_final as f64,
+    ));
+    // W31: live GC-thing bytes at final — discriminates "attached chunks hold
+    // retained live data" from "attached chunks are empty but unreleased".
+    b.metric(Metric::single(
+        "gc_things_final",
+        "bytes",
+        "gauge",
+        true,
+        None,
+        final_stats.gc_heap_gc_things as f64,
+    ));
     b.metric(Metric::single(
         "servo_gc_heap_decommitted_final",
         "bytes",

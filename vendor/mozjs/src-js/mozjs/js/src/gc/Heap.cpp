@@ -18,6 +18,7 @@
 
 #include "gc/Heap-inl.h"
 
+#include "gc/BaoChunkPoolCap.h"
 #include "gc/GCLock.h"
 #include "gc/Memory.h"
 #include "gc/Zone.h"
@@ -554,6 +555,19 @@ void GCRuntime::clearCurrentChunk(Zone* zone, const AutoLockGC& lock) {
 
   if (chunk->isEmpty()) {
     chunk->info.zone = nullptr;
+    // BAO-8: pool cap (default 0 = off) — this is the second pool push funnel
+    // (sweepPhase's per-zone clearCurrentChunk, GC.cpp); mirrored from
+    // GCRuntime::recycleChunk in Allocator.cpp. Same prepareToFreeChunk
+    // mirroring note applies (no out-of-line symbol; keep both sides in sync).
+    if (const size_t poolMax = js::gc::BaoChunkPoolMax();
+        poolMax != 0 && emptyChunks(lock).count() >= poolMax) {
+      stats().count(gcstats::COUNT_DESTROY_CHUNK);
+#ifdef DEBUG
+      chunk->info.numArenasFreeCommitted = 0;
+#endif
+      UnmapPages(static_cast<void*>(chunk), ChunkSize);
+      return;
+    }
     emptyChunks(lock).push(chunk);
     return;
   }

@@ -4,12 +4,16 @@
 
 #include "gc/Allocator.h"
 
+// BAO-8 patch: chunk-pool cap knob (see recycleChunk below).
+#include "gc/BaoChunkPoolCap.h"
+
 #include "mozilla/OperatorNewExtensions.h"
 #include "mozilla/TimeStamp.h"
 
 #include "gc/GCInternals.h"
 #include "gc/GCLock.h"
 #include "gc/GCProbes.h"
+#include "gc/Memory.h"
 #include "gc/Nursery.h"
 #include "gc/PublicIterators.h"
 #include "threading/CpuCount.h"
@@ -597,6 +601,10 @@ ArenaChunk* GCRuntime::getOrAllocChunk(StallAndRetry stallAndRetry,
   return chunk;
 }
 
+// BAO-8 patch: env-gated empty-chunk-pool cap, default OFF (0 = upstream
+// semantics, zero behavior change). Mechanism context + knob semantics live
+// in gc/BaoChunkPoolCap.h. This is one of the two pool push funnels (the
+// other is GCRuntime::clearCurrentChunk in Heap.cpp — both are capped).
 void GCRuntime::recycleChunk(ArenaChunk* chunk, const AutoLockGC& lock) {
 #ifdef DEBUG
   MOZ_ASSERT(chunk->isEmpty());
@@ -604,6 +612,22 @@ void GCRuntime::recycleChunk(ArenaChunk* chunk, const AutoLockGC& lock) {
   MOZ_ASSERT(!chunk->info.zone);
   chunk->verify();
 #endif
+
+  // BAO-8: pool cap (default 0 = off). Free the chunk to the OS when the
+  // pool is already at the cap instead of parking it until the next decommit
+  // pass — which Normal+high-frequency GCs skip entirely.
+  // NOTE: GCRuntime::prepareToFreeChunk is defined `inline` in GC.cpp with no
+  // out-of-line symbol, so it is not callable from this TU (link error at -O0).
+  // Mirror its two operations here; keep both sides in sync.
+  if (const size_t poolMax = js::gc::BaoChunkPoolMax();
+      poolMax != 0 && emptyChunks(lock).count() >= poolMax) {
+    stats().count(gcstats::COUNT_DESTROY_CHUNK);
+#ifdef DEBUG
+    chunk->info.numArenasFreeCommitted = 0;
+#endif
+    UnmapPages(static_cast<void*>(chunk), ChunkSize);
+    return;
+  }
 
   // Poison ChunkBase to catch use after free.
   AlwaysPoison(chunk, JS_FREED_CHUNK_PATTERN, sizeof(ChunkBase),
