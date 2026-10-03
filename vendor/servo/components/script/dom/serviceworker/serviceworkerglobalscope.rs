@@ -624,6 +624,20 @@ impl ServiceWorkerGlobalScope {
                     global.dispatch_activate(&mut realm);
                 }
 
+                // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): the
+                // worker script evaluated and the activate event was
+                // dispatched — report to the manager so it can relay the
+                // spec's Update Worker State → "activated" to the registering
+                // client. Without this relay the DOM ServiceWorker object
+                // stays at state "installing" forever (no statechange ever
+                // fires) and every wait_for_state(..., 'activated') setup
+                // step in the SW test suites hangs. Script-load failures take
+                // the `error!` early-return above and never report — the
+                // worker honestly stays un-activated.
+                let _ = global
+                    .swmanager_sender
+                    .send(ServiceWorkerMsg::WorkerEvaluated { worker_id });
+
                 let reporter_name = format!("service-worker-reporter-{}", random::<u64>());
                 global_scope.mem_profiler_chan().run_with_memory_reporting(
                     || {

@@ -280,6 +280,16 @@ pub enum ServiceWorkerMsg {
     },
     /// <https://w3c.github.io/ServiceWorker/#algorithms>
     HandleAlgorithm(ServiceWorkerAlgorithm),
+    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): the service worker
+    /// thread reports its script evaluated and the activate event was
+    /// dispatched. The manager relays this to the registering client as the
+    /// spec's Update Worker State → "activated" transition — this is the only
+    /// worker-thread-evidenced state gate in this build (install-event
+    /// settlement tracking is upstream-absent, as is the rest of Update
+    /// Worker State).
+    WorkerEvaluated {
+        worker_id: ServiceWorkerId,
+    },
     /// Exit the service worker manager
     Exit,
 }
@@ -374,6 +384,26 @@ pub enum ServiceWorkerAlgorithmResult {
         scope_url: ServoUrl,
         script_url: ServoUrl,
         origin: ImmutableOrigin,
+    },
+
+    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update Registration
+    /// State relay — the installing worker was set on this registration (spec
+    /// queues "updatefound" on the registration's ServiceWorkerRegistration
+    /// objects, <https://w3c.github.io/ServiceWorker/#update-registration-state>).
+    /// Not an algorithm result; re-using algo channel for convenience. Must
+    /// NOT consume a pending job promise.
+    UpdateFound {
+        registration_id: ServiceWorkerRegistrationId,
+    },
+
+    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update Worker State
+    /// relay — the worker thread reported script evaluation + activate
+    /// dispatch complete ("activated"; the manager-side Try Activate patch
+    /// already holds the registration slot). The client fires "statechange"
+    /// on the DOM ServiceWorker object. Not an algorithm result; must NOT
+    /// consume a pending job promise.
+    WorkerActivated {
+        worker_id: ServiceWorkerId,
     },
 }
 

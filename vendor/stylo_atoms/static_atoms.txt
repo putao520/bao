@@ -185,6 +185,7 @@ transitionstart
 uncapturederror
 unhandledrejection
 unload
+updatefound
 url
 visibilitychange
 volumechange

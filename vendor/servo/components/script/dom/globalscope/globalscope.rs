@@ -902,8 +902,8 @@ impl GlobalScope {
         scope: &ServoUrl,
         registration_id: ServiceWorkerRegistrationId,
         installing_worker: Option<ServiceWorkerId>,
-        _waiting_worker: Option<ServiceWorkerId>,
-        _active_worker: Option<ServiceWorkerId>,
+        waiting_worker: Option<ServiceWorkerId>,
+        active_worker: Option<ServiceWorkerId>,
     ) -> DomRoot<ServiceWorkerRegistration> {
         // Step 1
         {
@@ -925,9 +925,24 @@ impl GlobalScope {
             new_registration.set_installing(&worker);
         }
 
-        // TODO: 2.7 (waiting worker)
+        // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): upstream TODOs
+        // 2.7/2.8 — materialize the waiting/active DOM ServiceWorker objects
+        // from the manager's registration slots (the manager-side Try Activate
+        // patch populates the active slot at install time). Membership comes
+        // from the manager; the worker *state* is NOT inferred here — it
+        // transitions to "activated" only via the worker-thread-evidenced
+        // WorkerActivated relay.
+        // Step 2.7 (waiting worker)
+        if let Some(worker_id) = waiting_worker {
+            let worker = self.get_serviceworker(cx, script_url, scope, worker_id);
+            new_registration.set_waiting(&worker);
+        }
 
-        // TODO: 2.8 (active worker)
+        // Step 2.8 (active worker)
+        if let Some(worker_id) = active_worker {
+            let worker = self.get_serviceworker(cx, script_url, scope, worker_id);
+            new_registration.set_active(&worker);
+        }
 
         // Step 2.9
         self.registration_map
@@ -936,6 +951,35 @@ impl GlobalScope {
 
         // Step 3
         new_registration
+    }
+
+    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): look up a
+    /// previously-materialized DOM ServiceWorker object by its manager-side
+    /// id — the lookup half of
+    /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
+    /// Step 1, used by the lifecycle relays (Update Worker State).
+    pub(crate) fn get_serviceworker_by_id(
+        &self,
+        worker_id: ServiceWorkerId,
+    ) -> Option<DomRoot<ServiceWorker>> {
+        self.worker_map
+            .borrow()
+            .get(&worker_id)
+            .map(|worker| DomRoot::from_ref(&**worker))
+    }
+
+    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): look up a
+    /// previously-materialized DOM ServiceWorkerRegistration object by its
+    /// manager-side id, used by the lifecycle relays (Update Registration
+    /// State → "updatefound").
+    pub(crate) fn get_serviceworker_registration_by_id(
+        &self,
+        registration_id: ServiceWorkerRegistrationId,
+    ) -> Option<DomRoot<ServiceWorkerRegistration>> {
+        self.registration_map
+            .borrow()
+            .get(&registration_id)
+            .map(|registration| DomRoot::from_ref(&**registration))
     }
 
     /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
