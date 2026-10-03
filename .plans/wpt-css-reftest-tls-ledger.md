@@ -169,6 +169,21 @@ C 面另有 FAIL ×3978 与 unexpected-PASS ×417(两桶见 C6/C8)。
 9. 登记类: C8/H6 正向漂移(吸收波 ini)、H3 SharedWorker pref(既有 L2)
 
 
+
+## 桶 5(C7 空白帧)解体重分类(2026-10-04,e42 归因终局)
+
+**三假设全否,零真空白帧缺陷**:H1 首帧竞态(probe:nav 返回 t=0 立即截图 6/6 CONTENT,截图三相就绪机+baolatch 零竞态窗)/H2 latch 饥饿(JS 注入 fixed 红盒下一张即纯红,超时串扰 0 触发)/H3 capture-composite 顺序(捕获在 Painter::render 尾部,内容页双视口全捕到)——**不存在独立渲染/截图时序机制**,每条白帧都是截图对当前布局/绘制态的正确捕获。
+
+重分类(125 唯一 test 逐页 live DOM census+截图解码双视口+3 组 A/B 实证):
+- 22 条非白 solid(by-design 全色页 0x008000/0x0000FF/0xFFFF00/0x000000)= 良性 note,FAIL 在另侧布局分歧→C6
+- 9 条语义正确白(4 about:blank+5 blank/filler ref)+1 selectors 文本预期不可见 = 良性
+- 94 条并入特性族:layout-api 45(display:layout() 不布局)/anchor-position 16(anchor-size() 解析期丢弃)/masking 14(**A/B 实证**:无效 clip-path url(#a) 引用整元素不绘,spec 要求忽略引用应显示——masking 家族正确性缺陷并入 C6)/contain-intrinsic-size 5/grid 内在尺寸 2/multicol column-rule 2/view-transitions 2/paint-api 1/shapes 1(shape-outside 未实现+裁剪正确 A/B)/motion 1/ruby 1(1600px 行盒推出 800x600 视口)
+- 横切发现:**上游 servo 不渲染滚动条**(window.rs:2547 上游原文 TODO)——凡唯一预期 ink=滚动条的页必白;上游能力缺口非 bao 回归
+
+**立项候选(报用户裁定,不擅自立项)**:a) 上游 servo 滚动条绘制(解锁一批 overflow:scroll reftest);b) masking 无效引用语义(clip-path/mask url(#invalid) 应忽略——14 条+mask-image 家族);c) grid 内在尺寸×overflow。
+
+证据物:/tmp/probe-css-sf/blank-frame/(probe 脚本+PNG+log)+/tmp/solid-tests.json(125 条映射)。floats 哨兵 146/147 零回归,树零改动。
+
 ## 桶 3 重定性修正(2026-10-04,e36 归因终局)
 
 **XDR stencil cache 证伪(无罪)**:
