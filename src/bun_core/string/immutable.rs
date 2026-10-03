@@ -2380,42 +2380,47 @@ pub const UNICODE_REPLACEMENT: u32 = 0xFFFD;
 pub const UNICODE_REPLACEMENT_STR: [u8; 3] = [0xEF, 0xBF, 0xBD];
 
 // Spec (immutable.zig:1990, 2003) calls `bun.c_ares.ares_inet_pton`, the vendored
-// c-ares implementation. Do NOT call the system `inet_pton` here: on Windows that
-// resolves into ws2_32.dll and fails with WSANOTINITIALISED whenever it runs before
-// `WSAStartup()`, which URL/host parsing can. c-ares' impl is pure C, no
-// preconditions. RealImpl lives in `crate::native_seam` (named owner).
+// c-ares implementation. It stays exported for numeric-host resolution paths.
+// The IP *classification* predicates below no longer route through it
+// (upstream 0d73249ae3): `ares_inet_pton` is `inet_net_pton` underneath and
+// also takes `10` (as 10.0.0.0), `127.1` (as 127.1.0.0), `0x7f000001`,
+// zero-padded octets, a trailing `/bits`, and stops at a NUL — so a shorthand
+// name has two readings (resolver vs `net.isIP`) and must not classify as an
+// IP where the parsed value is compared. (It also keeps this module free of
+// the system `inet_pton`, which on Windows resolves into ws2_32.dll and fails
+// with WSANOTINITIALISED before `WSAStartup()`.)
 pub use crate::native_seam::ares_inet_pton;
-// dep-graph: bun_string < bun_sys, so cannot import the canonical
-// `bun_sys::posix::AF`. Keep a thin libc/ws2def passthrough instead. The
-// previous hand-rolled cfg ladder hardcoded `10` for the BSD fallback, which
-// is wrong (FreeBSD AF_INET6 == 28); routing through `libc` fixes that.
-const AF_INET: c_int = 2;
-#[cfg(not(windows))]
-const AF_INET6: c_int = libc::AF_INET6 as c_int;
-#[cfg(windows)]
-const AF_INET6: c_int = 23; // ws2def.h
 
+/// Whether `input` is an IP literal: `net.isIP` without a `%zone`. A strict
+/// parse, the same on every platform — see [`parse_strict`].
 pub fn is_ip_address(input: &[u8]) -> bool {
-    let mut buf = [0u8; 512];
-    if input.len() >= buf.len() {
-        return false;
+    parse_strict(input).is_some()
+}
+
+/// A dotted quad or an IPv6 address and nothing else, the same on every
+/// platform. This is `core::net`'s parser and not `ares_inet_pton`, which is
+/// `inet_net_pton` underneath: it also takes `10` (as 10.0.0.0), `127.1` (as
+/// 127.1.0.0), `0x7f000001`, zero-padded octets, a trailing `/bits`, and
+/// stops at a NUL. Use this when the parsed value is compared, not just
+/// classified. (upstream 0d73249ae3)
+pub fn parse_strict(input: &[u8]) -> Option<core::net::IpAddr> {
+    // The longest literal is "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255",
+    // so a longer host is never scanned.
+    if input.len() > 45 {
+        return None;
     }
-    buf[..input.len()].copy_from_slice(input);
-    let mut dst = [0u8; 28];
-    // buf is NUL-terminated (zeroed then copied); dst ≥ sizeof(in6_addr).
-    ares_inet_pton(AF_INET, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
-        || ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
+    crate::fmt::parse_ascii::<core::net::IpAddr>(input)
 }
 
 pub fn is_ipv6_address(input: &[u8]) -> bool {
-    let mut buf = [0u8; 512];
-    if input.len() >= buf.len() {
+    // The IPv6 half of [`parse_strict`]. Must be a strict parse, not a
+    // `contains(':')` heuristic: on Windows a unix-socket path like
+    // `C:/Windows/Temp/…` contains a colon and the old heuristic
+    // mis-bracketed it as `unix://[C:/…]`, which fails URL parsing.
+    if input.len() > 45 {
         return false;
     }
-    buf[..input.len()].copy_from_slice(input);
-    let mut dst = [0u8; 28];
-    // buf is NUL-terminated (zeroed then copied); dst ≥ sizeof(in6_addr).
-    ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
+    crate::fmt::parse_ascii::<core::net::Ipv6Addr>(input).is_some()
 }
 
 pub fn left_has_any_in_right(to_check: &[&[u8]], against: &[&[u8]]) -> bool {

@@ -294,7 +294,14 @@ pub fn ip2_string<'a>(
 
 /// Matches a DNS name pattern (possibly with a leading `*.` wildcard) against
 /// `hostname`. Mirrors Node.js `check()` in lib/tls.js for a single pattern.
+/// A reference name that is not a DNS name matches nothing, before any
+/// pattern comparison (upstream 262530d193) — enforced here at the single
+/// choke point; the `host_is_dns_name` gate in
+/// `check_x509_server_identity` stays as defense in depth.
 fn match_dns_name(pattern: &[u8], hostname: &[u8]) -> bool {
+    if !is_hostname(hostname) {
+        return false;
+    }
     if pattern.is_empty() {
         return false;
     }
@@ -353,11 +360,27 @@ fn unfqdn(name: &[u8]) -> &[u8] {
     name.strip_suffix(b".").unwrap_or(name)
 }
 
+/// Letters, digits, `-`, `_` and `.`. Not in Node.js: a host with any other
+/// byte matches nothing, as in rustls and mozilla::pkix. `*.evil.test` would
+/// cover "localhost/.evil.test". The empty name is not a hostname either
+/// (`all` over an empty iterator would otherwise vacuously pass it).
+/// (upstream 262530d193)
+fn is_hostname(host: &[u8]) -> bool {
+    !host.is_empty()
+        && host
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 // @trace REQ-ENG-007 [entity:TlsConnection]
 pub fn check_x509_server_identity(x509: &mut boring::X509, hostname: &[u8]) -> bool {
-    // As in Node.js, a host is an IP address only as typed, not after the
-    // IDNA mapping — Node keeps `domainToASCII("::1") == ""` out of the IP
-    // path (CVE-2026-48618, upstream 8705d893b5; unfqdn per 9103862a8f).
+    // As in Node.js, a host is an IP address only as typed, and only in the
+    // strict form of `net.isIP`: the shared predicate is a strict `core::net`
+    // parse (upstream 0d73249ae3), so `ares_inet_pton`'s shorthand — `127.1`
+    // (as 127.1.0.0), `0x7f000001`, `1.2.3.4/8` — is a host name here, not an
+    // IP. Never after the IDNA mapping — Node keeps
+    // `domainToASCII("::1") == ""` out of the IP path (CVE-2026-48618,
+    // upstream 8705d893b5; unfqdn per 9103862a8f).
     let host_is_ip = strings::is_ip_address(unfqdn(hostname));
     let ascii_hostname;
     // Match a non-ASCII host on its UTS #46 form, as in
@@ -377,6 +400,12 @@ pub fn check_x509_server_identity(x509: &mut boring::X509, hostname: &[u8]) -> b
     };
     // Node.js: "Remove trailing dots for error messages and matching."
     let hostname = unfqdn(hostname);
+    // A reference name that is not a DNS name matches nothing: the SAN loop
+    // and the CN fallback both gate on this, so "localhost/.evil.test" cannot
+    // hide inside a `*` wildcard's single label. Runs on the name the matcher
+    // compares (as typed for ASCII, the UTS #46 form for non-ASCII). IP
+    // literals are never DNS names either. (upstream 262530d193)
+    let host_is_dns_name = !host_is_ip && is_hostname(hostname);
     // Node.js: CN is consulted only when the certificate carries no
     // DNS / IP / URI subjectAltName entries. Track whether any were seen.
     let mut has_identifier_san = false;
@@ -421,7 +450,7 @@ pub fn check_x509_server_identity(x509: &mut boring::X509, hostname: &[u8]) -> b
                                 }
                                 boring::GEN_DNS => {
                                     has_identifier_san = true;
-                                    if !host_is_ip {
+                                    if host_is_dns_name {
                                         let dns_name = &*name.d.dNSName;
                                         let dns_name_slice = core::slice::from_raw_parts(
                                             dns_name.data,
@@ -454,8 +483,9 @@ pub fn check_x509_server_identity(x509: &mut boring::X509, hostname: &[u8]) -> b
 
         // Node.js tls.checkServerIdentity: when the certificate has no
         // DNS/IP/URI subjectAltName entries, fall back to the Subject
-        // Common Name. Never for IP-literal hosts (RFC 2818 §3.1).
-        if !host_is_ip && !has_identifier_san {
+        // Common Name. Never for IP-literal hosts (RFC 2818 §3.1), and never
+        // for a reference name that is not a DNS name (upstream 262530d193).
+        if host_is_dns_name && !has_identifier_san {
             let subject = boring::X509_get_subject_name(x509);
             if !subject.is_null() {
                 let mut last: c_int = -1;
@@ -619,5 +649,77 @@ mod server_identity_tests {
         assert!(strings::is_ip_address(unfqdn(b"127.0.0.1.")));
         assert!(strings::is_ip_address(unfqdn(b"::1.")));
         assert!(!strings::is_ip_address(unfqdn(b"example.com.")));
+    }
+
+    #[test]
+    fn host_with_a_non_dns_byte_is_not_a_hostname() {
+        // Letters, digits, `-`, `_` and `.` only (upstream 262530d193): the
+        // delimiters a URL parse would cut at (`/`, `?`, `#`, `\`), whitespace
+        // and `@` all disqualify. Underscore stays legal (`foo_bar` exists).
+        assert!(is_hostname(b"foo_bar.example.com"));
+        assert!(is_hostname(b"db.1"));
+        assert!(is_hostname(b"xn--a.example.com"));
+        assert!(is_hostname(b"example.com."));
+        for host in [
+            &b"localhost/.evil.test"[..],
+            b"localhost?.evil.test",
+            b"localhost#.evil.test",
+            b"localhost\\.evil.test",
+            b"db:5432/.evil.test",
+            b"localhost .evil.test",
+            b"localhost@.evil.test",
+            b"*.example.com",
+            b"",
+        ] {
+            assert!(!is_hostname(host), "{:?} must not be a hostname", host);
+        }
+    }
+
+    #[test]
+    fn wildcard_never_covers_a_pathed_host() {
+        // "localhost/.evil.test" hides "localhost" in the `*` label; the
+        // non-DNS-name gate rejects before any pattern comparison
+        // (upstream 262530d193).
+        let host = b"localhost/.evil.test";
+        assert!(!is_hostname(host));
+        assert!(!match_dns_name(b"*.evil.test", host));
+        // A literal `*` in the host no longer matches a wildcard either.
+        assert!(!match_dns_name(b"*.wild.test", b"*.wild.test"));
+    }
+
+    #[test]
+    fn ip_shorthand_is_a_hostname_not_an_ip() {
+        // `ares_inet_pton` is `inet_net_pton` underneath: it read `127.1` as
+        // 127.1.0.0 and took `/bits`; the strict parse classifies the plain
+        // shorthand as a host name, so it reaches the DNS SAN loop and matches
+        // nothing there (upstream 0d73249ae3 / 262530d193).
+        for host in [
+            &b"127.1"[..],
+            b"10",
+            b"0x7f000001",
+            b"127.000.000.001",
+            b"1.2.3",
+        ] {
+            assert!(
+                !strings::is_ip_address(host),
+                "{:?} must not classify as an IP literal",
+                host
+            );
+            // And they are DNS-name-shaped, so they reach the SAN loop (and
+            // match nothing against a wildcard they do not belong to).
+            assert!(is_hostname(host), "{:?} is a hostname shape", host);
+            assert!(!match_dns_name(b"*.wild.test", host));
+        }
+        // A `/bits` suffix or a `%zone` is neither an IP nor a DNS name: the
+        // host_is_dns_name gate rejects before any comparison, as upstream
+        // (both matchers reject a host with a zone).
+        for host in [&b"1.2.3.4/8"[..], b"127.0.0.1/32", b"::1%lo"] {
+            assert!(!strings::is_ip_address(host));
+            assert!(!is_hostname(host));
+        }
+        // The canonical forms stay IPs.
+        assert!(strings::is_ip_address(b"127.0.0.1"));
+        assert!(strings::is_ip_address(b"::1"));
+        assert!(strings::is_ip_address(b"fe80::1"));
     }
 }

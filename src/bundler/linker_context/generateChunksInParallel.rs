@@ -909,16 +909,7 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
 
             let bytecode_output_file: Option<options::OutputFile> = 'brk: {
                 if c.options.generate_bytecode_cache {
-                    let loader: Loader = if chunk.entry_point.is_entry_point() {
-                        c.parse_graph().input_files.items_loader()
-                            [chunk.entry_point.source_index() as usize]
-                    } else {
-                        Loader::Js
-                    };
-
-                    if matches!(chunk.content, crate::chunk::Content::Javascript(_))
-                        && loader.is_javascript_like()
-                    {
+                    if c.chunk_gets_bytecode(chunk) {
                         let mut fdpath = bun_paths::path_buffer_pool::get();
                         // For --compile builds, the bytecode URL must match the module name
                         // that will be used at runtime. The module name is:
@@ -1019,16 +1010,7 @@ pub fn generate_chunks_in_parallel<const IS_DEV_SERVER: bool>(
                     && c.options.output_format == options::Format::Esm
                     && c.options.compile
                 {
-                    let loader: Loader = if chunk.entry_point.is_entry_point() {
-                        c.parse_graph().input_files.items_loader()
-                            [chunk.entry_point.source_index() as usize]
-                    } else {
-                        Loader::Js
-                    };
-
-                    if matches!(chunk.content, crate::chunk::Content::Javascript(_))
-                        && loader.is_javascript_like()
-                    {
+                    if c.chunk_gets_bytecode(chunk) {
                         if let crate::chunk::Content::Javascript(js) = &chunk.content {
                             if let Some(module_info_bytes) = &js.module_info_bytes {
                                 let mut out_path: Vec<u8> = Vec::new();

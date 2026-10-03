@@ -309,6 +309,21 @@ impl<'a> LinkerContext<'a> {
         unsafe { &mut *self.parse_graph }
     }
 
+    /// Whether `chunk` is one that bytecode (and, in an executable, module
+    /// info) is made for. The output file list counts those files with this
+    /// before they are made (`OutputFileList::calculate_output_file_list_capacity`).
+    /// (upstream ba1faad337)
+    pub(crate) fn chunk_gets_bytecode(&self, chunk: &Chunk) -> bool {
+        // The CSS chunk of a JavaScript entry point has that entry point's loader.
+        let loader = if chunk.entry_point.is_entry_point() {
+            self.parse_graph().input_files.items_loader()
+                [chunk.entry_point.source_index() as usize]
+        } else {
+            Loader::Js
+        };
+        chunk.content.is_javascript() && loader.is_javascript_like()
+    }
+
     /// Shared-read accessor for the resolver.
     ///
     /// `resolver` is a backref into `BundleV2.transpiler.resolver`, assigned

@@ -2645,36 +2645,20 @@ pub(crate) mod strings_impl {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // IP-literal predicates. Spec (immutable.zig:1984-2004) calls
-    // `bun.c_ares.ares_inet_pton`, the vendored c-ares implementation.
-    // Do NOT call the system `inet_pton` here: on Windows that resolves into
-    // ws2_32.dll and fails with WSANOTINITIALISED whenever it runs before
-    // `WSAStartup()`, which URL/host parsing can. c-ares' impl is pure C, no
-    // preconditions. RealImpl lives in `crate::native_seam` (named owner).
+    // IP-literal predicates. Strict `core::net` parses since upstream
+    // 0d73249ae3: `ares_inet_pton` is `inet_net_pton` underneath and also
+    // takes shorthand (`127.1`, `0x7f000001`, `/bits`), so a name like
+    // `127.1` has two readings (resolver vs `net.isIP`) and must not
+    // classify as an IP where the parsed value is compared. The canonical
+    // impl lives in `crate::string::immutable` next to `parse_strict`.
     // ──────────────────────────────────────────────────────────────────────
-    use crate::native_seam::ares_inet_pton;
-    // dep-graph: bun_core < bun_sys, so cannot import the canonical
-    // `bun_sys::posix::AF`. Keep a thin libc/ws2def passthrough instead. The
-    // previous hand-rolled cfg ladder hardcoded `10` for the BSD fallback,
-    // which is wrong (FreeBSD AF_INET6 == 28); routing through `libc` fixes that.
-    #[cfg(not(windows))]
-    const AF_INET6: core::ffi::c_int = libc::AF_INET6 as core::ffi::c_int;
-    #[cfg(windows)]
-    const AF_INET6: core::ffi::c_int = 23; // ws2def.h
 
-    /// Zig: `bun.strings.isIPV6Address` — `ares_inet_pton(AF_INET6, …) > 0`.
-    /// Must be a strict parse, not a `contains(':')` heuristic: on Windows a
-    /// unix-socket path like `C:/Windows/Temp/…` contains a colon and the old
-    /// heuristic mis-bracketed it as `unix://[C:/…]`, which fails URL parsing.
+    /// Zig: `bun.strings.isIPV6Address`. Must be a strict parse, not a
+    /// `contains(':')` heuristic: on Windows a unix-socket path like
+    /// `C:/Windows/Temp/…` contains a colon and the old heuristic
+    /// mis-bracketed it as `unix://[C:/…]`, which fails URL parsing.
     pub fn is_ipv6_address(input: &[u8]) -> bool {
-        let mut buf = [0u8; 512];
-        if input.len() >= buf.len() {
-            return false;
-        }
-        buf[..input.len()].copy_from_slice(input);
-        let mut dst = [0u8; 28];
-        // buf is NUL-terminated (zeroed then copied); dst ≥ sizeof(in6_addr).
-        ares_inet_pton(AF_INET6, buf.as_ptr().cast(), dst.as_mut_ptr().cast()) > 0
+        crate::string::immutable::is_ipv6_address(input)
     }
 
     pub fn starts_with_uuid(s: &[u8]) -> bool {

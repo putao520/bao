@@ -338,6 +338,36 @@ pub mod bv2_impl {
     use crate::Graph::InputFileColumns;
     use crate::Index;
     use crate::JSAst;
+
+    /// Logs resolver errors that `resolve()` returns without writing to any
+    /// log so `has_errors()` actually fires. Returns `true` when `err` is one
+    /// of those; shared by the two resolve-failure arms. (upstream 8d36bff512)
+    #[cold]
+    fn log_unhandled_resolve_error(
+        log: &mut bun_ast::Log,
+        source: Option<&bun_ast::Source>,
+        range: bun_ast::Range,
+        err: bun_core::Error,
+        specifier: &[u8],
+        kind: bun_ast::ImportKind,
+        report: bool,
+    ) -> bool {
+        if err == bun_core::err!("InvalidDataURL") {
+            if report {
+                bun_ast::Log::add_resolve_error_with_text_dupe(
+                    log,
+                    source,
+                    range,
+                    format_args!("Could not resolve data URL: \"{}\"", bstr::BStr::new(specifier)),
+                    specifier,
+                    kind,
+                );
+            }
+            return true;
+        }
+        // Other errors are logged by the resolver before it returns Failure.
+        false
+    }
     use crate::bun_fs as Fs;
     use crate::options_impl::TargetExt;
     use crate::transpiler::Transpiler;
@@ -2436,8 +2466,18 @@ pub mod bv2_impl {
                                     );
                                 }
                             }
+                        } else {
+                            log_unhandled_resolve_error(
+                                log,
+                                source,
+                                import_record.range,
+                                err,
+                                &import_record.specifier,
+                                import_record.kind,
+                                !handles_import_errors
+                                    && !self.transpiler.options.ignore_module_resolution_errors,
+                            );
                         }
-                        // assume other errors are already in the log
                         return;
                     }
                 }
@@ -6401,8 +6441,22 @@ pub mod bv2_impl {
                                     }
                                 }
                             } else {
-                                // assume other errors are already in the log
-                                last_error = Some(err);
+                                let report = !import_record
+                                    .flags
+                                    .contains(bun_ast::ImportRecordFlags::HANDLES_IMPORT_ERRORS)
+                                    && !self.transpiler.options.ignore_module_resolution_errors;
+                                let ours = log_unhandled_resolve_error(
+                                    log,
+                                    Some(source),
+                                    import_record.range,
+                                    err,
+                                    import_record.path.text,
+                                    import_record.kind,
+                                    report,
+                                );
+                                if !ours || report {
+                                    last_error = Some(err);
+                                }
                             }
                             continue 'outer;
                         }
