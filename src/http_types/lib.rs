@@ -27,3 +27,48 @@ pub mod MimeType;
 pub fn parse_content_length(value: &[u8]) -> usize {
     bun_core::parse_int::<usize>(value, 10).unwrap_or(0)
 }
+
+/// RFC 9110 §8.6 `1*DIGIT`, strictly: `None` for anything else, or a
+/// value that overflows `u64`. Distinct from [`parse_content_length`] (the
+/// lenient `catch 0` fall-through non-framing call sites use): this is the
+/// wire-grammar parser the framing decision must have — upstream bun
+/// 83913e746a consolidates its inline copies onto this shape.
+#[inline]
+pub fn parse_content_length_strict(value: &[u8]) -> Option<u64> {
+    if value.is_empty() {
+        return None;
+    }
+    let mut n: u64 = 0;
+    for &c in value {
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add(u64::from(c - b'0'))?;
+    }
+    Some(n)
+}
+
+#[cfg(test)]
+mod tests {
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit] — upstream bun 83913e746a
+    use super::parse_content_length_strict;
+
+    #[test]
+    fn strict_content_length_is_1digit_only() {
+        assert_eq!(parse_content_length_strict(b"7"), Some(7));
+        assert_eq!(parse_content_length_strict(b"0"), Some(0));
+        assert_eq!(parse_content_length_strict(b"999999999999999999"), Some(999_999_999_999_999_999));
+        // the grammar rejects everything that is not 1*DIGIT
+        assert_eq!(parse_content_length_strict(b""), None);
+        assert_eq!(parse_content_length_strict(b"+5"), None);
+        assert_eq!(parse_content_length_strict(b"-1"), None);
+        assert_eq!(parse_content_length_strict(b"0x10"), None);
+        assert_eq!(parse_content_length_strict(b"5.0"), None);
+        assert_eq!(parse_content_length_strict(b"abc"), None);
+        assert_eq!(parse_content_length_strict(b"5, 7"), None);
+        assert_eq!(parse_content_length_strict(b" 5"), None);
+        assert_eq!(parse_content_length_strict(b"5 "), None);
+        assert_eq!(parse_content_length_strict(b"7, 7"), None);
+        assert_eq!(parse_content_length_strict(b"99999999999999999999"), None);
+    }
+}

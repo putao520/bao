@@ -136,7 +136,7 @@ pub enum Protocol {
 }
 
 pub use bun_http_types::Encoding::Encoding;
-pub use header_value_iterator::HeaderValueIterator;
+pub use header_value_iterator::{HeaderValueIterator, fold_transfer_encoding};
 pub use init_error::InitError;
 
 /// Zig: `pub const extremely_verbose = false;` — compile-time switch.
@@ -4859,12 +4859,21 @@ impl<'a> HTTPClient<'a> {
                 h if h == hash_header_const(b"Content-Length") => {
                     // byte-level parse — header.value() is network bytes, not &str
                     //
+                    // RFC 9110 §8.6 `1*DIGIT`, strictly (upstream bun 83913e746a
+                    // consolidation): one shared parser replaces the inline
+                    // form here; the wire-observable grammar is unchanged
+                    // (parse_unsigned at radix 10 already rejected hex/sign/
+                    // OWS/overflow) — the lock lives in the shared fn's unit
+                    // test and the response framing wire matrix.
+                    //
                     // RFC 9112 section 6.3: an invalid or conflicting
                     // Content-Length is an unrecoverable framing error —
                     // falling back to 0 would release a desynchronized socket
                     // into the keep-alive pool.
-                    let Ok(content_length) = bun_core::parse_unsigned::<usize>(header.value(), 10)
-                    else {
+                    let Some(content_length) = bun_http_types::parse_content_length_strict(
+                        header.value(),
+                    )
+                    .and_then(|n| usize::try_from(n).ok()) else {
                         return Err(err!(InvalidContentLength));
                     };
                     if self.method.has_body() {
@@ -4904,29 +4913,15 @@ impl<'a> HTTPClient<'a> {
                     }
                 }
                 h if h == hash_header_const(b"Transfer-Encoding") => {
-                    if header.value() == b"gzip" {
-                        if !self.flags.disable_decompression {
-                            self.state.transfer_encoding = Encoding::Gzip;
-                        }
-                    } else if header.value() == b"deflate" {
-                        if !self.flags.disable_decompression {
-                            self.state.transfer_encoding = Encoding::Deflate;
-                        }
-                    } else if header.value() == b"br" {
-                        if !self.flags.disable_decompression {
-                            self.state.transfer_encoding = Encoding::Brotli;
-                        }
-                    } else if header.value() == b"zstd" {
-                        if !self.flags.disable_decompression {
-                            self.state.transfer_encoding = Encoding::Zstd;
-                        }
-                    } else if header.value() == b"identity" {
-                        self.state.transfer_encoding = Encoding::Identity;
-                    } else if header.value() == b"chunked" {
-                        self.state.transfer_encoding = Encoding::Chunked;
-                    } else {
-                        return Err(err!(UnsupportedTransferEncoding));
-                    }
+                    // Upstream bun 83913e746a: one shared fold for the request
+                    // and response sides. RFC 9112 §6.1 — the token list is
+                    // comma-separated, OWS-trimmed, case-insensitive, and
+                    // `chunked` must be the final coding; anything the client
+                    // does not know (or a coding after `chunked`) rejects.
+                    // The previous exact-match arm rejected every valid list
+                    // form (`gzip, chunked`) and never tripped the repeated-
+                    // chunked case.
+                    fold_transfer_encoding(header.value(), &mut self.state.transfer_encoding)?;
                 }
                 h if h == hash_header_const(b"Location") => {
                     location = header.value();

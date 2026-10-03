@@ -103,6 +103,7 @@ mod net_connect_options_e2e_tests;
 mod net_deep_tests;
 mod net_echo_e2e_tests;
 mod net_socket_pipe_e2e_tests;
+mod net_tls_fetch_retention_tests;
 mod node_assert_deep_tests;
 mod node_assert_util_tests;
 mod node_async_hooks_deep_tests;
