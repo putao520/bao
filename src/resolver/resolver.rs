@@ -1823,9 +1823,20 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        // Node reads "type" from the nearest package.json, named or not
+        // (upstream 467e741449) — `enclosing_package_json` skips a nameless
+        // package.json, so it can't be used here.
+        // PORT NOTE: upstream reads this inside the `path_pair` loop via
+        // `is_primary`; bao keeps the read after the loop so the in-loop
+        // `module_type_from_ext` fill (mjs/cjs/mts/cts) keeps running first and
+        // the extension still wins over a package.json "type", matching
+        // upstream's trailing extension-wins block.
         if !kind.is_from_css() && module_type == options::ModuleType::Unknown {
-            if let Some(pkg) = result.package_json_ref() {
-                module_type = pkg.module_type;
+            let primary = result.path_pair.primary.name();
+            if let Ok(Some(dir)) = self.read_dir_info(primary.dir) {
+                if let Some(pkg) = dir.package_json_for_module_type {
+                    module_type = pkg.module_type;
+                }
             }
         }
 
@@ -6346,6 +6357,13 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+
+        // Node reads "type" from the nearest package.json, named or not
+        // (upstream 467e741449): this directory's own package.json if present,
+        // else the parent's nearest (which itself inherited upward).
+        info.package_json_for_module_type = info
+            .package_json()
+            .or_else(|| parent.as_ref().and_then(|p| p.package_json_for_module_type));
 
         // Record if this directory has a tsconfig.json or jsconfig.json file
         if self.opts.load_tsconfig_json {
