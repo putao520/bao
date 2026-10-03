@@ -21,9 +21,16 @@ use crate::common::{Metric, Params, ResultBuilder};
 
 pub fn run(p: &Params) -> Result<ResultBuilder, String> {
     let iterations = p.usize_of("iterations", 100);
+    // W31 chunk-residency attribution: `--gc-mode normal` reproduces the
+    // W5-era retention (GCOptions::Normal + inHighFrequencyGCMode skips the
+    // decommit pass, and chunk unmap lives ONLY inside that pass) so the
+    // Shrink-face GREEN above is attributable to Shrink, not to churn
+    // semantics. Default "shrink" = zero behavior change.
+    let gc_mode = p.str_of("gc-mode", "shrink");
 
     let mut b = ResultBuilder::new("zone-eval");
     b.param("iterations", iterations.into());
+    b.param("gc-mode", gc_mode.clone().into());
 
     // ── Baseline: a live context, stats collected on its cx ──────────────
     let mut base_ctx = JsContext::for_test()
@@ -89,22 +96,22 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
     // makes shouldDecommit() unconditionally true (chunk release) and runs the
     // purge/compact tail; GCReason::API skipped the decommit pass entirely in
     // high-frequency allocation modes (design /tmp/w10-zone-fix-design.md §4-B).
-    unsafe {
-        mozjs::jsapi::NonIncrementalGC(
-            final_ctx.raw_cx(),
-            mozjs::jsapi::GCOptions::Shrink,
-            mozjs::jsapi::GCReason::API,
-        );
-    }
+    // W31: gc-mode=normal arms the W5-era control face (plain JS_GC).
+    let forced_gc = |cx: *mut mozjs::jsapi::JSContext| unsafe {
+        if gc_mode == "normal" {
+            mozjs::jsapi::JS_GC(cx, mozjs::jsapi::GCReason::API);
+        } else {
+            mozjs::jsapi::NonIncrementalGC(
+                cx,
+                mozjs::jsapi::GCOptions::Shrink,
+                mozjs::jsapi::GCReason::API,
+            );
+        }
+    };
+    forced_gc(final_ctx.raw_cx());
     // Second sweep: SM chunk release can lag the first collection by a slice;
     // two full collections bound the honest post-GC reading.
-    unsafe {
-        mozjs::jsapi::NonIncrementalGC(
-            final_ctx.raw_cx(),
-            mozjs::jsapi::GCOptions::Shrink,
-            mozjs::jsapi::GCReason::API,
-        );
-    }
+    forced_gc(final_ctx.raw_cx());
     let final_stats = unsafe { collect_runtime_stats(final_ctx.raw_cx()) }
         .map_err(|e| format!("final stats failed: {e}"))?;
     b.metric(Metric::single(
@@ -211,14 +218,24 @@ pub fn run(p: &Params) -> Result<ResultBuilder, String> {
     // decommit pass is skipped in high-frequency allocation modes and the
     // chunk total stays parked near the churn peak — this gate is the RED
     // half of the Shrink-GC RED→GREEN pair.
+    // W31: gc-mode=normal EXPECTS the parked pool (that parking IS the
+    // W5-era retention mechanism under attribution) — report it in the note
+    // instead of failing the gate, so one command yields the A/B evidence.
     let chunk_gate = baseline.gc_heap_chunk_total.saturating_mul(3) / 2;
     if final_stats.gc_heap_chunk_total > chunk_gate {
-        return Err(format!(
-            "W10 chunk-fallout gate RED: gc_heap_chunk_total_final ({}) > baseline×1.5 ({}) — dead-realm chunk memory not released (reason={}; Shrink wiring required)",
-            final_stats.gc_heap_chunk_total,
-            chunk_gate,
-            "API"
-        ));
+        if gc_mode == "normal" {
+            b.note(format!(
+                "W31 normal-GC control: pool PARKED at final={} bytes (pre_gc={}) — upstream Normal+high-frequency GC skips the decommit pass; chunk unmap lives only in that pass (GC.cpp startDecommit/expireEmptyChunkPool). This is the W5-era retention mechanism reproduced.",
+                final_stats.gc_heap_chunk_total, pre_gc.gc_heap_chunk_total
+            ));
+        } else {
+            return Err(format!(
+                "W10 chunk-fallout gate RED: gc_heap_chunk_total_final ({}) > baseline×1.5 ({}) — dead-realm chunk memory not released (reason={}; Shrink wiring required)",
+                final_stats.gc_heap_chunk_total,
+                chunk_gate,
+                "API"
+            ));
+        }
     }
 
     Ok(b)
