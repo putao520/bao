@@ -41,8 +41,21 @@
   - FAIL「cross-realm plain object with non-callable 'handleEvent' property」:同报错
   - PASS「revoked Proxy as 'handleEvent'」/「non-callable revoked Proxy」/「callable revoked Proxy」
 - **Chromium oracle 同文件:harness OK + 同两格 FAIL、同报错**——按 e17 裁决 A,该两格是「测试文本 vs Chromium 实况」错位,**bao 非分歧方**(逐格同形)。
-- **逐格分歧 1 处**:「cross-realm non-callable revoked Proxy」bao PASS / Chromium FAIL(`expected "object" but got "undefined"`)——本轮扩面捞出的 bao↔Chromium 唯一分叉格,属引擎邻域发现(跨 realm revoked Proxy listener 行为),超本载具合同面,**登记待裁决,不动码**。
+- **逐格分歧 1 处**:「cross-realm non-callable revoked Proxy」bao PASS / Chromium FAIL(`expected "object" but got "undefined"`)——本轮扩面捞出的 bao↔Chromium 唯一分叉格,见下节终裁。
 - **载具面联动**:driver 报告明细面增强——harness status OK 但含失败 subtest 的文件也进「失败/超时明细」(testharness 的 harness-status 只对 harness 级错误翻转,不对 subtest 失败翻转;三态判定逻辑零改动)。
+
+### 分歧格终裁(2026-10-03,用户裁决):callback-interface Get-抛掷对齐 Chromium
+
+- **三样取证(cell 级探针 `/tmp/incv/revoked_proxy_cell4_probe.py`,双引擎逐格)**:
+  - **bao PASS 是真语义**:cell 4(listener = iframe-realm revoked 非 callable proxy)bao **同步抛出** SM revoked TypeError("illegal operation attempted on a revoked proxy")→ 经 report-the-exception 上报 **iframe error 事件**,error = iframe-realm TypeError → 两断言全过。main realm 零事件、零同步漏出。
+  - **Chromium 同格 = 真静默吞**:iframe/main 零 error 事件、dispatchEvent 不抛、**CDP exceptionThrown/console 全零** → error 恒 undefined 死在第 1 断言 `assert_equals: expected "object" but got "undefined"`。
+  - **spec 判定**:ES(revoked proxy [[Get]] 必抛)→ WebIDL call-a-user-object's-operation(`? Get(V,"handleEvent")` 传播)→ DOM report-the-exception(报到 callback object 的 relevant global = iframe)——**spec 终态 = bao 的观测形态;Chromium 是分止单方**。cells 1/2(not-callable handleEvent)双引擎同吞零分歧(两侧都偏离 spec,测试文本 vs 引擎实况错位,bao=Chromium)。
+  - Chromium 形态画像:**Call 前全吞、Call 后照报**(cells 3/5 的 Call 抛掷 Chromium 照报 iframe-realm TypeError,cell 4 的 Get 抛掷被吞)。
+- **终裁:向 Chromium 对齐**(裁决 A 宪法同构延伸:Chromium=事实标准,分止单格=探测向量——页面构造 revoked-proxy listener 观察 error 事件即可区分引擎;spec 正确性让位不可区分性)。
+- **修面(已落地)**:`vendor/servo/components/script_bindings/codegen/codegen.py` `CallbackOperationBase.getCallableDecl` 单操作臂——属性查找 `Err(JSFailed)` 臂改「清 SM pending exception(`JS_ClearPendingException`)+ `return Ok(Default::default())` 静默成功 no-op」;`Err(e)` 照旧传播(cells 1/2 形态零变化)。**零触碰**:Call 抛掷路径(cells 3/5 照报面)、`get_callable_property` 本体、多操作臂、TreatNonObjectAsNull 守卫臂。范围 = 全部单操作回调接口(在树 EventListener/NodeFilter/XPathNSResolver;成功型 ()/u16/Option<DOMString> 全 impl Default)。patch 清单行已入项目 CLAUDE.md(servo 定制文件清单)。
+- **上游 issue 候选**(按 upstream-issue-feedback 纪律,提报与否由用户指令定):Blink callback-interface 操作属性查找的 Get-throw 被 TryCatch 吞掉不 report,违反 DOM dispatch 的 report-the-exception 步;该 WPT 文件在 Chromium 自身 2/5 红。
+- **反向跟进条款(吸收波必读)**:若未来 Blink 开始 report 该 Get 抛掷(spec 方向修正),撤此吞臂重新对齐 Chromium。
+- **V 面(修后)**:[待 V 收口——重建 test-ci 二进制 → cell 探针复跑(cell 4 预期 = 静默吞,Chromium 同形)+ 46 文件全量(基线 44 PASS(harness)/2 crash/0 NO-HARVEST,本文件预期 3/5→2/5 == Chromium)]。
 
 ## 历史基线(2026-10-02 final · test-ci 档 + 载具三面 + crash-test face)
 

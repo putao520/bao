@@ -8989,8 +8989,41 @@ class CallbackOperationBase(CallbackMethod):
         getCallableFromProp = f'self.parent.get_callable_property(cx, c"{self.methodName}")?'
         if not self.singleOperation:
             return f'rooted!(&in(cx) let callable =\n{getCallableFromProp});\n'
+        # BAO patch (fork-maintained, 2026-10-03, user ruling — Chromium-shape
+        # alignment for callback-interface property lookups): Blink swallows a
+        # JS exception thrown by the operation-property lookup on a
+        # (non-callable) callback-interface listener — no error event reaches
+        # any realm and nothing is reported (measured on WPT
+        # dom/events/EventListener-handleEvent-cross-realm.html, "non-callable
+        # revoked Proxy" cell: Chromium = silent, servo = reports to the
+        # listener realm). The DOM dispatch report step says report; Chromium
+        # deviates; the anti-fingerprint constitution (2026-10-02 ruling A,
+        # same-logic extension 2026-10-03) picks Chromium as the baseline.
+        # Mirror it exactly: on JSFailed from the lookup, clear the pending
+        # SpiderMonkey exception and complete this invocation as a successful
+        # no-op. The Call-path exception below is untouched (still reported
+        # via ExceptionHandling::Report); get_callable_property itself is
+        # unchanged (shared by all CallbackInterface consumers — the swallow
+        # lives only in this generated invoke shape).
+        # Reverse-followup: if Blink ever starts reporting this throw, drop
+        # this swallow to re-match (see compat/web/WPT-FIRST-RUN.md 2026-10-03
+        # ruling + upstream issue candidate).
+        # Note: `Ok(Default::default())` requires the operation's success type
+        # to impl Default — true for all callback interfaces in-tree
+        # (EventListener: (), NodeFilter: u16, XPathNSResolver:
+        # Option<DOMString>); a future non-Default return fails compilation
+        # here (loud, by design).
+        swallowLookupFailure = (
+            'match self.parent.get_callable_property(cx, c"%s") {\n'
+            '    Ok(v) => v,\n'
+            '    Err(JSFailed) => {\n'
+            '        unsafe { js::rust::wrappers2::JS_ClearPendingException(cx) };\n'
+            '        return Ok(Default::default());\n'
+            '    }\n'
+            '    Err(e) => return Err(e),\n'
+            '}' % self.methodName)
         callable = CGIndenter(
-            CGIfElseWrapper('isCallable', CGGeneric('ObjectValue(self.callback())'), CGGeneric(getCallableFromProp))
+            CGIfElseWrapper('isCallable', CGGeneric('ObjectValue(self.callback())'), CGGeneric(swallowLookupFailure))
         ).define()
         return ('let isCallable = unsafe { IsCallable(self.callback()) };\n'
                 'rooted!(&in(cx) let callable =\n'
