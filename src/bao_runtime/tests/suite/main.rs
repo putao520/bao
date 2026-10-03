@@ -204,3 +204,4 @@ mod zlib_deep_tests;
 mod zlib_silent_tests;
 mod node_conformance;
 mod minimal_sm_init_tests;
+mod semantic_port_streams_tests;
