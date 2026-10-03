@@ -1,6 +1,50 @@
 # WPT First Run — Bao (subset, #14-C)
 
-## 结果总表(2026-10-02 final · test-ci 档 + 载具三面 + crash-test face)
+## 结果总表(2026-10-03 · wptserve 载具面落地 + subframe 链解锁 + manifest 扩面)
+
+- date: 2026-10-03 · driver: bao browser (headless CDP) + python ws,载具四面(每文件独立浏览器 + rAF 就绪门 + Shape A 输入合成 + crash-test face)+ **第五面 mini-wptserve(模板替换 + wpt hosts 多主机)**(`/tmp/wpt_first_run.py` + `/tmp/wptserve_mini.py`)
+- suite root: upstream tests/wpt/tests (`dom/` subset),**mini-wptserve**(browser_host=`web-platform.test`,hosts=`/home/putao/code/tools/servo/tests/wpt/hosts`——与浏览器侧解析同源,见下)
+- binary: /tmp/bao-target-routing/test-ci/bao(e18 target-routing 波产物,mtime 10-03 04:54,钉当前 master)
+- manifest: **46 files**(40 → 46:subframe 本体替换 ×1 + 新增 ×6,event 面优先)· **PASS(harness): 44** · OK(crash-survival): **2** · NO-HARVEST: **0**
+- subtest 总量(harness 面 44 文件):**PASS 1557 / FAIL 2**(2 条 FAIL 全部来自新增 cross-realm 文件,见专节;其余 43 文件含全部存量文件子测试数与 10-02 基线逐字节一致,零回归)
+
+### wptserve 载具面(2026-10-03 落地)
+
+- **载具资产** `/tmp/wptserve_mini.py`(ADAPT 上游 `tests/wpt/tests/tools/wptserve/wptserve/{pipes,handlers}.py` 子集,ADAPT 源对齐注释在文件头):
+  - `.sub.` 文件模板替换(`{{host}}` / `{{domains[www1|www2|...]}}` / `{{ports[http][0]}}` / `{{location[scheme|path|...]}}` / `{{headers[..]}}` / `{{GET[..]}}` / `uuid()` / `header_or_default(..)`;HTML escape 按 handlers.py 的 ML 扩展集 {.html,.htm,.xht,.xhtml,.xml,.svg});`<path>.headers` / `<path>.sub.headers` sidecar 头文件;
+  - **多主机 = 同 port 不同 Host 头**:全部 Host 服务同一 docroot(wptserve 本就单树服务所有子域;浏览器侧 origin 由 URL 决定而非 server),每请求 Host 头落访问日志作证据(`/tmp/wptserve-mini-access.log`:同 port 8944 三 Host——`web-platform.test` ×211 / `www1` ×2 / `www2` ×2,每链 subframe+subsubframe 各 1);
+  - **fail-closed loud 500**:未实现模板构(`$var:` 赋值 / `file_hash()` / `fs_path()` / `?pipe=gzip` 等)返回显式 500 + 缺口文本——载具缺口显式化,非静默空替换。
+- **浏览器侧域名解析(零 /etc/hosts 改动)**:servo 自有 HOST_FILE 机制(`vendor/servo/components/net/hosts.rs` 读 env `HOST_FILE`;页面网络路径 `obtain_response_bun` 经 `hosts::replace_host` 把连接目标重写为 127.0.0.1、Host 头保留原域名)。driver 起 browser 时注入 `HOST_FILE=/home/putao/code/tools/servo/tests/wpt/hosts`(上游 hosts 文件,只读消费)——模板域名表与浏览器解析**单源同文件**(`WptConfig` 同一 parse,自校验:browser_host 必为表中 registrable root)。
+- **端口纪律**:CDP 端口 9281 被无关 frog-preview http.server 长期占用(Sep 18 存活进程,非本项目),探测面选点避让;8944 曾被 10-01 旧载具孤儿 `http.server` 占用(已清),driver 现为进程内线程 server,不再产孤儿。
+
+### subframe 链解锁(e16 定性③闭环 + e17 裁决 A 解释)
+
+- **manifest 修正**:`EventListener-incumbent-global-subframe-1.sub.html`(子框体,非 harness 本体)→ **`EventListener-incumbent-global-1.sub.html`**(本体)并新增 `-2.sub.html`。裸静态 server 下这些文件结构性不可运行(iframe src 是未替换模板串)——本波后**四层 relay 全链真实语义执行**:`-1.sub.html`(harness)→ subframe-1@www1 → subsubframe@www2,模板替换 → 跨主机 iframe → `document.domain` 双侧松弛到 `web-platform.test` → 跨主机 postMessage 断言。
+- **实测**:bao **OK 1/1 ×2**(-1/-2 链,~1.1s/文件);**Chromium oracle 同载具同文件 OK 1/1 ×2**(`/tmp/incv/incumbent_chain_chrome.py`,Chrome `--host-resolver-rules` 多主机映射)——逐格吻合,符合 e17 裁决 A(servo=Chromium 形)。断言真值 = `assert_equals(e.origin, parent.location.origin)` 成立;该结论与 e17 ③「双侧 document.domain 松弛掩蔽」的裁决分析相容,不重开 incumbent 裁决。
+
+### manifest 扩面(+6,event 面优先;5 新文件 + 1 链文件)
+
+| 文件 | 结果 | 备注 |
+|---|---|---|
+| dom/events/EventListener-incumbent-global-1.sub.html | OK 1/1 | subframe-1 链本体(e16 ③闭环) |
+| dom/events/EventListener-incumbent-global-2.sub.html | OK 1/1 | -2 链(subframe-2 形,同构解锁) |
+| dom/events/EventListener-handleEvent-cross-realm.html | OK 3/5 | **2 条 subtest FAIL**,见专节 |
+| dom/events/Event-dispatch-other-document.html | OK 1/1 | |
+| dom/events/event-global.html | OK 8/8 | |
+| dom/events/Event-dispatch-throwing.html | OK 2/2 | |
+| dom/events/EventTarget-this-of-listener.html | OK 6/6 | |
+
+### 新文件发现:EventListener-handleEvent-cross-realm.html(harness status OK + 2 条 subtest FAIL)
+
+- 子测试明细(探针 `/tmp/incv/subtest_detail_probe.py`,全量 `__wpt_results__`):
+  - FAIL「cross-realm plain object without 'handleEvent' property」:`assert_equals: expected "object" but got "undefined"`
+  - FAIL「cross-realm plain object with non-callable 'handleEvent' property」:同报错
+  - PASS「revoked Proxy as 'handleEvent'」/「non-callable revoked Proxy」/「callable revoked Proxy」
+- **Chromium oracle 同文件:harness OK + 同两格 FAIL、同报错**——按 e17 裁决 A,该两格是「测试文本 vs Chromium 实况」错位,**bao 非分歧方**(逐格同形)。
+- **逐格分歧 1 处**:「cross-realm non-callable revoked Proxy」bao PASS / Chromium FAIL(`expected "object" but got "undefined"`)——本轮扩面捞出的 bao↔Chromium 唯一分叉格,属引擎邻域发现(跨 realm revoked Proxy listener 行为),超本载具合同面,**登记待裁决,不动码**。
+- **载具面联动**:driver 报告明细面增强——harness status OK 但含失败 subtest 的文件也进「失败/超时明细」(testharness 的 harness-status 只对 harness 级错误翻转,不对 subtest 失败翻转;三态判定逻辑零改动)。
+
+## 历史基线(2026-10-02 final · test-ci 档 + 载具三面 + crash-test face)
 
 - date: 2026-10-02 · driver: bao browser (headless CDP) + python ws,**每文件独立浏览器实例 + rAF 就绪门 + Shape A 输入合成 + crash-test face**(`/tmp/wpt_first_run.py`)
 - suite root: upstream tests/wpt/tests (`dom/` subset), static http server (127.0.0.1)
@@ -129,7 +173,7 @@ Shape A 单文件首航 4/4 后,全量复跑中 redispatch 仍 2/4 且无 tap �
 
 - ~~[WPT 收敛波] 7 FAIL 文件为真实引擎缺口~~ **2026-10-02 载具波后全部翻转,0 FAIL 残留**:5 文件系引擎缺口,已由 10-02 absorb 波修复(createElement-namespace 51/51 / webkit-animation 13/13 / subclasses-constructors 49/49 / NodeIterator-removal 25/25 / DOMTokenList 175/175);2 文件系载具限,已根治(redispatch:Shape A + rAF 就绪门 → 4/4;NodeList-tampered-2:test-ci 档 8.3s → 1/1)。现行基线 = 2026-10-02 总表(37 PASS / 0 FAIL / 3 NO-HARVEST)。
 - [载具面 · bao headless 帧生产] 帧生产为启动期一次性(boot frame),此后无帧 → rAF 门类测试在第 2+ 页面永挂。当前以每文件独立浏览器 + 就绪门在载具面规避;引擎侧连续产帧(如 headless 恒常 composite 或 CDP 可触发产帧面)属产品码域候选,未立项。
-- ~~[NO-HARVEST 3 文件] 均为 crash 型/子框架型测试,单独立项定位~~ **2026-10-02 全闭环(见「NO-HARVEST 3 文件定性收口」专节 + crash-test face)**:三文件均无引擎崩溃(vendor 零变更);NO-HARVEST 根因 = harness-less 收割通道结构性打不通。crash-test face 落地后现行终表 = **37 PASS(harness) / 3 OK(crash-survival) / 0 NO-HARVEST**。残留:subframe-1 全语义(incumbent-global 断言)依赖 wptserve 多主机,维持定性,挂账 wptserve 载具面;引擎邻域发现(WebIDL 回调期 incumbent 解析优先级)已**三角实证裁决收口(2026-10-02,裁决 A 维持现状零码变更)**,详见「NO-HARVEST 3 文件定性收口」专节③的裁决终态与两条上游 issue 候选登记。
+- ~~[NO-HARVEST 3 文件] 均为 crash 型/子框架型测试,单独立项定位~~ **2026-10-02 全闭环(见「NO-HARVEST 3 文件定性收口」专节 + crash-test face)**:三文件均无引擎崩溃(vendor 零变更);NO-HARVEST 根因 = harness-less 收割通道结构性打不通。crash-test face 落地后现行终表 = **37 PASS(harness) / 3 OK(crash-survival) / 0 NO-HARVEST**。残留:~~subframe-1 全语义(incumbent-global 断言)依赖 wptserve 多主机,维持定性,挂账 wptserve 载具面~~ **[2026-10-03 已闭环]** wptserve 载具面(mini-wptserve 模板替换 + wpt hosts 多主机)落地,manifest 换入 harness 本体 `-1.sub.html` 并新增 `-2.sub.html`,四层链真实语义执行 bao OK 1/1 ×2 且 Chromium oracle 逐格吻合(见 2026-10-03 总表专节);引擎邻域发现(WebIDL 回调期 incumbent 解析优先级)已**三角实证裁决收口(2026-10-02,裁决 A 维持现状零码变更)**,详见「NO-HARVEST 3 文件定性收口」专节③的裁决终态与两条上游 issue 候选登记。
 - [servo vendor 候选] pending window timer 跨同源 `window_for_replacement` 导航触发 `timers.rs:912` 断言 panic(上游不变量对 init-script 定时器不健壮;本波以 INJECT 零 timer 化规避,引擎侧加固待另立裁决)。
 - ~~[CDP 面] `removeScriptToEvaluateOnNewDocument` 未接线;接线时注册表按 identifier 化~~ **已闭环(2026-10-01 removeScript 按 id 合同)**:注册表按 identifier 化落地,remove 按 id 真删(见偏差注记)。
 - ~~[bao_cdp 直派面] `BridgeCommand::AddScriptToEvaluateOnNewDocument` → page `UserContentManager` 路径仍为 head 插入延迟任务时点~~ **已闭环(2026-10-01)**:memory bridge 面与 WS 面同落 vendor realm-entry 注入载体(CDP 规范时点),且 add 返回 vendor 自铸 identifier、remove 按其注销——双 CDP 面单源。保留面:cmd_add_script 另对当前 document 立即应用一次(evaluate_js_web,Chrome new-documents-only 的超集,行为自 W55 未变)。
