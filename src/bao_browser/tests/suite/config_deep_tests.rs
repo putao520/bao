@@ -243,6 +243,9 @@ fn test_browser_config_custom() {
         viewport_height: 720,
         headless: false,
         stealth_profile: None,
+        webdriver_port: None,
+        ignore_certificate_errors: false,
+        certificate_path: None,
     };
     assert_eq!(cfg.url.as_deref(), Some("https://test.com"));
     assert_eq!(cfg.cdp_port, 8080);

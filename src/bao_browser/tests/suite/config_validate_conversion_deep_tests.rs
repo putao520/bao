@@ -265,6 +265,9 @@ fn test_from_preserves_all_fields() {
         viewport_height: 1440,
         headless: false,
         stealth_profile: None,
+        webdriver_port: None,
+        ignore_certificate_errors: false,
+        certificate_path: None,
     };
     let bao: BaoConfig = bc.into();
     assert_eq!(bao.cdp_port, Some(9999));

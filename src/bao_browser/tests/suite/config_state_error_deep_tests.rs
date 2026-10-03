@@ -248,6 +248,9 @@ fn test_browser_config_custom() {
         viewport_height: 720,
         headless: false,
         stealth_profile: Some(bao_stealth::StealthProfile::chrome_default()),
+        webdriver_port: None,
+        ignore_certificate_errors: false,
+        certificate_path: None,
     };
     assert_eq!(cfg.url.as_deref(), Some("https://example.com"));
     assert_eq!(cfg.cdp_port, 8080);
@@ -267,6 +270,9 @@ fn test_from_browser_config() {
         viewport_height: 720,
         headless: true,
         stealth_profile: None,
+        webdriver_port: None,
+        ignore_certificate_errors: false,
+        certificate_path: None,
     };
     let bao: BaoConfig = bc.into();
     assert_eq!(bao.cdp_port, Some(3000));
