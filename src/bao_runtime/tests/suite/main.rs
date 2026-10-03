@@ -183,6 +183,7 @@ mod tls_sni_server_tests;
 mod uncaught_exception_tests;
 mod upstream_aeb1905d_port_tests;
 mod upstream_bun_semantic_port_tests;
+mod semantic_port_small_tests;
 mod url_deep_tests;
 mod url_format_query_tests;
 mod url_parse_query_tests;

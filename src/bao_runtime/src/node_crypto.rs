@@ -7445,6 +7445,69 @@ unsafe extern "C" fn crypto_get_cipher_info(cx: *mut JSContext, argc: u32, vp: *
     true
 }
 
+// ---- entropy cache (upstream aafd78b6d5 semantic port, bun#42902) ----
+//
+// `crypto.randomInt()` draws its sample bytes from this cache instead of
+// paying one BoringSSL `RAND_bytes` call per sample (~0.5 µs fixed cost
+// whatever the byte count). One `RAND_bytes` refills the whole 2 KiB cache,
+// so 256 8-byte samples share one call. The bytes are still `RAND_bytes`
+// output and each byte is handed out exactly one time, so the sampling is
+// unchanged — upstream serves `randomUUID()` and small `getRandomValues()`
+// from the same cache; bao scopes it to randomInt's draws, the only
+// consumer ported in this wave.
+//
+// Carrier shape: upstream hangs the cache off the per-VM `RareData`
+// (`RareData::entropy_slice`); bao's engine model is one thread-local
+// JSContext per ScriptThread, so the per-VM cache becomes a thread-local —
+// same partitioning (a worker thread gets its own cache), zero locks
+// (thread_local + RefCell).
+pub mod entropy_cache {
+    use std::cell::RefCell;
+
+    /// Cache size: upstream's 2 KiB (256 8-byte samples per refill).
+    pub const CAPACITY: usize = 2048;
+
+    struct Cache {
+        buf: [u8; CAPACITY],
+        pos: usize,
+    }
+
+    thread_local! {
+        // Start exhausted: the first take pays the single refill.
+        static CACHE: RefCell<Cache> =
+            RefCell::new(Cache { buf: [0u8; CAPACITY], pos: CAPACITY });
+    }
+
+    /// Hand out `out.len()` bytes from the cache; every byte is handed out
+    /// one time (the cursor only ever advances). One `RAND_bytes` call
+    /// refills at the boundary. A draw that fills (or exceeds) the whole
+    /// cache bypasses it — a straight `RAND_bytes` beats a wasted refill.
+    pub fn take(out: &mut [u8]) {
+        if out.is_empty() {
+            return;
+        }
+        if out.len() >= CAPACITY {
+            bao_crypto::random::rand_bytes(out).expect("RAND_bytes failed");
+            return;
+        }
+        CACHE.with(|c| {
+            let mut cache = c.borrow_mut();
+            if CAPACITY - cache.pos < out.len() {
+                cache.pos = 0;
+                bao_crypto::random::rand_bytes(&mut cache.buf).expect("RAND_bytes failed");
+            }
+            out.copy_from_slice(&cache.buf[cache.pos..cache.pos + out.len()]);
+            cache.pos += out.len();
+        });
+    }
+
+    /// Bytes left in the cache before the next refill (probe face for the
+    /// byte-once / one-refill-per-CAPACITY semantic locks).
+    pub fn remaining() -> usize {
+        CACHE.with(|c| CAPACITY - c.borrow().pos)
+    }
+}
+
 // ---- randomInt ----
 
 fn next_pow2(v: u64) -> u64 {
@@ -7507,7 +7570,9 @@ unsafe extern "C" fn crypto_random_int(cx: *mut JSContext, argc: u32, vp: *mut J
     let num_bytes = ((64 - mask.leading_zeros() + 7) / 8) as usize;
     let mut buf = [0u8; 8];
     let result = loop {
-        bao_crypto::random::rand_bytes(&mut buf[..num_bytes]).unwrap();
+        // Sample from the entropy cache (one RAND_bytes per 2 KiB refill),
+        // not one RAND_bytes per attempt — upstream aafd78b6d5.
+        entropy_cache::take(&mut buf[..num_bytes]);
         let mut r = 0u64;
         for &b in &buf[..num_bytes] {
             r = (r << 8) | b as u64;
