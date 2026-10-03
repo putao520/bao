@@ -494,6 +494,7 @@ dependencies = [
  "bao-servo",
  "bao-servo-net",
  "bao-servo-url",
+ "bao-servo-webdriver-server",
  "bao_boringssl_bridge",
  "bao_bundler",
  "bao_cdp",
@@ -511,6 +512,7 @@ dependencies = [
  "bun_uws",
  "cdp-server",
  "cookie 0.18.1",
+ "crossbeam-channel",
  "dashmap",
  "dpi",
  "euclid",
@@ -2124,6 +2126,37 @@ version = "0.5.17"
 dependencies = [
  "bao-servo-embedder-traits",
  "serde",
+]
+
+[[package]]
+name = "bao-servo-webdriver-server"
+version = "0.5.16"
+dependencies = [
+ "bao-servo-base",
+ "bao-servo-config",
+ "bao-servo-embedder-traits",
+ "bao-servo-geometry",
+ "bao-servo-url",
+ "base64 0.23.1",
+ "bytes",
+ "cookie 0.18.1",
+ "crossbeam-channel",
+ "euclid",
+ "http 0.2.12",
+ "http 1.4.1",
+ "image",
+ "keyboard-types",
+ "log",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "stylo_traits",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
+ "warp",
+ "webdriver",
 ]
 
 [[package]]
@@ -6797,6 +6830,7 @@ dependencies = [
  "http 1.4.1",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -8903,6 +8937,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 
 [[package]]
+name = "pin-project"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924"
+dependencies = [
+ "pin-project-internal",
+]
+
+[[package]]
+name = "pin-project-internal"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9904,6 +9958,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -11277,6 +11343,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -11733,6 +11800,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
 dependencies = [
  "try-lock",
+]
+
+[[package]]
+name = "warp"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a808122a8a77eecdabaefd88ddb1913c4be5ea1465399f63ba64c7aa705fea"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "headers",
+ "http 1.4.1",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "log",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
+ "pin-project",
+ "scoped-tls",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tokio",
+ "tokio-util",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]

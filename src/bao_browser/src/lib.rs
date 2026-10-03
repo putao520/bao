@@ -807,8 +807,16 @@ impl BrowserRuntime {
             if let Some(host) = self.webdriver_host() {
                 host.drain(self);
             }
-            // Yield instead of sleep — servo spin_event_loop is non-blocking.
-            std::thread::yield_now();
+            // Bounded poll (1ms): the loop drains non-blocking channels, so it
+            // must re-poll on a fixed cadence rather than block — but a bare
+            // `yield_now()` burns a FULL core per process forever (proven: an
+            // idle single process sat at 99.4% CPU with zero voluntary context
+            // switches, e26 evidence 2026-10-03). At N concurrent wptrunner
+            // browsers that is N cores of pure spin amplifying scheduler
+            // contention machine-wide. A 1ms poll keeps drain latency bounded
+            // at ≤1ms (orders of magnitude under every WebDriver/WPT budget)
+            // while dropping the idle burn to ~0.1% of a core.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         let _stats = self.page_pool.stats();
@@ -835,7 +843,9 @@ impl BrowserRuntime {
             if let Some(rx) = &self.cdp_bridge_rx {
                 rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
             }
-            std::thread::yield_now();
+            // Bounded poll — same cadence rationale as `run` (yield_now burned
+            // a full core for the whole pump duration).
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
@@ -894,8 +904,10 @@ impl BrowserRuntime {
                 }
             });
 
-            // Yield instead of sleep — check bridge commands more frequently.
-            std::thread::yield_now();
+            // Bounded poll — same cadence rationale as `run` (yield_now burned
+            // a full core for the whole pump duration; 1ms keeps bridge-command
+            // latency negligible).
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         Ok(())

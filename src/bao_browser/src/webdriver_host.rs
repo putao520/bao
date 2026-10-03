@@ -27,11 +27,11 @@ use servo::{
     WebDriverUserPromptAction, WebViewId,
 };
 
-/// Spin-loop no-op waker: bao's `run_browser` event loop spins
-/// `servo.spin_event_loop()` continuously (yield-based), so a wake signal has
-/// no scheduler to interrupt — the next spin drains the webdriver channel on
-/// its own. Fills `start_server`'s required waker argument without a platform
-/// event loop bao does not have.
+/// Poll-loop no-op waker: bao's `run_browser` event loop re-polls
+/// `servo.spin_event_loop()` on a bounded 1ms cadence, so a wake signal has
+/// no scheduler to interrupt — the next poll drains the webdriver channel on
+/// its own (≤1ms latency). Fills `start_server`'s required waker argument
+/// without a platform event loop bao does not have.
 #[derive(Clone, Copy, Default)]
 pub struct SpinLoopWaker;
 
@@ -41,7 +41,7 @@ impl EventLoopWaker for SpinLoopWaker {
     }
 
     fn wake(&self) {
-        // No-op: the owning loop spins unconditionally (see type doc).
+        // No-op: the owning loop re-polls on its fixed cadence (see type doc).
     }
 }
 
@@ -53,6 +53,20 @@ struct WebdriverBridge {
     /// (LoadUrl / Refresh / NewWindow / AddLoadStatusSender). Fulfilled by
     /// the delegate's `notify_load_status_changed(Complete)` hook.
     load_status_senders: HashMap<WebViewId, GenericSender<WebDriverLoadStatus>>,
+    /// Loads whose `Complete` edge fired with no waiter registered — the
+    /// edge is dropped otherwise (e26 livelock root, 2026-10-03): a
+    /// `NewWindow` webview's initial about:blank load completes while the
+    /// pump thread is still inside `create_webdriver_page` (the pipeline
+    /// pumps through `wait_for_pipeline_ready`'s internal spin), so the
+    /// Complete reaches [`notify_load_complete`] BEFORE the drain arm
+    /// inserts the session's load-status sender. Without this latch the
+    /// edge is lost, `webdriver_server`'s `wait_document_ready` then waits
+    /// out the full page-load timeout (300s default) for a second Complete
+    /// that never comes, and the serial dispatcher wedges every subsequent
+    /// WebDriver command in the process (wptrunner: browser killed →
+    /// CRASH; probability rises with concurrency because contention
+    /// randomizes whether the load or the create wins the race).
+    completed_loads: std::collections::HashSet<WebViewId>,
     /// go_back/go_forward traversal → completion channel, keyed by the
     /// `TraversalId` the delegate's `notify_traversal_complete` reports.
     pending_traversals: HashMap<TraversalId, GenericSender<WebDriverLoadStatus>>,
@@ -83,12 +97,41 @@ fn with_bridge<R>(f: impl FnOnce(&mut WebdriverBridge) -> R) -> Option<R> {
 
 /// `WebViewDelegate::notify_load_status_changed` — resolve the webview's
 /// pending WebDriver load-status waiters on `Complete`.
+///
+/// A Complete with no registered waiter is LATCHED, not dropped (see
+/// [`WebdriverBridge::completed_loads`] for the livelock this closes): the
+/// waiter's registration site replays it.
 pub fn notify_load_complete(webview_id: WebViewId) {
     with_bridge(|bridge| {
-        if let Some(sender) = bridge.load_status_senders.remove(&webview_id) {
-            let _ = sender.send(WebDriverLoadStatus::Complete);
+        match bridge.load_status_senders.remove(&webview_id) {
+            Some(sender) => {
+                let _ = sender.send(WebDriverLoadStatus::Complete);
+                bridge.completed_loads.remove(&webview_id);
+            },
+            None => {
+                bridge.completed_loads.insert(webview_id);
+            },
         }
     });
+}
+
+/// Register a load-status waiter for `webview_id`, resolving immediately if
+/// that webview's Complete already fired (latched) — and otherwise clearing
+/// any stale latch so only the NEW navigation's edge can satisfy the wait
+/// (LoadUrl inserts BEFORE `navigate()`, so its own Complete cannot have
+/// fired yet; anything latched predates this registration).
+fn register_load_status_sender(
+    bridge: &mut WebdriverBridge,
+    webview_id: WebViewId,
+    sender: GenericSender<WebDriverLoadStatus>,
+    replay_latched: bool,
+) {
+    if replay_latched && bridge.completed_loads.remove(&webview_id) {
+        let _ = sender.send(WebDriverLoadStatus::Complete);
+        return;
+    }
+    bridge.completed_loads.remove(&webview_id);
+    bridge.load_status_senders.insert(webview_id, sender);
 }
 
 /// `WebViewDelegate::notify_traversal_complete` — resolve the pending
@@ -252,10 +295,19 @@ impl WebDriverHost {
                         Some((webview_id, page)) => {
                             let _ = response_sender.send(webview_id);
                             if let Some(load_status_sender) = load_status_sender {
+                                // replay_latched = true: the new webview is
+                                // brand-new, so a latched Complete can only be
+                                // its initial about:blank load — exactly the
+                                // edge this waiter exists to observe. Dropping
+                                // it here is the e26 livelock (see
+                                // `WebdriverBridge::completed_loads`).
                                 with_bridge(|bridge| {
-                                    bridge
-                                        .load_status_senders
-                                        .insert(webview_id, load_status_sender);
+                                    register_load_status_sender(
+                                        bridge,
+                                        webview_id,
+                                        load_status_sender,
+                                        true,
+                                    );
                                 });
                             }
                             page.wait_for_pipeline_ready(std::time::Duration::from_secs(15))
@@ -271,6 +323,10 @@ impl WebDriverHost {
                     if let Some((_, page)) = runtime.page_for_webview(webview_id) {
                         let _ = runtime.page_pool().close_page(page.id());
                     }
+                    with_bridge(|bridge| {
+                        bridge.load_status_senders.remove(&webview_id);
+                        bridge.completed_loads.remove(&webview_id);
+                    });
                     let _ = response_sender.send(());
                 }
                 WebDriverCommandMsg::FocusWebView(webview_id) => {
@@ -327,10 +383,17 @@ impl WebDriverHost {
                 }
                 WebDriverCommandMsg::LoadUrl(webview_id, url, load_status_sender) => {
                     if let Some((_, page)) = runtime.page_for_webview(webview_id) {
+                        // replay_latched = false: the sender is registered
+                        // BEFORE `navigate()` fires, so its own Complete
+                        // cannot have latched yet — a latch here predates this
+                        // registration (boot load) and must not satisfy it.
                         with_bridge(|bridge| {
-                            bridge
-                                .load_status_senders
-                                .insert(webview_id, load_status_sender);
+                            register_load_status_sender(
+                                bridge,
+                                webview_id,
+                                load_status_sender,
+                                false,
+                            );
                         });
                         if let Err(error) = page.navigate(url.as_str()) {
                             log::error!("[webdriver] LoadUrl failed: {error}");
@@ -342,9 +405,12 @@ impl WebDriverHost {
                 WebDriverCommandMsg::Refresh(webview_id, load_status_sender) => {
                     if let Some((_, page)) = runtime.page_for_webview(webview_id) {
                         with_bridge(|bridge| {
-                            bridge
-                                .load_status_senders
-                                .insert(webview_id, load_status_sender);
+                            register_load_status_sender(
+                                bridge,
+                                webview_id,
+                                load_status_sender,
+                                false,
+                            );
                         });
                         if let Err(error) = page.reload() {
                             log::error!("[webdriver] Refresh failed: {error}");
@@ -413,10 +479,16 @@ impl WebDriverHost {
                             webview_id,
                             load_status_sender,
                         ) => {
+                            // replay_latched = false: registered BEFORE the
+                            // click/navigation it tracks (element-click face),
+                            // so a latch here is stale, not this navigation.
                             with_bridge(|bridge| {
-                                bridge
-                                    .load_status_senders
-                                    .insert(*webview_id, load_status_sender.clone());
+                                register_load_status_sender(
+                                    bridge,
+                                    *webview_id,
+                                    load_status_sender.clone(),
+                                    false,
+                                );
                             });
                         }
                         WebDriverScriptCommand::RemoveLoadStatusSender(webview_id) => {
