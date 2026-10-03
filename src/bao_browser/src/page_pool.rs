@@ -335,6 +335,17 @@ impl PagePool {
         }
     }
 
+    /// Ids of every live page (active + idle). Page ids are monotonic —
+    /// closed pages free their slot but never their id — so callers MUST NOT
+    /// reconstruct the live set from `stats()` counts (the webdriver host
+    /// enumerator regressed exactly this way: after the first window close
+    /// the 1..=count range silently missed live pages with higher ids).
+    pub fn live_page_ids(&self) -> Vec<usize> {
+        let active = self.active_pages.borrow().keys().copied().collect::<Vec<_>>();
+        let idle = self.idle_pages.borrow().keys().copied().collect::<Vec<_>>();
+        active.into_iter().chain(idle).collect()
+    }
+
     pub fn stats(&self) -> PoolStats {
         PoolStats {
             active: self.active_pages.borrow().len(),

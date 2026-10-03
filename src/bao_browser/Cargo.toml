@@ -23,8 +23,21 @@ readme = "README.md"
 [lib]
 name = "bao_browser"
 
+[features]
+# WPT official-toolchain face (REQ-BRW-002): links the upstream
+# `webdriver_server` component and installs the servoshell-parity embedder
+# host (webdriver_host.rs). Off by default for library consumers; bao_cli
+# enables it so the `bao` binary is a wptrunner-launchable WebDriver server.
+webdriver = ["dep:webdriver_server"]
+
 [dependencies]
 servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.23, <0.6.0", default-features = false, features = ["baked-in-resources"] }
+# WebDriver embedder host (feature "webdriver"): the upstream component that
+# owns the whole WebDriver HTTP protocol — bao only pumps the embedder channel.
+webdriver_server = { package = "bao-servo-webdriver-server", path = "../../vendor/servo/components/webdriver_server", version = "=0.5.16", optional = true }
+# Channel types shared with webdriver_server's embedder interface
+# (Sender<()> for input events / screenshots) and the host receiver.
+crossbeam-channel = "0.5"
 servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url", version = ">=0.5.9, <0.6.0" }
 dpi = "0.1"
 url = "2"

@@ -598,6 +598,85 @@ impl PageInner {
         self.touch();
     }
 
+    // ── WPT official-toolchain face (REQ-BRW-002, feature = "webdriver") ──
+    // Thin WebView passthroughs for the webdriver_server embedder host: they
+    // exist because the PageHandle facade returns bao's own result shapes,
+    // while WebDriver needs servo's raw completion ids (traversal / input
+    // event) to key its load-status waits.
+
+    /// servo's `WebView::go_back` traversal id — the webdriver host keys the
+    /// load-status wait on it (delegate `notify_traversal_complete`).
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_go_back(&self) -> servo::TraversalId {
+        self.webview.go_back(1)
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_go_forward(&self) -> servo::TraversalId {
+        self.webview.go_forward(1)
+    }
+
+    /// servo's `WebView::notify_input_event` — returns the id the delegate's
+    /// `notify_input_event_handled` reports back with.
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_dispatch_input_event(&self, event: servo::InputEvent) -> servo::InputEventId {
+        self.webview.notify_input_event(event)
+    }
+
+    /// servo's `WebView::take_screenshot` with the WebDriver result channel —
+    /// reftests/crash tests resolve through the callback, so this must stay
+    /// async (never block the event loop thread on the render).
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_take_screenshot(
+        &self,
+        rect: Option<euclid::Rect<f32, servo::CSSPixel>>,
+        result_sender: crossbeam_channel::Sender<
+            Result<servo::RgbaImage, servo::ScreenshotCaptureError>,
+        >,
+    ) {
+        self.webview
+            .take_screenshot(rect.map(|rect| rect.to_box2d().into()), move |result| {
+                let _ = result_sender.send(result);
+            });
+    }
+
+    /// Viewport in device-independent pixels (bao renders at hidpi 1.0 — the
+    /// physical viewport is the device-independent viewport).
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_viewport_size(
+        &self,
+    ) -> euclid::Size2D<f32, servo::DeviceIndependentPixel> {
+        euclid::Size2D::new(self.viewport.width as f32, self.viewport.height as f32)
+    }
+
+    /// Window rect in device-independent pixels (headless: a rect at the
+    /// origin spanning the viewport — servoshell's platform window has no
+    /// headless counterpart to diverge from).
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_window_rect(&self) -> servo::DeviceIndependentIntRect {
+        euclid::Box2D::from_origin_and_size(
+            euclid::Point2D::zero(),
+            euclid::Size2D::new(
+                self.viewport.width as i32,
+                self.viewport.height as i32,
+            ),
+        )
+    }
+
+    /// SetWindowRect: resize the viewport (position is meaningless headless);
+    /// answers with the resulting window rect like servoshell does.
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_set_window_rect(
+        &self,
+        requested_rect: servo::DeviceIndependentIntRect,
+    ) -> servo::DeviceIndependentIntRect {
+        let size = requested_rect.size();
+        if size.width > 0 && size.height > 0 {
+            self.set_viewport(size.width.max(1) as u32, size.height.max(1) as u32);
+        }
+        self.webdriver_window_rect()
+    }
+
     /// Focus the WebView window.
     pub fn focus(&self) {
         self.webview.focus();
@@ -2027,6 +2106,80 @@ impl PageHandle {
     {
         let borrow = self.inner.borrow();
         borrow.as_ref().and_then(f)
+    }
+
+    // ── WPT official-toolchain face (REQ-BRW-002, feature = "webdriver") ──
+    // Pass-throughs the webdriver host pump uses; each is Option because the
+    // page may have been torn down between the webview lookup and the command.
+
+    /// This page's servo WebViewId (stable across navigation).
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_webview_id(&self) -> Option<servo::WebViewId> {
+        self.with_inner_opt(|inner| Some(inner.webview.id()))
+    }
+
+    /// Bump the idle clock so idle reaping never closes a driven page.
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_touch(&self) {
+        self.with_inner_opt(|inner| {
+            inner.touch();
+            Some(())
+        });
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_go_back(&self) -> Option<servo::TraversalId> {
+        self.with_inner_opt(|inner| Some(inner.webdriver_go_back()))
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_go_forward(&self) -> Option<servo::TraversalId> {
+        self.with_inner_opt(|inner| Some(inner.webdriver_go_forward()))
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_dispatch_input_event(
+        &self,
+        event: servo::InputEvent,
+    ) -> Option<servo::InputEventId> {
+        self.with_inner_opt(|inner| Some(inner.webdriver_dispatch_input_event(event)))
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_take_screenshot(
+        &self,
+        rect: Option<euclid::Rect<f32, servo::CSSPixel>>,
+        result_sender: crossbeam_channel::Sender<
+            Result<servo::RgbaImage, servo::ScreenshotCaptureError>,
+        >,
+    ) {
+        self.with_inner_opt(|inner| {
+            inner.webdriver_take_screenshot(rect, result_sender);
+            Some(())
+        });
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_viewport_size(
+        &self,
+    ) -> euclid::Size2D<f32, servo::DeviceIndependentPixel> {
+        self.with_inner_opt(|inner| Some(inner.webdriver_viewport_size()))
+            .unwrap_or_default()
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_window_rect(&self) -> servo::DeviceIndependentIntRect {
+        self.with_inner_opt(|inner| Some(inner.webdriver_window_rect()))
+            .unwrap_or_else(|| servo::DeviceIndependentIntRect::zero())
+    }
+
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_set_window_rect(
+        &self,
+        requested_rect: servo::DeviceIndependentIntRect,
+    ) -> servo::DeviceIndependentIntRect {
+        self.with_inner_opt(|inner| Some(inner.webdriver_set_window_rect(requested_rect)))
+            .unwrap_or_else(|| servo::DeviceIndependentIntRect::zero())
     }
 }
 

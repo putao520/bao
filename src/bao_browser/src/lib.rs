@@ -19,6 +19,8 @@ mod phase_watch;
 mod permission;
 mod runtime_bridge;
 mod screenshot;
+#[cfg(feature = "webdriver")]
+pub mod webdriver_host;
 mod ws_registry;
 
 pub use config::{BaoConfig, BrowserConfig, PageConfig};
@@ -133,6 +135,14 @@ pub struct BrowserRuntime {
     /// Generation token for registry teardown (Drop clears only if this
     /// runtime's bridge is still the installed one).
     cdp_bridge_token: Option<usize>,
+    /// WPT official-toolchain face (REQ-BRW-002): when set, the run loops
+    /// drain the WebDriver embedder channel in addition to the servo loop.
+    /// Installed by `run_browser` before the loop starts.
+    #[cfg(feature = "webdriver")]
+    webdriver_host: std::cell::RefCell<Option<std::sync::Arc<webdriver_host::WebDriverHost>>>,
+    /// Cooperative exit flag — WebDriver `Shutdown` (and only that) sets it;
+    /// every run loop checks it each iteration.
+    exit_scheduled: std::cell::Cell<bool>,
 }
 
 impl BrowserRuntime {
@@ -153,6 +163,7 @@ impl BrowserRuntime {
             force_isolate_event_loops: true,
             disable_script_debugger: true,
             ignore_certificate_errors: config.ignore_certificate_errors,
+            certificate_path: config.certificate_path.clone(),
             ..Opts::default()
         });
         std::sync::LazyLock::force(&BAO_SERVO_OPTS_INIT);
@@ -451,7 +462,84 @@ impl BrowserRuntime {
             cdp_bridge: Some(cdp_bridge),
             cdp_bridge_rx: Some(cdp_bridge_rx),
             cdp_bridge_token: Some(cdp_bridge_token),
+            #[cfg(feature = "webdriver")]
+            webdriver_host: std::cell::RefCell::new(None),
+            exit_scheduled: std::cell::Cell::new(false),
         })
+    }
+
+    /// The process servo handle (WebDriver host face: command forwarding +
+    /// site-data manager).
+    pub fn servo(&self) -> &Rc<Servo> {
+        &self.servo
+    }
+
+    /// Schedule a cooperative exit — the run loops return Ok(()) at their
+    /// next iteration boundary. Only the WebDriver `Shutdown` command sets
+    /// this (the CDP path keeps its own stop handle).
+    pub fn schedule_exit(&self) {
+        self.exit_scheduled.set(true);
+    }
+
+    pub fn exit_scheduled(&self) -> bool {
+        self.exit_scheduled.get()
+    }
+
+    /// Install the WebDriver host (must happen before the run loop starts;
+    /// `webdriver_server::start_server` binds the HTTP port immediately).
+    #[cfg(feature = "webdriver")]
+    pub fn install_webdriver_host(&self, port: u16) {
+        let host = std::sync::Arc::new(webdriver_host::WebDriverHost::start(port));
+        self.webdriver_host.borrow_mut().replace(host);
+    }
+
+    #[cfg(feature = "webdriver")]
+    fn webdriver_host(&self) -> Option<std::sync::Arc<webdriver_host::WebDriverHost>> {
+        self.webdriver_host.borrow().clone()
+    }
+
+    /// The webview ids of every live page (GetAllWebViews face).
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver_webview_ids(&self) -> Vec<servo::WebViewId> {
+        self.page_pool
+            .live_page_ids()
+            .into_iter()
+            .filter_map(|id| self.page_pool.get_page(id))
+            .filter_map(|page| page.webdriver_webview_id())
+            .collect()
+    }
+
+    /// Find a live page by servo WebViewId (the per-webview command face).
+    #[cfg(feature = "webdriver")]
+    pub fn page_for_webview(
+        &self,
+        webview_id: servo::WebViewId,
+    ) -> Option<(usize, PageHandle)> {
+        self.page_pool.live_page_ids().into_iter().find_map(|id| {
+            self.page_pool.get_page(id).and_then(|page| {
+                if page.webdriver_webview_id() == Some(webview_id) {
+                    Some((id, page))
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
+    /// Create an about:blank page for a WebDriver NewWindow and return its
+    /// (WebViewId, page) pair.
+    #[cfg(feature = "webdriver")]
+    pub fn create_webdriver_page(
+        &self,
+        url: url::Url,
+    ) -> Option<(servo::WebViewId, PageHandle)> {
+        let config = PageConfig {
+            url: Some(url.to_string()),
+            ..Default::default()
+        };
+        let page = self.create_page(&config).ok()?;
+        let webview_id = page.webdriver_webview_id()?;
+        Some((webview_id, page))
     }
 
     pub fn page_pool(&self) -> &Rc<PagePool> {
@@ -686,7 +774,22 @@ impl BrowserRuntime {
         let max_wait = Duration::from_secs(300);
         let start = std::time::Instant::now();
 
-        while start.elapsed() < max_wait {
+        // WebDriver sessions outlive the interactive 300s cap (a wptrunner
+        // run keeps one browser for the whole suite chunk): under the
+        // WebDriver host the loop runs until Shutdown, not until the clock.
+        #[cfg(feature = "webdriver")]
+        let webdriver_mode = self.webdriver_host.borrow().is_some();
+        #[cfg(not(feature = "webdriver"))]
+        let webdriver_mode = false;
+
+        // Loop predicate: WebDriver mode runs until Shutdown (a wptrunner
+        // session outlives any fixed wall clock); every other mode keeps the
+        // interactive 300s cap.
+        while if webdriver_mode {
+            !self.exit_scheduled()
+        } else {
+            start.elapsed() < max_wait
+        } {
             self.servo.spin_event_loop();
             // Headless redraw leg: composite any webview servo requested a frame
             // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
@@ -697,6 +800,12 @@ impl BrowserRuntime {
             // through the bridge channel (Runtime.evaluate, Target listing…).
             if let Some(rx) = &self.cdp_bridge_rx {
                 rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
+            }
+            // WPT official-toolchain face (REQ-BRW-002): answer the
+            // webdriver_server embedder channel between spins.
+            #[cfg(feature = "webdriver")]
+            if let Some(host) = self.webdriver_host() {
+                host.drain(self);
             }
             // Yield instead of sleep — servo spin_event_loop is non-blocking.
             std::thread::yield_now();
@@ -922,6 +1031,7 @@ fn bao_execution_control_armer<'a>(
 pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
     let _stealth = config.stealth_profile.is_some();
     let url = config.url.clone();
+    let webdriver_port = config.webdriver_port;
     let bao_config: BaoConfig = config.into();
     let cdp_port = bao_config.cdp_port;
 
@@ -937,6 +1047,18 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
     if let Some(ref page_url) = url {
         log::debug!("[bao] navigating to {}", page_url);
     }
+
+    // WPT official-toolchain face (REQ-BRW-002): wptrunner's `servo` product
+    // launches the binary with `--webdriver=PORT` and speaks WebDriver to it.
+    // The run loop is runtime.run() — under the host it runs until the
+    // WebDriver Shutdown command instead of the interactive 300s cap.
+    #[cfg(feature = "webdriver")]
+    if let Some(port) = webdriver_port {
+        runtime.install_webdriver_host(port);
+        return runtime.run();
+    }
+    #[cfg(not(feature = "webdriver"))]
+    let _ = webdriver_port;
 
     if let Some(port) = cdp_port {
         // Create bridge channel for CDP <-> servo communication

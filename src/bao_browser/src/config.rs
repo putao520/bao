@@ -20,6 +20,10 @@ pub struct BaoConfig {
     /// (first `BrowserRuntime::new` wins — same first-writer-wins semantics as
     /// every other servo opt).
     pub ignore_certificate_errors: bool,
+    /// Servo `opts::certificate_path` passthrough (`--certificate-path`) —
+    /// the WPT tooling CA for strict TLS verification. `None` keeps servo's
+    /// default trust roots.
+    pub certificate_path: Option<String>,
 }
 
 impl Default for BaoConfig {
@@ -32,6 +36,7 @@ impl Default for BaoConfig {
             default_viewport_height: 1080,
             stealth_profile: None,
             ignore_certificate_errors: false,
+            certificate_path: None,
         }
     }
 }
@@ -74,6 +79,20 @@ pub struct BrowserConfig {
     pub viewport_height: u32,
     pub headless: bool,
     pub stealth_profile: Option<StealthProfile>,
+    /// WPT official-toolchain face (REQ-BRW-002): serve the WebDriver
+    /// protocol on this port (upstream servoshell `--webdriver[=port]`).
+    /// When set, `run_browser` drives the webdriver_server host instead of
+    /// the CDP bridge and runs until a WebDriver Shutdown.
+    pub webdriver_port: Option<u16>,
+    /// Servo `opts::ignore_certificate_errors` passthrough for the WebDriver
+    /// entry (`--ignore-certificate-errors`). The CDP entry keeps the
+    /// fail-closed default; wptrunner always passes the flag (upstream issue
+    /// servo#30080 — rustls rejects the WPT tooling certificate).
+    pub ignore_certificate_errors: bool,
+    /// Servo `opts::certificate_path` passthrough (`--certificate-path`) —
+    /// the WPT tooling CA for strict TLS verification. `None` keeps servo's
+    /// default trust roots.
+    pub certificate_path: Option<String>,
 }
 
 impl Default for BrowserConfig {
@@ -85,6 +104,9 @@ impl Default for BrowserConfig {
             viewport_height: 1080,
             headless: true,
             stealth_profile: None,
+            webdriver_port: None,
+            ignore_certificate_errors: false,
+            certificate_path: None,
         }
     }
 }
@@ -98,9 +120,11 @@ impl From<BrowserConfig> for BaoConfig {
             default_viewport_width: bc.viewport_width,
             default_viewport_height: bc.viewport_height,
             stealth_profile: bc.stealth_profile,
-            // BrowserConfig has no certificate-relaxation surface —
-            // production conversion stays fail-closed.
-            ignore_certificate_errors: false,
+            // WebDriver entry (`--ignore-certificate-errors`) is the one
+            // caller that relaxes verification; the interactive/CDP entry
+            // keeps the fail-closed default.
+            ignore_certificate_errors: bc.ignore_certificate_errors,
+            certificate_path: bc.certificate_path,
         }
     }
 }
@@ -177,6 +201,10 @@ mod tests {
         assert_eq!(cfg.viewport_height, 1080);
         assert!(cfg.headless);
         assert!(cfg.stealth_profile.is_none());
+        assert_eq!(cfg.webdriver_port, None);
+        // Fail-closed default: only the WebDriver entry relaxes verification,
+        // and only when `--ignore-certificate-errors` is passed.
+        assert!(!cfg.ignore_certificate_errors);
     }
 
     #[test]
@@ -197,6 +225,19 @@ mod tests {
     }
 
     #[test]
+    fn from_browser_config_preserves_webdriver_faces() {
+        let bc = BrowserConfig {
+            webdriver_port: Some(4444),
+            ignore_certificate_errors: true,
+            ..Default::default()
+        };
+        let bao: BaoConfig = bc.into();
+        // The WPT posture relaxations land in the engine config — this is
+        // what wptrunner's servo product launches with.
+        assert!(bao.ignore_certificate_errors);
+    }
+
+    #[test]
     fn from_browser_config_maps_fields_correctly() {
         let bc = BrowserConfig {
             url: Some("https://example.com".into()),
@@ -205,6 +246,7 @@ mod tests {
             viewport_height: 720,
             headless: false,
             stealth_profile: None,
+            ..Default::default()
         };
         let bao: BaoConfig = bc.into();
         assert_eq!(bao.cdp_port, Some(1234));

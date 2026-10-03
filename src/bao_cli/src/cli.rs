@@ -26,6 +26,76 @@ struct Cli {
     #[arg(long, global = true, value_parser = parse_timeout_ms)]
     timeout: Option<u64>,
 
+    // ── WPT official-toolchain face (REQ-BRW-002) ────────────────────────
+    // Upstream servoshell-compatible flag surface: wptrunner's `servo`
+    // product launches the binary as
+    // `binary --webdriver=PORT --hard-fail --ignore-certificate-errors
+    //  --enable-experimental-web-platform-features --window-size 800x600
+    //  [--certificate-path …] [--user-stylesheet …] [--pref=K=V …]
+    //  [--prefs-file …] --headless about:blank --config-dir … --temporary-storage`
+    // and speaks WebDriver to it. Any of these flags (or the positional URL)
+    // selects the browser entry; flags mirror servoshell's names exactly so
+    // the runner command line is byte-compatible.
+    /// Serve the WebDriver protocol on [PORT] (default 7000) and run until
+    /// the WebDriver Shutdown command. Upstream `--webdriver[=port]`.
+    #[arg(long, value_name = "PORT", num_args(0..=1), default_missing_value = "7000")]
+    webdriver: Option<u16>,
+
+    /// Exit non-zero if the engine hits a hard error (upstream `--hard-fail`;
+    /// accepted for command-line parity — bao fails hard by default).
+    #[arg(long)]
+    hard_fail: bool,
+
+    /// Skip peer-certificate verification failures (upstream
+    /// `--ignore-certificate-errors`; wptrunner always passes it).
+    #[arg(long)]
+    ignore_certificate_errors: bool,
+
+    /// Enable experimental web platform features (upstream
+    /// `--enable-experimental-web-platform-features`).
+    #[arg(long)]
+    enable_experimental_web_platform_features: bool,
+
+    /// Initial viewport as WxH (upstream `--window-size`).
+    #[arg(long, value_name = "WxH")]
+    window_size: Option<String>,
+
+    /// CA certificate to trust for page TLS (upstream `--certificate-path`).
+    #[arg(long, value_name = "PATH")]
+    certificate_path: Option<String>,
+
+    /// JSON file of preferences applied onto the global pref store (upstream
+    /// `--prefs-file`; wptrunner passes resources/wpt-prefs.json).
+    #[arg(long, value_name = "PATH")]
+    prefs_file: Option<String>,
+
+    /// Single preference override K=V (upstream `--pref`, repeatable).
+    #[arg(long = "pref", value_name = "K=V")]
+    pref: Vec<String>,
+
+    /// User stylesheet injected into every page (upstream `--user-stylesheet`,
+    /// repeatable).
+    #[arg(long, value_name = "PATH")]
+    user_stylesheet: Vec<String>,
+
+    /// Per-profile config directory (upstream `--config-dir`).
+    #[arg(long, value_name = "DIR")]
+    config_dir: Option<String>,
+
+    /// Use throwaway storage for this run (upstream `--temporary-storage`;
+    /// accepted for command-line parity — bao already keeps per-run state).
+    #[arg(long)]
+    temporary_storage: bool,
+
+    /// Headless mode (upstream `--headless`; bao is headless by default —
+    /// accepted for command-line parity).
+    #[arg(long)]
+    headless: bool,
+
+    /// Initial URL for the browser entry (the trailing positional in the
+    /// wptrunner command line, e.g. `about:blank`).
+    url: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -158,6 +228,24 @@ pub fn run() -> ::std::result::Result<(), i32> {
     bao_bundler::build_api::install();
 
     let cli = Cli::parse();
+    // WPT official-toolchain face (REQ-BRW-002): any servoshell-compatible
+    // browser flag (or the positional URL) selects the browser entry before
+    // any other dispatch — wptrunner's command line carries no subcommand.
+    let browser_entry = cli.webdriver.is_some()
+        || cli.hard_fail
+        || cli.ignore_certificate_errors
+        || cli.enable_experimental_web_platform_features
+        || cli.window_size.is_some()
+        || cli.certificate_path.is_some()
+        || cli.prefs_file.is_some()
+        || !cli.pref.is_empty()
+        || !cli.user_stylesheet.is_empty()
+        || cli.config_dir.is_some()
+        || cli.temporary_storage
+        || cli.headless;
+    if browser_entry || cli.url.is_some() {
+        return run_browser_entry(&cli);
+    }
     // --timeout only drives script execution entries (SM-EVOLUTION #24 S1
     // CLI wiring: `bao run` / top-level `-e`). On every other subcommand it
     // is rejected fail-closed instead of being silently ignored.
@@ -697,6 +785,83 @@ fn run_browser(
         viewport_height: 1080,
         headless,
         stealth_profile,
+        ..Default::default()
+    };
+    if let Err(e) = bao_browser::run_browser(config) {
+        eprintln!("Error: {}", e);
+        Err(1)
+    } else {
+        Ok(())
+    }
+}
+
+/// WPT official-toolchain face (REQ-BRW-002): the servoshell-compatible
+/// browser entry — apply pref plumbing, translate the wptrunner command line
+/// into a `BrowserConfig`, and hand the process to the WebDriver run loop.
+fn run_browser_entry(cli: &Cli) -> ::std::result::Result<(), i32> {
+    // Pref plumbing: --prefs-file entries first, then --pref=K=V (the
+    // command line wins; wptrunner's proxy prefs arrive via --pref). The
+    // prefs file is optional upstream too (servoshell's find_wpt_prefs
+    // tolerates a missing resources/wpt-prefs.json) — a missing file is a
+    // logged no-op, a corrupt one fails the launch.
+    let mut pref_overrides = Vec::new();
+    if let Some(ref path) = cli.prefs_file {
+        if ::std::path::Path::new(path).exists() {
+            match bao_browser::webdriver_host::load_prefs_file(path) {
+                Ok(mut from_file) => pref_overrides.append(&mut from_file),
+                Err(error) => {
+                    eprintln!("bao: {error}");
+                    return Err(2);
+                }
+            }
+        } else {
+            eprintln!("bao: prefs file {path} not found (skipping, like upstream servoshell)");
+        }
+    }
+    for pref in &cli.pref {
+        match pref.split_once('=') {
+            Some((key, value)) => pref_overrides.push((key.to_string(), value.to_string())),
+            None => {
+                eprintln!("bao: --pref expects K=V, got {pref:?}");
+                return Err(2);
+            }
+        }
+    }
+    if let Err(error) = bao_browser::webdriver_host::apply_pref_overrides(&pref_overrides) {
+        eprintln!("bao: {error}");
+        return Err(2);
+    }
+
+    // --window-size WxH → viewport. A malformed size fails the launch
+    // instead of silently running at the default (wptrunner sizes reftests
+    // against this viewport).
+    let (viewport_width, viewport_height) = match cli.window_size.as_deref() {
+        None => (1920, 1080),
+        Some(size) => match size.split_once('x') {
+            Some((w, h)) => match (w.trim().parse::<u32>(), h.trim().parse::<u32>()) {
+                (Ok(w), Ok(h)) if w >= 800 && h >= 600 => (w, h),
+                _ => {
+                    eprintln!("bao: --window-size expects WxH with W >= 800 and H >= 600, got {size:?}");
+                    return Err(2);
+                }
+            },
+            None => {
+                eprintln!("bao: --window-size expects WxH, got {size:?}");
+                return Err(2);
+            }
+        },
+    };
+
+    let config = BrowserConfig {
+        url: cli.url.clone(),
+        cdp_port: 9222,
+        viewport_width,
+        viewport_height,
+        headless: true,
+        stealth_profile: None,
+        webdriver_port: cli.webdriver,
+        ignore_certificate_errors: cli.ignore_certificate_errors,
+        certificate_path: cli.certificate_path.clone(),
     };
     if let Err(e) = bao_browser::run_browser(config) {
         eprintln!("Error: {}", e);

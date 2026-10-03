@@ -13,8 +13,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use dpi::PhysicalSize;
 use servo::{
     AllowOrDenyRequest, ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntRect,
-    DeviceIntSize, EmbedderControl, EmbedderControlId, LoadStatus, NavigationRequest,
-    PermissionRequest, ScreenGeometry, ServoDelegate, ServoError, WebView, WebViewDelegate,
+    DeviceIntSize, EmbedderControl, EmbedderControlId, InputEventId, InputEventResult, LoadStatus,
+    NavigationRequest, PermissionRequest, ScreenGeometry, ServoDelegate, ServoError, TraversalId,
+    WebView, WebViewDelegate,
 };
 
 use bao_cdp::servo_bridge::main_frame_id_for_target;
@@ -4903,8 +4904,51 @@ impl WebViewDelegate for BaoWebViewDelegate {
         self.state.borrow_mut().title = title;
     }
 
+    // ── WPT official-toolchain face (REQ-BRW-002, feature = "webdriver") ──
+    // servoshell-parity delegate hooks: the webdriver host's cross-thread
+    // bookkeeping resolves through these callbacks (they fire on script
+    // threads, which is why the registry is a mutex — see webdriver_host.rs).
+
+    /// Resolve the go_back/go_forward load-status wait keyed on this
+    /// traversal id (servoshell: `notify_traversal_complete`).
+    #[cfg(feature = "webdriver")]
+    fn notify_traversal_complete(&self, _webview: WebView, traversal_id: TraversalId) {
+        crate::webdriver_host::notify_traversal_complete(traversal_id);
+    }
+
+    /// Acknowledge the WebDriver input event once the DOM handled it
+    /// (servoshell: `notify_input_event_handled` → pending sender).
+    #[cfg(feature = "webdriver")]
+    fn notify_input_event_handled(
+        &self,
+        _webview: WebView,
+        event_id: InputEventId,
+        _result: InputEventResult,
+    ) {
+        crate::webdriver_host::notify_input_event_handled(event_id);
+    }
+
+    /// Under WebDriver ownership embedder controls are stashed for the
+    /// prompt endpoints instead of being shown headlessly
+    /// (servoshell: `show_embedder_control`'s webdriver branch).
+    #[cfg(feature = "webdriver")]
+    fn show_embedder_control(&self, webview: WebView, embedder_control: EmbedderControl) {
+        crate::webdriver_host::show_embedder_control(webview.id(), embedder_control);
+    }
+
+    #[cfg(feature = "webdriver")]
+    fn hide_embedder_control(&self, webview: WebView, control_id: EmbedderControlId) {
+        crate::webdriver_host::hide_embedder_control(webview.id(), control_id);
+    }
+
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
         self.state.borrow_mut().load_status = status;
+        // WPT official-toolchain face (REQ-BRW-002): resolve any pending
+        // WebDriver load-status waiter for this webview on Complete.
+        #[cfg(feature = "webdriver")]
+        if status == LoadStatus::Complete {
+            crate::webdriver_host::notify_load_complete(_webview.id());
+        }
         match status {
             LoadStatus::Started => {
                 // @trace REQ-BRW-004 [entity:Worker] [criterion:10]
@@ -5098,10 +5142,6 @@ impl WebViewDelegate for BaoWebViewDelegate {
             let _ = tx.send(msg);
         }
     }
-
-    fn show_embedder_control(&self, _webview: WebView, _control: EmbedderControl) {}
-
-    fn hide_embedder_control(&self, _webview: WebView, _id: EmbedderControlId) {}
 
     fn notify_crashed(&self, _webview: WebView, reason: String, _backtrace: Option<String>) {
         log::error!("[webview] crashed: {reason}");
