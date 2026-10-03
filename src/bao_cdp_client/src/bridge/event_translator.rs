@@ -12,11 +12,11 @@
 //! | FrameInfo | `Page.{frameNavigated, frameStartedLoading, frameStoppedLoading}` |
 //! | TimelineMarker | `Performance.metrics` |
 //!
-//! ## 数据流
+//! ## 数据流(库层 InMemory 模式)
 //!
 //! ```text
-//!   servo ScriptThread
-//!       ↓ (servo delegate callback)
+//!   事件产生线程(embedder 适配层 / 测试 harness)
+//!       ↓ on_* 回调
 //!   EventSubscriber::on_*  (本模块)
 //!       ↓ bounded mpsc(drop-on-full,容量 1024)
 //!   InMemoryTransport::recv_event  (translate 转换)
@@ -24,11 +24,18 @@
 //!   CDP Client
 //! ```
 //!
+//! ## 与 production real 路径的边界(REQ-CDP-004)
+//!
+//! 本面是**库层订阅面**(`InMemoryTransport` 库模式与测试 harness 的载体);
+//! bao_browser 的 servo delegate **不经此面**——production 事件走
+//! `BaoRuntime::set_event_channel` 安装的**无界可靠** mpsc(永不丢弃、永不
+//! 阻塞,由 `run_with_bridge` 泵排空)。本结构的有界 drop-newest 语义只作用
+//! 于其自持的 channel。
+//!
 //! ## 线程模型(DEC-CDP-002)
 //!
-//! servo ScriptThread `!Send`,但 `mpsc::SyncSender` 可克隆、可跨线程投递。
-//! EventSubscriber 持有 `SyncSender<ServoEvent>`,被 servo delegate 在 servo
-//! 线程调用 `on_console_message` 等方法时,`try_send` 到物理有界 channel。
+//! 事件产生线程调用 `on_console_message` 等方法时,`try_send` 到物理有界
+//! channel;`mpsc::SyncSender` 可克隆、可跨线程投递,持有方可位于任意线程。
 //! InMemoryTransport 在 client 线程 `recv_event`,translate 后返回。
 //!
 //! @trace REQ-BAO-API-003 [level:library]
@@ -769,7 +776,14 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
 /// 一次(防刷屏;饱和日志永远携带累计丢弃数)。
 const SATURATION_WARN_INTERVAL: usize = 1024;
 
-/// 事件订阅者 — servo delegate 在 servo 线程调用 on_* 方法,push 事件到 channel。
+/// 事件订阅者 — 库层(embedder/测试)订阅 servo 事件的入口:调用方在事件
+/// 产生线程调用 on_* 方法,push 事件到有界 channel。
+///
+/// # 与 production real 路径的边界(REQ-CDP-004)
+///
+/// bao_browser 的 servo delegate **不经本面**(production 事件走
+/// `BaoRuntime::set_event_channel` 安装的无界可靠 mpsc);本结构服务
+/// `InMemoryTransport` 库模式与测试 harness。
 ///
 /// 用法:
 ///
@@ -778,7 +792,8 @@ const SATURATION_WARN_INTERVAL: usize = 1024;
 /// use std::time::Duration;
 ///
 /// let (subscriber, rx) = EventSubscriber::new();
-/// // servo delegate 在 servo 线程调用 on_console_message 时,事件进入 channel
+/// // 调用方(如 servo delegate 适配层)在事件产生线程调 on_console_message,
+/// // 事件进入 channel
 /// subscriber.on_console_message("target-1", ConsoleLevel::Info, "hello", None, None, None);
 /// // 主线程在 InMemoryTransport 内 recv_event 时,从 rx 取出并 translate 为 CdpEvent
 /// let servo_event = rx.recv_timeout(Duration::from_millis(100)).expect("event delivered");
@@ -790,14 +805,15 @@ const SATURATION_WARN_INTERVAL: usize = 1024;
 ///
 /// 底层是 `mpsc::sync_channel` **物理有界** channel:`new()` 以容量 1024 构造
 /// `with_capacity`,至多缓冲 `capacity` 个未消费事件。满容后投递一律
-/// **drop-newest**(丢弃本次新事件,已缓冲事件原样保留),永不阻塞 servo
-/// ScriptThread;消费方排空后自动恢复投递。两条 sender 面共享同一物理容量:
+/// **drop-newest**(丢弃本次新事件,已缓冲事件原样保留),永不阻塞调用
+/// 线程;消费方排空后自动恢复投递。两条 sender 面共享同一物理容量:
 ///
 /// - `on_*` 回调:`try_send` 满容即丢弃,累计 [`EventSubscriber::dropped_count`]
 ///   并记饱和 warn(首次 + 每 `SATURATION_WARN_INTERVAL` 条节流);
-/// - [`EventSubscriber::sender`] 派生的 `SyncSender` 克隆(外部直推面,如
-///   bao_browser delegate):与 on_* 共享同一有界缓冲,**同样受限**——满容时
-///   `try_send` 同步返回 `TrySendError::Full`,丢弃决策归调用方。
+/// - [`EventSubscriber::sender`] 派生的 `SyncSender` 克隆(外部直推面):
+///   与 on_* 共享同一有界缓冲,**同样受限**——满容时 `try_send` 同步返回
+///   `TrySendError::Full`,丢弃决策归调用方。(production 不经此面:
+///   `set_event_channel` 消费 `Sender`,与本面类型不兼容,误传编译期报错。)
 ///
 /// # 关闭语义
 ///
@@ -807,8 +823,8 @@ const SATURATION_WARN_INTERVAL: usize = 1024;
 ///
 /// # 线程安全
 ///
-/// `mpsc::SyncSender` 可克隆、可跨线程投递,可被 servo delegate 在 servo
-/// 线程持有。`EventSubscriber` 不 `Clone`(避免多 sender 混淆事件源);
+/// `mpsc::SyncSender` 可克隆、可跨线程投递,持有方可位于任意线程。
+/// `EventSubscriber` 不 `Clone`(避免多 sender 混淆事件源);
 /// 如需多 sender,显式调 [`EventSubscriber::sender`] 拿到
 /// `SyncSender<ServoEvent>`。
 ///
@@ -1181,7 +1197,7 @@ impl Default for EventSubscriber {
     fn default() -> Self {
         // Default 创建 subscriber 并丢弃 receiver(不关心事件的场景):
         // 接收端不存在,后续 push 走 "receiver dropped" warn 路径——
-        // 不 panic、不阻塞。生产代码请用 `EventSubscriber::new()`。
+        // 不 panic、不阻塞。需要保留 receiver 的调用方请用 `EventSubscriber::new()`。
         let (sub, _rx) = Self::new();
         sub
     }

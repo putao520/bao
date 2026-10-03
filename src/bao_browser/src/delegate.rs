@@ -4447,7 +4447,9 @@ impl BaoServoDelegate {
         self.console_log_tx.borrow().clone()
     }
 
-    /// Set the channel for forwarding structured ServoEvent to EventSubscriber (Path B).
+    /// Set the channel for forwarding structured ServoEvent to the real CDP
+    /// event queue (Path B: unbounded reliable mpsc, drained by the
+    /// `run_with_bridge` pump — not the bao_cdp_client `EventSubscriber`).
     /// Called when CDP server starts alongside set_console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn set_event_tx(&self, tx: Sender<ServoEvent>) {
@@ -5464,7 +5466,7 @@ mod tests {
         }
     }
 
-    // ─── EventSubscriber (event_tx) Path B ─────────────────────────────
+    // ─── event_tx (real CDP event queue) Path B ────────────────────────
     // @trace REQ-CDP-006 [req:REQ-CDP-006] [level:unit]
 
     #[test]
