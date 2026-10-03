@@ -990,19 +990,31 @@ impl ClientSession {
         for client in core::mem::take(&mut self.pending_attach) {
             pending_client_mut(client).h2_fail(err);
         }
+        // Upstream 0cbeffdef9 (#42647): `handle_data`'s deliver loop holds a
+        // stream across the terminal callback that re-entered here. Freeing
+        // the streams mid-loop hands the loop a dangling pointer (double
+        // free / UAF at the `s.state` read). While `delivering` is set, fail
+        // each client but leave the streams in the maps — the deliver loop
+        // frees each stream exactly once via `remove_stream`. Outside the
+        // loop, behave as before.
+        let deliver_loop_frees_streams = self.delivering;
         for &e in self.streams.values() {
             let client = stream_mut(e).client.take();
             if let Some(c) = client {
                 stream_client_mut(c).h2 = None;
             }
-            drop_stream(e);
+            if !deliver_loop_frees_streams {
+                drop_stream(e);
+            }
             if let Some(c) = client {
                 stream_client_mut(c).h2_fail(err);
             }
         }
-        self.streams.clear_retaining_capacity();
-        // Every gate belonged to a stream that no longer exists.
-        self.paused_stream_ids.clear();
+        if !deliver_loop_frees_streams {
+            self.streams.clear_retaining_capacity();
+            // Every gate belonged to a stream that no longer exists.
+            self.paused_stream_ids.clear();
+        }
         self.give_up_socket_ref();
     }
 

@@ -1409,21 +1409,13 @@ pub mod waiter_thread_posix {
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            // All by-value `c_uint`/`c_int` args; the kernel validates flags
-            // and returns -1/errno on failure — no memory-safety preconditions,
-            // so `safe fn` (Rust 2024) discharges the link-time proof.
-            unsafe extern "C" {
-                safe fn eventfd(
-                    initval: core::ffi::c_uint,
-                    flags: core::ffi::c_int,
-                ) -> core::ffi::c_int;
-            }
-            let fd = eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC);
-            if fd < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
+            // Upstream b2ad29dc43 (#43845): route through `bun_sys::eventfd`
+            // so the waiter fd is kept off a closed fd 0/1/2
+            // (`move_above_stdio`).
+            let fd = bun_sys::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC)
+                .map_err(|e| std::io::Error::from_raw_os_error(e.errno as i32))?;
             // SAFETY: single-writer init path (guarded by fetch_max above).
-            unsafe { (*instance()).eventfd = Fd::from_native(fd) };
+            unsafe { (*instance()).eventfd = fd };
         }
 
         let thread = std::thread::Builder::new()
@@ -4060,3 +4052,36 @@ pub use spawn_process_body::spawn_process_windows;
 pub use spawn_process_body::sync;
 
 // ported from: src/runtime/api/bun/process.zig
+
+#[cfg(all(test, unix))]
+mod fd_hygiene_tests {
+    use super::*;
+    use bun_sys::FdExt as _;
+
+    // The lib-test harness links only crates the test unit references;
+    // `bun_core::Global::dump_current_stack_trace` declares the
+    // `#[no_mangle] __bun_crash_handler_dump_stack_trace` extern that only
+    // `bun_crash_handler` defines, so reference it here to pull the provider
+    // into the link (same pattern as `bun_watcher::Watcher` tests).
+    #[allow(unused_imports)]
+    use bun_crash_handler as _;
+
+    /// Upstream b2ad29dc43 (#43845) as absorbed in `bun_sys`: descriptors
+    /// created by `socketpair` stay above stdio, and `dup_at_least` lands at
+    /// `min` or higher. This crate links `bun_crash_handler`, so the
+    /// `FdExt::close` debug hook resolves here (it does not in mid-crate
+    /// lib-tests like `bun_sys`/`bun_spawn_sys`).
+    #[test]
+    fn socketpair_fds_sit_above_stdio_and_dup_at_least_honors_min() {
+        let pair = bun_sys::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, false)
+            .expect("socketpair");
+        assert!(pair[0].native() > 2 && pair[1].native() > 2);
+
+        let dup = bun_sys::dup_at_least(pair[0], 100).expect("dup_at_least");
+        assert!(dup.native() >= 100);
+
+        dup.close();
+        pair[0].close();
+        pair[1].close();
+    }
+}

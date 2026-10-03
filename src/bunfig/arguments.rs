@@ -18,22 +18,50 @@ use crate::bunfig::Bunfig;
 
 // ─── bunfig loading ──────────────────────────────────────────────────────────
 
+/// Upstream 65245c2c34 (#38370): `None` when `dir/path` does not fit — nothing
+/// could be opened at such a path anyway (`open()` rejects any path of
+/// `MAX_PATH_BYTES` bytes or more), so overflow becomes a normal open error
+/// instead of a `PathBuffer` NUL-write panic.
+fn join_config_path<'buf>(
+    dir: &[u8],
+    path: &[u8],
+    buf: &'buf mut PathBuffer,
+) -> Option<&'buf ZStr> {
+    let max_len = buf.len() - 1;
+    let len = resolve_path::join_abs_string_buf_checked::<platform::Auto>(
+        dir,
+        &mut buf[..max_len],
+        &[path],
+    )?
+    .len();
+    buf[len] = 0;
+    Some(ZStr::from_buf(&buf[..], len))
+}
+
 fn get_home_config_path(buf: &mut PathBuffer) -> Option<&ZStr> {
-    let paths: [&[u8]; 1] = [b".bunfig.toml"];
+    let dir = env_var::XDG_CONFIG_HOME
+        .get()
+        .or_else(|| env_var::HOME.get())?;
+    join_config_path(dir, b".bunfig.toml", buf)
+}
 
-    if let Some(data_dir) = env_var::XDG_CONFIG_HOME.get() {
-        return Some(resolve_path::join_abs_string_buf_z::<platform::Auto>(
-            data_dir, &mut **buf, &paths,
-        ));
+/// Upstream 65245c2c34 (#38370): a path that does not fit takes the existing
+/// "config failed to open" route — auto-loaded configs are skipped (as on any
+/// read error), an explicit `--config` exits 1 with `ENAMETOOLONG`.
+fn unreadable_config(
+    auto_loaded: bool,
+    err: &bun_sys::Error,
+    config_path: &[u8],
+) -> Result<(), bun_core::Error> {
+    if auto_loaded {
+        return Ok(());
     }
-
-    if let Some(home_dir) = env_var::HOME.get() {
-        return Some(resolve_path::join_abs_string_buf_z::<platform::Auto>(
-            home_dir, &mut **buf, &paths,
-        ));
-    }
-
-    None
+    Output::pretty_errorln(format_args!(
+        "{}\nwhile reading config \"{}\"",
+        err,
+        BStr::new(config_path),
+    ));
+    Global::exit(1);
 }
 
 fn load_bunfig(
@@ -45,17 +73,7 @@ fn load_bunfig(
     let source =
         match bun_ast::to_source(config_path, bun_ast::ToSourceOptions { convert_bom: true }) {
             Ok(s) => s,
-            Err(err) => {
-                if auto_loaded {
-                    return Ok(());
-                }
-                Output::pretty_errorln(format_args!(
-                    "{}\nwhile reading config \"{}\"",
-                    err,
-                    BStr::new(config_path.as_bytes()),
-                ));
-                Global::exit(1);
-            }
+            Err(err) => return unreadable_config(auto_loaded, &err, config_path.as_bytes()),
         };
 
     bun_ast::stmt::data::Store::create();
@@ -187,11 +205,15 @@ pub fn load_config(
     if config_path_.is_empty() {
         return Ok(());
     }
-    let config_path_len: usize;
-    if config_path_[0] == b'/' {
-        config_buf[..config_path_.len()].copy_from_slice(config_path_);
-        config_buf[config_path_.len()] = 0;
-        config_path_len = config_path_.len();
+    let config_path: Option<&ZStr> = if config_path_[0] == b'/' {
+        // Upstream 65245c2c34 (#38370): length-check the absolute value and
+        // use `resolve_path::z` (guard-then-`z`, the shape this file's other
+        // callers use) instead of an unchecked copy + NUL write.
+        if config_path_.len() < config_buf.len() {
+            Some(resolve_path::z(config_path_, &mut config_buf))
+        } else {
+            None
+        }
     } else {
         if ctx.args.absolute_working_dir.is_none() {
             let mut secondbuf = bun_paths::path_buffer_pool::get();
@@ -202,23 +224,20 @@ pub fn load_config(
             ctx.args.absolute_working_dir = Some(Box::<[u8]>::from(&secondbuf[..cwd_len]));
         }
 
-        // PORT NOTE: reshaped for borrowck — `join_abs_string_buf` ties the
-        // returned slice's lifetime to both `cwd` (borrowed from `ctx.args`)
-        // and `config_buf`. We only need the length to NUL-terminate and
-        // re-wrap, so capture `joined.len()` and drop the `ctx` borrow before
-        // the `&mut ctx` call below.
-        config_path_len = {
-            let awd: &[u8] = ctx.args.absolute_working_dir.as_deref().unwrap();
-            let parts: [&[u8]; 2] = [awd, config_path_];
-            let joined =
-                resolve_path::join_abs_string_buf::<platform::Auto>(awd, &mut *config_buf, &parts);
-            joined.len()
-        };
-        config_buf[config_path_len] = 0;
-    }
-    // SAFETY: `config_buf[config_path_len] == 0` (written above on both arms);
-    // `config_buf` outlives the call.
-    let config_path = ZStr::from_buf(&config_buf[..], config_path_len);
+        join_config_path(
+            ctx.args.absolute_working_dir.as_deref().unwrap(),
+            config_path_,
+            &mut config_buf,
+        )
+    };
+    let Some(config_path) = config_path else {
+        return unreadable_config(
+            auto_loaded,
+            &bun_sys::Error::from_code(bun_sys::E::ENAMETOOLONG, bun_sys::Tag::open)
+                .with_path(config_path_),
+            config_path_,
+        );
+    };
 
     if let Err(err) = load_config_path(cmd, auto_loaded, config_path, ctx) {
         report_bunfig_load_failure(ctx.log, err);
@@ -232,4 +251,24 @@ pub fn load_config_with_cmd_args(
     ctx: Context<'_>,
 ) -> Result<(), bun_core::Error> {
     load_config(cmd, args.option(b"--config"), ctx)
+}
+
+#[cfg(test)]
+mod join_config_path_tests {
+    use super::*;
+
+    /// Upstream 65245c2c34 (#38370): `dir/name` is built with the checked
+    /// join — a path that fits is NUL-terminated in the buffer, one that does
+    /// not fit yields `None` (open's ENAMETOOLONG route) instead of
+    /// overflowing the `PathBuffer`.
+    #[test]
+    fn fits_when_short_and_returns_none_on_overflow() {
+        let mut buf = bun_paths::path_buffer_pool::get();
+        let joined = join_config_path(b"/tmp", b"bunfig.toml", &mut buf).expect("short path fits");
+        assert_eq!(joined.as_bytes(), b"/tmp/bunfig.toml");
+
+        let long = vec![b'a'; buf.len() + 16];
+        let mut overflow_buf = bun_paths::path_buffer_pool::get();
+        assert!(join_config_path(b"/tmp", &long, &mut overflow_buf).is_none());
+    }
 }

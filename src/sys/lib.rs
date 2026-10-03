@@ -3081,6 +3081,38 @@ mod posix_impl {
             return Ok(rc as isize);
         }
     }
+    /// Upstream b2ad29dc43 (#43845): a descriptor created while fd 0, 1 or 2
+    /// is closed gets that number, where [`FdExt::close`] skips it and a
+    /// spawned child inherits it as stdio. Returns its duplicate at 3 or
+    /// higher (same `FD_CLOEXEC` state) with `fd` closed, or `fd` itself when
+    /// it is above stdio already or no higher number is free.
+    pub(crate) fn move_above_stdio(fd: Fd) -> Fd {
+        if fd.stdio_tag().is_none() {
+            return fd;
+        }
+        let moved = fcntl(fd, libc::F_GETFD, 0).and_then(|flags| {
+            let dup = if flags & libc::FD_CLOEXEC as isize != 0 {
+                libc::F_DUPFD_CLOEXEC
+            } else {
+                libc::F_DUPFD
+            };
+            fcntl(fd, dup, 3)
+        });
+        match moved {
+            Ok(rc) => {
+                let _ = fd.close_allowing_standard_io(None);
+                Fd::from_native(rc as i32)
+            }
+            // At the descriptor limit the creator still succeeds, as it did
+            // before the move existed.
+            Err(_) => fd,
+        }
+    }
+    /// sys.zig:3873-adjacent — `fcntl(F_DUPFD_CLOEXEC, min)` so the dup'd fd
+    /// is at `min` or higher (upstream `bun.sys.dupAtLeast`).
+    pub fn dup_at_least(fd: Fd, min: i32) -> Maybe<Fd> {
+        fcntl(fd, libc::F_DUPFD_CLOEXEC, min as isize).map(|rc| Fd::from_native(rc as i32))
+    }
     pub fn dup2(old: Fd, new: Fd) -> Maybe<Fd> {
         let rc = check!(safe_libc::dup2(old.native(), new.native()), Tag::dup2);
         Ok(Fd::from_native(rc))
@@ -3307,7 +3339,7 @@ mod posix_impl {
                 }
             }
         }
-        Ok([Fd::from_native(fds[0]), Fd::from_native(fds[1])])
+        Ok([Fd::from_native(fds[0]), Fd::from_native(fds[1])].map(move_above_stdio))
     }
 
     /// `pidfd_open(2)` — Linux ≥ 5.3. Returns a pollable fd referring to `pid`.
@@ -3316,6 +3348,7 @@ mod posix_impl {
     pub fn pidfd_open(pid: libc::pid_t, flags: u32) -> Maybe<Fd> {
         super::linux_syscall::pidfd_open(pid, flags)
             .map_err(|e| Error::from_code_int(e, Tag::pidfd_open))
+            .map(move_above_stdio)
     }
 
     // ── macOS clonefile / copyfile ──
@@ -3540,7 +3573,7 @@ mod posix_impl {
                 }
                 return Err(Error::from_code_int(e, Tag::memfd_create));
             }
-            return Ok(Fd::from_native(rc));
+            return Ok(move_above_stdio(Fd::from_native(rc)));
         }
     }
 
@@ -9254,7 +9287,7 @@ pub fn eventfd(initval: u32, flags: i32) -> Maybe<Fd> {
     if rc < 0 {
         return Err(err_with(Tag::open));
     }
-    Ok(Fd::from_native(rc))
+    Ok(move_above_stdio(Fd::from_native(rc)))
 }
 
 /// `bun.Output.stderrWriter()` — `std::io::Write` over stderr fd. Used by
@@ -9614,4 +9647,44 @@ pub fn force_link() {
         fn __bun_dispatch__OutputSink__Sys__stderr(_: *mut core::ffi::c_void) -> bun_core::output::File;
     }
     let _ = __bun_dispatch__OutputSink__Sys__stderr as *const () as usize;
+}
+
+#[cfg(all(test, unix))]
+mod move_above_stdio_tests {
+    use super::*;
+
+    // This lib-test does not link `bun_crash_handler`; stub its upward
+    // link-time symbol the same way `bun_core`'s own cfg(test) build does
+    // (pattern from `bun_io` pipe_reader_reentrancy tests).
+    #[unsafe(no_mangle)]
+    extern "Rust" fn __bun_crash_handler_dump_stack_trace(
+        _first_address: Option<usize>,
+        _limits: bun_core::DumpStackTraceOptions,
+    ) {
+    }
+
+    /// Upstream b2ad29dc43 (#43845): a descriptor already above stdio must
+    /// come back untouched (the hot path is one integer compare).
+    #[test]
+    fn fd_above_stdio_is_returned_unchanged() {
+        let pair = socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, false).expect("socketpair");
+        assert!(pair[0].native() > 2);
+        let moved = move_above_stdio(pair[0]);
+        assert_eq!(moved.native(), pair[0].native());
+        close(pair[0]).expect("close");
+        close(pair[1]).expect("close");
+    }
+
+    /// `dup_at_least` (upstream `bun.sys.dupAtLeast`, consumed by
+    /// `PosixSpawnFdGuard::source_above_slots`): the dup lands at `min` or
+    /// higher.
+    #[test]
+    fn dup_at_least_lands_above_min() {
+        let pair = socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, false).expect("socketpair");
+        let dup = dup_at_least(pair[0], 100).expect("dup_at_least");
+        assert!(dup.native() >= 100);
+        close(dup).expect("close dup");
+        close(pair[0]).expect("close");
+        close(pair[1]).expect("close");
+    }
 }
