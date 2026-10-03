@@ -56,6 +56,7 @@ mod config_deep_tests;
 mod config_pool_stats_deep_tests;
 mod config_state_error_deep_tests;
 mod config_validate_conversion_deep_tests;
+mod csp_violation_nav_tests;
 mod cross_crate_compat_tests;
 mod dom_node_interop_tests;
 mod error_permission_screenshot_comprehensive_tests;
