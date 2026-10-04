@@ -127,6 +127,7 @@ mod servo_event_delivery_tests;
 mod webfont_double_load_tests;
 mod window_open_tests;
 mod https_popup_fetch_tests;
+mod js_popup_load_tests;
 
 
 // Higher-tier soft-link providers are dev-deps nothing else `use`s in this
