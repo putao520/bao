@@ -231,6 +231,7 @@ StyleThread 栈 8MiB(上游 parity):bao 不走上游 mach,`.cargo/config.toml` [
 
 - **`--cargo-profile` ≠ `-P`**:nextest 的 `--cargo-profile test-ci` 选 cargo 构建 profile;`-P/--profile` 选 nextest 自身配置(`.config/nextest.toml`),两者不同
 - **suite 结构约定**:新增集成测试一律放 `tests/suite/<name>_tests.rs` 并在 `tests/suite/main.rs` 加 `mod <name>_tests;`。**禁止在 `tests/` 顶层新建 `.rs` 文件**(每个都会重新变成独立全引擎 target),也禁止在 `tests/` 下新建含 `main.rs` 的子目录**(cargo 会 auto-discover 为新 target;共享 helper 用 `mod.rs` + `#[path]` 引入,参照 `tests/suite/node_conformance/mod.rs`、`tests/suite/common/`)
+- **WPT 波基线二进制 = opt 构建(2026-10-04,e45/e46 波裁决)**:WPT campaign 一律用 opt profile 二进制(`cargo build --profile test-ci -p bao_bin`,私有 CARGO_TARGET_DIR 防锁竞争);dev/debug_info 族二进制 DOM getter 每-op ~500ns 通胀 × 重 op 数测试 → 假 TIMEOUT/假 CRASH 族(B1 六格实录:debug 下 3 CRASH+3 TIMEOUT,opt 下 6/6 全绿)。CRASH+零 stderr 的静默死亡格先按「wptrunner SIGTERM 杀挂死浏览器」判别律分流(memory `wpt-crash-sigterm-harness-class.md`)再立缺陷假说
 
 ### mozjs 构建经验
 

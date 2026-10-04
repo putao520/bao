@@ -48,15 +48,17 @@ run1 汇总口径(与 wptrunner ini 比对):xhr 402 expected / 4 error / 2 timeo
 
 ## B. 新分歧桶清单(39 格分解,按优先级排序)
 
-### B1 · NodeList 静态集合 length-getter 篡改族 —— **bao 独有,6 格(3 CRASH + 3 TIMEOUT),缺陷候选第 1 位**
+### B1 · NodeList 静态集合 length-getter 篡改族 —— ~~缺陷候选第 1 位~~ **已终裁:性能超时候裁,零缺陷(2026-10-04 e45 归因+opt 复跑闭环)**
 
 - 格:`/dom/nodes/NodeList-static-length-getter-tampered-indexOf-{1,2,3}.html` CRASH ×3 + `/dom/nodes/NodeList-static-length-getter-tampered-{1,2,3}.html` TIMEOUT ×3;全部 ini expected OK、chrome=O
 - 载体共性:同一 support 文件(`support/NodeList-static-length-tampered.js`)——静态 NodeList 100 项、循环中途 `Object.defineProperty(nodeList,"length",{get(){return 10}})` 篡改后继续集合操作;indexOf 变体=进程死亡,非 indexOf 变体=挂起
 - 崩面特征:proc1 复现 3/3(266.9s,每格 ~89s=测试跑 ~60s 触 timeout 后进程死亡),**零 stderr/零 panic/零 stack-overflow 文本**(raw `process_output` 无异常输出)= 静默进程死亡类(与 css-ledger C1 显式栈溢出、H1 导航期断连不同类)
-- 归因域:缺陷(DOM 静态集合 × length getter 篡改 → 挂起/进程死亡);两症状同族同根(嫌疑静态集合不变量被 tamper 破坏后迭代死循环/原生层违约)
-- 复现:`cd /tmp/bao-wpt && venv/bin/python run_bao_wpt_b3.py -- --processes 1 /dom/nodes/NodeList-static-length-getter-tampered-indexOf-1.html /dom/nodes/NodeList-static-length-getter-tampered-indexOf-2.html /dom/nodes/NodeList-static-length-getter-tampered-indexOf-3.html`
+- **终裁归因(e45 四路证据,2026-10-04)**:「死亡」= wptrunner 60s 死线后 SIGTERM 杀挂死浏览器(strace 定案,CRASH 标签含 is_alive/poll 误报成分);TIMEOUT 格测试实际跑完(Subtests 1/1);根因 = DOM getter 每-op ~500ns(debug_info 族二进制通胀)× 测试 6.5e7~1.3e8 op > 60s 死线。**语义零缺陷**:三处篡改位(own/setPrototypeOf/prototype)CHECK 全对(length=10/indexOf=-1/删后恢复),Rust 集合本体读真实长度篡改免疫;上游 servo nightly 同码 6/6 全 O。microbench:篡改后反而更快(4ns/10µs),untampered 阶段是成本主体
+- **opt 复跑实证(2026-10-04)**:test-ci profile(opt-level 2 stripped)重建 `/tmp/bao-wpt/opt-target/test-ci/bao` 复跑 6 格 = **6/6 ran as expected(82.9s)**——e45 假说终验证实
+- 处置:零修复合同(反面清单:nodelist.rs/codegen getter/Array.cpp 均禁立 vendor 补丁——语义已证正确);**后续 WPT 波基线二进制一律 opt 构建**(dev/debug 族 per-op 通胀制造假 TIMEOUT/CRASH 族);31 个 IndexedGetter 集合暴露面登记为未来 TIMEOUT 族统一暴露面;方法学沉淀 memory `wpt-crash-sigterm-harness-class.md`(CRASH+零 stderr=SIGTERM 判别律)
+- 复现(opt 基线):`cd /tmp/bao-wpt && venv/bin/python run_bao_wpt_opt.py -- --processes 1 /dom/nodes/NodeList-static-length-getter-tampered-indexOf-1.html /dom/nodes/NodeList-static-length-getter-tampered-indexOf-2.html /dom/nodes/NodeList-static-length-getter-tampered-indexOf-3.html /dom/nodes/NodeList-static-length-getter-tampered-{1,2,3}.html`
 
-### B2 · xhr 稳定挂起双格 —— bao 独有,2 格,缺陷候选第 2/3 位
+### B2 · xhr 稳定挂起双格 —— bao 独有,2 格,缺陷候选第 2/3 位(**e46 归因完成 2026-10-04:document.domain×sync XHR 假说证伪,真根因=window.open no-op,与 B2'/css-H2/H5 四族一根;修复合同 e47 在途**)
 
 - `/xhr/send-after-setting-document.domain.htm` TIMEOUT(两轮均挂;chrome=O;ini expected OK)——document.domain setter → origin 突变 → sync XHR 链挂起嫌疑
 - `/xhr/open-url-multi-window-6.htm` TIMEOUT(两轮均挂;chrome=O;ini expected OK)——window.open 多窗广播链(css-ledger H2 window 句柄族相邻,但载体是 xhr 导航面,独立立格)
