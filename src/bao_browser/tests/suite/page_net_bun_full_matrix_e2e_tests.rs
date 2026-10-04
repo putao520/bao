@@ -469,14 +469,17 @@ fn page_net_bun_full_destination_matrix() {
         pump(50);
     }
 
-    // Four subresources through the bridge (img + script + css + xhr); the
-    // window.fetch probe rides the Node stack and must NOT count.
+    // Five subresources through the bridge (img + script + css + xhr + the
+    // window.fetch probe): the 底层统一 ruling (e63 D2) keeps servo's WHATWG
+    // fetch on page realms, so the fetch probe rides the SAME bridge /
+    // stack / pool as every other subresource (the 2026-08-15 page-network
+    // unification, 5623b4b7 — now including fetch).
     let counter_after_subs = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
         counter_after_subs - counter_before,
-        4,
-        "img+script+css+xhr must all go through the bridge, window.fetch must not \
-         (recorded: {recorded:?})"
+        5,
+        "img+script+css+xhr+fetch must ALL go through the bridge (one unified \
+         page transport — e63 D2 底层统一; recorded: {recorded:?})"
     );
 
     // Document destination: navigate a second page to an http document.

@@ -2270,13 +2270,17 @@ mod tests {
     // ── REQ-SEC-001: CORS Bypass Unit Tests ──────────────────────────────
     // @trace TEST-SEC-001 [req:REQ-SEC-001] [level:unit]
 
-    /// REQ-SEC-001: fetch global is installed on page realm via install_all_native.
+    /// REQ-SEC-001 (as amended by the 底层统一 ruling, e63 D2): the Node-stack
+    /// fetch override stays pub for Node/bun engine realms; the PAGE-realm
+    /// exclusion is enforced at the embedder's page-injection call site
+    /// (`runtime_bridge::install_all_native` does not call this — pinned in
+    /// bao_browser page.rs `page_global_has_no_node_apis`).
     #[test]
-    fn cors_bypass_fetch_global_installed_for_page() {
+    fn cors_bypass_fetch_global_stays_pub_for_node_realms() {
         let source = include_str!("fetch_api.rs");
         assert!(
             source.contains("pub fn install_fetch_global"),
-            "REQ-SEC-001: install_fetch_global must be pub for page realm installation"
+            "REQ-SEC-001: install_fetch_global must stay pub (Node/bun realms)"
         );
     }
 

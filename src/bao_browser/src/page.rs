@@ -2757,9 +2757,14 @@ mod tests {
             .unwrap_or(source.len() - func_start);
         let func_body = &source[func_start..func_start + func_end];
 
+        // 底层统一 ruling (e63 D2): the Node-stack fetch override must NOT be
+        // installed on page realms — servo's WHATWG fetch is the sole page
+        // transport (Node/bun realms get it via globals::install_all).
         assert!(
-            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
-            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
+            !func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
+            "REQ-SEC-003 REGRESSION: install_all_native must NOT install the \
+             Node-stack fetch override on page realms (e63 D2 — servo WHATWG \
+             fetch owns the page transport)"
         );
         assert!(
             func_body.contains("bun_runtime::timers::install_timer_globals"),

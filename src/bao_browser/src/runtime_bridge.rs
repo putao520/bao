@@ -1956,7 +1956,20 @@ unsafe fn install_all_native(
     let global_handle = rooted_global.handle();
 
     // Install Web APIs using properly rooted handle
-    bun_runtime::fetch_api::install_fetch_global(&mut cx, global_handle);
+    // e63 D2 (底层统一用户裁决 2026-10-04): the Node-stack fetch override is
+    // NOT installed on page realms. It shadowed servo's WHATWG fetch, so
+    // every page fetch after this injection rode bun_http straight from the
+    // JS init — strict-by-default TLS that never consulted servo's
+    // `ignore_certificate_errors` / `certificate_path` posture (the e63 D2
+    // "HTTPS popup fetch silently dropped" face), and the binding flip made
+    // a page's transport stack depend on injection timing (pre-injection
+    // calls = servo fetch, post-injection = runtime fetch). Page realms keep
+    // servo's WHATWG fetch as the SOLE page transport (the 2026-08-15
+    // page-network unification, 5623b4b7); Node/bun engine realms get the
+    // override unchanged via `globals::install_all`.
+    // @trace REQ-BRW-002 [req:REQ-BRW-002] e63 D2 page-realm fetch exclusion
+    // (supersedes the REQ-SEC-001 page-realm installation pin — see
+    // page.rs `page_global_has_no_node_apis`).
     bun_runtime::timers::install_timer_globals(&mut cx, global_handle);
     bun_runtime::web_api::install_performance(&mut cx, global_handle);
     bun_runtime::web_api::install_websocket_constructor(&mut cx, global_handle);

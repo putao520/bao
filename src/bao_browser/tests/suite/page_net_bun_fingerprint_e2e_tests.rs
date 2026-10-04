@@ -656,8 +656,9 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     // ── Phase B: Node fetch (h2 gate = env flag, default ON); script/xhr
     //    stay on hyper ────────────────────────────────────────────────────
 
-    // window.fetch — same page, Node fetch stack (bun HTTPThread, stealth
-    // SSLConfig from the page profile via stealth_http).
+    // window.fetch — same page, servo WHATWG fetch → the same bridge stack
+    // as the subresources (底层统一, e63 D2); its ClientHello must carry the
+    // page profile's stealth fingerprint like every other page egress.
     inject(
         "fetch",
         &format!(
@@ -740,12 +741,14 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
 
     // ── Dispatch scope ────────────────────────────────────────────────────
     // Every subresource destination rides the bridge: img + css (the
-    // fingerprint-captured ones) plus script + xhr.
+    // fingerprint-captured ones) plus script + xhr + the window.fetch probe
+    // (the 底层统一 ruling, e63 D2 — servo WHATWG fetch owns the page
+    // transport, so the probe rides the same bridge as the rest).
 
     let bridge_count = servo_net::fetch::bun_bridge::page_net_bun_request_count();
     assert_eq!(
-        bridge_count, 4,
-        "bridge must have driven img+css+script+xhr (got {bridge_count}; fixture paths: {:?})",
+        bridge_count, 5,
+        "bridge must have driven img+css+script+xhr+fetch (got {bridge_count}; fixture paths: {:?})",
         fixture.paths()
     );
     let paths = fixture.paths();
