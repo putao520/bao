@@ -51,6 +51,7 @@ C 面另有 FAIL ×3978 与 unexpected-PASS ×417(两桶见 C6/C8)。
 - 证据: `/tmp/bao-wpt/https-face-e26.log` — window-location: `TypeError: can't access property "location", win is null`(testdriver `bless`→navigate 链,win 为 null);meta-refresh/header-refresh: `Test named 'sec-fetch-site - Same origin' specified 1 'cleanup' function, and 1 failed`(NOTRUN 级联)
 - 归因域: 缺陷候选(window.open 返回句柄/navigation 后窗口对象生命周期),非环境
 - 处置建议: 归入 window/navigation 缺陷 backlog;同族还有 H5 的 `window-open.https.sub.html` TIMEOUT(Same-origin/same-site window forced 全超时)
+- **部分根治注记(2026-10-04,a309b714)**:window-location 格 + H5 的 window-open.https.sub.html 格已随 window.open 落地修复转绿(e47 实现 request_create_new 真身,主会话 V 四格复验 4/4 ran as expected,含此二格);meta-refresh/header-refresh 两格(cleanup-fail 类)不在该根因域,留桶待另归因
 
 ### H3 · https 面 ERROR ×1 — `fetch/metadata/sharedworker.https.sub.html` — **既有 L2 桶,不重开**
 

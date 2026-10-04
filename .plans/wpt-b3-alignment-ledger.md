@@ -58,7 +58,7 @@ run1 汇总口径(与 wptrunner ini 比对):xhr 402 expected / 4 error / 2 timeo
 - 处置:零修复合同(反面清单:nodelist.rs/codegen getter/Array.cpp 均禁立 vendor 补丁——语义已证正确);**后续 WPT 波基线二进制一律 opt 构建**(dev/debug 族 per-op 通胀制造假 TIMEOUT/CRASH 族);31 个 IndexedGetter 集合暴露面登记为未来 TIMEOUT 族统一暴露面;方法学沉淀 memory `wpt-crash-sigterm-harness-class.md`(CRASH+零 stderr=SIGTERM 判别律)
 - 复现(opt 基线):`cd /tmp/bao-wpt && venv/bin/python run_bao_wpt_opt.py -- --processes 1 /dom/nodes/NodeList-static-length-getter-tampered-indexOf-1.html /dom/nodes/NodeList-static-length-getter-tampered-indexOf-2.html /dom/nodes/NodeList-static-length-getter-tampered-indexOf-3.html /dom/nodes/NodeList-static-length-getter-tampered-{1,2,3}.html`
 
-### B2 · xhr 稳定挂起双格 —— bao 独有,2 格,缺陷候选第 2/3 位(**e46 归因完成 2026-10-04:document.domain×sync XHR 假说证伪,真根因=window.open no-op,与 B2'/css-H2/H5 四族一根;修复合同 e47 在途**)
+### B2 · xhr 稳定挂起双格 —— ~~缺陷候选第 2/3 位~~ **已根治(a309b714,2026-10-04 e47 修复+主会话 V 四格复验 4/4 全绿)**
 
 - `/xhr/send-after-setting-document.domain.htm` TIMEOUT(两轮均挂;chrome=O;ini expected OK)——document.domain setter → origin 突变 → sync XHR 链挂起嫌疑
 - `/xhr/open-url-multi-window-6.htm` TIMEOUT(两轮均挂;chrome=O;ini expected OK)——window.open 多窗广播链(css-ledger H2 window 句柄族相邻,但载体是 xhr 导航面,独立立格)
