@@ -42,7 +42,7 @@ use crate::fetch::headers::determine_nosniff;
 use crate::filemanager_thread::FileManagerThreadMsg;
 use crate::http_status::HttpStatus;
 use crate::mime_classifier::{ApacheBugFlag, MimeClassifier};
-use crate::request::{PreloadId, Request, RequestBuilder};
+use crate::request::{Destination, PreloadId, Request, RequestBuilder, RequestMode};
 use crate::response::{Response, ResponseInit};
 
 pub mod blob_url_store;
@@ -128,6 +128,16 @@ pub struct CustomResponseMediator {
     pub reload_navigation: bool,
     /// <https://fetch.spec.whatwg.org/#concept-request-history-navigation-flag>
     pub history_navigation: bool,
+    /// <https://fetch.spec.whatwg.org/#concept-request-destination>
+    ///
+    /// Bao vendor patch (wave2-B2 e61, user ruling 2026-10-04): same loss
+    /// chain as the flags above — e60 forensics measured `""`/`"cors"` on
+    /// the mediated request where the spec wants `"iframe"`/`"navigate"`
+    /// (Sec-Fetch-Dest/Mode observable face). The destination and mode ride
+    /// the mediator like the flags do.
+    pub destination: Destination,
+    /// <https://fetch.spec.whatwg.org/#concept-request-mode>
+    pub mode: RequestMode,
 }
 
 /// [Policies](https://w3c.github.io/webappsec-referrer-policy/#referrer-policy-states)

@@ -734,6 +734,8 @@ async fn invoke_handle_fetch(request: &Request, context: &FetchContext) -> Optio
         load_url: load_url.clone(),
         reload_navigation: request.reload_navigation,
         history_navigation: request.history_navigation,
+        destination: request.destination,
+        mode: request.mode.clone(),
     };
     if manager_chan.send(mediator).is_err() {
         return None;

@@ -589,19 +589,31 @@ impl Request {
         self.request.borrow().clone()
     }
 
-    /// Set the reload-navigation and history-navigation flags on the
-    /// underlying request.
+    /// Set the mediation-restored fields on the underlying request: the
+    /// reload-navigation and history-navigation flags, the destination, and
+    /// the mode.
     ///
-    /// Bao vendor patch (wave2-B2 C): the service-worker `FetchEvent`
+    /// Bao vendor patch (wave2-B2 C + e61): the service-worker `FetchEvent`
     /// mediation rebuilds the mediated request from the URL
     /// (`Request::constructor` with an empty init), and `RequestInit` has no
-    /// members for these flags — the fetch spec only lets navigation set
-    /// them. The mediated flags arrive over the `CustomResponseMediator`, so
-    /// the SW realm needs this write path to restore them.
-    pub(crate) fn set_navigation_flags(&self, reload_navigation: bool, history_navigation: bool) {
+    /// members for these fields — the flags are only set by navigation, and
+    /// destination/mode come from the mediated net request. They arrive over
+    /// the `CustomResponseMediator`, so the SW realm needs this write path
+    /// to restore them (e60 forensics: without it the mediated request
+    /// observably carried `destination: ""` / `mode: "cors"` where the spec
+    /// wants `"iframe"` / `"navigate"` — the Sec-Fetch-Dest/Mode face).
+    pub(crate) fn set_mediation_fields(
+        &self,
+        reload_navigation: bool,
+        history_navigation: bool,
+        destination: Destination,
+        mode: NetTraitsRequestMode,
+    ) {
         let mut request = self.request.borrow_mut();
         request.reload_navigation = reload_navigation;
         request.history_navigation = history_navigation;
+        request.destination = destination;
+        request.mode = mode;
     }
 }
 

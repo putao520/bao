@@ -167,14 +167,17 @@ impl FetchEvent {
                 return;
             },
         };
-        // Bao vendor patch (wave2-B2 C): restore the navigation flags the net
-        // request carried. The constructor rebuilds from the URL alone
-        // (`RequestInit` has no members for these flags — the fetch spec only
-        // lets navigation set them), which left `isReloadNavigation` /
-        // `isHistoryNavigation` false on every mediated request.
-        request.set_navigation_flags(
+        // Bao vendor patch (wave2-B2 C + e61): restore the mediation fields
+        // the net request carried. The constructor rebuilds from the URL
+        // alone (`RequestInit` has no members for these fields — the fetch
+        // spec only lets navigation set the flags), which left
+        // `isReloadNavigation` / `isHistoryNavigation` false and
+        // destination/mode on their defaults on every mediated request.
+        request.set_mediation_fields(
             mediator.reload_navigation,
             mediator.history_navigation,
+            mediator.destination,
+            mediator.mode,
         );
 
         // <https://w3c.github.io/ServiceWorker/#service-worker-global-scope-fetch-event>
