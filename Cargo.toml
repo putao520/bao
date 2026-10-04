@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "examples"]
+exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "vendor/usvg", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -442,6 +442,11 @@ map_identity = "allow"
 # this chain (dual lock).
 [patch.crates-io]
 freetype = { path = "vendor/freetype-wrapper" }
+
+# BAO PATCH (clip-path-recursion-001, 2026-10-04): vendored usvg 0.48.1
+# (pristine registry source, checksum-verified) with a clipPath reference-cycle
+# guard - see vendor/usvg/src/parser/clippath.rs and the CLAUDE.md vendor list.
+usvg = { path = "vendor/usvg" }
 
 # BAO PATCH (REQ-BRW-047): vendored stylo_atoms with WebVTT enter/exit/cuechange atoms (workspace-local optimization; published script uses dynamic Atom::from)
 stylo_atoms = { path = "vendor/stylo_atoms" }
