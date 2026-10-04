@@ -102,11 +102,30 @@ const NATIVE_DATA_BODY: &str = "NATIVE_DATA_MUST_NOT_REACH_PAGE";
 const NATIVE_PASSTHROUGH_BODY: &str = "NATIVE_PASSTHROUGH_OK";
 const NATIVE_PROXIED_BODY: &str = "NATIVE_PROXIED_VIA_SW_SUBFETCH";
 
+/// The ServiceWorker the e71 destination test registers: intercepts the
+/// dedicated-worker script fetch (`destination: "worker"` is the original
+/// request's destination) with `respondWith(fetch(event.request))` — the
+/// canonical re-fetch shape — after first reporting the mediated Request's
+/// own destination through a marker fetch (a SW-realm fetch runs with
+/// service-workers mode "none", so the marker cannot re-enter mediation).
+const E71_SW_SCRIPT_JS: &str = r#"
+self.addEventListener('fetch', function (e) {
+  var u = String(e.request.url);
+  if (u.indexOf('/api/wscript') !== -1) {
+    e.waitUntil(fetch('/api/e71marker?d=' + encodeURIComponent(String(e.request.destination))));
+    e.respondWith(fetch(e.request));
+  }
+});
+"#;
+
 /// Minimal multi-path HTTP fixture: `/` → page HTML, `/sw.js` → SW script,
 /// the `/api/*` probes → fixed native bodies, everything else recorded.
 struct SwMediationFixture {
     shutdown: Arc<AtomicBool>,
     paths: Arc<Mutex<Vec<String>>>,
+    /// (path, sec-fetch-dest header value) per request — the e71 destination
+    /// face reads the wire header the re-fetch egressed with.
+    dests: Arc<Mutex<Vec<(String, Option<String>)>>>,
     sw_script: Arc<Mutex<Option<String>>>,
     port: u16,
 }
@@ -118,9 +137,11 @@ impl SwMediationFixture {
         let _ = listener.set_nonblocking(true);
         let shutdown = Arc::new(AtomicBool::new(false));
         let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let dests: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::new(Mutex::new(Vec::new()));
         let sw_script: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let shutdown_c = Arc::clone(&shutdown);
         let paths_c = Arc::clone(&paths);
+        let dests_c = Arc::clone(&dests);
         let script_c = Arc::clone(&sw_script);
         std::thread::Builder::new()
             .name("sw-mediation-fixture".into())
@@ -150,6 +171,18 @@ impl SwMediationFixture {
                                 .unwrap_or("")
                                 .to_string();
                             paths_c.lock().unwrap().push(path.clone());
+                            // e71: capture the request's sec-fetch-dest
+                            // header (lowercased scan; header order/value
+                            // casing varies across stacks).
+                            let lower = head.to_lowercase();
+                            let dest = lower
+                                .lines()
+                                .find_map(|l| {
+                                    l.trim()
+                                        .strip_prefix("sec-fetch-dest:")
+                                        .map(|v| v.trim().to_string())
+                                });
+                            dests_c.lock().unwrap().push((path.clone(), dest));
                             let sw_script_body = script_c.lock().unwrap().clone();
                             let (content_type, body): (&str, String) = if path.starts_with("/sw.js")
                             {
@@ -163,6 +196,10 @@ impl SwMediationFixture {
                                 ("text/plain", NATIVE_PASSTHROUGH_BODY.into())
                             } else if path.starts_with("/api/proxied") {
                                 ("text/plain", NATIVE_PROXIED_BODY.into())
+                            } else if path.starts_with("/api/wscript") {
+                                // Valid worker script so the re-fetched
+                                // worker boots cleanly once it arrives.
+                                ("application/javascript", "postMessage('w71-ok');".into())
                             } else {
                                 (
                                     "text/html",
@@ -189,6 +226,7 @@ impl SwMediationFixture {
         SwMediationFixture {
             shutdown,
             paths,
+            dests,
             sw_script,
             port,
         }
@@ -200,6 +238,10 @@ impl SwMediationFixture {
 
     fn recorded_paths(&self) -> Vec<String> {
         self.paths.lock().unwrap().clone()
+    }
+
+    fn recorded_requests(&self) -> Vec<(String, Option<String>)> {
+        self.dests.lock().unwrap().clone()
     }
 }
 
@@ -383,5 +425,148 @@ fn c19_sw_mediates_page_fetch_end_to_end_live() {
         paths_after.iter().filter(|p| p.starts_with("/api/proxied")).count() >= 1,
         "③ the SW's sub-fetch of /api/proxied must egress to the fixture \
          (no self-interception recursion): {paths_after:?}"
+    );
+}
+
+/// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] SW re-fetch destination preservation
+/// (live) — the wire sec-fetch-dest face of `respondWith(fetch(event.request))`.
+///
+/// The e69 forensics vehicle (mirroring WPT
+/// `fetch/api/request/destination/fetch-destination-worker.https.html`):
+/// an activated SW intercepts a dedicated-worker script fetch (original
+/// destination "worker") and re-fetches the mediated request. Two faces are
+/// asserted against the fixture's wire observations:
+///   1. INPUT face — the mediated Request the event carries reports
+///      `destination == "worker"` (the e61 set_mediation_fields face,
+///      relayed through the marker fetch's query).
+///   2. WIRE face — every egress of the worker-script path carries
+///      `sec-fetch-dest: worker`. This is the face the vendor patch under
+///      test fixes: the Request constructor's step-12 rebuild dropped the
+///      destination, so the re-fetch egressed `sec-fetch-dest: empty`
+///      (e69 live probe, 2026-10-05, unpatched tree — the RED observation
+///      this GREEN run must invert). Pre-activation native egresses also
+///      carry "worker" honestly, so "no empty record on this path" is the
+///      exact discriminator and cannot false-green: the only request that
+///      CAN carry "empty" here is the post-activation re-fetch.
+#[test]
+fn c19_sw_refetch_preserves_destination_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = SwMediationFixture::spawn();
+    let origin = format!("http://127.0.0.1:{}/", fixture.port);
+    fixture.set_script(E71_SW_SCRIPT_JS.to_owned());
+
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(origin.clone()),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page must succeed");
+
+    // Register the SW and wait for activation BEFORE creating the worker
+    // (e69's probe pattern): the destination discriminator must not be
+    // diluted by racing a native pre-activation egress against the fix.
+    // The registration script runs ONCE; the poll reads the variable it
+    // settles.
+    let register_and_activate_js = "window.__e71act = 'pending'; \
+         try { \
+           navigator.serviceWorker.register('/sw.js', {scope: '/'}).then(function (reg) { \
+             var w = reg.installing || reg.waiting || reg.active; \
+             return new Promise(function (res) { \
+               if (w.state === 'activated') { res(); } \
+               else { w.addEventListener('statechange', function () { \
+                 if (w.state === 'activated') { res(); } }); } \
+             }); \
+           }).then(function () { window.__e71act = 'ok'; }, \
+                   function (e) { window.__e71act = 'error:' + e; }); \
+         } catch (err) { window.__e71act = 'threw:' + err; } \
+         window.__e71act";
+    let initial = page
+        .evaluate_js_web(register_and_activate_js)
+        .expect("register dispatch must not fail");
+    eprintln!("[e71-dest] register dispatched, immediate eval = {initial:?}");
+    let act = wait_for(
+        || match page.evaluate_js_web("window.__e71act") {
+            Ok(s) if s.contains("pending") => None,
+            Ok(s) => Some(s),
+            Err(_) => None,
+        },
+        Duration::from_secs(30),
+        "service worker activation",
+    )
+    .unwrap_or_else(|| "<no settlement>".to_string());
+    eprintln!("[e71-dest] activation outcome = {act}");
+    assert!(
+        act.contains("ok"),
+        "service worker must activate on the live path before the worker is created: {act}"
+    );
+
+    // Create the dedicated worker whose script fetch the SW intercepts.
+    let worker_js = "window.__e71w = 'created'; \
+         try { new Worker('/api/wscript?e71=1'); } \
+         catch (err) { window.__e71w = 'threw:' + err; } \
+         window.__e71w";
+    let w = page
+        .evaluate_js_web(worker_js)
+        .expect("worker creation eval must not fail");
+    eprintln!("[e71-dest] worker creation = {w}");
+
+    // Wait for BOTH faces to bank: the marker (input face) and the
+    // re-fetch egress (wire face). A SW-realm fetch's response settlement
+    // may still wedge (documented pre-existing defect in this file's
+    // header) — both observables here are EGRESS records at the fixture,
+    // so neither depends on the response round-trip.
+    //
+    // Each poll enters the page realm with a no-op eval: bao's servo pump
+    // is lazy, and the pending worker-script fetch's embedder round-trip is
+    // only drained while the page realm pumps (the same reason this file's
+    // sync-XHR probes work — their blocking read drives the pump from
+    // inside the eval — and why the e69 WebDriver probe, which polled
+    // document.title every 500 ms, saw the egress a fully idle wait
+    // starves).
+    let reqs = wait_for(
+        || {
+            let _ = page.evaluate_js_web("void 0");
+            let reqs = fixture.recorded_requests();
+            let has_marker = reqs.iter().any(|(p, _)| p.starts_with("/api/e71marker"));
+            let has_refetch = reqs.iter().any(|(p, _)| p.starts_with("/api/wscript"));
+            (has_marker && has_refetch).then_some(reqs)
+        },
+        Duration::from_secs(45),
+        "SW re-fetch + marker egress",
+    )
+    .unwrap_or_else(|| fixture.recorded_requests());
+    eprintln!("[e71-dest] fixture requests = {reqs:?}");
+
+    // INPUT face — the mediated Request carried destination "worker".
+    let marker = reqs.iter().find(|(p, _)| p.starts_with("/api/e71marker"));
+    assert!(
+        marker.is_some_and(|(p, _)| p.contains("d=worker")),
+        "the mediated Request's destination must be \"worker\" (marker query), got: {marker:?}"
+    );
+
+    // WIRE face — the re-fetch egressed with the original destination.
+    let refetches: Vec<&(String, Option<String>)> = reqs
+        .iter()
+        .filter(|(p, _)| p.starts_with("/api/wscript"))
+        .collect();
+    assert!(
+        !refetches.is_empty(),
+        "the SW's re-fetch of /api/wscript must egress to the fixture: {reqs:?}"
+    );
+    let bad: Vec<&(String, Option<String>)> = refetches
+        .iter()
+        .filter(|(_, d)| d.as_ref().map(|v| v != "worker").unwrap_or(true))
+        .map(|r| *r)
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "sec-fetch-dest on the re-fetch egress must be \"worker\" (constructor \
+         rebuild must not drop the destination); offending records: {bad:?}"
     );
 }

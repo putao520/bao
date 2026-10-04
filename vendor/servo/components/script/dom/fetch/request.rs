@@ -193,6 +193,19 @@ impl Request {
         request.reload_navigation = temporary_request.reload_navigation;
         // history-navigation flag: request’s history-navigation flag.
         request.history_navigation = temporary_request.history_navigation;
+        // Bao vendor patch (REQ-BRW-002 / e71, user ruling 2026-10-05): the
+        // spec's step-12 copy list does not mention destination, but the
+        // fresh request above starts at `Destination::None`, so rebuilding
+        // from a Request input silently loses the original destination —
+        // a SW `respondWith(fetch(event.request))` re-fetch then hits the
+        // wire with `sec-fetch-dest: empty` instead of the original value
+        // (e69 forensics: worker re-fetch observed "empty" where "worker"
+        // is expected). Chromium preserves it across re-construction:
+        // `Request::Create` clones the input's FetchRequestData and
+        // `FetchRequestData::CloneExceptBody` copies `destination_` (and
+        // `original_destination_`) regardless of init. Mirror that here so
+        // the observable Sec-Fetch-Dest face is indistinguishable.
+        request.destination = temporary_request.destination;
 
         // Step 13. If init is not empty, then:
         if init.body.is_some() ||
