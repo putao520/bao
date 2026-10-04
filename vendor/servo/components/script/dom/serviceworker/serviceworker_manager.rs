@@ -345,6 +345,7 @@ impl ServiceWorkerManager {
                 url,
                 source,
                 origin,
+                target,
             } => {
                 let Some(registration) = self.registrations.get(&url) else {
                     warn!("No registration found for scope URL when forwarding message to worker.");
@@ -366,14 +367,14 @@ impl ServiceWorkerManager {
                 // could never reach iframe subdocument containers (e69
                 // attribution: fetch-destination-worker TIMEOUT). Each
                 // `Client.postMessage` call is a separately structured-cloned
-                // message, so delivery rotates one message per enrolled client
-                // (round-robin): a SW broadcasting to every `matchAll` result
-                // reaches every client exactly once, with no payload cloning
-                // (StructuredSerializedData is not Clone). Divergence (until a
-                // follow-up carries per-client targeting through
-                // ForwardWorkerMessage): a genuinely targeted postMessage may
-                // land on a sibling client — no worse than the previous
-                // registering-client-only delivery.
+                // message. BAO PATCH (REQ-BRW-004 e73 targeting): a message
+                // posted on a `Client` object carries that client's creation
+                // URL as `target` — deliver directly to the enrolled client
+                // keyed by it (the set's identity, see `enroll_client`). A
+                // target that matches nothing in the set — a stale/dead client
+                // URL, or the `event.source` client the SW realm synthesizes
+                // with the scope URL — falls through to the broadcast below:
+                // delivery is no worse than the pre-targeting shape.
                 let message = ServiceWorkerAlgorithmResult::MessageFromWorker {
                     message: data,
                     source,
@@ -381,11 +382,23 @@ impl ServiceWorkerManager {
                     script_url,
                     origin,
                 };
+                if let Some(target) = target &&
+                    let Some(client) = self.clients.iter().find(|c| c.client_url == target)
+                {
+                    let _ = client.callback.send(message);
+                    return true;
+                }
                 if self.clients.is_empty() {
                     // Legacy fallback: no client has ever enrolled — deliver
                     // to the registering client exactly as before this patch.
                     let _ = registration.client.send(message);
                 } else {
+                    // Broadcast fallback (no identifier, or an identifier that
+                    // matches nothing enrolled): one delivered message per
+                    // client, rotating (round-robin) — a SW broadcasting to
+                    // every `matchAll` result reaches every client exactly
+                    // once, with no payload cloning
+                    // (StructuredSerializedData is not Clone).
                     let index = self.next_client % self.clients.len();
                     self.next_client = self.next_client.wrapping_add(1);
                     let _ = self.clients[index].callback.send(message);

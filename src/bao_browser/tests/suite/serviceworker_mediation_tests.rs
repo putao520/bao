@@ -118,6 +118,39 @@ self.addEventListener('fetch', function (e) {
 });
 "#;
 
+/// The ServiceWorker the e73 targeting test registers: pure messaging face —
+/// no fetch listener (the scope deliberately excludes both pages, so no
+/// request is ever mediated and an unhandled-mediator stall cannot pollute
+/// the run). On any page message it finds the `matchAll` client whose URL is
+/// page B's creation URL and posts TWO messages to it, retrying `matchAll`
+/// while page B's container has not enrolled yet. Under targeted delivery
+/// (e73 `ForwardWorkerMessage.target`) both messages land on page B in FIFO
+/// order and page A banks none; under the pre-e73 round-robin broadcast the
+/// two messages alternate across the enrolled set, so each page banks
+/// exactly one — every assertion below inverts.
+const E73_SW_SCRIPT_JS: &str = r#"
+self.onmessage = function () {
+  var tries = 0;
+  var attempt = function () {
+    self.clients.matchAll().then(function (cs) {
+      var b = null;
+      for (var i = 0; i < cs.length; i++) {
+        if (String(cs[i].url).indexOf('/pageb') !== -1) { b = cs[i]; }
+      }
+      if (b) {
+        b.postMessage('e73-b1');
+        b.postMessage('e73-b2');
+      } else if (tries++ < 10) {
+        setTimeout(attempt, 200);
+      }
+    }, function () {
+      if (tries++ < 10) { setTimeout(attempt, 200); }
+    });
+  };
+  attempt();
+};
+"#;
+
 /// Minimal multi-path HTTP fixture: `/` → page HTML, `/sw.js` → SW script,
 /// the `/api/*` probes → fixed native bodies, everything else recorded.
 struct SwMediationFixture {
@@ -568,5 +601,178 @@ fn c19_sw_refetch_preserves_destination_live() {
         bad.is_empty(),
         "sec-fetch-dest on the re-fetch egress must be \"worker\" (constructor \
          rebuild must not drop the destination); offending records: {bad:?}"
+    );
+}
+
+/// Page-realm message recorder on `navigator.serviceWorker`: appends every
+/// worker→client message to `window.__e73` (comma-joined, FIFO order).
+fn install_e73_recorder_js() -> String {
+    "window.__e73 = ''; \
+     try { \
+       navigator.serviceWorker.addEventListener('message', function (e) { \
+         window.__e73 += (window.__e73 ? ',' : '') + String(e.data); \
+       }); \
+     } catch (err) { window.__e73 = 'threw:' + err; } \
+     window.__e73"
+    .to_owned()
+}
+
+/// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] SW→client postMessage
+/// per-client targeting (live) — the e73 `ForwardWorkerMessage.target` face.
+///
+/// Two pages of the same origin with DIFFERENT creation URLs (`/` and
+/// `/pageb`) → two distinct slots in the manager's origin-wide enrolled
+/// client set (enrollment is upsert-by-creation-URL, e70). The SW, on any
+/// page message, resolves `clients.matchAll()` and posts two messages to the
+/// client whose URL is page B's creation URL. Targeted delivery must land
+/// both on page B (FIFO) and nothing on page A; the pre-e73 round-robin
+/// broadcast alternates one message per client, so each page banks exactly
+/// one and both assertions invert (the RED shape this test must not regress
+/// to). The registration scope deliberately excludes both pages — no request
+/// is ever mediated, isolating the messaging face.
+#[test]
+fn c19_sw_postmessage_targets_enrolled_client_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = SwMediationFixture::spawn();
+    let origin = format!("http://127.0.0.1:{}/", fixture.port);
+    fixture.set_script(E73_SW_SCRIPT_JS.to_owned());
+
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+
+    // Page A — the registering page. Recorder first, then register + wait
+    // for the activated state (same settle pattern as the e71 destination
+    // test).
+    let page_a = runtime
+        .create_page(&PageConfig {
+            url: Some(origin.clone()),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page (A) must succeed");
+    let recorder_a = page_a
+        .evaluate_js_web(&install_e73_recorder_js())
+        .expect("A recorder install eval must not fail");
+    eprintln!("[e73-target] A recorder = {recorder_a:?}");
+
+    let register_js = "window.__e73reg = null; window.__e73act = 'pending'; \
+         try { \
+           navigator.serviceWorker.register('/sw.js', {scope: '/sw-scope/'}).then( \
+             function (reg) { \
+               window.__e73reg = reg; \
+               var w = reg.installing || reg.waiting || reg.active; \
+               return new Promise(function (res) { \
+                 if (w.state === 'activated') { res(); } \
+                 else { w.addEventListener('statechange', function () { \
+                   if (w.state === 'activated') { res(); } }); } \
+               }); \
+             }).then(function () { window.__e73act = 'ok'; }, \
+                     function (e) { window.__e73act = 'error:' + e; }); \
+         } catch (err) { window.__e73act = 'threw:' + err; } \
+         window.__e73act";
+    // The registration script runs ONCE (it self-settles __e73act); the poll
+    // only reads the variable — the file's established e71 shape.
+    let initial = page_a
+        .evaluate_js_web(register_js)
+        .expect("register dispatch must not fail");
+    eprintln!("[e73-target] register dispatched, immediate eval = {initial:?}");
+    let act = wait_for(
+        || match page_a.evaluate_js_web("window.__e73act") {
+            Ok(s) if s.contains("pending") => None,
+            Ok(s) => Some(s),
+            Err(_) => None,
+        },
+        Duration::from_secs(30),
+        "service worker activation (e73)",
+    )
+    .unwrap_or_else(|| "<no settlement>".to_string());
+    eprintln!("[e73-target] activation outcome = {act}");
+    assert!(
+        act.contains("ok"),
+        "service worker must activate on the live path: {act}"
+    );
+
+    // Page B — same origin, different creation URL → a second enrolled slot.
+    // Its container enrolls at creation (e70); the recorder must be live
+    // before anything is triggered.
+    let page_b = runtime
+        .create_page(&PageConfig {
+            url: Some(format!("{origin}pageb")),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page (B) must succeed");
+    let recorder_b = page_b
+        .evaluate_js_web(&install_e73_recorder_js())
+        .expect("B recorder install eval must not fail");
+    eprintln!("[e73-target] B recorder = {recorder_b:?}");
+
+    // Trigger: the SW's onmessage runs the targeted matchAll delivery. The
+    // registration object is post-activation, so `active` is the live
+    // worker; the scope does not cover page A, so `controller` stays null
+    // and `reg.active.postMessage` is the correct trigger face.
+    let trigger = page_a
+        .evaluate_js_web(
+            "window.__e73go = 'unset'; \
+             try { \
+               if (window.__e73reg && window.__e73reg.active) { \
+                 window.__e73reg.active.postMessage('go'); \
+                 window.__e73go = 'sent'; \
+               } else { window.__e73go = 'no-active-worker'; } \
+             } catch (err) { window.__e73go = 'threw:' + err; } \
+             window.__e73go",
+        )
+        .expect("trigger eval must not fail");
+    eprintln!("[e73-target] trigger = {trigger:?}");
+    assert_eq!(
+        trigger, "sent",
+        "the trigger must reach the active service worker"
+    );
+
+    // Bank page B's verdict (each poll pumps B's realm — bao's servo pump is
+    // lazy, delivery tasks only run while the owning page pumps), then pump
+    // A and read its verdict.
+    let verdict_b = wait_for(
+        || {
+            match page_b.evaluate_js_web("window.__e73") {
+                Ok(s) if !(s.contains("e73-b1") && s.contains("e73-b2")) => None,
+                Ok(s) => Some(s),
+                Err(_) => None,
+            }
+        },
+        Duration::from_secs(45),
+        "targeted messages on page B",
+    )
+    .unwrap_or_else(|| {
+        page_b
+            .evaluate_js_web("window.__e73")
+            .unwrap_or_else(|_| "<eval failed>".to_string())
+    });
+    eprintln!("[e73-target] B verdict = {verdict_b:?}");
+
+    // Give page A's delivery task queue a fair chance to run (if the sibling
+    // misdelivery shape ever reappears, A must be observed banking it) —
+    // several pump rounds before reading.
+    for _ in 0..5 {
+        let _ = page_a.evaluate_js_web("void 0");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let verdict_a = page_a
+        .evaluate_js_web("window.__e73")
+        .expect("A verdict eval must not fail");
+    eprintln!("[e73-target] A verdict = {verdict_a:?}");
+
+    // TARGETING face: both messages arrived at page B, in FIFO order,
+    // exactly (no duplicates from a retry, nothing else).
+    assert_eq!(
+        verdict_b, "e73-b1,e73-b2",
+        "both targeted messages must arrive at page B in order and exactly"
+    );
+    // SIBLING face: page A — the other enrolled client — must bank nothing.
+    assert_eq!(
+        verdict_a, "",
+        "the untargeted sibling client must receive none of the messages"
     );
 }

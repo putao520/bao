@@ -277,6 +277,11 @@ pub enum ServiceWorkerMsg {
         url: ServoUrl,
         source: ServiceWorkerId,
         origin: ImmutableOrigin,
+        /// BAO PATCH (REQ-BRW-004 e73 targeting): the targeted client's
+        /// creation URL — the identity the manager's origin-wide enrolled
+        /// set is keyed by. `None` (no identifier) keeps the broadcast
+        /// delivery as the fallback form.
+        target: Option<ServoUrl>,
     },
     /// <https://w3c.github.io/ServiceWorker/#algorithms>
     HandleAlgorithm(ServiceWorkerAlgorithm),

@@ -114,6 +114,13 @@ impl Client {
                 source: self.worker_id,
                 url: self.scope_url.clone(),
                 origin: origin.immutable().clone(),
+                // BAO PATCH (REQ-BRW-004 e73 targeting): this Client object is
+                // the postMessage target. `url` is the client's creation URL —
+                // for `clients.matchAll` results it is exactly the creation
+                // URL the manager's origin-wide enrolled set is keyed by — so
+                // it travels as the targeting identity and the manager can
+                // deliver directly instead of broadcasting.
+                target: Some(self.url.clone()),
             })
             .map_err(|_| {
                 Error::Type(c"Failed to send message to service worker manager".to_owned())
