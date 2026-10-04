@@ -32,7 +32,7 @@ run1 的 125 unexpected-OK 全部为 `expected ERROR` 的 serviceworker 变体�
 
 ## 波验收(2026-10-05,e67 环境重建后复跑,主会话 V 抽验)
 
-WPT 载具第二次重建(venv+launcher+HEAD 二进制 9bb44a12 链)后复跑波内全部已修格:**7/10 test 级绿,5 格修前全红翻转**(new-window 12/12、activate-after 2/2、fetch-destination/iframe/font-face×2),2 锚格未回归(multi-window-6/window-open.https)。残留红格(下轮清单):①send-on-deactivate 整格(navigate-away-w/o-BFCache 触发路径,与已绿 BFCache 子测分叉)②fetch-destination-worker 整格(DedicatedWorker destination 传播未达)③fetch-destination 4 子测(SVGImageElement/AudioWorklet/module css+text destination 面)④css-font-face http 变体 2 子测(sec-fetch-site 重定向,继承面)⑤锚格子测现状(sec-fetch-user forced 族/not-fully-active)。二进制 provenance:mtime>HEAD+clean tree+cargo 重链(+816B);EXCLUDED_PAGE_FACES 字符串不入 lib 二进制属 cfg(test) 设计。
+WPT 载具第二次重建(venv+launcher+HEAD 二进制 9bb44a12 链)后复跑波内全部已修格:**7/10 test 级绿,5 格修前全红翻转**(new-window 12/12、activate-after 2/2、fetch-destination/iframe/font-face×2),2 锚格未回归(multi-window-6/window-open.https)。残留红格(下轮清单):①send-on-deactivate 整格(**e68 归因终态 2026-10-05:子测 3/5=上游 parity**(servo ini expected FAIL,Chromium deactivate-flush 特性面 bao/上游均未实现,登记继承面);**子测 4=liveness 慢非死**(同 binary A/B+隔离探针全链通,multiplier=2 绿,~90%;session-history restore executor 唤醒调度延迟推过 10s 边际,低优候选:hop 打点定位;fetchLater flush 出口全树仅 timer+destroy 两条,无 deactivate 钩子))②fetch-destination-worker 整格(DedicatedWorker destination 传播未达)③fetch-destination 4 子测(SVGImageElement/AudioWorklet/module css+text destination 面)④css-font-face http 变体 2 子测(sec-fetch-site 重定向,继承面)⑤锚格子测现状(sec-fetch-user forced 族/not-fully-active)。二进制 provenance:mtime>HEAD+clean tree+cargo 重链(+816B);EXCLUDED_PAGE_FACES 字符串不入 lib 二进制属 cfg(test) 设计。
 
 ## 对齐地图分类规则(per-cell,同 wave1)
 
