@@ -71,11 +71,13 @@ run1 的 125 unexpected-OK 全部为 `expected ERROR` 的 serviceworker 变体�
 - 复现:`cd /tmp/bao-wpt && venv/bin/python run_bao_wpt_opt.py /fetch/api/request/destination/fetch-destination.https.html -- --processes 1`
 - **归因终态(2026-10-04 e53,主会话 V 采纳)**:setup 假说证伪(全部格 setup 子测 PASS,中继正常);挂点=setup 后观测通道,5 组根因:①SWGS `clients` 缺失(webidl 注释态,Clients 类型零存在)②Container `ready` 缺失(await undefined)③Container `onmessage` 缺失(expando 惰性)④**controller patch 丢失**(24255064 promise 波静默丢弃 dffa8f4e——已恢复 2918d029,e53 探针 `controller is null` 2+2→0+0)⑤preload 窄表+mediator 丢导航旗标。**修复进度**:controller 恢复✓(2918d029)· 合同 C mediator 旗标贯通✓(2e025890,isReloadNavigation RED→GREEN)· 合同 D preload 表扩容**停等用户裁决**(e55d 实证:六 token 封闭集=现行 HTML spec 逐字 parity,Chromium 接受全变体=可探测向量;codegen.py 先例同类,spec 正确性 vs 不可区分性待裁)· 合同 A/B(ready/onmessage/Clients 特性族)**待用户裁决立项**(上游全注释态无威胁收)。族外残留:`<frame>` 元素死(src 注释态)、iframe history.go(-1)(session-history 域)、isHistoryNavigation 子测 fixture 缺口(servo WPT 树无 hello.html)
 
-### B3 · window.open popup 通信回环挂起族 —— **缺陷候选第 3 位(3 格,跨台账同族)**
+### B3 · window.open popup 通信回环挂起族 —— **已根治+归因深化(2026-10-04)**
 
 - 格:`/fetch/fetch-later/new-window.https.window.html` + `/fetch/fetch-later/activate-after.https.window.html` + `/fetch/fetch-later/send-on-deactivate.https.window.html` TIMEOUT ×3;ini 无登记,chrome 全 O
 - 载体共性(读源实证):`new-window.https.window.js` 以 `window.open(popupUrl, target, features)` 开 popup 后**等待 popup 回传**——回环永挂。与 wave1 B2'(`/xhr/open-url-multi-window-6.htm`,已根治 a309b714 但本族仍挂)+ css-ledger H2(window.open 句柄族)同族:popup 打开已落地,popup→opener 通信/卸载语义仍有缺口;fetchLater 的 deactivate 依赖页卸载语义,三格同根
 - 复现:`cd /tmp/bao-wpt && venv/bin/python run_bao_wpt_opt.py /fetch/fetch-later/new-window.https.window.html -- --processes 1`
+
+- **B3 终态(2026-10-04)**:三格归约双根因已根治——D1 js: popup top-level load 缺步(315450b3,e62,spec navigate-to-javascript:-url 裁据+top-level 臂)/D2 HTTPS popup fetch 静默灭(6e5e8f8b,e63,**根因=REQ-SEC-001 遗留的页面 realm fetch 双栈覆盖与底层统一裁决冲突**,用户裁「底层统一」后页面 realm 排除 Node 栈 fetch,servo WHATWG fetch 独占页面传输面,e59 嫌疑面全证伪);测试夹具竞态另修(f30f7140,e64:非回归,基线自 born 红率 50-67%)。fetchLater 本体完整非特性缺口;附 D4 候选登记(popup 双载 DEAD_GLOBALS 误标,popup 生命周期域)+十面 WHATWG 遮蔽审查清单(页面 realm 同原则,CLAUDE.md 挂账)
 
 ### B4 · compression-dictionary Link-header 预载族 —— 缺陷候选第 4 位(4 格)
 
