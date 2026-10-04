@@ -55,11 +55,12 @@ run1 的 125 unexpected-OK 全部为 `expected ERROR` 的 serviceworker 变体�
 
 ## B. 新分歧桶清单(22 格,proc1 22/22 稳定,按反指纹暴露面优先级排序)
 
-### B1 · fetch/metadata SEC header induce 挂起族 —— **缺陷候选第 1 位(SEC metadata 指纹面核心)**
+### B1 · fetch/metadata SEC header induce 挂起族 —— ~~SEC metadata 指纹面~~ **已归因(2026-10-04 e52,SEC 假说证伪):第 2 次 webfont 加载终态 EOF 丢失(net 层,bun_bridge 终态清理嫌疑第 1 位)**
 
 - 格:`/fetch/metadata/generated/css-font-face.https.sub.tentative.html` + `/fetch/metadata/generated/css-font-face.sub.tentative.html` TIMEOUT ×2 + `/fetch/metadata/serviceworker-accessors.https.sub.html` TIMEOUT ×1;ini 全部无登记(=默认过),chrome 全 O
 - 载体机制(读源实证):css-font-face 经 `fetch/metadata/resources/helper.sub.js` 的 `induceRequest` 触发 `@font-face` 请求后轮询 `record-headers.py?retrieve&key=` 回读服务端记录——**font 请求从未到达服务端**,回读轮询永挂(零子测落地);serviceworker-accessors 走 `service_worker_unregister_and_register` 同形态 setup 挂
 - 归因域:`@font-face` 加载管线在 fetch/metadata 的 induce 面缺请求(或 font load promise 未 settle);反指纹语义 = Sec-Fetch-* 头在 font 请求上的缺失本身就是可指纹特征,与 STL 域直接相关
+- **归因终态(2026-10-04 e52,strace+gdb+独立探针三方实证)**:上两行读源推断被修正——font 请求**有出栈且服务端有应答**(第 1 子测 PASS);挂的是**第 2 个 @font-face 加载**:同 document 第 2 次 webfont 加载必挂(与跨域/CORS/body/连接复用全无关),响应字节完整读回但终态 EOF 从未派发 → `web_fonts_still_loading()` 恒非零 → `document.fonts.ready` 永不 fulfill(纯 lost-wakeup,61 线程全停寂;tick 探针证 ScriptThread 活着,非门/唤醒问题)。**SEC 假说证伪**:Sec-Fetch-* 注入点(http_loader.rs:1409 Step 8.13)覆盖 font 请求,trustworthy 形态带全头,非 trustworthy 按 spec 省略(子测 1 PASS 即证)。嫌疑序:①bun_bridge.rs:1085-1185 on_http_done 终态清理(BridgeState 非终态时 body_tx 不关→unfold 永不 None;两请求同 keep-alive fd 的状态混淆线索)②http_loader.rs:2274-2334 spawn_task③per-fetch 状态残留。影响=功能缺陷(≥2 webfont 页面 fonts.ready 永挂)+行为指纹;修复落 bao 层(bun_bridge 是 Bao 新增文件)
 - 复现:`cd /tmp/bao-wpt && venv/bin/python run_bao_wpt_opt.py /fetch/metadata/generated/css-font-face.sub.tentative.html -- --processes 1`
 
 ### B2 · SW 注册/激活 setup 挂起族 —— **缺陷候选第 2 位(9 格,本轮最大新桶)**
