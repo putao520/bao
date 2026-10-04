@@ -124,6 +124,7 @@ mod css_conformance_tests;
 mod svg_dom_geometry_tests;
 mod webvtt_render_tests;
 mod servo_event_delivery_tests;
+mod webfont_double_load_tests;
 mod window_open_tests;
 
 

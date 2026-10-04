@@ -1294,7 +1294,21 @@ impl RemoteWebFontDownloader {
         // https://drafts.csswg.org/css-fonts/#font-fetching-requirements
         let url = match url_source.url.url() {
             Some(url) => url.clone(),
-            None => return,
+            // BAO PATCH (fork-maintained, 2026-10-04, e56): an unresolved
+            // `src: url(...)` (the cascade has not resolved the SpecifiedUrl
+            // for this rule yet — ordering-dependent, seen when a second
+            // @font-face is inserted between rebuild passes) must FAIL this
+            // source, not silently return: the loading count was already
+            // incremented by `start_loading_one_web_font`, a known rule is
+            // never re-attempted by a later rebuild, so the silent return
+            // leaked the count and hung `document.fonts.ready` forever
+            // (webfont double-load settlement defect). css-fonts §src
+            // fallback semantics: an unloadable source advances to the next
+            // source / the load-failure path.
+            None => {
+                state.handle_web_font_load_failure();
+                return;
+            },
         };
 
         let webview_id = state.webview_id;
