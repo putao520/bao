@@ -91,11 +91,86 @@ impl ServiceWorkerContainer {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<ServiceWorkerContainer> {
-        reflect_dom_object(
+        let container = reflect_dom_object(
             cx,
             Box::new(ServiceWorkerContainer::new_inherited()),
             global,
-        )
+        );
+        // BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling
+        // 2026-10-05): enroll this container with the origin's service worker
+        // manager as a matchable client the moment it exists. Every document
+        // that touches `navigator.serviceWorker` (register / getRegistration /
+        // onmessage / matchAll) creates its container first, so this is the
+        // single choke point that makes iframe subdocument containers visible
+        // to the manager's client set — without it a SW's
+        // `clients.matchAll({includeUncontrolled: true})` could never reach
+        // them and worker→client messages time out (e69 attribution).
+        container.enroll_with_manager();
+        container
+    }
+
+    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
+    /// fire-and-forget enrollment ping. Reuses the
+    /// `MatchServiceWorkerRegistration` algorithm shape (its `enroll_only`
+    /// flag makes the manager answer nothing), so no new constellation
+    /// routing arm is required. The container's algorithm-result callback
+    /// doubles as the message-delivery channel the manager multicasts
+    /// `MessageFromWorker` through.
+    fn enroll_with_manager(&self) {
+        let global = self.global();
+        let Some(storage_key) = global.obtain_storage_key() else {
+            return;
+        };
+        let result_handler = self.ensure_callback();
+        let _ = global
+            .script_to_constellation_chan()
+            .send(ScriptToConstellationMessage::ServiceWorkerAlgorithm(
+                ServiceWorkerAlgorithm::MatchServiceWorkerRegistration {
+                    storage_key,
+                    client_url: global.creation_url(),
+                    result_handler,
+                    enroll_only: true,
+                },
+            ));
+    }
+
+    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave): create the container's
+    /// algorithm-result callback if it doesn't exist yet. Split out of
+    /// `get_or_setup_callback_with` so enrollment can set up the delivery
+    /// channel eagerly at container creation.
+    fn ensure_callback(&self) -> GenericCallback<ServiceWorkerAlgorithmResult> {
+        if let Some(cb) = self.callback.borrow_mut().as_ref() {
+            return cb.clone();
+        }
+
+        let global = self.global();
+        let response_listener = Trusted::new(self);
+
+        let task_source = global
+            .task_manager()
+            .dom_manipulation_task_source()
+            .to_sendable();
+        let callback = GenericCallback::new(move |message| {
+            let response_listener = response_listener.clone();
+            let response = match message {
+                Ok(inner) => inner,
+                Err(err) => {
+                    return error!(
+                        "Error in Service worker algorithm result handlings {:?}.",
+                        err
+                    );
+                },
+            };
+            task_source.queue(task!(set_request_result_to_database: move |cx| {
+                let container = response_listener.root();
+                container.handle_algorithm_result(cx, response)
+            }));
+        })
+        .expect("Could not create callback");
+
+        *self.callback.borrow_mut() = Some(callback.clone());
+
+        callback
     }
 
     /// <https://w3c.github.io/ServiceWorker/#reject-job-promise>
@@ -136,6 +211,7 @@ impl ServiceWorkerContainer {
                             scope_url,
                             script_url,
                             client_url: _,
+                            client_urls: _,
                         } = value;
                         // BAO PATCH (REQ-BRW-004 C19 controller wave): the
                         // manager resolves this job after the waiting→active
@@ -299,6 +375,7 @@ impl ServiceWorkerContainer {
             scope_url,
             script_url,
             client_url: _,
+            client_urls: _,
         } = info;
         if let Some(active_worker) = active_worker {
             let registration = self.global().get_serviceworker_registration(
@@ -471,38 +548,7 @@ impl ServiceWorkerContainer {
         pending: PendingAlgorithmResultPromise,
     ) -> GenericCallback<ServiceWorkerAlgorithmResult> {
         self.pending_algorithm_results.borrow_mut().push_back(pending);
-        if let Some(cb) = self.callback.borrow_mut().as_ref() {
-            return cb.clone();
-        }
-
-        let global = self.global();
-        let response_listener = Trusted::new(self);
-
-        let task_source = global
-            .task_manager()
-            .dom_manipulation_task_source()
-            .to_sendable();
-        let callback = GenericCallback::new(move |message| {
-            let response_listener = response_listener.clone();
-            let response = match message {
-                Ok(inner) => inner,
-                Err(err) => {
-                    return error!(
-                        "Error in Service worker algorithm result handlings {:?}.",
-                        err
-                    );
-                },
-            };
-            task_source.queue(task!(set_request_result_to_database: move |cx| {
-                let container = response_listener.root();
-                container.handle_algorithm_result(cx, response)
-            }));
-        })
-        .expect("Could not create callback");
-
-        *self.callback.borrow_mut() = Some(callback.clone());
-
-        callback
+        self.ensure_callback()
     }
 
     /// Continuation for
@@ -766,6 +812,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
             .script_to_constellation_chan()
             .send(ScriptToConstellationMessage::ServiceWorkerAlgorithm(
                 ServiceWorkerAlgorithm::MatchServiceWorkerRegistration {
+                    enroll_only: false,
                     client_url,
                     storage_key,
                     result_handler,
@@ -818,6 +865,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
             .script_to_constellation_chan()
             .send(ScriptToConstellationMessage::ServiceWorkerAlgorithm(
                 ServiceWorkerAlgorithm::MatchServiceWorkerRegistration {
+                    enroll_only: false,
                     client_url: global.creation_url(),
                     storage_key,
                     result_handler,

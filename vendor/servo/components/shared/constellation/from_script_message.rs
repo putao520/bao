@@ -354,6 +354,12 @@ pub struct ServiceWorkerRegistrationInfo {
     /// a single registering client per registration, so this is that
     /// client's creation URL (carried by the register job's referrer).
     pub client_url: ServoUrl,
+    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
+    /// the manager's origin-wide enrolled client set, snapshotted at answer
+    /// time — `clients.matchAll` builds one DOM `Client` per entry. Empty
+    /// means "fall back to `client_url`" (the legacy single-registering-client
+    /// shape) for producers that don't populate it.
+    pub client_urls: Vec<ServoUrl>,
 }
 
 /// <https://w3c.github.io/ServiceWorker/#algorithms>
@@ -368,6 +374,12 @@ pub enum ServiceWorkerAlgorithm {
         storage_key: ImmutableOrigin,
         client_url: ServoUrl,
         result_handler: GenericCallback<ServiceWorkerAlgorithmResult>,
+        /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling
+        /// 2026-10-05): when true the message doubles as a client-enrollment
+        /// ping — the manager records (client_url, result_handler) in its
+        /// origin-wide client set and answers nothing. Reuses this variant
+        /// so no new constellation routing arm is needed.
+        enroll_only: bool,
     },
 }
 

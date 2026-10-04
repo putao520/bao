@@ -6,11 +6,12 @@
 //!
 //! Bao vendor patch (REQ-BRW-004 e58 contract B, user ruling 2026-10-04,
 //! Chromium-parity): upstream has no `Clients` interface at all. Minimal
-//! subset per the ruling: `matchAll` resolves with the single registering
-//! client the manager models — the manager records the registering client's
-//! creation URL on the registration (the register job's referrer), and the
-//! answer travels the existing `MatchServiceWorkerRegistration` pipeline.
-//! `get` resolves with no match: the fork has no client registry.
+//! subset per the ruling: `matchAll` resolves with the manager's origin-wide
+//! enrolled client set (e70 multi-client wave, user ruling 2026-10-05 —
+//! supersedes the single-registering-client model; iframe subdocument
+//! containers enroll at container creation). The answer travels the existing
+//! `MatchServiceWorkerRegistration` pipeline. `get` resolves with no match:
+//! the fork has no per-client registry.
 
 use std::collections::VecDeque;
 
@@ -117,15 +118,31 @@ impl Clients {
         };
         let clients: Vec<DomRoot<Client>> = match registration_info {
             Some(info) => {
-                vec![Client::new(
-                    cx,
-                    &self.global(),
-                    self.swmanager_sender.clone(),
-                    info.client_url,
-                    info.scope_url,
-                    FrameType::Top_level,
-                    self.worker_id,
-                )]
+                // BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling
+                // 2026-10-05): build one DOM `Client` per enrolled client the
+                // manager snapshotted into the answer — iframe subdocument
+                // containers included (e69 attribution: the single
+                // registering-client answer made SW→iframe postMessage
+                // unreachable). Legacy fallback keeps the registering client
+                // when a producer sends an empty set.
+                let urls = if info.client_urls.is_empty() {
+                    vec![info.client_url.clone()]
+                } else {
+                    info.client_urls.clone()
+                };
+                urls.iter()
+                    .map(|url| {
+                        Client::new(
+                            cx,
+                            &self.global(),
+                            self.swmanager_sender.clone(),
+                            url.clone(),
+                            info.scope_url.clone(),
+                            FrameType::Top_level,
+                            self.worker_id,
+                        )
+                    })
+                    .collect()
             },
             None => Vec::new(),
         };
@@ -208,6 +225,7 @@ impl ClientsMethods<crate::DomTypeHolder> for Clients {
                     storage_key,
                     client_url: self.scope_url.clone(),
                     result_handler,
+                    enroll_only: false,
                 },
             ))
             .is_err()
