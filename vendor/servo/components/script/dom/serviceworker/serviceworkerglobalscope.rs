@@ -44,12 +44,13 @@ use crate::dom::bindings::codegen::Bindings::ServiceWorkerGlobalScopeBinding::Se
 use crate::dom::bindings::codegen::Bindings::WorkerBinding::WorkerType;
 use crate::dom::bindings::codegen::UnionTypes::ClientOrServiceWorkerOrMessagePort;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
 use crate::dom::bindings::trace::CustomTraceable;
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
 use crate::dom::client::Client;
+use crate::dom::serviceworker::clients::Clients;
 use crate::dom::csp::Violation;
 use crate::dom::debugger::debuggerglobalscope::DebuggerGlobalScope;
 use crate::dom::dedicatedworkerglobalscope::AutoWorkerReset;
@@ -220,6 +221,10 @@ pub(crate) struct ServiceWorkerGlobalScope {
     /// for SW scopes (storage partitioning semantics untouched).
     #[no_trace]
     owning_webview_id: Option<WebViewId>,
+
+    /// Bao vendor patch (REQ-BRW-004 e58 contract B, user ruling 2026-10-04):
+    /// the `clients` SameObject slot.
+    clients: MutNullableDom<Clients>,
 }
 
 /// One anchored `respondWith` promise plus its removal key.
@@ -323,6 +328,7 @@ impl ServiceWorkerGlobalScope {
             pending_fetch_response_key: Cell::new(0),
             worker_id,
             owning_webview_id,
+            clients: Default::default(),
         }
     }
 
@@ -699,6 +705,7 @@ impl ServiceWorkerGlobalScope {
                     scope.upcast(),
                     self.swmanager_sender.clone(),
                     self.scope_url.clone(),
+                    self.scope_url.clone(),
                     FrameType::None,
                     self.worker_id,
                 );
@@ -798,6 +805,50 @@ unsafe extern "C" fn interrupt_callback(cx: *mut RawJSContext) -> bool {
 }
 
 impl ServiceWorkerGlobalScopeMethods<crate::DomTypeHolder> for ServiceWorkerGlobalScope {
+    /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-clients>
+    ///
+    /// BAO PATCH (REQ-BRW-004 e58 contract B, user ruling 2026-10-04,
+    /// Chromium-parity): exposed with the minimal `Clients` implementation.
+    /// The fork's codegen gives SameObject getters no cx (typeNeedsCx stub);
+    /// take the script thread's active context instead
+    /// (serviceworker/cache.rs precedent).
+    #[allow(unsafe_code)]
+    fn Clients(&self) -> DomRoot<Clients> {
+        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
+        self.clients.or_init(|| {
+            Clients::new(
+                &mut cx,
+                &self.upcast::<GlobalScope>(),
+                self.swmanager_sender.clone(),
+                self.scope_url.clone(),
+                self.worker_id,
+            )
+        })
+    }
+
+    /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-skipwaiting>
+    ///
+    /// BAO PATCH (e58 contract B): resolves immediately — the worker only
+    /// runs once active, and the fork has no activation-wait queue to defer
+    /// the resolution to.
+    #[allow(unsafe_code)]
+    fn SkipWaiting(&self) -> RootedPromise {
+        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
+        let promise = Promise::new(&mut cx, &self.upcast::<GlobalScope>());
+        promise.resolve_native(&mut cx, &());
+        promise
+    }
+
+    // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-oninstall
+    // BAO PATCH (e58 contract B): exposure only — no install event dispatch
+    // site exists yet.
+    event_handler!(install, GetOninstall, SetOninstall);
+
+    // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onactivate
+    // BAO PATCH (e58 contract B): live — `dispatch_activate` fires the
+    // "activate" ExtendableEvent after the worker script evaluates.
+    event_handler!(activate, GetOnactivate, SetOnactivate);
+
     // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onmessage
     event_handler!(message, GetOnmessage, SetOnmessage);
 

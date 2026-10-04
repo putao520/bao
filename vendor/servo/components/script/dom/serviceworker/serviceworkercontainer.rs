@@ -135,6 +135,7 @@ impl ServiceWorkerContainer {
                             storage_key: _,
                             scope_url,
                             script_url,
+                            client_url: _,
                         } = value;
                         // BAO PATCH (REQ-BRW-004 C19 controller wave): the
                         // manager resolves this job after the waiting→active
@@ -297,6 +298,7 @@ impl ServiceWorkerContainer {
             storage_key: _,
             scope_url,
             script_url,
+            client_url: _,
         } = info;
         if let Some(active_worker) = active_worker {
             let registration = self.global().get_serviceworker_registration(

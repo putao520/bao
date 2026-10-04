@@ -348,6 +348,12 @@ pub struct ServiceWorkerRegistrationInfo {
     pub scope_url: ServoUrl,
     /// <https://w3c.github.io/ServiceWorker/#dfn-job-script-url>
     pub script_url: ServoUrl,
+    /// BAO PATCH (REQ-BRW-004 e58 contract B, user ruling 2026-10-04): the
+    /// creation URL of the client that registered this registration — the
+    /// data source for `clients.matchAll` on the SW side. The manager keeps
+    /// a single registering client per registration, so this is that
+    /// client's creation URL (carried by the register job's referrer).
+    pub client_url: ServoUrl,
 }
 
 /// <https://w3c.github.io/ServiceWorker/#algorithms>

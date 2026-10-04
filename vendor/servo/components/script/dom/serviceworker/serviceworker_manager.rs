@@ -149,11 +149,16 @@ struct ServiceWorkerRegistration {
     /// <https://w3c.github.io/ServiceWorker/#serviceworkercontainer-service-worker-client>
     /// The client of the container to which this registration belongs.
     client: GenericCallback<ServiceWorkerAlgorithmResult>,
+    /// BAO PATCH (REQ-BRW-004 e58 contract B): the registering client's
+    /// creation URL (the register job's referrer) — the `clients.matchAll`
+    /// data source on the SW side.
+    client_url: ServoUrl,
 }
 
 impl ServiceWorkerRegistration {
     pub(crate) fn new(
         client: GenericCallback<ServiceWorkerAlgorithmResult>,
+        client_url: ServoUrl,
     ) -> ServiceWorkerRegistration {
         ServiceWorkerRegistration {
             id: ServiceWorkerRegistrationId::new(),
@@ -165,6 +170,7 @@ impl ServiceWorkerRegistration {
             context: None,
             closing: None,
             client,
+            client_url,
         }
     }
 
@@ -518,6 +524,7 @@ impl ServiceWorkerManager {
                     .map(|worker| worker.id),
                 waiting_worker: registration.waiting_worker.as_ref().map(|worker| worker.id),
                 active_worker: registration.active_worker.as_ref().map(|worker| worker.id),
+                client_url: registration.client_url.clone(),
             });
         if result_handler
             .send(ServiceWorkerAlgorithmResult::MatchServiceWorkerRegistration(info))
@@ -602,6 +609,7 @@ impl ServiceWorkerManager {
                                 .active_worker
                                 .as_ref()
                                 .map(|worker| worker.id),
+                            client_url: registration.client_url.clone(),
                         },
                     )),
                 ));
@@ -609,7 +617,8 @@ impl ServiceWorkerManager {
         } else {
             // Step 6: Else
             // Step 6.1: Invoke Set Registration algorithm with job’s storage key, job’s scope url, and job’s update via cache mode.
-            let new_registration = ServiceWorkerRegistration::new(job.client.clone());
+            let new_registration =
+                ServiceWorkerRegistration::new(job.client.clone(), job.referrer.clone());
             self.registrations
                 .insert(job.scope_url.clone(), new_registration);
 
@@ -687,6 +696,7 @@ impl ServiceWorkerManager {
                             .as_ref()
                             .map(|worker| worker.id),
                         active_worker: registration.active_worker.as_ref().map(|worker| worker.id),
+                        client_url: registration.client_url.clone(),
                     },
                 )),
             ))
