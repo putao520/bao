@@ -25,7 +25,13 @@
 // Fixture semantics matter: HTTP/1.1 with Content-Length and NO
 // `Connection: close` (keep-alive), matching both the WPT wptserve shape and
 // the e52 probe matrix. A close-delimited fixture would terminate every
-// response via EOF and mask the defect.
+// response via EOF and mask the defect. The fixture serves each connection
+// on its own thread (wptserve itself is threaded): a page-side `fetch` the
+// harness may leave unsettled pins its pooled keep-alive socket, and with a
+// single-accept loop the next request (the second @font-face load) would be
+// starved on a never-accepted connection — a fixture artifact, not the
+// defect under test (e64 bisect: red rate tracked the marker fetch's
+// wire-out rate, identical signature at a393e354 and HEAD).
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -83,7 +89,19 @@ impl WebfontFixture {
                 listener.set_nonblocking(true).expect("nonblocking listener");
                 while !shutdown_c.load(Ordering::SeqCst) {
                     match listener.accept() {
-                        Ok((tcp, _)) => Self::serve_connection(tcp, &hits_c),
+                        Ok((tcp, _)) => {
+                            // One thread per connection (wptserve shape): a
+                            // keep-alive connection parked by an unsettled
+                            // page fetch must never starve requests that the
+                            // client legitimately carries on a second
+                            // connection. Keep-alive + Content-Length framing
+                            // are per-connection and unchanged.
+                            let hits_conn = Arc::clone(&hits_c);
+                            std::thread::Builder::new()
+                                .name("webfont-fixture-conn".into())
+                                .spawn(move || Self::serve_connection(tcp, &hits_conn))
+                                .expect("spawn webfont fixture connection");
+                        },
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(5));
                         },
