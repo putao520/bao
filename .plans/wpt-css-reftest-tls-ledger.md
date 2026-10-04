@@ -51,7 +51,8 @@ C 面另有 FAIL ×3978 与 unexpected-PASS ×417(两桶见 C6/C8)。
 - 证据: `/tmp/bao-wpt/https-face-e26.log` — window-location: `TypeError: can't access property "location", win is null`(testdriver `bless`→navigate 链,win 为 null);meta-refresh/header-refresh: `Test named 'sec-fetch-site - Same origin' specified 1 'cleanup' function, and 1 failed`(NOTRUN 级联)
 - 归因域: 缺陷候选(window.open 返回句柄/navigation 后窗口对象生命周期),非环境
 - 处置建议: 归入 window/navigation 缺陷 backlog;同族还有 H5 的 `window-open.https.sub.html` TIMEOUT(Same-origin/same-site window forced 全超时)
-- **部分根治注记(2026-10-04,a309b714)**:window-location 格 + H5 的 window-open.https.sub.html 格已随 window.open 落地修复转绿(e47 实现 request_create_new 真身,主会话 V 四格复验 4/4 ran as expected,含此二格);meta-refresh/header-refresh 两格(cleanup-fail 类)不在该根因域,留桶待另归因
+- **部分根治注记(2026-10-04,a309b714)**:window-location 格 + H5 的 window-open.https.sub.html 格已随 window.open 落地修复转绿(e47 实现 request_create_new 真身,主会话 V 四格复验 4/4 ran as expected,含此二格)
+- **残余双格归因修正(2026-10-04,e48 源码级取证,置信度 0.85)**:element-meta-refresh/header-refresh 两格与 window-location **同根**——window.open() no-op 返回 null;headline 形态差异系 `add_cleanup(() => win.close())` 把同一 null 解引用推迟到 cleanup 期爆 + testharness.js:3226-3239 任一 cleanup 抛错即 abort 的 NOTRUN 级联(`specified 1 'cleanup' function, and 1 failed` 为级联伪影)。当前树机制清单全在位(meta refresh htmlmetaelement.rs:78→242→document.rs:5119;Refresh header script_thread.rs:4505-4517 与上游 Step 17 形逐行 parity)。**待复跑确认**(/tmp WPT 环境灭失重建后 proc1 一遍定绿红;若仍红,嫌疑序:①popup document.write 时序 ②meta-refresh/postMessage 链 ③Refresh header 运行时面)
 
 ### H3 · https 面 ERROR ×1 — `fetch/metadata/sharedworker.https.sub.html` — **既有 L2 桶,不重开**
 
