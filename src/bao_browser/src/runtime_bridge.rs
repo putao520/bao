@@ -1970,20 +1970,37 @@ unsafe fn install_all_native(
     // @trace REQ-BRW-002 [req:REQ-BRW-002] e63 D2 page-realm fetch exclusion
     // (supersedes the REQ-SEC-001 page-realm installation pin — see
     // page.rs `page_global_has_no_node_apis`).
+    //
+    // e65 (底层统一裁决同原则扩展, REQ-BRW-002): the remaining Node-stack
+    // faces are likewise NOT installed on page realms — servo's WHATWG
+    // natives own every face they cover. Per-face ruling (tree evidence in
+    // the e65 commit message):
+    //   timers — the four WebIDL timer names already self-gate below
+    //     (JS_HasProperty keeps servo's TimerScheduler natives on pages);
+    //   performance — servo's DOM Performance (timeOrigin/mark/measure/
+    //     entries) is replaced by an epoch-based `{now}` plain object;
+    //   WebSocket — servo's WHATWG WebSocket (bun_http WsTlsStream +
+    //     per-WebViewId stealth transport) is replaced by a plain object
+    //     with no MessageEvent/addEventListener/instanceof face;
+    //   crypto — servo's Crypto ([SameObject] attr + webcrypto subtle) is
+    //     replaced by a plain object whose subtle ignores the SecureContext
+    //     gate (a Chromium-divergent tell on insecure origins);
+    //   encodings / base64 / microtask / structuredClone / constructor blob
+    //     / fetch classes — servo WHATWG natives (WindowOrWorkerGlobalScope
+    //     mixin + dedicated WebIDL classes) shadowed by Node-stack shapes;
+    //     the constructors blob's WHATWG names were already typeof-guarded
+    //     on pages (servo natives kept) — only its `_bao_*` internals
+    //     leaked onto the page global; the fetch classes are the fetch
+    //     family's class half: a Node-stack Request/Headers handed to the
+    //     page's servo fetch is a mixed-family TypeError.
+    // `install_timer_globals` STAYS: outside the self-gate it only adds the
+    // Node-only `setImmediate`/`clearImmediate`, which have no servo
+    // counterpart and dispatch through the embedder pump bridge. Node/bun
+    // engine realms are untouched — they install all faces via
+    // `globals::install_web_apis`.
+    // @trace REQ-BRW-002 [req:REQ-BRW-002] e65 page-realm ten-face WHATWG
+    // exclusion (per-face ruling table in the commit message).
     bun_runtime::timers::install_timer_globals(&mut cx, global_handle);
-    bun_runtime::web_api::install_performance(&mut cx, global_handle);
-    bun_runtime::web_api::install_websocket_constructor(&mut cx, global_handle);
-    bun_runtime::globals::install_crypto_global(&mut cx, global_handle);
-    bun_runtime::web_api::install_web_encodings(&mut cx, global_handle);
-    bun_runtime::web_api::install_atob_btoa(&mut cx, global_handle);
-    bun_runtime::web_api::install_queue_microtask(&mut cx, global_handle);
-    bun_runtime::globals::install_structured_clone(&mut cx, global_handle);
-    bun_runtime::globals::install_web_api_constructors(&mut cx, global_handle);
-    // Full WHATWG Headers/Request/Response classes — installed AFTER the
-    // constructors blob so their lazy deps (Blob/AbortController/
-    // ReadableStream/TextEncoder) are already on the global (same ordering
-    // as bun_runtime::globals::install_web_apis).
-    bun_runtime::web_fetch_classes::install_fetch_classes(&mut cx, global_handle);
 
     // REQ-ENG-001 criterion 5: Ensure WebAssembly global is available.
     // SpiderMonkey provides WebAssembly as a standard global class. It is lazily
@@ -4197,7 +4214,26 @@ mod tests {
             })
     }
 
-    /// Verify install_all_native calls install_web_apis (NOT install_all or install_node_apis).
+    /// Node-stack install calls that must NOT appear in `install_all_native`:
+    /// the page-realm WHATWG exclusion set (e63 D2 fetch + e65 ten-face
+    /// extension, 底层统一 ruling). Servo's WHATWG natives own every one of
+    /// these faces on page realms; Node/bun engine realms keep them via
+    /// `globals::install_web_apis`.
+    const EXCLUDED_PAGE_FACES: [&str; 10] = [
+        "bun_runtime::fetch_api::install_fetch_global",
+        "web_api::install_performance",
+        "web_api::install_websocket_constructor",
+        "globals::install_crypto_global",
+        "web_api::install_web_encodings",
+        "web_api::install_atob_btoa",
+        "web_api::install_queue_microtask",
+        "globals::install_structured_clone",
+        "globals::install_web_api_constructors",
+        "web_fetch_classes::install_fetch_classes",
+    ];
+
+    /// Verify install_all_native installs ONLY the self-gating timer shim
+    /// (NOT install_all / install_node_apis / any of the excluded faces).
     /// REQ-SEC-003: The bridge must NOT inject Node APIs on page global.
     #[test]
     fn runtime_bridge_calls_web_apis_not_install_all() {
@@ -4213,13 +4249,18 @@ mod tests {
         let func_end = install_all_native_end(&source, func_start);
         let func_body = &source[func_start..func_end];
 
-        assert!(
-            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
-            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
-        );
+        for face in EXCLUDED_PAGE_FACES {
+            assert!(
+                !func_body.contains(face),
+                "REQ-BRW-002 REGRESSION: install_all_native must NOT install the \
+                 Node-stack {face} override on page realms (e65 ten-face WHATWG \
+                 exclusion — servo WHATWG natives own the page face)"
+            );
+        }
         assert!(
             func_body.contains("bun_runtime::timers::install_timer_globals"),
-            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
+            "REQ-SEC-003 REGRESSION: install_all_native must keep the self-gating \
+             timer shim (WebIDL names skipped on pages; Node-only setImmediate)"
         );
         assert!(
             !func_body.contains("globals::install_all("),
@@ -4582,13 +4623,18 @@ mod tests {
         let func_end = install_all_native_end(&source, func_start);
         let func_body = &source[func_start + func_body_start..func_end];
 
-        assert!(
-            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
-            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
-        );
+        for face in EXCLUDED_PAGE_FACES {
+            assert!(
+                !func_body.contains(face),
+                "REQ-BRW-002 REGRESSION: install_all_native must NOT install the \
+                 Node-stack {face} override on page realms (e65 ten-face WHATWG \
+                 exclusion — servo WHATWG natives own the page face)"
+            );
+        }
         assert!(
             func_body.contains("bun_runtime::timers::install_timer_globals"),
-            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
+            "REQ-SEC-003 REGRESSION: install_all_native must keep the self-gating \
+             timer shim (WebIDL names skipped on pages; Node-only setImmediate)"
         );
         assert!(
             !func_body.contains("globals::install_all("),

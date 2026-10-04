@@ -2766,9 +2766,32 @@ mod tests {
              Node-stack fetch override on page realms (e63 D2 — servo WHATWG \
              fetch owns the page transport)"
         );
+        // e65 ten-face extension (same ruling): the remaining Node-stack
+        // faces stay off page realms — servo's WHATWG natives own every face
+        // they cover. The timers shim itself STAYS (it self-gates its four
+        // WebIDL names on pages and only adds Node-only setImmediate).
+        for face in [
+            "web_api::install_performance",
+            "web_api::install_websocket_constructor",
+            "globals::install_crypto_global",
+            "web_api::install_web_encodings",
+            "web_api::install_atob_btoa",
+            "web_api::install_queue_microtask",
+            "globals::install_structured_clone",
+            "globals::install_web_api_constructors",
+            "web_fetch_classes::install_fetch_classes",
+        ] {
+            assert!(
+                !func_body.contains(face),
+                "REQ-BRW-002 REGRESSION: install_all_native must NOT install the \
+                 Node-stack {face} override on page realms (e65 ten-face WHATWG \
+                 exclusion — servo WHATWG natives own the page face)"
+            );
+        }
         assert!(
             func_body.contains("bun_runtime::timers::install_timer_globals"),
-            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
+            "REQ-SEC-003 REGRESSION: install_all_native must keep the self-gating \
+             timer shim (WebIDL names skipped on pages; Node-only setImmediate)"
         );
         assert!(
             !func_body.contains("globals::install_all("),

@@ -17,16 +17,16 @@
 //           with the chained microtask flushed by the pump's RunJobs step,
 //           and the no-message-window behavior captured from timestamps.
 //           clearImmediate must actually cancel (BAO_REGISTRY remove).
-//   Q axis — queueMicrotask: bao's shadow (web_api.rs install_queue_microtask,
-//           defined unconditionally on the page global) routes the callback
-//           through CallOriginalPromiseResolve + CallOriginalPromiseThen —
-//           the real SM microtask queue, FIFO with promise reactions. The
+//   Q axis — queueMicrotask: since e65 the page face is servo's WHATWG
+//           queueMicrotask (WindowOrWorkerGlobalScope mixin), which queues
+//           onto the same SM microtask queue as promise reactions. The
 //           probe pins the canonical ordering: promise reactions and
 //           queueMicrotask callbacks interleave in enqueue order, nested
 //           microtasks append before the macrotask timer fires. Any
 //           macrotask-ish shadow (MiniEventLoop dispatch) would reorder.
-//           Spec TypeError parity (e59 ②): a non-callable argument throws
-//           a real TypeError naming queueMicrotask/function.
+//           Spec TypeError parity: a non-callable argument throws a real
+//           TypeError (servo WebIDL wording; the e59 hardened message
+//           naming queueMicrotask/function remains the Node-realm shape).
 //   C axis — crypto: install_crypto_global puts a plain object on the page
 //           global (BoringSSL CSPRNG randomUUID / getRandomValues), then
 //           install_crypto_subtle (tail of install_web_apis, via
@@ -38,6 +38,14 @@
 //           class-name identity (e59 ③): Object.prototype.toString.call(crypto)
 //           must be '[object Crypto]' (WebIDL [Symbol.toStringTag], not the
 //           plain '[object Object]').
+//
+//   G axis — e65 ten-face WHATWG exclusion guardrail (底层统一 extension of
+//           the 6e5e8f8b fetch identity guard): every page-realm global the
+//           deferred injection used to shadow must be (a) the SAME binding
+//           across the injection (parse-time snapshot identity) and (b)
+//           servo's WHATWG native shape, not the Node-stack shape
+//           (performance.timeOrigin/mark, WebSocket.prototype.send,
+//           crypto '[object Crypto]').
 //
 // Environment gating: real servo rendering requires DISPLAY (Xvfb). No
 // network fixture is used.
@@ -197,19 +205,22 @@ fn shadow_axis_probe_q_queue_microtask_order() {
         .expect("queueMicrotask arm");
     assert!(armed.contains("armed"), "queueMicrotask arm failed: {armed:?}");
 
-    // Spec TypeError parity (e59 ②): a non-callable argument (42) must throw
-    // a REAL TypeError whose message names queueMicrotask/function — the old
-    // shadow silently ignored non-object args.
+    // Spec TypeError parity: a non-callable argument (42) must throw a REAL
+    // TypeError — the spec-critical half of e59 ②. Since e65 the page face
+    // is servo's WHATWG queueMicrotask, whose WebIDL conversion message is
+    // servo's own wording ("Value is not an object.") and does NOT name the
+    // function; the e59 hardened message ("queueMicrotask: Argument 1 is
+    // not a function") remains the NODE-realm shape (web_api.rs
+    // report_type_error, untouched). A silent ignore would still be the
+    // typeof-probe-detectable divergence this pin guards against.
     let qarg = page.evaluate_js_web("String(window.__qarg)").ok();
     eprintln!("[q-microtask] non-function-arg verdict={qarg:?}");
     let qarg = qarg.unwrap_or_default();
     assert!(
-        qarg.contains("threw:TypeError")
-            && qarg.contains("queueMicrotask")
-            && qarg.contains("function"),
-        "Q axis: queueMicrotask(42) must throw a TypeError naming queueMicrotask/function \
-         (spec: non-callable argument throws TypeError; a silent ignore is a \
-         typeof-probe-detectable divergence), got: {qarg:?}"
+        qarg.contains("threw:TypeError"),
+        "Q axis: queueMicrotask(42) must throw a real TypeError (spec: non-callable \
+         argument throws; a silent ignore is a typeof-probe-detectable divergence), \
+         got: {qarg:?}"
     );
 
     let order = poll_sink(&page, "__mq", Duration::from_secs(10));
@@ -302,5 +313,86 @@ fn shadow_axis_probe_c_crypto_page_realm() {
     assert!(
         v.contains("|len=32|hex=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad|"),
         "C axis: subtle.digest('SHA-256') known-answer failed (NIST 'abc' vector): {v}"
+    );
+}
+
+/// G axis — e65 ten-face WHATWG exclusion guardrail (底层统一 ruling, the
+/// 6e5e8f8b fetch identity guard extended to the whole face set). Two faces
+/// per global:
+///   (a) IDENTITY — a parse-time snapshot of every face the deferred
+///       injection used to overwrite must still be `===` the live global
+///       after load (nothing rewrites the binding under the page);
+///   (b) SHAPE — the live binding must be servo's WHATWG native, not the
+///       Node-stack shadow: performance carries timeOrigin/mark (the epoch
+///       -based `{now}` plain object has neither), WebSocket carries
+///       `prototype.send` (the plain-object shadow defined send
+///       per-instance only), crypto stringifies '[object Crypto]'.
+#[test]
+fn shadow_axis_probe_g_whatwg_identity_page_realm() {
+    if !common::run_isolated("shadow_axis_probe_tests::shadow_axis_probe_g_whatwg_identity_page_realm") {
+        return;
+    }
+    if should_skip() {
+        return;
+    }
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(
+                "data:text/html;charset=utf-8,<html><body><script>globalThis.__g0={};\
+['fetch','setTimeout','WebSocket','performance','crypto','atob','btoa','queueMicrotask','structuredClone','TextEncoder','TextDecoder','Headers','Request','Response'].forEach(function(k){globalThis.__g0[k]=(typeof globalThis[k]!=='undefined')?globalThis[k]:null;});\
+</script></body></html>"
+                    .into(),
+            ),
+            ..Default::default()
+        })
+        .expect("create_page");
+
+    let verdict = page
+        .evaluate_js_web(
+            "(function() { \
+             var s = globalThis.__g0 || {}; \
+             var names = ['fetch','setTimeout','WebSocket','performance','crypto','atob','btoa','queueMicrotask','structuredClone','TextEncoder','TextDecoder','Headers','Request','Response']; \
+             var out = []; \
+             for (var i = 0; i < names.length; i++) { \
+               var k = names[i]; \
+               var cur = (typeof globalThis[k] !== 'undefined') ? globalThis[k] : null; \
+               out.push(k + '=' + (cur === s[k] ? 'same' : (s[k] === null ? 'late' : 'CHANGED'))); \
+             } \
+             out.push('timeOrigin=' + (typeof performance.timeOrigin === 'number' && performance.timeOrigin > 0)); \
+             out.push('perfMark=' + (typeof performance.mark === 'function')); \
+             out.push('protoSend=' + (typeof WebSocket.prototype.send === 'function')); \
+             out.push('cryptoTag=' + Object.prototype.toString.call(crypto)); \
+             return out.join('|'); \
+             })()",
+        )
+        .expect("G axis verdict evaluate");
+    eprintln!("[g-whatwg] verdict={verdict}");
+
+    // (a) identity: the parse-time snapshot must be the live binding for
+    // EVERY face. 'late' = the injection added the global after the page
+    // script ran (a Node-only face appearing mid-life); 'CHANGED' = the
+    // injection rewrote an existing binding. Both are the shadow face.
+    assert!(
+        !verdict.contains("CHANGED") && !verdict.contains("late"),
+        "G axis: a page-realm global binding changed across the deferred \
+         injection — the Node-stack shadow must NOT rewrite WHATWG faces \
+         (e65 ten-face exclusion): {verdict}"
+    );
+    // (b) shape: servo WHATWG natives, not the Node-stack shadow. The
+    // discriminators are ones the shadow demonstrably fails (checked
+    // against the e65 archaeology): the `{now}` performance object has no
+    // timeOrigin/mark, the plain-object WebSocket has no prototype.send.
+    for probe in ["timeOrigin=true", "perfMark=true", "protoSend=true"] {
+        assert!(
+            verdict.contains(probe),
+            "G axis: {probe} failed — the page face is not servo's WHATWG native \
+             (e65 ten-face exclusion broken): {verdict}"
+        );
+    }
+    assert!(
+        verdict.contains("cryptoTag=[object Crypto]"),
+        "G axis: crypto must stringify '[object Crypto]' (WebIDL interface \
+         class name): {verdict}"
     );
 }
