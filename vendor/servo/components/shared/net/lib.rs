@@ -118,6 +118,16 @@ impl CustomResponse {
 pub struct CustomResponseMediator {
     pub response_chan: IpcSender<Option<CustomResponse>>,
     pub load_url: ServoUrl,
+    /// <https://fetch.spec.whatwg.org/#concept-request-reload-navigation-flag>
+    ///
+    /// Bao vendor patch (wave2-B2 C): the mediated request is rebuilt in the
+    /// SW realm from the URL alone, which reset both navigation flags to
+    /// false — `FetchEvent.request.isReloadNavigation` never observed a
+    /// reload. The net request itself cannot cross the thread boundary, so
+    /// the flags travel with the mediator.
+    pub reload_navigation: bool,
+    /// <https://fetch.spec.whatwg.org/#concept-request-history-navigation-flag>
+    pub history_navigation: bool,
 }
 
 /// [Policies](https://w3c.github.io/webappsec-referrer-policy/#referrer-policy-states)

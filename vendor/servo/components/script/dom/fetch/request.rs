@@ -588,6 +588,21 @@ impl Request {
     pub(crate) fn get_request(&self) -> NetTraitsRequest {
         self.request.borrow().clone()
     }
+
+    /// Set the reload-navigation and history-navigation flags on the
+    /// underlying request.
+    ///
+    /// Bao vendor patch (wave2-B2 C): the service-worker `FetchEvent`
+    /// mediation rebuilds the mediated request from the URL
+    /// (`Request::constructor` with an empty init), and `RequestInit` has no
+    /// members for these flags — the fetch spec only lets navigation set
+    /// them. The mediated flags arrive over the `CustomResponseMediator`, so
+    /// the SW realm needs this write path to restore them.
+    pub(crate) fn set_navigation_flags(&self, reload_navigation: bool, history_navigation: bool) {
+        let mut request = self.request.borrow_mut();
+        request.reload_navigation = reload_navigation;
+        request.history_navigation = history_navigation;
+    }
 }
 
 fn net_request_from_global(global: &GlobalScope, url: ServoUrl) -> NetTraitsRequest {

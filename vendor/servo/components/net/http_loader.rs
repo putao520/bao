@@ -732,6 +732,8 @@ async fn invoke_handle_fetch(request: &Request, context: &FetchContext) -> Optio
     let mediator = CustomResponseMediator {
         response_chan,
         load_url: load_url.clone(),
+        reload_navigation: request.reload_navigation,
+        history_navigation: request.history_navigation,
     };
     if manager_chan.send(mediator).is_err() {
         return None;
