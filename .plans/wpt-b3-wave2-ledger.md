@@ -69,6 +69,7 @@ run1 的 125 unexpected-OK 全部为 `expected ERROR` 的 serviceworker 变体�
 - 载体共性(读源实证):fetch-destination 全部以 `service_worker_unregister_and_register(t, kScript, kScope)` + `wait_for_state(t, registration.installing, 'activated')` 开场——**零子测落地 = setup 的 SW 激活等待永挂**;dangling-markup-mitigation 同依 SW registration(其 ERROR 形态直接暴露 registration 对象缺失)
 - 归因域:SW 生命周期波(2026-10-04)修复了 register→waiting→active 主链与 updatefound/statechange(本轮 122 个 SW 变体格转绿为证),本族是**残余缺口**:`wait_for_state(installing→activated)` 等待路径 / registration 对象在部分 API 面(非 idlharness 主路径)不可达。与 SW 生命周期波同域,建议由该波 owner 顺链归因
 - 复现:`cd /tmp/bao-wpt && venv/bin/python run_bao_wpt_opt.py /fetch/api/request/destination/fetch-destination.https.html -- --processes 1`
+- **归因终态(2026-10-04 e53,主会话 V 采纳)**:setup 假说证伪(全部格 setup 子测 PASS,中继正常);挂点=setup 后观测通道,5 组根因:①SWGS `clients` 缺失(webidl 注释态,Clients 类型零存在)②Container `ready` 缺失(await undefined)③Container `onmessage` 缺失(expando 惰性)④**controller patch 丢失**(24255064 promise 波静默丢弃 dffa8f4e——已恢复 2918d029,e53 探针 `controller is null` 2+2→0+0)⑤preload 窄表+mediator 丢导航旗标。**修复进度**:controller 恢复✓(2918d029)· 合同 C mediator 旗标贯通✓(2e025890,isReloadNavigation RED→GREEN)· 合同 D preload 表扩容**停等用户裁决**(e55d 实证:六 token 封闭集=现行 HTML spec 逐字 parity,Chromium 接受全变体=可探测向量;codegen.py 先例同类,spec 正确性 vs 不可区分性待裁)· 合同 A/B(ready/onmessage/Clients 特性族)**待用户裁决立项**(上游全注释态无威胁收)。族外残留:`<frame>` 元素死(src 注释态)、iframe history.go(-1)(session-history 域)、isHistoryNavigation 子测 fixture 缺口(servo WPT 树无 hello.html)
 
 ### B3 · window.open popup 通信回环挂起族 —— **缺陷候选第 3 位(3 格,跨台账同族)**
 
