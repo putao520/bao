@@ -118,6 +118,13 @@ impl PermissionGuard {
         PermissionGuard { inner: None }
     }
 
+    /// The configured permission policy (cloned), if this guard is restricted.
+    /// Pool-side consumers (popup adoption, REQ-LIB-001) read it here to
+    /// inherit the opener's runtime-enforcement config.
+    pub fn config(&self) -> Option<&Permission> {
+        self.inner.as_ref()
+    }
+
     pub fn new(perm: Permission) -> Self {
         PermissionGuard { inner: Some(perm) }
     }

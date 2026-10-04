@@ -1738,6 +1738,59 @@ fn register_native_host_functions(
 // BCE-20260621-001: page_global stored keyed by WebViewId, replacing the
 // process-wide LAST_PAGE_GLOBAL AtomicUsize. Eliminates the "last writer
 // wins" race that let PageInner capture another page's pointer.
+
+/// Convert a stealth profile to the servo-net wire config (single conversion
+/// source — REQ-STL-001/002; consumed by the keyed registration below and by
+/// `install_all_native`'s process-global fallback write). Two identical
+/// structs in different crates — servo net cannot depend on bao_stealth.
+fn stealth_servo_wire_config(
+    profile: &bao_stealth::StealthProfile,
+) -> servo::StealthTlsWireConfig {
+    let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
+    servo::StealthTlsWireConfig {
+        tls12_cipher_suites: stc.tls12_cipher_suites,
+        tls13_cipher_suites: stc.tls13_cipher_suites,
+        signature_algorithms: stc.signature_algorithms,
+        supported_groups: stc.supported_groups,
+        alpn_protocols: stc.alpn_protocols,
+        h2_settings_payload: stc.h2_settings_payload,
+        h2_initial_stream_size: stc.h2_initial_stream_size,
+        h2_initial_connection_window_size: stc.h2_initial_connection_window_size,
+        h2_max_frame_size: stc.h2_max_frame_size,
+        h2_max_header_list_size: stc.h2_max_header_list_size,
+    }
+}
+
+/// Write the R53-A per-WebViewId keyed registries for one WebViewId: the
+/// stealth wire config (TLS + H2) and the canvas noise, both sourced from
+/// `profile` directly (NOT the engine_props thread-locals — those only carry
+/// the current script-thread profile, which is wrong on the pump thread where
+/// window.open popup adoption runs).
+///
+/// Consumers: `install_all_native` (script-thread injection — the keyed
+/// writes are idempotent) and `PagePool::create_popup_page` (REQ-LIB-001:
+/// the popup's entries must exist the moment the WebView exists, before the
+/// deferred injection lands, so no fetch of the young popup falls through to
+/// another page's process-global fallback).
+///
+/// @trace REQ-LIB-001 [entity:PagePool] R53-A keyed inheritance
+pub(crate) fn register_stealth_keyed_config_for_webview(
+    webview_id: servo::WebViewId,
+    profile: &bao_stealth::StealthProfile,
+) {
+    let wire = stealth_servo_wire_config(profile);
+    servo::set_stealth_wire_config_for_webview(
+        webview_id,
+        Some(wire),
+        Some(profile.http2.clone()),
+    );
+    servo::set_canvas_noise_for_webview(
+        webview_id,
+        profile.canvas.seed(),
+        profile.canvas.noise_amplitude(),
+    );
+}
+
 unsafe fn install_all_native(
     webview_id: servo::WebViewId,
     cx_ptr: *mut std::ffi::c_void,
@@ -1782,11 +1835,13 @@ unsafe fn install_all_native(
         // identity-less fallback bucket (pre-R53 sole storage — a second
         // page with a different profile silently overwrote every other
         // page's canvas noise).
-        servo::set_canvas_noise_for_webview(
-            webview_id,
-            bao_stealth::engine_props::canvas_seed(),
-            bao_stealth::engine_props::canvas_amplitude(),
-        );
+        // Keyed writes (wire config + canvas noise) go through the shared
+        // helper (REQ-LIB-001: the window.open popup adoption path registers
+        // the same entries pump-side before the deferred injection lands).
+        // The profile-sourced values are the SAME the engine_props
+        // thread-locals carry here — `set_profile(profile)` above seeded them
+        // from this profile's canvas fields.
+        crate::runtime_bridge::register_stealth_keyed_config_for_webview(webview_id, profile);
         servo::set_canvas_noise_seed(
             bao_stealth::engine_props::canvas_seed(),
             bao_stealth::engine_props::canvas_amplitude(),
@@ -1795,35 +1850,13 @@ unsafe fn install_all_native(
         // This makes servo's BoringSSL+hyper connections use the profile's cipher suites,
         // curves, signature algorithms, ALPN, and HTTP/2 settings. BoringSSL supports full
         // JA3/JA4 fingerprint configuration including cipher suite reordering.
-        // Convert bao_stealth config to servo net connector config (two identical structs
-        // in different crates — servo net cannot depend on bao_stealth).
-        let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
-        let wire = servo::StealthTlsWireConfig {
-            tls12_cipher_suites: stc.tls12_cipher_suites,
-            tls13_cipher_suites: stc.tls13_cipher_suites,
-            signature_algorithms: stc.signature_algorithms,
-            supported_groups: stc.supported_groups,
-            alpn_protocols: stc.alpn_protocols,
-            h2_settings_payload: stc.h2_settings_payload,
-            h2_initial_stream_size: stc.h2_initial_stream_size,
-            h2_initial_connection_window_size: stc.h2_initial_connection_window_size,
-            h2_max_frame_size: stc.h2_max_frame_size,
-            h2_max_header_list_size: stc.h2_max_header_list_size,
-        };
-        // R53-A net face: the per-WebViewId registry entry is the
-        // AUTHORITATIVE config for this page's keyed requests (page
-        // fetch/XHR egress carrying target_webview_id, worker realms with
-        // their owning page, SW realms stamped with the registering page).
+        // The per-WebViewId keyed entry was written by the shared helper above.
         // The process-global write below remains ONLY as the identity-less
         // fallback bucket (SW script updates and other infra fetches) and
         // for the existing public getter semantics — before R53-A it was
         // the sole storage, so a second page with a different profile
         // silently overwrote every other page's wire fingerprint.
-        servo::set_stealth_wire_config_for_webview(
-            webview_id,
-            Some(wire.clone()),
-            Some(profile.http2.clone()),
-        );
+        let wire = stealth_servo_wire_config(profile);
         servo::set_stealth_tls_config(Some(wire));
         // U2 stage 2: the servo-net bun bridge (net thread) reads the h2
         // pseudo-header order / preface PRIORITY frames from this global —

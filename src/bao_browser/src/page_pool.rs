@@ -7,9 +7,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
-use servo::Servo;
+use servo::{CreateNewWebViewRequest, Servo};
 
 use crate::config::{BaoConfig, PageConfig};
+use crate::permission::Permission;
 use crate::delegate::BaoServoDelegate;
 use crate::error::BrowserError;
 use crate::page::PageHandle;
@@ -37,6 +38,26 @@ pub struct PagePool {
     next_id: RefCell<usize>,
     total_created: RefCell<usize>,
     total_destroyed: RefCell<usize>,
+    /// Popup page ids adopted by `create_popup_page` whose pipeline-ready wait
+    /// + Node/stealth injection are still outstanding (REQ-LIB-001). Drained
+    /// by `init_pending_pages` from the pump loops — never from inside the
+    /// delegate callback, which runs within an in-flight `spin_event_loop`.
+    pending_inits: RefCell<Vec<usize>>,
+    /// Handles retired by `retire_webview_page` (content-initiated
+    /// window.close()) whose physical teardown is still outstanding
+    /// (REQ-LIB-001 criterion ⑤). The pool map drop is the immediate
+    /// accounting signal; the close itself must run pump-side — notify_closed
+    /// fires inside servo's embedder dispatch while the closing page's own
+    /// evaluate can hold `PageHandle.inner` borrowed, and `PageHandle::close`
+    /// needs `borrow_mut` on that same cell.
+    pending_closes: RefCell<Vec<PageHandle>>,
+    /// This pool's own `Rc` handle, armed post-construction by the runtime
+    /// (`BrowserRuntime` holds the only strong `Rc<PagePool>`). The creation
+    /// entries hand a derived `Weak` to every page delegate so servo's
+    /// embedder dispatch (`request_create_new` / `notify_closed`) can reach
+    /// the pool from the pump thread. Unarmed (`Weak::new()`) = delegates
+    /// deny popup opens / closes, logged — never a panic.
+    self_weak: RefCell<std::rc::Weak<PagePool>>,
 }
 
 impl PagePool {
@@ -55,7 +76,24 @@ impl PagePool {
             next_id: RefCell::new(1),
             total_created: RefCell::new(0),
             total_destroyed: RefCell::new(0),
+            pending_inits: RefCell::new(Vec::new()),
+            pending_closes: RefCell::new(Vec::new()),
+            self_weak: RefCell::new(std::rc::Weak::new()),
         }
+    }
+
+    /// Arm this pool's own `Rc` handle (REQ-LIB-001). Called ONCE by the
+    /// runtime right after the pool's `Rc::new` — inside `PagePool::new` the
+    /// `Rc` does not exist yet (chicken-and-egg).
+    pub(crate) fn arm_self_weak(&self, weak: std::rc::Weak<PagePool>) {
+        *self.self_weak.borrow_mut() = weak;
+    }
+
+    /// Derived `Weak` handed to page delegates. An unarmed pool yields a dead
+    /// weak: delegates log and deny popup opens (JS null) — fail-closed with
+    /// an honest signal, never a panic.
+    fn pool_weak(&self) -> std::rc::Weak<PagePool> {
+        self.self_weak.borrow().clone()
     }
 
     pub fn create_page(&self, config: &PageConfig) -> Result<PageHandle, BrowserError> {
@@ -102,7 +140,9 @@ impl PagePool {
                 crate::phase_watch::phase::CREATE_WEBVIEW_NEW,
                 id as u64,
             );
+            let pool_weak = self.pool_weak();
             let p = PageHandle::new(
+                &pool_weak,
                 Rc::clone(&self.servo),
                 Rc::clone(&self.servo_delegate),
                 config,
@@ -212,6 +252,234 @@ impl PagePool {
         crate::phase_watch::enter_phase(crate::phase_watch::phase::IDLE, 0);
 
         Ok(page)
+    }
+
+    /// Adopt a `window.open()` auxiliary WebView into the pool (REQ-LIB-001).
+    ///
+    /// Called from the WebView delegate's `request_create_new` on the pump
+    /// thread — the same thread that owns this pool's `Rc` domain. Building
+    /// the WebView from `request.builder(..)` (inside
+    /// `PageHandle::from_window_open`) answers the opener ScriptThread's
+    /// blocked creation channel; returning `None` leaves the request
+    /// unanswered, which the script side surfaces as a JS null — the same
+    /// Chromium semantics as a popup-blocked / resource-exhausted open (the
+    /// `max_total` gate deliberately maps to this, not to a panic).
+    ///
+    /// Accounting follows `create_page` semantics (active_pages +
+    /// total_created). The pipeline-ready wait + the single Node/stealth
+    /// injection entry that `create_page` runs inline are DEFERRED to
+    /// `init_pending_pages`: this call happens inside an in-flight
+    /// `spin_event_loop` (servo embedder-message dispatch) and re-entering
+    /// the event loop from within the callback is a message-reordering
+    /// hazard servoshell does not expose itself to (its request_create_new
+    /// only builds and registers).
+    ///
+    /// R53-A stealth inheritance: `stealth_profile` is the OPENER's profile
+    /// (delegate-side selection). The keyed wire-config / canvas-noise
+    /// entries for the child WebViewId are written HERE (before the opener's
+    /// ScriptThread can observe the popup or navigate it), and the deferred
+    /// injection later installs the full stealth surface through the same
+    /// single injection entry as every other page (e36 BCE discipline).
+    /// `None` profile = explicit stealth-free keyed entries, so the popup
+    /// does not inherit another page's process-global fallback either.
+    pub(crate) fn create_popup_page(
+        &self,
+        request: CreateNewWebViewRequest,
+        viewport: PhysicalSize<u32>,
+        stealth_profile: Option<bao_stealth::StealthProfile>,
+        permission: Option<Permission>,
+    ) -> Option<PageHandle> {
+        let total = self.active_pages.borrow().len() + self.idle_pages.borrow().len();
+        if total >= self.max_total {
+            return None;
+        }
+
+        // Creation-time realm policy (mirror create_page): the popup's Window
+        // realm is created by the opener's ScriptThread as soon as the
+        // builder response lands, so the forceUTC policy must be armed BEFORE
+        // the build, and a stealth-free popup must reset an earlier stealthed
+        // page's process-global flags.
+        let force_utc = stealth_profile
+            .as_ref()
+            .map_or(false, |p| p.timezone.force_utc);
+        servo::set_force_utc_realms(force_utc);
+        bao_engine::set_node_force_utc(force_utc);
+
+        let id = {
+            let mut next = self.next_id.borrow_mut();
+            let id = *next;
+            *next += 1;
+            id
+        };
+
+        let page = {
+            crate::phase_watch::enter_phase(
+                crate::phase_watch::phase::CREATE_WEBVIEW_NEW,
+                id as u64,
+            );
+            let pool_weak = self.pool_weak();
+            let p = PageHandle::from_window_open(
+                &pool_weak,
+                Rc::clone(&self.servo),
+                Rc::clone(&self.servo_delegate),
+                request,
+                viewport,
+                stealth_profile.clone(),
+                permission,
+                id,
+            );
+            match p {
+                Ok(page) => page,
+                Err(e) => {
+                    log::error!("[page_pool] window.open popup build failed: {e}");
+                    return None;
+                }
+            }
+        };
+
+        // R53-A keyed registration for the child WebViewId — the early window
+        // between webview creation and the deferred injection must not run on
+        // the process-global fallback bucket (multi-profile runtimes would
+        // present another page's wire/canvas fingerprint to any fetch this
+        // window sees). `install_all_native` (deferred injection) rewrites
+        // the same values — registry writes are idempotent.
+        if let Some(webview_id) = page.webview_id() {
+            match &stealth_profile {
+                Some(profile) => {
+                    crate::runtime_bridge::register_stealth_keyed_config_for_webview(
+                        webview_id, profile,
+                    );
+                }
+                None => {
+                    servo::set_stealth_wire_config_for_webview(webview_id, None, None);
+                    servo::set_canvas_noise_for_webview(webview_id, 0, 0.0);
+                }
+            }
+        }
+
+        self.active_pages.borrow_mut().insert(id, page.clone());
+        *self.total_created.borrow_mut() += 1;
+        self.pending_inits.borrow_mut().push(id);
+        crate::phase_watch::enter_phase(crate::phase_watch::phase::IDLE, 0);
+        Some(page)
+    }
+
+    /// Drive the deferred half of popup page creation (REQ-LIB-001):
+    /// pipeline-ready wait + the single Node/stealth injection entry +
+    /// per-Worker injector tier + permission-bridge registration for every
+    /// popup adopted by `create_popup_page` since the last drain — the exact
+    /// `create_page` tail, run pump-side between spins (never re-entrant with
+    /// the event loop). Called by the pump loops; a no-op with nothing
+    /// pending. Returns the number of popups fully initialized.
+    pub fn init_pending_pages(&self) -> usize {
+        let ids: Vec<usize> = std::mem::take(&mut *self.pending_inits.borrow_mut());
+        let mut initialized = 0;
+        for id in ids {
+            let Some(page) = self.active_pages.borrow().get(&id).cloned() else {
+                // Popup closed (window.close / pool close) before its init
+                // turn — nothing left to initialize.
+                continue;
+            };
+            crate::phase_watch::enter_phase(
+                crate::phase_watch::phase::CREATE_WAIT_READY,
+                id as u64,
+            );
+            // Popups carry no builder URL (the initial about:blank load is
+            // spawned by the opener's ScriptThread), so nav_seq == 0 — this
+            // keeps the first-frame contract, exactly like initial pages.
+            if let Err(e) = page.wait_for_pipeline_ready(Duration::from_secs(10)) {
+                // Fail-closed: a popup whose pipeline never came up must not
+                // sit in the pool as a fake-alive page.
+                log::error!("[page_pool] popup page {id} pipeline init failed: {e} — closing");
+                let _ = self.close_page_inner(id);
+                continue;
+            }
+            crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_INJECT, id as u64);
+            let profile = page.stealth_profile();
+            if let Err(e) = crate::runtime_bridge::inject_all_with_profile(&page, &profile) {
+                log::error!("[page_pool] popup page {id} injection failed: {e} — closing");
+                let _ = self.close_page_inner(id);
+                continue;
+            }
+            // Per-Worker injector tier (REQ-BRW-004, non-consuming) — mirrors
+            // the create_page tail so page-JS `new Worker()` from the popup is
+            // not a bare, fingerprintable Worker.
+            if let Some(webview_id) = page.webview_id() {
+                crate::runtime_bridge::register_worker_scope_injector_native(
+                    webview_id,
+                    profile.clone(),
+                );
+                crate::register_worker_interfaces_ready_injector_native(
+                    webview_id,
+                    profile.clone(),
+                );
+                // Runtime-side permission enforcement bridge (ISSUE #20) —
+                // inherited from the opener (delegate-side selection).
+                if let Some(permission) = page.permission().config().cloned() {
+                    let check = bun_runtime::permission_bridge::PermissionCheck {
+                        read_paths: permission.read,
+                        write_paths: permission.write,
+                        net_hosts: permission.net,
+                        env_allowed: permission.env.unwrap_or(true),
+                        run_allowed: permission.run.unwrap_or(true),
+                    };
+                    servo::register_script_thread_callback(
+                        webview_id,
+                        Box::new(move |_, _| {
+                            bun_runtime::permission_bridge::set_permission(Some(check));
+                        }),
+                    );
+                }
+            }
+            initialized += 1;
+            crate::phase_watch::enter_phase(crate::phase_watch::phase::IDLE, 0);
+        }
+        initialized
+    }
+
+    /// Retire a page from the pool's maps in response to content-initiated
+    /// close (`window.close()` → delegate `notify_closed`, REQ-LIB-001
+    /// criterion ⑤). Accounting drops HERE — a pool observer sees the page
+    /// gone the moment servo confirmed the close — while the physical
+    /// teardown (worker joins, keyed-registry cleanup, WebView drop) is
+    /// queued for the pump-side drain (`close_pending_pages`): this runs
+    /// inside servo's embedder dispatch where the closing page's own
+    /// evaluate legitimately holds `PageHandle.inner` borrowed, which
+    /// `PageHandle::close` needs mutably. Idempotent on double-retire.
+    pub(crate) fn retire_webview_page(&self, id: usize) -> bool {
+        let retired = self
+            .active_pages
+            .borrow_mut()
+            .remove(&id)
+            .or_else(|| self.idle_pages.borrow_mut().remove(&id).map(|e| e.page));
+        match retired {
+            Some(page) => {
+                self.pending_closes.borrow_mut().push(page);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Physical teardown for every page retired by `retire_webview_page`
+    /// since the last drain. Runs pump-side (never re-entrant with the event
+    /// loop); returns the number of pages closed.
+    pub fn close_pending_pages(&self) -> usize {
+        let pending: Vec<PageHandle> = std::mem::take(&mut *self.pending_closes.borrow_mut());
+        let mut closed = 0;
+        for page in pending {
+            let id = page.id();
+            let result = page.close();
+            // Counted as destroyed regardless of close() errors: the pool no
+            // longer holds the page and its WebView drops with the handle —
+            // reporting it alive would be the fake-alive failure mode.
+            *self.total_destroyed.borrow_mut() += 1;
+            closed += 1;
+            if let Err(e) = result {
+                log::error!("[page_pool] deferred close of page {id} errored: {e}");
+            }
+        }
+        closed
     }
 
     pub fn get_page(&self, id: usize) -> Option<PageHandle> {

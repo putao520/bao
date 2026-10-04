@@ -1299,8 +1299,38 @@ pub struct PageHandle {
     delegate: Rc<crate::delegate::BaoServoDelegate>,
 }
 
+/// Everything the shared page-assembly tail (`PageHandle::from_blueprint`)
+/// needs, sourced differently by the two creation entries: initial
+/// `create_page` (`PageHandle::new`) and `window.open` popup adoption
+/// (`PageHandle::from_window_open`, REQ-LIB-001).
+struct PageBlueprint {
+    id: usize,
+    viewport: PhysicalSize<u32>,
+    rendering_context: Rc<SoftwareRenderingContext>,
+    /// Raw builder (delegate/UCM/url NOT yet applied — `from_blueprint` owns
+    /// those). For popups it MUST come from `CreateNewWebViewRequest::builder`:
+    /// it carries the responder that unblocks the opener's ScriptThread; a
+    /// plain `WebViewBuilder` would leave that channel unanswered (JS null).
+    builder: WebViewBuilder,
+    stealth_profile: Option<bao_stealth::StealthProfile>,
+    permission: Option<crate::permission::Permission>,
+    /// `Some` drives the G0 Navigate transition (W16 #15-B). Popups carry
+    /// `None` — their initial about:blank load is spawned by the opener's
+    /// ScriptThread from the creation response, not by the builder.
+    initial_url: Option<url::Url>,
+}
+
+fn new_rendering_context(
+    viewport: PhysicalSize<u32>,
+) -> Result<Rc<SoftwareRenderingContext>, BrowserError> {
+    let rendering_context = SoftwareRenderingContext::new(viewport)
+        .map_err(|e| BrowserError::Init(format!("rendering context failed: {e:?}")))?;
+    Ok(Rc::new(rendering_context))
+}
+
 impl PageHandle {
     pub(crate) fn new(
+        pool_weak: &std::rc::Weak<crate::page_pool::PagePool>,
         servo: Rc<Servo>,
         servo_delegate: Rc<crate::delegate::BaoServoDelegate>,
         config: &PageConfig,
@@ -1312,11 +1342,87 @@ impl PageHandle {
             config.viewport_height.unwrap_or(default_viewport.height),
         );
 
-        let rendering_context = Rc::new(
-            SoftwareRenderingContext::new(viewport)
-                .map_err(|e| BrowserError::Init(format!("rendering context failed: {e:?}")))?,
+        let rendering_context = new_rendering_context(viewport)?;
+
+        let builder = WebViewBuilder::new(
+            &servo,
+            rendering_context.clone() as Rc<dyn RenderingContext>,
         );
 
+        let initial_url = match &config.url {
+            Some(url_str) => Some(
+                url::Url::parse(url_str)
+                    .map_err(|e| BrowserError::Init(format!("invalid URL: {e}")))?,
+            ),
+            None => None,
+        };
+
+        Self::from_blueprint(
+            pool_weak,
+            servo,
+            servo_delegate,
+            PageBlueprint {
+                id,
+                viewport,
+                rendering_context,
+                builder,
+                stealth_profile: config.stealth_profile.clone(),
+                permission: config.permission.clone(),
+                initial_url,
+            },
+        )
+    }
+
+    /// Build the auxiliary WebView answering a `window.open()` creation
+    /// request (REQ-LIB-001). The builder comes from
+    /// `CreateNewWebViewRequest::builder` so `build()` answers the opener's
+    /// blocked ScriptThread; viewport/stealth/permission are inherited from
+    /// the opener (pool-side selection).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_window_open(
+        pool_weak: &std::rc::Weak<crate::page_pool::PagePool>,
+        servo: Rc<Servo>,
+        servo_delegate: Rc<crate::delegate::BaoServoDelegate>,
+        request: servo::CreateNewWebViewRequest,
+        viewport: PhysicalSize<u32>,
+        stealth_profile: Option<bao_stealth::StealthProfile>,
+        permission: Option<crate::permission::Permission>,
+        id: usize,
+    ) -> Result<Self, BrowserError> {
+        let rendering_context = new_rendering_context(viewport)?;
+        let builder = request.builder(rendering_context.clone() as Rc<dyn RenderingContext>);
+        Self::from_blueprint(
+            pool_weak,
+            servo,
+            servo_delegate,
+            PageBlueprint {
+                id,
+                viewport,
+                rendering_context,
+                builder,
+                stealth_profile,
+                permission,
+                initial_url: None,
+            },
+        )
+    }
+
+    /// Shared page-assembly tail (both creation entries, REQ-LIB-001).
+    fn from_blueprint(
+        pool_weak: &std::rc::Weak<crate::page_pool::PagePool>,
+        servo: Rc<Servo>,
+        servo_delegate: Rc<crate::delegate::BaoServoDelegate>,
+        blueprint: PageBlueprint,
+    ) -> Result<Self, BrowserError> {
+        let PageBlueprint {
+            id,
+            viewport,
+            rendering_context,
+            builder,
+            stealth_profile,
+            permission,
+            initial_url,
+        } = blueprint;
         let webview_state = Rc::new(RefCell::new(BaoWebViewState::default()));
         // CDP target identity (REQ-CDP-004): every ServoEvent this webview's
         // delegate emits is tagged with the page's decimal id — the same
@@ -1326,6 +1432,10 @@ impl PageHandle {
         // creation, before `builder.build()` can deliver any delegate
         // callback.
         webview_state.borrow_mut().cdp_target_id = Some(id.to_string());
+        // Pool reverse identity (REQ-LIB-001): lets the per-page delegate
+        // answer `notify_closed` (window.close()) with the pool entry to
+        // retire — the delegate outlives no page id other than its own.
+        webview_state.borrow_mut().pool_page_id = Some(id);
         // Propagate console log channel from servo delegate to per-webview state
         if let Some(tx) = servo_delegate.console_log_tx() {
             webview_state.borrow_mut().console_log_tx = Some(tx);
@@ -1345,20 +1455,26 @@ impl PageHandle {
         // Workers spawned from this page inherit identical navigator/Canvas/WebGL/Audio
         // fingerprints. Without this, WorkerScopeConfig defaults to stealth_profile: None
         // and Workers would see servo's native fingerprint values instead.
-        if let Some(ref profile) = config.stealth_profile {
+        if let Some(ref profile) = stealth_profile {
             webview_state.borrow_mut().set_worker_scope_config(
                 crate::delegate::WorkerScopeConfig::from(profile as &bao_stealth::StealthProfile),
             );
         }
-        let webview_delegate =
-            Rc::new(BaoWebViewDelegate::new(Rc::clone(&webview_state), viewport));
+        // The per-page delegate carries a Weak<PagePool> back into the pool:
+        // `request_create_new` (window.open popup adoption) and `notify_closed`
+        // (window.close() retirement) both land here from servo's embedder
+        // dispatch on the pool's own thread. Weak — the pool strongly holds
+        // every page's delegate via PageInner, so a strong link would leak.
+        // @trace REQ-LIB-001
+        let webview_delegate = Rc::new(BaoWebViewDelegate::new(
+            Rc::clone(&webview_state),
+            viewport,
+            pool_weak.clone(),
+        ));
         let state = Rc::new(RefCell::new(PageState::Created));
 
-        let mut builder = WebViewBuilder::new(
-            &servo,
-            rendering_context.clone() as Rc<dyn RenderingContext>,
-        )
-        .delegate(Rc::clone(&webview_delegate) as Rc<dyn servo::WebViewDelegate>);
+        let mut builder =
+            builder.delegate(Rc::clone(&webview_delegate) as Rc<dyn servo::WebViewDelegate>);
 
         // Wire a per-page UserContentManager so CDP
         // Page.addScriptToEvaluateOnNewDocument can register scripts that
@@ -1367,9 +1483,7 @@ impl PageHandle {
         let user_content_manager = Rc::new(servo::UserContentManager::new(&servo));
         builder = builder.user_content_manager(Rc::clone(&user_content_manager));
 
-        if let Some(ref url_str) = config.url {
-            let url = url::Url::parse(url_str)
-                .map_err(|e| BrowserError::Init(format!("invalid URL: {e}")))?;
+        if let Some(url) = initial_url.clone() {
             builder = builder.url(url);
         }
 
@@ -1390,9 +1504,9 @@ impl PageHandle {
             webview_state,
             nav_seq: ::std::cell::Cell::new(0),
             viewport,
-            stealth_profile: config.stealth_profile.clone(),
-            permission: match &config.permission {
-                Some(perm) => PermissionGuard::new(perm.clone()),
+            stealth_profile,
+            permission: match permission {
+                Some(perm) => PermissionGuard::new(perm),
                 None => PermissionGuard::none(),
             },
             user_content_manager: Some(user_content_manager),
@@ -1413,7 +1527,7 @@ impl PageHandle {
         // contract. That unbumped counter is the ONE divergence from an
         // explicit navigate() and it is anchored here deliberately.
         // @trace REQ-BRW-001 [sm:PageLifecycle] criterion: Created→Navigating on initial URL
-        if config.url.is_some() {
+        if initial_url.is_some() {
             inner.apply(PageEvent::Navigate);
             inner.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
         }

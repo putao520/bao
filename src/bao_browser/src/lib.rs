@@ -434,6 +434,11 @@ impl BrowserRuntime {
             Rc::clone(&delegate),
             &config,
         ));
+        // REQ-LIB-001: arm the pool's own weak handle — every page delegate
+        // carries a derived Weak so servo's embedder dispatch
+        // (request_create_new / notify_closed) reaches the pool from the
+        // pump thread.
+        page_pool.arm_self_weak(Rc::downgrade(&page_pool));
 
         // #40 page-pipeline stall watchdog: every page op runs on this
         // thread; when one wedges inside a never-returning primitive the
@@ -795,6 +800,13 @@ impl BrowserRuntime {
             // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
             self.page_pool.paint_pages_needing_repaint();
             self.page_pool.check_idle_pages();
+            // REQ-LIB-001: settle window.open popups — physical teardown for
+            // content-closed pages first (window.close → notify_closed
+            // retire), then pipeline-ready wait + injection for freshly
+            // adopted popups. Both run pump-side, never re-entrant with the
+            // event loop.
+            self.page_pool.close_pending_pages();
+            self.page_pool.init_pending_pages();
             // memory:// CDP commands (process-registry bridge) execute here:
             // the drain answers every in-process client command that routed
             // through the bridge channel (Runtime.evaluate, Target listing…).
@@ -840,6 +852,13 @@ impl BrowserRuntime {
             // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
             self.page_pool.paint_pages_needing_repaint();
             self.page_pool.check_idle_pages();
+            // REQ-LIB-001: settle window.open popups — physical teardown for
+            // content-closed pages first (window.close → notify_closed
+            // retire), then pipeline-ready wait + injection for freshly
+            // adopted popups. Both run pump-side, never re-entrant with the
+            // event loop.
+            self.page_pool.close_pending_pages();
+            self.page_pool.init_pending_pages();
             if let Some(rx) = &self.cdp_bridge_rx {
                 rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
             }
@@ -872,6 +891,13 @@ impl BrowserRuntime {
             // capture only advance inside `Painter::render`.
             self.page_pool.paint_pages_needing_repaint();
             self.page_pool.check_idle_pages();
+            // REQ-LIB-001: settle window.open popups — physical teardown for
+            // content-closed pages first (window.close → notify_closed
+            // retire), then pipeline-ready wait + injection for freshly
+            // adopted popups. Both run pump-side, never re-entrant with the
+            // event loop.
+            self.page_pool.close_pending_pages();
+            self.page_pool.init_pending_pages();
 
             // Process pending CDP bridge commands
             bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));

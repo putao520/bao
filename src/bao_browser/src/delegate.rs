@@ -3229,6 +3229,12 @@ pub struct BaoWebViewState {
     /// (no-target-no-deliver, the same Chrome semantics the tightened
     /// `broadcast_for_target` miss branch enforces downstream).
     pub cdp_target_id: Option<String>,
+    /// Owning page's pool id (REQ-LIB-001). Stamped at page creation next to
+    /// `cdp_target_id`; the per-page delegate reads it to answer
+    /// `notify_closed` (window.close()) with the exact PagePool entry to
+    /// retire. `None` = no page behind this state (same semantics as
+    /// `cdp_target_id`).
+    pub pool_page_id: Option<usize>,
     /// Active Workers spawned from this webview's page.
     /// Keyed by WorkerId for O(1) lookup. On page unload (new navigation
     /// after LoadStatus::Complete), all Workers are auto-terminated
@@ -3303,6 +3309,7 @@ impl Default for BaoWebViewState {
             console_log_tx: None,
             event_tx: None,
             cdp_target_id: None,
+            pool_page_id: None,
             active_workers: Vec::new(),
             worker_scope_config: WorkerScopeConfig::default(),
             shared_worker_ports: Vec::new(),
@@ -4839,11 +4846,26 @@ impl ServoDelegate for BaoServoDelegate {
 pub struct BaoWebViewDelegate {
     state: Rc<RefCell<BaoWebViewState>>,
     viewport: PhysicalSize<u32>,
+    /// Weak link back to the owning PagePool (REQ-LIB-001). Servo dispatches
+    /// `request_create_new` (window.open) and `notify_closed` (window.close())
+    /// on the embedder thread during `spin_event_loop` — the same thread that
+    /// owns the pool's `Rc` domain — so the delegate can act on the pool
+    /// directly. Weak because the pool strongly holds every page's delegate
+    /// (PageInner → delegate); a strong link would be a leak cycle.
+    pool: std::rc::Weak<crate::page_pool::PagePool>,
 }
 
 impl BaoWebViewDelegate {
-    pub fn new(state: Rc<RefCell<BaoWebViewState>>, viewport: PhysicalSize<u32>) -> Self {
-        BaoWebViewDelegate { state, viewport }
+    pub fn new(
+        state: Rc<RefCell<BaoWebViewState>>,
+        viewport: PhysicalSize<u32>,
+        pool: std::rc::Weak<crate::page_pool::PagePool>,
+    ) -> Self {
+        BaoWebViewDelegate {
+            state,
+            viewport,
+            pool,
+        }
     }
 
     pub fn state(&self) -> &Rc<RefCell<BaoWebViewState>> {
@@ -5062,7 +5084,78 @@ impl WebViewDelegate for BaoWebViewDelegate {
         request.allow();
     }
 
-    fn request_create_new(&self, _parent_webview: WebView, _request: CreateNewWebViewRequest) {}
+    // @trace REQ-LIB-001 [entity:PagePool] [entity:BaoServoDelegate]
+    // window.open popup landing (REQ-LIB-001): servo asks the embedder to
+    // build the auxiliary WebView while the opener's ScriptThread blocks on
+    // the creation channel (vendor windowproxy.rs
+    // create_auxiliary_browsing_context → constellation AllowOpeningWebView →
+    // this callback on the embedder/pump thread). Building the WebView here
+    // (servoshell RunningAppState::request_create_new form, adapted to bao's
+    // pool-owned headless pages) answers that channel and `window.open()`
+    // returns a live WindowProxy. Dropping `request` without building (every
+    // early-return below) leaves the channel closed — the script side's
+    // `recv().unwrap()?` surfaces that as a JS null, i.e. the same observable
+    // semantics as Chromium's popup-blocked / resource-exhausted open.
+    //
+    // Accounting + stealth inheritance happen in
+    // `PagePool::create_popup_page`; the pipeline-ready wait + Node/stealth
+    // injection that `create_page` runs inline are DEFERRED to
+    // `PagePool::init_pending_pages` (pump-side drain): this callback runs
+    // inside an in-flight `spin_event_loop`, and re-entering the event loop
+    // from within servo's message dispatch is a reordering hazard servoshell
+    // does not expose itself to (its request_create_new only builds and
+    // registers).
+    fn request_create_new(&self, _parent_webview: WebView, request: CreateNewWebViewRequest) {
+        let Some(pool) = self.pool.upgrade() else {
+            log::warn!("[webview] window.open denied: page pool already torn down");
+            return;
+        };
+        // The opener's own delegate carries the opener identity: inherit its
+        // viewport and its stealth/permission config (R53-A — the popup is an
+        // auxiliary of the opener, so it must not present a different wire /
+        // canvas fingerprint, and multi-profile runtimes must not let the
+        // popup fall through to another page's process-global fallback).
+        let opener_page_id = self.state.borrow().pool_page_id;
+        let opener = opener_page_id.and_then(|id| pool.get_page(id));
+        let stealth_profile = opener.as_ref().and_then(|page| page.stealth_profile());
+        let permission = opener
+            .as_ref()
+            .and_then(|page| page.permission().config().cloned());
+        if pool
+            .create_popup_page(request, self.viewport, stealth_profile, permission)
+            .is_none()
+        {
+            log::warn!(
+                "[webview] window.open denied: page pool limit reached (null returned to JS)"
+            );
+        }
+    }
+
+    // @trace REQ-LIB-001 [entity:PagePool]
+    // window.close() retirement (REQ-LIB-001 criterion ⑤): servo notifies the
+    // embedder when content closed this WebView (ConstellationToEmbedderMsg::
+    // WebViewClosed); servoshell removes it from its tab interface here —
+    // bao's "interface" is the PagePool map. The map entry drops NOW
+    // (accounting) while the physical teardown is queued for the pump-side
+    // `close_pending_pages` drain: this callback fires inside servo's
+    // embedder dispatch, where the closing page's own evaluate legitimately
+    // holds `PageHandle.inner` borrowed — and `PageHandle::close` needs
+    // `borrow_mut` on that same cell (close-during-evaluate RefCell re-entry,
+    // hit by the window_open suite on the first cut).
+    fn notify_closed(&self, _webview: WebView) {
+        let Some(pool) = self.pool.upgrade() else {
+            return;
+        };
+        let page_id = self.state.borrow().pool_page_id;
+        if let Some(id) = page_id {
+            if !pool.retire_webview_page(id) {
+                // Double-close (TTL reclaim raced the content close, or a CDP
+                // Target.closeTarget already retired the page) is not an error
+                // for the embedder face — the pool entry is gone either way.
+                log::debug!("[webview] notify_closed: page {id} already retired");
+            }
+        }
+    }
 
     fn show_console_message(&self, _webview: WebView, level: ConsoleLogLevel, message: String) {
         let level_str = match level {
@@ -5232,7 +5325,7 @@ mod tests {
     fn test_webview_delegate_new_with_state() {
         let state = Rc::new(RefCell::new(BaoWebViewState::default()));
         let viewport = PhysicalSize::new(1024, 768);
-        let delegate = BaoWebViewDelegate::new(state, viewport);
+        let delegate = BaoWebViewDelegate::new(state, viewport, std::rc::Weak::new());
         assert!(delegate.state().borrow().url.is_none());
     }
 
@@ -5240,7 +5333,7 @@ mod tests {
     fn test_webview_delegate_state_rc_shared() {
         let state = Rc::new(RefCell::new(BaoWebViewState::default()));
         let viewport = PhysicalSize::new(800, 600);
-        let delegate = BaoWebViewDelegate::new(Rc::clone(&state), viewport);
+        let delegate = BaoWebViewDelegate::new(Rc::clone(&state), viewport, std::rc::Weak::new());
         // Modify state externally
         state.borrow_mut().title = Some("External".to_string());
         // Delegate sees same state
@@ -5251,7 +5344,7 @@ mod tests {
     fn test_webview_delegate_viewport_size() {
         let state = Rc::new(RefCell::new(BaoWebViewState::default()));
         let viewport = PhysicalSize::new(1440, 900);
-        let delegate = BaoWebViewDelegate::new(state, viewport);
+        let delegate = BaoWebViewDelegate::new(state, viewport, std::rc::Weak::new());
         // Verify delegate was created with specific viewport
         assert!(delegate.state().borrow().url.is_none());
     }
@@ -5405,7 +5498,7 @@ mod tests {
             ..Default::default()
         }));
         let viewport = PhysicalSize::new(800, 600);
-        let _delegate = BaoWebViewDelegate::new(state, viewport);
+        let _delegate = BaoWebViewDelegate::new(state, viewport, std::rc::Weak::new());
 
         // Simulate sending through state's channel (what show_console_message does)
         if let Some(ref tx) = _delegate.state().borrow().console_log_tx {
@@ -5437,7 +5530,7 @@ mod tests {
             ..Default::default()
         }));
         let viewport = PhysicalSize::new(800, 600);
-        let _delegate = BaoWebViewDelegate::new(state.clone(), viewport);
+        let _delegate = BaoWebViewDelegate::new(state.clone(), viewport, std::rc::Weak::new());
 
         // Simulate notify_url_changed by sending the same message the method
         // sends — frame id derived from the stamped target (REQ-CDP-004).
@@ -5692,7 +5785,7 @@ mod tests {
             ..Default::default()
         }));
         let viewport = PhysicalSize::new(800, 600);
-        let _delegate = BaoWebViewDelegate::new(state.clone(), viewport);
+        let _delegate = BaoWebViewDelegate::new(state.clone(), viewport, std::rc::Weak::new());
 
         // Simulate what notify_load_status_changed does on LoadStatus::Started
         let target = state.borrow().cdp_target().expect("stamped target");
