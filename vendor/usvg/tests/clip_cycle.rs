@@ -18,9 +18,10 @@
 // Servo's image cache parses SVG data URLs via `usvg::Tree::from_data` on a
 // rayon worker (`GlobalPool`), so a hostile SVG with a >=3-edge cycle aborts
 // the whole renderer (WPT css-masking clip-path-recursion-001.svg). The BAO
-// guard closes layer 2: a re-entry into a `clipPath` currently being converted
-// is an invalid reference and invalidates that clip path, which cascades up
-// and empties the cycle's content.
+// guards close layer 2 for both `clipPath` (parser/clippath.rs) and `mask`
+// (parser/mask.rs): a re-entry into an element currently being converted is
+// an invalid reference and invalidates that element, which cascades up and
+// empties the cycle's content.
 
 use usvg::{Options, Tree};
 
@@ -111,6 +112,59 @@ fn three_edge_clip_cycle_through_mask_does_not_overflow() {
     assert!(
         !tree.root().has_children(),
         "a >=3-edge clip cycle must not render any element (invalid reference cascade)"
+    );
+}
+
+#[test]
+fn three_edge_mask_cycle_does_not_overflow() {
+    // Same defect class as `three_edge_clip_cycle_through_mask_does_not_overflow`,
+    // but all-mask: a >=3-edge `mask` link cycle survives the parse-time fixer
+    // and used to recurse until the stack overflowed (reproduced on pristine
+    // 0.48.1). The mask guard treats the re-entry as an invalid reference and
+    // the invalidation cascades: every mask on the cycle ends up empty
+    // (invalid), the masked element is dropped.
+    let tree = parse(
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
+            <defs>
+                <mask id='m0'>
+                    <rect width='1' height='1' mask='url(#m1)'/>
+                </mask>
+                <mask id='m1'>
+                    <rect width='100' height='100' mask='url(#m2)'/>
+                </mask>
+                <mask id='m2'>
+                    <rect width='1' height='1' mask='url(#m0)'/>
+                </mask>
+            </defs>
+            <circle r='500' mask='url(#m0)'/>
+        </svg>",
+    );
+
+    assert!(
+        !tree.root().has_children(),
+        "a >=3-edge mask cycle must not render any element (invalid reference cascade)"
+    );
+}
+
+#[test]
+fn self_referencing_mask_neutralized_at_parse_time() {
+    // 1-edge mask cycle: `fix_recursive_links` strips the self-referencing
+    // attribute, so the mask stays valid and renders. Pins the parse-time
+    // layer for masks (mirrors the clipPath control above).
+    let tree = parse(
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
+            <defs>
+                <mask id='m0'>
+                    <rect width='50' height='50' mask='url(#m0)'/>
+                </mask>
+            </defs>
+            <circle r='50' mask='url(#m0)'/>
+        </svg>",
+    );
+
+    assert!(
+        tree.root().has_children(),
+        "a self-referencing mask is neutralized at parse time; the masked element must still render"
     );
 }
 

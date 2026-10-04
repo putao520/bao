@@ -64,6 +64,9 @@ pub struct Cache {
     // BAO PATCH (bao, clip-path-recursion-001): `clipPath` ids currently being
     // converted; re-entry means a reference cycle (see `parser/clippath.rs`).
     pub clip_paths_in_progress: HashSet<String>,
+    // BAO PATCH (bao, mask-recursion): same guard for `mask` element ids
+    // (see `parser/mask.rs`).
+    pub masks_in_progress: HashSet<String>,
     pub masks: HashMap<String, Arc<Mask>>,
     pub filters: HashMap<String, Arc<filter::Filter>>,
     pub paint: HashMap<String, Paint>,
@@ -115,6 +118,7 @@ impl Cache {
 
             clip_paths: HashMap::new(),
             clip_paths_in_progress: HashSet::new(),
+            masks_in_progress: HashSet::new(),
             masks: HashMap::new(),
             filters: HashMap::new(),
             paint: HashMap::new(),

@@ -20,6 +20,30 @@ pub(crate) fn convert(
         return None;
     }
 
+    // BAO PATCH (bao, mask-recursion): same defect class as the `clipPath`
+    // cycle guard in `parser/clippath.rs`. The parse-time fixer
+    // (`fix_recursive_links`) only neutralizes 1/2-edge cycles, so a >=3-edge
+    // `mask` link cycle survives into conversion, where `convert` re-enters
+    // per referenced element while the converted-mask cache is only populated
+    // after a subtree completes - unbounded recursion, stack overflow.
+    // Track the `mask` elements currently being converted and treat re-entry
+    // as an invalid reference: the whole mask is ignored.
+    let id = node.element_id().to_string();
+    if !cache.masks_in_progress.insert(id.clone()) {
+        log::warn!("Mask '{}' reference cycle detected; ignoring.", id);
+        return None;
+    }
+    let mask = convert_impl(node, state, object_bbox, cache);
+    cache.masks_in_progress.remove(&id);
+    mask
+}
+
+fn convert_impl(
+    node: SvgNode,
+    state: &converter::State,
+    object_bbox: Option<NonZeroRect>,
+    cache: &mut converter::Cache,
+) -> Option<Arc<Mask>> {
     let units = node
         .attribute(AId::MaskUnits)
         .unwrap_or(Units::ObjectBoundingBox);
