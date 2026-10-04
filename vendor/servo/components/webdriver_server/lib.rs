@@ -2008,7 +2008,9 @@ impl Handler {
         self.handle_any_user_prompts(self.webview_id()?)?;
 
         // Step 5. Let actions by tick be the result of trying to extract an action sequence
-        let actions_by_tick = self.extract_an_action_sequence(parameters.actions);
+        let actions_by_tick = self
+            .extract_an_action_sequence(parameters.actions)
+            .map_err(|error| WebDriverError::new(error, ""))?;
 
         // Step 6. Dispatch actions with current browsing context
         match self.dispatch_actions(actions_by_tick, browsing_context) {
@@ -2263,11 +2265,21 @@ impl Handler {
                         },
                     };
 
-                    let actions_by_tick = self.extract_an_action_sequence(vec![action_sequence]);
-                    if let Err(e) =
-                        self.dispatch_actions(actions_by_tick, self.browsing_context_id()?)
-                    {
-                        error!("handle_element_send_keys: dispatch_actions failed: {:?}", e);
+                    match self.extract_an_action_sequence(vec![action_sequence]) {
+                        Ok(actions_by_tick) => {
+                            if let Err(e) =
+                                self.dispatch_actions(actions_by_tick, self.browsing_context_id()?)
+                            {
+                                error!(
+                                    "handle_element_send_keys: dispatch_actions failed: {:?}",
+                                    e
+                                );
+                            }
+                        },
+                        Err(e) => error!(
+                            "handle_element_send_keys: extract_an_action_sequence failed: {:?}",
+                            e
+                        ),
                     }
                 },
                 DispatchStringEvent::Composition(event) => {
@@ -2413,9 +2425,17 @@ impl Handler {
         };
 
         // Step 8.16. Dispatch a list of actions with session's current browsing context
-        let actions_by_tick = self.extract_an_action_sequence(vec![action_sequence]);
-        if let Err(e) = self.dispatch_actions(actions_by_tick, self.browsing_context_id()?) {
-            error!("handle_element_click: dispatch_actions failed: {:?}", e);
+        match self.extract_an_action_sequence(vec![action_sequence]) {
+            Ok(actions_by_tick) => {
+                if let Err(e) = self.dispatch_actions(actions_by_tick, self.browsing_context_id()?)
+                {
+                    error!("handle_element_click: dispatch_actions failed: {:?}", e);
+                }
+            },
+            Err(e) => error!(
+                "handle_element_click: extract_an_action_sequence failed: {:?}",
+                e
+            ),
         }
 
         // Step 8.17 Remove an input source with input state and input id.
