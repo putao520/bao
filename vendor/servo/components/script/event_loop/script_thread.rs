@@ -101,8 +101,9 @@ use servo_config::{pref, prefs};
 use servo_constellation_traits::{
     HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, PaintMetricEvent,
     RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
-    ScriptToConstellationMessage, ScrollStateUpdate, SessionHistoryTraversalRequest,
-    StructuredSerializedData, TargetSnapshotParams, TraversalDirection, WindowSizeType,
+    ScriptToConstellationMessage, ScrollStateUpdate, ServiceWorkerAlgorithm,
+    SessionHistoryTraversalRequest, StructuredSerializedData, TargetSnapshotParams,
+    TraversalDirection, WindowSizeType,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::StorageThreads;
@@ -3971,6 +3972,37 @@ impl ScriptThread {
                     .get_jsobject()
                     .get(),
             );
+
+            // BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+            // 2026-10-05): this document's ServiceWorkerContainer enrolled its
+            // creation URL with the origin's SW manager the moment it was
+            // created (`ServiceWorkerContainer::new` →
+            // `enroll_with_manager`); the slot must die with the document or
+            // the manager keeps multicasting `MessageFromWorker` into a dead
+            // container's callback and answering `clients.matchAll` with a
+            // dead client (the e73 finding: the manager cannot detect the
+            // death itself — InProcess callback sends never fail). Send the
+            // unenroll HERE — before the `window_detached` gate, so a detached
+            // window's realm (same-origin nav already moved the browsing
+            // context) is covered too, mirroring the realm-discard cancel
+            // above. No-op when the document has no storage key (never
+            // enrolled; the manager removes nothing it does not hold).
+            let window = document.window();
+            let global_scope = window.as_global_scope();
+            if let Some(storage_key) = global_scope.obtain_storage_key() {
+                let _ = global_scope
+                    .script_to_constellation_chan()
+                    .send(ScriptToConstellationMessage::ServiceWorkerAlgorithm(
+                        ServiceWorkerAlgorithm::ClientGone {
+                            storage_key,
+                            client_url: global_scope.creation_url(),
+                            // Same accessor as the enrollment stamp
+                            // (`enroll_with_manager`), so the removal key
+                            // always matches what was registered.
+                            client_pipeline: global_scope.pipeline_id(),
+                        },
+                    ));
+            }
 
             if !document.window_detached() {
                 debug!("{pipeline_id}: Shutting down layout");

@@ -226,6 +226,7 @@ impl ClientsMethods<crate::DomTypeHolder> for Clients {
                     client_url: self.scope_url.clone(),
                     result_handler,
                     enroll_only: false,
+                    client_pipeline: global.pipeline_id(),
                 },
             ))
             .is_err()

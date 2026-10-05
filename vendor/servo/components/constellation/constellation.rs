@@ -2574,6 +2574,10 @@ where
             ServiceWorkerAlgorithm::MatchServiceWorkerRegistration { storage_key, .. } => {
                 storage_key.clone()
             },
+            // BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+            // 2026-10-05): route by the dead client's storage key, same as
+            // every other algorithm — the manager is per-origin.
+            ServiceWorkerAlgorithm::ClientGone { storage_key, .. } => storage_key.clone(),
         };
 
         if self

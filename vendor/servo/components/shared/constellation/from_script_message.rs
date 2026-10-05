@@ -385,6 +385,29 @@ pub enum ServiceWorkerAlgorithm {
         /// origin-wide client set and answers nothing. Reuses this variant
         /// so no new constellation routing arm is needed.
         enroll_only: bool,
+        /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+        /// 2026-10-05): the enrolling client's pipeline — the removal
+        /// identity of the enrollment. Same-URL navigation enrolls the NEW
+        /// document's container (upsert) at an arbitrary order relative to
+        /// the OLD pipeline's `ClientGone`; only this stamp tells a stale
+        /// teardown from the live entry it must not remove (see
+        /// `ClientGone`).
+        client_pipeline: PipelineId,
+    },
+    /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+    /// 2026-10-05): the client document behind an enrolled container is
+    /// gone — its pipeline exited and the document (with its
+    /// `ServiceWorkerContainer`) is being torn down. The manager drops the
+    /// enrolled client whose (client_url, client_pipeline) matches, so it
+    /// stops delivering `MessageFromWorker` into a dead container's
+    /// callback and answering `clients.matchAll` with a dead client (the
+    /// e73 finding: the manager cannot detect the death itself — an
+    /// InProcess callback send never fails). Fire-and-forget: nothing is
+    /// answered (the enrollment callback died with the document).
+    ClientGone {
+        storage_key: ImmutableOrigin,
+        client_url: ServoUrl,
+        client_pipeline: PipelineId,
     },
 }
 

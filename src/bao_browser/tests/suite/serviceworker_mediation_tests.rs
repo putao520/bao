@@ -776,3 +776,223 @@ fn c19_sw_postmessage_targets_enrolled_client_live() {
         "the untargeted sibling client must receive none of the messages"
     );
 }
+
+/// The ServiceWorker the e75 unenroll test registers: pure messaging face —
+/// no fetch listener (the scope deliberately excludes both pages, so no
+/// request is ever mediated and an unhandled-mediator stall cannot pollute
+/// the run). On any page message it answers with a targeted postMessage to
+/// page A carrying the snapshot `clients.matchAll()` just answered with
+/// (`e75-count=N;urls=...`), retrying while page A's container has not
+/// enrolled yet. The set membership IS the observable: the e75 teardown ping
+/// must remove a closed page's slot so the count drops.
+const E75_SW_SCRIPT_JS: &str = r#"
+self.onmessage = function () {
+  var tries = 0;
+  var attempt = function () {
+    self.clients.matchAll().then(function (cs) {
+      var a = null;
+      for (var i = 0; i < cs.length; i++) {
+        if (String(cs[i].url).indexOf('/pageb') === -1) { a = cs[i]; }
+      }
+      if (a) {
+        var urls = [];
+        for (var i = 0; i < cs.length; i++) {
+          urls.push(String(cs[i].url));
+        }
+        a.postMessage('e75-count=' + cs.length + ';urls=' + urls.join('|'));
+      } else if (tries++ < 10) {
+        setTimeout(attempt, 200);
+      }
+    }, function () {
+      if (tries++ < 10) { setTimeout(attempt, 200); }
+    });
+  };
+  attempt();
+};
+"#;
+
+/// Page-realm message recorder on `navigator.serviceWorker`: appends every
+/// worker→client message to `window.__e75` (comma-joined, FIFO order).
+fn install_e75_recorder_js() -> String {
+    "window.__e75 = ''; \
+     try { \
+       navigator.serviceWorker.addEventListener('message', function (e) { \
+         window.__e75 += (window.__e75 ? ',' : '') + String(e.data); \
+       }); \
+     } catch (err) { window.__e75 = 'threw:' + err; } \
+     window.__e75"
+        .to_owned()
+}
+
+/// @trace TEST-BRW-004 [req:REQ-BRW-004] [criterion:19] SW enrolled-client set
+/// hygiene on container teardown (live) — the e75 `ClientGone` face.
+///
+/// Two pages of the same origin with DIFFERENT creation URLs (`/` and
+/// `/pageb`) → two slots in the manager's origin-wide enrolled client set
+/// (enrollment is upsert, e70; the removal identity is the enrolling
+/// pipeline, e75). The SW, on any page message, answers with a targeted
+/// postMessage to page A carrying the `clients.matchAll()` snapshot
+/// (`e75-count=N;urls=...`). After page B is closed (pipeline exit →
+/// `handle_exit_pipeline_msg` → `ClientGone`), the next snapshot must drop
+/// to exactly page A — the dead client must not be answered anymore. Before
+/// the e75 teardown ping the manager kept the dead slot forever (the RED
+/// this test must not regress to: the count stays 2).
+#[test]
+fn c19_sw_unenrolls_dead_client_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = SwMediationFixture::spawn();
+    let origin = format!("http://127.0.0.1:{}/", fixture.port);
+    fixture.set_script(E75_SW_SCRIPT_JS.to_owned());
+
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+
+    // Page A — the registering page. Recorder first (this creates + enrolls
+    // the container), then register + wait for the activated state.
+    let page_a = runtime
+        .create_page(&PageConfig {
+            url: Some(origin.clone()),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page (A) must succeed");
+    let recorder_a = page_a
+        .evaluate_js_web(&install_e75_recorder_js())
+        .expect("A recorder install eval must not fail");
+    eprintln!("[e75-unenroll] A recorder = {recorder_a:?}");
+
+    let register_js = "window.__e75reg = null; window.__e75act = 'pending'; \
+         try { \
+           navigator.serviceWorker.register('/sw.js', {scope: '/sw-scope/'}).then( \
+             function (reg) { \
+               window.__e75reg = reg; \
+               var w = reg.installing || reg.waiting || reg.active; \
+               return new Promise(function (res) { \
+                 if (w.state === 'activated') { res(); } \
+                 else { w.addEventListener('statechange', function () { \
+                   if (w.state === 'activated') { res(); } }); } \
+               }); \
+             }).then(function () { window.__e75act = 'ok'; }, \
+                     function (e) { window.__e75act = 'error:' + e; }); \
+         } catch (err) { window.__e75act = 'threw:' + err; } \
+         window.__e75act";
+    let initial = page_a
+        .evaluate_js_web(register_js)
+        .expect("register dispatch must not fail");
+    eprintln!("[e75-unenroll] register dispatched, immediate eval = {initial:?}");
+    let act = wait_for(
+        || match page_a.evaluate_js_web("window.__e75act") {
+            Ok(s) if s.contains("pending") => None,
+            Ok(s) => Some(s),
+            Err(_) => None,
+        },
+        Duration::from_secs(30),
+        "service worker activation (e75)",
+    )
+    .unwrap_or_else(|| "<no settlement>".to_string());
+    eprintln!("[e75-unenroll] activation outcome = {act}");
+    assert!(
+        act.contains("ok"),
+        "service worker must activate on the live path: {act}"
+    );
+
+    // Page B — same origin, different creation URL → a second enrolled slot
+    // (its container enrolls at creation).
+    let page_b = runtime
+        .create_page(&PageConfig {
+            url: Some(format!("{origin}pageb")),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page (B) must succeed");
+    let _ = page_b.evaluate_js_web(&install_e75_recorder_js());
+
+    // Trigger + bank: one probe round-trip. Returns page A's full verdict
+    // string (`__e75`).
+    fn trigger_and_read(page_a: &bao_browser::PageHandle) -> Option<String> {
+        let go = page_a
+            .evaluate_js_web(
+                "try { \
+                   if (window.__e75reg && window.__e75reg.active) { \
+                     window.__e75reg.active.postMessage('probe'); \
+                     'sent'; \
+                   } else { 'no-active-worker'; } \
+                 } catch (err) { 'threw:' + err; }",
+            )
+            .ok()?;
+        if go != "sent" {
+            eprintln!("[e75-unenroll] trigger refused: {go:?}");
+            return None;
+        }
+        // Give the SW round-trip (postMessage → matchAll → postMessage →
+        // delivery task) a chance; each poll pumps A's realm.
+        std::thread::sleep(Duration::from_millis(500));
+        page_a.evaluate_js_web("window.__e75").ok()
+    }
+
+    // PROBE ①: both clients enrolled — the SW must answer count=2.
+    let verdict_two = wait_for(
+        || {
+            trigger_and_read(&page_a).and_then(|v| {
+                v.contains("e75-count=2").then_some(v)
+            })
+        },
+        Duration::from_secs(45),
+        "enrolled-set snapshot with both clients (count=2)",
+    )
+    .unwrap_or_else(|| "<no count=2 verdict>".to_string());
+    eprintln!("[e75-unenroll] ① verdict = {verdict_two:?}");
+    assert!(
+        verdict_two.contains("e75-count=2"),
+        "① both enrolled clients must be answered by matchAll: {verdict_two}"
+    );
+    assert!(
+        verdict_two.contains("/pageb"),
+        "① page B's slot must be in the snapshot: {verdict_two}"
+    );
+
+    // TEARDOWN: close page B (pipeline exit → handle_exit_pipeline_msg →
+    // ClientGone). The unenroll is asynchronous; keep triggering until a
+    // post-close snapshot flips.
+    let closed = page_b.close();
+    eprintln!("[e75-unenroll] page B close = {closed:?}");
+
+    // PROBE ②: the dead client must leave the set — the snapshot drops to
+    // exactly page A.
+    let mut verdict_one = wait_for(
+        || {
+            trigger_and_read(&page_a).and_then(|v| {
+                let flipped = v.matches("e75-count=").count() >= 2 &&
+                    v.rsplit("e75-count=").next().is_some_and(|tail| {
+                        tail.starts_with("1;")
+                    });
+                flipped.then_some(v)
+            })
+        },
+        Duration::from_secs(45),
+        "post-close snapshot with the dead client removed (count=1)",
+    )
+    .unwrap_or_else(|| "<no count=1 verdict>".to_string());
+    // Settle: sample once more so a pre-close verdict still in FIFO flight
+    // when the flip banked cannot masquerade as the last word.
+    std::thread::sleep(Duration::from_millis(1500));
+    if let Ok(later) = page_a.evaluate_js_web("window.__e75") {
+        verdict_one = later;
+    }
+    eprintln!("[e75-unenroll] ② verdict = {verdict_one:?}");
+
+    // SET-HYGIENE face: the LAST snapshot after the close must be count=1
+    // and must not carry page B's URL.
+    let last = verdict_one.rsplit(',').next().unwrap_or_default();
+    assert!(
+        last.starts_with("e75-count=1;"),
+        "② the post-close snapshot must drop to exactly one enrolled client: \
+         last={last:?} full={verdict_one:?}"
+    );
+    assert!(
+        !last.contains("/pageb"),
+        "② the closed client's URL must be gone from the snapshot: {last:?}"
+    );
+}

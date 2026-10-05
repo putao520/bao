@@ -130,6 +130,7 @@ impl ServiceWorkerContainer {
                     client_url: global.creation_url(),
                     result_handler,
                     enroll_only: true,
+                    client_pipeline: global.pipeline_id(),
                 },
             ));
     }
@@ -816,6 +817,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
                     client_url,
                     storage_key,
                     result_handler,
+                    client_pipeline: global.pipeline_id(),
                 },
             ))
             .is_err()
@@ -869,6 +871,7 @@ impl ServiceWorkerContainerMethods<crate::DomTypeHolder> for ServiceWorkerContai
                     client_url: global.creation_url(),
                     storage_key,
                     result_handler,
+                    client_pipeline: global.pipeline_id(),
                 },
             ))
             .is_err()

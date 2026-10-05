@@ -17,7 +17,7 @@ use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg};
 use fonts::FontContext;
 use net_traits::{CoreResourceMsg, CustomResponseMediator};
 use servo_base::generic_channel::{self, GenericCallback, GenericSender, RoutedReceiver};
-use servo_base::id::{PipelineNamespace, ServiceWorkerId, ServiceWorkerRegistrationId};
+use servo_base::id::{PipelineId, PipelineNamespace, ServiceWorkerId, ServiceWorkerRegistrationId};
 use servo_config::pref;
 use servo_constellation_traits::{
     DOMMessage, Job, JobError, JobResult, JobResultValue, JobType, SWManagerSenders, ScopeThings,
@@ -255,6 +255,10 @@ pub struct ServiceWorkerManager {
 /// algorithm-result callback that doubles as its message-delivery channel.
 struct ManagerClient {
     client_url: ServoUrl,
+    /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+    /// 2026-10-05): the pipeline that enrolled this client — the removal
+    /// identity for `ClientGone` (see `handle_client_gone`).
+    client_pipeline: PipelineId,
     callback: GenericCallback<ServiceWorkerAlgorithmResult>,
 }
 
@@ -416,13 +420,27 @@ impl ServiceWorkerManager {
                     client_url,
                     result_handler,
                     enroll_only,
+                    client_pipeline,
                 } => {
                     self.handle_match_registration(
                         storage_key,
                         client_url,
                         result_handler,
                         enroll_only,
+                        client_pipeline,
                     );
+                },
+                // BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+                // 2026-10-05): the document behind an enrolled client is gone
+                // (its pipeline exited) — drop it from the origin-wide
+                // enrolled set so delivery and `clients.matchAll` stop
+                // answering with a dead container.
+                ServiceWorkerAlgorithm::ClientGone {
+                    client_url,
+                    client_pipeline,
+                    ..
+                } => {
+                    self.handle_client_gone(client_url, client_pipeline);
                 },
             },
             // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): relay the
@@ -493,19 +511,23 @@ impl ServiceWorkerManager {
 
     /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
     /// upsert a client into the origin-wide enrolled set. The creation URL is
-    /// the identity; a re-enrollment replaces the stale callback of a
-    /// previous document with the same URL.
+    /// the matchAll/multicast identity; a re-enrollment replaces the stale
+    /// callback AND the removal identity (pipeline) of a previous document
+    /// with the same URL.
     fn enroll_client(
         &mut self,
         client_url: ServoUrl,
+        client_pipeline: PipelineId,
         callback: GenericCallback<ServiceWorkerAlgorithmResult>,
     ) {
         if let Some(slot) = self.clients.iter_mut().find(|c| c.client_url == client_url) {
             slot.callback = callback;
+            slot.client_pipeline = client_pipeline;
             return;
         }
         self.clients.push(ManagerClient {
             client_url,
+            client_pipeline,
             callback,
         });
     }
@@ -526,6 +548,7 @@ impl ServiceWorkerManager {
         client_url: ServoUrl,
         result_handler: GenericCallback<ServiceWorkerAlgorithmResult>,
         enroll_only: bool,
+        client_pipeline: PipelineId,
     ) {
         // BAO PATCH (REQ-BRW-004 e70 multi-client wave): enroll ONLY on the
         // dedicated enrollment ping. Real `clients.matchAll` queries must NOT
@@ -536,9 +559,10 @@ impl ServiceWorkerManager {
         // (observed live: fetch-destination-worker's scope
         // `resources/dummy.html` collides with the iframe's creation URL).
         if enroll_only {
-            // Upsert by client URL: a re-enrollment from a newer document
-            // with the same creation URL replaces the stale callback.
-            self.enroll_client(client_url, result_handler);
+            // Upsert by (client URL, enrolling pipeline): a re-enrollment from
+            // a newer document with the same creation URL replaces the stale
+            // callback and the removal identity of the older document.
+            self.enroll_client(client_url, client_pipeline, result_handler);
             return;
         }
 
@@ -638,6 +662,28 @@ impl ServiceWorkerManager {
             .is_err()
         {
             warn!("Failed to send match registration result to script.");
+        }
+    }
+
+    /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling 2026-10-05):
+    /// drop the enrolled client that the exited pipeline enrolled. The pair
+    /// (creation URL, enrolling pipeline) is the removal key: same-URL
+    /// navigation enrolls the NEW document's container (upsert) at an
+    /// arbitrary order relative to the OLD pipeline's exit, and only the
+    /// pipeline stamp distinguishes a stale teardown from the live entry it
+    /// must not remove. An unknown pair is a no-op (never enrolled, already
+    /// gone, or a newer document re-enrolled the URL). The round-robin
+    /// cursor is left alone: every delivery indexes through `% clients.len()`,
+    /// so the shrink can at worst repeat one client once.
+    fn handle_client_gone(&mut self, client_url: ServoUrl, client_pipeline: PipelineId) {
+        let before = self.clients.len();
+        self.clients.retain(|client| {
+            client.client_url != client_url || client.client_pipeline != client_pipeline
+        });
+        if self.clients.len() != before {
+            info!(
+                "Service worker client gone (unenrolled): url={client_url} pipeline={client_pipeline:?}"
+            );
         }
     }
 
