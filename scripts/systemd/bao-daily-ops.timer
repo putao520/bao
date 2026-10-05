@@ -1,8 +1,8 @@
 [Unit]
-Description=bao daily-ops daily trigger
+Description=bao quarterly upstream sync trigger (absorb v2: bulk tiered, user ruling 2026-10-05; next 2027-01-05)
 
 [Timer]
-OnCalendar=*-*-* 06:07:00
+OnCalendar=*-01-05 06:07:00
 RandomizedDelaySec=10m
 Persistent=true
 
