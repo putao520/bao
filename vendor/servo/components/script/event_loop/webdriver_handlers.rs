@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::ptr::NonNull;
@@ -26,6 +28,9 @@ use js::rust::wrappers2::{
 use js::rust::{HandleObject, HandleValue, IdVector};
 use net_traits::CookieSource::{HTTP, NonHTTP};
 use net_traits::CoreResourceMsg::{DeleteCookie, DeleteCookies, GetCookiesForUrl, SetCookieForUrl};
+use script_bindings::codegen::GenericBindings::PermissionStatusBinding::{
+    PermissionName, PermissionState,
+};
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::conversions::is_array_like;
 use script_bindings::num::Finite;
@@ -33,9 +38,11 @@ use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
 use servo_base::generic_channel::{self, GenericOneshotSender, GenericSend, GenericSender};
 use servo_base::id::{BrowsingContextId, PipelineId};
+use webdriver::command::SetPermissionState;
 use webdriver::error::ErrorStatus;
 
 use crate::DomTypeHolder;
+use crate::dom::Promise;
 use crate::dom::attr::is_boolean_attribute;
 use crate::dom::bindings::codegen::Bindings::CSSStyleDeclarationBinding::CSSStyleDeclarationMethods;
 use crate::dom::bindings::codegen::Bindings::DOMRectBinding::DOMRectMethods;
@@ -62,7 +69,10 @@ use crate::dom::bindings::conversions::{
     ConversionBehavior, ConversionResult, get_property, get_property_jsval, jsid_to_string,
     root_from_object,
 };
-use crate::dom::bindings::error::{Error, report_pending_exception, throw_dom_exception};
+use crate::dom::bindings::error::{
+    Error, ErrorInfo, javascript_error_info_from_error_info, report_pending_exception,
+    throw_dom_exception,
+};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
@@ -86,7 +96,8 @@ use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::nodelist::NodeList;
-use crate::dom::types::ShadowRoot;
+use crate::dom::promisenativehandler::Callback;
+use crate::dom::types::{PromiseNativeHandler, ShadowRoot};
 use crate::dom::validitystate::ValidationFlags;
 use crate::dom::window::Window;
 use crate::dom::xmlserializer::XMLSerializer;
@@ -296,7 +307,7 @@ fn matching_links<'a>(
             let content = node
                 .downcast::<HTMLElement>()
                 .map(|element| element.InnerText())
-                .map_or("".to_owned(), String::from)
+                .map_or(String::new(), String::from)
                 .trim()
                 .to_owned();
             if partial {
@@ -401,7 +412,7 @@ fn jsval_to_webdriver_inner(
         let string = unsafe { jsstr_to_string(cx, string) };
         Ok(JSValue::String(string))
     } else if val.get().is_object() {
-        rooted!(&in(cx) let object = match FromJSValConvertible::safe_from_jsval(cx, val, ()).unwrap() {
+        rooted!(&in(cx) let object = match FromJSValConvertible::from_jsval(cx, val, ()).unwrap() {
             ConversionResult::Success(object) => object,
             _ => unreachable!(),
         });
@@ -606,41 +617,84 @@ fn clone_an_object(
     return_val
 }
 
-pub(crate) fn handle_execute_async_script(
+#[derive(MallocSizeOf, JSTraceable)]
+struct WebDriverExecuteScriptFulfillmentHandler {
+    #[no_trace]
+    reply_sender: GenericSender<WebDriverJSResult>,
+}
+
+impl Callback for WebDriverExecuteScriptFulfillmentHandler {
+    fn callback(&self, cx: &mut CurrentRealm, return_value: HandleValue) {
+        let global_scope = GlobalScope::from_current_realm(cx);
+        let result = jsval_to_webdriver(cx, &global_scope, return_value);
+        let _ = self.reply_sender.send(result);
+    }
+}
+
+#[derive(MallocSizeOf, JSTraceable)]
+struct WebDriverExecuteScriptRejectionHandler {
+    #[no_trace]
+    reply_sender: GenericSender<WebDriverJSResult>,
+}
+
+impl Callback for WebDriverExecuteScriptRejectionHandler {
+    fn callback(&self, cx: &mut CurrentRealm, return_value: HandleValue) {
+        let error_info = ErrorInfo::from_value(cx, return_value);
+        let _ = self
+            .reply_sender
+            .send(Err(JavaScriptEvaluationError::EvaluationFailure(Some(
+                javascript_error_info_from_error_info(cx, &error_info, return_value),
+            ))));
+    }
+}
+
+pub(crate) fn handle_execute_script(
     window: Option<DomRoot<Window>>,
     eval: String,
-    reply: GenericSender<WebDriverJSResult>,
+    reply_sender: GenericSender<WebDriverJSResult>,
     cx: &mut JSContext,
 ) {
-    match window {
-        Some(window) => {
-            let reply_sender = reply.clone();
-            window.set_webdriver_script_chan(Some(reply));
+    let Some(window) = window else {
+        reply_sender
+            .send(Err(JavaScriptEvaluationError::DocumentNotFound))
+            .unwrap_or_else(|error| {
+                error!("ExecuteAsyncScript Failed to send reply: {error}");
+            });
+        return;
+    };
 
-            let global_scope = window.as_global_scope();
+    let global_scope = window.as_global_scope();
+    let mut realm = enter_auto_realm(cx, global_scope);
+    let mut realm = realm.current_realm();
+    let cx = &mut realm;
 
-            let mut realm = enter_auto_realm(cx, global_scope);
-            let mut realm = realm.current_realm();
-            if let Err(error) = global_scope.evaluate_js_on_global(
-                &mut realm,
-                eval.into(),
-                "",
-                None, // No known `introductionType` for JS code from WebDriver
-                None,
-            ) {
-                reply_sender.send(Err(error)).unwrap_or_else(|error| {
-                    error!("ExecuteAsyncScript Failed to send reply: {error}");
-                });
-            }
-        },
-        None => {
-            reply
-                .send(Err(JavaScriptEvaluationError::DocumentNotFound))
-                .unwrap_or_else(|error| {
-                    error!("ExecuteAsyncScript Failed to send reply: {error}");
-                });
-        },
+    rooted!(&in(cx) let mut return_value = UndefinedValue());
+    if let Err(error) = global_scope.evaluate_js_on_global(
+        cx,
+        eval.into(),
+        "",
+        None, // No known `introductionType` for JS code from WebDriver
+        Some(return_value.handle_mut()),
+    ) {
+        reply_sender.send(Err(error)).unwrap_or_else(|error| {
+            error!("ExecuteAsyncScript Failed to send reply: {error}");
+        });
+        return;
     }
+
+    let promise = Promise::new_resolved(cx, global_scope, return_value.handle());
+    let fulfillment_handler = WebDriverExecuteScriptFulfillmentHandler {
+        reply_sender: reply_sender.clone(),
+    };
+    let rejection_handler = WebDriverExecuteScriptRejectionHandler { reply_sender };
+
+    let handler = PromiseNativeHandler::new(
+        cx,
+        global_scope,
+        Some(Box::new(fulfillment_handler)),
+        Some(Box::new(rejection_handler)),
+    );
+    promise.append_native_handler(cx, &handler);
 }
 
 /// Get BrowsingContextId for <https://w3c.github.io/webdriver/#switch-to-parent-frame>
@@ -1312,10 +1366,10 @@ pub(crate) fn handle_will_send_keys(
     // using current text length for both the start and end parameters.
     if !element_has_focus {
         if let Some(input_element) = input_element {
-            let length = input_element.Value().len() as u32;
+            let length = input_element.Value().len_utf16().0;
             let _ = input_element.SetSelectionRange(length, length, None);
         } else if let Some(textarea_element) = element.downcast::<HTMLTextAreaElement>() {
-            let length = textarea_element.Value().len() as u32;
+            let length = textarea_element.Value().len_utf16().0;
             let _ = textarea_element.SetSelectionRange(length, length, None);
         }
     }
@@ -1409,7 +1463,7 @@ pub(crate) fn handle_get_cookies(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/webdriver-spec.html#get-cookie
+/// <https://w3c.github.io/webdriver/webdriver-spec.html#get-cookie>
 pub(crate) fn handle_get_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1440,7 +1494,7 @@ pub(crate) fn handle_get_cookie(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/webdriver-spec.html#add-cookie
+/// <https://w3c.github.io/webdriver/webdriver-spec.html#add-cookie>
 pub(crate) fn handle_add_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1491,7 +1545,7 @@ pub(crate) fn handle_add_cookie(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/#delete-all-cookies
+/// <https://w3c.github.io/webdriver/#delete-all-cookies>
 pub(crate) fn handle_delete_cookies(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1513,7 +1567,7 @@ pub(crate) fn handle_delete_cookies(
     reply.send(Ok(())).unwrap();
 }
 
-// https://w3c.github.io/webdriver/#delete-cookie
+/// <https://w3c.github.io/webdriver/#delete-cookie>
 pub(crate) fn handle_delete_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1644,7 +1698,7 @@ pub(crate) fn handle_get_text(
                         element
                             .upcast::<Node>()
                             .GetTextContent()
-                            .map_or("".to_owned(), String::from)
+                            .map_or(String::new(), String::from)
                     })
             }),
         )
@@ -1924,7 +1978,7 @@ fn get_container(element: &Element) -> Option<DomRoot<Element>> {
     Some(DomRoot::from_ref(element))
 }
 
-// https://w3c.github.io/webdriver/#element-click
+/// <https://w3c.github.io/webdriver/#element-click>
 pub(crate) fn handle_element_click(
     cx: &mut JSContext,
     documents: &DocumentCollection,
@@ -2182,5 +2236,46 @@ pub(crate) fn set_protocol_handler_automation_mode(
 ) {
     if let Some(document) = documents.find_document(pipeline) {
         document.set_protocol_handler_automation_mode(mode);
+    }
+}
+
+/// <https://www.w3.org/TR/permissions/#webdriver-command-set-permission>
+pub(crate) fn set_permission(
+    documents: &DocumentCollection,
+    pipeline: PipelineId,
+    name: String,
+    state: SetPermissionState,
+    reply: GenericOneshotSender<Result<(), ErrorStatus>>,
+) {
+    let Ok(name) = name.parse::<PermissionName>() else {
+        if let Err(err) = reply.send(Err(ErrorStatus::InvalidArgument)) {
+            error!("SetPermission Failed to send reply: {err}");
+        }
+        return;
+    };
+    let state = match state {
+        SetPermissionState::Denied => PermissionState::Denied,
+        SetPermissionState::Granted => PermissionState::Granted,
+        SetPermissionState::Prompt => PermissionState::Prompt,
+    };
+
+    let Some(global) = documents.find_global(pipeline) else {
+        if let Err(err) = reply.send(Err(ErrorStatus::NoSuchWindow)) {
+            error!("SetPermission Failed to send reply: {err}");
+        }
+        return;
+    };
+
+    // TODO: Make this per-origin instead of per-document/globalscope according to spec.
+    global
+        .permission_state_invocation_results()
+        .borrow_mut()
+        .insert(name, state);
+
+    // TODO: dispatch "change" event.
+    // This is currently impossible because eventtarget is not registered.
+
+    if let Err(err) = reply.send(Ok(())) {
+        error!("SetPermission Failed to send reply: {err}");
     }
 }

@@ -590,6 +590,7 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             global,
             Some(devtools_sender),
             Some(worker_id),
+            #[cfg(feature = "webgl")]
             window.webgl_chan_value(),
         );
 

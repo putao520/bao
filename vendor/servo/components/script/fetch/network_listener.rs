@@ -155,10 +155,10 @@ impl<Listener: FetchResponseListener> NetworkListener<Listener> {
         self.task_source
             .queue(task!(network_listener_response: move |cx| {
                 if let FetchResponseMsg::ProcessResponseEOF(request_id, ..) = &message {
-                    // fork holdout: FetchGroup carries no fetch_records (the
-                    // fork's fetch flow tracks completion via the document loader),
-                    // so there is nothing to mark here.
-                    let _ = request_id;
+                    global_scope
+                        .root()
+                        .fetch_group_mut()
+                        .mark_fetch_request_as_done(request_id);
                 }
 
                 let mut context = context.lock().unwrap();
@@ -178,7 +178,7 @@ impl<Listener: FetchResponseListener> NetworkListener<Listener> {
                         fetch_listener.process_response(cx, request_id, meta)
                     },
                     FetchResponseMsg::ProcessResponseChunk(request_id, data) => {
-                        fetch_listener.process_response_chunk(cx, request_id, Bytes::from(data.0))
+                        fetch_listener.process_response_chunk(cx, request_id, data)
                     },
                     FetchResponseMsg::ProcessResponseEOF(request_id, result, timing) => {
                         if let Some(fetch_listener) = context.take() {

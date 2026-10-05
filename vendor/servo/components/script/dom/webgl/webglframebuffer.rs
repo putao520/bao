@@ -10,7 +10,7 @@ use dom_struct::dom_struct;
 use euclid::Size2D;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use script_bindings::weakref::WeakRef;
 use servo_canvas_traits::webgl::{
     WebGLCommand, WebGLError, WebGLFramebufferBindingRequest, WebGLFramebufferId,
@@ -144,7 +144,7 @@ impl Drop for DroppableWebGLFramebuffer {
     }
 }
 
-#[dom_struct(associated_memory)] // actual memory usage is reported in WebGLFramebufferAttachment
+#[dom_struct]
 pub(crate) struct WebGLFramebuffer {
     webgl_object: WebGLObject,
     #[no_trace]
@@ -221,10 +221,10 @@ impl WebGLFramebuffer {
         context: &WebGLRenderingContext,
         id: WebGLFramebufferId,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(WebGLFramebuffer::new_inherited(context, id)),
             &*context.global(),
-            cx,
         )
     }
 }

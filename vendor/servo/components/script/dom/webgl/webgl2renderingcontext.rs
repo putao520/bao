@@ -3,8 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-#[cfg(feature = "webxr")]
-use std::rc::Rc;
 use std::{cmp, ptr};
 
 use bitflags::bitflags;
@@ -17,7 +15,6 @@ use js::jsval::{BooleanValue, DoubleValue, Int32Value, NullValue, ObjectValue, U
 use js::rust::{CustomAutoRooterGuard, HandleObject, MutableHandleObject, MutableHandleValue};
 use js::typedarray::{ArrayBufferView, Float32, Int32, Uint32};
 use pixels::{Alpha, Snapshot};
-use script_bindings::inheritance::Castable;
 use script_bindings::interfaces::WebGL2RenderingContextHelpers;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
 use servo_base::generic_channel::{self, GenericSharedMemory};
@@ -32,8 +29,9 @@ use webrender_api::ImageKey;
 
 use super::validations::types::TexImageTarget;
 use crate::canvas_context::CanvasContext;
-use crate::dom::bindings::buffer_source::create_buffer_source;
+#[cfg(feature = "webxr")]
 use crate::dom::RootedPromise;
+use crate::dom::bindings::buffer_source::create_buffer_source;
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::{
     WebGL2RenderingContextConstants as constants, WebGL2RenderingContextMethods,
 };
@@ -135,30 +133,15 @@ struct ReadPixelsSizes {
 }
 
 impl WebGL2RenderingContext {
-    /// (Bao) Decoupled from `&Window` (REQ-BRW-004 C14): the base context is
-    /// created through the Window entry (fires `webglcontextcreationerror`) or
-    /// the worker entry (inherits the parent `Window` WebGL channel), mirroring
-    /// the W3a WebGL1 dispatch.
     fn new_inherited(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         canvas: &RootedHTMLCanvasElementOrOffscreenCanvas,
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<WebGL2RenderingContext> {
-        let base = match global.downcast::<Window>() {
-            Some(window) => {
-                WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?
-            },
-            None => WebGLRenderingContext::new_in_worker(
-                cx,
-                global,
-                canvas,
-                WebGLVersion::WebGL2,
-                size,
-                attrs,
-            )?,
-        };
+        let base =
+            WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?;
 
         let samplers = (0..base.limits().max_combined_texture_image_units)
             .map(|_| Default::default())
@@ -205,24 +188,8 @@ impl WebGL2RenderingContext {
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        WebGL2RenderingContext::new_inherited(cx, window.upcast::<GlobalScope>(), canvas, size, attrs)
+        WebGL2RenderingContext::new_inherited(cx, window, canvas, size, attrs)
             .map(|ctx| reflect_dom_object_with_cx(Box::new(ctx), window, cx))
-    }
-
-    /// (Bao) Worker-realm entry point for OffscreenCanvas WebGL2 contexts: the
-    /// worker inherits the parent `Window`'s WebGL channel (REQ-BRW-004 C14).
-    /// Unlike the `Window` path there is no `webglcontextcreationerror` event
-    /// surface here, so failures are logged and surfaced as `null` (same shape
-    /// as the W3a WebGL1 `new_in_worker`).
-    pub(crate) fn new_in_worker(
-        cx: &mut js::context::JSContext,
-        global: &GlobalScope,
-        canvas: &RootedHTMLCanvasElementOrOffscreenCanvas,
-        size: Size2D<u32>,
-        attrs: GLContextAttributes,
-    ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        WebGL2RenderingContext::new_inherited(cx, global, canvas, size, attrs)
-            .map(|ctx| reflect_dom_object_with_cx(Box::new(ctx), global, cx))
     }
 
     pub(crate) fn set_image_key(&self, image_key: ImageKey) {
@@ -743,10 +710,10 @@ impl WebGL2RenderingContext {
         if pname == constants::FRAMEBUFFER_ATTACHMENT_OBJECT_NAME {
             match fb.attachment(attachment) {
                 Some(Renderbuffer(rb)) => {
-                    rb.safe_to_jsval(cx, rval);
+                    rb.to_jsval(cx, rval);
                 },
                 Some(Texture(texture)) => {
-                    texture.safe_to_jsval(cx, rval);
+                    texture.to_jsval(cx, rval);
                 },
                 _ => rval.set(NullValue()),
             }
@@ -1088,11 +1055,11 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     fn GetParameter(&self, cx: &mut JSContext, parameter: u32, mut rval: MutableHandleValue) {
         match parameter {
             constants::VERSION => {
-                "WebGL 2.0".safe_to_jsval(cx, rval);
+                "WebGL 2.0".to_jsval(cx, rval);
                 return;
             },
             constants::SHADING_LANGUAGE_VERSION => {
-                "WebGL GLSL ES 3.00".safe_to_jsval(cx, rval);
+                "WebGL GLSL ES 3.00".to_jsval(cx, rval);
                 return;
             },
             constants::MAX_CLIENT_WAIT_TIMEOUT_WEBGL => {
@@ -1111,50 +1078,48 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
                 let idx = (self.base.textures().active_unit_enum() - constants::TEXTURE0) as usize;
                 assert!(idx < self.samplers.len());
                 let sampler = self.samplers[idx].get();
-                sampler.safe_to_jsval(cx, rval);
+                sampler.to_jsval(cx, rval);
                 return;
             },
             constants::COPY_READ_BUFFER_BINDING => {
-                self.bound_copy_read_buffer.get().safe_to_jsval(cx, rval);
+                self.bound_copy_read_buffer.get().to_jsval(cx, rval);
                 return;
             },
             constants::COPY_WRITE_BUFFER_BINDING => {
-                self.bound_copy_write_buffer.get().safe_to_jsval(cx, rval);
+                self.bound_copy_write_buffer.get().to_jsval(cx, rval);
                 return;
             },
             constants::PIXEL_PACK_BUFFER_BINDING => {
-                self.bound_pixel_pack_buffer.get().safe_to_jsval(cx, rval);
+                self.bound_pixel_pack_buffer.get().to_jsval(cx, rval);
                 return;
             },
             constants::PIXEL_UNPACK_BUFFER_BINDING => {
-                self.bound_pixel_unpack_buffer.get().safe_to_jsval(cx, rval);
+                self.bound_pixel_unpack_buffer.get().to_jsval(cx, rval);
                 return;
             },
             constants::TRANSFORM_FEEDBACK_BUFFER_BINDING => {
                 self.bound_transform_feedback_buffer
                     .get()
-                    .safe_to_jsval(cx, rval);
+                    .to_jsval(cx, rval);
                 return;
             },
             constants::UNIFORM_BUFFER_BINDING => {
-                self.bound_uniform_buffer.get().safe_to_jsval(cx, rval);
+                self.bound_uniform_buffer.get().to_jsval(cx, rval);
                 return;
             },
             constants::TRANSFORM_FEEDBACK_BINDING => {
-                self.current_transform_feedback
-                    .get()
-                    .safe_to_jsval(cx, rval);
+                self.current_transform_feedback.get().to_jsval(cx, rval);
                 return;
             },
             constants::ELEMENT_ARRAY_BUFFER_BINDING => {
                 let buffer = self.current_vao(cx).element_array_buffer().get();
-                buffer.safe_to_jsval(cx, rval);
+                buffer.to_jsval(cx, rval);
                 return;
             },
             constants::VERTEX_ARRAY_BINDING => {
                 let vao = self.current_vao(cx);
                 let vao = vao.id().map(|_| &*vao);
-                vao.safe_to_jsval(cx, rval);
+                vao.to_jsval(cx, rval);
                 return;
             },
             // NOTE: DRAW_FRAMEBUFFER_BINDING is the same as FRAMEBUFFER_BINDING, handled on the WebGL1 side
@@ -1162,7 +1127,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
                 self.base
                     .get_read_framebuffer_slot()
                     .get()
-                    .safe_to_jsval(cx, rval);
+                    .to_jsval(cx, rval);
                 return;
             },
             constants::READ_BUFFER => {
@@ -2084,8 +2049,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             constants::TRANSFORM_FEEDBACK_BUFFER_MODE => {
                 retval.set(Int32Value(program.transform_feedback_buffer_mode()))
             },
-            // upstream ff33c55ff (#48495): the number of active uniform
-            // blocks is a legal WebGL2 getProgramParameter pname.
             constants::ACTIVE_UNIFORM_BLOCKS => {
                 retval.set(Int32Value(program.active_uniform_blocks().len() as i32))
             },
@@ -2153,7 +2116,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
 
         match target {
             constants::TRANSFORM_FEEDBACK_BUFFER_BINDING | constants::UNIFORM_BUFFER_BINDING => {
-                binding.buffer.get().safe_to_jsval(cx, retval)
+                binding.buffer.get().to_jsval(cx, retval)
             },
             constants::TRANSFORM_FEEDBACK_BUFFER_START | constants::UNIFORM_BUFFER_START => {
                 retval.set(Int32Value(binding.start.get() as _))
@@ -3496,8 +3459,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             format,
             level,
             border,
-            // upstream 8f8a9f4d2 (#48479): UNPACK_ALIGNMENT does not apply to
-            // TexImageSource uploads, whose rows are packed.
+            // UNPACK_ALIGNMENT does not apply to TexImageSource uploads, whose rows are packed.
             1,
             pixels.size(),
             TexSource::Pixels(pixels),
@@ -4716,11 +4678,11 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             constants::UNIFORM_OFFSET |
             constants::UNIFORM_ARRAY_STRIDE |
             constants::UNIFORM_MATRIX_STRIDE => {
-                values.safe_to_jsval(cx, rval);
+                values.to_jsval(cx, rval);
             },
             constants::UNIFORM_IS_ROW_MAJOR => {
                 let values = values.iter().map(|&v| v != 0).collect::<Vec<_>>();
-                values.safe_to_jsval(cx, rval);
+                values.to_jsval(cx, rval);
             },
             _ => unreachable!(),
         }

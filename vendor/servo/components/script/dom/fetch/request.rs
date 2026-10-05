@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::rc::Rc;
+use std::cell::Ref;
 use std::str::FromStr;
 
 use cssparser::match_ignore_ascii_case;
@@ -25,8 +25,9 @@ use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_url::ServoUrl;
 
 use crate::conversions::Convert;
+use crate::dom::RootedPromise;
 use crate::dom::abortsignal::AbortSignal;
-use crate::dom::bindings::codegen::Bindings::HeadersBinding::{HeadersInit, HeadersMethods};
+use crate::dom::bindings::codegen::Bindings::HeadersBinding::HeadersMethods;
 use crate::dom::bindings::codegen::Bindings::RequestBinding::{
     ReferrerPolicy, RequestCache, RequestCredentials, RequestDestination, RequestDuplex,
     RequestInfo, RequestInit, RequestMethods, RequestMode, RequestRedirect,
@@ -35,10 +36,8 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{ByteString, DOMString, USVString};
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::headers::{Guard, Headers};
-use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::stream::readablestream::ReadableStream;
 use crate::fetch::body::{
     BodyMixin, BodyType, Extractable, body_text_stream, clone_body_stream_for_dom_body,
@@ -164,12 +163,12 @@ impl Request {
         // TODO: `environment settings object` is not implemented in Servo yet.
 
         // Step 10. If init["window"] exists and is non-null, then throw a TypeError.
-        if !init.window.handle().is_null_or_undefined() {
+        if !init.window.get().is_null_or_undefined() {
             return Err(Error::Type(c"Window is present and is not null".to_owned()));
         }
 
         // Step 11. If init["window"] exists, then set traversableForUserPrompts to "no-traversable".
-        if !init.window.handle().is_undefined() {
+        if !init.window.get().is_undefined() {
             traversable_for_user_prompts = TraversableForUserPrompts::NoTraversable;
         }
 
@@ -193,19 +192,6 @@ impl Request {
         request.reload_navigation = temporary_request.reload_navigation;
         // history-navigation flag: request’s history-navigation flag.
         request.history_navigation = temporary_request.history_navigation;
-        // Bao vendor patch (REQ-BRW-002 / e71, user ruling 2026-10-05): the
-        // spec's step-12 copy list does not mention destination, but the
-        // fresh request above starts at `Destination::None`, so rebuilding
-        // from a Request input silently loses the original destination —
-        // a SW `respondWith(fetch(event.request))` re-fetch then hits the
-        // wire with `sec-fetch-dest: empty` instead of the original value
-        // (e69 forensics: worker re-fetch observed "empty" where "worker"
-        // is expected). Chromium preserves it across re-construction:
-        // `Request::Create` clones the input's FetchRequestData and
-        // `FetchRequestData::CloneExceptBody` copies `destination_` (and
-        // `original_destination_`) regardless of init. Mirror that here so
-        // the observable Sec-Fetch-Dest face is indistinguishable.
-        request.destination = temporary_request.destination;
 
         // Step 13. If init is not empty, then:
         if init.body.is_some() ||
@@ -220,7 +206,7 @@ impl Request {
             init.redirect.is_some() ||
             init.referrer.is_some() ||
             init.referrerPolicy.is_some() ||
-            !init.window.handle().is_undefined()
+            !init.window.get().is_undefined()
         {
             // Step 13.1. If request’s mode is "navigate", then set it to "same-origin".
             if request.mode == NetTraitsRequestMode::Navigate {
@@ -391,26 +377,10 @@ impl Request {
         // Step 33. If init is not empty, then:
         //
         // but spec says this should only be when non-empty init?
-        let headers_copy = init
-            .headers
-            .as_ref()
-            .map(|possible_header| match possible_header {
-                HeadersInit::ByteStringSequenceSequence(init_sequence) => {
-                    HeadersInit::ByteStringSequenceSequence(init_sequence.clone())
-                },
-                HeadersInit::ByteStringByteStringRecord(init_map) => {
-                    HeadersInit::ByteStringByteStringRecord(init_map.clone())
-                },
-            });
 
         // Step 33.3
         // We cannot empty `r.Headers().header_list` because
-        // we would undo the Step 25 above.  One alternative is to set
-        // `headers_copy` as a deep copy of `r.Headers()`. However,
-        // `r.Headers()` is a `DomRoot<T>`, and therefore it is difficult
-        // to obtain a mutable reference to `r.Headers()`. Without the
-        // mutable reference, we cannot mutate `r.Headers()` to be the
-        // deep copied headers in Step 25.
+        // we would undo the Step 25 above.
 
         // Step 32. If this’s request’s mode is "no-cors", then:
         if request.request.borrow().mode == NetTraitsRequestMode::NoCors {
@@ -426,7 +396,7 @@ impl Request {
             request.Headers(cx).set_guard(Guard::RequestNoCors);
         }
 
-        match headers_copy {
+        match init.headers.as_ref() {
             None => {
                 // Step 33.4. If headers is a Headers object, then for each header of its header list, append header to this’s headers.
                 //
@@ -441,7 +411,7 @@ impl Request {
                 }
             },
             // Step 33.5. Otherwise, fill this’s headers with headers.
-            Some(headers_copy) => request.Headers(cx).fill(Some(&headers_copy))?,
+            Some(headers) => request.Headers(cx).fill(Some(headers))?,
         }
 
         // Step 33.5 depending on how we got here
@@ -598,44 +568,14 @@ impl Request {
         Ok(r_clone)
     }
 
-    pub(crate) fn get_request(&self) -> NetTraitsRequest {
-        self.request.borrow().clone()
-    }
-
-    /// Set the mediation-restored fields on the underlying request: the
-    /// reload-navigation and history-navigation flags, the destination, and
-    /// the mode.
-    ///
-    /// Bao vendor patch (wave2-B2 C + e61): the service-worker `FetchEvent`
-    /// mediation rebuilds the mediated request from the URL
-    /// (`Request::constructor` with an empty init), and `RequestInit` has no
-    /// members for these fields — the flags are only set by navigation, and
-    /// destination/mode come from the mediated net request. They arrive over
-    /// the `CustomResponseMediator`, so the SW realm needs this write path
-    /// to restore them (e60 forensics: without it the mediated request
-    /// observably carried `destination: ""` / `mode: "cors"` where the spec
-    /// wants `"iframe"` / `"navigate"` — the Sec-Fetch-Dest/Mode face).
-    pub(crate) fn set_mediation_fields(
-        &self,
-        reload_navigation: bool,
-        history_navigation: bool,
-        destination: Destination,
-        mode: NetTraitsRequestMode,
-    ) {
-        let mut request = self.request.borrow_mut();
-        request.reload_navigation = reload_navigation;
-        request.history_navigation = history_navigation;
-        request.destination = destination;
-        request.mode = mode;
+    pub(crate) fn request(&self) -> Ref<'_, NetTraitsRequest> {
+        self.request.borrow()
     }
 }
 
 fn net_request_from_global(global: &GlobalScope, url: ServoUrl) -> NetTraitsRequest {
     let url = ensure_blob_referenced_by_url_is_kept_alive(global, url);
-    // Bao vendor patch (R53-A net face): SW-realm fetch() egress stamps the
-    // REGISTERING page's webview id (host-page stealth profile ownership);
-    // windows and dedicated/shared workers keep their native identity.
-    RequestBuilder::new(global.egress_webview_id(), url, global.get_referrer())
+    RequestBuilder::new(global.webview_id(), url, global.get_referrer())
         .with_global_scope(global)
         .build()
 }
@@ -708,7 +648,7 @@ impl RequestMethods<crate::DomTypeHolder> for Request {
     fn Referrer(&self) -> USVString {
         let r = self.request.borrow();
         USVString(match r.referrer {
-            Referrer::NoReferrer => String::from(""),
+            Referrer::NoReferrer => String::new(),
             Referrer::Client(_) => String::from("about:client"),
             Referrer::ReferrerUrl(ref u) => {
                 let u_c = u.clone();
@@ -944,12 +884,6 @@ impl Convert<Destination> for RequestDestination {
             RequestDestination::Video => Destination::Video,
             RequestDestination::Worker => Destination::Worker,
             RequestDestination::Xslt => Destination::Xslt,
-            // (Bao 段(1)) Worklet destinations are real DOM-visible
-            // destinations once worklet module fetches are SW-interceptable
-            // (fetch spec RequestDestination enum carries both). The
-            // ServiceWorker's own script fetch stays unexposed below.
-            RequestDestination::Audioworklet => Destination::AudioWorklet,
-            RequestDestination::Paintworklet => Destination::PaintWorklet,
         }
     }
 }
@@ -970,18 +904,9 @@ impl Convert<RequestDestination> for Destination {
             Destination::Object => RequestDestination::Object,
             Destination::Report => RequestDestination::Report,
             Destination::Script => RequestDestination::Script,
-            // (Bao 段(1)) AudioWorklet worklet module fetches are real
-            // intercepted requests (audioWorklet.addModule with a
-            // controlling service worker) and their destination IS the
-            // DOM-visible `Request.destination` value the fetch-destination
-            // assertions read. Only the ServiceWorker's own script fetch
-            // stays unexposed (upstream intent for that arm preserved;
-            // PaintWorklet keeps the upstream panic until paint worklet
-            // module fetches become interceptable in a follow-up).
-            Destination::ServiceWorker | Destination::PaintWorklet => {
+            Destination::ServiceWorker | Destination::AudioWorklet | Destination::PaintWorklet => {
                 panic!("ServiceWorker request destination should not be exposed to DOM")
             },
-            Destination::AudioWorklet => RequestDestination::Audioworklet,
             Destination::SharedWorker => RequestDestination::Sharedworker,
             Destination::Style => RequestDestination::Style,
             Destination::Text => RequestDestination::Text,

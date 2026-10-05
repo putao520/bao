@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::f32;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -29,7 +28,7 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::globalscope::GlobalScope;
+use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct AudioBufferSourceNode {
@@ -47,7 +46,7 @@ impl AudioBufferSourceNode {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_inherited(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<AudioBufferSourceNode> {
@@ -62,9 +61,10 @@ impl AudioBufferSourceNode {
             1, /* outputs */
         )?;
         let node_id = source_node.node().node_id();
+        // <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-playbackrate>
         let playback_rate = AudioParam::new(
             cx,
-            global,
+            window,
             context,
             node_id,
             AudioNodeType::AudioBufferSourceNode,
@@ -74,9 +74,10 @@ impl AudioBufferSourceNode {
             f32::MIN,
             f32::MAX,
         );
+        // <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-detune>
         let detune = AudioParam::new(
             cx,
-            global,
+            window,
             context,
             node_id,
             AudioNodeType::AudioBufferSourceNode,
@@ -104,26 +105,26 @@ impl AudioBufferSourceNode {
 
     pub(crate) fn new(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<DomRoot<AudioBufferSourceNode>> {
-        Self::new_with_proto(cx, global, None, context, options)
+        Self::new_with_proto(cx, window, None, context, options)
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<DomRoot<AudioBufferSourceNode>> {
-        let node = AudioBufferSourceNode::new_inherited(cx, global, context, options)?;
+        let node = AudioBufferSourceNode::new_inherited(cx, window, context, options)?;
         Ok(reflect_dom_object_with_proto(
             cx,
             Box::new(node),
-            global,
+            window,
             proto,
         ))
     }
@@ -133,12 +134,12 @@ impl AudioBufferSourceNodeMethods<crate::DomTypeHolder> for AudioBufferSourceNod
     /// <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-audiobuffersourcenode>
     fn Constructor(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<DomRoot<AudioBufferSourceNode>> {
-        AudioBufferSourceNode::new_with_proto(cx, global, proto, context, options)
+        AudioBufferSourceNode::new_with_proto(cx, window, proto, context, options)
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-buffer>
@@ -169,7 +170,7 @@ impl AudioBufferSourceNodeMethods<crate::DomTypeHolder> for AudioBufferSourceNod
                 self.source_node
                     .node()
                     .message(AudioNodeMessage::AudioBufferSourceNode(
-                        AudioBufferSourceNodeMessage::SetBuffer((*buffer).clone()),
+                        AudioBufferSourceNodeMessage::SetBuffer(buffer),
                     ));
             }
         }
@@ -259,7 +260,7 @@ impl AudioBufferSourceNodeMethods<crate::DomTypeHolder> for AudioBufferSourceNod
                 self.source_node
                     .node()
                     .message(AudioNodeMessage::AudioBufferSourceNode(
-                        AudioBufferSourceNodeMessage::SetBuffer((*buffer).clone()),
+                        AudioBufferSourceNodeMessage::SetBuffer(buffer),
                     ));
             }
         }
@@ -286,7 +287,7 @@ impl ConvertWithCx<AudioBufferSourceNodeOptions> for AudioBufferSourceOptions {
             buffer: self
                 .buffer
                 .as_ref()
-                .and_then(|b| (*b.as_ref()?.get_channels(cx)).clone()),
+                .and_then(|b| b.as_ref()?.get_channels(cx).map(|buffer| (*buffer).clone())),
             detune: *self.detune,
             loop_enabled: self.loop_,
             loop_end: Some(*self.loopEnd),

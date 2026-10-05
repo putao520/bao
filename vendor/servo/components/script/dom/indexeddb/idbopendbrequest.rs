@@ -8,7 +8,7 @@ use js::conversions::ToJSValConvertible;
 use js::jsval::UndefinedValue;
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::generic_channel::GenericSend;
 use servo_url::origin::ImmutableOrigin;
 use storage_traits::client_storage::StorageProxyMap;
@@ -120,7 +120,7 @@ impl IDBOpenDBRequest {
     }
 
     pub fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<IDBOpenDBRequest> {
-        reflect_dom_object_with_cx(Box::new(IDBOpenDBRequest::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(IDBOpenDBRequest::new_inherited()), global)
     }
 
     pub(crate) fn get_id(&self) -> Uuid {
@@ -185,7 +185,7 @@ impl IDBOpenDBRequest {
         transaction.set_active_flag(false);
 
         rooted!(&in(cx) let mut connection_val = UndefinedValue());
-        connection.safe_to_jsval(cx, connection_val.handle_mut());
+        connection.to_jsval(cx, connection_val.handle_mut());
 
         // Step 10.1: Set request’s result to connection.
         self.idbrequest.set_result(connection_val.handle());
@@ -246,11 +246,7 @@ impl IDBOpenDBRequest {
         let response_listener = OpenRequestListener {
             open_request: Trusted::new(self),
         };
-        // BAO patch (fork-maintained, 2026-09-28): fork profile GenericCallback keeps
-        // the ProfilerChan parameter.
-        let callback = GenericCallback::new(
-            global.time_profiler_chan().clone(),
-            move |message| {
+        let callback = GenericCallback::new(move |message| {
             let response_listener = response_listener.clone();
             task_source.queue(task!(request_callback: move |cx| {
                 response_listener.handle_delete_db(cx, message.unwrap());
@@ -305,7 +301,7 @@ impl IDBOpenDBRequest {
         let mut realm = enter_auto_realm(cx, result);
         let cx = &mut realm.current_realm();
         rooted!(&in(cx) let mut result_val = UndefinedValue());
-        result.safe_to_jsval(cx, result_val.handle_mut());
+        result.to_jsval(cx, result_val.handle_mut());
         self.set_result(result_val.handle());
 
         let event = Event::new(

@@ -23,7 +23,7 @@ use objc2_core_text::{
     kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait, kCTFontWidthTrait,
 };
 use skrifa::Tag;
-use style::values::computed::font::{FontWidth, FontStyle, FontWeight};
+use style::values::computed::font::{FontStyle, FontWeight, FontWidth};
 use webrender_api::{FontInstanceFlags, FontVariation};
 
 use super::core_text_font_cache::CoreTextFontCache;
@@ -475,7 +475,7 @@ impl Font {
         // the value stored in the HTML lang attribute is a BCP 47 language tag. These two
         // formats are generally compatible, but we may need to make refinements here in
         // the future.
-        let language = if !options.language.is_empty() {
+        let language = if !options.language.is_unknown() {
             Some(&*CFString::from_str(options.language.as_str()))
         } else {
             None
@@ -547,7 +547,7 @@ pub(crate) fn font_template_descriptor_from_ctfont_attributes(
     // > and 1.0. The value of 0.0 corresponds to regular glyph spacing, and negative
     // > values represent condensed glyph spacing.
     let font_width = get_f64_trait(unsafe { kCTFontWidthTrait }).unwrap_or(0.);
-    let stretch = FontWidth::from_percentage(font_width as f32 + 1.0);
+    let width = FontWidth::from_percentage(font_width as f32 + 1.0);
 
-    FontTemplateDescriptor::new(weight, stretch, style)
+    FontTemplateDescriptor::new(weight, width, style)
 }

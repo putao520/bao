@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,7 +50,7 @@ use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 pub(crate) type TrustedWorkerAddress = Trusted<Worker>;
 
-// https://html.spec.whatwg.org/multipage/#worker
+/// <https://html.spec.whatwg.org/multipage/#worker>
 #[dom_struct]
 pub(crate) struct Worker {
     eventtarget: EventTarget,
@@ -240,6 +242,7 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             }
         }
 
+        #[cfg(feature = "webgl")]
         let webgl_chan = global
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
@@ -247,6 +250,7 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             global,
             Some(devtools_sender),
             Some(worker_id),
+            #[cfg(feature = "webgl")]
             webgl_chan,
         );
         let animation_frame_provider_supported = global
@@ -317,11 +321,12 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
         message: HandleValue,
         options: &StructuredSerializeOptions,
     ) -> ErrorResult {
-        auto_root!(&in(cx) let guard = options
-            .transfer
-            .iter()
-            .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-            .collect::<Vec<_>>());
+        auto_root!(&in(cx) let guard =
+            options
+                .transfer
+                .iter()
+                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+                .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 

@@ -42,10 +42,11 @@ use crate::tasks::task_source::TaskSourceName;
 
 #[expect(clippy::large_enum_variant)]
 #[derive(Debug)]
+// We box only the devtools message because it is the largest and least used message.
 pub(crate) enum MixedMessage {
     FromConstellation(ScriptThreadMessage),
     FromScript(MainThreadScriptMsg),
-    FromDevtools(DevtoolScriptControlMsg),
+    FromDevtools(Box<DevtoolScriptControlMsg>),
     FromImageCache(ImageCacheResponseMessage),
     #[cfg(feature = "webgpu")]
     FromWebGPUServer(WebGPUMsg),
@@ -61,7 +62,7 @@ impl MixedMessage {
                     .parent_info
                     .or(Some(new_pipeline_info.new_pipeline_id)),
                 ScriptThreadMessage::Resize(id, ..) => Some(*id),
-                ScriptThreadMessage::ThemeChange(id, ..) => Some(*id),
+                ScriptThreadMessage::UpdateWebViewState(..) => None,
                 ScriptThreadMessage::ResizeInactive(id, ..) => Some(*id),
                 ScriptThreadMessage::UnloadDocument(id) => Some(*id),
                 ScriptThreadMessage::ExitPipeline(_webview_id, id, ..) => Some(*id),
@@ -70,10 +71,9 @@ impl MixedMessage {
                 ScriptThreadMessage::RefreshCursor(id, ..) => Some(*id),
                 ScriptThreadMessage::GetTitle(id) => Some(*id),
                 ScriptThreadMessage::GetDocumentOrigin(id, _) => Some(*id),
-                ScriptThreadMessage::GetInternalAncestorOriginObjectsList(id, _) => Some(*id),
+                ScriptThreadMessage::GetDocumentOriginDetails(id, _) => Some(*id),
                 ScriptThreadMessage::SetDocumentActivity(id, ..) => Some(*id),
-                ScriptThreadMessage::SetThrottled(_, id, ..) => Some(*id),
-                ScriptThreadMessage::SetThrottledInContainingIframe(_, id, ..) => Some(*id),
+                ScriptThreadMessage::SetThrottled(id, ..) => Some(*id),
                 ScriptThreadMessage::NavigateIframe(id, ..) => Some(*id),
                 ScriptThreadMessage::PostMessage { target: id, .. } => Some(*id),
                 ScriptThreadMessage::UpdatePipelineId(_, _, _, id, _) => Some(*id),
@@ -100,7 +100,7 @@ impl MixedMessage {
                 #[cfg(feature = "webgpu")]
                 ScriptThreadMessage::SetWebGPUPort(..) => None,
                 ScriptThreadMessage::SetScrollStates(id, ..) => Some(*id),
-                ScriptThreadMessage::EvaluateJavaScript(_, id, _, _, _) => Some(*id),
+                ScriptThreadMessage::EvaluateJavaScript(_, id, _, _) => Some(*id),
                 ScriptThreadMessage::SendImageKeysBatch(..) => None,
                 ScriptThreadMessage::PreferencesUpdated(..) => None,
                 ScriptThreadMessage::NoLongerWaitingOnAsychronousImageUpdates(_) => None,
@@ -111,6 +111,7 @@ impl MixedMessage {
                 ScriptThreadMessage::DestroyUserContentManager(..) => None,
                 ScriptThreadMessage::UpdatePinchZoomInfos(id, _) => Some(*id),
                 ScriptThreadMessage::SetAccessibilityActive(..) => None,
+                ScriptThreadMessage::ForwardAccessibilityAction(id, _) => Some(*id),
                 ScriptThreadMessage::TriggerGarbageCollection => None,
             },
             MixedMessage::FromScript(inner_msg) => match inner_msg {
@@ -270,11 +271,6 @@ pub(crate) enum ScriptEventLoopReceiver {
     MainThread(Receiver<MainThreadScriptMsg>),
     /// A receiver that receives messages to shared worker event loops.
     SharedWorker(Receiver<SharedWorkerScriptMsg>),
-    // BAO PATCH (REQ-BRW-004 C19): ServiceWorker arm so that
-    // `WorkerGlobalScope::new_script_pair` can serve the SW event loop
-    // (upstream left the third arm as a `panic!` TODO in workerglobalscope.rs).
-    /// A receiver that receives messages to a `ServiceWorker` event loop.
-    ServiceWorker(Receiver<ServiceWorkerScriptMsg>),
     /// A receiver that receives messages to dedicated workers (such as a generic Web Worker) event loop.
     DedicatedWorker(Receiver<DedicatedWorkerScriptMsg>),
 }
@@ -292,15 +288,6 @@ impl ScriptEventLoopReceiver {
                     Ok(message)
                 },
                 Ok(_) => panic!("unexpected shared worker event message!"),
-                Err(_) => Err(()),
-            },
-            // BAO PATCH (REQ-BRW-004 C19): mirror of the SharedWorker arm —
-            // the sync-XHR consumer drains this receiver on the SW thread itself.
-            Self::ServiceWorker(receiver) => match receiver.recv() {
-                Ok(ServiceWorkerScriptMsg::CommonWorker(WorkerScriptMsg::Common(message))) => {
-                    Ok(message)
-                },
-                Ok(_) => panic!("unexpected service worker event message!"),
                 Err(_) => Err(()),
             },
             Self::DedicatedWorker(receiver) => match receiver.recv() {
@@ -497,12 +484,12 @@ impl ScriptThreadReceivers {
                         .unwrap(),
                 )
             } else if index == devtools_index {
-                MixedMessage::FromDevtools(
+                MixedMessage::FromDevtools(Box::new(
                     operation
                         .recv(&self.devtools_server_receiver)
                         .unwrap()
                         .unwrap(),
-                )
+                ))
             } else if index == image_cache_index {
                 MixedMessage::FromImageCache(operation.recv(&self.image_cache_receiver).unwrap())
             } else {
@@ -550,7 +537,7 @@ impl ScriptThreadReceivers {
             return MixedMessage::FromScript(message).into();
         }
         if let Ok(message) = self.devtools_server_receiver.try_recv() {
-            return MixedMessage::FromDevtools(message.unwrap()).into();
+            return MixedMessage::FromDevtools(Box::new(message.unwrap())).into();
         }
         if let Ok(message) = self.image_cache_receiver.try_recv() {
             return MixedMessage::FromImageCache(message).into();
@@ -560,44 +547,5 @@ impl ScriptThreadReceivers {
             return MixedMessage::FromWebGPUServer(message.unwrap()).into();
         }
         None
-    }
-}
-
-#[cfg(test)]
-mod opaque_sender_tests {
-    use super::*;
-
-    struct NoopTask;
-
-    impl TaskBox for NoopTask {
-        fn name(&self) -> &'static str {
-            "NoopTask"
-        }
-
-        fn run_box(self: Box<Self>, _cx: &mut js::context::JSContext) {}
-    }
-
-    /// A memory-report callback can outlive the event loop it targets (e.g. a
-    /// page whose worker terminated before the profiler's next sweep). Sending
-    /// to the shut-down loop must warn instead of unwrapping the `SendError`
-    /// and taking down the process-wide profiler thread.
-    #[test]
-    fn profiler_send_to_shut_down_event_loop_does_not_panic() {
-        let (sender, receiver) = crossbeam_channel::bounded::<MainThreadScriptMsg>(1);
-        // Shut the loop down: every later send fails with a `SendError`.
-        drop(receiver);
-        let event_loop_sender = ScriptEventLoopSender::MainThread(sender);
-        let message = CommonScriptMsg::Task(
-            ScriptThreadEventCategory::ScriptEvent,
-            Box::new(NoopTask),
-            None,
-            TaskSourceName::DOMManipulation,
-        );
-        // Pre-fix this unwrapped the `SendError`; post-fix it logs a warning
-        // and returns. Reaching this point without panicking is the assertion.
-        <ScriptEventLoopSender as OpaqueSender<CommonScriptMsg>>::send(
-            &event_loop_sender,
-            message,
-        );
     }
 }

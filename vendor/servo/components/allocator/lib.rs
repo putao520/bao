@@ -4,19 +4,14 @@
 
 //! Selecting the default global allocator for Servo, and exposing common
 //! allocator introspection APIs for memory profiling.
-//!
-//! BAO PATCH (embed): only install `#[global_allocator]` when feature
-//! `install-global-allocator` is enabled. Library embeds (e.g. frog tools
-//! path-dep on package `bao`) already provide their own process allocator
-//! (jemalloc / system); dual `#[global_allocator]` fails the link.
 
 use std::os::raw::c_void;
 
-#[cfg(all(feature = "install-global-allocator", not(feature = "allocation-tracking")))]
+#[cfg(not(feature = "allocation-tracking"))]
 #[global_allocator]
 static ALLOC: Allocator = Allocator;
 
-#[cfg(all(feature = "install-global-allocator", feature = "allocation-tracking"))]
+#[cfg(feature = "allocation-tracking")]
 #[global_allocator]
 static ALLOC: crate::tracking::AccountingAlloc<Allocator> =
     crate::tracking::AccountingAlloc::with_allocator(Allocator);
@@ -31,6 +26,11 @@ pub fn is_tracking_unmeasured() -> bool {
 pub fn dump_unmeasured(_writer: impl std::io::Write) {
     #[cfg(feature = "allocation-tracking")]
     ALLOC.dump_unmeasured_allocations(_writer);
+}
+
+pub fn disable_unmeasured_tracking() {
+    #[cfg(feature = "allocation-tracking")]
+    ALLOC.disable();
 }
 
 pub struct HeapReport {

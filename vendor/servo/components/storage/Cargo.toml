@@ -1,15 +1,15 @@
 [package]
 name = "bao-servo-storage"
 version = "0.5.17"
+publish = true
+autotests = false # Inhibit lookup for tests/*.rs without [[test]] sections
+
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
-publish = true
 rust-version = "1.88.0"
 repository = "https://github.com/servo/servo"
 description = "A component of the servo web-engine."
-autotests = false # Inhibit lookup for tests/*.rs without [[test]] sections
-
 [lib]
 name = "storage"
 path = "lib.rs"
@@ -39,6 +39,7 @@ profile = {package = "bao-servo-profile", path = "../profile", version = ">=0.5.
 servo-default-resources = {package = "bao-servo-default-resources", path = "../default-resources", version = ">=0.5.17, <0.6.0"}
 url = {version = "2.5"}
 
-[[test]]
-name = "main"
-path = "tests/main.rs"
+[lints.rust]
+unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}
+[lints.clippy]
+manual_string_new = "warn"

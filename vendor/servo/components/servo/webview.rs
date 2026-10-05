@@ -39,7 +39,7 @@ use webrender_api::units::{DeviceIntRect, DevicePixel, DevicePoint, DeviceSize};
 use crate::clipboard_delegate::{ClipboardDelegate, DefaultClipboardDelegate};
 #[cfg(feature = "gamepad")]
 use crate::gamepad_delegate::{DefaultGamepadDelegate, GamepadDelegate};
-use crate::responders::IpcResponder;
+use crate::responders::AutomaticResponder;
 use crate::servo::PendingHandledInputEvent;
 use crate::webview_delegate::{CreateNewWebViewRequest, DefaultWebViewDelegate, WebViewDelegate};
 use crate::{
@@ -179,7 +179,7 @@ impl WebView {
             status_text: None,
             page_title: None,
             favicon: None,
-            focused: false,
+            focused: true,
             animating: false,
             cursor: Cursor::Pointer,
             back_forward_list: Default::default(),
@@ -256,7 +256,7 @@ impl WebView {
     ) {
         let request = CreateNewWebViewRequest {
             servo: self.servo(),
-            responder: IpcResponder::new(response_sender, None),
+            responder: AutomaticResponder::new(response_sender, None),
         };
         self.delegate().request_create_new(self.clone(), request);
     }
@@ -388,20 +388,9 @@ impl WebView {
         self.delegate().notify_favicon_changed(self);
     }
 
-    /// Whether or not this [`WebView`] currently has the keyboard focus.
-    ///
-    /// The embedder can use [`WebViewDelegate::notify_focus_changed`] to subscribe
-    /// to changes in the  [`WebView`]'s focus state.
+    /// Whether or not this [`WebView`] currently has system focus.
     pub fn focused(&self) -> bool {
         self.inner().focused
-    }
-
-    pub(crate) fn set_focused(self, new_value: bool) {
-        if self.inner().focused == new_value {
-            return;
-        }
-        self.inner_mut().focused = new_value;
-        self.delegate().notify_focus_changed(self, new_value);
     }
 
     /// Get the current [`Cursor`] for this [`WebView`].
@@ -421,18 +410,18 @@ impl WebView {
         self.delegate().notify_cursor_changed(self, new_value);
     }
 
-    /// Notify Servo that this [`WebView`] has gained keyboard focus.
-    pub fn focus(&self) {
-        self.servo()
-            .constellation_proxy()
-            .send(EmbedderToConstellationMessage::FocusWebView(self.id()));
-    }
-
-    /// Notify Servo that this [`WebView`] has lost keyboard focus.
-    pub fn blur(&self) {
-        self.servo()
-            .constellation_proxy()
-            .send(EmbedderToConstellationMessage::BlurWebView);
+    /// Notify Servo that this [`WebView`] has gained or lost system focus.
+    ///
+    /// All [`WebView`]s start with system focus activated, so embedders are
+    /// expected to explicitly set this to false when the containing view loses
+    /// focus.
+    pub fn set_focused(&self, focused: bool) {
+        let old_focused = std::mem::replace(&mut self.inner_mut().focused, focused);
+        if old_focused != focused {
+            self.servo().constellation_proxy().send(
+                EmbedderToConstellationMessage::SetWebViewHasSystemFocus(self.id(), focused),
+            );
+        }
     }
 
     /// Whether or not this [`WebView`] has animating content, such as a CSS animation or
@@ -710,16 +699,6 @@ impl WebView {
             .send(EmbedderToConstellationMessage::ExitFullScreen(self.id()));
     }
 
-    /// Set whether resource usage of this [`WebView`] should be throttled or not.
-    ///
-    /// A throttled [`WebView`] attempts to use less system resources by stopping
-    /// animations and running timers at a heavily limited rate.
-    pub fn set_throttled(&self, throttled: bool) {
-        self.servo().constellation_proxy().send(
-            EmbedderToConstellationMessage::SetWebViewThrottled(self.id(), throttled),
-        );
-    }
-
     /// Toggle the given [`WebRenderDebugOption`] from its current state.
     ///
     /// Note that this method toggles the debugging options globally i.e., it affects
@@ -754,24 +733,9 @@ impl WebView {
         script: T,
         callback: impl FnOnce(Result<JSValue, JavaScriptEvaluationError>) + 'static,
     ) {
-        self.evaluate_javascript_with_timeout(script, None, callback);
-    }
-
-    /// Evaluate the specified string of JavaScript code with an optional
-    /// engine-native timeout (ISSUE #24 servo wiring). When `timeout` is
-    /// `Some`, a runaway script is terminated via the SpiderMonkey interrupt
-    /// mechanism and the callback receives an evaluation failure whose message
-    /// carries the timeout semantics; `None` preserves the unbounded behavior.
-    pub fn evaluate_javascript_with_timeout<T: ToString>(
-        &self,
-        script: T,
-        timeout: Option<std::time::Duration>,
-        callback: impl FnOnce(Result<JSValue, JavaScriptEvaluationError>) + 'static,
-    ) {
         self.servo().javascript_evaluator_mut().evaluate(
             self.id(),
             script.to_string(),
-            timeout,
             Box::new(callback),
         );
     }
@@ -1054,6 +1018,16 @@ impl WebView {
         self.delegate()
             .notify_accessibility_tree_update(self.clone(), tree_update);
     }
+
+    /// Clear the session history of this [`WebView`]. The session history is also known
+    /// as the back-forward cache. Once cleared, [`WebViewDelegate::notify_history`]
+    /// will be called asynchronously and the resulting session history will contain only
+    /// a single item with the current URL.
+    pub fn clear_session_history(&self) {
+        self.servo().constellation_proxy().send(
+            EmbedderToConstellationMessage::ClearSessionHistory(self.id()),
+        );
+    }
 }
 
 /// A structure used to expose a view of the [`WebView`] to the Servo
@@ -1093,7 +1067,7 @@ pub struct WebViewBuilder {
     delegate: Rc<dyn WebViewDelegate>,
     url: Option<Url>,
     hidpi_scale_factor: Scale<f32, DeviceIndependentPixel, DevicePixel>,
-    create_new_webview_responder: Option<IpcResponder<Option<NewWebViewDetails>>>,
+    create_new_webview_responder: Option<AutomaticResponder<Option<NewWebViewDetails>>>,
     user_content_manager: Option<Rc<UserContentManager>>,
     clipboard_delegate: Option<Rc<dyn ClipboardDelegate>>,
     #[cfg(feature = "gamepad")]
@@ -1123,7 +1097,7 @@ impl WebViewBuilder {
     pub(crate) fn new_for_create_request(
         servo: &Servo,
         rendering_context: Rc<dyn RenderingContext>,
-        responder: IpcResponder<Option<NewWebViewDetails>>,
+        responder: AutomaticResponder<Option<NewWebViewDetails>>,
     ) -> Self {
         let mut builder = Self::new(servo, rendering_context);
         builder.create_new_webview_responder = Some(responder);

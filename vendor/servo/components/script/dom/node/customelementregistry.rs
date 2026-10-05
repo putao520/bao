@@ -20,15 +20,14 @@ use js::realm::{AutoRealm, CurrentRealm};
 use js::rust::wrappers2::{Construct1, JS_GetProperty, SameValue};
 use js::rust::{HandleObject, MutableHandleValue};
 use rustc_hash::{FxBuildHasher, FxHashSet};
+use script_bindings::callback::HasCallbackHolder;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
 use script_bindings::settings_stack::{run_a_callback, run_a_script};
 use style::attr::AttrValue;
 
 use crate::DomTypeHolder;
-use crate::dom::bindings::callback::{
-    CallbackContainer, ExceptionHandling, RootedCallback, TracedCallback,
-};
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::CustomElementRegistryBinding::{
     CustomElementConstructor, CustomElementRegistryMethods, ElementDefinitionOptions,
 };
@@ -53,12 +52,12 @@ use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::promise::Promise;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::window::Window;
 use crate::dom::{RootedPromise, TracedPromise};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::CustomElementReactionMicrotask;
+use crate::runtime::job_queue::CustomElementReactionMicrotask;
 
 /// <https://dom.spec.whatwg.org/#concept-element-custom-element-state>
 #[derive(Clone, Copy, Default, Eq, JSTraceable, MallocSizeOf, PartialEq)]
@@ -360,10 +359,7 @@ fn get_callback(
                     c"Lifecycle callback is not callable".to_owned(),
                 ));
             }
-            Ok(Some(RootedCallback::from(Function::new(
-                cx,
-                callback.to_object(),
-            ))))
+            Ok(Some(Function::new(cx, callback.to_object())))
         } else {
             Ok(None)
         }
@@ -642,7 +638,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
             rooted!(&in(cx) let mut constructor = UndefinedValue());
             definition
                 .constructor
-                .safe_to_jsval(cx, constructor.handle_mut());
+                .to_jsval(cx, constructor.handle_mut());
             // Step 19.1: Resolve this's when-defined promise map[name] with constructor.
             promise.resolve_native(cx, &constructor.get());
         }
@@ -652,7 +648,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-get>
     fn Get(&self, cx: &mut JSContext, name: DOMString, mut retval: MutableHandleValue) {
         match self.definitions.borrow().get(&LocalName::from(name)) {
-            Some(definition) => definition.constructor.safe_to_jsval(cx, retval),
+            Some(definition) => definition.constructor.to_jsval(cx, retval),
             None => retval.set(UndefinedValue()),
         }
     }
@@ -688,7 +684,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
             rooted!(&in(*realm) let mut constructor = UndefinedValue());
             definition
                 .constructor
-                .safe_to_jsval(realm, constructor.handle_mut());
+                .to_jsval(realm, constructor.handle_mut());
             let promise = Promise::new_in_realm(realm);
             promise.resolve_native(realm, &constructor.get());
             return promise;
@@ -974,7 +970,7 @@ impl CustomElementDefinition {
 
         rooted!(&in(cx) let element_val = ObjectValue(element.get()));
         let element: DomRoot<Element> =
-            match FromJSValConvertible::safe_from_jsval(cx, element_val.handle(), ()) {
+            match FromJSValConvertible::from_jsval(cx, element_val.handle(), ()) {
                 Ok(ConversionResult::Success(element)) => element,
                 Ok(ConversionResult::Failure(..)) => {
                     return Err(Error::Type(
@@ -1154,7 +1150,7 @@ fn run_upgrade_constructor(
     let window = element.owner_window();
     rooted!(&in(cx) let constructor_val = ObjectValue(constructor.callback()));
     rooted!(&in(cx) let mut element_val = UndefinedValue());
-    element.safe_to_jsval(cx, element_val.handle_mut());
+    element.to_jsval(cx, element_val.handle_mut());
     rooted!(&in(cx) let mut construct_result = ptr::null_mut::<JSObject>());
     {
         // Step 9.1. If definition's disable shadow is true and element's shadow root is non-null,
@@ -1422,22 +1418,22 @@ impl CustomElementReactionStack {
 
                 let local_name = DOMString::from(&*local_name);
                 rooted!(&in(cx) let mut name_value = UndefinedValue());
-                local_name.safe_to_jsval(cx, name_value.handle_mut());
+                local_name.to_jsval(cx, name_value.handle_mut());
 
                 rooted!(&in(cx) let mut old_value = NullValue());
                 if let Some(old_val) = old_val {
-                    old_val.safe_to_jsval(cx, old_value.handle_mut());
+                    old_val.to_jsval(cx, old_value.handle_mut());
                 }
 
                 rooted!(&in(cx) let mut value = NullValue());
                 if let Some(val) = val {
-                    val.safe_to_jsval(cx, value.handle_mut());
+                    val.to_jsval(cx, value.handle_mut());
                 }
 
                 rooted!(&in(cx) let mut namespace_value = NullValue());
                 if namespace != ns!() {
                     let namespace = DOMString::from(&*namespace);
-                    namespace.safe_to_jsval(cx, namespace_value.handle_mut());
+                    namespace.to_jsval(cx, namespace_value.handle_mut());
                 }
 
                 let args = vec![
@@ -1497,7 +1493,7 @@ impl CustomElementReactionStack {
                     // disconnectedCallback with no arguments.
                     if let Some(disconnected_callback) = disconnected_callback {
                         element.push_callback_reaction(
-                            disconnected_callback.root().native(),
+                            disconnected_callback.root(cx),
                             Box::new([]),
                             cx.no_gc(),
                         );
@@ -1506,7 +1502,7 @@ impl CustomElementReactionStack {
                     // connectedCallback with no arguments.
                     if let Some(connected_callback) = connected_callback {
                         element.push_callback_reaction(
-                            connected_callback.root().native(),
+                            connected_callback.root(cx),
                             Box::new([]),
                             cx.no_gc(),
                         );
@@ -1528,7 +1524,7 @@ impl CustomElementReactionStack {
 
         // Step 6. Add a new callback reaction to element's custom element reaction queue, with
         // callback function callback and arguments args.
-        element.push_callback_reaction(callback.root().native(), args.into_boxed_slice(), cx.no_gc());
+        element.push_callback_reaction(callback.root(cx), args.into_boxed_slice(), cx.no_gc());
 
         // Step 7. Enqueue an element on the appropriate element queue given element.
         self.enqueue_element(cx, element);

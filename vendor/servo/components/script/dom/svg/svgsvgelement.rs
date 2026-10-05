@@ -235,7 +235,6 @@ impl VirtualMethods for SVGSVGElement {
         match *name {
             local_name!("width") | local_name!("height") => {
                 let value = &value.str();
-                
                 let parser = &mut Parser::new(value);
                 let doc = self.owner_document();
                 let url = doc.url().into_url().into();

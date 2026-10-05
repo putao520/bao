@@ -102,7 +102,7 @@ pub(crate) struct Worklet {
 }
 
 impl Worklet {
-    pub(crate) fn new_inherited(
+    fn new_inherited(
         window: &Window,
         global_type: WorkletGlobalScopeType,
         thread_pool_constructor: Box<dyn FnOnce() -> Rc<dyn WorkletThreadPool>>,
@@ -150,14 +150,6 @@ impl Worklet {
     #[expect(dead_code)]
     pub(crate) fn worklet_global_scope_type(&self) -> WorkletGlobalScopeType {
         self.global_type
-    }
-
-    /// (Bao 段(3) wiring) Queue `task` for this worklet's primary thread.
-    /// The `WorkletId` is owned here, so the AudioWorklet face needs no
-    /// access to the private thread-pool fields.
-    pub(crate) fn perform_a_worklet_task(&self, task: WorkletTask) {
-        self.worklet_thread_pool()
-            .perform_a_worklet_task(self.droppable_field.worklet_id, task);
     }
 }
 
@@ -458,7 +450,7 @@ impl WorkletThreadPool for StatelessWorkletThreadPool {
 }
 
 /// A task which can be performed in the context of a [`WorkletGlobalScope`].
-pub(crate) type WorkletTask = Box<dyn FnOnce(&mut JSContext, &WorkletGlobalScope) + Send>;
+type WorkletTask = Box<dyn FnOnce(&mut JSContext, &WorkletGlobalScope) + Send>;
 
 /// The data messages sent to worklet threads
 enum WorkletData {
@@ -643,16 +635,8 @@ impl WorkletThread {
                 },
                 // Wake up! There may be control messages to process.
                 WorkletData::WakeUp => {},
-                // Quit! (Bao 段(3) wiring): flush audio-scope store-buffer
-                // edges first — same class as the ExitWorklet arm; the
-                // shutdown nursery collection must not see freed slots.
+                // Quit!
                 WorkletData::Quit => {
-                    for scope in self.global_scopes.values() {
-                        if let Some(audio) = scope.downcast::<crate::dom::audio::audioworkletglobalscope::AudioWorkletGlobalScope>(
-                        ) {
-                            audio.teardown_audio(cx);
-                        }
-                    }
                     return;
                 },
             }
@@ -811,17 +795,12 @@ impl WorkletThread {
         // queue a global task on the networking task source given workletGlobalScope to fetch a worklet script graph given moduleURLRecord,
         // outsideSettings, workletInstance's worklet destination type, options["credentials"], workletGlobalScope's relevant settings object,
         // workletInstance's module responses map, and the following steps given script:
-        //
-        // (Bao 段(1)) The worklet destination type is derived from the worklet
-        // global scope type instead of the upstream PaintWorklet hardcode;
-        // `Destination::AudioWorklet` was already in the fetch pipeline
-        // (net_traits Destination + `destination_as_str` "audioworklet").
         fetch_a_module_script_graph(
             cx,
             global,
             script_url,
             request_client,
-            destination_from_scope(&global_scope),
+            Destination::PaintWorklet,
             global.get_referrer(),
             credentials.convert(),
             Some(IntroductionType::WORKLET),
@@ -915,16 +894,6 @@ impl WorkletThread {
     fn process_control(&mut self, control: WorkletControl, cx: &mut js::context::JSContext) {
         match control {
             WorkletControl::ExitWorklet(worklet_id) => {
-                // (Bao 段(3) wiring) AudioWorklet scopes hold barriered Heap
-                // slots (the processor instance registry) — flush the SM
-                // store buffer with a GC while the runtime is alive, BEFORE
-                // the scope (and its slots) drops.
-                if let Some(scope) = self.global_scopes.get(&worklet_id) &&
-                    let Some(audio) = scope.downcast::<crate::dom::audio::audioworkletglobalscope::AudioWorkletGlobalScope>(
-                    )
-                {
-                    audio.teardown_audio(cx);
-                }
                 self.global_scopes.remove(&worklet_id);
             },
             WorkletControl::FetchAndInvokeAWorkletScript {
@@ -969,21 +938,6 @@ impl WorkletThread {
                 }
             },
         }
-    }
-}
-
-/// (Bao 段(1)) Map a worklet global scope to its fetch destination.
-/// Paint/Test worklets keep the historical PaintWorklet destination (their
-/// fetch face predates the generalization; semantics unchanged); audio
-/// worklets fetch with `Destination::AudioWorklet` (variant already in the
-/// fetch pipeline — `destination_as_str` "audioworklet").
-fn destination_from_scope(scope: &WorkletGlobalScope) -> Destination {
-    if scope.downcast::<crate::dom::audioworkletglobalscope::AudioWorkletGlobalScope>()
-        .is_some()
-    {
-        Destination::AudioWorklet
-    } else {
-        Destination::PaintWorklet
     }
 }
 

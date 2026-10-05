@@ -25,7 +25,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::{RootedPromise, TracedPromise};
 use crate::dom::stream::byteteeunderlyingsource::ByteTeeUnderlyingSource;
 use crate::dom::stream::readablestream::ReadableStream;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, expect(crown::unrooted_must_root))]
@@ -129,7 +129,7 @@ impl ByteTeeReadRequest {
         // Helper to surface clone failures exactly once
         let handle_clone_error = |cx: &mut JSContext, error: Error| {
             rooted!(&in(cx) let mut error_value = UndefinedValue());
-            error.safe_to_jsval(cx, &self.global(), error_value.handle_mut());
+            error.to_jsval(cx, &self.global(), error_value.handle_mut());
 
             let branch_1_controller = self.branch_1.get_byte_controller();
             let branch_2_controller = self.branch_2.get_byte_controller();

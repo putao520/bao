@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use dom_struct::dom_struct;
-use js::rust::Runtime;
 use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::gc::MutableHandleValue;
@@ -259,36 +258,31 @@ impl IDBIndexMethods<crate::DomTypeHolder> for IDBIndex {
     fn KeyPath(&self, cx: &mut JSContext, retval: MutableHandleValue) {
         match &self.key_path {
             KeyPath::String(string) => {
-                string.safe_to_jsval(cx, retval);
+                string.to_jsval(cx, retval);
             },
             KeyPath::StringSequence(sequence) => {
-                sequence.safe_to_jsval(cx, retval);
+                sequence.to_jsval(cx, retval);
             },
         }
     }
 
     /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-opencursor>
-    // BAO patch (fork-maintained, 2026-09-28): the terminal codegen passes no
-    // cx to this method; take the thread's active context instead.
-    #[allow(unsafe_code)]
     fn OpenCursor(
         &self,
+        cx: &mut JSContext,
         query: HandleValue,
         direction: IDBCursorDirection,
     ) -> Fallible<DomRoot<IDBRequest>> {
-        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
-        self.open_cursor(&mut cx, query, direction, false)
+        self.open_cursor(cx, query, direction, false)
     }
 
     /// <https://www.w3.org/TR/IndexedDB-3/#dom-idbindex-openkeycursor>
-    // BAO patch (fork-maintained, 2026-09-28): terminal codegen passes no cx.
-    #[allow(unsafe_code)]
     fn OpenKeyCursor(
         &self,
+        cx: &mut JSContext,
         query: HandleValue,
         direction: IDBCursorDirection,
     ) -> Fallible<DomRoot<IDBRequest>> {
-        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
-        self.open_cursor(&mut cx, query, direction, true)
+        self.open_cursor(cx, query, direction, true)
     }
 }

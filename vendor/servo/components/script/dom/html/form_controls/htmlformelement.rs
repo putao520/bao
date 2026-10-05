@@ -623,7 +623,7 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
         sourced_names_vec.sort_by(|a, b| {
             if a.element
                 .upcast::<Node>()
-                .CompareDocumentPosition(b.element.upcast::<Node>()) ==
+                .CompareDocumentPosition(no_gc, b.element.upcast::<Node>()) ==
                 0
             {
                 if a.source.is_past() && b.source.is_past() {
@@ -634,7 +634,7 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
             } else if a
                 .element
                 .upcast::<Node>()
-                .CompareDocumentPosition(b.element.upcast::<Node>()) &
+                .CompareDocumentPosition(no_gc, b.element.upcast::<Node>()) &
                 NodeConstants::DOCUMENT_POSITION_FOLLOWING ==
                 NodeConstants::DOCUMENT_POSITION_FOLLOWING
             {

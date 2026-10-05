@@ -215,9 +215,9 @@ pub(crate) use self::abort::*;
 pub(crate) mod activation;
 pub(crate) mod animations;
 pub(crate) use self::animations::*;
-pub(crate) mod audio;
 pub(crate) mod attributes;
 pub(crate) use self::attributes::*;
+pub(crate) mod audio;
 pub(crate) use self::audio::*;
 pub(crate) mod bindings;
 #[cfg(feature = "bluetooth")]
@@ -228,35 +228,11 @@ mod canvas;
 pub(crate) use self::canvas::*;
 pub(crate) mod characterdata;
 pub(crate) use self::characterdata::*;
-// Bao compatibility re-exports: BCE-patched files (script_thread.rs,
-// script_runtime.rs, dedicatedworkerglobalscope.rs) and legacy flat modules
-// (script_module.rs, textinput.rs, task_source.rs, ...) reference the old
-// flat `crate::dom::<name>` paths for modules that upstream moved into
-// subdirectories.
-pub(crate) use characterdata::comment;
-pub(crate) use characterdata::processinginstruction;
-pub(crate) use characterdata::text;
-pub(crate) use globalscope::messageport;
-pub(crate) use promise::promisenativehandler;
-pub(crate) use window::windowproxy;
-// ③c/协调大波 transitional path bridges: modules upstream moved into
-// subdirectories (end layout adopted; old flat paths kept alive for
-// not-yet-resynced referencers). Removed when referencers are resynced.
-pub(crate) use attributes::domstringlist;
-pub(crate) use attributes::domstringmap;
-pub(crate) use attributes::domtokenlist;
-pub(crate) use document::domimplementation;
-pub(crate) use document::domparser;
-pub(crate) use html::internals::customstateset;
-pub(crate) use html::internals::elementinternals;
-pub(crate) use node::customelementregistry;
-pub(crate) use xml::xmldocument;
-pub(crate) use xml::xmlserializer;
 pub(crate) mod clipboard;
 pub(crate) use self::clipboard::*;
 pub(crate) mod console;
 pub(crate) mod cookiestore;
-pub(crate) mod cookiestoremanager;
+pub(crate) use self::cookiestore::*;
 pub(crate) mod credentialmanagement;
 pub(crate) use self::credentialmanagement::*;
 pub(crate) mod css;
@@ -331,7 +307,6 @@ pub(crate) mod selection;
 pub(crate) mod selection_range;
 pub(crate) mod serviceworker;
 pub(crate) use self::serviceworker::*;
-pub(crate) use self::serviceworker::*;
 pub(crate) mod servointernals;
 pub(crate) mod servoparser;
 pub(crate) mod shadowroot;
@@ -358,8 +333,11 @@ pub(crate) mod values;
 pub(crate) mod visualviewport;
 pub(crate) mod wakelock;
 pub(crate) use self::wakelock::*;
+#[cfg(feature = "webgl")]
 pub(crate) mod webgl;
+#[cfg(feature = "webgl")]
 pub(crate) use self::webgl::extensions::ext::*;
+#[cfg(feature = "webgl")]
 pub(crate) use self::webgl::*;
 #[cfg(feature = "webxr")]
 mod webxr;
@@ -371,7 +349,9 @@ pub(crate) mod webgpu;
 pub(crate) use self::webgpu::*;
 #[cfg(not(feature = "webgpu"))]
 pub(crate) mod gpucanvascontext;
+#[cfg(feature = "webcrypto")]
 pub(crate) mod webcrypto;
+#[cfg(feature = "webcrypto")]
 pub(crate) use self::webcrypto::*;
 pub(crate) mod webrtc;
 pub(crate) use self::webrtc::*;

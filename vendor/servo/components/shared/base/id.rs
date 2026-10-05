@@ -202,25 +202,9 @@ pub struct PipelineNamespace {
 
 impl PipelineNamespace {
     /// Install a namespace for a given Id.
-    ///
-    /// BAO PATCH (BCE-20260627-009): Idempotent — if the TLS slot is already
-    /// populated (multiplex BaoRuntime instances), skip silently instead of
-    /// panicking. `Servo::new` (servo.rs:902) always calls this; concurrent
-    /// BaoRuntime instances would hit the `assert!(tls.get().is_none())` and
-    /// SIGABRT on the second init.
-    ///
-    /// Original servo: single-instance architecture — the assert guards against
-    /// accidental double-install in the same process. Bao preserves that guard
-    /// for the FIRST install per-thread, but allows subsequent install() calls
-    /// (from the SECOND BaoRuntime::new → Servo::new on the same thread) to be
-    /// no-ops.
     pub fn install(namespace_id: PipelineNamespaceId) {
         PIPELINE_NAMESPACE.with(|tls| {
-            if tls.get().is_some() {
-                // Already installed on this thread — idempotent skip for
-                // multi-BaoRuntime support.
-                return;
-            }
+            assert!(tls.get().is_none());
             tls.set(Some(PipelineNamespace {
                 id: namespace_id,
                 index: 0,
@@ -354,14 +338,6 @@ namespace_id! {BrowsingContextId, BrowsingContextIndex, "BrowsingContext"}
 size_of_test!(BrowsingContextId, 8);
 size_of_test!(Option<BrowsingContextId>, 8);
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct BrowsingContextGroupId(pub u32);
-impl fmt::Display for BrowsingContextGroupId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BrowsingContextGroup{:?}", self)
-    }
-}
-
 impl BrowsingContextId {
     pub fn from_string(str: &str) -> Option<BrowsingContextId> {
         let re = Regex::new(r"^BrowsingContext\((\d+),(\d+)\)$").ok()?;
@@ -391,10 +367,6 @@ impl fmt::Display for WebViewId {
         write!(f, "{}, TopLevel{}", self.0, self.1)
     }
 }
-
-// BAO note: the previous `impl From<WebViewId> for SpatialTreeItemKey` was
-// removed — webrender 0.70 dropped the SpatialTreeItemKey type entirely and
-// no downstream consumer references the conversion.
 
 impl WebViewId {
     pub fn new(painter_id: PainterId) -> WebViewId {
@@ -507,7 +479,8 @@ impl AtomicOptionScrollTreeNodeId {
     }
 
     pub fn set(&self, option_id: Option<ScrollTreeNodeId>) {
-        self.0.store(Self::from_option(option_id), Ordering::Relaxed);
+        self.0
+            .store(Self::from_option(option_id), Ordering::Relaxed);
     }
 
     fn from_option(option_id: Option<ScrollTreeNodeId>) -> usize {
@@ -607,8 +580,6 @@ impl fmt::Display for ScriptEventLoopId {
     }
 }
 
-// BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — LCPCandidateID
-// 增量(基线 7ca99fe3f 形态;coordination wave ③a'/③b 的 PaintTiming/LCP 面消费)。
 /// A unique identifier for a largest-contentful-paint candidate, generated at
 /// layout time.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]

@@ -121,8 +121,6 @@ pub(crate) struct HTMLLinkElement {
     source_set: DomRefCell<SourceSet>,
     /// <https://html.spec.whatwg.org/multipage/#dom-link-blocking>
     blocking: MutNullableDom<DOMTokenList>,
-    /// <https://html.spec.whatwg.org/multipage/#dom-link-sizes>
-    sizes: MutNullableDom<DOMTokenList>,
 }
 
 impl HTMLLinkElement {
@@ -148,7 +146,6 @@ impl HTMLLinkElement {
             line_number: creator.return_line_number(),
             source_set: DomRefCell::new(SourceSet::new()),
             blocking: Default::default(),
-            sizes: Default::default(),
         }
     }
 
@@ -1271,12 +1268,6 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
         })
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#dom-link-sizes>
-    fn Sizes(&self, cx: &mut js::context::JSContext) -> DomRoot<DOMTokenList> {
-        self.sizes
-            .or_init(|| DOMTokenList::new(cx, self.upcast(), &local_name!("sizes"), None))
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#dom-link-crossorigin>
     fn GetCrossOrigin(&self) -> Option<DOMString> {
         reflect_cross_origin_attribute(self.upcast::<Element>())
@@ -1334,7 +1325,7 @@ impl FetchResponseListener for FaviconFetchContext {
     ) {
         self.image_cache.notify_pending_response(
             self.id,
-            FetchResponseMsg::ProcessResponseChunk(request_id, chunk.into()),
+            FetchResponseMsg::ProcessResponseChunk(request_id, chunk),
         );
     }
 

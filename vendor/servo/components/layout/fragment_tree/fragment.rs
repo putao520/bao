@@ -4,6 +4,7 @@
 
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use app_units::Au;
 use atomic_refcell::AtomicRef;
@@ -115,6 +116,9 @@ pub(crate) struct TextFragment {
 pub(crate) struct ImageFragment {
     pub base: BaseFragment,
     pub style: SharedStyle,
+    /// The style to use for the selection overlay if this [`ImageFragment`] is
+    /// selected.
+    pub selected_style: SharedStyle,
     pub clip: PhysicalRect<Au>,
     pub image_key: Option<ImageKey>,
     pub showing_broken_image_icon: bool,
@@ -123,25 +127,9 @@ pub(crate) struct ImageFragment {
     pub natural_width: Option<Au>,
     /// The intrinsic (natural) height of the image, if known.
     pub natural_height: Option<Au>,
-    /// Shaped WebVTT cue text painted on top of the image, positioned within
-    /// the fragment rect. Only the video replaced content produces these
-    /// (BAO patch, fork-maintained, 2026-09-27, REQ-BRW-047).
-    pub cue_overlays: Vec<CueTextOverlay>,
-}
-
-/// One shaped, positioned WebVTT cue text line painted on top of a video
-/// image fragment (BAO patch, fork-maintained, 2026-09-27, REQ-BRW-047).
-#[derive(MallocSizeOf)]
-pub(crate) struct CueTextOverlay {
+    /// Whether or not this image is selected.
     #[conditional_malloc_size_of]
-    pub glyphs: Vec<Arc<ShapedTextSlice>>,
-    #[ignore_malloc_size_of = "copy-type webrender key"]
-    pub font_key: FontInstanceKey,
-    #[conditional_malloc_size_of]
-    pub font_metrics: Arc<FontMetrics>,
-    /// Baseline origin of this text line, relative to the fragment rect
-    /// origin.
-    pub baseline_origin: PhysicalPoint<Au>,
+    pub selected: Arc<AtomicBool>,
 }
 
 #[derive(MallocSizeOf)]
@@ -561,7 +549,7 @@ impl TextFragment {
                     return Some(current_character);
                 }
                 current_offset += advance;
-                current_character += Utf32CodeUnits(glyph.character_count());
+                current_character += glyph.character_count();
             }
         }
 

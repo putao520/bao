@@ -891,7 +891,7 @@ fn parse_a_margin(value: Option<&DOMString>) -> Result<IntersectionObserverMargi
     };
 
     // Create necessary style ParserContext and utilize stylo's IntersectionObserverMargin
-        let mut parser = Parser::new(value);
+    let mut parser = Parser::new(value);
 
     let context = parser_context_for_anonymous_content(
         CssRuleType::Style,

@@ -229,7 +229,7 @@ impl ShadowRoot {
                 match &sheet_in_shadow.owner {
                     StylesheetSource::Element(other_node) => owner_node
                         .upcast::<Node>()
-                        .is_before(other_node.upcast()),
+                        .is_before(no_gc, other_node.upcast()),
                     // Non-constructed stylesheet should be ordered before the
                     // constructed ones.
                     StylesheetSource::Constructed(_) => true,

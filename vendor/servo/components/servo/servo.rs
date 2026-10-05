@@ -8,37 +8,51 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+use accesskit::ActionRequest;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 pub use embedder_traits::*;
 use env_logger::Builder as EnvLoggerBuilder;
 use fonts::SystemFontService;
 #[cfg(all(
+    feature = "multiprocess",
     not(target_os = "windows"),
     not(target_os = "ios"),
     not(target_os = "android"),
     not(target_arch = "arm"),
     not(target_arch = "aarch64"),
+    not(target_arch = "riscv32"),
+    not(target_arch = "riscv64"),
     not(target_env = "ohos"),
 ))]
 use gaol::sandbox::{ChildSandbox, ChildSandboxMethods};
+#[cfg(feature = "multiprocess")]
 use ipc_channel::ipc::{self, IpcSender};
 use layout::LayoutFactoryImpl;
+#[cfg(feature = "multiprocess")]
 use layout_api::ScriptThreadFactory;
 use log::{Log, Metadata, Record, debug, warn};
 use media::{GlApi, NativeDisplay, WindowGLContext};
 use net::embedder::NetToEmbedderMsg;
+#[cfg(feature = "multiprocess")]
 use net::image_cache::ImageCacheFactoryImpl;
 use net::protocols::ProtocolRegistry;
 use net::resource_thread::new_resource_threads;
-use net_traits::{ResourceThreads, exit_fetch_thread, start_fetch_thread};
+#[cfg(feature = "multiprocess")]
+use net_traits::FetchThread;
+use net_traits::ResourceThreads;
 use paint::{InitialPaintState, Paint};
 pub use paint_api::rendering_context::RenderingContext;
 use paint_api::{CrossProcessPaintApi, PaintMessage, PaintProxy};
-use profile::{mem as profile_mem, system_reporter, time as profile_time};
-use profile_traits::mem::{MemoryReportResult, ProfilerMsg, Reporter};
+use profile::{mem as profile_mem, time as profile_time};
+use profile_traits::mem::MemoryReportResult;
+#[cfg(feature = "multiprocess")]
+use profile_traits::mem::{ProfilerMsg, Reporter};
 use profile_traits::{mem, time};
 use rustc_hash::FxHashMap;
-use script::{JSEngineSetup, ServiceWorkerManager};
+use script::JSEngineSetup;
+#[cfg(feature = "multiprocess")]
+use script::ServiceWorkerManager;
+#[cfg(feature = "multiprocess")]
 use servo_background_hang_monitor::HangMonitorRegister;
 use servo_base::generic_channel::{GenericCallback, GenericSender, RoutedReceiver, SendError};
 pub use servo_base::id::WebViewId;
@@ -50,20 +64,28 @@ use servo_bluetooth_traits::BluetoothRequest;
 use servo_config::opts::{DiagnosticsLoggingOption, Opts};
 use servo_config::prefs::{PrefValue, Preferences};
 use servo_config::{opts, pref, prefs};
+#[cfg(feature = "multiprocess")]
+use servo_constellation::UnprivilegedContent;
 #[cfg(all(
+    feature = "multiprocess",
     not(target_os = "windows"),
     not(target_os = "ios"),
     not(target_os = "android"),
     not(target_arch = "arm"),
     not(target_arch = "aarch64"),
+    not(target_arch = "riscv32"),
+    not(target_arch = "riscv64"),
     not(target_env = "ohos"),
 ))]
 use servo_constellation::content_process_sandbox_profile;
 use servo_constellation::{
-    Constellation, ConstellationToEmbedderMsg, FromEmbedderLogger, FromScriptLogger,
-    InitialConstellationState, NewScriptEventLoopProcessInfo, UnprivilegedContent,
+    Constellation, ConstellationToEmbedderMsg, FromEmbedderLogger, InitialConstellationState,
 };
-use servo_constellation_traits::{EmbedderToConstellationMessage, ScriptToConstellationSender};
+#[cfg(feature = "multiprocess")]
+use servo_constellation::{FromScriptLogger, NewScriptEventLoopProcessInfo};
+use servo_constellation_traits::EmbedderToConstellationMessage;
+#[cfg(feature = "multiprocess")]
+use servo_constellation_traits::ScriptToConstellationSender;
 use servo_geometry::{
     DeviceIndependentIntRect, convert_rect_to_css_pixel, convert_size_to_css_pixel,
 };
@@ -72,7 +94,10 @@ use servo_media::player::context::GlContext;
 use servo_wakelock::DefaultWakeLockDelegate;
 use storage::new_storage_threads;
 use storage_traits::StorageThreads;
+#[cfg(feature = "multiprocess")]
 use style::global_style_data::StyleThreadPool;
+#[cfg(feature = "webxr")]
+use webxr::WebXrRegistry;
 
 use crate::clipboard_delegate::StringRequest;
 #[cfg(feature = "gamepad")]
@@ -791,23 +816,6 @@ impl ServoInner {
                     webview.delegate().notify_closed(webview);
                 }
             },
-            ConstellationToEmbedderMsg::WebViewFocused(webview_id, focus_result) => {
-                if focus_result {
-                    for id in self.webviews.borrow().keys() {
-                        if let Some(webview) = self.get_webview_handle(*id) {
-                            let focused = webview.id() == webview_id;
-                            webview.set_focused(focused);
-                        }
-                    }
-                }
-            },
-            ConstellationToEmbedderMsg::WebViewBlurred => {
-                for id in self.webviews.borrow().keys() {
-                    if let Some(webview) = self.get_webview_handle(*id) {
-                        webview.set_focused(false);
-                    }
-                }
-            },
             ConstellationToEmbedderMsg::FinishJavaScriptEvaluation(evaluation_id, result) => {
                 self.javascript_evaluator
                     .borrow_mut()
@@ -868,40 +876,12 @@ impl ServoInner {
     }
 }
 
-// BAO PATCH (fork-maintained, 2026-09-29, W27): bounded join wait — see the
-// Drop impl below.
-const SERVO_DROP_JOIN_TIMEOUT: Duration = Duration::from_secs(15);
-
 impl Drop for ServoInner {
-    // BAO PATCH (fork-maintained, 2026-09-29, W27): bounded join wait.
-    // Upstream's spin has NO timeout — a dead or wedged servo thread (one
-    // that can no longer process the Exit message and join) keeps
-    // `spin_event_loop()` returning true FOREVER and runtime teardown hangs
-    // (live evidence: >13 min spin, W16 forensics — the root in that case
-    // was the W28 font-promise panic killing Script#2; both panic classes
-    // are now eradicated, so the hang no longer reproduces, but ANY future
-    // thread-death/wedge defect re-opens the unbounded-hang class). Liveness
-    // over perfect reclamation: after SERVO_DROP_JOIN_TIMEOUT the spin is
-    // abandoned, the wedged thread is LEAKED (loudly logged below — never a
-    // silent skip, never a panic) and teardown continues. 15s matches the
-    // repo's bounded-wait convention (wait_for_navigation / churn pipeline).
     fn drop(&mut self) {
         self.constellation_proxy
             .send(EmbedderToConstellationMessage::Exit);
         self.shutdown_state.set(ShutdownState::ShuttingDown);
-        let deadline = std::time::Instant::now() + SERVO_DROP_JOIN_TIMEOUT;
         while self.spin_event_loop() {
-            if std::time::Instant::now() >= deadline {
-                log::error!(
-                    "ServoInner::drop: shutdown did not complete within {:?} — abandoning the \
-                     join spin and continuing teardown. The wedged servo thread is LEAKED. \
-                     Typical cause: a thread died or is parked on a never-completing \
-                     operation (e.g. an in-flight load on a never-responding connection); \
-                     find the culprit thread in this process's thread list.",
-                    SERVO_DROP_JOIN_TIMEOUT
-                );
-                break;
-            }
             std::thread::sleep(Duration::from_micros(500));
         }
     }
@@ -922,8 +902,8 @@ impl Servo {
     #[servo_tracing::instrument(name = "Servo::new", skip(builder))]
     fn new(builder: ServoBuilder) -> Self {
         // Global configuration options, parsed from the command line.
-        let opts = builder.opts.map(|opts| *opts);
-        opts::initialize_options(opts.unwrap_or_default());
+        let opts = builder.opts.map(|opts| *opts).unwrap_or_default();
+        opts::initialize_options(opts);
         let opts = opts::get();
 
         // Set the preferences globally.
@@ -1001,8 +981,6 @@ impl Servo {
             mem_profiler_chan: mem_profiler_chan.clone(),
             shutdown_state: shutdown_state.clone(),
             event_loop_waker: event_loop_waker.clone(),
-            #[cfg(feature = "webxr")]
-            webxr_registry: builder.webxr_registry,
         });
 
         let protocols = Arc::new(protocols);
@@ -1041,6 +1019,9 @@ impl Servo {
             private_storage_threads.clone(),
         );
 
+        net::connector::prewarm_tls();
+
+        #[cfg(feature = "multiprocess")]
         if opts::get().multiprocess {
             prefs::add_observer(Box::new(constellation_proxy.clone()));
         }
@@ -1136,6 +1117,19 @@ impl Servo {
         &self.0.site_data_manager
     }
 
+    /// When an [`ActionRequest`] is received from AccessKit, forward it to the appropriate document
+    /// to fulfill the action in the request.
+    ///
+    /// For example, if an AccessKit adapter sends a request for an [`accesskit::Action::Click`]
+    /// with a particular [`accesskit::TreeId`] and [`accesskit::NodeId`], determine which document
+    /// contains the tree matching the [`accesskit::TreeId`] and forward the [`ActionRequest`]
+    /// there, so that it can find the appropriate node to take the click action on.
+    pub fn forward_accessibility_action(&self, action_request: ActionRequest) {
+        self.0.constellation_proxy.send(
+            EmbedderToConstellationMessage::ForwardAccessibilityAction(action_request),
+        );
+    }
+
     pub(crate) fn paint<'a>(&'a self) -> Ref<'a, Paint> {
         self.0.paint.borrow()
     }
@@ -1167,6 +1161,12 @@ impl Servo {
             .pending_handled_input_events
             .borrow_mut()
             .push(residue_event);
+    }
+
+    #[cfg(feature = "webxr")]
+    /// Registers a [`WebXrRegistry`]
+    pub fn register_webxr_registry(&self, registry: Box<dyn WebXrRegistry>) {
+        self.0.paint.borrow().register_webxr_registry(registry);
     }
 }
 
@@ -1203,11 +1203,9 @@ fn create_paint_channel(
     let sender_clone = sender.clone();
     let event_loop_waker_clone = event_loop_waker.clone();
     // This callback is equivalent to `PaintProxy::send`
-    // BAO patch (fork-maintained, 2026-09-29): paint 岛→基线迁移波 —
-    // generic_channel 统一 SendError 错误面(基线 7ca99fe3f 形态)。
     let result_callback = move |msg: Result<PaintMessage, SendError>| {
         if let Err(err) = sender_clone.send(msg) {
-            warn!("Failed to send response ({err:?}).");
+            warn!("Failed to send response ({:?}).", err);
         }
         event_loop_waker_clone.wake();
     };
@@ -1276,6 +1274,7 @@ fn create_constellation(
         webxr_registry: Some(paint.webxr_main_thread_registry()),
         #[cfg(not(feature = "webxr"))]
         webxr_registry: None,
+        #[cfg(feature = "webgl")]
         webgl_threads: Some(paint.webgl_threads()),
         webrender_external_image_id_manager: paint.webrender_external_image_id_manager(),
         #[cfg(feature = "webgpu")]
@@ -1321,6 +1320,7 @@ where
     }
 }
 
+#[cfg(feature = "multiprocess")]
 fn set_logger(script_to_constellation_sender: ScriptToConstellationSender) {
     let con_logger = FromScriptLogger::new(script_to_constellation_sender);
     let env = env_logger::Env::default();
@@ -1334,6 +1334,7 @@ fn set_logger(script_to_constellation_sender: ScriptToConstellationSender) {
 }
 
 /// Content process entry point.
+#[cfg(feature = "multiprocess")]
 pub fn run_content_process(token: String) {
     let (unprivileged_content_sender, unprivileged_content_receiver) =
         ipc::channel::<UnprivilegedContent>().unwrap();
@@ -1357,13 +1358,6 @@ pub fn run_content_process(token: String) {
     match unprivileged_content {
         UnprivilegedContent::ScriptEventLoop(new_event_loop_info) => {
             media_platform::init();
-
-            // Start the fetch thread for this content process.
-            // BAO PATCH (BCE-20260627-009): multiprocess path creates a fresh
-            // per-instance RouterProxy (single-process path uses the Constellation's
-            // router via Constellation::run).
-            let fetch_thread_join_handle =
-                start_fetch_thread(std::sync::Arc::new(ipc_channel::router::RouterProxy::new()));
 
             set_logger(
                 new_event_loop_info
@@ -1400,11 +1394,8 @@ pub fn run_content_process(token: String) {
 
             StyleThreadPool::shutdown();
 
-            // Shut down the fetch thread started above.
-            exit_fetch_thread();
-            fetch_thread_join_handle
-                .join()
-                .expect("Failed to join on the fetch thread in the constellation");
+            // Shut down the `FetchThread` if it had been started in the course of execution.
+            FetchThread::exit();
         },
         UnprivilegedContent::ServiceWorker(content) => {
             content.start::<ServiceWorkerManager>();
@@ -1413,11 +1404,14 @@ pub fn run_content_process(token: String) {
 }
 
 #[cfg(all(
+    feature = "multiprocess",
     not(target_os = "windows"),
     not(target_os = "ios"),
     not(target_os = "android"),
     not(target_arch = "arm"),
     not(target_arch = "aarch64"),
+    not(target_arch = "riscv32"),
+    not(target_arch = "riscv64"),
     not(target_env = "ohos"),
 ))]
 fn create_sandbox() {
@@ -1432,10 +1426,12 @@ fn create_sandbox() {
     target_os = "android",
     target_arch = "arm",
     target_arch = "aarch64",
+    target_arch = "riscv32",
+    target_arch = "riscv64",
     target_env = "ohos",
 ))]
 fn create_sandbox() {
-    panic!("Sandboxing is not supported on Windows, iOS, ARM targets and android.");
+    panic!("Sandboxing is not supported on Windows, iOS, ARM, RISC-V targets and android.");
 }
 
 struct DefaultEventLoopWaker;
@@ -1448,19 +1444,12 @@ impl EventLoopWaker for DefaultEventLoopWaker {
     fn wake(&self) {}
 }
 
-#[cfg(feature = "webxr")]
-struct DefaultWebXrRegistry;
-#[cfg(feature = "webxr")]
-impl webxr::WebXrRegistry for DefaultWebXrRegistry {}
-
 /// Builder for [`Servo`].
 pub struct ServoBuilder {
     opts: Option<Box<Opts>>,
     preferences: Option<Box<Preferences>>,
     event_loop_waker: Box<dyn EventLoopWaker>,
     protocol_registry: ProtocolRegistry,
-    #[cfg(feature = "webxr")]
-    webxr_registry: Box<dyn webxr::WebXrRegistry>,
 }
 
 impl Default for ServoBuilder {
@@ -1470,8 +1459,6 @@ impl Default for ServoBuilder {
             preferences: Default::default(),
             event_loop_waker: Box::new(DefaultEventLoopWaker),
             protocol_registry: Default::default(),
-            #[cfg(feature = "webxr")]
-            webxr_registry: Box::new(DefaultWebXrRegistry),
         }
     }
 }
@@ -1500,14 +1487,9 @@ impl ServoBuilder {
         self.protocol_registry = protocol_registry;
         self
     }
-
-    #[cfg(feature = "webxr")]
-    pub fn webxr_registry(mut self, webxr_registry: Box<dyn webxr::WebXrRegistry>) -> Self {
-        self.webxr_registry = webxr_registry;
-        self
-    }
 }
 
+#[cfg(feature = "multiprocess")]
 fn register_system_memory_reporter_for_event_loop(
     new_event_loop_info: &NewScriptEventLoopProcessInfo,
 ) {
@@ -1516,7 +1498,7 @@ fn register_system_memory_reporter_for_event_loop(
     // reporter can make measurements.
     let callback = GenericCallback::new(|message| {
         if let Ok(request) = message {
-            system_reporter::collect_reports(request);
+            profile::system_reporter::collect_reports(request);
         }
     })
     .expect("Could not create memory reporter callback");

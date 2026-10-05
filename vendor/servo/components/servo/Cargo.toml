@@ -1,15 +1,15 @@
 [package]
 name = "bao-servo"
 version = "0.5.25"
+publish = true
+readme = "../../README.md"
+
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
-publish = true
 rust-version = "1.88.0"
 repository = "https://github.com/servo/servo"
 description = "A component of the servo web-engine."
-readme = "../../README.md"
-
 [lib]
 name = "servo"
 path = "lib.rs"
@@ -18,12 +18,12 @@ crate-type = ["rlib"]
 [features]
 # Note: Servoshell does not use the default features of servo, so you also
 # need to add feature-groups that should be default to ports/servoshell/Cargo.toml
-default = ["bundled", "clipboard", "js_jit"]
+default = ["bundled", "clipboard", "js_jit", "multiprocess"]
 ## Convenience feature groups, to select multiple related features for a sensible
 #  configuration with `--no-default-features` build
 #
 # A convenience feature to enable all default web features servo has.
-default_web_features = ["brotli-compression-stream", "clipboard", "webgpu", "webxr"]
+default_web_features = ["brotli-compression-stream", "clipboard", "webcrypto", "webgpu", "webgl", "webxr"]
 # Bundle required resources in the binary.
 bundled = ["baked-in-resources", "bundled_freetype"]
 
@@ -58,8 +58,12 @@ jitspew = ["script/jitspew"]
 js_backtrace = ["script/js_backtrace"]
 js_jit = ["script/js_jit"]
 media-gstreamer = ["servo-media-gstreamer", "gstreamer"]
+
+# Allows multiprocess and ipc mode. If enabled this still needs the correct preference flags to use multi process mode.
+multiprocess = ["servo-base/multiprocess", "servo-constellation/multiprocess"]
+
 native-bluetooth = ["servo-bluetooth/native-bluetooth"]
-no-wgl = ["mozangle/egl", "mozangle/build_dlls", "surfman/sm-angle-default", "paint_api/no-wgl"]
+no-wgl = ["dep:mozangle", "mozangle/egl", "mozangle/build_dlls", "surfman/sm-angle-default", "paint_api/no-wgl"]
 profilemozjs = ["script/profilemozjs"]
 testbinding = ["script/testbinding"]
 tracing = [
@@ -74,10 +78,21 @@ tracing = [
     "net/tracing",
 ]
 vello = ["servo-constellation/vello"]
+
+# Enable WebCrypto Web Platform Features
+webcrypto = ["servo-constellation-traits/webcrypto", "script/webcrypto"]
 webgl_backtrace = [
     "script/webgl_backtrace",
     "webgl/webgl_backtrace",
     "servo-canvas-traits/webgl_backtrace",
+]
+webgl = [
+    "dep:webgl",
+    "paint/webgl",
+    "script/webgl",
+    "script_traits/webgl",
+    "servo-constellation/webgl",
+    "servo-constellation-traits/webgl",
 ]
 webgpu = [
     "dep:webgpu",
@@ -87,6 +102,8 @@ webgpu = [
     "servo-constellation-traits/webgpu",
 ]
 webxr = [
+    "webgl",
+    "gamepad",
     "dep:webxr",
     "dep:webxr-api",
     "paint/webxr",
@@ -102,7 +119,7 @@ crossbeam-channel = {version = "0.5"}
 devtools = {package = "bao-servo-devtools", path = "../devtools", version = ">=0.5.31, <0.6.0"}
 devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
 dpi = {version = "0.1"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.19, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
 env_logger = {version = "0.11"}
 euclid = {version = "0.22"}
 fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.19, <0.6.0"}
@@ -115,9 +132,9 @@ layout = {package = "bao-servo-layout", path = "../layout", version = ">=0.5.27,
 layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", version = ">=0.5.18, <0.6.0"}
 log = {version = "0.4.32"}
 media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = ">=0.5.16, <0.6.0"}
-mozangle = {version = "0.6"}
-net = {package = "bao-servo-net", path = "../net", version = ">=0.5.37, <0.6.0"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.17, <0.6.0"}
+mozangle = {version = "0.7", optional = true}
+net = {package = "bao-servo-net", path = "../net", version = ">=0.5.35, <0.6.0"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
 paint = {package = "bao-servo-paint", path = "../paint", version = ">=0.5.15, <0.6.0"}
 paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
@@ -133,7 +150,6 @@ servo-bluetooth = {package = "bao-servo-bluetooth", path = "../bluetooth", versi
 servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = ">=0.5.16, <0.6.0", optional = true}
 servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = ">=0.5.16, <0.6.0"}
 # Bao vendor dep: canvas noise (REQ-STL-003) re-exported via set_canvas_noise_seed
-servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = ">=0.5.16, <0.6.0"}
 servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
 servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = ">=0.5.27, <0.6.0"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}
@@ -148,11 +164,11 @@ storage = {package = "bao-servo-storage", path = "../storage", version = ">=0.5.
 storage_traits = {package = "bao-servo-storage-traits", path = "../shared/storage", version = ">=0.5.16, <0.6.0"}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_traits = {version = "=0.22.0"}
-surfman = {version = "0.13.0", features = ["chains"]}
+surfman = {version = "0.14.0"}
 tokio = {version = "1", features = ["sync"]}
 tracing = {version = "0.1.44", optional = true}
 url = {version = "2.5"}
-webgl = {package = "bao-servo-webgl", path = "../webgl", version = ">=0.5.15, <0.6.0", default-features = false}
+webgl = {package = "bao-servo-webgl", path = "../webgl", version = ">=0.5.15, <0.6.0", optional = true, default-features = false}
 webgpu = {package = "bao-servo-webgpu", path = "../webgpu", version = ">=0.5.14, <0.6.0", optional = true}
 webrender = {version = "0.70", features = ["serde"]}
 webrender_api = {version = "0.70"}
@@ -169,13 +185,13 @@ webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0
 
 [target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
 arboard = {version = "3", features = ["wayland-data-control"], optional = true}
-webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", features = ["glwindow", "headless"], optional = true}
+webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", optional = true, features = ["glwindow", "headless"]}
 
 [target.'cfg(all(not(target_os = "windows"), not(target_os = "ios"), not(target_os = "android"), not(target_env = "ohos"), not(target_arch = "arm"), not(target_arch = "aarch64"), not(target_arch="riscv32"), not(target_arch="riscv64")))'.dependencies]
 gaol = {version = "0.2.1"}
 
 [target.'cfg(target_os = "windows")'.dependencies]
-webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", features = ["glwindow", "headless", "openxr-api"], optional = true}
+webxr = {package = "bao-servo-webxr", path = "../webxr", version = ">=0.5.17, <0.6.0", optional = true, features = ["glwindow", "headless", "openxr-api"]}
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 servo-media-ohos = {package = "bao-servo-media-ohos", path = "../media/backends/ohos", version = ">=0.5.16, <0.6.0"}
@@ -183,12 +199,14 @@ ohos-pasteboard = {version = "0.1.0", optional = true}
 
 [dev-dependencies]
 accesskit_consumer = {version = "0.35.0"}
-content-security-policy = {version = "=0.9.0", features = ["serde"]}
+content-security-policy = {version = "0.9", features = ["serde"]}
+gleam = {version = "0.15"}
+glow = {version = "0.17.0"}
 http = {version = "1.4"}
 http-body-util = {version = "0.1"}
 hyper = {version = "1.10"}
 itertools = {version = "0.15"}
-net = {package = "bao-servo-net", path = "../net", version = ">=0.5.37, <0.6.0", features = ["test-util"]}
+net = {package = "bao-servo-net", path = "../net", version = ">=0.5.35, <0.6.0", features = ["test-util"]}
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
@@ -196,10 +214,12 @@ rustls = {version = "0.23", default-features = false, features = ["logging", "st
 # resolution of the self-pin would fail pre-upload); restored after publishing
 # (same strip→publish→restore protocol the 0.5.16 wave used — registry
 # bao-servo manifests carry no self dev-dep).
-bao-servo = { path = ".", features = ["testbinding", "tracing"] }
+servo = {package = "bao-servo", path = "../servo", version = ">=0.5.23, <0.6.0", features = ["testbinding", "tracing"]}
 tracing = {version = "0.1.44"}
 winit = {version = "0.30.13"}
 
-[[test]]
-name = "multiprocess"
-harness = false
+bao-servo = { path = ".", features = ["testbinding", "tracing"] }
+[lints.rust]
+unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}
+[lints.clippy]
+manual_string_new = "warn"

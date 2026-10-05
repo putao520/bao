@@ -48,9 +48,9 @@ impl UAShadowRoot<ShadowTree> for HTMLProgressElement {
             .upcast::<Node>()
             .AppendChild(cx, progress_bar.upcast::<Node>())
             .unwrap();
-        // fork holdout: pinned stylo has no ::-moz-progress-bar pseudo variant;
-        // the shadow progress bar renders unstyled until the pinned bump.
-        let _ = &progress_bar;
+        progress_bar
+            .upcast::<Node>()
+            .set_implemented_pseudo_element(PseudoElement::MozProgressBar);
 
         let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
             progress_bar: progress_bar.as_traced(),

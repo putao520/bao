@@ -5,9 +5,10 @@
 #![deny(unsafe_code)]
 
 use std::fmt::{self, Debug, Display};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{LazyLock, OnceLock};
 use std::thread::{self, JoinHandle};
 
+use bytes::Bytes;
 use content_security_policy::{self as csp};
 use cookie::Cookie;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -15,17 +16,19 @@ use headers::{ContentType, HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader}
 use http::{HeaderMap, HeaderValue, StatusCode, header};
 use hyper_serde::Serde;
 use hyper_util::client::legacy::Error as HyperError;
-use ipc_channel::ipc::{self, IpcSender};
-use ipc_channel::router::ROUTER;
 use malloc_size_of::malloc_size_of_is_0;
 use malloc_size_of_derive::MallocSizeOf;
 use mime::Mime;
+use parking_lot::RwLock;
+use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use profile_traits::mem::ReportsChan;
-use rand::rng;
-use rand::Rng as RngCore;
+use rand::{Rng, rng};
 use request::RequestId;
 use rustc_hash::FxHashMap;
+use rustls::{CipherSuite, NamedGroup, ProtocolVersion};
+use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
+use serde_with::{FromInto, serde_as};
 use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericOneshotSender, GenericSend, GenericSender,
     SendResult,
@@ -42,7 +45,7 @@ use crate::fetch::headers::determine_nosniff;
 use crate::filemanager_thread::FileManagerThreadMsg;
 use crate::http_status::HttpStatus;
 use crate::mime_classifier::{ApacheBugFlag, MimeClassifier};
-use crate::request::{Destination, PreloadId, Request, RequestBuilder, RequestMode};
+use crate::request::{Request, RequestBuilder};
 use crate::response::{Response, ResponseInit};
 
 pub mod blob_url_store;
@@ -116,28 +119,8 @@ impl CustomResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomResponseMediator {
-    pub response_chan: IpcSender<Option<CustomResponse>>,
+    pub response_chan: GenericCallback<Option<CustomResponse>>,
     pub load_url: ServoUrl,
-    /// <https://fetch.spec.whatwg.org/#concept-request-reload-navigation-flag>
-    ///
-    /// Bao vendor patch (wave2-B2 C): the mediated request is rebuilt in the
-    /// SW realm from the URL alone, which reset both navigation flags to
-    /// false — `FetchEvent.request.isReloadNavigation` never observed a
-    /// reload. The net request itself cannot cross the thread boundary, so
-    /// the flags travel with the mediator.
-    pub reload_navigation: bool,
-    /// <https://fetch.spec.whatwg.org/#concept-request-history-navigation-flag>
-    pub history_navigation: bool,
-    /// <https://fetch.spec.whatwg.org/#concept-request-destination>
-    ///
-    /// Bao vendor patch (wave2-B2 e61, user ruling 2026-10-04): same loss
-    /// chain as the flags above — e60 forensics measured `""`/`"cors"` on
-    /// the mediated request where the spec wants `"iframe"`/`"navigate"`
-    /// (Sec-Fetch-Dest/Mode observable face). The destination and mode ride
-    /// the mediator like the flags do.
-    pub destination: Destination,
-    /// <https://fetch.spec.whatwg.org/#concept-request-mode>
-    pub mode: RequestMode,
 }
 
 /// [Policies](https://w3c.github.io/webappsec-referrer-policy/#referrer-policy-states)
@@ -286,40 +269,10 @@ pub enum FetchResponseMsg {
     ProcessRequestBody(RequestId),
     // todo: send more info about the response (or perhaps the entire Response)
     ProcessResponse(RequestId, Result<FetchMetadata, NetworkError>),
-    ProcessResponseChunk(RequestId, DebugVec),
+    ProcessResponseChunk(RequestId, Bytes),
     ProcessResponseEOF(RequestId, Result<(), NetworkError>, ResourceFetchTiming),
     ProcessCspViolations(RequestId, Vec<csp::Violation>),
     ProcessContentLength(RequestId, usize),
-}
-
-#[derive(Deserialize, PartialEq, Serialize, MallocSizeOf)]
-pub struct DebugVec(pub Vec<u8>);
-
-// BAO patch (fork-maintained, 2026-09-28): bridge the pinned-bytes boundary —
-// window-end producers hand over bytes::Bytes, the fork stores Vec<u8>.
-impl From<bytes::Bytes> for DebugVec {
-    fn from(b: bytes::Bytes) -> Self {
-        DebugVec(b.to_vec())
-    }
-}
-
-impl From<Vec<u8>> for DebugVec {
-    fn from(v: Vec<u8>) -> Self {
-        Self(v)
-    }
-}
-
-impl std::ops::Deref for DebugVec {
-    type Target = Vec<u8>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for DebugVec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("[...; {}]", self.0.len()))
-    }
 }
 
 impl FetchResponseMsg {
@@ -329,8 +282,8 @@ impl FetchResponseMsg {
             FetchResponseMsg::ProcessResponse(id, ..) |
             FetchResponseMsg::ProcessResponseChunk(id, ..) |
             FetchResponseMsg::ProcessResponseEOF(id, ..) |
-            FetchResponseMsg::ProcessContentLength(id, _) |
-            FetchResponseMsg::ProcessCspViolations(id, ..) => *id,
+            FetchResponseMsg::ProcessCspViolations(id, ..) |
+            FetchResponseMsg::ProcessContentLength(id, _) => *id,
         }
     }
 }
@@ -347,16 +300,17 @@ pub trait FetchTaskTarget {
     fn process_response(&mut self, request: &Request, response: &Response);
 
     /// Fired when a chunk of response content is received
-    fn process_response_chunk(&mut self, request: &Request, chunk: Vec<u8>);
+    fn process_response_chunk(&mut self, request: &Request, chunk: bytes::Bytes);
 
     /// <https://fetch.spec.whatwg.org/#process-response-end-of-file>
     ///
     /// Fired when the response is fully fetched
     fn process_response_eof(&mut self, request: &Request, response: &Response);
 
-    fn process_response_length_hint(&mut self, request: &Request, length: usize);
-
     fn process_csp_violations(&mut self, request: &Request, violations: Vec<csp::Violation>);
+
+    /// Tell the listener that have a hint of how long the content is. This will be sent at most once.
+    fn process_response_length_hint(&mut self, request_id: &Request, length: usize);
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -411,11 +365,8 @@ impl FetchTaskTarget for GenericCallback<FetchResponseMsg> {
         ));
     }
 
-    fn process_response_chunk(&mut self, request: &Request, chunk: Vec<u8>) {
-        let _ = self.send(FetchResponseMsg::ProcessResponseChunk(
-            request.id,
-            chunk.into(),
-        ));
+    fn process_response_chunk(&mut self, request: &Request, chunk: bytes::Bytes) {
+        let _ = self.send(FetchResponseMsg::ProcessResponseChunk(request.id, chunk));
     }
 
     fn process_response_eof(&mut self, request: &Request, response: &Response) {
@@ -423,7 +374,8 @@ impl FetchTaskTarget for GenericCallback<FetchResponseMsg> {
             .get_network_error()
             .map_or_else(|| Ok(()), |network_error| Err(network_error.clone()));
         let timing = response.get_resource_timing().inner().clone();
-        let send_result = self.send(FetchResponseMsg::ProcessResponseEOF(
+
+        let _ = self.send(FetchResponseMsg::ProcessResponseEOF(
             request.id, result, timing,
         ));
     }
@@ -465,6 +417,66 @@ impl Display for TlsSecurityState {
     }
 }
 
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServoProtocolVersion(#[serde_as(as = "FromInto<u16>")] pub ProtocolVersion);
+
+impl malloc_size_of::MallocSizeOf for ServoProtocolVersion {
+    fn size_of(&self, _: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+        0
+    }
+}
+
+impl std::fmt::Debug for ServoProtocolVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            ProtocolVersion::SSLv2 => write!(f, "SSL 2.0"),
+            ProtocolVersion::SSLv3 => write!(f, "SSL 3.0"),
+            ProtocolVersion::TLSv1_0 => write!(f, "TLS 1.0"),
+            ProtocolVersion::TLSv1_1 => write!(f, "TLS 1.1"),
+            ProtocolVersion::TLSv1_2 => write!(f, "TLS 1.2"),
+            ProtocolVersion::TLSv1_3 => write!(f, "TLS 1.3"),
+            ProtocolVersion::DTLSv1_0 => write!(f, "DTLS 1.0"),
+            ProtocolVersion::DTLSv1_2 => write!(f, "DTLS 1.2"),
+            ProtocolVersion::DTLSv1_3 => write!(f, "DTLS 1.3"),
+            ProtocolVersion::Unknown(value) => write!(f, "Unknown ({value})"),
+            _ => write!(f, "Not yet implemented"),
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServoCipherSuite(#[serde_as(as = "FromInto<u16>")] pub CipherSuite);
+
+impl malloc_size_of::MallocSizeOf for ServoCipherSuite {
+    fn size_of(&self, _: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+        0
+    }
+}
+
+impl std::fmt::Debug for ServoCipherSuite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServoNamedGroup(#[serde_as(as = "FromInto<u16>")] pub NamedGroup);
+
+impl malloc_size_of::MallocSizeOf for ServoNamedGroup {
+    fn size_of(&self, _: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+        0
+    }
+}
+
+impl std::fmt::Debug for ServoNamedGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
 pub struct TlsSecurityInfo {
     // "insecure", "weak", "broken", "secure".
@@ -473,11 +485,11 @@ pub struct TlsSecurityInfo {
     // Reasons explaining why the negotiated parameters are considered weak.
     pub weakness_reasons: Vec<String>,
     // Negotiated TLS protocol version (e.g. "TLS 1.3").
-    pub protocol_version: Option<String>,
+    pub protocol_version: Option<ServoProtocolVersion>,
     // Negotiated cipher suite identifier.
-    pub cipher_suite: Option<String>,
+    pub cipher_suite: Option<ServoCipherSuite>,
     // Negotiated key exchange group.
-    pub kea_group_name: Option<String>,
+    pub kea_group_name: Option<ServoNamedGroup>,
     // Signature scheme used for certificate verification.
     pub signature_scheme_name: Option<String>,
     // Negotiated ALPN protocol (e.g. "h2" for HTTP/2, "http/1.1" for HTTP/1.1).
@@ -500,14 +512,14 @@ pub struct TlsSecurityInfo {
     pub used_private_dns: bool,
 }
 
-impl FetchTaskTarget for IpcSender<WebSocketNetworkEvent> {
+impl FetchTaskTarget for ProfileGenericCallback<WebSocketNetworkEvent> {
     fn process_request_body(&mut self, _: &Request) {}
     fn process_response(&mut self, _: &Request, response: &Response) {
         if response.is_network_error() {
             let _ = self.send(WebSocketNetworkEvent::Fail);
         }
     }
-    fn process_response_chunk(&mut self, _: &Request, _: Vec<u8>) {}
+    fn process_response_chunk(&mut self, _: &Request, _: bytes::Bytes) {}
     fn process_response_eof(&mut self, _: &Request, _: &Response) {}
     fn process_csp_violations(&mut self, _: &Request, violations: Vec<csp::Violation>) {
         let _ = self.send(WebSocketNetworkEvent::ReportCSPViolations(violations));
@@ -523,7 +535,7 @@ pub struct DiscardFetch;
 impl FetchTaskTarget for DiscardFetch {
     fn process_request_body(&mut self, _: &Request) {}
     fn process_response(&mut self, _: &Request, _: &Response) {}
-    fn process_response_chunk(&mut self, _: &Request, _: Vec<u8>) {}
+    fn process_response_chunk(&mut self, _: &Request, _: bytes::Bytes) {}
     fn process_response_eof(&mut self, _: &Request, _: &Response) {}
     fn process_csp_violations(&mut self, _: &Request, _: Vec<csp::Violation>) {}
     fn process_response_length_hint(&mut self, _: &Request, _: usize) {}
@@ -591,7 +603,7 @@ impl ResourceThreads {
     }
 
     pub fn clear_cookies(&self) {
-        let (sender, receiver) = ipc::channel().unwrap();
+        let (sender, receiver) = generic_channel::channel().unwrap();
         let _ = self
             .core_thread
             .send(CoreResourceMsg::DeleteCookies(None, Some(sender)));
@@ -730,7 +742,7 @@ pub enum WebSocketNetworkEvent {
 pub enum FetchChannels {
     ResponseMsg(GenericCallback<FetchResponseMsg>),
     WebSocket {
-        event_sender: IpcSender<WebSocketNetworkEvent>,
+        event_sender: ProfileGenericCallback<WebSocketNetworkEvent>,
         action_receiver: CallbackSetter<WebSocketDomAction>,
     },
     /// If the fetch is just being done to populate the cache,
@@ -793,7 +805,7 @@ pub enum CoreResourceMsg {
     DeleteCookiesForSites(Vec<String>, GenericSender<()>),
     /// This currently is used by unit tests and WebDriver only.
     /// When url is `None`, this clears cookies across all origins.
-    DeleteCookies(Option<ServoUrl>, Option<IpcSender<()>>),
+    DeleteCookies(Option<ServoUrl>, Option<GenericSender<()>>),
     /// Delete all session cookies (cookies without an expiry or max-age).
     DeleteSessionCookies(GenericSender<()>),
     DeleteCookie(ServoUrl, String),
@@ -864,7 +876,7 @@ impl CacheEntryDescriptor {
 
 // FIXME: https://github.com/servo/servo/issues/34591
 #[expect(clippy::large_enum_variant)]
-pub enum ToFetchThreadMessage {
+enum ToFetchThreadMessage {
     Cancel(Vec<RequestId>, CoreResourceThread),
     StartFetch(
         /* request_builder */ RequestBuilder,
@@ -882,7 +894,7 @@ pub type BoxedFetchCallback = Box<dyn FnMut(FetchResponseMsg) + Send + 'static>;
 /// A thread to handle fetches in a Servo process. This thread is responsible for
 /// listening for new fetch requests as well as updates on those operations and forwarding
 /// them to crossbeam channels.
-struct FetchThread {
+pub struct FetchThread {
     /// A list of active fetches. A fetch is no longer active once the
     /// [`FetchResponseMsg::ProcessResponseEOF`] is received.
     active_fetches: FxHashMap<RequestId, BoxedFetchCallback>,
@@ -890,21 +902,16 @@ struct FetchThread {
     /// updates from IPC messages to crossbeam messages as well as another sender which
     /// handles requests from clients wanting to do fetches.
     receiver: Receiver<ToFetchThreadMessage>,
-    /// A [`GenericCallback`] that's sent with every fetch request and leads back to our
+    /// An [`IpcSender`] that's sent with every fetch request and leads back to our
     /// router proxy.
     to_fetch_sender: GenericCallback<FetchResponseMsg>,
 }
 
 impl FetchThread {
-    fn spawn() -> (Sender<ToFetchThreadMessage>, JoinHandle<()>) {
+    fn spawn() -> FetchThreadHandle {
         let (sender, receiver) = unbounded();
 
         let sender_clone = sender.clone();
-        // BAO PATCH (BCE-20260627-009, adapted): upstream's FetchThread::spawn now
-        // builds the response channel as a GenericCallback (in-process direct
-        // callback in single-process mode; global ROUTER in ipc mode), replacing
-        // the old explicit ipc_router route registration. Per-instance routing
-        // for the Constellation remains handled by `start_fetch_thread`.
         let to_fetch_sender = GenericCallback::new(move |message| {
             let message: FetchResponseMsg = message.unwrap();
             let _ = sender_clone.send(ToFetchThreadMessage::FetchResponse(message));
@@ -921,18 +928,21 @@ impl FetchThread {
                 fetch_thread.run();
             })
             .expect("Thread spawning failed");
-        (sender, join_handle)
+        FetchThreadHandle {
+            sender,
+            join_handle: RwLock::new(Some(join_handle)),
+        }
     }
 
     fn run(&mut self) {
         loop {
-            match self.receiver.recv().unwrap() {
-                ToFetchThreadMessage::StartFetch(
+            match self.receiver.recv() {
+                Ok(ToFetchThreadMessage::StartFetch(
                     request_builder,
                     response_init,
                     callback,
                     core_resource_thread,
-                ) => {
+                )) => {
                     let request_builder_id = request_builder.id;
 
                     // Only redirects have a `response_init` field.
@@ -948,8 +958,12 @@ impl FetchThread {
                         ),
                     };
 
-                    let send_result = core_resource_thread.send(message);
-                    send_result.unwrap();
+                    if core_resource_thread.send(message).is_err() {
+                        // In this case the connection with the resource threads has been
+                        // broken, so just assume that we are shutting down as any further
+                        // messaging is likely to be unreliable.
+                        break;
+                    }
 
                     let preexisting_fetch =
                         self.active_fetches.insert(request_builder_id, callback);
@@ -958,7 +972,7 @@ impl FetchThread {
                     // process the second call. This should be handled by [`DeferredFetchRecord::process`]
                     assert!(preexisting_fetch.is_none());
                 },
-                ToFetchThreadMessage::FetchResponse(fetch_response_msg) => {
+                Ok(ToFetchThreadMessage::FetchResponse(fetch_response_msg)) => {
                     let request_id = fetch_response_msg.request_id();
                     let fetch_finished =
                         matches!(fetch_response_msg, FetchResponseMsg::ProcessResponseEOF(..));
@@ -973,179 +987,77 @@ impl FetchThread {
                         self.active_fetches.remove(&request_id);
                     }
                 },
-                ToFetchThreadMessage::Cancel(request_ids, core_resource_thread) => {
+                Ok(ToFetchThreadMessage::Cancel(request_ids, core_resource_thread)) => {
                     // Errors are ignored here, because Servo sends many cancellation requests when shutting down.
                     // At this point the networking task might be shut down completely, so just ignore errors
                     // during this time.
                     let _ = core_resource_thread.send(CoreResourceMsg::Cancel(request_ids));
                 },
-                ToFetchThreadMessage::Exit => break,
+                Ok(ToFetchThreadMessage::Exit) | Err(_) => break,
             }
+        }
+    }
+
+    fn fetch_async(
+        core_resource_thread: &CoreResourceThread,
+        request: RequestBuilder,
+        response_init: Option<ResponseInit>,
+        callback: BoxedFetchCallback,
+    ) {
+        let _ = FETCH_THREAD.get_or_init(FetchThread::spawn).sender.send(
+            ToFetchThreadMessage::StartFetch(
+                request,
+                response_init,
+                callback,
+                core_resource_thread.clone(),
+            ),
+        );
+    }
+
+    fn cancel_async_fetch(request_ids: Vec<RequestId>, core_resource_thread: &CoreResourceThread) {
+        if let Some(fetch_thread) = FETCH_THREAD.get() {
+            let _ = fetch_thread.sender.send(ToFetchThreadMessage::Cancel(
+                request_ids,
+                core_resource_thread.clone(),
+            ));
+        }
+    }
+
+    /// If the `FetchThread` is running, send the exit message and wait for it to exit.
+    pub fn exit() {
+        let Some(fetch_thread) = FETCH_THREAD.get() else {
+            return;
+        };
+        let _ = fetch_thread.sender.send(ToFetchThreadMessage::Exit);
+        if let Some(join_handle) = fetch_thread.join_handle.write().take() {
+            join_handle
+                .join()
+                .expect("Failed to join on the FetchThread join handle.");
         }
     }
 }
 
-// BAO PATCH (BCE-20260627-009): Fetch-thread lifecycle for bao's multi-BaoRuntime model.
-//
-// servo is single-instance: one Servo::new → one Constellation → one FetchThread,
-// started in `Constellation::run` (constellation.rs:778) and exited/shut-down at
-// the end of `Constellation::run` (constellation.rs:794-797) via
-// `exit_fetch_thread()` + `join_handle.join()`.
-//
-// bao runs many `BaoRuntime` instances in one process (concurrent integration
-// tests, multi-tenant production). Each `BaoRuntime::new` → `Servo::new` →
-// `Constellation::run` therefore calls `start_fetch_thread` / `exit_fetch_thread`.
-// The original servo code used `OnceLock<Sender>` + `.expect("set only once")`,
-// which panics on the 2nd `BaoRuntime`.
-//
-// Requirements for a correct fix:
-//   R1. No panic on the 2nd..Nth `BaoRuntime` (idempotent start).
-//   R2. The FIRST `Constellation` owns the real FetchThread; its `join_handle`
-//       is the real one. Its `exit_fetch_thread()` MUST send `Exit` so that
-//       `join_handle.join()` (constellation.rs:796) returns — otherwise the
-//       Constellation blocks forever in pthread_join and `Servo::drop` never
-//       completes (THIS WAS THE ROOT CAUSE of the servo constellation startup
-//       futex deadlock: the prior fix made `exit_fetch_thread` a global no-op,
-//       so even the owner never sent Exit → owner's join() hung → test deadlocked
-//       in BaoRuntime teardown).
-//   R3. Non-owner `Constellation`s get a no-op handle (their `join()` returns
-//       instantly); they MUST NOT send Exit (they don't own the real thread).
-//   R4. After the owner's FetchThread exits (owner's join completes), the
-//       sender must be cleared so a later `BaoRuntime` can spawn a fresh
-//       FetchThread. `OnceLock` cannot be cleared, so we use a `Mutex<Option<...>>`.
-//
-// Ownership model: "does THIS Constellation own the real FetchThread?" is a
-// per-thread question — `start_fetch_thread` and `exit_fetch_thread` are always
-// called in pairs on the same Constellation thread (`Constellation::run`).
-// A thread-local flag (`FETCH_THREAD_OWNED_ON_THIS_THREAD`) records whether the
-// caller of `exit_fetch_thread` is the owner.
-//
-// `Mutex` is required here (not `thread_local`) because the sender is a
-// process-global resource shared across Constellation threads: the owner writes
-// it in `start`, and a different thread (a later `BaoRuntime`) must observe it
-// gone after the owner clears it in `exit`. This is a genuine cross-thread
-// share — exactly the "Mutex only for true cross-thread sharing" exception in
-// the去锁化 principle (CLAUDE.md §4).
-static FETCH_THREAD_SENDER: LazyLock<std::sync::Mutex<Option<Sender<ToFetchThreadMessage>>>> =
-    LazyLock::new(|| std::sync::Mutex::new(None));
-
-// BAO PATCH (BCE-20260627-009): Per-thread FetchThread sender. Set by
-// `start_fetch_thread` on the Constellation thread that spawned the real
-// FetchThread; consumed by `exit_fetch_thread` on the same thread. Also set on
-// ScriptThread via Phase 5 (inherited from Constellation). See FETCH_THREAD_SENDER
-// for the cross-thread fallback design rationale.
-thread_local! {
-    static FETCH_THREAD_SENDER_ON_THIS_THREAD: std::cell::RefCell<Option<Sender<ToFetchThreadMessage>>> =
-        const { std::cell::RefCell::new(None) };
+struct FetchThreadHandle {
+    sender: Sender<ToFetchThreadMessage>,
+    join_handle: RwLock<Option<JoinHandle<()>>>,
 }
 
-/// Start the fetch thread, and returns the join handle to the background thread.
-///
-/// BAO PATCH (BCE-20260627-009): Per-instance FetchThread for bao's multi-BaoRuntime model.
-///
-/// Each `Constellation` creates its OWN FetchThread (no process-global sharing).
-/// The FetchThread's response route is registered on the calling thread's
-/// per-instance `RouterProxy` (set via `servo_base::ipc_router::set_thread_router`),
-/// so it is scoped to this BaoRuntime and cleaned up when the Constellation tears down.
-///
-/// The returned `JoinHandle` is the REAL FetchThread handle; the caller's later
-/// `exit_fetch_thread()` + `join()` shuts it down cleanly (the thread exits on `Exit`).
-pub fn start_fetch_thread(router: Arc<ipc_channel::router::RouterProxy>) -> JoinHandle<()> {
-    // Install per-instance router on this thread before spawning FetchThread,
-    // so `FetchThread::spawn()` registers the response route on this router.
-    servo_base::ipc_router::set_thread_router(router);
-    let (sender, join_handle) = FetchThread::spawn();
-    // Store sender in thread-local for this Constellation's exit_fetch_thread().
-    FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| {
-        *s.borrow_mut() = Some(sender.clone());
-    });
-    // Also publish to process-global so ScriptThreads inheriting via
-    // InitialScriptState can find it via fetch_async fallback.
-    let mut guard = FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned");
-    *guard = Some(sender);
-    drop(guard);
-    join_handle
-}
+static FETCH_THREAD: OnceLock<FetchThreadHandle> = OnceLock::new();
 
-/// Send the exit message to the background thread, after which the caller can,
-/// and should, join on the thread.
-///
-/// BAO PATCH (BCE-20260627-009): Per-instance exit. Sends `Exit` on THIS thread's
-/// FetchThread sender (set by `start_fetch_thread`), then clears the thread-local
-/// sender and the process-global sender (if it still points at ours). The caller's
-/// subsequent `join_handle.join()` returns once the FetchThread processes Exit.
-pub fn exit_fetch_thread() {
-    let sender = FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow_mut().take());
-    if let Some(sender) = sender {
-        let _ = sender.send(ToFetchThreadMessage::Exit);
-        // Clear process-global sender so a later BaoRuntime can spawn a fresh one.
-        let mut guard = FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned");
-        *guard = None;
-        drop(guard);
-    }
-    // If no thread-local sender, this thread is a non-owner: no-op.
-}
-
-/// Instruct the resource thread to make a new fetch request.
-///
-/// BAO PATCH (BCE-20260627-009): Prefer THIS thread's FetchThread sender
-/// (thread-local, set by start_fetch_thread on Constellation and inherited on
-/// ScriptThread). Fall back to process-global FETCH_THREAD_SENDER for legacy
-/// paths. Drop the fetch if no sender is live.
+/// Instruct the fetch thread to start a new asynchronous fetch request.
 pub fn fetch_async(
     core_resource_thread: &CoreResourceThread,
     request: RequestBuilder,
     response_init: Option<ResponseInit>,
     callback: BoxedFetchCallback,
 ) {
-    let local_sender = FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow().as_ref().cloned());
-    let sender = match local_sender {
-        Some(s) => s,
-        None => match FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned").clone() {
-            Some(s) => s,
-            None => return, // No live FetchThread; drop the fetch (post-teardown).
-        },
-    };
-    let _ = sender.send(ToFetchThreadMessage::StartFetch(
-        request,
-        response_init,
-        callback,
-        core_resource_thread.clone(),
-    ));
+    FetchThread::fetch_async(core_resource_thread, request, response_init, callback);
 }
 
 /// Instruct the resource thread to cancel an existing request. Does nothing if the
-/// request has already been completed or has not been fetched yet.
+/// request has already completed or has not been fetched yet.
 pub fn cancel_async_fetch(request_ids: Vec<RequestId>, core_resource_thread: &CoreResourceThread) {
-    let local_sender = FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow().as_ref().cloned());
-    let sender = match local_sender {
-        Some(s) => s,
-        None => match FETCH_THREAD_SENDER.lock().expect("FETCH_THREAD_SENDER poisoned").clone() {
-            Some(s) => s,
-            None => return,
-        },
-    };
-    let _ = sender.send(ToFetchThreadMessage::Cancel(request_ids, core_resource_thread.clone()));
-}
-
-/// BAO PATCH (BCE-20260627-009): Inherit a FetchThread sender on THIS thread.
-///
-/// Called by ScriptThreadFactory::create() to install the per-instance FetchThread
-/// sender inherited from the Constellation. After this call, `fetch_async` /
-/// `cancel_async_fetch` on this thread will route to the correct per-instance FetchThread.
-pub fn set_thread_fetch_sender(sender: Sender<ToFetchThreadMessage>) {
-    FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| {
-        *s.borrow_mut() = Some(sender);
-    });
-}
-
-/// BAO PATCH (BCE-20260627-009): Get THIS thread's FetchThread sender, if any.
-///
-/// Used by EventLoop::spawn (on the Constellation thread) to read the FetchThread
-/// sender set by `start_fetch_thread` and pass it to the ScriptThread via
-/// InitialScriptState.
-pub fn get_thread_fetch_sender() -> Option<Sender<ToFetchThreadMessage>> {
-    FETCH_THREAD_SENDER_ON_THIS_THREAD.with(|s| s.borrow().clone())
+    FetchThread::cancel_async_fetch(request_ids, core_resource_thread);
 }
 
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
@@ -1407,7 +1319,7 @@ impl NetworkError {
         )
     }
 
-    pub fn from_hyper_error(error: &HyperError, certificate: Option<Vec<u8>>) -> Self {
+    pub fn from_hyper_error(error: &HyperError, certificate: Option<CertificateDer>) -> Self {
         let error_string = error.to_string();
         match certificate {
             Some(certificate) => NetworkError::SslValidation(error_string, certificate.to_vec()),
@@ -1438,32 +1350,10 @@ pub fn trim_http_whitespace(mut slice: &[u8]) -> &[u8] {
     slice
 }
 
-pub fn http_percent_encode(bytes: &[u8]) -> String {
-    // This encode set is used for HTTP header values and is defined at
-    // https://tools.ietf.org/html/rfc5987#section-3.2
-    const HTTP_VALUE: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
-        .add(b' ')
-        .add(b'"')
-        .add(b'%')
-        .add(b'\'')
-        .add(b'(')
-        .add(b')')
-        .add(b'*')
-        .add(b',')
-        .add(b'/')
-        .add(b':')
-        .add(b';')
-        .add(b'<')
-        .add(b'-')
-        .add(b'>')
-        .add(b'?')
-        .add(b'[')
-        .add(b'\\')
-        .add(b']')
-        .add(b'{')
-        .add(b'}');
-
-    percent_encoding::percent_encode(bytes, HTTP_VALUE).to_string()
+/// Returns true if a given string has a given suffix with case-insensitive match.
+pub fn ends_with_ignore_ascii_case(string: &str, suffix: &str) -> bool {
+    string.len() >= suffix.len() &&
+        string.as_bytes()[string.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
 }
 
 /// Returns the cached current system locale, or en-US by default.

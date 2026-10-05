@@ -13,7 +13,7 @@ use js::jsapi::Heap;
 use js::jsval::{DoubleValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
-use script_bindings::reflector::{DomObject, reflect_dom_object_with_cx};
+use script_bindings::reflector::{DomObject, reflect_dom_object};
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{GenericSend, SendError};
 use storage_traits::indexeddb::{
@@ -174,7 +174,7 @@ impl RequestListener {
                     for (i, key) in keys.into_iter().enumerate() {
                         key_type_to_jsval(cx, &key, array.handle_mut_at(i));
                     }
-                    array.safe_to_jsval(cx, answer.handle_mut());
+                    array.to_jsval(cx, answer.handle_mut());
                 },
                 IdbResult::Value(serialized_data) => {
                     let result = postcard::from_bytes(&serialized_data)
@@ -208,7 +208,7 @@ impl RequestListener {
                             return;
                         };
                     }
-                    values.safe_to_jsval(cx, answer.handle_mut());
+                    values.to_jsval(cx, answer.handle_mut());
                 },
                 IdbResult::Count(count) => {
                     answer.handle_mut().set(DoubleValue(count as f64));
@@ -419,7 +419,7 @@ impl IDBRequest {
     }
 
     pub fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<IDBRequest> {
-        reflect_dom_object_with_cx(Box::new(IDBRequest::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(IDBRequest::new_inherited()), global)
     }
 
     pub fn set_source(&self, source: Option<&IDBObjectStore>) {
@@ -529,11 +529,7 @@ impl IDBRequest {
                 );
             }));
         };
-// BAO patch (fork-maintained, 2026-09-28): the fork's profile GenericCallback
-        // keeps the ProfilerChan parameter (fork holdout; window-end dropped it).
-        let callback =
-            GenericCallback::new(source.global().time_profiler_chan().clone(), closure)
-                .expect("Could not create callback");
+        let callback = GenericCallback::new(closure).expect("Could not create callback");
         let operation = operation_fn(callback);
 
         if matches!(

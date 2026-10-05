@@ -11,7 +11,7 @@ pub(crate) mod base {
     pub(crate) use js::conversions::{
         ConversionBehavior, ConversionResult, FromJSValConvertible, ToJSValConvertible,
     };
-    pub(crate) use js::error::throw_type_error_safe;
+    pub(crate) use js::error::throw_type_error;
     pub(crate) use js::gc::RootedVec;
     pub(crate) use js::jsapi::{
         HandleValue as RawHandleValue, HandleValueArray, Heap, IsCallable, JSObject, Value,
@@ -32,10 +32,8 @@ pub(crate) mod base {
 
     pub(crate) use crate::callback::{
         CallbackContainer, CallbackFunction, CallbackInterface, CallbackObject, ExceptionHandling,
-        // BAO patch (fork-maintained, 2026-09-27): RootedCallback/TracedCallback
-        // replayed for the GC root safety series (REQ-BRW-047 wave ①).
-        OwnerWindow, RootedCallback, ThisReflector, TracedCallback, call_setup,
-        wrap_call_this_value,
+        HasCallbackHolder, OwnerWindow, RootedCallback, ThisReflector, TracedCallback, call_setup,
+        create_callback_rooted, wrap_call_this_value,
     };
     pub(crate) use crate::codegen::DomTypes::DomTypes;
     pub(crate) use crate::codegen::GenericUnionTypes;

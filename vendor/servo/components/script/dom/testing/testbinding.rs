@@ -43,9 +43,7 @@ use crate::dom::bindings::codegen::UnionTypes::{
     HTMLElementOrLong, HTMLElementOrUnsignedLongOrStringOrBoolean, LongOrBoolean,
     LongOrLongSequenceSequence, LongSequenceOrBoolean, ObjectOrBoolean, ObjectOrLong,
     ObjectOrString, StringOrBoolean, StringOrLong, StringOrLongSequence, StringOrStringSequence,
-    StringOrUnsignedLong, StringSequenceOrUnsignedLong,
-    UnrestrictedDoubleOrDOMPointInitOrUnrestrictedDoubleOrDOMPointInitSequence,
-    UnsignedLongOrBoolean,
+    StringOrUnsignedLong, StringSequenceOrUnsignedLong, UnsignedLongOrBoolean,
 };
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::num::Finite;
@@ -580,12 +578,12 @@ impl TestBindingMethods<crate::DomTypeHolder> for TestBinding {
     ) -> RootedTraceableBox<TestDictionary> {
         let promise = Promise::new_resolved(cx, &self.global(), ());
         RootedTraceableBox::new(TestDictionary {
-            anyValue: RootedTraceableBox::new(Heap::default()),
+            anyValue: Box::new(Heap::default()),
             booleanValue: None,
             byteValue: None,
             dict: RootedTraceableBox::new(TestDictionaryDefaults {
                 UnrestrictedDoubleValue: 0.0,
-                anyValue: RootedTraceableBox::new(Heap::default()),
+                anyValue: Box::new(Heap::default()),
                 arrayValue: Vec::new(),
                 booleanValue: false,
                 bytestringValue: ByteString::new(vec![]),
@@ -602,7 +600,7 @@ impl TestBindingMethods<crate::DomTypeHolder> for TestBinding {
                 nullableFloatValue: None,
                 nullableLongLongValue: None,
                 nullableLongValue: None,
-                nullableObjectValue: RootedTraceableBox::new(Heap::default()),
+                nullableObjectValue: Box::new(Heap::default()),
                 nullableOctetValue: None,
                 nullableShortValue: None,
                 nullableStringValue: None,
@@ -699,7 +697,6 @@ impl TestBindingMethods<crate::DomTypeHolder> for TestBinding {
     fn PassAnySequence(&self, _: CustomAutoRooterGuard<Vec<JSVal>>) {}
     fn AnySequencePassthrough(
         &self,
-
         seq: CustomAutoRooterGuard<Vec<JSVal>>,
         return_value: &mut RootedVec<'_, Box<Heap<JSVal>>>,
     ) {
@@ -1195,12 +1192,6 @@ impl TestBindingMethods<crate::DomTypeHolder> for TestBinding {
     }
     fn FuncControlledStaticMethodDisabled(_: &GlobalScope) {}
     fn FuncControlledStaticMethodEnabled(_: &GlobalScope) {}
-
-    fn AcceptUnionWithUnionSequence(
-        &self,
-        _: UnrestrictedDoubleOrDOMPointInitOrUnrestrictedDoubleOrDOMPointInitSequence,
-    ) {
-    }
 
     fn DefaultByte(&self, _: i8) {}
     fn DefaultOctect(&self, _: u8) {}

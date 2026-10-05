@@ -10,9 +10,7 @@ dictionary GainOptions : AudioNodeOptions {
   float gain = 1.0;
 };
 
-// (Bao) Exposed=(Window,Worker): gain node of the offline audio fingerprint
-// vector (REQ-BRW-004 C15, user ruling 2026-09-09).
-[Exposed=(Window,Worker)]
+[Exposed=Window]
  interface GainNode : AudioNode {
    [Throws] constructor(BaseAudioContext context, optional GainOptions options = {});
    readonly attribute AudioParam gain;

@@ -111,8 +111,9 @@ impl BoundaryPoint {
         &self.node
     }
 
-    pub(crate) fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    pub(crate) fn partial_cmp(&self, no_gc: &NoGC, other: &Self) -> Option<Ordering> {
         Some(bp_position(
+            no_gc,
             &self.node.get(),
             self.offset.get(),
             &other.node.get(),
@@ -131,6 +132,7 @@ impl PartialEq for BoundaryPoint {
 
 /// <https://dom.spec.whatwg.org/#concept-range-bp-position>
 pub(crate) fn bp_position(
+    no_gc: &NoGC,
     a_node: &Node,
     a_offset: u32,
     b_node: &Node,
@@ -147,7 +149,7 @@ pub(crate) fn bp_position(
         return a_offset.cmp(&b_offset);
     }
 
-    let position = b_node.CompareDocumentPosition(a_node);
+    let position = b_node.CompareDocumentPosition(no_gc, a_node);
     assert!(
         position & NodeConstants::DOCUMENT_POSITION_DISCONNECTED == 0,
         "Nodes should be in the same tree"
@@ -156,7 +158,7 @@ pub(crate) fn bp_position(
         // Step 3: If nodeA is following nodeB, then if the position of (nodeB, offsetB)
         // relative to (nodeA, offsetA) is before, return after, and if it is after,
         // return before.
-        return match bp_position(b_node, b_offset, a_node, a_offset) {
+        return match bp_position(no_gc, b_node, b_offset, a_node, a_offset) {
             Ordering::Less => Ordering::Greater,
             Ordering::Greater => Ordering::Less,
             Ordering::Equal => unreachable!("Should be impossible due to Step 2."),

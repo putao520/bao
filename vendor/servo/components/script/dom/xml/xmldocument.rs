@@ -24,7 +24,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::customelementregistry::CustomElementReactionStack;
-use crate::dom::document::{DocumentSource, Document, HasBrowsingContext, IsHTMLDocument};
+use crate::dom::document::{Document, HasBrowsingContext, IsHTMLDocument};
 use crate::dom::location::Location;
 use crate::dom::node::Node;
 use crate::dom::window::Window;
@@ -65,7 +65,6 @@ impl XMLDocument {
                 content_type,
                 last_modified,
                 activity,
-                DocumentSource::NotFromParser,
                 doc_loader,
                 None,
                 None,

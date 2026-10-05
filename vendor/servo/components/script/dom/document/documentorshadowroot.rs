@@ -454,7 +454,7 @@ impl DocumentOrShadowRoot {
         incoming_value: HandleValue,
         owner: &StyleSheetListOwner,
     ) -> ErrorResult {
-        let maybe_stylesheets = Vec::<DomRoot<CSSStyleSheet>>::safe_from_jsval(cx, incoming_value, ())
+        let maybe_stylesheets = Vec::<DomRoot<CSSStyleSheet>>::from_jsval(cx, incoming_value, ())
             .map_err(|_| Error::JSFailed)?;
 
         match maybe_stylesheets {

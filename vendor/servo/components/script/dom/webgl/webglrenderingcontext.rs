@@ -28,16 +28,17 @@ use servo_base::{Epoch, generic_channel};
 use servo_canvas_traits::webgl::WebGLError::*;
 use servo_canvas_traits::webgl::{
     AlphaTreatment, GLContextAttributes, GLLimits, GlType, Parameter, SizedDataType, TexDataType,
-    TexFormat, TexParameter, WebGLChan, WebGLCommand, WebGLCommandBacktrace, WebGLContextId,
-    WebGLError, WebGLFramebufferBindingRequest, WebGLMsg, WebGLMsgSender, WebGLProgramId,
-    WebGLResult, WebGLSLVersion, WebGLVersion, YAxisTreatment, webgl_channel,
+    TexFormat, TexParameter, WebGLCommand, WebGLCommandBacktrace, WebGLContextId, WebGLError,
+    WebGLFramebufferBindingRequest, WebGLMsg, WebGLMsgSender, WebGLProgramId, WebGLResult,
+    WebGLSLVersion, WebGLVersion, YAxisTreatment, webgl_channel,
 };
 use servo_config::pref;
 use webrender_api::ImageKey;
 
 use crate::canvas_context::{CanvasContext, HTMLCanvasElementOrOffscreenCanvas};
-use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_slice};
+#[cfg(feature = "webxr")]
 use crate::dom::RootedPromise;
+use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_slice};
 use crate::dom::bindings::codegen::Bindings::ANGLEInstancedArraysBinding::ANGLEInstancedArraysConstants;
 use crate::dom::bindings::codegen::Bindings::EXTBlendMinmaxBinding::EXTBlendMinmaxConstants;
 use crate::dom::bindings::codegen::Bindings::OESVertexArrayObjectBinding::OESVertexArrayObjectConstants;
@@ -58,6 +59,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomOnceCell, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
+#[cfg(feature = "webgl_backtrace")]
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::node::NodeTraits;
 #[cfg(feature = "webxr")]
@@ -86,7 +88,6 @@ use crate::dom::webgl::webgltexture::{TexParameterValue, WebGLTexture};
 use crate::dom::webgl::webgluniformlocation::WebGLUniformLocation;
 use crate::dom::webgl::webglvertexarrayobject::WebGLVertexArrayObject;
 use crate::dom::webgl::webglvertexarrayobjectoes::WebGLVertexArrayObjectOES;
-use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::dom::window::Window;
 
 fn has_invalid_blend_constants(arg1: u32, arg2: u32) -> bool {
@@ -158,7 +159,7 @@ impl Drop for DroppableWebGLRenderingContext {
     }
 }
 
-#[dom_struct(associated_memory)]
+#[dom_struct]
 pub(crate) struct WebGLRenderingContext {
     reflector_: Reflector<AssociatedMemory>,
     #[no_trace]
@@ -202,22 +203,10 @@ pub(crate) struct WebGLRenderingContext {
     droppable: DroppableWebGLRenderingContext,
 }
 
-/// (Bao) Resolve the WebGL thread channel for a global scope: `Window`s carry their
-/// own handle, workers inherit the parent `Window`'s channel via
-/// `WorkerGlobalScopeInit.webgl_chan` (REQ-BRW-004 C14).
-fn webgl_chan_from_global(global: &GlobalScope) -> Option<WebGLChan> {
-    if let Some(window) = global.downcast::<Window>() {
-        return window.webgl_chan();
-    }
-    global
-        .downcast::<WorkerGlobalScope>()
-        .and_then(|worker| worker.webgl_chan())
-}
-
 impl WebGLRenderingContext {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new_inherited(
-        global: &GlobalScope,
+        window: &Window,
         canvas: HTMLCanvasElementOrOffscreenCanvas,
         webgl_version: WebGLVersion,
         size: Size2D<u32>,
@@ -227,10 +216,7 @@ impl WebGLRenderingContext {
             return Err("WebGL context creation error forced by pref `webgl.testing.context_creation_error`".into());
         }
 
-        let Some(webview_id) = global.webview_id() else {
-            return Err("WebGL initialization failed early on".into());
-        };
-        let webgl_chan = match webgl_chan_from_global(global) {
+        let webgl_chan = match window.webgl_chan() {
             Some(chan) => chan,
             None => return Err("WebGL initialization failed early on".into()),
         };
@@ -238,7 +224,7 @@ impl WebGLRenderingContext {
         let (sender, receiver) = webgl_channel().unwrap();
         webgl_chan
             .send(WebGLMsg::CreateContext(
-                webview_id.into(),
+                window.webview_id().into(),
                 webgl_version,
                 size,
                 attrs,
@@ -302,7 +288,7 @@ impl WebGLRenderingContext {
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGLRenderingContext>> {
         match WebGLRenderingContext::new_inherited(
-            window.upcast::<GlobalScope>(),
+            window,
             HTMLCanvasElementOrOffscreenCanvas::from(canvas),
             webgl_version,
             size,
@@ -331,37 +317,6 @@ impl WebGLRenderingContext {
                         event.upcast::<Event>().fire(cx, canvas.upcast());
                     },
                 }
-                None
-            },
-        }
-    }
-
-    /// (Bao) Worker-realm entry point for OffscreenCanvas WebGL contexts: the worker
-    /// inherits the parent `Window`'s WebGL channel (REQ-BRW-004 C14). Unlike the
-    /// `Window` path there is no `webglcontextcreationerror` event surface here, so
-    /// failures are logged and surfaced as `null`.
-    pub(crate) fn new_in_worker(
-        cx: &mut JSContext,
-        global: &GlobalScope,
-        canvas: &RootedHTMLCanvasElementOrOffscreenCanvas,
-        webgl_version: WebGLVersion,
-        size: Size2D<u32>,
-        attrs: GLContextAttributes,
-    ) -> Option<DomRoot<WebGLRenderingContext>> {
-        match WebGLRenderingContext::new_inherited(
-            global,
-            HTMLCanvasElementOrOffscreenCanvas::from(canvas),
-            webgl_version,
-            size,
-            attrs,
-        ) {
-            Ok(ctx) => Some(reflect_weak_referenceable_dom_object(
-                cx,
-                Rc::new(ctx),
-                global,
-            )),
-            Err(msg) => {
-                error!("Couldn't create WebGLRenderingContext: {}", msg);
                 None
             },
         }
@@ -2141,13 +2096,9 @@ impl CanvasContext for WebGLRenderingContext {
         }
 
         // Dirtying the canvas is unnecessary if we're actively displaying immersive
-        // XR content right now. (Bao) XR sessions only exist on `Window` globals;
-        // worker OffscreenCanvas contexts have no document canvas to dirty
-        // (REQ-BRW-004 C14).
-        if let Some(window) = self.global().downcast::<Window>() {
-            if window.in_immersive_xr_session() {
-                return;
-            }
+        // XR content right now.
+        if self.global().as_window().in_immersive_xr_session() {
+            return;
         }
 
         self.canvas.mark_as_dirty();
@@ -2236,24 +2187,24 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
         match parameter {
             constants::ARRAY_BUFFER_BINDING => {
-                self.bound_buffer_array.get().safe_to_jsval(cx, retval);
+                self.bound_buffer_array.get().to_jsval(cx, retval);
                 return;
             },
             constants::CURRENT_PROGRAM => {
-                self.current_program.get().safe_to_jsval(cx, retval);
+                self.current_program.get().to_jsval(cx, retval);
                 return;
             },
             constants::ELEMENT_ARRAY_BUFFER_BINDING => {
                 let buffer = self.current_vao(cx).element_array_buffer().get();
-                buffer.safe_to_jsval(cx, retval);
+                buffer.to_jsval(cx, retval);
                 return;
             },
             constants::FRAMEBUFFER_BINDING => {
-                self.bound_draw_framebuffer.get().safe_to_jsval(cx, retval);
+                self.bound_draw_framebuffer.get().to_jsval(cx, retval);
                 return;
             },
             constants::RENDERBUFFER_BINDING => {
-                self.bound_renderbuffer.get().safe_to_jsval(cx, retval);
+                self.bound_renderbuffer.get().to_jsval(cx, retval);
                 return;
             },
             constants::TEXTURE_BINDING_2D => {
@@ -2262,7 +2213,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                     .active_texture_slot(constants::TEXTURE_2D, self.webgl_version())
                     .unwrap()
                     .get();
-                texture.safe_to_jsval(cx, retval);
+                texture.to_jsval(cx, retval);
                 return;
             },
             WebGL2RenderingContextConstants::TEXTURE_BINDING_2D_ARRAY => {
@@ -2274,7 +2225,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                     )
                     .unwrap()
                     .get();
-                texture.safe_to_jsval(cx, retval);
+                texture.to_jsval(cx, retval);
                 return;
             },
             WebGL2RenderingContextConstants::TEXTURE_BINDING_3D => {
@@ -2286,7 +2237,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                     )
                     .unwrap()
                     .get();
-                texture.safe_to_jsval(cx, retval);
+                texture.to_jsval(cx, retval);
                 return;
             },
             constants::TEXTURE_BINDING_CUBE_MAP => {
@@ -2295,12 +2246,12 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                     .active_texture_slot(constants::TEXTURE_CUBE_MAP, self.webgl_version())
                     .unwrap()
                     .get();
-                texture.safe_to_jsval(cx, retval);
+                texture.to_jsval(cx, retval);
                 return;
             },
             OESVertexArrayObjectConstants::VERTEX_ARRAY_BINDING_OES => {
                 let vao = self.current_vao.get().filter(|vao| vao.id().is_some());
-                vao.safe_to_jsval(cx, retval);
+                vao.to_jsval(cx, retval);
                 return;
             },
             // In readPixels we currently support RGBA/UBYTE only.  If
@@ -2330,15 +2281,15 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 return retval.set(ObjectValue(rval.get()));
             },
             constants::VERSION => {
-                "WebGL 1.0".safe_to_jsval(cx, retval);
+                "WebGL 1.0".to_jsval(cx, retval);
                 return;
             },
             constants::RENDERER | constants::VENDOR => {
-                "Mozilla/Servo".safe_to_jsval(cx, retval);
+                "Mozilla/Servo".to_jsval(cx, retval);
                 return;
             },
             constants::SHADING_LANGUAGE_VERSION => {
-                "WebGL GLSL ES 1.0".safe_to_jsval(cx, retval);
+                "WebGL GLSL ES 1.0".to_jsval(cx, retval);
                 return;
             },
             constants::UNPACK_FLIP_Y_WEBGL => {
@@ -2419,14 +2370,13 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             Parameter::Bool4(param) => {
                 let (sender, receiver) = webgl_channel().unwrap();
                 self.send_command(WebGLCommand::GetParameterBool4(param, sender));
-                receiver.recv().unwrap().safe_to_jsval(cx, retval);
+                receiver.recv().unwrap().to_jsval(cx, retval);
             },
             Parameter::Int(param) => {
                 let (sender, receiver) = webgl_channel().unwrap();
                 self.send_command(WebGLCommand::GetParameterInt(param, sender));
                 retval.set(Int32Value(receiver.recv().unwrap()))
             },
-            // upstream b7e3ade7a (#48441): stencil masks are GLuints.
             Parameter::UInt(param) => {
                 let (sender, receiver) = webgl_channel().unwrap();
                 self.send_command(WebGLCommand::GetParameterUInt(param, sender));
@@ -3471,11 +3421,11 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             if let Some(webgl_attachment) = fb.attachment(attachment) {
                 match webgl_attachment {
                     WebGLFramebufferAttachmentRoot::Renderbuffer(rb) => {
-                        rb.safe_to_jsval(cx, retval);
+                        rb.to_jsval(cx, retval);
                         return;
                     },
                     WebGLFramebufferAttachmentRoot::Texture(texture) => {
-                        texture.safe_to_jsval(cx, retval);
+                        texture.to_jsval(cx, retval);
                         return;
                     },
                 }
@@ -3668,12 +3618,9 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         ));
 
         let (range_min, range_max, precision) = receiver.recv().unwrap();
-        // (Bao) Reflect on the owning global, not `as_window()`: shader
-        // precision probes are reachable from worker `OffscreenCanvas` WebGL
-        // contexts (REQ-BRW-004 C14).
         Some(WebGLShaderPrecisionFormat::new(
             cx,
-            &self.global(),
+            self.global().as_window(),
             range_min,
             range_max,
             precision,
@@ -3743,7 +3690,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 constants::VERTEX_ATTRIB_ARRAY_STRIDE => retval.set(Int32Value(data.stride as i32)),
                 constants::VERTEX_ATTRIB_ARRAY_BUFFER_BINDING => {
                     if let Some(buffer) = data.buffer() {
-                        buffer.safe_to_jsval(cx, retval.reborrow());
+                        buffer.to_jsval(cx, retval.reborrow());
                     } else {
                         retval.set(NullValue());
                     }
@@ -4366,13 +4313,13 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 WebGLCommand::GetUniformBool,
             ))),
             constants::BOOL_VEC2 => {
-                uniform_get(triple, WebGLCommand::GetUniformBool2).safe_to_jsval(cx, rval)
+                uniform_get(triple, WebGLCommand::GetUniformBool2).to_jsval(cx, rval)
             },
             constants::BOOL_VEC3 => {
-                uniform_get(triple, WebGLCommand::GetUniformBool3).safe_to_jsval(cx, rval)
+                uniform_get(triple, WebGLCommand::GetUniformBool3).to_jsval(cx, rval)
             },
             constants::BOOL_VEC4 => {
-                uniform_get(triple, WebGLCommand::GetUniformBool4).safe_to_jsval(cx, rval)
+                uniform_get(triple, WebGLCommand::GetUniformBool4).to_jsval(cx, rval)
             },
             constants::INT |
             constants::SAMPLER_2D |

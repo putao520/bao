@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, Ref, RefCell};
 use std::collections::hash_map::Entry;
@@ -9,7 +11,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
 use std::mem;
 use std::ops::{Deref, Index};
-use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,16 +26,14 @@ use embedder_traits::{
 };
 use fonts::FontContext;
 use indexmap::IndexSet;
-use ipc_channel::router::ROUTER;
 use js::context::{JSContext, NoGC};
 use js::jsapi::{GetNonCCWObjectGlobal, HandleObject, Heap, JSObject};
 use js::jsval::UndefinedValue;
 use js::panic::maybe_resume_unwind;
 use js::realm::CurrentRealm;
-use js::rust::wrappers2::{Compile1, CurrentGlobalOrNull};
+use js::rust::wrappers2::{Compile1, CurrentGlobalOrNull, JS_ExecuteScript};
 use js::rust::{
-    CustomAutoRooter, CustomAutoRooterGuard, HandleValue, MutableHandleValue, ParentRuntime,
-    get_object_class, transform_str_to_source_text,
+    HandleValue, MutableHandleValue, ParentRuntime, get_object_class, transform_str_to_source_text,
 };
 use js::{JSCLASS_IS_DOMJSCLASS, JSCLASS_IS_GLOBAL};
 use net_traits::blob_url_store::BlobBuf;
@@ -45,22 +44,16 @@ use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder, RequestClient,
-    ServiceWorkersMode,
 };
-use net_traits::{
-    CoreResourceMsg, CoreResourceThread, ReferrerPolicy, ResourceThreads, fetch_async,
-};
+use net_traits::{CoreResourceMsg, CoreResourceThread, ReferrerPolicy, ResourceThreads};
 use profile_traits::{
-    generic_channel as profile_generic_channel, ipc as profile_ipc, mem as profile_mem,
-    time as profile_time,
+    generic_callback as profile_generic_callback, generic_channel as profile_generic_channel,
+    mem as profile_mem, time as profile_time,
 };
 use rustc_hash::{FxBuildHasher, FxHashMap};
-// BAO patch (fork-maintained, 2026-09-27): rooted/traced callback replay
-// (GC root safety series, REQ-BRW-047 wave ①).
-use script_bindings::callback::{RootedCallback, TracedCallback};
-use script_bindings::callback::OwnerWindow;
+use script_bindings::callback::{OwnerWindow, RootedCallback, TracedCallback};
 use script_bindings::cell::{DomRefCell, RefMut};
-use script_bindings::interfaces::{GlobalScopeHelpers, StackRootPromiseHelpers, HeapTracedPromiseHelpers};
+use script_bindings::interfaces::GlobalScopeHelpers;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
 use servo_base::generic_channel;
@@ -72,7 +65,7 @@ use servo_base::id::{
 use servo_config::pref;
 use servo_constellation_traits::{
     BlobData, BlobImpl, BroadcastChannelMsg, ConstellationInterest, FileBlob, MessagePortImpl,
-    MessagePortMsg, PortMessageTask, ScriptToConstellationChan, ScriptToConstellationMessage,
+    PortMessageTask, ScriptToConstellationChan, ScriptToConstellationMessage,
     ScriptToConstellationSender,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
@@ -100,12 +93,11 @@ use crate::dom::bindings::conversions::{root_from_object, root_from_object_stati
 #[cfg(feature = "js_backtrace")]
 use crate::dom::bindings::error::LAST_EXCEPTION_BACKTRACE;
 use crate::dom::bindings::error::{
-    Error, ErrorInfo, Fallible, report_pending_exception, take_and_report_pending_exception_for_api,
+    ErrorInfo, Fallible, report_pending_exception, take_and_report_pending_exception_for_api,
 };
 use crate::dom::bindings::frozenarray::CachedFrozenArray;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
-use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::settings_stack::{entry_global, incumbent_global};
 use crate::dom::bindings::str::DOMString;
@@ -122,14 +114,22 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventsource::EventSource;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::file::File;
+use crate::dom::globalscope::auto_close_worker::AutoCloseWorker;
 use crate::dom::globalscope::broadcastchannel::BroadcastChannel;
-use crate::dom::globalscope::script_execution::{evaluate_script, fill_compile_options};
+use crate::dom::globalscope::listeners::{
+    BlobInfo, BlobResult, BlobTracker, BroadcastChannelState, BroadcastListener, FileListener,
+    FileListenerCallback, FileListenerState, FileListenerTarget, ManagedMessagePort,
+    MessageListener, MessagePortState,
+};
+use crate::dom::globalscope::script_execution::{
+    fill_compile_options, maybe_associate_with_script,
+};
 use crate::dom::idbfactory::IDBFactory;
 use crate::dom::messageport::MessagePort;
 use crate::dom::paintworkletglobalscope::PaintWorkletGlobalScope;
 use crate::dom::performance::performance::Performance;
 use crate::dom::performance::performanceentry::EntryType;
-use crate::dom::promise::{Promise, RootedPromise};
+use crate::dom::promise::RootedPromise;
 use crate::dom::readablestream::{CrossRealmTransformReadable, ReadableStream};
 use crate::dom::script_execution::ScriptOptions;
 use crate::dom::serviceworker::ServiceWorker;
@@ -152,70 +152,19 @@ use crate::event_loop::timers::{
     IsInterval, JsTimerTaskData, OneshotTimerCallback, OneshotTimerHandle, OneshotTimers,
     RootedInternalTimerCallback, TimerCallback, TimerEventId, TimerSource,
 };
-use crate::fetch::fetch::{DeferredFetchRecordId, FetchGroup, QueuedDeferredFetchRecord};
+use crate::fetch::fetch::FetchGroup;
 use crate::fetch::network_listener::{FetchResponseListener, NetworkListener};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
 use crate::modules::import_map::ImportMap;
 use crate::modules::script_module::{
-    ModuleRequest, ModuleStatus, ModuleTree, ResolvedModule, ScriptFetchOptions,
+    ModuleRequest, ModuleStatus, ResolvedModule, ScriptFetchOptions,
 };
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 use crate::runtime::script_runtime::ThreadSafeJSContext;
 use crate::tasks::task_manager::TaskManager;
 use crate::tasks::task_source::SendableTaskSource;
 use crate::unminify::unminified_path;
-
-#[derive(JSTraceable, MallocSizeOf)]
-pub(crate) struct AutoCloseWorker {
-    /// <https://html.spec.whatwg.org/multipage/#dom-workerglobalscope-closing>
-    #[conditional_malloc_size_of]
-    closing: Arc<AtomicBool>,
-    #[conditional_malloc_size_of]
-    animation_frame_provider_supported: Arc<AtomicBool>,
-    /// A handle to join on the worker thread.
-    #[ignore_malloc_size_of = "JoinHandle"]
-    join_handle: Option<JoinHandle<()>>,
-    /// A sender of control messages.
-    #[no_trace]
-    control_sender: Sender<DedicatedWorkerControlMsg>,
-    /// The context to request an interrupt on the worker thread.
-    #[ignore_malloc_size_of = "mozjs"]
-    #[no_trace]
-    context: ThreadSafeJSContext,
-}
-
-impl Drop for AutoCloseWorker {
-    /// <https://html.spec.whatwg.org/multipage/#terminate-a-worker>
-    fn drop(&mut self) {
-        // Step 1. Set the worker's `WorkerGlobalScope` object's closing flag to true.
-        self.closing.store(true, Ordering::SeqCst);
-
-        if self
-            .control_sender
-            .send(DedicatedWorkerControlMsg::Exit)
-            .is_err()
-        {
-            warn!("Couldn't send an exit message to a dedicated worker.");
-        }
-
-        self.context.request_interrupt_callback();
-
-        // Step 2. If there are any tasks queued in the `WorkerGlobalScope` object's relevant agent's event loop's task queues, discard them without processing them.
-        // Step 3. Abort the script currently running in the worker.
-        // Step 4. If the worker's WorkerGlobalScope object is actually a DedicatedWorkerGlobalScope object (i.e. the worker is a dedicated worker), then empty the port message queue of the port that the worker's implicit port is entangled with.
-        // TODO Steps 2-4.
-        if self
-            .join_handle
-            .take()
-            .expect("No handle to join on worker.")
-            .join()
-            .is_err()
-        {
-            warn!("Failed to join on dedicated worker thread.");
-        }
-    }
-}
 
 #[dom_struct]
 pub(crate) struct GlobalScope {
@@ -231,7 +180,6 @@ pub(crate) struct GlobalScope {
     /// When the count transitions from 0 to 1, a RegisterInterest message is sent.
     /// When it transitions from 1 to 0, an UnregisterInterest message is sent.
     #[no_trace]
-    // BAO patch (fork-maintained, 2026-09-27): 57c714a0e FxHashMap replay.
     constellation_interest_counts: RefCell<FxHashMap<ConstellationInterest, usize>>,
 
     /// The blobs managed by this global, if any.
@@ -254,11 +202,6 @@ pub(crate) struct GlobalScope {
 
     /// Timers (milliseconds) used by the Console API.
     console_timers: DomRefCell<HashMap<DOMString, Instant>>,
-
-    /// module map is used when importing JavaScript modules
-    /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
-    #[ignore_malloc_size_of = "mozjs"]
-    module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
 
     /// For providing instructions to an optional devtools server.
     #[no_trace]
@@ -372,19 +315,16 @@ pub(crate) struct GlobalScope {
     /// `size` getter of `ByteLengthQueuingStrategy` is called.
     ///
     /// <https://streams.spec.whatwg.org/#byte-length-queuing-strategy-size-function>
-    #[ignore_malloc_size_of = "callbacks are hard"]
-    byte_length_queuing_strategy_size_function: OnceCell<Rc<Function>>,
+    byte_length_queuing_strategy_size_function: OnceCell<TracedCallback<Function>>,
 
     /// The count queuing strategy size function that will be initialized once
     /// `size` getter of `CountQueuingStrategy` is called.
     ///
     /// <https://streams.spec.whatwg.org/#count-queuing-strategy-size-function>
-    #[ignore_malloc_size_of = "callbacks are hard"]
-    count_queuing_strategy_size_function: OnceCell<Rc<Function>>,
+    count_queuing_strategy_size_function: OnceCell<TracedCallback<Function>>,
 
-    #[ignore_malloc_size_of = "callbacks are hard"]
     notification_permission_request_callback_map:
-        DomRefCell<HashMap<String, Rc<NotificationPermissionCallback>>>,
+        DomRefCell<HashMap<String, TracedCallback<NotificationPermissionCallback>>>,
 
     /// An import map allows control over module specifier resolution.
     /// For now, only Window global objects have their import map modified from the initial empty one.
@@ -397,337 +337,7 @@ pub(crate) struct GlobalScope {
 
     /// <https://fetch.spec.whatwg.org/#environment-settings-object-fetch-group>
     #[no_trace]
-    #[no_trace]
     fetch_group: RefCell<FetchGroup>,
-}
-
-/// A wrapper for glue-code between the ipc router and the event-loop.
-struct MessageListener {
-    task_source: SendableTaskSource,
-    context: Trusted<GlobalScope>,
-}
-
-/// A wrapper for broadcasts coming in over IPC, and the event-loop.
-struct BroadcastListener {
-    task_source: SendableTaskSource,
-    context: Trusted<GlobalScope>,
-}
-
-type FileListenerCallback =
-    Box<dyn Fn(&mut js::context::JSContext, RootedPromise, Fallible<Vec<u8>>) + Send>;
-
-/// A wrapper for the handling of file data received by the ipc router
-struct FileListener {
-    /// State should progress as either of:
-    /// - Some(Empty) => Some(Receiving) => None
-    /// - Some(Empty) => None
-    state: Option<FileListenerState>,
-    task_source: SendableTaskSource,
-}
-
-enum FileListenerTarget {
-    Promise(TrustedPromise, FileListenerCallback),
-    Stream(Trusted<ReadableStream>),
-}
-
-enum FileListenerState {
-    Empty(FileListenerTarget),
-    Receiving(Vec<u8>, FileListenerTarget),
-}
-
-#[derive(JSTraceable, MallocSizeOf)]
-/// A holder of a weak reference for a DOM blob or file.
-pub(crate) enum BlobTracker {
-    /// A weak ref to a DOM file.
-    File(WeakRef<File>),
-    /// A weak ref to a DOM blob.
-    Blob(WeakRef<Blob>),
-}
-
-#[derive(JSTraceable, MallocSizeOf)]
-/// The info pertaining to a blob managed by this global.
-pub(crate) struct BlobInfo {
-    /// The weak ref to the corresponding DOM object.
-    tracker: BlobTracker,
-    /// The data and logic backing the DOM object.
-    #[no_trace]
-    blob_impl: BlobImpl,
-    /// Whether this blob has an outstanding URL,
-    /// <https://w3c.github.io/FileAPI/#url>.
-    has_url: bool,
-}
-
-/// The result of looking-up the data for a Blob,
-/// containing either the in-memory bytes,
-/// or the file-id.
-enum BlobResult {
-    Bytes(Vec<u8>),
-    File(Uuid, usize),
-}
-
-/// Data representing a message-port managed by this global.
-#[derive(JSTraceable, MallocSizeOf)]
-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-pub(crate) struct ManagedMessagePort {
-    /// The DOM port.
-    dom_port: Dom<MessagePort>,
-    /// The logic and data backing the DOM port.
-    /// The option is needed to take out the port-impl
-    /// as part of its transferring steps,
-    /// without having to worry about rooting the dom-port.
-    #[no_trace]
-    port_impl: Option<MessagePortImpl>,
-    /// We keep ports pending when they are first transfer-received,
-    /// and only add them, and ask the constellation to complete the transfer,
-    /// in a subsequent task if the port hasn't been re-transfered.
-    pending: bool,
-    /// Whether the port has been closed by script in this global,
-    /// so it can be removed.
-    explicitly_closed: bool,
-    /// The handler for `message` or `messageerror` used in the cross realm transform,
-    /// if any was setup with this port.
-    cross_realm_transform: Option<CrossRealmTransform>,
-}
-
-/// State representing whether this global is currently managing broadcast channels.
-#[derive(JSTraceable, MallocSizeOf)]
-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-pub(crate) enum BroadcastChannelState {
-    /// The broadcast-channel router id for this global, and a queue of managed channels.
-    /// Step 9, "sort destinations"
-    /// of <https://html.spec.whatwg.org/multipage/#dom-broadcastchannel-postmessage>
-    /// requires keeping track of creation order, hence the queue.
-    Managed(
-        #[no_trace] BroadcastChannelRouterId,
-        /// The map of channel-name to queue of channels, in order of creation.
-        HashMap<DOMString, VecDeque<Dom<BroadcastChannel>>>,
-    ),
-    /// This global is not managing any broadcast channels at this time.
-    UnManaged,
-}
-
-/// State representing whether this global is currently managing messageports.
-#[derive(JSTraceable, MallocSizeOf)]
-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-pub(crate) enum MessagePortState {
-    /// The message-port router id for this global, and a map of managed ports.
-    Managed(
-        #[no_trace] MessagePortRouterId,
-        HashMapTracedValues<MessagePortId, ManagedMessagePort, FxBuildHasher>,
-    ),
-    /// This global is not managing any ports at this time.
-    UnManaged,
-}
-
-impl BroadcastListener {
-    /// Handle a broadcast coming in over IPC,
-    /// by queueing the appropriate task on the relevant event-loop.
-    fn handle(&self, event: BroadcastChannelMsg) {
-        let context = self.context.clone();
-
-        // Note: strictly speaking we should just queue the message event tasks,
-        // not queue a task that then queues more tasks.
-        // This however seems to be hard to avoid in the light of the IPC.
-        // One can imagine queueing tasks directly,
-        // for channels that would be in the same script-thread.
-        self.task_source
-            .queue(task!(broadcast_message_event: move || {
-                let global = context.root();
-                // Step 10 of https://html.spec.whatwg.org/multipage/#dom-broadcastchannel-postmessage,
-                // For each BroadcastChannel object destination in destinations, queue a task.
-                global.broadcast_message_event(event, None);
-            }));
-    }
-}
-
-impl MessageListener {
-    /// A new message came in, handle it via a task enqueued on the event-loop.
-    /// A task is required, since we are using a trusted globalscope,
-    /// and we can only access the root from the event-loop.
-    fn notify(&self, msg: MessagePortMsg) {
-        match msg {
-            MessagePortMsg::CompleteTransfer(ports) => {
-                let context = self.context.clone();
-                self.task_source.queue(
-                    task!(process_complete_transfer: move |cx| {
-                        let global = context.root();
-
-                        let router_id = match global.port_router_id() {
-                            Some(router_id) => router_id,
-                            None => {
-                                // If not managing any ports, no transfer can succeed,
-                                // so just send back everything.
-                                let _ = global.script_to_constellation_chan().send(
-                                    ScriptToConstellationMessage::MessagePortTransferResult(None, vec![], ports),
-                                );
-                                return;
-                            }
-                        };
-
-                        let mut succeeded = vec![];
-                        let mut failed = FxHashMap::default();
-
-                        for (id, info) in ports.into_iter() {
-                            if global.is_managing_port(&id) {
-                                succeeded.push(id);
-                                global.complete_port_transfer(
-                                    cx,
-                                    id,
-                                    info.port_message_queue,
-                                    info.disentangled,
-                                );
-                            } else {
-                                failed.insert(id, info);
-                            }
-                        }
-                        let _ = global.script_to_constellation_chan().send(
-                            ScriptToConstellationMessage::MessagePortTransferResult(Some(router_id), succeeded, failed),
-                        );
-                    })
-                );
-            },
-            MessagePortMsg::CompletePendingTransfer(port_id, info) => {
-                let context = self.context.clone();
-                self.task_source.queue(task!(complete_pending: move |cx| {
-                    let global = context.root();
-                    global.complete_port_transfer(cx, port_id, info.port_message_queue, info.disentangled);
-                }));
-            },
-            MessagePortMsg::CompleteDisentanglement(port_id) => {
-                let context = self.context.clone();
-                self.task_source
-                    .queue(task!(try_complete_disentanglement: move |cx| {
-                        let global = context.root();
-                        global.try_complete_disentanglement(cx, port_id);
-                    }));
-            },
-            MessagePortMsg::NewTask(port_id, task) => {
-                let context = self.context.clone();
-                self.task_source.queue(task!(process_new_task: move |cx| {
-                    let global = context.root();
-                    global.route_task_to_port(cx, port_id, task);
-                }));
-            },
-        }
-    }
-}
-
-/// Callback used to enqueue file chunks to streams as part of FileListener.
-fn stream_handle_incoming(
-    cx: &mut js::context::JSContext,
-    stream: &ReadableStream,
-    bytes: Fallible<Vec<u8>>,
-) {
-    match bytes {
-        Ok(b) => {
-            stream.enqueue_native(cx, b);
-        },
-        Err(e) => {
-            stream.error_native(cx, e);
-        },
-    }
-}
-
-/// Callback used to close streams as part of FileListener.
-fn stream_handle_eof(cx: &mut js::context::JSContext, stream: &ReadableStream) {
-    stream.controller_close_native(cx);
-}
-
-impl FileListener {
-    fn handle(&mut self, msg: FileManagerResult<ReadFileProgress>) {
-        match msg {
-            Ok(ReadFileProgress::Meta(blob_buf)) => match self.state.take() {
-                Some(FileListenerState::Empty(target)) => {
-                    let bytes = if let FileListenerTarget::Stream(ref trusted_stream) = target {
-                        let trusted = trusted_stream.clone();
-
-                        let task = task!(enqueue_stream_chunk: move |cx| {
-                            let stream = trusted.root();
-                            stream_handle_incoming(cx, &stream, Ok(blob_buf.bytes));
-                        });
-                        self.task_source.queue(task);
-
-                        Vec::with_capacity(0)
-                    } else {
-                        blob_buf.bytes
-                    };
-
-                    self.state = Some(FileListenerState::Receiving(bytes, target));
-                },
-                _ => panic!(
-                    "Unexpected FileListenerState when receiving ReadFileProgress::Meta msg."
-                ),
-            },
-            Ok(ReadFileProgress::Partial(mut bytes_in)) => match self.state.take() {
-                Some(FileListenerState::Receiving(mut bytes, target)) => {
-                    if let FileListenerTarget::Stream(ref trusted_stream) = target {
-                        let trusted = trusted_stream.clone();
-
-                        let task = task!(enqueue_stream_chunk: move |cx| {
-                            let stream = trusted.root();
-                            stream_handle_incoming(cx, &stream, Ok(bytes_in));
-                        });
-
-                        self.task_source.queue(task);
-                    } else {
-                        bytes.append(&mut bytes_in);
-                    };
-
-                    self.state = Some(FileListenerState::Receiving(bytes, target));
-                },
-                _ => panic!(
-                    "Unexpected FileListenerState when receiving ReadFileProgress::Partial msg."
-                ),
-            },
-            Ok(ReadFileProgress::EOF) => match self.state.take() {
-                Some(FileListenerState::Receiving(bytes, target)) => match target {
-                    FileListenerTarget::Promise(trusted_promise, callback) => {
-                        let task = task!(resolve_promise: move |cx| {
-                            let promise = trusted_promise.root(cx);
-                            let mut realm = enter_auto_realm(cx, &*promise.global());
-                            callback(&mut realm, promise, Ok(bytes));
-                        });
-
-                        self.task_source.queue(task);
-                    },
-                    FileListenerTarget::Stream(trusted_stream) => {
-                        let task = task!(enqueue_stream_chunk: move |cx| {
-                            let stream = trusted_stream.root();
-                            stream_handle_eof(cx, &stream);
-                        });
-
-                        self.task_source.queue(task);
-                    },
-                },
-                _ => {
-                    panic!("Unexpected FileListenerState when receiving ReadFileProgress::EOF msg.")
-                },
-            },
-            Err(_) => match self.state.take() {
-                Some(FileListenerState::Receiving(_, target)) |
-                Some(FileListenerState::Empty(target)) => {
-                    let error = Err(Error::Network(None));
-
-                    match target {
-                        FileListenerTarget::Promise(trusted_promise, callback) => {
-                            self.task_source.queue(task!(reject_promise: move |cx| {
-                                let promise = trusted_promise.root(cx);
-                                let mut realm = enter_auto_realm(cx, &*promise.global());
-                                callback(&mut realm, promise, error);
-                            }));
-                        },
-                        FileListenerTarget::Stream(trusted_stream) => {
-                            self.task_source.queue(task!(error_stream: move |cx| {
-                                let stream = trusted_stream.root();
-                                stream_handle_incoming(cx, &stream, error);
-                            }));
-                        },
-                    }
-                },
-                _ => panic!("Unexpected FileListenerState when receiving Err msg."),
-            },
-        }
-    }
 }
 
 impl GlobalScope {
@@ -758,9 +368,6 @@ impl GlobalScope {
         Some(key)
     }
 
-    /// A sender to the event loop of this global scope. This either sends to the Worker event loop
-    /// or the ScriptThread event loop in the case of a `Window`. This can be `None` for dedicated
-    /// workers that are not currently handling a message.
     pub(crate) fn webview_id(&self) -> Option<WebViewId> {
         if let Some(window) = self.downcast::<Window>() {
             return Some(window.webview_id());
@@ -771,38 +378,8 @@ impl GlobalScope {
         if let Some(worker) = self.downcast::<SharedWorkerGlobalScope>() {
             return Some(worker.webview_id());
         }
-        // BAO PATCH (AudioWorklet 段(1), user ruling 2026-10-05): worklet
-        // realms carry their creating page's webview identity (plumbed via
-        // WorkletGlobalScopeInit from the Window). This is what makes the
-        // worklet module fetch (RequestBuilder::new(global.webview_id(), ..)
-        // in script_module.rs) a webview-keyed request — SW interception and
-        // per-webview stealth wire attribution work for worklet modules the
-        // same way they do for page/worker fetches. Before this arm a
-        // worklet module fetch was a webview-less request.
-        if let Some(worklet) = self.downcast::<crate::dom::workletglobalscope::WorkletGlobalScope>() {
-            return worklet.webview_id();
-        }
         // TODO: This should only return None for ServiceWorkerGlobalScope.
         None
-    }
-
-    /// Bao vendor patch (R53-A net face): the webview identity for
-    /// PAGE-EGRESS network requests (`fetch()` / XHR Request construction).
-    /// Identical to [`GlobalScope::webview_id`] except that a
-    /// `ServiceWorkerGlobalScope` — whose `webview_id()` is `None` by
-    /// upstream design (storage partitioning etc. deliberately see no
-    /// owning webview) — resolves to the REGISTERING page's WebViewId
-    /// (`ScopeThings` inheritance, `owning_webview_id`), so SW-realm
-    /// egress rides the host page's per-webview stealth TLS/H2 wire
-    /// profile. Dedicated and shared workers already carry their owning
-    /// page's webview id natively through `webview_id()`.
-    pub(crate) fn egress_webview_id(&self) -> Option<WebViewId> {
-        if let Some(sw) = self
-            .downcast::<crate::dom::serviceworker::serviceworkerglobalscope::ServiceWorkerGlobalScope>()
-        {
-            return sw.owning_webview_id();
-        }
-        self.webview_id()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -820,6 +397,7 @@ impl GlobalScope {
         inherited_secure_context: Option<bool>,
         unminify_js: bool,
     ) -> Self {
+        let fetch_group = RefCell::new(FetchGroup::new(resource_threads.sender()));
         Self {
             message_port_state: DomRefCell::new(MessagePortState::UnManaged),
             broadcast_channel_state: DomRefCell::new(BroadcastChannelState::UnManaged),
@@ -830,8 +408,6 @@ impl GlobalScope {
             indexeddb: Default::default(),
             worker_map: DomRefCell::new(HashMapTracedValues::new_fx()),
             console_timers: DomRefCell::new(Default::default()),
-            fetch_group: Default::default(),
-            module_map: DomRefCell::new(Default::default()),
             devtools_chan,
             mem_profiler_chan,
             time_profiler_chan,
@@ -862,11 +438,12 @@ impl GlobalScope {
             notification_permission_request_callback_map: Default::default(),
             import_map: Default::default(),
             resolved_module_set: Default::default(),
+            fetch_group,
         }
     }
 
     /// The message-port router Id of the global, if any
-    pub(crate) fn port_router_id(&self) -> Option<MessagePortRouterId> {
+    pub(super) fn port_router_id(&self) -> Option<MessagePortRouterId> {
         if let MessagePortState::Managed(id, _message_ports) = &*self.message_port_state.borrow() {
             Some(*id)
         } else {
@@ -875,7 +452,7 @@ impl GlobalScope {
     }
 
     /// Is this global managing a given port?
-    pub(crate) fn is_managing_port(&self, port_id: &MessagePortId) -> bool {
+    pub(super) fn is_managing_port(&self, port_id: &MessagePortId) -> bool {
         if let MessagePortState::Managed(_router_id, message_ports) =
             &*self.message_port_state.borrow()
         {
@@ -913,8 +490,8 @@ impl GlobalScope {
         scope: &ServoUrl,
         registration_id: ServiceWorkerRegistrationId,
         installing_worker: Option<ServiceWorkerId>,
-        waiting_worker: Option<ServiceWorkerId>,
-        active_worker: Option<ServiceWorkerId>,
+        _waiting_worker: Option<ServiceWorkerId>,
+        _active_worker: Option<ServiceWorkerId>,
     ) -> DomRoot<ServiceWorkerRegistration> {
         // Step 1
         {
@@ -936,24 +513,9 @@ impl GlobalScope {
             new_registration.set_installing(&worker);
         }
 
-        // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): upstream TODOs
-        // 2.7/2.8 — materialize the waiting/active DOM ServiceWorker objects
-        // from the manager's registration slots (the manager-side Try Activate
-        // patch populates the active slot at install time). Membership comes
-        // from the manager; the worker *state* is NOT inferred here — it
-        // transitions to "activated" only via the worker-thread-evidenced
-        // WorkerActivated relay.
-        // Step 2.7 (waiting worker)
-        if let Some(worker_id) = waiting_worker {
-            let worker = self.get_serviceworker(cx, script_url, scope, worker_id);
-            new_registration.set_waiting(&worker);
-        }
+        // TODO: 2.7 (waiting worker)
 
-        // Step 2.8 (active worker)
-        if let Some(worker_id) = active_worker {
-            let worker = self.get_serviceworker(cx, script_url, scope, worker_id);
-            new_registration.set_active(&worker);
-        }
+        // TODO: 2.8 (active worker)
 
         // Step 2.9
         self.registration_map
@@ -962,35 +524,6 @@ impl GlobalScope {
 
         // Step 3
         new_registration
-    }
-
-    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): look up a
-    /// previously-materialized DOM ServiceWorker object by its manager-side
-    /// id — the lookup half of
-    /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
-    /// Step 1, used by the lifecycle relays (Update Worker State).
-    pub(crate) fn get_serviceworker_by_id(
-        &self,
-        worker_id: ServiceWorkerId,
-    ) -> Option<DomRoot<ServiceWorker>> {
-        self.worker_map
-            .borrow()
-            .get(&worker_id)
-            .map(|worker| DomRoot::from_ref(&**worker))
-    }
-
-    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): look up a
-    /// previously-materialized DOM ServiceWorkerRegistration object by its
-    /// manager-side id, used by the lifecycle relays (Update Registration
-    /// State → "updatefound").
-    pub(crate) fn get_serviceworker_registration_by_id(
-        &self,
-        registration_id: ServiceWorkerRegistrationId,
-    ) -> Option<DomRoot<ServiceWorkerRegistration>> {
-        self.registration_map
-            .borrow()
-            .get(&registration_id)
-            .map(|registration| DomRoot::from_ref(&**registration))
     }
 
     /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
@@ -1025,7 +558,7 @@ impl GlobalScope {
     }
 
     /// Complete the transfer of a message-port.
-    pub(crate) fn complete_port_transfer(
+    pub(super) fn complete_port_transfer(
         &self,
         cx: &mut js::context::JSContext,
         port_id: MessagePortId,
@@ -1065,7 +598,7 @@ impl GlobalScope {
 
     /// The closing of `otherPort`, if it is in a different global.
     /// <https://html.spec.whatwg.org/multipage/#disentangle>
-    pub(crate) fn try_complete_disentanglement(
+    pub(super) fn try_complete_disentanglement(
         &self,
         cx: &mut js::context::JSContext,
         port_id: MessagePortId,
@@ -1551,7 +1084,7 @@ impl GlobalScope {
 
     /// Custom routing logic, followed by the task steps of
     /// <https://html.spec.whatwg.org/multipage/#message-port-post-message-steps>
-    pub(crate) fn route_task_to_port(
+    pub(super) fn route_task_to_port(
         &self,
         cx: &mut js::context::JSContext,
         port_id: MessagePortId,
@@ -2249,7 +1782,9 @@ impl GlobalScope {
                     }
 
                     let origin = self.origin().immutable().clone();
-                    let (tx, rx) = profile_ipc::channel(self.time_profiler_chan().clone()).unwrap();
+                    let (tx, rx) =
+                        profile_generic_channel::channel(self.time_profiler_chan().clone())
+                            .unwrap();
 
                     let msg = FileManagerThreadMsg::ActivateBlobURL(f.get_id(), tx, origin);
                     self.send_to_file_manager(msg);
@@ -2285,7 +1820,13 @@ impl GlobalScope {
     }
 
     fn read_file(&self, id: Uuid) -> Result<Vec<u8>, ()> {
-        let recv = self.send_msg(id);
+        let (chan, recv) = profile_generic_callback::GenericCallback::new_blocking(
+            self.time_profiler_chan().clone(),
+        )
+        .expect("Couldn't create read_file callback");
+
+        self.send_msg(id, chan);
+
         GlobalScope::read_msg(recv)
     }
 
@@ -2309,8 +1850,6 @@ impl GlobalScope {
             UnderlyingSourceType::Blob(size),
         )?;
 
-        let recv = self.send_msg(file_id);
-
         let trusted_stream = Trusted::new(&*stream);
         let mut file_listener = FileListener {
             state: Some(FileListenerState::Empty(FileListenerTarget::Stream(
@@ -2319,12 +1858,12 @@ impl GlobalScope {
             task_source: self.task_manager().file_reading_task_source().into(),
         };
 
-        ROUTER.add_typed_route(
-            recv.to_ipc_receiver(),
-            Box::new(move |msg| {
-                file_listener.handle(msg.expect("Deserialization of file listener msg failed."));
-            }),
-        );
+        let chan = profile_generic_callback::GenericCallback::new(move |msg| {
+            file_listener.handle(msg.expect("Deserialization of file listener msg failed."));
+        })
+        .expect("Couldn't create get_blob_stream callback");
+
+        self.send_msg(file_id, chan);
 
         Ok(stream)
     }
@@ -2335,8 +1874,6 @@ impl GlobalScope {
         promise: &RootedPromise,
         callback: FileListenerCallback,
     ) {
-        let recv = self.send_msg(id);
-
         let trusted_promise = TrustedPromise::from(promise);
         let mut file_listener = FileListener {
             state: Some(FileListenerState::Empty(FileListenerTarget::Promise(
@@ -2346,25 +1883,27 @@ impl GlobalScope {
             task_source: self.task_manager().file_reading_task_source().into(),
         };
 
-        ROUTER.add_typed_route(
-            recv.to_ipc_receiver(),
-            Box::new(move |msg| {
-                file_listener.handle(msg.expect("Deserialization of file listener msg failed."));
-            }),
-        );
+        let chan = profile_generic_callback::GenericCallback::new(move |msg| {
+            file_listener.handle(msg.expect("Deserialization of file listener msg failed."));
+        })
+        .expect("Couldn't create read_file_async callback");
+
+        self.send_msg(id, chan);
     }
 
-    fn send_msg(&self, id: Uuid) -> profile_ipc::IpcReceiver<FileManagerResult<ReadFileProgress>> {
+    fn send_msg(
+        &self,
+        id: Uuid,
+        chan: profile_generic_callback::GenericCallback<FileManagerResult<ReadFileProgress>>,
+    ) {
         let resource_threads = self.resource_threads();
-        let (chan, recv) = profile_ipc::channel(self.time_profiler_chan().clone()).unwrap();
         let origin = self.origin().immutable().clone();
         let msg = FileManagerThreadMsg::ReadFile(chan, id, origin);
         let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));
-        recv
     }
 
     fn read_msg(
-        receiver: profile_ipc::IpcReceiver<FileManagerResult<ReadFileProgress>>,
+        receiver: profile_generic_channel::GenericReceiver<FileManagerResult<ReadFileProgress>>,
     ) -> Result<Vec<u8>, ()> {
         let mut bytes = vec![];
 
@@ -2512,25 +2051,19 @@ impl GlobalScope {
         &self.consumed_rejections
     }
 
-    pub(crate) fn module_map(
+    pub(crate) fn with_module_map<T>(
         &self,
-    ) -> &DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>> {
-        &self.module_map
-    }
-
-    /// Return the [`ModuleTree`] for a given [`ModuleRequest`] or `None` if there is no
-    /// tree for the request or if that tree is still being fetched.
-    pub(crate) fn module_tree_for_request_if_loaded(
-        &self,
-        request: &ModuleRequest,
-    ) -> Option<Rc<ModuleTree>> {
-        self.module_map
-            .borrow()
-            .get(request)
-            .and_then(|status| match status {
-                ModuleStatus::Fetching(_) => None,
-                ModuleStatus::Loaded(module_tree) => Some(module_tree.clone()),
-            })
+        f: impl FnOnce(&DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>) -> T,
+    ) -> T {
+        if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+            f(worker.module_map())
+        } else if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
+            f(worklet.module_map())
+        } else if let Some(window) = self.downcast::<Window>() {
+            f(window.Document().module_map())
+        } else {
+            unreachable!("Unsupported global type retrieving module map")
+        }
     }
 
     pub(crate) fn time(&self, label: DOMString) -> Result<(), ()> {
@@ -2795,7 +2328,7 @@ impl GlobalScope {
             // TODO: is this the right URL to return?
             return worklet.base_url();
         }
-        if let Some(_debugger_global) = self.downcast::<DebuggerGlobalScope>() {
+        if self.is::<DebuggerGlobalScope>() || self.is::<DissimilarOriginWindow>() {
             return self.creation_url();
         }
         unreachable!();
@@ -3059,16 +2592,18 @@ impl GlobalScope {
             let mut source = transform_str_to_source_text(&code);
             rooted!(&in(cx) let compiled_script = unsafe { Compile1(cx, options.ptr, &mut source) });
 
-            let Some(script) = NonNull::new(*compiled_script) else {
+            if compiled_script.is_null() {
                 debug!("error compiling Dom string");
                 report_pending_exception(cx);
                 return Err(JavaScriptEvaluationError::CompilationFailure);
-            };
+            }
 
             rooted!(&in(cx) let mut value = UndefinedValue());
             let rval = rval.unwrap_or_else(|| value.handle_mut());
 
-            if !evaluate_script(cx, script, url, fetch_options, rval) {
+            maybe_associate_with_script(cx, compiled_script.handle(), url, fetch_options);
+
+            if unsafe { !JS_ExecuteScript(cx, compiled_script.handle(), rval) } {
                 let error_info = take_and_report_pending_exception_for_api(cx);
                 return Err(JavaScriptEvaluationError::EvaluationFailure(error_info));
             }
@@ -3463,16 +2998,12 @@ impl GlobalScope {
         options: &StructuredSerializeOptions,
         retval: MutableHandleValue,
     ) -> Fallible<()> {
-        let mut rooted = CustomAutoRooter::new(
+        auto_root!(&in(cx) let guard =
             options
                 .transfer
                 .iter()
                 .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-
-        #[expect(unsafe_code)]
-        let guard = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+                .collect::<Vec<_>>());
 
         let data = structuredclone::write(cx, value, Some(guard))?;
 
@@ -3487,35 +3018,9 @@ impl GlobalScope {
         context: Listener,
         task_source: SendableTaskSource,
     ) {
-        let network_listener = NetworkListener::new(context, task_source, self);
-        self.fetch_with_network_listener(request_builder, network_listener);
-    }
-
-    pub(crate) fn fetch_with_network_listener<Listener: FetchResponseListener>(
-        &self,
-        request_builder: RequestBuilder,
-        network_listener: NetworkListener<Listener>,
-    ) {
-        // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): the fetch
-        // spec applies "if globalObject is a ServiceWorkerGlobalScope object,
-        // set request's service-workers mode to 'none'" at the fetch
-        // algorithm level, for every request the SW global initiates.
-        // Upstream only implemented it on the `fetch()` DOM entry
-        // (fetch/fetch.rs), leaving e.g. sync XHR to self-mediate: the SW
-        // thread is then blocked inside the XHR event pump and can never
-        // answer its own mediator (HANDLE_FETCH_TIMEOUT deadlock per
-        // request). Downgrade here — the single choke point every
-        // script-initiated fetch from any global funnels through.
-        let request_builder = if self.is::<ServiceWorkerGlobalScope>() {
-            request_builder.service_workers_mode(ServiceWorkersMode::None)
-        } else {
-            request_builder
-        };
-        fetch_async(
-            &self.core_resource_thread(),
+        self.fetch_group_mut().fetch(
             request_builder,
-            None,
-            network_listener.into_callback(),
+            NetworkListener::new(context, task_source, self),
         );
     }
 
@@ -3527,93 +3032,63 @@ impl GlobalScope {
         self.unminified_js_dir.clone()
     }
 
-    pub(crate) fn set_byte_length_queuing_strategy_size(&self, function: Rc<Function>) {
+    pub(crate) fn set_byte_length_queuing_strategy_size(&self, function: RootedCallback<Function>) {
         if self
             .byte_length_queuing_strategy_size_function
-            .set(function)
+            .set(function.to_traced())
             .is_err()
         {
             warn!("byte length queuing strategy size function is set twice.");
         };
     }
 
-    pub(crate) fn get_byte_length_queuing_strategy_size(&self) -> Option<Rc<Function>> {
-        self.byte_length_queuing_strategy_size_function.get().cloned()
+    pub(crate) fn get_byte_length_queuing_strategy_size(
+        &self,
+        cx: &JSContext,
+    ) -> Option<RootedCallback<Function>> {
+        self.byte_length_queuing_strategy_size_function
+            .get()
+            .cloned()
+            .map(|f| f.root(cx))
     }
 
     pub(crate) fn set_count_queuing_strategy_size(&self, function: RootedCallback<Function>) {
         if self
             .count_queuing_strategy_size_function
-            .set(function.native())
+            .set(function.to_traced())
             .is_err()
         {
             warn!("count queuing strategy size function is set twice.");
         };
     }
 
-    pub(crate) fn get_count_queuing_strategy_size(&self) -> Option<Rc<Function>> {
-        self.count_queuing_strategy_size_function.get().cloned()
+    pub(crate) fn get_count_queuing_strategy_size(
+        &self,
+        cx: &JSContext,
+    ) -> Option<RootedCallback<Function>> {
+        self.count_queuing_strategy_size_function
+            .get()
+            .cloned()
+            .map(|f| f.root(cx))
     }
 
     pub(crate) fn add_notification_permission_request_callback(
         &self,
         callback_id: String,
-        callback: Rc<NotificationPermissionCallback>,
+        callback: RootedCallback<NotificationPermissionCallback>,
     ) {
         self.notification_permission_request_callback_map
             .borrow_mut()
-            .insert(callback_id, callback);
+            .insert(callback_id, callback.to_traced());
     }
 
     pub(crate) fn remove_notification_permission_request_callback(
         &self,
         callback_id: String,
-    ) -> Option<Rc<NotificationPermissionCallback>> {
+    ) -> Option<TracedCallback<NotificationPermissionCallback>> {
         self.notification_permission_request_callback_map
             .borrow_mut()
             .remove(&callback_id)
-    }
-
-    pub(crate) fn append_deferred_fetch(
-        &self,
-        deferred_fetch: QueuedDeferredFetchRecord,
-    ) -> DeferredFetchRecordId {
-        let deferred_record_id = DeferredFetchRecordId::default();
-        self.fetch_group
-            .borrow_mut()
-            .deferred_fetch_records
-            .insert(deferred_record_id, deferred_fetch);
-        deferred_record_id
-    }
-
-    pub(crate) fn deferred_fetches(&self) -> Vec<QueuedDeferredFetchRecord> {
-        self.fetch_group
-            .borrow()
-            .deferred_fetch_records
-            .values()
-            .cloned()
-            .collect()
-    }
-
-    pub(crate) fn deferred_fetch_record_for_id(
-        &self,
-        deferred_fetch_record_id: &DeferredFetchRecordId,
-    ) -> QueuedDeferredFetchRecord {
-        self.fetch_group
-            .borrow()
-            .deferred_fetch_records
-            .get(deferred_fetch_record_id)
-            .expect("Should always use a generated fetch_record_id instead of passing your own")
-            .clone()
-    }
-
-    /// <https://fetch.spec.whatwg.org/#process-deferred-fetches>
-    pub(crate) fn process_deferred_fetches(&self) {
-        // Step 1. For each deferred fetch record deferredRecord of fetchGroup’s
-        // deferred fetch records, process a deferred fetch deferredRecord.
-        for deferred_fetch in self.deferred_fetches() {
-            deferred_fetch.process(self);
-        }
     }
 
     pub(crate) fn fetch_group(&self) -> Ref<'_, FetchGroup> {
@@ -3738,12 +3213,6 @@ unsafe fn global_scope_from_global_static(global: *mut JSObject) -> DomRoot<Glob
 
 #[expect(unsafe_code)]
 impl GlobalScopeHelpers<crate::DomTypeHolder> for GlobalScope {
-    // BAO patch (fork-maintained, 2026-09-28): promise-redesign baseline sync
-    // (b820a9679) — GlobalScopeHelpers gained a static `entry`.
-    fn entry() -> DomRoot<Self> {
-        GlobalScope::entry()
-    }
-
     fn from_current_realm(realm: &'_ mut CurrentRealm) -> DomRoot<Self> {
         GlobalScope::from_current_realm(realm)
     }
@@ -3782,6 +3251,10 @@ impl GlobalScopeHelpers<crate::DomTypeHolder> for GlobalScope {
 
     fn script_to_constellation_chan(&self) -> ScriptToConstellationChan {
         self.script_to_constellation_chan()
+    }
+
+    fn entry() -> DomRoot<Self> {
+        GlobalScope::entry()
     }
 }
 

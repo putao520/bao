@@ -17,6 +17,8 @@ SCRIPT_PATH = os.path.abspath(os.path.dirname(__file__))
 SCRIPT_BINDINGS_ROOT = os.path.abspath(os.path.join(SCRIPT_PATH, ".."))
 
 FILTER_PATTERN = re.compile("// skip-unless ([A-Z_]+)\n")
+CONDITIONAL_BLOCK_START_PATTERN = re.compile(r"\s*// skip-unless ([A-Z_]+) begin\n")
+CONDITIONAL_BLOCK_END_PATTERN = re.compile(r"\s*// skip-unless ([A-Z_]+) end\n")
 
 if TYPE_CHECKING:
     from configuration import Configuration
@@ -51,6 +53,7 @@ def main() -> None:
                 if not os.environ.get(env_var):
                     continue
 
+            contents = filter_conditional_blocks(contents)
             parser.parse(contents, filename)
 
     add_css_properties_attributes(css_properties_json, parser)
@@ -68,7 +71,6 @@ def main() -> None:
         ("InterfaceObjectMapData", "InterfaceObjectMapData.json"),
         ("InterfaceTypes", "InterfaceTypes.rs"),
         ("InheritTypes", "InheritTypes.rs"),
-        ("ConcreteInheritTypes", "ConcreteInheritTypes.rs"),
         ("Bindings", "Bindings/mod.rs"),
         ("Bindings", "ConcreteBindings/mod.rs"),
         ("Bindings", "WebGPUConcreteBindings/mod.rs"),
@@ -107,10 +109,42 @@ def main() -> None:
                 f.write(module.encode("utf-8"))
 
 
+    from codegen import GlobalGenRoots
+    root = GlobalGenRoots.ConcreteInheritTypes(config, s, generic = True)
+    code = root.define()
+    with open(os.path.join(out_dir, "WebGPUConcreteInheritTypes.rs"), "wb") as f:
+        f.write(code.encode("utf-8"))
+
+    root = GlobalGenRoots.ConcreteInheritTypes(config, all_interface_descriptors - s, generic = False)
+    code = root.define()
+    with open(os.path.join(out_dir, "ConcreteInheritTypes.rs"), "wb") as f:
+        f.write(code.encode("utf-8"))
+
+
 def make_dir(path: str)-> str:
     if not os.path.exists(path):
         os.makedirs(path)
     return path
+
+
+def filter_conditional_blocks(contents: str) -> str:
+    """Remove `skip-unless` blocks whose Cargo feature is disabled."""
+    enabled = [True]
+    filtered_contents = []
+
+    for line in contents.splitlines(keepends=True):
+        if match := CONDITIONAL_BLOCK_START_PATTERN.fullmatch(line):
+            # Cargo exposes enabled features as CARGO_FEATURE_* to build scripts.
+            enabled.append(enabled[-1] and bool(os.environ.get(match.group(1))))
+            continue
+        if CONDITIONAL_BLOCK_END_PATTERN.fullmatch(line):
+            enabled.pop()
+            continue
+        if enabled[-1]:
+            filtered_contents.append(line)
+
+    assert len(enabled) == 1, "Unterminated skip-unless block"
+    return "".join(filtered_contents)
 
 
 def generate(config: Configuration, name: str, filename: str) -> None:
@@ -131,15 +165,12 @@ def add_css_properties_attributes(css_properties_json: str, parser: Parser) -> N
             ["layout.unimplemented", "layout_unimplemented"],
             ["layout.threads", "layout_threads"],
             ["layout.columns.enabled", "layout_columns_enabled"],
-            ["layout.flexbox.balance", "layout_flexbox_balance"],
             ["layout.grid.enabled", "layout_grid_enabled"],
-            ["layout.css.alpha-color-function.enabled", "layout_css_alpha_color_function_enabled"],
-            ["layout.css.attr.enabled", "layout_css_attr_enabled"],
             ["layout.css.ellipse-corners.enabled", "layout_css_ellipse_corners_enabled"],
-            ["layout.css.progress-function.enabled", "layout_css_progress_function_enabled"],
             ["layout.writing-mode.enabled", "layout_writing_mode_enabled"],
             ["layout.container-queries.enabled", "layout_container_queries_enabled"],
-            ["layout.variable_fonts.enabled", "layout_variable_fonts_enabled"]
+            ["layout.variable_fonts.enabled", "layout_variable_fonts_enabled"],
+            ["layout.flexbox.balance", "layout_flexbox_balance"],
         ]
         for mapping in MAPPING:
             if mapping[0] == preference_name:

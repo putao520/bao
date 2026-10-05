@@ -5,7 +5,6 @@
 #![cfg(test)]
 #![expect(dead_code)]
 
-mod bun_bridge;
 mod cookie;
 mod cookie_http_state;
 mod data_loader;
@@ -30,7 +29,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use devtools_traits::DevtoolsControlMsg;
 use embedder_traits::{AuthenticationResponse, EmbedderMsg, EmbedderProxy, GenericEmbedderProxy};
 use net::async_runtime::spawn_blocking_task;
-use net::connector::CACertificates;
+use net::connector::{CACertificates, create_http_client, create_tls_config};
 use net::embedder::NetToEmbedderMsg;
 use net::fetch::cors_cache::CorsCache;
 use net::fetch::methods::{self, FetchContext};
@@ -117,6 +116,11 @@ fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> Http
         auth_cache: RwLock::new(net::resource_thread::AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: net::http_cache::HttpCache::new(net::http_cache::HttpCacheAssignment::Public),
+        client: create_http_client(create_tls_config(
+            net::connector::CACertificates::Default,
+            false, /* ignore_certificate_errors */
+            override_manager.clone(),
+        )),
         override_manager,
         embedder_proxy: fc.unwrap_or_else(|| create_generic_embedder_proxy()),
     }
@@ -143,13 +147,12 @@ fn new_fetch_context(
         ignore_certificate_errors: false,
         preloaded_resources: Default::default(),
         in_flight_keep_alive_records: Default::default(),
-        sw_managers: Default::default(),
     }
 }
 impl FetchTaskTarget for FetchResponseCollector {
     fn process_request_body(&mut self, _: &Request) {}
     fn process_response(&mut self, _: &Request, _: &Response) {}
-    fn process_response_chunk(&mut self, _: &Request, _: Vec<u8>) {}
+    fn process_response_chunk(&mut self, _: &Request, _: bytes::Bytes) {}
     /// Fired when the response is fully fetched
     fn process_response_eof(&mut self, _: &Request, response: &Response) {
         let _ = self.sender.take().unwrap().send(response.clone());
@@ -164,7 +167,7 @@ fn fetch_with_context(request: Request, mut context: &mut FetchContext) -> Respo
     let mut target = FetchResponseCollector {
         sender: Some(sender),
     };
-    spawn_blocking_task::<_, Response>(async move {
+    spawn_blocking_task(async move {
         methods::fetch(request, &mut target, &mut context).await;
         receiver.await.unwrap()
     })
@@ -176,7 +179,7 @@ fn fetch_with_cors_cache(request: Request, cache: &mut CorsCache) -> Response {
         sender: Some(sender),
     };
     let mut fetch_context = new_fetch_context(None, None);
-    spawn_blocking_task::<_, Response>(async move {
+    spawn_blocking_task(async move {
         methods::fetch_with_cors_cache(request, cache, &mut target, &mut fetch_context).await;
         receiver.await.unwrap()
     })

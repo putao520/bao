@@ -3,35 +3,40 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use euclid::default::Size2D;
-use js::error::throw_type_error_safe;
+use js::error::throw_type_error;
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject, HandleValue};
 use pixels::{EncodedImageType, Snapshot};
 use rustc_hash::FxHashMap;
 use script_bindings::cell::{DomRefCell, Ref};
+#[cfg(feature = "webgl")]
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{DomObject, reflect_dom_object_with_proto};
+#[cfg(feature = "webgl")]
+use script_bindings::reflector::DomObject;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::weakref::WeakRef;
 use servo_base::id::{OffscreenCanvasId, OffscreenCanvasIndex};
+#[cfg(feature = "webgl")]
 use servo_canvas_traits::webgl::{GLContextAttributes, WebGLVersion};
 use servo_constellation_traits::{BlobImpl, TransferableOffscreenCanvas};
 
 use crate::canvas_context::{CanvasContext, OffscreenRenderingContext};
+#[cfg(feature = "webgl")]
 use crate::conversions::Convert;
+use crate::dom::RootedPromise;
+use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasRenderingContext2DSettings;
 use crate::dom::bindings::codegen::Bindings::OffscreenCanvasBinding::{
     ImageEncodeOptions, OffscreenCanvasMethods,
     OffscreenRenderingContext as RootedOffscreenRenderingContext, OffscreenRenderingContextId,
 };
-use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasRenderingContext2DSettings;
+#[cfg(feature = "webgl")]
 use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGLContextAttributes;
 use crate::dom::bindings::codegen::UnionTypes::HTMLCanvasElementOrOffscreenCanvas as RootedHTMLCanvasElementOrOffscreenCanvas;
 use crate::dom::bindings::conversions::ConversionResult;
 use crate::dom::bindings::error::{Error, Fallible};
-use crate::dom::RootedPromise;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
@@ -45,7 +50,9 @@ use crate::dom::imagebitmap::ImageBitmap;
 use crate::dom::imagebitmaprenderingcontext::ImageBitmapRenderingContext;
 use crate::dom::offscreencanvasrenderingcontext2d::OffscreenCanvasRenderingContext2D;
 use crate::dom::promise::Promise;
+#[cfg(feature = "webgl")]
 use crate::dom::types::{WebGLRenderingContext, Window};
+#[cfg(feature = "webgl")]
 use crate::dom::webgl::webgl2renderingcontext::WebGL2RenderingContext;
 
 /// <https://html.spec.whatwg.org/multipage/#offscreencanvas>
@@ -103,6 +110,7 @@ impl OffscreenCanvas {
         )
     }
 
+    #[cfg(feature = "webgl")]
     fn get_gl_attributes(
         cx: &mut js::context::JSContext,
         options: HandleValue,
@@ -110,7 +118,7 @@ impl OffscreenCanvas {
         match WebGLContextAttributes::new(cx, options) {
             Ok(ConversionResult::Success(attrs)) => Some(attrs.convert()),
             Ok(ConversionResult::Failure(error)) => {
-                throw_type_error_safe(cx, &error);
+                throw_type_error(cx, &error);
                 None
             },
             _ => {
@@ -151,9 +159,11 @@ impl OffscreenCanvas {
         }
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#offscreen-2d-context-creation-algorithm>
     pub(crate) fn get_or_init_2d_context(
         &self,
         cx: &mut js::context::JSContext,
+        options: HandleValue,
     ) -> Option<DomRoot<OffscreenCanvasRenderingContext2D>> {
         if let Some(ctx) = self.context() {
             return match *ctx {
@@ -161,14 +171,23 @@ impl OffscreenCanvas {
                 _ => None,
             };
         }
-        // BAO patch (fork-maintained, 2026-09-28): the fork's getContext face
-        // takes no options; webidl defaults == converting an empty dict.
+
+        // Step 2. Let settings be the result of converting arg to the dictionary type
+        // CanvasRenderingContext2DSettings. (This can throw an exception.)
+        let settings = match CanvasRenderingContext2DSettings::new(cx, options) {
+            Ok(ConversionResult::Success(settings)) => settings,
+            Ok(ConversionResult::Failure(error)) => {
+                throw_type_error(cx, &error);
+                return None;
+            },
+            Err(()) => return None,
+        };
         let context = OffscreenCanvasRenderingContext2D::new(
             cx,
             &self.global(),
             self,
             self.get_size(),
-            &CanvasRenderingContext2DSettings::default(),
+            &settings,
         )?;
         *self.context.safe_borrow_mut(cx.no_gc()) = Some(OffscreenRenderingContext::Context2d(
             Dom::from_ref(&*context),
@@ -207,6 +226,7 @@ impl OffscreenCanvas {
         Some(context)
     }
 
+    #[cfg(feature = "webgl")]
     // <https://html.spec.whatwg.org/multipage/#offscreen-context-type-webgl>
     pub(crate) fn get_or_init_webgl_context(
         &self,
@@ -226,32 +246,23 @@ impl OffscreenCanvas {
             RootedHTMLCanvasElementOrOffscreenCanvas::OffscreenCanvas(DomRoot::from_ref(self));
         let size = self.get_size();
         let attrs = Self::get_gl_attributes(cx, options)?;
-        let context = match self.global().downcast::<Window>() {
-            Some(window) => {
+        self.global()
+            .downcast::<Window>()
+            .and_then(|window| {
                 WebGLRenderingContext::new(cx, window, &canvas, WebGLVersion::WebGL1, size, attrs)
-            },
-            // (Bao) Worker realm: create the context against the inherited parent
-            // `Window` WebGL channel (REQ-BRW-004 C14).
-            None => WebGLRenderingContext::new_in_worker(
-                cx,
-                &self.global(),
-                &canvas,
-                WebGLVersion::WebGL1,
-                size,
-                attrs,
-            ),
-        };
-        context.map(|context| {
-            // Step 2. If context is null, then return null;
-            // otherwise set this's context mode to webgl or webgl2.
-            *self.context.safe_borrow_mut(cx.no_gc()) =
-                Some(OffscreenRenderingContext::WebGL(Dom::from_ref(&*context)));
+            })
+            .map(|context| {
+                // Step 2. If context is null, then return null;
+                // otherwise set this's context mode to webgl or webgl2.
+                *self.context.safe_borrow_mut(cx.no_gc()) =
+                    Some(OffscreenRenderingContext::WebGL(Dom::from_ref(&*context)));
 
-            // Step 3. Return context.
-            context
-        })
+                // Step 3. Return context.
+                context
+            })
     }
 
+    #[cfg(feature = "webgl")]
     // <https://html.spec.whatwg.org/multipage/#offscreen-context-type-webgl>
     fn get_or_init_webgl2_context(
         &self,
@@ -275,21 +286,18 @@ impl OffscreenCanvas {
             RootedHTMLCanvasElementOrOffscreenCanvas::OffscreenCanvas(DomRoot::from_ref(self));
         let size = self.get_size();
         let attrs = Self::get_gl_attributes(cx, options)?;
-        // (Bao) Worker realm: create the context against the inherited parent
-        // `Window` WebGL channel (REQ-BRW-004 C14, same dispatch as WebGL1).
-        let context = match self.global().downcast::<Window>() {
-            Some(window) => WebGL2RenderingContext::new(cx, window, &canvas, size, attrs),
-            None => WebGL2RenderingContext::new_in_worker(cx, &self.global(), &canvas, size, attrs),
-        };
-        context.map(|context| {
-            // Step 2. If context is null, then return null;
-            // otherwise set this's context mode to webgl or webgl2.
-            *self.context.safe_borrow_mut(cx.no_gc()) =
-                Some(OffscreenRenderingContext::WebGL2(Dom::from_ref(&*context)));
+        self.global()
+            .downcast::<Window>()
+            .and_then(|window| WebGL2RenderingContext::new(cx, window, &canvas, size, attrs))
+            .map(|context| {
+                // Step 2. If context is null, then return null;
+                // otherwise set this's context mode to webgl or webgl2.
+                *self.context.safe_borrow_mut(cx.no_gc()) =
+                    Some(OffscreenRenderingContext::WebGL2(Dom::from_ref(&*context)));
 
-            // Step 3. Return context.
-            context
-        })
+                // Step 3. Return context.
+                context
+            })
     }
 
     pub(crate) fn placeholder(&self) -> Option<DomRoot<HTMLCanvasElement>> {
@@ -410,6 +418,13 @@ impl OffscreenCanvasMethods<crate::DomTypeHolder> for OffscreenCanvas {
         id: OffscreenRenderingContextId,
         options: HandleValue,
     ) -> Fallible<Option<RootedOffscreenRenderingContext>> {
+        // Step 1. If options is not an object, then set options to null.
+        let options = if options.get().is_object() {
+            options
+        } else {
+            HandleValue::null()
+        };
+
         // Step 3. Throw an "InvalidStateError" DOMException if the
         // OffscreenCanvas object's context mode is detached.
         if let Some(OffscreenRenderingContext::Detached) = *self.context.borrow() {
@@ -418,20 +433,24 @@ impl OffscreenCanvasMethods<crate::DomTypeHolder> for OffscreenCanvas {
 
         match id {
             OffscreenRenderingContextId::_2d => Ok(self
-                .get_or_init_2d_context(cx)
+                .get_or_init_2d_context(cx, options)
                 .map(RootedOffscreenRenderingContext::OffscreenCanvasRenderingContext2D)),
             OffscreenRenderingContextId::Bitmaprenderer => Ok(self
                 .get_or_init_bitmaprenderer_context(cx)
                 .map(RootedOffscreenRenderingContext::ImageBitmapRenderingContext)),
+            #[cfg(feature = "webgl")]
             OffscreenRenderingContextId::Webgl => Ok(self
                 .get_or_init_webgl_context(cx, options)
                 .map(RootedOffscreenRenderingContext::WebGLRenderingContext)),
+            #[cfg(feature = "webgl")]
             OffscreenRenderingContextId::Experimental_webgl => Ok(self
                 .get_or_init_webgl_context(cx, options)
                 .map(RootedOffscreenRenderingContext::WebGLRenderingContext)),
+            #[cfg(feature = "webgl")]
             OffscreenRenderingContextId::Webgl2 => Ok(self
                 .get_or_init_webgl2_context(cx, options)
                 .map(RootedOffscreenRenderingContext::WebGL2RenderingContext)),
+            #[cfg(feature = "webgl")]
             OffscreenRenderingContextId::Experimental_webgl2 => Ok(self
                 .get_or_init_webgl2_context(cx, options)
                 .map(RootedOffscreenRenderingContext::WebGL2RenderingContext)),

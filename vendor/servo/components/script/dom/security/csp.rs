@@ -17,7 +17,7 @@ use http::header::{HeaderMap, HeaderValue, ValueIter};
 use hyper_serde::Serde;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
-use js::rust::describe_scripted_caller_safe;
+use js::rust::describe_scripted_caller;
 use log::warn;
 use servo_constellation_traits::{LoadData, LoadOrigin};
 use url::Url;
@@ -215,10 +215,9 @@ impl CspReporting for Option<CspList> {
             }
             // Cross-origin parents go via the constellation (slower)
             if let Some(parent_proxy) = window_proxy.parent() {
-                // fork holdout: the fork windowproxy face exposes
-                // document_origin() (origin snapshot) — the internal ancestor
-                // origin objects list is a window-end constellation face.
-                let Some(parent_origin) = parent_proxy.document_origin() else {
+                let Some((parent_origin, _)) =
+                    parent_proxy.document_origin_and_internal_ancestor_origin_objects_list()
+                else {
                     break;
                 };
                 let parent_origin = parent_origin.immutable().ascii_serialization();
@@ -385,7 +384,7 @@ pub(crate) trait GlobalCspReporting {
 }
 
 fn compute_scripted_caller_source_position(cx: &mut JSContext) -> SourcePosition {
-    match describe_scripted_caller_safe(cx) {
+    match describe_scripted_caller(cx) {
         Ok(scripted_caller) => SourcePosition {
             source_file: scripted_caller.filename,
             line_number: scripted_caller.line,

@@ -19,13 +19,13 @@ use fontconfig_sys::{
     FcPatternDestroy, FcPatternGetInteger, FcPatternGetString, FcResultMatch, FcSetSystem,
 };
 use fonts_traits::{FontTemplate, FontTemplateDescriptor, LocalFontIdentifier};
-use icu_locid::subtags::language;
+use icu_locale_core::subtags::language;
 use libc::{c_char, c_int};
 use log::debug;
 use servo_base::text::{UnicodeBlock, UnicodeBlockMethod};
 use style::Atom;
 use style::values::computed::font::GenericFontFamily;
-use style::values::computed::{FontWidth, FontStyle, FontWeight};
+use style::values::computed::{FontStyle, FontWeight, FontWidth};
 use unicode_script::Script;
 
 use crate::font::map_platform_values_to_style_values;
@@ -138,7 +138,7 @@ where
             let Some(weight) = font_weight_from_fontconfig_pattern(*font) else {
                 continue;
             };
-            let Some(stretch) = font_width_from_fontconfig_pattern(*font) else {
+            let Some(width) = font_width_from_fontconfig_pattern(*font) else {
                 continue;
             };
             let Some(style) = font_style_from_fontconfig_pattern(*font) else {
@@ -159,7 +159,7 @@ where
                 face_index: (index & 0xFFFF) as u16,
                 named_instance_index: (index >> 16) as u16,
             };
-            let descriptor = FontTemplateDescriptor::new(weight, stretch, style);
+            let descriptor = FontTemplateDescriptor::new(weight, width, style);
 
             callback(FontTemplate::new(
                 FontIdentifier::Local(local_font_identifier),

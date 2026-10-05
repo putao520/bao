@@ -166,7 +166,7 @@ impl FlexLineItem<'_> {
             })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn collect_fragment(
         mut self,
         initial_flex_layout: &InitialFlexLineLayout,
@@ -1766,7 +1766,7 @@ impl FlexItem<'_> {
             box_address = self.box_ as *const _ as usize,
         )
     )]
-    #[allow(clippy::too_many_arguments)]
+
     fn layout(
         &self,
         used_main_size: Au,
@@ -2090,7 +2090,11 @@ impl FlexItem<'_> {
             //  When flex-wrap is wrap-reverse,
             //  the cross-start and cross-end directions are swapped.”
             let flex_wrap = flex_context.containing_block.style.get_position().flex_wrap;
-            let flex_wrap_reverse = flex_wrap.intersects(FlexWrap::WRAP_REVERSE);
+            let flex_wrap_reverse = match flex_wrap {
+                FlexWrap::NOWRAP | FlexWrap::WRAP => false,
+                FlexWrap::WRAP_REVERSE => true,
+                _ => unreachable!("FlexWrap::BALANCE should be disabled"),
+            };
             // “if the block-start or inline-start margin (whichever is in the cross axis) is auto,
             //  set it to zero. Set the opposite margin so that the outer cross size of the item
             //  equals the cross size of its flex line.”
@@ -2671,7 +2675,6 @@ impl FlexItemBox {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[servo_tracing::instrument(name = "FlexContainer::layout_for_block_content_size", skip_all)]
     fn layout_for_block_content_size(
         &self,

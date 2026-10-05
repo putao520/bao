@@ -1,6 +1,8 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+// skip-unless CARGO_FEATURE_WEBGL
+
 //
 // WebGL IDL definitions scraped from the Khronos specification:
 // https://www.khronos.org/registry/webgl/specs/latest/
@@ -578,10 +580,7 @@ interface mixin WebGL2RenderingContextOverloads
                   /*[AllowShared]*/ ArrayBufferView dstData, GLuint dstOffset);
 };
 
-// (Bao) Exposed=(Window,Worker): WebGL2 on OffscreenCanvas is a worker surface
-// per the WebGL spec; upstream pins Window-only only because its OffscreenCanvas
-// WebGL2 path is Window-downcast (REQ-BRW-004 C14, user ruling 2026-09-09).
-[Exposed=(Window,Worker), Func="WebGL2RenderingContext::is_webgl2_enabled"]
+[Exposed=Window, Func="WebGL2RenderingContext::is_webgl2_enabled"]
 interface WebGL2RenderingContext
 {
 };

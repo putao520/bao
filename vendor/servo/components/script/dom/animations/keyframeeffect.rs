@@ -7,7 +7,7 @@ use std::ops::ControlFlow;
 use std::ptr::{self, NonNull};
 use std::sync::LazyLock;
 
-use cssparser::{Parser};
+use cssparser::Parser;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::conversions::{
@@ -201,7 +201,7 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
 
                 // Step 3.3.3 Let value be the result of converting IDL value to an ECMAScript String value.
                 rooted!(&in(cx) let mut value = UndefinedValue());
-                value_string.safe_to_jsval(cx, value.handle_mut());
+                value_string.to_jsval(cx, value.handle_mut());
 
                 // Step 3.3.4 Call the [[DefineOwnProperty]] internal method on output keyframe with property
                 // name property name, Property Descriptor { [[Writable]]: true, [[Enumerable]]: true, [[Configurable]]:
@@ -249,7 +249,6 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
 }
 
 /// <https://drafts.csswg.org/web-animations-1/#process-a-keyframes-argument>
-#[expect(unsafe_code)]
 fn process_a_keyframes_argument(
     cx: &mut JSContext,
     document: &Document,
@@ -267,29 +266,29 @@ fn process_a_keyframes_argument(
     // Step 5. Perform the steps corresponding to the first matching condition below:
     rooted!(&in(cx) let iterable = ObjectValue(keyframes));
     let mut keyframes = Vec::new();
-    let result = for_of(
-        cx,
-        iterable.handle(),
-        |cx: &mut JSContext, iterator_element| {
-            // Step 5.3.4 Let nextItem be IteratorValue(next).
-            // Step 5.3.5 Check the completion record of nextItem.
-            // Note: This happens inside the "for_of" call.
+    let result = for_of(cx, iterable.handle(), |cx, iterator_element| {
+        // Step 5.3.4 Let nextItem be IteratorValue(next).
+        // Step 5.3.5 Check the completion record of nextItem.
+        // Note: This happens inside the "for_of" call.
 
-            // Step 5.3.6 If Type(nextItem) is not Undefined, Null or Object, then throw a TypeError
-            // and abort these steps.
-            if !iterator_element.is_null_or_undefined() && !iterator_element.is_object() {
-                return Err(ForOfIterationFailure::Other(Error::Type(
-                    c"Keyframe must be an object, null or undefined".to_owned(),
-                )));
-            }
+        // Step 5.3.6 If Type(nextItem) is not Undefined, Null or Object, then throw a TypeError
+        // and abort these steps.
+        if !iterator_element.is_null_or_undefined() && !iterator_element.is_object() {
+            return Err(ForOfIterationFailure::Other(Error::Type(
+                c"Keyframe must be an object, null or undefined".to_owned(),
+            )));
+        }
 
-            // Step 5.3.7 Append to processed keyframes the result of running the procedure to process a
-            // keyframe-like object passing nextItem as the keyframe input with the allow lists flag set to false.
-            keyframes.push(process_a_keyframe_like_object(cx, document, iterator_element)?);
+        // Step 5.3.7 Append to processed keyframes the result of running the procedure to process a
+        // keyframe-like object passing nextItem as the keyframe input with the allow lists flag set to false.
+        keyframes.push(process_a_keyframe_like_object(
+            cx,
+            document,
+            iterator_element,
+        )?);
 
-            Ok(ControlFlow::Continue(()))
-        },
-    );
+        Ok(ControlFlow::Continue(()))
+    });
     match result {
         Ok(()) => Ok(keyframes),
         Err(ForOfIterationFailure::ValueIsNotIterable) => {
@@ -350,7 +349,7 @@ fn process_a_keyframe_like_object(
     //
     // Note: 'allow lists' is currently never true.
     // Use the following dictionary type:
-    let Ok(keyframe_output) = BaseKeyframe::safe_from_jsval(cx, keyframe_input, ()) else {
+    let Ok(keyframe_output) = BaseKeyframe::from_jsval(cx, keyframe_input, ()) else {
         return Err(Error::JSFailed);
     };
     let ConversionResult::Success(keyframe_output) = keyframe_output else {
@@ -449,7 +448,7 @@ fn get_property_declarations(
         // Otherwise,
         // Let property values be the result of converting raw value to a DOMString using the procedure
         // for converting an ECMAScript value to a DOMString [WEBIDL].
-        let property_value = match DOMString::safe_from_jsval(
+        let property_value = match DOMString::from_jsval(
             cx,
             property_value.handle(),
             StringificationBehavior::Default,
@@ -494,7 +493,7 @@ fn parse_single_property_declaration(
     parser_context: &ParserContext<'_>,
 ) -> Option<KeyframePropertyDeclaration> {
     let mut declaration = SourcePropertyDeclaration::default();
-        let mut parser = Parser::new(input);
+    let mut parser = Parser::new(input);
 
     // TODO: Consider reporting parse errors somewhere useful, like the devtools console.
     parser

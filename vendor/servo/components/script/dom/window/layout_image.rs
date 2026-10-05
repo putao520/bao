@@ -56,7 +56,7 @@ impl FetchResponseListener for LayoutImageContext {
     ) {
         self.cache.notify_pending_response(
             self.id,
-            FetchResponseMsg::ProcessResponseChunk(request_id, payload.into()),
+            FetchResponseMsg::ProcessResponseChunk(request_id, payload),
         );
     }
 

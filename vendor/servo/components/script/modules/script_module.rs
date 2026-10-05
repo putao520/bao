@@ -6,8 +6,7 @@
 //! related to `type=module` for script thread or worker threads.
 
 use std::borrow::Cow;
-use bytes::Bytes;
-use std::cell::{OnceCell, RefCell};
+use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::ffi::CStr;
 use std::fmt::Debug;
@@ -15,10 +14,11 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::{mem, ptr};
 
+use bytes::{Bytes, BytesMut};
 use encoding_rs::UTF_8;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
 use hyper_serde::Serde;
-use js::context::{JSContext, NoGC};
+use js::context::JSContext;
 use js::conversions::{ToJSValConvertible, jsstr_to_string};
 use js::gc::{HandleObject, MutableHandleValue};
 use js::jsapi::{
@@ -54,18 +54,18 @@ use script_bindings::trace::CustomTraceable;
 use servo_config::pref;
 use servo_url::ServoUrl;
 
-use crate::dom::bindings::error::{Error, ErrorToJsval, report_pending_exception};
-use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::trace::RootedTraceableBox;
-use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::codegen::Bindings::CSSStyleSheetBinding::{
     CSSStyleSheetInit, CSSStyleSheetMethods,
 };
 use crate::dom::bindings::codegen::UnionTypes::MediaListOrString;
-use crate::dom::css::cssstylesheet::CSSStyleSheet;
+use crate::dom::bindings::error::{Error, report_pending_exception, throw_dom_exception};
+use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::refcounted::Trusted;
+use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::str::{DOMString, USVString};
+use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::csp::{GlobalCspReporting, Violation};
+use crate::dom::css::cssstylesheet::CSSStyleSheet;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::fill_compile_options;
 use crate::dom::html::htmlscriptelement::substitute_with_local_script;
@@ -85,17 +85,6 @@ use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::IntroductionType;
 use crate::tasks::task::NonSendTaskBox;
 use crate::unminify::{ScriptSource, unminify_js};
-
-pub(crate) fn gen_type_error(
-    cx: &mut JSContext,
-    global: &GlobalScope,
-    error: Error,
-) -> RethrowError {
-    rooted!(&in(cx) let mut thrown = UndefinedValue());
-    error.safe_to_jsval(cx, global, thrown.handle_mut());
-
-    RethrowError(RootedTraceableBox::from_box(Heap::boxed(thrown.get())))
-}
 
 #[derive(JSTraceable)]
 pub(crate) struct ModuleObject(RootedTraceableBox<Heap<*mut JSObject>>);
@@ -206,7 +195,7 @@ impl ModuleTree {
     #[expect(clippy::too_many_arguments)]
     /// <https://html.spec.whatwg.org/multipage/#creating-a-javascript-module-script>
     fn create_a_javascript_module_script(
-        cx: &mut JSContext,
+        cx: &mut CurrentRealm,
         source: Cow<'_, str>,
         global: &GlobalScope,
         url: &ServoUrl,
@@ -215,21 +204,11 @@ impl ModuleTree {
         line_number: u32,
         introduction_type: Option<&'static CStr>,
     ) -> Self {
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
-        );
-        let cx = &mut *realm;
-
         let owner = Trusted::new(global);
 
         // Step 2. Let script be a new module script that this algorithm will subsequently initialize.
         // Step 6. Set script's parse error and error to rethrow to null.
-        let module = ModuleTree {
-            record: OnceCell::new(),
-            parse_error: OnceCell::new(),
-            rethrow_error: DomRefCell::new(None),
-        };
+        let module = ModuleTree::default();
 
         let compile_options = fill_compile_options(
             cx,
@@ -251,8 +230,7 @@ impl ModuleTree {
 
         unsafe {
             // Step 7. Let result be ParseModule(source, settings's realm, script).
-            rooted!(&in(cx) let mut module_script: *mut JSObject = std::ptr::null_mut());
-            module_script.set(CompileModule1(cx, compile_options.ptr, &mut source));
+            rooted!(&in(cx) let module_script = CompileModule1(cx, compile_options.ptr, &mut source));
 
             // Step 8. If result is a list of errors, then:
             if module_script.is_null() {
@@ -288,25 +266,14 @@ impl ModuleTree {
     #[expect(unsafe_code)]
     /// <https://html.spec.whatwg.org/multipage/#creating-a-json-module-script>
     fn create_a_json_module_script(
-        cx: &mut JSContext,
+        cx: &mut CurrentRealm,
         source: &str,
-        global: &GlobalScope,
         url: &ServoUrl,
         introduction_type: Option<&'static CStr>,
     ) -> Self {
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
-        );
-        let cx = &mut *realm;
-
         // Step 1. Let script be a new module script that this algorithm will subsequently initialize.
         // Step 4. Set script's parse error and error to rethrow to null.
-        let module = ModuleTree {
-            record: OnceCell::new(),
-            parse_error: OnceCell::new(),
-            rethrow_error: DomRefCell::new(None),
-        };
+        let module = ModuleTree::default();
 
         // Step 2. Set script's settings object to settings.
         // Step 3. Set script's base URL and fetch options to null.
@@ -320,16 +287,10 @@ impl ModuleTree {
             1, // line_number
         );
 
-        rooted!(&in(cx) let mut module_script: *mut JSObject = std::ptr::null_mut());
+        let mut source = transform_str_to_source_text(source);
 
-        unsafe {
-            // Step 5. Let result be ParseJSONModule(source).
-            module_script.set(CompileJsonModule1(
-                cx,
-                compile_options.ptr,
-                &mut transform_str_to_source_text(source),
-            ));
-        }
+        // Step 5. Let result be ParseJSONModule(source).
+        rooted!(&in(cx) let module_script = unsafe { CompileJsonModule1(cx, compile_options.ptr, &mut source) });
 
         // If this throws an exception, catch it, and set script's parse error to that exception, and return script.
         if module_script.is_null() {
@@ -351,17 +312,11 @@ impl ModuleTree {
     #[expect(unsafe_code)]
     /// <https://html.spec.whatwg.org/multipage/#creating-a-css-module-script>
     fn create_a_css_module_script(
-        cx: &mut JSContext,
+        cx: &mut CurrentRealm,
         source: &str,
         global: &GlobalScope,
         url: ServoUrl,
     ) -> Self {
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
-        );
-        let cx = &mut *realm;
-
         // Step 1. Let script be a new module script that this algorithm will subsequently initialize.
         // Step 4. Set script's parse error and error to rethrow to null.
         let script = ModuleTree::default();
@@ -381,21 +336,20 @@ impl ModuleTree {
 
         // Step 6. Run the steps to synchronously replace the rules of a CSSStyleSheet on sheet
         // given source.
-        // (BAO fork form: ReplaceSync is codegen'd with a NoGC token instead of a realm.)
-        let no_gc = unsafe { NoGC::new() };
-        if let Err(error) = sheet.ReplaceSync(&no_gc, USVString::from(source.to_owned())) {
-            // If this throws an exception, catch it, and set script's parse error to that
-            // exception, and return script.
-            let css_error = gen_type_error(cx, global, error);
+        if let Err(error) = sheet.ReplaceSync(cx, USVString::from(source.to_owned())) {
+            // If this throws an exception, catch it, and set script's parse error to that exception,
+            // and return script.
+            throw_dom_exception(cx, global, error);
 
-            let _ = script.parse_error.set(css_error);
+            let _ = script
+                .parse_error
+                .set(RethrowError::from_pending_exception(cx));
             return script;
         }
 
         // Step 7. Set script's record to the result of CreateDefaultExportSyntheticModule(sheet).
-        rooted!(&in(cx) let sheet_value = ObjectValue(sheet.reflector().get_jsobject().get()));
-        rooted!(&in(cx) let module_script =
-            unsafe { CreateDefaultExportSyntheticModule(cx, sheet_value.handle()) });
+        rooted!(&in(cx) let sheet = ObjectValue(sheet.reflector().get_jsobject().get()));
+        rooted!(&in(cx) let module_script = unsafe { CreateDefaultExportSyntheticModule(cx, sheet.handle()) });
         let _ = script.record.set(ModuleObject::new(module_script.handle()));
 
         // Step 8. Return script.
@@ -404,13 +358,7 @@ impl ModuleTree {
 
     #[expect(unsafe_code)]
     /// <https://html.spec.whatwg.org/multipage/#creating-a-text-module-script>
-    fn create_a_text_module_script(cx: &mut JSContext, global: &GlobalScope, source: &str) -> Self {
-        let mut realm = AutoRealm::new(
-            cx,
-            NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
-        );
-        let cx = &mut *realm;
-
+    fn create_a_text_module_script(cx: &mut CurrentRealm, source: &str) -> Self {
         // Step 1. Let script be a new module script that this algorithm will subsequently initialize.
         // Step 4. Set script's parse error and error to rethrow to null.
         let script = ModuleTree::default();
@@ -421,12 +369,11 @@ impl ModuleTree {
 
         // Step 5. Let result be CreateTextModule(text).
         rooted!(&in(cx) let mut text = UndefinedValue());
-        source.safe_to_jsval(cx, text.handle_mut());
+        source.to_jsval(cx, text.handle_mut());
+        rooted!(&in(cx) let result = unsafe { CreateDefaultExportSyntheticModule(cx, text.handle()) });
 
-        // Step 6. Set script's record to the result of CreateDefaultExportSyntheticModule(text).
-        rooted!(&in(cx) let module_script =
-            unsafe { CreateDefaultExportSyntheticModule(cx, text.handle()) });
-        let _ = script.record.set(ModuleObject::new(module_script.handle()));
+        // Step 6. Set script's record to result.
+        let _ = script.record.set(ModuleObject::new(result.handle()));
 
         // Step 7. Return script.
         script
@@ -537,8 +484,8 @@ impl ModuleTree {
                 // Step 10.1 If scopePrefix is serializedBaseURL, or if scopePrefix ends with U+002F (/)
                 // and scopePrefix is a code unit prefix of serializedBaseURL, then:
                 let prefix = prefix.as_str();
-                if prefix == serialized_base_url
-                    || (serialized_base_url.starts_with(prefix) && prefix.ends_with('\u{002f}'))
+                if prefix == serialized_base_url ||
+                    (serialized_base_url.starts_with(prefix) && prefix.ends_with('\u{002f}'))
                 {
                     // Step 10.1.1 Let scopeImportsMatch be the result of resolving an imports match
                     // given normalizedSpecifier, asURL, and scopeImports.
@@ -615,7 +562,7 @@ struct ModuleContext {
     /// The owner of the module that initiated the request.
     owner: Trusted<GlobalScope>,
     /// The response body received to date.
-    data: Vec<u8>,
+    data: BytesMut,
     /// The response metadata received to date.
     metadata: Option<Metadata>,
     /// Url and type of the requested module.
@@ -671,7 +618,7 @@ impl FetchResponseListener for ModuleContext {
         &mut self,
         _: &mut js::context::JSContext,
         _: RequestId,
-        mut chunk: Bytes,
+        chunk: Bytes,
     ) {
         if self.status.is_ok() {
             self.data.extend_from_slice(&chunk);
@@ -694,17 +641,15 @@ impl FetchResponseListener for ModuleContext {
             network_listener::submit_timing(cx, &self, &response, &timing);
         }
 
-        let module_map = global.module_map();
-
         // Step 1. If any of the following are true: bodyBytes is null or failure; or response's
         // status is not an ok status, then:
         if let (Err(error), _) | (_, Err(error)) = (response.as_ref(), self.status.as_ref()) {
             error!("Fetching module script failed {:?}", error);
             // Step 1.1. Let callbacks be moduleMap[(url, moduleType)].
             // Step 1.2. Remove moduleMap[(url, moduleType)].
-            let Some(ModuleStatus::Fetching(callbacks)) =
+            let Some(ModuleStatus::Fetching(callbacks)) = global.with_module_map(|module_map| {
                 module_map.safe_borrow_mut(cx).remove(&self.module_request)
-            else {
+            }) else {
                 return error!("Processing response for a non pending module request");
             };
 
@@ -747,6 +692,9 @@ impl FetchResponseListener for ModuleContext {
             self.options.referrer_policy = referrer_policy;
         }
 
+        let mut realm = enter_auto_realm(cx, &*global);
+        let cx = &mut realm.current_realm();
+
         // TODO Step 6. If mimeType's essence is "application/wasm" and moduleType is "javascript-or-wasm", then set
         // moduleScript to the result of creating a WebAssembly module script given bodyBytes, settingsObject, response's URL, and options.
 
@@ -758,15 +706,15 @@ impl FetchResponseListener for ModuleContext {
             // text module script given sourceText and settingsObject.
             (ModuleType::Text, _) => {
                 let module_tree =
-                    Rc::new(ModuleTree::create_a_text_module_script(cx, &global, &source_text));
+                    Rc::new(ModuleTree::create_a_text_module_script(cx, &source_text));
                 module_script = Some(module_tree);
             },
             // Step 7.3. If mimeType is a JavaScript MIME type and moduleType is
             // "javascript-or-wasm", then set moduleScript to the result of creating a JavaScript
             // module script given sourceText, settingsObject, response's URL, and options.
             (ModuleType::JavaScript, Some(mime)) if MimeClassifier::is_javascript(&mime) => {
-                if let Some(window) = global.downcast::<Window>()
-                    && let Some(script_souce) = window.local_script_source()
+                if let Some(window) = global.downcast::<Window>() &&
+                    let Some(script_souce) = window.local_script_source()
                 {
                     substitute_with_local_script(script_souce, &mut source_text, &final_url);
                 }
@@ -783,9 +731,9 @@ impl FetchResponseListener for ModuleContext {
                 ));
                 module_script = Some(module_tree);
             },
-            // Step 7.4. If the MIME type essence of mimeType is "text/css" and moduleType is
-            // "css", then set moduleScript to the result of creating a CSS module script given
-            // sourceText and settingsObject.
+            // Step 7.4. If the MIME type essence of mimeType is "text/css" and moduleType is "css",
+            // then set moduleScript to the result of creating a CSS module script given sourceText
+            // and settingsObject.
             (ModuleType::CSS, Some(mime)) if MimeClassifier::is_css(&mime) => {
                 let module_tree = Rc::new(ModuleTree::create_a_css_module_script(
                     cx,
@@ -801,7 +749,6 @@ impl FetchResponseListener for ModuleContext {
                 let module_tree = Rc::new(ModuleTree::create_a_json_module_script(
                     cx,
                     &source_text,
-                    &global,
                     &final_url,
                     self.introduction_type,
                 ));
@@ -810,35 +757,37 @@ impl FetchResponseListener for ModuleContext {
             _ => {},
         }
 
-        let callbacks = match module_map
-            .safe_borrow_mut(cx)
-            .entry(self.module_request.clone())
-        {
-            Entry::Occupied(mut entry) => {
-                // Step 9. If moduleScript is null, then remove moduleMap[(url, moduleType)];
-                // otherwise set moduleMap[(url, moduleType)] to moduleScript.
-                let old_value = match module_script.as_ref() {
-                    None => entry.remove(),
-                    Some(module_script) => {
-                        entry.insert(ModuleStatus::Loaded(module_script.clone()))
-                    },
-                };
+        let callbacks = global.with_module_map(|module_map| {
+            match module_map
+                .safe_borrow_mut(cx)
+                .entry(self.module_request.clone())
+            {
+                Entry::Occupied(mut entry) => {
+                    // Step 9. If moduleScript is null, then remove moduleMap[(url, moduleType)];
+                    // otherwise set moduleMap[(url, moduleType)] to moduleScript.
+                    let old_value = match module_script.as_ref() {
+                        None => entry.remove(),
+                        Some(module_script) => {
+                            entry.insert(ModuleStatus::Loaded(module_script.clone()))
+                        },
+                    };
 
-                match old_value {
-                    ModuleStatus::Loaded(_) => {
-                        return error!("Processing response for a non pending module request");
-                    },
-                    ModuleStatus::Fetching(callbacks) => callbacks,
-                }
-            },
-            Entry::Vacant(_) => {
-                return error!("Processing response for a non pending module request");
-            },
-        };
+                    match old_value {
+                        ModuleStatus::Loaded(_) => None,
+                        ModuleStatus::Fetching(callbacks) => Some(callbacks),
+                    }
+                },
+                Entry::Vacant(_) => None,
+            }
+        });
 
-        // Step 10. For each callback of callbacks: run callback given moduleScript.
-        for callback in callbacks {
-            (callback)(cx, module_script.clone());
+        if let Some(callbacks) = callbacks {
+            // Step 10. For each callback of callbacks: run callback given moduleScript.
+            for callback in callbacks {
+                (callback)(cx, module_script.clone());
+            }
+        } else {
+            error!("Processing response for a non pending module request");
         }
     }
 
@@ -1115,19 +1064,11 @@ unsafe extern "C" fn import_meta_resolve(cx: *mut RawJSContext, argc: u32, vp: *
         Ok(url) => {
             // Step 4.3. Return the serialization of url.
             url.as_str()
-                .safe_to_jsval(cx, unsafe { MutableHandleValue::from_raw(args.rval()) });
+                .to_jsval(cx, unsafe { MutableHandleValue::from_raw(args.rval()) });
             true
         },
         Err(error) => {
-            let resolution_error = gen_type_error(cx, &global_scope, error);
-
-            unsafe {
-                JS_SetPendingException(
-                    cx,
-                    resolution_error.handle(),
-                    ExceptionStackBehavior::Capture,
-                );
-            }
+            throw_dom_exception(cx, &global_scope, error);
             false
         },
     }
@@ -1154,9 +1095,9 @@ pub(crate) fn fetch_a_module_script_graph(
     // metadata is "not-parser-inserted", credentials mode is credentialsMode,
     // referrer policy is the empty string, and fetch priority is "auto".
     let options = ScriptFetchOptions {
-        integrity_metadata: "".into(),
+        integrity_metadata: String::new(),
         credentials_mode,
-        cryptographic_nonce: "".into(),
+        cryptographic_nonce: String::new(),
         parser_metadata: ParserMetadata::NotParserInserted,
         referrer_policy: ReferrerPolicy::EmptyString,
         render_blocking: false,
@@ -1283,8 +1224,8 @@ pub(crate) fn fetch_a_modulepreload_module(
 
             // Step 3. If result is not null, optionally fetch the descendants of and link result
             // given settingsObject, destination, and an empty algorithm.
-            if pref!(dom_allow_preloading_module_descendants)
-                && let Some(module) = result
+            if pref!(dom_allow_preloading_module_descendants) &&
+                let Some(module) = result
             {
                 fetch_the_descendants_and_link_module_script(
                     cx,
@@ -1311,6 +1252,9 @@ pub(crate) fn fetch_inline_module_script(
     introduction_type: Option<&'static CStr>,
     on_complete: impl FnOnce(&mut JSContext, Option<Rc<ModuleTree>>) + Clone + 'static,
 ) {
+    let mut realm = enter_auto_realm(cx, global);
+    let cx = &mut realm.current_realm();
+
     // Step 1. Let script be the result of creating a JavaScript module script using sourceText, settingsObject, baseURL, and options.
     let module_tree = Rc::new(ModuleTree::create_a_javascript_module_script(
         cx,
@@ -1362,7 +1306,6 @@ fn fetch_the_descendants_and_link_module_script(
     // Step 3. Let state be Record
     // { [[ErrorToRethrow]]: null, [[Destination]]: destination, [[PerformFetch]]: null, [[FetchClient]]: fetchClient }.
     let state = Box::new(LoadState {
-        error_to_rethrow: RefCell::new(None),
         destination,
         fetch_client,
         module_script: DomRefCell::new(Some(module_script.clone())),
@@ -1405,28 +1348,39 @@ pub(crate) fn fetch_a_single_module_script(
     let module_request = (url.url(), module_type);
 
     // Step 4. Let moduleMap be settingsObject's module map.
-    let module_map = global.module_map();
-    let mut module_map_borrow = module_map.safe_borrow_mut(cx);
+    let occupied = global.with_module_map(|module_map| {
+        let mut module_map_borrow = module_map.safe_borrow_mut(cx);
 
-    let entry = module_map_borrow.entry(module_request.clone());
+        let entry = module_map_borrow.entry(module_request.clone());
 
-    match entry {
-        Entry::Occupied(mut entry) => match entry.get_mut() {
-            // Step 5. If moduleMap[(url, moduleType)] is a module script, run onComplete given
-            // moduleMap[(url, moduleType)], and return.
-            ModuleStatus::Loaded(module_tree) => {
-                let module = module_tree.clone();
-                drop(module_map_borrow);
-                return on_complete(cx, Some(module));
+        match entry {
+            Entry::Occupied(mut entry) => {
+                match entry.get_mut() {
+                    // Step 5. If moduleMap[(url, moduleType)] is a module script, run onComplete given
+                    // moduleMap[(url, moduleType)], and return.
+                    ModuleStatus::Loaded(module_tree) => {
+                        let module = module_tree.clone();
+                        drop(module_map_borrow);
+                        on_complete(cx, Some(module));
+                    },
+                    // Step 6. If moduleMap[(url, moduleType)] is a list, append onComplete to
+                    // moduleMap[(url, moduleType)], and return.
+                    ModuleStatus::Fetching(callbacks) => {
+                        callbacks.push(Box::new(on_complete));
+                    },
+                }
+                true
             },
-            // Step 6. If moduleMap[(url, moduleType)] is a list, append onComplete to
-            // moduleMap[(url, moduleType)], and return.
-            ModuleStatus::Fetching(callbacks) => return callbacks.push(Box::new(on_complete)),
-        },
-        // Step 7. Set moduleMap[(url, moduleType)] to « onComplete ».
-        Entry::Vacant(entry) => {
-            entry.insert(ModuleStatus::Fetching(vec![Box::new(on_complete)]));
-        },
+            // Step 7. Set moduleMap[(url, moduleType)] to « onComplete ».
+            Entry::Vacant(entry) => {
+                entry.insert(ModuleStatus::Fetching(vec![Box::new(on_complete)]));
+                false
+            },
+        }
+    });
+
+    if occupied {
+        return;
     }
 
     // We only need a policy container when fetching the root of a module worker.
@@ -1468,7 +1422,7 @@ pub(crate) fn fetch_a_single_module_script(
 
     let context = ModuleContext {
         owner: Trusted::new(global),
-        data: vec![],
+        data: BytesMut::new(),
         metadata: None,
         module_request,
         options,
@@ -1537,9 +1491,9 @@ fn resolve_imports_match(
         // - specifierKey ends with U+002F (/)
         // - specifierKey is a code unit prefix of normalizedSpecifier
         // - either asURL is null, or asURL is special, then:
-        if specifier_key.ends_with('\u{002f}')
-            && normalized_specifier.starts_with(specifier_key)
-            && (as_url.is_none() || as_url.is_some_and(|u| u.is_special_scheme()))
+        if specifier_key.ends_with('\u{002f}') &&
+            normalized_specifier.starts_with(specifier_key) &&
+            (as_url.is_none() || as_url.is_some_and(|u| u.is_special_scheme()))
         {
             // Step 1.2.1 If resolutionResult is null, then throw a TypeError.
             // Step 1.2.2 Assert: resolutionResult is a URL.

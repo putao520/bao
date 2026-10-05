@@ -12,15 +12,15 @@ use fonts::{
     Font, FontData, FontDescriptor, FontIdentifier, FontTemplate, FontTemplateRef,
     PlatformFontMethods, ShapingFlags, ShapingOptions,
 };
-use icu_locid::subtags::Language;
+use icu_locale_core::subtags::Language;
 use servo_url::ServoUrl;
 use style::Zero;
 use style::computed_values::font_optical_sizing::T as FontOpticalSizing;
 use style::computed_values::font_variant_position::T as FontVariantPosition;
 use style::properties::longhands::font_variant_caps::computed_value::T as FontVariantCaps;
 use style::values::computed::{
-    FontFeatureSettings, FontWidth, FontStyle, FontSynthesis, FontVariantEastAsian,
-    FontVariantLigatures, FontVariantNumeric, FontWeight,
+    FontFeatureSettings, FontStyle, FontSynthesis, FontVariantEastAsian, FontVariantLigatures,
+    FontVariantNumeric, FontWeight, FontWidth,
 };
 use unicode_script::Script;
 
@@ -39,7 +39,7 @@ fn make_font(path: PathBuf) -> Font {
     let template = FontTemplate::new(identifier, platform_font.descriptor(), None);
     let descriptor = FontDescriptor {
         weight: FontWeight::normal(),
-        stretch: FontWidth::hundred(),
+        width: FontWidth::hundred(),
         style: FontStyle::normal(),
         variant: FontVariantCaps::Normal,
         pt_size: Au::from_px(24),
@@ -83,7 +83,7 @@ fn test_font_can_do_fast_shaping() {
         letter_spacing: Au::zero(),
         word_spacing: Au::zero(),
         script: Script::Latin,
-        language: Language::UND,
+        language: Language::UNKNOWN,
         flags: ShapingFlags::empty(),
         ligatures: FontVariantLigatures::NORMAL,
         numeric: FontVariantNumeric::NORMAL,
@@ -100,7 +100,7 @@ fn test_font_can_do_fast_shaping() {
         letter_spacing: Au::zero(),
         word_spacing: Au::zero(),
         script: Script::Cherokee,
-        language: Language::UND,
+        language: Language::UNKNOWN,
         flags: ShapingFlags::empty(),
         ligatures: FontVariantLigatures::NORMAL,
         numeric: FontVariantNumeric::NORMAL,
@@ -117,7 +117,7 @@ fn test_font_can_do_fast_shaping() {
         letter_spacing: Au::zero(),
         word_spacing: Au::zero(),
         script: Script::Latin,
-        language: Language::UND,
+        language: Language::UNKNOWN,
         flags: ShapingFlags::RTL_FLAG,
         ligatures: FontVariantLigatures::NORMAL,
         numeric: FontVariantNumeric::NORMAL,

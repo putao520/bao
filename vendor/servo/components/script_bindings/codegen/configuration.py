@@ -60,11 +60,6 @@ class Configuration:
         self.dictConfig = glbl['Dictionaries']
         self.unionConfig = glbl['Unions']
         self.sub_crates = glbl['SubCrates']
-        # BAO patch (fork-maintained, 2026-09-28): foundation ② — callback
-        # config section (safe-get: the fork's Bindings.conf carries no
-        # 'Callbacks' section yet; populated when the coordinated wave flips
-        # per-callback decisions).
-        self.callbackConfig = glbl.get('Callbacks', {})
 
         # Build descriptors for all the interfaces we have in the parse data.
         # This allows callers to specify a subset of interfaces by filtering
@@ -181,11 +176,6 @@ class Configuration:
     def getDictConfig(self, name: str) -> dict[str, Any]:
         return self.dictConfig.get(name, {})
 
-    # BAO patch (fork-maintained, 2026-09-28): foundation ② — per-callback
-    # decision config lookup (upstream b820a9679 form).
-    def getCallbackConfig(self, name: str) -> dict[str, Any]:
-        return self.callbackConfig.get(name, {})
-
     def getCallbacks(self, webIDLFile: str = "") -> list[IDLCallback]:
         return self._filterForFile(self.callbacks, webIDLFile=webIDLFile)
 
@@ -227,11 +217,6 @@ class DescriptorProvider:
         context of the current descriptor.
         """
         return self.config.getDescriptor(interfaceName)
-
-    # BAO patch (fork-maintained, 2026-09-28): coordinated-wave terminal state —
-    # default flipped to upstream end behavior (False = RootedCallback/
-    # TracedCallback everywhere); the fork's transitional Rc default and the
-    # stream-callback conf overrides are removed with it.
 
 def MemberIsLegacyUnforgeable(member: IDLAttribute | IDLMethod, descriptor: Descriptor) -> bool:
     return ((member.isAttr() or member.isMethod())
@@ -289,12 +274,7 @@ class Descriptor(DescriptorProvider):
         elif self.interface.isCallback():
             ty = 'crate::codegen::GenericBindings::%sBinding::%s' % (ifaceName, ifaceName)
             pathDefault = ty
-            # BAO patch (fork-maintained, 2026-09-28): aligned to the upstream
-            # origin/main form (:284) — the return-position declaration reads the
-            # per-descriptor useRcCallback key, same channel as the argument
-            # conversion site (codegen.py S1). Default = RootedCallback.
-            callback_type = "Rc" if desc.get('useRcCallback', False) else "RootedCallback"
-            self.returnType = "%s<%s<D>>" % (callback_type, ty)
+            self.returnType = "RootedCallback<%s<D>>" % ty
             self.argumentType = "???"
             self.nativeType = ty
         else:
@@ -328,7 +308,6 @@ class Descriptor(DescriptorProvider):
                 assert first_set.isdisjoint(second_set), f"In {ifaceName} set {configurationMethods[i]} has overlap with {configurationMethods[j]}. Duplicates: {first_set.intersection(second_set)}"
 
         self.additionalTraits = [name for name in desc.get('additionalTraits', [])]
-        self.useRcCallback = self.interface.isCallback() and desc.get('useRcCallback', False)
         self.bindingPath = f"{getModuleFromObject(self.interface)}::{ifaceName}_Binding"
         self.outerObjectHook = desc.get('outerObjectHook', 'None')
         self.proxy = False
@@ -535,6 +514,9 @@ class Descriptor(DescriptorProvider):
         # If we're isGlobal and have cross-origin members, we're a Window, and
         # that's not a cross-origin object.  The WindowProxy is.
         return self.concrete and self.interface.hasCrossOriginMembers and not self.isGlobal()
+
+    def emitsCrossOriginPropertyTable(self) -> bool:
+        return self.concrete and self.interface.hasCrossOriginMembers
 
     def hasDescendants(self) -> bool:
         return (self.interface.getUserData("hasConcreteDescendant", False)

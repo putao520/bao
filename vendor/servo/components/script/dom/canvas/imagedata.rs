@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use servo_base::generic_channel::GenericSharedMemory;
 use std::borrow::Cow;
 use std::vec::Vec;
 
@@ -201,6 +200,7 @@ impl ImageData {
         )
     }
 
+    #[cfg(feature = "webgl")]
     pub(crate) fn to_shared_memory(&self, no_gc: &NoGC) -> GenericSharedMemory {
         // This is safe because we copy the slice content
         GenericSharedMemory::from_bytes(self.as_slice(no_gc))

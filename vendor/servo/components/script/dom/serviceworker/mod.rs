@@ -6,10 +6,8 @@ pub(crate) use self::serviceworker::*;
 pub(crate) mod cache;
 pub(crate) mod cachestorage;
 pub(crate) mod client;
-pub(crate) mod clients;
 pub(crate) mod extendableevent;
 pub(crate) mod extendablemessageevent;
-pub(crate) mod fetchevent;
 pub(crate) mod navigationpreloadmanager;
 pub(crate) mod notification;
 #[allow(

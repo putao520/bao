@@ -41,7 +41,7 @@ impl Range {
             return true;
         }
         // > node is contained in range.
-        if self.contains(node) {
+        if self.contains(no_gc, node) {
             return true;
         }
         // > node has at least one child; and all its children are effectively contained in range;
@@ -111,7 +111,7 @@ impl Range {
     ) -> impl Iterator<Item = UnrootedDom<'a, Node>> {
         self.CommonAncestorContainer()
             .traverse_preorder_unrooted(no_gc, ShadowIncluding::No)
-            .filter(|node| self.contains(node))
+            .filter(|node| self.contains(no_gc, node))
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#block-extend>
@@ -200,8 +200,8 @@ impl Range {
         // Step 8. Let new range be a new range whose start and end nodes and offsets are start node,
         // start offset, end node, and end offset.
         let new_range = document.CreateRange(cx);
-        let _ = new_range.SetStart(&start_node, start_offset);
-        let _ = new_range.SetEnd(&end_node, end_offset);
+        let _ = new_range.SetStart(cx.no_gc(), &start_node, start_offset);
+        let _ = new_range.SetEnd(cx.no_gc(), &end_node, end_offset);
         // Step 9. Return new range.
         new_range
     }

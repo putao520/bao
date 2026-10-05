@@ -2,14 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
-// the list knows its owning `TextTrack` again (so `add` can seed the media
-// element's newly-introduced-cues list), plus cue-order `sort`, and
-// `refresh_active_cues`/`cues` backing `TextTrack::GetActiveCues`
-// (REQ-BRW-047). Fork form: `Dom::as_unrooted` does not exist in this fork's
-// `script_bindings`, so unrooted views are built with
-// `UnrootedDom::from_dom(.., no_gc)` instead (same semantics, local rewrite).
-
 use std::ops::Deref;
 
 use dom_struct::dom_struct;
@@ -83,7 +75,19 @@ impl TextTrackCueList {
                 cue.set_initial_index_in_list(dom_cues.len());
             }
             self.sort();
-            if let Some(track_list) = self.text_track.get().track_list() {
+            let text_track = self.text_track.get();
+            // https://html.spec.whatwg.org/multipage/#dom-media-addtexttrack
+            // > When a text track cue is added to it,
+            // > the text track list of cues has its rules permanently set accordingly.
+            if text_track
+                .rules_for_updating_the_text_track_rendering()
+                .is_none()
+            {
+                text_track.set_rules_for_updating_the_text_track_rendering(
+                    cue.rules_for_updating_the_text_track_rendering(),
+                );
+            }
+            if let Some(track_list) = text_track.track_list() {
                 track_list.notify_media_element_for_added_cue(cx, cue);
             }
         }
@@ -118,7 +122,7 @@ impl TextTrackCueList {
             .borrow()
             .clone()
             .into_iter()
-            .map(|cue| UnrootedDom::from_dom(cue, no_gc))
+            .map(|track| track.as_unrooted(no_gc))
             .collect()
     }
 }

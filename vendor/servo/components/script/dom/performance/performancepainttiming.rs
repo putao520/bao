@@ -5,7 +5,7 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use paint_api::display_list::PaintTimingInfo;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use script_traits::ProgressiveWebMetricType;
 use time::Duration;
 
@@ -23,16 +23,12 @@ pub(crate) struct PerformancePaintTiming {
     /// <https://www.w3.org/TR/paint-timing/#paint-timing-info>
     #[no_trace]
     paint_timing_info: PaintTimingInfo,
-    paint_time: DOMHighResTimeStamp,
-    presentation_time: Option<DOMHighResTimeStamp>,
 }
 
 impl PerformancePaintTiming {
     fn new_inherited(
         metric_type: ProgressiveWebMetricType,
         paint_timing_info: PaintTimingInfo,
-        paint_time: DOMHighResTimeStamp,
-        presentation_time: Option<DOMHighResTimeStamp>,
     ) -> PerformancePaintTiming {
         let name = match metric_type {
             ProgressiveWebMetricType::FirstPaint => DOMString::from_static("first-paint"),
@@ -53,8 +49,6 @@ impl PerformancePaintTiming {
                 Duration::ZERO,
             ),
             paint_timing_info,
-            paint_time,
-            presentation_time,
         }
     }
 
@@ -65,32 +59,25 @@ impl PerformancePaintTiming {
         metric_type: ProgressiveWebMetricType,
         paint_timing_info: PaintTimingInfo,
     ) -> DomRoot<PerformancePaintTiming> {
-        // BAO patch (fork-maintained, 2026-09-28): 构造期解析时间戳(cx-less
-        // getter 的取值前提)。
-        let performance = global.performance(cx);
-        let paint_time = performance
-            .to_dom_high_res_time_stamp(paint_timing_info.paint_time());
-        let presentation_time = paint_timing_info
-            .presentation_time()
-            .map(|instant| performance.to_dom_high_res_time_stamp(instant));
-        let entry = PerformancePaintTiming::new_inherited(
-            metric_type,
-            paint_timing_info,
-            paint_time,
-            presentation_time,
-        );
-        reflect_dom_object_with_cx(Box::new(entry), global, cx)
+        let entry = PerformancePaintTiming::new_inherited(metric_type, paint_timing_info);
+        reflect_dom_object(cx, Box::new(entry), global)
     }
 }
 
 impl PerformancePaintTimingMethods<crate::DomTypeHolder> for PerformancePaintTiming {
     /// <https://www.w3.org/TR/paint-timing/#dom-painttimingmixin-painttime>
-    fn PaintTime(&self) -> DOMHighResTimeStamp {
-        self.paint_time
+    fn PaintTime(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.global()
+            .performance(cx)
+            .to_dom_high_res_time_stamp(self.paint_timing_info.paint_time())
     }
 
     /// <https://www.w3.org/TR/paint-timing/#dom-painttimingmixin-presentationtime>
-    fn GetPresentationTime(&self) -> Option<DOMHighResTimeStamp> {
-        self.presentation_time
+    fn GetPresentationTime(&self, cx: &mut JSContext) -> Option<DOMHighResTimeStamp> {
+        Some(
+            self.global()
+                .performance(cx)
+                .maybe_to_dom_high_res_time_stamp(self.paint_timing_info.presentation_time()),
+        )
     }
 }

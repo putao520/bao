@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use async_recursion::async_recursion;
-use content_security_policy::percent_encoding::{AsciiSet, CONTROLS};
+use content_security_policy::percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use devtools_traits::ChromeToDevtoolsControlMsg;
 use embedder_traits::{AuthenticationResponse, GenericEmbedderProxy};
 use futures::{TryFutureExt, TryStreamExt, future};
 use headers::authorization::Basic;
@@ -24,10 +25,13 @@ use http::header::{
     CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LOCATION, CONTENT_TYPE, HeaderValue, RANGE,
     WWW_AUTHENTICATE,
 };
-use http::{HeaderMap, Method, StatusCode};
+use http::{HeaderMap, Method, Request as HyperRequest, StatusCode};
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
+use hyper::Response as HyperResponse;
+use hyper::body::{Bytes, Frame};
 use hyper::ext::ReasonPhrase;
-use hyper::header::HeaderName;
+use hyper::header::{HeaderName, TRANSFER_ENCODING};
 use ipc_channel::IpcError;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_channel::router::ROUTER;
@@ -47,29 +51,40 @@ use net_traits::request::{
 };
 use net_traits::response::{CacheState, RedirectTaint, Response, ResponseBody, ResponseType};
 use net_traits::{
-    CookieSource, CustomResponse, CustomResponseMediator, DOCUMENT_ACCEPT_HEADER_VALUE,
-    DiscardFetch, NetworkError, RedirectEndValue, RedirectStartValue, ReferrerPolicy,
-    ResourceAttribute, ResourceFetchTiming, ResourceFetchTimingContainer, ResourceTimeValue,
-    ResourceTimingType, TlsSecurityInfo, TlsSecurityState,
+    CookieSource, DOCUMENT_ACCEPT_HEADER_VALUE, DiscardFetch, NetworkError, RedirectEndValue,
+    RedirectStartValue, ReferrerPolicy, ResourceAttribute, ResourceFetchTimingContainer,
+    ResourceTimeValue, ServoCipherSuite, ServoNamedGroup, ServoProtocolVersion, TlsSecurityInfo,
+    TlsSecurityState,
 };
 use parking_lot::{Mutex, RwLock};
 use profile_traits::mem::{Report, ReportKind};
 use profile_traits::path;
+#[cfg(feature = "tracing")]
+use profile_traits::trace_span;
 use rustc_hash::FxHashMap;
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSharedMemory;
-use servo_base::id::HistoryStateId;
+use servo_base::id::{BrowsingContextId, HistoryStateId, PipelineId};
 use servo_config::pref;
 use servo_url::{ImmutableOrigin, ServoUrl};
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{
+    Receiver as TokioReceiver, Sender as TokioSender, UnboundedReceiver, UnboundedSender, channel,
+    unbounded_channel,
+};
+use tokio_stream::wrappers::ReceiverStream;
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 
 use crate::async_runtime::spawn_task;
 use crate::connector::{
-    CertificateErrorOverrideManager, TlsHandshakeInfo, create_tls_config,
+    CertificateErrorOverrideManager, ServoClient, TlsHandshakeInfo, create_tls_config,
 };
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
 use crate::decoder::Decoder;
-use crate::devtools::{send_request_to_devtools, send_response_values_to_devtools};
+use crate::devtools::{
+    prepare_devtools_request, send_request_to_devtools, send_response_values_to_devtools,
+};
 use crate::embedder::NetToEmbedderMsg;
 use crate::fetch::cors_cache::CorsCache;
 use crate::fetch::fetch_params::FetchParams;
@@ -100,6 +115,7 @@ pub struct HttpState {
     pub http_cache: HttpCache,
     pub auth_cache: RwLock<AuthCache>,
     pub history_states: RwLock<FxHashMap<HistoryStateId, Vec<u8>>>,
+    pub client: ServoClient,
     pub override_manager: CertificateErrorOverrideManager,
     pub embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 }
@@ -116,6 +132,16 @@ impl HttpState {
                 path: path!["hsts-list", suffix],
                 kind: ReportKind::ExplicitJemallocHeapSize,
                 size: self.hsts_list.read().size_of(ops),
+            },
+            Report {
+                path: path!["auth cache", suffix],
+                kind: ReportKind::ExplicitJemallocHeapSize,
+                size: self.auth_cache.read().size_of(ops),
+            },
+            Report {
+                path: path!["cookie storage", suffix],
+                kind: ReportKind::ExplicitJemallocHeapSize,
+                size: self.cookie_jar.read().size_of(ops),
             },
         ]
     }
@@ -376,9 +402,9 @@ fn build_tls_security_info(handshake: &TlsHandshakeInfo, hsts_enabled: bool) -> 
     TlsSecurityInfo {
         state,
         weakness_reasons: Vec::new(), // rustls never negotiates weak crypto
-        protocol_version: handshake.protocol_version.clone(),
-        cipher_suite: handshake.cipher_suite.clone(),
-        kea_group_name: handshake.kea_group_name.clone(),
+        protocol_version: handshake.protocol_version.map(ServoProtocolVersion),
+        cipher_suite: handshake.cipher_suite.map(ServoCipherSuite),
+        kea_group_name: handshake.kea_group_name.map(ServoNamedGroup),
         signature_scheme_name: handshake.signature_scheme_name.clone(),
         alpn_protocol: handshake.alpn_protocol.clone(),
         certificate_chain_der: handshake.certificate_chain_der.clone(),
@@ -396,7 +422,11 @@ fn auth_from_cache(
     auth_cache: &RwLock<AuthCache>,
     origin: &ImmutableOrigin,
 ) -> Option<Authorization<Basic>> {
-    if let Some(auth_entry) = auth_cache.read().entries.get(&origin.ascii_serialization()) {
+    if let Some(auth_entry) = auth_cache
+        .read()
+        .entries
+        .get(origin.ascii_serialization().as_ref())
+    {
         let user_name = &auth_entry.user_name;
         let password = &auth_entry.password;
         Some(Authorization::basic(user_name, password))
@@ -407,25 +437,60 @@ fn auth_from_cache(
 
 /// Messages from the IPC route to the fetch worker,
 /// used to fill the body with bytes coming-in over IPC.
-pub(crate) enum BodyChunk {
+enum BodyChunk {
     /// A chunk of bytes.
     Chunk(GenericSharedMemory),
     /// Body is done.
     Done,
-    /// The body stream errored (fetch spec step 5: terminate the fetch) —
-    /// the driver aborts the in-flight exchange instead of sending a
-    /// truncated body.
-    Error,
 }
 
-/// The sink side of the request body: chunks arriving over IPC are forwarded
-/// through this sender to the fetch driver, which writes them incrementally
-/// into the request's streaming-body buffer (the bun bridge's
-/// `ThreadSafeStreamBuffer`) — the wire sees bytes as they arrive, never a
-/// fully-buffered body. This is the pull-driven consumer side: the driver
-/// requests the next IPC chunk only after the previous one was accepted by
-/// the network (backpressure — at most one chunk in flight).
-pub(crate) type BodySink = UnboundedSender<BodyChunk>;
+/// The stream side of the body passed to hyper.
+enum BodyStream {
+    /// A receiver that can be used in Body::wrap_stream,
+    /// for streaming the request over the network.
+    Chunked(TokioReceiver<Result<Frame<Bytes>, hyper::Error>>),
+    /// A body whose bytes are buffered
+    /// and sent in one chunk over the network.
+    Buffered(UnboundedReceiver<BodyChunk>),
+}
+
+/// The sink side of the body passed to hyper,
+/// used to enqueue chunks.
+enum BodySink {
+    /// A Tokio sender used to feed chunks to the network stream.
+    Chunked(TokioSender<Result<Frame<Bytes>, hyper::Error>>),
+    /// A Crossbeam sender used to send chunks to the fetch worker,
+    /// where they will be buffered
+    /// in order to ensure they are not streamed them over the network.
+    Buffered(UnboundedSender<BodyChunk>),
+}
+
+impl BodySink {
+    fn transmit_bytes(&self, bytes: GenericSharedMemory) {
+        match self {
+            BodySink::Chunked(sender) => {
+                let sender = sender.clone();
+                spawn_task(async move {
+                    let _ = sender
+                        .send(Ok(Frame::data(Bytes::copy_from_slice(&bytes))))
+                        .await;
+                });
+            },
+            BodySink::Buffered(sender) => {
+                let _ = sender.send(BodyChunk::Chunk(bytes));
+            },
+        }
+    }
+
+    fn close(self) {
+        match self {
+            BodySink::Chunked(_) => {},
+            BodySink::Buffered(sender) => {
+                let _ = sender.send(BodyChunk::Done);
+            },
+        }
+    }
+}
 
 fn request_body_stream_closed_error(action: &str) -> NetworkError {
     NetworkError::Crash(format!(
@@ -448,18 +513,206 @@ fn log_fetch_terminated_send_failure(terminated_with_error: bool, context: &str)
     );
 }
 
-pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
+const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
+
+#[expect(clippy::too_many_arguments)]
+#[servo_tracing::instrument(skip_all, fields(url=url.as_str()))]
+/// This sets up the callback infrastructure to send body frames to `body_sender` and fires the client request.
+async fn obtain_response(
+    client: &ServoClient,
+    url: &ServoUrl,
+    method: &Method,
+    request_headers: &mut HeaderMap,
+    body_sender: Option<StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>>,
+    source_is_null: bool,
+    pipeline_id: &Option<PipelineId>,
+    request_id: Option<&str>,
+    destination: Destination,
+    is_xhr: bool,
+    context: &FetchContext,
+    fetch_terminated: UnboundedSender<bool>,
+    browsing_context_id: Option<BrowsingContextId>,
+) -> Result<(HyperResponse<Decoder>, Option<ChromeToDevtoolsControlMsg>), NetworkError> {
+    let mut headers = request_headers.clone();
+
+    let devtools_bytes = StdArc::new(Mutex::new(vec![]));
+
+    // https://url.spec.whatwg.org/#percent-encoded-bytes
+    let encoded_url = utf8_percent_encode(url.as_str(), FRAGMENT).to_string();
+
+    let request = if let Some(chunk_requester) = body_sender {
+        let (sink, stream) = if source_is_null {
+            // Step 4.2 of https://fetch.spec.whatwg.org/#concept-http-network-fetch
+            // TODO: this should not be set for HTTP/2(currently not supported?).
+            headers.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
+
+            let (sender, receiver) = channel(1);
+            (BodySink::Chunked(sender), BodyStream::Chunked(receiver))
+        } else {
+            // Note: Hyper seems to already buffer bytes when the request appears not stream-able,
+            // see https://github.com/hyperium/hyper/issues/2232#issuecomment-644322104
+            //
+            // However since this doesn't appear documented, and we're using an ancient version,
+            // for now we buffer manually to ensure we don't stream requests
+            // to servers that might not know how to handle them.
+            let (sender, receiver) = unbounded_channel();
+            (BodySink::Buffered(sender), BodyStream::Buffered(receiver))
+        };
+
+        obtain_response_setup_router_callback(
+            devtools_bytes.clone(),
+            chunk_requester,
+            sink,
+            fetch_terminated,
+        )?;
+
+        let body = match stream {
+            BodyStream::Chunked(receiver) => {
+                let stream = ReceiverStream::new(receiver);
+                BoxBody::new(http_body_util::StreamBody::new(stream))
+            },
+            BodyStream::Buffered(mut receiver) => {
+                // Accumulate bytes received over IPC into a vector.
+                let mut body = vec![];
+                loop {
+                    match receiver.recv().await {
+                        Some(BodyChunk::Chunk(bytes)) => {
+                            body.extend_from_slice(&bytes);
+                        },
+                        Some(BodyChunk::Done) => break,
+                        None => warn!("Failed to read all chunks from request body."),
+                    }
+                }
+                Full::new(body.into()).map_err(|_| unreachable!()).boxed()
+            },
+        };
+        HyperRequest::builder()
+            .method(method)
+            .uri(encoded_url)
+            .body(body)
+    } else {
+        HyperRequest::builder()
+            .method(method)
+            .uri(encoded_url)
+            .body(
+                http_body_util::Empty::new()
+                    .map_err(|_| unreachable!())
+                    .boxed(),
+            )
+    };
+
+    // TODO(#21261) connect_start: set if a persistent connection is *not* used and the last non-redirected
+    // fetch passes the timing allow check
+    let connect_start = CrossProcessInstant::now();
+    context.timing.set_attributes(&[
+        ResourceAttribute::DomainLookupStart,
+        ResourceAttribute::ConnectStart(connect_start),
+    ]);
+
+    // TODO: We currently don't know when the handhhake before the connection is done
+    // so our best bet would be to set `secure_connection_start` here when we are currently
+    // fetching on a HTTPS url.
+    if url.scheme() == "https" {
+        context
+            .timing
+            .set_attribute(ResourceAttribute::SecureConnectionStart);
+    }
+
+    let mut request = match request {
+        Ok(request) => request,
+        Err(error) => return Err(NetworkError::HttpError(error.to_string())),
+    };
+    *request.headers_mut() = headers.clone();
+
+    let connect_end = CrossProcessInstant::now();
+    context
+        .timing
+        .set_attribute(ResourceAttribute::ConnectEnd(connect_end));
+
+    let request_id = request_id.map(|v| v.to_owned());
+    let pipeline_id = *pipeline_id;
+    let closure_url = url.clone();
+    let method = method.clone();
+    let send_start = CrossProcessInstant::now();
+
+    let host = request.uri().host().unwrap_or("").to_owned();
+    let override_manager = context.state.override_manager.clone();
+    let headers = headers.clone();
+    let is_secure_scheme = url.is_secure_scheme();
+
+    // Generally, we use a persistent connection, so we will also set other PerformanceResourceTiming
+    //   attributes to this as well (domain_lookup_start, domain_lookup_end, connect_start, connect_end,
+    //   secure_connection_start)
+    context
+        .timing
+        .set_attribute(ResourceAttribute::RequestStart);
+
+    let client_future = client
+        .request(request)
+        .and_then(move |res| {
+            let send_end = CrossProcessInstant::now();
+
+            // TODO(#21271) response_start: immediately after receiving first byte of response
+
+            let msg = if let Some(request_id) = request_id {
+                if let Some(pipeline_id) = pipeline_id {
+                    if let Some(browsing_context_id) = browsing_context_id {
+                        Some(prepare_devtools_request(
+                            request_id,
+                            closure_url,
+                            method.clone(),
+                            headers,
+                            Some(devtools_bytes.lock().clone()),
+                            pipeline_id,
+                            (connect_end - connect_start).unsigned_abs(),
+                            (send_end - send_start).unsigned_abs(),
+                            destination,
+                            is_xhr,
+                            browsing_context_id,
+                        ))
+                    } else {
+                        debug!("Not notifying devtools (no browsing_context_id)");
+                        None
+                    }
+                    // TODO: ^This is not right, connect_start is taken before contructing the
+                    // request and connect_end at the end of it. send_start is takend before the
+                    // connection too. I'm not sure it's currently possible to get the time at the
+                    // point between the connection and the start of a request.
+                } else {
+                    debug!("Not notifying devtools (no pipeline_id)");
+                    None
+                }
+            } else {
+                debug!("Not notifying devtools (no request_id)");
+                None
+            };
+
+            future::ready(Ok((
+                Decoder::detect(res.map(|r| r.boxed()), is_secure_scheme),
+                msg,
+            )))
+        })
+        .map_err(move |error| {
+            warn!("network error: {error:?}");
+            NetworkError::from_hyper_error(
+                &error,
+                override_manager.remove_certificate_failing_verification(host.as_str()),
+            )
+        });
+
+    #[cfg(feature = "tracing")]
+    {
+        client_future.instrument(trace_span!("HyperRequest")).await
+    }
+
+    #[cfg(not(feature = "tracing"))]
+    {
+        client_future.await
+    }
+}
 
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.
-///
-/// Streaming contract (https://fetch.spec.whatwg.org/#concept-request-transmit-body,
-/// steps 3–5): this route connects to the script-side body stream, requests
-/// the FIRST chunk (steps 3–4), and forwards every delivered chunk to `sink`
-/// (step 5.1.2.2). Requesting the NEXT chunk (step 5.1.2.3) is the consumer's
-/// job: the fetch driver pulls through its clone of `chunk_requester` once
-/// the network accepted the previous chunk, so at most one IPC chunk is in
-/// flight and the wire — not an intermediary buffer — applies backpressure.
-pub(crate) fn obtain_response_setup_router_callback(
+fn obtain_response_setup_router_callback(
     devtools_bytes: StdArc<Mutex<Vec<u8>>>,
     chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
     sink: BodySink,
@@ -514,7 +767,7 @@ pub(crate) fn obtain_response_setup_router_callback(
                         );
                     }
                     if let Some(sink) = sink.take() {
-                        let _ = sink.send(BodyChunk::Done);
+                        sink.close();
                     }
 
                     return;
@@ -530,7 +783,7 @@ pub(crate) fn obtain_response_setup_router_callback(
                         );
                     }
                     if let Some(sink) = sink.take() {
-                        let _ = sink.send(BodyChunk::Error);
+                        sink.close();
                     }
 
                     return;
@@ -539,15 +792,45 @@ pub(crate) fn obtain_response_setup_router_callback(
 
             devtools_bytes.lock().extend_from_slice(&bytes);
 
-            // Step 5.1.2.2, transmit chunk over the network: hand the bytes
-            // to the fetch worker. Step 5.1.2.3 (request the next chunk) is
-            // performed by the consumer once this chunk was accepted — see
-            // the streaming contract in the doc comment above.
+            // Step 5.1.2.2, transmit chunk over the network,
+            // currently implemented by sending the bytes to the fetch worker.
             {
                 let Some(sink) = sink.as_ref() else {
                     return;
                 };
-                let _ = sink.send(BodyChunk::Chunk(bytes));
+                sink.transmit_bytes(bytes);
+            }
+
+            // Step 5.1.2.3
+            // Request the next chunk.
+            let mut chunk_requester = chunk_requester.lock();
+            if let Some(chunk_requester) = chunk_requester.as_mut() {
+                if let Err(error) = chunk_requester.send(BodyChunkRequest::Chunk) {
+                    log_request_body_stream_closed(
+                        "request the next request body chunk",
+                        Some(&error),
+                    );
+                    if fetch_terminated.send(true).is_err() {
+                        log_fetch_terminated_send_failure(
+                            true,
+                            "handling failure to request the next request body chunk",
+                        );
+                    }
+                    if let Some(sink) = sink.take() {
+                        sink.close();
+                    }
+                }
+            } else {
+                log_request_body_stream_closed("request the next request body chunk", None);
+                if fetch_terminated.send(true).is_err() {
+                    log_fetch_terminated_send_failure(
+                        true,
+                        "handling a closed request body stream while requesting the next chunk",
+                    );
+                }
+                if let Some(sink) = sink.take() {
+                    sink.close();
+                }
             }
         }),
     );
@@ -555,218 +838,9 @@ pub(crate) fn obtain_response_setup_router_callback(
     Ok(())
 }
 
-/// How long the net side waits for the service worker's `respondWith` to
-/// settle before giving up on mediation and falling through to the network
-/// path. The managed chain answers `None` (pass-through) immediately when no
-/// scope matches or no worker is active, so this bound only ever trips on a
-/// hung service-worker handler.
-const HANDLE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-
-// ── BAO PATCH (REQ-BRW-004 C19-②): net-layer Network event tap ─────────────
-//
-// Spec clause #19 subclause ②: "CDP Network 域可观测 SW 发起的请求/响应".
-// The embedder (bao_browser, on CDP Network.enable) installs one process-wide
-// tap here; `main_fetch`'s upstream devtools instrumentation points call the
-// `bao_emit_*` helpers below, so BOTH service-worker-mediated fetches and
-// regular page fetches — including the SW realm's own sub-fetches — surface
-// as Network.requestWillBeSent / Network.responseReceived on the embedder's
-// event channel. Same global-setter pattern as `connector::STEALTH_TLS_CONFIG`.
-
-/// One network observation forwarded to the embedder's tap.
-#[derive(Debug, Clone)]
-pub enum BaoNetworkTapEvent {
-    /// A request entered the net fetch pipeline (main_fetch step 1).
-    Request {
-        request_id: String,
-        url: String,
-        method: String,
-        /// Header name/value pairs (lossy-UTF8, wire order).
-        headers: Vec<(String, String)>,
-        /// CDP ResourceType string (best-effort Destination mapping).
-        resource_type: String,
-        /// The originating webview, when the net layer knows it.
-        webview_id: Option<String>,
-    },
-    /// A response settled (headers known; body may still stream).
-    Response {
-        request_id: String,
-        url: String,
-        status: u16,
-        status_text: String,
-        headers: Vec<(String, String)>,
-        mime_type: String,
-        webview_id: Option<String>,
-    },
-}
-
-/// The embedder-installed tap. Called on fetch worker threads; must be cheap
-/// and must not block (the embedder side only pushes into an mpsc channel).
-pub type BaoNetworkTap = StdArc<dyn Fn(BaoNetworkTapEvent) + Send + Sync>;
-
-static BAO_NETWORK_TAP: RwLock<Option<BaoNetworkTap>> = RwLock::new(None);
-
-/// Install or remove the process-wide network event tap (embedder API face is
-/// `servo::set_network_event_tap`).
-pub fn set_network_event_tap(tap: Option<BaoNetworkTap>) {
-    *BAO_NETWORK_TAP.write() = tap;
-}
-
-fn with_network_tap<F: FnOnce(&BaoNetworkTap)>(f: F) {
-    let tap = BAO_NETWORK_TAP.read().clone();
-    if let Some(ref tap) = tap {
-        f(tap);
-    }
-}
-
-/// `content_security_policy::Destination` → CDP `ResourceType` string.
-fn bao_destination_to_resource_type(destination: Destination) -> &'static str {
-    match destination {
-        Destination::Document | Destination::Frame | Destination::IFrame => "Document",
-        Destination::Script | Destination::ServiceWorker | Destination::SharedWorker |
-        Destination::Worker | Destination::Xslt => "Script",
-        Destination::Style => "Stylesheet",
-        Destination::Image => "Image",
-        Destination::Font => "Font",
-        Destination::Audio | Destination::Video | Destination::Track => "Media",
-        Destination::Manifest => "Manifest",
-        Destination::Json | Destination::Text => "Fetch",
-        Destination::None |
-        Destination::AudioWorklet |
-        Destination::Embed |
-        Destination::Object |
-        Destination::PaintWorklet |
-        Destination::Report |
-        Destination::WebIdentity => "Other",
-    }
-}
-
-fn bao_header_pairs(headers: &HeaderMap<HeaderValue>) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .map(|(name, value)| {
-            (
-                name.as_str().to_string(),
-                String::from_utf8_lossy(value.as_bytes()).into_owned(),
-            )
-        })
-        .collect()
-}
-
-/// Request-side tap emit (main_fetch step 1, beside
-/// `send_early_httprequest_to_devtools`). Data URLs are skipped, mirroring
-/// the devtools instrumentation.
-pub(crate) fn bao_emit_network_request_tap(request: &Request) {
-    if request.url().scheme() == "data" {
-        return;
-    }
-    with_network_tap(|tap| {
-        tap(BaoNetworkTapEvent::Request {
-            request_id: request.id.0.to_string(),
-            url: request.current_url().to_string(),
-            method: request.method.as_str().to_string(),
-            headers: bao_header_pairs(&request.headers),
-            resource_type: bao_destination_to_resource_type(request.destination).to_string(),
-            webview_id: request.target_webview_id.map(|id| id.to_string()),
-        });
-    });
-}
-
-/// Response-side tap emit (main_fetch step 22 and the synchronous-XHR
-/// branch). Error responses (status 0 — `HttpStatus::new_error`) are skipped:
-/// they carry no wire status to observe.
-pub(crate) fn bao_emit_network_response_tap(request: &Request, response: &Response) {
-    if response.status.raw_code() == 0 {
-        return;
-    }
-    let url = match response.url() {
-        Some(url) => url.to_string(),
-        None => return,
-    };
-    let status = response.status.raw_code();
-    let status_text = String::from_utf8_lossy(response.status.message()).into_owned();
-    let headers = bao_header_pairs(&response.headers);
-    let mime_type = response
-        .headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    let webview_id = request.target_webview_id.map(|id| id.to_string());
-    with_network_tap(|tap| {
-        tap(BaoNetworkTapEvent::Response {
-            request_id: request.id.0.to_string(),
-            url,
-            status,
-            status_text,
-            headers,
-            mime_type,
-            webview_id,
-        });
-    });
-}
-// ── end BAO PATCH (REQ-BRW-004 C19-②) ──────────────────────────────────────
-
-/// BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): "handle fetch", net
-/// side — the counterpart of the upstream TODO this patch replaces. Sends a
-/// [`CustomResponseMediator`] to the service-worker manager registered for
-/// the request origin (the manager applies the scope/active-worker match and
-/// answers `None` on miss) and awaits the mediated response.
-///
-/// Every failure mode (no manager registered for the origin, channel
-/// creation failure, dead manager thread, timeout, join failure) yields
-/// `None`, which lets `http_fetch` fall through to the regular network path —
-/// the upstream behaviour when no service worker is involved.
-///
-/// The answer travels on an ipc channel whose receive blocks, so the bounded
-/// wait runs on the blocking pool (`tokio::task::spawn_blocking`, same shape
-/// as the DNS resolution in `websocket_loader`) and the async fetch worker
-/// stays free.
-async fn invoke_handle_fetch(request: &Request, context: &FetchContext) -> Option<Response> {
-    let load_url = request.current_url();
-    let manager_chan = context
-        .sw_managers
-        .lock()
-        .get(&load_url.origin())
-        .cloned()?;
-
-    let (response_chan, response_port) = ipc::channel::<Option<CustomResponse>>().ok()?;
-    let mediator = CustomResponseMediator {
-        response_chan,
-        load_url: load_url.clone(),
-        reload_navigation: request.reload_navigation,
-        history_navigation: request.history_navigation,
-        destination: request.destination,
-        mode: request.mode.clone(),
-    };
-    if manager_chan.send(mediator).is_err() {
-        return None;
-    }
-
-    let answer = tokio::task::spawn_blocking(move || {
-        response_port.try_recv_timeout(HANDLE_FETCH_TIMEOUT).ok()
-    })
-    .await
-    .ok()?
-    .flatten()?;
-
-    Some(custom_response_into_response(answer, load_url))
-}
-
-/// BAO PATCH (REQ-BRW-004 C19): build the net [`Response`] a service worker
-/// settled with. The body is the fully-read byte sequence the SW realm
-/// extracted (`CustomResponse.body` is a one-shot `Vec<u8>`, not a stream),
-/// so the response is born complete: `ResponseBody::Done`.
-fn custom_response_into_response(custom: CustomResponse, url: ServoUrl) -> Response {
-    let mut response = Response::new(url, ResourceFetchTiming::new(ResourceTimingType::Resource));
-    response.status = HttpStatus::new(custom.raw_status.0, custom.raw_status.1.into_bytes());
-    response.headers = custom.headers;
-    *response.body.lock() = ResponseBody::Done(custom.body);
-    response
-}
-
 /// [HTTP fetch](https://fetch.spec.whatwg.org/#concept-http-fetch)
 #[async_recursion]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn http_fetch(
     fetch_params: &mut FetchParams,
     cache: &mut CorsCache,
@@ -787,15 +861,8 @@ pub(crate) async fn http_fetch(
 
     // Step 3. If request’s service-workers mode is "all", then
     if request.service_workers_mode == ServiceWorkersMode::All {
-        // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): Substep 1 —
-        // set response to the result of invoking handle fetch for request.
-        // A service-worker script load is excluded: a worker must not
-        // mediate its own script fetch (guards the update job, which
-        // re-fetches the script while an active worker exists; upstream
-        // leaves that request's service-workers mode at the default "all").
-        if request.destination != Destination::ServiceWorker {
-            response = invoke_handle_fetch(request, context).await;
-        }
+        // TODO: Substep 1
+        // Set response to the result of invoking handle fetch for request.
 
         // Substep 2
         if let Some(ref res) = response {
@@ -1006,7 +1073,7 @@ fn tao_check(request: &Request, response: &Response) -> Result<(), ()> {
     // return success.
     if values
         .iter()
-        .any(|header_str| *header_str == request_origin.ascii_serialization())
+        .any(|header_str| *header_str == request_origin.ascii_serialization().as_ref())
     {
         return Ok(());
     }
@@ -1120,7 +1187,7 @@ pub async fn http_redirect_fetch(
         // Step 5. If locationURL is failure, then return a network error.
         Some(Err(err)) => {
             return Response::network_error(NetworkError::ResourceLoadError(
-                format!("Location URL parse failure: {err}"),
+                "Location URL parse failure: ".to_owned() + &err,
             ));
         },
         // Step 6. If locationURL’s scheme is not an HTTP(S) scheme, then return a network error.
@@ -1165,15 +1232,9 @@ pub async fn http_redirect_fetch(
         return Response::network_error(NetworkError::CorsCredentials);
     }
 
-    // BAO (REQ-BRW-002): Upstream residue removed — no step of HTTP-redirect fetch
-    // (https://fetch.spec.whatwg.org/#http-redirect-fetch) sets request's origin to a unique
-    // opaque origin. Cross-origin redirect semantics are carried by "compute the
-    // redirect-taint" + "Serializing a request origin" (§2.2.5), both already implemented as
-    // `redirect_taint_for_request` / `serialize_request_origin` (the latter feeds the `Origin`
-    // header and the CORS check). Mutating the origin here poisons `set_the_sec_fetch_site_header`:
-    // an opaque origin fails `is_same_site` against every URL, so `Sec-Fetch-Site` collapses to
-    // "cross-site" on any redirect chain that leaves the request origin, instead of the
-    // loosest-site-per-hop semantics over `url_list` the spec and WPT expect.
+    if cors_flag && location_url.origin() != request.current_url().origin() {
+        request.origin = Origin::Origin(ImmutableOrigin::new_opaque());
+    }
 
     // Step 10. If request’s response tainting is "cors" and locationURL includes credentials, then return a network error.
     if cors_flag && has_credentials {
@@ -1704,7 +1765,11 @@ async fn http_network_or_cache_fetch(
         };
         {
             let mut auth_cache = context.state.auth_cache.write();
-            let key = request.current_url().origin().ascii_serialization();
+            let key = request
+                .current_url()
+                .origin()
+                .ascii_serialization()
+                .into_owned();
             auth_cache.entries.insert(key, entry);
         }
 
@@ -2089,7 +2154,7 @@ async fn http_network_fetch(
     if body.is_none() {
         // There cannot be an error streaming a non-existent body.
         // However in such a case the channel will remain unused
-        // and drop inside `obtain_response_bun`.
+        // and drop inside `obtain_response`.
         // Send the confirmation now, ensuring the receiver will not dis-connect first.
         let _ = fetch_terminated_sender.send(false);
     }
@@ -2099,7 +2164,7 @@ async fn http_network_fetch(
     // Step 6. Let newConnection be "yes" if forceNewConnection is true; otherwise "no".
 
     // Step 7. Switch on request’s mode:
-    let (res, msg) = match &request.mode {
+    let (response_stream, msg) = match &request.mode {
         // Let connection be the result of obtaining a WebSocket connection, given request’s current URL.
         RequestMode::WebSocket {
             protocols,
@@ -2116,12 +2181,11 @@ async fn http_network_fetch(
             };
 
             let mut tls_config = create_tls_config(
-                request.target_webview_id,
                 context.ca_certificates.clone(),
                 context.ignore_certificate_errors,
                 context.state.override_manager.clone(),
             );
-            tls_config.set_alpn_http1_only();
+            tls_config.alpn_protocols = vec!["http/1.1".to_string().into()];
 
             let response = match start_websocket(
                 context.state.clone(),
@@ -2152,39 +2216,37 @@ async fn http_network_fetch(
         // Let connection be the result of obtaining a connection, given networkPartitionKey,
         // request’s current URL, includeCredentials, and newConnection.
         _ => {
-            // Bao fusion (U2 terminal): the bun bridge IS the page network
-            // (bun HTTPThread + stealth TLS). It takes the same devtools
-            // identification inputs the hyper-era `obtain_response` took
-            // (request/pipeline/browsing-context ids, destination, is_xhr)
-            // so its requestWillBeSent-equivalent message is
-            // field-identical. The redirect loop, CORS, cache, HSTS and
-            // cookies all remain servo-side.
-            let (res, msg) = match crate::fetch::bun_bridge::obtain_response_bun(
+            let response_future = obtain_response(
+                &context.state.client,
                 &url,
                 &request.method,
                 &mut request.headers,
                 body,
+                request
+                    .body
+                    .as_ref()
+                    .is_some_and(|body| body.source_is_null()),
                 &request.pipeline_id,
-                request.target_webview_id,
                 Some(&request_id),
                 request.destination,
                 is_xhr,
-                browsing_context_id,
                 context,
                 fetch_terminated_sender,
-            )
-            .await
-            {
+                browsing_context_id,
+            );
+
+            // This will only get the headers, the body is read later
+            let (response_stream, msg) = match response_future.await {
                 Ok(wrapped_response) => wrapped_response,
                 Err(error) => return Response::network_error(error),
             };
-            (res, msg)
+            (response_stream, msg)
         },
     };
 
     if log_enabled!(log::Level::Info) {
-        debug!("{:?} response for {}", res.version(), url);
-        for header in res.headers().iter() {
+        debug!("{:?} response for {}", response_stream.version(), url);
+        for header in response_stream.headers().iter() {
             debug!(" - {:?}", header);
         }
     }
@@ -2200,35 +2262,46 @@ async fn http_network_fetch(
     let timing = context.timing.inner().clone();
     let mut response = Response::new(url.clone(), timing);
 
-    if let Some(handshake_info) = res.extensions().get::<TlsHandshakeInfo>() {
+    if let Some(handshake_info) = response_stream.extensions().get::<TlsHandshakeInfo>() {
         let mut hsts_enabled = url
             .host_str()
             .is_some_and(|host| context.state.hsts_list.read().is_host_secure(host));
 
         if url.scheme() == "https" &&
-            let Some(sts) = res.headers().typed_get::<StrictTransportSecurity>()
+            let Some(strict_transport_security) = response_stream
+                .headers()
+                .typed_get::<StrictTransportSecurity>()
         {
             // max-age > 0 enables HSTS, max-age = 0 disables it (RFC 6797 Section 6.1.1)
-            hsts_enabled = sts.max_age().as_secs() > 0;
+            hsts_enabled = strict_transport_security.max_age().as_secs() > 0;
         }
         response.tls_security_info = Some(build_tls_security_info(handshake_info, hsts_enabled));
     }
 
-    let status_text = res
+    let status_text = response_stream
         .extensions()
         .get::<ReasonPhrase>()
         .map(ReasonPhrase::as_bytes)
-        .or_else(|| res.status().canonical_reason().map(str::as_bytes))
+        .or_else(|| {
+            response_stream
+                .status()
+                .canonical_reason()
+                .map(str::as_bytes)
+        })
         .map(Vec::from)
         .unwrap_or_default();
-    response.status = HttpStatus::new(res.status(), status_text);
+    response.status = HttpStatus::new(response_stream.status(), status_text);
 
-    info!("got {:?} response for {:?}", res.status(), request.url());
-    response.headers = res.headers().clone();
+    info!(
+        "got {:?} response for {:?}",
+        response_stream.status(),
+        request.url()
+    );
+    response.headers = response_stream.headers().clone();
     response.referrer = request.referrer.to_url().cloned();
     response.referrer_policy = request.referrer_policy;
 
-    let res_body = response.body.clone();
+    let response_body = response.body.clone();
 
     // We're about to spawn a future to be waited on here
     let (done_sender, done_receiver) = unbounded_channel();
@@ -2258,7 +2331,7 @@ async fn http_network_fetch(
     let headers = response.headers.clone();
     let devtools_chan = context.devtools_chan.clone();
 
-    let prealloc_size: usize = if let Some(possible_length) = res
+    let prealloc_size: usize = if let Some(possible_length) = response_stream
         .headers()
         .get(http::header::CONTENT_LENGTH)
         .and_then(|header_value| header_value.to_str().ok())
@@ -2266,7 +2339,7 @@ async fn http_network_fetch(
     {
         // For compressed content, we pre-allocate a multiple of the
         // compressed size, assuming typical content will be highly compressed.
-        let multiplier: usize = if res.body().is_encoded() {
+        let multiplier: usize = if response_stream.body().is_encoded() {
             5
         } else {
             1
@@ -2279,34 +2352,36 @@ async fn http_network_fetch(
     }
     .min(pref!(network_max_content_length) as usize);
     let _ = done_sender.send(Data::ContentLength(prealloc_size));
-    *res_body.lock() = ResponseBody::Receiving(Vec::with_capacity(prealloc_size));
-    let res_body2 = res_body.clone();
+    *response_body.lock() = ResponseBody::Receiving(Vec::with_capacity(prealloc_size));
+    let response_body2 = response_body.clone();
 
     spawn_task(
-        res.into_body()
-            .try_fold(res_body, move |res_body, chunk| {
+        response_stream
+            .into_body()
+            .try_fold(response_body, move |response_body_accumulator, chunk| {
                 if cancellation_listener.cancelled() {
-                    *res_body.lock() = ResponseBody::Done(vec![]);
+                    *response_body_accumulator.lock() = ResponseBody::Done(vec![]);
                     let _ = done_sender.send(Data::Cancelled);
                     return future::ready(Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "Fetch aborted",
                     )));
                 }
-                if let ResponseBody::Receiving(ref mut body) = *res_body.lock() {
-                    let bytes = chunk;
-                    body.extend_from_slice(&bytes);
-                    let _ = done_sender.send(Data::Payload(bytes.to_vec()));
+                if let ResponseBody::Receiving(ref mut body) = *response_body_accumulator.lock() {
+                    body.extend_from_slice(&chunk);
+                    let _ = done_sender.send(Data::Payload(chunk));
                 }
-                future::ready(Ok(res_body))
+                future::ready(Ok(response_body_accumulator))
             })
-            .and_then(move |res_body| {
+            .and_then(move |complete_response_body| {
                 debug!("successfully finished response for {:?}", url1);
-                let mut body = res_body.lock();
-                let completed_body = match *body {
+                let mut body = complete_response_body.lock();
+                let mut completed_body = match *body {
                     ResponseBody::Receiving(ref mut body) => std::mem::take(body),
                     _ => vec![],
                 };
+                // This allocation may be retained by the http-cache.
+                completed_body.shrink_to_fit();
                 // If devtools is disabled avoid cloning, since the result would
                 // be unused anyway.
                 let devtools_response_body =
@@ -2328,12 +2403,12 @@ async fn http_network_fetch(
                 if let std::io::ErrorKind::InvalidData = error.kind() {
                     debug!("Content decompression error for {:?}", url2);
                     let _ = done_sender3.send(Data::Error(NetworkError::DecompressionError));
-                    let mut body = res_body2.lock();
+                    let mut body = response_body2.lock();
 
                     *body = ResponseBody::Done(vec![]);
                 }
                 debug!("finished response for {:?}", url2);
-                let mut body = res_body2.lock();
+                let mut body = response_body2.lock();
                 let completed_body = match *body {
                     ResponseBody::Receiving(ref mut body) => std::mem::take(body),
                     _ => vec![],
@@ -2528,9 +2603,14 @@ async fn cors_preflight_fetch(
 
         // Step 7.6 If one of request’s header list’s names is a CORS non-wildcard request-header name
         // and is not a byte-case-insensitive match for an item in headerNames, then return a network error.
+        //
+        // Note: This check deviates from the spec. Other browsers (Chrome, Firefox, Safari) all treat a
+        // `*` in headerNames as covering CORS non-wildcard request-header names.
+        let header_names_set: HashSet<&HeaderName> = HashSet::from_iter(header_names.iter());
         if request.headers.iter().any(|(name, _)| {
             is_cors_non_wildcard_request_header_name(name) &&
-                header_names.iter().all(|header_name| header_name != name)
+                !header_names_set.contains(name) &&
+                !header_names_set.contains(&HeaderName::from_static("*"))
         }) {
             return Response::network_error(NetworkError::CorsAuthorization);
         }
@@ -2539,14 +2619,10 @@ async fn cors_preflight_fetch(
         // if unsafeName is not a byte-case-insensitive match for an item in headerNames and request’s credentials
         // mode is "include" or headerNames does not contain `*`, return a network error.
         let unsafe_names = get_cors_unsafe_header_names(&request.headers);
-        let header_names_set: HashSet<&HeaderName> = HashSet::from_iter(header_names.iter());
-        let header_names_contains_star = header_names
-            .iter()
-            .any(|header_name| header_name.as_str() == "*");
         for unsafe_name in unsafe_names.iter() {
             if !header_names_set.contains(unsafe_name) &&
                 (request.credentials_mode == CredentialsMode::Include ||
-                    !header_names_contains_star)
+                    !header_names_set.contains(&HeaderName::from_static("*")))
             {
                 return Response::network_error(NetworkError::CorsHeaders);
             }

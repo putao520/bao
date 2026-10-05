@@ -6,9 +6,6 @@
  * https://html.spec.whatwg.org/multipage/#messageport
  */
 
-// (Bao) AudioWorklet added: the AudioWorklet realm (Exposed=AudioWorklet)
-// holds MessagePort-typed members (AudioWorkletProcessor.port). Upstream has
-// no AudioWorklet realm, so upstream parity is unaffected.
 [Exposed=(Window,Worker,AudioWorklet), Transferable]
 interface MessagePort : EventTarget {
   [Throws] undefined postMessage(any message, sequence<object> transfer);

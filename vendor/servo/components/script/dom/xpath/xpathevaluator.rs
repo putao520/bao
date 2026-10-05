@@ -68,7 +68,7 @@ impl XPathEvaluatorMethods<crate::DomTypeHolder> for XPathEvaluator {
         let parsed_expression = parse_expression(
             cx,
             &expression.str(),
-            resolver.map(|r| r.native()),
+            resolver,
             self.window.Document().is_html_document(),
         )?;
         Ok(XPathExpression::new(
@@ -98,7 +98,7 @@ impl XPathEvaluatorMethods<crate::DomTypeHolder> for XPathEvaluator {
         let parsed_expression = parse_expression(
             cx,
             &expression.str(),
-            resolver.map(|r| r.native()),
+            resolver,
             self.window.Document().is_html_document(),
         )?;
         let expression = XPathExpression::new(cx, &self.window, None, parsed_expression);

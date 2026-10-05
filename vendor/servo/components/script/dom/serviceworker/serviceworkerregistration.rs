@@ -115,18 +115,6 @@ impl ServiceWorkerRegistration {
         *self.installing.borrow_mut() = Some(Dom::from_ref(worker));
     }
 
-    // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): waiting/active slot
-    // setters — companions of `set_installing` for the spec's
-    // Get-the-Service-Worker-Registration-Object steps 2.7/2.8 (upstream left
-    // both TODO).
-    pub(crate) fn set_waiting(&self, worker: &ServiceWorker) {
-        *self.waiting.borrow_mut() = Some(Dom::from_ref(worker));
-    }
-
-    pub(crate) fn set_active(&self, worker: &ServiceWorker) {
-        *self.active.borrow_mut() = Some(Dom::from_ref(worker));
-    }
-
     pub(crate) fn get_navigation_preload_header_value(&self) -> ByteString {
         self.navigation_preload_header_value.borrow().clone()
     }
@@ -155,6 +143,7 @@ impl ServiceWorkerRegistration {
             pipeline_id: global.pipeline_id(),
         };
 
+        #[cfg(feature = "webgl")]
         let webgl_chan = global
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
@@ -164,6 +153,7 @@ impl ServiceWorkerRegistration {
             global,
             None,
             Some(worker_id),
+            #[cfg(feature = "webgl")]
             webgl_chan,
         );
         let browsing_context_id = global

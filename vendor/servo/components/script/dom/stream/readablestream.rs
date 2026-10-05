@@ -572,7 +572,7 @@ impl PipeTo {
             rooted!(&in(cx) let mut dest_closed = UndefinedValue());
             let error =
                 Error::Type(c"Destination is closed or has closed queued or in flight".to_owned());
-            error.safe_to_jsval(cx, global, dest_closed.handle_mut());
+            error.to_jsval(cx, global, dest_closed.handle_mut());
             self.set_shutdown_error(dest_closed.handle());
 
             // If preventCancel is false,
@@ -1237,7 +1237,7 @@ impl ReadableStream {
     /// Note: in other use cases this call happens via the controller.
     pub(crate) fn error_native(&self, cx: &mut JSContext, error: Error) {
         rooted!(&in(cx) let mut error_val = UndefinedValue());
-        error.safe_to_jsval(cx, &self.global(), error_val.handle_mut());
+        error.to_jsval(cx, &self.global(), error_val.handle_mut());
         self.error(cx, error_val.handle());
     }
 
@@ -1636,7 +1636,7 @@ impl ReadableStream {
         if self.is_errored() {
             let promise = Promise::new(cx, global);
             rooted!(&in(cx) let mut rval = UndefinedValue());
-            self.stored_error.safe_to_jsval(cx, rval.handle_mut());
+            self.stored_error.to_jsval(cx, rval.handle_mut());
             promise.reject_native(cx, &rval.handle());
             return promise;
         }
@@ -2419,7 +2419,7 @@ impl CrossRealmTransformReadable {
         // Let error be a new "DataCloneError" DOMException.
         let error = DOMException::new(cx, global, DOMErrorName::DataCloneError);
         rooted!(&in(cx) let mut rooted_error = UndefinedValue());
-        error.safe_to_jsval(cx, rooted_error.handle_mut());
+        error.to_jsval(cx, rooted_error.handle_mut());
 
         // Perform ! CrossRealmTransformSendError(port, error).
         port.cross_realm_transform_send_error(cx, rooted_error.handle());
@@ -2474,7 +2474,7 @@ pub(crate) fn bytes_from_chunk_jsval(
     cx: &mut JSContext,
     chunk: &RootedTraceableBox<Heap<JSVal>>,
 ) -> Result<Vec<u8>, Error> {
-    match Vec::<u8>::safe_from_jsval(cx, chunk.handle(), ConversionBehavior::EnforceRange) {
+    match Vec::<u8>::from_jsval(cx, chunk.handle(), ConversionBehavior::EnforceRange) {
         Ok(ConversionResult::Success(vec)) => Ok(vec),
         Ok(ConversionResult::Failure(error)) => Err(Error::Type(error.into_owned())),
         _ => Err(Error::Type(c"Unknown format for bytes read.".to_owned())),

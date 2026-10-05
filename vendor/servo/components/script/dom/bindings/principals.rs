@@ -40,8 +40,11 @@ pub(crate) unsafe extern "C" fn write_jsprincipal(
     };
 
     unsafe {
-        // SM153: inline JS_WriteUint32Pair -> Unchecked variant (u32 params, no bounds risk).
-        if !js::jsapi::JS_WriteUint32PairUnchecked(writer, StructuredCloneTags::Principals as u32, len) {
+        if !js::jsapi::JS_WriteUint32PairUnchecked(
+            writer,
+            StructuredCloneTags::Principals as u32,
+            len,
+        ) {
             return false;
         }
         if !js::jsapi::JS_WriteBytes(writer, bytes_of_origin.as_ptr() as _, len as usize) {
@@ -89,8 +92,6 @@ pub(crate) unsafe extern "C" fn read_jsprincipal(
 
 pub(crate) const PRINCIPALS_CALLBACKS: JSPrincipalsCallbacks = JSPrincipalsCallbacks {
     write: Some(write_jsprincipal),
-    // SM153: isSystemOrAddonPrincipal was split into two pure-virtuals
-    // (JSPrincipals::isSystemOrAddonPrincipal() now composes them).
     isSystemPrincipal: Some(principals_is_system_principal),
     isAddonPrincipal: Some(principals_is_addon_principal),
 };

@@ -6,11 +6,11 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
+use accesskit::ActionRequest;
 use app_units::Au;
 use bitflags::bitflags;
 use embedder_traits::{
@@ -19,14 +19,14 @@ use embedder_traits::{
 use euclid::{Point2D, Rect, Scale, Size2D};
 use fonts::{FontContext, FontContextWebFontMethods};
 use fonts_traits::{StylesheetWebFontLoadFinishedCallback, WebFontSetDifference};
-use icu_locid::subtags::Language;
+use icu_locale_core::subtags::Language;
 use layout_api::{
-    AccessibilityDamage, AxesOverflow, BoxAreaType, CSSPixelRectVec, DangerousStyleNode,
-    HitTestFlags, HitTestResult, IFrameSizes, Layout, LayoutConfig, LayoutDamage, LayoutElement,
-    LayoutFactory, LayoutNode, NodeRenderingType, OffsetParentResponse, PhysicalSides, QueryMsg,
-    ReflowGoal, ReflowPhasesRun, ReflowRequest, ReflowRequestRestyle, ReflowResult,
-    ReflowStatistics, ScrollContainerQueryFlags, ScrollContainerResponse, TrustedNodeAddress,
-    with_layout_state,
+    AccessibilityActionRequest, AccessibilityDamage, AxesOverflow, BoxAreaType, CSSPixelRectVec,
+    DangerousStyleNode, HitTestFlags, HitTestResult, IFrameSizes, Layout, LayoutConfig,
+    LayoutDamage, LayoutElement, LayoutFactory, LayoutNode, NodeRenderingType,
+    OffsetParentResponse, PhysicalSides, QueryMsg, ReflowGoal, ReflowPhasesRun, ReflowRequest,
+    ReflowRequestRestyle, ReflowResult, ReflowStatistics, ScrollContainerQueryFlags,
+    ScrollContainerResponse, TrustedNodeAddress, with_layout_state,
 };
 use log::{debug, warn};
 use malloc_size_of::{MallocConditionalSizeOf, MallocSizeOf, MallocSizeOfOps};
@@ -88,8 +88,8 @@ use crate::context::{CachedImageOrError, ImageResolver, LayoutContext};
 use crate::display_list::{DisplayListBuilder, HitTest, PaintTimingHandler, StackingContextTree};
 use crate::dom::NodeExt;
 use crate::query::{
-    find_character_offset_in_fragment_descendants, get_the_text_steps, process_box_area_request,
-    process_box_areas_request, process_client_rect_request,
+    BoxAreaInclusion, find_character_offset_in_fragment_descendants, get_the_text_steps,
+    process_box_area_request, process_box_areas_request, process_client_rect_request,
     process_containing_block_descendant_query, process_containing_block_query,
     process_current_css_zoom_query, process_effective_overflow_query,
     process_node_scroll_area_request, process_offset_parent_query, process_padding_request,
@@ -229,6 +229,13 @@ pub struct LayoutThread {
 
     /// See [Layout::force_accessibility_update()].
     force_accessibility_update: Cell<bool>,
+
+    /// Accessibility action requests which have arrived from assistive technology since the last
+    /// reflow, in chronological order.
+    /// This will be `None` unless [`Self::accessibility_active`] is true.
+    /// During reflow, these actions are drained and sent to the accessibility tree.
+    /// A reflow will be forced if this vec is non-empty.
+    pending_accessibility_actions: RefCell<Vec<ActionRequest>>,
 
     /// A callback to run whenever a web font from a `@font-face` rule finishes loading.
     web_font_finished_loading_callback: StylesheetWebFontLoadFinishedCallback,
@@ -410,13 +417,13 @@ impl Layout for LayoutThread {
             let node = unsafe { ServoLayoutNode::new(&node) };
             let stacking_context_tree = self.stacking_context_tree.borrow();
             let stacking_context_tree = stacking_context_tree.as_ref()?;
-            process_box_area_request(
-                self,
-                stacking_context_tree,
-                node,
-                area,
-                exclude_transform_and_inline,
-            )
+            let inclusion = if exclude_transform_and_inline {
+                BoxAreaInclusion::empty()
+            } else {
+                BoxAreaInclusion::Transforms | BoxAreaInclusion::Inlines
+            };
+
+            process_box_area_request(self, stacking_context_tree, node, area, inclusion)
         })
     }
 
@@ -704,7 +711,7 @@ impl Layout for LayoutThread {
             return;
         };
 
-        stacking_context_tree
+        let offsets = stacking_context_tree
             .paint_info
             .scroll_tree
             .set_all_scroll_offsets(scroll_states);
@@ -715,6 +722,11 @@ impl Layout for LayoutThread {
         // allowing the bounds to be recomputed against the new scroll offsets. See #47161 for a
         // transform-based alternative to recomputing every node.
         if self.accessibility_active() {
+            let mut accessibility_tree = self.accessibility_tree.borrow_mut();
+            if let Some(accessibility_tree) = accessibility_tree.as_mut() {
+                accessibility_tree.add_pending_scroll_updates(offsets);
+            };
+
             self.set_force_accessibility_update();
         }
     }
@@ -743,27 +755,40 @@ impl Layout for LayoutThread {
         self.accessibility_active.set(active);
         if !active {
             self.accessibility_tree.replace(None);
+            self.pending_accessibility_actions.borrow_mut().clear();
             return;
         }
 
         self.set_force_accessibility_update();
         let mut accessibility_tree = self.accessibility_tree.borrow_mut();
-        if accessibility_tree.is_some() {
-            return;
+        if accessibility_tree.is_none() {
+            *accessibility_tree = Some(AccessibilityTree::new(self.id.into(), epoch));
         }
-        *accessibility_tree = Some(AccessibilityTree::new(self.id.into(), epoch));
     }
 
     fn accessibility_active(&self) -> bool {
         self.accessibility_active.get()
     }
 
-    fn force_accessibility_update(&self) -> bool {
-        self.force_accessibility_update.get()
+    fn needs_accessibility_update(&self) -> bool {
+        if self.force_accessibility_update.get() {
+            return true;
+        }
+        if !self.pending_accessibility_actions.borrow().is_empty() {
+            return true;
+        }
+
+        false
     }
 
     fn set_force_accessibility_update(&self) {
         self.force_accessibility_update.set(true);
+    }
+
+    fn handle_accessibility_action(&self, action_request: ActionRequest) {
+        self.pending_accessibility_actions
+            .borrow_mut()
+            .push(action_request);
     }
 
     fn font_context(&self) -> &Arc<FontContext> {
@@ -839,6 +864,7 @@ impl LayoutThread {
             accessibility_active: Cell::new(false),
             accessibility_tree: Default::default(),
             force_accessibility_update: Cell::new(false),
+            pending_accessibility_actions: RefCell::new(vec![]),
             web_font_finished_loading_callback: Arc::new(web_font_finished_loading_callback)
                 as StylesheetWebFontLoadFinishedCallback,
         }
@@ -878,7 +904,7 @@ impl LayoutThread {
             return false;
         }
         // If the accessibility tree needs an update, we need reflow to build the accessibility tree.
-        if self.force_accessibility_update() || reflow_request.accessibility_damage.is_some() {
+        if self.needs_accessibility_update() || reflow_request.accessibility_damage.is_some() {
             return false;
         }
 
@@ -941,12 +967,13 @@ impl LayoutThread {
         root_element: &ServoLayoutNode,
         accessibility_damage: Option<AccessibilityDamageMap>,
         rooted_nodes: Option<FxHashSet<OpaqueNode>>,
+        pending_accessibility_actions: &mut Vec<AccessibilityActionRequest>,
         reflow_statistics: &mut ReflowStatistics,
     ) -> bool {
         let Some(damage) = accessibility_damage else {
             return false;
         };
-        if !self.force_accessibility_update() && damage.is_empty() {
+        if !self.needs_accessibility_update() && damage.is_empty() {
             return false;
         }
 
@@ -971,9 +998,12 @@ impl LayoutThread {
             stacking_context_tree,
         };
 
+        let action_requests = self.pending_accessibility_actions.take();
+
         let (tree_update, counters) = accessibility_tree.update_tree(
             root_element,
             damage,
+            action_requests,
             accessibility_context,
             rooted_nodes,
         );
@@ -996,6 +1026,9 @@ impl LayoutThread {
         reflow_statistics.nodes_in_tree_update = counters.nodes_in_tree_update;
 
         self.force_accessibility_update.set(false);
+
+        *pending_accessibility_actions = accessibility_tree.take_pending_actions();
+
         true
     }
 
@@ -1022,11 +1055,8 @@ impl LayoutThread {
             .as_document()
             .unwrap();
         let Some(root_element) = document.root_element() else {
-            if !self.last_display_list_was_empty.get() {
-                return self.clear_layout_trees_and_send_empty_display_list(&reflow_request);
-            }
             debug!("layout: No root node: bailing");
-            return None;
+            return self.maybe_clear_layout_trees_and_send_empty_display_list(&reflow_request);
         };
 
         let image_resolver = Arc::new(ImageResolver {
@@ -1052,6 +1082,7 @@ impl LayoutThread {
                 &image_resolver,
                 accessibility_damage.as_mut(),
             );
+
         if self.build_stacking_context_tree_for_reflow(&reflow_request) {
             reflow_phases_run.insert(ReflowPhasesRun::BuiltStackingContextTree);
         }
@@ -1061,10 +1092,12 @@ impl LayoutThread {
         if self.handle_update_scroll_node_request(&reflow_request) {
             reflow_phases_run.insert(ReflowPhasesRun::UpdatedScrollNodeOffset);
         }
+        let mut pending_accessibility_actions = vec![];
         if self.handle_accessibility_tree_update(
             &root_element.as_node(),
             accessibility_damage,
             reflow_request.rooted_nodes_for_accessibility_integrity_check,
+            &mut pending_accessibility_actions,
             &mut reflow_statistics,
         ) {
             reflow_phases_run.insert(ReflowPhasesRun::UpdatedAccessibilityTree);
@@ -1083,8 +1116,6 @@ impl LayoutThread {
         let pending_svg_elements_for_serialization =
             std::mem::take(&mut *image_resolver.pending_svg_elements_for_serialization.lock());
 
-        // BAO patch (fork-maintained, 2026-09-29): paint 岛→基线迁移波 —
-        // 单值 LCP 候选(基线形态;vendor 岛的 lcp_node_address 旁路删除)。
         let lcp_candidate = self
             .paint_timing_handler
             .borrow()
@@ -1101,6 +1132,7 @@ impl LayoutThread {
             reflow_statistics,
             changed_web_fonts,
             lcp_candidate,
+            pending_accessibility_actions,
         })
     }
 
@@ -1317,6 +1349,15 @@ impl LayoutThread {
             self.need_new_display_list.set(true);
         }
 
+        let mut insert_accessibility_damage_if_necessary = |node: ServoLayoutNode<'dom>| {
+            if let Some(map) = accessibility_damage.as_mut() {
+                map.entry(node.opaque())
+                    .or_insert((node, AccessibilityDamage::empty()))
+                    .1
+                    .insert(AccessibilityDamage::Layout);
+            }
+        };
+
         if !damage.contains(LayoutDamage::Relayout) {
             if damage.contains(LayoutDamage::RecalculateOverflow) {
                 assert!(self.need_new_display_list.get());
@@ -1339,15 +1380,6 @@ impl LayoutThread {
 
             debug_assert!(!layout_roots.is_empty());
 
-            let mut insert_accessibility_damage_if_necessary = |node: ServoLayoutNode<'dom>| {
-                if let Some(map) = accessibility_damage.as_mut() {
-                    map.entry(node.opaque())
-                        .or_insert((node, AccessibilityDamage::empty()))
-                        .1
-                        .insert(AccessibilityDamage::Layout);
-                }
-            };
-
             for layout_root in &layout_roots {
                 insert_accessibility_damage_if_necessary(layout_root.node());
             }
@@ -1356,11 +1388,6 @@ impl LayoutThread {
                 .iter()
                 .all(|layout_root| layout_root.try_layout(&layout_context))
             {
-                if self.accessibility_active() {
-                    // TODO(#47162) Compute accessibility damage rather than forcing a full update.
-                    self.set_force_accessibility_update();
-                }
-
                 return (
                     ReflowPhasesRun::RanLayout,
                     std::mem::take(&mut *layout_context.iframe_sizes.lock()),
@@ -1376,6 +1403,8 @@ impl LayoutThread {
                 layout_root.handle_failed_layout_root_layout();
             }
         }
+
+        insert_accessibility_damage_if_necessary(root_node);
 
         let box_tree = &*box_tree;
         let viewport_size = self.stylist.device().au_viewport_size();
@@ -1406,11 +1435,6 @@ impl LayoutThread {
                 .stylist
                 .rule_tree()
                 .dump_stdout(&layout_context.style_context.guards);
-        }
-
-        if self.accessibility_active() {
-            // TODO(#47162) Compute accessibility damage rather than forcing a full upate.
-            self.set_force_accessibility_update();
         }
 
         // GC the rule tree if some heuristics are met.
@@ -1545,27 +1569,28 @@ impl LayoutThread {
             &self.debug,
             paint_timing_handler,
             reflow_statistics,
-        );
-        // BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 —
-        // paint timing 路由替换为基线形态(mark 双参 + paint_info 内嵌路由,
-        // 替换 vendor 岛的 did_update/send_lcp_candidate 旁路)。
-        paint_timing_handler.mark_paint_timing(
-            reflow_request.paint_timing_eligible,
-            reflow_request.halt_lcp,
-        );
-        self.paint_api.send_display_list(
-            self.webview_id,
-            &stacking_context_tree.paint_info,
-            built_display_list,
+            reflow_request.frame_focused,
         );
 
         stacking_context_tree.paint_info.paint_timing_info = reflow_request.paint_timing_info;
+        stacking_context_tree.paint_info.paint_timing_report = paint_timing_handler
+            .mark_paint_timing(
+                reflow_request.paint_timing_eligible,
+                reflow_request.halt_lcp,
+            );
+
         if let Some(lcp_candidate) = paint_timing_handler.largest_contentful_paint_candidate() {
             stacking_context_tree.paint_info.lcp_candidate =
                 Some((lcp_candidate.id, lcp_candidate.area));
         } else {
             stacking_context_tree.paint_info.lcp_candidate = None;
         }
+
+        self.paint_api.send_display_list(
+            self.webview_id,
+            &stacking_context_tree.paint_info,
+            built_display_list,
+        );
 
         let (keys, instance_keys) = self
             .font_context
@@ -1606,11 +1631,13 @@ impl LayoutThread {
                 external_scroll_id,
             );
 
-            // Accessibility node bounds are relative to the viewport origin, so a script scroll
-            // makes every one of them stale even though no layout ran. Requesting an accessibility
-            // update lets the next "update the rendering" reflow recompute them, mirroring how
-            // `set_scroll_offsets_from_renderer()` handles renderer scrolls.
-            if self.accessibility_active() {
+            if self.accessibility_active() &&
+                let Some(accessibility_tree) = self.accessibility_tree.borrow_mut().as_mut()
+            {
+                accessibility_tree.add_pending_scroll_update(external_scroll_id, offset);
+
+                // Ensure the scroll updates are applied in the accessibility tree and sent to the
+                // embedder, even if there are no other changes which affect the accessibility tree.
                 self.set_force_accessibility_update();
             }
             true
@@ -1636,8 +1663,8 @@ impl LayoutThread {
         })
     }
 
-    /// Clear all cached layout trees and send an empty display list to paint.
-    fn clear_layout_trees_and_send_empty_display_list(
+    /// Clear all cached layout trees and send an empty display list to paint (if necessary).
+    fn maybe_clear_layout_trees_and_send_empty_display_list(
         &self,
         reflow_request: &ReflowRequest,
     ) -> Option<ReflowResult> {
@@ -1645,6 +1672,12 @@ impl LayoutThread {
         self.box_tree.borrow_mut().take();
         self.fragment_tree.borrow_mut().take();
         self.stacking_context_tree.borrow_mut().take();
+        self.need_new_display_list.set(false);
+
+        // If the last display list was also empty a new one is not necessary.
+        if self.last_display_list_was_empty.get() {
+            return None;
+        }
 
         // Send empty display list.
         let paint_info = PaintDisplayListInfo::new(
@@ -1839,7 +1872,7 @@ impl FontMetricsProvider for LayoutFontMetricsProvider {
 
         let Some(first_font_metrics) = font_group
             .first(font_context)
-            .map(|font| font.metrics.clone())
+            .map(|font| font.metrics().clone())
         else {
             return Default::default();
         };
@@ -1854,8 +1887,8 @@ impl FontMetricsProvider for LayoutFontMetricsProvider {
             .zero_horizontal_advance
             .or_else(|| {
                 font_group
-                    .find_by_codepoint(font_context, '0', None, Language::UND)?
-                    .metrics
+                    .find_by_codepoint(font_context, '0', None, Language::UNKNOWN)?
+                    .metrics()
                     .zero_horizontal_advance
             })
             .map(CSSPixelLength::from);
@@ -1864,8 +1897,8 @@ impl FontMetricsProvider for LayoutFontMetricsProvider {
             .ic_horizontal_advance
             .or_else(|| {
                 font_group
-                    .find_by_codepoint(font_context, '\u{6C34}', None, Language::UND)?
-                    .metrics
+                    .find_by_codepoint(font_context, '\u{6C34}', None, Language::UNKNOWN)?
+                    .metrics()
                     .ic_horizontal_advance
             })
             .map(CSSPixelLength::from);

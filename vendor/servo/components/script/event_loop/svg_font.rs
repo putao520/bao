@@ -18,15 +18,17 @@ use style::values::computed::font::{
     FamilyName, FontFamilyNameSyntax, GenericFontFamily, SingleFontFamily,
 };
 use style::values::computed::{
-    FontWidth as ServoFontWidth, FontStyle as ServoFontStyle, FontSynthesis, FontWeight,
+    FontStyle as ServoFontStyle, FontSynthesis, FontWeight, FontWidth as ServoFontWidth,
 };
 use webrender_api::FontVariation;
 
 /// Used to dynamically query fonts used in SVGs and insert them into the fontDB used when rasterizing.
+#[derive(MallocSizeOf)]
 pub struct SvgFontResolver {
     /// Cache for Font to ID
     font_id_cache: Mutex<FxHashMap<Font, fontdb::ID>>,
     fallback_id_cache: Mutex<FxHashMap<char, Vec<fontdb::ID>>>,
+    #[conditional_malloc_size_of]
     context: Arc<FontContext>,
 }
 
@@ -93,7 +95,7 @@ fn font_to_fontdescriptor(font: &Font) -> FontDescriptor {
         FontStyle::Oblique => ServoFontStyle::OBLIQUE,
     };
 
-    let stretch = match font.stretch() {
+    let width = match font.stretch() {
         FontStretch::UltraCondensed => ServoFontWidth::ULTRA_CONDENSED,
         FontStretch::ExtraCondensed => ServoFontWidth::EXTRA_CONDENSED,
         FontStretch::Condensed => ServoFontWidth::CONDENSED,
@@ -116,7 +118,7 @@ fn font_to_fontdescriptor(font: &Font) -> FontDescriptor {
 
     FontDescriptor {
         weight: FontWeight::from_float(font.weight() as f32),
-        stretch,
+        width,
         style,
         variant: FontVariantCaps::Normal,
         pt_size: Au::from_px(16),
@@ -129,7 +131,7 @@ fn font_to_fontdescriptor(font: &Font) -> FontDescriptor {
 fn fallback_descriptor() -> FontDescriptor {
     FontDescriptor {
         weight: FontWeight::normal(),
-        stretch: ServoFontWidth::hundred(),
+        width: ServoFontWidth::hundred(),
         style: ServoFontStyle::normal(),
         variant: FontVariantCaps::Normal,
         pt_size: Au::from_px(16),
@@ -179,8 +181,11 @@ impl FontResolver for SvgFontResolver {
                 return Some(*font_id);
             }
         }
-        let fallback_options =
-            FallbackFontSelectionOptions::new(character, None, icu_locid::subtags::Language::UND);
+        let fallback_options = FallbackFontSelectionOptions::new(
+            character,
+            None,
+            icu_locale_core::subtags::Language::UNKNOWN,
+        );
         for family in fallback_font_families(fallback_options) {
             let family = FontFamilyDescriptor::new(
                 SingleFontFamily::FamilyName(FamilyName {

@@ -6,14 +6,13 @@
 # override publish).
 name = "bao-servo-url"
 version = "0.5.10"
+publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
-publish = true
 rust-version = "1.88.0"
 repository = "https://github.com/servo/servo"
 description = "A component of the servo web-engine."
-
 [lib]
 name = "servo_url"
 path = "lib.rs"
@@ -28,3 +27,8 @@ serde = {version = "1.0.228", features = ["derive"]}
 servo_arc = {version = "=0.5.0", features = ["servo"]}
 url = {version = "2.5", features = ["serde"]}
 uuid = {version = "1.23.3", features = ["v4", "v5", "serde"]}
+
+[lints.rust]
+unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}
+[lints.clippy]
+manual_string_new = "warn"

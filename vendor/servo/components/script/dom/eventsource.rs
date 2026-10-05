@@ -283,7 +283,7 @@ impl EventSourceContext {
             let mut realm = enter_auto_realm(cx, &*event_source);
             let cx = &mut realm.current_realm();
             rooted!(&in(cx) let mut data = UndefinedValue());
-            self.data.safe_to_jsval(cx, data.handle_mut());
+            self.data.to_jsval(cx, data.handle_mut());
             MessageEvent::new(
                 cx,
                 &event_source.global(),
@@ -419,7 +419,7 @@ impl FetchResponseListener for EventSourceContext {
                 if (mime.type_(), mime.subtype()) != (mime::TEXT, mime::EVENT_STREAM) {
                     return self.fail_the_connection();
                 }
-                self.origin = meta.final_url.origin().ascii_serialization();
+                self.origin = meta.final_url.origin().ascii_serialization().into_owned();
                 // Step 15.4 announce the connection and interpret res's body line by line.
                 self.announce_the_connection();
             },

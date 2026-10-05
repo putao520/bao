@@ -2,51 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::{OnceCell, RefCell, RefMut};
-use bytes::Bytes;
 use std::collections::HashSet;
 use std::default::Default;
 use std::rc::Rc;
-use script_bindings::callback::RootedCallback;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use bytes::{Bytes, BytesMut};
 use content_security_policy::CspList;
 use devtools_traits::{DevtoolScriptControlMsg, WorkerId};
 use dom_struct::dom_struct;
 use encoding_rs::UTF_8;
 use fonts::FontContext;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
-
-// BAO patch (ISSUE #24 servo wiring, 2026-09-29): per-WebView worker-script
-// execution timeout. The embedder (Bao) arms a deadline for the worker realms
-// of a webview (`set_worker_script_timeout`); the worker JS evaluation paths
-// (`on_complete` initial script run, `importScripts`) consult it and route the
-// run through the registered execution-control bridge. Unset = unbounded
-// (upstream behavior, zero regression).
-static WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW: std::sync::LazyLock<
-    parking_lot::RwLock<rustc_hash::FxHashMap<servo_base::id::WebViewId, Duration>>,
-> = std::sync::LazyLock::new(|| parking_lot::RwLock::new(Default::default()));
-
-/// Set (or clear with `None`) the engine-native execution timeout applied to
-/// every worker-realm script evaluation belonging to `webview`.
-pub fn set_worker_script_timeout(webview: servo_base::id::WebViewId, timeout: Option<Duration>) {
-    let mut map = WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW.write();
-    match timeout {
-        Some(timeout) => {
-            map.insert(webview, timeout);
-        },
-        None => {
-            map.remove(&webview);
-        },
-    }
-}
-
-pub(crate) fn worker_script_timeout(webview: servo_base::id::WebViewId) -> Option<Duration> {
-    WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW.read().get(&webview).copied()
-}
-
 use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSContext as RawJSContext, Value};
@@ -60,16 +32,16 @@ use net_traits::request::{
 };
 use net_traits::{FetchMetadata, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming};
 use profile_traits::mem::{ProcessReports, perform_memory_report};
+use script_bindings::callback::RootedCallback;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::conversions::root_from_handlevalue;
 use script_bindings::reflector::DomObject;
 use script_bindings::root::rooted_heap_handle;
 use script_bindings::trace::CustomTraceable;
-use crate::dom::bindings::error::ErrorInfo;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::{GenericSend, GenericSender, RoutedReceiver};
 use servo_base::id::{PipelineId, PipelineNamespace};
-
+#[cfg(feature = "webgl")]
 use servo_canvas_traits::webgl::WebGLChan;
 use servo_constellation_traits::WorkerGlobalScopeInit;
 use servo_url::{MutableOrigin, ServoUrl};
@@ -77,7 +49,6 @@ use timers::TimerScheduler;
 use uuid::Uuid;
 
 use crate::dom::Window;
-use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
     ImageBitmapOptions, ImageBitmapSource,
 };
@@ -97,8 +68,9 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
-use crate::dom::bindings::trace::RootedTraceableBox;
+use crate::dom::bindings::trace::HashMapTracedValues;
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
+#[cfg(feature = "webcrypto")]
 use crate::dom::crypto::Crypto;
 use crate::dom::csp::{GlobalCspReporting, Violation, parse_csp_list_from_metadata};
 use crate::dom::debugger::debuggerglobalscope::DebuggerGlobalScope;
@@ -109,13 +81,11 @@ use crate::dom::htmlscriptelement::{SCRIPT_JS_MIMES, Script};
 use crate::dom::idbfactory::IDBFactory;
 use crate::dom::performance::performance::Performance;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promise::Promise;
+use crate::dom::promise::RootedPromise;
 use crate::dom::reporting::reportingendpoint::{ReportingEndpoint, SendReportsToEndpoints};
 use crate::dom::reporting::reportingobserver::ReportingObserver;
 use crate::dom::script_execution::ScriptOptions;
 use crate::dom::serviceworker::cachestorage::CacheStorage;
-// BAO PATCH (REQ-BRW-004 C19): third new_script_pair arm (upstream: `panic!` TODO).
-use crate::dom::serviceworker::serviceworkerglobalscope::ServiceWorkerGlobalScope;
 use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
 use crate::dom::trustedtypes::trustedtypepolicyfactory::TrustedTypePolicyFactory;
@@ -133,9 +103,9 @@ use crate::fetch::network_listener::{
     FetchResponseListener, ResourceTimingListener, submit_timing,
 };
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::modules::script_module::ScriptFetchOptions;
+use crate::modules::script_module::{ModuleRequest, ModuleStatus, ScriptFetchOptions};
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::{MicrotaskQueue, MicrotaskRunnable, UserMicrotask};
+use crate::runtime::job_queue::{MicrotaskRunnable, UserMicrotask, job_queue_microtask_checkpoint};
 use crate::runtime::script_runtime::{IntroductionType, Runtime, get_reports};
 use crate::tasks::task::TaskCanceller;
 use crate::tasks::task_manager::TaskManager;
@@ -145,7 +115,7 @@ pub(crate) fn prepare_workerscope_init(
     global: &GlobalScope,
     devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
     worker_id: Option<WorkerId>,
-    webgl_chan: Option<WebGLChan>,
+    #[cfg(feature = "webgl")] webgl_chan: Option<WebGLChan>,
 ) -> WorkerGlobalScopeInit {
     // An AnimationFrameProvider provider is considered supported if any of the following are true:
     // - provider is a Window.
@@ -174,6 +144,7 @@ pub(crate) fn prepare_workerscope_init(
         origin: global.origin().immutable().clone(),
         inherited_secure_context: Some(global.is_secure_context()),
         unminify_js: global.unminify_js(),
+        #[cfg(feature = "webgl")]
         webgl_chan,
     }
 }
@@ -181,7 +152,7 @@ pub(crate) fn prepare_workerscope_init(
 pub(crate) struct ScriptFetchContext {
     scope: Trusted<WorkerGlobalScope>,
     response: Option<Metadata>,
-    body_bytes: Vec<u8>,
+    body_bytes: BytesMut,
     url: ServoUrl,
     policy_container: PolicyContainer,
 }
@@ -195,7 +166,7 @@ impl ScriptFetchContext {
         ScriptFetchContext {
             scope,
             response: None,
-            body_bytes: Vec::new(),
+            body_bytes: BytesMut::new(),
             url,
             policy_container,
         }
@@ -217,7 +188,7 @@ impl FetchResponseListener for ScriptFetchContext {
         });
     }
 
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, mut chunk: Bytes) {
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Bytes) {
         self.body_bytes.extend_from_slice(&chunk);
     }
 
@@ -326,14 +297,10 @@ impl ResourceTimingListener for ScriptFetchContext {
     }
 }
 
-// https://html.spec.whatwg.org/multipage/#the-workerglobalscope-common-interface
+/// <https://html.spec.whatwg.org/multipage/#the-workerglobalscope-common-interface>
 #[dom_struct]
 pub(crate) struct WorkerGlobalScope {
     globalscope: GlobalScope,
-
-    /// <https://html.spec.whatwg.org/multipage/#microtask-queue>
-    #[conditional_malloc_size_of]
-    microtask_queue: Rc<MicrotaskQueue>,
 
     worker_name: DOMString,
     worker_type: WorkerType,
@@ -349,6 +316,7 @@ pub(crate) struct WorkerGlobalScope {
     runtime: DomRefCell<Option<Runtime>>,
     location: MutNullableDom<WorkerLocation>,
     navigator: MutNullableDom<WorkerNavigator>,
+    #[cfg(feature = "webcrypto")]
     crypto: MutNullableDom<Crypto>,
     #[no_trace]
     /// <https://html.spec.whatwg.org/multipage/#the-workerglobalscope-common-interface:policy-container>
@@ -417,11 +385,10 @@ pub(crate) struct WorkerGlobalScope {
     #[no_trace]
     font_context: Arc<FontContext>,
 
-    /// A handle for communicating messages to the WebGL thread, if available.
-    /// (Bao) Inherited from the parent `Window` via `WorkerGlobalScopeInit.webgl_chan`
-    /// so OffscreenCanvas WebGL contexts can be created in workers (REQ-BRW-004 C14).
-    #[no_trace]
-    webgl_chan: Option<WebGLChan>,
+    /// module map is used when importing JavaScript modules
+    /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
+    #[ignore_malloc_size_of = "mozjs"]
+    module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
 }
 
 impl WorkerGlobalScope {
@@ -464,7 +431,6 @@ impl WorkerGlobalScope {
                 init.unminify_js,
             ),
             caches: Default::default(),
-            microtask_queue: runtime.microtask_queue.clone(),
             worker_id: init.worker_id,
             worker_name,
             worker_type,
@@ -474,6 +440,7 @@ impl WorkerGlobalScope {
             runtime: DomRefCell::new(Some(runtime)),
             location: Default::default(),
             navigator: Default::default(),
+            #[cfg(feature = "webcrypto")]
             crypto: Default::default(),
             policy_container: Default::default(),
             devtools_receiver,
@@ -496,16 +463,18 @@ impl WorkerGlobalScope {
             )),
             origin: MutableOrigin::new(init.origin),
             font_context,
-            webgl_chan: init.webgl_chan,
+            module_map: Default::default(),
         }
+    }
+
+    pub(crate) fn module_map(
+        &self,
+    ) -> &DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>> {
+        &self.module_map
     }
 
     pub(crate) fn font_context(&self) -> Arc<FontContext> {
         self.font_context.clone()
-    }
-
-    pub(crate) fn webgl_chan(&self) -> Option<WebGLChan> {
-        self.webgl_chan.clone()
     }
 
     pub(crate) fn timers(&self) -> &OneshotTimers {
@@ -514,15 +483,14 @@ impl WorkerGlobalScope {
     }
 
     pub(crate) fn enqueue_microtask(&self, cx: &JSContext, job: Box<dyn MicrotaskRunnable>) {
-        self.microtask_queue.enqueue(cx, job);
+        crate::runtime::job_queue::enqueue(cx, job);
     }
 
     /// Perform a microtask checkpoint.
     pub(crate) fn perform_a_microtask_checkpoint(&self, cx: &mut JSContext) {
         // Only perform the checkpoint if we're not shutting down.
         if !self.is_closing() {
-            self.microtask_queue
-                .checkpoint(cx, vec![DomRoot::from_ref(&self.globalscope)]);
+            job_queue_microtask_checkpoint(cx, vec![DomRoot::from_ref(&self.globalscope)]);
         }
     }
 
@@ -690,7 +658,6 @@ impl WorkerGlobalScope {
 
     /// onComplete algorithm defined inside <https://html.spec.whatwg.org/multipage/#run-a-worker>
     #[expect(unsafe_code)]
-    #[expect(unsafe_code)]
     pub(crate) fn on_complete(&self, cx: &mut JSContext, script: Option<Script>) {
         // Step 1. If script is null or if script's error to rethrow is non-null, then:
         let script = match script {
@@ -728,173 +695,19 @@ impl WorkerGlobalScope {
             let mut realm = enter_auto_realm(cx, self);
             let cx = &mut realm.current_realm();
             define_all_exposed_interfaces(cx, self.upcast());
-            // BAO PATCH (REQ-BRW-004 C15, user ruling 2026-09-09 vendor
-            // patch): second worker-scope drain point — AFTER
-            // `define_all_exposed_interfaces` has defined this worker
-            // global's WebIDL interface constructors. The first drain (in
-            // `DedicatedWorkerGlobalScope::run_worker_scope`) runs BEFORE
-            // these exist, so an embedder JS-hook blob guarded with `typeof`
-            // checks (bao_stealth W1a guards) saw every interface as
-            // `undefined` and installed nothing — engine-layer getters do
-            // not depend on interfaces, which is why they worked from the
-            // first drain while the JS prototype hooks did not. The embedder
-            // re-runs its install here; it is idempotent (its defines on
-            // already-PERMANENT getters fail safely — the embedder's
-            // define_permanent_getter documents the "prior install" arm),
-            // so only the previously skipped JS hooks land now. Callbacks
-            // are keyed by WebViewId (same shape as the first drain) and run
-            // on this Worker thread, before any worker script executes.
-            {
-                let global_scope = self.upcast::<GlobalScope>();
-                if let Some(webview_id) = global_scope.webview_id() {
-                    for callback in crate::event_loop::script_thread::drain_worker_interfaces_ready_callbacks(
-                        webview_id,
-                    ) {
-                        unsafe {
-                            callback(
-                                cx.raw_cx_no_gc() as *mut std::ffi::c_void,
-                                script_bindings::reflector::DomObject::reflector(global_scope)
-                                    .get_jsobject()
-                                    .get() as *mut std::ffi::c_void,
-                            );
-                        }
-                    }
-                    // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
-                    // patch): per-Worker injector delivery at the second
-                    // drain point — NON-consuming, so EVERY Dedicated Worker
-                    // of this webview gets the post-interfaces install (the
-                    // one-shot drain above only covers the first Worker).
-                    // `WorkerGlobalScope::on_complete` is not reached by the
-                    // ServiceWorker path (SW has its own define + drain in
-                    // serviceworkerglobalscope.rs), so S-family semantics are
-                    // untouched.
-                    for injector in crate::event_loop::script_thread::worker_interfaces_ready_injectors(
-                        webview_id,
-                    ) {
-                        unsafe {
-                            injector(
-                                cx.raw_cx_no_gc() as *mut std::ffi::c_void,
-                                script_bindings::reflector::DomObject::reflector(global_scope)
-                                    .get_jsobject()
-                                    .get() as *mut std::ffi::c_void,
-                            );
-                        }
-                    }
-                }
-            }
             // Step 9. Set inside settings's execution ready flag.
             self.execution_ready.store(true, Ordering::Relaxed);
             match script {
                 Script::Classic(script) => {
-                    // BAO patch (ISSUE #24 servo wiring, 2026-09-29): optional
-                    // engine-native timeout for this worker realm's script run
-                    // (per-WebView registry + embedder execution-control
-                    // bridge). Unset = unbounded (upstream behavior).
-                    let timeout = self.globalscope.webview_id()
-                        .and_then(|webview| worker_script_timeout(webview));
-                    // SAFETY: the raw pointer targets this worker thread's
-                    // live owner realm context; the armer executes the closure
-                    // synchronously on this thread inside this frame, so the
-                    // pointer-derived reborrow never aliases a concurrent use.
-                    let started = std::time::Instant::now();
-                    let cx_ptr: *mut CurrentRealm = cx;
-                    let cx_raw = unsafe { cx.raw_cx_no_gc() };
-                    let (result, termination) = match timeout {
-                        None => (
-                            self.globalscope.run_a_classic_script(
-                                cx,
-                                script,
-                                RethrowErrors::No,
-                                None, // return_value
-                            ),
-                            None,
-                        ),
-                        Some(timeout) => {
-                            match crate::event_loop::script_thread::run_under_bao_execution_control(
-                                cx_raw,
-                                timeout,
-                                move || {
-                                    let cx = unsafe { &mut *cx_ptr };
-                                    self.globalscope.run_a_classic_script(
-                                        cx,
-                                        script,
-                                        RethrowErrors::No,
-                                        None, // return_value
-                                    )
-                                },
-                            ) {
-                                Some((result, termination)) => (result, termination),
-                                None => {
-                                    let message =
-                                        "timeout requested but no execution-control bridge is installed";
-                                    (
-                                        Err(Error::Type(
-                                            c"timeout requested but no execution-control bridge is installed"
-                                                .to_owned(),
-                                        )),
-                                        Some(message.to_string()),
-                                    )
-                                },
-                            }
-                        },
-                    };
-                    if let Some(message) = termination {
-                        error!("Worker script terminated by execution control: {message}");
-                        self.globalscope.report_an_error(
-                            cx,
-                            ErrorInfo {
-                                message: message.clone(),
-                                filename: "<execution-control>".to_string(),
-                                ..Default::default()
-                            },
-                            HandleValue::null(),
-                        );
-                    }
-                    _ = result;
+                    _ = self.globalscope.run_a_classic_script(
+                        cx,
+                        script,
+                        RethrowErrors::No,
+                        None, // return_value
+                    );
                 },
                 Script::Module(module_tree) => {
-                    // BAO patch (ISSUE #24 servo wiring): same optional
-                    // engine-native timeout as the Classic arm above.
-                    let timeout = self.globalscope.webview_id()
-                        .and_then(|webview| worker_script_timeout(webview));
-                    // SAFETY: see the Classic arm — live owner context, the
-                    // armer runs the closure synchronously inside this frame.
-                    let cx_ptr: *mut CurrentRealm = cx;
-                    let cx_raw = unsafe { cx.raw_cx_no_gc() };
-                    let termination = match timeout {
-                        None => {
-                            self.globalscope.run_a_module_script(cx, module_tree, false);
-                            None
-                        },
-                        Some(timeout) => {
-                            match crate::event_loop::script_thread::run_under_bao_execution_control(
-                                cx_raw,
-                                timeout,
-                                move || {
-                                    let cx = unsafe { &mut *cx_ptr };
-                                    self.globalscope.run_a_module_script(cx, module_tree, false)
-                                },
-                            ) {
-                                Some(((), termination)) => termination,
-                                None => Some(
-                                    "timeout requested but no execution-control bridge is installed"
-                                        .to_string(),
-                                ),
-                            }
-                        },
-                    };
-                    if let Some(message) = termination {
-                        error!("Worker script terminated by execution control: {message}");
-                        self.globalscope.report_an_error(
-                            cx,
-                            ErrorInfo {
-                                message: message.clone(),
-                                filename: "<execution-control>".to_string(),
-                                ..Default::default()
-                            },
-                            HandleValue::null(),
-                        );
-                    }
+                    self.globalscope.run_a_module_script(cx, module_tree, false);
                 },
                 _ => unreachable!(),
             }
@@ -955,7 +768,6 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-workerglobalscope-importscripts>
-    #[expect(unsafe_code)]
     fn ImportScripts(
         &self,
         cx: &mut JSContext,
@@ -1054,54 +866,12 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
             );
 
             // Run the classic script script, with rethrow errors set to true.
-            // BAO patch (ISSUE #24 servo wiring, 2026-09-29): optional
-            // engine-native timeout (same per-WebView registry + bridge as the
-            // initial script run in `on_complete`). A control termination (or a
-            // missing bridge under an armed timeout) surfaces as a diagnosable
-            // error to the calling worker script.
-            let timeout = self.globalscope.webview_id()
-                .and_then(|webview| worker_script_timeout(webview));
-            // SAFETY: the raw pointer targets this worker thread's live owner
-            // context; the armer executes the closure synchronously on this
-            // thread inside this frame, so the pointer-derived reborrow never
-            // aliases a concurrent use.
-            let cx_ptr: *mut JSContext = cx;
-            let cx_raw = unsafe { cx.raw_cx_no_gc() };
-            let result = match timeout {
-                None => self.globalscope.run_a_classic_script(
-                    cx,
-                    script,
-                    RethrowErrors::Yes,
-                    None, // return_value
-                ),
-                Some(timeout) => {
-                    match crate::event_loop::script_thread::run_under_bao_execution_control(
-                        cx_raw,
-                        timeout,
-                        move || {
-                            let cx = unsafe { &mut *cx_ptr };
-                            self.globalscope.run_a_classic_script(
-                                cx,
-                                script,
-                                RethrowErrors::Yes,
-                                None, // return_value
-                            )
-                        },
-                    ) {
-                        Some((result, Some(message))) => {
-                            error!("importScripts terminated by execution control: {message}");
-                            Err(Error::Type(
-                                c"Script terminated: deadline exceeded (timeout)".to_owned(),
-                            ))
-                        },
-                        Some((result, None)) => result,
-                        None => Err(Error::Type(
-                            c"timeout requested but no execution-control bridge is installed"
-                                .to_owned(),
-                        )),
-                    }
-                },
-            };
+            let result = self.globalscope.run_a_classic_script(
+                cx,
+                script,
+                RethrowErrors::Yes,
+                None, // return_value
+            );
 
             if let Err(error) = result {
                 if self.is_closing() {
@@ -1150,6 +920,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dfn-Crypto>
+    #[cfg(feature = "webcrypto")]
     fn Crypto(&self, cx: &mut JSContext) -> DomRoot<Crypto> {
         self.crypto
             .or_init(|| Crypto::new(cx, self.upcast::<GlobalScope>()))
@@ -1240,9 +1011,6 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-queuemicrotask>
-    // BAO patch (fork-maintained, 2026-09-28): terminal codegen hands the
-    // callback as RootedCallback; the fork's UserMicrotask stores the traced
-    // form, RootedCallback::to_traced bridges the two.
     fn QueueMicrotask(&self, cx: &mut JSContext, callback: RootedCallback<VoidFunction>) {
         self.enqueue_microtask(
             cx,
@@ -1310,7 +1078,8 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
             self.upcast::<GlobalScope>()
                 .origin()
                 .immutable()
-                .ascii_serialization(),
+                .ascii_serialization()
+                .into_owned(),
         )
     }
 
@@ -1347,12 +1116,8 @@ impl WorkerGlobalScope {
             dedicated.new_script_pair()
         } else if let Some(shared) = self.downcast::<SharedWorkerGlobalScope>() {
             shared.new_script_pair()
-        } else if let Some(service_worker) = self.downcast::<ServiceWorkerGlobalScope>() {
-            // BAO PATCH (REQ-BRW-004 C19): upstream left this arm as
-            // `panic!("need to implement a sender for ServiceWorker")`.
-            service_worker.new_script_pair()
         } else {
-            unreachable!("no other concrete WorkerGlobalScope type")
+            panic!("need to implement a sender for ServiceWorker")
         }
     }
 
@@ -1419,14 +1184,14 @@ impl WorkerGlobalScope {
         rooted!(&in(cx) let mut wrapped_global: Value);
         debugger_global
             .reflector()
-            .safe_to_jsval(cx, wrapped_global.handle_mut());
+            .to_jsval(cx, wrapped_global.handle_mut());
         self.debugger_global.set(*wrapped_global);
     }
 
     pub(crate) fn handle_devtools_message(&self, msg: DevtoolScriptControlMsg, cx: &mut JSContext) {
         match msg {
             DevtoolScriptControlMsg::WantsLiveNotifications(_pipe_id, _wants_updates) => {},
-            DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, reply) => {
+            DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, eager, reply) => {
                 let debugger_global_handle = rooted_heap_handle(self, |this| &this.debugger_global);
                 let debugger_global =
                     root_from_handlevalue::<DebuggerGlobalScope>(cx, debugger_global_handle)
@@ -1438,7 +1203,7 @@ impl WorkerGlobalScope {
                     id,
                     Some(self.worker_id()),
                     frame_actor_id,
-                    false, /* fork devtools msg enum carries no eager flag */
+                    eager,
                     reply,
                 );
             },

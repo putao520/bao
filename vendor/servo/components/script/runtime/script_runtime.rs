@@ -9,13 +9,13 @@
 
 use core::ffi::c_char;
 use std::cell::{Cell, LazyCell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::io::{Write, stdout};
 use std::ops::{Deref, DerefMut};
 use std::os::raw::c_void;
 use std::ptr::NonNull;
-use std::rc::{Rc, Weak};
+use std::rc::Weak;
 use std::time::Instant;
 use std::{os, ptr};
 
@@ -24,17 +24,16 @@ use js::context::JSContext;
 use js::conversions::jsstr_to_string;
 use js::gc::StackGCVector;
 use js::glue::{
-    CreateJobQueue, DeleteJobQueue, DispatchablePointer, JobQueueTraps, RUST_js_GetErrorMessage,
-    RegisterScriptEnvironmentPreparer, RunScriptEnvironmentPreparerClosure, SetBuildId,
-    StreamConsumerConsumeChunk, StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd,
-    StreamConsumerStreamError,
+    DispatchablePointer, RUST_js_GetErrorMessage, RegisterScriptEnvironmentPreparer,
+    RunScriptEnvironmentPreparerClosure, SetBuildId, StreamConsumerConsumeChunk,
+    StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
 };
 use js::jsapi::{
     AsmJSOption, BuildIdCharVector, CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
     GCOptions, GCProgress, GCReason, Handle as RawHandle, HandleObject, HandleString,
     HandleValue as RawHandleValue, Heap, JSContext as RawJSContext, JSGCParamKey, JSGCStatus,
-    JSJitCompilerOption, JSObject, JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType,
-    MutableHandleObject, MutableHandleString, PromiseRejectionHandlingState, RuntimeCode,
+    JSJitCompilerOption, JSObject, JSSecurityCallbacks, JSString, JSTracer, MimeType,
+    MutableHandleString, PromiseRejectionHandlingState, RuntimeCode,
     ScriptEnvironmentPreparer_Closure, SetProcessBuildIdOp, StreamConsumer as JSStreamConsumer,
 };
 use js::jsval::{JSVal, UndefinedValue};
@@ -46,7 +45,7 @@ use js::rust::wrappers2::{
     JS_AddExtraGCRootsTracer, JS_GetPromiseResult, JS_InitDestroyPrincipalsCallback,
     JS_InitReadPrincipalsCallback, JS_NewStringCopyUTF8N, JS_SetGCCallback, JS_SetGCParameter,
     JS_SetGlobalJitCompilerOption, JS_SetOffthreadIonCompilationEnabled, JS_SetSecurityCallbacks,
-    SetDOMCallbacks, SetGCSliceCallback, SetJobQueue, SetPreserveWrapperCallbacks,
+    SetDOMCallbacks, SetGCSliceCallback, SetPreserveWrapperCallbacks,
     SetPromiseRejectionTrackerCallback, SetUpEventLoopDispatch,
 };
 use js::rust::{
@@ -63,6 +62,7 @@ use script_bindings::script_runtime::{mark_runtime_dead, runtime_is_alive, temp_
 use script_bindings::settings_stack::run_a_script;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
 use servo_config::pref;
+use servo_url::ServoUrl;
 use style::thread_state::{self, ThreadState};
 
 use crate::dom::bindings::codegen::Bindings::ResponseBinding::Response_Binding::ResponseMethods;
@@ -90,26 +90,14 @@ use crate::dom::promise::Promise;
 use crate::dom::promiserejectionevent::PromiseRejectionEvent;
 use crate::dom::response::Response;
 use crate::dom::trustedtypes::trustedscript::TrustedScript;
+use crate::dom::window::Window;
 use crate::engine::handle::current_js_engine_handle;
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
 use crate::modules::script_module::EnsureModuleHooksInitialized;
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskQueue;
+use crate::runtime::job_queue::{JobQueue, job_queue_clear};
 use crate::tasks::task_source::TaskSourceName;
 use crate::{DomTypeHolder, ScriptThread};
-
-// SM153: JobQueueTraps lost enqueuePromiseJob/empty (promise reaction jobs
-// enqueue into the ENGINE-owned regular microtask queue, drained by the
-// runJobs trap) and gained getHostDefinedGlobal + traceNonGCThingMicroTask.
-static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
-    getHostDefinedData: Some(get_host_defined_data),
-    getHostDefinedGlobal: Some(get_host_defined_global),
-    runJobs: Some(run_jobs),
-    traceNonGCThingMicroTask: Some(crate::runtime::microtask::trace_non_gc_things_micro_task),
-    pushNewInterruptQueue: Some(push_new_interrupt_queue),
-    popInterruptQueue: Some(pop_interrupt_queue),
-    dropInterruptQueues: Some(drop_interrupt_queues),
-};
 
 static SECURITY_CALLBACKS: JSSecurityCallbacks = JSSecurityCallbacks {
     contentSecurityPolicyAllows: Some(content_security_policy_allows),
@@ -252,97 +240,6 @@ impl From<ScriptThreadEventCategory> for ScriptHangAnnotation {
     }
 }
 
-/// <https://searchfox.org/firefox-main/rev/446c6e609dbd7c355c2fb27209dfe4833211991f/xpcom/base/CycleCollectedJSContext.cpp#229>
-#[expect(unsafe_code)]
-unsafe extern "C" fn get_host_defined_data(
-    cx: *mut RawJSContext,
-    incumbent_global: MutableHandleObject,
-    data: MutableHandleObject,
-) -> bool {
-    incumbent_global.set(std::ptr::null_mut());
-    data.set(std::ptr::null_mut());
-    if !unsafe { get_host_defined_global(cx, incumbent_global) } {
-        return false;
-    }
-
-    if incumbent_global.is_null() {
-        return true;
-    }
-
-    // we have no schedulingState
-
-    true
-}
-
-#[allow(unsafe_code)]
-/// <https://searchfox.org/firefox-main/rev/446c6e609dbd7c355c2fb27209dfe4833211991f/xpcom/base/CycleCollectedJSContext.cpp#199>
-unsafe extern "C" fn get_host_defined_global(
-    _cx: *mut RawJSContext,
-    out: MutableHandleObject,
-) -> bool {
-    wrap_panic(&mut || {
-        let Some(incumbent_global) = GlobalScope::incumbent() else {
-            return;
-        };
-
-        out.set(incumbent_global.reflector().get_jsobject().get());
-    });
-
-    true
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn run_jobs(microtask_queue: *const c_void, cx: *mut RawJSContext) {
-    let mut cx = unsafe {
-        // SAFETY: We are in SM hook
-        JSContext::from_ptr(NonNull::new(cx).expect("JSContext should not be null in SM hook"))
-    };
-    wrap_panic(&mut || {
-        let microtask_queue = unsafe { &*(microtask_queue as *const MicrotaskQueue) };
-        // TODO: run Promise- and User-variant Microtasks, and do #notify-about-rejected-promises.
-        // Those will require real `globalscopes` values.
-        microtask_queue.checkpoint(&mut cx, vec![]);
-    });
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn push_new_interrupt_queue(interrupt_queues: *mut c_void) -> *const c_void {
-    let mut result = std::ptr::null();
-    wrap_panic(&mut || {
-        let mut interrupt_queues =
-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
-        let new_queue = Rc::new(MicrotaskQueue::default());
-        result = Rc::as_ptr(&new_queue) as *const c_void;
-        interrupt_queues.push(new_queue);
-        std::mem::forget(interrupt_queues);
-    });
-    result
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn pop_interrupt_queue(interrupt_queues: *mut c_void) -> *const c_void {
-    let mut result = std::ptr::null();
-    wrap_panic(&mut || {
-        let mut interrupt_queues =
-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
-        let popped_queue: Rc<MicrotaskQueue> =
-            interrupt_queues.pop().expect("Guaranteed by SpiderMonkey?");
-        // Dangling, but jsglue.cpp will only use this for pointer comparison.
-        result = Rc::as_ptr(&popped_queue) as *const c_void;
-        std::mem::forget(interrupt_queues);
-    });
-    result
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn drop_interrupt_queues(interrupt_queues: *mut c_void) {
-    wrap_panic(&mut || {
-        let interrupt_queues =
-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
-        drop(interrupt_queues);
-    });
-}
-
 #[expect(unsafe_code)]
 /// <https://html.spec.whatwg.org/multipage/#the-hostpromiserejectiontracker-implementation>
 unsafe extern "C" fn promise_rejection_tracker(
@@ -433,7 +330,7 @@ unsafe extern "C" fn promise_rejection_tracker(
 #[expect(unsafe_code)]
 fn safely_convert_null_to_string(cx: &JSContext, str_: HandleString) -> DOMString {
     DOMString::from(match std::ptr::NonNull::new(*str_) {
-        None => "".to_owned(),
+        None => String::new(),
         Some(str_) => unsafe { jsstr_to_string(cx, str_) },
     })
 }
@@ -484,8 +381,8 @@ unsafe extern "C" fn content_security_policy_allows(
         let csp_list = global.get_csp_list();
 
         // If we don't have any CSP checks to run, short-circuit all logic here
-        allowed = csp_list.is_none()
-            || match runtime_code {
+        allowed = csp_list.is_none() ||
+            match runtime_code {
                 RuntimeCode::JS => {
                     let parameter_strings = unsafe { Handle::from_raw(parameter_strings) };
                     let parameter_strings_length = parameter_strings.len();
@@ -648,11 +545,7 @@ struct RuntimeCallbackData {
 pub(crate) struct Runtime {
     #[ignore_malloc_size_of = "Type from mozjs"]
     rt: RustRuntime,
-    /// Our actual microtask queue, which is preserved and untouched by the debugger when running debugger scripts.
-    #[conditional_malloc_size_of]
-    pub(crate) microtask_queue: Rc<MicrotaskQueue>,
-    #[ignore_malloc_size_of = "Type from mozjs"]
-    job_queue: *mut JobQueue,
+    job_queue: JobQueue,
     /// The data that is set on the SpiderMonkey runtime callbacks as a pointer.
     runtime_callback_data: Box<RuntimeCallbackData>,
 }
@@ -796,23 +689,12 @@ impl Runtime {
             InitConsumeStreamCallback(cx, Some(consume_stream), Some(report_stream_error));
         }
 
-        let microtask_queue = Rc::new(MicrotaskQueue::default());
-
-        // Extra queues for debugger scripts (“interrupts”) via AutoDebuggerJobQueueInterruption and saveJobQueue().
-        // Moved indefinitely to mozjs via CreateJobQueue(), borrowed from mozjs via JobQueueTraps, and moved back from
-        // mozjs for dropping via DeleteJobQueue().
-        let interrupt_queues: Box<Vec<Rc<MicrotaskQueue>>> = Box::default();
-
         let cx_opts;
         let job_queue;
         unsafe {
             let cx = runtime.cx();
-            job_queue = CreateJobQueue(
-                &JOB_QUEUE_TRAPS,
-                &*microtask_queue as *const _ as *const c_void,
-                Box::into_raw(interrupt_queues) as *mut c_void,
-            );
-            SetJobQueue(cx, job_queue);
+            job_queue = JobQueue::new();
+            job_queue.set_on_context(cx);
             SetPromiseRejectionTrackerCallback(
                 cx,
                 Some(promise_rejection_tracker),
@@ -853,9 +735,6 @@ impl Runtime {
         } else {
             AsmJSOption::DisabledByAsmJSPref
         };
-        // SM153: import-attributes are always enabled; the opt-in setter was
-        // removed from PrefableCompileOptions.
-
         let wasm_enabled = pref!(js_wasm_enabled);
         cx_opts.set_wasm_(wasm_enabled);
         if wasm_enabled {
@@ -960,10 +839,15 @@ impl Runtime {
             if let Some(val) = in_range(pref!(js_mem_gc_empty_chunk_count_min), 0, 10_000) {
                 JS_SetGCParameter(cx, JSGCParamKey::JSGC_MIN_EMPTY_CHUNK_COUNT, val as u32);
             }
+            if let Some(val) = in_range(pref!(js_mem_gc_malloc_threshold_base_mb), 0, 10_000) {
+                JS_SetGCParameter(cx, JSGCParamKey::JSGC_MALLOC_THRESHOLD_BASE, val as u32);
+            }
+            if let Some(val) = in_range(pref!(js_mem_gc_urgent_threshold_mb), 0, 10_000) {
+                JS_SetGCParameter(cx, JSGCParamKey::JSGC_URGENT_THRESHOLD_MB, val as u32);
+            }
         }
         Runtime {
             rt: runtime,
-            microtask_queue,
             job_queue,
             runtime_callback_data: unsafe { Box::from_raw(runtime_callback_data) },
         }
@@ -981,16 +865,12 @@ impl Runtime {
 }
 
 impl Drop for Runtime {
-    #[expect(unsafe_code)]
     fn drop(&mut self) {
         // Clear our main microtask_queue.
-        self.microtask_queue.clear(self.rt.cx_no_gc());
+        job_queue_clear(self.rt.cx_no_gc());
 
-        // Delete the RustJobQueue in mozjs
-        unsafe {
-            DeleteJobQueue(self.job_queue);
-        }
         LivePromiseReferences::destruct();
+        script_bindings::refcounted::LiveDOMReferences::destruct();
         mark_runtime_dead();
     }
 }
@@ -1018,12 +898,48 @@ fn in_range<T: PartialOrd + Copy>(val: T, min: T, max: T) -> Option<T> {
 
 thread_local!(static MALLOC_SIZE_OF_OPS: Cell<*mut MallocSizeOfOps> = const { Cell::new(ptr::null_mut()) });
 
+#[derive(Default)]
+struct InterfaceSizeData {
+    /// How many live instances of this interface exist.
+    count: usize,
+    /// The total number of bytes allocated for instances of this interface.
+    bytes: usize,
+}
+
+struct GlobalSizeData {
+    /// The URL associated with this global.
+    url: ServoUrl,
+    /// A map of WebIDL interface names to size information.
+    interface_sizes: HashMap<&'static str, InterfaceSizeData>,
+    /// Is this global considered dead?
+    is_zombie: bool,
+}
+
+#[derive(Default)]
+/// A map of globals to size information for those globals.
+/// The key is the global's JS reflector pointer as an integer.
+pub(crate) struct PerGlobalInterfaceSizes(HashMap<usize, GlobalSizeData>);
+
+thread_local!(
+    static DOM_OBJECT_SIZES: LazyCell<RefCell<PerGlobalInterfaceSizes>> = const {
+        LazyCell::new(Default::default)
+    }
+);
+
 #[expect(unsafe_code)]
 unsafe extern "C" fn get_size(obj: *mut JSObject) -> usize {
     let ops = MALLOC_SIZE_OF_OPS.get();
     ALREADY_COMPUTED_OBJECTS.with(|objects| {
         let ignored = objects.borrow();
-        compute_size(obj, unsafe { &mut *ops }, &ignored)
+        DOM_OBJECT_SIZES.with(|dom_sizes| {
+            let mut per_global_interface_sizes = dom_sizes.borrow_mut();
+            compute_size(
+                obj,
+                unsafe { &mut *ops },
+                &ignored,
+                Some(&mut per_global_interface_sizes),
+            )
+        })
     })
 }
 
@@ -1108,39 +1024,9 @@ unsafe extern "C" fn trace_rust_roots(tr: *mut JSTracer, data: *mut os::raw::c_v
 
 #[expect(unsafe_code)]
 unsafe extern "C" fn servo_build_id(build_id: *mut BuildIdCharVector) -> bool {
-    // BAO patch (XDR build-id dual-defect, 2026-09-24):
-    //
-    // 1) Pointer-from-value crash: upstream passed `servo_id[0] as *const
-    //    c_char` — the BYTE VALUE 'S' (0x53) reinterpreted as the `chars`
-    //    pointer, so the very first `GetScriptTranscodingBuildId` on a
-    //    ScriptThread SIGSEGV'd reading address 0x53 (observed via
-    //    `_siginfo.si_addr == 0x53`). Latent until something invoked the
-    //    process build-id op — bao's stencil XDR decode
-    //    (`bao_engine::xdr_cache::load` → `VersionCheck`) became the first
-    //    caller and crashed every browser e2e that reached stealth
-    //    injection on a servo ScriptThread. Fix: pass the slice's address
-    //    (`as_ptr()`), length stays explicit (SetBuildId is length-based;
-    //    no NUL needed).
-    //
-    // 2) Process-singleton tag stability: `GetBuildId` is a PROCESS-global
-    //    function pointer with two installers in a bao browser process
-    //    (this one, per ScriptThread; and bao_engine's
-    //    `bao_process_build_id`, lazily on first stealth injection). Two
-    //    different tags ("Servo\0" vs "bao-stencil-xdr-1") make XDR entries
-    //    encode under one id and VersionCheck-fail under the other — cache
-    //    thrash with decode-time regeneration on every flip. Both
-    //    installers must write the SAME bytes; the tag lives canonically in
-    //    `bao_engine::xdr_cache::BUILD_ID_TAG` and is mirrored here.
-    let servo_id = BUILD_ID_TAG;
-    unsafe { SetBuildId(build_id, servo_id.as_ptr() as *const c_char, servo_id.len()) }
+    let servo_id = b"Servo\0";
+    unsafe { SetBuildId(build_id, servo_id[0] as *const c_char, servo_id.len()) }
 }
-
-/// The process XDR build-id tag — mirror of
-/// `bao_engine::xdr_cache::BUILD_ID_TAG` (b"bao-stencil-xdr-1"). servo
-/// cannot depend on bao_engine (dependency direction is the other way), so
-/// the byte string is duplicated here; the two definitions must stay
-/// byte-identical (see `servo_build_id` above for why).
-const BUILD_ID_TAG: &[u8; 17] = b"bao-stencil-xdr-1";
 
 #[expect(unsafe_code)]
 #[cfg(feature = "debugmozjs")]
@@ -1165,7 +1051,7 @@ unsafe fn set_gc_zeal_options(cx: *mut RawJSContext) {
 #[cfg(not(feature = "debugmozjs"))]
 unsafe fn set_gc_zeal_options(_: *mut RawJSContext) {}
 
-thread_local!(pub(crate) static ALREADY_COMPUTED_OBJECTS: LazyCell<RefCell<HashSet<*const JSObject>>> = const {
+thread_local!(static ALREADY_COMPUTED_OBJECTS: LazyCell<RefCell<HashSet<*const JSObject>>> = const {
     LazyCell::new(Default::default)
 });
 
@@ -1174,6 +1060,7 @@ pub(crate) fn compute_size(
     obj: *mut JSObject,
     ops: &mut MallocSizeOfOps,
     ignored: &HashSet<*const JSObject>,
+    per_global_interface_sizes: Option<&mut PerGlobalInterfaceSizes>,
 ) -> usize {
     if ignored.contains(&(obj as *const JSObject)) {
         return 0;
@@ -1186,7 +1073,35 @@ pub(crate) fn compute_size(
             if dom_object.is_null() {
                 return 0;
             }
-            unsafe { (v.malloc_size_of)(&mut *ops, dom_object) }
+            let size = unsafe { (v.malloc_size_of)(&mut *ops, dom_object) };
+
+            let Some(per_global_interface_sizes) = per_global_interface_sizes else {
+                return size;
+            };
+
+            let global = unsafe { js::jsapi::GetNonCCWObjectGlobal(obj) };
+            let interface = v.interface_chain[v.depth as usize];
+            let interface_size = per_global_interface_sizes
+                .0
+                .entry(global as usize)
+                .or_insert_with(|| {
+                    let global = unsafe { GlobalScope::from_object(obj) };
+                    GlobalSizeData {
+                        url: global.get_url(),
+                        interface_sizes: HashMap::new(),
+                        is_zombie: global
+                            .downcast::<Window>()
+                            .is_some_and(|window| !window.is_alive()),
+                    }
+                })
+                .interface_sizes
+                .entry(interface.into())
+                .or_default();
+            interface_size.count += 1;
+            interface_size.bytes += size;
+            // Always report a size of zero, since we report this value
+            // in a separate tree from the main JS heap.
+            0
         },
         Err(_e) => 0,
     }
@@ -1224,6 +1139,34 @@ pub(crate) fn get_reports(
         path.append(&mut path_suffix);
         reports.push(Report { path, kind, size })
     };
+
+    DOM_OBJECT_SIZES.with(|sizes| {
+        let mut sizes = sizes.borrow_mut();
+        let mut known_globals = HashMap::new();
+        for global_size_data in sizes.0.values() {
+            let url = global_size_data.url.as_str();
+            let suffix = if global_size_data.is_zombie {
+                "-zombie"
+            } else {
+                ""
+            };
+            let index = known_globals.entry(url).or_insert(0);
+            *index += 1;
+            for (interface, interface_data) in &global_size_data.interface_sizes {
+                report(
+                    path![
+                        "dom",
+                        "out-of-tree",
+                        format!("url({url}){suffix}-{}", *index),
+                        format!("{interface} [{}]", interface_data.count)
+                    ],
+                    ReportKind::ExplicitJemallocHeapSize,
+                    interface_data.bytes,
+                );
+            }
+        }
+        sizes.0.clear();
+    });
 
     // A note about possibly confusing terminology: the JS GC "heap" is allocated via
     // mmap/VirtualAlloc, which means it's not on the malloc "heap", so we use

@@ -9,25 +9,14 @@
 interface ServiceWorkerGlobalScope : WorkerGlobalScope {
   // A container for a list of Client objects that correspond to
   // browsing contexts (or shared workers) that are on the origin of this SW
-  // Bao vendor patch (REQ-BRW-004 e58 contract B, user ruling 2026-10-04,
-  // Chromium-parity): exposed with the minimal Clients implementation
-  // (matchAll over the single registering client; see Clients.webidl).
-  [SameObject] readonly attribute Clients clients;
+  //[SameObject] readonly attribute Clients clients;
   //[SameObject] readonly attribute ServiceWorkerRegistration registration;
 
-  // Bao vendor patch (e58 contract B): resolves immediately — the worker is
-  // only running once active, and the fork has no activation-wait queue.
-  // (`Promise<undefined>`, this parser's spelling of the spec's void.)
-  [NewObject] Promise<undefined> skipWaiting();
+  //[NewObject] Promise<void> skipWaiting();
 
-  // Bao vendor patch (e58 contract B): exposed; "install" has no dispatch
-  // site yet (exposure only, Chrome-parity surface). "activate" is live —
-  // dispatch_activate fires it after the worker script evaluates.
-  attribute EventHandler oninstall;
-  attribute EventHandler onactivate;
-  // Bao vendor patch (user ruling 2026-09-09): exposed with the FetchEvent
-  // pipeline (REQ-BRW-004 C19 S2a).
-  attribute EventHandler onfetch;
+  //attribute EventHandler oninstall;
+  //attribute EventHandler onactivate;
+  //attribute EventHandler onfetch;
 
   // event
   attribute EventHandler onmessage; // event.source of the message events is Client object

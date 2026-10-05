@@ -22,7 +22,7 @@ use crate::dom::promise::{RootedPromise, TracedPromise};
 use crate::dom::stream::defaultteeunderlyingsource::DefaultTeeUnderlyingSource;
 use crate::dom::stream::readablestream::ReadableStream;
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, expect(crown::unrooted_must_root))]
@@ -135,7 +135,7 @@ impl DefaultTeeReadRequest {
                 Err(error) => {
                     // If cloneResult is an abrupt completion,
                     rooted!(&in(cx) let mut error_value = UndefinedValue());
-                    error.safe_to_jsval(cx, global, error_value.handle_mut());
+                    error.to_jsval(cx, global, error_value.handle_mut());
                     // Perform ! ReadableStreamDefaultControllerError(branch_1.[[controller]], cloneResult.[[Value]]).
                     self.readable_stream_default_controller_error(
                         cx,
@@ -158,7 +158,7 @@ impl DefaultTeeReadRequest {
             // If cloneResult is an abrupt completion,
             if let Err(error) = structuredclone::read(cx, global, data, chunk2_value.handle_mut()) {
                 rooted!(&in(cx) let mut error_value = UndefinedValue());
-                error.safe_to_jsval(cx, global, error_value.handle_mut());
+                error.to_jsval(cx, global, error_value.handle_mut());
                 // Perform ! ReadableStreamDefaultControllerError(branch_1.[[controller]], cloneResult.[[Value]]).
                 self.readable_stream_default_controller_error(
                     cx,

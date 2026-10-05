@@ -35,8 +35,6 @@ pub(crate) struct LargestContentfulPaint {
     /// <https://www.w3.org/TR/paint-timing/#paint-timing-info>
     #[no_trace]
     paint_timing_info: PaintTimingInfo,
-    paint_time: DOMHighResTimeStamp,
-    presentation_time: Option<DOMHighResTimeStamp>,
 }
 
 impl LargestContentfulPaint {
@@ -45,8 +43,6 @@ impl LargestContentfulPaint {
         element: Option<&Element>,
         load_time: Option<CrossProcessInstant>,
         paint_timing_info: PaintTimingInfo,
-        paint_time: DOMHighResTimeStamp,
-        presentation_time: Option<DOMHighResTimeStamp>,
     ) -> LargestContentfulPaint {
         // From: <https://www.w3.org/TR/largest-contentful-paint/#sec-largest-contentful-paint-interface>
         //
@@ -70,8 +66,6 @@ impl LargestContentfulPaint {
                 .unwrap_or_default(),
             element: element.map(Dom::from_ref),
             paint_timing_info,
-            paint_time,
-            presentation_time,
         }
     }
 
@@ -83,14 +77,6 @@ impl LargestContentfulPaint {
         load_time: Option<CrossProcessInstant>,
         paint_timing_info: PaintTimingInfo,
     ) -> DomRoot<LargestContentfulPaint> {
-        // BAO patch (fork-maintained, 2026-09-28): 构造期解析时间戳(cx-less
-        // getter 的取值前提)。
-        let performance = global.performance(cx);
-        let paint_time = performance
-            .to_dom_high_res_time_stamp(paint_timing_info.paint_time());
-        let presentation_time = paint_timing_info
-            .presentation_time()
-            .map(|instant| performance.to_dom_high_res_time_stamp(instant));
         reflect_dom_object(
             cx,
             Box::new(LargestContentfulPaint::new_inherited(
@@ -98,8 +84,6 @@ impl LargestContentfulPaint {
                 element,
                 load_time,
                 paint_timing_info,
-                paint_time,
-                presentation_time,
             )),
             global,
         )
@@ -151,12 +135,18 @@ impl LargestContentfulPaintMethods<crate::DomTypeHolder> for LargestContentfulPa
     }
 
     /// <https://www.w3.org/TR/paint-timing/#dom-painttimingmixin-painttime>
-    fn PaintTime(&self) -> DOMHighResTimeStamp {
-        self.paint_time
+    fn PaintTime(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        self.global()
+            .performance(cx)
+            .to_dom_high_res_time_stamp(self.paint_timing_info.paint_time())
     }
 
     /// <https://www.w3.org/TR/paint-timing/#dom-painttimingmixin-presentationtime>
-    fn GetPresentationTime(&self) -> Option<DOMHighResTimeStamp> {
-        self.presentation_time
+    fn GetPresentationTime(&self, cx: &mut JSContext) -> Option<DOMHighResTimeStamp> {
+        Some(
+            self.global()
+                .performance(cx)
+                .maybe_to_dom_high_res_time_stamp(self.paint_timing_info.presentation_time()),
+        )
     }
 }

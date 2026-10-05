@@ -463,7 +463,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         parse: F,
         push: &mut impl FnMut(PropertyDeclaration),
     ) where
-        F: for<'i> FnOnce(
+        F: for<'i, 't> FnOnce(
             &ParserContext,
             &mut cssparser::Parser<'i>,
         ) -> Result<PropertyDeclaration, style_traits::ParseError>,

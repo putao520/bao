@@ -23,7 +23,7 @@ interface HTMLLinkElement : HTMLElement {
            attribute DOMString hreflang;
   [CEReactions]
            attribute DOMString type;
-  [SameObject, PutForwards=value] readonly attribute DOMTokenList sizes;
+  // [SameObject, PutForwards=value] readonly attribute DOMTokenList sizes;
   [CEReactions] attribute USVString imageSrcset;
   [CEReactions] attribute DOMString imageSizes;
   [CEReactions]

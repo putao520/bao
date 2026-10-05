@@ -108,7 +108,7 @@ impl KeyboardEvent {
         can_bubble: bool,
         cancelable: bool,
         view: Option<&Window>,
-        detail: i32,
+        _detail: i32,
         key: Key,
         code: DOMString,
         original_code: Option<Code>,
@@ -125,7 +125,6 @@ impl KeyboardEvent {
             can_bubble,
             cancelable,
             view,
-            detail,
             DOMString::from(key.to_string()),
             location,
             repeat,
@@ -139,12 +138,6 @@ impl KeyboardEvent {
         event.key_code.set(key_code);
         event.uievent.set_which(key_code);
         event
-    }
-
-    // BAO patch (fork-maintained, 2026-09-28): inherent getter over the
-    // stored modifier set, consumed by the editing/scroll input paths.
-    pub(crate) fn modifiers(&self) -> Modifiers {
-        self.modifiers.get()
     }
 
     pub(crate) fn key(&self) -> Key {
@@ -163,7 +156,6 @@ impl KeyboardEvent {
         can_bubble_arg: bool,
         cancelable_arg: bool,
         view_arg: Option<&Window>,
-        detail: i32,
         key_arg: DOMString,
         location_arg: u32,
         repeat: bool,
@@ -177,7 +169,7 @@ impl KeyboardEvent {
             can_bubble_arg,
             cancelable_arg,
             view_arg,
-            detail,
+            0,
         );
         *self.key.borrow_mut() = key_arg;
         self.location.set(location_arg);
@@ -240,7 +232,6 @@ impl KeyboardEventMethods<crate::DomTypeHolder> for KeyboardEvent {
             can_bubble_arg,
             cancelable_arg,
             view_arg,
-            0, /* initKeyboardEvent has no detailArg */
             key_arg,
             location_arg,
             repeat,

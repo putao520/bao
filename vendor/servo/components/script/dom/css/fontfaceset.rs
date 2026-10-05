@@ -51,29 +51,6 @@ pub(crate) struct FontFaceSet {
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-readypromise-slot>
     promise: DomRefCell<TracedPromise>,
 
-    // BAO patch (fork-maintained, 2026-09-29, ISSUE #23/#25 realm-discard
-    // class): storage-face pin — see the `Traceable for RootedPromise` impl in
-    // promise.rs. `TracedPromise` is unrooted by design (liveness = GC trace
-    // graph), but this holder can be dereferenced by the message pump while
-    // its creation realm has already lost JS reachability (bao's pipeline exit
-    // is pump-deferred) — the pin keeps the `PermanentRoot` alive for exactly
-    // the wrapper's lifetime so the deref stays legal.
-    //
-    // BAO patch (fork-maintained, 2026-10-04, e56 followup — slot-swap
-    // rebinding): the pin is a CONSTRUCTION-TIME snapshot, so every site that
-    // swaps the `promise` slot MUST rebind it in the same step
-    // (`switch_to_loading` — the only swapper). W28 migrated the pump's
-    // waiting-read to this pin without carrying the swap invariant: after the
-    // first resolution the pin permanently reported "fulfilled" and the pump's
-    // gate short-circuited before the count check, hanging every SUBSEQUENT
-    // `document.fonts.ready` settlement of the document (≥2 @font-face pages:
-    // render pipeline frozen + fingerprintable timing). Class lesson (see
-    // memory promise-pin-realm-discard-class): any struct holding a
-    // RootedPromise pin as a storage-face read source must treat pin rebinding
-    // as part of the slot's swap semantics — snapshotting at construction
-    // alone = permanent stale reads after the first swap.
-    ready_promise_pin: DomRefCell<RootedPromise>,
-
     set_entries: DomRefCell<Vec<Dom<FontFace>>>,
 }
 
@@ -82,7 +59,6 @@ impl FontFaceSet {
         FontFaceSet {
             target: EventTarget::new_inherited(),
             promise: DomRefCell::new(promise.to_traced()),
-            ready_promise_pin: DomRefCell::new(promise.clone()),
             set_entries: Default::default(),
         }
     }
@@ -133,20 +109,8 @@ impl FontFaceSet {
         true
     }
 
-    // BAO PATCH (fork-maintained, 2026-09-29, W28): read through the pin's
-    // REGISTERED root slot (`is_fulfilled_from_root`) — the `promise` twin's
-    // reflector address goes stale after a compacting (Shrink) collection
-    // relocates the pinned object while this wrapper is unreachable from the
-    // JS heap and the pump still dereferences it (documents map,
-    // maybe_fulfill_font_ready_promises). Crash form pre-patch:
-    // waiting_to_fullfill_promise → promise_obj → IsPromiseObject on a
-    // freed/reused cell (SIGSEGV in Shape::getObjectClass).
-    // e56 followup (2026-10-04): the pin is rebidden by `switch_to_loading`
-    // whenever the slot swaps, so this read tracks the LIVE ready promise
-    // (upstream `!self.promise.borrow().is_fulfilled()` semantics) while
-    // keeping W28's relocation-safe source.
     pub(crate) fn waiting_to_fullfill_promise(&self) -> bool {
-        !self.ready_promise_pin.borrow().is_fulfilled_from_root()
+        !self.promise.borrow().is_fulfilled()
     }
 
     fn contains_face(&self, target: &FontFace) -> bool {
@@ -178,12 +142,6 @@ impl FontFaceSet {
         // promise, replace it with a fresh pending promise.
         if self.promise.borrow().is_fulfilled() {
             let promise = Promise::new(cx, &self.global());
-            // e56 followup (2026-10-04): rebind the storage-face pin in the
-            // same step — the pump's waiting-gate reads the pin, so a slot
-            // swap without a pin rebind strands the gate on the stale
-            // (fulfilled) promise forever (every subsequent
-            // `document.fonts.ready` of the document never settles).
-            *self.ready_promise_pin.borrow_mut() = promise.clone();
             *self.promise.borrow_mut() = promise.to_traced()
         }
 
@@ -549,10 +507,7 @@ impl FontQueryParameters {
             &urlextradata,
         );
 
-        // BAO patch (fork-maintained, 2026-09-28): the fork pins cssparser
-        // 0.37, whose `Parser::new` takes `&mut ParserInput` (upstream window
-        // end pins an older cssparser accepting `&str` directly).
-                let mut parser = Parser::new(font);
+        let mut parser = Parser::new(font);
         let Ok(font_shorthand) =
             parser.parse_entirely(|parser| font::parse_value(&parser_context, parser))
         else {

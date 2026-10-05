@@ -3,12 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #![deny(unsafe_code)]
-#![allow(clippy::too_many_arguments)]
+#![expect(clippy::too_many_arguments)]
 
 mod backend;
 pub mod canvas_data;
-// Bao vendor module: anti-fingerprinting canvas noise (REQ-STL-003).
-pub mod canvas_noise;
 pub mod canvas_paint_thread;
 mod peniko_conversions;
 #[cfg(feature = "vello")]

@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -37,9 +38,8 @@ use style::thread_state::{self, ThreadState};
 
 use crate::conversions::Convert;
 use crate::dom::abstractworker::{MessageData, SimpleWorkerErrorHandler, WorkerScriptMsg};
-use script_bindings::interfaces::StackRootPromiseHelpers;
 use crate::dom::abstractworkerglobalscope::{WorkerEventLoopMethods, run_worker_event_loop};
-use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback};
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::DedicatedWorkerGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::DedicatedWorkerGlobalScopeBinding::DedicatedWorkerGlobalScopeMethods;
@@ -205,7 +205,7 @@ impl QueuedTaskConversion for DedicatedWorkerScriptMsg {
 
 unsafe_no_jsmanaged_fields!(TaskQueue<DedicatedWorkerScriptMsg>);
 
-// https://html.spec.whatwg.org/multipage/#dedicatedworkerglobalscope
+/// <https://html.spec.whatwg.org/multipage/#dedicatedworkerglobalscope>
 #[dom_struct]
 pub(crate) struct DedicatedWorkerGlobalScope {
     workerglobalscope: WorkerGlobalScope,
@@ -230,10 +230,10 @@ pub(crate) struct DedicatedWorkerGlobalScope {
     animation_frame_ident: Cell<u32>,
     /// Pending animation frame callbacks for a later worker rendering update.
     #[ignore_malloc_size_of = "closures are hard"]
-    animation_frame_list: DomRefCell<VecDeque<(u32, Rc<FrameRequestCallback>)>>,
+    animation_frame_list: DomRefCell<VecDeque<(u32, TracedCallback<FrameRequestCallback>)>>,
     /// Callbacks snapshotted for the current worker rendering update.
     #[ignore_malloc_size_of = "closures are hard"]
-    current_animation_frame_list: DomRefCell<VecDeque<(u32, Rc<FrameRequestCallback>)>>,
+    current_animation_frame_list: DomRefCell<VecDeque<(u32, TracedCallback<FrameRequestCallback>)>>,
     /// Whether we're in the process of running animation callbacks.
     running_animation_callbacks: Cell<bool>,
     /// Whether Constellation currently treats this worker as having callbacks.
@@ -585,55 +585,6 @@ impl DedicatedWorkerGlobalScope {
                 }
                 let scope = global.upcast::<WorkerGlobalScope>();
                 let global_scope = global.upcast::<GlobalScope>();
-                // Bao vendor patch (DEC-WK-001 / TASK-1): drain embedder Worker scope
-                // callbacks so Bao can inject stealth profile + lifecycle hooks on the
-                // Worker thread (per BCE-20260621-001: DOM-Node interop must happen on
-                // the owning thread; mirrors the script-thread
-                // `drain_embedder_callbacks`).
-                // Use case (Bao): install stealth profile inheritance (DEC-WK-007),
-                // register WorkerHandle + WorkerChannelBridge (DF-WK-1), hook
-                // self.close()/importScripts natives.
-                // BAO PATCH (BCE-20260627-009): NOTE - realm entry for embedder
-                // callbacks is handled INSIDE the callback (worker_scope_init_native)
-                // because the worker thread's cx starts in the null realm (oldRealm=0x0)
-                // and LeaveRealm with a freed startingRealm pointer segfaults. The
-                // callback owns its own realm lifecycle.
-                // @trace DEC-WK-001 servo-native Worker path (vendor patch)
-                // @trace REQ-BRW-004 [criterion:1,3,7] Worker thread owns Runtime/JSContext
-                // BAO PATCH (per-worker association): drain only the callbacks
-                // registered for THIS Worker's webview, so page-JS `new Worker()`
-                // can never consume another page's queued callback
-                // (cross-page stealth-profile crosstalk).
-                for callback in
-                    crate::event_loop::script_thread::drain_worker_scope_callbacks(webview_id)
-                {
-                    unsafe {
-                        callback(
-                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
-                            script_bindings::reflector::DomObject::reflector(global_scope).get_jsobject().get() as *mut std::ffi::c_void,
-                        );
-                    }
-                }
-                // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
-                // patch): per-Worker injector delivery — the one-shot drain
-                // above is consumed by the FIRST Worker of this webview, so
-                // without this loop the SECOND and later `new Worker()` in
-                // the same page received zero embedder injection (bare,
-                // fingerprintable Worker). The injector tier is
-                // NON-consuming: every Dedicated Worker scope this webview
-                // creates receives a delivery. Runs after the one-shot
-                // callbacks; the embedder's install is idempotent, so the
-                // first Worker's double run (one-shot + injector) is safe.
-                for injector in
-                    crate::event_loop::script_thread::worker_scope_injectors(webview_id)
-                {
-                    unsafe {
-                        injector(
-                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
-                            script_bindings::reflector::DomObject::reflector(global_scope).get_jsobject().get() as *mut std::ffi::c_void,
-                        );
-                    }
-                }
 
                 // Step 12. Obtain script by switching on options["type"]:
                 {
@@ -690,21 +641,6 @@ impl DedicatedWorkerGlobalScope {
 
                 // Drop worker rAF state before destroying the JS runtime.
                 global.clear_animation_frame_callbacks_and_unregister();
-
-                // BAO PATCH (BCE-20260627-009): Flush cx realm stack before clear_js_runtime
-                // to prevent JSAutoRealm::drop LeaveRealm on freed Realm (UAF SIGSEGV).
-                // Worker thread teardown: clear_js_runtime frees JSRuntime (which owns all Realms).
-                // If cx.realm stack has JSAutoRealm guards with oldRealm pointers to those Realms,
-                // those guards' drop after clear_js_runtime causes LeaveRealm(freed_ptr) -> UAF.
-                // Fix: enter global's realm one more time, so cx.realm becomes globalRealm.
-                // Then any lingering guard's oldRealm will be globalRealm (which is still rooted
-                // at this point). After this block ends, the temporary guard drops cleanly,
-                // and clear_js_runtime frees runtime (globalRealm is part of runtime, but
-                // cx.realm is now null). Subsequent guard drops in closure teardown will
-                // LeaveRealm(oldRealm=null) which is safe.
-                {
-                    let _flush = crate::realms::enter_auto_realm(cx, &*global);
-                }
                 scope.clear_js_runtime();
             })
             .expect("Thread spawning failed")
@@ -794,7 +730,7 @@ impl DedicatedWorkerGlobalScope {
     }
 
     fn remove_animation_frame_callback_from(
-        list: &DomRefCell<VecDeque<(u32, Rc<FrameRequestCallback>)>>,
+        list: &DomRefCell<VecDeque<(u32, TracedCallback<FrameRequestCallback>)>>,
         ident: u32,
     ) {
         let mut list = list.borrow_mut();
@@ -832,7 +768,7 @@ impl DedicatedWorkerGlobalScope {
         // Step 5. Set callbacks[handle] to callback.
         self.animation_frame_list
             .borrow_mut()
-            .push_back((ident, callback.native()));
+            .push_back((ident, callback.to_traced()));
         log::debug!("Queued dedicated worker animation frame callback: handle={ident} ---->");
         self.set_animation_frame_callbacks_active(true);
 
@@ -879,8 +815,8 @@ impl DedicatedWorkerGlobalScope {
             let mut pending = self.animation_frame_list.borrow_mut();
             let mut current = self.current_animation_frame_list.borrow_mut();
             for _ in 0..callback_count {
-                if let Some(callback) = pending.pop_front() {
-                    current.push_back(callback);
+                if let Some(ref callback) = pending.pop_front() {
+                    current.push_back(callback.clone());
                 }
             }
         }
@@ -892,13 +828,13 @@ impl DedicatedWorkerGlobalScope {
         for _ in 0..callback_count {
             // Step 3.1. Let callback be callbacks[handle].
             // Step 3.2. Remove callbacks[handle].
-            let callback = self
+            rooted!(&in(cx) let callback = self
                 .current_animation_frame_list
                 .borrow_mut()
                 .pop_front()
-                .map(|(_, callback)| callback);
+                .map(|(_, callback)| callback));
 
-            if let Some(callback) = callback {
+            if let Some(ref callback) = *callback {
                 // Step 3.3. Invoke callback with « now » and "`report`".
                 let _ = callback.Call__(cx, Finite::wrap(*timing), ExceptionHandling::Report);
             }
@@ -1210,11 +1146,12 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
         message: HandleValue,
         options: &StructuredSerializeOptions,
     ) -> ErrorResult {
-        auto_root!(&in(cx) let guard = options
-            .transfer
-            .iter()
-            .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-            .collect::<Vec<_>>());
+        auto_root!(&in(cx) let guard =
+            options
+                .transfer
+                .iter()
+                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+                .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 
@@ -1225,7 +1162,10 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-animationframeprovider-requestanimationframe>
-    fn RequestAnimationFrame(&self, callback: RootedCallback<FrameRequestCallback>) -> Fallible<u32> {
+    fn RequestAnimationFrame(
+        &self,
+        callback: RootedCallback<FrameRequestCallback>,
+    ) -> Fallible<u32> {
         self.request_animation_frame(callback)
     }
 

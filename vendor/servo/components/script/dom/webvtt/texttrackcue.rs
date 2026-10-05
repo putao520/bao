@@ -2,12 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
-// cue ↔ track association is a live `MutNullableDom` again (so AddCue can
-// re-home cues across tracks), plus the text track cue active flag and the
-// text track cue order state (`initial_index_in_list` + `Ord`) that
-// `TextTrackCueList::sort` and `time_marches_on` consume (REQ-BRW-047).
-
 use std::cell::Cell;
 use std::cmp::Ordering;
 
@@ -20,6 +14,7 @@ use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::texttrack::TextTrack;
+use crate::dom::webvtt::rules_for_rendering::RulesForUpdatingTheTextTrackRendering;
 
 #[dom_struct]
 pub(crate) struct TextTrackCue {
@@ -40,6 +35,8 @@ pub(crate) struct TextTrackCue {
     /// > in the order they were last added to their respective
     /// > text track list of cues, oldest first
     initial_index_in_list: Cell<usize>,
+    /// <https://html.spec.whatwg.org/multipage/#rules-for-updating-the-text-track-rendering>
+    rules_for_updating_the_text_track_rendering: RulesForUpdatingTheTextTrackRendering,
 }
 
 impl TextTrackCue {
@@ -48,6 +45,7 @@ impl TextTrackCue {
         start_time: f64,
         end_time: f64,
         text_track: Option<&TextTrack>,
+        rules_for_updating_the_text_track_rendering: RulesForUpdatingTheTextTrackRendering,
     ) -> TextTrackCue {
         TextTrackCue {
             eventtarget: EventTarget::new_inherited(),
@@ -58,6 +56,7 @@ impl TextTrackCue {
             pause_on_exit: Cell::new(false),
             active: Default::default(),
             initial_index_in_list: Default::default(),
+            rules_for_updating_the_text_track_rendering,
         }
     }
 
@@ -91,6 +90,18 @@ impl TextTrackCue {
 
     pub(crate) fn set_initial_index_in_list(&self, initial_index_in_list: usize) {
         self.initial_index_in_list.set(initial_index_in_list);
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#rules-for-updating-the-text-track-rendering>
+    pub(crate) fn rules_for_updating_the_text_track_rendering(
+        &self,
+    ) -> RulesForUpdatingTheTextTrackRendering {
+        // https://html.spec.whatwg.org/multipage/#text-track-model:rules-for-updating-the-text-track-rendering
+        // > A text track cue is associated with rules for updating the text track rendering,
+        // > as defined by the specification for the specific kind of text track cue.
+        // > These rules are used specifically when the object representing the cue
+        // > is added to a TextTrack object using the addCue() method.
+        self.rules_for_updating_the_text_track_rendering
     }
 }
 

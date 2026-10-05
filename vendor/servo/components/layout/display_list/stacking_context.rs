@@ -10,7 +10,10 @@ use app_units::Au;
 use embedder_traits::ViewportDetails;
 use euclid::{Point2D, Rect, SideOffsets2D, Size2D};
 use malloc_size_of_derive::MallocSizeOf;
-use paint_api::display_list::{AxesScrollSensitivity, PaintDisplayListInfo, ReferenceFrameNodeInfo, ScrollableNodeInfo, SpatialTreeNodeInfo, StickyNodeInfo, TouchAction};
+use paint_api::display_list::{
+    AxesScrollSensitivity, PaintDisplayListInfo, ReferenceFrameNodeInfo, ScrollType,
+    ScrollableNodeInfo, SpatialTreeNodeInfo, StickyNodeInfo, TouchAction,
+};
 use servo_base::id::ScrollTreeNodeId;
 use servo_base::print_tree::PrintTree;
 use servo_config::opts::{DiagnosticsLogging, DiagnosticsLoggingOption};
@@ -241,6 +244,7 @@ impl StackingContextTree {
         content_rect: LayoutRect,
         clip_rect: LayoutRect,
         scroll_sensitivity: AxesScrollSensitivity,
+        touch_action: TouchAction,
     ) -> ScrollTreeNodeId {
         self.paint_info.scroll_tree.add_scroll_tree_node(
             Some(parent_scroll_node_id),
@@ -249,9 +253,7 @@ impl StackingContextTree {
                 content_rect,
                 clip_rect,
                 scroll_sensitivity,
-                // BAO patch (fork-maintained, 2026-09-29): 基线 display_list 的
-                // touch_action 字段(样式面 touch-action 消费未迁移,v1 缺省 Auto)。
-                touch_action: TouchAction::Auto,
+                touch_action,
                 offset: LayoutVector2D::zero(),
                 offset_changed: Cell::new(false),
             }),
@@ -1049,9 +1051,28 @@ impl BoxFragmentWithStyle<'_> {
             stacking_context_tree.paint_info.pipeline_id,
         );
 
+        let mut x_sensitivity: ScrollType = overflow.x.into();
+        let mut y_sensitivity: ScrollType = overflow.y.into();
+        let touch_action = TouchAction::from(style.get_box().touch_action);
+        // `touch-action` only restricts direct touch manipulation; mouse wheel
+        // (`InputEvents`) and script-driven scrolling are unaffected, so we only
+        // strip `ScrollType::Touch` from the excluded axis.
+        match touch_action {
+            TouchAction::PanX => {
+                y_sensitivity.remove(ScrollType::Touch);
+            },
+            TouchAction::PanY => {
+                x_sensitivity.remove(ScrollType::Touch);
+            },
+            TouchAction::None => {
+                x_sensitivity.remove(ScrollType::Touch);
+                y_sensitivity.remove(ScrollType::Touch);
+            },
+            TouchAction::Auto => {},
+        }
         let sensitivity = AxesScrollSensitivity {
-            x: overflow.x.into(),
-            y: overflow.y.into(),
+            x: x_sensitivity,
+            y: y_sensitivity,
         };
 
         let scroll_tree_node_id = stacking_context_tree.define_scroll_frame(
@@ -1060,6 +1081,7 @@ impl BoxFragmentWithStyle<'_> {
             self.scrollable_overflow().to_webrender(),
             scroll_frame_rect,
             sensitivity,
+            touch_action,
         );
 
         Some(OverflowFrameData {

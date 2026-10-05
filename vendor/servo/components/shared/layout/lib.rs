@@ -8,8 +8,6 @@
 
 #![deny(unsafe_code)]
 
-// BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — LCPCandidate
-// 面(基线 7ca99fe3f 形态,paint_timing_handler 消费)。
 mod largest_contentful_paint_candidate;
 mod layout_damage;
 mod layout_dom;
@@ -18,20 +16,19 @@ mod layout_node;
 mod pseudo_element_chain;
 
 use std::any::Any;
-use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicIsize;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use accesskit::{Action, ActionData, ActionRequest};
 use app_units::Au;
-use atomic_refcell::AtomicRefCell;
 use background_hang_monitor_api::BackgroundHangMonitorRegister;
 use bitflags::bitflags;
 use embedder_traits::{Cursor, ScriptToEmbedderChan, Theme, UntrustedNodeAddress, ViewportDetails};
 use euclid::{Point2D, Rect};
-use fonts::{FontContext, TextByteRange, WebFontDocumentContext, WebFontSetDifference};
+use fonts::{FontContext, WebFontDocumentContext, WebFontSetDifference};
 pub use largest_contentful_paint_candidate::LCPCandidate;
 pub use layout_damage::{AccessibilityDamage, LayoutDamage};
 pub use layout_dom::{
@@ -45,8 +42,8 @@ use malloc_size_of::{MallocSizeOf as MallocSizeOfTrait, MallocSizeOfOps, malloc_
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::{ImageCache, ImageCacheFactory, PendingImageId};
 use net_traits::request::InternalRequest;
-use paint_api::display_list::PaintTimingInfo;
 use paint_api::CrossProcessPaintApi;
+use paint_api::display_list::PaintTimingInfo;
 use parking_lot::RwLock;
 use pixels::{RasterImage, Repeat};
 use profile_traits::mem::Report;
@@ -59,7 +56,7 @@ use servo_arc::Arc as ServoArc;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
-use servo_base::text::{Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
+use servo_base::text::{RangeAny, Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::Atom;
 use style::animation::DocumentAnimationSet;
@@ -85,6 +82,17 @@ use webrender_api::{ExternalScrollId, ImageKey};
 
 pub trait GenericLayoutDataTrait: Any + MallocSizeOfTrait + Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
+
+    /// Returns whether `new_range` was successfully set on an existing text run
+    fn set_text_run_selection(&self, new_range: Option<RangeAny<Utf32CodeUnits>>) -> bool;
+
+    /// Set whether or not this node is selected when it is an element. Returns `true`
+    /// if anything changed that requires a new display list.
+    fn set_element_selection(&self, selected: bool) -> bool;
+
+    /// Get the text rendered by this node, if it is a `CharacterData` node and produces
+    /// a `TextRun` in the box tree.
+    fn rendered_text(&self, range: RangeAny<Utf32CodeUnits>) -> Option<String>;
 }
 
 pub trait LayoutDataTrait: GenericLayoutDataTrait + Default {}
@@ -143,21 +151,6 @@ pub enum LayoutElementType {
     SVGSVGElement,
 }
 
-/// A selection shared between script and layout. This selection is managed by the DOM
-/// node that maintains it, and can be modified from script. Once modified, layout is
-/// expected to reflect the new selection visual on the next display list update.
-#[derive(Clone, Debug, Default, MallocSizeOf, PartialEq)]
-pub struct ScriptSelection {
-    /// The range of this selection in the DOM node that manages it.
-    pub range: TextByteRange,
-    /// The character range of this selection in the DOM node that manages it.
-    pub character_range: Range<usize>,
-    /// Whether or not this selection is enabled. Selections may be disabled
-    /// when their node loses focus.
-    pub enabled: bool,
-}
-
-pub type SharedSelection = Arc<AtomicRefCell<ScriptSelection>>;
 pub struct HTMLCanvasData {
     pub image_key: Option<ImageKey>,
     pub width: u32,
@@ -254,65 +247,17 @@ pub struct MediaMetadata {
     pub height: u32,
 }
 
-// BAO patch (fork-maintained, 2026-09-27): active-cue render snapshot types
-// for the WebVTT cue overlay (REQ-BRW-047). The script thread rebuilds the
-// `Vec<WebVttCueBoxData>` whenever the set of active cues changes (step 18 of
-// <https://html.spec.whatwg.org/multipage/#time-marches-on>); layout reads it
-// when constructing the video replaced content and paints the cue boxes on
-// top of the video frame. Plain data only — never page-visible DOM.
-
-/// <https://w3c.github.io/webvtt/#webvtt-cue-position-alignment>
-#[derive(Clone, Copy, Debug, Default, MallocSizeOf, PartialEq)]
-pub enum WebVttPositionAlign {
-    LineLeft,
-    Center,
-    LineRight,
-    #[default]
-    Auto,
-}
-
-/// <https://w3c.github.io/webvtt/#webvtt-cue-text-alignment>
-#[derive(Clone, Copy, Debug, Default, MallocSizeOf, PartialEq)]
-pub enum WebVttTextAlign {
-    Start,
-    #[default]
-    Center,
-    End,
-    Left,
-    Right,
-}
-
-/// One visible WebVTT cue box of the media element's active-cue render
-/// snapshot, in <https://html.spec.whatwg.org/multipage/#text-track-cue-order>.
-#[derive(Clone, Debug, Default, MallocSizeOf, PartialEq)]
-pub struct WebVttCueBoxData {
-    /// Text lines of the cue box: WebVTT cue text with tags resolved to plain
-    /// text, split on line breaks.
-    pub text_lines: Vec<String>,
-    /// <https://w3c.github.io/webvtt/#webvtt-cue-line> — `None` is `auto`.
-    pub line: Option<f64>,
-    /// <https://w3c.github.io/webvtt/#webvtt-cue-snap-to-lines-flag>
-    pub snap_to_lines: bool,
-    /// <https://w3c.github.io/webvtt/#webvtt-cue-position> — `None` is `auto`.
-    pub position: Option<f64>,
-    /// <https://w3c.github.io/webvtt/#webvtt-cue-position-alignment>
-    pub position_align: WebVttPositionAlign,
-    /// <https://w3c.github.io/webvtt/#webvtt-cue-text-alignment>
-    pub align: WebVttTextAlign,
-    /// <https://w3c.github.io/webvtt/#webvtt-cue-size> (percentage).
-    pub size: f64,
-    /// Position of this cue in
-    /// <https://html.spec.whatwg.org/multipage/#text-track-cue-order>.
-    pub order: usize,
-}
-
 pub struct HTMLMediaData {
     pub current_frame: Option<MediaFrame>,
     pub metadata: Option<MediaMetadata>,
     pub poster_url: Option<ServoUrl>,
-    /// Active WebVTT cue boxes to render on top of the video frame, in
-    /// text-track cue order. Empty when nothing should be overlaid.
-    pub cue_overlays: Vec<WebVttCueBoxData>,
+}
+
+#[derive(Debug)]
+pub struct AccessibilityActionRequest {
+    pub action: Action,
+    pub target: OpaqueNode,
+    pub data: Option<ActionData>,
 }
 
 pub struct LayoutConfig {
@@ -488,12 +433,15 @@ pub trait Layout {
     /// - a page is loaded after accesibility is activated.
     ///
     /// Checked in can_skip_reflow_request_entirely(), as a dirty accessibility tree
-    /// should force a reflow, and handle_accessibility_tree_update() to determine whether to
-    /// update the accessibility tree during reflow.
-    fn force_accessibility_update(&self) -> bool;
+    /// should force a reflow, and handle_reflow() to determine whether to update the
+    /// accessibility tree during reflow.
+    fn needs_accessibility_update(&self) -> bool;
 
-    /// See [Self::force_accessibility_update()].
+    /// See [Self::needs_accessibility_update()].
     fn set_force_accessibility_update(&self);
+
+    /// Handle an accessibility action.
+    fn handle_accessibility_action(&self, action_request: ActionRequest);
 
     fn font_context(&self) -> &Arc<FontContext>;
 }
@@ -706,6 +654,8 @@ pub struct ReflowResult {
     pub changed_web_fonts: WebFontSetDifference,
     /// The LCP candidate during this layout pass, if any.
     pub lcp_candidate: Option<LCPCandidate>,
+    /// Actions which have been requested by assistive technology, if any.
+    pub pending_accessibility_actions: Vec<AccessibilityActionRequest>,
 }
 
 bitflags! {
@@ -791,12 +741,13 @@ pub struct ReflowRequest {
     pub animating_images: Arc<RwLock<AnimatingImages>>,
     /// The node highlighted by the devtools, if any
     pub highlighted_dom_node: Option<OpaqueNode>,
+    /// Whether or not this document has system focus and is the focused frame
+    /// in the frame tree.
+    pub frame_focused: bool,
     /// Whether LCP computation should be halted for this reflow.
     /// From <https://www.w3.org/TR/largest-contentful-paint/#limitations>:
     /// > The LargestContentfulPaint ... algorithm halts ... inputs.
     pub halt_lcp: bool,
-    // BAO patch (fork-maintained, 2026-09-29): paint 岛→基线迁移波 — paint
-    // timing 路由字段(基线 7ca99fe3f 形态)。
     /// Whether the document's browsing context is paint-timing eligible.
     /// <https://www.w3.org/TR/paint-timing/#paint-timing-eligible>
     pub paint_timing_eligible: bool,

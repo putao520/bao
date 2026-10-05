@@ -7,7 +7,7 @@ use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use script_bindings::weakref::WeakRef;
 use servo_canvas_traits::webgl::{
     GlType, InternalFormatIntVec, WebGLCommand, WebGLError, WebGLRenderbufferId, WebGLResult,
@@ -79,7 +79,7 @@ impl Drop for DroppableWebGLRenderbuffer {
     }
 }
 
-#[dom_struct(associated_memory)]
+#[dom_struct]
 pub(crate) struct WebGLRenderbuffer {
     webgl_object: WebGLObject,
     ever_bound: Cell<bool>,
@@ -124,10 +124,10 @@ impl WebGLRenderbuffer {
         context: &WebGLRenderingContext,
         id: WebGLRenderbufferId,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(WebGLRenderbuffer::new_inherited(context, id)),
             &*context.global(),
-            cx,
         )
     }
 }

@@ -12,11 +12,7 @@ dictionary OfflineAudioContextOptions {
   required float sampleRate;
 };
 
-// (Bao) Exposed=(Window,Worker): offline rendering is pure software (servo-media
-// OfflineAudioSink, no audio hardware) and its control plane is global-agnostic;
-// upstream pins Window-only only because its constructor is Window-anchored
-// (REQ-BRW-004 C15, user ruling 2026-09-09).
-[Exposed=(Window,Worker)]
+[Exposed=Window]
 interface OfflineAudioContext : BaseAudioContext {
   [Throws] constructor(OfflineAudioContextOptions contextOptions);
   [Throws] constructor(unsigned long numberOfChannels, unsigned long length, float sampleRate);

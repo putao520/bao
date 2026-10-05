@@ -3,8 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use bytes::Bytes;
 
+use bytes::Bytes;
 use content_security_policy::Destination;
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
@@ -14,13 +14,6 @@ use net_traits::request::RequestId;
 use net_traits::{FetchMetadata, NetworkError, ResourceFetchTiming};
 use script_bindings::cell::DomRefCell;
 use servo_url::ServoUrl;
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
-// track URL change tracking (abort ongoing fetch, re-run the processing
-// model, deduplicated error event) and the `track(no_gc)` accessor the
-// TextTrackList iterator consumes (REQ-BRW-047). Fork adaptations kept:
-// `WebVttCue` import path (resynced `cue::settings` module), `Vec<u8>`
-// payload (fork NetworkListener form), `runtime::microtask::MicrotaskRunnable`
-// path (fork renamed `job_queue`).
 use servo_webvtt::cue::settings::WebVttCue;
 use servo_webvtt::{IncrementalWebVTTParser, WebVttParserSink};
 
@@ -57,7 +50,7 @@ use crate::fetch::fetch::{
 };
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 
 #[derive(Clone, Copy, Default, JSTraceable, MallocSizeOf, PartialEq)]
 #[repr(u16)]
@@ -174,34 +167,14 @@ impl HTMLTrackElement {
             return;
         };
         // Step 4. Run the remainder of these steps in parallel, allowing whatever caused these steps to run to continue.
-        // Step 5. Top: Await a stable state.
         self.has_started_tracking_processing_model.set(true);
+        // Step 5. Top: Await a stable state.
         let task = TrackElementMicrotask::ProcessingModel {
             element: Dom::from_ref(self),
         };
         self.is_running_processing_model_algorithm.set(true);
 
         ScriptThread::await_stable_state(cx, Box::new(task));
-    }
-
-    /// Rooted view of this track element's text track, for callers without a
-    /// `no_gc` token (fork codegen flat-form companions; REQ-BRW-047).
-    pub(crate) fn track_rooted(&self) -> DomRoot<TextTrack> {
-        DomRoot::from_ref(&*self.track)
-    }
-
-    pub(crate) fn track<'a>(&self, no_gc: &'a NoGC) -> UnrootedDom<'a, TextTrack> {
-        // BAO patch (fork-maintained, 2026-09-27): upstream `Dom::as_unrooted`
-        // does not exist in this fork; `UnrootedDom::from_dom` is the same
-        // view (fork scripts_bindings API, REQ-BRW-047).
-        UnrootedDom::from_dom(self.track.clone(), no_gc)
-    }
-
-    fn is_hidden_or_showing(&self) -> bool {
-        matches!(
-            self.track.Mode(),
-            TextTrackMode::Hidden | TextTrackMode::Showing
-        )
     }
 
     fn check_if_track_parent_element_changed(&self, cx: &mut JSContext) {
@@ -223,6 +196,17 @@ impl HTMLTrackElement {
             // > The track element's parent element changes and the new parent is a media element.
             self.start_the_track_processing_model(cx);
         }
+    }
+
+    pub(crate) fn track<'a>(&self, no_gc: &'a NoGC) -> UnrootedDom<'a, TextTrack> {
+        self.track.as_unrooted(no_gc)
+    }
+
+    fn is_hidden_or_showing(&self) -> bool {
+        matches!(
+            self.track.Mode(),
+            TextTrackMode::Hidden | TextTrackMode::Showing
+        )
     }
 
     /// Step 10.4 of <https://html.spec.whatwg.org/multipage/#start-the-track-processing-model>
@@ -500,7 +484,9 @@ impl MicrotaskRunnable for TrackElementMicrotask {
                 // The synchronous section consists of the following steps.
                 // (The steps in the synchronous section are marked with ⌛.)
                 // Step 6. ⌛ Set the text track readiness state to loading.
-                element.readiness_state.set(TextTrackReadinessState::Loading);
+                element
+                    .readiness_state
+                    .set(TextTrackReadinessState::Loading);
                 // Step 7. ⌛ Let URL be the track URL of the track element.
                 let url = element.track_url.borrow().clone();
                 // Step 8. ⌛ If the track element's parent is a media element,
@@ -537,10 +523,6 @@ impl MicrotaskRunnable for TrackElementMicrotask {
                         url,
                         payload: vec![],
                     };
-                    // BAO patch (fork-maintained, 2026-09-27): upstream
-                    // 7ca99fe3f aborts any earlier fetch and arms the
-                    // canceller here, so a track URL change (or mode change)
-                    // can abort the ongoing fetch (REQ-BRW-047).
                     element.cancel_ongoing_request();
                     *element.canceller.borrow_mut() = Some(FetchCanceller::new(
                         request.id,

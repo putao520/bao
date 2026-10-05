@@ -15,11 +15,14 @@ use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak};
 use std::{mem, ptr};
 
+use js::context::NoGC;
 use js::jsapi::JSTracer;
-use crate::conversions::IDLInterface;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 
 use crate::JSTraceable;
+use crate::codegen::PrototypeList::proto_id_to_id;
+use crate::conversions::IDLInterface;
+use crate::dom::UnrootedDom;
 use crate::reflector::DomObject;
 use crate::root::DomRoot;
 
@@ -30,18 +33,11 @@ pub struct WeakRef<T: WeakReferenceable>(Weak<T>);
 
 /// Trait implemented by weak-referenceable interfaces.
 pub trait WeakReferenceable: IDLInterface + DomObject + Sized {
-    ///
-    /// Panics if the object is not of the interface or one of its descendants
-    /// (base-typed downgrade of a leaf instance is legitimate — e.g. the media
-    /// base class holds `HTMLAudioElement`/`HTMLVideoElement` instances).
     /// Downgrade a DOM object reference to a weak one.
+    ///
+    /// Panics if the object is parent type not leaf type
     fn downgrade(&self) -> WeakRef<Self> {
-        let proto_id = self.reflector().proto_id();
-        assert!(
-            proto_id >= Self::PROTO_FIRST && proto_id <= Self::PROTO_LAST,
-            "cannot downgrade an object of proto id {proto_id} as {:?}",
-            Self::PROTO_ID,
-        );
+        assert_eq!(Self::PROTO_ID, proto_id_to_id(self.reflector().proto_id()));
         let rc = unsafe { Rc::from_raw(self as *const Self) };
         let weak = WeakRef(Rc::downgrade(&rc));
         mem::forget(rc);
@@ -68,6 +64,14 @@ impl<T: WeakReferenceable> WeakRef<T> {
     /// DomRoot a weak reference. Returns `None` if the object was already collected.
     pub fn root(&self) -> Option<DomRoot<T>> {
         self.0.upgrade().map(|x| DomRoot::from_ref(&*x))
+    }
+
+    /// Return an [`UnrootedDom`] reference to the data contained in this [`WeakRef`],
+    /// if it is still alive.
+    pub fn unrooted<'a>(&self, no_gc: &'a NoGC) -> Option<UnrootedDom<'a, T>> {
+        self.0
+            .upgrade()
+            .map(|value| UnrootedDom::from_ref(&*value, no_gc))
     }
 
     /// Return whether the weakly-referenced object is still alive.

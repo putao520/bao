@@ -4,6 +4,8 @@
 
 //! This module implements structured cloning, as defined by [HTML](https://html.spec.whatwg.org/multipage/#safe-passing-of-structured-data).
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::ffi::CStr;
 use std::os::raw;
 use std::ptr::{self, NonNull};
@@ -48,6 +50,7 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::serializable::{Serializable, StorageKey};
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::blob::Blob;
+#[cfg(feature = "webcrypto")]
 use crate::dom::cryptokey::CryptoKey;
 use crate::dom::dompoint::DOMPoint;
 use crate::dom::dompointreadonly::DOMPointReadOnly;
@@ -94,6 +97,7 @@ pub(super) enum StructuredCloneTags {
     DomMatrix = 0xFFFF8012,
     DomMatrixReadOnly = 0xFFFF8013,
     ImageData = 0xFFFF8014,
+    #[cfg(feature = "webcrypto")]
     CryptoKey = 0xFFFF8015,
     Max = 0xFFFFFFFF,
 }
@@ -115,6 +119,7 @@ impl From<SerializableInterface> for StructuredCloneTags {
             SerializableInterface::ImageBitmap => StructuredCloneTags::ImageBitmap,
             SerializableInterface::QuotaExceededError => StructuredCloneTags::QuotaExceededError,
             SerializableInterface::ImageData => StructuredCloneTags::ImageData,
+            #[cfg(feature = "webcrypto")]
             SerializableInterface::CryptoKey => StructuredCloneTags::CryptoKey,
         }
     }
@@ -156,6 +161,7 @@ fn reader_for_type(
         SerializableInterface::ImageBitmap => read_object::<ImageBitmap>,
         SerializableInterface::QuotaExceededError => read_object::<QuotaExceededError>,
         SerializableInterface::ImageData => read_object::<ImageData>,
+        #[cfg(feature = "webcrypto")]
         SerializableInterface::CryptoKey => read_object::<CryptoKey>,
     }
 }
@@ -217,17 +223,11 @@ unsafe fn write_object<T: Serializable>(
         let storage_key = StorageKey::new(new_id);
 
         unsafe {
-            // SM153: JS_WriteUint32Pair became an inline wrapper over the Unchecked
-            // variant (no link symbol); params are already u32 so bounds checks
-            // cannot fire.
             assert!(JS_WriteUint32PairUnchecked(
                 w,
                 StructuredCloneTags::from(interface) as u32,
                 0
             ));
-            // SM153: JS_WriteUint32Pair became an inline wrapper over the Unchecked
-            // variant (no link symbol); params are already u32 so bounds checks
-            // cannot fire.
             assert!(JS_WriteUint32PairUnchecked(
                 w,
                 storage_key.name_space,
@@ -321,6 +321,7 @@ fn serialize_for_type(val: SerializableInterface) -> SerializeOperation {
         SerializableInterface::ImageBitmap => try_serialize::<ImageBitmap>,
         SerializableInterface::QuotaExceededError => try_serialize::<QuotaExceededError>,
         SerializableInterface::ImageData => try_serialize::<ImageData>,
+        #[cfg(feature = "webcrypto")]
         SerializableInterface::CryptoKey => try_serialize::<CryptoKey>,
     }
 }
@@ -745,7 +746,7 @@ pub(crate) fn write(
     unsafe {
         rooted!(&in(cx) let mut val = UndefinedValue());
         if let Some(transfer) = transfer {
-            transfer.safe_to_jsval(cx, val.handle_mut());
+            transfer.to_jsval(cx, val.handle_mut());
         }
         let mut sc_writer = StructuredDataWriter::default();
         let sc_writer_ptr = &mut sc_writer as *mut _;

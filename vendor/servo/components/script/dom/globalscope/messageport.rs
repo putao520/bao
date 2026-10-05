@@ -12,14 +12,12 @@ use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::UndefinedValue;
 use js::rust::wrappers2::JS_NewObject;
-use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue};
+use js::rust::{CustomAutoRooterGuard, HandleValue};
 use rustc_hash::FxHashMap;
 use script_bindings::callback::RootedCallback;
 use script_bindings::reflector::reflect_weak_referenceable_dom_object;
 use servo_base::id::{MessagePortId, MessagePortIndex};
 use servo_constellation_traits::{MessagePortImpl, PortMessageTask};
-
-use crate::dom::audio::audioworkletport::{PortPayload, PortRedirect};
 
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull;
 use crate::dom::bindings::codegen::Bindings::MessagePortBinding::{
@@ -46,14 +44,6 @@ pub(crate) struct MessagePort {
     #[no_trace]
     entangled_port: RefCell<Option<MessagePortId>>,
     detached: Cell<bool>,
-    /// (Bao 段(3) wiring) AudioWorklet node/processor port redirect: when
-    /// set, `postMessage` routes through the in-process conduit instead of
-    /// the constellation port path (worklet event loops have no constellation
-    /// port delivery — see `audio::audioworkletport`). Lifetime is the
-    /// port's own; no global registry.
-    #[no_trace]
-    #[ignore_malloc_size_of = "lock-free conduit, no heap-owned GC payload"]
-    bao_port_redirect: RefCell<Option<PortRedirect>>,
 }
 
 impl MessagePort {
@@ -62,7 +52,6 @@ impl MessagePort {
             eventtarget: EventTarget::new_inherited(),
             entangled_port: RefCell::new(None),
             detached: Cell::new(false),
-            bao_port_redirect: RefCell::new(None),
             message_port_id,
         }
     }
@@ -91,17 +80,9 @@ impl MessagePort {
                 eventtarget: EventTarget::new_inherited(),
                 detached: Cell::new(false),
                 entangled_port: RefCell::new(entangled_port),
-                bao_port_redirect: RefCell::new(None),
             }),
             owner,
         )
-    }
-
-    /// (Bao 段(3) wiring) Route this port's `postMessage` payloads through
-    /// `redirect`'s conduit instead of the constellation port path. See
-    /// `audio::audioworkletport`.
-    pub(crate) fn set_bao_port_redirect(&self, redirect: PortRedirect) {
-        *self.bao_port_redirect.borrow_mut() = Some(redirect);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#entangle>
@@ -128,7 +109,11 @@ impl MessagePort {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#handler-messageport-onmessage>
-    fn set_onmessage(&self, cx: &mut JSContext, listener: Option<RootedCallback<EventHandlerNonNull>>) {
+    fn set_onmessage(
+        &self,
+        cx: &mut JSContext,
+        listener: Option<RootedCallback<EventHandlerNonNull>>,
+    ) {
         let eventtarget = self.upcast::<EventTarget>();
         eventtarget.set_event_handler_common(cx, "message", listener);
     }
@@ -167,32 +152,6 @@ impl MessagePort {
             {
                 doomed = true;
             }
-        }
-
-        // (Bao 段(3) wiring) AudioWorklet node/processor ports route through
-        // the in-process conduit instead of the constellation port path —
-        // worklet event loops have no constellation port delivery (see
-        // `audio::audioworkletport`). Port transfer through the conduit is
-        // rejected outright for now (the receiving worklet realm does not
-        // manage a constellation port registry yet); a `DataCloneError` keeps
-        // that limit loud instead of silently dropping the transferred port.
-        if let Some(redirect) = self.bao_port_redirect.borrow().clone() {
-            if transfer.iter().any(|&obj| unsafe {
-                root_from_object::<MessagePort>(cx, obj).is_ok()
-            }) {
-                return Err(Error::DataClone(None));
-            }
-            let data = match structuredclone::write(cx, message, Some(transfer)) {
-                Ok(data) => data,
-                Err(err) => {
-                    return Err(err);
-                },
-            };
-            let origin = self.global().origin().immutable().ascii_serialization();
-            redirect
-                .conduit
-                .send(redirect.direction, PortPayload { origin, data });
-            return Ok(());
         }
 
         // Step 5
@@ -245,7 +204,7 @@ impl MessagePort {
             rooted!(&in(cx) let mut rooted_error = UndefinedValue());
             error
                 .clone()
-                .safe_to_jsval(cx, &self.global(), rooted_error.handle_mut());
+                .to_jsval(cx, &self.global(), rooted_error.handle_mut());
             self.cross_realm_transform_send_error(cx, rooted_error.handle());
         }
 
@@ -263,7 +222,7 @@ impl MessagePort {
         // Let message be OrdinaryObjectCreate(null).
         rooted!(&in(cx) let mut message = unsafe { JS_NewObject(cx, ptr::null()) });
         rooted!(&in(cx) let mut type_string = UndefinedValue());
-        type_.safe_to_jsval(cx, type_string.handle_mut());
+        type_.to_jsval(cx, type_string.handle_mut());
 
         // Perform ! CreateDataProperty(message, "type", type).
         set_dictionary_property(cx, message.handle(), c"type", type_string.handle())
@@ -277,12 +236,11 @@ impl MessagePort {
         // Done in `global.post_messageport_msg`.
 
         // Let options be «[ "transfer" → « » ]».
-        let mut rooted = CustomAutoRooter::new(vec![]);
-        let transfer = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+        auto_root!(&in(cx) let transfer = Vec::<*mut JSObject>::new());
 
         // Run the message port post message steps providing targetPort, message, and options.
         rooted!(&in(cx) let mut message_val = UndefinedValue());
-        message.safe_to_jsval(cx, message_val.handle_mut());
+        message.to_jsval(cx, message_val.handle_mut());
         self.post_message_impl(cx, message_val.handle(), transfer)
     }
 }
@@ -360,15 +318,12 @@ impl MessagePortMethods<crate::DomTypeHolder> for MessagePort {
         if self.detached.get() {
             return Ok(());
         }
-        let mut rooted = CustomAutoRooter::new(
+        auto_root!(&in(cx) let guard =
             options
                 .transfer
                 .iter()
                 .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-        #[expect(unsafe_code)]
-        let guard = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+                .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 
@@ -402,7 +357,11 @@ impl MessagePortMethods<crate::DomTypeHolder> for MessagePort {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#handler-messageport-onmessage>
-    fn SetOnmessage(&self, cx: &mut JSContext, listener: Option<RootedCallback<EventHandlerNonNull>>) {
+    fn SetOnmessage(
+        &self,
+        cx: &mut JSContext,
+        listener: Option<RootedCallback<EventHandlerNonNull>>,
+    ) {
         if self.detached.get() {
             return;
         }

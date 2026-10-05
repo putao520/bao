@@ -159,14 +159,14 @@ impl CryptoKey {
 
         // Create and store a cached object of algorithm
         rooted!(&in(cx) let mut algorithm_object_value: Value);
-        algorithm.safe_to_jsval(cx, algorithm_object_value.handle_mut());
+        algorithm.to_jsval(cx, algorithm_object_value.handle_mut());
         crypto_key
             .algorithm_cached
             .set(algorithm_object_value.to_object());
 
         // Create and store a cached object of usages
         rooted!(&in(cx) let mut usages_object_value: Value);
-        usages.safe_to_jsval(cx, usages_object_value.handle_mut());
+        usages.to_jsval(cx, usages_object_value.handle_mut());
         crypto_key
             .usages_cached
             .set(usages_object_value.to_object());
@@ -184,6 +184,20 @@ impl CryptoKey {
 
     pub(crate) fn handle(&self) -> &Handle {
         &self.handle
+    }
+
+    /// Ensure that the [[type]] internal slot of key is same as `expected`. If the [[type]]
+    /// internal slot of key is not same as `expected`, then throw an InvalidAccessError.
+    pub(crate) fn ensure_type(&self, expected: KeyType) -> ErrorResult {
+        if self.key_type == expected {
+            Ok(())
+        } else {
+            Err(Error::InvalidAccess(Some(match expected {
+                KeyType::Public => "The key is not a public key".into(),
+                KeyType::Private => "The key is not a private key".into(),
+                KeyType::Secret => "The key is not a secret key".into(),
+            })))
+        }
     }
 }
 

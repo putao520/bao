@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use dom_struct::dom_struct;
-use js::rust::Runtime;
 use js::context::JSContext;
 use net_traits::request::Referrer;
 use script_bindings::dom::MutNullableDom;
@@ -604,18 +603,14 @@ impl LocationMethods<crate::DomTypeHolder> for Location {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-location-ancestororigins>
-    // BAO patch (fork-maintained, 2026-09-28): terminal codegen passes no cx;
-    // take the thread's active context instead.
-    #[allow(unsafe_code)]
-    fn GetAncestorOrigins(&self) -> Fallible<DomRoot<DOMStringList>> {
-        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
+    fn GetAncestorOrigins(&self, cx: &mut JSContext) -> Fallible<DomRoot<DOMStringList>> {
         let window = self.window.same_origin_window()?;
 
         // Step 1. If this's relevant Document is null, then return this's empty DOMStringList.
         if !self.has_document() {
             return Ok(self
                 .empty_dom_string_list
-                .or_init(|| DOMStringList::new(&mut cx, window.upcast(), vec![])));
+                .or_init(|| DOMStringList::new(cx, window.upcast(), vec![])));
         }
         // Step 2. If this's relevant Document's origin is not same origin-domain
         // with the entry settings object's origin, then throw a "SecurityError" DOMException.

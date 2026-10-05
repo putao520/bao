@@ -3,18 +3,12 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
-// real `getCueAsHTML` via the WebVTT cue text parsing + DOM construction
-// rules (REQ-BRW-047); cue settings types moved to `servo_webvtt::cue::settings`.
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use html5ever::local_name;
 use js::context::JSContext;
 use js::rust::HandleObject;
-// BAO patch (fork-maintained, 2026-09-27): snapshot types for the WebVTT cue
-// overlay render pipeline (REQ-BRW-047).
-use layout_api::{WebVttCueBoxData, WebVttPositionAlign, WebVttTextAlign};
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_webvtt::cue::settings::{
@@ -45,6 +39,7 @@ use crate::dom::node::Node;
 use crate::dom::texttrack::TextTrack;
 use crate::dom::texttrackcue::TextTrackCue;
 use crate::dom::vttregion::VTTRegion;
+use crate::dom::webvtt::rules_for_rendering::RulesForUpdatingTheTextTrackRendering;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -63,42 +58,6 @@ pub(crate) struct VTTCue {
 }
 
 impl VTTCue {
-    /// Build one entry of the media element's active-cue render snapshot:
-    /// this cue's box settings and its cue text resolved to plain text lines
-    /// (BAO patch, fork-maintained, 2026-09-27, REQ-BRW-047). Layout computes
-    /// the CSS WebVTT box geometry (line / position / align / size) from this.
-    pub(crate) fn render_snapshot(&self, order: usize) -> WebVttCueBoxData {
-        let text = self.text.borrow().str().to_owned();
-        let parsed = webvtt_cue_text_parsing_rules(&text, None);
-        WebVttCueBoxData {
-            text_lines: collect_cue_text_lines(&parsed),
-            line: match *self.line.borrow() {
-                LineAndPositionSetting::Double(value) => Some(value),
-                LineAndPositionSetting::Auto => None,
-            },
-            snap_to_lines: self.snap_to_lines.get(),
-            position: match *self.position.borrow() {
-                LineAndPositionSetting::Double(value) => Some(value),
-                LineAndPositionSetting::Auto => None,
-            },
-            position_align: match self.position_align.get() {
-                PositionAlignSetting::Line_left => WebVttPositionAlign::LineLeft,
-                PositionAlignSetting::Center => WebVttPositionAlign::Center,
-                PositionAlignSetting::Line_right => WebVttPositionAlign::LineRight,
-                PositionAlignSetting::Auto => WebVttPositionAlign::Auto,
-            },
-            align: match self.align.get() {
-                AlignSetting::Start => WebVttTextAlign::Start,
-                AlignSetting::Center => WebVttTextAlign::Center,
-                AlignSetting::End => WebVttTextAlign::End,
-                AlignSetting::Left => WebVttTextAlign::Left,
-                AlignSetting::Right => WebVttTextAlign::Right,
-            },
-            size: self.size.get(),
-            order,
-        }
-    }
-
     #[expect(clippy::too_many_arguments)]
     fn new_inherited(
         start_time: f64,
@@ -116,7 +75,13 @@ impl VTTCue {
         track: Option<&TextTrack>,
     ) -> Self {
         VTTCue {
-            texttrackcue: TextTrackCue::new_inherited(id, start_time, end_time, track),
+            texttrackcue: TextTrackCue::new_inherited(
+                id,
+                start_time,
+                end_time,
+                track,
+                RulesForUpdatingTheTextTrackRendering::WebVTT,
+            ),
             text: DomRefCell::new(text),
             region: DomRefCell::new(None),
             vertical: Cell::new(vertical),
@@ -196,6 +161,7 @@ impl VTTCue {
             track,
         )
     }
+
     /// <https://w3c.github.io/webvtt/#dom-construction-rules>
     fn webvtt_cue_text_dom_construction_rules(
         &self,
@@ -588,39 +554,4 @@ impl Convert<f64> for WebVttCueSize {
     fn convert(self) -> f64 {
         self.0
     }
-}
-
-/// Flatten a WebVTT node object tree into plain text lines for the render
-/// snapshot: text objects contribute their value, timestamps contribute their
-/// serialized form, internal node objects contribute their children, and line
-/// breaks in the cue text start a new line (BAO patch, fork-maintained,
-/// 2026-09-27, REQ-BRW-047).
-fn collect_cue_text_lines(root: &Rc<WebVTTNodeObject>) -> Vec<String> {
-    fn walk(node: &WebVTTNodeObject, lines: &mut Vec<String>) {
-        match &node.kind {
-            WebVTTNodeObjectKind::Text(text) => {
-                for (i, part) in text.split('\n').enumerate() {
-                    if i > 0 {
-                        lines.push(String::new());
-                    }
-                    lines.last_mut().expect("always at least one line").push_str(part);
-                }
-            },
-            WebVTTNodeObjectKind::Timestamp(timestamp) => {
-                lines
-                    .last_mut()
-                    .expect("always at least one line")
-                    .push_str(&format!("{timestamp}"));
-            },
-            _ => {
-                for child in node.children().iter() {
-                    walk(child, lines);
-                }
-            },
-        }
-    }
-
-    let mut lines = vec![String::new()];
-    walk(root, &mut lines);
-    lines
 }

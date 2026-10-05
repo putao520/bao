@@ -15,21 +15,23 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_tungstenite::WebSocketStream;
+use async_tungstenite::tokio::{ConnectStream, client_async_tls_with_connector_and_config};
 use futures::stream::StreamExt;
 use headers::{
     Authorization, Connection, HeaderMapExt, SecWebsocketKey, SecWebsocketVersion, Upgrade,
 };
 use http::HeaderMap;
 use http::header::{self, HeaderName, HeaderValue};
-use ipc_channel::ipc::IpcSender;
 use log::{debug, trace, warn};
 use net_traits::request::{RequestBuilder, RequestMode};
 use net_traits::{CookieSource, MessageData, WebSocketDomAction, WebSocketNetworkEvent};
+use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use servo_base::generic_channel::CallbackSetter;
 use servo_url::ServoUrl;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio_rustls::TlsConnector;
 use tungstenite::error::{Error, ProtocolError, UrlError};
 use tungstenite::handshake::client::Response;
 use tungstenite::protocol::CloseFrame;
@@ -55,7 +57,7 @@ pub fn create_handshake_request(
     let mut headers = HeaderMap::new();
     headers.insert(
         "Origin",
-        HeaderValue::from_str(&request.url.origin().ascii_serialization())?,
+        HeaderValue::from_str(request.url.origin().ascii_serialization().as_ref())?,
     );
 
     let host = format!(
@@ -202,65 +204,14 @@ fn setup_dom_listener(
     receiver
 }
 
-/// Unified WebSocket stream that handles both plain and TLS connections.
-///
-/// Bao vendor patch (REQ-STL-001): wraps `WebSocketStream` over either a plain
-/// TCP socket or a BoringSSL TLS stream, dispatching `send`/`close`/`poll_next`
-/// to the appropriate variant. The TLS stream is bun_http's
-/// `WsTlsStream` (bao BoringSSL stack + stealth per-connection fingerprint +
-/// process-wide session cache) — hyper-ecosystem connector machinery is no
-/// longer involved in the WS path.
-enum WsStream {
-    Plain(
-        WebSocketStream<
-            async_tungstenite::tokio::TokioAdapter<tokio::net::TcpStream>,
-        >,
-    ),
-    Tls(
-        WebSocketStream<
-            async_tungstenite::tokio::TokioAdapter<bun_http::websocket_http_client::WsTlsStream>,
-        >,
-    ),
-}
-
-impl WsStream {
-    async fn send(&mut self, msg: Message) -> Result<(), tungstenite::Error> {
-        match self {
-            WsStream::Plain(s) => std::pin::Pin::new(s).send(msg).await,
-            WsStream::Tls(s) => std::pin::Pin::new(s).send(msg).await,
-        }
-    }
-
-    async fn close(&mut self, frame: Option<CloseFrame>) -> Result<(), tungstenite::Error> {
-        match self {
-            WsStream::Plain(s) => s.close(frame).await,
-            WsStream::Tls(s) => s.close(frame).await,
-        }
-    }
-}
-
-impl futures::Stream for WsStream {
-    type Item = Result<Message, tungstenite::Error>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        match self.get_mut() {
-            WsStream::Plain(s) => std::pin::Pin::new(s).poll_next(cx),
-            WsStream::Tls(s) => std::pin::Pin::new(s).poll_next(cx),
-        }
-    }
-}
-
 /// Listen for WS events from the DOM and the network until one side
 /// closes the connection or an error occurs. Since this is an async
 /// function that uses the select operation, it will run as a task
 /// on the WS tokio runtime.
 async fn run_ws_loop(
     mut dom_receiver: UnboundedReceiver<DomMsg>,
-    resource_event_sender: IpcSender<WebSocketNetworkEvent>,
-    mut stream: WsStream,
+    resource_event_sender: ProfileGenericCallback<WebSocketNetworkEvent>,
+    mut stream: WebSocketStream<ConnectStream>,
 ) {
     loop {
         select! {
@@ -348,65 +299,12 @@ async fn run_ws_loop(
     }
 }
 
-/// Resolve a WebSocket host through bao's process-wide shared DNS cache
-/// (`bun_dns::cache`), mirroring the hyper connector's resolver: cache hit →
-/// immediate addresses, miss → blocking `getaddrinfo` on a tokio worker with
-/// the result written back (getaddrinfo returns no TTL, so entries use the
-/// engine cap). Returns the full address list so tokio keeps its
-/// happy-eyeballs interleaving when connecting.
-async fn resolve_via_shared_cache(
-    host: &str,
-    port: u16,
-) -> std::io::Result<Vec<std::net::SocketAddr>> {
-    fn to_std(ip: &bun_dns::cache::IpAddr) -> std::net::IpAddr {
-        match ip {
-            bun_dns::cache::IpAddr::V4(octets) => {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::from(*octets))
-            },
-            bun_dns::cache::IpAddr::V6(octets) => {
-                std::net::IpAddr::V6(std::net::Ipv6Addr::from(*octets))
-            },
-        }
-    }
-
-    fn from_std(ip: &std::net::IpAddr) -> bun_dns::cache::IpAddr {
-        match ip {
-            std::net::IpAddr::V4(v4) => bun_dns::cache::IpAddr::V4(v4.octets()),
-            std::net::IpAddr::V6(v6) => bun_dns::cache::IpAddr::V6(v6.octets()),
-        }
-    }
-
-    if let Some(addrs) = bun_dns::cache::lookup(host.as_bytes()) {
-        return Ok(addrs
-            .iter()
-            .map(|ip| std::net::SocketAddr::new(to_std(ip), port))
-            .collect());
-    }
-    let host_for_cache = host.to_owned();
-    let resolved = tokio::task::spawn_blocking(move || {
-        // Same lookup the hyper resolver performs: (host, 0) with the
-        // system resolver, the destination port applied by the caller.
-        use std::net::ToSocketAddrs;
-        (host_for_cache.as_str(), 0)
-            .to_socket_addrs()
-            .map(|it| it.map(|sa| sa.ip()).collect::<Vec<_>>())
-    })
-    .await
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
-    let ips: Vec<bun_dns::cache::IpAddr> = resolved.iter().map(from_std).collect();
-    bun_dns::cache::insert(host.as_bytes(), ips, None);
-    Ok(resolved
-        .into_iter()
-        .map(|ip| std::net::SocketAddr::new(ip, port))
-        .collect())
-}
-
 /// Initiate a new async WS connection. Returns an error if the connection fails
 /// for any reason, or if the response isn't valid. Otherwise, the endless WS
 /// listening loop will be started.
 pub(crate) async fn start_websocket(
     http_state: Arc<HttpState>,
-    resource_event_sender: IpcSender<WebSocketNetworkEvent>,
+    resource_event_sender: ProfileGenericCallback<WebSocketNetworkEvent>,
     protocols: &[String],
     client: &net_traits::request::Request,
     tls_config: TlsConfig,
@@ -431,21 +329,9 @@ pub(crate) async fn start_websocket(
         .port_or_known_default()
         .ok_or_else(|| Error::Url(UrlError::UnableToConnect("Unknown port".into())))?;
 
-    // Bao vendor patch: resolve through the process-wide shared DNS cache
-    // (`bun_dns::cache`) — the same fusion point as the hyper connector's
-    // resolver, so page WebSockets resolve a host once per TTL window like
-    // every other stack in this process, instead of tokio's built-in
-    // getaddrinfo bypassing the cache. IP literals never hit DNS.
-    let try_socket = match domain {
-        url::Host::Ipv4(ip) => TcpStream::connect((ip, port)).await,
-        url::Host::Ipv6(ip) => TcpStream::connect((ip, port)).await,
-        url::Host::Domain(hostname) => {
-            let addrs =
-                resolve_via_shared_cache(hostname, port).await.map_err(Error::Io)?;
-            TcpStream::connect(addrs.as_slice()).await
-        },
-    };
+    let try_socket = TcpStream::connect((&*domain.to_string(), port)).await;
     let socket = try_socket.map_err(Error::Io)?;
+    let connector = TlsConnector::from(Arc::new(tls_config));
 
     // TODO(pylbrecht): move request conversion to a separate function
     let mut original_url = client.original_url();
@@ -463,60 +349,8 @@ pub(crate) async fn start_websocket(
         );
     }
 
-    let is_secure = url.scheme() == "wss" || url.scheme() == "https";
-    let (stream, response) = if is_secure {
-        // Bao vendor patch (REQ-STL-001): TLS on the bao stack —
-        // `bun_http::websocket_http_client::WsTlsStream` (BoringSSL bridge +
-        // stealth per-connection fingerprint [sigalgs / ALPN(http/1.1) /
-        // curves] + process-wide TLS session-cache offer, salted so wss
-        // shares the servo fetch session pool under identical parameter
-        // sets). This replaces the servo connector's BoringsslTlsStream,
-        // decoupling the WS path from the hyper-ecosystem connector; the
-        // `tls_config` parameter remains only as the http_loader call-site
-        // contract (data passthrough — its TlsClient and per-connection
-        // stealth fields are consumed here, no connector machinery).
-        let host_str = domain.to_string();
-        let opts = bun_http::websocket_http_client::WsTlsOptions {
-            sigalg_list: tls_config
-                .stealth_per_connection
-                .as_ref()
-                .and_then(|pc| pc.sigalg_list.clone()),
-            alpn_wire: tls_config
-                .stealth_per_connection
-                .as_ref()
-                .and_then(|pc| pc.alpn_wire.clone()),
-            curves_list: tls_config
-                .stealth_per_connection
-                .as_ref()
-                .and_then(|pc| pc.curves_list.clone()),
-            ignore_certificate_errors: tls_config.ignore_certificate_errors,
-        };
-        let mut tls_stream =
-            bun_http::websocket_http_client::WsTlsStream::new(
-                socket,
-                &tls_config.client,
-                &host_str,
-                port,
-                &opts,
-            )
-            .map_err(|e| {
-                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            })?;
-
-        // Perform TLS handshake
-        tls_stream.handshake().await.map_err(Error::Io)?;
-
-        // WS handshake over the established TLS stream
-        let adapter = async_tungstenite::tokio::TokioAdapter::new(tls_stream);
-        let (ws_stream, response) =
-            async_tungstenite::client_async_with_config(builder, adapter, None).await?;
-        (WsStream::Tls(ws_stream), response)
-    } else {
-        // Plain WebSocket - no TLS needed
-        let (ws_stream, response) =
-            async_tungstenite::tokio::client_async_with_config(builder, socket, None).await?;
-        (WsStream::Plain(ws_stream), response)
-    };
+    let (stream, response) =
+        client_async_tls_with_connector_and_config(builder, socket, Some(connector), None).await?;
 
     let protocol_in_use = process_ws_response(&http_state, &response, &url, protocols)?;
 

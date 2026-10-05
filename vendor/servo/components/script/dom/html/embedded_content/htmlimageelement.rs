@@ -3,11 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use bytes::Bytes;
-use std::mem;
-use std::rc::Rc;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use dom_struct::dom_struct;
 use euclid::default::Point2D;
 use html5ever::{LocalName, Prefix, QualName, local_name, ns};
@@ -25,6 +23,7 @@ use net_traits::{
 use num_traits::ToPrimitive;
 use pixels::{CorsStatus, ImageMetadata, Snapshot};
 use script_bindings::cell::DomRefCell;
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_url::ServoUrl;
 use servo_url::origin::MutableOrigin;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
@@ -63,20 +62,21 @@ use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, MoveContext, Node, NodeDamage, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
-use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
+use crate::dom::promise::Promise;
 use crate::dom::srcset::SourceSet;
 use crate::dom::window::Window;
+use crate::dom::{RootedPromise, TracedPromise};
 use crate::event_loop::document_loader::{LoadBlocker, LoadType};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 
 /// <https://html.spec.whatwg.org/multipage/#img-req-state>
-#[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
+#[derive(Clone, Copy, Default, JSTraceable, MallocSizeOf)]
 enum State {
+    #[default]
     Unavailable,
     PartiallyAvailable,
     CompletelyAvailable,
@@ -90,7 +90,7 @@ enum ImageRequestPhase {
 }
 
 /// <https://html.spec.whatwg.org/multipage/#image-request>
-#[derive(JSTraceable, MallocSizeOf)]
+#[derive(Default, JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct ImageRequest {
     state: State,
@@ -104,6 +104,9 @@ struct ImageRequest {
     metadata: Option<ImageMetadata>,
     #[no_trace]
     final_url: Option<ServoUrl>,
+    /// The time the image became completely available, if it has.
+    #[no_trace]
+    load_time: Option<CrossProcessInstant>,
     current_pixel_density: Option<f64>,
 }
 
@@ -111,7 +114,7 @@ struct ImageRequest {
 pub(crate) struct HTMLImageElement {
     htmlelement: HTMLElement,
     current_request: DomRefCell<Box<ImageRequest>>,
-    pending_request: DomRefCell<Box<ImageRequest>>,
+    pending_request: DomRefCell<Option<Box<ImageRequest>>>,
     form_owner: MutNullableDom<HTMLFormElement>,
     source_set: DomRefCell<SourceSet>,
     /// <https://html.spec.whatwg.org/multipage/#concept-img-dimension-attribute-source>
@@ -119,7 +122,6 @@ pub(crate) struct HTMLImageElement {
     dimension_attribute_source: MutNullableDom<Element>,
     /// <https://html.spec.whatwg.org/multipage/#last-selected-source>
     last_selected_source: DomRefCell<Option<USVString>>,
-    #[conditional_malloc_size_of]
     image_decode_promises: DomRefCell<Vec<TracedPromise>>,
     /// Line number this element was created on
     line_number: u64,
@@ -128,7 +130,7 @@ pub(crate) struct HTMLImageElement {
 }
 
 impl HTMLImageElement {
-    // https://html.spec.whatwg.org/multipage/#check-the-usability-of-the-image-argument
+    /// <https://html.spec.whatwg.org/multipage/#check-the-usability-of-the-image-argument>
     pub(crate) fn is_usable(&self) -> Fallible<bool> {
         // If image has an intrinsic width or intrinsic height (or both) equal to zero, then return bad.
         if let Some(image) = &self.current_request.borrow().image {
@@ -151,6 +153,11 @@ impl HTMLImageElement {
 
     pub(crate) fn image_data(&self) -> Option<Image> {
         self.current_request.borrow().image.clone()
+    }
+
+    /// The time the image became completely available, if it has.
+    pub(crate) fn load_time(&self) -> Option<CrossProcessInstant> {
+        self.current_request.borrow().load_time
     }
 
     /// Gets the copy of the raster image data.
@@ -227,7 +234,7 @@ impl FetchResponseListener for ImageContext {
         if self.status.is_ok() {
             self.image_cache.notify_pending_response(
                 self.id,
-                FetchResponseMsg::ProcessResponseChunk(request_id, payload.into()),
+                FetchResponseMsg::ProcessResponseChunk(request_id, payload),
             );
         }
     }
@@ -398,10 +405,17 @@ impl HTMLImageElement {
 
     // Steps common to when an image has been loaded.
     fn handle_loaded_image(&self, cx: &mut JSContext, image: Image, url: ServoUrl) {
-        self.current_request.borrow_mut().metadata = Some(image.metadata());
-        self.current_request.borrow_mut().final_url = Some(url);
-        self.current_request.borrow_mut().image = Some(image);
-        self.current_request.borrow_mut().state = State::CompletelyAvailable;
+        {
+            let mut current_request = self.current_request.borrow_mut();
+            current_request.metadata = Some(image.metadata());
+            current_request.final_url = Some(url);
+            current_request.image = Some(image);
+            current_request.state = State::CompletelyAvailable;
+            current_request.load_time = Some(CrossProcessInstant::now());
+        }
+
+        self.pending_request.borrow_mut().take();
+
         LoadBlocker::terminate(&self.current_request.borrow().blocker, cx);
         // Mark the node dirty
         self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
@@ -439,7 +453,10 @@ impl HTMLImageElement {
                 // If the user agent is able to determine image request's image's width and height,
                 // and image request is the pending request, set image request's state to partially
                 // available.
-                self.pending_request.borrow_mut().state = State::PartiallyAvailable;
+                self.pending_request
+                    .borrow_mut()
+                    .get_or_insert_default()
+                    .state = State::PartiallyAvailable;
                 (false, false)
             },
             (ImageResponse::FailedToLoadOrDecode, ImageRequestPhase::Current) => {
@@ -467,10 +484,11 @@ impl HTMLImageElement {
                 self.abort_request(cx, State::Unavailable, ImageRequestPhase::Pending);
 
                 // Step 2. Upgrade the pending request to the current request.
-                mem::swap(
-                    &mut *self.current_request.borrow_mut(),
-                    &mut *self.pending_request.borrow_mut(),
-                );
+                // This is written this way as otherwise crown complains
+                if self.pending_request.borrow().is_some() {
+                    *self.current_request.borrow_mut() =
+                        self.pending_request.borrow_mut().take().unwrap();
+                }
                 self.image_request.set(ImageRequestPhase::Current);
 
                 // Step 3. Set the current request's state to broken.
@@ -511,9 +529,11 @@ impl HTMLImageElement {
     ) {
         match image {
             ImageResponse::Loaded(image, url) => {
-                self.pending_request.borrow_mut().metadata = Some(image.metadata());
-                self.pending_request.borrow_mut().final_url = Some(url);
-                self.pending_request.borrow_mut().image = Some(image);
+                if let Some(pending_request) = self.pending_request.borrow_mut().as_mut() {
+                    pending_request.metadata = Some(image.metadata());
+                    pending_request.final_url = Some(url);
+                    pending_request.image = Some(image);
+                }
                 self.finish_reacting_to_environment_change(
                     selected_source,
                     generation,
@@ -531,7 +551,10 @@ impl HTMLImageElement {
                 self.abort_request(cx, State::Unavailable, ImageRequestPhase::Pending);
             },
             ImageResponse::MetadataLoaded(meta) => {
-                self.pending_request.borrow_mut().metadata = Some(meta);
+                self.pending_request
+                    .borrow_mut()
+                    .get_or_insert_default()
+                    .metadata = Some(meta);
             },
         };
     }
@@ -549,13 +572,10 @@ impl HTMLImageElement {
                 request.current_pixel_density = None;
             },
             ImageRequestPhase::Pending => {
-                LoadBlocker::terminate(&self.pending_request.borrow().blocker, cx);
-
-                let mut request = self.pending_request.safe_borrow_mut(cx);
-                request.state = state;
-                request.image = None;
-                request.metadata = None;
-                request.current_pixel_density = None;
+                if let Some(pending_request) = &*self.pending_request.borrow() {
+                    LoadBlocker::terminate(&pending_request.blocker, cx);
+                }
+                self.pending_request.borrow_mut().take();
             },
         };
 
@@ -586,6 +606,38 @@ impl HTMLImageElement {
             Some(LoadBlocker::new(&document, LoadType::Image(url.clone())));
     }
 
+    fn init_pending_image_request(
+        &self,
+        cx: &mut JSContext,
+        request: &DomRefCell<Option<Box<ImageRequest>>>,
+        url: &ServoUrl,
+        src: &USVString,
+    ) {
+        {
+            let mut request = request.safe_borrow_mut(cx);
+            let request = request.get_or_insert_default();
+            request.parsed_url = Some(url.clone());
+            request.source_url = Some(src.clone());
+            request.image = None;
+            request.metadata = None;
+        }
+        let document = self.owner_document();
+        LoadBlocker::terminate(
+            &request
+                .borrow()
+                .as_ref()
+                .expect("Just created a request")
+                .blocker,
+            cx,
+        );
+        *request
+            .safe_borrow_mut(cx)
+            .as_mut()
+            .expect("Just created a request")
+            .blocker
+            .borrow_mut() = Some(LoadBlocker::new(&document, LoadType::Image(url.clone())));
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#update-the-image-data>
     fn prepare_image_request(
         &self,
@@ -601,8 +653,8 @@ impl HTMLImageElement {
                 if self
                     .pending_request
                     .borrow()
-                    .parsed_url
                     .as_ref()
+                    .and_then(|pending_request| pending_request.parsed_url.as_ref())
                     .is_some_and(|parsed_url| *parsed_url == *image_url)
                 {
                     return;
@@ -634,14 +686,17 @@ impl HTMLImageElement {
                         // set the current request to image request. Otherwise, set the pending
                         // request to image request.
                         self.image_request.set(ImageRequestPhase::Pending);
-                        self.init_image_request(
+                        self.init_pending_image_request(
                             cx,
                             &self.pending_request,
                             image_url,
                             selected_source,
                         );
-                        self.pending_request.borrow_mut().current_pixel_density =
-                            Some(selected_pixel_density);
+                        self.pending_request
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("Just created a pending request")
+                            .current_pixel_density = Some(selected_pixel_density);
                     },
                     (_, State::Broken) | (_, State::Unavailable) => {
                         // Step 18. If the current request's state is unavailable or broken, then
@@ -662,14 +717,17 @@ impl HTMLImageElement {
                         // set the current request to image request. Otherwise, set the pending
                         // request to image request.
                         self.image_request.set(ImageRequestPhase::Pending);
-                        self.init_image_request(
+                        self.init_pending_image_request(
                             cx,
                             &self.pending_request,
                             image_url,
                             selected_source,
                         );
-                        self.pending_request.borrow_mut().current_pixel_density =
-                            Some(selected_pixel_density);
+                        self.pending_request
+                            .borrow_mut()
+                            .as_mut()
+                            .expect("Just created a pending image request")
+                            .current_pixel_density = Some(selected_pixel_density);
                     },
                 }
             },
@@ -975,7 +1033,7 @@ impl HTMLImageElement {
 
         // Step 13. Set the element's pending request to image request.
         self.image_request.set(ImageRequestPhase::Pending);
-        self.init_image_request(cx, &self.pending_request, &image_url, &selected_source);
+        self.init_pending_image_request(cx, &self.pending_request, &image_url, &selected_source);
 
         // Step 15. If the list of available images contains an entry for key, then set image
         // request's image data to that of the entry. Continue to the next step.
@@ -1071,7 +1129,6 @@ impl HTMLImageElement {
 
         // Step 2.3. If the decoding process completes successfully, then queue a global task on the
         // DOM manipulation task source with global to resolve promise with undefined.
-        let this = Trusted::new(self);
         let trusted_image_decode_promises: Vec<TrustedPromise> = self
             .image_decode_promises
             .borrow()
@@ -1085,19 +1142,6 @@ impl HTMLImageElement {
             .task_manager()
             .dom_manipulation_task_source()
             .queue(task!(fulfill_image_decode_promises: move |cx| {
-                let this = this.root();
-                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
-                // decode settle task may land after this realm's pipeline
-                // was closed — resolving then would re-enter a discarded
-                // realm's JS. Drop the settle entirely. Pure address probe —
-                // MUST run before any JS deref below.
-                if crate::event_loop::script_thread::bao_is_realm_discarded(
-                    script_bindings::reflector::DomObject::reflector(&*this.global())
-                        .get_jsobject()
-                        .get(),
-                ) {
-                    return;
-                }
                 for trusted_promise in trusted_image_decode_promises {
                     trusted_promise.root(cx).resolve_native(cx, &());
                 }
@@ -1112,7 +1156,6 @@ impl HTMLImageElement {
 
         // Step 2.3. Queue a global task on the DOM manipulation task source with global to reject
         // promise with an "EncodingError" DOMException.
-        let this = Trusted::new(self);
         let trusted_image_decode_promises: Vec<TrustedPromise> = self
             .image_decode_promises
             .borrow()
@@ -1126,16 +1169,6 @@ impl HTMLImageElement {
             .task_manager()
             .dom_manipulation_task_source()
             .queue(task!(reject_image_decode_promises: move |cx| {
-                let this = this.root();
-                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): same
-                // drop-on-discard face as the fulfill arm above.
-                if crate::event_loop::script_thread::bao_is_realm_discarded(
-                    script_bindings::reflector::DomObject::reflector(&*this.global())
-                        .get_jsobject()
-                        .get(),
-                ) {
-                    return;
-                }
                 for trusted_promise in trusted_image_decode_promises {
                     trusted_promise.root(cx).reject_error(cx, Error::Encoding(Some("Image could not be decoded".into())));
                 }
@@ -1171,9 +1204,8 @@ impl HTMLImageElement {
                 // img element's current pixel density to selected pixel density.
                 *this.last_selected_source.borrow_mut() = Some(selected_source);
 
-                {
-                    let mut pending_request = this.pending_request.borrow_mut();
 
+                if let Some(pending_request) = &mut *this.pending_request.borrow_mut() {
                     // Step 16.3. Set the image request's state to completely available.
                     pending_request.state = State::CompletelyAvailable;
 
@@ -1182,10 +1214,13 @@ impl HTMLImageElement {
                     // Step 16.4. Add the image to the list of available images using the key key,
                     // with the ignore higher-layer caching flag set.
                     // Already a part of the list of available images due to Step 15.
-
                     // Step 16.5. Upgrade the pending request to the current request.
-                    mem::swap(&mut *this.current_request.borrow_mut(), &mut *pending_request);
+                } else {
+                    log::error!("Pending request was null");
+                    return
                 }
+                *this.current_request.borrow_mut() = this.pending_request.borrow_mut().take().expect("Should have a pending request");
+
 
                 this.abort_request(cx, State::Unavailable, ImageRequestPhase::Pending);
                 this.image_request.set(ImageRequestPhase::Current);
@@ -1227,18 +1262,10 @@ impl HTMLImageElement {
                 metadata: None,
                 blocker: DomRefCell::new(None),
                 final_url: None,
+                load_time: None,
                 current_pixel_density: None,
             })),
-            pending_request: DomRefCell::new(Box::new(ImageRequest {
-                state: State::Unavailable,
-                parsed_url: None,
-                source_url: None,
-                image: None,
-                metadata: None,
-                blocker: DomRefCell::new(None),
-                final_url: None,
-                current_pixel_density: None,
-            })),
+            pending_request: DomRefCell::new(None),
             form_owner: Default::default(),
             generation: Default::default(),
             source_set: DomRefCell::new(SourceSet::new()),
@@ -1352,7 +1379,6 @@ pub(crate) enum ImageElementMicrotask {
     },
     Decode {
         elem: Dom<HTMLImageElement>,
-        #[conditional_malloc_size_of]
         promise: TracedPromise,
     },
 }
@@ -1620,7 +1646,7 @@ impl HTMLImageElementMethods<crate::DomTypeHolder> for HTMLImageElement {
                 let unparsed_url = &current_request.source_url;
                 match *unparsed_url {
                     Some(ref url) => url.clone(),
-                    None => USVString("".to_owned()),
+                    None => USVString(String::new()),
                 }
             },
         }

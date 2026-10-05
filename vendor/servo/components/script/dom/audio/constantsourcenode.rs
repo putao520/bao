@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::f32;
-
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
@@ -22,8 +20,6 @@ use crate::dom::bindings::codegen::Bindings::ConstantSourceNodeBinding::{
 };
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::bindings::inheritance::Castable;
-use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -51,9 +47,10 @@ impl ConstantSourceNode {
             1,            /* outputs */
         )?;
         let node_id = source_node.node().node_id();
+        // <https://webaudio.github.io/web-audio-api/#dom-constantsourcenode-offset>
         let offset = AudioParam::new(
             cx,
-            window.upcast::<GlobalScope>(),
+            window,
             context,
             node_id,
             AudioNodeType::ConstantSourceNode,

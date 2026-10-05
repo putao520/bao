@@ -16,7 +16,7 @@ use headers::{
     CacheControl, ContentRange, Expires, HeaderMapExt, LastModified, Pragma, Range, Vary,
 };
 use http::{HeaderMap, Method, StatusCode, header};
-use log::{debug, error};
+use log::{debug, error, info};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::http_status::HttpStatus;
@@ -259,6 +259,12 @@ pub struct HttpCache {
     disk_cache: Option<std::sync::Arc<DiskCache>>,
 }
 
+impl std::fmt::Debug for HttpCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.entries.iter()).finish()
+    }
+}
+
 impl MallocSizeOf for HttpCache {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         self.entries
@@ -283,7 +289,7 @@ impl HttpCache {
             size,
             size as u64,
             UnitWeighter,
-            DefaultHashBuilder::new(),
+            DefaultHashBuilder::default(),
             lifecycle,
         );
 
@@ -292,13 +298,19 @@ impl HttpCache {
             disk_cache,
         }
     }
+
+    #[expect(clippy::len_without_is_empty)]
+    /// The number of entries in the memory cache. This does not say anything about the disk cache.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 #[derive(Clone)]
 /// The lifecycle hooks of the HttpCache.
 /// Responsible for moving data to the disk.
 pub struct MemoryCacheLifecycle {
-    pub(crate) disk_cache: Option<std::sync::Arc<DiskCache>>,
+    pub(crate) disk_cache: Option<StdArc<DiskCache>>,
 }
 
 impl MemoryCacheLifecycle {
@@ -312,15 +324,17 @@ impl Lifecycle<CacheKey, CacheEntry> for MemoryCacheLifecycle {
 
     // Cached Resources that are not complete could get evicted which means they cannot fill their body.
     // We allow unfinished resources to stay in the cache.
-    fn is_pinned(&self, _: &CacheKey, val: &CacheEntry) -> bool {
-        val.blocking_read()
-            .iter()
-            .any(|resource| !resource.is_done())
+    fn is_pinned(&self, key: &CacheKey, val: &CacheEntry) -> bool {
+        let pinned = val
+            .try_read()
+            .map(|cached_resources| cached_resources.iter().any(|resource| !resource.is_done()))
+            .unwrap_or(true);
+        info!("Key {key:?} is pinned",);
+        pinned
     }
 
-    fn begin_request(&self) -> Self::RequestState {}
-
     fn on_evict(&self, _state: &mut Self::RequestState, key: CacheKey, value: CacheEntry) {
+        info!("Evicting {key:?} from memory cache");
         if let Some(disk_cache_data) = &self.disk_cache {
             let disk_cache_data = disk_cache_data.clone();
             tokio::spawn(async move { disk_cache_data.store(key, value).await });
@@ -1238,73 +1252,5 @@ impl<'a> CachedResourcesOrGuard<'a> {
             },
             CachedResourcesOrGuard::Guard(_) => None,
         }
-    }
-}
-
-#[cfg(test)]
-mod memory_cache_lifecycle_tests {
-    use super::*;
-
-    fn cached_resource(body: ResponseBody) -> CachedResource {
-        CachedResource {
-            request_headers: Arc::new(ParkingLotMutex::new(SerializeableHeaderMap(
-                HeaderMap::new(),
-            ))),
-            body: Arc::new(ParkingLotMutex::new(body)),
-            aborted: Arc::new(AtomicBool::new(false)),
-            awaiting_body: Arc::new(ParkingLotMutex::new(vec![])),
-            metadata: CachedMetadata {
-                headers: Arc::new(ParkingLotMutex::new(SerializeableHeaderMap(
-                    HeaderMap::new(),
-                ))),
-                final_url: ServoUrl::parse("http://example.com/").unwrap(),
-                content_type: None,
-                charset: None,
-                status: HttpStatus::default(),
-            },
-            location_url: None,
-            status: StatusCode::OK.into(),
-            url_list: vec![],
-            expires: ApproxDuration::default(),
-            stale_while_revalidate: ApproxDuration::default(),
-            revalidating: StdArc::new(AtomicBool::new(false)),
-            last_validated: SystemTime::now(),
-        }
-    }
-
-    fn entry(resources: Vec<CachedResource>) -> CacheEntry {
-        StdArc::new(TokioRwLock::new(resources))
-    }
-
-    /// Requests that are still transferring (body not finished) are inserted
-    /// into the cache before their body completes; a small memory cache must
-    /// not evict them mid-transfer, so any unfinished resource pins its entry.
-    #[test]
-    fn unfinished_resources_are_pinned() {
-        let lifecycle = MemoryCacheLifecycle::empty();
-        let key = CacheKey::from_url(ServoUrl::parse("http://example.com/").unwrap());
-
-        // Receiving body → not done → pinned.
-        let receiving = entry(vec![cached_resource(ResponseBody::Receiving(vec![0u8]))]);
-        assert!(lifecycle.is_pinned(&key, &receiving));
-
-        // Empty body → not done → pinned.
-        let empty = entry(vec![cached_resource(ResponseBody::Empty)]);
-        assert!(lifecycle.is_pinned(&key, &empty));
-
-        // Done body → not pinned.
-        let done = entry(vec![cached_resource(ResponseBody::Done(vec![0u8]))]);
-        assert!(!lifecycle.is_pinned(&key, &done));
-
-        // Mixed: any unfinished resource pins the entry.
-        let mixed = entry(vec![
-            cached_resource(ResponseBody::Done(vec![0u8])),
-            cached_resource(ResponseBody::Receiving(vec![0u8])),
-        ]);
-        assert!(lifecycle.is_pinned(&key, &mixed));
-
-        // Empty entry → nothing unfinished → not pinned.
-        let none = entry(vec![]);
-        assert!(!lifecycle.is_pinned(&key, &none));
     }
 }

@@ -2,14 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
-// the list again owns its `HTMLMediaElement` and enumerates text tracks in
-// spec order (track element children in tree order, then addTextTrack tracks)
-// through `TextTrackListIterator`; `Length`/`IndexedGetter`/`GetTrackById`
-// take the no-GC token and `add` seeds the media element's newly-introduced
-// cues (REQ-BRW-047). Fork form: unrooted views are built with
-// `UnrootedDom::from_dom(.., no_gc)` (no `Dom::as_unrooted` in this fork).
-
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
@@ -145,33 +137,6 @@ impl TextTrackList {
             }));
     }
 
-    // BAO patch (fork-maintained, 2026-09-27): the fork's codegen generates
-    // the flat (no `no_gc` parameter) `TextTrackListMethods` signatures, so
-    // the trait methods below walk the spec-ordered track list through this
-    // rooted helper instead of the unrooted `iter`.
-    fn tracks_in_spec_order(&self) -> Vec<DomRoot<TextTrack>> {
-        // Step 1. The text tracks corresponding to track element children of
-        // the media element, in tree order, then Step 2. any text tracks
-        // added using the addTextTrack() method, in the order they were
-        // added, oldest first. (Step 3, media-resource-specific tracks, is a
-        // TODO, as upstream.)
-        let track_element_tracks: Vec<DomRoot<TextTrack>> = self
-            .media_element
-            .upcast::<Node>()
-            .children()
-            .filter_map(|child| DomRoot::downcast::<HTMLTrackElement>(child))
-            .map(|track_element| track_element.track_rooted())
-            .collect();
-        let dom_tracks: Vec<DomRoot<TextTrack>> = self
-            .dom_tracks
-            .borrow()
-            .clone()
-            .into_iter()
-            .map(|track| DomRoot::from_ref(&*track))
-            .collect();
-        track_element_tracks.into_iter().chain(dom_tracks).collect()
-    }
-
     pub(crate) fn iter<'a>(&'a self, no_gc: &'a NoGC) -> TextTrackListIterator<'a> {
         TextTrackListIterator {
             no_gc,
@@ -186,7 +151,7 @@ impl TextTrackList {
                     .borrow()
                     .clone()
                     .into_iter()
-                    .map(|track| UnrootedDom::from_dom(track, no_gc)),
+                    .map(|track| track.as_unrooted(no_gc)),
             ),
         }
     }
@@ -194,30 +159,32 @@ impl TextTrackList {
 
 impl TextTrackListMethods<crate::DomTypeHolder> for TextTrackList {
     /// <https://html.spec.whatwg.org/multipage/#dom-texttracklist-length>
-    fn Length(&self) -> u32 {
+    fn Length(&self, no_gc: &NoGC) -> u32 {
         // > The length attribute of a TextTrackList object must return
         // > the number of text tracks in the list represented by the TextTrackList object.
-        self.tracks_in_spec_order().len() as u32
+        self.iter(no_gc).count() as u32
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttracklist-item>
-    fn IndexedGetter(&self, idx: u32) -> Option<DomRoot<TextTrack>> {
+    fn IndexedGetter(&self, no_gc: &NoGC, idx: u32) -> Option<DomRoot<TextTrack>> {
         // > To determine the value of an indexed property of a TextTrackList object
         // > for a given index index, the user agent must return the indexth
         // > text track in the list represented by the TextTrackList object.
-        self.tracks_in_spec_order().into_iter().nth(idx as usize)
+        self.iter(no_gc)
+            .nth(idx as usize)
+            .map(|track| track.as_rooted())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttracklist-gettrackbyid>
-    fn GetTrackById(&self, id: DOMString) -> Option<DomRoot<TextTrack>> {
+    fn GetTrackById(&self, no_gc: &NoGC, id: DOMString) -> Option<DomRoot<TextTrack>> {
         // > The getTrackById(id) method must return the first TextTrack in
         // > the TextTrackList object whose id IDL attribute would return
         // > a value equal to the value of the id argument.
         // > When no tracks match the given argument, the method must return null.
         let id_str = String::from(id);
-        self.tracks_in_spec_order()
-            .into_iter()
+        self.iter(no_gc)
             .find(|track| *track.id() == id_str)
+            .map(|track| track.as_rooted())
     }
 
     // https://html.spec.whatwg.org/multipage/#handler-texttracklist-onchange

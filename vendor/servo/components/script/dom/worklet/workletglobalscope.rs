@@ -19,19 +19,17 @@ use profile_traits::{mem, time};
 use script_bindings::cell::DomRefCell;
 use script_traits::Painter;
 use servo_base::generic_channel::GenericCallback;
-use servo_base::id::{PipelineId, WebViewId};
+use servo_base::id::PipelineId;
 use servo_constellation_traits::ScriptToConstellationSender;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
 use stylo_atoms::Atom;
 
-use crate::runtime::microtask::MicrotaskQueue;
 use crate::dom::Window;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues};
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
-use crate::dom::audio::audioworkletglobalscope::{AudioWorkletGlobalScope, AudioWorkletScopeData};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::paintworkletglobalscope::PaintWorkletGlobalScope;
 #[cfg(feature = "testbinding")]
@@ -42,6 +40,7 @@ use crate::dom::worklet::WorkletExecutor;
 use crate::messaging::MainThreadScriptMsg;
 use crate::modules::script_module::{ModuleRequest, ModuleStatus};
 use crate::realms::enter_auto_realm;
+use crate::runtime::job_queue::job_queue_microtask_checkpoint;
 use crate::tasks::task::TaskCanceller;
 use crate::tasks::task_manager::TaskManager;
 
@@ -65,12 +64,6 @@ pub(crate) struct WorkletGlobalScope {
     #[no_trace]
     origin: MutableOrigin,
 
-    /// The owning page's webview identity (plumbed from the creating
-    /// Window through `WorkletGlobalScopeInit`); None for worklets created
-    /// without a Window.
-    #[no_trace]
-    webview_id: Option<WebViewId>,
-
     /// The [`TaskManager`] for this [`WorkletGlobalScope`].
     #[conditional_malloc_size_of]
     task_manager: Rc<TaskManager>,
@@ -82,15 +75,11 @@ pub(crate) struct WorkletGlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
     #[ignore_malloc_size_of = "mozjs"]
     module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
-    /// <https://html.spec.whatwg.org/#microtask-queue>
-    #[conditional_malloc_size_of]
-    microtask_queue: Rc<MicrotaskQueue>,
 }
 
 impl WorkletGlobalScope {
     /// Create a new heap-allocated `WorkletGlobalScope`.
     #[allow(clippy::too_many_arguments)]
-    #[expect(unsafe_code)]
     pub(crate) fn new(
         scope_type: WorkletGlobalScopeType,
         pipeline_id: PipelineId,
@@ -121,73 +110,16 @@ impl WorkletGlobalScope {
                 init,
                 closing,
             )),
-            WorkletGlobalScopeType::Audio => DomRoot::upcast(AudioWorkletGlobalScope::new(
-                cx,
-                pipeline_id,
-                base_url,
-                inherited_secure_context,
-                executor,
-                init,
-                closing,
-            )),
         };
 
         let mut realm = enter_auto_realm(cx, &*scope);
         let mut realm = realm.current_realm();
         define_all_exposed_interfaces(&mut realm, scope.upcast());
 
-        // BAO PATCH (REQ-BRW-004 4th injection realm, user ruling 2026-10-05,
-        // AudioWorklet 段(1)): the AudioWorklet realm must not be a bare realm
-        // (anti-fingerprint constitution A). Both REQ-BRW-004 injector layers
-        // run here, AFTER `define_all_exposed_interfaces` — the worklet realm
-        // has exactly one creation point, so the engine-layer getters and the
-        // post-interfaces JS hooks land in the same drain (the embedder
-        // install is idempotent — same property as the worker second drain).
-        // Only the NON-consuming injector registries are drained: the
-        // consume-once Worker queues keep their first-Worker semantics, and a
-        // worklet realm must not steal a future Worker's one-shot install.
-        // Paint/Test worklet realms keep the upstream bare-realm behavior
-        // (untouched scope).
-        if scope_type == WorkletGlobalScopeType::Audio {
-            if let Some(webview_id) = init.webview_id {
-                for injector in
-                    crate::event_loop::script_thread::worker_scope_injectors(webview_id)
-                {
-                    unsafe {
-                        injector(
-                            realm.raw_cx_no_gc() as *mut std::ffi::c_void,
-                            script_bindings::reflector::DomObject::reflector(
-                                scope.upcast::<GlobalScope>(),
-                            )
-                            .get_jsobject()
-                            .get() as *mut std::ffi::c_void,
-                        );
-                    }
-                }
-                for injector in
-                    crate::event_loop::script_thread::worker_interfaces_ready_injectors(
-                        webview_id,
-                    )
-                {
-                    unsafe {
-                        injector(
-                            realm.raw_cx_no_gc() as *mut std::ffi::c_void,
-                            script_bindings::reflector::DomObject::reflector(
-                                scope.upcast::<GlobalScope>(),
-                            )
-                            .get_jsobject()
-                            .get() as *mut std::ffi::c_void,
-                        );
-                    }
-                }
-            }
-        }
-
         scope
     }
 
     /// Create a new stack-allocated `WorkletGlobalScope`.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_inherited(
         pipeline_id: PipelineId,
         base_url: ServoUrl,
@@ -199,7 +131,6 @@ impl WorkletGlobalScope {
         let script_event_loop_sender = executor.event_loop_sender();
 
         Self {
-            microtask_queue: crate::event_loop::script_thread::ScriptThread::microtask_queue(),
             globalscope: GlobalScope::new_inherited(
                 init.devtools_chan.clone(),
                 init.mem_profiler_chan.clone(),
@@ -227,17 +158,9 @@ impl WorkletGlobalScope {
                 }),
             )),
             origin: MutableOrigin::new(ImmutableOrigin::new_opaque()),
-            webview_id: init.webview_id,
             closing,
             module_map: Default::default(),
         }
-    }
-
-    /// The owning page's webview identity, if this worklet was created from
-    /// a Window (REQ-BRW-004 4th injection realm keying + module-fetch
-    /// webview attribution).
-    pub(crate) fn webview_id(&self) -> Option<WebViewId> {
-        self.webview_id
     }
 
     pub(crate) fn module_map(
@@ -287,10 +210,7 @@ impl WorkletGlobalScope {
 
     pub(crate) fn perform_a_microtask_checkpoint(&self, cx: &mut JSContext) {
         if !self.closing.load(Ordering::SeqCst) {
-            // (Bao) SM153: microtasks live in the engine-owned queue; drain via
-            // the fork's MicrotaskQueue (upstream end free-fn form not adopted).
-            self.microtask_queue
-                .checkpoint(cx, vec![DomRoot::from_ref(&self.globalscope)]);
+            job_queue_microtask_checkpoint(cx, vec![DomRoot::from_ref(&self.globalscope)]);
         }
     }
 }
@@ -311,8 +231,6 @@ impl From<&Window> for WorkletGlobalScopeInit {
             image_cache: global_scope.image_cache(),
             #[cfg(feature = "webgpu")]
             gpu_id_hub: global_scope.wgpu_id_hub(),
-            webview_id: Some(window.webview_id()),
-            audio: None,
         }
     }
 }
@@ -340,22 +258,14 @@ pub(crate) struct WorkletGlobalScopeInit {
     #[cfg(feature = "webgpu")]
     pub(crate) gpu_id_hub: Arc<IdentityHub>,
     pub(crate) script_to_constellation_sender: ScriptToConstellationSender,
-    /// The owning page's webview identity (None when no Window is known).
-    pub(crate) webview_id: Option<WebViewId>,
-    /// The audio face for `WorkletGlobalScopeType::Audio` scopes; set by the
-    /// creating `BaseAudioContext`'s `audioWorklet` getter (Bao 段(1)).
-    pub(crate) audio: Option<AudioWorkletScopeData>,
 }
 
 /// <https://drafts.css-houdini.org/worklets/#worklet-global-scope-type>
-#[derive(Clone, Copy, Debug, JSTraceable, MallocSizeOf, PartialEq)]
+#[derive(Clone, Copy, Debug, JSTraceable, MallocSizeOf)]
 pub(crate) enum WorkletGlobalScopeType {
     /// A servo-specific testing worklet
     #[cfg(feature = "testbinding")]
     Test,
     /// A paint worklet
     Paint,
-    /// An audio worklet (Bao 段(1), user ruling 2026-10-05; upstream has
-    /// zero AudioWorklet runtime — e83 profile).
-    Audio,
 }

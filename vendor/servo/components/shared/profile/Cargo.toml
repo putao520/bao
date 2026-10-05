@@ -1,14 +1,13 @@
 [package]
 name = "bao-servo-profile-traits"
 version = "0.5.17"
+publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
-publish = true
 rust-version = "1.88.0"
 repository = "https://github.com/servo/servo"
 description = "A component of the servo web-engine."
-
 [lib]
 name = "profile_traits"
 path = "lib.rs"
@@ -24,6 +23,11 @@ malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_siz
 malloc_size_of_derive = {version = "0.1"}
 serde = {version = "1.0.228"}
 servo-allocator = {package = "bao-servo-allocator", path = "../../allocator", version = ">=0.5.2, <0.6.0"}
-servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../../shared/base", version = ">=0.5.17, <0.6.0"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 tracing = {version = "0.1.44", optional = true}
+
+[lints.rust]
+unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}
+[lints.clippy]
+manual_string_new = "warn"

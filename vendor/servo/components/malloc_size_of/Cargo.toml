@@ -1,34 +1,35 @@
 [package]
 name = "bao-servo-malloc-size-of"
-license = "MIT OR Apache-2.0"
 version = "0.5.10"
-authors = ["The Servo Project Developers"]
-edition = "2024"
 publish = true
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2024"
 rust-version = "1.88.0"
 repository = "https://github.com/servo/servo"
 description = "A component of the servo web-engine."
-
 [lib]
-name = "servo_malloc_size_of"
 path = "lib.rs"
 
+name = "servo_malloc_size_of"
 [dependencies]
 app_units = {version = "0.7"}
 atomic_refcell = {version = "0.1.14"}
-content-security-policy = {version = "=0.9.0", features = ["serde"]}
+bytes = {version = "1.0", features = ["serde"]}
+cookie = {package = "cookie", version = "0.18"}
+content-security-policy = {version = "0.9", features = ["serde"]}
 crossbeam-channel = {version = "0.5"}
 data-url = {version = "0.3"}
 encoding_rs = {version = "0.8", features = ["serde"]}
 euclid = {version = "0.22"}
 http = {version = "1.4"}
-icu_locid = {version = "1.5.0"}
+icu_locale_core = {version = "2.1.0"}
 indexmap = {version = "2.14.0", features = ["std"]}
 ipc-channel = {package = "bao-ipc-channel", path = "../../../ipc-channel", version = "0.22.0"}
 keyboard-types = {version = "0.8.3", features = ["serde", "webdriver"]}
 markup5ever = {version = "0.40"}
-memmap2 = "0.9.10"
 mime = {version = "0.3.13"}
+memmap2 = {version = "0.9.10"}
 once_cell = {version = "1.21.4"}
 parking_lot = {version = "0.12", features = ["serde"]}
 resvg = {version = "0.48.1"}
@@ -39,7 +40,7 @@ string_cache = {version = "0.11"}
 style = {package = "bao-stylo", path = "../../../stylo", version = ">=0.22.0, <0.23.0"}
 stylo_dom = {version = "=0.22.0"}
 stylo_malloc_size_of = {version = "=0.22.0"}
-taffy = {version = "0.13.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"]}
+taffy = {version = "0.14.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"]}
 tendril = {version = "0.5", features = ["encoding_rs"]}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 tokio = {version = "1", features = ["sync"]}
@@ -52,3 +53,10 @@ vello_cpu = {version = "0.2.0", features = ["multithreading"]}
 webrender = {version = "0.70", features = ["serde"]}
 webrender_api = {version = "0.70"}
 wr_malloc_size_of = {version = "0.2.2"}
+
+[dev-dependencies]
+servo-allocator = {package = "bao-servo-allocator", path = "../allocator", version = ">=0.5.2, <0.6.0"}
+[lints.rust]
+unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}
+[lints.clippy]
+manual_string_new = "warn"

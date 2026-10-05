@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::{Bytes, BytesMut};
 use crossbeam_channel::Sender;
-use style::values::SourceLocation;
+use cssparser::SourceLocation;
 use encoding_rs::UTF_8;
 use js::context::JSContext;
 use net_traits::mime_classifier::MimeClassifier;

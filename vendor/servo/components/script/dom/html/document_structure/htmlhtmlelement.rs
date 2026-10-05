@@ -5,7 +5,7 @@
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix};
 use js::rust::HandleObject;
-use crate::dom::bindings::codegen::Bindings::HTMLHtmlElementBinding::HTMLHtmlElementMethods;
+use script_bindings::codegen::GenericBindings::HTMLHtmlElementBinding::HTMLHtmlElementMethods;
 
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;

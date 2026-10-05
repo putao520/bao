@@ -31,8 +31,8 @@ use crate::async_runtime::{
 };
 pub use crate::hosts::replace_host_table;
 
-static CRT_FILE: &[u8] = include_bytes!("../../resources/self_signed_certificate_for_testing.crt");
-static PEM_FILE: &[u8] = include_bytes!("../../resources/privatekey_for_testing.key");
+static CRT_FILE: &[u8] = include_bytes!("tests/self_signed_certificate_for_testing.crt");
+static PEM_FILE: &[u8] = include_bytes!("tests/privatekey_for_testing.key");
 
 static ASYNC_RUNTIME: LazyLock<Arc<Mutex<Box<dyn AsyncRuntime>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(init_async_runtime())));
@@ -95,10 +95,7 @@ where
 
     let listener = StdTcpListener::bind("0.0.0.0:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let listener =
-        spawn_blocking_task::<_, TcpListener>(
-            async move { TcpListener::from_std(listener).unwrap() },
-        );
+    let listener = spawn_blocking_task(async move { TcpListener::from_std(listener).unwrap() });
 
     let url_string = format!("http://localhost:{}", listener.local_addr().unwrap().port());
     let url = UrlWithBlobClaim::new(ServoUrl::parse(&url_string).unwrap(), None);
@@ -185,10 +182,7 @@ where
     let handler = Arc::new(handler);
     let listener = StdTcpListener::bind("[::0]:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let listener =
-        spawn_blocking_task::<_, TcpListener>(
-            async move { TcpListener::from_std(listener).unwrap() },
-        );
+    let listener = spawn_blocking_task(async move { TcpListener::from_std(listener).unwrap() });
 
     let url_string = format!("http://localhost:{}", listener.local_addr().unwrap().port());
     let url = UrlWithBlobClaim::new(ServoUrl::parse(&url_string).unwrap(), None);

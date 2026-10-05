@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use dwrote::{Font, FontCollection, FontWidth, FontStyle};
+use dwrote::{Font, FontCollection, FontStretch, FontStyle};
 use fonts_traits::LocalFontIdentifier;
 use servo_base::text::{UnicodeBlock, UnicodeBlockMethod, unicode_plane};
 use style::values::computed::font::GenericFontFamily;
@@ -322,20 +322,20 @@ fn font_template_descriptor_from_font(font: &Font) -> FontTemplateDescriptor {
         FontStyle::Italic => StyleFontStyle::ITALIC,
     };
     let weight = StyleFontWeight::from_float(font.weight().to_u32() as f32);
-    let stretch = match font.stretch() {
-        FontWidth::Undefined => FontWidthKeyword::Normal,
-        FontWidth::UltraCondensed => FontWidthKeyword::UltraCondensed,
-        FontWidth::ExtraCondensed => FontWidthKeyword::ExtraCondensed,
-        FontWidth::Condensed => FontWidthKeyword::Condensed,
-        FontWidth::SemiCondensed => FontWidthKeyword::SemiCondensed,
-        FontWidth::Normal => FontWidthKeyword::Normal,
-        FontWidth::SemiExpanded => FontWidthKeyword::SemiExpanded,
-        FontWidth::Expanded => FontWidthKeyword::Expanded,
-        FontWidth::ExtraExpanded => FontWidthKeyword::ExtraExpanded,
-        FontWidth::UltraExpanded => FontWidthKeyword::UltraExpanded,
+    let width = match font.stretch() {
+        FontStretch::Undefined => FontWidthKeyword::Normal,
+        FontStretch::UltraCondensed => FontWidthKeyword::UltraCondensed,
+        FontStretch::ExtraCondensed => FontWidthKeyword::ExtraCondensed,
+        FontStretch::Condensed => FontWidthKeyword::Condensed,
+        FontStretch::SemiCondensed => FontWidthKeyword::SemiCondensed,
+        FontStretch::Normal => FontWidthKeyword::Normal,
+        FontStretch::SemiExpanded => FontWidthKeyword::SemiExpanded,
+        FontStretch::Expanded => FontWidthKeyword::Expanded,
+        FontStretch::ExtraExpanded => FontWidthKeyword::ExtraExpanded,
+        FontStretch::UltraExpanded => FontWidthKeyword::UltraExpanded,
     }
     .compute();
-    FontTemplateDescriptor::new(weight, stretch, style)
+    FontTemplateDescriptor::new(weight, width, style)
 }
 
 pub(crate) fn default_system_generic_font_family(

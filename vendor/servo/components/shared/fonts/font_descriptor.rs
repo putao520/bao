@@ -7,14 +7,14 @@ use std::ops::{Deref, RangeInclusive};
 use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 use style::computed_values::font_optical_sizing::T as FontOpticalSizing;
-use style::computed_values::font_variant_caps;
+use style::computed_values::font_variant_caps::T as FontVariantCaps;
 use style::font_face::{
-    ComputedFontWidthRange, ComputedFontStyleRange, ComputedFontWeightRange, Descriptors,
-    FontWidthRange, FontStyleRange, FontWeightRange,
+    ComputedFontStyleRange, ComputedFontWeightRange, ComputedFontWidthRange, Descriptors,
+    FontStyleRange, FontWeightRange, FontWidthRange,
 };
 use style::properties::style_structs::Font as FontStyleStruct;
 use style::stylesheets::FontFaceRule;
-use style::values::computed::{Au, FontWidth, FontStyle, FontSynthesis, FontWeight};
+use style::values::computed::{Au, FontStyle, FontSynthesis, FontWeight, FontWidth};
 use webrender_api::FontVariation;
 
 /// `FontDescriptor` describes the parameters of a `Font`. It represents rendering a given font
@@ -24,9 +24,9 @@ use webrender_api::FontVariation;
 #[derive(Clone, Debug, Deserialize, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub struct FontDescriptor {
     pub weight: FontWeight,
-    pub stretch: FontWidth,
+    pub width: FontWidth,
     pub style: FontStyle,
-    pub variant: font_variant_caps::T,
+    pub variant: FontVariantCaps,
     pub pt_size: Au,
     /// The value of the `@font-variation-settings` property.
     ///
@@ -51,7 +51,7 @@ impl<'a> From<&'a FontStyleStruct> for FontDescriptor {
             .collect();
         FontDescriptor {
             weight: style.font_weight,
-            stretch: style.font_width,
+            width: style.font_width,
             style: style.font_style,
             variant: style.font_variant_caps,
             pt_size: Au::from_f32_px(style.font_size.computed_size().px()),
@@ -71,7 +71,7 @@ impl<'a> From<&'a FontStyleStruct> for FontDescriptor {
 pub struct CSSFontFaceDescriptors {
     pub family_name: LowercaseFontFamilyName,
     pub weight: Option<ComputedFontWeightRange>,
-    pub stretch: Option<ComputedFontWidthRange>,
+    pub width: Option<ComputedFontWidthRange>,
     pub style: Option<ComputedFontStyleRange>,
     pub unicode_range: Option<Vec<RangeInclusive<u32>>>,
 }
@@ -97,7 +97,7 @@ impl From<&Descriptors> for CSSFontFaceDescriptors {
             .font_weight
             .as_ref()
             .and_then(FontWeightRange::compute);
-        let stretch = descriptors
+        let width = descriptors
             .font_width
             .as_ref()
             .and_then(FontWidthRange::compute);
@@ -113,7 +113,7 @@ impl From<&Descriptors> for CSSFontFaceDescriptors {
         CSSFontFaceDescriptors {
             family_name: family_name.into(),
             weight,
-            stretch,
+            width,
             style,
             unicode_range,
         }

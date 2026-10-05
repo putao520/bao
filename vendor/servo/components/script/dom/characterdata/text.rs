@@ -12,7 +12,6 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::TextBinding::TextMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::error::{Error, Fallible};
-use crate::dom::live_range_text_split_steps;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
@@ -99,10 +98,10 @@ impl TextMethods<crate::DomTypeHolder> for Text {
                 .unwrap();
 
             // Steps 7.2-7.5: The live range update steps.
-            // BAO patch (fork-maintained, 2026-09-28): the fork's live-range
-            // architecture (WeakRangeVec free fn), not the window-end
-            // selection/live-range split pair.
-            live_range_text_split_steps(parent, node, offset, new_node.upcast());
+            if let Some(selection) = document.selection() {
+                selection.text_split_steps(node, offset, parent, new_node);
+            }
+            document.live_range_text_split_steps(cx.no_gc(), parent, node, offset, new_node);
         }
         // Step 8.
         cdata.DeleteData(cx, offset, count).unwrap();

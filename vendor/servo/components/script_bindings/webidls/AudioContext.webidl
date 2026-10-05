@@ -22,14 +22,7 @@ dictionary AudioTimestamp {
   DOMHighResTimeStamp performanceTime;
 };
 
-// (Bao) Exposed=(Window,Worker): REQ-BRW-004 C15 — the real-time AudioContext
-// constructor is worker-reachable. Rendering runs on servo-media's own
-// AudioRenderThread (sink built on the render thread; the calling thread only
-// does channel control + a bounded init handshake), so worker-realm
-// construction has no Window dependency. The createMedia* members stay behind
-// member-level [Exposed=Window] gates: they reference Window-only types
-// (HTMLMediaElement / MediaStream / MediaStreamTrack / Media*Audio*Node).
-[Exposed=(Window,Worker)]
+[Exposed=Window]
 interface AudioContext : BaseAudioContext {
   [Throws] constructor(optional AudioContextOptions contextOptions = {});
   readonly attribute double baseLatency;
@@ -40,8 +33,8 @@ interface AudioContext : BaseAudioContext {
   Promise<undefined> suspend();
   Promise<undefined> close();
 
-  [Exposed=Window, Throws] MediaElementAudioSourceNode createMediaElementSource(HTMLMediaElement mediaElement);
-  [Exposed=Window, Throws] MediaStreamAudioSourceNode createMediaStreamSource(MediaStream mediaStream);
-  [Exposed=Window, Throws] MediaStreamTrackAudioSourceNode createMediaStreamTrackSource(MediaStreamTrack mediaStreamTrack);
-  [Exposed=Window, Throws] MediaStreamAudioDestinationNode createMediaStreamDestination();
+  [Throws] MediaElementAudioSourceNode createMediaElementSource(HTMLMediaElement mediaElement);
+  [Throws] MediaStreamAudioSourceNode createMediaStreamSource(MediaStream mediaStream);
+  [Throws] MediaStreamTrackAudioSourceNode createMediaStreamTrackSource(MediaStreamTrack mediaStreamTrack);
+  [Throws] MediaStreamAudioDestinationNode createMediaStreamDestination();
 };

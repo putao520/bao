@@ -4,7 +4,6 @@
 
 use std::borrow::Cow;
 use std::ffi::CStr;
-use std::ptr::NonNull;
 use std::rc::Rc;
 
 use bitflags::bitflags;
@@ -331,17 +330,6 @@ pub(crate) fn fill_compile_options(
     options.set_is_run_once(true);
     options.set_no_script_rval(!script_options.contains(ScriptOptions::ReturnsAValue));
 
-    // BAO patch (fork-maintained, 2026-09-29, ISSUE #27 hidden-bootstrap):
-    // the filename-"" class IS the embedder-driven evaluate (CDP
-    // Runtime.evaluate, polyfill/Node boot — page and worker scripts always
-    // carry a real URL). Those evaluates must stay invisible to the Debugger
-    // (no onNewScript → no Debugger.scriptParsed leak of bootstrap internals);
-    // the same suppression the Node-realm evaluate path has had since
-    // BCE-20260622-004.
-    if filename.is_empty() {
-        options.set_hide_script_from_debugger(true);
-    }
-
     options
 }
 
@@ -374,45 +362,4 @@ pub(crate) fn maybe_associate_with_script(
             );
         }
     }
-}
-
-/// <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation>
-/// BAO patch (fork-maintained, 2026-09-28): ported from the fork's pre-window
-/// script_execution.rs — the window-end rewrite dropped this helper, but the
-/// fork's globalscope.rs evaluate path still calls it.
-#[expect(unsafe_code)]
-pub(crate) fn evaluate_script(
-    cx: &mut JSContext,
-    compiled_script: NonNull<JSScript>,
-    url: ServoUrl,
-    fetch_options: ScriptFetchOptions,
-    rval: MutableHandleValue,
-) -> bool {
-    rooted!(&in(cx) let record = compiled_script.as_ptr());
-    rooted!(&in(cx) let mut script_private = UndefinedValue());
-
-    unsafe { JS_GetScriptPrivate(*record, script_private.handle_mut()) };
-
-    // When `ScriptPrivate` for the compiled script is undefined,
-    // we need to set it so that it can be used in dynamic import context.
-    if script_private.is_undefined() {
-        debug!("Set script private for {}", url);
-        let module_script_data = Rc::new(ModuleScript::new(
-            url,
-            fetch_options,
-            // We can't initialize an module owner here because
-            // the executing context of script might be different
-            // from the dynamic import script's executing context.
-            None,
-        ));
-
-        unsafe {
-            SetScriptPrivate(
-                *record,
-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
-            );
-        }
-    }
-
-    unsafe { JS_ExecuteScript(cx, record.handle(), rval) }
 }

@@ -7,9 +7,9 @@ use std::cell::Cell;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
-use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue};
+use js::rust::{CustomAutoRooterGuard, HandleValue};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::id::ServiceWorkerId;
 use servo_constellation_traits::{DOMMessage, ScriptToConstellationMessage};
 use servo_url::ServoUrl;
@@ -66,31 +66,20 @@ impl ServiceWorker {
         scope_url: ServoUrl,
         worker_id: ServiceWorkerId,
     ) -> DomRoot<ServiceWorker> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(ServiceWorker::new_inherited(
                 script_url.as_str(),
                 scope_url,
                 worker_id,
             )),
             global,
-            cx,
         )
     }
 
     pub(crate) fn dispatch_simple_error(cx: &mut JSContext, address: TrustedServiceWorkerAddress) {
         let service_worker = address.root();
         service_worker.upcast().fire_event(cx, atom!("error"));
-    }
-
-    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04):
-    /// <https://w3c.github.io/ServiceWorker/#update-worker-state> — set the
-    /// state of the service worker and fire "statechange" on this
-    /// ServiceWorker object. Upstream never implemented the algorithm (the
-    /// `state` cell is written exactly once, at construction), so workers
-    /// were observably stuck at "installing" forever.
-    pub(crate) fn update_state(&self, cx: &mut JSContext, state: ServiceWorkerState) {
-        self.state.set(state);
-        self.upcast().fire_event(cx, atom!("statechange"));
     }
 
     pub(crate) fn get_script_url(&self) -> ServoUrl {
@@ -152,15 +141,12 @@ impl ServiceWorkerMethods<crate::DomTypeHolder> for ServiceWorker {
         message: HandleValue,
         options: &StructuredSerializeOptions,
     ) -> ErrorResult {
-        let mut rooted = CustomAutoRooter::new(
+        auto_root!(&in(cx) let guard =
             options
                 .transfer
                 .iter()
                 .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-        #[expect(unsafe_code)]
-        let guard = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+                .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 

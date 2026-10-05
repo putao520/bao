@@ -13,7 +13,7 @@ use js::rust::HandleObject;
 use profile_traits::mem::MemoryReportResult;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::interfaces::ServoInternalsHelpers;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::str::USVString;
 use servo_config::prefs::{self, PrefValue, Preferences};
 use servo_constellation_traits::ScriptToConstellationMessage;
@@ -28,11 +28,11 @@ use crate::routed_promise::{RoutedPromiseListener, callback_promise};
 
 fn pref_to_jsval(cx: &mut js::context::JSContext, pref: &PrefValue, rval: MutableHandleValue) {
     match pref {
-        PrefValue::Bool(b) => b.safe_to_jsval(cx, rval),
-        PrefValue::Int(i) => i.safe_to_jsval(cx, rval),
-        PrefValue::UInt(u) => u.safe_to_jsval(cx, rval),
-        PrefValue::Str(s) => s.safe_to_jsval(cx, rval),
-        PrefValue::Float(f) => f.safe_to_jsval(cx, rval),
+        PrefValue::Bool(b) => b.to_jsval(cx, rval),
+        PrefValue::Int(i) => i.to_jsval(cx, rval),
+        PrefValue::UInt(u) => u.to_jsval(cx, rval),
+        PrefValue::Str(s) => s.to_jsval(cx, rval),
+        PrefValue::Float(f) => f.to_jsval(cx, rval),
         PrefValue::Array(arr) => {
             rooted_vec!(let mut js_arr);
             for item in arr {
@@ -40,7 +40,7 @@ fn pref_to_jsval(cx: &mut js::context::JSContext, pref: &PrefValue, rval: Mutabl
                 pref_to_jsval(cx, item, js_val.handle_mut());
                 js_arr.push(Heap::boxed(js_val.get()));
             }
-            js_arr.safe_to_jsval(cx, rval);
+            js_arr.to_jsval(cx, rval);
         },
     }
 }
@@ -58,7 +58,7 @@ impl ServoInternals {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<ServoInternals> {
-        reflect_dom_object_with_cx(Box::new(ServoInternals::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(ServoInternals::new_inherited()), global)
     }
 }
 

@@ -19,24 +19,24 @@ use std::rc::Rc;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::conversions::{ConversionResult, FromJSValConvertible, ToJSValConvertible};
-use js::gc::{MutableHandleValue, Traceable};
+use js::gc::MutableHandleValue;
 use js::jsapi::{
     CallArgs, GetFunctionNativeReserved, Heap, JS_GetFunctionObject, JSContext as RawJSContext,
-    JSObject, JSTracer, PromiseState, PromiseUserInputEventHandlingState, RemoveRawValueRoot,
-    SetFunctionNativeReserved,
+    JSObject, PromiseState, PromiseUserInputEventHandlingState, SetFunctionNativeReserved,
 };
 use js::jsval::{Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
-    AddPromiseReactions, AddRawValueRoot, CallOriginalPromiseReject, CallOriginalPromiseResolve,
+    AddPromiseReactions, CallOriginalPromiseReject, CallOriginalPromiseResolve,
     GetPromiseIsHandled, GetPromiseState, IsPromiseObject, JS_ClearPendingException,
     JS_NewFunction, NewFunctionWithReserved, NewPromiseObject, RejectPromise, ResolvePromise,
     SetAnyPromiseIsHandled, SetPromiseUserInputEventHandlingState,
 };
-use js::rust::{HandleObject, HandleValue, MutableHandleObject, Runtime};
+use js::rust::{HandleObject, HandleValue, MutableHandleObject};
 use script_bindings::interfaces::{
     HeapTracedPromiseHelpers, PromiseHelpers, StackRootPromiseHelpers,
 };
+use script_bindings::permanent_root::PermanentRoot;
 use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 use script_bindings::settings_stack::run_a_script;
 
@@ -45,12 +45,12 @@ use crate::dom::bindings::conversions::root_from_object;
 use crate::dom::bindings::error::{Error, ErrorToJsval};
 use crate::dom::bindings::refcounted::TrustedPromise;
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot};
+use crate::dom::bindings::root::{AsHandleValue, Dom};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 
 /// A reference to a Promise object, treated as a GC root. The Promise will not
 /// be collected by the GC before this RootedPromise is dropped.
@@ -74,38 +74,11 @@ impl Deref for RootedPromise {
         &self.0.0
     }
 }
+
 impl RootedPromise {
     /// Obtain a TracedPromise object that references the same underlying Promise.
     pub(crate) fn to_traced(&self) -> TracedPromise {
         TracedPromise(self.duplicate_unrooted())
-    }
-
-    // BAO PATCH (fork-maintained, 2026-09-29, W28): promise-state read from
-    // the REGISTERED PermanentRoot slot. Registered raw-value roots are
-    // marked AND relocation-updated by every collection (including Shrink
-    // compaction); reflector copies inside DOM wrappers that the JS heap can
-    // no longer reach are neither. ae61880a pinned the stored promises'
-    // COLLECTION liveness; W28 closes the MOVE-staleness half — a compacting
-    // Shrink GC (W15 realm-discard hook) relocates the pinned object and
-    // pump-deferred deref faces must read the slot address, not the
-    // reflector (crash evidence: FontFaceSet::waiting_to_fullfill_promise →
-    // promise_obj → IsPromiseObject on a freed cell).
-    #[expect(unsafe_code)]
-    pub(crate) fn is_fulfilled_from_root(&self) -> bool {
-        let val = self.0.1.0.get();
-        if !val.is_object() || val.is_null() {
-            // Uninitialized/degenerate root — nothing to wait on; callers
-            // treat "fulfilled" as stop-waiting.
-            return true;
-        }
-        let mut obj_slot = val.to_object();
-        // SAFETY: the address was read from a GC-registered raw-value root
-        // slot (AddRawValueRoot at init — relocation-updated), copied into a
-        // plain local that GetPromiseState (a pure read, cannot GC) keeps
-        // stable for the duration of the call.
-        let state =
-            unsafe { GetPromiseState(HandleObject::from_marked_location(&obj_slot as *const _)) };
-        matches!(state, PromiseState::Rejected | PromiseState::Fulfilled)
     }
 }
 
@@ -118,9 +91,7 @@ impl From<&'_ RootedPromise> for TrustedPromise {
 impl FromJSValConvertible for RootedPromise {
     type Config = ();
 
-    // BAO patch (fork-maintained, 2026-09-27): fork conversions trait uses
-    // the `safe_from_jsval` form.
-    fn safe_from_jsval(
+    fn from_jsval(
         cx: &mut JSContext,
         value: HandleValue,
         _option: Self::Config,
@@ -138,10 +109,8 @@ impl FromJSValConvertible for RootedPromise {
 }
 
 impl ToJSValConvertible for RootedPromise {
-    // BAO patch (fork-maintained, 2026-09-27): fork conversions trait uses
-    // the `safe_to_jsval` form.
-    fn safe_to_jsval(&self, cx: &mut JSContext, rval: MutableHandleValue) {
-        DomRoot::from_ref(&self.0.0).safe_to_jsval(cx, rval)
+    fn to_jsval(&self, cx: &mut JSContext, rval: MutableHandleValue<'_>) {
+        self.0.0.to_jsval(cx, rval)
     }
 }
 
@@ -156,42 +125,6 @@ pub(crate) struct TracedPromise(#[conditional_malloc_size_of] Rc<Promise>);
 impl std::cmp::PartialEq for TracedPromise {
     fn eq(&self, other: &Self) -> bool {
         *self.0 == **other
-    }
-}
-
-// BAO patch (fork-maintained, 2026-09-28): ③c — conditional size measurement
-// for `#[conditional_malloc_size_of]` storage fields holding `TracedPromise`.
-impl malloc_size_of::MallocConditionalSizeOf for TracedPromise {
-    fn conditional_size_of(&self, ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
-        self.0.conditional_size_of(ops)
-    }
-}
-
-// BAO patch (fork-maintained, 2026-09-29, ISSUE #23/#25 realm-discard class):
-// storage-face pin. ③'s `to_traced()` yields an *unrooted* twin
-// (`duplicate_unrooted` → `permanent_js_root: None`) whose liveness is purely
-// the GC trace graph. A holder whose storage can be dereferenced after its
-// creation realm lost JS reachability (FontFaceSet's ready promise: stored at
-// construction, never exposed to JS, dereferenced by the message pump even
-// while the owning pipeline's exit is still pump-deferred — by which time SM
-// has already collected the realm's cells; shape poison 0x4b4b4b4b,
-// RED-1-adjacent SIGSEGV in `fulfill_ready_promise_if_needed`) must therefore
-// pin the reflector. Holding the `RootedPromise` clone keeps the
-// `PermanentRoot` alive for exactly the wrapper's lifetime, restoring the
-// pre-③ self-root semantics at the storage face without changing the upstream
-// `TracedPromise` contract.
-//
-// Empty trace is sound: the pinned JSObject is kept alive by the
-// `PermanentRoot` (a true root), not by this edge — there is nothing for the
-// tracer to propagate.
-#[expect(unsafe_code)]
-unsafe impl Traceable for RootedPromise {
-    #[expect(unsafe_code)]
-    unsafe fn trace(&self, _tracer: *mut JSTracer) {}
-}
-impl malloc_size_of::MallocSizeOf for RootedPromise {
-    fn size_of(&self, ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
-        self.0.size_of(ops)
     }
 }
 
@@ -215,55 +148,6 @@ impl Deref for TracedPromise {
     type Target = Promise;
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-/// A manual GC root that will exist until this PermanentRoot is dropped.
-#[derive(JSTraceable)] // TODO: remove this once this is no longer part of Promise.
-#[derive(Default, MallocSizeOf)]
-#[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_interior)]
-/// Maintains a GC root for the contained value until this object is dropped.
-///
-/// # Safety
-/// The root (and the contained value) is only valid as long as this value
-/// is never moved after it is initialized. It should only be used inside
-/// of a container like Box or Rc and never extracted from it.
-struct PermanentRoot(#[ignore_malloc_size_of = "mozjs value"] Heap<JSVal>);
-
-impl PermanentRoot {
-    /// Add a GC root for the provided JS object.
-    ///
-    /// # Safety
-    /// - This method must only be called on a `PermanentRoot` that will not
-    ///   move for the remainder of its lifetime (e.g. inside of Box, Rc, etc.)
-    /// - This must only be called once per instance of `PermanentRoot`
-    #[expect(unsafe_code)]
-    unsafe fn init(&self, cx: &JSContext, object: HandleObject) {
-        self.0.set(ObjectValue(*object));
-        unsafe {
-            assert!(AddRawValueRoot(
-                cx,
-                self.0.get_unsafe(),
-                c"Promise::root".as_ptr(),
-            ));
-        }
-    }
-}
-
-impl Drop for PermanentRoot {
-    #[expect(unsafe_code)]
-    fn drop(&mut self) {
-        let js_root = self.0.get();
-        if js_root.is_undefined() {
-            return;
-        }
-        let object = js_root.to_object();
-        assert!(!object.is_null());
-        if let Some(cx) = Runtime::get() {
-            unsafe {
-                RemoveRawValueRoot(cx.as_ptr(), self.0.get_unsafe());
-            }
-        }
     }
 }
 
@@ -354,7 +238,7 @@ impl Promise {
             promise
                 .0
                 .init_reflector_without_associated_memory(obj.get());
-            promise.1.init(cx, obj);
+            promise.1.init(cx, *obj, c"Promise::root");
         }
         RootedPromise(promise)
     }
@@ -394,7 +278,7 @@ impl Promise {
         let mut realm = enter_auto_realm(cx, global);
         let cx = &mut realm.current_realm();
         rooted!(&in(cx) let mut rval = UndefinedValue());
-        value.safe_to_jsval(cx, rval.handle_mut());
+        value.to_jsval(cx, rval.handle_mut());
         rooted!(&in(cx) let p = unsafe { CallOriginalPromiseResolve(cx, rval.handle()) });
         assert!(!p.handle().is_null());
         Promise::new_with_js_promise(cx, p.handle())
@@ -411,7 +295,7 @@ impl Promise {
         let mut realm = enter_auto_realm(cx, global);
         let cx = &mut realm.current_realm();
         rooted!(&in(cx) let mut rval = UndefinedValue());
-        value.safe_to_jsval(cx, rval.handle_mut());
+        value.to_jsval(cx, rval.handle_mut());
         rooted!(&in(cx) let p = unsafe { CallOriginalPromiseReject(cx, rval.handle()) });
         assert!(!p.handle().is_null());
         Promise::new_with_js_promise(cx, p.handle())
@@ -424,7 +308,7 @@ impl Promise {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
         rooted!(&in(cx) let mut v = UndefinedValue());
-        val.safe_to_jsval(cx, v.handle_mut());
+        val.to_jsval(cx, v.handle_mut());
         self.resolve(cx, v.handle());
     }
 
@@ -444,7 +328,7 @@ impl Promise {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
         rooted!(&in(cx) let mut v = UndefinedValue());
-        val.safe_to_jsval(cx, v.handle_mut());
+        val.to_jsval(cx, v.handle_mut());
         self.reject(cx, v.handle());
     }
 
@@ -452,7 +336,7 @@ impl Promise {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
         rooted!(&in(cx) let mut v = UndefinedValue());
-        error.safe_to_jsval(cx, &self.global(), v.handle_mut());
+        error.to_jsval(cx, &self.global(), v.handle_mut());
         self.reject(cx, v.handle());
     }
 

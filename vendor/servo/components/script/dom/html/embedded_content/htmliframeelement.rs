@@ -112,7 +112,6 @@ pub(crate) struct HTMLIFrameElement {
     /// on the initial creation of the iframe contents. If the iframe
     /// itself changes the `window.name`, that takes precedence.
     frozen_name: DomRefCell<Option<String>>,
-    throttled: Cell<bool>,
 }
 
 impl HTMLIFrameElement {
@@ -280,7 +279,6 @@ impl HTMLIFrameElement {
                 self.about_blank_pipeline_id.set(Some(new_pipeline_id));
 
                 let load_info = IFrameLoadInfoWithData {
-                    embedder_theme: window.embedder_theme(),
                     info: load_info,
                     load_data: load_data.clone(),
                     old_pipeline_id,
@@ -293,8 +291,7 @@ impl HTMLIFrameElement {
                     .unwrap();
 
                 let new_pipeline_info = NewPipelineInfo {
-                    webview_id: window.webview_id(),
-                    embedder_theme: window.embedder_theme(),
+                    webview_state: (*window.webview_state()).clone(),
                     parent_info: Some(window.pipeline_id()),
                     new_pipeline_id,
                     browsing_context_id,
@@ -313,7 +310,6 @@ impl HTMLIFrameElement {
             },
             PipelineType::Navigation => {
                 let load_info = IFrameLoadInfoWithData {
-                    embedder_theme: window.embedder_theme(),
                     info: load_info,
                     load_data,
                     old_pipeline_id,
@@ -614,14 +610,6 @@ impl HTMLIFrameElement {
         }
     }
 
-    // BAO patch (fork-maintained, 2026-09-28): restored from the fork's
-    // throttling face (window-end caller in script_thread).
-    pub(crate) fn set_throttled(&self, throttled: bool) {
-        if self.throttled.get() != throttled {
-            self.throttled.set(throttled);
-        }
-    }
-
     fn destroy_nested_browsing_context(&self) {
         self.pipeline_id.set(None);
         self.pending_pipeline_id.set(None);
@@ -677,7 +665,6 @@ impl HTMLIFrameElement {
             browsing_context_id: Cell::new(None),
             webview_id: Cell::new(None),
             pipeline_id: Cell::new(None),
-            throttled: Cell::new(false),
             pending_pipeline_id: Cell::new(None),
             about_blank_pipeline_id: Cell::new(None),
             sandbox: Default::default(),
@@ -885,9 +872,7 @@ impl HTMLIFrameElement {
         // TODO
 
         // Step 5. Destroy a document and its descendants given navigable's active document.
-        // BAO patch (fork-maintained, 2026-09-28): the fork's RemoveIFrame carries
-        // an IpcSender (generic_channel form not adopted).
-        let (sender, receiver) = ipc_channel::ipc::channel::<Vec<PipelineId>>().unwrap();
+        let (sender, receiver) = channel(self.global().time_profiler_chan().clone()).unwrap();
         let msg = ScriptToConstellationMessage::RemoveIFrame(browsing_context_id, sender);
         self.owner_window()
             .as_global_scope()

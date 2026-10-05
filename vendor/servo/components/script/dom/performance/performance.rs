@@ -15,7 +15,7 @@ use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMa
 use script_bindings::codegen::GenericBindings::PerformanceMarkBinding::PerformanceMarkMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::codegen::GenericUnionTypes::StringOrPerformanceMeasureOptions;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use time::Duration;
 
@@ -34,10 +34,9 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::performance::performancetiming::PerformanceTiming;
@@ -170,14 +169,14 @@ impl Performance {
     ) -> DomRoot<Performance> {
         let timing = PerformanceTiming::new(cx, global);
         let navigation = PerformanceNavigation::new(cx, global);
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(Performance::new_inherited(
                 navigation_start,
                 &timing,
                 &navigation,
             )),
             global,
-            cx,
         )
     }
 
@@ -762,7 +761,7 @@ impl PerformanceMethods<crate::DomTypeHolder> for Performance {
             !options.detail.get().is_null_or_undefined()
         {
             // Step 9.1.1. Let record be the result of calling the StructuredSerialize algorithm on startOrMeasureOptions’s detail.
-            let record = structuredclone::write(cx, options.detail.handle(), None)?;
+            let record = structuredclone::write(cx, options.detail.as_handle_value(), None)?;
 
             // Step 9.1.2. Set entry’s detail to the result of calling the StructuredDeserialize algorithm on record and the current realm.
             structuredclone::read(cx, &self.global(), record, detail.handle_mut())?;
@@ -813,35 +812,6 @@ pub(crate) trait ToDOMHighResTimeStamp {
     fn to_dom_high_res_time_stamp(&self) -> DOMHighResTimeStamp;
 }
 
-// BAO PATCH (SM-EVOLUTION #28, user ruling 2026-09-10 — REQ-STL identity
-// consistency): profile-driven grid for EVERY DOM high-resolution timestamp
-// (`performance.now`, `timeOrigin`, performance entries' startTime/duration,
-// resource timing, LCP render times — all funnel through this single
-// conversion). Upstream quantizes to a servo-specific 10µs grid; that grid
-// is itself a fingerprint tell, and it disagreeing with the Date-layer grid
-// (engine-native `JS::SetTimeResolutionUsec`, fed from the SAME
-// `StealthProfile::timing` field by bao_browser) would be another one.
-//
-// 0 (default) keeps the upstream 10µs grid byte-for-byte — stealth-free
-// pages and upstream WPT behavior are unaffected. Non-zero floors to the
-// profile grid (floor matches the engine clamp's coarsening semantics).
-// Process-global, last write wins (engine-level sink granularity, same
-// class as the canvas noise seed global).
-static DOM_TIME_PRECISION_US: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// Set the DOM high-resolution timestamp grid in microseconds
-/// (0 = upstream 10µs grid). BAO embedder API, re-exported via the `servo`
-/// crate; armed from `StealthProfile::timing.precision_us`.
-pub fn set_dom_time_precision_us(precision_us: u64) {
-    DOM_TIME_PRECISION_US.store(precision_us, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// The currently armed DOM timestamp grid in microseconds (0 = upstream).
-pub fn dom_time_precision_us() -> u64 {
-    DOM_TIME_PRECISION_US.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 impl ToDOMHighResTimeStamp for Duration {
     fn to_dom_high_res_time_stamp(&self) -> DOMHighResTimeStamp {
         // https://www.w3.org/TR/hr-time-2/#clock-resolution
@@ -849,15 +819,7 @@ impl ToDOMHighResTimeStamp for Duration {
         // exactly representable f64 so WPT tests might occasionally corner-case on
         // rounding.  web-platform-tests/wpt#21526 wants us to use an integer number of
         // microseconds; the next divisor of milliseconds up from 5 microseconds is 10.
-        let precision_us = dom_time_precision_us();
-        let microseconds_rounded = if precision_us == 0 {
-            (self.whole_microseconds() as f64 / 10.).floor() * 10.
-        } else {
-            // BAO PATCH (SM-EVOLUTION #28): profile-driven grid, floored to
-            // match the engine-native Date clamp's coarsening semantics.
-            (self.whole_microseconds() as f64 / precision_us as f64).floor()
-                * precision_us as f64
-        };
+        let microseconds_rounded = (self.whole_microseconds() as f64 / 10.).floor() * 10.;
         Finite::wrap(microseconds_rounded / 1000.)
     }
 }

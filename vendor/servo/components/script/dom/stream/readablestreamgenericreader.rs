@@ -101,7 +101,7 @@ pub(crate) trait ReadableStreamGenericReader {
             } else {
                 // Otherwise, set reader.[[closedPromise]] to a promise rejected with a TypeError exception.
                 rooted!(&in(cx) let mut error = UndefinedValue());
-                Error::Type(c"Cannot release lock due to stream state.".to_owned()).safe_to_jsval(
+                Error::Type(c"Cannot release lock due to stream state.".to_owned()).to_jsval(
                     cx,
                     &stream.global(),
                     error.handle_mut(),

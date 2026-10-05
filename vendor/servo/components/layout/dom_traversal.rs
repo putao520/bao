@@ -16,7 +16,6 @@ use style::properties::ComputedValues;
 use style::selector_parser::PseudoElement;
 use style::values::generics::counters::{Content, ContentItem};
 use style::values::specified::Quotes;
-use web_atoms::LocalName;
 
 use crate::context::LayoutContext;
 use crate::dom::{BoxSlot, LayoutBox, NodeExt};
@@ -363,8 +362,6 @@ pub(crate) fn generate_pseudo_element_content(
                         ContentItem::String(s) => {
                             Some(PseudoElementContentItem::Text(s.to_string()))
                         },
-                        // stylo 0.22 removed the `attr()` content item from `content`; the
-                        // parser can no longer produce it, so no arm exists here.
                         ContentItem::Image(image) => {
                             ReplacedContents::from_image(pseudo_element_info.node, context, image)
                                 .map(PseudoElementContentItem::Replaced)

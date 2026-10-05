@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::Builder;
 
@@ -31,9 +30,8 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
-use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
-use script_bindings::interfaces::StackRootPromiseHelpers;
+use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct OfflineAudioContext {
@@ -41,7 +39,6 @@ pub(crate) struct OfflineAudioContext {
     channel_count: u32,
     length: u32,
     rendering_started: Cell<bool>,
-    #[conditional_malloc_size_of]
     pending_rendering_promise: DomRefCell<Option<TracedPromise>>,
 }
 
@@ -74,7 +71,7 @@ impl OfflineAudioContext {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         channel_count: u32,
         length: u32,
@@ -87,13 +84,13 @@ impl OfflineAudioContext {
         {
             return Err(Error::NotSupported(None));
         }
-        let pipeline_id = global.pipeline_id();
+        let pipeline_id = window.pipeline_id();
         let context =
             OfflineAudioContext::new_inherited(channel_count, length, sample_rate, pipeline_id)?;
         Ok(reflect_dom_object_with_proto(
             cx,
             Box::new(context),
-            global,
+            window,
             proto,
         ))
     }
@@ -103,13 +100,13 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext>
     fn Constructor(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         options: &OfflineAudioContextOptions,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
         OfflineAudioContext::new(
             cx,
-            global,
+            window,
             proto,
             options.numberOfChannels,
             options.length,
@@ -120,13 +117,13 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext-numberofchannels-length-samplerate>
     fn Constructor_(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         number_of_channels: u32,
         length: u32,
         sample_rate: Finite<f32>,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
-        OfflineAudioContext::new(cx, global, proto, number_of_channels, length, *sample_rate)
+        OfflineAudioContext::new(cx, window, proto, number_of_channels, length, *sample_rate)
     }
 
     // https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-oncomplete
@@ -176,21 +173,6 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                 let _ = receiver.recv();
                 task_source.queue(task!(resolve: move |cx| {
                     let this = this.root();
-                    // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
-                    // render thread's completion may land after this realm's
-                    // pipeline was closed — resolving then would re-enter a
-                    // discarded realm's JS (the promise's reflector is
-                    // legally GC-swept). Drop the settle entirely (browser
-                    // navigation semantics: an offline render outliving its
-                    // document delivers nothing). Pure address probe —
-                    // MUST run before any JS deref below.
-                    if crate::event_loop::script_thread::bao_is_realm_discarded(
-                        script_bindings::reflector::DomObject::reflector(&*this.global())
-                            .get_jsobject()
-                            .get(),
-                    ) {
-                        return;
-                    }
                     let processed_audio = processed_audio.lock().unwrap();
                     let mut processed_audio: Vec<_> = processed_audio
                         .chunks(this.length as usize)
@@ -202,7 +184,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                     }
                     let buffer = AudioBuffer::new(
                         cx,
-                        &this.global(),
+                        this.global().as_window(),
                         this.channel_count,
                         this.length,
                         *this.context.SampleRate(),
@@ -214,9 +196,12 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                             .safe_borrow_mut(cx.no_gc()))
                             .take()
                             .unwrap()
+                            .root(cx)
                     };
                     promise.resolve_native(cx, &buffer);
-                    let event = OfflineAudioCompletionEvent::new(cx, &this.global(),
+                    let global = &this.global();
+                    let window = global.as_window();
+                    let event = OfflineAudioCompletionEvent::new(cx, window,
                                                                  atom!("complete"),
                                                                  EventBubbles::DoesNotBubble,
                                                                  EventCancelable::NotCancelable,

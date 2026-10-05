@@ -1,14 +1,13 @@
 [package]
 name = "bao-servo-base"
 version = "0.5.18"
+publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
-publish = true
 rust-version = "1.88.0"
 repository = "https://github.com/servo/servo"
 description = "A component of the servo web-engine."
-
 [lib]
 name = "servo_base"
 path = "lib.rs"
@@ -30,17 +29,22 @@ rayon = {version = "1"}
 regex = {version = "1.12"}
 serde = {version = "1.0.228"}
 serde_json = {version = "1.0"}
-smallvec = {version = "1"}
+smallvec = {version = "1.15", features = ["serde", "union"]}
 servo-config = {package = "bao-servo-config", path = "../../config", version = ">=0.5.12, <0.6.0"}
 time = {package = "time", version = "0.3", features = ["large-dates", "local-offset", "serde"]}
 unicode-segmentation = {version = "1.13.3"}
 webrender_api = {version = "0.70"}
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-mach2 = {version = "0.6"}
+mach2 = {version = "0.7"}
 
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))'.dependencies]
 libc = {version = "0.2"}
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = {version = "0.61", features = ["Win32_System_Performance"]}
+
+[lints.rust]
+unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}
+[lints.clippy]
+manual_string_new = "warn"

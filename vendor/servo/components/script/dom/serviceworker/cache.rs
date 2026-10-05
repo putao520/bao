@@ -6,9 +6,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use dom_struct::dom_struct;
-use js::rust::Runtime;
 use js::context::JSContext;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::root::DomRoot;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_url::ServoUrl;
@@ -53,7 +52,7 @@ impl Cache {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope, name: DOMString) -> DomRoot<Cache> {
-        reflect_dom_object_with_cx(Box::new(Cache::new_inherited(name)), global, cx)
+        reflect_dom_object(cx, Box::new(Cache::new_inherited(name)), global)
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -165,15 +164,12 @@ impl Cache {
 
 impl CacheMethods<crate::DomTypeHolder> for Cache {
     /// <https://w3c.github.io/ServiceWorker/#dom-cache-keys>
-    // BAO patch (fork-maintained, 2026-09-28): terminal codegen passes no cx;
-    // take the thread's active context instead.
-    #[allow(unsafe_code)]
     fn Keys(
         &self,
+        cx: &mut JSContext,
         request: Option<RequestOrUSVString>,
         _options: &CacheQueryOptions,
     ) -> RootedPromise {
-        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
         // Step 1: Let r be null.
         let mut r: Option<DomRoot<Request>> = None;
 
@@ -183,7 +179,7 @@ impl CacheMethods<crate::DomTypeHolder> for Cache {
 
         // Step 4: Let promise be a new promise.
         // Note: step re-ordered to make it available in Step 2.
-        let promise = Promise::new(&mut cx, &global);
+        let promise = Promise::new(cx, &global);
 
         // Step 2: If the optional argument request is not omitted, then:
         if let Some(request) = request {
@@ -199,10 +195,10 @@ impl CacheMethods<crate::DomTypeHolder> for Cache {
                 let Ok(url) = ServoUrl::parse(&request_string) else {
                     // If this throws an exception, return a promise rejected with that exception.
                     // Note: only the url parse can error.
-                    promise.reject_error(&mut cx, Error::Type(c"Invalid URL".to_owned()));
+                    promise.reject_error(cx, Error::Type(c"Invalid URL".to_owned()));
                     return promise;
                 };
-                let request = Request::new(&mut cx, &global, None, url);
+                let request = Request::new(cx, &global, None, url);
                 r = Some(request);
             }
         }
@@ -222,7 +218,7 @@ impl CacheMethods<crate::DomTypeHolder> for Cache {
             .is_err()
         {
             promise.reject_error(
-                &mut cx,
+                cx,
                 Error::Operation(Some("Could not run the parallel steps.".to_string())),
             );
             return promise;

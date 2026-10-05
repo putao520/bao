@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::mem;
@@ -9,6 +11,7 @@ use std::rc::Rc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
+use bytes::Bytes;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
@@ -24,7 +27,6 @@ use markup5ever::TokenizerResult;
 use mime::{self, Mime};
 use net_traits::mime_classifier::{ApacheBugFlag, MediaType, MimeClassifier, NoSniffFlag};
 use net_traits::policy_container::PolicyContainer;
-use net_traits::request::RequestId;
 use net_traits::{
     FetchMetadata, LoadContext, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming,
 };
@@ -33,7 +35,7 @@ use profile_traits::time::{
 };
 use profile_traits::time_profile;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::script_runtime::temp_cx;
 use script_traits::DocumentActivity;
 use servo_base::id::{PipelineId, WebViewId};
@@ -65,7 +67,7 @@ use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
 use crate::dom::csp::parse_csp_list_from_metadata;
 use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
-use crate::dom::document::{Document, DocumentSource, HasBrowsingContext, IsHTMLDocument};
+use crate::dom::document::{Document, HasBrowsingContext, IsHTMLDocument};
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::documenttype::DocumentType;
 use crate::dom::domstringlist::DOMStringList;
@@ -256,7 +258,6 @@ impl ServoParser {
             None,
             None,
             DocumentActivity::Inactive,
-            DocumentSource::FromParser,
             loader,
             None,
             None,
@@ -476,7 +477,7 @@ impl ServoParser {
         self.parse_sync(cx);
     }
 
-    // https://html.spec.whatwg.org/multipage/#abort-a-parser
+    /// <https://html.spec.whatwg.org/multipage/#abort-a-parser>
     pub(crate) fn abort(&self, cx: &mut JSContext) {
         assert!(!self.aborted.get());
         self.aborted.set(true);
@@ -552,7 +553,8 @@ impl ServoParser {
         encoding_hint_from_content_type: Option<&'static Encoding>,
         encoding_of_container_document: Option<&'static Encoding>,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(ServoParser::new_inherited(
                 document,
                 tokenizer,
@@ -561,7 +563,6 @@ impl ServoParser {
                 encoding_of_container_document,
             )),
             document.window(),
-            cx,
         )
     }
 
@@ -584,12 +585,12 @@ impl ServoParser {
         self.network_input.push_back(chunk);
     }
 
-    fn push_bytes_input_chunk(&self, chunk: Vec<u8>) {
+    fn push_bytes_input_chunk(&self, chunk: &[u8]) {
         // For byte input, we convert it to text using the network decoder.
         if let Some(decoded_chunk) = self
             .network_decoder
             .borrow_mut()
-            .push(&chunk, &self.document)
+            .push(chunk, &self.document)
         {
             self.push_tendril_input_chunk(decoded_chunk);
         }
@@ -601,7 +602,7 @@ impl ServoParser {
             // to overwrite the network input, this prefetching may
             // have been wasted, but in most cases it won't.
             let mut prefetch_decoder = self.prefetch_decoder.borrow_mut();
-            prefetch_decoder.process(ByteTendril::from(&*chunk));
+            prefetch_decoder.process(ByteTendril::from(chunk));
 
             self.prefetch_input
                 .push_back(mem::take(&mut prefetch_decoder.inner_sink_mut().output));
@@ -684,11 +685,11 @@ impl ServoParser {
         }
     }
 
-    fn parse_bytes_chunk(&self, cx: &mut JSContext, input: Vec<u8>) {
+    fn parse_bytes_chunk(&self, cx: &mut JSContext, input: &[u8]) {
         let mut realm = enter_auto_realm(cx, &*self.document);
         let cx = &mut realm.current_realm();
         self.document.set_current_parser(Some(self));
-        self.push_bytes_input_chunk(input);
+        self.push_bytes_input_chunk(input.as_ref());
         if !self.suspended.get() {
             self.parse_sync(cx);
         }
@@ -1024,8 +1025,13 @@ impl ParserContext {
     /// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
     fn initialize_document_object(&self, cx: &mut JSContext, document: &Document) {
         // Step 9. Let document be a new Document, with
+        // policy container: navigationParams's policy container
         document.set_policy_container(self.navigation_params.policy_container.clone());
+        // active sandboxing flag: set navigationParams's final sandboxing flag set
         document.set_active_sandboxing_flag_set(self.navigation_params.final_sandboxing_flag_set);
+        // current document readiness: "loading"
+        document.set_document_readiness_to_loading_for_initialization();
+        // about base URL: navigationParams's about base URL
         document.set_about_base_url(self.navigation_params.about_base_url.clone());
         // Step 11. Set document's internal ancestor origin objects list to the result of
         // running the internal ancestor origin objects list creation steps given
@@ -1138,7 +1144,7 @@ impl ParserContext {
         if let Some(parser) = parser {
             parser.parse_bytes_chunk(
                 cx,
-                std::mem::take(&mut self.navigation_params.resource_header),
+                std::mem::take(&mut self.navigation_params.resource_header).as_ref(),
             );
         }
     }
@@ -1323,7 +1329,6 @@ impl ParserContext {
         debug_assert_eq!(document.ReadyState(), DocumentReadyState::Complete);
 
         document.set_current_parser(None);
-        document.start_the_end_loading_phase();
         document.finish_load(LoadType::PageSource(self.url.clone()), cx);
 
         document.notify_embedder_of_load_completion();
@@ -1333,8 +1338,8 @@ impl ParserContext {
     /// <https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document>
     pub(crate) fn process_response(
         &mut self,
+        script_thread: &ScriptThread,
         cx: &mut JSContext,
-        _: RequestId,
         meta_result: Result<FetchMetadata, NetworkError>,
     ) {
         let (metadata, mut error) = match meta_result {
@@ -1371,17 +1376,25 @@ impl ParserContext {
         // Step 21.9. Set responsePolicyContainer to the result of creating a
         // policy container from a fetch response given response and request's
         // reserved client.
-        let (policy_container, endpoints_list, link_headers) = match metadata.as_ref() {
-            None => (PolicyContainer::default(), None, vec![]),
-            Some(metadata) => (
-                Self::create_policy_container_from_fetch_response(metadata),
-                ReportingEndpoint::parse_reporting_endpoints_header(
-                    &self.url.clone(),
-                    &metadata.headers,
-                ),
-                extract_links_from_headers(&metadata.headers),
-            ),
-        };
+        let (policy_container, endpoints_list, link_headers, content_language) = metadata
+            .as_ref()
+            .map(|metadata| {
+                (
+                    Self::create_policy_container_from_fetch_response(metadata),
+                    ReportingEndpoint::parse_reporting_endpoints_header(
+                        &self.url.clone(),
+                        &metadata.headers,
+                    ),
+                    extract_links_from_headers(&metadata.headers),
+                    metadata
+                        .headers
+                        .as_ref()
+                        .and_then(|headers| headers.get("Content-Language"))
+                        .and_then(|header| header.to_str().ok())
+                        .map(|string| string.to_owned()),
+                )
+            })
+            .unwrap_or_default();
 
         // Step 21.10. Set finalSandboxFlags to the union of targetSnapshotParams's
         // sandboxing flags and responsePolicyContainer's CSP list's CSP-derived
@@ -1402,7 +1415,7 @@ impl ParserContext {
             self.source_origin.clone(),
         );
 
-        let Some(document) = ScriptThread::page_headers_available(
+        let Some(document) = script_thread.handle_page_headers_available(
             self.webview_id,
             self.pipeline_id,
             metadata.as_ref(),
@@ -1470,6 +1483,10 @@ impl ParserContext {
         if let Some(endpoints) = endpoints_list {
             window.set_endpoints_list(endpoints);
         }
+        // https://html.spec.whatwg.org/multipage/#language
+        // > then language information from a higher-level protocol (such as HTTP),
+        // > if any, must be used as the final fallback language instead
+        document.set_default_language(content_language);
         if let Some(parser) = document.get_current_parser() {
             self.parser = Some(Trusted::new(&*parser));
         }
@@ -1553,12 +1570,7 @@ impl ParserContext {
         }
     }
 
-    pub(crate) fn process_response_chunk(
-        &mut self,
-        cx: &mut JSContext,
-        _: RequestId,
-        payload: Vec<u8>,
-    ) {
+    pub(crate) fn process_response_chunk(&mut self, cx: &mut JSContext, payload: Bytes) {
         if self.is_synthesized_document {
             return;
         }
@@ -1575,13 +1587,13 @@ impl ParserContext {
             // https://mimesniff.spec.whatwg.org/#read-the-resource-header
             self.navigation_params
                 .resource_header
-                .extend_from_slice(&payload);
+                .extend_from_slice(payload.as_ref());
             // the number of bytes in buffer is greater than or equal to 1445.
             if self.navigation_params.resource_header.len() >= 1445 {
                 self.load_document(cx, Some(&parser), &document);
             }
         } else {
-            parser.parse_bytes_chunk(cx, payload);
+            parser.parse_bytes_chunk(cx, payload.as_ref());
         }
     }
 
@@ -1591,7 +1603,6 @@ impl ParserContext {
     pub(crate) fn process_response_eof(
         mut self,
         cx: &mut JSContext,
-        _: RequestId,
         status: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
@@ -2194,6 +2205,7 @@ fn create_element_for_token(
     let element = Element::create(cx, name, is, document, creator, creation_mode, None);
 
     // Step 11. Append each attribute in the given token to element.
+    element.attrs().reserve_exact(attrs.len());
     for attr in attrs {
         element.set_attribute_from_parser(cx, attr.name, attr.value);
     }

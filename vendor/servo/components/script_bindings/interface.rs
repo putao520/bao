@@ -8,7 +8,7 @@ use std::convert::TryFrom;
 use std::ffi::CStr;
 use std::ptr::{self, NonNull};
 
-use js::error::throw_type_error_safe;
+use js::error::throw_type_error;
 use js::glue::UncheckedUnwrapObject;
 use js::jsapi::JS::CompartmentIterResult;
 use js::jsapi::{
@@ -132,36 +132,6 @@ impl InterfaceConstructorBehavior {
 /// A trace hook.
 pub(crate) type TraceHook = unsafe extern "C" fn(trc: *mut JSTracer, obj: *mut JSObject);
 
-// BAO PATCH (SM-EVOLUTION #28, user ruling 2026-09-10 — REQ-STL identity
-// consistency): process-global switch arming `forceUTC_` on every realm
-// `create_global_object` creates (Window / DedicatedWorker / SharedWorker /
-// ServiceWorker globals all funnel through this choke point). Before this,
-// every Date local-time computation ran in the HOST zone — a +0800 host
-// leaked straight through getTimezoneOffset/toString/Intl offsets.
-//
-// Engine semantics: `forceUTC_` is a creation-time-only per-realm flag (no
-// post-creation setter) with Firefox-RFP shape — SM maps it to the real IANA
-// zone Atlantic/Reykjavik (UTC+0, real DST history). The embedder (bao_browser)
-// arms this from `StealthProfile::timezone` BEFORE the page's pipeline realms
-// are created; last write wins process-wide (engine-level sink granularity,
-// same class as the canvas noise seed global). With the switch off (default,
-// and what stealth-free pages reset it to), upstream host-derived behavior is
-// preserved byte-for-byte.
-static FORCE_UTC_REALMS: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Arm/clear the engine-native forceUTC timezone policy for all subsequently
-/// created servo realms (BAO embedder API; re-exported via `servo` crate).
-pub fn set_force_utc_realms(force: bool) {
-    FORCE_UTC_REALMS.store(force, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Whether subsequently created servo realms run Date local-time methods in
-/// UTC+0.
-pub fn force_utc_realms() -> bool {
-    FORCE_UTC_REALMS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// Create a global object with the given class.
 pub(crate) unsafe fn create_global_object<D: DomTypes>(
     cx: &mut js::context::JSContext,
@@ -177,22 +147,6 @@ pub(crate) unsafe fn create_global_object<D: DomTypes>(
     let mut options = RealmOptions::default();
     options.creationOptions_.traceGlobal_ = Some(trace);
     options.creationOptions_.sharedMemoryAndAtomics_ = false;
-    // BAO PATCH (SM-EVOLUTION #28): engine-native timezone identity.
-    // SM153: forceUTC_ removed — the same engine semantics (the IANA zone
-    // Atlantic/Reykjavik, real UTC+0 with real DST history) ride
-    // RealmBehaviors::setTimeZoneOverride via the jsglue shim. Plus the
-    // SM153 time-precision parity RTP token (callback is token-agnostic;
-    // the Maybe must be non-empty for Date reads to take the clamped path).
-    if force_utc_realms() {
-        js::glue::BaoSetRealmTimeZoneOverride(
-            std::ptr::from_mut(&mut *options),
-            c"Atlantic/Reykjavik".as_ptr(),
-        );
-    }
-    js::glue::BaoSetRealmOptionsReduceTimerPrecisionCallerType(
-        std::ptr::from_mut(&mut *options),
-        0,
-    );
     if use_system_compartment {
         options.creationOptions_.compSpec_ = CompartmentSpecifier::NewCompartmentAndZone;
         options.creationOptions_.__bindgen_anon_1.comp_ = std::ptr::null_mut();
@@ -211,31 +165,33 @@ pub(crate) unsafe fn create_global_object<D: DomTypes>(
         // in select_compartment() below [1], preventing compartment reuse in either direction between this global
         // and any globals created with `use_system_compartment` set to false.
         // [1] IsSystemCompartment() → Realm::isSystem() → Realm::isSystem_ → principals == trustedPrincipals()
-        JS_SetTrustedPrincipals(cx, principal.as_raw());
+        unsafe { JS_SetTrustedPrincipals(cx, principal.as_raw()) };
     }
 
-    rval.set(JS_NewGlobalObject(
-        cx,
-        class,
-        principal.as_raw(),
-        OnNewGlobalHookOption::DontFireOnNewGlobalHook,
-        &*options,
-    ));
+    rval.set(unsafe {
+        JS_NewGlobalObject(
+            cx,
+            class,
+            principal.as_raw(),
+            OnNewGlobalHookOption::DontFireOnNewGlobalHook,
+            &*options,
+        )
+    });
     assert!(!rval.is_null());
 
     // Initialize the reserved slots before doing anything that can GC, to
     // avoid getting trace hooks called on a partially initialized object.
     let private_val = PrivateValue(private);
-    JS_SetReservedSlot(rval.get(), DOM_OBJECT_SLOT, &private_val);
+    unsafe { JS_SetReservedSlot(rval.get(), DOM_OBJECT_SLOT, &private_val) };
     let proto_array: Box<ProtoOrIfaceArray> =
         Box::new([ptr::null_mut::<JSObject>(); PrototypeList::PROTO_OR_IFACE_LENGTH]);
     let val = PrivateValue(Box::into_raw(proto_array) as *const libc::c_void);
-    JS_SetReservedSlot(rval.get(), DOM_PROTOTYPE_SLOT, &val);
+    unsafe { JS_SetReservedSlot(rval.get(), DOM_PROTOTYPE_SLOT, &val) };
 
     let mut cx = AutoRealm::new_from_handle(cx, rval.handle());
     let cx = &mut cx;
 
-    JS_FireOnNewGlobalObject(cx, rval.handle());
+    unsafe { JS_FireOnNewGlobalObject(cx, rval.handle()) };
 }
 
 /// Choose the compartment to create a new global object in.
@@ -248,13 +204,16 @@ fn select_compartment(cx: &mut js::context::JSContext, options: &mut RealmOption
     ) -> CompartmentIterResult {
         let data = data as *mut Data;
 
-        if !IsSharableCompartment(compartment) || IsSystemCompartment(compartment) {
-            return CompartmentIterResult::KeepGoing;
+        unsafe {
+            if !IsSharableCompartment(compartment) || IsSystemCompartment(compartment) {
+                return CompartmentIterResult::KeepGoing;
+            }
+
+            // Choose any sharable, non-system compartment in this context to allow
+            // same-agent documents to share JS and DOM objects.
+            *data = compartment;
         }
 
-        // Choose any sharable, non-system compartment in this context to allow
-        // same-agent documents to share JS and DOM objects.
-        *data = compartment;
         CompartmentIterResult::Stop
     }
 
@@ -524,13 +483,15 @@ unsafe extern "C" fn fun_to_string_hook(
     obj: RawHandleObject,
     _is_to_source: bool,
 ) -> *mut JSString {
-    let js_class = get_object_class(obj.get());
-    assert!(!js_class.is_null());
-    let repr = (*(js_class as *const NonCallbackInterfaceObjectClass)).representation;
-    assert!(!repr.is_empty());
-    let ret = JS_NewStringCopyN(cx, repr.as_ptr() as *const libc::c_char, repr.len());
-    assert!(!ret.is_null());
-    ret
+    unsafe {
+        let js_class = get_object_class(obj.get());
+        assert!(!js_class.is_null());
+        let repr = (*(js_class as *const NonCallbackInterfaceObjectClass)).representation;
+        assert!(!repr.is_empty());
+        let ret = JS_NewStringCopyN(cx, repr.as_ptr() as *const libc::c_char, repr.len());
+        assert!(!ret.is_null());
+        ret
+    }
 }
 
 fn create_unscopable_object(
@@ -592,7 +553,7 @@ unsafe extern "C" fn invalid_constructor(
 ) -> bool {
     // SAFETY: it is safe to construct a JSContext from engine hook.
     let mut cx = unsafe { js::context::JSContext::from_ptr(NonNull::new(cx).unwrap()) };
-    throw_type_error_safe(&mut cx, c"Illegal constructor.");
+    throw_type_error(&mut cx, c"Illegal constructor.");
     false
 }
 
@@ -603,7 +564,7 @@ unsafe extern "C" fn non_new_constructor(
 ) -> bool {
     // SAFETY: it is safe to construct a JSContext from engine hook.
     let mut cx = unsafe { js::context::JSContext::from_ptr(NonNull::new(cx).unwrap()) };
-    throw_type_error_safe(&mut cx, c"This constructor needs to be called with `new`.");
+    throw_type_error(&mut cx, c"This constructor needs to be called with `new`.");
     false
 }
 

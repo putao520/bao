@@ -17,8 +17,8 @@ use crossbeam_channel::Sender;
 use devtools_traits::DevtoolsControlMsg;
 use embedder_traits::GenericEmbedderProxy;
 use hyper_serde::Serde;
-use ipc_channel::ipc::IpcSender;
 use log::{debug, trace, warn};
+use malloc_size_of_derive::MallocSizeOf;
 use net_traits::blob_url_store::{BlobTokenCommunicator, parse_blob_url};
 use net_traits::filemanager_thread::FileTokenCheck;
 use net_traits::pub_domains::public_suffix_list_size_of;
@@ -26,11 +26,12 @@ use net_traits::request::{Destination, PreloadEntry, PreloadId, RequestBuilder, 
 use net_traits::response::{Response, ResponseInit};
 use net_traits::{
     AsyncRuntime, CookieAsyncResponse, CookieData, CookieSource, CoreResourceMsg,
-    CoreResourceThread, DiscardFetch, FetchChannels, FetchTaskTarget,
+    CoreResourceThread, CustomResponseMediator, DiscardFetch, FetchChannels, FetchTaskTarget,
     NetworkError, ResourceFetchTiming, ResourceThreads, ResourceTimingType, WebSocketDomAction,
     WebSocketNetworkEvent,
 };
 use parking_lot::{Mutex, RwLock};
+use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use profile_traits::mem::{
     ProcessReports, ProfilerChan as MemProfilerChan, Report, ReportKind, ReportsChan,
     perform_memory_report,
@@ -43,14 +44,16 @@ use rustls_pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericReceiver, GenericReceiverSet,
-    GenericSelectionResult,
+    GenericSelectionResult, GenericSender,
 };
 use servo_base::id::CookieStoreId;
-use servo_url::ServoUrl;
+use servo_url::{ImmutableOrigin, ServoUrl};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::async_runtime::{init_async_runtime, spawn_task};
-use crate::connector::{CACertificates, CertificateErrorOverrideManager};
+use crate::connector::{
+    CACertificates, CertificateErrorOverrideManager, create_http_client, create_tls_config,
+};
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
 use crate::embedder::NetToEmbedderMsg;
@@ -58,7 +61,7 @@ use crate::fetch::cors_cache::CorsCache;
 use crate::fetch::fetch_params::{FetchParams, SharedPreloadedResources};
 use crate::fetch::methods::{
     AutoRequestBodyStreamCloser, CancellationListener, FetchContext,
-    SharedInflightKeepAliveRecords, SwManagers, WebSocketChannel, fetch,
+    SharedInflightKeepAliveRecords, WebSocketChannel, fetch,
     transfers_request_body_stream_to_later_manual_redirect,
 };
 use crate::filemanager_thread::FileManager;
@@ -70,17 +73,14 @@ use crate::request_interceptor::RequestInterceptor;
 use crate::websocket_loader::create_handshake_request;
 
 /// Load a file with CA certificate and produce a RootCertStore with the results.
-fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<Vec<u8>>> {
+fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<CertificateDer<'static>>> {
     let mut pem = BufReader::new(File::open(file_path)?);
 
-    // Bao vendor patch (REQ-STL-001): the boringssl-backed connector consumes
-    // DER certificate bytes, not rustls CertificateDer wrappers.
     let certs = CertificateDer::pem_reader_iter(&mut pem)
         .filter_map(|cert| {
             cert.inspect_err(|e| log::error!("Could not load certificate ({e}). Ignoring it."))
                 .ok()
         })
-        .map(|cert| cert.to_vec())
         .collect();
     Ok(certs)
 }
@@ -133,7 +133,7 @@ pub fn new_core_resource_thread(
     mem_profiler_chan: MemProfilerChan,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates,
+    ca_certificates: CACertificates<'static>,
     ignore_certificate_errors: bool,
     protocols: Arc<ProtocolRegistry>,
 ) -> (CoreResourceThread, CoreResourceThread) {
@@ -192,7 +192,7 @@ pub fn new_core_resource_thread(
 struct ResourceChannelManager {
     resource_manager: CoreResourceManager,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates,
+    ca_certificates: CACertificates<'static>,
     ignore_certificate_errors: bool,
     cancellation_listeners: FxHashMap<RequestId, Weak<CancellationListener>>,
     cookie_listeners: FxHashMap<CookieStoreId, GenericCallback<CookieAsyncResponse>>,
@@ -201,6 +201,8 @@ struct ResourceChannelManager {
 /// This returns a tuple HttpState and a private HttpState.
 fn create_http_states(
     config_dir: Option<&Path>,
+    ca_certificates: CACertificates<'static>,
+    ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> (Arc<HttpState>, Arc<HttpState>) {
     let mut hsts_list = HstsList::default();
@@ -219,6 +221,11 @@ fn create_http_states(
         auth_cache: RwLock::new(auth_cache),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Public),
+        client: create_http_client(create_tls_config(
+            ca_certificates.clone(),
+            ignore_certificate_errors,
+            override_manager.clone(),
+        )),
         override_manager,
         embedder_proxy: embedder_proxy.clone(),
     };
@@ -230,6 +237,11 @@ fn create_http_states(
         auth_cache: RwLock::new(AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Private),
+        client: create_http_client(create_tls_config(
+            ca_certificates,
+            ignore_certificate_errors,
+            override_manager.clone(),
+        )),
         override_manager,
         embedder_proxy,
     };
@@ -249,8 +261,12 @@ impl ResourceChannelManager {
         protocols: Arc<ProtocolRegistry>,
         embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
     ) {
-        let (public_http_state, private_http_state) =
-            create_http_states(self.config_dir.as_deref(), embedder_proxy);
+        let (public_http_state, private_http_state) = create_http_states(
+            self.config_dir.as_deref(),
+            self.ca_certificates.clone(),
+            self.ignore_certificate_errors,
+            embedder_proxy,
+        );
 
         let mut rx_set = GenericReceiverSet::new();
         let private_id = rx_set.add(private_receiver);
@@ -598,11 +614,8 @@ impl ResourceChannelManager {
                 self.cookie_listeners.remove(&cookie_store_id);
             },
             CoreResourceMsg::NetworkMediator(mediator_chan, origin) => {
-                // BAO PATCH (REQ-BRW-004 C19): shared registry — the async
-                // fetch tasks consult it to invoke "handle fetch".
                 self.resource_manager
                     .sw_managers
-                    .lock()
                     .insert(origin, mediator_chan);
             },
             CoreResourceMsg::ListCookies(sender) => {
@@ -672,7 +685,7 @@ impl ResourceChannelManager {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, MallocSizeOf)]
 pub struct AuthCacheEntry {
     pub user_name: String,
     pub password: String,
@@ -687,7 +700,7 @@ impl Default for AuthCache {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, MallocSizeOf)]
 pub struct AuthCache {
     pub version: u32,
     pub entries: HashMap<String, AuthCacheEntry>,
@@ -695,14 +708,10 @@ pub struct AuthCache {
 
 pub struct CoreResourceManager {
     devtools_sender: Option<Sender<DevtoolsControlMsg>>,
-    /// BAO PATCH (REQ-BRW-004 C19): per-origin service-worker manager
-    /// channels, shared with the async fetch tasks (see `SwManagers`). The
-    /// upstream field was a plain `HashMap` that was only ever written —
-    /// this registry is the read path upstream never had.
-    sw_managers: SwManagers,
+    sw_managers: HashMap<ImmutableOrigin, GenericSender<CustomResponseMediator>>,
     filemanager: FileManager,
     request_interceptor: RequestInterceptor,
-    ca_certificates: CACertificates,
+    ca_certificates: CACertificates<'static>,
     ignore_certificate_errors: bool,
     preloaded_resources: SharedPreloadedResources,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
@@ -714,7 +723,7 @@ impl CoreResourceManager {
         devtools_sender: Option<Sender<DevtoolsControlMsg>>,
         _profiler_chan: ProfilerChan,
         embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
-        ca_certificates: CACertificates,
+        ca_certificates: CACertificates<'static>,
         ignore_certificate_errors: bool,
         blob_token_communicator: Arc<Mutex<BlobTokenCommunicator>>,
     ) -> CoreResourceManager {
@@ -783,7 +792,6 @@ impl CoreResourceManager {
         let devtools_chan = self.devtools_sender.clone();
         let filemanager = self.filemanager.clone();
         let request_interceptor = self.request_interceptor.clone();
-        let sw_managers = self.sw_managers.clone();
 
         let timing_type = match request_builder.destination {
             Destination::Document => ResourceTimingType::Navigation,
@@ -844,7 +852,6 @@ impl CoreResourceManager {
                 ca_certificates,
                 ignore_certificate_errors,
                 preloaded_resources: preloaded_resources.clone(),
-                sw_managers,
                 in_flight_keep_alive_records,
             };
 
@@ -894,7 +901,7 @@ impl CoreResourceManager {
     fn websocket_connect(
         &self,
         mut request: RequestBuilder,
-        event_sender: IpcSender<WebSocketNetworkEvent>,
+        event_sender: ProfileGenericCallback<WebSocketNetworkEvent>,
         action_receiver: CallbackSetter<WebSocketDomAction>,
         http_state: &Arc<HttpState>,
         cancellation_listener: Arc<CancellationListener>,
@@ -908,7 +915,6 @@ impl CoreResourceManager {
         let ca_certificates = self.ca_certificates.clone();
         let ignore_certificate_errors = self.ignore_certificate_errors;
         let in_flight_keep_alive_records = self.in_flight_keep_alive_records.clone();
-        let sw_managers = self.sw_managers.clone();
         let preloaded_resources = self.preloaded_resources.clone();
 
         spawn_task(async move {
@@ -945,7 +951,6 @@ impl CoreResourceManager {
                         ca_certificates,
                         ignore_certificate_errors,
                         preloaded_resources,
-                        sw_managers,
                         in_flight_keep_alive_records,
                     };
                     fetch(request, &mut event_sender, &context).await;

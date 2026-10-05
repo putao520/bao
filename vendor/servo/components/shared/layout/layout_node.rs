@@ -23,7 +23,7 @@ use crate::layout_dom::{DangerousStyleNodeOf, LayoutElementOf, LayoutNodeOf};
 use crate::pseudo_element_chain::PseudoElementChain;
 use crate::{
     GenericLayoutData, HTMLCanvasData, HTMLMediaData, LayoutDataTrait, LayoutDomTypeBundle,
-    LayoutNodeType, SVGElementData, SharedSelection,
+    LayoutNodeType, SVGElementData,
 };
 
 /// A trait that exposes a DOM nodes to layout. Implementors of this trait must abide by certain
@@ -154,7 +154,7 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
 
     /// Returns the computed `:selected` style for the given node, properly handling
     /// pseudo-elements. For elements this returns their style and for other nodes, this
-    /// returns the style of the parent element, if one exists.
+    /// returns the selected style of the parent element, if one exists.
     ///
     /// # Panics
     ///
@@ -173,10 +173,11 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
     /// For a text node, returns which range of this text is part of the document selection
     ///
     /// Returned offsets are counted in `char`s in the `self.text_content()` string.
-    fn document_selection_in_text_node(&self) -> Option<RangeAny<Utf32CodeUnits>>;
+    fn text_node_selection(&self) -> Option<RangeAny<Utf32CodeUnits>>;
 
-    /// For a text node, returns which range of this text is part of a form control selection.
-    fn form_control_selection_in_text_node(&self) -> Option<SharedSelection>;
+    /// For a text node, whether a caret should be painted when the selection is an empty range
+    /// (start == end)
+    fn text_node_paints_caret(&self) -> bool;
 
     /// If this is an image element, returns its URL. If this is not an image element, fails.
     fn image_url(&self) -> Option<ServoUrl>;
@@ -186,6 +187,9 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
 
     /// If this is an image element, returns its image data. Otherwise, returns `None`.
     fn image_data(&self) -> Option<(Option<Image>, Option<ImageMetadata>)>;
+
+    /// Whether or not this node is selected when it is interpreted as a replaced element.
+    fn replaced_is_selected(&self) -> bool;
 
     /// Whether or not this is an image element that is showing a broken image icon.
     fn showing_broken_image_icon(&self) -> bool;

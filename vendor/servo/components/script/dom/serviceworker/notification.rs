@@ -2,11 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::rc::Rc;
-use bytes::Bytes;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use dom_struct::dom_struct;
 use embedder_traits::{
     EmbedderMsg, Notification as EmbedderNotification,
@@ -35,9 +34,8 @@ use crate::dom::bindings::codegen::Bindings::NotificationBinding::{
     NotificationAction, NotificationDirection, NotificationMethods, NotificationOptions,
     NotificationPermission, NotificationPermissionCallback,
 };
-use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::PermissionStatus_Binding::PermissionStatusMethods;
 use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::{
-    PermissionDescriptor, PermissionName, PermissionState,
+    PermissionDescriptor, PermissionName, PermissionState, PermissionStatusMethods,
 };
 use crate::dom::bindings::codegen::UnionTypes::UnsignedLongOrUnsignedLongSequence;
 use crate::dom::bindings::error::{Error, Fallible};
@@ -46,7 +44,6 @@ use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::{DOMString, USVString};
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::bindings::utils::to_frozen_array;
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::eventtarget::EventTarget;
@@ -416,7 +413,7 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
         let uuid_ = uuid.clone();
 
         if let Some(callback) = permission_callback {
-            global.add_notification_permission_request_callback(uuid, callback.native());
+            global.add_notification_permission_request_callback(uuid, callback);
         }
 
         global.task_manager().dom_manipulation_task_source().queue(
@@ -426,7 +423,10 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
 
                 // Step 3.2.1: If deprecatedCallback is given,
                 //             then invoke deprecatedCallback with « permissionState » and "report".
-                if let Some(callback) = global.remove_notification_permission_request_callback(uuid_) {
+                if let Some(callback) = global
+                    .remove_notification_permission_request_callback(uuid_)
+                    .as_deref()
+                {
                     let _ = callback.Call__(cx, notification_permission, ExceptionHandling::Report);
                 }
 
@@ -791,7 +791,7 @@ impl FetchResponseListener for ResourceFetchListener {
         if self.status.is_ok() {
             self.image_cache.notify_pending_response(
                 self.pending_image_id,
-                FetchResponseMsg::ProcessResponseChunk(request_id, payload.into()),
+                FetchResponseMsg::ProcessResponseChunk(request_id, payload),
             );
         }
     }

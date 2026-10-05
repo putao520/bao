@@ -104,7 +104,7 @@ pub(crate) fn execute_removeformat_command(
         let Ok(start_text) = start_text.SplitText(cx, start_offset) else {
             unreachable!("Must always be able to split");
         };
-        let _ = active_range.SetStart(start_text.upcast(), 0);
+        let _ = active_range.SetStart(cx.no_gc(), start_text.upcast(), 0);
     }
     // Step 4. If the active range's end node is an editable Text node,
     // and its end offset is neither zero nor its end node's length,

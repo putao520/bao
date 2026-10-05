@@ -9,8 +9,10 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
+use std::cell::Cell;
 use std::fmt;
 
+use accesskit::ActionRequest;
 use bitflags::bitflags;
 use crossbeam_channel::RecvTimeoutError;
 use devtools_traits::ScriptToDevtoolsControlMsg;
@@ -27,9 +29,6 @@ use malloc_size_of::malloc_size_of_is_0;
 use malloc_size_of_derive::MallocSizeOf;
 use media::WindowGLContext;
 use net_traits::ResourceThreads;
-// BAO patch (fork-maintained, 2026-09-28): paint 岛→基线迁移波 — LCPCandidateID
-// 源重指到 servo_base::id(基线形态,同型零行为变化)。
-use servo_base::id::LCPCandidateID;
 use paint_api::{CrossProcessPaintApi, PinchZoomInfos};
 use pixels::PixelFormat;
 use profile_traits::mem;
@@ -38,11 +37,12 @@ use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
 use servo_base::generic_channel::{GenericCallback, GenericReceiver, GenericSender};
 use servo_base::id::{
-    BrowsingContextId, HistoryStateId, PipelineId, PipelineNamespaceId, PipelineNamespaceRequest,
-    ScriptEventLoopId, WebViewId,
+    BrowsingContextId, HistoryStateId, LCPCandidateID, PipelineId, PipelineNamespaceId,
+    PipelineNamespaceRequest, ScriptEventLoopId, WebViewId,
 };
 #[cfg(feature = "bluetooth")]
 use servo_bluetooth_traits::BluetoothRequest;
+#[cfg(feature = "webgl")]
 use servo_canvas_traits::webgl::WebGLPipeline;
 use servo_config::prefs::PrefValue;
 use servo_constellation_traits::{
@@ -61,9 +61,24 @@ use webgpu_traits::WebGPUMsg;
 use webrender_api::ImageKey;
 use webrender_api::units::DevicePixel;
 
+/// A representation of the `WebView` state that is kept in each `EventLoop`
+/// and in the `Constellation`.
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+pub struct WebViewState {
+    /// The [`WebViewId`] of this `WebView`.
+    pub id: WebViewId,
+    /// The platform [`Theme`] to use for this `WebView`.
+    pub theme: Cell<Theme>,
+    /// Whether or not the `WebView` has system focus. More than one `WebView` may have
+    /// system focus at one time.
+    pub has_system_focus: Cell<bool>,
+}
+
 /// The initial data required to create a new `Pipeline` attached to an existing `ScriptThread`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NewPipelineInfo {
+    /// The [`WebViewState`] of the `WebView` that this pipeline belongs to.
+    pub webview_state: WebViewState,
     /// The ID of the parent pipeline and frame type, if any.
     /// If `None`, this is a root pipeline.
     pub parent_info: Option<PipelineId>,
@@ -71,8 +86,6 @@ pub struct NewPipelineInfo {
     pub new_pipeline_id: PipelineId,
     /// Id of the browsing context associated with this pipeline.
     pub browsing_context_id: BrowsingContextId,
-    /// Id of the top-level browsing context associated with this pipeline.
-    pub webview_id: WebViewId,
     /// Id of the opener, if any
     pub opener: Option<BrowsingContextId>,
     /// Network request data which will be initiated by the script thread.
@@ -81,8 +94,6 @@ pub struct NewPipelineInfo {
     pub viewport_details: ViewportDetails,
     /// The ID of the `UserContentManager` associated with this new pipeline's `WebView`.
     pub user_content_manager_id: Option<UserContentManagerId>,
-    /// The [`Theme`] of the new layout.
-    pub embedder_theme: Theme,
     /// A snapshot of the navigation parameters of the target of this navigation.
     pub target_snapshot_params: TargetSnapshotParams,
     /// Name of this iframe, if any
@@ -126,23 +137,9 @@ pub enum ProgressiveWebMetricType {
     LargestContentfulPaint {
         /// The identity of the element, if any.
         id: LCPCandidateID,
-        /// The pixel area of the largest contentful element.
-        area: usize,
-        /// The URL of the largest contentful element, if any.
-        url: Option<ServoUrl>,
     },
     /// Time to interactive
     TimeToInteractive,
-}
-
-impl ProgressiveWebMetricType {
-    /// Returns the area if the metric type is LargestContentfulPaint
-    pub fn area(&self) -> usize {
-        match self {
-            ProgressiveWebMetricType::LargestContentfulPaint { area, .. } => *area,
-            _ => 0,
-        }
-    }
 }
 
 /// The reason why the pipeline id of an iframe is being updated.
@@ -168,8 +165,8 @@ pub enum ScriptThreadMessage {
     StopDelayingLoadEventsMode(PipelineId),
     /// Window resized.  Sends a DOM event eventually, but first we combine events.
     Resize(PipelineId, ViewportDetails, WindowSizeType),
-    /// Theme changed.
-    ThemeChange(PipelineId, Theme),
+    /// Inform the ScriptThread that some aspect of the WebViewState has changed.
+    UpdateWebViewState(WebViewState),
     /// Notifies script that window has been resized but to not take immediate action.
     ResizeInactive(PipelineId, ViewportDetails),
     /// Window switched from fullscreen mode.
@@ -191,15 +188,17 @@ pub enum ScriptThreadMessage {
     /// Retrieve the origin of a document for a pipeline, in case a child needs to retrieve the
     /// origin of a parent in a different script thread.
     GetDocumentOrigin(PipelineId, GenericSender<Option<OriginSnapshot>>),
-    /// Retrieve the internal ancestor origin objects list of a document for a pipeline,
-    /// in case a child needs to retrieve the origin of a parent in a different script thread.
-    GetInternalAncestorOriginObjectsList(PipelineId, GenericSender<Option<Vec<ImmutableOrigin>>>),
+    /// Retrieve the origin and internal ancestor origin objects list of a
+    /// `Document` for a given `PipelineId`, in case a child needs to retrieve
+    /// the origin of a parent in a different event loop.
+    GetDocumentOriginDetails(
+        PipelineId,
+        GenericSender<Option<(OriginSnapshot, Vec<ImmutableOrigin>)>>,
+    ),
     /// Notifies script thread of a change to one of its document's activity
     SetDocumentActivity(PipelineId, DocumentActivity),
     /// Set whether to use less resources by running timers at a heavily limited rate.
-    SetThrottled(WebViewId, PipelineId, bool),
-    /// Notify the containing iframe (in PipelineId) that the nested browsing context (BrowsingContextId) is throttled.
-    SetThrottledInContainingIframe(WebViewId, PipelineId, BrowsingContextId, bool),
+    SetThrottled(PipelineId, bool),
     /// Notifies script thread that a url should be loaded in this iframe.
     /// PipelineId is for the parent, BrowsingContextId is for the nested browsing context
     NavigateIframe(
@@ -298,16 +297,8 @@ pub enum ScriptThreadMessage {
     /// pipeline via the Constellation.
     SetScrollStates(PipelineId, ScrollStateUpdate),
     /// Evaluate the given JavaScript and return a result via a corresponding message
-    /// to the Constellation. The optional timeout arms the engine-native
-    /// interrupt control around the evaluation (ISSUE #24 servo wiring);
-    /// `None` preserves the unbounded behavior.
-    EvaluateJavaScript(
-        WebViewId,
-        PipelineId,
-        JavaScriptEvaluationId,
-        String,
-        Option<std::time::Duration>,
-    ),
+    /// to the Constellation.
+    EvaluateJavaScript(WebViewId, PipelineId, JavaScriptEvaluationId, String),
     /// A new batch of keys for the image cache for the specific pipeline.
     SendImageKeysBatch(PipelineId, Vec<ImageKey>),
     /// Preferences were updated in the parent process.
@@ -344,6 +335,8 @@ pub enum ScriptThreadMessage {
     /// may be split across multiple script threads, and the pipelines in a script thread may belong
     /// to multiple webviews. So the simplest approach is to activate it for one pipeline at a time.
     SetAccessibilityActive(PipelineId, bool, Epoch),
+    /// Forward the given [`accesskit::ActionRequest`] to the given pipeline.
+    ForwardAccessibilityAction(PipelineId, ActionRequest),
     /// Force a garbage collection in this script thread.
     TriggerGarbageCollection,
 }
@@ -482,6 +475,7 @@ pub struct InitialScriptState {
     /// The ID of the pipeline namespace for this script thread.
     pub pipeline_namespace_id: PipelineNamespaceId,
     /// A channel to the WebGL thread used in this pipeline.
+    #[cfg(feature = "webgl")]
     pub webgl_chan: Option<WebGLPipeline>,
     /// The XR device registry
     pub webxr_registry: Option<webxr_api::Registry>,
@@ -493,14 +487,6 @@ pub struct InitialScriptState {
     pub privileged_urls: Vec<ServoUrl>,
     /// A copy of constellation's `UserContentManagerId` to `UserContents` map.
     pub user_contents_for_manager_id: FxHashMap<UserContentManagerId, UserContents>,
-
-    /// BAO PATCH (BCE-20260627-009): Per-instance RouterProxy for this ScriptThread.
-    /// Set by EventLoop::spawn from the Constellation's router. Marked `#[serde(skip)]`
-    /// because `Arc<RouterProxy>` is not serializable (bao runs single-process, so
-    /// ScriptThread inherits it directly; the multiprocess path leaves this `None`
-    /// and the thread falls back to the process-global ROUTER).
-    #[serde(skip)]
-    pub router_proxy: Option<std::sync::Arc<ipc_channel::router::RouterProxy>>,
 }
 
 /// Errors from executing a paint worklet

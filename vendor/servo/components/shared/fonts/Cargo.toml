@@ -1,14 +1,13 @@
 [package]
 name = "bao-servo-fonts-traits"
 version = "0.5.18"
+publish = true
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
-publish = true
 rust-version = "1.88.0"
 repository = "https://github.com/servo/servo"
 description = "A component of the servo web-engine."
-
 [lib]
 name = "fonts_traits"
 path = "lib.rs"
@@ -22,11 +21,11 @@ memmap2 = {version = "0.9.10"}
 num-derive = {version = "0.4.2"}
 num-traits = {version = "0.2"}
 parking_lot = {version = "0.12", features = ["serde"]}
-profile_traits = {package = "bao-servo-profile-traits", path = "../profile", version = ">=0.5.16, <0.6.0"}
-read-fonts = {version = "0.41.0"}
+profile_traits = {package = "bao-servo-profile-traits", path = "../../shared/profile", version = ">=0.5.16, <0.6.0"}
+read-fonts = {version = "0.43.3"}
 serde = {version = "1.0.228"}
 servo_arc = {version = "=0.5.0", features = ["servo"]}
-servo-base = {package = "bao-servo-base", path = "../base", version = ">=0.5.17, <0.6.0"}
+servo-base = {package = "bao-servo-base", path = "../../shared/base", version = ">=0.5.17, <0.6.0"}
 servo-url = {package = "bao-servo-url", path = "../../url", version = ">=0.5.9, <0.6.0"}
 style = {package = "bao-stylo", path = "../../../../stylo", version = ">=0.22.0, <0.23.0"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}
@@ -34,3 +33,8 @@ webrender_api = {version = "0.70"}
 
 [target.'cfg(target_os = "windows")'.dependencies]
 dwrote = {version = "0.11.5"}
+
+[lints.rust]
+unexpected_cfgs = {level = "warn", check-cfg = ["cfg(crown)", "cfg(coverage)", "cfg(llvm_pgo)", "cfg(ohos_mock)"]}
+[lints.clippy]
+manual_string_new = "warn"

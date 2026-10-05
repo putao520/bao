@@ -353,15 +353,13 @@ impl ElementInternalsMethods<crate::DomTypeHolder> for ElementInternals {
     }
 
     /// <https://html.spec.whatwg.org/multipage#dom-elementinternals-willvalidate>
-    #[allow(unsafe_code)]
     fn GetWillValidate(&self, no_gc: &NoGC) -> Fallible<bool> {
         if !self.is_target_form_associated() {
             return Err(Error::NotSupported(Some(
                 "The target element is not a form-associated custom element".to_owned(),
             )));
         }
-        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
-        Ok(self.is_instance_validatable(cx.no_gc()))
+        Ok(self.is_instance_validatable(no_gc))
     }
 
     /// <https://html.spec.whatwg.org/multipage#dom-elementinternals-form>

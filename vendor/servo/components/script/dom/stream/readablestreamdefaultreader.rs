@@ -14,9 +14,7 @@ use js::jsval::{JSVal, UndefinedValue};
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{
-    Reflector, reflect_dom_object_with_cx, reflect_dom_object_with_proto,
-};
+use script_bindings::reflector::{Reflector, reflect_dom_object, reflect_dom_object_with_proto};
 
 use super::byteteereadrequest::ByteTeeReadRequest;
 use super::readablebytestreamcontroller::ReadableByteStreamController;
@@ -128,7 +126,7 @@ impl ReadRequest {
                     cx,
                     &ReadableStreamReadResult {
                         done: Some(false),
-                        value: chunk,
+                        value: chunk.into_box(),
                     },
                 );
             },
@@ -177,7 +175,7 @@ impl ReadRequest {
                     Err(err) => {
                         // Step 1. If chunk is not a Uint8Array object, call failureSteps with a TypeError and abort.
                         rooted!(&in(cx) let mut v = UndefinedValue());
-                        err.safe_to_jsval(cx, &global, v.handle_mut());
+                        err.to_jsval(cx, &global, v.handle_mut());
                         (failure_steps)(cx, v.handle());
                     },
                 }
@@ -191,13 +189,11 @@ impl ReadRequest {
             ReadRequest::Read(promise) => {
                 // close steps
                 // Resolve promise with «[ "value" → undefined, "done" → true ]».
-                let result = RootedTraceableBox::new(Heap::default());
-                result.set(UndefinedValue());
                 promise.resolve_native(
                     cx,
                     &ReadableStreamReadResult {
                         done: Some(true),
-                        value: result,
+                        value: Heap::boxed(UndefinedValue()),
                     },
                 );
             },
@@ -371,7 +367,7 @@ impl ReadableStreamDefaultReader {
         global: &GlobalScope,
     ) -> DomRoot<ReadableStreamDefaultReader> {
         let closed_promise = Promise::new(cx, global);
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited(&closed_promise)), global, cx)
+        reflect_dom_object(cx, Box::new(Self::new_inherited(&closed_promise)), global)
     }
 
     /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-reader>
@@ -448,11 +444,11 @@ impl ReadableStreamDefaultReader {
         self.generic_release(cx).expect("Generic release failed");
         // Let e be a new TypeError exception.
         rooted!(&in(cx) let mut error = UndefinedValue());
-        Error::Type(c"Reader is released".to_owned()).safe_to_jsval(
+        Error::Type(c"Reader is released".to_owned()).to_jsval(
             cx,
             &self.global(),
             error.handle_mut(),
-        );;
+        );
 
         // Perform ! ReadableStreamDefaultReaderErrorReadRequests(reader, e).
         self.error_read_requests(cx, error.handle());
@@ -642,11 +638,11 @@ impl ReadableStreamDefaultReaderMethods<crate::DomTypeHolder> for ReadableStream
         // If this.[[stream]] is undefined, return a promise rejected with a TypeError exception.
         if self.stream.get().is_none() {
             rooted!(&in(cx) let mut error = UndefinedValue());
-            Error::Type(c"stream is undefined".to_owned()).safe_to_jsval(
+            Error::Type(c"stream is undefined".to_owned()).to_jsval(
                 cx,
                 &self.global(),
                 error.handle_mut(),
-            );;
+            );
             return Promise::new_rejected(cx, &self.global(), error.handle());
         }
         // Let promise be a new promise.

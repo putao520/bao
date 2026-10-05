@@ -5,9 +5,9 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
-use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue};
+use js::rust::{CustomAutoRooterGuard, HandleValue};
 use script_bindings::error::ErrorResult;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::root::DomRoot;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::ServiceWorkerId;
@@ -35,14 +35,6 @@ pub(crate) struct Client {
     #[no_trace]
     url: ServoUrl,
 
-    /// BAO PATCH (REQ-BRW-004 e58 contract B): the registration scope this
-    /// client's messages route through — the manager keys registrations by
-    /// scope, while `url` is the client's own URL (they differ for
-    /// `clients.matchAll` clients, whose URL is the registering page's
-    /// creation URL).
-    #[no_trace]
-    scope_url: ServoUrl,
-
     /// <https://w3c.github.io/ServiceWorker/#dfn-service-worker-client-frame-type>
     frame_type: FrameType,
 
@@ -54,7 +46,6 @@ impl Client {
     fn new_inherited(
         swmanager_sender: GenericSender<ServiceWorkerMsg>,
         url: ServoUrl,
-        scope_url: ServoUrl,
         frame_type: FrameType,
         worker_id: ServiceWorkerId,
     ) -> Client {
@@ -62,7 +53,6 @@ impl Client {
             reflector_: Reflector::new(),
             swmanager_sender,
             url,
-            scope_url,
             frame_type,
             worker_id,
         }
@@ -73,20 +63,18 @@ impl Client {
         global: &GlobalScope,
         swmanager_sender: GenericSender<ServiceWorkerMsg>,
         url: ServoUrl,
-        scope_url: ServoUrl,
         frame_type: FrameType,
         worker_id: ServiceWorkerId,
     ) -> DomRoot<Client> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(Client::new_inherited(
                 swmanager_sender,
                 url,
-                scope_url,
                 frame_type,
                 worker_id,
             )),
             global,
-            cx,
         )
     }
 
@@ -112,15 +100,8 @@ impl Client {
             .send(ServiceWorkerMsg::ForwardWorkerMessage {
                 data,
                 source: self.worker_id,
-                url: self.scope_url.clone(),
+                url: self.url.clone(),
                 origin: origin.immutable().clone(),
-                // BAO PATCH (REQ-BRW-004 e73 targeting): this Client object is
-                // the postMessage target. `url` is the client's creation URL —
-                // for `clients.matchAll` results it is exactly the creation
-                // URL the manager's origin-wide enrolled set is keyed by — so
-                // it travels as the targeting identity and the manager can
-                // deliver directly instead of broadcasting.
-                target: Some(self.url.clone()),
             })
             .map_err(|_| {
                 Error::Type(c"Failed to send message to service worker manager".to_owned())
@@ -146,15 +127,12 @@ impl ClientMethods<crate::DomTypeHolder> for Client {
         message: HandleValue,
         options: &StructuredSerializeOptions,
     ) -> ErrorResult {
-        let mut rooted = CustomAutoRooter::new(
+        auto_root!(&in(cx) let guard =
             options
                 .transfer
                 .iter()
                 .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-        #[expect(unsafe_code)]
-        let guard = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+                .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 

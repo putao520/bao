@@ -11,7 +11,7 @@ use itertools::Itertools;
 use js::context::JSContext;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::dom::UnrootedDom;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use stylo_dom::ElementState;
 
 use crate::dom::bindings::codegen::Bindings::ElementInternalsBinding::ValidityStateFlags;
@@ -73,7 +73,7 @@ impl fmt::Display for ValidationFlags {
     }
 }
 
-// https://html.spec.whatwg.org/multipage/#validitystate
+/// <https://html.spec.whatwg.org/multipage/#validitystate>
 #[dom_struct]
 pub(crate) struct ValidityState {
     reflector_: Reflector,
@@ -97,15 +97,15 @@ impl ValidityState {
         window: &Window,
         element: &Element,
     ) -> DomRoot<ValidityState> {
-        reflect_dom_object_with_cx(Box::new(ValidityState::new_inherited(element)), window, cx)
+        reflect_dom_object(cx, Box::new(ValidityState::new_inherited(element)), window)
     }
 
-    // https://html.spec.whatwg.org/multipage/#custom-validity-error-message
+    /// <https://html.spec.whatwg.org/multipage/#custom-validity-error-message>
     pub(crate) fn custom_error_message(&self) -> Ref<'_, DOMString> {
         self.custom_error_message.borrow()
     }
 
-    // https://html.spec.whatwg.org/multipage/#custom-validity-error-message
+    /// <https://html.spec.whatwg.org/multipage/#custom-validity-error-message>
     pub(crate) fn set_custom_error_message(&self, cx: &mut JSContext, error: DOMString) {
         *self.custom_error_message.borrow_mut() = error;
         self.perform_validation_and_update(cx, ValidationFlags::CUSTOM_ERROR);
@@ -164,15 +164,13 @@ impl ValidityState {
             form_owner.update_validity(cx);
         }
 
-        // BAO patch (fork-maintained, 2026-09-27): bind through a local so the
-        // `no_gc` borrow ends before the mutable `cx` use below.
-        let fieldset = self
+        if let Some(fieldset) = self
             .element
             .upcast::<Node>()
             .ancestors_unrooted(cx.no_gc())
             .find_map(UnrootedDom::downcast::<HTMLFieldSetElement>)
-            .map(|node| node.as_rooted());
-        if let Some(fieldset) = fieldset {
+            .map(|node| node.as_rooted())
+        {
             fieldset.update_validity(cx);
         }
     }

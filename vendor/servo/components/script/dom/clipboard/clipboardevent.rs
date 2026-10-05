@@ -67,12 +67,6 @@ pub(crate) struct ClipboardEvent {
 }
 
 impl ClipboardEvent {
-    // BAO patch (fork-maintained, 2026-09-28): restored from the fork's
-    // clipboard-event face; the synced getter was dropped in the window sync.
-    pub(crate) fn get_clipboard_data(&self) -> Option<DomRoot<DataTransfer>> {
-        self.clipboard_data.get()
-    }
-
     fn new_inherited(
         clipboard_event_type: ClipboardEventType,
         clipboard_data: Option<&DataTransfer>,

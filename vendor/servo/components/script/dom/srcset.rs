@@ -391,7 +391,7 @@ impl SourceSet {
 
 /// <https://html.spec.whatwg.org/multipage/#parse-a-sizes-attribute>
 pub fn parse_a_sizes_attribute(value: &str) -> SourceSizeList {
-        let mut parser = Parser::new(value);
+    let mut parser = Parser::new(value);
     // FIXME(emilio): why ::empty() instead of ::DEFAULT? Also, what do
     // browsers do regarding quirks-mode in a media list?
     let context = parser_context_for_anonymous_content(

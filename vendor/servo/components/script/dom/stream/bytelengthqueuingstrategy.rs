@@ -66,8 +66,8 @@ impl ByteLengthQueuingStrategyMethods<crate::DomTypeHolder> for ByteLengthQueuin
         let global = self.global();
         // Return this's relevant global object's byte length queuing strategy
         // size function.
-        if let Some(fun) = global.get_byte_length_queuing_strategy_size() {
-            return Ok(RootedCallback::from(fun));
+        if let Some(fun) = global.get_byte_length_queuing_strategy_size(cx) {
+            return Ok(fun);
         }
 
         // Step 1. Let steps be the following steps, given chunk
@@ -75,23 +75,16 @@ impl ByteLengthQueuingStrategyMethods<crate::DomTypeHolder> for ByteLengthQueuin
 
         // Step 2. Let F be !CreateBuiltinFunction(steps, 1, "size", « »,
         // globalObject’s relevant Realm).
-        let fun = RootedCallback::from(native_fn!(
-            cx,
-            byte_length_queuing_strategy_size,
-            c"size",
-            1,
-            0
-        ));
+        let fun = native_fn!(cx, byte_length_queuing_strategy_size, c"size", 1, 0);
         // Step 3. Set globalObject’s byte length queuing strategy size function to
         // a Function that represents a reference to F,
         // with callback context equal to globalObject's relevant settings object.
-        global.set_byte_length_queuing_strategy_size(fun.native());
+        global.set_byte_length_queuing_strategy_size(fun.clone());
         Ok(fun)
     }
 }
 
 /// <https://streams.spec.whatwg.org/#byte-length-queuing-strategy-size-function>
-    #[allow(unsafe_code)]
 fn byte_length_queuing_strategy_size(cx: &mut js::context::JSContext, args: CallArgs) -> bool {
     // Step 1. Let steps be the following steps, given chunk:
     // Step 1.1. Return ? GetV(chunk, "byteLength").
@@ -100,12 +93,10 @@ fn byte_length_queuing_strategy_size(cx: &mut js::context::JSContext, args: Call
     // https://tc39.es/ecma262/#sec-getv
     // Let O be ? ToObject(V).
     if chunk.is_undefined() || chunk.is_null() {
-        unsafe {
-            throw_type_error(
-                &*cx as *const _ as *mut _,
-                c"ByteLengthQueuingStrategy size called with undefined or nulll",
-            );
-        }
+        throw_type_error(
+            cx,
+            c"ByteLengthQueuingStrategy size called with undefined or nulll",
+        );
         return false;
     }
 

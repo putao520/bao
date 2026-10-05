@@ -11,14 +11,12 @@ use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg, Worke
 use embedder_traits::user_contents::UserContentManagerId;
 use embedder_traits::{
     AnimationState, FocusSequenceNumber, JSValue, JavaScriptEvaluationError,
-    JavaScriptEvaluationId, MediaSessionEvent, ScriptToEmbedderChan, Theme, ViewportDetails,
-    WakeLockType,
+    JavaScriptEvaluationId, MediaSessionEvent, ScriptToEmbedderChan, ViewportDetails, WakeLockType,
 };
 use encoding_rs::Encoding;
 use euclid::default::Size2D as UntypedSize2D;
 use fonts_traits::SystemFontServiceProxySender;
 use http::{HeaderMap, Method};
-use ipc_channel::ipc::IpcSender;
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{Destination, InsecureRequestsPolicy, Referrer, RequestBody};
@@ -36,6 +34,7 @@ use servo_base::id::{
     ServiceWorkerRegistrationId, WebViewId,
 };
 use servo_canvas_traits::canvas::{CanvasId, CanvasMsg};
+#[cfg(feature = "webgl")]
 use servo_canvas_traits::webgl::WebGLChan;
 use servo_url::{ImmutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::StorageThreads;
@@ -176,7 +175,7 @@ impl LoadData {
             referrer,
             referrer_policy,
             policy_container: None,
-            srcdoc: "".to_string(),
+            srcdoc: String::new(),
             inherited_secure_context,
             crash: None,
             inherited_insecure_requests_policy,
@@ -277,24 +276,9 @@ pub enum ServiceWorkerMsg {
         url: ServoUrl,
         source: ServiceWorkerId,
         origin: ImmutableOrigin,
-        /// BAO PATCH (REQ-BRW-004 e73 targeting): the targeted client's
-        /// creation URL — the identity the manager's origin-wide enrolled
-        /// set is keyed by. `None` (no identifier) keeps the broadcast
-        /// delivery as the fallback form.
-        target: Option<ServoUrl>,
     },
     /// <https://w3c.github.io/ServiceWorker/#algorithms>
     HandleAlgorithm(ServiceWorkerAlgorithm),
-    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): the service worker
-    /// thread reports its script evaluated and the activate event was
-    /// dispatched. The manager relays this to the registering client as the
-    /// spec's Update Worker State → "activated" transition — this is the only
-    /// worker-thread-evidenced state gate in this build (install-event
-    /// settlement tracking is upstream-absent, as is the rest of Update
-    /// Worker State).
-    WorkerEvaluated {
-        worker_id: ServiceWorkerId,
-    },
     /// Exit the service worker manager
     Exit,
 }
@@ -353,18 +337,6 @@ pub struct ServiceWorkerRegistrationInfo {
     pub scope_url: ServoUrl,
     /// <https://w3c.github.io/ServiceWorker/#dfn-job-script-url>
     pub script_url: ServoUrl,
-    /// BAO PATCH (REQ-BRW-004 e58 contract B, user ruling 2026-10-04): the
-    /// creation URL of the client that registered this registration — the
-    /// data source for `clients.matchAll` on the SW side. The manager keeps
-    /// a single registering client per registration, so this is that
-    /// client's creation URL (carried by the register job's referrer).
-    pub client_url: ServoUrl,
-    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
-    /// the manager's origin-wide enrolled client set, snapshotted at answer
-    /// time — `clients.matchAll` builds one DOM `Client` per entry. Empty
-    /// means "fall back to `client_url`" (the legacy single-registering-client
-    /// shape) for producers that don't populate it.
-    pub client_urls: Vec<ServoUrl>,
 }
 
 /// <https://w3c.github.io/ServiceWorker/#algorithms>
@@ -379,35 +351,6 @@ pub enum ServiceWorkerAlgorithm {
         storage_key: ImmutableOrigin,
         client_url: ServoUrl,
         result_handler: GenericCallback<ServiceWorkerAlgorithmResult>,
-        /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling
-        /// 2026-10-05): when true the message doubles as a client-enrollment
-        /// ping — the manager records (client_url, result_handler) in its
-        /// origin-wide client set and answers nothing. Reuses this variant
-        /// so no new constellation routing arm is needed.
-        enroll_only: bool,
-        /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
-        /// 2026-10-05): the enrolling client's pipeline — the removal
-        /// identity of the enrollment. Same-URL navigation enrolls the NEW
-        /// document's container (upsert) at an arbitrary order relative to
-        /// the OLD pipeline's `ClientGone`; only this stamp tells a stale
-        /// teardown from the live entry it must not remove (see
-        /// `ClientGone`).
-        client_pipeline: PipelineId,
-    },
-    /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
-    /// 2026-10-05): the client document behind an enrolled container is
-    /// gone — its pipeline exited and the document (with its
-    /// `ServiceWorkerContainer`) is being torn down. The manager drops the
-    /// enrolled client whose (client_url, client_pipeline) matches, so it
-    /// stops delivering `MessageFromWorker` into a dead container's
-    /// callback and answering `clients.matchAll` with a dead client (the
-    /// e73 finding: the manager cannot detect the death itself — an
-    /// InProcess callback send never fails). Fire-and-forget: nothing is
-    /// answered (the enrollment callback died with the document).
-    ClientGone {
-        storage_key: ImmutableOrigin,
-        client_url: ServoUrl,
-        client_pipeline: PipelineId,
     },
 }
 
@@ -430,26 +373,6 @@ pub enum ServiceWorkerAlgorithmResult {
         scope_url: ServoUrl,
         script_url: ServoUrl,
         origin: ImmutableOrigin,
-    },
-
-    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update Registration
-    /// State relay — the installing worker was set on this registration (spec
-    /// queues "updatefound" on the registration's ServiceWorkerRegistration
-    /// objects, <https://w3c.github.io/ServiceWorker/#update-registration-state>).
-    /// Not an algorithm result; re-using algo channel for convenience. Must
-    /// NOT consume a pending job promise.
-    UpdateFound {
-        registration_id: ServiceWorkerRegistrationId,
-    },
-
-    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update Worker State
-    /// relay — the worker thread reported script evaluation + activate
-    /// dispatch complete ("activated"; the manager-side Try Activate patch
-    /// already holds the registration slot). The client fires "statechange"
-    /// on the DOM ServiceWorker object. Not an algorithm result; must NOT
-    /// consume a pending job promise.
-    WorkerActivated {
-        worker_id: ServiceWorkerId,
     },
 }
 
@@ -511,15 +434,6 @@ impl PartialEq for Job {
             false
         }
     }
-}
-
-/// Used to determine if a script has any pending asynchronous activity.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-pub enum DocumentState {
-    /// The document has been loaded and is idle.
-    Idle,
-    /// The document is either loading or waiting on an event.
-    Pending,
 }
 
 /// This trait allows creating a `ServiceWorkerManager` without depending on the `script`
@@ -589,8 +503,6 @@ pub struct IFrameLoadInfoWithData {
     pub old_pipeline_id: Option<PipelineId>,
     /// The initial viewport size for this iframe.
     pub viewport_details: ViewportDetails,
-    /// The [`Theme`] to use within this iframe.
-    pub embedder_theme: Theme,
 }
 
 /// Resources required by workerglobalscopes
@@ -625,6 +537,7 @@ pub struct WorkerGlobalScopeInit {
     /// Unminify Javascript.
     pub unminify_js: bool,
     /// Handle for communicating messages to the WebGL thread, if available.
+    #[cfg(feature = "webgl")]
     pub webgl_chan: Option<WebGLChan>,
 }
 
@@ -768,13 +681,8 @@ pub enum ScriptToConstellationMessage {
     ChangeWorkerAnimationFrameProviderState(WorkerId, bool),
     /// Requests that a new 2D canvas thread be created. (This is done in the constellation because
     /// 2D canvases may use the GPU and we don't want to give untrusted content access to the GPU.)
-    /// Bao (BUN-EVOLUTION R53-A phase 2): carries the requesting realm's
-    /// owning-webview identity (`GlobalScope::egress_webview_id`) so the
-    /// paint thread can resolve the per-WebViewId canvas noise config at
-    /// the `GetImageData` choke point. `None` = identity-less realm.
     CreateCanvasPaintThread(
         UntypedSize2D<u64>,
-        Option<WebViewId>,
         GenericSender<Option<(GenericSender<CanvasMsg>, CanvasId)>>,
     ),
     /// Notifies the constellation that this pipeline is requesting focus.
@@ -805,7 +713,10 @@ pub enum ScriptToConstellationMessage {
         PipelineId,
         GenericSender<Option<(BrowsingContextId, Option<PipelineId>)>>,
     ),
-    /// Get the nth child browsing context ID for a given browsing context, sorted in tree order.
+    /// Get the count of child browsing contexts for a given browsing context.
+    GetChildBrowsingContextCount(BrowsingContextId, GenericSender<usize>),
+    /// Get the nth child browsing context ID for a given browsing context, when sorted in
+    /// insertion order.
     GetChildBrowsingContextId(
         BrowsingContextId,
         usize,
@@ -815,8 +726,12 @@ pub enum ScriptToConstellationMessage {
     GetDocumentOrigin(PipelineId, GenericSender<Option<OriginSnapshot>>),
     /// If the document corresponding to the given pipeline is fully active
     IsCurrentlyFullyActive(PipelineId, GenericSender<bool>),
-    /// Get the internal ancestor origin objects list of the document corresponding to the given pipeline
-    GetInternalAncestorOriginObjectsList(PipelineId, GenericSender<Option<Vec<ImmutableOrigin>>>),
+    /// Get the origin and internal ancestor origin objects list of the `Document`
+    /// corresponding to the given `PipelineId`.
+    GetDocumentOriginDetails(
+        PipelineId,
+        GenericSender<Option<(OriginSnapshot, Vec<ImmutableOrigin>)>>,
+    ),
     /// All pending loads are complete, and the `load` event for this pipeline
     /// has been dispatched.
     LoadComplete,
@@ -851,9 +766,7 @@ pub enum ScriptToConstellationMessage {
     JointSessionHistoryLength(GenericSender<u32>),
     /// Notification that this iframe should be removed.
     /// Returns a list of pipelines which were closed.
-    RemoveIFrame(BrowsingContextId, IpcSender<Vec<PipelineId>>),
-    /// Successful response to [crate::ConstellationControlMsg::SetThrottled].
-    SetThrottledComplete(bool),
+    RemoveIFrame(BrowsingContextId, GenericSender<Vec<PipelineId>>),
     /// A load has been requested in an IFrame.
     ScriptLoadedURLInIFrame(IFrameLoadInfoWithData),
     /// A load of the initial `about:blank` has been completed in an IFrame.
@@ -862,8 +775,6 @@ pub enum ScriptToConstellationMessage {
     CreateAuxiliaryWebView(AuxiliaryWebViewCreationRequest),
     /// Mark a new document as active
     ActivateDocument,
-    /// Set the document state for a pipeline (used by screenshot / reftests)
-    SetDocumentState(DocumentState),
     /// Update the pipeline Url, which can change after redirections.
     SetFinalUrl(ServoUrl),
     /// A log entry, with the top-level browsing context id and thread name

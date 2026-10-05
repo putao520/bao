@@ -18,7 +18,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
-use crate::dom::globalscope::GlobalScope;
+use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct OfflineAudioCompletionEvent {
@@ -36,7 +36,7 @@ impl OfflineAudioCompletionEvent {
 
     pub(crate) fn new(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         type_: Atom,
         bubbles: EventBubbles,
         cancelable: EventCancelable,
@@ -44,7 +44,7 @@ impl OfflineAudioCompletionEvent {
     ) -> DomRoot<OfflineAudioCompletionEvent> {
         Self::new_with_proto(
             cx,
-            global,
+            window,
             None,
             type_,
             bubbles,
@@ -55,7 +55,7 @@ impl OfflineAudioCompletionEvent {
 
     fn new_with_proto(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         type_: Atom,
         bubbles: EventBubbles,
@@ -63,7 +63,7 @@ impl OfflineAudioCompletionEvent {
         rendered_buffer: &AudioBuffer,
     ) -> DomRoot<OfflineAudioCompletionEvent> {
         let event = Box::new(OfflineAudioCompletionEvent::new_inherited(rendered_buffer));
-        let ev = reflect_dom_object_with_proto(cx, event, global, proto);
+        let ev = reflect_dom_object_with_proto(cx, event, window, proto);
         {
             let event = ev.upcast::<Event>();
             event.init_event(type_, bool::from(bubbles), bool::from(cancelable));
@@ -76,7 +76,7 @@ impl OfflineAudioCompletionEventMethods<crate::DomTypeHolder> for OfflineAudioCo
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocompletionevent-offlineaudiocompletionevent>
     fn Constructor(
         cx: &mut JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         type_: DOMString,
         init: &OfflineAudioCompletionEventInit,
@@ -85,7 +85,7 @@ impl OfflineAudioCompletionEventMethods<crate::DomTypeHolder> for OfflineAudioCo
         let cancelable = EventCancelable::from(init.parent.cancelable);
         Ok(OfflineAudioCompletionEvent::new_with_proto(
             cx,
-            global,
+            window,
             proto,
             Atom::from(type_),
             bubbles,

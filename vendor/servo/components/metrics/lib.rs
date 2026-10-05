@@ -7,13 +7,13 @@ use std::cmp::Ordering;
 use std::time::Duration;
 
 use malloc_size_of_derive::MallocSizeOf;
-use servo_base::id::LCPCandidateID;
 use profile_traits::time::{
     ProfilerCategory, ProfilerChan, TimerMetadata, TimerMetadataFrameType, TimerMetadataReflowType,
     send_profile_data,
 };
 use script_traits::ProgressiveWebMetricType;
 use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::id::LCPCandidateID;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
 use servo_url::ServoUrl;
 
@@ -233,16 +233,11 @@ impl ProgressiveWebMetrics {
         &self,
         id: LCPCandidateID,
         paint_time: CrossProcessInstant,
-        area: usize,
     ) {
         set_metric(
             self,
             Some(self.make_metadata(false)),
-            ProgressiveWebMetricType::LargestContentfulPaint {
-                id,
-                area,
-                url: None,
-            },
+            ProgressiveWebMetricType::LargestContentfulPaint { id },
             ProfilerCategory::TimeToLargestContentfulPaint,
             &self.largest_contentful_paint,
             paint_time,

@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::time::Duration;
-
 use embedder_traits::{JSValue, JavaScriptEvaluationError, JavaScriptEvaluationId};
 use rustc_hash::FxHashMap;
 use servo_base::id::WebViewId;
@@ -39,7 +37,6 @@ impl JavaScriptEvaluator {
         &mut self,
         webview_id: WebViewId,
         script: String,
-        timeout: Option<Duration>,
         callback: Box<dyn FnOnce(Result<JSValue, JavaScriptEvaluationError>)>,
     ) {
         let evaluation_id = self.generate_id();
@@ -48,7 +45,6 @@ impl JavaScriptEvaluator {
                 webview_id,
                 evaluation_id,
                 script,
-                timeout,
             ));
         self.pending_evaluations
             .insert(evaluation_id, PendingEvaluation { callback });

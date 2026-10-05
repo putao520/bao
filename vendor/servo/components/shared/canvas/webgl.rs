@@ -490,8 +490,6 @@ pub enum WebGLCommand {
     GetParameterBool(ParameterBool, GenericSender<bool>),
     GetParameterBool4(ParameterBool4, GenericSender<[bool; 4]>),
     GetParameterInt(ParameterInt, GenericSender<i32>),
-    // upstream b7e3ade7a (#48441): the stencil masks are GLuints — a dedicated
-    // UInt command round-trips them without the i32 clamp.
     GetParameterUInt(ParameterUInt, GenericSender<u32>),
     GetParameterInt2(ParameterInt2, GenericSender<[i32; 2]>),
     GetParameterInt4(ParameterInt4, GenericSender<[i32; 4]>),
@@ -923,7 +921,6 @@ parameters! {
             UnpackSkipPixels = gl::UNPACK_SKIP_PIXELS,
             UnpackSkipRows = gl::UNPACK_SKIP_ROWS,
         }),
-        // upstream b7e3ade7a (#48441): stencil masks returned unsigned.
         UInt(ParameterUInt {
             StencilBackValueMask = gl::STENCIL_BACK_VALUE_MASK,
             StencilBackWritemask = gl::STENCIL_BACK_WRITEMASK,

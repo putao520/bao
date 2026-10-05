@@ -16,7 +16,8 @@ use euclid::default::{Point2D, Rect};
 use euclid::num::Zero;
 use font_types::NameId;
 use fonts_traits::FontDescriptor;
-use icu_locid::subtags::Language;
+use icu_locale_core::subtags::Language;
+use icu_properties::props::{EnumeratedProperty, GeneralCategory};
 use log::debug;
 use malloc_size_of_derive::MallocSizeOf;
 use parking_lot::RwLock;
@@ -41,8 +42,8 @@ use style::values::computed::font::{
     FamilyName, FontFamilyNameSyntax, GenericFontFamily, SingleFontFamily,
 };
 use style::values::computed::{
-    FontFeatureSettings, FontWidth, FontStyle, FontSynthesis, FontVariantEastAsian,
-    FontVariantLigatures, FontVariantNumeric, FontWeight,
+    FontFeatureSettings, FontStyle, FontSynthesis, FontVariantEastAsian, FontVariantLigatures,
+    FontVariantNumeric, FontWeight, FontWidth,
 };
 use unicode_script::Script;
 use webrender_api::{
@@ -155,10 +156,7 @@ pub trait PlatformFontMethods: Sized {
         self,
         _font_identifer: &FontIdentifier,
         _variations: &[FontVariation],
-    ) -> Result<Self, &'static str> {
-        // TODO: Get rid of this default implementation once windows support is added.
-        Ok(self)
-    }
+    ) -> Result<Self, &'static str>;
 
     /// Get a [`FontTemplateDescriptor`] from a [`PlatformFont`]. This is used to get
     /// descriptors for web fonts.
@@ -172,7 +170,7 @@ pub trait PlatformFontMethods: Sized {
     fn table_for_tag(&self, _: Tag) -> Option<FontTable>;
     fn typographic_bounds(&self, _: GlyphId) -> Rect<f32>;
 
-    /// Get the necessary [`FontInstanceFlags`]` for this font.
+    /// Get the necessary [`FontInstanceFlags`] for this font.
     fn webrender_font_instance_flags(&self) -> FontInstanceFlags;
 
     /// Get the necessary [`FontInstancePlatformOptions`] for this font.
@@ -190,7 +188,7 @@ pub trait PlatformFontMethods: Sized {
         }
 
         let weight = FontWeight::from_float(os2.us_weight_class() as f32);
-        let stretch = match os2.us_width_class() {
+        let width = match os2.us_width_class() {
             1 => FontWidth::ULTRA_CONDENSED,
             2 => FontWidth::EXTRA_CONDENSED,
             3 => FontWidth::CONDENSED,
@@ -203,7 +201,7 @@ pub trait PlatformFontMethods: Sized {
             _ => FontWidth::NORMAL,
         };
 
-        FontTemplateDescriptor::new(weight, stretch, style)
+        FontTemplateDescriptor::new(weight, width, style)
     }
 }
 
@@ -214,7 +212,7 @@ pub(crate) trait FontTableMethods {
     fn buffer(&self) -> &[u8];
     fn parse_as_specific_table<'a, Table>(&'a self) -> Result<Table, ReadError>
     where
-        Table: FontRead<'a>,
+        Table: FontRead<'a, Args = ()>,
     {
         Table::read(read_fonts::FontData::new(self.buffer()))
     }
@@ -281,7 +279,7 @@ impl malloc_size_of::MallocSizeOf for CachedShapeData {
 pub struct Font {
     pub(crate) handle: PlatformFont,
     pub(crate) template: FontTemplateRef,
-    pub metrics: Arc<FontMetrics>,
+    pub metrics: OnceLock<Arc<FontMetrics>>,
     pub descriptor: FontDescriptor,
 
     /// The data for this font. And the index of the font within the data (in case it's a TTC)
@@ -337,7 +335,8 @@ impl malloc_size_of::MallocSizeOf for Font {
         // TODO: Collect memory usage for platform fonts and for shapers.
         // This skips the template, because they are already stored in the template cache.
 
-        self.metrics.size_of(ops) +
+        let metrics_size = self.metrics.get().map_or(0, |metrics| metrics.size_of(ops));
+        metrics_size +
             self.descriptor.size_of(ops) +
             self.cached_shape_data.read().size_of(ops) +
             self.font_instance_key
@@ -380,12 +379,10 @@ impl Font {
             handle
         };
 
-        let metrics = Arc::new(handle.metrics());
-
         Ok(Font {
             handle,
             template,
-            metrics,
+            metrics: OnceLock::new(),
             descriptor,
             data_and_index: data
                 .map(|data| OnceLock::from(FontDataAndIndex { data, index: 0 }))
@@ -405,12 +402,16 @@ impl Font {
         self.template.identifier()
     }
 
-    pub(crate) fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
-        self.handle.webrender_font_instance_platform_options()
+    pub fn metrics(&self) -> &Arc<FontMetrics> {
+        self.metrics.get_or_init(|| Arc::new(self.handle.metrics()))
     }
 
     pub(crate) fn webrender_font_instance_flags(&self) -> FontInstanceFlags {
         self.handle.webrender_font_instance_flags()
+    }
+
+    pub(crate) fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        self.handle.webrender_font_instance_platform_options()
     }
 
     pub(crate) fn has_color_bitmap_or_colr_table(&self) -> bool {
@@ -499,9 +500,7 @@ impl ShapingOptions {
         // https://drafts.csswg.org/css-text/#letter-spacing-property
         // Letter spacing ignores invisible zero-width formatting characters (such as those from the Unicode Cf category).
         // Spacing must be added as if those characters did not exist in the document.
-        if icu_properties::maps::general_category().get(character) ==
-            icu_properties::GeneralCategory::Format
-        {
+        if GeneralCategory::for_char(character) == GeneralCategory::Format {
             return Au::zero();
         }
         self.letter_spacing
@@ -1211,8 +1210,7 @@ fn compute_variations(
     //
     // If the selected font is defined in an @font-face rule, then the values applied at this step should be clamped
     // to the value of the font-weight, font-width, and font-style descriptors in that @font-face rule.
-    // TODO: Clamp weight/stretch to the descriptors from the @font-face rule, if any
-    // NOTE: font-stretch is a legacy alias to font-width
+    // TODO: Clamp weight/width to the descriptors from the @font-face rule, if any
     add_variation(FontVariation {
         tag: Tag::new(b"wght").to_u32(),
         value: descriptor.weight.value(),
@@ -1220,7 +1218,7 @@ fn compute_variations(
 
     add_variation(FontVariation {
         tag: Tag::new(b"wdth").to_u32(),
-        value: descriptor.stretch.0.to_float(),
+        value: descriptor.width.0.to_float(),
     });
 
     if variation_axes.intersects(VariationAxes::ITAL | VariationAxes::SLNT) {

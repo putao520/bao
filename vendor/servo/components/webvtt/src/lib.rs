@@ -2,12 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
-// parser split into `collectors` + `cue::{settings,text}` modules (REQ-BRW-047
-// absorption wave; the pre-sync form inlined these types at crate root). The
-// fork `Cargo.toml` (bao-servo-webvtt rename + `[lib] name`) is intentional
-// and retained.
-
 use std::marker::PhantomData;
 use std::mem;
 
@@ -69,9 +63,9 @@ pub struct IncrementalWebVTTParser<Context, Sink: WebVttParserSink<Context>> {
     state: ParserState,
 
     // Storage values
-    lines_from_previous_position: StrTendril,
     current_line_in_block: StrTendril,
     current_buffer_in_block: String,
+    lines_from_previous_position: StrTendril,
 
     current_cue_in_block: Option<WebVttCue>,
 }
@@ -94,10 +88,10 @@ where
             in_header: Default::default(),
             line_count: Default::default(),
             state: Default::default(),
-            lines_from_previous_position: Default::default(),
             current_line_in_block: Default::default(),
             current_buffer_in_block: Default::default(),
             current_cue_in_block: Default::default(),
+            lines_from_previous_position: Default::default(),
         }
     }
 
@@ -419,12 +413,7 @@ where
     }
 }
 
-// BAO patch (fork-maintained, 2026-09-27): un-gated from
-// `#[cfg(any(test, feature = "test-util"))]`. This fork's single-universe
-// cargo topology keeps `bao-servo-webvtt` a non-member path dependency, and
-// cargo cannot resolve the crate's self-referential dev-dependency there —
-// so the tests reach this module through the plain lib instead of the
-// feature-flagged self-dep. The helpers are pure Rust test scaffolding.
+#[cfg(any(test, feature = "test-util"))]
 pub mod shared_test_setup;
 
 #[cfg(test)]

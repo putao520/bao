@@ -3,11 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // https://html.spec.whatwg.org/multipage/#messageevent
-// (Bao) AudioWorklet added: the AudioWorklet realm receives `message`
-// events on MessagePorts (node↔processor port pairs; same shape as the
-// MessagePort exposure edit). Upstream has no AudioWorklet realm, so
-// upstream parity is unaffected.
-[Exposed=(Window,Worker,AudioWorklet)]
+[Exposed=(Window,Worker)]
 interface MessageEvent : Event {
   [Throws] constructor(DOMString type, optional MessageEventInit eventInitDict = {});
   readonly attribute any data;

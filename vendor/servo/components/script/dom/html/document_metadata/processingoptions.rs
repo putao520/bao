@@ -162,33 +162,21 @@ impl LinkProcessingOptions {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#translate-a-preload-destination>
-    ///
-    /// Bao vendor patch (wave2-B2 D, user ruling 2026-10-04, Chromium-parity):
-    /// the spec closes "preload destination" to exactly fetch/font/image/
-    /// script/style/track (everything else returns null), and the previous
-    /// table below was that spec-parity shape. Chrome instead accepts the
-    /// full fetch-spec destination set, and whether `<link rel=preload
-    /// as=json>` fires load/error is page-observable — an engine
-    /// distinguisher. Per the indistinguishability-over-spec-correctness
-    /// ruling (same class as the 2026-10-03 codegen.py callback ruling) the
-    /// closed set is deliberately diverged from: tokens are translated
-    /// through the fetch-spec destination table
-    /// (`Destination::from_str`, zero hand-made mappings) and only tokens
-    /// with no fetch-spec destination still return null. If the spec ever
-    /// aligns with Chrome, restore the six-token table.
     pub(crate) fn translate_a_preload_destination(
         potential_destination: &str,
     ) -> Option<Destination> {
-        // Step 1. "fetch" is a valid preload destination with no fetch-spec
-        // destination spelling (`Destination::from_str` has no "fetch" arm):
-        // it translates to the empty destination.
-        if potential_destination == "fetch" {
-            return Some(Destination::None);
-        }
-        // Step 2. Return the result of translating destination (the
-        // fetch-spec potential-destination table); null for tokens that are
-        // not a potential destination.
-        Destination::from_str(potential_destination).ok()
+        // Step 2. Return the result of translating destination.
+        Some(match potential_destination {
+            "fetch" => Destination::None,
+            "font" => Destination::Font,
+            "image" => Destination::Image,
+            "script" => Destination::Script,
+            "style" => Destination::Style,
+            "track" => Destination::Track,
+            // Step 1. If destination is not "fetch", "font", "image",
+            // "script", "style", or "track", then return null.
+            _ => return None,
+        })
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-a-link-request>

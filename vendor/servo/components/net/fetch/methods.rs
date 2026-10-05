@@ -8,6 +8,7 @@ use std::{io, mem, str};
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
+use bytes::Bytes;
 use content_security_policy as csp;
 use crossbeam_channel::Sender;
 use devtools_traits::DevtoolsControlMsg;
@@ -15,7 +16,7 @@ use embedder_traits::resources::{self, Resource};
 use headers::{AccessControlExposeHeaders, ContentType, HeaderMapExt};
 use http::header::{self, HeaderMap, HeaderName, RANGE};
 use http::{HeaderValue, Method, StatusCode};
-use ipc_channel::ipc::{self, IpcSender};
+use ipc_channel::ipc;
 use log::{debug, trace, warn};
 use malloc_size_of_derive::MallocSizeOf;
 use mime::{self, Mime};
@@ -31,17 +32,18 @@ use net_traits::request::{
 };
 use net_traits::response::{Response, ResponseBody, ResponseType, TerminationReason};
 use net_traits::{
-    CustomResponseMediator, FetchTaskTarget, NetworkError, ReferrerPolicy, ResourceAttribute,
-    ResourceFetchTiming, ResourceFetchTimingContainer, ResourceTimeValue, ResourceTimingType,
-    WebSocketDomAction, WebSocketNetworkEvent, set_default_accept_language,
+    FetchTaskTarget, NetworkError, ReferrerPolicy, ResourceAttribute, ResourceFetchTiming,
+    ResourceFetchTimingContainer, ResourceTimeValue, ResourceTimingType, WebSocketDomAction,
+    WebSocketNetworkEvent, set_default_accept_language,
 };
 use parking_lot::Mutex;
+use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use rustc_hash::FxHashMap;
 use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
-use servo_base::generic_channel::{CallbackSetter, GenericSender};
+use servo_base::generic_channel::CallbackSetter;
 use servo_base::id::PipelineId;
-use servo_url::{Host, ImmutableOrigin, ServoUrl};
+use servo_url::{Host, ServoUrl};
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc::{UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender};
 
@@ -63,7 +65,7 @@ pub type Target<'a> = &'a mut (dyn FetchTaskTarget + Send);
 
 #[derive(Clone, Deserialize, Serialize)]
 pub enum Data {
-    Payload(Vec<u8>),
+    Payload(bytes::Bytes),
     ContentLength(usize),
     Done,
     Cancelled,
@@ -71,13 +73,13 @@ pub enum Data {
 }
 
 pub struct WebSocketChannel {
-    pub sender: IpcSender<WebSocketNetworkEvent>,
+    pub sender: ProfileGenericCallback<WebSocketNetworkEvent>,
     pub receiver: Option<CallbackSetter<WebSocketDomAction>>,
 }
 
 impl WebSocketChannel {
     pub fn new(
-        sender: IpcSender<WebSocketNetworkEvent>,
+        sender: ProfileGenericCallback<WebSocketNetworkEvent>,
         receiver: Option<CallbackSetter<WebSocketDomAction>>,
     ) -> Self {
         Self { sender, receiver }
@@ -95,22 +97,9 @@ pub struct InFlightKeepAliveRecord {
 pub type SharedInflightKeepAliveRecords =
     Arc<Mutex<FxHashMap<PipelineId, Vec<InFlightKeepAliveRecord>>>>;
 
-/// BAO PATCH (REQ-BRW-004 C19): per-origin service-worker manager channels,
-/// shared between the resource thread (which registers them on
-/// `CoreResourceMsg::NetworkMediator`) and the async fetch tasks (which
-/// consult them to invoke "handle fetch"). The `Mutex` is a true cross-thread
-/// share (resource thread writes, tokio fetch workers read), which is the
-/// allowed exception in the去锁化 principle.
-pub type SwManagers =
-    Arc<Mutex<FxHashMap<ImmutableOrigin, GenericSender<CustomResponseMediator>>>>;
-
 #[derive(Clone)]
 pub struct FetchContext {
     pub state: Arc<HttpState>,
-    /// BAO PATCH (REQ-BRW-004 C19): the `SwManagers` registry of the
-    /// `CoreResourceManager` that spawned this fetch, consulted by
-    /// `http_fetch` step 3 to invoke "handle fetch".
-    pub sw_managers: SwManagers,
     pub user_agent: String,
     pub devtools_chan: Option<Sender<DevtoolsControlMsg>>,
     pub filemanager: FileManager,
@@ -120,7 +109,7 @@ pub struct FetchContext {
     pub timing: ResourceFetchTimingContainer,
     pub protocols: Arc<ProtocolRegistry>,
     pub websocket_chan: Option<Arc<Mutex<WebSocketChannel>>>,
-    pub ca_certificates: CACertificates,
+    pub ca_certificates: CACertificates<'static>,
     pub ignore_certificate_errors: bool,
     pub preloaded_resources: SharedPreloadedResources,
     pub in_flight_keep_alive_records: SharedInflightKeepAliveRecords,
@@ -421,10 +410,6 @@ pub async fn main_fetch(
     // Step 1: Let request be fetchParam's request.
     let request = &mut fetch_params.request;
     send_early_httprequest_to_devtools(request, context);
-    // BAO PATCH (REQ-BRW-004 C19-②): request-side Network event tap — the
-    // embedder-installed observability face beside the devtools
-    // instrumentation. No-op unless servo::set_network_event_tap installed one.
-    crate::http_loader::bao_emit_network_request_tap(request);
     // Step 2: Let response be null.
     let mut response = None;
 
@@ -864,11 +849,6 @@ pub async fn main_fetch(
         if !response_loaded {
             wait_for_response(request, &mut response, target, done_chan, context).await;
         }
-        // BAO PATCH (REQ-BRW-004 C19-②): response-side Network event tap for
-        // the synchronous branch — the upstream devtools response send skips
-        // this path entirely, but synchronous XHR is a first-class CDP
-        // observation surface (the sub2 live probe drives a sync XHR).
-        crate::http_loader::bao_emit_network_response_tap(request, &response);
         // overloaded similarly to process_response
         target.process_response_eof(request, &response);
         return response;
@@ -888,11 +868,6 @@ pub async fn main_fetch(
     // Send Response to Devtools
     send_response_to_devtools(request, context, &response, None);
     send_security_info_to_devtools(request, context, &response);
-    // BAO PATCH (REQ-BRW-004 C19-②): response-side Network event tap — the
-    // embedder observability face. Headers/status are final here (CDP
-    // responseReceived semantics); service-worker-mediated and plain network
-    // responses both settle through this point.
-    crate::http_loader::bao_emit_network_response_tap(request, &response);
 
     // Step 23.
     if !response_loaded {
@@ -931,11 +906,11 @@ async fn wait_for_response(
                 Some(Data::ContentLength(length)) => {
                     target.process_response_length_hint(request, length);
                 },
-                Some(Data::Payload(vec)) => {
+                Some(Data::Payload(bytes)) => {
                     if let Some(body) = devtools_body.as_mut() {
-                        body.extend(&vec);
+                        body.extend(&bytes);
                     }
-                    target.process_response_chunk(request, vec);
+                    target.process_response_chunk(request, bytes);
                 },
                 Some(Data::Error(network_error)) => {
                     if network_error == NetworkError::DecompressionError {
@@ -965,7 +940,7 @@ async fn wait_for_response(
                 // in case there was no channel to wait for, the body was
                 // obtained synchronously via scheme_fetch for data/file/about/etc
                 // We should still send the body across as a chunk
-                target.process_response_chunk(request, vec.clone());
+                target.process_response_chunk(request, Bytes::copy_from_slice(vec));
                 if context.devtools_chan.is_some() {
                     // Now that we've replayed the entire cached body,
                     // notify the DevTools server with the full Response.
@@ -1088,7 +1063,7 @@ fn handle_allowcert_request(request: &mut Request, context: &FetchContext) -> io
     context
         .state
         .override_manager
-        .add_override(&cert_bytes);
+        .add_override(&CertificateDer::from_slice(&cert_bytes).into_owned());
     Ok(())
 }
 
@@ -1199,7 +1174,7 @@ pub fn should_be_blocked_due_to_nosniff(
         Some(ref mime_type) if destination.is_script_like() => !is_javascript_mime_type(mime_type),
         // Step 5
         Some(ref mime_type) if destination == Destination::Style => {
-            mime_type.type_() != mime::TEXT && mime_type.subtype() != mime::CSS
+            mime_type.type_() != mime::TEXT || mime_type.subtype() != mime::CSS
         },
 
         None if destination == Destination::Style || destination.is_script_like() => true,

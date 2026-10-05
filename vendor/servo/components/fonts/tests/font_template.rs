@@ -13,7 +13,7 @@ fn test_font_template_descriptor() {
     use fonts::platform::font::PlatformFont;
     use fonts::{FontData, FontIdentifier, FontTemplateDescriptor, PlatformFontMethods};
     use servo_url::ServoUrl;
-    use style::values::computed::font::{FontWidth, FontStyle, FontWeight};
+    use style::values::computed::font::{FontStyle, FontWeight, FontWidth};
 
     fn descriptor(filename: &str) -> FontTemplateDescriptor {
         let mut path: PathBuf = [
@@ -42,25 +42,17 @@ fn test_font_template_descriptor() {
 
     assert_eq!(
         descriptor("DejaVuSans"),
-        FontTemplateDescriptor::new(
-            FontWeight::NORMAL,
-            FontWidth::hundred(),
-            FontStyle::NORMAL,
-        )
+        FontTemplateDescriptor::new(FontWeight::NORMAL, FontWidth::hundred(), FontStyle::NORMAL)
     );
 
     assert_eq!(
         descriptor("DejaVuSans-Bold"),
-        FontTemplateDescriptor::new(FontWeight::BOLD, FontWidth::hundred(), FontStyle::NORMAL,)
+        FontTemplateDescriptor::new(FontWeight::BOLD, FontWidth::hundred(), FontStyle::NORMAL)
     );
 
     assert_eq!(
         descriptor("DejaVuSans-Oblique"),
-        FontTemplateDescriptor::new(
-            FontWeight::NORMAL,
-            FontWidth::hundred(),
-            FontStyle::ITALIC,
-        )
+        FontTemplateDescriptor::new(FontWeight::NORMAL, FontWidth::hundred(), FontStyle::ITALIC)
     );
 
     assert_eq!(

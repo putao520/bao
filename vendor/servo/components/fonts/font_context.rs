@@ -1294,21 +1294,7 @@ impl RemoteWebFontDownloader {
         // https://drafts.csswg.org/css-fonts/#font-fetching-requirements
         let url = match url_source.url.url() {
             Some(url) => url.clone(),
-            // BAO PATCH (fork-maintained, 2026-10-04, e56): an unresolved
-            // `src: url(...)` (the cascade has not resolved the SpecifiedUrl
-            // for this rule yet — ordering-dependent, seen when a second
-            // @font-face is inserted between rebuild passes) must FAIL this
-            // source, not silently return: the loading count was already
-            // incremented by `start_loading_one_web_font`, a known rule is
-            // never re-attempted by a later rebuild, so the silent return
-            // leaked the count and hung `document.fonts.ready` forever
-            // (webfont double-load settlement defect). css-fonts §src
-            // fallback semantics: an unloadable source advances to the next
-            // source / the load-failure path.
-            None => {
-                state.handle_web_font_load_failure();
-                return;
-            },
+            None => return,
         };
 
         let webview_id = state.webview_id;
@@ -1372,7 +1358,7 @@ impl RemoteWebFontDownloader {
         );
 
         let font_data = match fontsan::process(&font_data) {
-            Ok(bytes) => FontData::from_bytes(&bytes),
+            Ok(bytes) => FontData::from_vec(bytes),
             Err(error) => {
                 debug!(
                     "Sanitiser rejected web font url={:?} with {error:?}",
@@ -1416,7 +1402,7 @@ impl RemoteWebFontDownloader {
                     self.web_font_family_name, new_bytes
                 );
                 if self.response_valid {
-                    self.response_data.extend(new_bytes.0)
+                    self.response_data.extend(new_bytes)
                 }
                 DownloaderResponseResult::InProcess
             },
@@ -1434,7 +1420,8 @@ impl RemoteWebFontDownloader {
                 DownloaderResponseResult::Finished
             },
             FetchResponseMsg::ProcessContentLength(_request_id, size) => {
-                self.response_data.reserve(size - self.response_data.len());
+                self.response_data
+                    .reserve(size.saturating_sub(self.response_data.len()));
                 DownloaderResponseResult::InProcess
             },
         }

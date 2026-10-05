@@ -23,7 +23,7 @@ use crate::dom::bindings::error::Error;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot, MutNullableDom};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::gamepad::Gamepad;
 use crate::dom::promise::{Promise, RootedPromise};
@@ -185,7 +185,7 @@ impl XRSystemMethods<crate::DomTypeHolder> for XRSystem {
         if let Some(ref r) = init.requiredFeatures {
             for feature in r {
                 if let Ok(ConversionResult::Success(s)) =
-                    String::safe_from_jsval(realm, feature.handle(), ())
+                    String::from_jsval(realm, feature.as_handle_value(), ())
                 {
                     required_features.push(s)
                 } else {
@@ -202,7 +202,7 @@ impl XRSystemMethods<crate::DomTypeHolder> for XRSystem {
         if let Some(ref o) = init.optionalFeatures {
             for feature in o {
                 if let Ok(ConversionResult::Success(s)) =
-                    String::safe_from_jsval(realm, feature.handle(), ())
+                    String::from_jsval(realm, feature.as_handle_value(), ())
                 {
                     optional_features.push(s)
                 } else {
@@ -244,21 +244,7 @@ impl XRSystemMethods<crate::DomTypeHolder> for XRSystem {
                 return;
             };
             task_source.queue(task!(request_session: move |cx| {
-                let this = this.root();
-                // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the
-                // XR device's session response may land after this
-                // realm's pipeline was closed — settling then would
-                // re-enter a discarded realm's JS. Drop the settle
-                // entirely. Pure address probe — MUST run before any JS
-                // deref below.
-                if crate::event_loop::script_thread::bao_is_realm_discarded(
-                    script_bindings::reflector::DomObject::reflector(&*this.global())
-                        .get_jsobject()
-                        .get(),
-                ) {
-                    return;
-                }
-                this.session_obtained(cx, message, &trusted.root(cx), mode);
+                this.root().session_obtained(cx, message, &trusted.root(cx), mode);
             }));
         })
         .expect("Could not create callback");

@@ -191,7 +191,7 @@ impl DefaultTeeUnderlyingSource {
         reasons_values.push(self.reason_2.get());
 
         rooted!(&in(cx) let mut reasons_value = UndefinedValue());
-        reasons_values.safe_to_jsval(cx, reasons_value.handle_mut());
+        reasons_values.to_jsval(cx, reasons_value.handle_mut());
 
         // Let cancelResult be ! ReadableStreamCancel(stream, compositeReason).
         let cancel_result = self.stream.cancel(cx, global, reasons_value.handle());

@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::rc::Rc;
-
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
@@ -31,11 +29,11 @@ use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlmediaelement::HTMLMediaElement;
 use crate::dom::mediastream::MediaStream;
 use crate::dom::mediastreamtrack::MediaStreamTrack;
 use crate::dom::promise::{Promise, RootedPromise};
+use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct AudioContext {
@@ -86,13 +84,13 @@ impl AudioContext {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new(
         cx: &mut js::context::JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         options: &AudioContextOptions,
     ) -> Fallible<DomRoot<AudioContext>> {
-        let pipeline_id = global.pipeline_id();
+        let pipeline_id = window.pipeline_id();
         let context = AudioContext::new_inherited(options, pipeline_id)?;
-        let context = reflect_dom_object_with_proto(cx, Box::new(context), global, proto);
+        let context = reflect_dom_object_with_proto(cx, Box::new(context), window, proto);
         context.resume();
         Ok(context)
     }
@@ -114,11 +112,11 @@ impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
     /// <https://webaudio.github.io/web-audio-api/#AudioContext-constructors>
     fn Constructor(
         cx: &mut js::context::JSContext,
-        global: &GlobalScope,
+        window: &Window,
         proto: Option<HandleObject>,
         options: &AudioContextOptions,
     ) -> Fallible<DomRoot<AudioContext>> {
-        AudioContext::new(cx, global, proto, options)
+        AudioContext::new(cx, window, proto, options)
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audiocontext-baselatency>

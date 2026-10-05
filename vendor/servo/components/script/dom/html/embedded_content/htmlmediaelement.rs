@@ -3,21 +3,13 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, RefCell};
-use bytes::Bytes;
 use std::collections::VecDeque;
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f for
-// the WebVTT cue-tracking face — `time_marches_on` full algorithm (current /
-// other / missed cues, active flags, enter/exit/cuechange events), the
-// newly-introduced-cues list, and the active-cue render snapshot consumed by
-// layout (REQ-BRW-047). Orthogonal upstream evolution (RootedPromise play
-// promises) IS synced now (③c promise migration); MediaElementWeakRef /
-// download-buffering evolution stays unsynced.
 use std::ops::Deref;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 use std::{f64, mem};
 
+use bytes::Bytes;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use dom_struct::dom_struct;
 use embedder_traits::{MediaPositionState, MediaSessionEvent, MediaSessionPlaybackState};
@@ -28,7 +20,7 @@ use http::StatusCode;
 use http::header::HeaderMap;
 use js::context::{JSContext, NoGC};
 use js::realm::CurrentRealm;
-use layout_api::{MediaFrame, WebVttCueBoxData};
+use layout_api::MediaFrame;
 use media::{GLPlayerMsg, GLPlayerMsgForward, WindowGLContext};
 use net_traits::request::{Destination, RequestId};
 use net_traits::{
@@ -58,19 +50,18 @@ use webrender_api::{
 };
 
 use crate::dom::audio::audiotrack::AudioTrack;
-use script_bindings::interfaces::{HeapTracedPromiseHelpers, StackRootPromiseHelpers};
 use crate::dom::audio::audiotracklist::AudioTrackList;
 use crate::dom::bindings::codegen::Bindings::HTMLMediaElementBinding::{
     CanPlayTypeResult, HTMLMediaElementConstants, HTMLMediaElementMethods,
 };
 use crate::dom::bindings::codegen::Bindings::MediaErrorBinding::MediaErrorConstants::*;
 use crate::dom::bindings::codegen::Bindings::MediaErrorBinding::MediaErrorMethods;
-use crate::dom::bindings::codegen::Bindings::TextTrackCueBinding::TextTrackCueMethods;
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::Navigator_Binding::NavigatorMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::Node_Binding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::TextTrackBinding::{
     TextTrackKind, TextTrackMethods, TextTrackMode,
 };
+use crate::dom::bindings::codegen::Bindings::TextTrackCueBinding::TextTrackCueMethods;
 use crate::dom::bindings::codegen::Bindings::URLBinding::URLMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::{
@@ -94,6 +85,7 @@ use crate::dom::element::{
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::html::htmlaudioelement::HTMLAudioElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlsourceelement::HTMLSourceElement;
 use crate::dom::html::htmlvideoelement::HTMLVideoElement;
@@ -104,8 +96,10 @@ use crate::dom::mediastream::MediaStream;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeDamage, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
-use crate::dom::referrer_policy_for_element;
+use crate::dom::promise::Promise;
+use crate::dom::rules_for_rendering::{
+    RulesForUpdatingTheTextTrackRendering, ShouldResetRenderingControls,
+};
 use crate::dom::texttrack::TextTrack;
 use crate::dom::texttrackcue::TextTrackCue;
 use crate::dom::texttracklist::TextTrackList;
@@ -114,7 +108,7 @@ use crate::dom::trackevent::TrackEvent;
 use crate::dom::url::URL;
 use crate::dom::videotrack::VideoTrack;
 use crate::dom::videotracklist::VideoTrackList;
-use crate::dom::webvtt::vttcue::VTTCue;
+use crate::dom::{RootedPromise, TracedPromise, referrer_policy_for_element};
 use crate::event_loop::document_loader::{LoadBlocker, LoadType};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::fetch::fetch::{
@@ -122,7 +116,7 @@ use crate::fetch::fetch::{
 };
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 use crate::tasks::task_source::SendableTaskSource;
 
 /// A CSS file to style the media controls.
@@ -142,22 +136,8 @@ enum FrameStatus {
     Unlocked,
 }
 
-// BAO patch (fork-maintained, 2026-09-27): resynced to upstream 7ca99fe3f —
-/// Used to determine whether the current playback position was changed
-/// during normal playback or not in
-/// <https://html.spec.whatwg.org/multipage/#time-marches-on>
-#[derive(Clone, Copy, Default, MallocSizeOf, PartialEq)]
-enum PlaybackPositionWasMoved {
-    #[default]
-    ExplicitMove,
-    NormalPlayback,
-}
-
 #[derive(MallocSizeOf)]
-struct FrameHolder(
-    FrameStatus,
-    #[ignore_malloc_size_of = "defined in servo-media"] VideoFrame,
-);
+struct FrameHolder(FrameStatus, VideoFrame);
 
 impl FrameHolder {
     fn new(frame: VideoFrame) -> FrameHolder {
@@ -538,6 +518,8 @@ enum LoopCondition {
     Ignored,
 }
 
+type BoxedSliceOfPromises = Box<[TracedPromise]>;
+
 #[dom_struct]
 pub(crate) struct HTMLMediaElement {
     htmlelement: HTMLElement,
@@ -568,12 +550,9 @@ pub(crate) struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/multipage/#delaying-the-load-event-flag>
     delaying_the_load_event_flag: DomRefCell<Option<LoadBlocker>>,
     /// <https://html.spec.whatwg.org/multipage/#list-of-pending-play-promises>
-    #[conditional_malloc_size_of]
     pending_play_promises: DomRefCell<Vec<TracedPromise>>,
     /// Play promises which are soon to be fulfilled by a queued task.
-    #[expect(clippy::type_complexity)]
-    #[conditional_malloc_size_of]
-    in_flight_play_promises_queue: DomRefCell<VecDeque<(Box<[TracedPromise]>, ErrorResult)>>,
+    in_flight_play_promises_queue: DomRefCell<VecDeque<(BoxedSliceOfPromises, ErrorResult)>>,
     #[ignore_malloc_size_of = "servo_media"]
     #[no_trace]
     player: DomRefCell<Option<Arc<Mutex<dyn Player>>>>,
@@ -588,20 +567,6 @@ pub(crate) struct HTMLMediaElement {
     event_handler: RefCell<Option<Arc<Mutex<HTMLMediaElementEventHandler>>>>,
     /// <https://html.spec.whatwg.org/multipage/#show-poster-flag>
     show_poster: Cell<bool>,
-    /// Used to track the
-    /// <https://html.spec.whatwg.org/multipage/#current-playback-position>
-    /// when
-    /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
-    /// was last invoked (if any)
-    position_when_time_marches_on_ran: Cell<Option<f64>>,
-    /// <https://html.spec.whatwg.org/multipage/#list-of-newly-introduced-cues>
-    newly_introduced_cues: DomRefCell<Vec<Dom<TextTrackCue>>>,
-    /// Active-cue render snapshot read by layout when constructing the video
-    /// replaced content (BAO patch, fork-maintained, 2026-09-27, REQ-BRW-047).
-    /// Rebuilt by step 18 of `time_marches_on`; plain data, never page-visible
-    /// DOM. Read on the layout thread through `borrow_for_layout`.
-    #[no_trace]
-    active_cue_overlays: DomRefCell<Vec<WebVttCueBoxData>>,
     /// <https://html.spec.whatwg.org/multipage/#dom-media-duration>
     duration: Cell<f64>,
     /// <https://html.spec.whatwg.org/multipage/#current-playback-position>
@@ -654,6 +619,14 @@ pub(crate) struct HTMLMediaElement {
     media_controls_id: DomRefCell<Option<String>>,
     /// <https://html.spec.whatwg.org/multipage/#did-perform-automatic-track-selection>
     did_perform_automatic_track_selection: Cell<bool>,
+    /// Used to track the
+    /// <https://html.spec.whatwg.org/multipage/#current-playback-position>
+    /// when
+    /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
+    /// was last invoked (if any)
+    position_when_time_marches_on_ran: Cell<Option<f64>>,
+    /// <https://html.spec.whatwg.org/multipage/#list-of-newly-introduced-cues>
+    newly_introduced_cues: DomRefCell<Vec<Dom<TextTrackCue>>>,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#dom-media-networkstate>
@@ -685,6 +658,16 @@ enum PlaybackDirection {
     Backwards,
 }
 
+/// Used to determine whether the current playback position was changed
+/// during normal playback or not in
+/// <https://html.spec.whatwg.org/multipage/#time-marches-on>
+#[derive(Clone, Copy, Default, MallocSizeOf, PartialEq)]
+enum PlaybackPositionWasMoved {
+    #[default]
+    ExplicitMove,
+    NormalPlayback,
+}
+
 impl HTMLMediaElement {
     pub(crate) fn new_inherited(
         tag_name: LocalName,
@@ -696,7 +679,7 @@ impl HTMLMediaElement {
             network_state: Cell::new(NetworkState::Empty),
             ready_state: Cell::new(ReadyState::HaveNothing),
             src_object: Default::default(),
-            current_src: DomRefCell::new("".to_owned()),
+            current_src: Default::default(),
             generation_id: Cell::new(0),
             fired_loadeddata_event: Cell::new(false),
             error: Default::default(),
@@ -705,9 +688,6 @@ impl HTMLMediaElement {
             playback_rate: Cell::new(1.0),
             muted_state: Default::default(),
             load_state: Cell::new(LoadState::NotLoaded),
-            position_when_time_marches_on_ran: Default::default(),
-            newly_introduced_cues: Default::default(),
-            active_cue_overlays: Default::default(),
             source_children_pointer: DomRefCell::new(None),
             current_source_child: Default::default(),
             // FIXME(nox): Why is this initialised to true?
@@ -741,6 +721,8 @@ impl HTMLMediaElement {
             current_fetch_context: RefCell::new(None),
             media_controls_id: DomRefCell::new(None),
             did_perform_automatic_track_selection: Default::default(),
+            position_when_time_marches_on_ran: Default::default(),
+            newly_introduced_cues: Default::default(),
         }
     }
 
@@ -809,10 +791,12 @@ impl HTMLMediaElement {
         }
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
     #[expect(clippy::type_complexity)]
     fn current_and_other_cues<'no_gc>(
         &self,
         no_gc: &'no_gc NoGC,
+        text_tracks_list: &TextTrackList,
     ) -> Option<(
         Vec<UnrootedDom<'no_gc, TextTrackCue>>,
         Vec<UnrootedDom<'no_gc, TextTrackCue>>,
@@ -826,7 +810,6 @@ impl HTMLMediaElement {
         // all the cues of hidden and showing text tracks of the media element
         // that are not present in current cues.
         let current_playback_position = self.current_playback_position.get();
-        let text_tracks_list = self.text_tracks_list.get()?;
         Some(
             text_tracks_list
                 .iter(no_gc)
@@ -837,19 +820,6 @@ impl HTMLMediaElement {
                         cue.end_time() > current_playback_position
                 }),
         )
-    }
-
-    /// Step 6 of <https://html.spec.whatwg.org/multipage/#time-marches-on>:
-    /// the throttled `timeupdate` event. (BAO patch, fork-maintained,
-    /// 2026-09-27 — factored out so it also fires when the element has no
-    /// text tracks, preserving this fork's pre-absorption behavior for
-    /// track-less media; REQ-BRW-047.)
-    fn queue_throttled_timeupdate(&self) {
-        if Instant::now() > self.next_timeupdate_event.get() {
-            self.queue_media_element_task_to_fire_event(atom!("timeupdate"));
-            self.next_timeupdate_event
-                .set(Instant::now() + Duration::from_millis(250));
-        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
@@ -864,11 +834,12 @@ impl HTMLMediaElement {
         // Step 2. Let other cues be a list of cues, initialized to contain
         // all the cues of hidden and showing text tracks of the media element
         // that are not present in current cues.
-        let Some((current_cues, other_cues)) = self.current_and_other_cues(cx.no_gc()) else {
-            // No text tracks: the cue machinery is inert, but the periodic
-            // `timeupdate` must still fire (fork behavior — see the anchor on
-            // `queue_throttled_timeupdate`).
-            self.queue_throttled_timeupdate();
+        let Some(text_tracks_list) = self.text_tracks_list.get() else {
+            return;
+        };
+        let Some((current_cues, other_cues)) =
+            self.current_and_other_cues(cx.no_gc(), &text_tracks_list)
+        else {
             return;
         };
         // Step 3. Let last time be the current playback position at the time
@@ -914,9 +885,17 @@ impl HTMLMediaElement {
                 vec![]
             };
 
-        // Step 6 (see `queue_throttled_timeupdate`).
-        if playback_was_moved_monotonic_increase {
-            self.queue_throttled_timeupdate();
+        // Step 6. If the time was reached through the usual monotonic increase of the current
+        // playback position during normal playback, and if the user agent has not fired a
+        // timeupdate event at the element in the past 15 to 250ms and is not still running event
+        // handlers for such an event, then the user agent must queue a media element task given the
+        // media element to fire an event named timeupdate at the element.
+        if playback_was_moved_monotonic_increase &&
+            Instant::now() > self.next_timeupdate_event.get()
+        {
+            self.queue_media_element_task_to_fire_event(atom!("timeupdate"));
+            self.next_timeupdate_event
+                .set(Instant::now() + Duration::from_millis(250));
         }
 
         // Step 7. If all of the cues in current cues have their text track cue active flag set,
@@ -956,6 +935,7 @@ impl HTMLMediaElement {
         // a text track cue target with a time time,
         // the user agent must run these steps:
         let mut events: Vec<(f64, (Atom, DomRoot<TextTrackCue>))> = vec![];
+        let no_gc = cx.no_gc();
         let mut affected_tracks = vec![];
         // https://html.spec.whatwg.org/multipage/#prepare-an-event
         let mut prepare_an_event =
@@ -972,7 +952,7 @@ impl HTMLMediaElement {
                 // the text track track, and the text track cue target.
                 events.push((time, (event, text_track_cue)));
                 // Step 4. Add track to affected tracks.
-                affected_tracks.push(track);
+                affected_tracks.push(track.as_unrooted(no_gc));
             };
 
         // Step 10. For each text track cue in missed cues,
@@ -980,7 +960,7 @@ impl HTMLMediaElement {
         for text_track_cue in &missed_cues {
             prepare_an_event(
                 text_track_cue.start_time(),
-                Atom::from("enter"),
+                atom!("enter"),
                 text_track_cue.clone(),
             );
         }
@@ -993,7 +973,7 @@ impl HTMLMediaElement {
             if text_track_cue.is_active() || missed_cues.iter().any(|cue| cue == text_track_cue) {
                 prepare_an_event(
                     text_track_cue.start_time().max(text_track_cue.end_time()),
-                    Atom::from("exit"),
+                    atom!("exit"),
                     text_track_cue.clone(),
                 );
             }
@@ -1006,7 +986,7 @@ impl HTMLMediaElement {
             if !text_track_cue.is_active() {
                 prepare_an_event(
                     text_track_cue.start_time(),
-                    Atom::from("enter"),
+                    atom!("enter"),
                     text_track_cue.clone(),
                 );
             }
@@ -1030,25 +1010,29 @@ impl HTMLMediaElement {
 
         // Step 15. Sort affected tracks in the same order as the text tracks appear
         // in the media element's list of text tracks, and remove duplicates.
-        // TODO
+        let affected_tracks: Vec<DomRoot<TextTrack>> = text_tracks_list
+            .iter(cx.no_gc())
+            .filter(|text_track| affected_tracks.contains(text_track))
+            .map(|text_track| text_track.as_rooted())
+            .collect();
 
         // Step 16. For each text track in affected tracks, in the list order,
         // queue a media element task given the media element to fire
         // an event named cuechange at the TextTrack object,
         // and, if the text track has a corresponding track element,
         // to then fire an event named cuechange at the track element as well.
-        for text_track in affected_tracks {
-            let text_track = Trusted::new(&*text_track);
+        for text_track in &affected_tracks {
+            let text_track = Trusted::new(&**text_track);
 
             self.owner_global()
                 .task_manager()
                 .media_element_task_source()
                 .queue(task!(queue_event: move |cx| {
                     let text_track = text_track.root();
-                    text_track.upcast::<EventTarget>().fire_event(cx, Atom::from("cuechange"));
+                    text_track.upcast::<EventTarget>().fire_event(cx, atom!("cuechange"));
 
                     if let Some(track_element) = text_track.associated_track() {
-                        track_element.upcast::<EventTarget>().fire_event(cx, Atom::from("cuechange"));
+                        track_element.upcast::<EventTarget>().fire_event(cx, atom!("cuechange"));
                     }
                 }));
         }
@@ -1068,10 +1052,16 @@ impl HTMLMediaElement {
         // if it is not the empty string.
         // For example, for text tracks based on WebVTT,
         // the rules for updating the display of WebVTT text tracks. [WEBVTT]
-        // BAO patch (fork-maintained, 2026-09-27): implement step 18 for
-        // WebVTT — rebuild the active-cue render snapshot that layout reads
-        // when constructing the video replaced content (REQ-BRW-047).
-        self.update_active_cue_render_snapshot(cx);
+        //
+        // TODO(https://github.com/whatwg/html/issues/12994): Figure out how to pass in language
+        // as well as handling multiple text tracks with different updating rules
+        RulesForUpdatingTheTextTrackRendering::WebVTT.run(
+            cx,
+            self,
+            affected_tracks,
+            None,
+            ShouldResetRenderingControls::No,
+        );
     }
 
     /// <https://html.spec.whatwg.org/multipage/#internal-play-steps>
@@ -2196,10 +2186,10 @@ impl HTMLMediaElement {
     /// `fulfill_in_flight_play_promises`, to actually fulfill the promises
     /// which were taken and moved to the in-flight queue.
     fn take_pending_play_promises(&self, result: ErrorResult) {
-        let pending_play_promises = std::mem::take(&mut *self.pending_play_promises.borrow_mut());
-        self.in_flight_play_promises_queue
-            .borrow_mut()
-            .push_back((pending_play_promises.into(), result));
+        self.in_flight_play_promises_queue.borrow_mut().push_back((
+            std::mem::take(&mut *self.pending_play_promises.borrow_mut()).into(),
+            result,
+        ));
     }
 
     /// Fulfills the next in-flight play promises queue after running a closure.
@@ -2214,17 +2204,6 @@ impl HTMLMediaElement {
     where
         F: FnOnce(&mut JSContext),
     {
-        // BAO PATCH (ISSUE #25 generalization, 2026-09-29): the settle task
-        // may land after this realm's pipeline was closed — settling then
-        // would re-enter a discarded realm's JS. Drop the settle (and the
-        // queue entry) entirely. Pure address probe — MUST run before any
-        // JS deref below.
-        if crate::event_loop::script_thread::bao_is_realm_discarded(
-            script_bindings::reflector::DomObject::reflector(&*self.global()).get_jsobject().get(),
-        ) {
-            let _ = self.in_flight_play_promises_queue.borrow_mut().pop_front();
-            return;
-        }
         let (promises, result) = self
             .in_flight_play_promises_queue
             .borrow_mut()
@@ -2556,6 +2535,20 @@ impl HTMLMediaElement {
 
         let player_id = {
             let player_guard = player.lock().unwrap();
+
+            // We flag the media to enable download buffering when it's supposed to be big and
+            // that happens heuristically for videos with preload="auto" and audio that loops.
+            let is_video = matches!(
+                self.media_type_id(),
+                HTMLMediaElementTypeId::HTMLVideoElement
+            );
+            let should_enable_download_buffering =
+                (is_video || self.Loop()) && self.Preload() == "auto";
+            if let Err(error) =
+                player_guard.set_download_buffering_enabled(should_enable_download_buffering)
+            {
+                warn!("Could not set download buffering: {error:?}");
+            }
 
             if let Err(error) = player_guard.set_mute(self.is_muted()) {
                 warn!("Could not set mute state: {error:?}");
@@ -3276,11 +3269,43 @@ impl HTMLMediaElement {
         }
 
         self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+
+        // https://html.spec.whatwg.org/multipage/#embedded-content-rendering-rules:rules-for-updating-the-text-track-rendering
+        // > When the user agent starts exposing a user interface for a video element,
+        // > the user agent should run the rules for updating the text track rendering
+        // > of each of the text tracks in the video element's list of text tracks
+        // > that are showing and whose text track kind is one of subtitles or captions
+        // > (e.g., for text tracks based on WebVTT,
+        // > the rules for updating the display of WebVTT text tracks). [WEBVTT]
+        self.run_rules_for_updating_the_text_track_rendering_for_current_tracks(cx);
     }
 
-    fn remove_controls(&self) {
+    fn remove_controls(&self, cx: &mut JSContext) {
         if let Some(id) = self.media_controls_id.borrow_mut().take() {
+            // We also rerun this when removing controls, even if time marches on
+            // hasn't run yet. That way, existing cues that are rendered will be
+            // repositioned accordingly
+            self.run_rules_for_updating_the_text_track_rendering_for_current_tracks(cx);
             self.owner_document().unregister_media_controls(&id);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#embedded-content-rendering-rules:rules-for-updating-the-text-track-rendering>
+    fn run_rules_for_updating_the_text_track_rendering_for_current_tracks(
+        &self,
+        cx: &mut JSContext,
+    ) {
+        if let Some(text_track_list) = self.text_tracks_list.get() {
+            RulesForUpdatingTheTextTrackRendering::WebVTT.run(
+                cx,
+                self,
+                text_track_list
+                    .iter(cx.no_gc())
+                    .map(|text_track| text_track.as_rooted())
+                    .collect(),
+                None,
+                ShouldResetRenderingControls::Yes,
+            );
         }
     }
 
@@ -3309,53 +3334,6 @@ impl HTMLMediaElement {
         }
 
         current_frame
-    }
-
-    /// The active-cue render snapshot for layout. Called on the layout thread
-    /// from `HTMLVideoElement::data` (BAO patch, fork-maintained, 2026-09-27,
-    /// REQ-BRW-047).
-    #[expect(unsafe_code)]
-    pub(crate) fn cue_overlays_for_layout(&self) -> Vec<WebVttCueBoxData> {
-        // SAFETY: same contract as the `poster_url` read in
-        // `HTMLVideoElement::data` — runs on the layout thread, where the cell
-        // is only read, never mutated.
-        unsafe { self.active_cue_overlays.borrow_for_layout() }.clone()
-    }
-
-    /// Step 18 of <https://html.spec.whatwg.org/multipage/#time-marches-on> for
-    /// WebVTT: rebuild the active-cue render snapshot that layout reads when
-    /// constructing the video replaced content, and dirty the element so the
-    /// next layout pass picks it up. (BAO patch, fork-maintained, 2026-09-27 —
-    /// upstream 7ca99fe3f leaves step 18 as a TODO; REQ-BRW-047.)
-    fn update_active_cue_render_snapshot(&self, cx: &mut JSContext) {
-        let Some(text_tracks_list) = self.text_tracks_list.get() else {
-            return;
-        };
-        // Collect the active cues of showing tracks. `TextTrackCue: Ord` is the
-        // text track cue order, so sorting the flattened list orders cues
-        // across tracks the same way the cue-order sort does.
-        let mut active_cues: Vec<DomRoot<TextTrackCue>> = text_tracks_list
-            .iter(cx.no_gc())
-            .filter(|text_track| text_track.Mode() == TextTrackMode::Showing)
-            .flat_map(|text_track| text_track.cues(cx.no_gc()))
-            .filter(|cue| cue.is_active())
-            .map(|cue| cue.as_rooted())
-            .collect();
-        active_cues.sort_by(|a, b| a.cmp(b));
-
-        let mut cue_boxes: Vec<WebVttCueBoxData> = Vec::new();
-        for (order, cue) in active_cues.iter().enumerate() {
-            // Only WebVTT cues (VTTCue) carry cue text and box settings.
-            let Some(vtt_cue) = cue.downcast::<VTTCue>() else {
-                continue;
-            };
-            cue_boxes.push(vtt_cue.render_snapshot(order));
-        }
-
-        if *self.active_cue_overlays.borrow() != cue_boxes {
-            *self.active_cue_overlays.borrow_mut() = cue_boxes;
-            self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
-        }
     }
 
     /// By default the audio is rendered through the audio sink automatically
@@ -4020,7 +3998,7 @@ impl VirtualMethods for HTMLMediaElement {
                 if mutation.new_value(attr).is_some() {
                     self.render_controls(cx);
                 } else {
-                    self.remove_controls();
+                    self.remove_controls(cx);
                 }
             },
             _ => (),
@@ -4031,7 +4009,7 @@ impl VirtualMethods for HTMLMediaElement {
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
         self.super_type().unwrap().unbind_from_tree(cx, context);
 
-        self.remove_controls();
+        self.remove_controls(cx);
 
         // Step 1. Await a stable state, allowing the task that removed the media element from the Document to continue.
         // The synchronous section consists of all the remaining steps of this algorithm.
@@ -4436,25 +4414,24 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
             }
 
             // Discard chunk of the response body if fetch context doesn't support range requests.
-            let payload = if !current_fetch_context.is_seekable() &&
-                self.content_length_to_discard != 0
-            {
-                if chunk.len() as u64 > self.content_length_to_discard {
-                    let shrink_chunk = chunk[self.content_length_to_discard as usize..].to_vec();
-                    self.content_length_to_discard = 0;
-                    shrink_chunk
+            let payload =
+                if !current_fetch_context.is_seekable() && self.content_length_to_discard != 0 {
+                    if chunk.len() as u64 > self.content_length_to_discard {
+                        let shrink_chunk = chunk.slice(self.content_length_to_discard as usize..);
+                        self.content_length_to_discard = 0;
+                        shrink_chunk
+                    } else {
+                        // Completely discard this response chunk.
+                        self.content_length_to_discard -= chunk.len() as u64;
+                        return;
+                    }
                 } else {
-                    // Completely discard this response chunk.
-                    self.content_length_to_discard -= chunk.len() as u64;
-                    return;
-                }
-            } else {
-                chunk.to_vec()
-            };
+                    chunk
+                };
 
             if let Err(e) = {
                 let mut data_source = current_fetch_context.data_source().borrow_mut();
-                data_source.add_buffer_to_queue(DataBuffer::Payload(payload));
+                data_source.add_buffer_to_queue(DataBuffer::Payload(payload.to_vec()));
                 data_source
                     .process_into_player_from_queue(element.player.borrow().as_ref().unwrap())
             } {
@@ -4616,12 +4593,47 @@ impl HTMLMediaElementFetchListener {
     }
 }
 
+/// A weak reference to an [`HTMLMediaElement`], remembering the concrete type of
+/// the referenced element.
+///
+/// A `WeakRef<HTMLMediaElement>` would only remember the parent type, which is not
+/// the type an audio or video element is allocated as.
+#[derive(JSTraceable, MallocSizeOf)]
+pub(crate) enum MediaElementWeakRef {
+    Audio(WeakRef<HTMLAudioElement>),
+    Video(WeakRef<HTMLVideoElement>),
+}
+
+impl MediaElementWeakRef {
+    /// Create a weak reference to the given media element.
+    pub(crate) fn new(element: &HTMLMediaElement) -> Self {
+        if let Some(audio) = element.downcast::<HTMLAudioElement>() {
+            return Self::Audio(WeakRef::new(audio));
+        }
+
+        match element.downcast::<HTMLVideoElement>() {
+            Some(video) => Self::Video(WeakRef::new(video)),
+            None => unreachable!(
+                "Only HTMLAudioElement and HTMLVideoElement derive from HTMLMediaElement."
+            ),
+        }
+    }
+
+    /// Root the referenced element, if it has not been collected yet.
+    pub(crate) fn root(&self) -> Option<DomRoot<HTMLMediaElement>> {
+        match self {
+            Self::Audio(audio) => audio.root().map(DomRoot::upcast),
+            Self::Video(video) => video.root().map(DomRoot::upcast),
+        }
+    }
+}
+
 /// The [`HTMLMediaElementEventHandler`] is a structure responsible for handling media events for
 /// the [`HTMLMediaElement`] and exists to decouple ownership of the [`HTMLMediaElement`] from IPC
 /// router callback.
 #[derive(JSTraceable, MallocSizeOf)]
 struct HTMLMediaElementEventHandler {
-    element: WeakRef<HTMLMediaElement>,
+    element: MediaElementWeakRef,
 }
 
 #[expect(unsafe_code)]
@@ -4630,7 +4642,7 @@ unsafe impl Send for HTMLMediaElementEventHandler {}
 impl HTMLMediaElementEventHandler {
     fn new(element: &HTMLMediaElement) -> Self {
         Self {
-            element: WeakRef::new(element),
+            element: MediaElementWeakRef::new(element),
         }
     }
 

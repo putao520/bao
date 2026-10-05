@@ -6,7 +6,7 @@ use dom_struct::dom_struct;
 use euclid::default::Size2D;
 use js::context::{JSContext, NoGC};
 use pixels::Snapshot;
-use script_bindings::reflector::{AssociatedMemory, Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{AssociatedMemory, Reflector, reflect_dom_object};
 use servo_base::{Epoch, generic_channel};
 use servo_canvas_traits::canvas::{CanvasCommand, CanvasId};
 use webrender_api::ImageKey;
@@ -38,8 +38,8 @@ use crate::dom::imagedata::ImageData;
 use crate::dom::path2d::Path2D;
 use crate::dom::textmetrics::TextMetrics;
 
-// https://html.spec.whatwg.org/multipage/#canvasrenderingcontext2d
-#[dom_struct(associated_memory)]
+/// <https://html.spec.whatwg.org/multipage/#canvasrenderingcontext2d>
+#[dom_struct]
 pub(crate) struct CanvasRenderingContext2D {
     reflector_: Reflector<AssociatedMemory>,
     canvas: HTMLCanvasElementOrOffscreenCanvas,
@@ -130,7 +130,7 @@ impl CanvasRenderingContext2D {
             settings,
         )
         .map(|context| {
-            let context = reflect_dom_object_with_cx(Box::new(context), global, cx);
+            let context = reflect_dom_object(cx, Box::new(context), global);
             context.update_associated_memory_size();
             context
         })

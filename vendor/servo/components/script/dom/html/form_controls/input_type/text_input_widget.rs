@@ -61,11 +61,7 @@ impl TextInputWidget {
         if let Some(shadow_tree) = &*self.shadow_tree.borrow() &&
             let Some(character_data) = shadow_tree.value_character_data()
         {
-            // fork holdout: text-run selection lives in the origin/main
-            // layout architecture; the fork selection face is carried by
-            // WeakRangeVec.
-            let _ = (&character_data, &new_range);
-            false
+            character_data.set_text_run_selection(new_range)
         } else {
             false
         }

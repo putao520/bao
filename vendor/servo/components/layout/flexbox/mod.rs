@@ -51,12 +51,20 @@ impl FlexContainerConfig {
         let flex_direction = container_style.clone_flex_direction();
         let flex_axis = FlexAxis::from(flex_direction);
         let flex_wrap = container_style.get_position().flex_wrap;
-        let container_is_single_line = !flex_wrap.intersects(FlexWrap::WRAP | FlexWrap::WRAP_REVERSE);
+        let container_is_single_line = match flex_wrap {
+            FlexWrap::NOWRAP => true,
+            FlexWrap::WRAP | FlexWrap::WRAP_REVERSE => false,
+            _ => unreachable!("FlexWrap::BALANCE should be disabled"),
+        };
         let flex_direction_is_reversed = match flex_direction {
             FlexDirection::Row | FlexDirection::Column => false,
             FlexDirection::RowReverse | FlexDirection::ColumnReverse => true,
         };
-        let flex_wrap_reverse = flex_wrap.intersects(FlexWrap::WRAP_REVERSE);
+        let flex_wrap_reverse = match flex_wrap {
+            FlexWrap::NOWRAP | FlexWrap::WRAP => false,
+            FlexWrap::WRAP_REVERSE => true,
+            _ => unreachable!("FlexWrap::BALANCE should be disabled"),
+        };
 
         let align_content = container_style.clone_align_content();
         let align_items = AlignItems(match container_style.clone_align_items().0 {

@@ -10,7 +10,6 @@ use style_traits::CSSPixel;
 use stylo_atoms::Atom;
 use uuid::Uuid;
 
-use crate::dom::range::range::WeakRangeVec;
 use crate::dom::bindings::root::{Dom, MutNullableDom};
 use crate::dom::customelementregistry::{
     CustomElementDefinition, CustomElementReaction, CustomElementRegistry, CustomElementState,
@@ -22,7 +21,7 @@ use crate::dom::intersectionobserver::IntersectionObserverRegistration;
 use crate::dom::mutationobserver::RegisteredObserver;
 use crate::dom::nodelist::NodeList;
 use crate::dom::range::Range;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::types::Element;
 use crate::dom::window::LayoutValue;
 
@@ -32,12 +31,6 @@ use crate::dom::window::LayoutValue;
 #[derive(Default, JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct NodeRareData {
-    // BAO patch (fork-maintained, 2026-09-28): fork live-range architecture —
-    // restored from the pre-window raredata (REQ-BRW selection/live-range face).
-    /// The weak list of ranges which start or end containers are this node. No
-    /// range should ever be found twice in this vector, even if both the start
-    /// and end containers are this node.
-    pub(crate) weak_ranges: WeakRangeVec,
     /// The shadow root the node belongs to.
     /// This is None if the node is not in a shadow tree or
     /// if it is a ShadowRoot.
