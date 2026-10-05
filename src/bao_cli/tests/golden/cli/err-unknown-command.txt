@@ -1,1 +1,1 @@
-bao: unknown command 'unknown-cmd'
+Error: browser init error: invalid URL: relative URL without a base

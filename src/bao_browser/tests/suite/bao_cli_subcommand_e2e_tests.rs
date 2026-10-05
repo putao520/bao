@@ -19,9 +19,11 @@
 //   4. **install**: bao 层 clap 先拦截 — `--help` rc=0 印用法;未知 flag
 //      rc=2 印 "unexpected argument"。两者都不触达 bun_install 委托,
 //      网络路径(真装包)按合同排除。
-//   5. **external**: `External(Vec<String>)` 目前对所有裸参数统一拒绝
-//      ("bao: unknown command ..." rc=1,cli.rs:182-185)— 不做脚本直跑;
-//      断言该真实行为(SKIPPED 语义见测试内注释)。
+//   5. **external**: 裸路径参数经 97f32ed9(REQ-BRW-002)的顶层 `url` 位置
+//      参数走 browser 入口(cli.rs:246 `cli.url.is_some()`);相对路径被
+//      `url::Url::parse` 拒绝 → "browser init error: invalid URL: relative
+//      URL without a base" rc=1(page.rs BrowserError::Init)——不是脚本
+//      直跑,也不是 External 的 "unknown command"。
 //
 // **运行约束**: 需要预 build 的 bao 二进制(bao_path() 探测);缺失时
 // graceful skip,与 bao_cli_e2e_tests.rs 同约定。
@@ -571,18 +573,21 @@ fn bao_cli_subcommand_install_argument_surface() {
     assert_eq!(failed, 0, "{} install sub-assertions failed — see stderr above", failed);
 }
 
-// ─── 5. bao <file.js> — External 子命令当前的真实行为 ────────────────────────
+// ─── 5. bao <file.js> — 裸路径走顶层 url 位置参数(browser 入口) ────────────
 //
-// SKIPPED(behavior-mismatch): 任务期望 `bao /path/to/script.js` 直跑脚本
-// (exit 0 + marker)。实测与 cli.rs:182-185 一致:External 变体对**所有**
-// 裸参数统一打印 "bao: unknown command '<first arg>'" 并返回 Err(1) —
-// 不存在脚本直跑通路(脚本入口是 `bao run <file>` 或顶层 `-e`)。
-// 本测试钉住当前真实契约:脚本路径参数被拒绝且 rc=1,防止未来引入直跑时
-// 无声漂移。
+// 97f32ed9(REQ-BRW-002,WPT 官方 oracle 载具)给顶层 CLI 加了 `url` 位置
+// 参数(wptrunner 命令行的尾随位置)。因此 `bao /path/to/script.js` 不再落
+// `Commands::External` 的 "unknown command"(f249ca4b 时代的旧期望),
+// 而是 `cli.url = Some(path)` → browser 入口(cli.rs:246);相对路径在
+// page.rs 的 `url::Url::parse` 处失败 → `BrowserError::Init("invalid URL:
+// relative URL without a base")` → "Error: browser init error: ..." rc=1。
+// 脚本直跑通路仍不存在(脚本入口是 `bao run <file>` 或顶层 `-e`)。
+// 本测试钉住该真实契约:bare path 被 browser init 以 invalid URL 拒绝,
+// 防止未来 url 语义漂移时无声变化。
 
 #[test]
 // @trace REQ-CLI-001 [level:e2e]
-fn bao_cli_subcommand_external_script_path_is_rejected() {
+fn bao_cli_subcommand_external_script_path_treated_as_url_is_rejected_by_browser_init() {
     if bao_path().is_none() {
         eprintln!(
             "SKIP: bao binary not found at ./{} — run `cargo build` first",
@@ -593,8 +598,10 @@ fn bao_cli_subcommand_external_script_path_is_rejected() {
 
     let mut passed = 0u32;
     let mut failed = 0u32;
+    const INVALID_URL_STDERR: &str =
+        "Error: browser init error: invalid URL: relative URL without a base";
 
-    // ── §a 存在的脚本文件 → rc=1 + "bao: unknown command '<path>'" ───────
+    // ── §a 存在的脚本文件 → rc=1 + browser init invalid URL(不执行脚本)──
     let temp = fresh_temp_dir("external_script");
     std::fs::write(temp.join("ext.js"), "console.log('bao-external-marker');\n").unwrap();
     let script = temp.join("ext.js");
@@ -605,7 +612,7 @@ fn bao_cli_subcommand_external_script_path_is_rejected() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             if output.status.code() == Some(1)
-                && stderr.contains(&format!("bao: unknown command '{}'", script_str))
+                && stderr.contains(INVALID_URL_STDERR)
                 && !stdout.contains("bao-external-marker")
             {
                 eprintln!("PASS  §a::existing_script_rejected_rc1");
@@ -627,14 +634,12 @@ fn bao_cli_subcommand_external_script_path_is_rejected() {
     }
     let _ = std::fs::remove_dir_all(&temp);
 
-    // ── §b 不存在的路径 → 同一拒绝通路 rc=1(与文件存在与否无关) ─────────
+    // ── §b 不存在的路径 → 同一 invalid URL 拒绝通路(与文件存在与否无关) ──
     let temp = fresh_temp_dir("external_missing");
     match run_bao_in(&temp, &["bao_sub_e2e_missing.js"]) {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if output.status.code() == Some(1)
-                && stderr.contains("bao: unknown command 'bao_sub_e2e_missing.js'")
-            {
+            if output.status.code() == Some(1) && stderr.contains(INVALID_URL_STDERR) {
                 eprintln!("PASS  §b::missing_path_same_rejection");
                 passed += 1;
             } else {

@@ -1,6 +1,6 @@
 Bao Runtime â SpiderMonkey + Servo
 
-Usage: <BIN> [OPTIONS] [COMMAND]
+Usage: <BIN> [OPTIONS] [URL] [COMMAND]
 
 Commands:
   run      
@@ -12,7 +12,37 @@ Commands:
   compat   Compatibility inventory reports over the four INVENTORY SSOTs (compat/{node,bun,cdp,web}). Informational only â always exits 0 on success; Partial/Unsupported rows are inventory facts, not failures (consumers that need a gate read --json)
   help     Print this message or the help of the given subcommand(s)
 
+Arguments:
+  [URL]  Initial URL for the browser entry (the trailing positional in the wptrunner command line, e.g. `about:blank`)
+
 Options:
-  -e, --eval <EVAL>        Evaluate the given code string (Bun-style top-level `-e`/`--eval`). When present, Bao runs the code and exits â no subcommand needed. Equivalent to `<BIN> run --eval <code>`
-      --timeout <TIMEOUT>  Terminate a runaway script after <MS> milliseconds (engine-native interrupt; exit code 124, GNU-timeout convention). While a controlled script entry is in flight, SIGINT (Ctrl-C) cancels it gracefully (exit code 130) instead of killing the process. Applies only to script execution (`<BIN> run`, `bao -e`); without it nothing changes
-  -h, --help               Print help
+  -e, --eval <EVAL>
+          Evaluate the given code string (Bun-style top-level `-e`/`--eval`). When present, Bao runs the code and exits â no subcommand needed. Equivalent to `<BIN> run --eval <code>`
+      --timeout <TIMEOUT>
+          Terminate a runaway script after <MS> milliseconds (engine-native interrupt; exit code 124, GNU-timeout convention). While a controlled script entry is in flight, SIGINT (Ctrl-C) cancels it gracefully (exit code 130) instead of killing the process. Applies only to script execution (`<BIN> run`, `bao -e`); without it nothing changes
+      --webdriver [<PORT>]
+          Serve the WebDriver protocol on [PORT] (default 7000) and run until the WebDriver Shutdown command. Upstream `--webdriver[=port]`
+      --hard-fail
+          Exit non-zero if the engine hits a hard error (upstream `--hard-fail`; accepted for command-line parity â bao fails hard by default)
+      --ignore-certificate-errors
+          Skip peer-certificate verification failures (upstream `--ignore-certificate-errors`; wptrunner always passes it)
+      --enable-experimental-web-platform-features
+          Enable experimental web platform features (upstream `--enable-experimental-web-platform-features`)
+      --window-size <WxH>
+          Initial viewport as WxH (upstream `--window-size`)
+      --certificate-path <PATH>
+          CA certificate to trust for page TLS (upstream `--certificate-path`)
+      --prefs-file <PATH>
+          JSON file of preferences applied onto the global pref store (upstream `--prefs-file`; wptrunner passes resources/wpt-prefs.json)
+      --pref <K=V>
+          Single preference override K=V (upstream `--pref`, repeatable)
+      --user-stylesheet <PATH>
+          User stylesheet injected into every page (upstream `--user-stylesheet`, repeatable)
+      --config-dir <DIR>
+          Per-profile config directory (upstream `--config-dir`)
+      --temporary-storage
+          Use throwaway storage for this run (upstream `--temporary-storage`; accepted for command-line parity â bao already keeps per-run state)
+      --headless
+          Headless mode (upstream `--headless`; bao is headless by default â accepted for command-line parity)
+  -h, --help
+          Print help
