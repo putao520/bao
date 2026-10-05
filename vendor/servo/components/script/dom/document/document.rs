@@ -2578,17 +2578,6 @@ impl Document {
                 // Step 9.3. Let window be the Document's relevant global object.
                 let window = document.window();
                 if !window.is_alive() || document.window_detached() {
-                    // BAO (D3, e66 family): a completion task landing here
-                    // after the document's pipeline exited means its load
-                    // event will never fire — surface it instead of
-                    // silently swallowing the navigation-completion signal
-                    // (navigation-completion signals may arrive or be loud,
-                    // never silently disappear).
-                    warn!(
-                        "Document {} load event dropped: window not alive or detached \
-                         (pipeline exited before completion ran)",
-                        document.pipeline_id()
-                    );
                     return;
                 }
 

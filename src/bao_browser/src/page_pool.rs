@@ -43,6 +43,15 @@ pub struct PagePool {
     /// by `init_pending_pages` from the pump loops — never from inside the
     /// delegate callback, which runs within an in-flight `spin_event_loop`.
     pending_inits: RefCell<Vec<usize>>,
+    /// Bounded retry budget for popup ids whose deferred injection hit a
+    /// transient evaluate error (e94 D3 fourth seam): a popup adopted
+    /// mid-navigation can sit in the window between its initial pipeline
+    /// leaving the script thread's `documents` set and its replacement
+    /// entering it, where an injection evaluate comes back
+    /// `JavaScript("WebViewNotReady")`. That is a navigation-in-flight
+    /// artifact, not a broken page; the id re-queues (each pump turn counts
+    /// one retry) until the retry window expires.
+    init_retries: RefCell<HashMap<usize, std::time::Instant>>,
     /// Handles retired by `retire_webview_page` (content-initiated
     /// window.close()) whose physical teardown is still outstanding
     /// (REQ-LIB-001 criterion ⑤). The pool map drop is the immediate
@@ -77,6 +86,7 @@ impl PagePool {
             total_created: RefCell::new(0),
             total_destroyed: RefCell::new(0),
             pending_inits: RefCell::new(Vec::new()),
+            init_retries: RefCell::new(HashMap::new()),
             pending_closes: RefCell::new(Vec::new()),
             self_weak: RefCell::new(std::rc::Weak::new()),
         }
@@ -388,6 +398,25 @@ impl PagePool {
             // spawned by the opener's ScriptThread), so nav_seq == 0 — this
             // keeps the first-frame contract, exactly like initial pages.
             if let Err(e) = page.wait_for_pipeline_ready(Duration::from_secs(10)) {
+                // Same transient-evaluate class as the injection branch below
+                // (e94 D3 fourth seam): the frame-ready drain's own evaluate
+                // can hit `WebViewNotReady` while the js: navigation's
+                // pipeline swap is in flight. Re-queue within the retry
+                // window; anything else — or an expired window — stays
+                // fail-closed.
+                const WAIT_RETRY_WINDOW: std::time::Duration =
+                    std::time::Duration::from_secs(5);
+                let transient = matches!(&e, BrowserError::JavaScript(msg) if msg == "WebViewNotReady");
+                let first_seen = *self
+                    .init_retries
+                    .borrow_mut()
+                    .entry(id)
+                    .or_insert_with(std::time::Instant::now);
+                if transient && first_seen.elapsed() < WAIT_RETRY_WINDOW {
+                    self.pending_inits.borrow_mut().push(id);
+                    continue;
+                }
+                let _ = self.init_retries.borrow_mut().remove(&id);
                 // Fail-closed: a popup whose pipeline never came up must not
                 // sit in the pool as a fake-alive page.
                 log::error!("[page_pool] popup page {id} pipeline init failed: {e} — closing");
@@ -397,6 +426,33 @@ impl PagePool {
             crate::phase_watch::enter_phase(crate::phase_watch::phase::CREATE_INJECT, id as u64);
             let profile = page.stealth_profile();
             if let Err(e) = crate::runtime_bridge::inject_all_with_profile(&page, &profile) {
+                // Transient-evaluate retry (e94 D3 fourth seam): a popup
+                // adopted mid-navigation can sit in the window between its
+                // initial about:blank pipeline leaving the script thread's
+                // `documents` set and its replacement pipeline entering it —
+                // an injection evaluate in that window comes back
+                // `JavaScript("WebViewNotReady")`. That is a timing artifact
+                // of the navigation in flight, not a broken page: closing on
+                // it murdered freshly opened popups ~11ms after window.open
+                // (the js_popup_load_tests intermittent red). Re-queue for a
+                // later pump turn (bounded); anything else — or an exhausted
+                // budget — stays fail-closed.
+                // The retry window is wall-clock (not a retry count): pump
+                // cadence varies (test pumps, page-load stalls), so a count
+                // would translate to an unpredictable real-world window.
+                const INJECT_RETRY_WINDOW: std::time::Duration =
+                    std::time::Duration::from_secs(5);
+                let transient = matches!(&e, BrowserError::JavaScript(msg) if msg == "WebViewNotReady");
+                let first_seen = *self
+                    .init_retries
+                    .borrow_mut()
+                    .entry(id)
+                    .or_insert_with(std::time::Instant::now);
+                if transient && first_seen.elapsed() < INJECT_RETRY_WINDOW {
+                    self.pending_inits.borrow_mut().push(id);
+                    continue;
+                }
+                let _ = self.init_retries.borrow_mut().remove(&id);
                 log::error!("[page_pool] popup page {id} injection failed: {e} — closing");
                 let _ = self.close_page_inner(id);
                 continue;
@@ -509,6 +565,7 @@ impl PagePool {
     }
 
     fn close_page_inner(&self, id: usize) -> Result<(), BrowserError> {
+        let _ = self.init_retries.borrow_mut().remove(&id);
         if let Some(page) = self.active_pages.borrow_mut().remove(&id) {
             page.close()?;
             *self.total_destroyed.borrow_mut() += 1;
