@@ -21,7 +21,9 @@ malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../../malloc_siz
 malloc_size_of_derive = {version = "0.1"}
 num-complex = {version = "0.4.6"}
 num-traits = {version = "0.2"}
+parking_lot = {version = "0.12"}
 petgraph = {version = "0.8.3", features = ["stable_graph"]}
+realfft = {version = "3.5.0"}
 rustc-hash = {version = "2.1.2"}
 serde = {version = "1.0.228", features = ["derive"]}
 servo-base = {package = "bao-servo-base", path = "../../shared/base", version = ">=0.5.17, <0.6.0"}
