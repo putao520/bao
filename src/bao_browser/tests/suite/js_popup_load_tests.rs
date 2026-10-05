@@ -181,6 +181,14 @@ const OPEN_STRING: &str = r#"(() => {
   try {
     const w = window.open('javascript:"<html><title>t</title>"', '', '');
     globalThis.__d1b.open = w ? 'OBJ' : 'NULL';
+    // Keep the WindowProxy reachable (e94 ruling, test-side harness fix):
+    // the popup is embedder-owned (servo keeps only a weak handle — "keep a
+    // live handle or it will be immediately destroyed"), and the non-string
+    // sister shape (`__d1a_w`) plus the WPT blank-window carriers all hold
+    // the handle. Releasing it abandons the popup's lifetime to the
+    // embedder's pool bookkeeping, which races the `load` event — a fixture
+    // semantics violation, not a navigation defect.
+    globalThis.__d1b_w = w;
     if (w) w.addEventListener('load', () => {
       globalThis.__d1b.load = true;
       try { globalThis.__d1b.title = w.document.title; } catch (e) {
@@ -409,6 +417,15 @@ fn js_popup_string_result_fires_load_with_document() {
         window,
     );
     let elapsed = start.elapsed();
+
+    // Live-observability: was the popup page still in the pool at settle
+    // time? A missing id means the pool retired/closed it mid-test — the
+    // CloseWebView → discard-Yes → ExitPipeline chain that removes the
+    // js: document before its queued load task can drain.
+    let live_ids = runtime.page_pool().live_page_ids();
+    eprintln!(
+        "e94 diag: live pool pages at settle: {live_ids:?} (opener id printed at creation)"
+    );
 
     let mut problems = Vec::new();
     if !open_snapshot.contains("\"open\":\"OBJ\"") {
