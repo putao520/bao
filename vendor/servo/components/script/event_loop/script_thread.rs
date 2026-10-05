@@ -3966,12 +3966,31 @@ impl ScriptThread {
             // into the discarded realm and pinning it against GC. No-op
             // when no embedder cancel is registered (upstream-only
             // builds); runs no JS.
-            bao_cancel_timers_for_discarded_realm(
-                cx,
-                script_bindings::reflector::DomObject::reflector(&*document.window())
-                    .get_jsobject()
-                    .get(),
-            );
+            //
+            // BAO PATCH (e77, 2026-10-05): skip the discard when the dying
+            // document's Window global is STILL the global of another
+            // document registered on this ScriptThread. The
+            // initial-about:blank replacement leg (`window_for_replacement`
+            // in `load`) re-arms the SAME Window object — same reflector,
+            // same JS global — for the successor document, so the replaced
+            // pipeline's "realm" is the successor's LIVE realm: marking it
+            // DEAD suppressed the successor's in-flight resolves at the
+            // liveness probe and purged its armed bao timers (e63 popup
+            // zombie-suppression face, RED-locked by
+            // popup_global_mislabel_tests). The mark finally lands when the
+            // LAST document on that global exits (no live sharer then).
+            let dying_global = script_bindings::reflector::DomObject::reflector(&*document.window())
+                .get_jsobject()
+                .get();
+            let global_shared_with_live_document = !dying_global.is_null()
+                && self.documents.borrow().iter().any(|(_, other)| {
+                    script_bindings::reflector::DomObject::reflector(other.window())
+                        .get_jsobject()
+                        .get() == dying_global
+                });
+            if !global_shared_with_live_document {
+                bao_cancel_timers_for_discarded_realm(cx, dying_global);
+            }
 
             // BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
             // 2026-10-05): this document's ServiceWorkerContainer enrolled its
