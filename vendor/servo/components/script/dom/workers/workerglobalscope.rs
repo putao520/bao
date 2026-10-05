@@ -19,6 +19,38 @@ use dom_struct::dom_struct;
 use encoding_rs::UTF_8;
 use fonts::FontContext;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
+
+// BAO patch (ISSUE #24 servo wiring, 2026-09-29): per-WebView worker-script
+// execution timeout. The embedder (Bao) arms a deadline for the worker realms
+// of a webview (`set_worker_script_timeout`); the worker JS evaluation paths
+// (`on_complete` initial script run, `importScripts`) consult it and route the
+// run through the registered execution-control bridge. Unset = unbounded
+// (upstream behavior, zero regression).
+static WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW: std::sync::LazyLock<
+    parking_lot::RwLock<rustc_hash::FxHashMap<servo_base::id::WebViewId, Duration>>,
+> = std::sync::LazyLock::new(|| parking_lot::RwLock::new(Default::default()));
+
+/// Set (or clear with `None`) the engine-native execution timeout applied to
+/// every worker-realm script evaluation belonging to `webview`.
+pub fn set_worker_script_timeout(webview: servo_base::id::WebViewId, timeout: Option<Duration>) {
+    let mut map = WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW.write();
+    match timeout {
+        Some(timeout) => {
+            map.insert(webview, timeout);
+        },
+        None => {
+            map.remove(&webview);
+        },
+    }
+}
+
+/// The per-WebView worker-script timeout armed by the embedder. Consumed by
+/// the worker JS evaluation paths (worker-realm face replay); until that face
+/// lands this is a pure registry read.
+#[allow(dead_code)]
+pub(crate) fn worker_script_timeout(webview: servo_base::id::WebViewId) -> Option<Duration> {
+    WORKER_SCRIPT_TIMEOUT_BY_WEBVIEW.read().get(&webview).copied()
+}
 use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSContext as RawJSContext, Value};

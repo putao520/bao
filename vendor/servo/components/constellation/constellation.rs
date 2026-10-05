@@ -1337,8 +1337,9 @@ where
                 webview_id,
                 evaluation_id,
                 script,
+                timeout,
             ) => {
-                self.handle_evaluate_javascript(webview_id, evaluation_id, script);
+                self.handle_evaluate_javascript(webview_id, evaluation_id, script, timeout);
             },
             EmbedderToConstellationMessage::CreateMemoryReport(sender) => {
                 self.mem_profiler_chan.send(ProfilerMsg::Report(sender));
@@ -1505,6 +1506,7 @@ where
         webview_id: WebViewId,
         evaluation_id: JavaScriptEvaluationId,
         script: String,
+        timeout: Option<std::time::Duration>,
     ) {
         let browsing_context_id = BrowsingContextId::from(webview_id);
         let Some(pipeline) = self
@@ -1526,6 +1528,7 @@ where
                 pipeline.id,
                 evaluation_id,
                 script,
+                timeout,
             ))
             .is_err()
         {

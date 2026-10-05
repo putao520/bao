@@ -51,6 +51,42 @@ mod window_named_properties;
 mod xpath;
 
 pub use event_loop::script_thread::ScriptThread;
+
+// Bao embedder-callback API (vendor patch) lives on the upstream ScriptThread
+// in event_loop; re-exported here so `servo` crate / bao embedders can reach it.
+// register_worker_interfaces_ready_callback (REQ-BRW-004 C15, user ruling
+// 2026-09-09) is the second worker-scope drain point — drained after
+// define_all_exposed_interfaces so embedder JS hooks see defined interfaces.
+// The register_*_injector pair (REQ-BRW-004, user ruling 2026-09-09) is the
+// per-Worker NON-consuming delivery tier: every Dedicated Worker of the
+// webview receives the injector (the FnOnce callbacks above are consume-once
+// — only the first Worker drained them).
+pub use event_loop::script_thread::{
+    bao_current_thread_wake_fn, bao_run_in_script_settings, register_bao_event_loop_pump,
+    register_bao_execution_control_armer, register_bao_realm_discard_cancel,
+    register_bao_realm_liveness_probe, register_embedder_callback,
+    register_embedder_new_document_script, register_worker_interfaces_ready_callback,
+    register_worker_interfaces_ready_injector, register_worker_scope_callback,
+    register_worker_scope_injector, unregister_embedder_new_document_script,
+    unregister_embedder_new_document_scripts, unregister_worker_injectors, BaoEventLoopPump,
+    BaoExecutionControlArmer, BaoRealmDiscardCancel, BaoRealmLivenessProbe,
+    EmbedderWorkerInjector,
+};
+// BAO patch (ISSUE #24 servo wiring, 2026-09-29): per-WebView worker-script
+// execution timeout registry (consumed by the worker JS evaluation paths via
+// the execution-control bridge).
+pub use crate::dom::workers::workerglobalscope::set_worker_script_timeout;
+// BAO PATCH (SM-EVOLUTION #28, verdict consumed 2026-09-10 — REQ-STL
+// identity consistency): engine-native identity sinks re-exported so the
+// `servo` crate / bao embedders reach them — realm forceUTC arming
+// (script_bindings' `create_global_object` is the single choke point for
+// every DOM realm) and the DOM high-res timestamp grid (the single
+// `ToDOMHighResTimeStamp` conversion every performance timestamp funnels
+// through).
+pub use script_bindings::interface::{force_utc_realms, set_force_utc_realms};
+pub use crate::dom::performance::performance::{
+    dom_time_precision_us, set_dom_time_precision_us,
+};
 pub(crate) use script_bindings::DomTypes;
 pub(crate) use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 

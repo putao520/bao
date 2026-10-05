@@ -37,6 +37,7 @@ impl JavaScriptEvaluator {
         &mut self,
         webview_id: WebViewId,
         script: String,
+        timeout: Option<std::time::Duration>,
         callback: Box<dyn FnOnce(Result<JSValue, JavaScriptEvaluationError>)>,
     ) {
         let evaluation_id = self.generate_id();
@@ -45,6 +46,7 @@ impl JavaScriptEvaluator {
                 webview_id,
                 evaluation_id,
                 script,
+                timeout,
             ));
         self.pending_evaluations
             .insert(evaluation_id, PendingEvaluation { callback });

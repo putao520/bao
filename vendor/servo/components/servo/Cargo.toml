@@ -150,6 +150,7 @@ servo-bluetooth = {package = "bao-servo-bluetooth", path = "../bluetooth", versi
 servo-bluetooth-traits = {package = "bao-servo-bluetooth-traits", path = "../shared/bluetooth", version = ">=0.5.16, <0.6.0", optional = true}
 servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/canvas", version = ">=0.5.16, <0.6.0"}
 # Bao vendor dep: canvas noise (REQ-STL-003) re-exported via set_canvas_noise_seed
+servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = ">=0.5.16, <0.6.0"}
 servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
 servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = ">=0.5.27, <0.6.0"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}

@@ -679,7 +679,7 @@ impl PageInner {
 
     /// Focus the WebView window.
     pub fn focus(&self) {
-        self.webview.focus();
+        self.webview.set_focused(true);
     }
 
     /// Dispatch a mouse button event at the given page coordinates.

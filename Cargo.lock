@@ -689,6 +689,7 @@ dependencies = [
  "bao-ipc-channel",
  "bao-servo-background-hang-monitor",
  "bao-servo-base",
+ "bao-servo-canvas",
  "bao-servo-canvas-traits",
  "bao-servo-config",
  "bao-servo-constellation",

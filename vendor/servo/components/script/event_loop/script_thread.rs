@@ -22,6 +22,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::default::Default;
+use std::ffi::c_void;
 use std::option::Option;
 use std::rc::{Rc, Weak};
 use std::result::Result;
@@ -45,8 +46,8 @@ use devtools_traits::{
 use embedder_traits::user_contents::{UserContentManagerId, UserContents, UserScript};
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
-    InputEventOutcome, JavaScriptEvaluationError, JavaScriptEvaluationId, MediaSessionActionType,
-    ViewportDetails, WebDriverScriptCommand,
+    InputEventOutcome, JavaScriptErrorInfo, JavaScriptEvaluationError, JavaScriptEvaluationId,
+    JSValue, MediaSessionActionType, ViewportDetails, WebDriverScriptCommand,
 };
 use encoding_rs::Encoding;
 use fonts::{FontContext, SystemFontServiceProxy, WebFontLoadEvent};
@@ -57,6 +58,7 @@ use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
 use js::jsapi::{GCReason, JSContext as UnsafeJSContext};
 use js::jsval::UndefinedValue;
+use js::realm::CurrentRealm;
 use js::rust::ParentRuntime;
 use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, SetWindowProxyClass};
 use layout_api::{LayoutConfig, LayoutFactory, RestyleReason, ScriptThreadFactory};
@@ -77,6 +79,9 @@ use profile_traits::time::ProfilerCategory;
 use profile_traits::time_profile;
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
+// BAO PATCH (BCE-20260910-004): servo's own "prepare to run script" wrapper,
+// used by `bao_run_in_script_settings` for embedder-side JS dispatches.
+use script_bindings::settings_stack::run_a_script;
 use script_traits::{
     ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, InitialScriptState,
     NewPipelineInfo, Painter, ScriptThreadMessage, UpdatePipelineIdReason, WebViewState,
@@ -96,8 +101,9 @@ use servo_config::{pref, prefs};
 use servo_constellation_traits::{
     HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, PaintMetricEvent,
     RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
-    ScriptToConstellationMessage, ScrollStateUpdate, SessionHistoryTraversalRequest,
-    StructuredSerializedData, TargetSnapshotParams, TraversalDirection, WindowSizeType,
+    ScriptToConstellationMessage, ScrollStateUpdate, ServiceWorkerAlgorithm,
+    SessionHistoryTraversalRequest, StructuredSerializedData, TargetSnapshotParams,
+    TraversalDirection, WindowSizeType,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, OriginSnapshot, ServoUrl};
 use smallvec::SmallVec;
@@ -163,6 +169,626 @@ use crate::runtime::script_runtime::{
     IntroductionType, Runtime, ScriptThreadEventCategory, ThreadSafeJSContext, get_reports,
 };
 use crate::tasks::task_queue::TaskQueue;
+
+// ============================================================================
+// Embedder Script Callbacks (Bao vendor patch)
+// ============================================================================
+/// Global callback queue for embedders (e.g., Bao) to register Rust functions
+/// that execute on the script thread with access to JSContext + Window global.
+///
+/// Callbacks are drained by `handle_evaluate_javascript` before executing JS,
+/// so embedders can register host functions that are available to the evaluated
+/// script.
+///
+/// Usage: `register_embedder_callback(webview_id, |cx, global| { ... })` before
+/// calling evaluate.
+type EmbedderScriptCallback = Box<dyn FnOnce(*mut c_void, *mut c_void) + Send>;
+
+static EMBEDDER_SCRIPT_CALLBACKS: std::sync::Mutex<Vec<(WebViewId, EmbedderScriptCallback)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a callback to be executed on this ScriptThread the next time
+/// `handle_evaluate_javascript` runs for `webview_id`.
+///
+/// The callback receives `(cx, global)` as `*mut c_void`; it is the embedder's
+/// responsibility to cast these to the correct types.
+pub fn register_embedder_callback(webview_id: WebViewId, callback: EmbedderScriptCallback) {
+    EMBEDDER_SCRIPT_CALLBACKS
+        .lock()
+        .unwrap()
+        .push((webview_id, callback));
+}
+
+fn drain_embedder_callbacks(webview_id: WebViewId) -> Vec<EmbedderScriptCallback> {
+    let mut guard = EMBEDDER_SCRIPT_CALLBACKS.lock().unwrap();
+    let (matching, remaining): (Vec<_>, Vec<_>) =
+        guard.drain(..).partition(|(wid, _)| *wid == webview_id);
+    *guard = remaining;
+    matching.into_iter().map(|(_, cb)| cb).collect()
+}
+
+// ============================================================================
+// Embedder Event-Loop Pump Bridge (Bao vendor patch — page-realm async fetch
+// settlement)
+// ============================================================================
+// Bao's page realms install the Node-stack `fetch` override (same stack,
+// same fingerprint — the page-net unification posture). Its response
+// resolution is delivered as a ConcurrentTask on the calling thread's bao
+// MiniEventLoop (`bun_runtime::timers::with_event_loop`). The servo
+// ScriptThread never runs that loop: `handle_msgs` blocks on servo's own
+// receivers, and the only bao pumps (`drain_and_check` /
+// `tick_without_idle`) exist in the node runtime and JsContext test
+// harnesses. Without this bridge the request egresses (the server sees it)
+// but the resolve task sits in the never-drained queue and the page's
+// `fetch()` Promise never settles — the "page-realm async fetch black hole"
+// (e39 evidence; fetch_axis_probe_tests B axis).
+//
+// Bridge contract (both directions, registered by the embedder at runtime
+// init):
+//   1. `register_bao_event_loop_pump(cb)`: process-global pump callback.
+//      `handle_msgs` calls it on the ScriptThread with the thread's
+//      JSContext right after its blocking recv returns. Bao registers
+//      `bun_runtime::timers::pump_embedder_thread` (RunJobs + due bao
+//      timers + one non-blocking MiniEventLoop tick).
+//   2. `bao_current_thread_wake_fn()`: per-thread wake closure (clones this
+//      ScriptThread's `self_sender` and sends `MainThreadScriptMsg::WakeUp`).
+//      The fetch machinery captures it ON THE CREATING THREAD at fetch start
+//      and fires it from its HTTPThread when a resolve lands, so the blocked
+//      recv above wakes and the pump dispatches it. Node-realm threads have
+//      no entry here (`None`) — the node loop keeps pumping as before.
+pub type BaoEventLoopPump = Box<dyn Fn(*mut c_void) + Send + Sync>;
+
+static BAO_EVENT_LOOP_PUMP: std::sync::OnceLock<BaoEventLoopPump> = std::sync::OnceLock::new();
+
+thread_local! {
+    static BAO_SCRIPT_THREAD_WAKE: std::cell::RefCell<
+        Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Register the process-global embedder event-loop pump (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init; the
+/// first registration wins (OnceLock semantics, matching the other embedder
+/// registries).
+pub fn register_bao_event_loop_pump(pump: BaoEventLoopPump) {
+    let _ = BAO_EVENT_LOOP_PUMP.set(pump);
+}
+
+/// The current thread's wake closure, if this thread is a servo ScriptThread
+/// created by this process. `None` on node-realm / worker threads.
+pub fn bao_current_thread_wake_fn() -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+    BAO_SCRIPT_THREAD_WAKE.with(|w| w.borrow().clone())
+}
+
+/// Run the embedder pump (if registered) on this ScriptThread. Called from
+/// `handle_msgs` right after its blocking recv returns — the point where a
+/// wake (see `bao_current_thread_wake_fn`) has just unblocked the thread.
+fn bao_pump_embedder_event_loop(cx: &mut JSContext) {
+    if let Some(pump) = BAO_EVENT_LOOP_PUMP.get() {
+        // SAFETY: the RAW SpiderMonkey context pointer (same conversion as
+        // the embedder-evaluate drain in `handle_evaluate_javascript`: the
+        // wrapper's address must never leak through as a JSContext*). The
+        // pump runs JS (which can GC), so the no_gc borrowing only covers
+        // the pointer read itself.
+        pump(unsafe { cx.raw_cx_no_gc() } as *mut c_void);
+    }
+}
+
+/// BAO PATCH (BCE-20260910-004, settings-stack push for embedder JS
+/// dispatch): run `f` with this thread's script settings stack pushed for
+/// `global_object`'s realm — the "prepare to run script" step every servo JS
+/// entry performs (script evaluation via `run_a_classic_script`, WebIDL
+/// callback invocation via `call_setup`). Bao's embedder event-loop pump
+/// (above) fires page-realm timers OUTSIDE any settings-stack entry; a page
+/// callback then touching `location.*` getters, `document.open()` or canvas
+/// origin-clean checks dereferenced `entry_global().unwrap()` on an EMPTY
+/// stack and panicked (dom/bindings/settings_stack.rs:36, Script#3 on
+/// meituan's WAF JS — the realworld anti-scraping wedge; the panicked
+/// ScriptThread also wedged `ServoInner::drop`'s shutdown spin). Registered
+/// by the embedder into `bun_runtime::timers` (registry mirror of the pump
+/// bridge above) and called by `BaoTimeoutObject::fire_js` around its
+/// page-realm dispatch. `run_a_script` is exactly servo's own wrapper: it
+/// pushes a `StackEntryKind::Entry` and performs a microtask checkpoint when
+/// the stack empties again.
+pub fn bao_run_in_script_settings(
+    cx: *mut c_void,
+    global_object: *mut c_void,
+    f: &mut dyn FnMut(),
+) {
+    if cx.is_null() || global_object.is_null() {
+        f();
+        return;
+    }
+    // SAFETY: both pointers come from the embedder pump contract — the live
+    // JSContext of the calling ScriptThread and the raw-rooted global of a
+    // live realm on that thread (same conversion as
+    // `bao_pump_embedder_event_loop` / `fire_js`'s AutoRealm root).
+    let global = unsafe {
+        GlobalScope::from_object(global_object as *mut js::jsapi::JSObject)
+    };
+    let mut cx = unsafe {
+        JSContext::from_ptr(core::ptr::NonNull::new_unchecked(cx as *mut _))
+    };
+    let cx = &mut cx;
+    run_a_script::<crate::DomTypeHolder, _, _>(cx, &global, |_| f());
+}
+
+// BAO PATCH (RED-1 P-A, user ruling 2026-09-10): realm-discard timer
+// cancel bridge. Same-registered-domain navigation reuses this
+// ScriptThread (constellation event-loop reuse) and discards the old
+// page realm at pipeline exit — servo cancels its own task sources only
+// inside `Window::clear_js_runtime`, but bao timers registered against
+// the old realm's global (the thread's bao timer registry: page-realm
+// `setImmediate` chains, node-segment timers) had NO discard hook. The
+// deadline fired a zombie callback into the discarded realm, a
+// re-arming chain/interval ran forever, and the raw-rooted global
+// pinned the realm against GC (per-navigation accumulation). This
+// bridge hands the discard to the embedder, which purges the thread's
+// bao timer registry for exactly that global (browser navigation
+// semantics: a document's timers die with the document). Mirrors the
+// pump bridge registration face above (`*mut c_void` params keep the
+// two mozjs crate instances decoupled).
+pub type BaoRealmDiscardCancel = Box<dyn Fn(*mut c_void, *mut c_void) + Send + Sync>;
+
+static BAO_REALM_DISCARD_CANCEL: std::sync::OnceLock<BaoRealmDiscardCancel> =
+    std::sync::OnceLock::new();
+
+/// Register the process-global realm-discard cancel (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init;
+/// the first registration wins (OnceLock semantics, matching the other
+/// embedder registries).
+pub fn register_bao_realm_discard_cancel(cancel: BaoRealmDiscardCancel) {
+    let _ = BAO_REALM_DISCARD_CANCEL.set(cancel);
+}
+
+// BAO PATCH (ISSUE #25 generalization, 2026-09-29): realm-liveness probe
+// bridge — the query half of the discard story above. External threads
+// (audio render, media, image decode, gamepad, XR, cookie) settle their
+// stored promises by queueing tasks back onto the ScriptThread; when the
+// creating realm's pipeline was closed in the meantime, that resolve is a
+// zombie re-entry into a discarded realm (same class as the fetch
+// ConcurrentTask completion E3's #25 guard suppresses — the correct
+// defense is drop-on-discard, NOT pinning: the resolve semantics require
+// the promise to be genuinely alive). The resolve sites call
+// `bao_is_realm_discarded(global)` BEFORE any JS deref and drop the
+// settle when it returns true. `script` must not depend on bao_runtime
+// (vendor → src layering), so — mirroring the bridges above — the
+// embedder installs the probe once at runtime init; `*mut c_void` keeps
+// the two mozjs crate instances decoupled. Unregistered (upstream-only
+// builds): every call answers `false`, zero behavior change.
+pub type BaoRealmLivenessProbe = Box<dyn Fn(*mut c_void) -> bool + Send + Sync>;
+
+static BAO_REALM_LIVENESS_PROBE: std::sync::OnceLock<BaoRealmLivenessProbe> =
+    std::sync::OnceLock::new();
+
+/// Register the process-global realm-liveness probe (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init;
+/// the first registration wins (OnceLock semantics, matching the other
+/// embedder registries).
+pub fn register_bao_realm_liveness_probe(probe: BaoRealmLivenessProbe) {
+    let _ = BAO_REALM_LIVENESS_PROBE.set(probe);
+}
+
+/// Whether `global`'s realm was navigation-discarded (the DEAD_GLOBALS
+/// mark, answered by the embedder's liveness probe). Pure address
+/// comparison — the caller MUST invoke this before any JS deref on the
+/// realm's objects (the marked global's cells are legally GC-swept).
+pub(crate) fn bao_is_realm_discarded(global: *mut js::jsapi::JSObject) -> bool {
+    if global.is_null() {
+        return false;
+    }
+    BAO_REALM_LIVENESS_PROBE
+        .get()
+        .map_or(false, |probe| probe(global as *mut c_void))
+}
+
+// BAO patch (ISSUE #24 servo wiring, 2026-09-29): engine-native evaluation
+// control bridge — the arming half of Bao's ExecutionControl
+// (`bao_engine::execution_control`: JS_AddInterruptCallback + owner-thread
+// armed stack + deadline watcher + stable termination messages). `script`
+// must not depend on `bao_engine` (vendor → src layering), so — mirroring the
+// realm-discard bridge above — the embedder (bao_browser ← bao_engine)
+// installs the armer once at runtime init and the servo evaluation paths
+// (embedder `handle_evaluate_javascript`, worker `on_complete` /
+// `importScripts`) hand it their owner-thread closure. `*mut c_void` keeps
+// the two mozjs crate instances decoupled.
+///
+/// Contract: the armer runs the closure synchronously ON THE CALLING THREAD
+/// under the armed control and returns its boxed output plus, when a control
+/// termination fired (deadline exceeded / cancelled), the stable diagnosable
+/// message (bao_engine `terminal_message` text).
+pub type BaoExecutionControlArmer = Box<
+    dyn for<'a> Fn(
+        *mut c_void,
+        Duration,
+        Box<dyn FnOnce() -> Box<dyn std::any::Any> + 'a>,
+    ) -> (Box<dyn std::any::Any>, Option<String>)
+        + Send
+        + Sync,
+>;
+
+static BAO_EXECUTION_CONTROL_ARMER: std::sync::OnceLock<BaoExecutionControlArmer> =
+    std::sync::OnceLock::new();
+
+/// Register the process-global execution-control armer (see the bridge
+/// contract above). Called once by the embedder (Bao) at runtime init; the
+/// first registration wins (OnceLock semantics, matching the other embedder
+/// registries).
+pub fn register_bao_execution_control_armer(armer: BaoExecutionControlArmer) {
+    let _ = BAO_EXECUTION_CONTROL_ARMER.set(armer);
+}
+
+/// Run `run` under the registered execution-control armer with `timeout`.
+///
+/// Returns `None` when no armer is installed (embedder did not register one) —
+/// call sites decide the fail-closed policy for a timeout that cannot be
+/// honored. `Ok((output, None))` = the closure ran to completion without a
+/// control termination; `Ok((output, Some(message)))` = the control terminated
+/// the executing JS (the engine cleared the pending exception) and `message`
+/// carries the timeout/cancel semantics.
+pub(crate) fn run_under_bao_execution_control<'a, T: 'static>(
+    cx_raw: *mut js::jsapi::JSContext,
+    timeout: Duration,
+    run: impl FnOnce() -> T + 'a,
+) -> Option<(T, Option<String>)> {
+    let armer = BAO_EXECUTION_CONTROL_ARMER.get()?;
+    let payload: Box<dyn FnOnce() -> Box<dyn std::any::Any> + 'a> =
+        Box::new(move || Box::new(run()));
+    let (boxed, termination) = armer(cx_raw as *mut c_void, timeout, payload);
+    let typed = boxed
+        .downcast::<T>()
+        .expect("execution-control armer returned the wrong payload type");
+    Some((*typed, termination))
+}
+
+/// Invoke the registered realm-discard cancel for `global` — the JS
+/// global of the Window whose realm is being discarded. Called from
+/// `handle_exit_pipeline_msg` on this ScriptThread while its JSContext
+/// is still live (BEFORE the `window_detached` gate, so a detached
+/// window's realm is covered too — `clear_js_runtime` alone is
+/// unreachable on that path). The embedder side is a pure registry purge
+/// (releases raw roots; runs no JS).
+pub(crate) fn bao_cancel_timers_for_discarded_realm(
+    cx: &mut JSContext,
+    global: *mut js::jsapi::JSObject,
+) {
+    if global.is_null() {
+        return;
+    }
+    if let Some(cancel) = BAO_REALM_DISCARD_CANCEL.get() {
+        // SAFETY: the RAW SpiderMonkey context pointer (same conversion as
+        // `bao_pump_embedder_event_loop` above — the wrapper's address must
+        // never leak through as a JSContext*). The cancel runs no JS, so
+        // the no_gc borrowing only covers the pointer read itself.
+        cancel(unsafe { cx.raw_cx_no_gc() } as *mut c_void, global as *mut c_void);
+    }
+}
+
+// ============================================================================
+// Embedder Worker Scope Callbacks (Bao vendor patch - DEC-WK-001 / TASK-1)
+// ============================================================================
+// Mirrors `register_embedder_callback` but for servo-native DOM Worker scope
+// creation. When `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+// building the Worker's global object, it drains these callbacks so the
+// embedder (Bao) can inject stealth profile + lifecycle tracking hooks on
+// the same thread that owns the Worker's JSContext (per BCE-20260621-001:
+// DOM/Node interop must happen on the owning thread).
+//
+// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+// are the Worker thread's JSContext and DedicatedWorkerGlobalScope global.
+// Bao uses this to:
+//   - register a WorkerHandle + WorkerChannelBridge (DF-WK-1)
+//   - install stealth profile inheritance (DEC-WK-007 / CRIT-STL-WK)
+//   - hook self.close()/importScripts natives (criteria #4/#5/#8)
+type EmbedderWorkerScopeCallback = Box<dyn FnOnce(*mut c_void, *mut c_void) + Send>;
+
+// BAO PATCH (per-worker association): entries are keyed by WebViewId so a
+// Worker scope creation only drains callbacks registered for ITS webview.
+// Mirrors the WebViewId-keyed `EMBEDDER_SCRIPT_CALLBACKS` / `drain_embedder_callbacks`
+// above. Without the key, a global Vec drain let one page's Worker consume
+// another page's queued callback (cross-page stealth-profile crosstalk).
+static EMBEDDER_WORKER_SCOPE_CALLBACKS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerScopeCallback)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+/// constructing the Worker global object **for `webview_id`**.
+///
+/// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+/// are actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+/// It runs on the Worker thread (not the ScriptThread).
+pub fn register_worker_scope_callback(webview_id: WebViewId, callback: EmbedderWorkerScopeCallback) {
+    EMBEDDER_WORKER_SCOPE_CALLBACKS
+        .lock()
+        .unwrap()
+        .push((webview_id, callback));
+}
+
+/// Drain pending Worker scope callbacks registered for `webview_id`.
+///
+/// Callbacks registered for other webviews stay queued for their own Worker
+/// scope creation. Called once per Worker scope creation; each callback runs
+/// at most once. This must be invoked from the Worker thread after the
+/// Worker's global object is constructed but before the event loop starts
+/// processing messages - see `DedicatedWorkerGlobalScope::run_worker_scope`.
+pub(crate) fn drain_worker_scope_callbacks(webview_id: WebViewId) -> Vec<EmbedderWorkerScopeCallback> {
+    let mut guard = EMBEDDER_WORKER_SCOPE_CALLBACKS.lock().unwrap();
+    let (matching, remaining): (Vec<_>, Vec<_>) =
+        guard.drain(..).partition(|(wid, _)| *wid == webview_id);
+    *guard = remaining;
+    matching.into_iter().map(|(_, cb)| cb).collect()
+}
+
+// ============================================================================
+// Embedder Worker Interfaces-Ready Callbacks (Bao vendor patch - REQ-BRW-004
+// C15, user ruling 2026-09-09)
+// ============================================================================
+// Second worker-scope drain point, structurally identical to
+// `EMBEDDER_WORKER_SCOPE_CALLBACKS` above (same WebViewId keying, same
+// FnOnce consume-once semantics) but drained at a LATER lifecycle point:
+// `WorkerGlobalScope::run_worker_script` drains these right AFTER
+// `define_all_exposed_interfaces` has defined the worker global's WebIDL
+// interface constructors.
+//
+// Why a second point is needed: the first drain (in
+// `DedicatedWorkerGlobalScope::run_worker_scope`) runs before the worker's
+// interface objects exist, so an embedder JS-hook blob guarded with
+// `typeof` checks (bao_stealth W1a guards) saw every interface as
+// `undefined` at that point and installed nothing — engine-layer getters
+// (which do not depend on interfaces) worked, JS prototype hooks did not.
+// Re-running the embedder install at this later point lands the previously
+// skipped hooks; the embedder's install is idempotent (its property defines
+// on already-PERMANENT getters fail safely, see the embedder's
+// define_permanent_getter "prior install" arm).
+static EMBEDDER_WORKER_INTERFACES_READY_CALLBACKS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerScopeCallback)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native worker global's interfaces are defined **for `webview_id`**
+/// (inside `WorkerGlobalScope::run_worker_script`, after
+/// `define_all_exposed_interfaces` and before the worker script runs).
+///
+/// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+/// are actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+/// It runs on the Worker thread (not the ScriptThread).
+pub fn register_worker_interfaces_ready_callback(
+    webview_id: WebViewId,
+    callback: EmbedderWorkerScopeCallback,
+) {
+    EMBEDDER_WORKER_INTERFACES_READY_CALLBACKS
+        .lock()
+        .unwrap()
+        .push((webview_id, callback));
+}
+
+/// Drain pending worker interfaces-ready callbacks registered for
+/// `webview_id`. Mirrors `drain_worker_scope_callbacks`: callbacks for other
+/// webviews stay queued; each callback runs at most once.
+pub(crate) fn drain_worker_interfaces_ready_callbacks(
+    webview_id: WebViewId,
+) -> Vec<EmbedderWorkerScopeCallback> {
+    let mut guard = EMBEDDER_WORKER_INTERFACES_READY_CALLBACKS.lock().unwrap();
+    let (matching, remaining): (Vec<_>, Vec<_>) =
+        guard.drain(..).partition(|(wid, _)| *wid == webview_id);
+    *guard = remaining;
+    matching.into_iter().map(|(_, cb)| cb).collect()
+}
+
+// ============================================================================
+// Embedder Worker Injectors — per-Worker delivery tier (Bao vendor patch -
+// REQ-BRW-004, user ruling 2026-09-09 vendor patch)
+// ============================================================================
+// The two FnOnce registries above are consume-once: the FIRST Worker-scope
+// drain for a webview empties the queue, so the SECOND and later
+// `new Worker()` in the same page received ZERO embedder injection — engine
+// getters and JS hooks all absent, a fingerprintable bare Worker (e43
+// observation on the fa084a64 drain points).
+//
+// This tier inverts the delivery semantics: an injector registered for a
+// webview is delivered to EVERY worker scope that webview creates —
+// Dedicated Worker AND ServiceWorker (clone of an `Arc<dyn Fn>` — the entry
+// is never consumed). The one-shot tier above is kept untouched and still
+// drains first, so:
+//   - Worker #1 receives the one-shot callback(s) AND the injector — the
+//     embedder's install is idempotent (define_permanent_getter "prior
+//     install" arm / e36 __originalGetParameter__ gate), so the double run
+//     is safe;
+//   - ServiceWorkerGlobalScope drains the one-shot scope tier (S-family,
+//   serviceworkerglobalscope.rs) UNCHANGED, and additionally delivers this
+//   injector tier at its own two points (scope + post-define). Without the
+//   SW injector delivery, a page that created a Dedicated Worker BEFORE
+//   registering its SW starved the SW scope: the one-shot queue was already
+//   consumed by the Worker, so the SW realm ran with ZERO embedder injection
+//   (bare, fingerprintable). The injector tier is what makes SW injection
+//   timing-independent (arch-spec-closeout disclosure ③).
+// Registration is an UPSERT per webview (one injector per webview per phase):
+// re-registering replaces the previous entry instead of stacking a second
+// delivery. `unregister_worker_injectors` removes both phases' entries when
+// the page closes so closed pages do not accumulate injectors.
+pub type EmbedderWorkerInjector =
+    std::sync::Arc<dyn Fn(*mut c_void, *mut c_void) + Send + Sync>;
+
+static EMBEDDER_WORKER_SCOPE_INJECTORS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerInjector)>> =
+    std::sync::Mutex::new(Vec::new());
+
+static EMBEDDER_WORKER_INTERFACES_READY_INJECTORS:
+    std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerInjector)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn upsert_worker_injector(
+    registry: &std::sync::Mutex<Vec<(WebViewId, EmbedderWorkerInjector)>>,
+    webview_id: WebViewId,
+    injector: EmbedderWorkerInjector,
+) {
+    let mut guard = registry.lock().unwrap();
+    // Upsert (one injector per webview): drop any previous entry for this
+    // webview, then push the new one.
+    guard.retain(|(wid, _)| *wid != webview_id);
+    guard.push((webview_id, injector));
+}
+
+/// Register a per-Worker injector for `webview_id`: delivered to EVERY
+/// worker scope that webview creates (never consumed) — inside
+/// `DedicatedWorkerGlobalScope::run_worker_scope` after the one-shot
+/// callbacks have drained, and inside
+/// `ServiceWorkerGlobalScope::run_worker_scope` after ITS one-shot drain
+/// (the SW starvation fix: a same-page Dedicated Worker created before the
+/// SW registration already consumed the one-shot queue).
+///
+/// The injector receives `(cx: *mut c_void, global: *mut c_void)` which are
+/// `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)` and runs on
+/// the Worker thread.
+pub fn register_worker_scope_injector(webview_id: WebViewId, injector: EmbedderWorkerInjector) {
+    upsert_worker_injector(&EMBEDDER_WORKER_SCOPE_INJECTORS, webview_id, injector);
+}
+
+/// Register a per-Worker injector delivered at the SECOND drain point —
+/// inside `WorkerGlobalScope::on_complete`, right after
+/// `define_all_exposed_interfaces` and before the worker script runs, for
+/// EVERY Dedicated Worker of `webview_id` (never consumed). The SW path
+/// never reaches `on_complete` (it defines + evaluates synchronously), so
+/// `ServiceWorkerGlobalScope::run_worker_scope` delivers this phase at its
+/// OWN post-`define_all_exposed_interfaces` point instead — without it the
+/// W1a JS hooks (audio/webgl) never landed on a SW realm at all.
+pub fn register_worker_interfaces_ready_injector(
+    webview_id: WebViewId,
+    injector: EmbedderWorkerInjector,
+) {
+    upsert_worker_injector(&EMBEDDER_WORKER_INTERFACES_READY_INJECTORS, webview_id, injector);
+}
+
+/// Snapshot the per-Worker scope injectors for `webview_id` (NON-consuming:
+/// the entries stay registered for the next Worker of the same webview).
+pub(crate) fn worker_scope_injectors(webview_id: WebViewId) -> Vec<EmbedderWorkerInjector> {
+    EMBEDDER_WORKER_SCOPE_INJECTORS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(wid, _)| *wid == webview_id)
+        .map(|(_, inj)| std::sync::Arc::clone(inj))
+        .collect()
+}
+
+/// Snapshot the per-Worker interfaces-ready injectors for `webview_id`
+/// (NON-consuming — mirrors `worker_scope_injectors`).
+pub(crate) fn worker_interfaces_ready_injectors(
+    webview_id: WebViewId,
+) -> Vec<EmbedderWorkerInjector> {
+    EMBEDDER_WORKER_INTERFACES_READY_INJECTORS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(wid, _)| *wid == webview_id)
+        .map(|(_, inj)| std::sync::Arc::clone(inj))
+        .collect()
+}
+
+/// Remove every per-Worker injector registered for `webview_id` (both drain
+/// phases). Called by the embedder when the page closes so a closed page's
+/// injector does not linger in the registry.
+pub fn unregister_worker_injectors(webview_id: WebViewId) {
+    EMBEDDER_WORKER_SCOPE_INJECTORS
+        .lock()
+        .unwrap()
+        .retain(|(wid, _)| *wid != webview_id);
+    EMBEDDER_WORKER_INTERFACES_READY_INJECTORS
+        .lock()
+        .unwrap()
+        .retain(|(wid, _)| *wid != webview_id);
+}
+
+// ============================================================================
+// Embedder New-Document Scripts — realm entry injection (Bao vendor patch -
+// REQ-CDP-004, CDP Page.addScriptToEvaluateOnNewDocument; user ruling "W55
+// vendor realm entry injection", 2026-10-01)
+// ============================================================================
+// CDP semantics: every registered script is evaluated on EVERY new document
+// created for the webview, after the document object exists and BEFORE the
+// HTML parser writes any page script into it — drained in
+// `ScriptThread::load` right before the `ServoParser::parse_*` call, the
+// converging point of both window-creation arms (fresh `Window::new` AND
+// same-origin `window_for_replacement` reuse).
+//
+// The per-Worker injector tier above is the structural template: entries are
+// NON-consuming (every new document replays them all, registration order
+// preserved), keyed per WebViewId, and removed at page close by the embedder
+// (`unregister_embedder_new_document_scripts`). Each entry carries the
+// identifier minted here (`register_embedder_new_document_script` return
+// value): re-registering the SAME source for the same webview is a no-op
+// returning the EXISTING identifier (one registry entry is one CDP handle —
+// a second id for a dedup'd entry would dangle after a remove), while
+// distinct sources stack instead of overwriting each other.
+//
+// This replaces bao's former pump-timed dispatch (FrameStartedLoading →
+// `evaluate_js_web` from the embedder event loop), which fired after parsing
+// began: synchronously-completing pages finished before the injection landed
+// and never observed it (W55 0/40 NO-HARVEST evidence).
+static EMBEDDER_NEW_DOCUMENT_SCRIPTS: std::sync::Mutex<Vec<(WebViewId, u64, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Process-global identifier source for new-document scripts (REQ-CDP-004):
+/// every CDP `Page.addScriptToEvaluateOnNewDocument` identifier is minted
+/// HERE — the single id source both CDP faces (WS registry and memory
+/// bridge) return to clients, and the key `Page.removeScriptToEvaluateOnNewDocument`
+/// unregisters by.
+static EMBEDDER_NEW_DOCUMENT_SCRIPT_NEXT_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// Register an embedder script evaluated on every new document of
+/// `webview_id` (CDP `Page.addScriptToEvaluateOnNewDocument` carrier) and
+/// return its identifier. Re-registering the same source for the same
+/// webview is a no-op returning the existing identifier; distinct sources
+/// stack and replay in registration order.
+pub fn register_embedder_new_document_script(webview_id: WebViewId, source: String) -> u64 {
+    let mut guard = EMBEDDER_NEW_DOCUMENT_SCRIPTS.lock().unwrap();
+    if let Some((_, id, _)) = guard
+        .iter()
+        .find(|(wid, _, src)| *wid == webview_id && *src == source)
+    {
+        return *id;
+    }
+    let id = EMBEDDER_NEW_DOCUMENT_SCRIPT_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    guard.push((webview_id, id, source));
+    id
+}
+
+/// Unregister one new-document script by identifier (CDP
+/// `Page.removeScriptToEvaluateOnNewDocument` carrier). Returns whether the
+/// entry existed and was removed. Scoped to `webview_id`: one page cannot
+/// remove another page's script even if it learned its identifier. Later
+/// documents of the webview replay only the remaining entries (drain order
+/// and non-consuming semantics unchanged).
+pub fn unregister_embedder_new_document_script(webview_id: WebViewId, script_id: u64) -> bool {
+    let mut guard = EMBEDDER_NEW_DOCUMENT_SCRIPTS.lock().unwrap();
+    let before = guard.len();
+    guard.retain(|(wid, id, _)| !(*wid == webview_id && *id == script_id));
+    guard.len() != before
+}
+
+/// Snapshot the new-document scripts for `webview_id` (NON-consuming — every
+/// new document replays them all, in registration order).
+pub(crate) fn embedder_new_document_scripts(webview_id: WebViewId) -> Vec<String> {
+    EMBEDDER_NEW_DOCUMENT_SCRIPTS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(wid, _, _)| *wid == webview_id)
+        .map(|(_, _, source)| source.clone())
+        .collect()
+}
+
+/// Remove every new-document script registered for `webview_id`. Called by
+/// the embedder when the page closes so a closed page's init scripts do not
+/// linger in the registry.
+pub fn unregister_embedder_new_document_scripts(webview_id: WebViewId) {
+    EMBEDDER_NEW_DOCUMENT_SCRIPTS
+        .lock()
+        .unwrap()
+        .retain(|(wid, _, _)| *wid != webview_id);
+}
 
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
 
@@ -845,6 +1471,19 @@ impl ScriptThread {
         let mut runtime =
             Runtime::new(Some(ScriptEventLoopSender::MainThread(self_sender.clone())));
 
+        // BAO PATCH (embedder event-loop pump bridge): publish this
+        // ScriptThread's wake closure (a `WakeUp` self-send) so fetch
+        // ConcurrentTask completions on other threads can unblock this
+        // thread's `handle_msgs` recv; the pump installed alongside then
+        // dispatches the queue. `ScriptThread::new` runs on the script
+        // thread itself, so the thread-local lands on the owning thread.
+        BAO_SCRIPT_THREAD_WAKE.with(|w| {
+            let sender = self_sender.clone();
+            *w.borrow_mut() = Some(std::sync::Arc::new(move || {
+                let _ = sender.send(MainThreadScriptMsg::WakeUp);
+            }));
+        });
+
         // SAFETY: We ensure that only one JSContext exists in this thread.
         // This is the first one and the only one
         let mut cx = unsafe { runtime.cx() };
@@ -1369,6 +2008,14 @@ impl ScriptThread {
             &self.timer_scheduler.borrow(),
             &fully_active,
         );
+
+        // BAO PATCH (embedder event-loop pump bridge): the blocking recv just
+        // returned — dispatch pending bao ConcurrentTasks (page-realm fetch
+        // resolves / setImmediate) on this thread before processing the
+        // woken event. A fetch completion wakes this recv precisely so this
+        // pump runs (see `bao_current_thread_wake_fn`). Cheap no-op when the
+        // embedder registered no pump (pure-servo usage).
+        bao_pump_embedder_event_loop(cx);
 
         loop {
             debug!("Handling event: {event:?}");
@@ -1898,8 +2545,16 @@ impl ScriptThread {
                 pipeline_id,
                 evaluation_id,
                 script,
+                timeout,
             ) => {
-                self.handle_evaluate_javascript(webview_id, pipeline_id, evaluation_id, script, cx);
+                self.handle_evaluate_javascript(
+                    webview_id,
+                    pipeline_id,
+                    evaluation_id,
+                    script,
+                    timeout,
+                    cx,
+                );
             },
             ScriptThreadMessage::SendImageKeysBatch(pipeline_id, image_keys) => {
                 if let Some(window) = self.documents.borrow().find_window(pipeline_id) {
@@ -3221,6 +3876,76 @@ impl ScriptThread {
                 parser.abort(cx);
             }
 
+            // BAO PATCH (RED-1 P-A, user ruling 2026-09-10): same-
+            // registered-domain navigation reuses this ScriptThread
+            // (constellation event-loop reuse), and the old realm's bao
+            // timers (registered against its Window global on this
+            // thread's bao timer registry) have no other discard hook —
+            // servo cancels its own task sources only inside
+            // `clear_js_runtime` below, which a detached window
+            // (same-origin nav already moved the browsing context) never
+            // reaches. Hand the discard to the embedder HERE so those
+            // timers die with the realm in both branches (browser
+            // navigation semantics) instead of firing zombie callbacks
+            // into the discarded realm and pinning it against GC. No-op
+            // when no embedder cancel is registered (upstream-only
+            // builds); runs no JS.
+            //
+            // BAO PATCH (e77, 2026-10-05): skip the discard when the dying
+            // document's Window global is STILL the global of another
+            // document registered on this ScriptThread. The
+            // initial-about:blank replacement leg (`window_for_replacement`
+            // in `load`) re-arms the SAME Window object — same reflector,
+            // same JS global — for the successor document, so the replaced
+            // pipeline's "realm" is the successor's LIVE realm: marking it
+            // DEAD suppressed the successor's in-flight resolves at the
+            // liveness probe and purged its armed bao timers (e63 popup
+            // zombie-suppression face, RED-locked by
+            // popup_global_mislabel_tests). The mark finally lands when the
+            // LAST document on that global exits (no live sharer then).
+            let dying_global = script_bindings::reflector::DomObject::reflector(&*document.window())
+                .get_jsobject()
+                .get();
+            let global_shared_with_live_document = !dying_global.is_null()
+                && self.documents.borrow().iter().any(|(_, other)| {
+                    script_bindings::reflector::DomObject::reflector(other.window())
+                        .get_jsobject()
+                        .get() == dying_global
+                });
+            if !global_shared_with_live_document {
+                bao_cancel_timers_for_discarded_realm(cx, dying_global);
+            }
+
+            // BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+            // 2026-10-05): this document's ServiceWorkerContainer enrolled its
+            // creation URL with the origin's SW manager the moment it was
+            // created (`ServiceWorkerContainer::new` →
+            // `enroll_with_manager`); the slot must die with the document or
+            // the manager keeps multicasting `MessageFromWorker` into a dead
+            // container's callback and answering `clients.matchAll` with a
+            // dead client (the e73 finding: the manager cannot detect the
+            // death itself — InProcess callback sends never fail). Send the
+            // unenroll HERE — before the `window_detached` gate, so a detached
+            // window's realm (same-origin nav already moved the browsing
+            // context) is covered too. No-op when the document has no storage
+            // key (never enrolled; the manager removes nothing it does not
+            // hold).
+            let global_scope = document.window().as_global_scope();
+            if let Some(storage_key) = global_scope.obtain_storage_key() {
+                let _ = global_scope
+                    .script_to_constellation_chan()
+                    .send(ScriptToConstellationMessage::ServiceWorkerAlgorithm(
+                        ServiceWorkerAlgorithm::ClientGone {
+                            storage_key,
+                            client_url: global_scope.creation_url(),
+                            // Same accessor as the enrollment stamp
+                            // (`enroll_with_manager`), so the removal key
+                            // always matches what was registered.
+                            client_pipeline: global_scope.pipeline_id(),
+                        },
+                    ));
+            }
+
             if !document.window_detached() {
                 debug!("{pipeline_id}: Shutting down layout");
                 document.window().layout_mut().exit_now();
@@ -3784,6 +4509,44 @@ impl ScriptThread {
                 webview_id,
             ),
         );
+
+        // BAO PATCH (REQ-CDP-004, W55 vendor realm entry injection, user
+        // ruling 2026-10-01): CDP `Page.addScriptToEvaluateOnNewDocument` —
+        // evaluate every embedder script registered for this webview HERE:
+        // the new document is fully constructed (window + document + window
+        // proxy) and the parser has not written any page script into it yet.
+        // This is the CDP-mandated injection point ("after the document was
+        // created but before any of its scripts were written into it"), on
+        // the converging path of both window-creation arms. Bao's former
+        // FrameStartedLoading pump fired after parsing began, so
+        // synchronously-completing pages never observed the injected script
+        // (0/40 NO-HARVEST evidence). We are already inside the window's
+        // auto realm, so `CurrentRealm::assert` resolves to it. A failing
+        // init script is logged and skipped — it must not fail the load.
+        for source in embedder_new_document_scripts(webview_id) {
+            let global_scope = window.as_global_scope();
+            // Spec "check if we can run script": a Document that is not fully
+            // active (backgrounded page, inactive iframe) or has scripting
+            // sandboxed ABORTS the script silently — `evaluate_js_on_global`
+            // hard-asserts this precondition, so probe it first and skip (the
+            // scripts stay registered and replay on the next document).
+            if !global_scope.can_run_script() {
+                continue;
+            }
+            let mut current_realm = CurrentRealm::assert(cx);
+            if let Err(error) = global_scope.evaluate_js_on_global(
+                &mut current_realm,
+                source.into(),
+                "",
+                None, // No known `introductionType` for embedder init scripts
+                None,
+            ) {
+                warn!(
+                    "Embedder new-document script failed for webview {}: {error:?}",
+                    webview_id
+                );
+            }
+        }
 
         if !incomplete.load_data.is_initial_about_blank {
             if is_html_document == IsHTMLDocument::NonHTMLDocument {
@@ -4523,6 +5286,7 @@ impl ScriptThread {
         pipeline_id: PipelineId,
         evaluation_id: JavaScriptEvaluationId,
         script: String,
+        timeout: Option<std::time::Duration>,
         cx: &mut js::context::JSContext,
     ) {
         let Some(window) = self.documents.borrow().find_window(pipeline_id) else {
@@ -4541,23 +5305,73 @@ impl ScriptThread {
         let mut realm = enter_auto_realm(cx, global_scope);
         let cx = &mut realm.current_realm();
 
-        rooted!(&in(cx) let mut return_value = UndefinedValue());
-        if let Err(err) = global_scope.evaluate_js_on_global(
-            cx,
-            script.into(),
-            "",
-            None, // No known `introductionType` for JS code from embedder
-            Some(return_value.handle_mut()),
-        ) {
-            _ = self.senders.pipeline_to_constellation_sender.send((
-                webview_id,
-                pipeline_id,
-                ScriptToConstellationMessage::FinishJavaScriptEvaluation(evaluation_id, Err(err)),
-            ));
-            return;
-        };
+        // Drain and execute pending embedder callbacks for this WebView.
+        // This allows embedders (e.g., Bao) to register Rust host functions
+        // on the Window global before the evaluated JS runs.
+        for callback in drain_embedder_callbacks(webview_id) {
+            unsafe {
+                callback(
+                    cx.raw_cx_no_gc() as *mut c_void,
+                    script_bindings::reflector::DomObject::reflector(global_scope)
+                        .get_jsobject()
+                        .get() as *mut c_void,
+                );
+            }
+        }
 
-        let result = jsval_to_webdriver(cx, global_scope, return_value.handle());
+        rooted!(&in(cx) let mut return_value = UndefinedValue());
+
+        // BAO patch (ISSUE #24 servo wiring, 2026-09-29): optional engine-native
+        // timeout around the embedder evaluation (eval + WebDriver
+        // serialization). The arming itself lives in bao_engine's
+        // ExecutionControl and reaches this site through the registered
+        // embedder bridge (`run_under_bao_execution_control`); a timeout with
+        // no bridge installed is a fail-closed diagnosable error, never a
+        // silent unbounded eval.
+        // SAFETY: this ScriptThread's live owner context — derived before the
+        // armed closure takes its borrow of `cx`.
+        let cx_raw = unsafe { cx.raw_cx_no_gc() };
+        let eval_outcome = || -> Result<JSValue, JavaScriptEvaluationError> {
+            global_scope
+                .evaluate_js_on_global(
+                    cx,
+                    script.into(),
+                    "",
+                    None, // No known `introductionType` for JS code from embedder
+                    Some(return_value.handle_mut()),
+                )
+                .map(|()| jsval_to_webdriver(cx, global_scope, return_value.handle()))?
+        };
+        let result = match timeout {
+            None => eval_outcome(),
+            Some(timeout) => {
+                match run_under_bao_execution_control(cx_raw, timeout, eval_outcome) {
+                    None => Err(JavaScriptEvaluationError::EvaluationFailure(Some(
+                        JavaScriptErrorInfo {
+                            message:
+                                "timeout requested but no execution-control bridge is installed"
+                                    .to_string(),
+                            filename: "<execution-control>".to_string(),
+                            stack: None,
+                            line_number: 0,
+                            column: 0,
+                        },
+                    ))),
+                    Some((_outcome, Some(termination_message))) => {
+                        Err(JavaScriptEvaluationError::EvaluationFailure(Some(
+                            JavaScriptErrorInfo {
+                                message: termination_message,
+                                filename: "<execution-control>".to_string(),
+                                stack: None,
+                                line_number: 0,
+                                column: 0,
+                            },
+                        )))
+                    },
+                    Some((outcome, None)) => outcome,
+                }
+            },
+        };
         let _ = self.senders.pipeline_to_constellation_sender.send((
             webview_id,
             pipeline_id,
@@ -4720,4 +5534,111 @@ fn obtain_a_browsing_context(
     // Step 15. Return newBrowsingContext.
     // TODO
     Some(browsing_context)
+}
+
+// BAO PATCH (REQ-CDP-004): registry-level unit coverage for the new-document
+// script carrier — identifier single-sourcing, idempotent re-registration
+// (same webview + same source = the SAME identifier), removal by identifier,
+// per-webview scoping, and the drain snapshot a new document replays. Pure
+// registry logic: no engine, no JSContext.
+#[cfg(test)]
+mod embedder_new_document_script_registry_tests {
+    use servo_base::id::{PainterId, PipelineNamespace, PipelineNamespaceId, WebViewId};
+
+    fn webview() -> WebViewId {
+        // Id minting needs the thread's pipeline namespace (BAO-patched
+        // idempotent install); test threads have no constellation to request
+        // one from, so install a fixed local namespace.
+        PipelineNamespace::install(PipelineNamespaceId(1));
+        WebViewId::new(PainterId::next())
+    }
+
+    #[test]
+    fn register_mints_stable_incrementing_identifiers() {
+        let w = webview();
+        let id1 = super::register_embedder_new_document_script(w, "a".into());
+        let id2 =
+            super::register_embedder_new_document_script(w, "b".into());
+        assert_ne!(id1, id2, "distinct sources must stack under distinct ids");
+        assert!(id1 >= 1 && id2 >= 1, "identifiers are 1-based positive");
+        super::unregister_embedder_new_document_scripts(w);
+    }
+
+    #[test]
+    fn same_source_reregistration_is_idempotent_same_id() {
+        let w = webview();
+        let id1 = super::register_embedder_new_document_script(w, "x".into());
+        let id2 =
+            super::register_embedder_new_document_script(w, "x".into());
+        assert_eq!(id1, id2, "one registry entry is one CDP handle");
+        // Still exactly one entry: the drain replays it once.
+        assert_eq!(super::embedder_new_document_scripts(w), vec!["x"]);
+        super::unregister_embedder_new_document_scripts(w);
+    }
+
+    #[test]
+    fn same_source_other_webview_gets_distinct_id() {
+        let w1 = webview();
+        let w2 = webview();
+        let id1 = super::register_embedder_new_document_script(w1, "x".into());
+        let id2 =
+            super::register_embedder_new_document_script(w2, "x".into());
+        assert_ne!(id1, id2, "registration is scoped per webview");
+        super::unregister_embedder_new_document_scripts(w1);
+        super::unregister_embedder_new_document_scripts(w2);
+    }
+
+    #[test]
+    fn unregister_by_id_removes_only_that_entry() {
+        let w = webview();
+        let id_a = super::register_embedder_new_document_script(w, "a".into());
+        let id_b = super::register_embedder_new_document_script(w, "b".into());
+        let id_c = super::register_embedder_new_document_script(w, "c".into());
+
+        assert!(
+            super::unregister_embedder_new_document_script(w, id_b),
+            "removing a live identifier must report removal"
+        );
+        assert!(
+            !super::unregister_embedder_new_document_script(w, id_b),
+            "double remove is a false, not a panic"
+        );
+        assert!(
+            !super::unregister_embedder_new_document_script(w, u64::MAX),
+            "unknown identifier is a false, not an error"
+        );
+
+        // REQ-CDP-004 remove-then-zero-injection: the removed source never
+        // reaches a new document; the survivors keep registration order.
+        assert_eq!(
+            super::embedder_new_document_scripts(w),
+            vec!["a", "c"],
+            "ids {id_a} and {id_c} survive, {id_b} is gone"
+        );
+        super::unregister_embedder_new_document_scripts(w);
+        assert!(
+            super::embedder_new_document_scripts(w).is_empty(),
+            "page-close sweep clears the webview's entries"
+        );
+    }
+
+    #[test]
+    fn remove_is_scoped_to_the_owning_webview() {
+        let w1 = webview();
+        let w2 = webview();
+        let id1 = super::register_embedder_new_document_script(w1, "x".into());
+        super::register_embedder_new_document_script(w2, "x".into());
+        // w2 cannot remove w1's script even with the identifier in hand.
+        assert!(
+            !super::unregister_embedder_new_document_script(w2, id1),
+            "cross-webview remove must not report success"
+        );
+        assert_eq!(
+            super::embedder_new_document_scripts(w1),
+            vec!["x"],
+            "w1's entry is untouched by w2's remove"
+        );
+        super::unregister_embedder_new_document_scripts(w1);
+        super::unregister_embedder_new_document_scripts(w2);
+    }
 }

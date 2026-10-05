@@ -733,9 +733,24 @@ impl WebView {
         script: T,
         callback: impl FnOnce(Result<JSValue, JavaScriptEvaluationError>) + 'static,
     ) {
+        self.evaluate_javascript_with_timeout(script, None, callback);
+    }
+
+    /// Evaluate the specified string of JavaScript code with an optional
+    /// engine-native timeout (ISSUE #24 servo wiring). When `timeout` is
+    /// `Some`, a runaway script is terminated via the SpiderMonkey interrupt
+    /// mechanism and the callback receives an evaluation failure whose message
+    /// carries the timeout semantics; `None` preserves the unbounded behavior.
+    pub fn evaluate_javascript_with_timeout<T: ToString>(
+        &self,
+        script: T,
+        timeout: Option<std::time::Duration>,
+        callback: impl FnOnce(Result<JSValue, JavaScriptEvaluationError>) + 'static,
+    ) {
         self.servo().javascript_evaluator_mut().evaluate(
             self.id(),
             script.to_string(),
+            timeout,
             Box::new(callback),
         );
     }

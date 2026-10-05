@@ -29,12 +29,191 @@ use rustls::client::{ClientConnection, EchStatus};
 use rustls::crypto::{CryptoProvider, aws_lc_rs};
 use rustls::{CipherSuite, ClientConfig, NamedGroup, ProtocolVersion};
 use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use servo_base::id::WebViewId;
 use servo_config::pref;
 use tokio::net::TcpStream;
 use tower::Service;
 
 use crate::async_runtime::spawn_task;
 use crate::hosts::replace_host;
+
+// ── Stealth TLS/HTTP2 wire configuration ──────────────────────────────
+//
+// Bao vendor patch (REQ-STL-001). Wire-level configuration for servo's
+// TLS/HTTP2 stack, set by the embedder (Bao) during stealth profile
+// initialization. Follows the same pattern as
+// `servo_canvas::canvas_noise::set_global_canvas_noise()` — global static,
+// set once at init time, read on every connection.
+//
+// The struct is re-declared here (instead of importing from `bao_stealth`)
+// to avoid widening the servo `net` crate's contract with the bao layer;
+// fields must be kept in sync with `bao_stealth::StealthTlsWireConfig`.
+// Consumers: the page-network bun bridge (`net/fetch/bun_bridge.rs`) shapes
+// its `SSLConfig` from these values and the WebSocket loader's TLS config —
+// the boringssl stealth connector face replays onto the same registry.
+
+/// Wire-level TLS/HTTP2 configuration for servo's network layer.
+///
+/// When set, TLS consumers apply cipher suites, curves, signature
+/// algorithms, and ALPN protocols to the BoringSSL `SSL_CTX` (WebSocket
+/// loader; the page-network bridge reads the same config via
+/// [`resolve_stealth_tls_config`] and shapes its `SSLConfig` from it).
+///
+/// BoringSSL supports full JA3/JA4 fingerprint configuration including
+/// cipher suite reordering, curves/groups ordering, and signature algorithm
+/// ordering.
+#[derive(Debug, Clone)]
+pub struct StealthTlsWireConfig {
+    /// TLS 1.2 cipher suites as IANA u16 IDs (ordered as in profile).
+    /// Applied via `SSL_CTX_set_cipher_list()` on the BoringSSL SSL_CTX.
+    pub tls12_cipher_suites: Vec<u16>,
+    /// TLS 1.3 cipher suites as IANA u16 IDs (ordered as in profile).
+    /// Applied via `SSL_CTX_set_cipher_list()` on the BoringSSL SSL_CTX.
+    pub tls13_cipher_suites: Vec<u16>,
+    /// Signature algorithms as IANA u16 IDs.
+    /// Applied via `SSL_CTX_set1_sigalgs_list()` on the BoringSSL SSL_CTX.
+    pub signature_algorithms: Vec<u16>,
+    /// Supported groups as IANA u16 IDs.
+    /// Applied via `SSL_set1_curves_list()` per-connection on the BoringSSL SSL.
+    pub supported_groups: Vec<u16>,
+    /// ALPN protocols as raw bytes (e.g., `b"h2"`, `b"http/1.1"`).
+    /// Applied via `SSL_CTX_set_alpn_protos()` on the BoringSSL SSL_CTX.
+    pub alpn_protocols: Vec<Vec<u8>>,
+    /// HTTP/2 SETTINGS payload in binary wire format (6 bytes per setting).
+    /// Stored for potential future custom h2 wrapper.
+    pub h2_settings_payload: Vec<u8>,
+    /// HTTP/2 initial stream window size.
+    pub h2_initial_stream_size: u32,
+    /// HTTP/2 initial connection window size.
+    pub h2_initial_connection_window_size: u32,
+    /// HTTP/2 SETTINGS_MAX_FRAME_SIZE.
+    pub h2_max_frame_size: u32,
+    /// HTTP/2 SETTINGS_MAX_HEADER_LIST_SIZE.
+    pub h2_max_header_list_size: u32,
+}
+
+/// Global stealth TLS/HTTP2 wire configuration set by the embedder (Bao).
+/// When `Some`, TLS consumers use these values to shape the TLS
+/// ClientHello; the page-network bridge shapes its per-request
+/// `bun_http::ssl_config::SSLConfig` from the same snapshot.
+static STEALTH_TLS_CONFIG: std::sync::RwLock<Option<StealthTlsWireConfig>> =
+    std::sync::RwLock::new(None);
+
+/// Set the global stealth TLS/HTTP2 configuration.
+///
+/// Called by Bao's runtime bridge during stealth profile initialization,
+/// following the same pattern as `servo::set_canvas_noise_seed()`.
+pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
+    let mut guard = STEALTH_TLS_CONFIG.write().unwrap();
+    *guard = config;
+}
+
+/// Read the current global stealth TLS/HTTP2 configuration.
+pub(crate) fn get_stealth_tls_config() -> Option<StealthTlsWireConfig> {
+    STEALTH_TLS_CONFIG.read().unwrap().clone()
+}
+
+// ── Per-WebViewId stealth wire-config registry (R53-A net face) ─────────
+//
+// The process-global above is a LAST-WRITE-WINS snapshot: with more than
+// one page carrying different stealth profiles, every page install
+// overwrote the whole process's wire config, so ALL pages' subsequent
+// connections rode the LAST-created page's fingerprint (silent
+// cross-contamination inside a single runtime — BUN-EVOLUTION R53). The
+// registries below key the SAME two faces (TLS wire config + the h2
+// fingerprint snapshot the bun bridge reads) by the request's
+// `target_webview_id`, which `net_traits::request::Request` already
+// carries end-to-end:
+//
+//   keyed hit    → that entry is AUTHORITATIVE, including an explicit
+//                  `None` (a stealth-free page must not inherit another
+//                  page's profile through the fallback);
+//   miss / None  → the process-global above (embedder-set default; the
+//                  pre-R53 behavior, preserved for identity-less
+//                  infrastructure fetches such as SW script updates).
+//
+// Dedicated/shared-worker egress carries the owning page's webview id
+// natively (`GlobalScope::webview_id`); service-worker egress is stamped
+// with the REGISTERING page's webview id by the script-side vendor patch
+// (`GlobalScope::egress_webview_id`), so worker/SW realms resolve to
+// their host page's profile.
+
+static STEALTH_TLS_BY_WEBVIEW: LazyLock<
+    std::sync::RwLock<HashMap<WebViewId, Option<StealthTlsWireConfig>>>,
+> = LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+
+static STEALTH_H2_BY_WEBVIEW: LazyLock<
+    std::sync::RwLock<HashMap<WebViewId, Option<bao_stealth::Http2Fingerprint>>>,
+> = LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+
+/// Re-export so the `servo` facade can name the h2 fingerprint type in the
+/// keyed setter without a direct `bao_stealth` dependency of its own (the
+/// net crate already depends on it).
+pub use bao_stealth::Http2Fingerprint;
+
+/// Upsert one webview's stealth wire configuration (TLS + HTTP/2 faces
+/// together — the embedder always installs both from a single profile).
+pub fn set_stealth_wire_config_for_webview(
+    webview_id: WebViewId,
+    tls: Option<StealthTlsWireConfig>,
+    h2: Option<Http2Fingerprint>,
+) {
+    STEALTH_TLS_BY_WEBVIEW
+        .write()
+        .unwrap()
+        .insert(webview_id, tls);
+    STEALTH_H2_BY_WEBVIEW
+        .write()
+        .unwrap()
+        .insert(webview_id, h2);
+}
+
+/// Drop a webview's keyed entries (page close). Webview ids are not
+/// reused within a process, but the entries pin profile memory otherwise.
+pub fn clear_stealth_wire_config_for_webview(webview_id: WebViewId) {
+    STEALTH_TLS_BY_WEBVIEW.write().unwrap().remove(&webview_id);
+    STEALTH_H2_BY_WEBVIEW.write().unwrap().remove(&webview_id);
+}
+
+/// Resolve the stealth TLS wire config for a request's webview identity.
+/// A keyed hit is authoritative (explicit `None` included — stealth-free
+/// pages stay stealth-free); a miss or an identity-less request falls
+/// back to the process-global default. Consumed by the page-network bun
+/// bridge (`net/fetch/bun_bridge.rs`, module wiring owned by the net-face
+/// replay slice).
+#[allow(dead_code)]
+pub(crate) fn resolve_stealth_tls_config(
+    webview_id: Option<WebViewId>,
+) -> Option<StealthTlsWireConfig> {
+    match webview_id {
+        Some(id) => STEALTH_TLS_BY_WEBVIEW
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(get_stealth_tls_config),
+        None => get_stealth_tls_config(),
+    }
+}
+
+/// Resolve the HTTP/2 fingerprint snapshot for a webview identity (same
+/// resolution semantics as [`resolve_stealth_tls_config`]; falls back to
+/// `bao_stealth`'s process-global snapshot). Consumed by the page-network
+/// bun bridge (see above).
+#[allow(dead_code)]
+pub(crate) fn resolve_http2_fingerprint(
+    webview_id: Option<WebViewId>,
+) -> Option<Http2Fingerprint> {
+    match webview_id {
+        Some(id) => STEALTH_H2_BY_WEBVIEW
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(bao_stealth::global_http2_fingerprint),
+        None => bao_stealth::global_http2_fingerprint(),
+    }
+}
 
 pub const BUF_SIZE: usize = 32768;
 
