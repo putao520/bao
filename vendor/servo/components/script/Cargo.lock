@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.29"
+version = "0.5.30"
 dependencies = [
  "aes",
  "aes-gcm",

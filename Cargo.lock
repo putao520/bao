@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.29"
+version = "0.5.30"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1831,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.29"
+version = "0.5.30"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webdriver-server"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "bao-browser",
  "bao_engine",
@@ -2341,7 +2341,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp_client"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "bao_cdp",
  "bao_engine",
@@ -2849,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
@@ -4319,7 +4319,7 @@ dependencies = [
 
 [[package]]
 name = "cdp-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "log",
  "serde",

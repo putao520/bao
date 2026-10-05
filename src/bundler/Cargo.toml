@@ -4,7 +4,7 @@ name = "bun_bundler"
 # 0.2.3 (2026-10-03): dead --dump-environment-variables flag retired —
 # dump_environment_variables fn removed alongside the DebugOptions field
 # removal in bun_options_types 0.2.2 (upstream 468efacace; zero refs remain).
-version = "0.2.3"
+version = "0.2.4"
 edition.workspace = true
 description.workspace = true
 license.workspace = true
