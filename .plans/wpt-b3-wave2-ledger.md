@@ -30,6 +30,14 @@
 
 run1 的 125 unexpected-OK 全部为 `expected ERROR` 的 serviceworker 变体格(bao 真跑通了 SW,ini 还停留在 ERROR)——SW 生命周期波(2026-10-04)的正向产出,join chrome 后 125 格里 122 格 chrome=O(=ALIGNED-pass,ini 滞后),非缺陷。
 
+## fork 自治第一梯队(2026-10-05,用户「我们已经独立了」裁决)
+
+| 项 | 交付 | 验证 |
+|---|---|---|
+| sec-fetch-site 重定向链(原④) | 50ddab13:http_redirect_fetch spec 外 origin-opaque 突变删除(§4.5 逐字核对零此步骤;现行载体 taint+序列化已在);注册表登记 33169c37 | https 双子测翻 PASS(19/19 Unexpected 0)+回归守护批 10/10 |
+| ini 期望自治更新 | servo 树 ed8a211c2:4 ini 99 行删除(波内翻绿格翻期望,保留 3 登记缺口) | 逐条以本 session 实测翻转 |
+| unenroll 集合卫生(多 client 收尾) | fd6727ce:ClientGone 算法变体+RED-1 地形发送点+移除键 (creation URL, pipeline) 防 reload 竞态 | live verbatim count=2→close B→count=1;SW 族 24/24 |
+
 ## 波验收(2026-10-05,e67 环境重建后复跑,主会话 V 抽验)
 
 WPT 载具第二次重建(venv+launcher+HEAD 二进制 9bb44a12 链)后复跑波内全部已修格:**7/10 test 级绿,5 格修前全红翻转**(new-window 12/12、activate-after 2/2、fetch-destination/iframe/font-face×2),2 锚格未回归(multi-window-6/window-open.https)。残留红格(下轮清单):①send-on-deactivate 整格(**e68 归因终态 2026-10-05:子测 3/5=上游 parity**(servo ini expected FAIL,Chromium deactivate-flush 特性面 bao/上游均未实现,登记继承面);**子测 4=liveness 慢非死**(同 binary A/B+隔离探针全链通,multiplier=2 绿,~90%;session-history restore executor 唤醒调度延迟推过 10s 边际,低优候选:hop 打点定位;fetchLater flush 出口全树仅 timer+destroy 两条,无 deactivate 钩子))②fetch-destination-worker 整格 **已翻绿**(e70 6e31fca4 多 client 模型:worker destination 子测 PASS,e71 destination 补拷+e73 targeting 随波)③fetch-destination 4 子测 **终态(2026-10-05,e72)**:SVGImageElement 已修翻绿(4fb021cc,上游裸 TODO 按 "as HTMLImageElement" 镜像补全 fetch 链,SW 观察 destination=="image" 全链贯通);AudioWorklet/CSS module/Text module 三面=特性缺口登记(webidl 无 audioWorklet 属性/SM 无 CSS+Text 编译 API/csp 0.8.1 pin 无 Text 变体——非 destination 置位问题,不硬修)④css-font-face http 变体 2 子测(sec-fetch-site 重定向,继承面)⑤锚格子测现状(sec-fetch-user forced 族/not-fully-active)。二进制 provenance:mtime>HEAD+clean tree+cargo 重链(+816B);EXCLUDED_PAGE_FACES 字符串不入 lib 二进制属 cfg(test) 设计。
