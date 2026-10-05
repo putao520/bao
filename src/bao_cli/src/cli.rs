@@ -172,8 +172,6 @@ enum Commands {
         #[arg(long, global = true)]
         json: bool,
     },
-    #[command(external_subcommand)]
-    External(Vec<String>),
 }
 
 /// `bao compat` report domains (the four INVENTORY SSOTs).
@@ -305,10 +303,6 @@ pub fn run() -> ::std::result::Result<(), i32> {
         Some(Commands::Doctor) => crate::doctor::run(),
         Some(Commands::Compat { domain, json }) => {
             crate::compat::run(domain.map(crate::compat::Domain::from), json)
-        }
-        Some(Commands::External(args)) => {
-            eprintln!("bao: unknown command '{}'", args[0]);
-            Err(1)
         }
         None => {
             eprintln!("bao: no command given. Try `bao --help`.");
