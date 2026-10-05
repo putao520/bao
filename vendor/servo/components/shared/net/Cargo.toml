@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net-traits"
-version = "0.5.16"
+version = "0.5.17"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -29,7 +29,7 @@ content-security-policy = {version = "=0.9.0", features = ["serde"]}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
 data-url = {version = "0.3"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = ">=0.5.17, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../embedder", version = ">=0.5.19, <0.6.0"}
 headers = {version = "0.4"}
 http = {version = "1.4"}
 hyper-util = {version = "0.1", features = ["client-legacy", "client-proxy", "http2", "tokio"]}

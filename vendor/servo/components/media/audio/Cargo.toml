@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-media-audio"
-version = "0.5.20"
+version = "0.5.21"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"

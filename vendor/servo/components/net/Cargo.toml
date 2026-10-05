@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo-net"
-version = "0.5.36"
+version = "0.5.37"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -54,7 +54,7 @@ cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
 data-url = {version = "0.3"}
 devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.19, <0.6.0"}
 fst = {version = "0.4"}
 fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.17, <0.6.0"}
 futures = {version = "0.3", default-features = false}
@@ -74,7 +74,7 @@ malloc_size_of = {package = "bao-servo-malloc-size-of", path = "../malloc_size_o
 malloc_size_of_derive = {version = "0.1"}
 mime = {version = "0.3.13"}
 mime_guess = {version = "2.0.5"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.17, <0.6.0"}
 nom = {version = "8.0.0"}
 paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}

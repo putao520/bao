@@ -13,7 +13,7 @@ name = "bao-browser"
 # 0.1.21 (2026-09-17): bun_runtime floor → ^0.2 via workspace dep (0.2.0
 # breaking wave); same-wave sibling bumps beneath (bun_core/bao_engine/
 # bao_stealth/bao_cdp_client).
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 description.workspace = true
 license.workspace = true
@@ -31,7 +31,7 @@ name = "bao_browser"
 webdriver = ["dep:webdriver_server"]
 
 [dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.23, <0.6.0", default-features = false, features = ["baked-in-resources"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources"] }
 # WebDriver embedder host (feature "webdriver"): the upstream component that
 # owns the whole WebDriver HTTP protocol — bao only pumps the embedder channel.
 webdriver_server = { package = "bao-servo-webdriver-server", path = "../../vendor/servo/components/webdriver_server", version = "=0.5.17", optional = true }
@@ -65,7 +65,7 @@ euclid = "0.22"
 # 交叉构建路径 — windows target 不启用 servo 的 media-gstreamer 后端(baked-in-
 # resources 保持全 target);media 面=独立后续波。非 windows 维持 gstreamer 媒体栈。
 [target.'cfg(not(windows))'.dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.23, <0.6.0", features = ["media-gstreamer"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", features = ["media-gstreamer"] }
 
 # win-cross GL backend selection (Windows GL context class root fix): surfman's
 # WGL backend restores the *previous* (null) context when `create_context`
@@ -85,7 +85,7 @@ servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", v
 # cfg(windows)-gated because mozangle's build.rs panics on non-Windows targets
 # when egl/build_dlls are on; Linux keeps its X11/EGL path byte-identical.
 [target.'cfg(windows)'.dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.23, <0.6.0", default-features = false, features = ["baked-in-resources", "no-wgl"] }
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "no-wgl"] }
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }

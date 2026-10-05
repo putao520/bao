@@ -76,7 +76,7 @@ ecdsa = {version = "0.17"}
 ed25519-dalek = {version = "3.0", features = ["alloc", "pkcs8", "rand_core", "zeroize"]}
 ed448-goldilocks = {version = "=0.14.0-pre.15"}
 elliptic-curve = {version = "0.14", features = ["pkcs8"]}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.19, <0.6.0"}
 encoding_rs = {version = "0.8", features = ["serde"]}
 euclid = {version = "0.22"}
 flate2 = {version = "1.1"}
@@ -111,7 +111,7 @@ mime = {version = "0.3.13"}
 mime_guess = {version = "2.0.5"}
 ml-dsa = {version = "0.1", features = ["zeroize"]}
 ml-kem = {version = "0.3", features = ["getrandom", "pkcs8", "zeroize"]}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.17, <0.6.0"}
 nom-rfc8288 = {version = "0.4.0"}
 num-traits = {version = "0.2"}
 num_cpus = {version = "1.17.0"}
@@ -135,7 +135,7 @@ rustc-hash = {version = "2.1.2"}
 # BAO patch (fork-maintained, 2026-09-28): webcrypto hybrid-KEM dependency,
 # synced with the upstream 7ca99fe3f subtlecrypto.rs end-state (REQ-BRW-047 wave ③).
 x-wing = { version = "0.1.0", features = ["zeroize"] }
-script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = ">=0.5.22, <0.6.0"}
+script_bindings = {package = "bao-servo-script-bindings", path = "../script_bindings", version = ">=0.5.23, <0.6.0"}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = ">=0.5.14, <0.6.0"}
 selectors = {version = "=0.41.0"}
 serde = {version = "1.0.228", features = ["derive"]}

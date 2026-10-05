@@ -331,7 +331,7 @@ impl AudioWorkletNode {
         let event = Event::new(
             cx,
             &self.global(),
-            atom!("processorerror"),
+            Atom::from("processorerror"),
             EventBubbles::DoesNotBubble,
             EventCancelable::NotCancelable,
         );

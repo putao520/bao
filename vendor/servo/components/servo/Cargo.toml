@@ -1,6 +1,6 @@
 [package]
 name = "bao-servo"
-version = "0.5.24"
+version = "0.5.25"
 authors = ["The Servo Project Developers"]
 license = "MPL-2.0"
 edition = "2024"
@@ -102,10 +102,10 @@ crossbeam-channel = {version = "0.5"}
 devtools = {package = "bao-servo-devtools", path = "../devtools", version = ">=0.5.31, <0.6.0"}
 devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
 dpi = {version = "0.1"}
-embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}
+embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.19, <0.6.0"}
 env_logger = {version = "0.11"}
 euclid = {version = "0.22"}
-fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.17, <0.6.0"}
+fonts = {package = "bao-servo-fonts", path = "../fonts", version = ">=0.5.19, <0.6.0"}
 gstreamer = {version = "0.25", features = ["v1_18"], optional = true}
 http = {version = "1.4"}
 image = {version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"]}
@@ -116,15 +116,15 @@ layout_api = {package = "bao-servo-layout-api", path = "../shared/layout", versi
 log = {version = "0.4.32"}
 media = {package = "bao-servo-media-thread", path = "../media/media-thread", version = ">=0.5.16, <0.6.0"}
 mozangle = {version = "0.6"}
-net = {package = "bao-servo-net", path = "../net", version = ">=0.5.35, <0.6.0"}
-net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.15, <0.6.0"}
+net = {package = "bao-servo-net", path = "../net", version = ">=0.5.37, <0.6.0"}
+net_traits = {package = "bao-servo-net-traits", path = "../shared/net", version = ">=0.5.17, <0.6.0"}
 paint = {package = "bao-servo-paint", path = "../paint", version = ">=0.5.15, <0.6.0"}
 paint_api = {package = "bao-servo-paint-api", path = "../shared/paint", version = ">=0.5.15, <0.6.0"}
 parking_lot = {version = "0.12", features = ["serde"]}
 profile = {package = "bao-servo-profile", path = "../profile", version = ">=0.5.18, <0.6.0"}
 profile_traits = {package = "bao-servo-profile-traits", path = "../shared/profile", version = ">=0.5.16, <0.6.0"}
 rustc-hash = {version = "2.1.2"}
-script = {package = "bao-servo-script", path = "../script", version = ">=0.5.27, <0.6.0"}
+script = {package = "bao-servo-script", path = "../script", version = ">=0.5.30, <0.6.0"}
 script_traits = {package = "bao-servo-script-traits", path = "../shared/script", version = ">=0.5.14, <0.6.0"}
 serde = {version = "1.0.228"}
 servo-background-hang-monitor = {package = "bao-servo-background-hang-monitor", path = "../background_hang_monitor", version = ">=0.5.18, <0.6.0"}
@@ -135,7 +135,7 @@ servo-canvas-traits = {package = "bao-servo-canvas-traits", path = "../shared/ca
 # Bao vendor dep: canvas noise (REQ-STL-003) re-exported via set_canvas_noise_seed
 servo-canvas = {package = "bao-servo-canvas", path = "../canvas", version = ">=0.5.16, <0.6.0"}
 servo-config = {package = "bao-servo-config", path = "../config", version = ">=0.5.12, <0.6.0"}
-servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = ">=0.5.25, <0.6.0"}
+servo-constellation = {package = "bao-servo-constellation", path = "../constellation", version = ">=0.5.27, <0.6.0"}
 servo-constellation-traits = {package = "bao-servo-constellation-traits", path = "../shared/constellation", version = ">=0.5.14, <0.6.0"}
 servo-geometry = {package = "bao-servo-geometry", path = "../geometry", version = ">=0.5.9, <0.6.0"}
 servo-media = {package = "bao-servo-media", path = "../media/servo-media", version = ">=0.5.17, <0.6.0"}
@@ -188,7 +188,7 @@ http = {version = "1.4"}
 http-body-util = {version = "0.1"}
 hyper = {version = "1.10"}
 itertools = {version = "0.15"}
-net = {package = "bao-servo-net", path = "../net", version = ">=0.5.35, <0.6.0", features = ["test-util"]}
+net = {package = "bao-servo-net", path = "../net", version = ">=0.5.37, <0.6.0", features = ["test-util"]}
 rustls = {version = "0.23", default-features = false, features = ["logging", "std", "tls12"]}
 # This must always be a path dependency, we don't want to add a dependency on a
 # crates.io version of ourselves - we want to enable a feature of ourselves.
