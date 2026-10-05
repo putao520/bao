@@ -276,6 +276,11 @@ pub enum ServiceWorkerMsg {
         url: ServoUrl,
         source: ServiceWorkerId,
         origin: ImmutableOrigin,
+        /// BAO PATCH (REQ-BRW-004 e73 targeting): the targeted client's
+        /// creation URL — the identity the manager's origin-wide enrolled
+        /// set is keyed by. `None` (no identifier) keeps the broadcast
+        /// delivery as the fallback form.
+        target: Option<ServoUrl>,
     },
     /// <https://w3c.github.io/ServiceWorker/#algorithms>
     HandleAlgorithm(ServiceWorkerAlgorithm),
@@ -343,12 +348,11 @@ pub struct ServiceWorkerRegistrationInfo {
     /// registering client per registration, so this is that client's
     /// creation URL (carried by the register job's referrer).
     pub client_url: ServoUrl,
-    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave): the manager's
-    /// origin-wide enrolled client set, snapshotted at answer time —
-    /// `clients.matchAll` builds one DOM `Client` per entry. Empty means
-    /// "fall back to `client_url`" (the legacy single-registering-client
-    /// shape) for producers that don't populate it. (The enrollment set
-    /// itself is a separate replay face — currently absent.)
+    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
+    /// the manager's origin-wide enrolled client set, snapshotted at answer
+    /// time — `clients.matchAll` builds one DOM `Client` per entry. Empty
+    /// means "fall back to `client_url`" (the legacy single-registering-client
+    /// shape) for producers that don't populate it.
     pub client_urls: Vec<ServoUrl>,
 }
 
@@ -364,6 +368,35 @@ pub enum ServiceWorkerAlgorithm {
         storage_key: ImmutableOrigin,
         client_url: ServoUrl,
         result_handler: GenericCallback<ServiceWorkerAlgorithmResult>,
+        /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling
+        /// 2026-10-05): when true the message doubles as a client-enrollment
+        /// ping — the manager records (client_url, result_handler) in its
+        /// origin-wide client set and answers nothing. Reuses this variant
+        /// so no new constellation routing arm is needed.
+        enroll_only: bool,
+        /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+        /// 2026-10-05): the enrolling client's pipeline — the removal
+        /// identity of the enrollment. Same-URL navigation enrolls the NEW
+        /// document's container (upsert) at an arbitrary order relative to
+        /// the OLD pipeline's `ClientGone`; only this stamp tells a stale
+        /// teardown from the live entry it must not remove (see
+        /// `ClientGone`).
+        client_pipeline: PipelineId,
+    },
+    /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling 2026-10-05):
+    /// the client document behind an enrolled container is gone — its
+    /// pipeline exited and the document (with its `ServiceWorkerContainer`)
+    /// is being torn down. The manager drops the enrolled client whose
+    /// (client_url, client_pipeline) matches, so it stops delivering
+    /// `MessageFromWorker` into a dead container's callback and answering
+    /// `clients.matchAll` with a dead client (the e73 finding: the manager
+    /// cannot detect the death itself — an InProcess callback send never
+    /// fails). Fire-and-forget: nothing is answered (the enrollment callback
+    /// died with the document).
+    ClientGone {
+        storage_key: ImmutableOrigin,
+        client_url: ServoUrl,
+        client_pipeline: PipelineId,
     },
 }
 

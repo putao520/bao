@@ -6,7 +6,7 @@
 [Pref="dom_serviceworker_enabled", Exposed=(Window,Worker)]
 interface ServiceWorkerContainer : EventTarget {
   readonly attribute ServiceWorker? controller;
-  //readonly attribute Promise<ServiceWorkerRegistration> ready;
+  readonly attribute Promise<ServiceWorkerRegistration> ready;
 
   [NewObject] Promise<ServiceWorkerRegistration> register(USVString scriptURL,
                                                           optional RegistrationOptions options = {});
@@ -17,10 +17,16 @@ interface ServiceWorkerContainer : EventTarget {
   //void startMessages();
 
   // events
-  //attribute EventHandler oncontrollerchange;
+  // Bao vendor patch (REQ-BRW-004 e57 contract A, user ruling 2026-10-04,
+  // Chromium-parity): ready/onmessage/onmessageerror/oncontrollerchange
+  // exposed — upstream leaves all of these commented out. `onmessage` is
+  // live because the container already dispatches worker→client message
+  // events (the MessageFromWorker arm); `onmessageerror` has no dispatch
+  // site yet (exposure only, matching Chrome's surface).
+  attribute EventHandler oncontrollerchange;
   //attribute EventHandler onerror;
-  //attribute EventHandler onmessage; // event.source of message events is ServiceWorker object
-  //attribute EventHandler onmessageerror;
+  attribute EventHandler onmessage; // event.source of message events is ServiceWorker object
+  attribute EventHandler onmessageerror;
 };
 
 dictionary RegistrationOptions {

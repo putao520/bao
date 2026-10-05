@@ -573,6 +573,7 @@ impl ServiceWorkerGlobalScope {
                     scope.upcast(),
                     self.swmanager_sender.clone(),
                     self.scope_url.clone(),
+                    self.scope_url.clone(),
                     FrameType::None,
                     self.worker_id,
                 );

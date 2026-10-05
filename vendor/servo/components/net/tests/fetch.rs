@@ -776,6 +776,7 @@ fn test_fetch_with_hsts() {
 
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
+        sw_managers: Default::default(),
         user_agent: DEFAULT_USER_AGENT.into(),
         devtools_chan: None,
         filemanager: FileManager::new(
@@ -840,6 +841,7 @@ fn test_load_adds_host_to_hsts_list_when_url_is_https() {
 
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
+        sw_managers: Default::default(),
         user_agent: DEFAULT_USER_AGENT.into(),
         devtools_chan: None,
         filemanager: FileManager::new(
@@ -909,6 +911,7 @@ fn test_fetch_self_signed() {
 
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
+        sw_managers: Default::default(),
         user_agent: DEFAULT_USER_AGENT.into(),
         devtools_chan: None,
         filemanager: FileManager::new(
@@ -1558,6 +1561,7 @@ fn test_fetch_request_intercepted() {
 
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
+        sw_managers: Default::default(),
         user_agent: DEFAULT_USER_AGENT.into(),
         devtools_chan: None,
         filemanager: FileManager::new(

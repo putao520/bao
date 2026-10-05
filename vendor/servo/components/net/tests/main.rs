@@ -134,6 +134,7 @@ fn new_fetch_context(
 
     FetchContext {
         state: Arc::new(create_http_state(Some(sender.clone()))),
+        sw_managers: Default::default(),
         user_agent: DEFAULT_USER_AGENT.into(),
         devtools_chan,
         filemanager: FileManager::new(sender.clone(), BlobTokenCommunicator::stub_for_testing()),

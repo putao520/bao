@@ -17,7 +17,7 @@ use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg};
 use fonts::FontContext;
 use net_traits::{CoreResourceMsg, CustomResponseMediator};
 use servo_base::generic_channel::{self, GenericCallback, GenericSender, RoutedReceiver};
-use servo_base::id::{PipelineNamespace, ServiceWorkerId, ServiceWorkerRegistrationId};
+use servo_base::id::{PipelineId, PipelineNamespace, ServiceWorkerId, ServiceWorkerRegistrationId};
 use servo_config::pref;
 use servo_constellation_traits::{
     DOMMessage, Job, JobError, JobResult, JobResultValue, JobType, SWManagerSenders, ScopeThings,
@@ -85,7 +85,6 @@ impl ServiceWorker {
 }
 
 /// When updating a registration, which worker are we targetting?
-#[expect(dead_code)]
 enum RegistrationUpdateTarget {
     Installing,
     Waiting,
@@ -233,6 +232,14 @@ impl ServiceWorkerRegistration {
 pub struct ServiceWorkerManager {
     /// <https://w3c.github.io/ServiceWorker/#dfn-scope-to-registration-map>
     registrations: HashMap<ServoUrl, ServiceWorkerRegistration>,
+    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
+    /// origin-wide set of enrolled client containers (upserted by client URL,
+    /// latest callback wins). Populated by container-creation enrollment
+    /// (`ServiceWorkerContainer::enroll_with_manager`); the delivery and
+    /// `clients.matchAll` answer faces multicast across it.
+    clients: Vec<ManagerClient>,
+    // Round-robin cursor over `clients` (e70): one delivered message per client.
+    next_client: usize,
     // own sender to send messages here
     own_sender: GenericSender<ServiceWorkerMsg>,
     // receiver to receive messages from constellation
@@ -241,6 +248,20 @@ pub struct ServiceWorkerManager {
     resource_receiver: RoutedReceiver<CustomResponseMediator>,
     /// A shared [`FontContext`] to use for all service workers spawned by this [`ServiceWorkerManager`].
     font_context: Arc<FontContext>,
+}
+
+/// BAO PATCH (REQ-BRW-004 e70 multi-client wave): one enrolled client
+/// container — its creation URL (the matchAll/multicast identity), the
+/// pipeline that enrolled it (the `ClientGone` removal identity, e75), and
+/// the algorithm-result callback that doubles as its message-delivery
+/// channel.
+struct ManagerClient {
+    client_url: ServoUrl,
+    /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+    /// 2026-10-05): the pipeline that enrolled this client — the removal
+    /// identity for `ClientGone` (see `handle_client_gone`).
+    client_pipeline: PipelineId,
+    callback: GenericCallback<ServiceWorkerAlgorithmResult>,
 }
 
 impl ServiceWorkerManager {
@@ -255,6 +276,8 @@ impl ServiceWorkerManager {
 
         ServiceWorkerManager {
             registrations: HashMap::new(),
+            clients: Vec::new(),
+            next_client: 0,
             own_sender,
             own_port: from_constellation_receiver,
             resource_receiver: resource_port,
@@ -328,6 +351,7 @@ impl ServiceWorkerManager {
                 url,
                 source,
                 origin,
+                target,
             } => {
                 let Some(registration) = self.registrations.get(&url) else {
                     warn!("No registration found for scope URL when forwarding message to worker.");
@@ -343,18 +367,47 @@ impl ServiceWorkerManager {
                     warn!("No worker found for scope URL when forwarding message to worker.");
                     return true;
                 };
-                if registration
-                    .client
-                    .send(ServiceWorkerAlgorithmResult::MessageFromWorker {
-                        message: data,
-                        source,
-                        scope_url: url,
-                        script_url,
-                        origin,
-                    })
-                    .is_err()
+                // BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling
+                // 2026-10-05): deliver across the origin-wide enrolled client
+                // set instead of only the registering client — the old shape
+                // could never reach iframe subdocument containers (e69
+                // attribution: fetch-destination-worker TIMEOUT). Each
+                // `Client.postMessage` call is a separately structured-cloned
+                // message. BAO PATCH (REQ-BRW-004 e73 targeting): a message
+                // posted on a `Client` object carries that client's creation
+                // URL as `target` — deliver directly to the enrolled client
+                // keyed by it (the set's identity, see `enroll_client`). A
+                // target that matches nothing in the set — a stale/dead client
+                // URL, or the `event.source` client the SW realm synthesizes
+                // with the scope URL — falls through to the broadcast below:
+                // delivery is no worse than the pre-targeting shape.
+                let message = ServiceWorkerAlgorithmResult::MessageFromWorker {
+                    message: data,
+                    source,
+                    scope_url: url,
+                    script_url,
+                    origin,
+                };
+                if let Some(target) = target
+                    && let Some(client) = self.clients.iter().find(|c| c.client_url == target)
                 {
-                    warn!("Failed to forward message from worker to script.");
+                    let _ = client.callback.send(message);
+                    return true;
+                }
+                if self.clients.is_empty() {
+                    // Legacy fallback: no client has ever enrolled — deliver
+                    // to the registering client exactly as before this patch.
+                    let _ = registration.client.send(message);
+                } else {
+                    // Broadcast fallback (no identifier, or an identifier that
+                    // matches nothing enrolled): one delivered message per
+                    // client, rotating (round-robin) — a SW broadcasting to
+                    // every `matchAll` result reaches every client exactly
+                    // once, with no payload cloning
+                    // (StructuredSerializedData is not Clone).
+                    let index = self.next_client % self.clients.len();
+                    self.next_client = self.next_client.wrapping_add(1);
+                    let _ = self.clients[index].callback.send(message);
                 }
             },
             ServiceWorkerMsg::HandleAlgorithm(algorithm) => match algorithm {
@@ -368,8 +421,28 @@ impl ServiceWorkerManager {
                     storage_key,
                     client_url,
                     result_handler,
+                    enroll_only,
+                    client_pipeline,
                 } => {
-                    self.handle_match_registration(storage_key, client_url, result_handler);
+                    self.handle_match_registration(
+                        storage_key,
+                        client_url,
+                        result_handler,
+                        enroll_only,
+                        client_pipeline,
+                    );
+                },
+                // BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling
+                // 2026-10-05): the document behind an enrolled client is gone
+                // (its pipeline exited) — drop it from the origin-wide
+                // enrolled set so delivery and `clients.matchAll` stop
+                // answering with a dead container.
+                ServiceWorkerAlgorithm::ClientGone {
+                    client_url,
+                    client_pipeline,
+                    ..
+                } => {
+                    self.handle_client_gone(client_url, client_pipeline);
                 },
             },
             ServiceWorkerMsg::Exit => return false,
@@ -418,13 +491,63 @@ impl ServiceWorkerManager {
         // TODO: Finish Job.
     }
 
+    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
+    /// upsert a client into the origin-wide enrolled set. The creation URL is
+    /// the matchAll/multicast identity; a re-enrollment replaces the stale
+    /// callback AND the removal identity (pipeline) of a previous document
+    /// with the same URL.
+    fn enroll_client(
+        &mut self,
+        client_url: ServoUrl,
+        client_pipeline: PipelineId,
+        callback: GenericCallback<ServiceWorkerAlgorithmResult>,
+    ) {
+        if let Some(slot) = self.clients.iter_mut().find(|c| c.client_url == client_url) {
+            slot.callback = callback;
+            slot.client_pipeline = client_pipeline;
+            return;
+        }
+        self.clients.push(ManagerClient {
+            client_url,
+            client_pipeline,
+            callback,
+        });
+    }
+
     /// <https://w3c.github.io/ServiceWorker/#match-service-worker-registration>
+    ///
+    /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
+    /// the client-enrollment entry point (the `enroll_only` ping). Only
+    /// enrollment pings mutate the set; real `clients.matchAll` queries
+    /// never do (their scope-URL identity could collide with an in-scope
+    /// document and hijack its delivery slot). The set is origin-wide —
+    /// `matchAll` with `includeUncontrolled: true` answers with every
+    /// enrolled same-origin client, which is how iframe subdocument
+    /// containers become reachable.
     fn handle_match_registration(
-        &self,
+        &mut self,
         storage_key: ImmutableOrigin,
         client_url: ServoUrl,
         result_handler: GenericCallback<ServiceWorkerAlgorithmResult>,
+        enroll_only: bool,
+        client_pipeline: PipelineId,
     ) {
+        // BAO PATCH (REQ-BRW-004 e70 multi-client wave): enroll ONLY on the
+        // dedicated enrollment ping. Real `clients.matchAll` queries must NOT
+        // enroll: the SW realm's `Clients` query carries its scope URL, which
+        // can equal an in-scope document's creation URL — the upsert would
+        // then REPLACE that document's delivery callback with the SW's own
+        // answer handler and the message would be silently swallowed there
+        // (observed live: fetch-destination-worker's scope
+        // `resources/dummy.html` collides with the iframe's creation URL).
+        if enroll_only {
+            // Upsert by (client URL, enrolling pipeline): a re-enrollment from
+            // a newer document with the same creation URL replaces the stale
+            // callback and the removal identity of the older document.
+            self.enroll_client(client_url, client_pipeline, result_handler);
+            return;
+        }
+
         // Step 1: Run the following steps atomically.
         // Note: done using the channel from which this message was received.
 
@@ -505,19 +628,44 @@ impl ServiceWorkerManager {
                     .map(|worker| worker.id),
                 waiting_worker: registration.waiting_worker.as_ref().map(|worker| worker.id),
                 active_worker: registration.active_worker.as_ref().map(|worker| worker.id),
-                // BAO PATCH (e58 contract B / e70 answer face): the
-                // registering client's creation URL; the enrolled-set
-                // snapshot stays empty here (enrollment wave replay is a
-                // separate face) — the legacy single-registering-client
-                // fallback applies.
+                // BAO PATCH (REQ-BRW-004 e70 multi-client wave): snapshot the
+                // origin-wide enrolled set for `clients.matchAll`; legacy
+                // fallback keeps the registering client when nothing has
+                // enrolled yet.
                 client_url: registration.client_url.clone(),
-                client_urls: Vec::new(),
+                client_urls: if self.clients.is_empty() {
+                    vec![registration.client_url.clone()]
+                } else {
+                    self.clients.iter().map(|c| c.client_url.clone()).collect()
+                },
             });
         if result_handler
             .send(ServiceWorkerAlgorithmResult::MatchServiceWorkerRegistration(info))
             .is_err()
         {
             warn!("Failed to send match registration result to script.");
+        }
+    }
+
+    /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling 2026-10-05):
+    /// drop the enrolled client that the exited pipeline enrolled. The pair
+    /// (creation URL, enrolling pipeline) is the removal key: same-URL
+    /// navigation enrolls the NEW document's container (upsert) at an
+    /// arbitrary order relative to the OLD pipeline's exit, and only the
+    /// pipeline stamp distinguishes a stale teardown from the live entry it
+    /// must not remove. An unknown pair is a no-op (never enrolled, already
+    /// gone, or a newer document re-enrolled the URL). The round-robin
+    /// cursor is left alone: every delivery indexes through `% clients.len()`,
+    /// so the shrink can at worst repeat one client once.
+    fn handle_client_gone(&mut self, client_url: ServoUrl, client_pipeline: PipelineId) {
+        let before = self.clients.len();
+        self.clients.retain(|client| {
+            client.client_url != client_url || client.client_pipeline != client_pipeline
+        });
+        if self.clients.len() != before {
+            info!(
+                "Service worker client gone (unenrolled): url={client_url} pipeline={client_pipeline:?}"
+            );
         }
     }
 
@@ -629,7 +777,43 @@ impl ServiceWorkerManager {
             Some(new_worker.clone()),
         );
 
-        // Step 7: Invoke Resolve Job Promise with job and registration
+        // Step 17: Run the Update Registration State algorithm passing registration,
+        // "waiting" and registration’s installing worker as the arguments.
+        registration.update_registration_state(RegistrationUpdateTarget::Waiting, Some(new_worker));
+
+        // Step 18: Run the Update Registration State algorithm passing registration, "installing" and null as the arguments.
+        // TODO: registration.update_registration_state(RegistrationUpdateTarget::Installing, None);
+        // Note: commenting out for now, because it causes errors in tests,
+        // probably because we are still lacking functionality elsewhere.
+
+        // BAO PATCH (REQ-BRW-004 C19, user ruling 2026-09-09): the spec's
+        // "Try Activate" step (install finishes by activating the waiting
+        // worker when the registration has no active worker —
+        // <https://w3c.github.io/ServiceWorkers/#activation-algorithm>: set
+        // the active worker to the waiting worker and clear waiting). Upstream
+        // never passes `RegistrationUpdateTarget::Active` anywhere, so
+        // `active_worker` stays null forever and `handle_message_from_resource`
+        // answers every fetch mediation with pass-through — a service worker
+        // could never intercept anything. An existing active worker keeps
+        // control (the waiting worker stays waiting, browser update
+        // semantics).
+        if registration.active_worker.is_none()
+            && let Some(waiting) = registration.waiting_worker.clone()
+        {
+            registration.update_registration_state(RegistrationUpdateTarget::Active, Some(waiting));
+            registration.update_registration_state(RegistrationUpdateTarget::Waiting, None);
+        }
+
+        // Step 7: Invoke Resolve Job Promise with job and registration.
+        // BAO PATCH (REQ-BRW-004 C19 controller wave, user ruling 2026-09-09):
+        // upstream sent this resolution at Step 7, before the waiting→active
+        // transitions, so the resolved ServiceWorkerRegistrationInfo always
+        // carried pre-activation state (active_worker: None on first
+        // registration). Moved after the activation transitions: this resolve
+        // is the only activation notification the registering client ever
+        // gets, and the page-side container needs `active_worker` populated
+        // here to assign `navigator.serviceWorker.controller` in the same
+        // task that settles the register() promise.
         let client = job.client.clone();
         if client
             .send(ServiceWorkerAlgorithmResult::Job(
@@ -648,13 +832,10 @@ impl ServiceWorkerManager {
                             .as_ref()
                             .map(|worker| worker.id),
                         active_worker: registration.active_worker.as_ref().map(|worker| worker.id),
-                // BAO PATCH (e58 contract B / e70 answer face): the
-                // registering client's creation URL; the enrolled-set
-                // snapshot stays empty here (enrollment wave replay is a
-                // separate face) — the legacy single-registering-client
-                // fallback applies.
-                client_url: registration.client_url.clone(),
-                client_urls: Vec::new(),
+                        client_url: registration.client_url.clone(),
+                        // BAO PATCH (REQ-BRW-004 e70): the Register job answer carries no
+                        // client set; consumers ignore it (matchAll is the set consumer).
+                        client_urls: Vec::new(),
                     },
                 )),
             ))
@@ -662,15 +843,6 @@ impl ServiceWorkerManager {
         {
             warn!("Failed to send resolve job promise result to script.");
         }
-
-        // Step 17: Run the Update Registration State algorithm passing registration,
-        // "waiting" and registration’s installing worker as the arguments.
-        registration.update_registration_state(RegistrationUpdateTarget::Waiting, Some(new_worker));
-
-        // Step 18: Run the Update Registration State algorithm passing registration, "installing" and null as the arguments.
-        // TODO: registration.update_registration_state(RegistrationUpdateTarget::Installing, None);
-        // Note: commenting out for now, because it causes errors in tests,
-        // probably because we are still lacking functionality elsewhere.
 
         // Step 21: Wait for all the tasks queued by Update Worker State invoked in this algorithm to have executed.
         // TODO: queue tasks above and wait for them to execute.
