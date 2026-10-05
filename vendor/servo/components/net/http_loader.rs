@@ -1164,9 +1164,15 @@ pub async fn http_redirect_fetch(
         return Response::network_error(NetworkError::CorsCredentials);
     }
 
-    if cors_flag && location_url.origin() != request.current_url().origin() {
-        request.origin = Origin::Origin(ImmutableOrigin::new_opaque());
-    }
+    // BAO (REQ-BRW-002): Upstream residue removed — no step of HTTP-redirect fetch
+    // (https://fetch.spec.whatwg.org/#http-redirect-fetch) sets request's origin to a unique
+    // opaque origin. Cross-origin redirect semantics are carried by "compute the
+    // redirect-taint" + "Serializing a request origin" (§2.2.5), both already implemented as
+    // `redirect_taint_for_request` / `serialize_request_origin` (the latter feeds the `Origin`
+    // header and the CORS check). Mutating the origin here poisons `set_the_sec_fetch_site_header`:
+    // an opaque origin fails `is_same_site` against every URL, so `Sec-Fetch-Site` collapses to
+    // "cross-site" on any redirect chain that leaves the request origin, instead of the
+    // loosest-site-per-hop semantics over `url_list` the spec and WPT expect.
 
     // Step 10. If request’s response tainting is "cors" and locationURL includes credentials, then return a network error.
     if cors_flag && has_credentials {
