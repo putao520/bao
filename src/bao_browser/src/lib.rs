@@ -270,6 +270,24 @@ impl BrowserRuntime {
         // surface is itself a fingerprint signal. REQ-BRW-004 C14 + user
         // ruling 2026-09-09.
         preferences.dom_webgl2_enabled = true;
+        // `dom_sharedworker_enabled` defaults to false in the bao vendor
+        // snapshot (config/prefs.rs — the upstream default at the vendor
+        // baseline is true; this false is a bao-local single-line change), so
+        // the generated `SharedWorkerBinding::ConstructorEnabled` gate keeps
+        // the `SharedWorker` interface object off the Window global and every
+        // `new SharedWorker()` dies with a ReferenceError (e81 profile: L2
+        // 127-cell variant tax). The vendor implementation is real
+        // (`SharedWorker::Constructor` → registry →
+        // `SharedWorkerGlobalScope::run_shared_worker_scope`, upstream
+        // 9fc8f7389), so the pref is the only gate. Flip here (bao is the
+        // embedder; vendor defaults stay untouched) — same four-flip precedent
+        // as IDB / OffscreenCanvas / SW / WebGL2 above.
+        // REQ-BRW-004 third worker scope + user ruling: the SharedWorker
+        // scope's embedder drain (REQ-BRW-004 per-Worker injector tier, third
+        // scope) lands in the same wave — constitution A: an enabled-but-bare
+        // realm is itself a detection vector, so enablement and drain ship
+        // together.
+        preferences.dom_sharedworker_enabled = true;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls
