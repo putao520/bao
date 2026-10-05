@@ -443,7 +443,7 @@ unsafe extern "C" fn buffer_transcode(cx: *mut JSContext, _argc: u32, vp: *mut J
     let msg = ::std::ffi::CString::new("Not implemented").unwrap();
     {
         let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-        mozjs::error::throw_type_error_safe(&mut cx_s, msg.as_ref());
+        mozjs::error::throw_type_error(&mut cx_s, msg.as_ref());
     }
     args.rval().set(UndefinedValue());
     false

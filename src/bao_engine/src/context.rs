@@ -980,7 +980,7 @@ impl JsContext {
 fn extract_exception(cx: &mut mozjs::context::JSContext) -> JsError {
     rooted!(&in(cx) let mut exn = UndefinedValue());
     if let Some(info) =
-        mozjs::rust::error_info_from_exception_stack_safe(cx, exn.handle_mut().into())
+        mozjs::rust::error_info_from_exception_stack(cx, exn.handle_mut().into())
     {
         JsError {
             message: info.message,

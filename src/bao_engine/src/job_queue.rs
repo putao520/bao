@@ -7,7 +7,7 @@ use ::std::ptr;
 use ::std::sync::atomic::{AtomicUsize, Ordering};
 use ::std::sync::OnceLock;
 
-use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
+use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps, RustJobQueue};
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::realm::AutoRealm;
@@ -96,7 +96,7 @@ thread_local! {
     // live job object is itself rooted as a property of that global).
     static JOB_IDS: RefCell<VecDeque<(usize, *mut mozjs::jsapi::JSObject)>> =
         const { RefCell::new(VecDeque::new()) };
-    static QUEUE_PTR: RefCell<*mut mozjs::jsapi::JobQueue> = const { RefCell::new(ptr::null_mut()) };
+    static QUEUE_PTR: RefCell<*mut RustJobQueue> = const { RefCell::new(ptr::null_mut()) };
 }
 
 fn job_prop_name(id: usize) -> CString {
@@ -154,20 +154,17 @@ impl JobQueue {
     pub fn init(cx: &mozjs::context::JSContext) -> bool {
         // SM153: promise reaction jobs enqueue into the engine-owned regular
         // microtask queue (no enqueuePromiseJob trap); runJobs drains both
-        // that queue and bao's stored jobs. The interrupt-queue traps must be
-        // real functions now — RustJobQueue's destructor and SavedQueue
-        // bookkeeping call them unconditionally.
+        // that queue and bao's stored jobs. Since aaec2cb2 (upstream #811)
+        // the draining flag lives inside RustJobQueue — the interrupt-queue
+        // traps are gone.
         let traps = JobQueueTraps {
             getHostDefinedData: Some(get_host_defined_data),
             getHostDefinedGlobal: Some(get_host_defined_global),
             runJobs: Some(run_jobs),
             traceNonGCThingMicroTask: Some(trace_non_gc_thing_microtask),
-            pushNewInterruptQueue: Some(push_new_interrupt_queue),
-            popInterruptQueue: Some(pop_interrupt_queue),
-            dropInterruptQueues: Some(drop_interrupt_queues),
         };
 
-        let queue = unsafe { CreateJobQueue(&traps, ptr::null(), ptr::null_mut()) };
+        let queue = unsafe { CreateJobQueue(&traps) };
         if queue.is_null() {
             return false;
         }
@@ -176,7 +173,7 @@ impl JobQueue {
             *p.borrow_mut() = queue;
         });
 
-        unsafe { SetJobQueue(cx, queue) }
+        unsafe { SetJobQueue(cx, queue as *mut _) }
         true
     }
 
@@ -240,7 +237,7 @@ unsafe extern "C" fn enqueue_job(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
+unsafe extern "C" fn run_jobs(cx: *mut JSContext) {
     // SM153: fixpoint-drain BOTH sources — the engine's regular microtask
     // queue (promise reactions, engine jobs) and bao's stored jobs — running
     // one kind can enqueue more of the other. Ordering parity with SM140:
@@ -471,29 +468,6 @@ unsafe extern "C" fn trace_non_gc_thing_microtask(
 // SavedQueue bookkeeping call them unconditionally. bao runs no debugger
 // interrupt queues, so the stack hands out unique well-formed tokens and
 // keeps the pop-matches-push contract the C++ SavedQueue asserts.
-thread_local! {
-    static INTERRUPT_QUEUES: ::std::cell::RefCell<Vec<*const c_void>> =
-        const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
-}
-static INTERRUPT_TOKEN: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(1);
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn push_new_interrupt_queue(_a: *mut c_void) -> *const c_void {
-    let token = INTERRUPT_TOKEN.fetch_add(1, Ordering::Relaxed) as *const c_void;
-    INTERRUPT_QUEUES.with(|q| q.borrow_mut().push(token));
-    token
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn pop_interrupt_queue(_a: *mut c_void) -> *const c_void {
-    INTERRUPT_QUEUES.with(|q| q.borrow_mut().pop()).unwrap_or(ptr::null())
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn drop_interrupt_queues(_a: *mut c_void) {
-    INTERRUPT_QUEUES.with(|q| q.borrow_mut().clear());
-}
-
 // ── Node nextTick queue (ISSUE #25②) ────────────────────────────────────────
 //
 // `process.nextTick` previously degraded to `queueMicrotask` (a

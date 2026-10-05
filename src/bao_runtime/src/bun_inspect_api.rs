@@ -357,7 +357,7 @@ pub(crate) unsafe fn throw_invalid_arg_type(cx: *mut JSContext, msg: &str) -> bo
         .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
     {
         let mut cx_s = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-        mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+        mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
     }
     if JS_IsExceptionPending(cx) {
         rooted!(in(cx) let mut exn = UndefinedValue());

@@ -23,7 +23,7 @@ use bao_workflow_host::{
     WorkflowHostCallbacks, install_workflow_host_on_bun, install_workflow_host_on_global,
     js_to_rust_string, set_workflow_host_callbacks, take_workflow_host_callbacks,
 };
-use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
+use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps, RustJobQueue};
 use mozjs::jsapi::{JSObject, OnNewGlobalHookOption};
 use mozjs::jsapi::{Handle as RawHandle, MutableHandle as RawMutableHandle};
 use mozjs::jsval::{ObjectValue, UndefinedValue};
@@ -35,7 +35,7 @@ use mozjs::rust::{CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE
 // ── minimal SM job queue (embedding traps; mirrors bao_engine JobQueue shape) ──
 
 thread_local! {
-    static QUEUE_PTR: RefCell<*mut mozjs::jsapi::JobQueue> = const { RefCell::new(ptr::null_mut()) };
+    static QUEUE_PTR: RefCell<*mut RustJobQueue> = const { RefCell::new(ptr::null_mut()) };
 }
 
 struct TestJobQueue;
@@ -53,18 +53,15 @@ impl TestJobQueue {
             getHostDefinedGlobal: Some(get_host_defined_global),
             runJobs: Some(run_jobs_trap),
             traceNonGCThingMicroTask: Some(trace_non_gc_thing_microtask),
-            pushNewInterruptQueue: Some(push_new_interrupt_queue),
-            popInterruptQueue: Some(pop_interrupt_queue),
-            dropInterruptQueues: Some(drop_interrupt_queues),
         };
-        let queue = unsafe { CreateJobQueue(&traps, ptr::null(), ptr::null_mut()) };
+        let queue = unsafe { CreateJobQueue(&traps) };
         assert!(
             !queue.is_null(),
             "CreateJobQueue must succeed for Promise drain"
         );
         QUEUE_PTR.with(|p| *p.borrow_mut() = queue);
         unsafe {
-            SetJobQueue(cx, queue);
+            SetJobQueue(cx, queue as *mut _);
         }
         Self
     }
@@ -119,7 +116,7 @@ unsafe fn dequeue_next_regular_micro_task_abi_safe(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn run_jobs_trap(_queue: *const c_void, cx: *mut mozjs::jsapi::JSContext) {
+unsafe extern "C" fn run_jobs_trap(cx: *mut mozjs::jsapi::JSContext) {
     // SM153 (mirrors bao_engine::job_queue::run_jobs): promise reaction jobs
     // enqueue into the engine-owned regular microtask queue — there is no
     // enqueuePromiseJob trap anymore. Drain it to fixpoint: running one job
@@ -188,19 +185,6 @@ unsafe extern "C" fn trace_non_gc_thing_microtask(
     _value_ptr: *mut mozjs_sys::jsval::JSVal,
 ) {
 }
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn push_new_interrupt_queue(_queues: *mut c_void) -> *const c_void {
-    ptr::null()
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn pop_interrupt_queue(_queues: *mut c_void) -> *const c_void {
-    ptr::null()
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn drop_interrupt_queues(_queues: *mut c_void) {}
 
 // ── host callbacks ──
 

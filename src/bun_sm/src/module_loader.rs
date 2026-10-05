@@ -982,7 +982,7 @@ unsafe extern "C" fn host_load_imported_module(
                 mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(raw_cx));
             let c_msg = CString::new(msg)
                 .unwrap_or_else(|_| CString::new("Cannot load module").unwrap());
-            mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+            mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
         }
         return false;
     }
@@ -3052,7 +3052,7 @@ fn check_module_evaluation_promise(
 fn extract_module_error(cx: &mut mozjs::context::JSContext) -> JsError {
     rooted!(&in(cx) let mut exn = UndefinedValue());
     if let ::std::option::Option::Some(info) = unsafe {
-        mozjs::rust::error_info_from_exception_stack(cx.raw_cx_no_gc(), exn.handle_mut().into())
+        mozjs::rust::error_info_from_exception_stack(cx, exn.handle_mut().into())
     } {
         JsError {
             message: info.message,

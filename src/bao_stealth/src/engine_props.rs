@@ -900,7 +900,7 @@ make_f64_getter!(getter_device_memory, TL_DEVICE_MEMORY, device_memory);
 /// Built with NewArrayObject1 + JS_DefineElement, mirroring the mozjs
 /// sequence-conversion precedent (mozjs/src/conversions.rs
 /// `ToJSValConvertible for [T]`), since raw-pointer engine_props cannot use
-/// the wrappers2 `safe_to_jsval` entry points directly.
+/// the wrappers2 `to_jsval` entry points directly.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     use mozjs::rust::wrappers2::{JS_DefineElement, NewArrayObject1};

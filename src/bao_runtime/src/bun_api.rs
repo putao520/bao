@@ -8727,7 +8727,7 @@ unsafe extern "C" fn tty_wrap_tty_ctor(cx: *mut JSContext, argc: u32, vp: *mut J
         let c_msg = c"UV_EINVAL: invalid file descriptor";
         {
             let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-            mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+            mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
         }
         return false;
     }
@@ -9808,7 +9808,7 @@ unsafe extern "C" fn bun_concat_array_buffers(
             let c_msg = c"Cannot perform Bun.concatArrayBuffers on a detached ArrayBuffer";
             {
                 let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-                mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+                mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
             }
             return false;
         }
@@ -9860,7 +9860,7 @@ unsafe extern "C" fn bun_concat_array_buffers(
         });
         {
             let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+            mozjs::error::throw_range_error(&mut cx_s, c_msg.as_ref());
         }
         return false;
     }
@@ -9871,7 +9871,7 @@ unsafe extern "C" fn bun_concat_array_buffers(
             let c_msg = c"Failed to allocate ArrayBuffer: size overflow";
             {
                 let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-                mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+                mozjs::error::throw_range_error(&mut cx_s, c_msg.as_ref());
             }
             return false;
         }
@@ -9889,7 +9889,7 @@ unsafe extern "C" fn bun_concat_array_buffers(
         });
         {
             let mut cx_s = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+            mozjs::error::throw_range_error(&mut cx_s, c_msg.as_ref());
         }
         return false;
     }

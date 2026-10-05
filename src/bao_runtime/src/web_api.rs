@@ -1941,7 +1941,7 @@ unsafe fn td_buffer_source_bytes(cx: *mut JSContext, input: JSVal) -> Option<Vec
     if !input.is_object() {
         let mut cx_s =
             unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-        mozjs::error::throw_type_error_safe(
+        mozjs::error::throw_type_error(
             &mut cx_s,
             c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
         );
@@ -1976,7 +1976,7 @@ unsafe fn td_buffer_source_bytes(cx: *mut JSContext, input: JSVal) -> Option<Vec
         }
         let mut cx_s =
             unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
-        mozjs::error::throw_type_error_safe(
+        mozjs::error::throw_type_error(
             &mut cx_s,
             c"The provided value is not an instance of ArrayBuffer or ArrayBufferView".as_ref(),
         );
@@ -2273,7 +2273,7 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
 
 /// Report a REAL TypeError to the JS engine — `JS_ReportErrorNumberUTF8` with
 /// `JSEXN_TYPEERR` (same pattern as bao_browser's `report_reference_error` /
-/// `mozjs::error::throw_type_error_safe`; `JS_ReportErrorUTF8` would produce a
+/// `mozjs::error::throw_type_error`; `JS_ReportErrorUTF8` would produce a
 /// generic Error, so `e instanceof TypeError` would be false).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn report_type_error(cx: *mut JSContext, message: &str) {

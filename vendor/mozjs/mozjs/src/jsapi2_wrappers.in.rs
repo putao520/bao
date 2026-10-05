@@ -98,6 +98,7 @@ wrap!(jsapi: pub fn UTF8CharsToNewLatin1CharsZ(cx: &mut JSContext, utf8: *const 
 wrap!(jsapi: pub fn EncodeNarrowToUtf8(cx: &mut JSContext, chars: *const ::std::os::raw::c_char) -> UniqueChars);
 wrap!(jsapi: pub fn EncodeUtf8ToNarrow(cx: &mut JSContext, chars: *const ::std::os::raw::c_char) -> UniqueChars);
 wrap!(jsapi: pub fn EncodeUtf8ToWide(cx: &JSContext, chars: *const ::std::os::raw::c_char) -> UniqueWideChars);
+wrap!(jsapi: pub fn GetWellKnownSymbolKey(cx: &JSContext, which: SymbolCode) -> PropertyKey);
 wrap!(jsapi: pub fn ToGetterId(cx: &mut JSContext, id: Handle<PropertyKey>, getterId: MutableHandle<PropertyKey>) -> bool);
 wrap!(jsapi: pub fn ToSetterId(cx: &mut JSContext, id: Handle<PropertyKey>, setterId: MutableHandle<PropertyKey>) -> bool);
 wrap!(jsapi: pub fn SetHostEnsureCanAddPrivateElementHook(cx: &JSContext, op: EnsureCanAddPrivateElementOp));
@@ -277,6 +278,7 @@ wrap!(jsapi: pub fn IsArray(cx: &mut JSContext, obj: Handle<*mut JSObject>, isAr
 wrap!(jsapi: pub fn IsArray1(cx: &mut JSContext, obj: Handle<*mut JSObject>, answer: *mut IsArrayAnswer) -> bool);
 wrap!(jsapi: pub fn GetBuiltinClass(cx: &mut JSContext, obj: Handle<*mut JSObject>, cls: *mut ESClass) -> bool);
 wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
+wrap!(jsapi: pub fn GetJobQueue(cx: &JSContext) -> *mut JobQueue);
 wrap!(jsapi: pub fn SetPromiseRejectionTrackerCallback(cx: &JSContext, callback: PromiseRejectionTrackerCallback, data: *mut ::std::os::raw::c_void));
 wrap!(jsapi: pub fn JobQueueIsEmpty(cx: &JSContext));
 wrap!(jsapi: pub fn JobQueueMayNotBeEmpty(cx: &JSContext));

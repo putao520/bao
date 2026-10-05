@@ -233,6 +233,16 @@ pub struct Preferences {
     pub dom_webxr_openxr_enabled: bool,
     pub dom_webxr_sessionavailable: bool,
     pub dom_webxr_unsafe_assume_user_intent: bool,
+    /// (Bao) AudioWorklet exposure gate. Defaults TRUE: Chromium exposes
+    /// AudioWorklet unconditionally, and the anti-fingerprint target is
+    /// `audioContext.audioWorklet === undefined` (e83 §2). Defaulting false
+    /// would keep that one-line engine probe alive. Upstream has no such
+    /// pref (upstream has no AudioWorklet at all); this is the codegen
+    /// conditional-exposure carrier that lets `interface AudioWorklet :
+    /// Worklet` inherit from a Pref-gated parent while staying on by
+    /// default (configuration.py rejects an unconditional child of a
+    /// conditionally-exposed parent).
+    pub dom_audio_worklet_enabled: bool,
     pub dom_worklet_enabled: bool,
     pub dom_worklet_blockingsleep_enabled: bool,
     pub dom_worklet_testing_enabled: bool,
@@ -496,6 +506,7 @@ impl Preferences {
             dom_webxr_test: false,
             dom_webxr_unsafe_assume_user_intent: false,
             dom_worklet_blockingsleep_enabled: false,
+            dom_audio_worklet_enabled: true,
             dom_worklet_enabled: false,
             dom_worklet_testing_enabled: false,
             dom_worklet_timeout_ms: 10,

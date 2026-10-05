@@ -13,7 +13,7 @@
 // passes the ADDRESS OF THE RUST `js::context::JSContext` WRAPPER object
 // (8-byte `{ ptr: NonNull<RawJSContext>, no_gc }`), not the raw SpiderMonkey
 // JSContext. `DescribeScriptedCaller` then read `realm_` (JSContext+0xb0)
-// out of adjacent stack memory. Fix = `describe_scripted_caller_safe(cx)`
+// out of adjacent stack memory. Fix = `describe_scripted_caller(cx)`
 // (upstream servo form, same as console.rs's W12-B fix).
 //
 // Carrier here mirrors the WPT page's mechanism (IDN/https was incidental):
@@ -171,7 +171,7 @@ fn csp_violating_stylesheet_subresource_does_not_kill_the_process() {
 
     // The violation must actually have been reported into the page — this is
     // the proof the fixed code path (compute_scripted_caller_source_position
-    // → describe_scripted_caller_safe) executed, not that the fetch silently
+    // → describe_scripted_caller) executed, not that the fetch silently
     // never happened.
     let count = |page: &PageHandle| -> u32 {
         page.evaluate_js_web("String(window.__violations)")

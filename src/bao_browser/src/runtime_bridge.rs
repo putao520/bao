@@ -637,7 +637,7 @@ pub unsafe fn evaluate_in_node_realm(
 /// "JS exception thrown" string discarded everything callers needed.
 ///
 /// Composition (reuse ladder — all extraction math/IO is mozjs-owned):
-/// * `error_info_from_exception_stack_safe` — message + filename + line from
+/// * `error_info_from_exception_stack` — message + filename + line from
 ///   the live pending exception (must run BEFORE clearing),
 /// * `JS_GetProperty(cx, obj, "name")` — the Error subclass name
 ///   ("SyntaxError"/"TypeError"/…), keeping compile-vs-runtime and
@@ -657,9 +657,9 @@ fn take_pending_exception_text(cx: &mut mozjs::context::JSContext) -> Option<Str
         return None;
     }
     // Error info must be read from the live pending state (see
-    // error_info_from_exception_stack_safe), so clear only afterwards.
+    // error_info_from_exception_stack), so clear only afterwards.
     let error_info =
-        mozjs::rust::error_info_from_exception_stack_safe(cx, exception_value.handle_mut());
+        mozjs::rust::error_info_from_exception_stack(cx, exception_value.handle_mut());
     // SAFETY: the exception value has been read above; clear it so it cannot
     // leak into later evaluations.
     unsafe { JS_ClearPendingException(cx) };
@@ -1479,7 +1479,7 @@ unsafe fn lazy_constructor_getter_impl(
 /// (which would cause a confusing "X is not a constructor" TypeError
 /// when the user tries `new Worker()`).
 ///
-/// Uses `JS_ReportErrorNumberUTF8` (same pattern as `mozjs::error::throw_type_error_safe`)
+/// Uses `JS_ReportErrorNumberUTF8` (same pattern as `mozjs::error::throw_type_error`)
 /// with `JSEXN_REFERENCEERR` to produce a proper ReferenceError exception.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn report_reference_error(cx: *mut mozjs::jsapi::JSContext, message: &str) {

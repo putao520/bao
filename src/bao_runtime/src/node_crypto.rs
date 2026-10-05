@@ -6060,9 +6060,9 @@ unsafe fn argon2_throw_with_code(cx: *mut JSContext, range: bool, code: &str, ms
     {
         let mut cx_s = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         if range {
-            mozjs::error::throw_range_error_safe(&mut cx_s, c_msg.as_ref());
+            mozjs::error::throw_range_error(&mut cx_s, c_msg.as_ref());
         } else {
-            mozjs::error::throw_type_error_safe(&mut cx_s, c_msg.as_ref());
+            mozjs::error::throw_type_error(&mut cx_s, c_msg.as_ref());
         }
     }
     if JS_IsExceptionPending(cx) {
