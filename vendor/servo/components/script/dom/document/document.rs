@@ -2403,6 +2403,39 @@ impl Document {
         // Step 18. Run any unloading document cleanup steps for oldDocument that are defined by this specification and other applicable specifications.
         self.unloading_cleanup_steps(cx);
 
+        // BAO PATCH (REQ-BRW-002 deactivate-flush, 2026-10-05): third flush
+        // exit for deferred fetch records, on document deactivation.
+        //
+        // Exit inventory (<https://fetch.spec.whatwg.org/#queue-a-deferred-fetch>):
+        //   1. timer exit — activateAfter elapses (queue_deferred_fetch's
+        //      schedule_timer);
+        //   2. destroy exit — fetch group termination
+        //      (terminate_fetch_group → GlobalScope::process_deferred_fetches);
+        //   3. deactivate exit — this site. Step 20 below ("destroy
+        //      oldDocument if not salvageable") is unimplemented upstream, so
+        //      a plain
+        //      navigation-away never reaches the destroy exit and pending
+        //      records linger until their activateAfter — but a navigating
+        //      document is about to lose the opportunity to execute scripts
+        //      (spec step 6.1's second wait condition: "The user agent has a
+        //      reason to believe that it is about to lose the opportunity to
+        //      execute scripts"), which authorizes processing the records
+        //      now. This also mirrors the observable Chromium behavior when
+        //      the BackgroundSync permission is off, which the WPT
+        //      fetch/fetch-later/send-on-deactivate suite pins: pending
+        //      records are force-sent on every navigation, "even if page is
+        //      put into BFCache" (BackgroundSync-off flushes on the BFCache
+        //      path too; bao has no BFCache eligibility gating — pagehide
+        //      salvageable is unconditionally true — so flushing here is the
+        //      Chromium-off semantics for both outcomes of the navigation).
+        //
+        // Runs after the pagehide/unload handlers so records queued by them
+        // are included, and is idempotent with the other two exits:
+        // `process` skips records whose invoke state is no longer "pending"
+        // (already sent via the timer, aborted via AbortSignal, or flushed by
+        // a later destroy-time fetch group termination).
+        self.owner_global().process_deferred_fetches();
+
         // https://w3c.github.io/FileAPI/#lifeTime
         self.window.as_global_scope().clean_up_all_file_resources();
 
