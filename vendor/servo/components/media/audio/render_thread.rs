@@ -9,6 +9,7 @@ use servo_media_streams::{MediaSocket, MediaStreamId};
 
 use crate::analyser_node::AnalyserNode;
 use crate::audio_node::{AudioNodeEngine, AudioNodeInit, AudioNodeMessage, BlockInfo, ChannelInfo};
+use crate::audioworklet_node::AudioWorkletNode;
 use crate::biquad_filter_node::BiquadFilterNode;
 use crate::block::{Chunk, FRAMES_PER_BLOCK, Tick};
 use crate::buffer_source_node::AudioBufferSourceNode;
@@ -211,6 +212,9 @@ impl AudioRenderThread {
             AudioNodeInit::AnalyserNode(sender) => Box::new(AnalyserNode::new(sender, ch)),
             AudioNodeInit::AudioBufferSourceNode(options) => {
                 Box::new(AudioBufferSourceNode::new(options, ch))
+            },
+            AudioNodeInit::AudioWorkletNode(init) => {
+                Box::new(AudioWorkletNode::new(init, ch))
             },
             AudioNodeInit::BiquadFilterNode(options) => {
                 Box::new(BiquadFilterNode::new(options, ch, self.sample_rate))

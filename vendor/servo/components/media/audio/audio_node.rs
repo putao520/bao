@@ -10,6 +10,7 @@ use malloc_size_of_derive::MallocSizeOf;
 use servo_base::generic_channel::GenericCallback;
 use servo_media_streams::{MediaSocket, MediaStreamId};
 
+use crate::audioworklet_node::AudioWorkletNodeInit;
 use crate::biquad_filter_node::{BiquadFilterNodeMessage, BiquadFilterNodeOptions};
 use crate::block::{Block, Chunk, Tick};
 use crate::buffer_source_node::{AudioBufferSourceNodeMessage, AudioBufferSourceNodeOptions};
@@ -31,6 +32,7 @@ pub enum AudioNodeInit {
     BiquadFilterNode(BiquadFilterNodeOptions),
     AudioBuffer,
     AudioBufferSourceNode(AudioBufferSourceNodeOptions),
+    AudioWorkletNode(AudioWorkletNodeInit),
     ChannelMergerNode(ChannelNodeOptions),
     ChannelSplitterNode,
     ConstantSourceNode(ConstantSourceNodeOptions),
@@ -59,6 +61,7 @@ pub enum AudioNodeType {
     BiquadFilterNode,
     AudioBuffer,
     AudioBufferSourceNode,
+    AudioWorkletNode,
     ChannelMergerNode,
     ChannelSplitterNode,
     ConstantSourceNode,

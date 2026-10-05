@@ -20,6 +20,10 @@ pub enum ParamType {
     Up(ParamDir),
     Orientation(ParamDir),
     Offset,
+    /// A parameter of an AudioWorkletNode, addressed by its declaration
+    /// index; the name→index mapping lives in the script face's
+    /// `AudioParamMap`.
+    WorkletParam(u32),
 }
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, MallocSizeOf)]
@@ -195,6 +199,11 @@ impl Param {
 
     pub fn set_rate(&mut self, rate: ParamRate) {
         self.kind = rate;
+    }
+
+    /// The current automation rate of this parameter.
+    pub fn rate(&self) -> ParamRate {
+        self.kind
     }
 
     pub(crate) fn insert_event(&mut self, event: AutomationEvent) {

@@ -22,6 +22,7 @@ extern crate servo_media_traits;
 
 pub mod analyser_node;
 pub mod audio_node;
+pub mod audioworklet_node;
 pub mod biquad_filter_node;
 pub mod block;
 pub mod buffer_source_node;
@@ -42,6 +43,7 @@ pub mod oscillator_node;
 pub mod panner_node;
 pub mod param;
 pub mod render_thread;
+pub mod ring;
 pub mod sink;
 pub mod stereo_panner;
 pub mod wave_shaper_node;
