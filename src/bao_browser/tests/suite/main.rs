@@ -69,6 +69,7 @@ mod fingerprint_website_eval_e2e_tests;
 mod h2_fetch_node_stack_e2e_tests;
 mod indexeddb_e2e_tests;
 mod media_e2e_tests;
+mod module_css_text_tests;
 mod mouse_bezier_e2e_tests;
 mod multi_page_security_e2e_tests;
 mod opaque_origin_startup_regression_tests;

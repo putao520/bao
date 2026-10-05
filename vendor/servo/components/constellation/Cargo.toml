@@ -29,7 +29,7 @@ panic = "deny"
 accesskit = {version = "0.24.0", features = ["serde"]}
 backtrace = {version = "0.3"}
 base64 = {version = "0.23.0"}
-content-security-policy = {version = "=0.8.1", features = ["serde"]}
+content-security-policy = {version = "=0.9.0", features = ["serde"]}
 crossbeam-channel = {version = "0.5"}
 devtools_traits = {package = "bao-servo-devtools-traits", path = "../shared/devtools", version = ">=0.5.13, <0.6.0"}
 embedder_traits = {package = "bao-servo-embedder-traits", path = "../shared/embedder", version = ">=0.5.17, <0.6.0"}

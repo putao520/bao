@@ -168,6 +168,7 @@ pub(crate) fn set_default_accept(request: &mut Request) {
             },
             Destination::Json => HeaderValue::from_static("application/json,*/*;q=0.5"),
             Destination::Style => HeaderValue::from_static("text/css,*/*;q=0.1"),
+            Destination::Text => HeaderValue::from_static("text/plain,*/*;q=0.5"),
             // Step 11.1. Let value be `*/*`.
             _ => HeaderValue::from_static("*/*"),
         }
@@ -628,7 +629,7 @@ fn bao_destination_to_resource_type(destination: Destination) -> &'static str {
         Destination::Font => "Font",
         Destination::Audio | Destination::Video | Destination::Track => "Media",
         Destination::Manifest => "Manifest",
-        Destination::Json => "Fetch",
+        Destination::Json | Destination::Text => "Fetch",
         Destination::None |
         Destination::AudioWorklet |
         Destination::Embed |

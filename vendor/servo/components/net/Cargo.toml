@@ -43,10 +43,13 @@ async-tungstenite = {version = "0.35", features = ["tokio-rustls-webpki-roots"]}
 base64 = {version = "0.23.0"}
 bytes = {version = "1.0"}
 chrono = {version = "0.4", features = ["serde"]}
-# Pinned exactly: 0.8.3 breaks this crate at compile time (match on Csp
-# directives — the `Text` arm was removed upstream), and the caret req let
-# consumers resolve past the repo lock. Released as 0.5.9 (e71 #10).
-content-security-policy = {version = "=0.8.1", features = ["serde"]}
+# Pinned exactly: the caret req once let consumers resolve past the repo
+# lock (e71 #10, released as 0.5.9). 0.9.0 lifts the e71 holdout: upstream
+# ADDED `Destination::Text` (import type:"text" modules; 0.8.1 lacked it),
+# plus a spec fix — 'self' no longer matches blob: URLs (Step 4.1). 0.9.0
+# is 0.8.3's src byte-identical (0.8.3 was yanked 2026-09-07 and republished
+# as 0.9.0; an exact pin must stay resolvable for the published family).
+content-security-policy = {version = "=0.9.0", features = ["serde"]}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
 data-url = {version = "0.3"}

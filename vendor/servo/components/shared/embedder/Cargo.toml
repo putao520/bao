@@ -19,7 +19,7 @@ gamepad = []
 [dependencies]
 accesskit = {version = "0.24.0", features = ["serde"]}
 bitflags = {version = "2.11"}
-content-security-policy = {version = "=0.8.1", features = ["serde"]}
+content-security-policy = {version = "=0.9.0", features = ["serde"]}
 cookie = {package = "cookie", version = "0.18"}
 crossbeam-channel = {version = "0.5"}
 euclid = {version = "0.22"}

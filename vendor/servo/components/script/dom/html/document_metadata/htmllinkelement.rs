@@ -1000,7 +1000,7 @@ impl HTMLLinkElement {
 
         // A module preload destination is "json", "style", "text" or a script-like destination.
         let is_a_modulepreload_destination = match destination {
-            Destination::Json | Destination::Style => true, // fork holdout: pinned csp has no Text destination
+            Destination::Json | Destination::Style | Destination::Text => true,
             // https://fetch.spec.whatwg.org/#ref-for-request-destination-script-like
             // While "xslt" can cause script execution, it is not relevant here.
             Destination::Xslt => false,
