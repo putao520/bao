@@ -325,6 +325,24 @@ pub(crate) enum TheEndLoadingPhase {
     Done,
 }
 
+/// Whether a document settled out of the completion re-arm set
+/// (`docs_with_no_blocking_loads`) after a
+/// [`Document::maybe_queue_document_completion`] attempt (BAO D3).
+///
+/// `NotReady` is the re-arm signal: the document's the-end chain has not run
+/// yet and the spin tail must keep it enrolled for a later attempt. The
+/// pre-D3 behavior dropped every document from the set unconditionally,
+/// which permanently lost the completion chain of any document that was
+/// blocked, not fully active, or delaying load events at the moment of its
+/// first spin tail.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum DocumentCompletionOutcome {
+    /// Completion was queued, or can never apply: stop re-arming.
+    Settled,
+    /// The document is not ready yet: keep it enrolled for a later spin tail.
+    NotReady,
+}
+
 /// Information about a declarative refresh
 #[derive(JSTraceable, MallocSizeOf)]
 pub(crate) enum DeclarativeRefresh {
@@ -1113,6 +1131,13 @@ impl Document {
         media.resume(&client_context_id);
 
         if self.ready_state.get() != DocumentReadyState::Complete {
+            // BAO (D3, e66 candidate ②): the document just became fully active
+            // while its completion chain has not run yet. Re-enroll it in the
+            // script-thread re-arm set so the spin tail can queue completion
+            // once it is ready; without this arm a document whose the-end
+            // chain raced this activation would never reach `Complete` and
+            // neither `load` nor `pageshow` would ever fire for it.
+            ScriptThread::mark_document_with_no_blocked_loads(self);
             return;
         }
 
@@ -2489,12 +2514,27 @@ impl Document {
 
     // https://html.spec.whatwg.org/multipage/#the-end
     // TODO(43149): Remove when document replacement is implemented
-    pub(crate) fn maybe_queue_document_completion(&self, cx: &mut JSContext) {
+    ///
+    /// Returns whether the document settled out of the completion re-arm set
+    /// (BAO D3): `NotReady` means the spin tail must keep the document
+    /// enrolled so a later spin can re-arm its completion.
+    pub(crate) fn maybe_queue_document_completion(
+        &self,
+        cx: &mut JSContext,
+    ) -> DocumentCompletionOutcome {
         // The initial about:blank document passes through
         // https://html.spec.whatwg.org/multipage/#creating-a-new-browsing-context
         // instead of the steps used by other documents.
         if self.is_initial_about_blank() {
-            return;
+            return DocumentCompletionOutcome::Settled;
+        }
+
+        // In case we have already aborted this document and receive a
+        // a subsequent message to load the document. `inhibit_events` is only
+        // reached from `queue_document_completion`, so an inhibited document
+        // already had its completion queued: re-arming it is pointless.
+        if self.loader.borrow().events_inhibited() {
+            return DocumentCompletionOutcome::Settled;
         }
 
         // https://html.spec.whatwg.org/multipage/#delaying-load-events-mode
@@ -2509,17 +2549,15 @@ impl Document {
         // See https://github.com/servo/servo/issues/22507
         let not_ready_for_load = self.loader.borrow().is_blocked() ||
             !self.is_fully_active() ||
-            is_in_delaying_load_events_mode ||
-            // In case we have already aborted this document and receive a
-            // a subsequent message to load the document
-            self.loader.borrow().events_inhibited();
+            is_in_delaying_load_events_mode;
 
         if not_ready_for_load {
             // Step 6.
-            return;
+            return DocumentCompletionOutcome::NotReady;
         }
 
         self.queue_document_completion(cx);
+        DocumentCompletionOutcome::Settled
     }
 
     /// Step 9 of <https://html.spec.whatwg.org/multipage/#the-end>
@@ -2540,6 +2578,17 @@ impl Document {
                 // Step 9.3. Let window be the Document's relevant global object.
                 let window = document.window();
                 if !window.is_alive() || document.window_detached() {
+                    // BAO (D3, e66 family): a completion task landing here
+                    // after the document's pipeline exited means its load
+                    // event will never fire — surface it instead of
+                    // silently swallowing the navigation-completion signal
+                    // (navigation-completion signals may arrive or be loud,
+                    // never silently disappear).
+                    warn!(
+                        "Document {} load event dropped: window not alive or detached \
+                         (pipeline exited before completion ran)",
+                        document.pipeline_id()
+                    );
                     return;
                 }
 

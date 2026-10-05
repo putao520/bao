@@ -203,6 +203,28 @@ struct PendingApprovalNavigation {
 
 type PendingApprovalNavigations = FxHashMap<PipelineId, PendingApprovalNavigation>;
 
+/// BAO (D3, e66 candidate ①): a navigation that `load_url` could not start
+/// because its target browsing context still had a pending page (or the
+/// navigating pipeline was not active yet).
+///
+/// The upstream guards silently discarded such a navigation. For a freshly
+/// created popup whose initial `about:blank` page is still pending activation
+/// that discard is the *common* case, not an error — and since
+/// `javascript:`-URL results never re-fire, the popup was left permanently
+/// without the document it was opened with (the intermittent
+/// `js_popup_string_result_fires_load_with_document` hang). Deferred
+/// navigations are replayed on the edges that resolve their target's pending
+/// change (activation, abort, pipeline close).
+struct DeferredNavigation {
+    webview_id: WebViewId,
+    source_id: PipelineId,
+    load_data: LoadData,
+    history_handling: NavigationHistoryBehavior,
+    target_snapshot_params: TargetSnapshotParams,
+}
+
+type DeferredNavigations = FxHashMap<BrowsingContextId, DeferredNavigation>;
+
 #[derive(Debug)]
 /// The state used by MessagePortInfo to represent the various states the port can be in.
 enum TransferState {
@@ -444,6 +466,12 @@ pub struct Constellation<STF, SWF> {
     /// Pipeline IDs are namespaced in order to avoid name collisions,
     /// and the namespaces are allocated by the constellation.
     next_pipeline_namespace_id: Cell<PipelineNamespaceId>,
+
+    /// BAO (D3): navigations deferred because their target browsing context
+    /// still had a pending page (or the navigating pipeline was not active
+    /// yet). Keyed by target browsing context; replayed on the edges that
+    /// resolve the target's pending change. See [`DeferredNavigation`].
+    deferred_navigations: DeferredNavigations,
 
     /// A [`GenericSender`] to notify navigation events to webdriver.
     webdriver_load_status_sender: Option<(GenericSender<WebDriverLoadStatus>, PipelineId)>,
@@ -726,6 +754,7 @@ where
                     worker_animation_frame_providers: Default::default(),
                     browsing_contexts: Default::default(),
                     pending_changes: vec![],
+                    deferred_navigations: Default::default(),
                     next_pipeline_namespace_id: Cell::new(FIRST_CONTENT_PIPELINE_NAMESPACE_ID),
                     time_profiler_chan: state.time_profiler_chan,
                     mem_profiler_chan: state.mem_profiler_chan.clone(),
@@ -2728,6 +2757,7 @@ where
         }
 
         // Close any pending changes and pipelines
+        self.deferred_navigations.clear();
         while let Some(pending) = self.pending_changes.pop() {
             debug!(
                 "{}: Removing pending browsing context",
@@ -4168,6 +4198,44 @@ where
         }
     }
 
+    /// Tell webdriver that the navigation of `pipeline_id` stopped advancing
+    /// (BAO D3): the counterpart of the notifications the iframe arm sends.
+    fn notify_webdriver_navigation_stopped(&self, pipeline_id: PipelineId) {
+        if let Some((sender, id)) = &self.webdriver_load_status_sender && pipeline_id == *id {
+            let _ = sender.send(WebDriverLoadStatus::NavigationStop);
+        }
+    }
+
+    /// Replay a navigation that was deferred because its target browsing
+    /// context still had a pending page (BAO D3, see [`DeferredNavigation`]).
+    ///
+    /// Called on the edges that resolve the target's pending change:
+    /// `handle_activate_document_msg`, `handle_abort_load_url_msg`, and
+    /// `close_pipeline`'s pending-change removal. If the replayed navigation
+    /// cannot start either, it re-defers (never silently discarded) or fails
+    /// loudly through `load_url`'s existing warnings.
+    fn replay_deferred_navigation(&mut self, browsing_context_id: BrowsingContextId) {
+        let Some(deferred) = self.deferred_navigations.remove(&browsing_context_id) else {
+            return;
+        };
+        if self.shutting_down {
+            // Shutdown in progress: starting new pipelines would fight the
+            // teardown; the deferred navigation dies with the run.
+            return;
+        }
+        debug!(
+            "{}: Replaying deferred navigation of {}",
+            deferred.source_id, browsing_context_id
+        );
+        self.load_url(
+            deferred.webview_id,
+            deferred.source_id,
+            deferred.load_data,
+            deferred.history_handling,
+            deferred.target_snapshot_params,
+        );
+    }
+
     #[servo_tracing::instrument(skip_all)]
     fn load_url(
         &mut self,
@@ -4259,11 +4327,39 @@ where
             },
             None => {
                 // Make sure no pending page would be overridden.
-                for change in &self.pending_changes {
-                    if change.browsing_context_id == browsing_context_id {
-                        // id that sent load msg is being changed already; abort
-                        return None;
-                    }
+                if self
+                    .pending_changes
+                    .iter()
+                    .any(|change| change.browsing_context_id == browsing_context_id)
+                {
+                    // id that sent load msg is being changed already; abort
+                    //
+                    // BAO (D3, e66 candidate ①): this used to silently discard
+                    // the navigation. For a freshly created popup whose
+                    // initial about:blank page is still pending activation
+                    // that discard is the common case, not an error — and
+                    // since `javascript:`-URL results never re-fire, the popup
+                    // was left permanently without the document it was opened
+                    // with. Defer the navigation until the pending change
+                    // resolves (replayed from `handle_activate_document_msg`
+                    // and friends), and tell webdriver the navigation stopped
+                    // advancing so it can never hang on this edge.
+                    warn!(
+                        "{}: Deferring navigation of {} while a pending change is in flight",
+                        source_id, browsing_context_id
+                    );
+                    self.notify_webdriver_navigation_stopped(source_id);
+                    self.deferred_navigations.insert(
+                        browsing_context_id,
+                        DeferredNavigation {
+                            webview_id,
+                            source_id,
+                            load_data,
+                            history_handling,
+                            target_snapshot_params,
+                        },
+                    );
+                    return None;
                 }
 
                 if self.get_activity(source_id) == DocumentActivity::Inactive {
@@ -4271,6 +4367,26 @@ where
                     // active. This could be caused by a delayed navigation (eg. from
                     // a timer) or a race between multiple navigations (such as an
                     // onclick handler on an anchor element).
+                    //
+                    // BAO (D3, e66 candidate ①): same silent-discard class as
+                    // the pending-change guard above — defer instead of
+                    // dropping (replayed on the pending-change resolution
+                    // edge, by which point this pipeline is usually active).
+                    warn!(
+                        "{}: Deferring navigation of {} while the navigating pipeline is inactive",
+                        source_id, browsing_context_id
+                    );
+                    self.notify_webdriver_navigation_stopped(source_id);
+                    self.deferred_navigations.insert(
+                        browsing_context_id,
+                        DeferredNavigation {
+                            webview_id,
+                            source_id,
+                            load_data,
+                            history_handling,
+                            target_snapshot_params,
+                        },
+                    );
                     return None;
                 }
 
@@ -4322,12 +4438,17 @@ where
 
         // If it is found, remove it from the pending changes.
         if let Some(pending_index) = pending_index {
+            let browsing_context_id =
+                self.pending_changes[pending_index].browsing_context_id;
             self.pending_changes.remove(pending_index);
             self.close_pipeline(
                 new_pipeline_id,
                 DiscardBrowsingContext::No,
                 ExitPipelineMode::Normal,
             );
+            // BAO (D3): the pending change of this browsing context was just
+            // removed — a navigation deferred against it can proceed now.
+            self.replay_deferred_navigation(browsing_context_id);
         }
 
         self.send_screenshot_readiness_requests_to_pipelines();
@@ -5727,6 +5848,7 @@ where
         // the active document of its frame.
         let change = self.pending_changes.swap_remove(pending_index);
         let webview_id = change.webview_id;
+        let browsing_context_id = change.browsing_context_id;
 
         self.send_screenshot_readiness_requests_to_pipelines();
 
@@ -5759,6 +5881,11 @@ where
         }
 
         self.change_session_history(change);
+
+        // BAO (D3): the pending change of this browsing context just resolved
+        // (its pipeline activated) — a navigation deferred against it can
+        // proceed now.
+        self.replay_deferred_navigation(browsing_context_id);
     }
 
     /// Called when the window is resized.
@@ -6049,6 +6176,12 @@ where
     ) -> Option<BrowsingContext> {
         debug!("{}: Closing", browsing_context_id);
 
+        // BAO (D3): the target of a deferred navigation is going away — drop
+        // it before the children close, so the pending-change removals in
+        // `close_pipeline` don't replay a navigation into a context that is
+        // being torn down.
+        let _ = self.deferred_navigations.remove(&browsing_context_id);
+
         self.close_browsing_context_children(
             browsing_context_id,
             DiscardBrowsingContext::Yes,
@@ -6228,9 +6361,11 @@ where
             .pending_changes
             .iter()
             .position(|change| change.new_pipeline_id == pipeline_id);
-        if let Some(pending_index) = pending_index {
+        let removed_pending_browsing_context = pending_index.map(|pending_index| {
+            let browsing_context_id = self.pending_changes[pending_index].browsing_context_id;
             self.pending_changes.remove(pending_index);
-        }
+            browsing_context_id
+        });
 
         // Inform script and paint that this pipeline has exited.
         if !pipeline.send_exit_message_to_script(dbc) {
@@ -6239,6 +6374,13 @@ where
             // that `Paint` cleans up the pipeline display immediately without waiting for
             // confirmation from the event loop.
             self.handle_pipeline_exited(pipeline_id, PipelineExitSource::all());
+        }
+
+        // BAO (D3): the pending change of this browsing context was just
+        // removed — a navigation deferred against it can proceed now. (Run
+        // after the last use of the borrowed `pipeline` above.)
+        if let Some(browsing_context_id) = removed_pending_browsing_context {
+            self.replay_deferred_navigation(browsing_context_id);
         }
 
         self.send_screenshot_readiness_requests_to_pipelines();

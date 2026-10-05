@@ -137,7 +137,8 @@ use crate::dom::customelementregistry::{
 };
 use crate::dom::document::focus::FocusableArea;
 use crate::dom::document::{
-    Document, DocumentSource, HasBrowsingContext, IsHTMLDocument, RenderingUpdateReason,
+    Document, DocumentCompletionOutcome, DocumentSource, HasBrowsingContext, IsHTMLDocument,
+    RenderingUpdateReason,
 };
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::element::Element;
@@ -2065,8 +2066,7 @@ impl ScriptThread {
     }
 
     /// Handle incoming messages from other tasks and the task queue.
-    fn handle_msgs(&self, cx: &mut js::context::JSContext) -> bool {
-        // Proritize rendering tasks and others, and gather all other events as `sequential`.
+    fn handle_msgs(&self, cx: &mut js::context::JSContext) -> bool {        // Proritize rendering tasks and others, and gather all other events as `sequential`.
         let mut sequential = vec![];
 
         // Notify the background-hang-monitor we are waiting for an event.
@@ -2227,15 +2227,43 @@ impl ScriptThread {
         // TODO(43149): Remove when document replacement is implemented
         {
             // https://html.spec.whatwg.org/multipage/#the-end step 6
-            {
-                let docs = self.docs_with_no_blocking_loads.borrow();
-                for document in docs.iter() {
-                    let mut realm = enter_auto_realm(cx, &**document);
-                    let cx = &mut realm.current_realm();
-                    document.maybe_queue_document_completion(cx);
+            //
+            // BAO (D3, e66 candidate ③): this set is the completion re-arm
+            // set, not a one-shot queue. A document that is not ready yet
+            // (blocked loader / not fully active / delaying load events) at
+            // this spin tail must stay enrolled so a later spin can re-arm
+            // it; the old unconditional `clear()` permanently dropped the
+            // completion chain of any document that happened to be not-ready
+            // at its first spin tail (`load` never fired, readyState stuck
+            // below "complete"). Documents settle out of the set when their
+            // completion is queued or can never apply; documents whose
+            // pipeline left this thread are dropped without retrying (they
+            // can never complete and holding them would pin them forever).
+            let docs: Vec<Dom<Document>> = self
+                .docs_with_no_blocking_loads
+                .borrow()
+                .iter()
+                .cloned()
+                .collect();
+            let mut not_ready = FxHashSet::default();
+            for document in docs {
+                if self
+                    .documents
+                    .borrow()
+                    .find_document(document.pipeline_id())
+                    .is_none()
+                {
+                    continue;
+                }
+                let mut realm = enter_auto_realm(cx, &*document);
+                let cx = &mut realm.current_realm();
+                if document.maybe_queue_document_completion(cx) ==
+                    DocumentCompletionOutcome::NotReady
+                {
+                    not_ready.insert(document);
                 }
             }
-            self.docs_with_no_blocking_loads.borrow_mut().clear();
+            *self.docs_with_no_blocking_loads.borrow_mut() = not_ready;
         }
 
         let built_any_display_lists =
@@ -3585,7 +3613,6 @@ impl ScriptThread {
             activity,
             thread::current().name()
         );
-
         // If a pipeline transitions to fully active, the next turn of the event
         // loop will release any pending tasks targeting that pipeline. To ensure
         // we always run those as soon as possible, not just whenever we happen to
