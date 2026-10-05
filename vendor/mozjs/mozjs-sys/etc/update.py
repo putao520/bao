@@ -267,6 +267,8 @@ impl icu_casemap::ClosureSink for CodePointInversionListBuilder {
         # scratch full tree BEFORE the split (upstream patch semantics are
         # single-topsrcdir), so apply_patches() must run against SCRATCH —
         # see apply_patches() BAO DELTA below.
+        subprocess.check_call(["cargo", "fmt"])
+
         subprocess.check_call(
             [
                 "rsync",
