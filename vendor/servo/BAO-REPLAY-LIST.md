@@ -69,6 +69,25 @@
 - `fonts/font_context.rs`、`config/{opts,prefs}.rs`、`allocator/{lib.rs,Cargo.toml}`、`url/Cargo.toml`、`webvtt/{Cargo.toml,src/cue/text.rs,src/lib.rs}` 余量、`pixels/benches.rs`（保留在树，dormant）
 - MessagePort.webidl `[Exposed]` 增 `AudioWorklet`（本阶段为编译收敛新增的一行 fork 适配，随 e90 回放对账）
 
+### 3.6 e102 回放切片 1 记录（2026-10-06, commit 83c6d5ec）——audio seam 全量回植 + SW 机械耦合回填
+
+**已回植（audio 波,e89/e91 形对新快照适配;commit 83c6d5ec）**：
+- `worklet/workletglobalscope.rs`：`WorkletGlobalScopeType::Audio` 变体 + `WorkletGlobalScopeInit.audio` 字段 + Audio 分派臂
+- `worklet/worklet.rs`：`pub(crate) WorkletTask` + `Worklet::perform_a_worklet_task` + `new_inherited` pub + ExitWorklet/Quit `teardown_audio` 钩子（store-buffer flush SIGSEGV 防线）+ `destination_from_scope`（audio worklet fetch destination=audioworklet）
+- `BaseAudioContext.webidl` audioWorklet 属性 + `baseaudiocontext.rs` 字段/getter；`audioworkletglobalscope.rs` RegisterProcessor 三参形 + HasCallbackHolder；`audioparam.rs` SetParamRange 移除（上游已删）；`audiobuffersourcenode.rs` SetBuffer `as_deref().cloned()`（dom Arc 形→media 值形）；`messageport.rs` `set_bao_port_redirect` 钩子重植
+- 新 codegen 形注记：fork codegen 对这两个 BAO 方法/属性（RegisterProcessor/AudioWorklet getter）生成**无 cx 参** trait（typeNeedsCx stub）——impl 内部 `JSContext::get_from_thread()` 取上下文（serviceworker/cache.rs 先例）；同批 codegen 对上游 RegisterPaint 仍生成带 cx 形，两形并存属 fork codegen 现行行为
+- 保留：§3.2/§3.4 的 worklet 注入 drain + `GlobalScope::webview_id` worklet 臂**未随切片 1 回植**（见下条登记面）
+
+**已回植（SW 机械耦合,机制 dormant 待 net 拦截波）**：
+- `shared/net/lib.rs` CustomResponseMediator 四字段（e60 Sec-Fetch-Dest/Mode 面；response_chan 保持上游新 `GenericCallback` 形）+ `fetch/request.rs` `set_mediation_fields` + `serviceworkerglobalscope.rs` Response 臂→`FetchEvent::handle_mediator` 分派 + `add/remove_pending_fetch_response` 锚（C19 SIGSEGV 防线）+ `fetchevent.rs` IpcSender→GenericCallback 全量重定型
+- `from_script_message.rs` ServiceWorkerRegistrationInfo 补 `client_url`（e58）/`client_urls`（e70）；manager registration 链经 `job.referrer`；matchAll 应答=单注册客户端回落。**enroll set/enroll_only/client_pipeline 未回填**（e69/e70/e73/e75 行为波整体属切片 2；裸字段无消费者=假阀门,故 variant 保持上游 3 字段形,clients.rs 调用点已对齐）
+- `htmlmediaelement.rs` set_download_buffering_enabled：上游 Player trait 已删该方法,按上游终态对齐（set_mute+get_id）,非回植
+
+**e102 实测登记面（stealth 重落面,P1 尾批输入）**：
+- **per-Worker injector 层目标树零残留**：`worker_scope_injectors` / `EMBEDDER_WORKER_SCOPE_INJECTORS` / `register_worker_*_injector` 在 components/script + components/servo 全 0 命中（e102 工具实测）——§3.2「per-Worker injector 双层」条目的实锤状态确认;连带 worklet 第 4 注入 realm drain、`WorkletGlobalScope.webview_id` 字段/访问器、`GlobalScope::webview_id()` worklet 臂均未回植（切片 1 裁量:与 injector 层一体回植,避免半面）
+- **mediation 全链剩余缺口（切片 2 输入）**：`net/http_loader.rs` `invoke_handle_fetch` + `resource_thread.rs` SwManagers 目标树 0 命中（C19 S2b net 拦截面整体溶解）;`serviceworkerglobalscope.rs` 分派臂已回植但无 caller——net 拦截面+enroll 波重落前 mediation/aw-destination-sw 测试恒红（切片 1 GREEN 判据已按此修订:编译收敛+RED 附归因）
+- **bao_browser lib 59 错（阻塞测试面,非 vendor 域）**：src/bao_browser 全 6 文件（cdp_handler 4/lib 17/page_pool 6/page 11/runtime_bridge 20/ws_registry 1）,首因 `servo::Opts` 等嵌入 API 新形失配=e90/e91 桥层对新 servo 快照整层回放域;audioworklet 6+mediation 5+https_popup 1 最小测试集无法构建
+
 ## 四、保留文件（BAO-new 零删除；dormant=未接 module 声明，随回放接线）
 
 `canvas/canvas_noise.rs`、`layout/webvtt_cue_overlay.rs`、`net/fetch/bun_bridge.rs`、`net/tests/bun_bridge.rs`、`pixels/benches.rs`、`script/Cargo.lock`、`script/dom/audio/audioworklet{,globalscope,handler,node,port,processor,audioparammap}.rs`（e90 全链，随回放接 module）、`script/dom/serviceworker/{clients,fetchevent}.rs`、`script/dom/svg/svg_geometry.rs`、`shared/base/ipc_router.rs`、`script_bindings/webidls/{AudioParamMap,AudioWorklet,AudioWorkletGlobalScope,AudioWorkletNode,AudioWorkletProcessor,Clients,FetchEvent}.webidl`、`media/audio/{audioworklet_node,node,ring}.rs`（components/media 全程未触碰，e90 域字节级保持）
