@@ -38,7 +38,7 @@ run1 的 125 unexpected-OK 全部为 `expected ERROR` 的 serviceworker 变体�
 | ini 期望自治更新 | servo 树 ed8a211c2:4 ini 99 行删除(波内翻绿格翻期望,保留 3 登记缺口) | 逐条以本 session 实测翻转 |
 | unenroll 集合卫生(多 client 收尾) | fd6727ce:ClientGone 算法变体+RED-1 地形发送点+移除键 (creation URL, pipeline) 防 reload 竞态 | live verbatim count=2→close B→count=1;SW 族 24/24 |
 | deactivate-flush 第三出口 | e3ba6cc7:Document::unload Step 18 后 process_deferred_fetches(与 destroy 出口同形;spec step 6.1+Chromium BS-off 锚) | 集成级单因子钉死(563b7076 在场无 flush 仍红→仅 flush 绿 2/2);**WPT subtest5 翻转=双因子联合**(flush 使能 beacon+563b7076 解 popup executor wedge;e76 归因更正 2026-10-05,单因子对照省略——双因子皆保留皆目标,分解无行动后果) |
-| D4 双载误标 | 563b7076:替换腿(window_for_replacement)同 global 复用致 P0 exit 误标后继活 realm DEAD→跳过仍有持有者的 global/末文档 exit 终局 mark | popup_global_mislabel 4/4 绿;诚实红=offline_render(其绿系误标掩盖 mark-latency 第三缺陷,#[ignore] 追踪+跟进合同 e77 续) |
+| D4 双载误标 | 563b7076:替换腿(window_for_replacement)同 global 复用致 P0 exit 误标后继活 realm DEAD→跳过仍有持有者的 global/末文档 exit 终局 mark | popup_global_mislabel 4/4 绿;offline_render 终态(2026-10-05 e77 续案):**mark-latency 假说被证伪**(13M 样本 OfflineAudioContext ~600ms 塌缩,settle 先于移除;「12s 推迟」系测试 deadline 循环误读)——真缺陷=测试保真度(断言扫全会话把活 realm 合法 settle 记违规,该 settle 又恰被误标压制),02c16833 时戳门控修复(移除后到达=硬失败;移除前=合法 settle 由 563b7076 pin),ignore 解除 3/3 绿 |
 
 ## 波验收(2026-10-05,e67 环境重建后复跑,主会话 V 抽验)
 
