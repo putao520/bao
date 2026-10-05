@@ -5,6 +5,10 @@
 pub(crate) mod analysernode;
 pub(crate) mod audiobuffer;
 pub(crate) mod audiobuffersourcenode;
+pub(crate) mod audioworklet;
+pub(crate) mod audioworkletglobalscope;
+pub(crate) mod audioworkletnode;
+pub(crate) mod audioworkletprocessor;
 pub(crate) mod audiocontext;
 pub(crate) mod audiodestinationnode;
 pub(crate) mod audiolistener;

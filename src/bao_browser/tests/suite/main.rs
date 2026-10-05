@@ -112,6 +112,7 @@ mod worker_onerror_integration_tests;
 mod worker_tests;
 mod stealth_offscreencanvas_tests;
 mod stealth_worker_audio_tests;
+mod audioworklet_tests;
 mod worker_multi_injection_tests;
 mod sharedworker_injection_tests;
 mod serviceworker_fetchevent_tests;

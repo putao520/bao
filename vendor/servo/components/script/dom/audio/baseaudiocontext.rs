@@ -26,6 +26,8 @@ use servo_media::{ClientContextId, ServoMedia};
 use uuid::Uuid;
 
 use crate::conversions::Convert;
+use crate::dom::audio::audioworklet::AudioWorklet;
+use crate::dom::audio::audioworkletglobalscope::AudioWorkletScopeData;
 use crate::dom::audio::analysernode::AnalyserNode;
 use crate::dom::audio::audiobuffer::AudioBuffer;
 use crate::dom::audio::audiobuffersourcenode::AudioBufferSourceNode;
@@ -96,6 +98,11 @@ pub(crate) struct BaseAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-destination>
     destination: MutNullableDom<AudioDestinationNode>,
     listener: MutNullableDom<AudioListener>,
+    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-audioworklet>
+    /// (Bao 段(1)): first appearance of this attribute in either tree; each
+    /// BaseAudioContext owns its AudioWorklet ([SameObject] semantics via
+    /// the nullable cache, one Worklet thread pool per context).
+    audio_worklet: MutNullableDom<AudioWorklet>,
     /// Resume promises which are soon to be fulfilled by a queued task.
     #[conditional_malloc_size_of]
     in_flight_resume_promises_queue: DomRefCell<VecDeque<(BoxedSliceOfPromises, ErrorResult)>>,
@@ -137,6 +144,7 @@ impl BaseAudioContext {
             audio_context_impl,
             destination: Default::default(),
             listener: Default::default(),
+            audio_worklet: Default::default(),
             in_flight_resume_promises_queue: Default::default(),
             pending_resume_promises: Default::default(),
             decode_resolvers: Default::default(),
@@ -354,6 +362,26 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
         let window = global.as_window();
         self.listener
             .or_init(|| AudioListener::new(cx, window, self))
+    }
+
+    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-audioworklet>
+    ///
+    /// (Bao 段(1), user ruling 2026-10-05): lazily creates this context's
+    /// AudioWorklet — a real Worklet engine object (WorkletGlobalScopeType::
+    /// Audio) whose thread-pool init carries the creating context's
+    /// servo-media handle and sample rate, so the AudioWorkletGlobalScope
+    /// reports real currentTime/currentFrame/sampleRate. Mirrors
+    /// `Window::new_paint_worklet`.
+    fn AudioWorklet(&self, cx: &mut JSContext) -> DomRoot<AudioWorklet> {
+        let global = self.global();
+        let window = global.as_window();
+        self.audio_worklet.or_init(|| {
+            let audio = AudioWorkletScopeData::new(
+                self.audio_context_impl(),
+                self.sample_rate,
+            );
+            AudioWorklet::new(cx, window, audio)
+        })
     }
 
     // https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-onstatechange

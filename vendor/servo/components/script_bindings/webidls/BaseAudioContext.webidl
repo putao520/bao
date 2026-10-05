@@ -26,6 +26,12 @@ interface BaseAudioContext : EventTarget {
   readonly attribute double currentTime;
   // (Bao) AudioListener stays Window-only.
   [Exposed=Window] readonly attribute AudioListener listener;
+  // (Bao) AudioWorklet is a Window face only (the Worklet object needs the
+  // Window for its thread-pool init); authored in-tree (upstream zero
+  // implementation, user ruling 2026-10-05). First appearance of the
+  // `audioWorklet` attribute on BaseAudioContext in either tree — this is
+  // the exact probe surface of e83 §2 (`audioContext.audioWorklet`).
+  [Exposed=Window, SameObject] readonly attribute AudioWorklet audioWorklet;
   readonly attribute AudioContextState  state;
   Promise<undefined> resume();
   attribute EventHandler onstatechange;

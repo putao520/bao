@@ -771,6 +771,17 @@ impl GlobalScope {
         if let Some(worker) = self.downcast::<SharedWorkerGlobalScope>() {
             return Some(worker.webview_id());
         }
+        // BAO PATCH (AudioWorklet 段(1), user ruling 2026-10-05): worklet
+        // realms carry their creating page's webview identity (plumbed via
+        // WorkletGlobalScopeInit from the Window). This is what makes the
+        // worklet module fetch (RequestBuilder::new(global.webview_id(), ..)
+        // in script_module.rs) a webview-keyed request — SW interception and
+        // per-webview stealth wire attribution work for worklet modules the
+        // same way they do for page/worker fetches. Before this arm a
+        // worklet module fetch was a webview-less request.
+        if let Some(worklet) = self.downcast::<crate::dom::workletglobalscope::WorkletGlobalScope>() {
+            return worklet.webview_id();
+        }
         // TODO: This should only return None for ServiceWorkerGlobalScope.
         None
     }

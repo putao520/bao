@@ -944,6 +944,12 @@ impl Convert<Destination> for RequestDestination {
             RequestDestination::Video => Destination::Video,
             RequestDestination::Worker => Destination::Worker,
             RequestDestination::Xslt => Destination::Xslt,
+            // (Bao 段(1)) Worklet destinations are real DOM-visible
+            // destinations once worklet module fetches are SW-interceptable
+            // (fetch spec RequestDestination enum carries both). The
+            // ServiceWorker's own script fetch stays unexposed below.
+            RequestDestination::Audioworklet => Destination::AudioWorklet,
+            RequestDestination::Paintworklet => Destination::PaintWorklet,
         }
     }
 }
@@ -964,9 +970,18 @@ impl Convert<RequestDestination> for Destination {
             Destination::Object => RequestDestination::Object,
             Destination::Report => RequestDestination::Report,
             Destination::Script => RequestDestination::Script,
-            Destination::ServiceWorker | Destination::AudioWorklet | Destination::PaintWorklet => {
+            // (Bao 段(1)) AudioWorklet worklet module fetches are real
+            // intercepted requests (audioWorklet.addModule with a
+            // controlling service worker) and their destination IS the
+            // DOM-visible `Request.destination` value the fetch-destination
+            // assertions read. Only the ServiceWorker's own script fetch
+            // stays unexposed (upstream intent for that arm preserved;
+            // PaintWorklet keeps the upstream panic until paint worklet
+            // module fetches become interceptable in a follow-up).
+            Destination::ServiceWorker | Destination::PaintWorklet => {
                 panic!("ServiceWorker request destination should not be exposed to DOM")
             },
+            Destination::AudioWorklet => RequestDestination::Audioworklet,
             Destination::SharedWorker => RequestDestination::Sharedworker,
             Destination::Style => RequestDestination::Style,
             Destination::Text => RequestDestination::Text,

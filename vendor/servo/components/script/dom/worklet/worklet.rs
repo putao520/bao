@@ -102,7 +102,7 @@ pub(crate) struct Worklet {
 }
 
 impl Worklet {
-    fn new_inherited(
+    pub(crate) fn new_inherited(
         window: &Window,
         global_type: WorkletGlobalScopeType,
         thread_pool_constructor: Box<dyn FnOnce() -> Rc<dyn WorkletThreadPool>>,
@@ -795,12 +795,17 @@ impl WorkletThread {
         // queue a global task on the networking task source given workletGlobalScope to fetch a worklet script graph given moduleURLRecord,
         // outsideSettings, workletInstance's worklet destination type, options["credentials"], workletGlobalScope's relevant settings object,
         // workletInstance's module responses map, and the following steps given script:
+        //
+        // (Bao 段(1)) The worklet destination type is derived from the worklet
+        // global scope type instead of the upstream PaintWorklet hardcode;
+        // `Destination::AudioWorklet` was already in the fetch pipeline
+        // (net_traits Destination + `destination_as_str` "audioworklet").
         fetch_a_module_script_graph(
             cx,
             global,
             script_url,
             request_client,
-            Destination::PaintWorklet,
+            destination_from_scope(&global_scope),
             global.get_referrer(),
             credentials.convert(),
             Some(IntroductionType::WORKLET),
@@ -938,6 +943,21 @@ impl WorkletThread {
                 }
             },
         }
+    }
+}
+
+/// (Bao 段(1)) Map a worklet global scope to its fetch destination.
+/// Paint/Test worklets keep the historical PaintWorklet destination (their
+/// fetch face predates the generalization; semantics unchanged); audio
+/// worklets fetch with `Destination::AudioWorklet` (variant already in the
+/// fetch pipeline — `destination_as_str` "audioworklet").
+fn destination_from_scope(scope: &WorkletGlobalScope) -> Destination {
+    if scope.downcast::<crate::dom::audioworkletglobalscope::AudioWorkletGlobalScope>()
+        .is_some()
+    {
+        Destination::AudioWorklet
+    } else {
+        Destination::PaintWorklet
     }
 }
 
