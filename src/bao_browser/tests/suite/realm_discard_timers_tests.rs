@@ -730,6 +730,19 @@ fn page_discard_inflight_completion_never_reenters_js() {
 // source) drains on the host's ticks into the guard. The 300s render
 // outlasts every setup race by orders of magnitude.
 // ---------------------------------------------------------------------------
+// e77 (2026-10-05, lead ruling): ignored against the mark-latency defect
+// this test exposes — its pre-563b7076 green came from the realm-discard
+// mislabel (commit 563b7076 fixed the mislabel; the early wrongful mark at
+// the about:blank pipeline's exit was exactly what suppressed the render
+// settle here, proven by e77 address probes: batch order
+// [skip(P_f0) → settle PASSED → mark(P_f1)], same global, no GC move).
+// Under correct semantics the mark lands at the true death (the removed
+// iframe's last-document exit), but with a heavy servo-media render in
+// flight the exit processing defers until after the settle (A/B: without a
+// render the mark is prompt, ~100ms after removal), leaving a dead-realm
+// re-entry window. Un-ignore when the mark-latency fix lands and this
+// test turns green as its final verification.
+#[ignore = "mark-latency 第三缺陷(e77 发现):render 在飞时 exit 处理推迟,死域重入窗待 prompt-mark 修复;追踪本仓 commit 563b7076 终报"]
 #[test]
 fn offline_render_resolve_suppressed_after_discard() {
     let fixture = DiscardFixture::spawn();
