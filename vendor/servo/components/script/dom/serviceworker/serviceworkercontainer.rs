@@ -19,6 +19,7 @@ use servo_constellation_traits::{
     ServiceWorkerAlgorithm, ServiceWorkerAlgorithmResult, ServiceWorkerRegistrationInfo,
 };
 use servo_url::{ImmutableOrigin, ServoUrl};
+use stylo_atoms::Atom;
 
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerBinding::ServiceWorkerState;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerContainerBinding::{
@@ -438,7 +439,14 @@ impl ServiceWorkerContainer {
                     .global()
                     .get_serviceworker_registration_by_id(registration_id)
                 {
-                    registration.upcast().fire_event(cx, atom!("updatefound"));
+                    // BAO PATCH (REQ-DEPLOY-1, 2026-10-05): literal Atom
+                    // instead of atom!() — registry stylo_atoms 0.22.0's
+                    // static_atoms.txt has no "updatefound" entry, so the
+                    // macro form breaks publish-face compilation. Atom::from
+                    // interns dynamically; identical runtime behavior.
+                    registration
+                        .upcast()
+                        .fire_event(cx, Atom::from("updatefound"));
                 }
             },
             // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update
