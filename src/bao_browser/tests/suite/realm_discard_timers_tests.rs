@@ -126,10 +126,16 @@ impl DiscardFixture {
                                     } else if path.starts_with("/frame") {
                                         // ISSUE #25 generalization: iframe page
                                         // whose script arms a 300s-stereo
-                                        // offline render — its pipeline gets
-                                        // closed (removed) while the render is
-                                        // still in flight, and the settle must
-                                        // be dropped at dispatch.
+                                        // offline render. NOTE (e77, 2026-10-05):
+                                        // servo-media fast-collapses the 13M-
+                                        // sample buffer (~600ms), so the settle
+                                        // usually fires BEFORE the iframe is
+                                        // removed — that pre-removal settle is
+                                        // the LIVE realm's legal .then (must
+                                        // fire); the AUDIO-DONE assert in
+                                        // offline_render_resolve_suppressed_
+                                        // after_discard timestamp-gates on
+                                        // removal for exactly this.
                                         (
                                             "text/html",
                                             b"<!doctype html><title>frame</title><script>new OfflineAudioContext(2, 44100 * 300, 44100).startRendering().then(function(){fetch('/hit?tag=AUDIO-DONE');});</script>"
@@ -175,6 +181,14 @@ impl DiscardFixture {
 
     fn hit_paths(&self) -> Vec<String> {
         self.hits.lock().unwrap().iter().map(|(p, _)| p.clone()).collect()
+    }
+
+    /// Timestamped hit records — the AUDIO-DONE assert gates on arrival
+    /// time (a settle from the still-live realm BEFORE the iframe removal
+    /// is legal and must not be counted; only post-removal arrivals are
+    /// dead-realm re-entry).
+    fn hit_records(&self) -> Vec<(String, Instant)> {
+        self.hits.lock().unwrap().clone()
     }
 }
 
@@ -730,19 +744,19 @@ fn page_discard_inflight_completion_never_reenters_js() {
 // source) drains on the host's ticks into the guard. The 300s render
 // outlasts every setup race by orders of magnitude.
 // ---------------------------------------------------------------------------
-// e77 (2026-10-05, lead ruling): ignored against the mark-latency defect
-// this test exposes — its pre-563b7076 green came from the realm-discard
-// mislabel (commit 563b7076 fixed the mislabel; the early wrongful mark at
-// the about:blank pipeline's exit was exactly what suppressed the render
-// settle here, proven by e77 address probes: batch order
-// [skip(P_f0) → settle PASSED → mark(P_f1)], same global, no GC move).
-// Under correct semantics the mark lands at the true death (the removed
-// iframe's last-document exit), but with a heavy servo-media render in
-// flight the exit processing defers until after the settle (A/B: without a
-// render the mark is prompt, ~100ms after removal), leaving a dead-realm
-// re-entry window. Un-ignore when the mark-latency fix lands and this
-// test turns green as its final verification.
-#[ignore = "mark-latency 第三缺陷(e77 发现):render 在飞时 exit 处理推迟,死域重入窗待 prompt-mark 修复;追踪本仓 commit 563b7076 终报"]
+// e77 (2026-10-05, attribution refuted the deferral premise — see the
+// assert notes in the body): the pre-563b7076 green here came from the
+// realm-discard MISLABEL (the early wrongful mark at the about:blank
+// pipeline's exit wrongly dropped this render's settle). On the current
+// servo-media the 13M-sample buffer fast-collapses: the render settles
+// ~600ms after arm, BEFORE the iframe removal — so the .then firing is
+// the LIVE realm's legal settle, which post-563b7076 must NOT be
+// suppressed (that is exactly what this test now pins). The AUDIO-DONE
+// assert is therefore timestamp-gated at removal start; the
+// post-discard drop face stays pinned by the /hang sibling below
+// (page_discard_inflight_completion_never_reenters_js) — a post-removal
+// render settle is not deterministically constructible (servo-media
+// collapses the huge buffer before any removal can race it).
 #[test]
 fn offline_render_resolve_suppressed_after_discard() {
     let fixture = DiscardFixture::spawn();
@@ -777,7 +791,12 @@ fn offline_render_resolve_suppressed_after_discard() {
     )
     .unwrap_or_default();
     assert!(armed.contains("framed"), "iframe arm failed: {armed:?}");
-    // Let the iframe pipeline load and its script start the render.
+    // Let the iframe pipeline load and its script start the render. On the
+    // current servo-media the 13M-sample buffer fast-collapses (~600ms), so
+    // the render's settle typically lands IN HERE — while the iframe is
+    // still mounted and its realm is LIVE. That settle is legal and must
+    // fire (post-563b7076 it is no longer wrongly suppressed by the
+    // mislabel mark); the AUDIO-DONE assert below gates on arrival time.
     let settle = Instant::now();
     while settle.elapsed() < Duration::from_millis(1500) {
         let _ = page.evaluate_js_web("");
@@ -786,8 +805,10 @@ fn offline_render_resolve_suppressed_after_discard() {
     let events_before = bun_runtime::timers::realm_discard_events_total();
 
     // Discard: remove the iframe -> constellation close_pipeline ->
-    // ExitPipeline -> RED-1 mark, with the render still in flight on its
-    // audio thread.
+    // ExitPipeline -> RED-1 mark. The mark must land promptly here (the
+    // e77 attribution probe measured ~100ms after removal); from this
+    // instant the realm is dead and NO settle may re-enter its JS.
+    let removal_instant = Instant::now();
     let removed = page.evaluate_js_web(
         "(function() { \
            var f = document.getElementById('zframe'); \
@@ -799,18 +820,14 @@ fn offline_render_resolve_suppressed_after_discard() {
     .unwrap_or_default();
     assert!(removed.contains("removed"), "iframe removal failed: {removed:?}");
 
-    // Pump through the render's completion window: whatever the terminal
-    // path (servo's audio teardown short-circuits the eos chain, or a
-    // queued settle drains into the guard), the dead realm's JS must never
-    // be re-entered — no AUDIO-DONE, and the timer face stays at zero. The
-    // mark itself must land (pipeline close = ExitPipeline on the shared
-    // ScriptThread, drained by the host's ticks). The POSITIVE
-    // suppression-count assertion is NOT constructible here: the render
-    // time is unbounded from below by an API knob (servo-media throughput
-    // collapses non-linearly past ~13M samples) and the teardown races the
-    // mark — a guard hit was observed live once (discarded=true, DONE
-    // dropped), proving the mechanism, but not deterministically
-    // schedulable.
+    // Pump through the mark's landing window: the mark itself must land
+    // (pipeline close = ExitPipeline on the shared ScriptThread, drained
+    // by the host's ticks). The POSITIVE post-discard suppression-count
+    // assertion is NOT constructible here: servo-media collapses the
+    // huge buffer before any removal can race the settle — a settle that
+    // fires after removal_start but before the mark would be a genuine
+    // dead-realm re-entry, and the AUDIO-DONE assert below counts it as
+    // exactly that (strict, timestamp-gated).
     let deadline = Instant::now() + Duration::from_secs(12);
     loop {
         let _ = page.evaluate_js_web("");
@@ -826,11 +843,18 @@ fn offline_render_resolve_suppressed_after_discard() {
          (events={})",
         bun_runtime::timers::realm_discard_events_total()
     );
+    let audio_done_after_removal: Vec<String> = fixture
+        .hit_records()
+        .into_iter()
+        .filter(|(p, t)| p.contains("AUDIO-DONE") && *t >= removal_instant)
+        .map(|(p, _)| p)
+        .collect();
     assert!(
-        !fixture.hit_paths().iter().any(|p| p.contains("AUDIO-DONE")),
+        audio_done_after_removal.is_empty(),
         "ISSUE #25 B-class: the discarded realm's render settle RE-ENTERED JS \
-         (hits: {:?})",
-        fixture.hit_paths()
+         after iframe removal (post-removal hits: {audio_done_after_removal:?}; \
+         pre-removal AUDIO-DONE arrivals are the LIVE realm's legal settle — \
+         see the arm-window comment above)"
     );
     assert_eq!(
         bun_runtime::timers::zombie_fires_total(),
