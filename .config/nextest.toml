@@ -106,3 +106,35 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'package(bao-browser) and test(sigint_cancels_runaway_under_timeout)'
 threads-required = "num-test-threads"
+
+# Test resource isolation (task: e87 full-suite battery residual, REQ-BRW-002
+# test-infrastructure fidelity, isolated 2026-10-05):
+#
+# `https_popup_fetch_tests::https_popup_fetch_settles_under_ignore_certificate_errors`
+# is a full-engine e2e: it boots a whole BaoRuntime (servo ScriptThread +
+# constellation), drives a real window.open popup, and gates on three
+# wall-clock deadline windows (20s popup-fetch egress / 15s opener settle /
+# 25s popup settle) against a python3 TLS fixture subprocess. In the e87
+# battery it died on the FIRST window with zero egress — the fixture saw
+# nothing past its own bind-time "/ready" marker, not even the initial
+# /opener page load — while the isolated rerun (fresh process) was green with
+# the full egress + settle chain re-proven. Two compounding faces, same
+# quarantine for both:
+#
+#   1. Deadline-bound full-engine boot under fleet load — the documented
+#      starvation class of the three bao-browser entries above; a fresh
+#      process with exclusive scheduling keeps every window inside its
+#      headroom.
+#   2. Process-state pollution — this suite's engine tests accumulate
+#      process-global state across a single libtest process (per CLAUDE.md
+#      the JSEngine handle is deliberately not torn down across BaoRuntime
+#      lifecycles, and stealth/canvas registries are process-global), so a
+#      shared-process battery is structurally unsuited to full-engine tests.
+#      nextest's per-test process is the structural carrier; this override
+#      makes the fresh-process form exclusive as well.
+#
+# Test-level filter: the module holds exactly one test. No test code or
+# assertions are weakened.
+[[profile.default.overrides]]
+filter = 'package(bao-browser) and test(https_popup_fetch_settles_under_ignore_certificate_errors)'
+threads-required = "num-test-threads"
