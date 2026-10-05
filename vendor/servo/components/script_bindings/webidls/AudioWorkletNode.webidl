@@ -19,6 +19,10 @@ interface AudioWorkletNode : AudioNode {
                          DOMString name,
                          optional AudioWorkletNodeOptions options = {});
     readonly attribute MessagePort port;
+    // (Bao 段(3) wiring): the processor's declared AudioParams, keyed in
+    // `parameterDescriptors` order; each AudioParam automates the media-side
+    // `ParamType::WorkletParam(index)` of the node's servo-media graph node.
+    readonly attribute AudioParamMap parameters;
     attribute EventHandler onprocessorerror;
 };
 

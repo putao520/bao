@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::conversions::Convert;
 use crate::dom::audio::audioworklet::AudioWorklet;
+use crate::dom::audio::audioworklethandler::SharedProcessorRegistry;
 use crate::dom::audio::audioworkletglobalscope::AudioWorkletScopeData;
 use crate::dom::audio::analysernode::AnalyserNode;
 use crate::dom::audio::audiobuffer::AudioBuffer;
@@ -376,11 +377,13 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
         let global = self.global();
         let window = global.as_window();
         self.audio_worklet.or_init(|| {
+            let registry: Arc<SharedProcessorRegistry> = Arc::default();
             let audio = AudioWorkletScopeData::new(
                 self.audio_context_impl(),
                 self.sample_rate,
+                registry.clone(),
             );
-            AudioWorklet::new(cx, window, audio)
+            AudioWorklet::new(cx, window, registry, audio)
         })
     }
 

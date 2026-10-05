@@ -56,6 +56,58 @@ const PROCESSOR_JS: &str = r#"
 registerProcessor('probe-processor', class extends AudioWorkletProcessor {});
 "#;
 
+/// 段(3) wiring: an echo processor with one k-rate parameter — its
+/// `process()` multiplies the input by the `gain` parameter and returns
+/// true, so an OfflineAudioContext render produces a real, sample-exact
+/// echo (the script↔media bridge under test).
+const ECHO_PROCESSOR_JS: &str = r#"
+registerProcessor('echo-processor', class extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [{ name: 'gain', defaultValue: 1, minValue: 0, maxValue: 10,
+              automationRate: 'k-rate' }];
+  }
+  process(inputs, outputs, parameters) {
+    var input = inputs[0];
+    var output = outputs[0];
+    var gain = parameters.gain[0];
+    for (var ch = 0; ch < output.length; ++ch) {
+      var inp = (input && input.length > 0) ? input[Math.min(ch, input.length - 1)]
+                                            : null;
+      for (var i = 0; i < output[ch].length; ++i) {
+        output[ch][i] = inp ? inp[i] * gain : 0;
+      }
+    }
+    return true;
+  }
+});
+"#;
+
+/// A processor whose `process()` throws on the first block: the node must
+/// mute and `onprocessorerror` must fire exactly once on the main thread.
+const THROW_PROCESSOR_JS: &str = r#"
+registerProcessor('throw-processor', class extends AudioWorkletProcessor {
+  process(inputs, outputs, parameters) {
+    throw new TypeError('boom from process()');
+  }
+});
+"#;
+
+/// A processor that answers node-port messages (the conduit roundtrip
+/// under test): every inbound message is echoed back with the scope's real
+/// sampleRate attached.
+const PORT_PROCESSOR_JS: &str = r#"
+registerProcessor('port-processor', class extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    var p = this.port;
+    p.addEventListener('message', function (e) {
+      p.postMessage({ echo: e.data.value, sr: sampleRate });
+    });
+  }
+  process(inputs, outputs, parameters) { return true; }
+});
+"#;
+
 /// Service worker: asserts the module fetch destination the same way the WPT
 /// fetch-destination worker does, and responds with the pass-through fetch
 /// when it matches. Records the observed destination for the fixture probe.
@@ -137,6 +189,12 @@ impl AwHttpFixture {
                             let (ct, body): (&str, String) = if path.starts_with("/processor.js")
                             {
                                 ("text/javascript", PROCESSOR_JS.replace("__ORIGIN__", &origin))
+                            } else if path.starts_with("/echo-processor.js") {
+                                ("text/javascript", ECHO_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/throw-processor.js") {
+                                ("text/javascript", THROW_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/port-processor.js") {
+                                ("text/javascript", PORT_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/sw.js") {
                                 ("application/javascript", AW_SW_JS.replace("__ORIGIN__", &origin))
                             } else if path.starts_with("/dummy") {
@@ -452,10 +510,12 @@ fn audioworklet_module_fetch_destination_via_sw_live() {
 ///
 /// AudioWorkletNode constructs as a real (INERT by 段(1) design) AudioNode:
 /// `instanceof AudioNode` holds, `port` is a real MessagePort, and
-/// `onprocessorerror` is settable. The unregistered-name rejection arm is a
-/// documented 段(2) face (see the file header).
+/// `onprocessorerror` is settable, `parameters` is a real AudioParamMap.
+/// The unregistered-name rejection (spec NotSupportedError arm) went live
+/// with the 段(3) wiring — the 段(1) INERT deviation documented in the file
+/// header is closed, so this test now asserts the rejection too.
 #[test]
-fn audioworklet_node_constructs_inert_live() {
+fn audioworklet_node_constructs_live() {
     if should_skip() {
         return;
     }
@@ -474,29 +534,288 @@ fn audioworklet_node_constructs_inert_live() {
         })
         .expect("gated live test: create_page must succeed");
 
+    // Register the processor first: the name validation is the registry.
+    let add = eval_pending(
+        &page,
+        &format!(
+            "window.__probe = 'pending'; try {{ \
+               window.__c = new AudioContext(); \
+               window.__c.audioWorklet.addModule('{origin}processor.js').then( \
+                 function() {{ window.__probe = 'resolved'; }}, \
+                 function(e) {{ window.__probe = 'rejected:' + e; }}); \
+             }} catch (e) {{ window.__probe = 'threw:' + e; }}",
+            origin = origin,
+        ),
+        Duration::from_secs(20),
+        "addModule settlement",
+    );
+    assert!(
+        add.contains("resolved"),
+        "addModule must resolve before node construction, got: {add}"
+    );
+
     let node = page
         .evaluate_js_web(
             "(function(){ try { \
-               var c = new AudioContext(); \
-               var n = new AudioWorkletNode(c, 'probe-processor'); \
+               var threw = null; \
+               var unregistered = null; \
+               try { new AudioWorkletNode(window.__c, 'no-such-processor'); } \
+               catch (e) { threw = e.name; } \
+               var n = new AudioWorkletNode(window.__c, 'probe-processor'); \
                var p = n.port; \
                n.onprocessorerror = function () {}; \
                return JSON.stringify({ \
+                 unregisteredThrew: threw, \
                  isNode: n instanceof AudioWorkletNode, \
                  isAudioNode: n instanceof AudioNode, \
                  portIsPort: p instanceof MessagePort, \
-                 onprocessorerror: typeof n.onprocessorerror \
+                 onprocessorerror: typeof n.onprocessorerror, \
+                 parameters: typeof n.parameters, \
+                 parametersSize: n.parameters.size \
                }); \
              } catch (e) { return 'threw:' + e; } })()",
         )
         .expect("node probe eval must run");
     eprintln!("[aw-test] node = {node}");
     assert!(
-        node.contains("\"isNode\":true") &&
+        node.contains("\"unregisteredThrew\":\"NotSupportedError\"") &&
+            node.contains("\"isNode\":true") &&
             node.contains("\"isAudioNode\":true") &&
             node.contains("\"portIsPort\":true") &&
-            node.contains("\"onprocessorerror\":\"function\""),
-        "AudioWorkletNode must construct with a real AudioNode/port/event-handler face, \
+            node.contains("\"onprocessorerror\":\"function\"") &&
+            node.contains("\"parameters\":\"object\"") &&
+            node.contains("\"parametersSize\":0"),
+        "AudioWorkletNode must reject unregistered names (NotSupportedError) and construct \
+         registered ones with a real AudioNode/port/parameters/event-handler face, \
          got: {node}"
+    );
+}
+
+/// Shared live-runtime setup for the 段(3) wiring scenarios: fixture + page
+/// with the named processor module already added to the context's worklet.
+fn spawn_wired_page(
+    fixture: &AwHttpFixture,
+    runtime: &BrowserRuntime,
+    module_path: &str,
+) -> PageHandle {
+    let origin = format!("http://127.0.0.1:{}/", fixture.port);
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(origin.clone()),
+            ..Default::default()
+        })
+        .expect("gated live test: create_page must succeed");
+    page.evaluate_js_web("window.__ctx = new AudioContext();")
+        .expect("AudioContext construction must run");
+    let add = eval_pending(
+        &page,
+        &format!(
+            "window.__probe = 'pending'; try {{ \
+               window.__ctx.audioWorklet.addModule('{origin}{module}').then( \
+                 function() {{ window.__probe = 'resolved'; }}, \
+                 function(e) {{ window.__probe = 'rejected:' + e; }}); \
+             }} catch (e) {{ window.__probe = 'threw:' + e; }}",
+            origin = origin,
+            module = module_path,
+        ),
+        Duration::from_secs(20),
+        "addModule settlement",
+    );
+    assert!(
+        add.contains("resolved"),
+        "addModule of {module_path} must resolve for the wiring scenarios, got: {add}"
+    );
+    page
+}
+
+/// @trace REQ-BRW-002 [criterion:audioworklet-echo-render] live
+///
+/// 段(3) wiring end to end: registerProcessor (parameterDescriptors
+/// extraction included) → `new AudioWorkletNode` (real servo-media graph
+/// node + bridge) → OfflineAudioContext render → the destination carries the
+/// processor's sample-exact echo, and `node.parameters` is a real
+/// AudioParamMap whose `gain` entry automates `WorkletParam(0)`.
+#[test]
+fn audioworklet_render_echo_and_parameters_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "echo-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 44100, 44100);
+               await ctx.audioWorklet.addModule(window.location.origin + '/echo-processor.js');
+               var node = new AudioWorkletNode(ctx, 'echo-processor',
+                 { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+               var paramsType = typeof node.parameters;
+               var gain = node.parameters.get('gain');
+               var gainType = gain ? typeof gain.value : 'missing';
+               var src = ctx.createConstantSource();
+               src.offset.value = 0.25;
+               src.connect(node);
+               node.connect(ctx.destination);
+               src.start(0);
+               var buf = await ctx.startRendering();
+               var d = buf.getChannelData(0);
+               var firstNonzero = -1;
+               for (var i = 0; i < d.length; ++i) {
+                 if (Math.abs(d[i]) > 1e-6) { firstNonzero = i; break; }
+               }
+               // The exact-echo proof: the longest run of samples equal to
+               // 0.25 (f32-exact). The offline render fast-forwards through
+               // the bridge, so WHERE the echo lands depends on machine
+               // speed (pipeline fill + pump spin-up); THAT it appears,
+               // contiguous and sample-exact, is the machine-independent
+               // signal.
+               var bestRun = 0, run = 0;
+               for (var i = 0; i < d.length; ++i) {
+                 if (d[i] === 0.25) { ++run; if (run > bestRun) bestRun = run; }
+                 else { run = 0; }
+               }
+               window.__probe = JSON.stringify({
+                 stage: 'done', paramsType: paramsType, gainType: gainType,
+                 firstNonzero: firstNonzero, bestRun: bestRun, len: d.length
+               });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(30),
+        "offline echo render",
+    );
+
+    eprintln!("[aw-test] echo render = {result}");
+    assert!(
+        result.contains("\"paramsType\":\"object\"") && result.contains("\"gainType\":\"number\""),
+        "AudioWorkletNode.parameters must be a real AudioParamMap with a numeric gain entry, \
+         got: {result}"
+    );
+    let best_run: f64 = result
+        .split("\"bestRun\":")
+        .nth(1)
+        .and_then(|rest| rest.split([',', '}']).next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.);
+    // 8 blocks of contiguous f32-exact echo: the processor ran at block
+    // rate through the real bridge and the graph delivered its output.
+    assert!(
+        best_run >= 8. * 128.,
+        "the render must carry a contiguous sample-exact 0.25 echo run of at least 8 blocks \
+         (got {best_run} samples), result: {result}"
+    );
+    let first_nonzero: f64 = result
+        .split("\"firstNonzero\":")
+        .nth(1)
+        .and_then(|rest| rest.split([',', '}']).next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1.);
+    assert!(
+        first_nonzero >= 0.,
+        "the render must not be entirely silent, got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-002 [criterion:audioworklet-onprocessorerror] live
+///
+/// A processor whose `process()` throws latches the bridge on the worklet
+/// thread and fires `processorerror` on the main thread exactly once (the
+/// spec's one-shot), through the Trusted-task channel.
+#[test]
+fn audioworklet_processorerror_fires_once_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "throw-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 4096, 44100);
+               await ctx.audioWorklet.addModule(window.location.origin + '/throw-processor.js');
+               var node = new AudioWorkletNode(ctx, 'throw-processor');
+               var fired = 0;
+               node.onprocessorerror = function () { ++fired; };
+               var src = ctx.createConstantSource();
+               src.offset.value = 0.5;
+               src.connect(node);
+               node.connect(ctx.destination);
+               src.start(0);
+               await ctx.startRendering();
+               // Give the one-shot task a moment beyond the render EOS.
+               await new Promise(function (resolve) { setTimeout(resolve, 500); });
+               window.__probe = JSON.stringify({ stage: 'done', fired: fired });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(30),
+        "onprocessorerror render",
+    );
+
+    eprintln!("[aw-test] processorerror = {result}");
+    assert!(
+        result.contains("\"fired\":1"),
+        "onprocessorerror must fire exactly once for a throwing processor, got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-002 [criterion:audioworklet-port-roundtrip] live
+///
+/// The node↔processor port pair routes through the bounded conduit: a
+/// main→processor message wakes the pump drain on the worklet thread, the
+/// processor's handler replies, and the reply is dispatched as a `message`
+/// event on the node's port with the scope's real sampleRate attached.
+#[test]
+fn audioworklet_port_roundtrip_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "port-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 128, 44100);
+               await ctx.audioWorklet.addModule(window.location.origin + '/port-processor.js');
+               var node = new AudioWorkletNode(ctx, 'port-processor');
+               var reply = await new Promise(function (resolve, reject) {
+                 node.port.onmessage = function (e) { resolve(e.data); };
+                 setTimeout(function () { reject(new Error('port roundtrip timeout')); }, 10000);
+                 node.port.postMessage({ value: 'ping-42' });
+               });
+               window.__probe = JSON.stringify({
+                 stage: 'done', echo: reply.echo, sr: reply.sr,
+                 srIsNumber: typeof reply.sr === 'number' && reply.sr === 44100
+               });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(30),
+        "port roundtrip",
+    );
+
+    eprintln!("[aw-test] port roundtrip = {result}");
+    assert!(
+        result.contains("\"echo\":\"ping-42\"") && result.contains("\"srIsNumber\":true"),
+        "the node↔processor port roundtrip must echo the payload with the real scope sampleRate, \
+         got: {result}"
     );
 }

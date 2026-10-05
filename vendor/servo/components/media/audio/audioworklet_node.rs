@@ -53,7 +53,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use malloc_size_of_derive::MallocSizeOf;
 
@@ -312,6 +312,16 @@ pub struct AudioWorkletBridge {
     underruns: AtomicU64,
     /// The render side had no pooled frame left to ship inputs with.
     frame_starved: AtomicU64,
+    /// Worklet-thread wake hook, installed by the script face when the pump is
+    /// registered (BAO 段(3) wiring). The render side never blocks and never
+    /// calls into SpiderMonkey; it only notifies through this closure, which
+    /// the script face binds to its own event loop (a worklet task post —
+    /// `WorkletExecutor::schedule_a_worklet_task`), so `process()` runs on the
+    /// worklet thread within micro of the render side publishing inputs.
+    /// Without it the pump would only be driven by external worklet activity;
+    /// with it, offline (faster-than-real-time) renders stay fed and real-time
+    /// latency stays at one quantum.
+    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl fmt::Debug for AudioWorkletBridge {
@@ -339,6 +349,7 @@ impl AudioWorkletBridge {
             finished: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
             frame_starved: AtomicU64::new(0),
+            wake: Mutex::new(None),
         }
     }
 
@@ -360,7 +371,27 @@ impl AudioWorkletBridge {
     /// that quantum are dropped (real-time discipline: never block, never
     /// buffer unboundedly).
     pub fn push_pending(&self, quantum: WorkletQuantum) -> Result<(), SpscRingError<WorkletQuantum>> {
-        self.pending.push(quantum)
+        let result = self.pending.push(quantum);
+        if result.is_ok() {
+            self.wake_worklet();
+        }
+        result
+    }
+
+    /// Install the worklet-side wake hook (BAO 段(3) wiring). Called once by
+    /// the script face when the pump is registered; later calls overwrite the
+    /// previous hook (same worklet thread in practice).
+    pub fn set_wake_fn(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.wake.lock().expect("Locking the worklet wake hook") = Some(wake);
+    }
+
+    /// Notify the worklet thread that a fresh quantum is available. The
+    /// closure is script-face-owned; this side never drives SpiderMonkey and
+    /// never blocks the render thread on the notification.
+    fn wake_worklet(&self) {
+        if let Some(wake) = self.wake.lock().expect("Locking the worklet wake hook").as_ref() {
+            wake();
+        }
     }
 
     /// Take the oldest completed output quantum, or `None` on underrun.

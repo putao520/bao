@@ -151,6 +151,14 @@ impl Worklet {
     pub(crate) fn worklet_global_scope_type(&self) -> WorkletGlobalScopeType {
         self.global_type
     }
+
+    /// (Bao 段(3) wiring) Queue `task` for this worklet's primary thread.
+    /// The `WorkletId` is owned here, so the AudioWorklet face needs no
+    /// access to the private thread-pool fields.
+    pub(crate) fn perform_a_worklet_task(&self, task: WorkletTask) {
+        self.worklet_thread_pool()
+            .perform_a_worklet_task(self.droppable_field.worklet_id, task);
+    }
 }
 
 impl WorkletMethods<crate::DomTypeHolder> for Worklet {
@@ -450,7 +458,7 @@ impl WorkletThreadPool for StatelessWorkletThreadPool {
 }
 
 /// A task which can be performed in the context of a [`WorkletGlobalScope`].
-type WorkletTask = Box<dyn FnOnce(&mut JSContext, &WorkletGlobalScope) + Send>;
+pub(crate) type WorkletTask = Box<dyn FnOnce(&mut JSContext, &WorkletGlobalScope) + Send>;
 
 /// The data messages sent to worklet threads
 enum WorkletData {
@@ -635,8 +643,16 @@ impl WorkletThread {
                 },
                 // Wake up! There may be control messages to process.
                 WorkletData::WakeUp => {},
-                // Quit!
+                // Quit! (Bao 段(3) wiring): flush audio-scope store-buffer
+                // edges first — same class as the ExitWorklet arm; the
+                // shutdown nursery collection must not see freed slots.
                 WorkletData::Quit => {
+                    for scope in self.global_scopes.values() {
+                        if let Some(audio) = scope.downcast::<crate::dom::audio::audioworkletglobalscope::AudioWorkletGlobalScope>(
+                        ) {
+                            audio.teardown_audio(cx);
+                        }
+                    }
                     return;
                 },
             }
@@ -899,6 +915,16 @@ impl WorkletThread {
     fn process_control(&mut self, control: WorkletControl, cx: &mut js::context::JSContext) {
         match control {
             WorkletControl::ExitWorklet(worklet_id) => {
+                // (Bao 段(3) wiring) AudioWorklet scopes hold barriered Heap
+                // slots (the processor instance registry) — flush the SM
+                // store buffer with a GC while the runtime is alive, BEFORE
+                // the scope (and its slots) drops.
+                if let Some(scope) = self.global_scopes.get(&worklet_id) &&
+                    let Some(audio) = scope.downcast::<crate::dom::audio::audioworkletglobalscope::AudioWorkletGlobalScope>(
+                    )
+                {
+                    audio.teardown_audio(cx);
+                }
                 self.global_scopes.remove(&worklet_id);
             },
             WorkletControl::FetchAndInvokeAWorkletScript {

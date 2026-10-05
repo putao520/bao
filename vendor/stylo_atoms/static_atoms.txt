@@ -125,6 +125,7 @@ popstate
 postershown
 prefers-color-scheme
 print
+processorerror
 progress
 radio
 range
