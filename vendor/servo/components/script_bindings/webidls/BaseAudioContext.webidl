@@ -21,6 +21,10 @@ interface BaseAudioContext : EventTarget {
   readonly attribute float sampleRate;
   readonly attribute double currentTime;
   readonly attribute AudioListener listener;
+  // (Bao 段(1)) AudioWorklet is a Window face only (the Worklet object needs
+  // the Window for its thread-pool init); authored in-tree (upstream zero
+  // implementation, user ruling 2026-10-05).
+  [SameObject] readonly attribute AudioWorklet audioWorklet;
   readonly attribute AudioContextState  state;
   Promise<undefined> resume();
   attribute EventHandler onstatechange;

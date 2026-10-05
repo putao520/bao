@@ -45,7 +45,7 @@ use crate::fetch::headers::determine_nosniff;
 use crate::filemanager_thread::FileManagerThreadMsg;
 use crate::http_status::HttpStatus;
 use crate::mime_classifier::{ApacheBugFlag, MimeClassifier};
-use crate::request::{Request, RequestBuilder};
+use crate::request::{Destination, Request, RequestBuilder, RequestMode};
 use crate::response::{Response, ResponseInit};
 
 pub mod blob_url_store;
@@ -121,6 +121,24 @@ impl CustomResponse {
 pub struct CustomResponseMediator {
     pub response_chan: GenericCallback<Option<CustomResponse>>,
     pub load_url: ServoUrl,
+    /// <https://fetch.spec.whatwg.org/#concept-request-reload-navigation-flag>
+    ///
+    /// Bao vendor patch (wave2-B2 C): the mediated request is rebuilt in the
+    /// SW realm from the URL alone, which reset both navigation flags to
+    /// false — `FetchEvent.request.isReloadNavigation` never observed a
+    /// reload. The net request itself cannot cross the thread boundary, so
+    /// the flags travel with the mediator. (Producer face: the net-side SW
+    /// interception — currently absent — stamps these.)
+    pub reload_navigation: bool,
+    /// <https://fetch.spec.whatwg.org/#concept-request-history-navigation-flag>
+    pub history_navigation: bool,
+    /// <https://fetch.spec.whatwg.org/#concept-request-destination>
+    ///
+    /// Bao vendor patch (e60): the mediated request observably carried
+    /// `destination: ""` / `mode: "cors"` where the spec wants `"iframe"` /
+    /// `"navigate"` — the Sec-Fetch-Dest/Mode face.
+    pub destination: Destination,
+    pub mode: RequestMode,
 }
 
 /// [Policies](https://w3c.github.io/webappsec-referrer-policy/#referrer-policy-states)

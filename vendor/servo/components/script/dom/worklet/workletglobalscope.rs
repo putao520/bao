@@ -26,6 +26,7 @@ use storage_traits::StorageThreads;
 use stylo_atoms::Atom;
 
 use crate::dom::Window;
+use crate::dom::audio::audioworkletglobalscope::{AudioWorkletGlobalScope, AudioWorkletScopeData};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues};
@@ -102,6 +103,15 @@ impl WorkletGlobalScope {
                 closing,
             )),
             WorkletGlobalScopeType::Paint => DomRoot::upcast(PaintWorkletGlobalScope::new(
+                cx,
+                pipeline_id,
+                base_url,
+                inherited_secure_context,
+                executor,
+                init,
+                closing,
+            )),
+            WorkletGlobalScopeType::Audio => DomRoot::upcast(AudioWorkletGlobalScope::new(
                 cx,
                 pipeline_id,
                 base_url,
@@ -231,6 +241,7 @@ impl From<&Window> for WorkletGlobalScopeInit {
             image_cache: global_scope.image_cache(),
             #[cfg(feature = "webgpu")]
             gpu_id_hub: global_scope.wgpu_id_hub(),
+            audio: None,
         }
     }
 }
@@ -258,6 +269,11 @@ pub(crate) struct WorkletGlobalScopeInit {
     #[cfg(feature = "webgpu")]
     pub(crate) gpu_id_hub: Arc<IdentityHub>,
     pub(crate) script_to_constellation_sender: ScriptToConstellationSender,
+    /// (Bao 段(1)) The audio face for `WorkletGlobalScopeType::Audio` scopes;
+    /// set by the creating `BaseAudioContext`'s `audioWorklet` getter so the
+    /// scope reads real servo-media values (suspended contexts report real
+    /// zeros, not fabricated numbers).
+    pub(crate) audio: Option<AudioWorkletScopeData>,
 }
 
 /// <https://drafts.css-houdini.org/worklets/#worklet-global-scope-type>
@@ -268,4 +284,7 @@ pub(crate) enum WorkletGlobalScopeType {
     Test,
     /// A paint worklet
     Paint,
+    /// An audio worklet (Bao 段(1), user ruling 2026-10-05; upstream has
+    /// zero AudioWorklet runtime — e83 profile).
+    Audio,
 }

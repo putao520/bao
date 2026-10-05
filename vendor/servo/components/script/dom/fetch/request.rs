@@ -571,6 +571,28 @@ impl Request {
     pub(crate) fn request(&self) -> Ref<'_, NetTraitsRequest> {
         self.request.borrow()
     }
+
+    /// Bao vendor patch (wave2-B2 C + e60): restore the mediation fields the
+    /// net request carried. The SW-realm request constructor rebuilds from
+    /// the URL alone (`RequestInit` has no members for these fields — the
+    /// fetch spec only lets navigation set the flags), which left
+    /// `isReloadNavigation` / `isHistoryNavigation` false and
+    /// destination/mode on their defaults on every mediated request — the
+    /// Sec-Fetch-Dest/Mode observable face. (Producer face: the net-side SW
+    /// interception stamps the mediator — currently absent.)
+    pub(crate) fn set_mediation_fields(
+        &self,
+        reload_navigation: bool,
+        history_navigation: bool,
+        destination: Destination,
+        mode: NetTraitsRequestMode,
+    ) {
+        let mut request = self.request.borrow_mut();
+        request.reload_navigation = reload_navigation;
+        request.history_navigation = history_navigation;
+        request.destination = destination;
+        request.mode = mode;
+    }
 }
 
 fn net_request_from_global(global: &GlobalScope, url: ServoUrl) -> NetTraitsRequest {

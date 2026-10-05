@@ -41,7 +41,7 @@ use stylo_atoms::Atom;
 
 use crate::dom::audio::audioworklethandler::{ParamDescriptor, SharedProcessorRegistry};
 use crate::dom::audio::audioworkletport::AudioWorkletPortConduit;
-use crate::dom::bindings::callback::{CallbackContainer, RootedCallback};
+use script_bindings::callback::{HasCallbackHolder, RootedCallback};
 use crate::dom::bindings::codegen::Bindings::VoidFunctionBinding::VoidFunction;
 use crate::dom::bindings::codegen::Bindings::AudioWorkletGlobalScopeBinding::{
     self, AudioWorkletGlobalScopeMethods,
@@ -464,10 +464,14 @@ impl AudioWorkletGlobalScopeMethods<crate::DomTypeHolder> for AudioWorkletGlobal
     #[expect(unsafe_code)]
     fn RegisterProcessor(
         &self,
-        cx: &mut JSContext,
         name: DOMString,
         processor_ctor: RootedCallback<VoidFunction>,
     ) -> Fallible<()> {
+        // (Bao) the fork's codegen passes no cx for this member (the
+        // typeNeedsCx stub); take the script/worklet thread's active context
+        // (serviceworker/cache.rs precedent).
+        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
+        let cx = &mut cx;
         let name = Atom::from(name);
         rooted!(&in(cx) let ctor_obj = processor_ctor.callback_holder().get());
         rooted!(&in(cx) let ctor_val = ObjectValue(ctor_obj.get()));

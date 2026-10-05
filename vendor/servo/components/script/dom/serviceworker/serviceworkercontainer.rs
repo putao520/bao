@@ -105,6 +105,8 @@ impl ServiceWorkerContainer {
                             storage_key: _,
                             scope_url,
                             script_url,
+                            client_url: _,
+                            client_urls: _,
                         } = value;
                         // Step 2.2: If equivalentJob’s job type is either register or update,
                         // set convertedValue to the result of getting the service worker registration object

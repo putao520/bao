@@ -134,7 +134,7 @@ impl AudioWorkletNode {
         // The creating context's AudioWorklet face (SameObject per context):
         // the shared processor registry validates the name (spec
         // NotSupportedError arm) and carries the parameter descriptors.
-        let audio_worklet = context.AudioWorklet(cx);
+        let audio_worklet = context.AudioWorklet();
         let name_atom = Atom::from(name.clone());
         let params: Vec<ParamDescriptor> = {
             let registry = audio_worklet.registry();
@@ -204,6 +204,7 @@ impl AudioWorkletNode {
         // `ParamType::WorkletParam(i)` through the regular automation
         // timeline (the name→index mapping this node carries).
         let global = context.global();
+        let window = global.as_window();
         let mut param_map = IndexMap::new();
         for (index, param) in params.iter().enumerate() {
             let automation_rate = match param.rate {
@@ -212,7 +213,7 @@ impl AudioWorkletNode {
             };
             let audio_param = AudioParam::new(
                 cx,
-                &global,
+                &window,
                 context,
                 node.node_id(),
                 AudioNodeType::AudioWorkletNode,
@@ -386,7 +387,7 @@ impl AudioWorkletNodeMethods<crate::DomTypeHolder> for AudioWorkletNode {
             window,
             proto,
         );
-        let audio_worklet = context.AudioWorklet(cx);
+        let audio_worklet = context.AudioWorklet();
         dom_root.wire_processor(cx, &audio_worklet);
         Ok(dom_root)
     }

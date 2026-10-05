@@ -137,7 +137,6 @@ impl Clients {
                             &self.global(),
                             self.swmanager_sender.clone(),
                             url.clone(),
-                            info.scope_url.clone(),
                             FrameType::Top_level,
                             self.worker_id,
                         )
@@ -225,8 +224,6 @@ impl ClientsMethods<crate::DomTypeHolder> for Clients {
                     storage_key,
                     client_url: self.scope_url.clone(),
                     result_handler,
-                    enroll_only: false,
-                    client_pipeline: global.pipeline_id(),
                 },
             ))
             .is_err()

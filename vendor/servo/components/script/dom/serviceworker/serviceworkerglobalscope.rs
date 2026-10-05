@@ -4,6 +4,8 @@
 
 #![cfg_attr(crown, allow(crown::jscontext_first_arg))]
 
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread::{self, JoinHandle};
@@ -23,6 +25,7 @@ use net_traits::request::{
     CredentialsMode, Destination, InsecureRequestsPolicy, ParserMetadata, Referrer, RequestBuilder,
 };
 use rand::random;
+use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
 use servo_base::generic_channel::{GenericReceiver, GenericSend, GenericSender, RoutedReceiver};
 use servo_base::id::{PipelineId, ServiceWorkerId};
@@ -51,11 +54,12 @@ use crate::dom::csp::Violation;
 use crate::dom::debugger::debuggerglobalscope::DebuggerGlobalScope;
 use crate::dom::dedicatedworkerglobalscope::AutoWorkerReset;
 use crate::dom::event::Event;
-use crate::dom::eventtarget::EventTarget;
 use crate::dom::extendableevent::ExtendableEvent;
 use crate::dom::extendablemessageevent::ExtendableMessageEvent;
+use crate::dom::serviceworker::fetchevent::FetchEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::RethrowErrors;
+use crate::dom::promise::{RootedPromise, TracedPromise};
 use crate::dom::script_execution::ScriptOptions;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
@@ -192,6 +196,25 @@ pub(crate) struct ServiceWorkerGlobalScope {
 
     #[no_trace]
     worker_id: ServiceWorkerId,
+
+    /// Bao vendor patch (C19 SIGSEGV fix): respondWith promises anchored for
+    /// the lifetime of their settlement; entries removed at settlement
+    /// (fetchevent.rs settle callbacks). See `add_pending_fetch_response`.
+    #[ignore_malloc_size_of = "anchored promises are transient per fetch"]
+    pending_fetch_responses: DomRefCell<VecDeque<PendingFetchResponse>>,
+
+    /// Monotonic key source for `pending_fetch_responses` entries.
+    pending_fetch_response_key: Cell<usize>,
+}
+
+/// Bao vendor patch (C19): one anchored respondWith promise, keyed for
+/// removal at settlement.
+#[derive(JSTraceable, MallocSizeOf)]
+struct PendingFetchResponse {
+    #[ignore_malloc_size_of = "plain counter"]
+    key: usize,
+    #[ignore_malloc_size_of = "the anchored promise is heap-measured via the scope itself"]
+    promise: TracedPromise,
 }
 
 impl WorkerEventLoopMethods for ServiceWorkerGlobalScope {
@@ -275,6 +298,8 @@ impl ServiceWorkerGlobalScope {
             scope_url,
             control_receiver,
             worker_id,
+            pending_fetch_responses: DomRefCell::new(VecDeque::new()),
+            pending_fetch_response_key: Cell::new(0),
         }
     }
 
@@ -570,11 +595,17 @@ impl ServiceWorkerGlobalScope {
                 self.upcast::<WorkerGlobalScope>().process_event(msg, cx);
             },
             Response(mediator) => {
-                // TODO XXXcreativcoder This will eventually use a FetchEvent interface to fire event
-                // when we have the Request and Response dom api's implemented
-                // https://w3c.github.io/ServiceWorker/#fetchevent-interface
-                self.upcast::<EventTarget>().fire_event(cx, atom!("fetch"));
-                let _ = mediator.response_chan.send(None);
+                // Bao vendor patch (user ruling 2026-09-09): replaces upstream
+                // TODO XXXcreativcoder's bare `Event` placeholder with the real
+                // FetchEvent pipeline
+                // (https://w3c.github.io/ServiceWorker/#fetchevent-interface).
+                // The event carries the mediated Request and owns the
+                // respondWith receiver; the mediator channel is answered
+                // inside FetchEvent::handle_mediator (Some(CustomResponse)
+                // when respondWith fulfilled, None as pass-through otherwise —
+                // identical to the previous unconditional send(None) fallback).
+                let mut realm = enter_auto_realm(cx, self.upcast::<WorkerGlobalScope>());
+                FetchEvent::handle_mediator(&mut realm.current_realm(), self, mediator);
             },
             WakeUp => {},
         }
@@ -582,6 +613,29 @@ impl ServiceWorkerGlobalScope {
 
     pub(crate) fn event_loop_sender(&self) -> ScriptEventLoopSender {
         ScriptEventLoopSender::ServiceWorker(self.own_sender.clone())
+    }
+
+    /// Anchor a `respondWith` promise natively for the lifetime of its
+    /// settlement (Bao vendor patch, user ruling 2026-09-09, C19 SIGSEGV fix).
+    /// Returns the pending-list key the settler must hand back to
+    /// `remove_pending_fetch_response`.
+    pub(crate) fn add_pending_fetch_response(&self, promise: &RootedPromise) -> usize {
+        let key = self.pending_fetch_response_key.get();
+        self.pending_fetch_response_key.set(key + 1);
+        self.pending_fetch_responses
+            .borrow_mut()
+            .push_back(PendingFetchResponse {
+                key,
+                promise: promise.to_traced(),
+            });
+        key
+    }
+
+    /// Release the native anchor of a settled `respondWith` promise.
+    pub(crate) fn remove_pending_fetch_response(&self, key: usize) {
+        self.pending_fetch_responses
+            .borrow_mut()
+            .retain(|entry| entry.key != key);
     }
 
     fn dispatch_activate(&self, cx: &mut CurrentRealm) {

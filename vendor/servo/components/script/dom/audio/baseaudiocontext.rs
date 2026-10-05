@@ -32,6 +32,9 @@ use crate::dom::audio::audiobuffer::AudioBuffer;
 use crate::dom::audio::audiobuffersourcenode::AudioBufferSourceNode;
 use crate::dom::audio::audiodestinationnode::AudioDestinationNode;
 use crate::dom::audio::audiolistener::AudioListener;
+use crate::dom::audio::audioworklet::AudioWorklet;
+use crate::dom::audio::audioworklethandler::SharedProcessorRegistry;
+use crate::dom::audio::audioworkletglobalscope::AudioWorkletScopeData;
 use crate::dom::audio::audionode::MAX_CHANNEL_COUNT;
 use crate::dom::audio::biquadfilternode::BiquadFilterNode;
 use crate::dom::audio::channelmergernode::ChannelMergerNode;
@@ -103,6 +106,11 @@ pub(crate) struct BaseAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-destination>
     destination: MutNullableDom<AudioDestinationNode>,
     listener: MutNullableDom<AudioListener>,
+    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-audioworklet>
+    /// (Bao 段(1)): each BaseAudioContext owns its AudioWorklet ([SameObject]
+    /// semantics via the nullable cache, one Worklet thread pool per
+    /// context).
+    audio_worklet: MutNullableDom<AudioWorklet>,
     /// Resume promises which are soon to be fulfilled by a queued task.
     in_flight_resume_promises_queue: DomRefCell<VecDeque<(BoxedSliceOfPromises, ErrorResult)>>,
     /// <https://webaudio.github.io/web-audio-api/#pendingresumepromises>
@@ -142,6 +150,7 @@ impl BaseAudioContext {
             audio_context_impl,
             destination: Default::default(),
             listener: Default::default(),
+            audio_worklet: Default::default(),
             in_flight_resume_promises_queue: Default::default(),
             pending_resume_promises: Default::default(),
             decode_resolvers: Default::default(),
@@ -295,6 +304,32 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-state>
     fn State(&self) -> AudioContextState {
         self.state.get()
+    }
+
+    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-audioworklet>
+    /// (Bao 段(1)) The creating context's AudioWorklet face: a Worklet with
+    /// `WorkletGlobalScopeType::Audio` whose thread-pool init carries this
+    /// context's audio face (servo-media handle + sample rate) and the shared
+    /// processor registry (script-thread read face of
+    /// `new AudioWorkletNode`).
+    #[expect(unsafe_code)]
+    fn AudioWorklet(&self) -> DomRoot<AudioWorklet> {
+        // (Bao) the fork's codegen passes no cx for this getter (the
+        // typeNeedsCx stub); take the script thread's active context
+        // (serviceworker/cache.rs precedent).
+        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
+        let cx = &mut cx;
+        let global = self.global();
+        let window = global.as_window();
+        self.audio_worklet.or_init(|| {
+            let registry: Arc<SharedProcessorRegistry> = Arc::default();
+            let audio = AudioWorkletScopeData::new(
+                self.audio_context_impl(),
+                self.sample_rate,
+                registry.clone(),
+            );
+            AudioWorklet::new(cx, window, registry, audio)
+        })
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-resume>

@@ -25,13 +25,13 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use http::StatusCode;
-use ipc_channel::ipc::IpcSender;
 use js::context::JSContext;
 use js::jsapi::Heap;
 use js::jsval::{JSVal, ObjectValue};
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject, HandleValue};
 use net_traits::{CustomResponse, CustomResponseMediator};
+use servo_base::generic_channel::GenericCallback;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use stylo_atoms::Atom;
 
@@ -82,13 +82,13 @@ pub(crate) struct FetchEvent {
     /// to nobody.
     #[no_trace]
     #[ignore_malloc_size_of = "Ipc channel sender"]
-    response_sender: Option<IpcSender<Option<CustomResponse>>>,
+    response_sender: Option<GenericCallback<Option<CustomResponse>>>,
 }
 
 impl FetchEvent {
     fn new_inherited(
         request: &Request,
-        response_sender: Option<IpcSender<Option<CustomResponse>>>,
+        response_sender: Option<GenericCallback<Option<CustomResponse>>>,
     ) -> FetchEvent {
         FetchEvent {
             event: ExtendableEvent::new_inherited(),
@@ -106,7 +106,7 @@ impl FetchEvent {
         bubbles: bool,
         cancelable: bool,
         request: &Request,
-        response_sender: Option<IpcSender<Option<CustomResponse>>>,
+        response_sender: Option<GenericCallback<Option<CustomResponse>>>,
     ) -> DomRoot<FetchEvent> {
         Self::new_with_proto(
             cx,
@@ -128,7 +128,7 @@ impl FetchEvent {
         bubbles: bool,
         cancelable: bool,
         request: &Request,
-        response_sender: Option<IpcSender<Option<CustomResponse>>>,
+        response_sender: Option<GenericCallback<Option<CustomResponse>>>,
     ) -> DomRoot<FetchEvent> {
         let event = reflect_dom_object_with_proto(
             cx,
@@ -237,7 +237,7 @@ impl FetchEvent {
 struct FetchResponseResolveHandler {
     #[no_trace]
     #[ignore_malloc_size_of = "Ipc channel sender"]
-    response_sender: Option<IpcSender<Option<CustomResponse>>>,
+    response_sender: Option<GenericCallback<Option<CustomResponse>>>,
     /// Key of this promise's entry on the SW scope's pending list; removed on
     /// settlement so the native anchor is bounded by
     /// the promise's lifetime.
@@ -249,7 +249,7 @@ struct FetchResponseResolveHandler {
 struct FetchResponseRejectHandler {
     #[no_trace]
     #[ignore_malloc_size_of = "Ipc channel sender"]
-    response_sender: Option<IpcSender<Option<CustomResponse>>>,
+    response_sender: Option<GenericCallback<Option<CustomResponse>>>,
     /// See `FetchResponseResolveHandler::pending_key`.
     pending_key: usize,
 }

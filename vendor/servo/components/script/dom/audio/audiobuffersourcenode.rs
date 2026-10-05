@@ -170,7 +170,7 @@ impl AudioBufferSourceNodeMethods<crate::DomTypeHolder> for AudioBufferSourceNod
                 self.source_node
                     .node()
                     .message(AudioNodeMessage::AudioBufferSourceNode(
-                        AudioBufferSourceNodeMessage::SetBuffer(buffer),
+                        AudioBufferSourceNodeMessage::SetBuffer(buffer.as_deref().cloned()),
                     ));
             }
         }
@@ -260,7 +260,7 @@ impl AudioBufferSourceNodeMethods<crate::DomTypeHolder> for AudioBufferSourceNod
                 self.source_node
                     .node()
                     .message(AudioNodeMessage::AudioBufferSourceNode(
-                        AudioBufferSourceNodeMessage::SetBuffer(buffer),
+                        AudioBufferSourceNodeMessage::SetBuffer(buffer.as_deref().cloned()),
                     ));
             }
         }
