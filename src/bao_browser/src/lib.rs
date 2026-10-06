@@ -288,6 +288,22 @@ impl BrowserRuntime {
         // realm is itself a detection vector, so enablement and drain ship
         // together.
         preferences.dom_sharedworker_enabled = true;
+        // `dom_intersection_observer_enabled` defaults to false upstream
+        // (config/prefs.rs:454); the vendor IntersectionObserver
+        // implementation is real (`script/dom/intersectionobserver/` —
+        // observe/unobserve/disconnect + spec-annotated notification
+        // algorithm, driven from the update-the-rendering steps in
+        // `script_thread.rs`), and the webidl `[Pref=]` gate is the only
+        // thing keeping the interface object off the Window global. Two
+        // consumers need the Chrome-parity flip (real Chrome ships it on):
+        // (1) puppeteer ≥13's `ElementHandle.scrollIntoViewIfNeeded` →
+        // `isIntersectingViewport` constructs an IntersectionObserver IN
+        // PAGE CONTEXT on every `page.click()` — without the flip each
+        // click dies with `ReferenceError: IntersectionObserver is not
+        // defined` (e124 puppeteer_real_lifecycle_e2e red); (2) the missing
+        // global is itself a fingerprint signal (detection pages probe for
+        // its presence). Same six-flip precedent as the five above.
+        preferences.dom_intersection_observer_enabled = true;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls

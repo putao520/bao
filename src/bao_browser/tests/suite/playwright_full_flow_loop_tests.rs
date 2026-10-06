@@ -102,6 +102,17 @@ fn eval_js(t: &mut WsCdp, expr: &str) -> String {
 struct WsCdp {
     client: WebSocketClient,
     next_id: i64,
+    /// Events observed while waiting for a command response. The response
+    /// wait loop must keep reading the wire (the response can trail several
+    /// events), but DISCARDING those frames loses event edges — e.g. the
+    /// `Page.frameNavigated` for a just-issued navigation routinely lands
+    /// while the settle-poll evals are still cycling, and a dropped edge
+    /// later surfaces as `no Page.frameNavigated event for the second
+    /// navigation` after a 15s timeout (e124: the e107 red's fine-grained
+    /// root cause — a harness-side lost-edge race, not a server-side
+    /// delivery failure). Buffer them; wait_frame_navigated_to drains the
+    /// buffer first. Bounded: this harness sees O(tens) of events.
+    pending_events: Vec<Value>,
 }
 
 impl WsCdp {
@@ -128,11 +139,13 @@ impl WsCdp {
         WsCdp {
             client,
             next_id: 1,
+            pending_events: Vec::new(),
         }
     }
 
-    /// Send a command and wait for the matching response id (events are
-    /// skipped). Returns the full response object.
+    /// Send a command and wait for the matching response id. Events seen
+    /// along the way are BUFFERED (not skipped — see `pending_events`);
+    /// unrelated command responses are still skipped.
     fn send(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
@@ -151,7 +164,12 @@ impl WsCdp {
                     if v.get("id").and_then(|i| i.as_i64()) == Some(id) {
                         return v;
                     }
-                    // event or unrelated response — keep reading
+                    // Event frames are buffered for the event-face waiters
+                    // (a dropped edge is unrecoverable on the wire); other
+                    // command responses keep being skipped.
+                    if v.get("method").is_some() && self.pending_events.len() < 1000 {
+                        self.pending_events.push(v);
+                    }
                 }
                 RecvOutcome::Timeout => {
                     continue;
@@ -170,6 +188,20 @@ impl WsCdp {
     /// event_router) actually reaches WS clients — command responses alone
     /// cannot evidence that path.
     fn wait_frame_navigated_to(&mut self, url_hint: &str) -> bool {
+        // Buffered edges first: the event may already have been consumed
+        // while a command response wait was cycling (see `pending_events`).
+        let hit_in_buffer = self
+            .pending_events
+            .iter()
+            .any(|v| {
+                v.get("method").and_then(|m| m.as_str()) == Some("Page.frameNavigated")
+                    && v["params"]["frame"]["url"]
+                        .as_str()
+                        .is_some_and(|url| url.contains(url_hint))
+            });
+        if hit_in_buffer {
+            return true;
+        }
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while std::time::Instant::now() < deadline {
             match self.client.recv().expect("ws recv") {
@@ -181,6 +213,11 @@ impl WsCdp {
                             .is_some_and(|url| url.contains(url_hint))
                     {
                         return true;
+                    }
+                    // Non-matching frames seen here are buffered too (the
+                    // waiter for another hint may need them later).
+                    if v.get("method").is_some() && self.pending_events.len() < 1000 {
+                        self.pending_events.push(v);
                     }
                 }
                 RecvOutcome::Timeout => continue,

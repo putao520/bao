@@ -758,6 +758,28 @@ impl StealthHooks {
         // actually accessible by index.
         let plugin_count = config.plugin_count.min(config.plugins.len() as u32);
 
+        // e124 rewrite (battery-red root cause): the previous payload returned a
+        // PLAIN ARRAY for navigator.plugins and then ran
+        // `Object.defineProperty(arr, 'length', {get, configurable: true})` on it —
+        // an Array's `length` is non-configurable by spec, so EVERY
+        // navigator.plugins read threw
+        // `TypeError: can't redefine non-configurable property "length"`
+        // (the payload only defines the getter at install time; the throw fires on
+        // first read, so page-creation installs never noticed). Detection pages
+        // that probe plugins (bot.sannysoft.com's Plugins Length row) caught the
+        // exception mid-script and aborted their whole detection table. The spoof
+        // now builds spec-shaped fakes instead:
+        //   - navigator.plugins  : Object.create(PluginArray.prototype) with an OWN
+        //     `length` getter (fresh object — configurable target), indexed entries,
+        //     item/namedItem/refresh and Symbol.toStringTag 'PluginArray'
+        //     (`instanceof PluginArray` passes; Object.prototype.toString tags
+        //     correctly).
+        //   - each plugin        : Object.create(Plugin.prototype) +
+        //     Symbol.toStringTag 'Plugin' (`toString()` returns '[object Plugin]').
+        //   - navigator.mimeTypes: MimeTypeArray.prototype carrier, same shape.
+        // Index getters close over a `let`-captured slot (the old `var` loop
+        // captured the loop variable by reference — every index read returned
+        // items[length] === undefined).
         format!(
             r#"(function() {{
   var PLUGIN_COUNT = {plugin_count};
@@ -769,63 +791,95 @@ impl StealthHooks {
     Object.defineProperty(p, 'name', {{ get: function() {{ return name; }}, enumerable: true }});
     Object.defineProperty(p, 'filename', {{ get: function() {{ return filename; }}, enumerable: true }});
     Object.defineProperty(p, 'description', {{ get: function() {{ return description; }}, enumerable: true }});
-    Object.defineProperty(p, 'length', {{ get: function() {{ return mimes.length; }}, enumerable: true }});
-    for (var i = 0; i < mimes.length; i++) {{
-      Object.defineProperty(p, i, {{ get: function() {{ return mimes[i]; }}, enumerable: true }});
+    Object.defineProperty(p, 'length', {{ get: function() {{ return mimes.length; }}, enumerable: true, configurable: true }});
+    for (let mi = 0; mi < mimes.length; mi++) {{
+      let m = mimes[mi];
+      Object.defineProperty(p, String(mi), {{ get: function() {{ return m; }}, enumerable: true, configurable: true }});
     }}
+    try {{ Object.defineProperty(p, Symbol.toStringTag, {{ value: 'Plugin' }}); }} catch (e) {{}}
     return p;
   }}
 
-  function makeMimeType(type, suffixes, description) {{
+  function makeMimeType(type, suffixes, description, enabledPlugin) {{
     var m = Object.create(MimeType.prototype);
     Object.defineProperty(m, 'type', {{ get: function() {{ return type; }}, enumerable: true }});
     Object.defineProperty(m, 'suffixes', {{ get: function() {{ return suffixes; }}, enumerable: true }});
     Object.defineProperty(m, 'description', {{ get: function() {{ return description; }}, enumerable: true }});
+    if (enabledPlugin) {{
+      Object.defineProperty(m, 'enabledPlugin', {{ get: function() {{ return enabledPlugin; }}, enumerable: true }});
+    }}
+    try {{ Object.defineProperty(m, Symbol.toStringTag, {{ value: 'MimeType' }}); }} catch (e) {{}}
     return m;
   }}
 
-  if (typeof navigator !== 'undefined') {{
-    var mimeObjs = MIME_TYPES.map(function(t) {{
-      var suffix = t === 'application/pdf' ? 'pdf' : 'pdf';
-      return makeMimeType(t, suffix, '');
+  if (typeof navigator !== 'undefined' && typeof Plugin !== 'undefined' && typeof MimeType !== 'undefined') {{
+    var pluginObjs = PLUGIN_NAMES.map(function(name) {{
+      var mimesForPlugin = MIME_TYPES.slice(0, Math.min(MIME_TYPES.length, PLUGIN_NAMES.length > 1 ? 1 : MIME_TYPES.length));
+      return makePlugin(name, 'internal-pdf-viewer', name, mimesForPlugin);
     }});
+    // Wire each MimeType's enabledPlugin back to its owning fake (Chrome
+    // shape); the mime fakes are rebuilt so every plugin gets its own pair.
+    for (let pi = 0; pi < pluginObjs.length; pi++) {{
+      let plugin = pluginObjs[pi];
+      let ownMimes = MIME_TYPES.map(function(t) {{
+        return makeMimeType(t, t === 'application/pdf' ? 'pdf' : 'pdf', '', plugin);
+      }});
+      Object.defineProperty(plugin, 'length', {{ get: function() {{ return ownMimes.length; }}, enumerable: true }});
+      for (let oi = 0; oi < ownMimes.length; oi++) {{
+        let om = ownMimes[oi];
+        Object.defineProperty(plugin, String(oi), {{ get: function() {{ return om; }}, enumerable: true }});
+      }}
+    }}
 
-    var pluginObjs = PLUGIN_NAMES.map(function(name, idx) {{
-      var mimesForPlugin = mimeObjs.slice(0, Math.min(mimeObjs.length, PLUGIN_NAMES.length > 1 ? 1 : mimeObjs.length));
-      var filename = 'internal-pdf-viewer';
-      return makePlugin(name, filename, name, mimesForPlugin);
-    }});
+    var pluginsCarrier = Object.create(PluginArray.prototype);
+    Object.defineProperty(pluginsCarrier, 'length', {{ get: function() {{ return PLUGIN_COUNT; }}, enumerable: true }});
+    for (let i = 0; i < pluginObjs.length; i++) {{
+      let entry = pluginObjs[i];
+      Object.defineProperty(pluginsCarrier, String(i), {{ get: function() {{ return entry; }}, enumerable: true }});
+      try {{
+        Object.defineProperty(pluginsCarrier, entry.name, {{ get: function() {{ return entry; }}, enumerable: true }});
+      }} catch (e) {{}}
+    }}
+    pluginsCarrier.item = function(i) {{ return pluginObjs[i] || null; }};
+    pluginsCarrier.namedItem = function(name) {{
+      for (var j = 0; j < pluginObjs.length; j++) {{
+        if (pluginObjs[j] && pluginObjs[j].name === name) return pluginObjs[j];
+      }}
+      return null;
+    }};
+    pluginsCarrier.refresh = function() {{}};
+    try {{ Object.defineProperty(pluginsCarrier, Symbol.toStringTag, {{ value: 'PluginArray' }}); }} catch (e) {{}}
+
+    var mimeCarrier = Object.create(MimeTypeArray.prototype);
+    var allMimes = [];
+    for (let p = 0; p < pluginObjs.length; p++) {{
+      let pl = pluginObjs[p];
+      for (let q = 0; q < pl.length; q++) {{ allMimes.push(pl[q]); }}
+    }}
+    Object.defineProperty(mimeCarrier, 'length', {{ get: function() {{ return allMimes.length; }}, enumerable: true }});
+    for (let k = 0; k < allMimes.length; k++) {{
+      let km = allMimes[k];
+      Object.defineProperty(mimeCarrier, String(k), {{ get: function() {{ return km; }}, enumerable: true }});
+      try {{
+        Object.defineProperty(mimeCarrier, km.type, {{ get: function() {{ return km; }}, enumerable: true }});
+      }} catch (e) {{}}
+    }}
+    mimeCarrier.item = function(i) {{ return allMimes[i] || null; }};
+    mimeCarrier.namedItem = function(type) {{
+      for (var r = 0; r < allMimes.length; r++) {{
+        if (allMimes[r] && allMimes[r].type === type) return allMimes[r];
+      }}
+      return null;
+    }};
+    try {{ Object.defineProperty(mimeCarrier, Symbol.toStringTag, {{ value: 'MimeTypeArray' }}); }} catch (e) {{}}
 
     Object.defineProperty(navigator, 'plugins', {{
-      get: function() {{
-        var arr = pluginObjs;
-        Object.defineProperty(arr, 'length', {{ get: function() {{ return PLUGIN_COUNT; }}, configurable: true }});
-        arr.item = function(i) {{ return arr[i] || null; }};
-        arr.namedItem = function(name) {{
-          for (var j = 0; j < arr.length; j++) {{
-            if (arr[j] && arr[j].name === name) return arr[j];
-          }}
-          return null;
-        }};
-        arr.refresh = function() {{}};
-        return arr;
-      }},
+      get: function() {{ return pluginsCarrier; }},
       configurable: true
     }});
 
     Object.defineProperty(navigator, 'mimeTypes', {{
-      get: function() {{
-        var arr = mimeObjs;
-        Object.defineProperty(arr, 'length', {{ get: function() {{ return arr.length; }}, configurable: true }});
-        arr.item = function(i) {{ return arr[i] || null; }};
-        arr.namedItem = function(type) {{
-          for (var j = 0; j < arr.length; j++) {{
-            if (arr[j] && arr[j].type === type) return arr[j];
-          }}
-          return null;
-        }};
-        return arr;
-      }},
+      get: function() {{ return mimeCarrier; }},
       configurable: true
     }});
   }}

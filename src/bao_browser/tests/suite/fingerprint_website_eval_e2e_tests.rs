@@ -56,7 +56,7 @@
 #![allow(dead_code)]
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle, PagePool, PageState};
-use bao_stealth::StealthProfile;
+use bao_stealth::{StealthHooks, StealthProfile};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -119,11 +119,50 @@ fn wait_for_load(page: &PageHandle, max_ms: u64) {
 }
 
 // ---------------------------------------------------------------------------
-// inject_stealth_js — JS-level stealth property injection via Object.defineProperty
-// Uses the same profile data source as engine_props (data consistency).
+// build_stealth_js / inject_stealth_js — JS-level stealth property injection.
+// Uses the same profile data source as engine_props (data consistency), plus
+// the PRODUCT's own plugin spoof payload (bao_stealth::StealthHooks).
+//
+// The payload is ONE self-contained script (a sequence of self-guarding
+// IIFEs — one segment throwing never kills the rest) because it is consumed
+// in three places:
+//   1. local scenarios — evaluated directly on the data: page;
+//   2. post-navigation refresh — evaluated after the site loaded (only
+//      late-async probes can still observe it);
+//   3. NEW-DOCUMENT registration (the load-bearing one for site evaluation,
+//      e124): `add_script_to_evaluate_on_new_document` replays the payload
+//      at the vendor realm-entry drain point — AFTER the new document's
+//      window is built, BEFORE any page script runs — so the site's inline
+//      detector scripts see the stealthed surface. Evaluating the payload
+//      only AFTER the load (the pre-e124 shape) is structurally too late:
+//      the rows are already colored by then, which is exactly how the
+//      battery red (sannysoft p=4/f=4 on a bare unstealthed document)
+//      happened.
 // ---------------------------------------------------------------------------
 
-fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), String> {
+fn build_stealth_js(profile: &StealthProfile) -> String {
+    let mut segments: Vec<String> = Vec::new();
+
+    // Drain-time forensics (FIRST segment — runs before every override,
+    // capturing the realm's pre-injection surface for the evaluation
+    // detail; `__bao_stealth_diag` is read post-load by evaluate_sannysoft
+    // to make failures self-evidencing).
+    segments.push(
+        "(function() { try { globalThis.__bao_stealth_diag = 'plugin=' + (typeof Plugin) \
++ ' mime=' + (typeof MimeType) \
++ ' navLangs=' + (function(){ try { return JSON.stringify(navigator.languages); } catch(e) { return 'THROW'; } })() \
++ ' ownLangs=' + Object.prototype.hasOwnProperty.call(navigator, 'languages') \
++ ' ownPlugins=' + Object.prototype.hasOwnProperty.call(navigator, 'plugins'); } catch(e) { globalThis.__bao_stealth_diag = 'DIAG-THROW:' + e; } })();"
+            .to_string(),
+    );
+
+
+    // navigator string overrides (own-property getters, matching the
+    // engine_props data source). NOTE: real Chrome carries these on
+    // Navigator.prototype — own-property placement is itself detectable via
+    // getOwnPropertyNames; registered as a product-parity follow-up, not
+    // fixed here (the site rows under test read VALUES, not placement,
+    // except webdriver below).
     let nav_overrides = [
         ("userAgent", &profile.navigator.user_agent),
         ("platform", &profile.navigator.platform),
@@ -132,13 +171,20 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
     ];
     for (prop, value) in &nav_overrides {
         let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!(
+        segments.push(format!(
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return '{}';}}, configurable: false}}); }} catch(e){{}} }})()",
             prop, escaped
-        );
-        page.evaluate_js_web(&js)
-            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        ));
     }
+    // navigator.languages — the profile's array (the product's navigator_js
+    // hook overrides the same surface; sannysoft's Languages row requires a
+    // non-empty array).
+    let languages = serde_json::to_string(&profile.navigator.languages)
+        .unwrap_or_else(|_| r#"["en-US","en"]"#.into());
+    segments.push(format!(
+        "(function() {{ try {{ Object.defineProperty(navigator, 'languages', {{get: function(){{return {};}}, configurable: false}}); }} catch(e){{}} }})()",
+        languages
+    ));
     let nav_num_overrides = [
         (
             "hardwareConcurrency",
@@ -147,16 +193,64 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
         ("maxTouchPoints", profile.navigator.max_touch_points),
     ];
     for (prop, value) in &nav_num_overrides {
-        let js = format!(
+        segments.push(format!(
             "(function() {{ try {{ Object.defineProperty(navigator, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
-        );
-        page.evaluate_js_web(&js)
-            .map_err(|e| format!("inject nav.{}: {}", prop, e))?;
+        ));
     }
-    let js = "(function() { try { Object.defineProperty(navigator, 'webdriver', {get: function(){return false;}, configurable: false}); } catch(e){} })()";
-    page.evaluate_js_web(&js)
-        .map_err(|e| format!("inject webdriver: {}", e))?;
+    // webdriver — PROTOTYPE-level, never an own property of the navigator
+    // instance. bot.sannysoft.com's "WebDriver (New)" detector (2026 site
+    // revision) flags `_.has(navigator, "webdriver")` — lodash _.has is an
+    // OWN-property check — so an own-property defineProperty (the pre-2019
+    // stealth idiom) is itself the detection signal. Real Chrome carries
+    // `webdriver` as a prototype accessor returning false; mirror that:
+    // reads still yield false, own-property probes miss.
+    segments.push(
+        "(function() { \
+            try { delete navigator.webdriver; } catch(e) {} \
+            try { \
+                var proto = Object.getPrototypeOf(navigator); \
+                if (proto && !Object.prototype.hasOwnProperty.call(navigator, 'webdriver')) { \
+                    Object.defineProperty(proto, 'webdriver', \
+                        {get: function(){return false;}, configurable: true, enumerable: true}); \
+                } \
+            } catch(e) {} \
+         })()"
+            .to_string(),
+    );
+    // plugins — the PRODUCT's own plugin spoof payload
+    // (bao_stealth::StealthHooks::plugin_js, the same bytes the engine
+    // installs on a fresh stealthed page). Guarded on the Plugin/MimeType
+    // interface constructors: the new-document drain point runs before page
+    // scripts, and the payload must not assume interface objects a given
+    // realm may not expose.
+    let hooks = StealthHooks::from_profile(
+        &profile.canvas,
+        &profile.audio,
+        &profile.navigator,
+        &profile.screen,
+        &profile.webgl,
+        &profile.font,
+        &profile.battery,
+        profile.webrtc_mode,
+        &profile.timing,
+        &profile.clientrects,
+        &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
+    );
+    let plugin_js = hooks.plugin_js().to_string();
+    if !plugin_js.is_empty() {
+        segments.push(format!(
+            "(function() {{ if (typeof Plugin === 'undefined' || typeof MimeType === 'undefined') {{ return; }} {} }})()",
+            plugin_js
+        ));
+    }
     let screen_overrides = [
         ("width", profile.screen.width),
         ("height", profile.screen.height),
@@ -166,19 +260,38 @@ fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), 
         ("pixelDepth", profile.screen.color_depth),
     ];
     for (prop, value) in &screen_overrides {
-        let js = format!(
+        segments.push(format!(
             "(function() {{ try {{ Object.defineProperty(screen, '{}', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
             prop, value
-        );
-        page.evaluate_js_web(&js)
-            .map_err(|e| format!("inject screen.{}: {}", prop, e))?;
+        ));
     }
-    let js = format!(
+    segments.push(format!(
         "(function() {{ try {{ Object.defineProperty(window, 'devicePixelRatio', {{get: function(){{return {}; }}, configurable: false}}); }} catch(e){{}} }})()",
         profile.screen.device_pixel_ratio
+    ));
+    // Post-injection forensics (LAST segment — captures the surface AFTER
+    // every override ran, at drain time; read post-load alongside the
+    // pre-state to pinpoint which segment silently failed).
+    segments.push(
+        "(function() { try { globalThis.__bao_stealth_diag_after = 'pluginLen=' \
++ (navigator.plugins ? navigator.plugins.length : 'NOPLUGINS') \
++ ' langs=' + (function(){ try { return JSON.stringify(navigator.languages); } catch(e) { return 'THROW'; } })() \
++ ' ua40=' + String(navigator.userAgent).slice(0, 40); } catch(e) { globalThis.__bao_stealth_diag_after = 'AFTER-THROW:' + e; } })();"
+            .to_string(),
     );
-    page.evaluate_js_web(&js)
-        .map_err(|e| format!("inject dpr: {}", e))?;
+
+    // Semicolon-terminated joins: two adjacent IIFEs separated by a bare
+    // newline parse as `(a())(b())` — the first call's result invoked with
+    // the second IIFE as argument (`(intermediate value)() is not a
+    // function`, observed at join time). The semicolon terminates each
+    // call expression before the next begins.
+    segments.join(";\n")
+}
+
+fn inject_stealth_js(page: &PageHandle, profile: &StealthProfile) -> Result<(), String> {
+    let payload = build_stealth_js(profile);
+    page.evaluate_js_web(&payload)
+        .map_err(|e| format!("inject stealth payload: {}", e))?;
     Ok(())
 }
 
@@ -446,6 +559,22 @@ fn run_fingerprint_site_evaluations_in_parent(pool: &PagePool, report: &mut Repo
             }
         };
 
+        // PRE-NAVIGATION stealth registration (e124 load-bearing fix): the
+        // engine-level injection keys off the Window global pointer and does
+        // not survive navigation, and a post-load evaluation is structurally
+        // too late for parse-time detector scripts — the site's rows are
+        // colored by the page's own inline JS long before we could evaluate
+        // anything. Register the SAME payload as a new-document script: the
+        // vendor realm-entry drain replays it on the incoming document
+        // BEFORE any page script runs, so the detectors observe the
+        // stealthed surface (REQ-CDP-004 W55 carrier).
+        let payload = build_stealth_js(&profile);
+        if let Err(e) = page.add_script_to_evaluate_on_new_document(&payload) {
+            report.skip(site.name, &format!("new-document registration: {e}"));
+            let _ = page.close();
+            continue;
+        }
+
         // External HTTPS navigation — formerly SIGSEGV-trigger per BCE-002-residual
         // claim, now safe under BCE-001 + BCE-002 patches.
         if let Err(e) = page.navigate(site.url) {
@@ -455,9 +584,10 @@ fn run_fingerprint_site_evaluations_in_parent(pool: &PagePool, report: &mut Repo
         }
         wait_for_load(&page, 15000);
 
-        // Re-inject stealth AFTER navigation so the post-load document reflects
-        // our profile (the engine-level registration keys off the Window global
-        // pointer, which changes after navigation).
+        // Post-load refresh of the same payload — belt-and-braces for
+        // LATE-async probes (anything the site defers past parse time still
+        // observes the stealthed surface even if the realm-entry replay
+        // itself was skipped on this document).
         let _ = inject_stealth_js(&page, &profile);
 
         // Site-specific REAL evaluation.
@@ -491,23 +621,47 @@ fn run_fingerprint_site_evaluations_in_parent(pool: &PagePool, report: &mut Repo
 // Site-specific evaluators — scrape real detection data from the DOM
 // ---------------------------------------------------------------------------
 
-/// Parse sannysoft's detection table. Returns (passed, failed) by probing
-/// multiple selector strategies (sannysoft DOM has evolved across revisions):
-///   1. `#table-result .passed/.failed` (legacy container)
-///   2. `.passed` / `.failed` global counts (current)
-fn sannysoft_counts(page: &PageHandle) -> Result<(u32, u32), String> {
+/// Parse sannysoft's detection table. Returns (passed, failed, per-row
+/// verdicts) by probing multiple selector strategies (sannysoft DOM has
+/// evolved across revisions — third collection strategy, 2026-10 site
+/// revision):
+///   1. Id-anchored detection cells (current): the `*-result` family plus
+///      `#webgl-vendor` / `#webgl-renderer` / `#broken-image-dimensions`,
+///      classified by their `passed`/`failed` class. Cells with NEITHER
+///      class (the site's unevaluated state — e.g. a WEBGL_debug_renderer_info
+///      probe that threw) are excluded from the rate, exactly like the
+///      site's own uncolored rendering.
+///   2. `#table-result .passed/.failed` (legacy container)
+///   3. `.passed` / `.failed` global counts (legacy catch-all)
+fn sannysoft_counts(page: &PageHandle) -> Result<(u32, u32, String), String> {
     let js = "(function() { \
+        var cells = document.querySelectorAll(\
+            '[id$=\"-result\"], #webgl-vendor, #webgl-renderer, #broken-image-dimensions'); \
+        var p = 0, f = 0, rows = []; \
+        for (var i = 0; i < cells.length; i++) { \
+            var c = cells[i]; \
+            var cls = String(c.className || ''); \
+            var id = c.id || ('cell' + i); \
+            if (cls.indexOf('passed') !== -1) { p++; rows.push(id + ':P'); } \
+            else if (cls.indexOf('failed') !== -1) { f++; rows.push(id + ':F'); } \
+            else { rows.push(id + ':-'); } \
+        } \
+        if (p + f > 0) { return String(p) + ',' + String(f) + ';' + rows.join(' '); } \
         var p1 = document.querySelectorAll('#table-result .passed').length; \
         var f1 = document.querySelectorAll('#table-result .failed').length; \
-        if (p1 + f1 > 0) { return String(p1) + ',' + String(f1); } \
+        if (p1 + f1 > 0) { return String(p1) + ',' + String(f1) + ';legacy-container'; } \
         var p2 = document.querySelectorAll('.passed').length; \
         var f2 = document.querySelectorAll('.failed').length; \
-        return String(p2) + ',' + String(f2); \
+        return String(p2) + ',' + String(f2) + ';legacy-global'; \
      })()";
     let raw = page
         .evaluate_js_web(js)
         .map_err(|e| format!("eval: {}", e))?;
-    let parts: Vec<&str> = raw.split(',').collect();
+    let (counts, rows) = match raw.split_once(';') {
+        Some((c, r)) => (c, r.to_string()),
+        None => (raw.as_str(), String::new()),
+    };
+    let parts: Vec<&str> = counts.split(',').collect();
     if parts.len() != 2 {
         return Err(format!("malformed counts '{}'", raw));
     }
@@ -519,7 +673,7 @@ fn sannysoft_counts(page: &PageHandle) -> Result<(u32, u32), String> {
         .trim()
         .parse()
         .map_err(|_| format!("bad failed '{}'", parts[1]))?;
-    Ok((passed, failed))
+    Ok((passed, failed, rows))
 }
 
 /// Dump first ~10 sannysoft detection rows for human review of the real
@@ -550,12 +704,20 @@ fn evaluate_sannysoft(page: &PageHandle) -> (&'static str, String) {
             );
         }
     };
-    let (passed, failed) = counts;
+    let (passed, failed, rows) = counts;
     let total = passed + failed;
     if total == 0 {
+        // Empty-load forensics: distinguish "page never navigated off
+        // about:blank" / "load failed" / "JS not yet run" for the skip
+        // detail — an honest skip needs the evidence, not a guess.
+        let diag = page.evaluate_js_web(
+            "(function() { return String(document.URL) + ' rs=' + String(document.readyState) \
+             + ' len=' + String((document.body && document.body.innerText || '').length); })()",
+        );
+        let extra = diag.unwrap_or_else(|e| format!("diag-eval-err: {e}"));
         return (
             "SKIP",
-            "no detection rows parsed (page did not fully load)".to_string(),
+            format!("no detection rows parsed (page did not fully load) [{extra}]"),
         );
     }
     let pass_rate = passed as f64 / total as f64;
@@ -566,31 +728,39 @@ fn evaluate_sannysoft(page: &PageHandle) -> (&'static str, String) {
         Err(_) => false, // eval error → don't add leak claim
     };
 
-    // Efficacy: pass rate >= 0.6 AND no webdriver leak.
-    let row_sample = sannysoft_row_sample(page);
-    let short_rows: String = row_sample.chars().take(200).collect();
+    // Stealth-surface evidence: read the drain-time forensics recorded by
+    // the payload's first/last segments (present on any document where the
+    // new-document registration actually ran) into the FAIL/PASS detail.
+    let diag = page
+        .evaluate_js_web(
+            "(function() { return String(globalThis.__bao_stealth_diag || 'NO-DIAG') + ' || ' \
+             + String(globalThis.__bao_stealth_diag_after || 'NO-DIAG-AFTER'); })()",
+        )
+        .unwrap_or_else(|e| format!("diag-eval-err: {e}"));
+    let short_diag: String = diag.chars().take(200).collect();
+    let short_rows: String = rows.chars().take(300).collect();
     if pass_rate >= 0.6 && !webdriver_leaked {
         (
             "PASS",
             format!(
-                "counts(p={},f={},rate={:.2}) webdriver_hidden={} rows=[{}]",
-                passed, failed, pass_rate, !webdriver_leaked, short_rows
+                "counts(p={},f={},rate={:.2}) webdriver_hidden={} rows=[{}] diag[{}]",
+                passed, failed, pass_rate, !webdriver_leaked, short_rows, short_diag
             ),
         )
     } else if webdriver_leaked {
         (
             "FAIL",
             format!(
-                "webdriver LEAKED (counts p={},f={},rate={:.2})",
-                passed, failed, pass_rate
+                "webdriver LEAKED (counts p={},f={},rate={:.2}) rows=[{}]",
+                passed, failed, pass_rate, short_rows
             ),
         )
     } else {
         (
             "FAIL",
             format!(
-                "pass_rate={:.2} below 0.6 (p={},f={}) rows=[{}]",
-                pass_rate, passed, failed, short_rows
+                "pass_rate={:.2} below 0.6 (p={},f={}) rows=[{}] diag[{}]",
+                pass_rate, passed, failed, short_rows, short_diag
             ),
         )
     }
