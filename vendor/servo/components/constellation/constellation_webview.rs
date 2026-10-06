@@ -15,7 +15,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use script_traits::{ConstellationInputEvent, ScriptThreadMessage, WebViewState};
 use servo_base::Epoch;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
-use servo_constellation_traits::{ScreenshotReadinessResponse, SessionHistoryTraversalRequest};
+use servo_constellation_traits::{
+    LoadData, ScreenshotReadinessResponse, SessionHistoryTraversalRequest,
+};
 use style_traits::CSSPixel;
 
 use crate::browsingcontext::{BrowsingContext, FullyActiveBrowsingContextsIterator};
@@ -42,6 +44,20 @@ pub(crate) struct ConstellationWebView {
     /// document is active. Between starting the load and it activating,
     /// we store a `SessionHistoryChange` object for the navigation in progress.
     pub pending_changes: Vec<SessionHistoryChange>,
+
+    /// BAO PATCH (e133, REQ-BRW-002): an embedder-initiated top-level load
+    /// (`EmbedderToConstellationMessage::LoadUrl` — the typed-URL / API
+    /// navigate path) that arrived while its browsing context was not ready
+    /// to accept it: either the webview's initial pipeline has not activated
+    /// yet (the `BrowsingContext` map entry only materializes at activation,
+    /// so upstream silently dropped the load with "LoadUrl for unknown
+    /// browsing context"), or a pending session-history change targets the
+    /// same top-level browsing context (upstream's "a pending page will not
+    /// be overridden" guard dropped the load wholesale). An embedder
+    /// navigation is the newest user intent, so it is deferred here instead
+    /// and flushed at the activation digest (`handle_activate_document_msg`).
+    /// Newest deferral wins — a superseded older deferral is replaced.
+    pub(crate) deferred_embedder_load: Option<LoadData>,
 
     /// The [`BrowsingContextGroup`] associated with this [`ConstellationWebView`]. Every
     /// `WebView` has a single [`BrowsingContextGroup`], but that group may be shared amongst
@@ -123,6 +139,7 @@ impl ConstellationWebView {
             active_top_level_pipeline_id: None,
             active_top_level_pipeline_epoch: Epoch::default(),
             pending_changes: Default::default(),
+            deferred_embedder_load: None,
             browsing_context_group,
             focused_browsing_context_id,
             hovered_browsing_context_id: None,

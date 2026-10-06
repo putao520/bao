@@ -534,6 +534,88 @@ fn epoch_ms_now() -> u128 {
         .as_millis()
 }
 
+/// e133 (REQ-BRW-002) — Face B deterministic vehicle: the back-to-back double
+/// navigate. Two LoadUrls land within the same event-loop window while the
+/// FIRST navigation's document creation is still held back (slowinit carrier:
+/// response arrives only after the carrier delay, so navigation A's pipeline
+/// is pending — its `ActivateDocument` has not been digested). Upstream
+/// constellation then hits the "a pending page will not be overridden" guard
+/// in `load_url` and drops the second load WHOLESALE: zero load-status edges,
+/// the navigation never runs, the page stays on A's document forever
+/// (`BAO_NAV_RACE_PROBE=1` shows `P3 LOAD-DROPPED-PENDING-GUARD`).
+/// The e131 midload test documented this drop as out-of-scope; this test pins
+/// the FIXED contract: the newest navigation must eventually win.
+#[test]
+fn post_creation_back_to_back_double_navigate_not_dropped() {
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        eprintln!("[skip] no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
+        return;
+    }
+    let port = spawn_origin();
+    let runtime = match BrowserRuntime::new(BaoConfig::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[skip] runtime init failed: {e}");
+            return;
+        }
+    };
+    let pool = runtime.page_pool();
+    let target_a = format!("http://127.0.0.1:{port}/slowinit600");
+    let target_b = format!("http://127.0.0.1:{port}/t");
+
+    for round in 0..3usize {
+        let page = pool
+            .create_page(&PageConfig {
+                url: Some("about:blank".into()),
+                ..Default::default()
+            })
+            .expect("create_page");
+
+        // A: document creation held back ~600ms → its pipeline stays PENDING
+        // in constellation's pending_changes for the whole window.
+        page.navigate(&target_a).expect("navigate A");
+        // B: back-to-back — lands while A is still pending (same tick).
+        let t0 = Instant::now();
+        page.navigate(&target_b).expect("navigate B");
+
+        // The fixed contract: B (the newest navigation) eventually wins — its
+        // URL commits and the page reaches Interactive on B's document. Pump
+        // driven per spin (live-test wait loops must drive the pump).
+        let mut b_committed: Option<Duration> = None;
+        let mut b_interactive: Option<Duration> = None;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            let _ = page.evaluate_js_web(";");
+            let url = page.current_url().unwrap_or_default();
+            if b_committed.is_none() && url.ends_with("/t") {
+                b_committed = Some(t0.elapsed());
+            }
+            if b_committed.is_some()
+                && matches!(page.get_state(), PageState::Interactive | PageState::Idle)
+            {
+                b_interactive = Some(t0.elapsed());
+                break;
+            }
+        }
+        match (b_committed, b_interactive) {
+            (Some(c), Some(i)) => eprintln!(
+                "[nav-race double-nav] round {round}: B committed +{:.0}ms, Interactive +{:.0}ms",
+                c.as_secs_f64() * 1000.0,
+                i.as_secs_f64() * 1000.0
+            ),
+            (Some(c), None) => panic!(
+                "round {round}: B committed at +{:.0}ms but never reached Interactive within 15s",
+                c.as_secs_f64() * 1000.0
+            ),
+            (None, _) => panic!(
+                "round {round}: back-to-back navigate B was DROPPED wholesale (zero edges) — \
+                 URL never committed to {target_b} within 15s (constellation pending-guard drop)"
+            ),
+        }
+        let _ = page.close();
+    }
+}
+
 /// e131 fix regression pin: the generation gate must never STARVE a
 /// navigation. The hazard: the new load's `Started` credits the generation —
 /// if servo's webview-side same-value dedupe (removed in the same fix) were
@@ -571,11 +653,13 @@ fn post_creation_navigate_midload_renavigate_not_starved() {
         // Navigation A: doc-init fast (its `Started` edge is delivered and
         // credited), load event held back ~300ms by the blocking
         // subresource — a genuinely mid-load document when B is issued.
-        // (NOT a back-to-back double navigate: two LoadUrls in the same
-        // event-loop tick hit servo's constellation `pending_changes`
-        // semantics — "a pending page will not be overridden" — which drops
-        // the second load wholesale; that is pre-existing constellation
-        // behavior outside this race's scope.)
+        // (NOT a back-to-back double navigate: that shape used to hit
+        // servo's constellation `pending_changes` semantics — "a pending
+        // page will not be overridden" — dropping the second load
+        // wholesale; e133 fixed it by deferring the embedder load until the
+        // pending change activates — pinned by
+        // `post_creation_back_to_back_double_navigate_not_dropped`. This
+        // test keeps the mid-load shape so both windows stay covered.)
         page.navigate(&format!("http://127.0.0.1:{port}/slowinit300"))
             .expect("navigate A");
         let a_url = format!("http://127.0.0.1:{port}/slowinit300");

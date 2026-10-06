@@ -290,6 +290,25 @@ struct WorkerAnimationFrameProvider {
     tick_pending: bool,
 }
 
+// BAO PATCH (e133, REQ-BRW-002): zero-edge navigation death forensics probes.
+// Gated by `BAO_NAV_RACE_PROBE` (same key as the e131 nav_race_repro family);
+// zero cost when unset (single lazily-cached env read per call site).
+// Timestamps are epoch-milliseconds, matching the e131 hop-clock convention.
+pub(crate) fn bao_probe_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("BAO_NAV_RACE_PROBE").is_some())
+}
+
+pub(crate) fn bao_probe_ms(tag: &str, detail: String) {
+    if bao_probe_enabled() {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        eprintln!("[constellation probe +{ms}] {tag}: {detail}");
+    }
+}
+
 /// The `Constellation` itself. In the servo browser, there is one
 /// constellation, which maintains all of the browser global data.
 /// In embedded applications, there may be more than one constellation,
@@ -1245,8 +1264,13 @@ where
                 self.handle_allow_navigation_response(pipeline_id, allowed);
             },
             // Load a new page from a typed url
-            // If there is already a pending page (self.pending_changes), it will not be overridden;
-            // However, if the id is not encompassed by another change, it will be.
+            // BAO PATCH (e133, REQ-BRW-002): upstream dropped this load
+            // wholesale (zero edges) when the webview's browsing context had
+            // not materialized yet (initial pipeline pre-activation) or a
+            // pending session-history change targeted the same top-level
+            // browsing context. The embedder load is the newest user intent,
+            // so it is deferred on the webview and flushed at activation
+            // digest instead of being dropped. See handle_embedder_load_url.
             EmbedderToConstellationMessage::LoadUrl(webview_id, url_request) => {
                 let mut load_data = LoadData::new_for_new_unrelated_webview(url_request.url);
 
@@ -1254,22 +1278,7 @@ where
                     load_data.headers.extend(url_request.headers);
                 }
 
-                let ctx_id = BrowsingContextId::from(webview_id);
-                let pipeline_id = match self.browsing_contexts.get(&ctx_id) {
-                    Some(ctx) => ctx.pipeline_id,
-                    None => {
-                        return warn!("{}: LoadUrl for unknown browsing context", webview_id);
-                    },
-                };
-                // Since this is a top-level load, initiated by the embedder, go straight to load_url,
-                // bypassing schedule_navigation.
-                self.load_url(
-                    webview_id,
-                    pipeline_id,
-                    load_data,
-                    NavigationHistoryBehavior::Push,
-                    TargetSnapshotParams::default(),
-                );
+                self.handle_embedder_load_url(webview_id, load_data);
             },
             // Create a new top level browsing context. Will use response_chan to return
             // the browsing context id.
@@ -3327,6 +3336,12 @@ where
             TargetSnapshotParams::default(),
             None,
         );
+        // BAO probe P6 (e133): webview creation — its BrowsingContext map entry
+        // only materializes at P5 (activation), the zero-edge death window.
+        bao_probe_ms(
+            "P6 webview-created",
+            format!("{webview_id:?} initial_pipeline={pipeline_id:?}"),
+        );
 
         self.system_font_service
             .prefetch_font_keys_for_painter(PainterId::from(webview_id));
@@ -4117,6 +4132,122 @@ where
         }
     }
 
+    /// BAO PATCH (e133, REQ-BRW-002): the embedder-initiated top-level load
+    /// (typed-URL / API navigate path), extracted from the `LoadUrl` message
+    /// arm so a deferred load can re-enter the identical path at activation
+    /// digest.
+    ///
+    /// Upstream dropped this load wholesale — a zero-edge navigation death
+    /// (no Started/HeadParsed/Complete edges, nothing observable) — in two
+    /// windows:
+    ///  * the webview's initial pipeline has not activated yet: a new
+    ///    webview's `BrowsingContext` map entry only materializes at
+    ///    activation (`change_session_history` → `new_browsing_context`), so
+    ///    the arm's lookup failed with "LoadUrl for unknown browsing context";
+    ///    the post-creation navigate races the initial pipeline's
+    ///    `ActivateDocument` digestion (the embedder's `frame_ready` fires at
+    ///    first paint, which bypasses the constellation's message loop, so
+    ///    under load the queued `ActivateDocument` can lose the channel
+    ///    select to the freshly-arrived `LoadUrl`);
+    ///  * a pending session-history change targets the same top-level
+    ///    browsing context: `load_url`'s "a pending page will not be
+    ///    overridden" guard returns early (deterministic for back-to-back
+    ///    navigates — the second load dies in the same event-loop window the
+    ///    first load's pipeline spends pending).
+    ///
+    /// The embedder load is the newest user intent: defer it on the webview
+    /// (newest deferral wins) and flush at `handle_activate_document_msg`
+    /// instead of dropping. The script-initiated path
+    /// (`handle_allow_navigation_response` → `load_url`) keeps the upstream
+    /// guard untouched.
+    fn handle_embedder_load_url(&mut self, webview_id: WebViewId, load_data: LoadData) {
+        let ctx_id = BrowsingContextId::from(webview_id);
+        bao_probe_ms(
+            "P1 loadurl-entry",
+            format!("{webview_id:?} url={}", load_data.url),
+        );
+        let Some(pipeline_id) = self
+            .browsing_contexts
+            .get(&ctx_id)
+            .map(|ctx| ctx.pipeline_id)
+        else {
+            self.defer_or_drop_embedder_load(webview_id, load_data, "unknown-browsing-context");
+            return;
+        };
+        let pending_for_ctx = self.webviews.get(&webview_id).is_some_and(|webview| {
+            webview
+                .pending_changes
+                .iter()
+                .any(|change| change.browsing_context_id == ctx_id)
+        });
+        if pending_for_ctx {
+            self.defer_or_drop_embedder_load(webview_id, load_data, "pending-change-in-flight");
+            return;
+        }
+        // Since this is a top-level load, initiated by the embedder, go straight to load_url,
+        // bypassing schedule_navigation.
+        self.load_url(
+            webview_id,
+            pipeline_id,
+            load_data,
+            NavigationHistoryBehavior::Push,
+            TargetSnapshotParams::default(),
+        );
+    }
+
+    /// BAO PATCH (e133, REQ-BRW-002): stash an embedder load that cannot run
+    /// yet on its webview, or drop it (with the upstream warning) if the
+    /// webview itself is unknown. Newest deferral wins: a load deferred while
+    /// an older deferral is still waiting replaces it — both are embedder
+    /// navigations and only the newest user intent should ever run.
+    fn defer_or_drop_embedder_load(&mut self, webview_id: WebViewId, load_data: LoadData, reason: &str) {
+        match self.webviews.get_mut(&webview_id) {
+            Some(webview) => {
+                bao_probe_ms(
+                    "P7 LOADURL-DEFERRED",
+                    format!("{webview_id:?} reason={reason} url={}", load_data.url),
+                );
+                webview.deferred_embedder_load = Some(load_data);
+            },
+            None => {
+                bao_probe_ms(
+                    "P2 LOADURL-DROPPED-UNKNOWN-WEBVIEW",
+                    format!("{webview_id:?} url={}", load_data.url),
+                );
+                warn!("{}: LoadUrl for unknown browsing context", webview_id);
+            },
+        }
+    }
+
+    /// BAO PATCH (e133, REQ-BRW-002): flush the deferred embedder load, if
+    /// any, now that a pending change has been digested (activation) — the
+    /// browsing context materialized/advanced and no pending change for it
+    /// remains, so the newest user navigation can run. Re-enters
+    /// `handle_embedder_load_url`, which re-checks both guards and re-defers
+    /// if another navigation went pending in the meantime. If the pending
+    /// pipeline died instead of activating (close_pipeline removed its change
+    /// without an activation), the deferral stays parked — the same net
+    /// behavior as upstream's outright drop for that corner.
+    fn flush_deferred_embedder_load(&mut self, webview_id: WebViewId) {
+        let Some(load_data) = self
+            .webviews
+            .get(&webview_id)
+            .and_then(|webview| webview.deferred_embedder_load.clone())
+        else {
+            return;
+        };
+        bao_probe_ms(
+            "P8 deferred-flush",
+            format!("{webview_id:?} url={}", load_data.url),
+        );
+        // Clear first: the re-entry below either runs the load or installs a
+        // fresh (possibly newer) deferral; a stale slot must not survive.
+        if let Some(webview) = self.webviews.get_mut(&webview_id) {
+            webview.deferred_embedder_load = None;
+        }
+        self.handle_embedder_load_url(webview_id, load_data);
+    }
+
     #[servo_tracing::instrument(skip_all)]
     fn load_url(
         &mut self,
@@ -4213,6 +4344,16 @@ where
                     })
                 {
                     // id that sent load msg is being changed already; abort
+                    // BAO probe P3 (e133): this load died at the upstream
+                    // "a pending page will not be overridden" guard — the
+                    // deterministic back-to-back double-navigate drop.
+                    bao_probe_ms(
+                        "P3 LOAD-DROPPED-PENDING-GUARD",
+                        format!(
+                            "{webview_id:?} bc={browsing_context_id:?} source={source_id:?} url={}",
+                            load_data.url
+                        ),
+                    );
                     return None;
                 }
 
@@ -4236,6 +4377,7 @@ where
                 };
 
                 let new_pipeline_id = PipelineId::new();
+                let probe_url = load_data.url.to_string();
                 self.new_pipeline(
                     new_pipeline_id,
                     browsing_context_id,
@@ -4262,6 +4404,11 @@ where
                 } else {
                     warn!("Could not find WebView for URL load: ({webview_id:?})");
                 }
+                // BAO probe P4 (e133): the navigation SPAWNED — edges will flow.
+                bao_probe_ms(
+                    "P4 load-spawned",
+                    format!("{webview_id:?} new_pipeline={new_pipeline_id:?} url={probe_url}"),
+                );
 
                 Some(new_pipeline_id)
             },
@@ -5639,6 +5786,13 @@ where
 
         // Find the pending change whose new pipeline id is pipeline_id. If it is found, remove
         // it from the pending changes, and make it the active document of its frame.
+        // BAO probe P5 (e133): ActivateDocument ARRIVED at the constellation —
+        // the pending change digests now, so the browsing context materializes
+        // (new webview) / advances (existing BC) from this point on.
+        bao_probe_ms(
+            "P5 activate-arrived",
+            format!("{webview_id:?} pipeline={pipeline_id:?}"),
+        );
         let Some(change) = self
             .webviews
             .get_mut(&webview_id)
@@ -5683,6 +5837,12 @@ where
                 &self.pipelines,
             );
         }
+
+        // BAO PATCH (e133, REQ-BRW-002): a pending change just digested — if
+        // an embedder load was deferred against it (zero-edge navigation
+        // death fix), this is the moment the browsing context can accept the
+        // newest user navigation.
+        self.flush_deferred_embedder_load(webview_id);
     }
 
     /// Called when the window is resized.
