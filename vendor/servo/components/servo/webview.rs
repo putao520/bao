@@ -322,9 +322,15 @@ impl WebView {
     }
 
     pub(crate) fn set_load_status(self, new_value: LoadStatus) {
-        if self.inner().load_status == new_value {
-            return;
-        }
+        // Bao patch (e131, stale-Complete race): the upstream same-value
+        // dedupe collapsed consecutive equal edges from DIFFERENT loads into
+        // one — a new navigation's `Started` arriving while the WebView copy
+        // still reads `Started` (mid-load re-navigate) was swallowed, so the
+        // embedder could not tell which load a later `Complete` belonged to.
+        // Per-load edge streams contain no same-value repeats (the document
+        // side guards readiness transitions), so always notifying changes
+        // nothing within one load and restores the cross-load boundaries the
+        // embedder's load-generation gating keys on.
         self.inner_mut().load_status = new_value;
         self.delegate().notify_load_status_changed(self, new_value);
     }

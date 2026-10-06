@@ -254,12 +254,21 @@ impl PageInner {
         if self.get_state() != PageState::Navigating {
             self.apply(PageEvent::Navigate);
         }
-        // BCE (stale Complete race): a second navigation to the same page
-        // leaves the previous load's `Complete` in webview_state until
-        // servo's async Started arrives — get_state's projection below would
-        // report Interactive for a load that just began. Reset to Started
-        // (identical to the event servo is about to deliver; idempotent).
-        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        // BCE (stale Complete race) + e131 (load-generation gate): a second
+        // navigation to the same page leaves the previous load's `Complete`
+        // in webview_state until servo's async Started arrives — get_state's
+        // projection below would report Interactive for a load that just
+        // began. Reset to Started (identical to the event servo is about to
+        // deliver; idempotent) AND bump the load generation: the previous
+        // load's in-flight `Complete` (delivered after this reset — its load
+        // completes before the replacement commit) is dropped by the
+        // delegate's generation gate until the NEW load's `Started` credits
+        // the generation (see BaoWebViewState::load_generation).
+        {
+            let mut ws = self.webview_state.borrow_mut();
+            ws.load_status = servo::LoadStatus::Started;
+            ws.load_generation += 1;
+        }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }
@@ -547,8 +556,12 @@ impl PageInner {
         if self.get_state() != PageState::Navigating {
             self.apply(PageEvent::Navigate);
         }
-        // BCE (stale Complete race) — see navigate().
-        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        // BCE (stale Complete race) + e131 load-generation gate — see navigate().
+        {
+            let mut ws = self.webview_state.borrow_mut();
+            ws.load_status = servo::LoadStatus::Started;
+            ws.load_generation += 1;
+        }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }
@@ -561,8 +574,12 @@ impl PageInner {
         if self.get_state() != PageState::Navigating {
             self.apply(PageEvent::Navigate);
         }
-        // BCE (stale Complete race) — see navigate().
-        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        // BCE (stale Complete race) + e131 load-generation gate — see navigate().
+        {
+            let mut ws = self.webview_state.borrow_mut();
+            ws.load_status = servo::LoadStatus::Started;
+            ws.load_generation += 1;
+        }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }
@@ -575,8 +592,12 @@ impl PageInner {
         if self.get_state() != PageState::Navigating {
             self.apply(PageEvent::Navigate);
         }
-        // BCE (stale Complete race) — see navigate().
-        self.webview_state.borrow_mut().load_status = servo::LoadStatus::Started;
+        // BCE (stale Complete race) + e131 load-generation gate — see navigate().
+        {
+            let mut ws = self.webview_state.borrow_mut();
+            ws.load_status = servo::LoadStatus::Started;
+            ws.load_generation += 1;
+        }
         self.nav_seq.set(self.nav_seq.get() + 1);
         Ok(())
     }

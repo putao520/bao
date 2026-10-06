@@ -3192,6 +3192,21 @@ pub struct BaoWebViewState {
     pub url: Option<url::Url>,
     pub title: Option<String>,
     pub load_status: LoadStatus,
+    /// e131 (stale-Complete race, REQ-BRW-002): load generation — bumped by
+    /// every embedder-side navigation entry (navigate/reload/go_back/
+    /// go_forward). `LoadStatus` edges carry no load identity (WebViewId
+    /// only), so a `Complete` belonging to the PREVIOUS load can land after
+    /// the navigation's synchronous reset and un-reset it (`get_state()` then
+    /// projects `Interactive` before the new load commits — the e124
+    /// post-creation navigate flake). The pair below gates acceptance:
+    /// `started_generation` is credited when servo delivers a `Started` for
+    /// the current generation; an un-credited `Complete` belongs to a
+    /// superseded load and is dropped.
+    pub load_generation: u64,
+    /// The generation whose `Started` edge servo has delivered (see
+    /// `load_generation`). Equal to `load_generation` except in the window
+    /// between a navigation entry and the new load's own `Started`.
+    pub started_generation: u64,
     pub frame_ready: bool,
     /// Latched repaint request from servo (`WebViewDelegate::notify_new_frame_ready`).
     /// This is servo's embedder contract for "a new frame is ready — repaint now"
@@ -3303,6 +3318,8 @@ impl Default for BaoWebViewState {
             url: None,
             title: None,
             load_status: LoadStatus::Started,
+            load_generation: 0,
+            started_generation: 0,
             frame_ready: false,
             repaint_pending: false,
             dom_proxies_dirty: false,
@@ -4964,7 +4981,41 @@ impl WebViewDelegate for BaoWebViewDelegate {
     }
 
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
-        self.state.borrow_mut().load_status = status;
+        // e131 (stale-Complete race, REQ-BRW-002): load-generation gate. A
+        // `Complete` arriving for a generation whose `Started` was never
+        // delivered belongs to a load superseded by a navigation entry — the
+        // previous load was still in flight when navigate/reload/go_back/
+        // go_forward reset the copy, and its late `Complete` would un-reset
+        // it (Interactive projected before the new load commits — the e124
+        // post-creation navigate flake; reproducer:
+        // nav_race_repro_tests). Dropped with no observable effect: the
+        // state write, the CDP FrameStoppedLoading event and the webdriver
+        // load-complete resolution are all skipped for the superseded edge.
+        // The new load's own `Started` credits the current generation (see
+        // the `Started` arm below); servo's webview-side same-value dedupe
+        // was removed (vendor patch, webview.rs) so that credit is reliable
+        // even for a mid-load re-navigate onto a copy that still reads
+        // `Started`.
+        {
+            let mut state = self.state.borrow_mut();
+            match status {
+                LoadStatus::Complete => {
+                    if state.started_generation != state.load_generation {
+                        log::debug!(
+                            "[delegate] dropping stale Complete for superseded load \
+                             (generation {} of {}, webview {})",
+                            state.started_generation,
+                            state.load_generation,
+                            _webview.id()
+                        );
+                        return;
+                    }
+                }
+                LoadStatus::Started => state.started_generation = state.load_generation,
+                LoadStatus::HeadParsed => {}
+            }
+            state.load_status = status;
+        }
         // WPT official-toolchain face (REQ-BRW-002): resolve any pending
         // WebDriver load-status waiter for this webview on Complete.
         #[cfg(feature = "webdriver")]
