@@ -11,6 +11,9 @@
 // block) is the 段(2) servo-media bridge face.
 [Exposed=AudioWorklet]
 interface AudioWorkletProcessor {
+    // (Bao e122) [Throws]: the reentrancy face — a second construction
+    // while a node instantiation is in flight is the spec's TypeError.
+    [Throws]
     constructor(optional object options);
     readonly attribute MessagePort port;
 };

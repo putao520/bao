@@ -288,6 +288,44 @@ pub(crate) struct AudioWorkletGlobalScope {
     #[no_trace]
     #[ignore_malloc_size_of = "media pump, no heap-owned GC payload"]
     audio_pumps: DomRefCell<Vec<NodePump>>,
+    /// The in-flight instantiation's base-construction handoff (e122):
+    /// installed by `instantiate_processor` *before* invoking the registered
+    /// constructor, so the `AudioWorkletProcessor` base constructor wires
+    /// its freshly minted port into the node's lane-0 conduit immediately —
+    /// a constructor-body `this.port.postMessage` already rides the ring
+    /// instead of the dead constellation path (the spec's port is part of
+    /// the base-constructed instance, not a post-construction wiring step).
+    /// `Consumed` marks the one allowed construction of this instantiation
+    /// as spent — any further `new AudioWorkletProcessor()` while the
+    /// instantiation is in flight is the spec constructor-reentrancy
+    /// TypeError face (processor-construction-port WPT battery).
+    #[no_trace]
+    #[ignore_malloc_size_of = "no heap-owned GC payload"]
+    pending_construction: DomRefCell<Option<PendingProcessorConstruction>>,
+}
+
+/// The state of the in-flight processor instantiation's construction
+/// handoff (see [`AudioWorkletGlobalScope::pending_construction`]).
+pub(crate) enum PendingProcessorConstruction {
+    /// The next `AudioWorkletProcessor` construction takes this conduit for
+    /// its port's redirect (lane 0).
+    Fresh(Arc<AudioWorkletPortConduit>),
+    /// The instantiation's one allowed construction already happened.
+    Consumed,
+}
+
+/// What the `AudioWorkletProcessor` base constructor should do with the
+/// minted port (see
+/// [`AudioWorkletGlobalScope::take_pending_processor_construction`]).
+pub(crate) enum ConstructionHandoff {
+    /// Wire the minted port into this conduit (lane 0) — the
+    /// instantiation's one allowed construction.
+    Wire(Arc<AudioWorkletPortConduit>),
+    /// An instantiation is in flight but its construction is spent: the
+    /// spec's constructor-reentrancy TypeError face.
+    Reentrant,
+    /// No instantiation in flight: a plain, un-entangled port.
+    Bare,
 }
 
 impl AudioWorkletGlobalScope {
@@ -323,6 +361,7 @@ impl AudioWorkletGlobalScope {
             processor_instances: Default::default(),
             port_lane_ports: Default::default(),
             audio_pumps: DomRefCell::new(Vec::new()),
+            pending_construction: DomRefCell::new(None),
         });
         let origin = global.worklet_global.origin();
         AudioWorkletGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(cx, &origin, global)
@@ -330,6 +369,41 @@ impl AudioWorkletGlobalScope {
 
     pub(crate) fn audio(&self) -> &AudioWorkletScopeData {
         &self.audio
+    }
+
+    // ── e122: the in-flight instantiation's construction handoff ──
+
+    /// Install the handoff for the instantiation that is about to invoke
+    /// its registered constructor (worklet thread; see
+    /// `instantiate_processor`).
+    pub(crate) fn set_pending_processor_construction(
+        &self,
+        pending: PendingProcessorConstruction,
+    ) {
+        *self.pending_construction.borrow_mut() = Some(pending);
+    }
+
+    /// Take the handoff for the `AudioWorkletProcessor` base constructor:
+    /// `Fresh` yields the conduit (flipping the slot to `Consumed` — the
+    /// instantiation's one allowed construction), `Consumed` reports the
+    /// reentrancy face, `None` means no instantiation is in flight.
+    pub(crate) fn take_pending_processor_construction(&self) -> ConstructionHandoff {
+        let mut slot = self.pending_construction.borrow_mut();
+        match slot.take() {
+            Some(PendingProcessorConstruction::Fresh(conduit)) => {
+                *slot = Some(PendingProcessorConstruction::Consumed);
+                ConstructionHandoff::Wire(conduit)
+            },
+            Some(PendingProcessorConstruction::Consumed) => ConstructionHandoff::Reentrant,
+            None => ConstructionHandoff::Bare,
+        }
+    }
+
+    /// Clear the handoff once the registered constructor returned (both the
+    /// success and every failure arm — a stale `Fresh` slot would mis-wire
+    /// the next unrelated base construction).
+    pub(crate) fn clear_pending_processor_construction(&self) {
+        *self.pending_construction.borrow_mut() = None;
     }
 
     // ── 段(3) wiring: instance/pump registries and the block-rate drain ──
@@ -560,6 +634,17 @@ impl AudioWorkletGlobalScopeMethods<crate::DomTypeHolder> for AudioWorkletGlobal
     /// <https://webaudio.github.io/web-audio-api/#dom-audioworkletglobalscope-samplerate>
     fn SampleRate(&self) -> Finite<f32> {
         Finite::wrap(self.audio.sample_rate())
+    }
+
+    /// <https://webaudio.github.io/web-audio-api/#dom-audioworkletglobalscope-renderquantumsize>
+    ///
+    /// (e122) Always the default 128: servo-media renders at the fixed
+    /// quantum — the `renderSizeHint` context option is not plumbed. The
+    /// getter's presence keeps rendersizehint-style constructor bodies from
+    /// hitting a ReferenceError (the honest completion is a content FAIL on
+    /// the size assertion, matching the servo ini expectation).
+    fn RenderQuantumSize(&self) -> u32 {
+        128
     }
 }
 

@@ -36,7 +36,9 @@ use js::gc::HandleValue;
 use js::jsapi::{HandleValueArray, Heap, JSObject};
 use js::jsval::{ObjectValue, UndefinedValue};
 use js::realm::AutoRealm;
-use js::rust::wrappers2::{Call, Construct1, JS_ClearPendingException, JS_IsExceptionPending};
+use js::rust::wrappers2::{
+    Call, Construct1, JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending,
+};
 use servo_media::audio::audioworklet_node::{
     AudioWorkletBridge, AudioWorkletPump, AudioWorkletProcessorHandler, ProcessorControl,
     WorkletQuantum,
@@ -48,6 +50,7 @@ use crate::dom::audio::audioworkletglobalscope::{
 };
 use crate::dom::audio::audioworkletnode::AudioWorkletNode;
 use crate::dom::bindings::conversions::get_property_jsval;
+use crate::dom::bindings::error::ErrorInfo;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::DomRoot;
@@ -123,8 +126,11 @@ impl WorkletProcessorHandler {
     }
 
     /// Latch the failure on the bridge (render side mutes) and queue the
-    /// one-shot `processorerror` task to the script thread.
-    fn report_processor_error(&mut self) {
+    /// one-shot `processorerror` task to the script thread. `info` is the
+    /// captured throw site (message/filename/line/column) when the failure
+    /// was a pending JS exception — the spec's `processorerror` is an
+    /// `ErrorEvent` carrying exactly those (e122).
+    fn report_processor_error(&mut self, info: Option<ErrorInfo>) {
         self.bridge.signal_processor_error();
         if self.error_reported.swap(true, Ordering::AcqRel) {
             return;
@@ -132,7 +138,7 @@ impl WorkletProcessorHandler {
         let node = self.node.clone();
         let task = task!(fire_processorerror: move |cx| {
             let node = node.root();
-            node.fire_processorerror_once(cx);
+            node.fire_processorerror_once(cx, info);
         });
         let msg = CommonScriptMsg::Task(
             ScriptThreadEventCategory::WorkletEvent,
@@ -176,28 +182,28 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
         // per call, so a processor swapping `this.process` is honoured.
         rooted!(&in(cx) let mut process_val = UndefinedValue());
         if inst.instance.get().is_null() {
-            self.report_processor_error();
+            self.report_processor_error(None);
             return ProcessorControl::Finish;
         }
         rooted!(&in(cx) let instance_obj = inst.instance.get());
         if get_property_jsval(cx, instance_obj.handle(), c"process", process_val.handle_mut())
             .is_err()
         {
-            self.report_processor_error();
+            self.report_processor_error(None);
             return ProcessorControl::Finish;
         }
         if !process_val.is_object() {
             // No callable `process` method: the processor will never produce
             // output. Latch through the same channel (one report, node
             // muted).
-            self.report_processor_error();
+            self.report_processor_error(None);
             return ProcessorControl::Finish;
         }
 
         // Copy inputs and parameter timelines into the persistent arrays.
         // Short borrow: no JS runs inside the copies.
         if !inst.write_inputs(cx, quantum) {
-            self.report_processor_error();
+            self.report_processor_error(None);
             return ProcessorControl::Finish;
         }
 
@@ -212,7 +218,12 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
         call_args.push(outputs_value.get());
         call_args.push(params_value.get());
         let args = HandleValueArray::from(&call_args);
-        rooted!(&in(cx) let this_value = UndefinedValue());
+        // (e122) `this` is the processor instance: class bodies are strict
+        // mode, so a `this` of `undefined` made every `this.port.*` /
+        // `this.<field>` access in `process()` throw a TypeError on the
+        // first block (the node latched processorerror and went silent —
+        // every WPT processor that touches `this` hung there).
+        rooted!(&in(cx) let this_value = ObjectValue(instance_obj.get()));
         rooted!(&in(cx) let mut result = UndefinedValue());
         unsafe {
             Call(
@@ -225,10 +236,19 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
         }
 
         if unsafe { JS_IsExceptionPending(cx) } {
+            // (e122) Capture the throw site before clearing: the spec's
+            // `processorerror` is an ErrorEvent carrying the exception's
+            // message/filename/line/column.
+            rooted!(&in(cx) let mut exn = UndefinedValue());
+            let info = if unsafe { JS_GetPendingException(cx, exn.handle_mut()) } {
+                Some(ErrorInfo::from_value(cx, exn.handle()))
+            } else {
+                None
+            };
             unsafe { JS_ClearPendingException(cx) };
             // A throwing block outputs silence (the output copy below is
             // skipped on this path — the quantum buffers stay zeroed).
-            self.report_processor_error();
+            self.report_processor_error(info);
             return ProcessorControl::Finish;
         }
 
@@ -321,7 +341,20 @@ pub(crate) fn instantiate_processor(
     }
 
     // `new ctor(options)` — the deserialized options dictionary object is
-    // the constructor's single argument (spec step 8).
+    // the constructor's single argument (spec step 8). (e122) The
+    // construction handoff is installed BEFORE the call: the
+    // `AudioWorkletProcessor` base constructor (reached via `super()`, or a
+    // direct `new AudioWorkletProcessor()` in the exotic construction-port
+    // shapes) wires its port into the node's lane-0 conduit as it mints it,
+    // so a constructor-body `this.port.postMessage` rides the ring instead
+    // of the dead constellation path. The handoff is cleared right after
+    // the call — a stale `Fresh` slot would mis-wire the next unrelated
+    // base construction.
+    scope.set_pending_processor_construction(
+        crate::dom::audio::audioworkletglobalscope::PendingProcessorConstruction::Fresh(
+            conduit.clone(),
+        ),
+    );
     rooted_vec!(let mut ctor_args);
     ctor_args.push(options_val.get());
     let args = HandleValueArray::from(&ctor_args);
@@ -329,6 +362,7 @@ pub(crate) fn instantiate_processor(
     unsafe {
         Construct1(cx, ctor, &args, instance.handle_mut());
     }
+    scope.clear_pending_processor_construction();
     if unsafe { JS_IsExceptionPending(cx) } {
         debug!("AudioWorklet processor constructor threw for node {node_key}.");
         unsafe { JS_ClearPendingException(cx) };
@@ -581,7 +615,7 @@ fn latch_failure(
     let sender = main_sender.clone();
     let task = task!(fire_processorerror: move |cx| {
         let node = node.root();
-        node.fire_processorerror_once(cx);
+        node.fire_processorerror_once(cx, None);
     });
     let msg = CommonScriptMsg::Task(
         ScriptThreadEventCategory::WorkletEvent,

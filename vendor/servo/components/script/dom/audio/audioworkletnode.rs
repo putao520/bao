@@ -70,6 +70,7 @@ use crate::dom::bindings::structuredclone;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
+use crate::dom::event::errorevent::ErrorEvent;
 use crate::dom::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::messageport::MessagePort;
 use crate::dom::bindings::reflector::DomGlobal;
@@ -439,17 +440,35 @@ impl AudioWorkletNode {
     /// Fire the `processorerror` event once for this node (the spec fires it
     /// a single time; both the worklet-side handler and the instantiation
     /// failure path funnel through here).
-    pub(crate) fn fire_processorerror_once(&self, cx: &mut JSContext) {
+    pub(crate) fn fire_processorerror_once(
+        &self,
+        cx: &mut JSContext,
+        info: Option<crate::dom::bindings::error::ErrorInfo>,
+    ) {
         if self.processor_error_fired.get() {
             return;
         }
         self.processor_error_fired.set(true);
-        let event = Event::new(
+        // (e122) The spec's `processorerror` is an ErrorEvent: it carries the
+        // captured throw site (message/filename/lineno/colno) of the
+        // processor failure. The `error` property stays undefined — the
+        // exception value itself lives in the worklet realm and cannot
+        // cross (the pre-activation cross-realm rule).
+        let (message, filename, lineno, colno) = info
+            .map(|info| (info.message, info.filename, info.lineno, info.column))
+            .unwrap_or_default();
+        rooted!(&in(cx) let error_value = UndefinedValue());
+        let event = ErrorEvent::new(
             cx,
             &self.global(),
             Atom::from("processorerror"),
             EventBubbles::DoesNotBubble,
             EventCancelable::NotCancelable,
+            message.into(),
+            filename.into(),
+            lineno,
+            colno,
+            error_value.handle(),
         );
         event.upcast::<Event>().fire(cx, self.upcast());
     }

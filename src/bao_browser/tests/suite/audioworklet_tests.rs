@@ -108,15 +108,57 @@ registerProcessor('port-processor', class extends AudioWorkletProcessor {
 });
 "#;
 
+/// (e122) The constructor-post face: `this.port.postMessage` from inside
+/// the constructor must ride the node's lane-0 conduit — the redirect is
+/// handed to the base construction through the in-flight instantiation's
+/// pending-construction slot, so the message event fires on the node's
+/// port with no prior page→worklet traffic. (Pre-e122 the redirect was
+/// installed only after the registered constructor returned, and every
+/// constructor-posted message fell into the dead constellation path — the
+/// WPT messageport/options hang class.)
+const CTOR_POST_PROCESSOR_JS: &str = r#"
+registerProcessor('ctor-post-processor', class extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.port.postMessage({ state: 'created' });
+  }
+  process(inputs, outputs) { return true; }
+});
+"#;
+
+/// (e122) The `this`-in-process face: the WPT processor idiom reads and
+/// writes own fields (counters, `this.port`) inside `process()`. Class
+/// bodies are strict mode, so the pre-e122 call shape (`this = undefined`)
+/// made every `this.<x>` access throw on the first block — the node
+/// latched processorerror and went silent. This processor counts its
+/// blocks and reports from the tenth, pinning both the `this` binding and
+/// per-block own-field state.
+const THIS_STATE_PROCESSOR_JS: &str = r#"
+registerProcessor('this-state-processor', class extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.count = 0;
+  }
+  process(inputs, outputs) {
+    ++this.count;
+    if (this.count === 10) {
+      this.port.postMessage({ count: this.count });
+      return false;
+    }
+    return true;
+  }
+});
+"#;
+
 /// (e114) A processor that publishes what its constructor argument carries:
 /// the spec's "invoking processor constructor" step 8 hands the constructor
 /// the DESERIALIZED options dictionary — `options.processorOptions` must be
 /// the exact value the page placed there (structured clone through the
 /// shared serialization base). Poke-reply shape (the established
 /// PORT_PROCESSOR_JS idiom): the page asks, the processor answers with the
-/// facts it captured at construction. (A processor cannot post from its own
-/// constructor — `this.port` is redirected only after instantiation
-/// completes; that pre-activation window is a documented 段(3) limitation.)
+/// facts it captured at construction. (Since e122 a processor CAN also post
+/// from its own constructor — the pending-construction handoff wires
+/// `this.port` during the base construction; see CTOR_POST_PROCESSOR_JS.)
 const OPTS_PROCESSOR_JS: &str = r#"
 registerProcessor('opts-processor', class extends AudioWorkletProcessor {
   constructor(options) {
@@ -284,6 +326,10 @@ impl AwHttpFixture {
                                 ("text/javascript", THROW_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/port-processor.js") {
                                 ("text/javascript", PORT_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/ctor-post-processor.js") {
+                                ("text/javascript", CTOR_POST_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/this-state-processor.js") {
+                                ("text/javascript", THIS_STATE_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/opts-processor.js") {
                                 ("text/javascript", OPTS_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/nested-opts-processor.js") {
@@ -1104,5 +1150,109 @@ fn audioworklet_processor_options_port_in_port_roundtrip_live() {
             result.contains("\"echo\":\"pong-to-processor\""),
         "the processorOptions MessagePort must transfer to the processor realm and carry a full \
          postMessage roundtrip (worklet→main ping, main→worklet pong), got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-004 [criterion:audioworklet-ctor-port-message] live
+///
+/// (e122) A processor constructor's `this.port.postMessage` rides the
+/// node's lane-0 conduit from construction on: the message event fires on
+/// the node's port with NO prior page→worklet traffic. Pre-e122 the
+/// redirect was installed only after the registered constructor returned,
+/// so every constructor-posted message was lost (the WPT
+/// messageport/options deterministic-TIMEOUT class — first message arrives
+/// only when the page posts first).
+#[test]
+fn audioworklet_ctor_port_message_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "ctor-post-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 128, 44100);
+               await ctx.audioWorklet.addModule(window.location.origin + '/ctor-post-processor.js');
+               var node = new AudioWorkletNode(ctx, 'ctor-post-processor');
+               var msg = await new Promise(function (resolve) {
+                 node.port.onmessage = function (e) { resolve(e.data); };
+                 setTimeout(function () { resolve('__timeout__'); }, 10000);
+               });
+               window.__probe = JSON.stringify({ stage: 'done', msg: msg });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(30),
+        "ctor port message",
+    );
+
+    eprintln!("[aw-test] ctor port message = {result}");
+    assert!(
+        result.contains("\"state\":\"created\""),
+        "the processor constructor's port.postMessage must reach node.port.onmessage without \
+         prior page→worklet traffic, got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-004 [criterion:audioworklet-process-this-binding] live
+///
+/// (e122) `process()` runs with `this` bound to the processor instance:
+/// own-field counters and `this.port` posts work per block. The pre-e122
+/// call passed `this = undefined` — class bodies are strict mode, so every
+/// `this.<x>` access threw on the first block, the node latched
+/// processorerror and went silent (every WPT processor that touches `this`
+/// in `process()` hung there while the arg-only echo surface stayed green).
+#[test]
+fn audioworklet_process_this_binding_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "this-state-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 128 * 32, 44100);
+               await ctx.audioWorklet.addModule(window.location.origin + '/this-state-processor.js');
+               var node = new AudioWorkletNode(ctx, 'this-state-processor');
+               var src = ctx.createConstantSource();
+               src.offset.value = 0.25;
+               src.connect(node);
+               node.connect(ctx.destination);
+               src.start(0);
+               var report = new Promise(function (resolve) {
+                 node.port.onmessage = function (e) { resolve(e.data); };
+               });
+               var buf = await ctx.startRendering();
+               var msg = await Promise.race([
+                 report,
+                 new Promise(function (resolve) { setTimeout(function () { resolve('__timeout__'); }, 10000); }),
+               ]);
+               window.__probe = JSON.stringify({ stage: 'done', msg: msg, len: buf.length });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(40),
+        "process this-binding",
+    );
+
+    eprintln!("[aw-test] process this-binding = {result}");
+    assert!(
+        result.contains("\"count\":10"),
+        "process() must run with this bound to the instance (own-field counter reaches 10 and \
+         posts from this.port), got: {result}"
     );
 }

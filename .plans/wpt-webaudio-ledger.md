@@ -83,3 +83,41 @@ cd /tmp/e121 && xvfb-run -a ./venv/bin/python run_e121.py <tests-root 相对路�
 - 读数: the-audioworklet-interface 全套 39 文件双跑全启动(3 file-flip 保持 + 12 sub-flip + 16 挂起 + 1 CRASH + 19 as-expected);params 46/46、ctors 19/19、idlharness 112 翻 0 红零意外终态
 - 同步: vendor webaudio 域 420 测试资源 + 203 ini 期望,byte-identical,首次入库
 - 红格全数登记 §D(不修,另案);判别实验与断代限制如实登记 §D1
+
+## F. e122 挂起类清偿(2026-10-06,判别实验+根因修复+诚实分账)
+
+### F1. 判别实验结论(合同①)
+**776ffd31(pre-e119)二进制复现 17 文件同形态挂起(16 TIMEOUT+1 CRASH,per-file 终态逐一一致)——e119 饱和配速(9d79635b)无罪**;挂起类是 AudioWorklet 实现的结构面,与配速改动无涉。raw log:/tmp/e122/{776-chunk-01,776-chunk-02}.raw.log(chunk-00 被 /tmp 清扫覆写,其 6 文件终态在会话记录:全 TIMEOUT)。
+
+### F2. 根因(e122 CDP 探针流水定位,探针组 /tmp/e122-http/*)
+| # | 根因 | 机制 | 处置 |
+|---|------|------|------|
+| A | **构造器 postMessage 走死路径** | `instantiate_processor` 在 `Construct1`(构造器 JS 已跑)**之后**才对 processor port 装 conduit redirect——构造器体的 `this.port.postMessage` 落入 worklet 线程无投递的星座 port 路径,消息必丢(e121 集成面全绿是因为探针都先 post 再等回显,redirect 已在位;真 WPT 构造器首发全挂) | **已修**:pending-construction handoff——scope 槽 `Fresh(conduit)→Consumed`,`AudioWorkletProcessor` 基类构造器铸 port 即装 redirect(audioworkletglobalscope.rs/audioworkletprocessor.rs/audioworklethandler.rs) |
+| B | **process() this=undefined** | `process_quantum` 以 `UndefinedValue()` 作 this 调 `Call`;类体严格模式 → 任何 `this.port`/`this.<字段>` 访问首块即 TypeError → 节点 processorerror 锁死静音。**echo 集成测试的 processor 只用参数不触 this,验收面从未覆盖**——这是 17 挂的最大单一根因 | **已修**:`this_value = ObjectValue(instance)` 一行 |
+| C | **单次构造 TypeError 面缺失** | construction-port 电池要求:实例化在飞时第二次 `new AudioWorkletProcessor()` 抛 TypeError | **已修**:handoff `Consumed` 臂 + webidl `[Throws]` |
+| D | **processorerror 是裸 Event 非 ErrorEvent** | spec 要求 ErrorEvent(message/filename/lineno/colno) | **已修**:捕获 pending exception 的 ErrorInfo 经任务过线程,`ErrorEvent::new` 派发(onerror sub1 PASS) |
+| E | **worklet scope 缺 `renderQuantumSize` 全局** | rendersizehint 构造器体读该全局 → ReferenceError → 实例化 latch → 挂 | **已修**:getter 恒 128(servo-media 固定量子;renderSizeHint 选项未贯通,诚实 FAIL 与 servo ini 一致)——rendersizehint 文件级 TIMEOUT→OK |
+| F | **未连接/零输出节点永不被处理** | servo-media graph.process = dests 起 DFS 拉模型;无 destination 通路的 worklet 节点 process() 永不调用(Chromium 语义:worklet 节点恒处理直到 process 返 false)——graph.rs/render_thread.rs **越出本合同 owner 边界** | **登记**(ini 多值期望);根治=后续合同:servo-media graph「worklet 节点恒处理」语义 |
+| G | **SAB 经 conduit 序列化失败** | 构造器 post 含 SAB → worklet realm structuredclone write 抛 → 构造器失败 latch → 挂(postmessage-SAB) | **登记**(servo 继承序列化面) |
+| H | **suspend() promise 不 settle** | servo 实时状态机继承面(suspend 后 currentTime 仍走)——no-process-function 在 `await context.suspend()` 挂死 | **登记** |
+| I | **worklet 线程 minor-GC tenuring SIGSEGV(新暴露)** | 实时 context 每块持续 port.postMessage(A/B 修复后才有流量)→ 构造小对象/serialization 分配 → nursery minor GC → `TraceIonJSFrame` 追踪 Ion 帧槽位遇垃圾值 → `TenuringTracer::promoteObject` SIGSEGV。gdb(dev 符号)栈:promoteObject←TraceIonJSFrame←minorGC←NewArrayObject←structuredclone::write←post_message_impl(redirect 臂)。**判别**:离线 10335 块逐块 post 存活、纯分配不 post 存活、单发存活——仅「实时+持续 post」复现;机制落点 SM GC/JIT+structuredclone 面(越界) | **登记**(promises CRASH 确定性);根治=后续合同:mozjs/GC 面归因 |
+
+### F3. 17 文件终态分账(终版二进制 = A-E 全修)
+| 终态 | 文件数 | 明细 |
+|------|--------|------|
+| **OK(完成且如 ini 期望)** | 6 | denormals / messageport / creation-time / output-channel-count / suspended-context-messageport / rendersizehint(E 修复转化) |
+| **诚实非挂终态(红但真跑)** | 2 | options=ERROR(sub1 翻 PASS:e114 载荷形状残量「4 属性 vs 期望 2」,诚实红不掩盖);promises=CRASH(根因 I,确定性) |
+| **确定性 TIMEOUT(继承/结构面,ini 登记)** | 9 | SAB(G)/automatic-pull(F)/onerror sub2(G 族 blob 反序列化面)/no-process-function(H)/frozen-array sub1(F,任务体不连节点)/zero-outputs(F)/process-getter(F)/process-parameters(F)/construction-port Singleton(F) |
+子测级正向翻转(保持 ini 原期望,uncaught-pass 为正向信号):construction-port 3/4(constructor-port 语义全对)、onerror sub1(ErrorEvent)、options sub1(processorOptions round-trip)、messageport sub2/sub3、options/frozen-array/zero-outputs 等文件的 AUDIT 框架子测若干。
+
+### F4. ini 登记(vendor meta,自治通道;multi-value 期望覆盖 servo 真值与 bao 确定性态)
+automatic-pull / process-getter / process-parameters / zero-outputs / frozen-array / construction-port(Singleton)/ SAB(file [ERROR,TIMEOUT])/ no-process-function / onerror(sub2/sub3)/ promises(file [FAIL,CRASH])/ options(sub2)——11 文件;正向翻转子测**不**改 ini(可见性保留)。
+
+### F5. 复验(零回退)
+- `cargo nt -p bao-servo-media-audio` **26/26**;`BAO_TEST_NETWORK=1 cargo nt -p bao-browser -E 'test(audioworklet)'` **11/11**(e119 面板 9 + e122 新增回归测 2:ctor-port-message/process-this-binding)
+- 绿基线 22 文件(39−17)终版二进制重跑:**20 OK + 2 ERROR-as-expected**(audioparam-iterable/throw-onmessage,与 e121 一致)——零回退
+- 判别/修复全程 raw log:/tmp/e122/{776,fix2,fin,grn}-*.raw.log(半衰期资产)
+
+### F6. 基础设施事件
+- **/tmp/e121 整车再次被外部清扫**(venv/meta/296M raw logs 全失)——本波重建:venv 私建于 /tmp/e122/venv、meta 从 vendor ini 树 + manifestupdate(rebuild=True) 重生成(MANIFEST.json 40M,webaudio 全域在案)、launcher run_e122.py。/tmp/e122-cdp-probe.py 等散置 /tmp 根的探针也被清(载具资产必须全部私有化进 /tmp/e122)。
+- e122 CDP 探针流水(probe.py + /tmp/e122-http/*):构造器首发/echo 对照/throw 探针/计数器/options 双向/分配-only/持续 post/离线长渲染——归因链的可复算载体。

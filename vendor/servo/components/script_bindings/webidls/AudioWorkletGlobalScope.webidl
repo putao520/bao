@@ -23,4 +23,10 @@ interface AudioWorkletGlobalScope : WorkletGlobalScope {
     readonly attribute double currentFrame;
     readonly attribute double currentTime;
     readonly attribute float sampleRate;
+    // (Bao e122) The render-quantum-size face: present so a processor (or a
+    // constructor body — the WPT rendersizehint battery reads it there)
+    // never hits a ReferenceError. Always 128 — servo-media renders at the
+    // fixed quantum; the `renderSizeHint` context option is not plumbed
+    // (upstream servo has neither face).
+    readonly attribute unsigned long renderQuantumSize;
 };
