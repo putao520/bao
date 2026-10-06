@@ -68,13 +68,30 @@ use crate::ring::{SpscRing, SpscRingError};
 /// 8 quanta ≈ 21 ms at 48 kHz: enough to absorb scheduling jitter of the
 /// worklet (JS) thread without letting a stalled worklet thread strand an
 /// unbounded amount of render-thread work. Each side degrades honestly when
-/// the ring is full: the render side drops the freshest input quantum (the
-/// worklet keeps the last good state instead of a stale backlog) and the
-/// worklet side stages its output until the render side catches up.
+/// the ring is full: the render side first paces itself against the pump
+/// with bounded cooperative yields (see [`SATURATION_PACE_YIELDS`]) and,
+/// once that cap is spent, drops the freshest input quantum (the worklet
+/// keeps the last good state instead of a stale backlog); the worklet side
+/// stages its output until the render side catches up.
 pub const DEFAULT_BRIDGE_CAPACITY: usize = 8;
 
 /// Spec upper bound for a node port's channel count.
 const MAX_PORT_CHANNELS: u8 = 32;
+
+/// How many cooperative yields the render thread spends trying to hand a
+/// saturated pending ring to the worklet thread before falling back to
+/// dropping the freshest input quantum (see `AudioWorkletNode::process`).
+///
+/// Each `yield_now()` cedes the CPU once: on a machine where the render
+/// thread would otherwise sprint past the pump (the offline fast-forward
+/// render produces blocks 10-20x faster than the JS `process()` call
+/// consumes them), the first yield is already a full handoff — the worklet
+/// thread drains its pending ring to idle and frees many slots. The cap is
+/// a wedge guard for the window where no drainer exists yet (processor
+/// instantiation) or the worklet thread died: those yields are near-free
+/// (nothing else runnable ⇒ the yield returns immediately), and once the
+/// cap is spent the honest drop degradation stands.
+const SATURATION_PACE_YIELDS: usize = 64;
 
 /// Validation error for [`AudioWorkletNodeOptions`].
 ///
@@ -745,13 +762,33 @@ impl AudioNodeEngine for AudioWorkletNode {
         }
 
         // Publish this block's inputs and parameter timeline to the worklet
-        // thread. Dropping the freshest quantum when the worklet thread is
-        // more than `capacity` blocks behind is the honest degradation: the
-        // processor keeps its last state instead of chasing a stale backlog.
+        // thread. A saturated pending ring means the producer is outrunning
+        // the pump: pace it first with bounded cooperative yields — every
+        // yield hands the CPU to the worklet thread, whose drain-to-idle
+        // task frees ring slots, so the ready ring gets contiguous batches
+        // instead of one quantum at a time interleaved with silent
+        // underruns. Only after the cap (no drainer yet — instantiation —
+        // or a wedged worklet thread) does the honest degradation stand:
+        // drop the freshest quantum; the processor keeps its last state
+        // instead of chasing a stale backlog. The pacing lives exclusively
+        // in this saturated path: the healthy steady state stays wait-free,
+        // lock-free and syscall-free.
         if let Some(mut quantum) = self.pool.pop() {
             self.fill_quantum(&mut quantum, &inputs, info);
-            if let Err(SpscRingError::Full(quantum)) = self.bridge.push_pending(quantum) {
-                self.pool.push(quantum);
+            let mut yields_left = SATURATION_PACE_YIELDS;
+            loop {
+                match self.bridge.push_pending(quantum) {
+                    Ok(()) => break,
+                    Err(SpscRingError::Full(returned)) => {
+                        quantum = returned;
+                        if yields_left == 0 {
+                            self.pool.push(quantum);
+                            break;
+                        }
+                        yields_left -= 1;
+                        std::thread::yield_now();
+                    },
+                }
             }
         } else {
             self.bridge.record_frame_starved();
