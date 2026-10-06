@@ -680,210 +680,6 @@ fn log_fetch_terminated_send_failure(terminated_with_error: bool, context: &str)
 
 pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
 
-#[expect(clippy::too_many_arguments)]
-#[servo_tracing::instrument(skip_all, fields(url=url.as_str()))]
-/// This sets up the callback infrastructure to send body frames to `body_sender` and fires the client request.
-async fn obtain_response(
-    client: &ServoClient,
-    url: &ServoUrl,
-    method: &Method,
-    request_headers: &mut HeaderMap,
-    body_sender: Option<StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>>,
-    source_is_null: bool,
-    pipeline_id: &Option<PipelineId>,
-    request_id: Option<&str>,
-    destination: Destination,
-    is_xhr: bool,
-    context: &FetchContext,
-    fetch_terminated: UnboundedSender<bool>,
-    browsing_context_id: Option<BrowsingContextId>,
-) -> Result<(HyperResponse<Decoder>, Option<ChromeToDevtoolsControlMsg>), NetworkError> {
-    let mut headers = request_headers.clone();
-
-    let devtools_bytes = StdArc::new(Mutex::new(vec![]));
-
-    // https://url.spec.whatwg.org/#percent-encoded-bytes
-    let encoded_url = utf8_percent_encode(url.as_str(), FRAGMENT).to_string();
-
-    let request = if let Some(chunk_requester) = body_sender {
-        let (sink, stream) = if source_is_null {
-            // Step 4.2 of https://fetch.spec.whatwg.org/#concept-http-network-fetch
-            // TODO: this should not be set for HTTP/2(currently not supported?).
-            headers.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
-
-            let (sender, receiver) = channel(1);
-            (BodySink::Chunked(sender), BodyStream::Chunked(receiver))
-        } else {
-            // Note: Hyper seems to already buffer bytes when the request appears not stream-able,
-            // see https://github.com/hyperium/hyper/issues/2232#issuecomment-644322104
-            //
-            // However since this doesn't appear documented, and we're using an ancient version,
-            // for now we buffer manually to ensure we don't stream requests
-            // to servers that might not know how to handle them.
-            let (sender, receiver) = unbounded_channel();
-            (BodySink::Buffered(sender), BodyStream::Buffered(receiver))
-        };
-
-        obtain_response_setup_router_callback(
-            devtools_bytes.clone(),
-            chunk_requester,
-            sink,
-            fetch_terminated,
-        )?;
-
-        let body = match stream {
-            BodyStream::Chunked(receiver) => {
-                let stream = ReceiverStream::new(receiver);
-                BoxBody::new(http_body_util::StreamBody::new(stream))
-            },
-            BodyStream::Buffered(mut receiver) => {
-                // Accumulate bytes received over IPC into a vector.
-                let mut body = vec![];
-                loop {
-                    match receiver.recv().await {
-                        Some(BodyChunk::Chunk(bytes)) => {
-                            body.extend_from_slice(&bytes);
-                        },
-                        Some(BodyChunk::Done) => break,
-                        Some(BodyChunk::Error) => {
-                            // BAO PATCH (REQ-BRW-004 e63 streaming): the body
-                            // stream errored — terminate the fetch (spec step
-                            // 5) instead of sending a truncated body.
-                            return Err(NetworkError::HttpError(
-                                "request body stream errored".to_string(),
-                            ));
-                        },
-                        None => warn!("Failed to read all chunks from request body."),
-                    }
-                }
-                Full::new(body.into()).map_err(|_| unreachable!()).boxed()
-            },
-        };
-        HyperRequest::builder()
-            .method(method)
-            .uri(encoded_url)
-            .body(body)
-    } else {
-        HyperRequest::builder()
-            .method(method)
-            .uri(encoded_url)
-            .body(
-                http_body_util::Empty::new()
-                    .map_err(|_| unreachable!())
-                    .boxed(),
-            )
-    };
-
-    // TODO(#21261) connect_start: set if a persistent connection is *not* used and the last non-redirected
-    // fetch passes the timing allow check
-    let connect_start = CrossProcessInstant::now();
-    context.timing.set_attributes(&[
-        ResourceAttribute::DomainLookupStart,
-        ResourceAttribute::ConnectStart(connect_start),
-    ]);
-
-    // TODO: We currently don't know when the handhhake before the connection is done
-    // so our best bet would be to set `secure_connection_start` here when we are currently
-    // fetching on a HTTPS url.
-    if url.scheme() == "https" {
-        context
-            .timing
-            .set_attribute(ResourceAttribute::SecureConnectionStart);
-    }
-
-    let mut request = match request {
-        Ok(request) => request,
-        Err(error) => return Err(NetworkError::HttpError(error.to_string())),
-    };
-    *request.headers_mut() = headers.clone();
-
-    let connect_end = CrossProcessInstant::now();
-    context
-        .timing
-        .set_attribute(ResourceAttribute::ConnectEnd(connect_end));
-
-    let request_id = request_id.map(|v| v.to_owned());
-    let pipeline_id = *pipeline_id;
-    let closure_url = url.clone();
-    let method = method.clone();
-    let send_start = CrossProcessInstant::now();
-
-    let host = request.uri().host().unwrap_or("").to_owned();
-    let override_manager = context.state.override_manager.clone();
-    let headers = headers.clone();
-    let is_secure_scheme = url.is_secure_scheme();
-
-    // Generally, we use a persistent connection, so we will also set other PerformanceResourceTiming
-    //   attributes to this as well (domain_lookup_start, domain_lookup_end, connect_start, connect_end,
-    //   secure_connection_start)
-    context
-        .timing
-        .set_attribute(ResourceAttribute::RequestStart);
-
-    let client_future = client
-        .request(request)
-        .and_then(move |res| {
-            let send_end = CrossProcessInstant::now();
-
-            // TODO(#21271) response_start: immediately after receiving first byte of response
-
-            let msg = if let Some(request_id) = request_id {
-                if let Some(pipeline_id) = pipeline_id {
-                    if let Some(browsing_context_id) = browsing_context_id {
-                        Some(prepare_devtools_request(
-                            request_id,
-                            closure_url,
-                            method.clone(),
-                            headers,
-                            Some(devtools_bytes.lock().clone()),
-                            pipeline_id,
-                            (connect_end - connect_start).unsigned_abs(),
-                            (send_end - send_start).unsigned_abs(),
-                            destination,
-                            is_xhr,
-                            browsing_context_id,
-                        ))
-                    } else {
-                        debug!("Not notifying devtools (no browsing_context_id)");
-                        None
-                    }
-                    // TODO: ^This is not right, connect_start is taken before contructing the
-                    // request and connect_end at the end of it. send_start is takend before the
-                    // connection too. I'm not sure it's currently possible to get the time at the
-                    // point between the connection and the start of a request.
-                } else {
-                    debug!("Not notifying devtools (no pipeline_id)");
-                    None
-                }
-            } else {
-                debug!("Not notifying devtools (no request_id)");
-                None
-            };
-
-            future::ready(Ok((
-                Decoder::detect(res.map(|r| r.boxed()), is_secure_scheme),
-                msg,
-            )))
-        })
-        .map_err(move |error| {
-            warn!("network error: {error:?}");
-            NetworkError::from_hyper_error(
-                &error,
-                override_manager.remove_certificate_failing_verification(host.as_str()),
-            )
-        });
-
-    #[cfg(feature = "tracing")]
-    {
-        client_future.instrument(trace_span!("HyperRequest")).await
-    }
-
-    #[cfg(not(feature = "tracing"))]
-    {
-        client_future.await
-    }
-}
-
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.
 pub(crate) fn obtain_response_setup_router_callback(
     devtools_bytes: StdArc<Mutex<Vec<u8>>>,
@@ -2417,7 +2213,7 @@ async fn http_network_fetch(
     if body.is_none() {
         // There cannot be an error streaming a non-existent body.
         // However in such a case the channel will remain unused
-        // and drop inside `obtain_response`.
+        // and drop inside `obtain_response_bun`.
         // Send the confirmation now, ensuring the receiver will not dis-connect first.
         let _ = fetch_terminated_sender.send(false);
     }
@@ -2479,27 +2275,36 @@ async fn http_network_fetch(
         // Let connection be the result of obtaining a connection, given networkPartitionKey,
         // request’s current URL, includeCredentials, and newConnection.
         _ => {
-            let response_future = obtain_response(
-                &context.state.client,
+            // Bao fusion (U2 terminal): the bun bridge IS the page network
+            // (bun HTTPThread + stealth TLS). It takes the same devtools
+            // identification inputs the hyper-era `obtain_response` took
+            // (request/pipeline/browsing-context ids, destination, is_xhr)
+            // so its requestWillBeSent-equivalent message is
+            // field-identical. The redirect loop, CORS, cache, HSTS and
+            // cookies all remain servo-side.
+            //
+            // BAO PATCH (R53-A): `target_webview_id` threads the request's
+            // page identity into the bridge, which resolves the
+            // per-WebViewId stealth wire registries
+            // (`connector::resolve_stealth_{tls_config,http2_fingerprint}`) —
+            // keyed hit is authoritative (explicit None = stealth-free page),
+            // miss falls back to the process global.
+            let (response_stream, msg) = match crate::fetch::bun_bridge::obtain_response_bun(
                 &url,
                 &request.method,
                 &mut request.headers,
                 body,
-                request
-                    .body
-                    .as_ref()
-                    .is_some_and(|body| body.source_is_null()),
                 &request.pipeline_id,
+                request.target_webview_id,
                 Some(&request_id),
                 request.destination,
                 is_xhr,
+                browsing_context_id,
                 context,
                 fetch_terminated_sender,
-                browsing_context_id,
-            );
-
-            // This will only get the headers, the body is read later
-            let (response_stream, msg) = match response_future.await {
+            )
+            .await
+            {
                 Ok(wrapped_response) => wrapped_response,
                 Err(error) => return Response::network_error(error),
             };

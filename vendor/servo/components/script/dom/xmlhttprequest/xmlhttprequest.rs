@@ -720,7 +720,7 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
         };
 
         let global = self.global();
-        let mut request = RequestBuilder::new(global.webview_id(), url, self.referrer.clone())
+        let mut request = RequestBuilder::new(global.egress_webview_id(), url, self.referrer.clone())
             .method(self.request_method.borrow().clone())
             .headers((*self.request_headers.borrow()).clone())
             .unsafe_request(true)
