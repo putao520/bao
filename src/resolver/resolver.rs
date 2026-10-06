@@ -1057,10 +1057,9 @@ impl<'a> Resolver<'a> {
         kind: ast::ImportKind,
         out: &mut MatchResult,
     ) -> MatchStatus {
-        // SAFETY: PORT — `import_path` is caller-interned (DirnameStore/source text)
-        // and outlives the returned MatchResult. Zig used raw `[]const u8` here.
-        // TODO(port): thread an explicit `'a` through MatchResult instead.
-        let import_path: &'static [u8] = unsafe { &*std::ptr::from_ref::<[u8]>(import_path) };
+        // (upstream 7883b3007d) the former `&'static [u8]` widening of
+        // `import_path` was never needed — `match_tsconfig_paths` takes a
+        // plain `&[u8]` borrow — and is removed.
         if source_dir.is_empty() {
             return MatchStatus::NotFound;
         }

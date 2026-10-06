@@ -29,11 +29,14 @@ pub struct HPACK {
     self_: *mut c_void,
 }
 
-pub struct DecodeResult {
-    // TODO(port): lifetime — name/value point into an FFI thread_local shared buffer,
-    // valid only until the next decode/encode call. Consider `DecodeResult<'a>`.
-    pub name: &'static [u8],
-    pub value: &'static [u8],
+// (upstream 7883b3007d) `name`/`value` used to be `&'static [u8]` forges
+// into the FFI thread-local shared buffer. They now borrow from `&mut
+// self`, so the compiler checks that a caller copies them before its next
+// `decode`/`encode`. Limit: every `HPACK` on a thread shares that buffer,
+// so the borrow covers one instance only.
+pub struct DecodeResult<'a> {
+    pub name: &'a [u8],
+    pub value: &'a [u8],
     pub never_index: bool,
     pub well_know: u16,
     /// offset of the next header position in src
@@ -65,8 +68,10 @@ impl HPACK {
         // TODO(port): wrap in an owning newtype with Drop instead of returning a raw *mut HPACK
     }
 
-    /// DecodeResult name and value uses a thread_local shared buffer and should be copy/cloned before the next decode/encode call
-    pub fn decode(&mut self, src: &[u8]) -> Result<DecodeResult, HpackError> {
+    /// `name` and `value` point into a thread-local buffer that every `HPACK`
+    /// on this thread decodes and encodes through. The borrow only stops this
+    /// instance from overwriting them.
+    pub fn decode<'a>(&'a mut self, src: &[u8]) -> Result<DecodeResult<'a>, HpackError> {
         let mut header = lshpack_header::default();
         // SAFETY: genuine FFI — only the `(src.as_ptr(), src.len())` pair carries
         // an obligation here (in-bounds read), discharged by `src: &[u8]`. The

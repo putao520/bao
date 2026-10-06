@@ -2577,7 +2577,16 @@ pub struct StyleSheet<AtRule> {
     pub sources: Vec<Box<[u8]>>,
     pub source_map_urls: Vec<Option<Box<[u8]>>>,
     pub license_comments: Vec<&'static [u8]>, // TODO(port): lifetime — arena
-    pub options: ParserOptions<'static>,      // TODO(port): lifetime
+    /// (upstream 7883b3007d) the sheet used to keep the whole
+    /// `ParserOptions`, including `logger` — a raw pointer to a `Log` that,
+    /// in the bundler, is a stack local while the sheet moves into the
+    /// bundle arena (dangling pointer; nothing read it after the parse).
+    /// The sheet now keeps the three values it reads.
+    pub filename: &'static [u8], // TODO(port): lifetime
+    /// [`ParserOptions::css_modules`] of the parse.
+    pub css_modules: Option<css_modules::Config>,
+    /// [`ParserOptions::flags`] of the parse.
+    pub flags: ParserFlags,
     // Zig: `tailwind: if (AtRule == BundlerAtRule) ?*BundlerTailwindState else u0`
     // TODO(port): conditional field; for now Option<Box<_>> always.
     pub tailwind: Option<Box<BundlerTailwindState>>,
@@ -2599,7 +2608,9 @@ impl<AtRule> StyleSheet<AtRule> {
             sources: Vec::new(),
             source_map_urls: Vec::new(),
             license_comments: Vec::new(),
-            options: ParserOptions::default(None),
+            filename: b"",
+            css_modules: None,
+            flags: ParserFlags::default(),
             tailwind: None,
             layer_names: PlainVec2::new(),
             local_scope: LocalScope::default(),
@@ -2639,7 +2650,7 @@ mod stylesheet_impl {
             // here and create a lookup table by name.
             let custom_media: Option<
                 ArrayHashMap<Box<[u8]>, css_rules::custom_media::CustomMediaRule>,
-            > = if self.options.flags.contains(ParserFlags::CUSTOM_MEDIA)
+            > = if self.flags.contains(ParserFlags::CUSTOM_MEDIA)
                 && options
                     .targets
                     .should_compile_same(compat::Feature::CustomMediaQueries)
@@ -2664,7 +2675,7 @@ mod stylesheet_impl {
                 handler_context: ctx,
                 unused_symbols: &options.unused_symbols,
                 custom_media,
-                css_modules: self.options.css_modules.is_some(),
+                css_modules: self.css_modules.is_some(),
                 extra,
                 err: None,
                 selector_expansion_multiplier: 1,
@@ -2683,7 +2694,7 @@ mod stylesheet_impl {
                     .sources
                     .get(e.loc.source_index as usize)
                     .map(|source| &**source)
-                    .unwrap_or(self.options.filename);
+                    .unwrap_or(self.filename);
                 let minify_error = Err {
                     kind: e.kind,
                     loc: Some(ErrorLocation {
@@ -2743,7 +2754,7 @@ mod stylesheet_impl {
                 printer.newline()?;
             }
 
-            if let Some(config) = &self.options.css_modules {
+            if let Some(config) = &self.css_modules {
                 let mut references = CssModuleReferences::default();
                 let references_ptr: *mut CssModuleReferences<'_> = &raw mut references;
                 // SAFETY: `'bump`-erasure — `Printer<'a>` stores `CssModule<'a>` which
@@ -2952,7 +2963,9 @@ mod stylesheet_impl {
                     sources,
                     source_map_urls,
                     license_comments,
-                    options,
+                    filename: options.filename,
+                    css_modules: options.css_modules,
+                    flags: options.flags,
                     tailwind: None,
                     layer_names,
                     local_scope: parser_extra.local_scope,
@@ -3007,7 +3020,9 @@ mod stylesheet_impl {
                 sources: Vec::new(),
                 source_map_urls: Vec::new(),
                 license_comments: Vec::new(),
-                options,
+                filename: options.filename,
+                css_modules: options.css_modules,
+                flags: options.flags,
                 tailwind: None,
                 layer_names: PlainVec2::new(),
                 local_scope: LocalScope::default(),
