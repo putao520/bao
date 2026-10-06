@@ -32,7 +32,11 @@ profile_traits = {package = "bao-servo-profile-traits", path = "../../shared/pro
 rustc-hash = {version = "2.1.2"}
 script_traits = {package = "bao-servo-script-traits", path = "../../shared/script", version = ">=0.5.14, <0.6.0"}
 uuid = {version = "1.23.3", features = ["v4", "v5"]}
-selectors = {version = "=0.41.0"}
+# BAO PATCH (e128): selectors resolves to the vendored servo/stylo monorepo fork
+# (0cb50925b) by path — NOT via [patch.crates-io]: 0cb50925b has breaking API
+# changes (Element gains a Copy bound) and lol_html depends on the registry
+# crate, which must stay on the registry node.
+selectors = {version = "=0.41.0", path = "../../../../selectors"}
 serde = {version = "1.0.228"}
 background_hang_monitor_api = {package = "bao-servo-background-hang-monitor-api", path = "../../shared/background_hang_monitor", version = ">=0.5.16, <0.6.0"}
 servo-base = {package = "bao-servo-base", path = "../../shared/base", version = ">=0.5.17, <0.6.0"}

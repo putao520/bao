@@ -155,10 +155,6 @@ fn derive_variant_arm(variant: &VariantInfo, generics: &mut Option<WhereClause>)
     let separator = if variant_attrs.comma { ", " } else { " " };
 
     if variant_attrs.skip {
-        // BAO PATCH (issue #44): anchor the error type. This arm can be wrapped
-        // by the `#[css(function)]` template below as `#expr?;`, which would
-        // otherwise leave the `Result` error type inferred from
-        // `std::fmt::Error: From<_>` (ambiguous when serde_fmt is in the graph).
         return quote!(Ok::<(), ::std::fmt::Error>(()));
     }
 
@@ -176,7 +172,7 @@ fn derive_variant_arm(variant: &VariantInfo, generics: &mut Option<WhereClause>)
     };
 
     if let Some(function) = variant_attrs.function {
-        let mut identifier = function.explicit().map_or(identifier, |name| name);
+        let mut identifier = function.explicit().unwrap_or(identifier);
         identifier.push('(');
         expr = quote! {
             std::fmt::Write::write_str(dest, #identifier)?;
@@ -195,7 +191,7 @@ fn derive_variant_fields_expr(
     let mut iter = bindings
         .iter()
         .filter_map(|binding| {
-            let attrs = cg::parse_field_attrs::<CssFieldAttrs>(&binding.ast());
+            let attrs = cg::parse_field_attrs::<CssFieldAttrs>(binding.ast());
             if attrs.skip {
                 return None;
             }
@@ -205,8 +201,6 @@ fn derive_variant_fields_expr(
 
     let (first, attrs) = match iter.next() {
         Some(pair) => pair,
-        // BAO PATCH (issue #44): anchor the error type (same reasoning as the
-        // skipped-variant arm; this expression can also land under `#expr?;`).
         None => return quote! { Ok::<(), ::std::fmt::Error>(()) },
     };
     if attrs.field_bound {

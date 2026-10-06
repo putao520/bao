@@ -6,6 +6,7 @@
 
 //! Servo's selector parser.
 
+use crate::FxHashMap;
 use crate::attr::{AttrIdentifier, AttrValue};
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::derives::*;
@@ -18,11 +19,8 @@ use crate::selector_parser::AttrValue as SelectorAttrValue;
 use crate::selector_parser::{PseudoElementCascadeType, SelectorParser};
 use crate::values::{AtomIdent, AtomString};
 use crate::{Atom, CaseSensitivityExt, LocalName, Namespace, Prefix};
-use cssparser::{
-    match_ignore_ascii_case, serialize_identifier, CowRcStr, Parser as CssParser, ToCss,
-};
+use cssparser::{Parser as CssParser, ToCss, match_ignore_ascii_case, serialize_identifier};
 use dom::{DocumentState, ElementState};
-use rustc_hash::FxHashMap;
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::parser::SelectorParseErrorKind;
 use std::fmt;
@@ -289,21 +287,22 @@ impl PseudoElement {
 
     /// Property flag that properties must have to apply to this pseudo-element.
     #[inline]
-    pub fn property_restriction(&self) -> Option<PropertyFlags> {
-        Some(match self {
+    pub fn property_restriction(&self) -> PropertyFlags {
+        match self {
             PseudoElement::FirstLetter => PropertyFlags::APPLIES_TO_FIRST_LETTER,
             PseudoElement::Marker if crate::pref!("layout.css.marker.restricted") => {
                 PropertyFlags::APPLIES_TO_MARKER
             },
             PseudoElement::Placeholder => PropertyFlags::APPLIES_TO_PLACEHOLDER,
-            _ => return None,
-        })
+            PseudoElement::Selection => PropertyFlags::APPLIES_TO_HIGHLIGHT,
+            _ => PropertyFlags::empty(),
+        }
     }
 
     /// Whether this pseudo-element should actually exist if it has
     /// the given styles.
     pub fn should_exist(&self, style: &ComputedValues) -> bool {
-        let display = style.get_box().clone_display();
+        let display = *style.get_box().get_display();
         if display == Display::None {
             return false;
         }
@@ -614,10 +613,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         !self.for_supports_rule
     }
 
-    fn parse_non_ts_pseudo_class(
-        &self,
-        name: CowRcStr<'i>,
-    ) -> Result<NonTSPseudoClass, ParseError> {
+    fn parse_non_ts_pseudo_class(&self, name: &str) -> Result<NonTSPseudoClass, ParseError> {
         let pseudo_class = match_ignore_ascii_case! { &name,
             "active" => NonTSPseudoClass::Active,
             "any-link" => NonTSPseudoClass::AnyLink,
@@ -668,7 +664,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
 
     fn parse_non_ts_functional_pseudo_class(
         &self,
-        name: CowRcStr<'i>,
+        name: &str,
         parser: &mut CssParser<'i>,
         after_part: bool,
     ) -> Result<NonTSPseudoClass, ParseError> {
@@ -686,7 +682,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         Ok(pseudo_class)
     }
 
-    fn parse_pseudo_element(&self, name: CowRcStr<'i>) -> Result<PseudoElement, ParseError> {
+    fn parse_pseudo_element(&self, name: &str) -> Result<PseudoElement, ParseError> {
         use self::PseudoElement::*;
         let pseudo_element = match_ignore_ascii_case! { &name,
             "before" => Before,
@@ -859,8 +855,7 @@ impl ServoElementSnapshot {
 
     fn get_attr(&self, namespace: &Namespace, name: &LocalName) -> Option<&AttrValue> {
         self.attrs
-            .as_ref()
-            .unwrap()
+            .as_ref()?
             .iter()
             .find(|&&(ref ident, _)| ident.local_name == *name && ident.namespace == *namespace)
             .map(|&(_, ref v)| v)
@@ -881,11 +876,11 @@ impl ServoElementSnapshot {
     where
         F: FnMut(&AttrValue) -> bool,
     {
-        self.attrs
-            .as_ref()
-            .unwrap()
-            .iter()
-            .any(|&(ref ident, ref v)| ident.local_name == *name && f(v))
+        self.attrs.as_ref().is_some_and(|attrs| {
+            attrs
+                .iter()
+                .any(|&(ref ident, ref v)| ident.local_name == *name && f(v))
+        })
     }
 }
 

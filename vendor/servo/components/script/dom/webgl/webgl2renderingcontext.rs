@@ -16,7 +16,7 @@ use js::rust::{CustomAutoRooterGuard, HandleObject, MutableHandleObject, Mutable
 use js::typedarray::{ArrayBufferView, Float32, Int32, Uint32};
 use pixels::{Alpha, Snapshot};
 use script_bindings::interfaces::WebGL2RenderingContextHelpers;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::generic_channel::{self, GenericSharedMemory};
 use servo_canvas_traits::webgl::WebGLError::*;
 use servo_canvas_traits::webgl::{
@@ -46,7 +46,6 @@ use crate::dom::bindings::codegen::UnionTypes::{
 use crate::dom::bindings::error::{ErrorResult, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
 #[cfg(feature = "webxr")]
@@ -134,31 +133,7 @@ struct ReadPixelsSizes {
 }
 
 impl WebGL2RenderingContext {
-    /// (Bao) Decoupled from `&Window` (REQ-BRW-004 C14): the base context is
-    /// created through the Window entry (fires `webglcontextcreationerror`) or
-    /// the worker entry (inherits the parent `Window` WebGL channel), mirroring
-    /// the W3a WebGL1 dispatch.
-    fn new_inherited(
-        cx: &mut JSContext,
-        global: &GlobalScope,
-        canvas: &RootedHTMLCanvasElementOrOffscreenCanvas,
-        size: Size2D<u32>,
-        attrs: GLContextAttributes,
-    ) -> Option<WebGL2RenderingContext> {
-        let base = match global.downcast::<Window>() {
-            Some(window) => {
-                WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?
-            },
-            None => WebGLRenderingContext::new_in_worker(
-                cx,
-                global,
-                canvas,
-                WebGLVersion::WebGL2,
-                size,
-                attrs,
-            )?,
-        };
-
+    fn new_inherited(base: &WebGLRenderingContext) -> WebGL2RenderingContext {
         let samplers = (0..base.limits().max_combined_texture_image_units)
             .map(|_| Default::default())
             .collect::<Vec<_>>()
@@ -173,9 +148,9 @@ impl WebGL2RenderingContext {
                 .collect::<Vec<_>>()
                 .into();
 
-        Some(WebGL2RenderingContext {
+        WebGL2RenderingContext {
             reflector_: Reflector::new(),
-            base: Dom::from_ref(&*base),
+            base: Dom::from_ref(base),
             occlusion_query: MutNullableDom::new(None),
             primitives_query: MutNullableDom::new(None),
             samplers,
@@ -194,7 +169,7 @@ impl WebGL2RenderingContext {
             enable_rasterizer_discard: Cell::new(false),
             default_fb_readbuffer: Cell::new(constants::BACK),
             default_fb_drawbuffer: Cell::new(constants::BACK),
-        })
+        }
     }
 
     pub(crate) fn new(
@@ -204,15 +179,20 @@ impl WebGL2RenderingContext {
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        WebGL2RenderingContext::new_inherited(cx, window.upcast::<GlobalScope>(), canvas, size, attrs)
-            .map(|ctx| reflect_dom_object_with_cx(Box::new(ctx), window, cx))
+        let base =
+            WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?;
+        Some(reflect_dom_object(
+            cx,
+            Box::new(WebGL2RenderingContext::new_inherited(&base)),
+            window,
+        ))
     }
 
-    /// (Bao) Worker-realm entry point for OffscreenCanvas WebGL2 contexts: the
-    /// worker inherits the parent `Window`'s WebGL channel (REQ-BRW-004 C14).
-    /// Unlike the `Window` path there is no `webglcontextcreationerror` event
-    /// surface here, so failures are logged and surfaced as `null` (same shape
-    /// as the W3a WebGL1 `new_in_worker`).
+    /// (Bao) Worker-realm entry point for OffscreenCanvas WebGL2 contexts
+    /// (REQ-BRW-004 C14/W3b): the worker inherits the parent `Window`'s WebGL
+    /// channel. Unlike the `Window` path there is no
+    /// `webglcontextcreationerror` event surface here, so failures are logged
+    /// and surfaced as `null` (same shape as the W3a WebGL1 `new_in_worker`).
     pub(crate) fn new_in_worker(
         cx: &mut js::context::JSContext,
         global: &GlobalScope,
@@ -220,8 +200,19 @@ impl WebGL2RenderingContext {
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        WebGL2RenderingContext::new_inherited(cx, global, canvas, size, attrs)
-            .map(|ctx| reflect_dom_object_with_cx(Box::new(ctx), global, cx))
+        let base = WebGLRenderingContext::new_in_worker(
+            cx,
+            global,
+            canvas,
+            WebGLVersion::WebGL2,
+            size,
+            attrs,
+        )?;
+        Some(reflect_dom_object(
+            cx,
+            Box::new(WebGL2RenderingContext::new_inherited(&base)),
+            global,
+        ))
     }
 
     pub(crate) fn set_image_key(&self, image_key: ImageKey) {

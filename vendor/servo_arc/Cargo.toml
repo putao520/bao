@@ -1,0 +1,33 @@
+# BAO PATCH (e128, 2026-10-07, REQ-BRW-002 vendor convergence to 2026-10-05
+# upstream boundary): vendored from the servo/stylo monorepo @ 0cb50925b
+# (the rev upstream servo pins in commit 614cd411f "Upgrade Stylo to
+# 2026-10-01"; crates.io still tops at 0.22.0/0.41.0/0.5.0, so the git
+# snapshot is vendored per user ruling 2026-10-07 — W3 "fork 1 pkg only"
+# superseded for this wave, noted in the absorption ledger).
+# Workspace inheritance (version.workspace / x = { workspace = true }) is
+# inlined as path+version literals — single compile universe, no vendor
+# sub-workspace (single-compile-universe ruling).
+# Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
+[package]
+name = "servo_arc"
+version = "0.5.0"
+authors = ["The Servo Project Developers"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/servo/stylo"
+description = "A fork of std::sync::Arc with some extra functionality and without weak references"
+edition = "2024"
+readme = "../README.md"
+
+[lib]
+name = "servo_arc"
+path = "lib.rs"
+
+[features]
+default = ["track_alloc_size"]
+gecko_refcount_logging = []
+servo = ["serde", "track_alloc_size"]
+track_alloc_size = []
+
+[dependencies]
+serde = { version = "1.0", optional = true }
+stable_deref_trait = "1.0.0"

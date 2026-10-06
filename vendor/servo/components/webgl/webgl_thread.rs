@@ -86,7 +86,7 @@ pub(crate) struct GLContextData {
 
 #[derive(Debug)]
 pub struct GLState {
-    _webgl_version: WebGLVersion,
+    webgl_version: WebGLVersion,
     _gl_version: GLVersion,
     requested_flags: ContextAttributeFlags,
     // This is the WebGL view of the color mask
@@ -204,7 +204,7 @@ impl Default for GLState {
     fn default() -> GLState {
         GLState {
             _gl_version: GLVersion { major: 1, minor: 0 },
-            _webgl_version: WebGLVersion::WebGL1,
+            webgl_version: WebGLVersion::WebGL1,
             requested_flags: ContextAttributeFlags::empty(),
             color_write_mask: [true, true, true, true],
             clear_color: (0., 0., 0., 0.),
@@ -679,7 +679,7 @@ impl WebGLThread {
 
         let state = GLState {
             _gl_version: gl_version,
-            _webgl_version: webgl_version,
+            webgl_version,
             requested_flags,
             default_vao,
             ..Default::default()
@@ -857,8 +857,12 @@ impl WebGLThread {
                 .get_mut(&context_id)
                 .expect("Missing WebGL context");
 
-            // Ensure there are no pending GL errors from other parts of the pipeline.
-            debug_assert_eq!(unsafe { data.gl.get_error() }, gl::NO_ERROR);
+            // Some surfman backends fail to create the next surface while a GL error is pending.
+            let pending_error = unsafe { data.gl.get_error() };
+            debug_assert_eq!(pending_error, gl::NO_ERROR);
+            if pending_error != gl::NO_ERROR {
+                warn!("Discarding GL error {pending_error:#x} before swapping {context_id:?}");
+            }
 
             // Check to see if any of the current framebuffer bindings are the surface we're about
             // to swap out. If so, we'll have to reset them after destroying the surface.
@@ -1941,10 +1945,42 @@ impl WebGLImpl {
                 sender.send(value).unwrap()
             },
             WebGLCommand::GetParameterInt(param, ref sender) => {
+                // The core profiles used for WebGL 2 dropped the `*_BITS` queries.
+                let webgl2 = state.webgl_version == WebGLVersion::WebGL2;
                 let value = match param {
                     webgl::ParameterInt::AlphaBits if state.fake_no_alpha() => 0,
                     webgl::ParameterInt::DepthBits if state.fake_no_depth() => 0,
                     webgl::ParameterInt::StencilBits if state.fake_no_stencil() => 0,
+                    webgl::ParameterInt::RedBits if webgl2 => Self::read_draw_framebuffer_bits(
+                        gl,
+                        gl::COLOR_ATTACHMENT0,
+                        gl::FRAMEBUFFER_ATTACHMENT_RED_SIZE,
+                    ),
+                    webgl::ParameterInt::GreenBits if webgl2 => Self::read_draw_framebuffer_bits(
+                        gl,
+                        gl::COLOR_ATTACHMENT0,
+                        gl::FRAMEBUFFER_ATTACHMENT_GREEN_SIZE,
+                    ),
+                    webgl::ParameterInt::BlueBits if webgl2 => Self::read_draw_framebuffer_bits(
+                        gl,
+                        gl::COLOR_ATTACHMENT0,
+                        gl::FRAMEBUFFER_ATTACHMENT_BLUE_SIZE,
+                    ),
+                    webgl::ParameterInt::AlphaBits if webgl2 => Self::read_draw_framebuffer_bits(
+                        gl,
+                        gl::COLOR_ATTACHMENT0,
+                        gl::FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE,
+                    ),
+                    webgl::ParameterInt::DepthBits if webgl2 => Self::read_draw_framebuffer_bits(
+                        gl,
+                        gl::DEPTH_ATTACHMENT,
+                        gl::FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE,
+                    ),
+                    webgl::ParameterInt::StencilBits if webgl2 => Self::read_draw_framebuffer_bits(
+                        gl,
+                        gl::STENCIL_ATTACHMENT,
+                        gl::FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE,
+                    ),
                     _ => unsafe { gl.get_parameter_i32(param as u32) },
                 };
                 sender.send(value).unwrap()
@@ -2520,8 +2556,16 @@ impl WebGLImpl {
                     attach(attachment)
                 }
             },
-            WebGLCommand::ReadBuffer(buffer) => unsafe { gl.read_buffer(buffer) },
-            WebGLCommand::DrawBuffers(ref buffers) => unsafe { gl.draw_buffers(buffers) },
+            WebGLCommand::ReadBuffer(buffer) => unsafe {
+                gl.read_buffer(Self::default_framebuffer_color_buffer(buffer, ctx, device))
+            },
+            WebGLCommand::DrawBuffers(ref buffers) => {
+                let buffers: Vec<_> = buffers
+                    .iter()
+                    .map(|&buffer| Self::default_framebuffer_color_buffer(buffer, ctx, device))
+                    .collect();
+                unsafe { gl.draw_buffers(&buffers) }
+            },
         }
 
         // If debug asertions are enabled, then check the error state.
@@ -2722,6 +2766,22 @@ impl WebGLImpl {
         chan.send(parameter).unwrap();
     }
 
+    /// Reads one component size of a draw framebuffer attachment, or 0 when
+    /// nothing is attached, as OpenGL ES 3.0.6 §4.4.5 defines the `*_BITS` values.
+    fn read_draw_framebuffer_bits(gl: &Gl, attachment: u32, pname: u32) -> i32 {
+        unsafe {
+            let object_type = gl.get_framebuffer_attachment_parameter_i32(
+                gl::DRAW_FRAMEBUFFER,
+                attachment,
+                gl::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+            );
+            if object_type as u32 == gl::NONE {
+                return 0;
+            }
+            gl.get_framebuffer_attachment_parameter_i32(gl::DRAW_FRAMEBUFFER, attachment, pname)
+        }
+    }
+
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.7>
     fn get_renderbuffer_parameter(gl: &Gl, target: u32, pname: u32, chan: &GenericSender<i32>) {
         let parameter = unsafe { gl.get_renderbuffer_parameter_i32(target, pname) };
@@ -2832,6 +2892,23 @@ impl WebGLImpl {
             state.drawing_to_default_framebuffer =
                 request == WebGLFramebufferBindingRequest::Default;
             state.restore_invariant(gl);
+        }
+    }
+
+    /// Maps a WebGL default framebuffer color buffer to its GL name: when the surface is backed
+    /// by a framebuffer object, GL rejects `BACK` and uses `COLOR_ATTACHMENT0` for the color
+    /// buffer.
+    fn default_framebuffer_color_buffer(buffer: u32, ctx: &Context, device: &Device) -> u32 {
+        if buffer != gl::BACK {
+            return buffer;
+        }
+        let surface_info = device
+            .context_surface_info(ctx)
+            .expect("WebGL commands run with their context current")
+            .expect("WebGL contexts are created with a surface attached");
+        match surface_info.framebuffer_object {
+            Some(_) => gl::COLOR_ATTACHMENT0,
+            None => gl::BACK,
         }
     }
 

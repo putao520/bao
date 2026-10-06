@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/freetype-wrapper", "vendor/usvg", "examples"]
+exclude = ["vendor/servo", "vendor/ipc-channel", "vendor/stylo", "vendor/stylo_atoms", "vendor/stylo_dom", "vendor/stylo_malloc_size_of", "vendor/stylo_static_prefs", "vendor/stylo_traits", "vendor/selectors", "vendor/servo_arc", "vendor/to_shmem", "vendor/to_shmem_derive", "vendor/freetype-wrapper", "vendor/usvg", "examples"]
 members = [
     # Public unified library entry (consumers depend on package `bao` only).
     "src/bao",
@@ -448,12 +448,29 @@ freetype = { path = "vendor/freetype-wrapper" }
 # guard - see vendor/usvg/src/parser/clippath.rs and the CLAUDE.md vendor list.
 usvg = { path = "vendor/usvg" }
 
-# BAO PATCH (REQ-BRW-047): vendored stylo_atoms with WebVTT enter/exit/cuechange atoms (workspace-local optimization; published script uses dynamic Atom::from)
+# BAO PATCH (REQ-BRW-047 -> e128 2026-10-07): vendored `stylo_atoms`
+# (0.22.0 base). The WebVTT `enter`/`exit`/`cuechange` atoms were natively
+# absorbed upstream by the 0.22.0 atom table; the remaining BAO additions are
+# `processorerror` (AudioWorklet wave) and `updatefound` (SW lifecycle wave).
+# Also carries a build.rs rerun-if-changed patch (fingerprint-rotation
+# staleness). Atoms are append-only (no existing entry is touched).
 stylo_atoms = { path = "vendor/stylo_atoms" }
 
-# BAO PATCH (REQ-BRW-047, fork-maintained, 2026-09-27): vendored
-# `stylo_atoms` (0.20.0, code unchanged, `static_atoms.txt` extended with the
-# `cuechange` / `enter` / `exit` event atoms). Upstream 7ca99fe3f's
-# `time_marches_on` fires these events; the registry crate's closed atom
-# table predates them, so the `atom!` macro fails to compile. Atoms are
-# append-only (no existing entry is touched).
+# BAO PATCH (e128, 2026-10-07, REQ-BRW-002 upstream convergence to the
+# 2026-10-05 boundary): the stylo monorepo crates servo pins in upstream
+# commit 614cd411f ("Upgrade Stylo to 2026-10-01", git pin 0cb50925b) are
+# vendored — crates.io still tops at 0.22.0/0.41.0/0.5.0, so the git
+# snapshot is the absorb form (user ruling 2026-10-07; W3 "fork 1 pkg"
+# superseded for this wave). Versions are unchanged content-forward moves.
+# NOTE: `stylo` itself is NOT patched — it keeps the bao-stylo rename and is
+# wired as a direct path dep in the vendor/servo component manifests
+# (patch entries cannot rename packages). `selectors` is NOT patched either
+# — 0cb50925b has breaking API changes (Element gains a `Copy` bound) and
+# lol_html depends on the registry crate; consumers use path deps instead.
+stylo_dom = { path = "vendor/stylo_dom" }
+stylo_malloc_size_of = { path = "vendor/stylo_malloc_size_of" }
+stylo_static_prefs = { path = "vendor/stylo_static_prefs" }
+stylo_traits = { path = "vendor/stylo_traits" }
+servo_arc = { path = "vendor/servo_arc" }
+to_shmem = { path = "vendor/to_shmem" }
+to_shmem_derive = { path = "vendor/to_shmem_derive" }

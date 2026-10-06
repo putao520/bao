@@ -15,12 +15,13 @@ use crate::selector_parser::SelectorImpl;
 use crate::stylist::{CascadeData, ContainerConditionId, Rule, ScopeConditionId, Stylist};
 use crate::{Atom, LocalName, Namespace, ShrinkIfNeeded, WeakAtom};
 use dom::ElementState;
+use hashbrown::hash_map;
+use hashbrown::{HashMap, HashSet};
 use precomputed_hash::PrecomputedHash;
 use selectors::matching::MatchingContext;
 use selectors::parser::{Combinator, Component, SelectorIter};
 use smallvec::SmallVec;
-use std::collections::hash_map;
-use std::collections::{HashMap, HashSet};
+use std::borrow::Borrow;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 /// A hasher implementation that doesn't hash anything, because it expects its
@@ -251,18 +252,18 @@ impl SelectorMap<Rule> {
             );
         }
 
-        if let Some(id) = rule_hash_target.id() {
-            if let Some(rules) = self.id_hash.get(id, quirks_mode) {
-                SelectorMap::get_matching_rules(
-                    element,
-                    rules,
-                    matching_rules_list,
-                    matching_context,
-                    cascade_level,
-                    cascade_data,
-                    stylist,
-                )
-            }
+        if let Some(id) = rule_hash_target.id()
+            && let Some(rules) = self.id_hash.get(id, quirks_mode)
+        {
+            SelectorMap::get_matching_rules(
+                element,
+                rules,
+                matching_rules_list,
+                matching_context,
+                cascade_level,
+                cascade_data,
+                stylist,
+            )
         }
 
         rule_hash_target.each_class(|class| {
@@ -403,14 +404,15 @@ impl<T: SelectorMapEntry> SelectorMap<T> {
             ($entry:ident, $bucket:expr) => {{
                 let vec = match $bucket {
                     Bucket::Root => &mut self.root,
-                    Bucket::ID(id) => self
-                        .id_hash
-                        .try_entry(id.clone(), quirks_mode)?
-                        .or_default(),
-                    Bucket::Class(class) => self
-                        .class_hash
-                        .try_entry(class.clone(), quirks_mode)?
-                        .or_default(),
+                    Bucket::ID(id) => {
+                        self.id_hash
+                            .try_get_or_insert_with(id, quirks_mode, Default::default)?
+                    },
+                    Bucket::Class(class) => self.class_hash.try_get_or_insert_with(
+                        class,
+                        quirks_mode,
+                        Default::default,
+                    )?,
                     Bucket::Attribute { name, lower_name }
                     | Bucket::LocalName { name, lower_name } => {
                         // If the local name in the selector isn't lowercase,
@@ -434,18 +436,18 @@ impl<T: SelectorMapEntry> SelectorMap<T> {
                         };
                         if name != lower_name {
                             hash.try_reserve(1)?;
-                            let vec = hash.entry(lower_name.clone()).or_default();
+                            let vec = hash.entry_ref(lower_name).or_default();
                             vec.try_reserve(1)?;
                             let mut entry = $entry.clone();
                             entry.set_bucket_matches(bucket_matches);
                             vec.push(entry);
                         }
                         hash.try_reserve(1)?;
-                        hash.entry(name.clone()).or_default()
+                        hash.entry_ref(name).or_default()
                     },
                     Bucket::Namespace(url) => {
                         self.namespace_hash.try_reserve(1)?;
-                        self.namespace_hash.entry(url.clone()).or_default()
+                        self.namespace_hash.entry_ref(url).or_default()
                     },
                     Bucket::RarePseudoClasses => &mut self.rare_pseudo_classes,
                     Bucket::Universal => &mut self.other,
@@ -550,12 +552,12 @@ impl<T: SelectorMapEntry> SelectorMap<T> {
             }
         }
 
-        if let Some(id) = element.id() {
-            if let Some(v) = self.id_hash.get(id, quirks_mode) {
-                for entry in v.iter() {
-                    if !f(entry) {
-                        return false;
-                    }
+        if let Some(id) = element.id()
+            && let Some(v) = self.id_hash.get(id, quirks_mode)
+        {
+            for entry in v.iter() {
+                if !f(entry) {
+                    return false;
                 }
             }
         }
@@ -666,12 +668,12 @@ impl<T: SelectorMapEntry> SelectorMap<T> {
         }
 
         // Check the additional id.
-        if let Some(id) = additional_id {
-            if let Some(v) = self.id_hash.get(id, quirks_mode) {
-                for entry in v.iter() {
-                    if !f(entry) {
-                        return false;
-                    }
+        if let Some(id) = additional_id
+            && let Some(v) = self.id_hash.get(id, quirks_mode)
+        {
+            for entry in v.iter() {
+                if !f(entry) {
+                    return false;
                 }
             }
         }
@@ -1001,17 +1003,23 @@ impl<V> MaybeCaseInsensitiveHashMap<Atom, V> {
         self.0.shrink_if_needed()
     }
 
-    /// HashMap::try_entry
-    pub fn try_entry(
+    /// Returns the value for `key`, inserting `default` if missing. The key is only cloned when
+    /// it's actually inserted.
+    pub fn try_get_or_insert_with(
         &mut self,
-        mut key: Atom,
+        key: &WeakAtom,
         quirks_mode: QuirksMode,
-    ) -> Result<hash_map::Entry<'_, Atom, V>, AllocErr> {
-        if quirks_mode == QuirksMode::Quirks {
-            key = key.to_ascii_lowercase()
-        }
+        default: impl FnOnce() -> V,
+    ) -> Result<&mut V, AllocErr> {
         self.0.try_reserve(1)?;
-        Ok(self.0.entry(key))
+        let lower;
+        let key: &WeakAtom = if quirks_mode == QuirksMode::Quirks {
+            lower = key.to_ascii_lowercase();
+            lower.borrow()
+        } else {
+            key
+        };
+        Ok(self.0.entry_ref(key).or_insert_with(default))
     }
 
     /// HashMap::is_empty
@@ -1032,18 +1040,22 @@ impl<V> MaybeCaseInsensitiveHashMap<Atom, V> {
 
     /// HashMap::get
     pub fn get(&self, key: &WeakAtom, quirks_mode: QuirksMode) -> Option<&V> {
-        if quirks_mode == QuirksMode::Quirks {
-            self.0.get(&key.to_ascii_lowercase())
+        let lower;
+        let key: &WeakAtom = if quirks_mode == QuirksMode::Quirks {
+            lower = key.to_ascii_lowercase();
+            lower.borrow()
         } else {
-            self.0.get(key)
-        }
+            key
+        };
+        self.0.get(key)
     }
 }
 
 #[test]
+#[cfg(feature = "servo")]
 fn test_precomputed_hash_set() {
     let mut set = PrecomputedHashSet::default();
-    let atom = crate::Atom::from("");
+    let atom = atom!("");
     assert!(!set.contains(&atom));
     set.insert(atom.clone());
     assert!(set.contains(&atom));

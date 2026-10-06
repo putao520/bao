@@ -406,9 +406,24 @@ pub(crate) trait AtomExt {
     fn get_hash32(&self) -> u32;
 }
 
+#[cfg(feature = "servo")]
 impl<Static: string_cache::StaticAtomSet> AtomExt for string_cache::Atom<Static> {
     fn get_hash32(&self) -> u32 {
         let hash64 = self.get_hash();
         (hash64 >> 32) as u32 ^ (hash64 as u32)
+    }
+}
+
+#[cfg(feature = "gecko")]
+impl AtomExt for crate::Atom {
+    fn get_hash32(&self) -> u32 {
+        self.get_hash()
+    }
+}
+
+#[cfg(feature = "gecko")]
+impl AtomExt for crate::WeakAtom {
+    fn get_hash32(&self) -> u32 {
+        self.get_hash()
     }
 }

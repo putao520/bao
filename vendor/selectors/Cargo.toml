@@ -1,0 +1,43 @@
+# BAO PATCH (e128, 2026-10-07, REQ-BRW-002 vendor convergence to 2026-10-05
+# upstream boundary): vendored from the servo/stylo monorepo @ 0cb50925b
+# (the rev upstream servo pins in commit 614cd411f "Upgrade Stylo to
+# 2026-10-01"; crates.io still tops at 0.22.0/0.41.0/0.5.0, so the git
+# snapshot is vendored per user ruling 2026-10-07 — W3 "fork 1 pkg only"
+# superseded for this wave, noted in the absorption ledger).
+# Workspace inheritance (version.workspace / x = { workspace = true }) is
+# inlined as path+version literals — single compile universe, no vendor
+# sub-workspace (single-compile-universe ruling).
+# Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
+[package]
+name = "selectors"
+version = "0.41.0"
+authors = ["The Servo Project Developers"]
+documentation = "https://docs.rs/selectors/"
+description = "CSS Selectors matching for Rust"
+repository = "https://github.com/servo/stylo"
+readme = "README.md"
+keywords = ["css", "selectors"]
+license = "MPL-2.0"
+edition = "2024"
+
+[lib]
+name = "selectors"
+path = "lib.rs"
+
+[features]
+bench = []
+to_shmem = ["dep:to_shmem", "dep:to_shmem_derive"]
+
+[dependencies]
+bitflags = "2"
+cssparser = "0.38"
+derive_more = { version = "2", features = ["add", "add_assign"] }
+hashbrown = "0.17"
+rustc-hash = "2.1.1"
+log = "0.4"
+precomputed-hash = "0.1"
+servo_arc = { version = "0.5.0", path = "../servo_arc" }
+smallvec = "1.0"
+to_shmem = { version = "0.6.0", path = "../to_shmem", features = ["servo"], optional = true }
+to_shmem_derive = { version = "0.2.0", path = "../to_shmem_derive", optional = true }
+new_debug_unreachable = "1"

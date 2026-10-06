@@ -1,0 +1,43 @@
+# BAO PATCH (e128, 2026-10-07, REQ-BRW-002 vendor convergence to 2026-10-05
+# upstream boundary): vendored from the servo/stylo monorepo @ 0cb50925b
+# (the rev upstream servo pins in commit 614cd411f "Upgrade Stylo to
+# 2026-10-01"; crates.io still tops at 0.22.0/0.41.0/0.5.0, so the git
+# snapshot is vendored per user ruling 2026-10-07 — W3 "fork 1 pkg only"
+# superseded for this wave, noted in the absorption ledger).
+# Workspace inheritance (version.workspace / x = { workspace = true }) is
+# inlined as path+version literals — single compile universe, no vendor
+# sub-workspace (single-compile-universe ruling).
+# Upstream sync: re-copy from the monorepo rev servo pins, redo inlining.
+[package]
+name = "stylo_traits"
+version = "0.22.0"
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+repository = "https://github.com/servo/stylo"
+edition = "2024"
+description = "Types used by the Stylo CSS engine"
+
+[lib]
+name = "style_traits"
+path = "lib.rs"
+
+[features]
+default = ["servo"]
+servo = ["stylo_atoms", "cssparser/serde", "url", "euclid/serde"]
+gecko = []
+
+[dependencies]
+app_units = "0.7"
+bitflags = "2"
+cssparser = "0.38"
+euclid = "0.22"
+malloc_size_of = { version = "0.22.0", path = "../stylo_malloc_size_of", package = "stylo_malloc_size_of", features = ["servo"] }
+malloc_size_of_derive = "0.1"
+selectors = { version = "0.41.0", path = "../selectors" }
+serde = "1.0"
+servo_arc = { version = "0.5.0", path = "../servo_arc" }
+stylo_atoms = { version = "0.22.0", path = "../stylo_atoms", optional = true }
+thin-vec = "0.2"
+to_shmem = { version = "0.6.0", path = "../to_shmem", features = ["servo"] }
+to_shmem_derive = { version = "0.2.0", path = "../to_shmem_derive" }
+url = { version = "2.5", optional = true }
