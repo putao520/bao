@@ -30,4 +30,9 @@ dictionary AudioWorkletNodeOptions : AudioNodeOptions {
     unsigned long numberOfInputs = 1;
     unsigned long numberOfOutputs = 1;
     sequence<unsigned long>? outputChannelCount = null;
+    // (Bao e114) spec §AudioWorkletNode-constructors step 9-10: the options
+    // dictionary is converted to a JS object and StructuredSerialize'd for
+    // the processor constructor's single argument (the webaudio spec's
+    // AudioWorkletNodeOptions processorOptions member).
+    any processorOptions = null;
 };

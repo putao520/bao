@@ -21,8 +21,20 @@ use std::sync::{Arc, Mutex};
 use dom_struct::dom_struct;
 use indexmap::IndexMap;
 use js::context::JSContext;
-use js::rust::HandleObject;
+use js::conversions::{jsstr_to_string, ToJSValConvertible};
+use js::gc::CustomAutoRooter;
+use js::jsapi::{ESClass, JSITER_OWNONLY, JSObject, JSPROP_ENUMERATE};
+use js::jsval::{JSVal, NullValue, ObjectValue, UndefinedValue};
+use js::rust::wrappers2::{
+    GetArrayLength, GetBuiltinClass, GetPropertyKeys, JS_ClearPendingException, JS_DefineElement,
+    JS_DefineProperty, JS_GetElement, JS_GetPropertyById, JS_IdToValue, JS_NewObject,
+    NewArrayObject1,
+};
+use js::rust::{CustomAutoRooterGuard, HandleObject, IdVector};
+use rustc_hash::FxHashMap;
+use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_proto;
+use servo_constellation_traits::StructuredSerializedData;
 use servo_media::audio::audioworklet_node::{
     AudioWorkletNodeError, AudioWorkletNodeInit, AudioWorkletNodeOptions as MediaOptions,
     DEFAULT_BRIDGE_CAPACITY, WorkletParamInit,
@@ -49,10 +61,12 @@ use crate::dom::bindings::codegen::Bindings::BaseAudioContextBinding::BaseAudioC
 use crate::dom::bindings::codegen::Bindings::AudioWorkletNodeBinding::{
     AudioWorkletNodeMethods, AudioWorkletNodeOptions,
 };
+use crate::dom::bindings::conversions::root_from_object;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::structuredclone;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
@@ -74,6 +88,35 @@ pub(crate) struct WorkletNodeShape {
     pub(crate) output_channels: Vec<u8>,
     pub(crate) params: Vec<ParamDescriptor>,
 }
+
+/// One step of a [`PortPath`]: a named own property of a plain object, or an
+/// element index of an array. Plain data (`Send`) — travels with the
+/// instantiation task so the worklet thread can place each minted lane port
+/// back at the position the substituted `MessagePort` occupied.
+#[derive(Clone, Debug)]
+pub(crate) enum PortPathSeg {
+    Key(Box<str>),
+    Index(u32),
+}
+
+/// The path from the options-object root to one substituted `MessagePort`
+/// position inside `processorOptions` (plain data, `Send`).
+pub(crate) type PortPath = Vec<PortPathSeg>;
+
+/// One substituted `MessagePort`: the page's port object plus every position
+/// it occupied in the options graph (the same object at two positions is one
+/// slot with two paths — identity is preserved by minting one lane port and
+/// placing it at each path).
+pub(crate) struct OptionPortSlot {
+    pub(crate) port: DomRoot<MessagePort>,
+    pub(crate) paths: Vec<PortPath>,
+}
+
+/// (e114) The options record shipped to the instantiation task: the
+/// structured-clone bytes of the options dictionary (spec step 10) plus the
+/// positions of any substituted `processorOptions` ports. Plain data
+/// (`Send`).
+pub(crate) type SerializedOptions = (StructuredSerializedData, Vec<Vec<PortPath>>);
 
 #[dom_struct]
 pub(crate) struct AudioWorkletNode {
@@ -101,6 +144,10 @@ pub(crate) struct AudioWorkletNode {
     /// This node's processor key.
     #[no_trace = "plain integer key, nothing to trace"]
     node_key: u64,
+    /// (e114) The main-side endpoints of the `processorOptions` port lanes:
+    /// the page's own port objects, redirected into this node's conduit.
+    /// Kept alive here so the `notify_main` drain can dispatch on them.
+    lane_ports: DomRefCell<Vec<Dom<MessagePort>>>,
     /// `processorerror` has fired once for this node (spec: fire once).
     processor_error_fired: Cell<bool>,
     /// The DOMString name the node was constructed with.
@@ -114,7 +161,7 @@ impl AudioWorkletNode {
         context: &BaseAudioContext,
         name: DOMString,
         options: &AudioWorkletNodeOptions,
-    ) -> Fallible<AudioWorkletNode> {
+    ) -> Fallible<(AudioWorkletNode, SerializedOptions)> {
         // Spec: if outputChannelCount is given, its length must equal
         // numberOfOutputs, else a NotSupportedError.
         let unwrapped = options.parent.unwrap_or(
@@ -183,6 +230,44 @@ impl AudioWorkletNode {
             output_channels: media_output_channels(&media_options),
             params: params.clone(),
         };
+
+        // (e114) spec §AudioWorkletNode-constructors steps 9-10: convert the
+        // options dictionary to a JS object and StructuredSerialize it — the
+        // worklet thread's "invoking processor constructor" step 5
+        // deserializes this record into the constructor's single argument.
+        // A `MessagePort` inside `processorOptions` (the Transferable
+        // subface) cannot ride the generic constellation port-router path
+        // (worklet event loops have no port delivery — the documented
+        // limitation the node↔processor conduit exists around), so it is
+        // substituted out for a null placeholder here, its position
+        // recorded, and the worklet thread mints the counterpart lane
+        // endpoint at instantiation. See `substitute_option_ports`.
+        rooted!(&in(cx) let mut options_object = UndefinedValue());
+        options.to_jsval(cx, options_object.handle_mut());
+        let (serialized_options, option_slots): (_, Vec<OptionPortSlot>) =
+            match structuredclone::write(cx, options_object.handle(), None) {
+                Ok(data) => (data, Vec::new()),
+                Err(Error::DataClone(_)) => {
+                    // A Transferable (a MessagePort) sits somewhere inside
+                    // `processorOptions`: substitute it out and serialize the
+                    // substituted graph. A second DataCloneError from this
+                    // write (e.g. a port hidden inside a Map) propagates —
+                    // the construction fails loudly, DataCloneError-shaped.
+                    rooted!(&in(cx) let mut substituted = UndefinedValue());
+                    let slots = substitute_option_ports(
+                        cx,
+                        options_object.handle(),
+                        substituted.handle_mut(),
+                    )?;
+                    let data = structuredclone::write(cx, substituted.handle(), None)?;
+                    (data, slots)
+                },
+                Err(err) => return Err(err),
+            };
+        let option_port_paths: Vec<Vec<PortPath>> = option_slots
+            .iter()
+            .map(|slot| slot.paths.clone())
+            .collect();
         let bridge = Arc::new(media_options.make_bridge_with_capacity(DEFAULT_BRIDGE_CAPACITY));
 
         // The real graph face: e90's render-side AudioWorkletNode consumes
@@ -233,13 +318,33 @@ impl AudioWorkletNode {
         // processor's port posts back into `to_main`, delivered by the
         // `notify_main` task.
         let port = MessagePort::new(cx, &global);
-        let conduit = AudioWorkletPortConduit::new();
+        // Register the node's port in the main global's port registry:
+        // `port.onmessage = ...` runs the spec's implicit `start()` on the
+        // port, and an unregistered port would panic once the global manages
+        // ANY port (e.g. the page also created a MessageChannel). The node's
+        // own traffic is fully redirected into the conduit, so the registry
+        // entry only serves the start/close bookkeeping.
+        global.track_message_port(&port, None);
+        let conduit = AudioWorkletPortConduit::with_lane_count(1 + option_slots.len() as u32);
         port.set_bao_port_redirect(PortRedirect {
             conduit: conduit.clone(),
-            direction: PortDirection::ToProcessor,
+            direction: PortDirection::ToProcessor { lane: 0 },
         });
+        // Each substituted `processorOptions` port becomes the main-side
+        // endpoint of its own conduit lane: its `postMessage` feeds the
+        // worklet-thread counterpart minted at instantiation, and the lane's
+        // `to_main` ring dispatches `message` events back on this object.
+        let mut lane_ports = Vec::with_capacity(option_slots.len());
+        for (index, slot) in option_slots.iter().enumerate() {
+            let lane = index as u32 + 1;
+            slot.port.set_bao_port_redirect(PortRedirect {
+                conduit: conduit.clone(),
+                direction: PortDirection::ToProcessor { lane },
+            });
+            lane_ports.push(Dom::from_ref(&*slot.port));
+        }
         let node_key = NEXT_NODE_KEY.fetch_add(1, Ordering::Relaxed);
-        Ok(AudioWorkletNode {
+        let built = AudioWorkletNode {
             node,
             port: Dom::from_ref(&*port),
             parameters: Dom::from_ref(&*parameters),
@@ -247,9 +352,11 @@ impl AudioWorkletNode {
             bridge,
             shape,
             node_key,
+            lane_ports: DomRefCell::new(lane_ports),
             processor_error_fired: Cell::new(false),
             name: name.into(),
-        })
+        };
+        Ok((built, (serialized_options, option_port_paths)))
     }
 
     /// Wire the worklet half once this node is reflected: install the
@@ -258,7 +365,12 @@ impl AudioWorkletNode {
     /// arrays, block-rate pump) to the worklet thread. Called exactly once,
     /// from the constructor, after reflection — the `Trusted` handles below
     /// need the rooted DOM object.
-    pub(crate) fn wire_processor(&self, cx: &mut JSContext, audio_worklet: &crate::dom::audio::audioworklet::AudioWorklet) {
+    pub(crate) fn wire_processor(
+        &self,
+        _cx: &mut JSContext,
+        audio_worklet: &crate::dom::audio::audioworklet::AudioWorklet,
+        serialized_options: SerializedOptions,
+    ) {
         let global = self.global();
         {
             // `Trusted` and `SendableTaskSource` are Send but not Sync; the
@@ -285,6 +397,7 @@ impl AudioWorkletNode {
         let task_name = Atom::from(self.name.clone());
         let task_bridge = self.bridge.clone();
         let task_conduit = self.conduit.clone();
+        let task_options = serialized_options;
         let task_shape = WorkletNodeShape {
             input_ports: self.shape.input_ports,
             output_ports: self.shape.output_ports,
@@ -316,6 +429,7 @@ impl AudioWorkletNode {
                     task_bridge,
                     task_conduit,
                     &task_shape,
+                    task_options,
                     main_sender,
                 );
             },
@@ -340,8 +454,10 @@ impl AudioWorkletNode {
         event.upcast::<Event>().fire(cx, self.upcast());
     }
 
-    /// Drain the conduit's `to_main` ring on the script thread, dispatching
-    /// `message` events on this node's port (the `notify_main` hook body).
+    /// Drain the conduit's `to_main` rings on the script thread, dispatching
+    /// `message` events on this node's port (lane 0) and on each
+    /// `processorOptions` lane's main-side endpoint port (the `notify_main`
+    /// hook body).
     pub(crate) fn drain_inbound_port(
         &self,
         cx: &mut JSContext,
@@ -352,6 +468,26 @@ impl AudioWorkletNode {
             crate::dom::audio::audioworkletport::dispatch_port_payload(
                 cx,
                 &self.port,
+                &global,
+                payload,
+            );
+        }
+        // Collect under a short borrow (dispatch runs script), then fire.
+        let mut lane_payloads = Vec::new();
+        {
+            let lanes = self.lane_ports.borrow();
+            for (index, port) in lanes.iter().enumerate() {
+                let lane = index as u32 + 1;
+                while let Some(payload) = conduit.pop_for_main_lane(lane) {
+                    lane_payloads.push((DomRoot::from_ref(&**port), payload));
+                }
+            }
+        }
+        for (port, payload) in lane_payloads {
+            let global = self.global();
+            crate::dom::audio::audioworkletport::dispatch_port_payload(
+                cx,
+                &port,
                 &global,
                 payload,
             );
@@ -371,6 +507,272 @@ fn media_output_channels(options: &MediaOptions) -> Vec<u8> {
         .collect()
 }
 
+// ── (e114) processorOptions Transferable substitution ──
+
+/// How a walked value is placed into the substituted clone: a primitive
+/// (relocation-free `JSVal` copy), an object held in the walk's auto-rooter
+/// (index into the rooter's vector — the pointer is re-read at every use so
+/// a moving GC inside a getter cannot stale it), or the null placeholder
+/// written at a substituted `MessagePort` position.
+enum Placement {
+    Value(JSVal),
+    Object(usize),
+    Null,
+}
+
+/// Soft bounds of the substitution walk (mirrors the bounded-walk
+/// discipline of the surrounding audio code): a port-free options graph of
+/// any size never enters this path (the plain `structuredclone::write`
+/// handles it first), so these only cap the port-carrying case.
+const MAX_SUBSTITUTION_DEPTH: usize = 256;
+const MAX_SUBSTITUTION_OBJECTS: usize = 8192;
+
+/// Walk the converted options graph — the same plain-object/array domain
+/// SM's own structured-clone traversal covers — building a substituted
+/// clone in which every `MessagePort` is replaced by `null`, and recording
+/// each port's position(s). Getters therefore run exactly once per property
+/// (the follow-up `structuredclone::write` reads the substituted clone, not
+/// the original graph). Non-plain containers (Date, Map, TypedArray, ...) are
+/// copied by reference: a port hidden inside one cannot be substituted, and
+/// the follow-up write then fails loudly (`DataCloneError`).
+///
+/// This is the DOM-layer expression of structured-clone transfer
+/// placeholder mechanics (SM's `SCTAG_TRANSFER_MAP_PENDING_ENTRY` is the
+/// engine-layer equivalent): the positions travel out-of-band so the
+/// worklet thread can mint each lane port and place it back into the
+/// deserialized value (see `instantiate_processor`).
+#[expect(unsafe_code)]
+fn substitute_option_ports(
+    cx: &mut JSContext,
+    value: js::rust::Handle<JSVal>,
+    mut out: js::rust::MutableHandleValue,
+) -> Fallible<Vec<OptionPortSlot>> {
+    let mut slots = Vec::new();
+    let mut rooter = CustomAutoRooter::new(Vec::<*mut JSObject>::new());
+    let mut visited: FxHashMap<*mut JSObject, usize> = FxHashMap::default();
+    {
+        // SAFETY: the guard is created and dropped on this thread with its
+        // runtime's own context, per the CustomAutoRooter contract.
+        let mut guard = unsafe { rooter.root(cx.raw_cx()) };
+        let mut path = Vec::new();
+        let placement = substitution_walk(
+            cx,
+            value.get(),
+            &mut path,
+            &mut guard,
+            &mut slots,
+            &mut visited,
+            0,
+        )?;
+        let substituted = match placement {
+            Placement::Value(value) => value,
+            Placement::Object(index) => ObjectValue(guard[index]),
+            Placement::Null => NullValue(),
+        };
+        out.set(substituted);
+    }
+    Ok(slots)
+}
+
+/// One recursion step of [`substitute_option_ports`]. `source` objects are
+/// stack-rooted per level; every object the walk creates or keeps by
+/// reference is additionally held in `guard`'s auto-rooter and only ever
+/// re-read from it (never carried as a bare `JSVal` across a JS call).
+#[expect(unsafe_code)]
+fn substitution_walk(
+    cx: &mut JSContext,
+    value: JSVal,
+    path: &mut Vec<PortPathSeg>,
+    guard: &mut CustomAutoRooterGuard<'_, Vec<*mut JSObject>>,
+    slots: &mut Vec<OptionPortSlot>,
+    visited: &mut FxHashMap<*mut JSObject, usize>,
+    depth: usize,
+) -> Fallible<Placement> {
+    if depth > MAX_SUBSTITUTION_DEPTH || guard.len() > MAX_SUBSTITUTION_OBJECTS {
+        return Err(Error::DataClone(None));
+    }
+    if !value.is_object() {
+        return Ok(Placement::Value(value));
+    }
+    rooted!(&in(cx) let source = value.to_object());
+
+    // A `MessagePort`: record the slot (identity-deduped — the same object
+    // at two positions is one lane with two paths) and place the null
+    // placeholder.
+    // SAFETY: a plain read of the reflector for `source.get()` (an object
+    // the walk rooted above); no JS runs inside.
+    let rooted_port = unsafe { root_from_object::<MessagePort>(cx, source.get()) };
+    if let Ok(port) = rooted_port {
+        let id = *port.message_port_id();
+        let slot = match slots
+            .iter_mut()
+            .find(|slot| *slot.port.message_port_id() == id)
+        {
+            Some(slot) => slot,
+            None => {
+                slots.push(OptionPortSlot {
+                    port,
+                    paths: Vec::new(),
+                });
+                slots.last_mut().expect("slot just pushed")
+            },
+        };
+        slot.paths.push(path.clone());
+        return Ok(Placement::Null);
+    }
+
+    let mut class = ESClass::Other;
+    if !unsafe { GetBuiltinClass(cx, source.handle(), &mut class) } {
+        unsafe { JS_ClearPendingException(cx) };
+        return Err(Error::DataClone(None));
+    }
+    match class {
+        ESClass::Object => {
+            if let Some(&index) = visited.get(&source.get()) {
+                return Ok(Placement::Object(index));
+            }
+            let clone = unsafe { JS_NewObject(cx, std::ptr::null()) };
+            if clone.is_null() {
+                return Err(Error::DataClone(None));
+            }
+            guard.push(clone);
+            let clone_index = guard.len() - 1;
+            visited.insert(source.get(), clone_index);
+
+            let mut ids = IdVector::new(cx);
+            if !unsafe {
+                GetPropertyKeys(cx, source.handle(), JSITER_OWNONLY, ids.handle_mut())
+            } {
+                unsafe { JS_ClearPendingException(cx) };
+                return Err(Error::DataClone(None));
+            }
+            for id in ids.iter() {
+                rooted!(&in(cx) let id = *id);
+                rooted!(&in(cx) let mut key_val = UndefinedValue());
+                if !unsafe { JS_IdToValue(cx, id.get(), key_val.handle_mut()) } {
+                    continue;
+                }
+                let key = if key_val.is_string() {
+                    rooted!(&in(cx) let js_string = key_val.to_string());
+                    let Some(js_string) = std::ptr::NonNull::new(js_string.get()) else {
+                        continue;
+                    };
+                    unsafe { jsstr_to_string(cx, js_string) }
+                } else if key_val.is_int32() {
+                    key_val.to_int32().to_string()
+                } else {
+                    // Symbol-keyed properties are skipped by structured
+                    // clone; skip them here too.
+                    continue;
+                };
+                let Ok(c_key) = std::ffi::CString::new(key.as_bytes()) else {
+                    continue;
+                };
+                rooted!(&in(cx) let mut prop_val = UndefinedValue());
+                if !unsafe {
+                    JS_GetPropertyById(cx, source.handle(), id.handle(), prop_val.handle_mut())
+                } {
+                    // A getter threw: fail the construction DataClone-shaped.
+                    unsafe { JS_ClearPendingException(cx) };
+                    return Err(Error::DataClone(None));
+                }
+                path.push(PortPathSeg::Key(key.into()));
+                let placement = substitution_walk(
+                    cx,
+                    prop_val.get(),
+                    path,
+                    guard,
+                    slots,
+                    visited,
+                    depth + 1,
+                )?;
+                path.pop();
+                rooted!(&in(cx) let clone_here = guard[clone_index]);
+                rooted!(&in(cx) let mut defined = UndefinedValue());
+                match placement {
+                    Placement::Value(value) => defined.set(value),
+                    Placement::Object(index) => defined.set(ObjectValue(guard[index])),
+                    Placement::Null => defined.set(NullValue()),
+                }
+                if !unsafe {
+                    JS_DefineProperty(
+                        cx,
+                        clone_here.handle(),
+                        c_key.as_ptr(),
+                        defined.handle(),
+                        JSPROP_ENUMERATE as _,
+                    )
+                } {
+                    unsafe { JS_ClearPendingException(cx) };
+                    return Err(Error::DataClone(None));
+                }
+            }
+            Ok(Placement::Object(clone_index))
+        },
+        ESClass::Array => {
+            if let Some(&index) = visited.get(&source.get()) {
+                return Ok(Placement::Object(index));
+            }
+            let mut length = 0u32;
+            if !unsafe { GetArrayLength(cx, source.handle(), &mut length) } {
+                return Err(Error::DataClone(None));
+            }
+            let clone = unsafe { NewArrayObject1(cx, length as usize) };
+            if clone.is_null() {
+                return Err(Error::DataClone(None));
+            }
+            guard.push(clone);
+            let clone_index = guard.len() - 1;
+            visited.insert(source.get(), clone_index);
+            for index in 0..length {
+                rooted!(&in(cx) let mut element = UndefinedValue());
+                if !unsafe { JS_GetElement(cx, source.handle(), index, element.handle_mut()) } {
+                    unsafe { JS_ClearPendingException(cx) };
+                    return Err(Error::DataClone(None));
+                }
+                path.push(PortPathSeg::Index(index));
+                let placement = substitution_walk(
+                    cx,
+                    element.get(),
+                    path,
+                    guard,
+                    slots,
+                    visited,
+                    depth + 1,
+                )?;
+                path.pop();
+                rooted!(&in(cx) let clone_here = guard[clone_index]);
+                rooted!(&in(cx) let mut defined = UndefinedValue());
+                match placement {
+                    Placement::Value(value) => defined.set(value),
+                    Placement::Object(index) => defined.set(ObjectValue(guard[index])),
+                    Placement::Null => defined.set(NullValue()),
+                }
+                if !unsafe {
+                    JS_DefineElement(
+                        cx,
+                        clone_here.handle(),
+                        index,
+                        defined.handle(),
+                        JSPROP_ENUMERATE as _,
+                    )
+                } {
+                    unsafe { JS_ClearPendingException(cx) };
+                    return Err(Error::DataClone(None));
+                }
+            }
+            Ok(Placement::Object(clone_index))
+        },
+        _ => {
+            // Non-plain container: keep by reference; the serializer handles
+            // it (a port nested inside such a value fails the follow-up
+            // write loudly).
+            guard.push(source.get());
+            Ok(Placement::Object(guard.len() - 1))
+        },
+    }
+}
+
 impl AudioWorkletNodeMethods<crate::DomTypeHolder> for AudioWorkletNode {
     /// <https://webaudio.github.io/web-audio-api/#dom-audioworkletnode-audioworkletnode>
     fn Constructor(
@@ -381,7 +783,8 @@ impl AudioWorkletNodeMethods<crate::DomTypeHolder> for AudioWorkletNode {
         name: DOMString,
         options: &AudioWorkletNodeOptions,
     ) -> Fallible<DomRoot<AudioWorkletNode>> {
-        let node = AudioWorkletNode::new_inherited(cx, context, name, options)?;
+        let (node, serialized_options) =
+            AudioWorkletNode::new_inherited(cx, context, name, options)?;
         let dom_root = reflect_dom_object_with_proto(
             cx,
             Box::new(node),
@@ -389,7 +792,7 @@ impl AudioWorkletNodeMethods<crate::DomTypeHolder> for AudioWorkletNode {
             proto,
         );
         let audio_worklet = context.AudioWorklet();
-        dom_root.wire_processor(cx, &audio_worklet);
+        dom_root.wire_processor(cx, &audio_worklet, serialized_options);
         Ok(dom_root)
     }
 

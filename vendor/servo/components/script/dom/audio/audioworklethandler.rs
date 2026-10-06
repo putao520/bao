@@ -50,6 +50,8 @@ use crate::dom::audio::audioworkletnode::AudioWorkletNode;
 use crate::dom::bindings::conversions::get_property_jsval;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
+use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::structuredclone;
 use script_bindings::reflector::DomObject;
 use crate::messaging::{CommonScriptMsg, MainThreadScriptMsg};
 use crate::realms::enter_auto_realm;
@@ -260,11 +262,12 @@ pub(crate) fn instantiate_processor(
     bridge: Arc<AudioWorkletBridge>,
     conduit: Arc<crate::dom::audio::audioworkletport::AudioWorkletPortConduit>,
     shape: &crate::dom::audio::audioworkletnode::WorkletNodeShape,
+    serialized_options: crate::dom::audio::audioworkletnode::SerializedOptions,
     main_sender: Sender<MainThreadScriptMsg>,
 ) {
     use crate::dom::audio::audioworkletport::{PortDirection, PortRedirect};
-    use js::rust::wrappers2::{JS_NewObject, NewArrayObject};
     use js::rust::wrappers2::JS_SetProperty;
+    use js::rust::wrappers2::{JS_NewObject, NewArrayObject};
 
     // The worklet thread mints DOM ids here (the processor's MessagePort) —
     // install the pipeline namespace first, mirroring the worker global scope
@@ -274,10 +277,53 @@ pub(crate) fn instantiate_processor(
     let mut realm = enter_auto_realm(cx, scope.upcast::<crate::dom::globalscope::GlobalScope>());
     let cx = &mut realm.current_realm();
 
-    // `new ctor()`: `processorOptions` is not plumbed yet (documented 段(3)
-    // limitation) — the processor constructs with `undefined`.
+    // (e114) spec "invoking processor constructor" steps 4-5 then 8:
+    // deserialize the options record in this worklet realm, mint the
+    // counterpart endpoint of every substituted `processorOptions`
+    // `MessagePort` lane and place it back at the recorded position, then
+    // `Construct(ctor, «options»)`. The minted ports are wired ToMain into
+    // the node's conduit — their `postMessage` rides the lane ring instead
+    // of the constellation port path (which never reaches worklet event
+    // loops).
+    let global = scope.upcast::<crate::dom::globalscope::GlobalScope>();
+    rooted!(&in(cx) let mut options_val = UndefinedValue());
+    let mut lane_ports: Vec<DomRoot<crate::dom::globalscope::messageport::MessagePort>> =
+        Vec::new();
+    let (options_data, port_paths) = serialized_options;
+    if structuredclone::read(cx, global, options_data, options_val.handle_mut()).is_err() {
+        debug!("AudioWorklet options deserialization failed for node {node_key}.");
+        latch_failure(&node, &bridge, &main_sender);
+        return;
+    }
+    for (index, slot_paths) in port_paths.iter().enumerate() {
+        let lane = index as u32 + 1;
+        let port = crate::dom::globalscope::messageport::MessagePort::new(cx, global);
+        port.set_bao_port_redirect(PortRedirect {
+            conduit: conduit.clone(),
+            direction: PortDirection::ToMain { lane },
+        });
+        rooted!(&in(cx) let port_value = ObjectValue(
+            port.reflector().get_jsobject().get(),
+        ));
+        // One lane per port object: the same object substituted at several
+        // positions is one minted port placed back at each of its paths.
+        for path in slot_paths {
+            if !set_option_path_value(cx, options_val.handle(), path, port_value.handle()) {
+                debug!(
+                    "AudioWorklet processorOptions port path missing for node {node_key}, \
+                     lane {lane}."
+                );
+                latch_failure(&node, &bridge, &main_sender);
+                return;
+            }
+        }
+        lane_ports.push(port);
+    }
+
+    // `new ctor(options)` — the deserialized options dictionary object is
+    // the constructor's single argument (spec step 8).
     rooted_vec!(let mut ctor_args);
-    ctor_args.push(UndefinedValue());
+    ctor_args.push(options_val.get());
     let args = HandleValueArray::from(&ctor_args);
     rooted!(&in(cx) let mut instance = null_mut::<JSObject>());
     unsafe {
@@ -429,10 +475,11 @@ pub(crate) fn instantiate_processor(
     };
     scope.register_processor_instance(node_key, instance_data);
 
-    // Route the processor-side port through the conduit's `to_main` ring.
+    // Route the processor-side port through the conduit's `to_main` ring
+    // (lane 0 — the node's own port pair).
     port.set_bao_port_redirect(PortRedirect {
         conduit: conduit.clone(),
-        direction: PortDirection::ToMain,
+        direction: PortDirection::ToMain { lane: 0 },
     });
 
     // Wake hook: the render bridge (quantum pushes) and the node port's
@@ -457,7 +504,69 @@ pub(crate) fn instantiate_processor(
     let handler = WorkletProcessorHandler::new(scope, node_key, bridge.clone(), node, main_sender);
     let pump = AudioWorkletPump::new(bridge, Box::new(handler));
     scope.register_pump(node_key, conduit, pump);
+    // The minted `processorOptions` lane ports (traced here — the drain
+    // re-reads them per wake).
+    scope.register_port_lanes(node_key, lane_ports);
     scope.drain_audio_pumps(cx);
+}
+
+/// Walk `path` from the deserialized options root and set `value` at its
+/// end (the worklet-thread half of the e114 transfer-substitution: the
+/// minted lane port is placed back exactly where the substituted
+/// `MessagePort` sat). Returns false when the path no longer resolves
+/// (a hostile deserialization edge — the caller latches the failure).
+#[expect(unsafe_code)]
+fn set_option_path_value(
+    cx: &mut JSContext,
+    root: js::rust::Handle<js::jsval::JSVal>,
+    path: &[crate::dom::audio::audioworkletnode::PortPathSeg],
+    value: js::rust::Handle<js::jsval::JSVal>,
+) -> bool {
+    use crate::dom::audio::audioworkletnode::PortPathSeg;
+    use js::rust::wrappers2::{JS_GetElement, JS_GetProperty, JS_SetElement, JS_SetProperty};
+
+    let Some((last, parents)) = path.split_last() else {
+        return false;
+    };
+    rooted!(&in(cx) let mut current = root.get());
+    for seg in parents {
+        if !current.is_object() {
+            return false;
+        }
+        rooted!(&in(cx) let obj = current.to_object());
+        rooted!(&in(cx) let mut child = UndefinedValue());
+        let ok = match seg {
+            PortPathSeg::Key(key) => {
+                let Ok(c_key) = std::ffi::CString::new(key.as_bytes()) else {
+                    return false;
+                };
+                unsafe { JS_GetProperty(cx, obj.handle(), c_key.as_ptr(), child.handle_mut()) }
+            },
+            PortPathSeg::Index(index) => unsafe {
+                JS_GetElement(cx, obj.handle(), *index, child.handle_mut())
+            },
+        };
+        if !ok {
+            unsafe { JS_ClearPendingException(cx) };
+            return false;
+        }
+        current.set(child.get());
+    }
+    if !current.is_object() {
+        return false;
+    }
+    rooted!(&in(cx) let obj = current.to_object());
+    match last {
+        PortPathSeg::Key(key) => {
+            let Ok(c_key) = std::ffi::CString::new(key.as_bytes()) else {
+                return false;
+            };
+            unsafe { JS_SetProperty(cx, obj.handle(), c_key.as_ptr(), value) }
+        },
+        PortPathSeg::Index(index) => unsafe {
+            JS_SetElement(cx, obj.handle(), *index, value)
+        },
+    }
 }
 
 /// Bridge latch + one-shot script-thread report shared by the instantiation

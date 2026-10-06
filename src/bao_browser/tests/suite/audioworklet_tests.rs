@@ -108,6 +108,95 @@ registerProcessor('port-processor', class extends AudioWorkletProcessor {
 });
 "#;
 
+/// (e114) A processor that publishes what its constructor argument carries:
+/// the spec's "invoking processor constructor" step 8 hands the constructor
+/// the DESERIALIZED options dictionary — `options.processorOptions` must be
+/// the exact value the page placed there (structured clone through the
+/// shared serialization base). Poke-reply shape (the established
+/// PORT_PROCESSOR_JS idiom): the page asks, the processor answers with the
+/// facts it captured at construction. (A processor cannot post from its own
+/// constructor — `this.port` is redirected only after instantiation
+/// completes; that pre-activation window is a documented 段(3) limitation.)
+const OPTS_PROCESSOR_JS: &str = r#"
+registerProcessor('opts-processor', class extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    var node = this;
+    node.opts = options;
+    node.port.addEventListener('message', function (e) {
+      if (!e.data || e.data.cmd !== 'go') { return; }
+      var options = node.opts;
+      var po = options && options.processorOptions;
+      node.port.postMessage({
+        hasOptions: typeof options === 'object' && options !== null,
+        poType: po === null ? 'null' : typeof po,
+        x: po ? po.x : null,
+        numberOfInputs: options ? options.numberOfInputs : null,
+        numberOfOutputs: options ? options.numberOfOutputs : null
+      });
+    });
+  }
+  process(inputs, outputs, parameters) { return true; }
+});
+"#;
+
+/// (e114) The nested-structure variant: the whole `processorOptions`
+/// subgraph (objects, arrays, numbers, strings, booleans, null) must
+/// survive the main→worklet structured clone byte-shape (the substitution
+/// clone preserves enumeration order; JSON comparison is the oracle).
+const NESTED_OPTS_PROCESSOR_JS: &str = r#"
+registerProcessor('nested-opts-processor', class extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    var node = this;
+    node.opts = options;
+    node.port.addEventListener('message', function (e) {
+      if (!e.data || e.data.cmd !== 'go') { return; }
+      var po = node.opts && node.opts.processorOptions;
+      node.port.postMessage({
+        roundtrip: po ? JSON.stringify(po) : null,
+        innerIsArray: !!(po && po.a && Array.isArray(po.a.b))
+      });
+    });
+  }
+  process(inputs, outputs, parameters) { return true; }
+});
+"#;
+
+/// (e114) The port-in-port variant (the Transferable subface): a MessagePort
+/// placed inside `processorOptions` is transferred to the processor realm
+/// (the worklet thread receives the minted counterpart endpoint wired
+/// through the node's conduit). On the page's 'go' poke it posts the
+/// transfer facts and pings through the channel port (worklet→main);
+/// anything arriving on the channel port is forwarded through the node's
+/// port (main→worklet observability).
+const PIPO_PROCESSOR_JS: &str = r#"
+registerProcessor('pipo-processor', class extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    var node = this;
+    node.chan = options && options.processorOptions && options.processorOptions.channel;
+    node.opts = options;
+    node.port.addEventListener('message', function (e) {
+      if (!e.data || e.data.cmd !== 'go') { return; }
+      node.port.postMessage({
+        chanIsPort: node.chan instanceof MessagePort,
+        poType: node.opts ? typeof node.opts.processorOptions : 'none'
+      });
+      if (node.chan) {
+        node.chan.postMessage('ping-from-processor');
+      }
+    });
+    if (node.chan) {
+      node.chan.addEventListener('message', function (e) {
+        node.port.postMessage({ got: e.data });
+      });
+    }
+  }
+  process(inputs, outputs, parameters) { return true; }
+});
+"#;
+
 /// Service worker: asserts the module fetch destination the same way the WPT
 /// fetch-destination worker does, and responds with the pass-through fetch
 /// when it matches. Records the observed destination for the fixture probe.
@@ -195,6 +284,12 @@ impl AwHttpFixture {
                                 ("text/javascript", THROW_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/port-processor.js") {
                                 ("text/javascript", PORT_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/opts-processor.js") {
+                                ("text/javascript", OPTS_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/nested-opts-processor.js") {
+                                ("text/javascript", NESTED_OPTS_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/pipo-processor.js") {
+                                ("text/javascript", PIPO_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/sw.js") {
                                 ("application/javascript", AW_SW_JS.replace("__ORIGIN__", &origin))
                             } else if path.starts_with("/dummy") {
@@ -817,5 +912,197 @@ fn audioworklet_port_roundtrip_live() {
         result.contains("\"echo\":\"ping-42\"") && result.contains("\"srIsNumber\":true"),
         "the node↔processor port roundtrip must echo the payload with the real scope sampleRate, \
          got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-004 [criterion:structured-clone] live
+///
+/// (e114) `processorOptions` passthrough: the options dictionary crosses to
+/// the processor realm through the shared structured-clone base (spec
+/// "invoking processor constructor" steps 3-5 + 8) — the processor
+/// constructor receives the deserialized dictionary object, and
+/// `options.processorOptions.x` is the exact value the page placed there.
+#[test]
+fn audioworklet_processor_options_simple_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "opts-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 128, 44100);
+               await ctx.audioWorklet.addModule(window.location.origin + '/opts-processor.js');
+               var node = new AudioWorkletNode(ctx, 'opts-processor',
+                 { processorOptions: { x: 1 } });
+               var msgs = [];
+               node.port.onmessage = function (e) { msgs.push(e.data); };
+               node.port.postMessage({ cmd: 'go' });
+               var deadline = Date.now() + 10000;
+               while (msgs.length < 1 && Date.now() < deadline) {
+                 await new Promise(function (r) { setTimeout(r, 50); });
+               }
+               var m = msgs[0] || {};
+               window.__probe = JSON.stringify({
+                 stage: 'done', hasOptions: m.hasOptions, poType: m.poType,
+                 x: m.x, numberOfInputs: m.numberOfInputs, numberOfOutputs: m.numberOfOutputs
+               });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(30),
+        "processorOptions simple passthrough",
+    );
+
+    eprintln!("[aw-test] processorOptions simple = {result}");
+    assert!(
+        result.contains("\"hasOptions\":true") &&
+            result.contains("\"poType\":\"object\"") &&
+            result.contains("\"x\":1") &&
+            result.contains("\"numberOfInputs\":1") &&
+            result.contains("\"numberOfOutputs\":1"),
+        "the processor constructor must receive the deserialized options dictionary with the \
+         page's processorOptions intact, got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-004 [criterion:structured-clone] live
+///
+/// (e114) The nested-structure variant of the passthrough: objects, arrays
+/// and every scalar flavour inside `processorOptions` survive the
+/// main→worklet structured clone with shape and order intact (the
+/// substitution clone preserves enumeration order; JSON comparison is the
+/// oracle).
+#[test]
+fn audioworklet_processor_options_nested_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "nested-opts-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 128, 44100);
+               await ctx.audioWorklet.addModule(
+                 window.location.origin + '/nested-opts-processor.js');
+               var payload = { a: { b: [1, 2.5, 'three', true, null] }, n: [4, 5], flag: false };
+               var node = new AudioWorkletNode(ctx, 'nested-opts-processor',
+                 { processorOptions: payload });
+               var msgs = [];
+               node.port.onmessage = function (e) { msgs.push(e.data); };
+               node.port.postMessage({ cmd: 'go' });
+               var deadline = Date.now() + 10000;
+               while (msgs.length < 1 && Date.now() < deadline) {
+                 await new Promise(function (r) { setTimeout(r, 50); });
+               }
+               var m = msgs[0] || {};
+               window.__probe = JSON.stringify({
+                 stage: 'done', equal: m.roundtrip === JSON.stringify(payload),
+                 innerIsArray: m.innerIsArray, got: m.roundtrip
+               });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(30),
+        "processorOptions nested passthrough",
+    );
+
+    eprintln!("[aw-test] processorOptions nested = {result}");
+    assert!(
+        result.contains("\"equal\":true") && result.contains("\"innerIsArray\":true"),
+        "the nested processorOptions subgraph must survive the structured clone with shape and \
+         order intact, got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-004 [criterion:structured-clone] live
+///
+/// (e114) The port-in-port roundtrip (the Transferable subface): a
+/// MessagePort placed inside `processorOptions` is transferred to the
+/// processor realm — the worklet thread's constructor sees a real
+/// MessagePort (the minted conduit lane counterpart), its
+/// `postMessage('ping-from-processor')` lands on the page's port
+/// (worklet→main through the lane), and the page's reply is received by the
+/// processor and forwarded through the node's port (main→worklet through
+/// the lane).
+#[test]
+fn audioworklet_processor_options_port_in_port_roundtrip_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "pipo-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var ctx = new OfflineAudioContext(1, 128, 44100);
+               await ctx.audioWorklet.addModule(window.location.origin + '/pipo-processor.js');
+               var mc = new MessageChannel();
+               var node = new AudioWorkletNode(ctx, 'pipo-processor',
+                 { processorOptions: { channel: mc.port1 } });
+               var fromNode = [], fromChan = [];
+               node.port.onmessage = function (e) { fromNode.push(e.data); };
+               mc.port1.onmessage = function (e) { fromChan.push(e.data); };
+               node.port.postMessage({ cmd: 'go' });
+               var wait_for = function (pred) {
+                 var deadline = Date.now() + 10000;
+                 return new Promise(function (resolve) {
+                   (function poll() {
+                     if (pred() || Date.now() >= deadline) { resolve(); return; }
+                     setTimeout(poll, 50);
+                   })();
+                 });
+               };
+               await wait_for(function () { return fromNode.length >= 1; });
+               var first = fromNode[0] || {};
+               await wait_for(function () { return fromChan.length >= 1; });
+               var ping = fromChan.length >= 1 ? String(fromChan[0]) : '__none__';
+               mc.port1.postMessage('pong-to-processor');
+               await wait_for(function () {
+                 return fromNode.some(function (m) { return m && m.got; });
+               });
+               var echo = '__none__';
+               for (var i = 0; i < fromNode.length; ++i) {
+                 if (fromNode[i] && fromNode[i].got) { echo = fromNode[i].got; break; }
+               }
+               window.__probe = JSON.stringify({
+                 stage: 'done', chanIsPort: !!first.chanIsPort,
+                 poType: first.poType, ping: ping, echo: echo
+               });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(40),
+        "processorOptions port-in-port roundtrip",
+    );
+
+    eprintln!("[aw-test] processorOptions port-in-port = {result}");
+    assert!(
+        result.contains("\"chanIsPort\":true") &&
+            result.contains("\"poType\":\"object\"") &&
+            result.contains("\"ping\":\"ping-from-processor\"") &&
+            result.contains("\"echo\":\"pong-to-processor\""),
+        "the processorOptions MessagePort must transfer to the processor realm and carry a full \
+         postMessage roundtrip (worklet→main ping, main→worklet pong), got: {result}"
     );
 }

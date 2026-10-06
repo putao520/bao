@@ -280,6 +280,10 @@ pub(crate) struct AudioWorkletGlobalScope {
     processor_registry: DomRefCell<HashMapTracedValues<Atom, Box<ProcessorDefinition>>>,
     /// node key → traced processor instance data (worklet thread).
     processor_instances: DomRefCell<HashMapTracedValues<u64, Box<ProcessorInstanceData>>>,
+    /// node key → the minted worklet-side endpoints of the node's
+    /// `processorOptions` port lanes (e114; entry `i` is lane `i + 1`).
+    /// Traced — the drain re-reads the slots per wake.
+    port_lane_ports: DomRefCell<HashMapTracedValues<u64, Vec<Dom<MessagePort>>>>,
     /// The block-rate pumps (untraced, thread-confined — see [`NodePump`]).
     #[no_trace]
     #[ignore_malloc_size_of = "media pump, no heap-owned GC payload"]
@@ -317,6 +321,7 @@ impl AudioWorkletGlobalScope {
             audio,
             processor_registry: Default::default(),
             processor_instances: Default::default(),
+            port_lane_ports: Default::default(),
             audio_pumps: DomRefCell::new(Vec::new()),
         });
         let origin = global.worklet_global.origin();
@@ -386,6 +391,22 @@ impl AudioWorkletGlobalScope {
         });
     }
 
+    /// Register the minted worklet-side endpoints of a node's
+    /// `processorOptions` port lanes (e114; worklet thread, called at
+    /// instantiation right after `register_pump`).
+    pub(crate) fn register_port_lanes(
+        &self,
+        node_key: u64,
+        ports: Vec<DomRoot<MessagePort>>,
+    ) {
+        self.port_lane_ports
+            .borrow_mut()
+            .0
+            .entry(node_key)
+            .or_default()
+            .extend(ports.into_iter().map(|port| Dom::from_ref(&*port)));
+    }
+
     /// 段(3) teardown (worklet thread, while this thread's runtime is alive):
     /// flush the SM store buffer BEFORE the instance Heap slots free.
     /// `Heap::set` records nursery edges against the slot addresses; freeing
@@ -402,6 +423,7 @@ impl AudioWorkletGlobalScope {
             unsafe { js::jsapi::JS_GC(cx.raw_cx(), js::jsapi::GCReason::API) };
         }
         self.processor_instances.borrow_mut().0.clear();
+        self.port_lane_ports.borrow_mut().0.clear();
     }
 
     /// The block-rate step, posted by the wake hook (render side publishing
@@ -430,31 +452,39 @@ impl AudioWorkletGlobalScope {
                 }
             }
         }
-        // Then inbound port payloads: pop under the borrow, dispatch outside
-        // it (dispatch runs script).
-        let mut payloads = Vec::new();
+        // Then inbound port payloads: lane 0 (the processor's own port) and
+        // each `processorOptions` lane (its minted counterpart port). Pop
+        // under short borrows, dispatch outside them (dispatch runs script).
+        let mut dispatches: Vec<(DomRoot<MessagePort>, crate::dom::audio::audioworkletport::PortPayload)> =
+            Vec::new();
         {
             let pumps = self.audio_pumps.borrow();
+            let lane_ports = self.port_lane_ports.borrow();
             for entry in pumps.iter() {
                 while let Some(payload) = entry.conduit.pop_for_processor() {
-                    payloads.push((entry.node_key, payload));
+                    if let Some(inst) = self.instance_data(entry.node_key) {
+                        dispatches.push((DomRoot::from_ref(&*inst.port), payload));
+                    }
+                }
+                for lane in 1..entry.conduit.lane_count() {
+                    while let Some(payload) = entry.conduit.pop_for_processor_lane(lane) {
+                        let Some(ports) = lane_ports.get(&entry.node_key) else {
+                            continue;
+                        };
+                        let Some(port) = ports.get(lane as usize - 1) else {
+                            continue;
+                        };
+                        dispatches.push((DomRoot::from_ref(&**port), payload));
+                    }
                 }
             }
         }
-        if payloads.is_empty() {
+        if dispatches.is_empty() {
             return;
         }
         let global = self.upcast::<crate::dom::globalscope::GlobalScope>();
-        for (node_key, payload) in payloads {
-            let Some(inst) = self.instance_data(node_key) else {
-                continue;
-            };
-            crate::dom::audio::audioworkletport::dispatch_port_payload(
-                cx,
-                &inst.port,
-                global,
-                payload,
-            );
+        for (port, payload) in dispatches {
+            crate::dom::audio::audioworkletport::dispatch_port_payload(cx, &port, global, payload);
         }
     }
 }
