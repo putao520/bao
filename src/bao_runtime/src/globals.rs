@@ -930,27 +930,36 @@ pub fn install_buffer_global(
     return _base64Bytes(s);
   }
 
-  // Shared *Write body: writes `bytes` into this buffer at `offset`, clamped
-  // to `length` (remaining buffer space). Returns the number of bytes
-  // actually written. Performs ERR_BUFFER_OUT_OF_BOUNDS bounds check per
-  // Node.js (offset/length that exceed buf.length throw).
-  function _doWrite(buf, bytes, offset, length) {
-    // @trace REQ-ENG-005 [api:Buffer.*Write] — Node.js semantics:
-    //   • offset beyond buf.length → ERR_BUFFER_OUT_OF_BOUNDS
-    //   • explicit numeric length that exceeds (buf.length - offset) →
-    //     ERR_BUFFER_OUT_OF_BOUNDS (NOT a silent clamp). buffer.test.js
-    //     "*Write methods … length larger than available buffer space"
-    //     drives this for utf8Write/utf16leWrite/latin1Write/asciiWrite/
-    //     base64Write/base64urlWrite/hexWrite.
-    //   • length undefined → clamp to remaining buffer space (silent).
-    //   • NaN/Infinity offset coerces to 0 (V8 IntegerValue).
-    //   • Non-number length (e.g. a class with Symbol.toPrimitive) is
-    //     coerced via ToNumber; the resulting number is CLAMPED to the
-    //     remaining buffer space rather than throwing — buffer.test.js
-    //     "*Write methods with NaN/invalid offset and length" drives
-    //     `buf.utf8Write(str, F1, C3)` (C3 toPrimitive → 215, clamped to
-    //     buf.length 6) NOT to throw. This matches V8's path where a
-    //     coerced non-primitive length bypasses the explicit-range guard.
+  // @trace REQ-ENG-005 [api:Buffer.*Write] — upstream aa8307619d: the
+  // per-encoding writers reject a value that is not a primitive string
+  // (Node's THROW_AND_RETURN_IF_NOT_STRING, src/node_buffer.cc) and never
+  // coerce it — an object's toString/valueOf/Symbol.toPrimitive must not
+  // run. Fixed message, ERR_INVALID_ARG_TYPE code.
+  function _stringArgumentOrThrow(value) {
+    if (typeof value === 'string') return value;
+    var err = new TypeError('argument must be a string');
+    err.code = 'ERR_INVALID_ARG_TYPE';
+    throw err;
+  }
+
+  // Resolve+validate the [offset, length] write window for a *Write call.
+  // @trace REQ-ENG-005 [api:Buffer.*Write] — Node.js semantics:
+  //   • offset beyond buf.length → ERR_BUFFER_OUT_OF_BOUNDS
+  //   • explicit numeric length that exceeds (buf.length - offset) →
+  //     ERR_BUFFER_OUT_OF_BOUNDS (NOT a silent clamp). buffer.test.js
+  //     "*Write methods … length larger than available buffer space"
+  //     drives this for utf8Write/utf16leWrite/latin1Write/asciiWrite/
+  //     base64Write/base64urlWrite/hexWrite.
+  //   • length undefined → clamp to remaining buffer space (silent).
+  //   • NaN/Infinity offset coerces to 0 (V8 IntegerValue).
+  //   • Non-number length (e.g. a class with Symbol.toPrimitive) is
+  //     coerced via ToNumber; the resulting number is CLAMPED to the
+  //     remaining buffer space rather than throwing — buffer.test.js
+  //     "*Write methods with NaN/invalid offset and length" drives
+  //     `buf.utf8Write(str, F1, C3)` (C3 toPrimitive → 215, clamped to
+  //     buf.length 6) NOT to throw. This matches V8's path where a
+  //     coerced non-primitive length bypasses the explicit-range guard.
+  function _writeBounds(buf, offset, length) {
     var bufLen = buf.length;
     // ToNumber-coerce offset (runs user valueOf / Symbol.toPrimitive).
     var offNum = (offset === undefined || offset === null) ? 0 : (+offset);
@@ -981,8 +990,17 @@ pub fn install_buffer_global(
         len = Math.min(lenNum >>> 0, bufLen - off);
       }
     }
-    var n = Math.min(bytes.length, len);
-    for (var i = 0; i < n; i++) buf[off + i] = bytes[i] & 0xFF;
+    return [off, len];
+  }
+
+  // Shared *Write body: writes `bytes` into this buffer at `offset`, clamped
+  // to `length` (remaining buffer space). Returns the number of bytes
+  // actually written. Performs ERR_BUFFER_OUT_OF_BOUNDS bounds check per
+  // Node.js (offset/length that exceed buf.length throw).
+  function _doWrite(buf, bytes, offset, length) {
+    var b = _writeBounds(buf, offset, length);
+    var n = Math.min(bytes.length, b[1]);
+    for (var i = 0; i < n; i++) buf[b[0] + i] = bytes[i] & 0xFF;
     return n;
   }
 
@@ -994,43 +1012,15 @@ pub fn install_buffer_global(
     // "truncate write() at character boundary" drive this. We compute the
     // full UTF-8 byte sequence, then walk the original string's codepoints
     // to find the largest prefix whose encoded length fits `length`.
-    var s = String(string);
+    //
+    // @trace REQ-ENG-005 — upstream aa8307619d order (Node wraps
+    // utf8/latin1/ascii in a JS bounds-checking wrapper): the bounds check
+    // runs FIRST, so ERR_BUFFER_OUT_OF_BOUNDS wins over a non-string value,
+    // and offset/length valueOf runs before the rejection.
+    var b = _writeBounds(this, offset, length);
+    var off = b[0], len = b[1];
+    var s = _stringArgumentOrThrow(string);
     var allBytes = _utf8Bytes(s);
-    var bufLen = this.length;
-    // ToNumber-coerce offset (runs user valueOf / Symbol.toPrimitive); NaN /
-    // Infinity coerces to 0 (V8 IntegerValue parity).
-    var offNum = (offset === undefined || offset === null) ? 0 : (+offset);
-    if (!isFinite(offNum)) offNum = 0;
-    var off = offNum >>> 0;
-    if (off > bufLen) {
-      throw _ERR_BUFFER_OUT_OF_BOUNDS();
-    }
-    // @trace REQ-ENG-005 — explicit numeric length > remaining throws
-    // ERR_BUFFER_OUT_OF_BOUNDS; undefined / non-number length clamps
-    // silently (V8 IntegerValue: NaN → 0 → clamp to remaining). A non-number
-    // length (class with Symbol.toPrimitive) is ToNumber-coerced then clamped
-    // without throwing — buffer.test.js "*Write methods with NaN/invalid
-    // offset and length" drives this branch.
-    var len;
-    if (length === undefined || length === null) {
-      len = bufLen - off;
-    } else if (typeof length === 'number') {
-      if (!isFinite(length)) {
-        len = bufLen - off;
-      } else {
-        len = length >>> 0;
-        if (len > bufLen - off) {
-          throw _ERR_BUFFER_OUT_OF_BOUNDS();
-        }
-      }
-    } else {
-      var lenNum = +length;
-      if (!isFinite(lenNum)) {
-        len = bufLen - off;
-      } else {
-        len = Math.min(lenNum >>> 0, bufLen - off);
-      }
-    }
     // Walk codepoints; for each, compute its UTF-8 byte length, and stop
     // when adding it would exceed `len` (character-boundary truncation).
     var written = 0;
@@ -1059,26 +1049,35 @@ pub fn install_buffer_global(
   _bp.asciiWrite = function(string, offset, length) {
     // Node.js parity: 'ascii' on encode == 'latin1' (verbatim byte copy,
     // not 7-bit masking). See bun/test #31083.
-    var s = String(string);
+    // Bounds-first family (aa8307619d, same JS wrapper as utf8Write): the
+    // offset/length coercion + bounds check run before the string check —
+    // ERR_BUFFER_OUT_OF_BOUNDS wins over a non-string value.
+    var b = _writeBounds(this, offset, length);
+    var s = _stringArgumentOrThrow(string);
     var bytes = new Array(s.length);
     for (var i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xFF;
-    // Pass offset/length uncoerced so _doWrite can distinguish "non-number
-    // argument that ToNumber-coerces to a finite value" (apply explicit
-    // bounds check) from "non-number argument that ToNumber-coerces to NaN /
-    // Infinity" (silently treat as 0 / remaining per Node V8 IntegerValue).
-    return _doWrite(this, bytes, offset, length);
+    var n = Math.min(bytes.length, b[1]);
+    for (var j = 0; j < n; j++) this[b[0] + j] = bytes[j] & 0xFF;
+    return n;
   };
   _bp.latin1Write = _bp.asciiWrite;
+  // String-first family (aa8307619d, Node's native SlowWriteString): the
+  // value is rejected BEFORE offset/length are read — no valueOf calls on
+  // them when the value is not a string.
   _bp.hexWrite = function(string, offset, length) {
-    var bytes = _hexBytes(String(string));
+    var s = _stringArgumentOrThrow(string);
+    var bytes = _hexBytes(s);
     return _doWrite(this, bytes, offset, length);
   };
   _bp.base64Write = function(string, offset, length) {
-    var bytes = _base64Bytes(String(string));
+    var s = _stringArgumentOrThrow(string);
+    var bytes = _base64Bytes(s);
     return _doWrite(this, bytes, offset, length);
   };
   _bp.base64urlWrite = function(string, offset, length) {
-    var bytes = _base64urlBytes(String(string));
+    // String-first family (aa8307619d).
+    var s = _stringArgumentOrThrow(string);
+    var bytes = _base64urlBytes(s);
     return _doWrite(this, bytes, offset, length);
   };
   _bp.ucs2Write = function(string, offset, length) {
@@ -1087,37 +1086,12 @@ pub fn install_buffer_global(
     // the remaining buffer space is dropped entirely. buffer.test.js
     // "write" drives x.write("ыыыыыы", 3, "ucs2") on a 4-byte buffer to
     // assert 0 bytes are written (only 1 byte available at offset 3).
-    var s = String(string);
+    // String-first family (aa8307619d): reject the value before offset/
+    // length are read.
+    var s = _stringArgumentOrThrow(string);
     var bytes = _utf16leBytes(s);
-    var bufLen = this.length;
-    // ToNumber-coerce offset (runs user valueOf / Symbol.toPrimitive); NaN /
-    // Infinity coerces to 0 (V8 IntegerValue parity).
-    var offNum = (offset === undefined || offset === null) ? 0 : (+offset);
-    if (!isFinite(offNum)) offNum = 0;
-    var off = offNum >>> 0;
-    if (off > bufLen) {
-      throw _ERR_BUFFER_OUT_OF_BOUNDS();
-    }
-    var len;
-    if (length === undefined || length === null) {
-      len = bufLen - off;
-    } else if (typeof length === 'number') {
-      if (!isFinite(length)) {
-        len = bufLen - off;
-      } else {
-        len = length >>> 0;
-        if (len > bufLen - off) {
-          throw _ERR_BUFFER_OUT_OF_BOUNDS();
-        }
-      }
-    } else {
-      var lenNum = +length;
-      if (!isFinite(lenNum)) {
-        len = bufLen - off;
-      } else {
-        len = Math.min(lenNum >>> 0, bufLen - off);
-      }
-    }
+    var b = _writeBounds(this, offset, length);
+    var off = b[0], len = b[1];
     // Truncate to even byte count (full UCS-2 units only).
     var n = Math.min(bytes.length, len);
     if (n % 2 !== 0) n -= 1;
@@ -1126,7 +1100,8 @@ pub fn install_buffer_global(
   };
   _bp.utf16leWrite = _bp.ucs2Write;
   _bp.utf16beWrite = function(string, offset, length) {
-    var s = String(string);
+    // bao extension (no Node twin); string-first family order (aa8307619d).
+    var s = _stringArgumentOrThrow(string);
     var bytes = new Array(s.length * 2);
     for (var i = 0; i < s.length; i++) {
       var c = s.charCodeAt(i);
