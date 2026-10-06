@@ -96,6 +96,14 @@
 - stylo 全家 vendor 落地与接线见根 Cargo.toml 注释与 CLAUDE.md;stylo_atoms 零变更;bao-stylo-derive 重锚 0cb50925b（pinned-Ok 3 位点,第 4 裸位点按原 delta 保持裸置）。
 - 坑位：vendor 同步 mtime 回退复用 stale 生成物（properties.rs 旧 clone_* 形 101 错;清 build/fingerprint 后绿——stylo_atoms build.rs rerun-if-changed patch 同类,但该 patch 防内容追加不防 mtime 回退）。
 
+### 3.8 e128 补丁终态对齐轮（2026-10-07,用户裁定「终态一次合并」模式）——§三全清单对账收口
+
+- 方法：以 648de 终态树为唯一基准,当前树对 240a/648de 双 cmp 三分——**123 文件在补丁态**（§三在册面 87+ 全部已带 BAO patch,e102-e127 波成果）;85 窗口文件=终态整替;**pending 面逐一对账**：
+  - `htmlmediaelement.rs` timeupdate 保活锚=**唯一真 pending**（fc02334b 引入、a7272f16 快照抹除、e102-e127 未回放;648de 终态危害仍在:text_tracks 早退压 Step-6）——已重施（Step-6 触发块上移到早退前,上游节流逻辑原样;media_e2e+webvtt_render 2/2 PASS 证）
+  - 6 个路径迁移面（html{video,track,image,iframe}element/text_control/stacking_context→新路径 embedded_content/form_controls/display_list）:旧 patch 零行（a7272f16^ vs 4842b770e 实测）——§三保守列入,对账升级无 patch
+  - webvtt 族（src/lib.rs 等）:§二在册溶解（上游自有实现替换）;`fonts/font_context.rs` 196 行旧 delta=选择性吸收漂移,BAO 特征面（platform_options/cascade_index/is_font_active/FontFaceRuleInfo）648de 全原生——溶解
+- 模式注记:P1「切片 1-6 回放」废止（用户裁定 2026-10-07）;本节为补丁清单一次性终态对齐的收口记录,此后上游同步=终态合并+本清单对齐一轮过。
+
 ## 四、保留文件（BAO-new 零删除；dormant=未接 module 声明，随回放接线）
 
 `canvas/canvas_noise.rs`、`layout/webvtt_cue_overlay.rs`、`net/fetch/bun_bridge.rs`、`net/tests/bun_bridge.rs`、`pixels/benches.rs`、`script/Cargo.lock`、`script/dom/audio/audioworklet{,globalscope,handler,node,port,processor,audioparammap}.rs`（e90 全链，随回放接 module）、`script/dom/serviceworker/{clients,fetchevent}.rs`、`script/dom/svg/svg_geometry.rs`、`shared/base/ipc_router.rs`、`script_bindings/webidls/{AudioParamMap,AudioWorklet,AudioWorkletGlobalScope,AudioWorkletNode,AudioWorkletProcessor,Clients,FetchEvent}.webidl`、`media/audio/{audioworklet_node,node,ring}.rs`（components/media 全程未触碰，e90 域字节级保持）
