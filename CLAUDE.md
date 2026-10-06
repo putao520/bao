@@ -213,7 +213,7 @@ StyleThread 栈 8MiB(上游 parity):bao 不走上游 mach,`.cargo/config.toml` [
 
 单一宇宙:全仓唯一 `[workspace]` 根 / `Cargo.lock` / `[patch.crates-io]`(freetype 1 条,主根)/ `rust-toolchain.toml`(nightly pin)。vendor 四仓形态:
 
-- `vendor/servo` 组件 = 主 workspace **非成员 path dep**(70 manifest 已内联全部 workspace 继承,5a2d85bc;`[workspace]` 虚拟根/Cargo.lock/rust-toolchain.toml 已删,a4a3b942;主根 exclude 保留 `vendor/servo` 作防再成员化护栏)。`vendor/mozjs` 同构(eu1 8d4c8260);`vendor/stylo` / `vendor/ipc-channel` / `vendor/freetype-wrapper` 本就是自洽单 crate。
+- `vendor/servo` 组件 = 主 workspace **非成员 path dep**(70 manifest 已内联全部 workspace 继承,5a2d85bc;`[workspace]` 虚拟根/Cargo.lock/rust-toolchain.toml 已删,a4a3b942;主根 exclude 保留 `vendor/servo` 作防再成员化护栏)。`vendor/mozjs` 同构(eu1 8d4c8260);`vendor/ipc-channel` / `vendor/freetype-wrapper` 本就是自洽单 crate。**stylo 全家 vendor(e128,2026-10-07)**:`vendor/stylo`(=bao-stylo fork,含 in-tree bao-stylo-derive)+ `vendor/{stylo_atoms,stylo_dom,stylo_malloc_size_of,stylo_static_prefs,stylo_traits,selectors,servo_arc,to_shmem,to_shmem_derive}` = 上游 servo 648de26fa lock 的 git pin 0cb50925b 全集(0.23.0 未发,git snapshot 形态;用户裁决 2026-10-07 覆盖 W3「仅 fork 1 包」)。manifest workspace 继承已内联 path+version 字面量。接线:root [patch.crates-io] 7 条(stylo_atoms 原有+stylo_dom/stylo_malloc_size_of/stylo_static_prefs/stylo_traits/servo_arc/to_shmem/to_shmem_derive);**selectors 不走 patch**(0cb50925b Element+Copy bound 破坏性 API)——layout/script/shared-layout 三 manifest path dep 隔离,lol_html 的 registry selectors 0.37 线零触碰;stylo(bao-stylo)维持 8 manifest 直连 path dep(package 改名,patch 不能改名)。上游同步 stylo:按上游 lock 的 git pin rev 重拷 9 目录+重放(bao-stylo 改名头/bao-stylo-derive pinned-Ok 3 位点/stylo_atoms 2 atom+build.rs rerun patch),**坑:同步后 mtime 回退会复用 stale 生成物(properties.rs)——清 target 内 bao-stylo build/fingerprint 目录或 touch properties/build.py**。
 - **验证 remap**:一律主根 `cargo check|cargo nt -p bao-servo-*`(`-p` 匹配全图包,含非成员)。禁 `cd vendor/servo`(根已删)。从主根首次对某 servo crate 跑 test 会按需解析其 dev-deps 并一次性增长主锁,跑后 `git diff Cargo.lock` 审计。
 - **发布 remap**:servo lockstep 线走组件目录 `cargo publish --manifest-path vendor/servo/components/<c>/Cargo.toml`(manifest 自含;publish-verify 解析 registry freetype 0.8.0——2026-09-21 解析级实证,编译 parity 依 E17 符号对照)。
 - 历史记录:本文档 2026-09-21 前的「双 workspace patch 链 / 双侧 lock」叙述为当时机制描述,现行为单侧主根 patch。
@@ -364,7 +364,7 @@ StyleThread 栈 8MiB(上游 parity):bao 不走上游 mach,`.cargo/config.toml` [
 |------|------|---------|
 | Bun | `~/code/rust/bun/src/` | ~85 个纯 Rust crate(零修改复用);`jsc/` 是 JSC→SM 迁移目标;`runtime/` 是 Bun API 实现来源 |
 | Bun SPEC | `~/code/rust/bun/CLAUDE.md` | 构建命令、测试规范、crate 组织 |
-| Servo | `~/code/tools/servo/`(vendor 快照见 `vendor/servo/`,2026-08-13 上游 HEAD,10 个 Bao 定制文件见上文清单) | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
+| Servo | `~/code/tools/servo/`(vendor 快照见 `vendor/servo/`,**2026-10-05 上游界 648de26fa**——e128 收敛,stylo 2026-10-01 bump+11 commit;BAO 定制文件见上文清单) | `libservo` 嵌入入口;`script/` DOM(每 ScriptThread 一个 thread-local SM JSContext);`script_bindings/` SM↔DOM 桥接 |
 | mozjs | `vendor/mozjs/`(SM 153.3.0esr / bao-mozjs 0.24.0 / bao-mozjs-sys 153.3.0-0,2026-09-21 前移波 em1 系列;extracted-crates 12 件 in-tree 同源提取;7 项 BAO patch 见上文清单;单宇宙吸收后无独立 workspace——8d4c8260) | SM FFI 绑定源码 |
 | blitz | `~/code/rust/blitz/` | DioxusLabs 模块化浏览器参考架构 |
 

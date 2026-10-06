@@ -1,6 +1,6 @@
 # vendor/servo 快照替换 — 溶解核验与待回放清单（e99, REQ-BRW-002 / REQ-DEPLOY-1 P1-② 第一阶段）
 
-- 快照点：`vendor/servo/components` 全树 4842b770e（2026-08-13）→ **614cd411f^ = 240a37393**（2026-10-05，stylo 2026-10-01 bump `614cd411f` 之前一 commit；用户暂定钉）。
+- 快照点：`vendor/servo/components` 全树 4842b770e（2026-08-13）→ 614cd411f^ = 240a37393（e99/e102 血换）→ **648de26fa**（2026-10-05 上游界，e128 收敛 2026-10-07；窗口=stylo bump `614cd411f`+11 commit，界外 14 commit 显式不做；stylo 落地=vendor snapshot 0cb50925b 全家，见根 Cargo.toml patch 段与 CLAUDE.md 拓扑节）。
 - 本阶段边界：快照替换 + manifest 归一 + 机械 build-fix。**语义回放不做**（归 6 切片阶段）；本文件是回放阶段的输入清单。
 - 判定方法：溶解项 = 工具实测（目标树字节级/grep 级证据 + 上游窗口 commit 号）；待回放项 = 默认态（e97 recon 126 补丁文件中未能证实已溶解者）。回放切片动手前必须先对上游终态做 per-file 语义对账——部分「待回放」条目可能在对账中升级为已溶解。
 
@@ -87,6 +87,14 @@
 - **per-Worker injector 层目标树零残留**：`worker_scope_injectors` / `EMBEDDER_WORKER_SCOPE_INJECTORS` / `register_worker_*_injector` 在 components/script + components/servo 全 0 命中（e102 工具实测）——§3.2「per-Worker injector 双层」条目的实锤状态确认;连带 worklet 第 4 注入 realm drain、`WorkletGlobalScope.webview_id` 字段/访问器、`GlobalScope::webview_id()` worklet 臂均未回植（切片 1 裁量:与 injector 层一体回植,避免半面）
 - **mediation 全链剩余缺口（切片 2 输入）**：`net/http_loader.rs` `invoke_handle_fetch` + `resource_thread.rs` SwManagers 目标树 0 命中（C19 S2b net 拦截面整体溶解）;`serviceworkerglobalscope.rs` 分派臂已回植但无 caller——net 拦截面+enroll 波重落前 mediation/aw-destination-sw 测试恒红（切片 1 GREEN 判据已按此修订:编译收敛+RED 附归因）
 - **bao_browser lib 59 错（阻塞测试面,非 vendor 域）**：src/bao_browser 全 6 文件（cdp_handler 4/lib 17/page_pool 6/page 11/runtime_bridge 20/ws_registry 1）,首因 `servo::Opts` 等嵌入 API 新形失配=e90/e91 桥层对新 servo 快照整层回放域;audioworklet 6+mediation 5+https_popup 1 最小测试集无法构建
+
+### 3.7 e128 窗口收敛记录（2026-10-07, commit d3b752e0）——240a37393 → 648de26fa
+
+- 86 窗口文件三分：**85 CLEAN-REPLACE**（当前树=240a 纯净态,整体替换;含 stylo fixup rename 波的 layout 31/script 47 文件、webgl BACK/_BITS、stream 零拷贝三连、reflect_dom_object 迁移、a11y test、attr str ref）+ **1 三方合并**（webgl2renderingcontext.rs:上游 0b365e20b 把 new_inherited 重构为 `(base: &WebGLRenderingContext)` 参形[恰完成 Window 解锚],BAO W3b `new_in_worker` 以 reflect_dom_object 新形重放,`new` 用上游原生形）+ 0 删除。
+- support/android 2 kt 同步（窗口新增文件）;tests/ 32 文件零交集跳过（vendor 不载 wpt,参考仓 29b280def 已含）。
+- BAO patch 存活面核验（读级+编译级）：非窗口 patch 文件全部不动（§三清单+e102-e127 波回放面）;溶解探针——GL make-current（rendering_context.rs:140 字节在位）/SM153 job_queue（编译绿即证）/csp canonical 名（编译绿）/AudioWorklet e126/e127 收口（instantiate_processor 在位）/BFCache 833137b3（document.rs+windowproxy.rs 均不在窗口）。
+- stylo 全家 vendor 落地与接线见根 Cargo.toml 注释与 CLAUDE.md;stylo_atoms 零变更;bao-stylo-derive 重锚 0cb50925b（pinned-Ok 3 位点,第 4 裸位点按原 delta 保持裸置）。
+- 坑位：vendor 同步 mtime 回退复用 stale 生成物（properties.rs 旧 clone_* 形 101 错;清 build/fingerprint 后绿——stylo_atoms build.rs rerun-if-changed patch 同类,但该 patch 防内容追加不防 mtime 回退）。
 
 ## 四、保留文件（BAO-new 零删除；dormant=未接 module 声明，随回放接线）
 
