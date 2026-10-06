@@ -135,6 +135,16 @@ pub enum WebDriverCommandMsg {
     ),
     /// Close the webview associated with the provided id.
     CloseWebView(WebViewId, GenericOneshotSender<()>),
+    /// BAO PATCH (REQ-BRW-002 e106, main-session cross-boundary authorization
+    /// 2026-10-06): e99 snapshot swap (a7272f16) dropped these two variants —
+    /// mechanical replay of the upstream-ini form (webdriver.rs:137-140),
+    /// which bao's webdriver embedder host and servoshell's dispatcher both
+    /// consume. Semantics: build-surface replay only; constellation routing
+    /// of FocusWebView remains the catch-all arm (webdriver-domain follow-up).
+    /// Focus the webview associated with the provided id.
+    FocusWebView(WebViewId),
+    /// Get focused webview. For now, this is only used when start new session.
+    GetFocusedWebView(GenericOneshotSender<Option<WebViewId>>),
     /// Make the given WebView the WebView to use for input event interaction.
     SelectWebViewForInteraction(WebViewId),
     /// Get the WebView selected for user interaction. For now, this is only used when

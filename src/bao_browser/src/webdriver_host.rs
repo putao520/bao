@@ -558,6 +558,27 @@ impl WebDriverHost {
                         }
                     }
                 }
+                // BAO PATCH (REQ-BRW-002 e106, main-session cross-boundary
+                // authorization 2026-10-06): the vendor enum's
+                // interaction-selection face (e99 snapshot swap a7272f16
+                // replay follow-through — this exhaustive match was
+                // non-exhaustive against it, masked until the variant
+                // E0599s above were fixed). Headless: selection is
+                // bookkeeping only — same shape as the FocusWebView arm
+                // (bump the idle clock so idle reaping never closes a
+                // driven page).
+                WebDriverCommandMsg::SelectWebViewForInteraction(webview_id) => {
+                    if let Some((_, page)) = runtime.page_for_webview(webview_id) {
+                        page.webdriver_touch();
+                    }
+                }
+                // Only received at session start: the webview selected for
+                // interaction is the initial page's webview (same answer as
+                // GetFocusedWebView above).
+                WebDriverCommandMsg::GetWebViewSelectedForInteraction(response_sender) => {
+                    let _ = response_sender
+                        .send(runtime.webdriver_webview_ids().into_iter().next());
+                }
             }
         }
     }
