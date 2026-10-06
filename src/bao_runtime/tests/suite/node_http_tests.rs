@@ -609,3 +609,107 @@ fn test_node_http2_client_binary_body_roundtrip() {
     assert_eq!(body, &expected_all, "http2 request wire bytes must be exact");
     bun_runtime::shutdown_thread_sm();
 }
+
+// @trace TEST-ENG-007-HTTP [req:REQ-ENG-007] [level:integration]
+// Test lock for upstream oven-sh/bun 519963edc8 (node:http: a thrown
+// dispatch reads the role of its response from the role bit). Upstream's
+// crash lived in the #43557 queued-response/current-response grant
+// machinery, which bao never absorbed: bao's node:http routes each request
+// synchronously through uWS and the throw arm owns exactly the uWS
+// response it was invoked with (explicit 500 + teardown + close). The
+// lock pins the invariant both shapes share: a throwing 'request' listener
+// never kills the server, the throwing request gets an observable
+// terminal, and the next request — including one pipelined behind the
+// throwing request on the same connection — never leaves the server
+// wedged.
+#[test]
+fn test_node_http_thrown_dispatch_liveness() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    let port_str = eval_string(
+        &mut ctx,
+        r#"
+        var http = require('http');
+        var srv = http.createServer(function(req, res) {
+            if (req.url.indexOf('/boom') === 0) {
+                throw new Error('the listener threw');
+            }
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('ok');
+        });
+        srv.listen(0, '127.0.0.1');
+        String(srv.address().port)
+    "#,
+    );
+    let port: u16 = port_str.trim().parse().unwrap_or_else(|_| {
+        panic!("listen(0) failed: {}", port_str)
+    });
+
+    // 1. The throwing request gets an explicit observable terminal (500),
+    //    not a crash and not silence.
+    let (head, body) = raw_get(&mut ctx, port, "/boom");
+    assert!(
+        head.starts_with("HTTP/1.1 500"),
+        "thrown dispatch must answer 500, got: {:?}",
+        head.lines().next().unwrap_or("")
+    );
+    assert!(
+        String::from_utf8_lossy(&body).contains("request handler threw"),
+        "500 body must name the throw, got: {:?}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // 2. Server liveness: the next connection answers normally.
+    let (head2, body2) = raw_get(&mut ctx, port, "/ok");
+    assert!(
+        head2.starts_with("HTTP/1.1 200") && body2 == b"ok",
+        "server must survive a thrown dispatch, got: {:?} {:?}",
+        head2.lines().next().unwrap_or(""),
+        String::from_utf8_lossy(&body2)
+    );
+
+    // 3. Pipelined form (upstream's queued scenario, bao shape): a second
+    //    request written behind the throwing one in the same segment. The
+    //    throw arm closes the connection (fail-closed: no late dispatch
+    //    into a failed handler), and the server answers the NEXT
+    //    connection — no wedge.
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("pipelined connect");
+    s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let pipelined = format!(
+        "GET /boom HTTP/1.1\r\nHost: x\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(pipelined.as_bytes()).expect("write pipelined");
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    for _ in 0..50 {
+        pump(&mut ctx, 2);
+        match s.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+    let resp = String::from_utf8_lossy(&buf).into_owned();
+    assert!(
+        resp.starts_with("HTTP/1.1 500"),
+        "pipelined throwing request must answer 500 first, got: {:?}",
+        resp.lines().next().unwrap_or("")
+    );
+    let (head3, body3) = raw_get(&mut ctx, port, "/ok");
+    assert!(
+        head3.starts_with("HTTP/1.1 200") && body3 == b"ok",
+        "server must answer after a pipelined throw, got: {:?} {:?}",
+        head3.lines().next().unwrap_or(""),
+        String::from_utf8_lossy(&body3)
+    );
+    bun_runtime::shutdown_thread_sm();
+}
