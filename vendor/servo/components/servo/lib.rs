@@ -205,6 +205,41 @@ pub fn bao_current_thread_wake_fn() -> Option<std::sync::Arc<dyn Fn() + Send + S
     script::bao_current_thread_wake_fn()
 }
 
+/// Network event tap types + installer for embedder-side network observability
+/// (Bao vendor patch, REQ-BRW-004 criterion #19 subclause ②: CDP Network
+/// domain observability of SW-intercepted and regular fetches).
+///
+/// When a tap is installed, `main_fetch`'s request/response instrumentation
+/// points forward every fetch (service-worker-mediated responses and the SW
+/// realm's own sub-fetches included) to the closure. The closure runs on
+/// fetch worker threads and must not block.
+pub use net::http_loader::{BaoNetworkTap, BaoNetworkTapEvent};
+
+pub fn set_network_event_tap(tap: Option<BaoNetworkTap>) {
+    net::http_loader::set_network_event_tap(tap);
+}
+
+/// Webview-less `WebResourceRequested` local-verdict types + installer
+/// (Bao vendor patch, BCE-20260910-002).
+///
+/// Upstream servo answers every `WebResourceRequested` round-trip from a
+/// resident embedder main loop (`Servo::spin_event_loop`). Bao's embedder
+/// is a lazy pump (PageHandle interaction APIs) and `Servo` is !Send, so a
+/// fetch with `target_webview_id == None` (SW/worker realms) could park in
+/// the interceptor's embedder wait forever while the owning page sat idle.
+/// The embedder (bao_browser, at `BaoRuntime::new`) installs one
+/// process-wide handler that the net request interceptor consults locally
+/// for those requests. With no handler installed, the upstream embedder
+/// round-trip is preserved unchanged; webview-owned requests always keep
+/// the full round-trip.
+pub use net::request_interceptor::{
+    BaoWebviewlessResourceHandler, BaoWebviewlessResourceVerdict,
+};
+
+pub fn set_webviewless_resource_handler(handler: Option<BaoWebviewlessResourceHandler>) {
+    net::request_interceptor::set_webviewless_resource_handler(handler);
+}
+
 /// Register a callback to be executed on the Worker thread the next time a
 /// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
 /// constructing the Worker global object **for `webview_id`**.

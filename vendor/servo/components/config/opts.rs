@@ -41,6 +41,29 @@ pub struct Opts {
     /// Whether we're running in multiprocess mode.
     pub multiprocess: bool,
 
+    /// Force each pipeline to create its own EventLoop (and thus its own
+    /// ScriptThread + JSContext), even for same-origin pages. This provides
+    /// full per-TAB JS isolation at the cost of additional memory per TAB.
+    /// Used by Bao for per-TAB fingerprint isolation.
+    pub force_isolate_event_loops: bool,
+
+    // BAO PATCH (BCE-20260621-002): Disable servo's built-in `JS::Debugger`
+    // instrumentation. When `false` (the default), servo's ScriptThread calls
+    // `debugger_global.fire_add_debuggee(...)` on every page load, which marks
+    // the Realm as a debuggee (`Realm::setIsDebuggee`) and toggles SpiderMonkey
+    // BaselineInterpreter debugger instrumentation (`BaselineJIT.cpp`).
+    // Bao embeds servo but ships its own CDP (`bao_cdp`) and never connects to
+    // servo's devtools server. With bao's multi-page + navigate + later
+    // `evaluate` workload, the toggled JIT instrumentation combined with
+    // `initForOsr`'s `cx->activation_->prev()->asInterpreter()` dereference
+    // deterministically SIGSEGVs. Setting this to `true` skips the
+    // `fire_add_debuggee` call entirely, avoiding `setIsDebuggee` and the
+    // downstream JIT toggle, eliminating the SIGSEGV without touching
+    // SpiderMonkey. Servo's normal devtools users keep the default `false` and
+    // are unaffected. Authorized exception to the "don't modify servo upstream"
+    // rule: 2026-06-21 user written authorization — limited to BCE-20260621-002.
+    pub disable_script_debugger: bool,
+
     /// Whether to force using ipc_channel instead of crossbeam_channel in singleprocess mode. Does
     /// nothing in multiprocess mode.
     pub force_ipc: bool,
@@ -247,6 +270,10 @@ impl Default for Opts {
             time_profiler_trace_path: None,
             hard_fail: true,
             multiprocess: false,
+            force_isolate_event_loops: false,
+            // BAO PATCH (BCE-20260621-002): default false so normal servo devtools
+            // users are unaffected; bao sets this to true at init.
+            disable_script_debugger: false,
             force_ipc: false,
             background_hang_monitor: false,
             random_pipeline_closure_probability: None,
@@ -270,13 +297,65 @@ impl Default for Opts {
 // opts everywhere it is used, which gets particularly cumbersome
 // when passing through the DOM structures.
 static OPTIONS: OnceLock<Opts> = OnceLock::new();
+static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Initialize options.
 ///
 /// Should only be called once at process startup.
 /// Must be called before the first call to [`get`].
+///
+/// BAO PATCH (BCE-20260627-009): Idempotent initialization — supports multiple
+/// BaoRuntime instances (production multi-tenant + concurrent integration tests).
+/// Semantics:
+///   - First explicit `initialize_options(opts)` wins (sets INITIALIZED=true).
+///   - Subsequent calls with same bao config fields → no-op (idempotent).
+///   - Subsequent calls with different bao config fields → panic (real conflict).
+///   - If a lazy `Default` sneaked in via `get()` before any explicit init
+///     (INITIALIZED still false), the first explicit `initialize_options` may
+///     overwrite it (bao's explicit config takes priority over servo's lazy default).
+///
+/// Original servo: `OPTIONS.set(opts).expect("Already initialized")` panics on
+/// ANY re-init, even with identical opts. That breaks bao's multi-BaoRuntime model
+/// (each `BaoRuntime::new` triggers `Servo::new` → `initialize_options`).
 pub fn initialize_options(opts: Opts) {
-    OPTIONS.set(opts).expect("Already initialized");
+    use std::sync::atomic::Ordering;
+    // First-writer-wins via OnceLock. If empty, we set it.
+    if OPTIONS.set(opts).is_ok() {
+        INITIALIZED.store(true, Ordering::Release);
+        return;
+    }
+    // OnceLock full. If not explicitly initialized (lazy Default from get()), bao
+    // lost the race — bail with actionable message. bao must init before any servo get().
+    if !INITIALIZED.load(Ordering::Acquire) {
+        panic!(
+            "servo opts OnceLock holds a lazy Default (get() called before bao init). \
+             bao::BaoRuntime must be created before any servo code triggers opts::get()."
+        );
+    }
+    // Already explicitly initialized — idempotent if bao config fields match.
+    let existing = OPTIONS.get().expect("OPTIONS set");
+    if existing.force_isolate_event_loops && existing.disable_script_debugger {
+        return;
+    }
+    panic!(
+        "Opts already initialized with non-bao config (force_isolate_event_loops={}, \
+         disable_script_debugger={}). Bao requires (true, true).",
+        existing.force_isolate_event_loops, existing.disable_script_debugger
+    );
+}
+
+/// Returns `true` if [`initialize_options`] has been called (i.e. the process-global
+/// `OnceLock` holds an explicitly-initialized value).
+///
+/// Unlike [`get`], this NEVER initializes the `OnceLock` — it is a pure read of the
+/// current state. This is essential for callers (like bao's `BaoRuntime::new`) that
+/// must decide whether to pass opts to `Servo::new` based on whether servo config is
+/// already set, WITHOUT triggering the `get_or_init(Default)` side effect that would
+/// lock in default values and cause a subsequent real `initialize_options` to panic.
+///
+/// BAO PATCH (BCE-20260627-009): companion to the idempotent `initialize_options`.
+pub fn is_initialized() -> bool {
+    OPTIONS.get().is_some()
 }
 
 /// Get the servo options

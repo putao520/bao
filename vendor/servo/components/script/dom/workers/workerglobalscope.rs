@@ -118,6 +118,7 @@ use crate::dom::reporting::reportingendpoint::{ReportingEndpoint, SendReportsToE
 use crate::dom::reporting::reportingobserver::ReportingObserver;
 use crate::dom::script_execution::ScriptOptions;
 use crate::dom::serviceworker::cachestorage::CacheStorage;
+use crate::dom::serviceworker::serviceworkerglobalscope::ServiceWorkerGlobalScope;
 use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
 use crate::dom::trustedtypes::trustedtypepolicyfactory::TrustedTypePolicyFactory;
@@ -1148,8 +1149,12 @@ impl WorkerGlobalScope {
             dedicated.new_script_pair()
         } else if let Some(shared) = self.downcast::<SharedWorkerGlobalScope>() {
             shared.new_script_pair()
+        } else if let Some(service_worker) = self.downcast::<ServiceWorkerGlobalScope>() {
+            // BAO PATCH (REQ-BRW-004 C19): upstream left this arm as
+            // `panic!("need to implement a sender for ServiceWorker")`.
+            service_worker.new_script_pair()
         } else {
-            panic!("need to implement a sender for ServiceWorker")
+            unreachable!("no other concrete WorkerGlobalScope type")
         }
     }
 

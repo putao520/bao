@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, after};
+use crossbeam_channel::{Receiver, Sender, after, unbounded};
 use devtools_traits::DevtoolScriptControlMsg;
 use dom_struct::dom_struct;
 use fonts::FontContext;
@@ -66,7 +66,7 @@ use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::worker::TrustedWorkerAddress;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::fetch::fetch::{CspViolationsProcessor, load_whole_resource};
-use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
+use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
 use crate::modules::script_module::ScriptFetchOptions;
 use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::{IntroductionType, Runtime, ThreadSafeJSContext};
@@ -614,6 +614,18 @@ impl ServiceWorkerGlobalScope {
 
     pub(crate) fn event_loop_sender(&self) -> ScriptEventLoopSender {
         ScriptEventLoopSender::ServiceWorker(self.own_sender.clone())
+    }
+
+    /// Synchronous DOM API channel for the SW realm (Bao vendor patch,
+    /// REQ-BRW-004 C19 — mirror of the SharedWorker form; without it
+    /// `WorkerGlobalScope::new_script_pair` panics and every sync DOM call
+    /// on the SW thread kills the worker).
+    pub(crate) fn new_script_pair(&self) -> (ScriptEventLoopSender, ScriptEventLoopReceiver) {
+        let (sender, receiver) = unbounded();
+        (
+            ScriptEventLoopSender::ServiceWorker(sender),
+            ScriptEventLoopReceiver::ServiceWorker(receiver),
+        )
     }
 
     /// Anchor a `respondWith` promise natively for the lifetime of its

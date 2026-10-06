@@ -115,6 +115,150 @@ use crate::{
     websocket_loader::start_websocket,
 };
 
+// ── BAO PATCH (REQ-BRW-004 C19-②): net-layer Network event tap ─────────────
+//
+// Spec clause #19 subclause ②: "CDP Network 域可观测 SW 发起的请求/响应".
+// The embedder (bao_browser, on CDP Network.enable) installs one process-wide
+// tap here; `main_fetch`'s upstream devtools instrumentation points call the
+// `bao_emit_*` helpers below, so BOTH service-worker-mediated fetches and
+// regular page fetches — including the SW realm's own sub-fetches — surface
+// as Network.requestWillBeSent / Network.responseReceived on the embedder's
+// event channel. Same global-setter pattern as `connector::STEALTH_TLS_CONFIG`.
+
+/// One network observation forwarded to the embedder's tap.
+#[derive(Debug, Clone)]
+pub enum BaoNetworkTapEvent {
+    /// A request entered the net fetch pipeline (main_fetch step 1).
+    Request {
+        request_id: String,
+        url: String,
+        method: String,
+        /// Header name/value pairs (lossy-UTF8, wire order).
+        headers: Vec<(String, String)>,
+        /// CDP ResourceType string (best-effort Destination mapping).
+        resource_type: String,
+        /// The originating webview, when the net layer knows it.
+        webview_id: Option<String>,
+    },
+    /// A response settled (headers known; body may still stream).
+    Response {
+        request_id: String,
+        url: String,
+        status: u16,
+        status_text: String,
+        headers: Vec<(String, String)>,
+        mime_type: String,
+        webview_id: Option<String>,
+    },
+}
+
+/// The embedder-installed tap. Called on fetch worker threads; must be cheap
+/// and must not block (the embedder side only pushes into an mpsc channel).
+pub type BaoNetworkTap = StdArc<dyn Fn(BaoNetworkTapEvent) + Send + Sync>;
+
+static BAO_NETWORK_TAP: RwLock<Option<BaoNetworkTap>> = RwLock::new(None);
+
+/// Install or remove the process-wide network event tap (embedder API face is
+/// `servo::set_network_event_tap`).
+pub fn set_network_event_tap(tap: Option<BaoNetworkTap>) {
+    *BAO_NETWORK_TAP.write() = tap;
+}
+
+fn with_network_tap<F: FnOnce(&BaoNetworkTap)>(f: F) {
+    let tap = BAO_NETWORK_TAP.read().clone();
+    if let Some(ref tap) = tap {
+        f(tap);
+    }
+}
+
+/// `content_security_policy::Destination` → CDP `ResourceType` string.
+fn bao_destination_to_resource_type(destination: Destination) -> &'static str {
+    match destination {
+        Destination::Document | Destination::Frame | Destination::IFrame => "Document",
+        Destination::Script | Destination::ServiceWorker | Destination::SharedWorker |
+        Destination::Worker | Destination::Xslt => "Script",
+        Destination::Style => "Stylesheet",
+        Destination::Image => "Image",
+        Destination::Font => "Font",
+        Destination::Audio | Destination::Video | Destination::Track => "Media",
+        Destination::Manifest => "Manifest",
+        Destination::Json | Destination::Text => "Fetch",
+        Destination::None |
+        Destination::AudioWorklet |
+        Destination::Embed |
+        Destination::Object |
+        Destination::PaintWorklet |
+        Destination::Report |
+        Destination::WebIdentity => "Other",
+    }
+}
+
+fn bao_header_pairs(headers: &HeaderMap<HeaderValue>) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Request-side tap emit (main_fetch step 1, beside
+/// `send_early_httprequest_to_devtools`). Data URLs are skipped, mirroring
+/// the devtools instrumentation.
+pub(crate) fn bao_emit_network_request_tap(request: &Request) {
+    if request.url().scheme() == "data" {
+        return;
+    }
+    with_network_tap(|tap| {
+        tap(BaoNetworkTapEvent::Request {
+            request_id: request.id.0.to_string(),
+            url: request.current_url().to_string(),
+            method: request.method.as_str().to_string(),
+            headers: bao_header_pairs(&request.headers),
+            resource_type: bao_destination_to_resource_type(request.destination).to_string(),
+            webview_id: request.target_webview_id.map(|id| id.to_string()),
+        });
+    });
+}
+
+/// Response-side tap emit (main_fetch step 22 and the synchronous-XHR
+/// branch). Error responses (status 0 — `HttpStatus::new_error`) are skipped:
+/// they carry no wire status to observe.
+pub(crate) fn bao_emit_network_response_tap(request: &Request, response: &Response) {
+    if response.status.raw_code() == 0 {
+        return;
+    }
+    let url = match response.url() {
+        Some(url) => url.to_string(),
+        None => return,
+    };
+    let status = response.status.raw_code();
+    let status_text = String::from_utf8_lossy(response.status.message()).into_owned();
+    let headers = bao_header_pairs(&response.headers);
+    let mime_type = response
+        .headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let webview_id = request.target_webview_id.map(|id| id.to_string());
+    with_network_tap(|tap| {
+        tap(BaoNetworkTapEvent::Response {
+            request_id: request.id.0.to_string(),
+            url,
+            status,
+            status_text,
+            headers,
+            mime_type,
+            webview_id,
+        });
+    });
+}
+// ── end BAO PATCH (REQ-BRW-004 C19-②) ──────────────────────────────────────
+
 /// The various states an entry of the HttpCache can be in.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HttpCacheEntryState {
@@ -454,11 +598,15 @@ fn auth_from_cache(
 
 /// Messages from the IPC route to the fetch worker,
 /// used to fill the body with bytes coming-in over IPC.
-enum BodyChunk {
+pub(crate) enum BodyChunk {
     /// A chunk of bytes.
     Chunk(GenericSharedMemory),
     /// Body is done.
     Done,
+    /// The body stream errored (fetch spec step 5: terminate the fetch) —
+    /// the driver aborts the in-flight exchange instead of sending a
+    /// truncated body.
+    Error,
 }
 
 /// The stream side of the body passed to hyper.
@@ -473,7 +621,7 @@ enum BodyStream {
 
 /// The sink side of the body passed to hyper,
 /// used to enqueue chunks.
-enum BodySink {
+pub(crate) enum BodySink {
     /// A Tokio sender used to feed chunks to the network stream.
     Chunked(TokioSender<Result<Frame<Bytes>, hyper::Error>>),
     /// A Crossbeam sender used to send chunks to the fetch worker,
@@ -530,7 +678,7 @@ fn log_fetch_terminated_send_failure(terminated_with_error: bool, context: &str)
     );
 }
 
-const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
+pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
 
 #[expect(clippy::too_many_arguments)]
 #[servo_tracing::instrument(skip_all, fields(url=url.as_str()))]
@@ -597,6 +745,14 @@ async fn obtain_response(
                             body.extend_from_slice(&bytes);
                         },
                         Some(BodyChunk::Done) => break,
+                        Some(BodyChunk::Error) => {
+                            // BAO PATCH (REQ-BRW-004 e63 streaming): the body
+                            // stream errored — terminate the fetch (spec step
+                            // 5) instead of sending a truncated body.
+                            return Err(NetworkError::HttpError(
+                                "request body stream errored".to_string(),
+                            ));
+                        },
                         None => warn!("Failed to read all chunks from request body."),
                     }
                 }
@@ -729,7 +885,7 @@ async fn obtain_response(
 }
 
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.
-fn obtain_response_setup_router_callback(
+pub(crate) fn obtain_response_setup_router_callback(
     devtools_bytes: StdArc<Mutex<Vec<u8>>>,
     chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
     sink: BodySink,
@@ -784,6 +940,14 @@ fn obtain_response_setup_router_callback(
                         );
                     }
                     if let Some(sink) = sink.take() {
+                        // BAO PATCH (REQ-BRW-004 e63 streaming): deliver the
+                        // terminal chunk to the Buffered consumer so the
+                        // bridge's driver completes Ok — upstream's bare
+                        // close() erases the Done/Error distinction the
+                        // bridge's driver needs. Chunked path unchanged.
+                        if let BodySink::Buffered(sink) = &sink {
+                            let _ = sink.send(BodyChunk::Done);
+                        }
                         sink.close();
                     }
 
@@ -800,6 +964,14 @@ fn obtain_response_setup_router_callback(
                         );
                     }
                     if let Some(sink) = sink.take() {
+                        // BAO PATCH (REQ-BRW-004 e63 streaming): surface the
+                        // error to the Buffered consumer — the driver aborts
+                        // the in-flight exchange instead of sending a
+                        // truncated body (fetch spec step 5). Chunked path
+                        // unchanged.
+                        if let BodySink::Buffered(sink) = &sink {
+                            let _ = sink.send(BodyChunk::Error);
+                        }
                         sink.close();
                     }
 

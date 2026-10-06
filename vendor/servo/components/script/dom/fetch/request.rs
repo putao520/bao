@@ -888,6 +888,8 @@ impl Convert<Destination> for RequestDestination {
         match self {
             RequestDestination::_empty => Destination::None,
             RequestDestination::Audio => Destination::Audio,
+            // (Bao 段(1)) round-trip arm of the AudioWorklet exposure above.
+            RequestDestination::Audioworklet => Destination::AudioWorklet,
             RequestDestination::Document => Destination::Document,
             RequestDestination::Embed => Destination::Embed,
             RequestDestination::Font => Destination::Font,
@@ -926,9 +928,18 @@ impl Convert<RequestDestination> for Destination {
             Destination::Object => RequestDestination::Object,
             Destination::Report => RequestDestination::Report,
             Destination::Script => RequestDestination::Script,
-            Destination::ServiceWorker | Destination::AudioWorklet | Destination::PaintWorklet => {
+            // (Bao 段(1)) AudioWorklet worklet module fetches are real
+            // intercepted requests (audioWorklet.addModule with a
+            // controlling service worker) and their destination IS the
+            // DOM-visible `Request.destination` value the fetch-destination
+            // assertions read. Only the ServiceWorker's own script fetch
+            // stays unexposed (upstream intent for that arm preserved;
+            // PaintWorklet keeps the upstream panic until paint worklet
+            // module fetches become interceptable in a follow-up).
+            Destination::ServiceWorker | Destination::PaintWorklet => {
                 panic!("ServiceWorker request destination should not be exposed to DOM")
             },
+            Destination::AudioWorklet => RequestDestination::Audioworklet,
             Destination::SharedWorker => RequestDestination::Sharedworker,
             Destination::Style => RequestDestination::Style,
             Destination::Text => RequestDestination::Text,

@@ -524,6 +524,35 @@ impl CertificateErrorOverrideManager {
             .certificates_failing_to_verify
             .remove(&server_name)
     }
+
+    // BAO PATCH (U2 bun_bridge, restored accessor): all user-accepted override
+    // certificates — the bun bridge folds them into each request's per-SSL
+    // trust store (hyper parity pass-through). Upstream's rustls verifier
+    // reads `overrides` internally (BaoVerifier above) and never needed a
+    // getter; the bridge consumes it from outside the verifier.
+    pub(crate) fn override_certs(&self) -> Vec<CertificateDer<'static>> {
+        self.0.lock().overrides.clone()
+    }
+
+    // BAO PATCH (U2 bun_bridge, restored accessor): record a failing-host
+    // certificate obtained out-of-band (the bridge's bounded direct TLS
+    // probe) so the immediately-following
+    // `remove_certificate_failing_verification` returns it. Upstream writes
+    // this map only from inside the rustls verifier; the bridge's error
+    // path needs the external write.
+    pub(crate) fn record_certificate_failing_verification(&self, host: &str, der: &[u8]) {
+        let server_name = match ServerName::try_from(host) {
+            Ok(name) => name.to_owned(),
+            Err(error) => {
+                warn!("Could not convert host string into RustTLS ServerName: {error:?}");
+                return;
+            },
+        };
+        self.0
+            .lock()
+            .certificates_failing_to_verify
+            .insert(server_name, CertificateDer::from(der.to_vec()));
+    }
 }
 
 #[derive(Clone, Debug, Default)]

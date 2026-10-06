@@ -4272,7 +4272,18 @@ impl ScriptThread {
                 )
             },
         };
-        if self.senders.devtools_server_sender.is_some() {
+        // BAO PATCH (BCE-20260621-002): Skip `fire_add_debuggee` when
+        // `disable_script_debugger` is set. servo's normal devtools users never
+        // set this flag and keep the original behavior. bao (which uses its own
+        // `bao_cdp` and never connects to servo devtools) sets the flag to avoid
+        // `Realm::setIsDebuggee` + BaselineInterpreter debugger-instrumentation
+        // toggle, which deterministically SIGSEGVs under bao's multi-page +
+        // navigate + later-`evaluate` workload
+        // (`initForOsr:153` `cx->activation_->prev()->asInterpreter()` NULL
+        // deref). See `components/config/opts.rs::disable_script_debugger` for
+        // the full root-cause analysis. Authorized servo upstream patch
+        // (2026-06-21 user written authorization, limited to BCE-20260621-002).
+        if self.senders.devtools_server_sender.is_some() && !opts::get().disable_script_debugger {
             self.debugger_global.fire_add_debuggee(
                 cx,
                 window.upcast(),

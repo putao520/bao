@@ -104,12 +104,15 @@ use servo_url::ServoUrl;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
+use rustls::{CipherSuite, ProtocolVersion};
+use rustls_pki_types::CertificateDer;
+
 use crate::connector::StealthTlsWireConfig;
 use crate::connector::TlsHandshakeInfo;
 use crate::decoder::Decoder;
 use crate::devtools::prepare_devtools_request;
 use crate::fetch::methods::FetchContext;
-use crate::http_loader::{FRAGMENT, BodyChunk, obtain_response_setup_router_callback};
+use crate::http_loader::{BodySink, FRAGMENT, BodyChunk, obtain_response_setup_router_callback};
 
 /// How often the awaiting future re-checks servo's cancellation listener while
 /// waiting for the HTTPThread callback. The Notify wakes us the moment the
@@ -679,13 +682,13 @@ pub fn map_bun_error(error: bun_core::Error) -> BridgeError {
 pub fn build_ssl_config(
     wire: Option<&StealthTlsWireConfig>,
     h2_fingerprint: Option<&bao_stealth::Http2Fingerprint>,
-    ca_override: Option<&[Vec<u8>]>,
+    ca_override: Option<&[CertificateDer<'static>]>,
 ) -> bun_http::ssl_config::SSLConfig {
     let mut config = bun_http::ssl_config::SSLConfig::default();
     let Some(wire) = wire else {
         if let Some(ca) = ca_override {
             // Profile-less embedder can still pin a trust list.
-            config.ca_certs_der = Some(ca.iter().map(|der| der.clone().into()).collect());
+            config.ca_certs_der = Some(ca.iter().map(|der| der.as_ref().to_vec().into()).collect());
         }
         return config;
     };
@@ -738,7 +741,7 @@ pub fn build_ssl_config(
         );
     }
     if let Some(ca) = ca_override {
-        config.ca_certs_der = Some(ca.iter().map(|der| der.clone().into()).collect());
+        config.ca_certs_der = Some(ca.iter().map(|der| der.as_ref().to_vec().into()).collect());
     }
     config
 }
@@ -1353,10 +1356,17 @@ fn probe_failing_certificate(host: &str, port: u16) -> Option<Vec<u8>> {
 /// `signature_scheme_name` stay `None` (BoringSSL exposes no public API for
 /// them — same documented limitation on the hyper path), `mac` is integral
 /// to the AEAD suites BoringSSL negotiates (see `BunTlsInfo::mac`'s doc).
+///
+/// BAO REPLAY NOTE (snapshot 614cd411f^): upstream retyped
+/// `TlsHandshakeInfo.protocol_version`/`cipher_suite` from `Option<String>`
+/// to the typed rustls enums during the rustls migration; the bridge's
+/// BoringSSL string snapshots map through `bun_protocol_version` /
+/// `bun_cipher_suite` below, with unmapped strings degrading to `None`
+/// (same documented-limitation pattern as the two `None` fields).
 pub fn bun_tls_info_to_handshake(info: &bun_http::BunTlsInfo) -> TlsHandshakeInfo {
     TlsHandshakeInfo {
-        protocol_version: info.protocol_version.clone(),
-        cipher_suite: info.cipher_suite.clone(),
+        protocol_version: info.protocol_version.as_deref().and_then(bun_protocol_version),
+        cipher_suite: info.cipher_suite.as_deref().and_then(bun_cipher_suite),
         // BoringSSL doesn't expose the KX group name via a simple API —
         // connector.rs parity (b946b713 documents the same limitation).
         kea_group_name: None,
@@ -1368,7 +1378,49 @@ pub fn bun_tls_info_to_handshake(info: &bun_http::BunTlsInfo) -> TlsHandshakeInf
             .as_deref()
             .map(|alpn| String::from_utf8_lossy(alpn).into_owned()),
         certificate_chain_der: info.peer_certificates_der.clone(),
+        // BoringSSL path negotiates no ECH (rustls-only upstream feature).
         used_ech: false, // ECH not negotiated by the bridge stack
+    }
+}
+
+/// BoringSSL `SSL_get_version` string → rustls `ProtocolVersion` (upstream
+/// retyped the `TlsHandshakeInfo` field during the rustls migration).
+/// Unmapped strings degrade to `None` — same documented-limitation pattern
+/// as the `kea_group_name`/`signature_scheme_name` `None`s above.
+fn bun_protocol_version(version: &str) -> Option<ProtocolVersion> {
+    match version {
+        "TLSv1" | "TLSv1.0" => Some(ProtocolVersion::TLSv1_0),
+        "TLSv1.1" => Some(ProtocolVersion::TLSv1_1),
+        "TLSv1.2" => Some(ProtocolVersion::TLSv1_2),
+        "TLSv1.3" => Some(ProtocolVersion::TLSv1_3),
+        _ => None,
+    }
+}
+
+/// BoringSSL `SSL_CIPHER_get_name` → rustls `CipherSuite`. Same degradation
+/// policy as `bun_protocol_version`.
+fn bun_cipher_suite(name: &str) -> Option<CipherSuite> {
+    match name {
+        "TLS_AES_128_GCM_SHA256" => Some(CipherSuite::TLS13_AES_128_GCM_SHA256),
+        "TLS_AES_256_GCM_SHA384" => Some(CipherSuite::TLS13_AES_256_GCM_SHA384),
+        "TLS_CHACHA20_POLY1305_SHA256" => Some(CipherSuite::TLS13_CHACHA20_POLY1305_SHA256),
+        "TLS_AES_128_CCM_SHA256" => Some(CipherSuite::TLS13_AES_128_CCM_SHA256),
+        "TLS_AES_128_CCM_8_SHA256" => Some(CipherSuite::TLS13_AES_128_CCM_8_SHA256),
+        "ECDHE-ECDSA-AES128-GCM-SHA256" => {
+            Some(CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256)
+        },
+        "ECDHE-ECDSA-AES256-GCM-SHA384" => {
+            Some(CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384)
+        },
+        "ECDHE-RSA-AES128-GCM-SHA256" => Some(CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
+        "ECDHE-RSA-AES256-GCM-SHA384" => Some(CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384),
+        "ECDHE-ECDSA-CHACHA20-POLY1305" => {
+            Some(CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256)
+        },
+        "ECDHE-RSA-CHACHA20-POLY1305" => {
+            Some(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256)
+        },
+        _ => None,
     }
 }
 
@@ -1567,7 +1619,10 @@ impl RequestBodyFeeder {
         obtain_response_setup_router_callback(
             devtools_bytes,
             StdArc::clone(&chunk_requester),
-            sink,
+            // BAO REPLAY NOTE (snapshot 614cd411f^): upstream turned BodySink
+            // from a type alias into an enum; the bridge is definitionally
+            // the Buffered path (chunks buffer in the fetch worker).
+            BodySink::Buffered(sink),
             fetch_terminated.clone(),
         )?;
         Ok((
@@ -1949,7 +2004,7 @@ pub(crate) async fn obtain_response_bun(
         ),
         None => (None, false),
     };
-    let ca_override: Option<Vec<Vec<u8>>> = match &context.ca_certificates {
+    let ca_override: Option<Vec<CertificateDer<'static>>> = match &context.ca_certificates {
         crate::connector::CACertificates::Override(certificates) => Some(certificates.clone()),
         crate::connector::CACertificates::Default => None,
     };
