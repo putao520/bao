@@ -6502,21 +6502,9 @@ pub mod __gated_printer {
             }
 
             let quote = best_quote_char_for_string(import_record.path.text, false);
-            if import_record
-                .flags
-                .contains(ImportRecordFlags::PRINT_NAMESPACE_IN_PATH)
-                && !import_record.path.is_file()
-            {
-                self.print(quote);
-                self.print_string_characters_utf8(import_record.path.namespace, quote);
-                self.print(b":");
-                self.print_string_characters_utf8(import_record.path.text, quote);
-                self.print(quote);
-            } else {
-                self.print(quote);
-                self.print_string_characters_utf8(import_record.path.text, quote);
-                self.print(quote);
-            }
+            self.print(quote);
+            self.print_string_characters_utf8(import_record.path.text, quote);
+            self.print(quote);
         }
 
         pub fn print_bundled_import(&mut self, record: &ImportRecord, s: &S::Import) {

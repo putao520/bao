@@ -24,86 +24,6 @@ pub(crate) type ResolveResults = HashMap<u64, ()>;
 // is structurally equivalent (growable ring buffer); swap once the re-export lands.
 pub(crate) type ResolveQueue = std::collections::VecDeque<resolver::Result>;
 
-/// Spec `JSGlobalObject.BunPluginTarget` (JSGlobalObject.zig:265). Defined at
-/// this tier (lowest crate that needs to name it) and re-exported from
-/// `bun_jsc::BunPluginTarget` so there is exactly one enum (no bridge between
-/// mirror types).
-#[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum BunPluginTarget {
-    Bun = 0,
-    Node = 1,
-    Browser = 2,
-}
-
-// Crosses FFI by-value to `JSBundlerPlugin__create` / `Bun__runOn*Plugins`
-// (C++: `typedef uint8_t BunPluginTarget`, `headers-handwritten.h`). NB: the
-// C++ header's *named* constants (`BunPluginTargetBrowser = 1`, `Node = 2`)
-// disagree with Zig `JSGlobalObject.zig:265` (`node = 1`, `browser = 2`); Rust
-// matches the Zig spec. The width (`u8`) is what matters at the ABI.
-bun_core::assert_ffi_discr!(BunPluginTarget, u8; Bun = 0, Node = 1, Browser = 2);
-
-/// Spec PluginRunner.zig:34 `onResolve` — the JSC-aware resolve hook.
-///
-/// The body calls `JSGlobalObject.runOnResolvePlugins`, so it cannot be
-/// defined at this tier (`bun_jsc` depends on this crate). `bun_jsc` provides
-/// the concrete `PluginRunner { global_object: *mut JSGlobalObject }` and
-/// implements this trait; `Linker.plugin_runner` holds it as
-/// `*mut dyn PluginResolver` so the linker stays JSC-free while the body lives
-/// in exactly one place (no fn-ptr field, no `*mut c_void` erasure).
-pub trait PluginResolver {
-    fn on_resolve(
-        &self,
-        specifier: &[u8],
-        importer: &[u8],
-        log: &mut bun_ast::Log,
-        loc: bun_ast::Loc,
-        target: BunPluginTarget,
-    ) -> Result<Option<bun_paths::fs::Path<'static>>, bun_core::Error>;
-}
-
-/// Spec PluginRunner.zig — namespace for the static byte-level helpers
-/// (`extractNamespace` / `couldBePlugin`). The stateful struct (with
-/// `global_object`) lives in `bun_jsc::PluginRunner` where `JSGlobalObject` is
-/// nameable; only the JSC-free helpers stay at this tier.
-pub struct PluginRunner;
-
-impl PluginRunner {
-    /// Spec PluginRunner.zig:14 `extractNamespace`.
-    pub fn extract_namespace(specifier: &[u8]) -> &[u8] {
-        let Some(colon) = bun_core::index_of_char(specifier, b':') else {
-            return b"";
-        };
-        let colon = colon as usize;
-        if cfg!(windows)
-            && colon == 1
-            && specifier.len() > 3
-            && bun_paths::resolve_path::is_sep_any(specifier[2])
-            && ((specifier[0] > b'a' && specifier[0] < b'z')
-                || (specifier[0] > b'A' && specifier[0] < b'Z'))
-        {
-            return b"";
-        }
-        &specifier[..colon]
-    }
-
-    /// Spec PluginRunner.zig:22 `couldBePlugin` — cheap pre-filter that rules
-    /// out `./` / `../` / absolute paths before hitting the resolve hook.
-    pub fn could_be_plugin(specifier: &[u8]) -> bool {
-        if let Some(last_dot) = bun_core::last_index_of_char(specifier, b'.') {
-            let ext = &specifier[last_dot + 1..];
-            // '.' followed by either a letter or a non-ascii character
-            // maybe there are non-ascii file extensions?
-            // we mostly want to cheaply rule out "../" and ".." and "./"
-            if !ext.is_empty()
-                && (ext[0].is_ascii_lowercase() || ext[0].is_ascii_uppercase() || ext[0] > 127)
-            {
-                return true;
-            }
-        }
-        !bun_paths::is_absolute(specifier) && bun_core::index_of_char(specifier, b':').is_some()
-    }
-}
 
 /// Spec `transpiler.zig:5` — `pub const MacroJSCtx = @import("../bundler_jsc/PluginRunner.zig").MacroJSCtx`.
 /// The canonical newtype lives in `bun_ast::Macro` (the lowest tier that
@@ -400,7 +320,7 @@ impl<'a> Transpiler<'a> {
         self.resolver.fs = self.fs;
         // Spec ThreadPool.zig:310 reseats the linker back-pointers.
         // Only reseat the back-pointers — do NOT `Linker::init` here: that
-        // would clobber `import_counter` / `plugin_runner` /
+        // would clobber `import_counter` /
         // `tagged_resolutions` / `any_needs_runtime`, which the spec
         // preserves across the move (bundle_v2.zig:230 only reseats).
         self.linker.reseat_self_refs(
