@@ -44,7 +44,7 @@ use crate::dom::bindings::codegen::Bindings::ServiceWorkerGlobalScopeBinding::Se
 use crate::dom::bindings::codegen::Bindings::WorkerBinding::WorkerType;
 use crate::dom::bindings::codegen::UnionTypes::ClientOrServiceWorkerOrMessagePort;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
 use crate::dom::bindings::trace::CustomTraceable;
@@ -56,10 +56,11 @@ use crate::dom::dedicatedworkerglobalscope::AutoWorkerReset;
 use crate::dom::event::Event;
 use crate::dom::extendableevent::ExtendableEvent;
 use crate::dom::extendablemessageevent::ExtendableMessageEvent;
+use crate::dom::serviceworker::clients::Clients;
 use crate::dom::serviceworker::fetchevent::FetchEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::RethrowErrors;
-use crate::dom::promise::{RootedPromise, TracedPromise};
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::script_execution::ScriptOptions;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
@@ -205,6 +206,11 @@ pub(crate) struct ServiceWorkerGlobalScope {
     #[no_trace]
     owning_webview_id: Option<WebViewId>,
 
+    /// Bao vendor patch (REQ-BRW-004 e58 contract B, user ruling
+    /// 2026-10-04; replayed 2026-10-06 after the a7272f16 snapshot swap
+    /// dissolved the e58 SWGS exposure face): the `clients` SameObject slot.
+    clients: MutNullableDom<Clients>,
+
     /// Bao vendor patch (C19 SIGSEGV fix): respondWith promises anchored for
     /// the lifetime of their settlement; entries removed at settlement
     /// (fetchevent.rs settle callbacks). See `add_pending_fetch_response`.
@@ -310,6 +316,11 @@ impl ServiceWorkerGlobalScope {
             owning_webview_id,
             pending_fetch_responses: DomRefCell::new(VecDeque::new()),
             pending_fetch_response_key: Cell::new(0),
+            // Bao vendor patch (REQ-BRW-004 e58 contract B, user ruling
+            // 2026-10-04; replayed 2026-10-06 after the a7272f16 snapshot
+            // swap dissolved the e58 SWGS exposure face): the `clients`
+            // SameObject slot.
+            clients: Default::default(),
         }
     }
 
@@ -797,6 +808,58 @@ unsafe extern "C" fn interrupt_callback(cx: *mut RawJSContext) -> bool {
 }
 
 impl ServiceWorkerGlobalScopeMethods<crate::DomTypeHolder> for ServiceWorkerGlobalScope {
+    /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-clients>
+    ///
+    /// BAO PATCH (REQ-BRW-004 e58 contract B, user ruling 2026-10-04;
+    /// replayed 2026-10-06 — the a7272f16 snapshot swap dissolved the e58
+    /// SWGS exposure face while the e70/e73 clients/manager supersedes
+    /// survived): exposed with the minimal `Clients` implementation.
+    /// The fork's codegen gives SameObject getters no cx (typeNeedsCx stub);
+    /// take the script thread's active context instead
+    /// (serviceworker/cache.rs precedent).
+    #[allow(unsafe_code)]
+    fn Clients(&self) -> DomRoot<Clients> {
+        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
+        self.clients.or_init(|| {
+            Clients::new(
+                &mut cx,
+                &self.upcast::<GlobalScope>(),
+                self.swmanager_sender.clone(),
+                self.scope_url.clone(),
+                self.worker_id,
+            )
+        })
+    }
+
+    /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-skipwaiting>
+    ///
+    /// BAO PATCH (e58 contract B; replayed 2026-10-06): resolves
+    /// immediately — the worker only runs once active, and the fork has no
+    /// activation-wait queue to defer the resolution to.
+    #[allow(unsafe_code)]
+    fn SkipWaiting(&self) -> RootedPromise {
+        let mut cx = unsafe { JSContext::get_from_thread().expect("no active JS context") };
+        let promise = Promise::new(&mut cx, &self.upcast::<GlobalScope>());
+        promise.resolve_native(&mut cx, &());
+        promise
+    }
+
+    // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-oninstall
+    // BAO PATCH (e58 contract B; replayed 2026-10-06): exposure only — no
+    // install event dispatch site exists yet.
+    event_handler!(install, GetOninstall, SetOninstall);
+
+    // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onactivate
+    // BAO PATCH (e58 contract B; replayed 2026-10-06): live —
+    // `dispatch_activate` fires the "activate" ExtendableEvent after the
+    // worker script evaluates.
+    event_handler!(activate, GetOnactivate, SetOnactivate);
+
+    // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onfetch
+    // BAO PATCH (REQ-BRW-004 C19 S2a; replayed 2026-10-06): the mediator arm
+    // dispatches the fetch event via `FetchEvent::handle_mediator`.
+    event_handler!(fetch, GetOnfetch, SetOnfetch);
+
     // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-onmessage
     event_handler!(message, GetOnmessage, SetOnmessage);
 
