@@ -2342,6 +2342,28 @@ impl Document {
             return;
         }
 
+        // BAO PATCH (REQ-BRW-004 BFCache eligibility gate, 2026-10-06; fork
+        // self-governance legislation under the 2026-10-05 "we are
+        // independent now" ruling): a document failing the BFCache
+        // eligibility condition set must not stay alive on navigation.
+        // Upstream only clears salvageable from conditions that fire inside
+        // abort() (cancelled fetches, parser-aborted, ...) or from page
+        // unload handlers; the executor-suspend navigation shape (WPT
+        // remote-context-helper navigateToNew) drains every in-flight fetch
+        // before navigating, so no such condition fires and an
+        // opener-linked window is live-restored as if it were
+        // BFCache-eligible (fetch/fetch-later/send-on-deactivate subtests
+        // 3/4 root cause). Evaluating the condition set here, before the
+        // pagehide event fires, keeps both observables aligned: pagehide is
+        // dispatched with persisted=false, and the unloading cleanup steps
+        // below send DiscardDocument for unsalvageable documents, which
+        // makes the constellation replace the session-history reloader with
+        // NeedsToReload::Yes — history back is then a fresh load instead of
+        // a live pipeline restore.
+        if self.bfcache_eligibility_blocked() {
+            self.make_document_unsalvageable();
+        }
+
         // TODO: Step 1, increase the event loop's termination nesting level by 1.
         // Step 2
         self.incr_ignore_opens_during_unload_counter();
@@ -4592,6 +4614,25 @@ impl Document {
 
     pub(crate) fn salvageable(&self) -> bool {
         self.salvageable.get()
+    }
+
+    // BAO PATCH (REQ-BRW-004 BFCache eligibility gate, 2026-10-06): the
+    // condition set that makes a document ineligible to stay alive (be
+    // salvaged) on navigation — the subset of Chromium's back/forward cache
+    // blocking reasons (`BackForwardCacheImpl::CanStoreDocument`) that
+    // servo's salvage/discard model can express, legislated under the fork
+    // self-governance ruling. Consumed by `unload` before the pagehide event
+    // fires, so a blocked document dispatches pagehide with persisted=false
+    // and sends `DiscardDocument` in the unloading cleanup steps (fresh
+    // reload on history traversal instead of a live pipeline restore).
+    fn bfcache_eligibility_blocked(&self) -> bool {
+        // Chromium blocking reason kOpenWindowOpener: an auxiliary window
+        // that still has its opener link (window.opener would be non-null)
+        // is never stored in the back/forward cache. Only top-level
+        // traversables can have openers, so iframe documents are never
+        // blocked by this condition.
+        self.browsing_context()
+            .is_some_and(|window_proxy| window_proxy.has_live_opener())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#make-document-unsalvageable>

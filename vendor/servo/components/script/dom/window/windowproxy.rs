@@ -454,6 +454,33 @@ impl WindowProxy {
         self.disowned.set(true);
     }
 
+    // BAO PATCH (REQ-BRW-004 BFCache eligibility gate, 2026-10-06): whether
+    // this browsing context still has a live opener link, i.e. whether
+    // `window.opener` would be non-null (the null conditions of
+    // <https://html.spec.whatwg.org/multipage/#dom-opener>, checked without
+    // creating the JS-valued opener wrapper). Chromium's back/forward cache
+    // never stores such an auxiliary window (blocking reason
+    // kOpenWindowOpener); this predicate is consumed by the fork's BFCache
+    // eligibility gate in `Document::unload`.
+    pub(crate) fn has_live_opener(&self) -> bool {
+        if self.disowned.get() {
+            return false;
+        }
+        let Some(opener_browsing_context_id) = self.opener else {
+            return false;
+        };
+        match self
+            .script_window_proxies
+            .find_window_proxy(opener_browsing_context_id)
+        {
+            Some(opener_proxy) => !opener_proxy.is_browsing_context_discarded(),
+            // The opener is not in this script thread's proxy registry;
+            // without local evidence that the link is severed, treat it as
+            // linked (matches the non-null outcome of `opener` above).
+            None => true,
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#dom-window-close>
     /// Step 3.1, set BCs `is_closing` to true.
     pub(crate) fn close(&self) {
