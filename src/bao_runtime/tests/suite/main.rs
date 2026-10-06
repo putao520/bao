@@ -17,6 +17,7 @@ mod assert_deep_tests;
 mod atob_binary_roundtrip_tests;
 mod buffer_deep_tests;
 mod buffer_module_tests;
+mod blob_slice_stream_tests;
 mod bridge_contract_tests;
 mod bug353_deep_verification_tests;
 mod browser_servo_tests;
