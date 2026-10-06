@@ -332,9 +332,14 @@ function _wrapTimerConstructor(original, type, oneShot) {
   // wrapping class touches (global host timers + the `timers` module face).
   try {
     var _pCustom = Symbol.for('nodejs.util.promisify.custom');
+    // Node lib/timers.js accessor shape (upstream c5a68b0594): enumerable,
+    // non-configurable, getter-only — the wrapper REPLACES the global timer
+    // function, so its forwarder is the descriptor user code observes; the
+    // getter stays live (reads through to the original's stamp every time).
     Object.defineProperty(wrapper, _pCustom, {
       get: function() { return original[_pCustom]; },
-      configurable: true
+      enumerable: true,
+      configurable: false
     });
   } catch (e) { /* non-configurable re-run — leave as is */ }
   return wrapper;

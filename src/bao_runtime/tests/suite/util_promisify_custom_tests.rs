@@ -187,3 +187,54 @@ fn promisify_generic_wrapper_still_resolves_single_value() {
     );
     bun_runtime::shutdown_thread_sm();
 }
+
+/// Upstream oven-sh/bun c5a68b0594 (timers: store [util.promisify.custom] as
+/// a per-function accessor) — bao-shape test lock. The JSC inline-cache
+/// cross-contamination that commit fixes cannot exist in SpiderMonkey, but
+/// the Node-parity surface it pins is assertable here: each timer function
+/// carries its OWN getter-only accessor (enumerable, non-configurable) whose
+/// getter ignores the receiver, and a strict-mode write / Object.assign copy
+/// is rejected with a TypeError — the old value-stamp (writable data
+/// property) accepted both.
+#[test]
+fn promisify_custom_timer_accessor_shape() {
+    let mut ctx = setup_ctx();
+    let verdict = eval_string(
+        &mut ctx,
+        r#"
+        var tp = require('timers/promises');
+        var custom = Symbol.for('nodejs.util.promisify.custom');
+        var out = [];
+        // Descriptor shape: enumerable, non-configurable, getter-only.
+        var d = Object.getOwnPropertyDescriptor(setTimeout, custom);
+        out.push('descriptor:' + (d && d.enumerable === true && d.configurable === false &&
+            typeof d.get === 'function' && d.set === undefined));
+        // Own value per timer, identity with the promise forms.
+        out.push('own_value:' + (setTimeout[custom] === tp.setTimeout &&
+            setImmediate[custom] === tp.setImmediate &&
+            setTimeout[custom] !== setImmediate[custom]));
+        // Getter ignores the receiver (Reflect.get with a foreign receiver,
+        // and prototype-chain lookup through Object.create).
+        out.push('receiver_ignored:' + (Reflect.get(setTimeout, custom, {}) === tp.setTimeout &&
+            Object.create(setInterval)[custom] === tp.setInterval));
+        // Object.assign copies through [[Set]] — getter-only must reject.
+        try { var src = {}; src[custom] = 1; Object.assign(setTimeout, src);
+              out.push('assign:accepted'); }
+        catch (e) { out.push('assign:' + (e instanceof TypeError ? 'throws' : 'wrong:' + e)); }
+        // Strict-mode assignment throws; the property is unchanged after.
+        var before = setTimeout[custom];
+        try { (function() { 'use strict'; setTimeout[custom] = 1; })();
+              out.push('strict_write:accepted'); }
+        catch (e) { out.push('strict_write:' + (e instanceof TypeError ? 'throws' : 'wrong:' + e)); }
+        out.push('unchanged:' + (setTimeout[custom] === before && before === tp.setTimeout));
+        out.join('|')
+    "#,
+    );
+    assert_eq!(
+        verdict,
+        "descriptor:true|own_value:true|receiver_ignored:true|assign:throws|strict_write:throws|unchanged:true",
+        "timer promisify.custom accessor shape diverged from Node (c5a68b0594): {}",
+        verdict
+    );
+    bun_runtime::shutdown_thread_sm();
+}

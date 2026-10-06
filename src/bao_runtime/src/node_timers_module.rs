@@ -187,9 +187,26 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
       typeof g.setInterval !== 'function' ||
       typeof g.setImmediate !== 'function') return;
   var custom = Symbol.for('nodejs.util.promisify.custom');
-  g.setTimeout[custom] = p.setTimeout;
-  g.setInterval[custom] = p.setInterval;
-  g.setImmediate[custom] = p.setImmediate;
+  // Upstream c5a68b0594 shape (Node lib/timers.js): each timer function
+  // carries its OWN getter-only accessor (enumerable, non-configurable) —
+  // the getter ignores the receiver and returns that timer's promise form.
+  // The getter-only form rejects a strict-mode write and an Object.assign
+  // copy with a TypeError, as in Node. Idempotence guard: a second stamp
+  // run on the same realm sees the non-configurable getter already in
+  // place and skips (redefining a non-configurable accessor with a fresh
+  // closure would throw — the closure is never SameValue).
+  function stampOne(fn, value) {
+    var d = Object.getOwnPropertyDescriptor(fn, custom);
+    if (d && d.configurable === false && typeof d.get === 'function') return;
+    Object.defineProperty(fn, custom, {
+      enumerable: true,
+      configurable: false,
+      get: function() { return value; }
+    });
+  }
+  stampOne(g.setTimeout, p.setTimeout);
+  stampOne(g.setInterval, p.setInterval);
+  stampOne(g.setImmediate, p.setImmediate);
 })"#;
     unsafe {
         // (Bao, BCE) Root the incoming promises singleton BEFORE any
