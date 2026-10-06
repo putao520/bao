@@ -681,6 +681,19 @@ fn log_fetch_terminated_send_failure(terminated_with_error: bool, context: &str)
 pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b'|').add(b'{').add(b'}');
 
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.
+///
+/// Streaming contract (<https://fetch.spec.whatwg.org/#concept-request-transmit-body>,
+/// steps 3–5): this route connects to the script-side body stream, requests
+/// the FIRST chunk (steps 3–4), and forwards every delivered chunk to `sink`
+/// (step 5.1.2.2). Requesting the NEXT chunk (step 5.1.2.3) is the consumer's
+/// job: the fetch driver pulls through its clone of `chunk_requester` once
+/// the network accepted the previous chunk (the bun bridge's
+/// `RequestBodyFeeder`, with the 16 KiB high-water backpressure), so at most
+/// one IPC chunk is in flight. This route MUST stay single-puller — a second
+/// pull here double-requests each chunk and stops the DOM-side
+/// `TransmitBodyConnectHandler` twice (its second `stop_reading` is a
+/// `Stop reading called multiple times` panic — the router-proxy death that
+/// killed the streaming upload e2e; see the a4a3a218 replay note below).
 pub(crate) fn obtain_response_setup_router_callback(
     devtools_bytes: StdArc<Mutex<Vec<u8>>>,
     chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
@@ -741,10 +754,15 @@ pub(crate) fn obtain_response_setup_router_callback(
                         // bridge's driver completes Ok — upstream's bare
                         // close() erases the Done/Error distinction the
                         // bridge's driver needs. Chunked path unchanged.
-                        if let BodySink::Buffered(sink) = &sink {
+                        // close() is deliberately NOT called: on the Buffered
+                        // path it would send a SECOND Done (double-terminate —
+                        // the a4a3a218 replay shipped both this send and
+                        // close(); the driver breaks on the first Done, the
+                        // extra one is just wire noise). The channel
+                        // disconnects when this sender drops with `sink`.
+                        if let BodySink::Buffered(sink) = sink {
                             let _ = sink.send(BodyChunk::Done);
                         }
-                        sink.close();
                     }
 
                     return;
@@ -764,11 +782,11 @@ pub(crate) fn obtain_response_setup_router_callback(
                         // error to the Buffered consumer — the driver aborts
                         // the in-flight exchange instead of sending a
                         // truncated body (fetch spec step 5). Chunked path
-                        // unchanged.
-                        if let BodySink::Buffered(sink) = &sink {
+                        // unchanged; close() withheld, same double-send
+                        // reasoning as the Done arm above.
+                        if let BodySink::Buffered(sink) = sink {
                             let _ = sink.send(BodyChunk::Error);
                         }
-                        sink.close();
                     }
 
                     return;
@@ -777,45 +795,22 @@ pub(crate) fn obtain_response_setup_router_callback(
 
             devtools_bytes.lock().extend_from_slice(&bytes);
 
-            // Step 5.1.2.2, transmit chunk over the network,
-            // currently implemented by sending the bytes to the fetch worker.
+            // Step 5.1.2.2, transmit chunk over the network: hand the bytes
+            // to the fetch worker. Step 5.1.2.3 (request the next chunk) is
+            // performed by the consumer once this chunk was accepted — see
+            // the streaming contract in the doc comment above. BAO PATCH
+            // (REQ-BRW-002 e110): the a4a3a218 snapshot replay restored
+            // upstream's eager router-side pull here, which raced the bridge
+            // feeder's own pull — two BodyChunkRequest::Chunk per delivered
+            // chunk — and the DOM body stream answered the second
+            // post-data request with the `Stop reading called multiple
+            // times` panic (router-proxy thread death → Script#1 SendError;
+            // streaming upload e2e leg-2 death / 17min ScriptThread wedge).
             {
                 let Some(sink) = sink.as_ref() else {
                     return;
                 };
                 sink.transmit_bytes(bytes);
-            }
-
-            // Step 5.1.2.3
-            // Request the next chunk.
-            let mut chunk_requester = chunk_requester.lock();
-            if let Some(chunk_requester) = chunk_requester.as_mut() {
-                if let Err(error) = chunk_requester.send(BodyChunkRequest::Chunk) {
-                    log_request_body_stream_closed(
-                        "request the next request body chunk",
-                        Some(&error),
-                    );
-                    if fetch_terminated.send(true).is_err() {
-                        log_fetch_terminated_send_failure(
-                            true,
-                            "handling failure to request the next request body chunk",
-                        );
-                    }
-                    if let Some(sink) = sink.take() {
-                        sink.close();
-                    }
-                }
-            } else {
-                log_request_body_stream_closed("request the next request body chunk", None);
-                if fetch_terminated.send(true).is_err() {
-                    log_fetch_terminated_send_failure(
-                        true,
-                        "handling a closed request body stream while requesting the next chunk",
-                    );
-                }
-                if let Some(sink) = sink.take() {
-                    sink.close();
-                }
             }
         }),
     );
