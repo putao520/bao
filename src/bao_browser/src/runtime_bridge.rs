@@ -1509,9 +1509,11 @@ unsafe fn report_reference_error(cx: *mut mozjs::jsapi::JSContext, message: &str
             argCount: 1,
             exnType: mozjs::jsapi::JSExnType::JSEXN_REFERENCEERR as i16,
         };
-        // SAFETY: read of a static is safe; the static itself is never moved
-        // or mutated after this first access (it's initialized once).
-        unsafe { &raw const FORMAT }
+        // Taking a raw pointer to the static is itself safe; the static is
+        // never moved or mutated after this first access (it's initialized
+        // once), so the pointer is only dereferenced through the SM error
+        // machinery which treats it as read-only.
+        &raw const FORMAT
     }
 
     // SAFETY: JS_ReportErrorNumberUTF8 is the standard SpiderMonkey API for

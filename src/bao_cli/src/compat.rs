@@ -92,19 +92,6 @@ pub enum Status {
     Supported,
 }
 
-impl Status {
-    fn label(self) -> &'static str {
-        match self {
-            Status::Supported => "Supported",
-            Status::SupportedAck => "Supported(ack)",
-            Status::Partial => "Partial",
-            Status::PartialAckOnly => "Partial(ack-only)",
-            Status::ExplicitlyUnsupported => "Explicitly-Unsupported",
-            Status::Unsupported => "Unsupported",
-        }
-    }
-}
-
 /// Per-section / per-domain status tallies. `unclassified` is explicit —
 /// any status cell that matches no known token is counted, warned on
 /// stderr, and never silently dropped.
