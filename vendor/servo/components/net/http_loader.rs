@@ -13,8 +13,7 @@ use std::{
 };
 
 use async_recursion::async_recursion;
-use content_security_policy::percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use devtools_traits::ChromeToDevtoolsControlMsg;
+use content_security_policy::percent_encoding::{AsciiSet, CONTROLS};
 use embedder_traits::{AuthenticationResponse, GenericEmbedderProxy};
 use futures::{TryFutureExt, TryStreamExt, future};
 use headers::{
@@ -24,20 +23,15 @@ use headers::{
     UserAgent, authorization::Basic,
 };
 use http::{
-    HeaderMap, Method, Request as HyperRequest, StatusCode,
+    HeaderMap, Method, StatusCode,
     header::{
         self, ACCEPT, ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_REQUEST_HEADERS, AUTHORIZATION,
         CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LOCATION, CONTENT_TYPE, HeaderValue, RANGE,
         WWW_AUTHENTICATE,
     },
 };
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
-use hyper::{
-    Response as HyperResponse,
-    body::{Bytes, Frame},
-    ext::ReasonPhrase,
-    header::{HeaderName, TRANSFER_ENCODING},
-};
+use http_body_util::{BodyExt, Full};
+use hyper::{ext::ReasonPhrase, header::HeaderName};
 use ipc_channel::{
     IpcError,
     ipc::{self, IpcSender},
@@ -74,31 +68,24 @@ use profile_traits::{
 };
 use rustc_hash::FxHashMap;
 use servo_base::{
-    cross_process_instant::CrossProcessInstant,
     generic_channel::{GenericCallback, GenericSharedMemory},
-    id::{BrowsingContextId, HistoryStateId, PipelineId},
+    id::HistoryStateId,
 };
 use servo_config::pref;
 use servo_url::{ImmutableOrigin, ServoUrl};
-use tokio::sync::mpsc::{
-    Receiver as TokioReceiver, Sender as TokioSender, UnboundedReceiver, UnboundedSender, channel,
-    unbounded_channel,
-};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 #[cfg(feature = "tracing")]
 use tracing::Instrument;
 
 use crate::{
     async_runtime::spawn_task,
     connector::{
-        CertificateErrorOverrideManager, ServoClient, TlsHandshakeInfo, create_tls_config,
+        CertificateErrorOverrideManager, ServoClient, TlsHandshakeInfo, create_ws_tls_config,
     },
     cookie::ServoCookie,
     cookie_storage::CookieStorage,
     decoder::Decoder,
-    devtools::{
-        prepare_devtools_request, send_request_to_devtools, send_response_values_to_devtools,
-    },
+    devtools::{send_request_to_devtools, send_response_values_to_devtools},
     embedder::NetToEmbedderMsg,
     fetch::{
         cors_cache::CorsCache,
@@ -609,21 +596,9 @@ pub(crate) enum BodyChunk {
     Error,
 }
 
-/// The stream side of the body passed to hyper.
-enum BodyStream {
-    /// A receiver that can be used in Body::wrap_stream,
-    /// for streaming the request over the network.
-    Chunked(TokioReceiver<Result<Frame<Bytes>, hyper::Error>>),
-    /// A body whose bytes are buffered
-    /// and sent in one chunk over the network.
-    Buffered(UnboundedReceiver<BodyChunk>),
-}
-
 /// The sink side of the body passed to hyper,
 /// used to enqueue chunks.
 pub(crate) enum BodySink {
-    /// A Tokio sender used to feed chunks to the network stream.
-    Chunked(TokioSender<Result<Frame<Bytes>, hyper::Error>>),
     /// A Crossbeam sender used to send chunks to the fetch worker,
     /// where they will be buffered
     /// in order to ensure they are not streamed them over the network.
@@ -633,14 +608,6 @@ pub(crate) enum BodySink {
 impl BodySink {
     fn transmit_bytes(&self, bytes: GenericSharedMemory) {
         match self {
-            BodySink::Chunked(sender) => {
-                let sender = sender.clone();
-                spawn_task(async move {
-                    let _ = sender
-                        .send(Ok(Frame::data(Bytes::copy_from_slice(&bytes))))
-                        .await;
-                });
-            },
             BodySink::Buffered(sender) => {
                 let _ = sender.send(BodyChunk::Chunk(bytes));
             },
@@ -649,7 +616,6 @@ impl BodySink {
 
     fn close(self) {
         match self {
-            BodySink::Chunked(_) => {},
             BodySink::Buffered(sender) => {
                 let _ = sender.send(BodyChunk::Done);
             },
@@ -760,9 +726,8 @@ pub(crate) fn obtain_response_setup_router_callback(
                         // close(); the driver breaks on the first Done, the
                         // extra one is just wire noise). The channel
                         // disconnects when this sender drops with `sink`.
-                        if let BodySink::Buffered(sink) = sink {
-                            let _ = sink.send(BodyChunk::Done);
-                        }
+                        let BodySink::Buffered(sink) = sink;
+                        let _ = sink.send(BodyChunk::Done);
                     }
 
                     return;
@@ -784,9 +749,8 @@ pub(crate) fn obtain_response_setup_router_callback(
                         // truncated body (fetch spec step 5). Chunked path
                         // unchanged; close() withheld, same double-send
                         // reasoning as the Done arm above.
-                        if let BodySink::Buffered(sink) = sink {
-                            let _ = sink.send(BodyChunk::Error);
-                        }
+                        let BodySink::Buffered(sink) = sink;
+                        let _ = sink.send(BodyChunk::Error);
                     }
 
                     return;
@@ -856,6 +820,12 @@ async fn invoke_handle_fetch(request: &Request, context: &FetchContext) -> Optio
         history_navigation: request.history_navigation,
         destination: request.destination,
         mode: request.mode.clone(),
+        // BAO PATCH (REQ-BRW-004 e112 client-scope mediation wave): the
+        // requesting script client's pipeline — the manager's non-navigation
+        // mediation routes by the CLIENT's controlled state (see the
+        // mediator field docs), and this is the identity the manager's
+        // enrolled client set is keyed by.
+        client_pipeline: request.pipeline_id,
     };
     if manager_chan.send(mediator).is_err() {
         return None;
@@ -2234,12 +2204,18 @@ async fn http_network_fetch(
                 )
             };
 
-            let mut tls_config = create_tls_config(
+            // BAO PATCH (REQ-STL-001, e113 WS per-page wire): the WS TLS leg
+            // rides the Bao BoringSSL stack with the per-page stealth
+            // fingerprint resolved from `request.target_webview_id` (keyed
+            // registry hit is authoritative; miss falls back to the process
+            // global) — same per-page wire contract as the HTTP leg
+            // (`obtain_response_bun`).
+            let mut tls_config = create_ws_tls_config(
+                request.target_webview_id,
                 context.ca_certificates.clone(),
                 context.ignore_certificate_errors,
-                context.state.override_manager.clone(),
             );
-            tls_config.alpn_protocols = vec!["http/1.1".to_string().into()];
+            tls_config.set_alpn_http1_only();
 
             let response = match start_websocket(
                 context.state.clone(),

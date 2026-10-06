@@ -34,6 +34,22 @@ use servo_config::pref;
 use tokio::net::TcpStream;
 use tower::Service;
 
+use bao_boringssl_bridge::TlsClient;
+use bao_stealth::{
+    boringssl_cipher_list_string, boringssl_curves_list_string, boringssl_sigalgs_list_string,
+};
+use bun_boringssl_sys::boringssl::*;
+
+// Verification symbol compiled into the vendored BoringSSL library but not
+// declared in the hand-rolled bindings (same pattern as
+// bao_boringssl_bridge/src/client.rs). Ground truth: vendor/boringssl/include/openssl.
+#[allow(unsafe_code)]
+unsafe extern "C" {
+    /// Load the system default trust paths (OPENSSLDIR bundle + hash dir)
+    /// into the ctx's store.
+    fn SSL_CTX_set_default_verify_paths(ctx: *mut SSL_CTX) -> core::ffi::c_int;
+}
+
 use crate::async_runtime::spawn_task;
 use crate::hosts::replace_host;
 
@@ -212,6 +228,177 @@ pub(crate) fn resolve_http2_fingerprint(
             .cloned()
             .unwrap_or_else(bao_stealth::global_http2_fingerprint),
         None => bao_stealth::global_http2_fingerprint(),
+    }
+}
+
+// ── BAO PATCH (REQ-STL-001, e113 WS per-page wire): WebSocket TLS leg ──
+//
+// The page `wss://` path rides the Bao BoringSSL stack (stealth
+// per-connection fingerprint + process-wide session cache), NOT the
+// upstream rustls connector above — same split as the HTTP leg, where the
+// page network rides `fetch::bun_bridge::obtain_response_bun`. The
+// per-page identity comes from `resolve_stealth_tls_config(webview_id)`:
+// keyed hit is authoritative (explicit `None` = stealth-free page), miss
+// falls back to the process global.
+//
+// Blueprint: the pre-snapshot-swap connector's `create_tls_config`
+// 4-arg (webview_id) BoringSSL form; renamed here because the upstream
+// rustls connector owns the `create_tls_config` name in this snapshot.
+
+/// Per-connection settings from the stealth profile (applied on each new
+/// TLS connection because BoringSSL only provides `SSL_set_*` variants,
+/// not `SSL_CTX_set_*`).
+pub struct StealthPerConnection {
+    /// Signature algorithms as OpenSSL name strings (e.g.,
+    /// "rsa_pss_rsae_sha256:rsa_pkcs1_sha256").
+    pub sigalg_list: Option<String>,
+    /// ALPN protocols in wire format (length-prefixed).
+    pub alpn_wire: Option<Vec<u8>>,
+    /// Supported groups as OpenSSL name strings (e.g., "X25519:P-256:P-384").
+    pub curves_list: Option<String>,
+}
+
+/// TLS configuration for the WebSocket leg: the shared BoringSSL
+/// `TlsClient` plus the stealth per-connection fingerprint fields the
+/// `WsTlsStream` consumer applies per connection.
+pub struct WsTlsConfig {
+    pub client: TlsClient,
+    pub ignore_certificate_errors: bool,
+    pub stealth_per_connection: Option<StealthPerConnection>,
+}
+
+impl WsTlsConfig {
+    /// Override the ALPN to only advertise HTTP/1.1 (for WebSocket
+    /// connections that don't support HTTP/2).
+    pub fn set_alpn_http1_only(&mut self) {
+        let alpn_wire = vec![0x08, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1'];
+        match &mut self.stealth_per_connection {
+            Some(pc) => pc.alpn_wire = Some(alpn_wire),
+            None => {
+                self.stealth_per_connection = Some(StealthPerConnection {
+                    sigalg_list: None,
+                    alpn_wire: Some(alpn_wire),
+                    curves_list: None,
+                });
+            },
+        }
+    }
+}
+
+/// Create the WebSocket-leg [`WsTlsConfig`] for a request's webview
+/// identity: the BoringSSL `TlsClient` with the per-page stealth cipher
+/// list applied on the shared ctx, and the per-connection fingerprint
+/// fields extracted for `WsTlsStream`.
+#[allow(unsafe_code)]
+pub fn create_ws_tls_config(
+    webview_id: Option<WebViewId>,
+    ca_certificates: CACertificates,
+    ignore_certificate_errors: bool,
+) -> WsTlsConfig {
+    // Build the BoringSSL TlsClient
+    let (client, stealth_per_connection) = match resolve_stealth_tls_config(webview_id) {
+        Some(stealth) => {
+            // Use stealth profile to configure cipher suites
+            let client =
+                TlsClient::new().expect("Failed to create BoringSSL TlsClient");
+            let ctx = client.ctx();
+
+            // Build the TLS 1.2 cipher list string from the stealth config.
+            // SSL_CTX_set_cipher_list sets the default for all connections.
+            // TLS 1.3 suites are omitted: their order is built into BoringSSL
+            // (no set_ciphersuites API in this build).
+            let cipher_str = boringssl_cipher_list_string(&stealth.tls12_cipher_suites);
+
+            if !cipher_str.is_empty() {
+                let cipher_c = std::ffi::CString::new(cipher_str)
+                    .expect("invalid cipher string");
+                // SAFETY: SSL_CTX_set_cipher_list sets the cipher list on the SSL_CTX.
+                // The CString is valid for the duration of this call. The ctx pointer is
+                // valid because we just obtained it from the TlsClient.
+                let ok = unsafe { SSL_CTX_set_cipher_list(ctx, cipher_c.as_ptr()) };
+                if ok == 0 {
+                    warn!("BoringSSL: SSL_CTX_set_cipher_list failed for stealth config");
+                }
+            }
+
+            // Prepare per-connection settings (BoringSSL only has SSL_set_* for these)
+            let sigalg_list = if !stealth.signature_algorithms.is_empty() {
+                let sigalgs = boringssl_sigalgs_list_string(&stealth.signature_algorithms);
+                if !sigalgs.is_empty() {
+                    Some(sigalgs)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let alpn_wire = if !stealth.alpn_protocols.is_empty() {
+                let mut wire: Vec<u8> = Vec::new();
+                for proto in &stealth.alpn_protocols {
+                    wire.push(proto.len() as u8);
+                    wire.extend_from_slice(proto);
+                }
+                Some(wire)
+            } else {
+                None
+            };
+
+            // FFDHE groups are filtered by the shared builder: a single
+            // unrecognized group name makes SSL_set1_curves_list fail the
+            // whole call, silently discarding the groups fingerprint.
+            let curves_list = if !stealth.supported_groups.is_empty() {
+                let curves = boringssl_curves_list_string(&stealth.supported_groups);
+                if !curves.is_empty() {
+                    Some(curves)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            (client, Some(StealthPerConnection {
+                sigalg_list,
+                alpn_wire,
+                curves_list,
+            }))
+        }
+        None => {
+            let client =
+                TlsClient::new().expect("Failed to create BoringSSL TlsClient");
+            (client, None)
+        }
+    };
+
+    // Trust store for peer verification. `Default` = system roots (what a
+    // real browser trusts); an explicit override list (WPT / embedder-supplied
+    // CAs) replaces it. Connections opt into verification at the consumer
+    // (`SSL_VERIFY_PEER` per connection); the store must be populated here,
+    // on the shared ctx.
+    match ca_certificates {
+        CACertificates::Default => {
+            // SAFETY: client.ctx() is a live SSL_CTX; the call only mutates
+            // its cert store. Errors leave the store as-is — verification
+            // then fails closed against an empty store, never open.
+            let ok = unsafe { SSL_CTX_set_default_verify_paths(client.ctx()) };
+            if ok != 1 {
+                warn!("BoringSSL: SSL_CTX_set_default_verify_paths failed — verification will fail closed");
+            }
+        },
+        CACertificates::Override(certificates) => {
+            for der in certificates {
+                if !client.add_trusted_der(&der) {
+                    warn!("BoringSSL: embedder CA certificate could not be parsed (DER) — skipped");
+                }
+            }
+        },
+    }
+
+    WsTlsConfig {
+        client,
+        ignore_certificate_errors,
+        stealth_per_connection,
     }
 }
 
