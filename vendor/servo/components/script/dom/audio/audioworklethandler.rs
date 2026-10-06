@@ -393,90 +393,171 @@ pub(crate) fn instantiate_processor(
     // Persistent per-port channel arrays, one `Float32Array(128)` each
     // (k-rate parameters expose a length-1 array per the spec). Created once;
     // every block reuses them through their traced slots.
-    fn make_channel_array(
+    //
+    // (e126) Rooting discipline for the construction window: until
+    // `register_processor_instance` files the traced `ProcessorInstanceData`,
+    // nothing else references the freshly created JS objects below, so each
+    // one (every channel `Float32Array`, every wrapper array, the params
+    // object) is pushed into `instance_roots` at birth and stays rooted
+    // across all later allocations of this function. Without those roots a
+    // nursery collection inside the window moved or freed the objects while
+    // their `Heap`/raw copies kept pre-GC addresses — the traced instance
+    // data then pointed into recycled nursery memory and the next minor GC
+    // tenured garbage through it (`TraceIonJSFrame` /
+    // `TraceExactStackRootList` → `promoteObject` SIGSEGV on the worklet
+    // thread — the e126 crash). The final `Heap` slots are re-derived from
+    // the rooted values so they carry post-GC addresses, never pre-GC
+    // copies; raw copies never span an allocation.
+    rooted_vec!(let mut instance_roots);
+    fn make_channel_array_index(
         cx: &mut JSContext,
         len: usize,
-    ) -> crate::dom::bindings::buffer_source::HeapBufferSource<js::typedarray::Float32> {
-        let arr = crate::dom::bindings::buffer_source::HeapBufferSource::
-            <js::typedarray::Float32>::default();
+        roots: &mut js::gc::RootedVec<'_, js::jsval::JSVal>,
+    ) -> Option<usize> {
+        rooted!(&in(cx) let mut array = null_mut::<JSObject>());
         let zeros = vec![0.; len];
-        let _ = arr.set_data(cx, &zeros);
-        arr
-    }
-    let input_arrays: Vec<Vec<_>> = (0..shape.input_ports)
-        .map(|_| {
-            (0..shape.input_channels)
-                .map(|_| make_channel_array(cx, 128))
-                .collect()
-        })
-        .collect();
-    let output_arrays: Vec<Vec<_>> = (0..shape.output_ports)
-        .map(|port| {
-            (0..shape.output_channels[port as usize].max(1))
-                .map(|_| make_channel_array(cx, 128))
-                .collect()
-        })
-        .collect();
-    let param_arrays: Vec<_> = shape
-        .params
-        .iter()
-        .map(|param| {
-            make_channel_array(cx, if param.rate == ParamRate::KRate { 1 } else { 128 })
-        })
-        .collect();
-
-    // Outer argument containers: `inputs[p][c]`, `outputs[p][c]` arrays and
-    // the `params` object keyed by parameter name. The per-channel objects
-    // are read through their traced slots (`RootedTypedArray` keeps each
-    // alive for the read; no JS runs in here).
-    fn inner_object(
-        arr: &crate::dom::bindings::buffer_source::HeapBufferSource<js::typedarray::Float32>,
-    ) -> *mut JSObject {
-        let Ok(view) = arr.get_typed_array() else {
-            return std::ptr::null_mut();
-        };
-        unsafe { view.underlying_object().get() }
+        if crate::dom::bindings::buffer_source::create_buffer_source::<js::typedarray::Float32>(
+            cx,
+            &zeros,
+            array.handle_mut(),
+        )
+        .is_err()
+            || array.get().is_null()
+        {
+            return None;
+        }
+        roots.push(ObjectValue(array.get()));
+        Some(roots.len() - 1)
     }
     #[expect(unsafe_code)]
-    fn outer_array(
+    fn outer_array_index(
         cx: &mut JSContext,
-        objects: Vec<*mut JSObject>,
-    ) -> *mut JSObject {
+        roots: &mut js::gc::RootedVec<'_, js::jsval::JSVal>,
+        indices: &[usize],
+    ) -> Option<usize> {
         rooted_vec!(let mut values);
-        for obj in objects {
-            values.push(ObjectValue(obj));
+        for &index in indices {
+            values.push(roots[index]);
         }
-        unsafe { NewArrayObject(cx, &HandleValueArray::from(&values)) }
-    }
-    let mut input_port_objects = Vec::with_capacity(input_arrays.len());
-    for port in &input_arrays {
-        let mut channel_objects = Vec::with_capacity(port.len());
-        for arr in port {
-            channel_objects.push(inner_object(arr));
+        let array = unsafe { NewArrayObject(cx, &HandleValueArray::from(&values)) };
+        if array.is_null() {
+            return None;
         }
-        input_port_objects.push(outer_array(cx, channel_objects));
+        roots.push(ObjectValue(array));
+        Some(roots.len() - 1)
     }
-    let inputs_array = outer_array(cx, input_port_objects);
-    let mut output_port_objects = Vec::with_capacity(output_arrays.len());
-    for port in &output_arrays {
-        let mut channel_objects = Vec::with_capacity(port.len());
-        for arr in port {
-            channel_objects.push(inner_object(arr));
+    fn rooted_channel(
+        cx: &mut JSContext,
+        roots: &js::gc::RootedVec<'_, js::jsval::JSVal>,
+        index: usize,
+    ) -> crate::dom::bindings::buffer_source::HeapBufferSource<js::typedarray::Float32> {
+        rooted!(&in(cx) let obj = roots[index].to_object());
+        crate::dom::bindings::buffer_source::HeapBufferSource::<js::typedarray::Float32>::new(
+            obj.handle(),
+        )
+    }
+
+    let mut input_leaf_indices: Vec<Vec<usize>> = Vec::with_capacity(shape.input_ports as usize);
+    for _ in 0..shape.input_ports {
+        let mut port_indices = Vec::with_capacity(shape.input_channels as usize);
+        for _ in 0..shape.input_channels {
+            match make_channel_array_index(cx, 128, &mut instance_roots) {
+                Some(index) => port_indices.push(index),
+                None => {
+                    debug!("AudioWorklet channel array creation failed for node {node_key}.");
+                    latch_failure(&node, &bridge, &main_sender);
+                    return;
+                },
+            }
         }
-        output_port_objects.push(outer_array(cx, channel_objects));
+        input_leaf_indices.push(port_indices);
     }
-    let outputs_array = outer_array(cx, output_port_objects);
+    let mut output_leaf_indices: Vec<Vec<usize>> = Vec::with_capacity(shape.output_ports as usize);
+    for port in 0..shape.output_ports {
+        let mut port_indices = Vec::new();
+        for _ in 0..shape.output_channels[port as usize].max(1) {
+            match make_channel_array_index(cx, 128, &mut instance_roots) {
+                Some(index) => port_indices.push(index),
+                None => {
+                    debug!("AudioWorklet channel array creation failed for node {node_key}.");
+                    latch_failure(&node, &bridge, &main_sender);
+                    return;
+                },
+            }
+        }
+        output_leaf_indices.push(port_indices);
+    }
+    let mut param_leaf_indices = Vec::with_capacity(shape.params.len());
+    for param in &shape.params {
+        let len = if param.rate == ParamRate::KRate { 1 } else { 128 };
+        match make_channel_array_index(cx, len, &mut instance_roots) {
+            Some(index) => param_leaf_indices.push(index),
+            None => {
+                debug!("AudioWorklet param array creation failed for node {node_key}.");
+                latch_failure(&node, &bridge, &main_sender);
+                return;
+            },
+        }
+    }
+
+    // Outer argument containers: `inputs[p][c]`, `outputs[p][c]` arrays and
+    // the `params` object keyed by parameter name. Each wrapper is rooted at
+    // creation; parent levels reference the children only through their root
+    // indices, re-read under a fresh borrow at use.
+    let mut input_port_indices = Vec::with_capacity(input_leaf_indices.len());
+    for port_indices in &input_leaf_indices {
+        match outer_array_index(cx, &mut instance_roots, port_indices) {
+            Some(index) => input_port_indices.push(index),
+            None => {
+                debug!("AudioWorklet input wrapper creation failed for node {node_key}.");
+                latch_failure(&node, &bridge, &main_sender);
+                return;
+            },
+        }
+    }
+    let inputs_array_index = match outer_array_index(cx, &mut instance_roots, &input_port_indices)
+    {
+        Some(index) => index,
+        None => {
+            debug!("AudioWorklet inputs array creation failed for node {node_key}.");
+            latch_failure(&node, &bridge, &main_sender);
+            return;
+        },
+    };
+    let mut output_port_indices = Vec::with_capacity(output_leaf_indices.len());
+    for port_indices in &output_leaf_indices {
+        match outer_array_index(cx, &mut instance_roots, port_indices) {
+            Some(index) => output_port_indices.push(index),
+            None => {
+                debug!("AudioWorklet output wrapper creation failed for node {node_key}.");
+                latch_failure(&node, &bridge, &main_sender);
+                return;
+            },
+        }
+    }
+    let outputs_array_index = match outer_array_index(cx, &mut instance_roots, &output_port_indices)
+    {
+        Some(index) => index,
+        None => {
+            debug!("AudioWorklet outputs array creation failed for node {node_key}.");
+            latch_failure(&node, &bridge, &main_sender);
+            return;
+        },
+    };
     let params_object = unsafe { JS_NewObject(cx, std::ptr::null()) };
+    if params_object.is_null() {
+        debug!("AudioWorklet params object creation failed for node {node_key}.");
+        latch_failure(&node, &bridge, &main_sender);
+        return;
+    }
+    instance_roots.push(ObjectValue(params_object));
+    let params_object_index = instance_roots.len() - 1;
     for (index, param) in shape.params.iter().enumerate() {
-        if index >= param_arrays.len() {
+        if index >= param_leaf_indices.len() {
             break;
         }
-        let obj = inner_object(&param_arrays[index]);
-        if obj.is_null() {
-            continue;
-        }
-        rooted!(&in(cx) let value = ObjectValue(obj));
-        rooted!(&in(cx) let params_ref = params_object);
+        rooted!(&in(cx) let value = instance_roots[param_leaf_indices[index]]);
+        rooted!(&in(cx) let params_ref = instance_roots[params_object_index].to_object());
         let Ok(name) = std::ffi::CString::new(param.name.clone()) else {
             continue;
         };
@@ -499,12 +580,29 @@ pub(crate) fn instantiate_processor(
                 .get_jsobject()
                 .get(),
         ),
-        inputs_array: heap(inputs_array),
-        outputs_array: heap(outputs_array),
-        params_object: heap(params_object),
-        input_arrays,
-        output_arrays,
-        param_arrays,
+        inputs_array: heap(instance_roots[inputs_array_index].to_object()),
+        outputs_array: heap(instance_roots[outputs_array_index].to_object()),
+        params_object: heap(instance_roots[params_object_index].to_object()),
+        input_arrays: input_leaf_indices
+            .iter()
+            .map(|port| {
+                port.iter()
+                    .map(|&index| rooted_channel(cx, &instance_roots, index))
+                    .collect()
+            })
+            .collect(),
+        output_arrays: output_leaf_indices
+            .iter()
+            .map(|port| {
+                port.iter()
+                    .map(|&index| rooted_channel(cx, &instance_roots, index))
+                    .collect()
+            })
+            .collect(),
+        param_arrays: param_leaf_indices
+            .iter()
+            .map(|&index| rooted_channel(cx, &instance_roots, index))
+            .collect(),
         port: crate::dom::bindings::root::Dom::from_ref(&*port),
     };
     scope.register_processor_instance(node_key, instance_data);
