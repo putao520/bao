@@ -28,3 +28,6 @@ pub(crate) mod svgtextelement;
 pub(crate) mod svgtextpositioningelement;
 pub(crate) mod svgtspanelement;
 pub(crate) mod svguseelement;
+// BAO patch (fork-maintained, 2026-09-27): REQ-BRW-046 — SVG geometry computation
+// core behind getBBox/getCTM/getScreenCTM/getTotalLength/getPointAtLength.
+pub(crate) mod svg_geometry;

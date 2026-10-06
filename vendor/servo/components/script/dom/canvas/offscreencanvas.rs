@@ -246,20 +246,30 @@ impl OffscreenCanvas {
             RootedHTMLCanvasElementOrOffscreenCanvas::OffscreenCanvas(DomRoot::from_ref(self));
         let size = self.get_size();
         let attrs = Self::get_gl_attributes(cx, options)?;
-        self.global()
-            .downcast::<Window>()
-            .and_then(|window| {
+        // (Bao) Worker realm: create the context against the inherited parent
+        // `Window` WebGL channel (REQ-BRW-004 C14).
+        let context = match self.global().downcast::<Window>() {
+            Some(window) => {
                 WebGLRenderingContext::new(cx, window, &canvas, WebGLVersion::WebGL1, size, attrs)
-            })
-            .map(|context| {
-                // Step 2. If context is null, then return null;
-                // otherwise set this's context mode to webgl or webgl2.
-                *self.context.safe_borrow_mut(cx.no_gc()) =
-                    Some(OffscreenRenderingContext::WebGL(Dom::from_ref(&*context)));
+            },
+            None => WebGLRenderingContext::new_in_worker(
+                cx,
+                &self.global(),
+                &canvas,
+                WebGLVersion::WebGL1,
+                size,
+                attrs,
+            ),
+        };
+        context.map(|context| {
+            // Step 2. If context is null, then return null;
+            // otherwise set this's context mode to webgl or webgl2.
+            *self.context.safe_borrow_mut(cx.no_gc()) =
+                Some(OffscreenRenderingContext::WebGL(Dom::from_ref(&*context)));
 
-                // Step 3. Return context.
-                context
-            })
+            // Step 3. Return context.
+            context
+        })
     }
 
     #[cfg(feature = "webgl")]
@@ -286,18 +296,21 @@ impl OffscreenCanvas {
             RootedHTMLCanvasElementOrOffscreenCanvas::OffscreenCanvas(DomRoot::from_ref(self));
         let size = self.get_size();
         let attrs = Self::get_gl_attributes(cx, options)?;
-        self.global()
-            .downcast::<Window>()
-            .and_then(|window| WebGL2RenderingContext::new(cx, window, &canvas, size, attrs))
-            .map(|context| {
-                // Step 2. If context is null, then return null;
-                // otherwise set this's context mode to webgl or webgl2.
-                *self.context.safe_borrow_mut(cx.no_gc()) =
-                    Some(OffscreenRenderingContext::WebGL2(Dom::from_ref(&*context)));
+        // (Bao) Worker realm: create the context against the inherited parent
+        // `Window` WebGL channel (REQ-BRW-004 C14, same dispatch as WebGL1).
+        let context = match self.global().downcast::<Window>() {
+            Some(window) => WebGL2RenderingContext::new(cx, window, &canvas, size, attrs),
+            None => WebGL2RenderingContext::new_in_worker(cx, &self.global(), &canvas, size, attrs),
+        };
+        context.map(|context| {
+            // Step 2. If context is null, then return null;
+            // otherwise set this's context mode to webgl or webgl2.
+            *self.context.safe_borrow_mut(cx.no_gc()) =
+                Some(OffscreenRenderingContext::WebGL2(Dom::from_ref(&*context)));
 
-                // Step 3. Return context.
-                context
-            })
+            // Step 3. Return context.
+            context
+        })
     }
 
     pub(crate) fn placeholder(&self) -> Option<DomRoot<HTMLCanvasElement>> {

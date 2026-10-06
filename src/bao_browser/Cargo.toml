@@ -31,7 +31,14 @@ name = "bao_browser"
 webdriver = ["dep:webdriver_server"]
 
 [dependencies]
-servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources"] }
+# webgl/webcrypto (e109 REQ-BRW-002 replay): the post-swap upstream snapshot
+# gates the WebGL and Web Crypto exposure axes behind cargo features
+# (`skip-unless CARGO_FEATURE_WEBGL`/`_WEBCRYPTO` in script_bindings webidls +
+# `#[cfg(feature = "webgl")]` impl arms in script). Bao's product contract is
+# that WebGL and crypto are always-on surfaces (stealth probing needs the real
+# GL/crypto face present), so the features are enabled unconditionally here —
+# the pre-swap snapshot compiled both in unconditionally.
+servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "webgl", "webcrypto"] }
 # WebDriver embedder host (feature "webdriver"): the upstream component that
 # owns the whole WebDriver HTTP protocol — bao only pumps the embedder channel.
 webdriver_server = { package = "bao-servo-webdriver-server", path = "../../vendor/servo/components/webdriver_server", version = "=0.5.17", optional = true }

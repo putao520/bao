@@ -15,7 +15,9 @@ dictionary AudioBufferSourceOptions {
   float playbackRate = 1;
 };
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): buffer source of the offline audio stack
+// (REQ-BRW-004 C15, user ruling 2026-09-09).
+[Exposed=(Window,Worker)]
 interface AudioBufferSourceNode : AudioScheduledSourceNode {
   [Throws] constructor(BaseAudioContext context, optional AudioBufferSourceOptions options = {});
   [Throws] attribute AudioBuffer? buffer;

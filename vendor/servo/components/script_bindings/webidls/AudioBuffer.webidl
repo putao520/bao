@@ -12,7 +12,10 @@ dictionary AudioBufferOptions {
   required float sampleRate;
 };
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): AudioBuffer is the offline-render payload and
+// noise-injection carrier; required by OfflineAudioContext in workers
+// (REQ-BRW-004 C15, user ruling 2026-09-09).
+[Exposed=(Window,Worker)]
 interface AudioBuffer {
   [Throws] constructor(AudioBufferOptions options);
   readonly attribute float sampleRate;

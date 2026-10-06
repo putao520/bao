@@ -6,7 +6,10 @@
  * https://webaudio.github.io/web-audio-api/#AudioScheduledSourceNode
  */
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): base of OscillatorNode and
+// AudioBufferSourceNode, exposed by inheritance consequence (REQ-BRW-004 C15,
+// user ruling 2026-09-09).
+[Exposed=(Window,Worker)]
 interface AudioScheduledSourceNode : AudioNode {
   attribute EventHandler onended;
   [Throws] undefined start(optional double when = 0);

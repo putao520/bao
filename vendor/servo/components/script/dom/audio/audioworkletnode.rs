@@ -54,6 +54,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 use crate::dom::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::messageport::MessagePort;
@@ -213,7 +214,7 @@ impl AudioWorkletNode {
             };
             let audio_param = AudioParam::new(
                 cx,
-                &window,
+                window.upcast::<GlobalScope>(),
                 context,
                 node.node_id(),
                 AudioNodeType::AudioWorkletNode,

@@ -759,6 +759,10 @@ pub enum ScriptToConstellationMessage {
     /// 2D canvases may use the GPU and we don't want to give untrusted content access to the GPU.)
     CreateCanvasPaintThread(
         UntypedSize2D<u64>,
+        // Bao (BUN-EVOLUTION R53-A phase 2): the requesting global's egress
+        // webview identity, relayed verbatim by the constellation to the
+        // canvas paint thread (see `GlobalScope::egress_webview_id`).
+        Option<WebViewId>,
         GenericSender<Option<(GenericSender<CanvasMsg>, CanvasId)>>,
     ),
     /// Notifies the constellation that this pipeline is requesting focus.

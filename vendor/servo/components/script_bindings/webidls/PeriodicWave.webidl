@@ -15,7 +15,11 @@ dictionary PeriodicWaveOptions : PeriodicWaveConstraints {
     sequence<float> imag;
 };
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): waveform carrier of OscillatorNode — the
+// new upstream snapshot activated setPeriodicWave/getPeriodicWave on
+// OscillatorNode, which is worker-exposed (REQ-BRW-004 C15 type-visibility
+// consequence, user ruling 2026-09-09).
+[Exposed=(Window,Worker)]
 interface PeriodicWave {
     [Throws] constructor (BaseAudioContext context, optional PeriodicWaveOptions options = {});
 };

@@ -29,7 +29,7 @@
 //   css-cascade     css/css-cascade           10     特异性/源序/important/inline/继承/shorthand/initial
 //   css-variables   css/css-variables         3      定义替换/fallback/继承
 //   css-flexbox     css/css-flexbox           10     display/flex-* 六属性/gap/order/align-self
-//   css-grid(gate) css/css-grid              1      display:grid 门态(layout.grid.enabled=false→block)
+//   css-grid(gate) css/css-grid              1      display:grid 门态(layout.grid.enabled=true→grid;门默认被上游快照翻转为 true,e109 同步)
 //   css-fonts       css/css-fonts, css/CSS1   9      family/size(px+em 解析)/weight/style/line-height/spacing/transform
 //   css-transforms  css/css-transforms        6      rotate180/translate/scale/scale0.5/none/origin
 //   css-position    css/css-position, css/css-box  9  position 三态/z-index/margin em 解析/padding/border/display/box-sizing
@@ -40,7 +40,7 @@
 //   CSS 相关门,逐项状态 = 头注释立法;吸收波翻转任一门必须同步更新本表 +
 //   对应 gate 探针)**:
 //   pref(点分)                    字段                              默认    CSS 能力面
-//   layout.grid.enabled            layout_grid_enabled               false   display:grid 布局与解析门(gate 探针)
+//   layout.grid.enabled            layout_grid_enabled               true    display:grid 布局与解析门(门默认被上游快照翻转为 true,e109 同步;gate 探针=grid 生效)
 //   layout.columns.enabled         layout_columns_enabled            false   多列布局 columns/*
 //   layout.css.attr.enabled        layout_css_attr_enabled           false   attr() 函数
 //   layout.writing-mode.enabled    layout_writing_mode_enabled       false   竖排 writing-mode
@@ -329,10 +329,12 @@ fn css_conformance_computed_style_gate() {
     probe(&mut report, "f-item", "align-self", "center");
     probe(&mut report, "f-shorthand", "flex-grow", "2");
 
-    // ── css-grid(gate 探针:layout.grid.enabled=false)───────────────
-    // 门关 → grid 解析被 stylo 拒绝 → computed 回落 block。门翻转时本探针
-    // 红灯,强制同步更新头表立法(REQ-BRW-049 零静默回退语义)。
-    probe(&mut report, "g-box", "display", "block");
+    // ── css-grid(gate 探针:layout.grid.enabled=true,上游快照翻转)───
+    // 门开 → grid 解析生效 → computed = grid。e99 快照换血把
+    // `layout_grid_enabled` 默认翻转为 true(vendor/servo/components/config/
+    // prefs.rs:566),按头注释立法协议同步本表与本探针(REQ-BRW-049 零静默
+    // 回退语义:任何后续门翻转仍会点亮本探针)。
+    probe(&mut report, "g-box", "display", "grid");
 
     // ── css-fonts(9) ────────────────────────────────────────────────
     probe_contains(&mut report, "ft-family", "font-family", "monospace");

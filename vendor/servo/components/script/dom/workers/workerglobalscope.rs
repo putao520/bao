@@ -422,6 +422,12 @@ pub(crate) struct WorkerGlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
     #[ignore_malloc_size_of = "mozjs"]
     module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
+    /// A handle for communicating messages to the WebGL thread, if available.
+    /// (Bao) Inherited from the parent `Window` via `WorkerGlobalScopeInit.webgl_chan`
+    /// so OffscreenCanvas WebGL contexts can be created in workers (REQ-BRW-004 C14).
+    #[no_trace]
+    #[cfg(feature = "webgl")]
+    webgl_chan: Option<WebGLChan>,
 }
 
 impl WorkerGlobalScope {
@@ -442,6 +448,10 @@ impl WorkerGlobalScope {
         // Install a pipeline-namespace in the current thread.
         PipelineNamespace::auto_install();
 
+        // (Bao REQ-BRW-004 C14): capture the inherited WebGL channel before
+        // `init` is consumed by the field-wise destructure below.
+        #[cfg(feature = "webgl")]
+        let worker_webgl_chan = init.webgl_chan;
         let devtools_receiver = match init.from_devtools_sender {
             Some(..) => Some(devtools_receiver),
             None => None,
@@ -497,6 +507,8 @@ impl WorkerGlobalScope {
             origin: MutableOrigin::new(init.origin),
             font_context,
             module_map: Default::default(),
+            #[cfg(feature = "webgl")]
+            webgl_chan: worker_webgl_chan,
         }
     }
 
@@ -508,6 +520,13 @@ impl WorkerGlobalScope {
 
     pub(crate) fn font_context(&self) -> Arc<FontContext> {
         self.font_context.clone()
+    }
+
+    /// (Bao) Inherited from the parent `Window` via `WorkerGlobalScopeInit.webgl_chan`
+    /// (REQ-BRW-004 C14). Upstream stores the field but has no reader yet.
+    #[cfg(feature = "webgl")]
+    pub(crate) fn webgl_chan(&self) -> Option<WebGLChan> {
+        self.webgl_chan.clone()
     }
 
     pub(crate) fn timers(&self) -> &OneshotTimers {
@@ -728,6 +747,61 @@ impl WorkerGlobalScope {
             let mut realm = enter_auto_realm(cx, self);
             let cx = &mut realm.current_realm();
             define_all_exposed_interfaces(cx, self.upcast());
+            // BAO PATCH (REQ-BRW-004 C15, user ruling 2026-09-09 vendor
+            // patch): second worker-scope drain point — AFTER
+            // `define_all_exposed_interfaces` has defined this worker
+            // global's WebIDL interface constructors. The first drain (in
+            // `DedicatedWorkerGlobalScope::run_worker_scope` /
+            // `SharedWorkerGlobalScope::new`) runs BEFORE these exist, so an
+            // embedder JS-hook blob guarded with `typeof` checks (bao_stealth
+            // W1a guards) saw every interface as `undefined` and installed
+            // nothing — engine-layer getters do not depend on interfaces,
+            // which is why they worked from the first drain while the JS
+            // prototype hooks did not. The embedder re-runs its install here;
+            // it is idempotent (its defines on already-PERMANENT getters fail
+            // safely — the embedder's define_permanent_getter documents the
+            // "prior install" arm), so only the previously skipped JS hooks
+            // land now. Callbacks are keyed by WebViewId (same shape as the
+            // first drain) and run on this Worker thread, before any worker
+            // script executes.
+            {
+                let global_scope = self.upcast::<GlobalScope>();
+                if let Some(webview_id) = global_scope.webview_id() {
+                    for callback in crate::event_loop::script_thread::drain_worker_interfaces_ready_callbacks(
+                        webview_id,
+                    ) {
+                        unsafe {
+                            callback(
+                                cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                                script_bindings::reflector::DomObject::reflector(global_scope)
+                                    .get_jsobject()
+                                    .get() as *mut std::ffi::c_void,
+                            );
+                        }
+                    }
+                    // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                    // patch): per-Worker injector delivery at the second
+                    // drain point — NON-consuming, so EVERY Dedicated/Shared
+                    // Worker of this webview gets the post-interfaces install
+                    // (the one-shot drain above only covers the first
+                    // Worker). The ServiceWorker path never reaches
+                    // `on_complete` (SW has its own define + drain in
+                    // serviceworkerglobalscope.rs), so S-family semantics are
+                    // untouched.
+                    for injector in crate::event_loop::script_thread::worker_interfaces_ready_injectors(
+                        webview_id,
+                    ) {
+                        unsafe {
+                            injector(
+                                cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                                script_bindings::reflector::DomObject::reflector(global_scope)
+                                    .get_jsobject()
+                                    .get() as *mut std::ffi::c_void,
+                            );
+                        }
+                    }
+                }
+            }
             // Step 9. Set inside settings's execution ready flag.
             self.execution_ready.store(true, Ordering::Relaxed);
             match script {

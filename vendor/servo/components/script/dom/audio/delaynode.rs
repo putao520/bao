@@ -22,6 +22,8 @@ use crate::dom::bindings::codegen::Bindings::AudioParamBinding::AutomationRate;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::types::AudioNode;
+use crate::dom::bindings::inheritance::Castable;
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -52,7 +54,7 @@ impl DelayNodeMethods<crate::DomTypeHolder> for DelayNode {
         let node_id = source_node.node_id();
         let delay_time = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             node_id,
             AudioNodeType::OscillatorNode,

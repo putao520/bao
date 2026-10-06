@@ -18,12 +18,24 @@ use servo_base::generic_channel::GenericSender;
 use servo_base::{Epoch, generic_channel};
 use servo_canvas_traits::ConstellationCanvasMsg;
 use servo_canvas_traits::canvas::*;
+// Bao (REQ-BRW-004 C13, user ruling 2026-09-09 vendor patch): global canvas
+// noise consumed at the paint-thread readback choke point. Bao
+// (BUN-EVOLUTION R53-A phase 2): the per-WebViewId registry resolves the
+// OWNING page's config; the global remains the fallback bucket.
+use crate::canvas_noise::{CanvasNoiseConfig, canvas_noise_for_webview, get_global_canvas_noise};
+use servo_base::id::WebViewId;
 use webrender_api::ImageKey;
 
 use crate::canvas_data::*;
 
 pub struct CanvasPaintThread {
     canvases: FxHashMap<CanvasId, Canvas>,
+    /// Bao (BUN-EVOLUTION R53-A phase 2): the owning webview of each
+    /// canvas (stamped at creation by the script side), consulted at the
+    /// `GetImageData` noise choke point to resolve the per-WebViewId
+    /// canvas noise config. Identity-less canvases (None — not stored)
+    /// keep the process-global fallback.
+    canvas_webviews: FxHashMap<CanvasId, WebViewId>,
     next_canvas_id: CanvasId,
     paint_api: CrossProcessPaintApi,
 }
@@ -32,6 +44,7 @@ impl CanvasPaintThread {
     fn new(paint_api: CrossProcessPaintApi) -> CanvasPaintThread {
         CanvasPaintThread {
             canvases: FxHashMap::default(),
+            canvas_webviews: FxHashMap::default(),
             next_canvas_id: CanvasId(0),
             paint_api,
         }
@@ -75,8 +88,8 @@ impl CanvasPaintThread {
                         }
                         recv(create_receiver) -> msg => {
                             match msg {
-                                Ok(ConstellationCanvasMsg::Create { sender: creator, size }) => {
-                                    if let Err(error) = creator.send(canvas_paint_thread.create_canvas(size)) {
+                                Ok(ConstellationCanvasMsg::Create { sender: creator, size, webview_id }) => {
+                                    if let Err(error) = creator.send(canvas_paint_thread.create_canvas(size, webview_id)) {
                                         warn!("Create canvas response failed ({error})");
                                     }
                                 },
@@ -102,12 +115,19 @@ impl CanvasPaintThread {
     }
 
     #[servo_tracing::instrument(skip_all)]
-    pub fn create_canvas(&mut self, size: Size2D<u64>) -> Option<CanvasId> {
+    pub fn create_canvas(&mut self, size: Size2D<u64>, webview_id: Option<WebViewId>) -> Option<CanvasId> {
         let canvas_id = self.next_canvas_id;
         self.next_canvas_id.0 += 1;
 
         let canvas = Canvas::new(size, self.paint_api.clone())?;
         self.canvases.insert(canvas_id, canvas);
+        // Bao (BUN-EVOLUTION R53-A phase 2): remember which webview owns
+        // this canvas so the GetImageData noise choke point resolves the
+        // PER-WEBVIEW config (keyed hit authoritative, miss → process-global
+        // fallback). Identity-less realms (None) keep pre-R53 semantics.
+        if let Some(webview_id) = webview_id {
+            self.canvas_webviews.insert(canvas_id, webview_id);
+        }
 
         Some(canvas_id)
     }
@@ -132,6 +152,10 @@ impl CanvasPaintThread {
             CanvasCommand::Recreate(size) => self.canvas(canvas_id).recreate(size),
             CanvasCommand::Destroy => {
                 self.canvases.remove(&canvas_id);
+                // Bao (R53-A phase 2): drop the ownership record with the
+                // canvas (the keyed noise config itself lives in the
+                // per-WebViewId registry, cleared at page close).
+                self.canvas_webviews.remove(&canvas_id);
             },
             CanvasCommand::SetImageKey(image_key) => {
                 self.canvas(canvas_id).set_image_key(image_key);
@@ -301,7 +325,27 @@ impl CanvasPaintThread {
                 );
             },
             CanvasCommand::GetImageData(dest_rect, sender) => {
-                let snapshot = self.canvas(canvas_id).read_pixels(dest_rect);
+                let mut snapshot = self.canvas(canvas_id).read_pixels(dest_rect);
+                // Bao (REQ-BRW-004 C13, user ruling 2026-09-09 vendor patch):
+                // deterministic canvas noise at the paint-thread readback choke
+                // point. Every pixel read that leaves the canvas — JS
+                // `getImageData` (window and worker realms), `toDataURL`,
+                // `toBlob`, `convertToBlob`, `transferToImageBitmap`,
+                // `createImageBitmap` — funnels through this command, a surface
+                // JS-realm hooks can't fully cover.
+                //
+                // Bao (BUN-EVOLUTION R53-A phase 2): the noise config resolves
+                // per the canvas's OWNING webview — keyed registry hit
+                // authoritative (an explicit disabled entry = a stealth-free
+                // page reads back byte-exact, no inheritance from a coexisting
+                // profile page); miss or identity-less canvas → process-global
+                // fallback. Unset/disabled resolves to `None`: byte-for-byte
+                // identical to upstream (W2 gate).
+                let noise = match self.canvas_webviews.get(&canvas_id) {
+                    Some(webview_id) => canvas_noise_for_webview(*webview_id),
+                    None => get_global_canvas_noise(),
+                };
+                apply_canvas_noise(&mut snapshot, noise);
                 if let Err(error) = sender.send(snapshot.to_shared()) {
                     warn!("GetImageData response failed ({error})");
                 }
@@ -632,5 +676,20 @@ impl Canvas {
             Canvas::Vello(canvas_data) => canvas_data.recreate(size),
             Canvas::VelloCPU(canvas_data) => canvas_data.recreate(size),
         }
+    }
+}
+
+/// Bao (REQ-BRW-004 C13, user ruling 2026-09-09 vendor patch): apply the
+/// resolved canvas noise config to a readback snapshot in place. `None`
+/// (unset/disabled) leaves the bytes untouched — byte-for-byte identical to
+/// upstream.
+fn apply_canvas_noise(snapshot: &mut Snapshot, noise: Option<(u64, f64)>) {
+    if let Some((seed, amplitude)) = noise {
+        let size = snapshot.size();
+        CanvasNoiseConfig::new(seed, amplitude).apply_to_pixels(
+            snapshot.as_raw_bytes_mut(),
+            size.width,
+            size.height,
+        );
     }
 }

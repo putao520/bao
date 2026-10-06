@@ -378,8 +378,39 @@ impl GlobalScope {
         if let Some(worker) = self.downcast::<SharedWorkerGlobalScope>() {
             return Some(worker.webview_id());
         }
+        // BAO PATCH (AudioWorklet 段(1), user ruling 2026-10-05): worklet
+        // realms carry their creating page's webview identity (plumbed via
+        // WorkletGlobalScopeInit from the Window). This is what makes the
+        // worklet module fetch (RequestBuilder::new(global.webview_id(), ..)
+        // in script_module.rs) a webview-keyed request — SW interception and
+        // per-webview stealth wire attribution work for worklet modules the
+        // same way they do for page/worker fetches. Before this arm a
+        // worklet module fetch was a webview-less request.
+        if let Some(worklet) = self.downcast::<crate::dom::workletglobalscope::WorkletGlobalScope>() {
+            return worklet.webview_id();
+        }
         // TODO: This should only return None for ServiceWorkerGlobalScope.
         None
+    }
+
+    /// Bao (R53-A, 2026-09-10 user ruling): the webview identity for
+    /// PAGE-EGRESS network requests (`fetch()` / XHR Request construction)
+    /// — and canvas ownership stamping (`CanvasState::new`).
+    /// Identical to [`GlobalScope::webview_id`] except that a
+    /// `ServiceWorkerGlobalScope` — whose `webview_id()` is `None` by
+    /// upstream design (storage partitioning etc. deliberately see no
+    /// owning webview) — resolves to the REGISTERING page's WebViewId
+    /// (`ScopeThings` inheritance, `owning_webview_id`), so SW-realm
+    /// egress rides the host page's per-webview stealth TLS/H2 wire
+    /// profile. Dedicated and shared workers already carry their owning
+    /// page's webview id natively through `webview_id()`.
+    pub(crate) fn egress_webview_id(&self) -> Option<WebViewId> {
+        if let Some(sw) = self
+            .downcast::<crate::dom::serviceworker::serviceworkerglobalscope::ServiceWorkerGlobalScope>()
+        {
+            return sw.owning_webview_id();
+        }
+        self.webview_id()
     }
 
     #[allow(clippy::too_many_arguments)]

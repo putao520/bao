@@ -28,7 +28,7 @@ use rand::random;
 use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
 use servo_base::generic_channel::{GenericReceiver, GenericSend, GenericSender, RoutedReceiver};
-use servo_base::id::{PipelineId, ServiceWorkerId};
+use servo_base::id::{PipelineId, ServiceWorkerId, WebViewId};
 use servo_config::pref;
 use servo_constellation_traits::{
     ScopeThings, ServiceWorkerMsg, WorkerGlobalScopeInit, WorkerScriptLoadOrigin,
@@ -197,6 +197,14 @@ pub(crate) struct ServiceWorkerGlobalScope {
     #[no_trace]
     worker_id: ServiceWorkerId,
 
+    /// Bao (R53-A, 2026-09-10 user ruling): the REGISTERING page's WebViewId,
+    /// captured from `ScopeThings.webview_id` (ScopeThings inheritance). The
+    /// SW's `webview_id()` stays `None` by upstream design (storage
+    /// partitioning semantics untouched); egress resolves through
+    /// `GlobalScope::egress_webview_id` instead.
+    #[no_trace]
+    owning_webview_id: Option<WebViewId>,
+
     /// Bao vendor patch (C19 SIGSEGV fix): respondWith promises anchored for
     /// the lifetime of their settlement; entries removed at settlement
     /// (fetchevent.rs settle callbacks). See `add_pending_fetch_response`.
@@ -274,6 +282,7 @@ impl ServiceWorkerGlobalScope {
         closing: Arc<AtomicBool>,
         font_context: Arc<FontContext>,
         worker_id: ServiceWorkerId,
+        owning_webview_id: Option<WebViewId>,
     ) -> ServiceWorkerGlobalScope {
         ServiceWorkerGlobalScope {
             workerglobalscope: WorkerGlobalScope::new_inherited(
@@ -298,9 +307,17 @@ impl ServiceWorkerGlobalScope {
             scope_url,
             control_receiver,
             worker_id,
+            owning_webview_id,
             pending_fetch_responses: DomRefCell::new(VecDeque::new()),
             pending_fetch_response_key: Cell::new(0),
         }
+    }
+
+    /// The REGISTERING page's WebViewId (R53-A SW egress identity) — see
+    /// the `owning_webview_id` field doc. `None` only for scopes built
+    /// without `ScopeThings` (none on the live path today).
+    pub(crate) fn owning_webview_id(&self) -> Option<WebViewId> {
+        self.owning_webview_id
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -319,6 +336,7 @@ impl ServiceWorkerGlobalScope {
         font_context: Arc<FontContext>,
         debugger_global: &DebuggerGlobalScope,
         worker_id: ServiceWorkerId,
+        owning_webview_id: Option<WebViewId>,
         cx: &mut JSContext,
     ) -> DomRoot<ServiceWorkerGlobalScope> {
         let scope = Box::new(ServiceWorkerGlobalScope::new_inherited(
@@ -335,6 +353,7 @@ impl ServiceWorkerGlobalScope {
             closing,
             font_context,
             worker_id,
+            owning_webview_id,
         ));
         let scope = ServiceWorkerGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(
             cx,
@@ -368,6 +387,7 @@ impl ServiceWorkerGlobalScope {
             script_url,
             init,
             worker_load_origin,
+            webview_id,
             ..
         } = scope_things;
 
@@ -434,11 +454,70 @@ impl ServiceWorkerGlobalScope {
                     font_context,
                     &debugger_global,
                     worker_id,
+                    Some(webview_id),
                     cx,
                 );
 
                 let worker_scope = global.upcast::<WorkerGlobalScope>();
                 let global_scope = global.upcast::<GlobalScope>();
+
+                // Bao vendor patch (REQ-BRW-004 S1 / DF-WK-10): drain embedder
+                // Worker scope callbacks keyed to the webview that REGISTERED
+                // this service worker. `ScopeThings.webview_id` is captured from
+                // the registering page's GlobalScope in
+                // `ServiceWorkerRegistration::create_scope_things` and travels
+                // through the registration job, so the SW scope inherits that
+                // page's stealth profile via the same `worker_scope_init_native`
+                // path used by dedicated workers (DEC-WK-007 / CRIT-STL-WK).
+                // Per-worker keying (same cross-page crosstalk fix as
+                // dedicatedworkerglobalscope.rs): only callbacks registered for
+                // THIS webview are drained.
+                // BAO PATCH (BCE-20260627-009): realm entry for embedder
+                // callbacks is handled INSIDE the callback (worker_scope_init_native)
+                // because this thread's cx starts in the null realm; the
+                // callback owns its own realm lifecycle.
+                // @trace REQ-BRW-004 [criterion:12..17] SW stealth inheritance
+                for callback in
+                    crate::event_loop::script_thread::drain_worker_scope_callbacks(webview_id)
+                {
+                    unsafe {
+                        callback(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope)
+                                .get_jsobject()
+                                .get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
+                // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                // patch): per-Worker injector delivery on the SW path — the
+                // one-shot drain above is consumed by the FIRST worker-scope
+                // drain of this webview, and that drain may belong to a
+                // DEDICATED Worker created by the same page BEFORE the SW
+                // registration (starvation: page runs `new Worker(...)` first,
+                // then `serviceWorker.register(...)`). In that timing the SW
+                // scope drained an EMPTY queue and ran with ZERO embedder
+                // injection — a bare fingerprintable SW realm. The injector
+                // tier is NON-consuming (same form as the dedicated-worker
+                // delivery in dedicatedworkerglobalscope.rs): every worker
+                // scope of this webview — Dedicated AND ServiceWorker —
+                // receives the engine-getter install. Runs after the one-shot
+                // callbacks; the install is idempotent
+                // (define_permanent_getter "prior install" arm), so a fresh
+                // page's double run (one-shot + injector) is safe.
+                // @trace REQ-BRW-004 [criterion:12..17] SW starvation fix
+                for injector in
+                    crate::event_loop::script_thread::worker_scope_injectors(webview_id)
+                {
+                    unsafe {
+                        injector(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope)
+                                .get_jsobject()
+                                .get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
 
                 if devtools_enabled {
                     debugger_global.fire_add_debuggee(
@@ -493,6 +572,36 @@ impl ServiceWorkerGlobalScope {
                     let mut realm = enter_auto_realm(cx, worker_scope);
                     let mut realm = realm.current_realm();
                     define_all_exposed_interfaces(&mut realm, global_scope);
+                    // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                    // patch): per-Worker injector delivery at the SW's own
+                    // define point — AFTER `define_all_exposed_interfaces`
+                    // (the SW global's WebIDL interface constructors exist)
+                    // and BEFORE the SW script runs. The Dedicated path
+                    // delivers this phase in `WorkerGlobalScope::on_complete`,
+                    // which the SW path never reaches (SW loads its script
+                    // synchronously via `load_whole_resource` and evaluates it
+                    // below), so without this site the W1a JS hooks (audio
+                    // getChannelData / webgl getParameter) NEVER landed on a
+                    // SW realm — the first-point install above runs before the
+                    // interfaces exist and its typeof-guarded blob skips every
+                    // JS hook (same reason the Dedicated path has a second
+                    // drain point). NON-consuming tier; only the injector
+                    // delivers here (the one-shot interfaces-ready queue is
+                    // never drained on the SW path), so each SW scope runs the
+                    // hooks blob EXACTLY once — no audio double-wrap.
+                    // @trace REQ-BRW-004 [criterion:15] SW JS-hook delivery
+                    for injector in crate::event_loop::script_thread::worker_interfaces_ready_injectors(
+                        webview_id,
+                    ) {
+                        unsafe {
+                            injector(
+                                realm.raw_cx_no_gc() as *mut std::ffi::c_void,
+                                script_bindings::reflector::DomObject::reflector(global_scope)
+                                    .get_jsobject()
+                                    .get() as *mut std::ffi::c_void,
+                            );
+                        }
+                    }
 
                     let script = global_scope.create_a_classic_script(
                         &mut realm,

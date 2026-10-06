@@ -24,6 +24,8 @@ use crate::dom::bindings::codegen::Bindings::StereoPannerNodeBinding::{
 };
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::inheritance::Castable;
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -64,7 +66,7 @@ impl StereoPannerNode {
         // <https://webaudio.github.io/web-audio-api/#dom-stereopannernode-pan>
         let pan = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             node_id,
             AudioNodeType::StereoPannerNode,

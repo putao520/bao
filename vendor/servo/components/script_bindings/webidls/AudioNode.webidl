@@ -23,7 +23,9 @@ dictionary AudioNodeOptions {
    ChannelInterpretation channelInterpretation;
 };
 
-[Exposed=Window]
+// (Bao) Exposed=(Window,Worker): base interface of the worker-exposed offline
+// audio node family (REQ-BRW-004 C15, user ruling 2026-09-09).
+[Exposed=(Window,Worker)]
 interface AudioNode : EventTarget {
   [Throws]
   AudioNode connect(AudioNode destinationNode,

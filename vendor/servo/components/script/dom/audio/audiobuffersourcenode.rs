@@ -28,7 +28,7 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::window::Window;
+use crate::dom::globalscope::GlobalScope;
 
 #[dom_struct]
 pub(crate) struct AudioBufferSourceNode {
@@ -46,7 +46,7 @@ impl AudioBufferSourceNode {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_inherited(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<AudioBufferSourceNode> {
@@ -64,7 +64,7 @@ impl AudioBufferSourceNode {
         // <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-playbackrate>
         let playback_rate = AudioParam::new(
             cx,
-            window,
+            global,
             context,
             node_id,
             AudioNodeType::AudioBufferSourceNode,
@@ -77,7 +77,7 @@ impl AudioBufferSourceNode {
         // <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-detune>
         let detune = AudioParam::new(
             cx,
-            window,
+            global,
             context,
             node_id,
             AudioNodeType::AudioBufferSourceNode,
@@ -105,26 +105,26 @@ impl AudioBufferSourceNode {
 
     pub(crate) fn new(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<DomRoot<AudioBufferSourceNode>> {
-        Self::new_with_proto(cx, window, None, context, options)
+        Self::new_with_proto(cx, global, None, context, options)
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<DomRoot<AudioBufferSourceNode>> {
-        let node = AudioBufferSourceNode::new_inherited(cx, window, context, options)?;
+        let node = AudioBufferSourceNode::new_inherited(cx, global, context, options)?;
         Ok(reflect_dom_object_with_proto(
             cx,
             Box::new(node),
-            window,
+            global,
             proto,
         ))
     }
@@ -134,12 +134,12 @@ impl AudioBufferSourceNodeMethods<crate::DomTypeHolder> for AudioBufferSourceNod
     /// <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-audiobuffersourcenode>
     fn Constructor(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &AudioBufferSourceOptions,
     ) -> Fallible<DomRoot<AudioBufferSourceNode>> {
-        AudioBufferSourceNode::new_with_proto(cx, window, proto, context, options)
+        AudioBufferSourceNode::new_with_proto(cx, global, proto, context, options)
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audiobuffersourcenode-buffer>

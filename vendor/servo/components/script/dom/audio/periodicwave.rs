@@ -17,7 +17,7 @@ use crate::dom::audio::baseaudiocontext::BaseAudioContext;
 use crate::dom::bindings::codegen::Bindings::PeriodicWaveBinding::PeriodicWaveOptions;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::window::Window;
+use crate::dom::globalscope::GlobalScope;
 
 #[dom_struct]
 pub(crate) struct PeriodicWave {
@@ -35,7 +35,7 @@ impl PeriodicWaveMethods<crate::DomTypeHolder> for PeriodicWave {
     /// <https://webaudio.github.io/web-audio-api/#dom-periodicwave-periodicwave>
     fn Constructor(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         proto: Option<HandleObject>,
         context: &BaseAudioContext,
         options: &PeriodicWaveOptions,
@@ -112,7 +112,7 @@ impl PeriodicWaveMethods<crate::DomTypeHolder> for PeriodicWave {
                 // the PeriodicWaveConstraints on the PeriodicWaveOptions
                 normalize: !options.parent.disableNormalization,
             }),
-            window,
+            global,
             proto,
         ))
     }

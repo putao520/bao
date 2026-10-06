@@ -202,9 +202,25 @@ pub struct PipelineNamespace {
 
 impl PipelineNamespace {
     /// Install a namespace for a given Id.
+    ///
+    /// BAO PATCH (BCE-20260627-009): Idempotent — if the TLS slot is already
+    /// populated (multiplex BaoRuntime instances), skip silently instead of
+    /// panicking. `Servo::new` (servo.rs:902) always calls this; concurrent
+    /// BaoRuntime instances would hit the `assert!(tls.get().is_none())` and
+    /// SIGABRT on the second init.
+    ///
+    /// Original servo: single-instance architecture — the assert guards against
+    /// accidental double-install in the same process. Bao preserves that guard
+    /// for the FIRST install per-thread, but allows subsequent install() calls
+    /// (from the SECOND BaoRuntime::new → Servo::new on the same thread) to be
+    /// no-ops.
     pub fn install(namespace_id: PipelineNamespaceId) {
         PIPELINE_NAMESPACE.with(|tls| {
-            assert!(tls.get().is_none());
+            if tls.get().is_some() {
+                // Already installed on this thread — idempotent skip for
+                // multi-BaoRuntime support.
+                return;
+            }
             tls.set(Some(PipelineNamespace {
                 id: namespace_id,
                 index: 0,

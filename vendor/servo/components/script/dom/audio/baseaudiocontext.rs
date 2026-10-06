@@ -390,7 +390,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
     fn CreateOscillator(&self, cx: &mut JSContext) -> Fallible<DomRoot<OscillatorNode>> {
         OscillatorNode::new(
             cx,
-            self.global().as_window(),
+            &self.global(),
             self,
             &OscillatorOptions::empty(),
         )
@@ -398,7 +398,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
 
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-creategain>
     fn CreateGain(&self, cx: &mut JSContext) -> Fallible<DomRoot<GainNode>> {
-        GainNode::new(cx, self.global().as_window(), self, &GainOptions::empty())
+        GainNode::new(cx, &self.global(), self, &GainOptions::empty())
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createdelay>
@@ -444,7 +444,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
         options.real = Some(real);
         options.imag = Some(imag);
         options.parent = constraints_copy;
-        PeriodicWave::Constructor(cx, self.global().as_window(), None, self, &options)
+        PeriodicWave::Constructor(cx, &self.global(), None, self, &options)
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createanalyser>
@@ -526,7 +526,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
         }
         Ok(AudioBuffer::new(
             cx,
-            self.global().as_window(),
+            &self.global(),
             number_of_channels,
             length,
             *sample_rate,
@@ -538,7 +538,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
     fn CreateBufferSource(&self, cx: &mut JSContext) -> Fallible<DomRoot<AudioBufferSourceNode>> {
         AudioBufferSourceNode::new(
             cx,
-            self.global().as_window(),
+            &self.global(),
             self,
             &AudioBufferSourceOptions::empty(),
         )
@@ -643,7 +643,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                         };
                         let buffer = AudioBuffer::new(
                             cx,
-                            this.global().as_window(),
+                            &this.global(),
                             decoded_audio.len() as u32 /* number of channels */,
                             length as u32,
                             this.sample_rate,

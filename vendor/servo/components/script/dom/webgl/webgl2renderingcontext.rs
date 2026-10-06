@@ -46,6 +46,7 @@ use crate::dom::bindings::codegen::UnionTypes::{
 use crate::dom::bindings::error::{ErrorResult, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
 #[cfg(feature = "webxr")]
@@ -133,15 +134,30 @@ struct ReadPixelsSizes {
 }
 
 impl WebGL2RenderingContext {
+    /// (Bao) Decoupled from `&Window` (REQ-BRW-004 C14): the base context is
+    /// created through the Window entry (fires `webglcontextcreationerror`) or
+    /// the worker entry (inherits the parent `Window` WebGL channel), mirroring
+    /// the W3a WebGL1 dispatch.
     fn new_inherited(
         cx: &mut JSContext,
-        window: &Window,
+        global: &GlobalScope,
         canvas: &RootedHTMLCanvasElementOrOffscreenCanvas,
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<WebGL2RenderingContext> {
-        let base =
-            WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?;
+        let base = match global.downcast::<Window>() {
+            Some(window) => {
+                WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?
+            },
+            None => WebGLRenderingContext::new_in_worker(
+                cx,
+                global,
+                canvas,
+                WebGLVersion::WebGL2,
+                size,
+                attrs,
+            )?,
+        };
 
         let samplers = (0..base.limits().max_combined_texture_image_units)
             .map(|_| Default::default())
@@ -188,8 +204,24 @@ impl WebGL2RenderingContext {
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        WebGL2RenderingContext::new_inherited(cx, window, canvas, size, attrs)
+        WebGL2RenderingContext::new_inherited(cx, window.upcast::<GlobalScope>(), canvas, size, attrs)
             .map(|ctx| reflect_dom_object_with_cx(Box::new(ctx), window, cx))
+    }
+
+    /// (Bao) Worker-realm entry point for OffscreenCanvas WebGL2 contexts: the
+    /// worker inherits the parent `Window`'s WebGL channel (REQ-BRW-004 C14).
+    /// Unlike the `Window` path there is no `webglcontextcreationerror` event
+    /// surface here, so failures are logged and surfaced as `null` (same shape
+    /// as the W3a WebGL1 `new_in_worker`).
+    pub(crate) fn new_in_worker(
+        cx: &mut js::context::JSContext,
+        global: &GlobalScope,
+        canvas: &RootedHTMLCanvasElementOrOffscreenCanvas,
+        size: Size2D<u32>,
+        attrs: GLContextAttributes,
+    ) -> Option<DomRoot<WebGL2RenderingContext>> {
+        WebGL2RenderingContext::new_inherited(cx, global, canvas, size, attrs)
+            .map(|ctx| reflect_dom_object_with_cx(Box::new(ctx), global, cx))
     }
 
     pub(crate) fn set_image_key(&self, image_key: ImageKey) {

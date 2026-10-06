@@ -28,6 +28,8 @@ use crate::dom::bindings::codegen::Bindings::BiquadFilterNodeBinding::{
 };
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::inheritance::Castable;
+use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -65,7 +67,7 @@ impl BiquadFilterNode {
         // <https://webaudio.github.io/web-audio-api/#dom-biquadfilternode-gain>
         let gain = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             node.node_id(),
             AudioNodeType::BiquadFilterNode,
@@ -78,7 +80,7 @@ impl BiquadFilterNode {
         // <https://webaudio.github.io/web-audio-api/#dom-biquadfilternode-q>
         let q = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             node.node_id(),
             AudioNodeType::BiquadFilterNode,
@@ -92,7 +94,7 @@ impl BiquadFilterNode {
         // <https://webaudio.github.io/web-audio-api/#dom-biquadfilternode-frequency>
         let frequency = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             node.node_id(),
             AudioNodeType::BiquadFilterNode,
@@ -106,7 +108,7 @@ impl BiquadFilterNode {
         // <https://webaudio.github.io/web-audio-api/#dom-biquadfilternode-detune>
         let detune = AudioParam::new(
             cx,
-            window,
+            window.upcast::<GlobalScope>(),
             context,
             node.node_id(),
             AudioNodeType::BiquadFilterNode,
