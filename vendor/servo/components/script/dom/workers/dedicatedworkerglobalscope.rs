@@ -585,6 +585,59 @@ impl DedicatedWorkerGlobalScope {
                 }
                 let scope = global.upcast::<WorkerGlobalScope>();
                 let global_scope = global.upcast::<GlobalScope>();
+                // Bao vendor patch (DEC-WK-001 / TASK-1): drain embedder Worker scope
+                // callbacks so Bao can inject stealth profile + lifecycle hooks on the
+                // Worker thread (per BCE-20260621-001: DOM-Node interop must happen on
+                // the owning thread; mirrors the script-thread
+                // `drain_embedder_callbacks`).
+                // Use case (Bao): install stealth profile inheritance (DEC-WK-007),
+                // register WorkerHandle + WorkerChannelBridge (DF-WK-1), hook
+                // self.close()/importScripts natives.
+                // BAO PATCH (BCE-20260627-009): NOTE - realm entry for embedder
+                // callbacks is handled INSIDE the callback (worker_scope_init_native)
+                // because the worker thread's cx starts in the null realm (oldRealm=0x0)
+                // and LeaveRealm with a freed startingRealm pointer segfaults. The
+                // callback owns its own realm lifecycle.
+                // @trace DEC-WK-001 servo-native Worker path (vendor patch)
+                // @trace REQ-BRW-004 [criterion:1,3,7] Worker thread owns Runtime/JSContext
+                // BAO PATCH (per-worker association): drain only the callbacks
+                // registered for THIS Worker's webview, so page-JS `new Worker()`
+                // can never consume another page's queued callback
+                // (cross-page stealth-profile crosstalk).
+                for callback in
+                    crate::event_loop::script_thread::drain_worker_scope_callbacks(webview_id)
+                {
+                    unsafe {
+                        callback(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope)
+                                .get_jsobject()
+                                .get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
+                // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                // patch): per-Worker injector delivery — the one-shot drain
+                // above is consumed by the FIRST Worker of this webview, so
+                // without this loop the SECOND and later `new Worker()` in
+                // the same page received zero embedder injection (bare,
+                // fingerprintable Worker). The injector tier is
+                // NON-consuming: every Dedicated Worker scope this webview
+                // creates receives a delivery. Runs after the one-shot
+                // callbacks; the embedder's install is idempotent, so the
+                // first Worker's double run (one-shot + injector) is safe.
+                for injector in
+                    crate::event_loop::script_thread::worker_scope_injectors(webview_id)
+                {
+                    unsafe {
+                        injector(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope)
+                                .get_jsobject()
+                                .get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
 
                 // Step 12. Obtain script by switching on options["type"]:
                 {

@@ -532,6 +532,73 @@ impl SharedWorkerGlobalScope {
                 // It is intentionally unused because its Drop unregisters the worker.
                 let _registration_cleanup = SharedWorkerRegistrationCleanup { registration_id };
 
+                // Bao vendor patch (REQ-BRW-004 [criterion:12..17]): drain embedder
+                // Worker scope callbacks keyed to this SharedWorker's owning webview,
+                // so the SharedWorker realm inherits the page's stealth profile on the
+                // worker thread (a bare SharedWorker realm is itself a detection
+                // vector, so enablement and drain land together).
+                //
+                // Placement: after the constructor handshake (setup /
+                // registration) — past this point the scope is live and will
+                // fetch its script — and before the script fetch, so the
+                // injection precedes any worker script. The consume-once
+                // scope queue is drained here rather than before the
+                // handshake so a handshake failure (parent hung up →
+                // clear_js_runtime) cannot burn the page's queued callback on
+                // a scope that never runs.
+                //
+                // The interfaces-ready phase needs NO new site here: the
+                // SharedWorker script load goes through
+                // `ScriptFetchContext`/`on_complete`
+                // (classic via `fetch_a_classic_worker_script`, module via the
+                // `worker_scope.on_complete` callback below), which already
+                // drains the interfaces-ready tiers keyed by
+                // `GlobalScope::webview_id()` — and that accessor already
+                // resolves this scope. (The ServiceWorker path was different:
+                // it never reaches `on_complete`, hence its own post-define
+                // delivery.)
+                //
+                // BAO PATCH (BCE-20260627-009): realm entry for embedder
+                // callbacks is handled INSIDE the callback
+                // (worker_scope_init_native) because this thread's cx starts
+                // in the null realm; the callback owns its own realm
+                // lifecycle.
+                // @trace REQ-BRW-004 [criterion:12..17] SharedWorker stealth inheritance
+                for callback in
+                    crate::event_loop::script_thread::drain_worker_scope_callbacks(webview_id)
+                {
+                    unsafe {
+                        callback(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope)
+                                .get_jsobject()
+                                .get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
+                // BAO PATCH (REQ-BRW-004, user ruling 2026-09-09 vendor
+                // patch): per-Worker injector delivery — the one-shot drain
+                // above is consume-once, so a Dedicated Worker created by the
+                // same page before this SharedWorker would have emptied it.
+                // The injector tier is NON-consuming: every worker scope this
+                // webview creates — Dedicated, SharedWorker AND
+                // ServiceWorker — receives a delivery. Runs after the
+                // one-shot callbacks; the embedder's install is idempotent
+                // (define_permanent_getter "prior install" arm), so the
+                // double run is safe.
+                for injector in
+                    crate::event_loop::script_thread::worker_scope_injectors(webview_id)
+                {
+                    unsafe {
+                        injector(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            script_bindings::reflector::DomObject::reflector(global_scope)
+                                .get_jsobject()
+                                .get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
+
                 // Step 11. Let destination be "sharedworker" if is shared is true, and
                 // "worker" otherwise.
                 // Step 12. Obtain script by switching on options["type"]:
