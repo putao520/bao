@@ -67,7 +67,7 @@ impl StealthHooks {
             timing_js: Self::build_timing_js(timing),
             clientrects_js: Self::build_clientrects_js(clientrects),
             screen_display_js: Self::build_screen_display_js(screen_display),
-            plugin_js: Self::build_plugin_js(plugin),
+            plugin_js: Self::build_plugin_js(plugin, navigator),
             speech_js: Self::build_speech_js(speech),
             media_devices_js: Self::build_media_devices_js(media_devices),
             permissions_js: Self::build_permissions_js(permissions),
@@ -749,7 +749,18 @@ impl StealthHooks {
 
     // ── Plugin/MimeType spoofing ────────────────────────────────
 
-    fn build_plugin_js(config: &PluginConfig) -> String {
+    /// Chrome page-surface spoof segment: navigator.plugins / navigator.mimeTypes
+    /// PLUS the `window.chrome` object (e130, REQ-BRW-002 rendering-face API gap
+    /// closure). The two belong to one segment on purpose: they are the same
+    /// "Chrome-specific page surface" family, and the fingerprint evaluation
+    /// carrier (fingerprint_website_eval_e2e) consumes exactly this one
+    /// StealthHooks segment for its new-document payload, so the chrome object
+    /// must ride in the same bytes. The chrome section is build-time UA-gated
+    /// (`navigator.user_agent` contains "Chrome"): real Firefox exposes NO
+    /// window.chrome, so its presence under a Firefox UA is itself a detection
+    /// signal (constitution: per-cell indistinguishability with the browser the
+    /// UA claims).
+    fn build_plugin_js(config: &PluginConfig, navigator_profile: &NavigatorProfile) -> String {
         let plugins_json = serde_json::to_string(&config.plugins).unwrap_or_else(|_| "[]".into());
         let mime_types_json =
             serde_json::to_string(&config.mime_types).unwrap_or_else(|_| "[]".into());
@@ -757,6 +768,8 @@ impl StealthHooks {
         // inconsistency where navigator.plugins.length reports fewer items than are
         // actually accessible by index.
         let plugin_count = config.plugin_count.min(config.plugins.len() as u32);
+        // Chrome-family UA gate for the window.chrome section (see doc above).
+        let chrome_surface = navigator_profile.user_agent.contains("Chrome");
 
         // e124 rewrite (battery-red root cause): the previous payload returned a
         // PLAIN ARRAY for navigator.plugins and then ran
@@ -883,12 +896,66 @@ impl StealthHooks {
       configurable: true
     }});
   }}
+{chrome_section}
 }})();"#,
             plugin_count = plugin_count,
             plugins = plugins_json,
             mime_types = mime_types_json,
+            chrome_section = if chrome_surface { Self::CHROME_SURFACE_JS.trim() } else { "" },
         )
     }
+
+    /// `window.chrome` spoof — real desktop Chrome shape (own enumerable data
+    /// property of Window carrying app / runtime / loadTimes / csi). Its own
+    /// realm guards make it inert outside page realms (real Chrome workers
+    /// have no window.chrome either) and idempotent across re-injections.
+    const CHROME_SURFACE_JS: &str = r#"
+  // window.chrome (e130): bot.sannysoft.com's "Chrome (New)" row fails on
+  // plain absence; deeper probes (creepjs et al.) compare the member set, so
+  // a bare {} is not enough — mirror the documented vanilla-page shape.
+  if (typeof window !== 'undefined' && typeof Plugin !== 'undefined' && typeof MimeType !== 'undefined'
+      && !(typeof window.chrome !== 'undefined' && window.chrome)) {
+    function baoChromeLoadTimes() {
+      var t = (typeof performance !== 'undefined' && performance.timing) ? performance.timing : null;
+      var base = (t && t.fetchStart) ? (t.fetchStart / 1000) : (Date.now() / 1000);
+      return {
+        requestTime: base,
+        startLoadTime: base,
+        commitLoadTime: base + 0.048,
+        finishDocumentLoadTime: base + 0.212,
+        finishLoadTime: base + 0.247,
+        firstPaintTime: base + 0.156,
+        firstPaintAfterLoadTime: 0,
+        navigationType: 'Other',
+        wasFetchedViaSpdy: true,
+        wasNpnNegotiated: true,
+        npnNegotiatedProtocol: 'h2',
+        wasAlternateProtocolAvailable: false,
+        connectionInfo: 'h2'
+      };
+    }
+    var baoChrome = {
+      app: {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+        getDetails: function() { return null; },
+        getIsInstalled: function() { return false; },
+        installState: function(callback) { if (typeof callback === 'function') { callback('not_installed'); } }
+      },
+      runtime: {},
+      csi: function() {
+        var t = (typeof performance !== 'undefined' && performance.timing) ? performance.timing : null;
+        var start = (t && t.navigationStart) ? t.navigationStart : 0;
+        var onload = (t && t.loadEventEnd) ? t.loadEventEnd : 0;
+        return { startE: start, onloadE: onload, pageT: Math.max(0, onload - start) / 1000, tran: 15 };
+      },
+      loadTimes: baoChromeLoadTimes
+    };
+    try {
+      Object.defineProperty(window, 'chrome', { value: baoChrome, writable: true, enumerable: true, configurable: false });
+    } catch (e) {}
+  }"#;
 
     // ── SpeechSynthesis voices ───────────────────────────────────
 
@@ -1017,44 +1084,29 @@ impl StealthHooks {
     }
 
     // ── Permissions API ──────────────────────────────────────────
+    //
+    // RETIRED (e130, REQ-BRW-002 rendering-face API gap closure): this JS
+    // wrapper around `navigator.permissions.query` predates servo shipping
+    // the Permissions API — while the API was absent the wrapper was a
+    // structural no-op (its `navigator.permissions && navigator.permissions.query`
+    // guard never fired). The servo vendor tree ships the full native
+    // implementation (`dom/permission/`, `dom_permissions_enabled` pref —
+    // flipped on at the bao embedder surface, src/bao_browser/src/lib.rs):
+    // `query()` resolves a REAL PermissionStatus DOM object (EventTarget
+    // interface, spec-shaped `state`), and states follow the spec defaults
+    // ("prompt" on secure contexts — Chrome's default posture). Re-activating
+    // the JS wrapper in the realms where combined_js is evaluated
+    // (page-creation installs + worker scopes) would REPLACE that native
+    // surface with a plain object whose promises fail
+    // `instanceof PermissionStatus`, and would leave navigated pages (which
+    // never see combined_js) on the native path — a cross-path inconsistency
+    // between realms of the same browser, the same defect class that retired
+    // the canvas read-out JS hooks (user ruling 2026-09-09, BRW-004 C13).
+    // The PermissionsConfig stays on the profile surface (frozen plumbing —
+    // from_profile signature unchanged); only the hook payload is empty.
 
-    fn build_permissions_js(config: &PermissionsConfig) -> String {
-        if !config.enabled {
-            return String::new();
-        }
-        let states_json: Vec<String> = config
-            .states
-            .iter()
-            .map(|(k, v)| format!("'{}': '{}'", k, v))
-            .collect();
-        let states_map = states_json.join(", ");
-
-        format!(
-            r#"(function() {{
-  var PERMISSION_STATES = {{{states_map}}};
-
-  if (typeof navigator !== 'undefined' && navigator.permissions && navigator.permissions.query) {{
-    var origQuery = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = function(desc) {{
-      var name = (typeof desc === 'object' && desc !== null) ? desc.name : desc;
-      if (name && PERMISSION_STATES.hasOwnProperty(name)) {{
-        var state = PERMISSION_STATES[name];
-        return Promise.resolve({{
-          state: state,
-          status: state,
-          name: name,
-          onchange: null,
-          addEventListener: function() {{}},
-          removeEventListener: function() {{}},
-          dispatchEvent: function() {{ return true; }}
-        }});
-      }}
-      return origQuery(desc);
-    }};
-  }}
-}})();"#,
-            states_map = states_map,
-        )
+    fn build_permissions_js(_config: &PermissionsConfig) -> String {
+        String::new()
     }
 
     // ── WebGL context attributes ─────────────────────────────────
@@ -1609,9 +1661,13 @@ mod tests {
             combined.contains("enumerateDevices"),
             "combined JS must contain media devices hooks"
         );
+        // e130: the permissions JS wrapper is RETIRED — servo's native
+        // Permissions API (dom_permissions_enabled, flipped at the bao
+        // embedder surface) owns the query() surface with a real
+        // PermissionStatus. The wrapper's assignment must stay gone.
         assert!(
-            combined.contains("permissions.query"),
-            "combined JS must contain permissions hooks"
+            !combined.contains("navigator.permissions.query ="),
+            "combined JS must NOT wrap the native navigator.permissions.query (e130 retirement)"
         );
         assert!(
             combined.contains("getContextAttributes"),
@@ -1624,6 +1680,70 @@ mod tests {
         assert!(
             combined.contains("contentWindow"),
             "combined JS must contain iframe hooks"
+        );
+        // e130: the Chrome page-surface spoof (plugins + window.chrome) rides
+        // in the plugin segment; this test's profile is FIREFOX, so the
+        // window.chrome section must be build-time gated OUT (real Firefox
+        // exposes none).
+        assert!(
+            !combined.contains("Object.defineProperty(window, 'chrome'"),
+            "combined JS (firefox profile) must NOT define window.chrome"
+        );
+    }
+
+    // ── e130: window.chrome page-surface spoof ──────────────────────
+
+    #[test]
+    fn chrome_profile_plugin_js_carries_window_chrome() {
+        let hooks = chrome_hooks();
+        let js = hooks.plugin_js();
+        assert!(
+            js.contains("Object.defineProperty(window, 'chrome'"),
+            "chrome-profile plugin payload must define window.chrome (sannysoft Chrome row)"
+        );
+        // Real desktop Chrome shape: app / runtime / loadTimes / csi members.
+        for member in ["app:", "runtime:", "csi:", "loadTimes"] {
+            assert!(
+                js.contains(member),
+                "window.chrome spoof must carry the {} member (real Chrome shape)",
+                member
+            );
+        }
+        assert!(
+            js.contains("installState"),
+            "window.chrome.app must carry installState (documented vanilla-page shape)"
+        );
+        // Worker-safety: the section must be inert outside page realms (real
+        // Chrome workers have no window.chrome) — internal window guard.
+        assert!(
+            js.contains("typeof window !== 'undefined'"),
+            "window.chrome section must guard on typeof window (worker realms)"
+        );
+    }
+
+    #[test]
+    fn firefox_profile_plugin_js_has_no_window_chrome() {
+        let hooks = firefox_hooks();
+        let js = hooks.plugin_js();
+        assert!(
+            !js.contains("Object.defineProperty(window, 'chrome'"),
+            "firefox-profile plugin payload must NOT define window.chrome — real Firefox \
+             exposes none, presence under a Firefox UA is itself a detection signal"
+        );
+    }
+
+    #[test]
+    fn permissions_js_retired_empty() {
+        // e130: the JS wrapper around navigator.permissions.query is retired —
+        // servo's native Permissions API (real PermissionStatus objects) owns
+        // the surface. Both profiles must produce an empty payload.
+        assert!(
+            chrome_hooks().permissions_js().is_empty(),
+            "permissions_js must be retired (empty) for the chrome profile"
+        );
+        assert!(
+            firefox_hooks().permissions_js().is_empty(),
+            "permissions_js must be retired (empty) for the firefox profile"
         );
     }
 

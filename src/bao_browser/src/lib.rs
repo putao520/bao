@@ -304,6 +304,40 @@ impl BrowserRuntime {
         // global is itself a fingerprint signal (detection pages probe for
         // its presence). Same six-flip precedent as the five above.
         preferences.dom_intersection_observer_enabled = true;
+        // `dom_permissions_enabled` defaults to false upstream; the vendor
+        // Permissions implementation is REAL (`script/dom/permission/` —
+        // Permissions.query/request/revoke resolving spec-shaped
+        // PermissionStatus DOM objects with EventTarget + onchange, exposed
+        // on Navigator AND WorkerNavigator via the webidl `[Pref=]` gate),
+        // and the pref is the only thing keeping `navigator.permissions`
+        // off the globals. Real Chrome ships the Permissions API on every
+        // page; its absence is itself a fingerprint signal —
+        // bot.sannysoft.com's "Permissions" row
+        // (`navigator.permissions.query({name:'notifications'})`) fails on
+        // the missing API alone (e124 residual: permissions-result:F).
+        // Query semantics after the flip follow the spec defaults and
+        // Chrome's posture: "prompt" on secure contexts (nothing granted),
+        // "denied" on non-secure contexts. Same flip precedent as the six
+        // above. REQ-BRW-002 rendering-face API gap closure (e130).
+        preferences.dom_permissions_enabled = true;
+        // `dom_notification_enabled` defaults to false upstream; the vendor
+        // Notification implementation is REAL
+        // (`script/dom/serviceworker/notification.rs` — constructor with
+        // spec validation, static `permission` getter, requestPermission
+        // with the deprecated-callback promise shape, full attribute
+        // surface), pref-gated in Notification.webidl only. The
+        // sannysoft Permissions row is a TWO-API probe: it reads
+        // `Notification.permission` right beside
+        // `navigator.permissions.query(...)` — with `Notification`
+        // undefined the whole async probe throws and the row never colors
+        // green. After the flip `Notification.permission` reports "default"
+        // (the notifications permission state is "prompt" on secure
+        // contexts — desktop Chrome's default posture), which does NOT
+        // match the headless-Chrome signature the row actually hunts
+        // (`Notification.permission === 'denied' && query.state ===
+        // 'prompt'`). Same flip precedent as the seven above.
+        // REQ-BRW-002 rendering-face API gap closure (e130).
+        preferences.dom_notification_enabled = true;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls
