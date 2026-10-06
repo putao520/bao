@@ -341,6 +341,11 @@ struct us_socket_t {
    * inside a handshake callback must still RST, not FIN, when it is finally
    * performed). */
   unsigned char ssl_pending_close_code;
+  /* (upstream 77ec53a40e) us_socket_set_first_flight_before_fin: the first
+   * handshake step is still due, and a shutdown waits for it. */
+  unsigned char ssl_first_flight_before_fin : 1;
+  /* (upstream 77ec53a40e) us_internal_ssl_shutdown held its FIN back for that step. */
+  unsigned char ssl_shutdown_after_first_flight : 1;
   /* Consecutive send() failures with an errno that is neither
    * would-block/transient nor a known peer-gone error (see
    * us_socket_write_check_error). Reset by any send that makes progress.
@@ -359,6 +364,15 @@ struct us_socket_t {
 #if defined(LIBUS_USE_EPOLL) || defined(LIBUS_USE_KQUEUE)
 _Static_assert(sizeof(struct us_socket_flags) == 1, "us_socket_flags grew");
 #endif
+
+/* (upstream a11362e365) Whether a raw write can send: the fd is open and no
+ * FIN went out. Gates the raw writes, the raw shutdown and the two
+ * sealed-after-our-own-FIN drops in openssl.c — records sealed after our FIN
+ * can never reach the peer, and parking them as a spill would hold the loop's
+ * one spill slot forever (us_internal_ssl_close waits for it). */
+static inline int us_internal_socket_can_raw_write(struct us_socket_t *s) {
+  return !s->flags.is_closed && us_internal_poll_type(&s->p) != POLL_TYPE_SOCKET_SHUT_DOWN;
+}
 
 /* us_socket_adopt relocates a socket whose ext grows and retires the old block
  * (is_closed + adopted, prev -> replacement; freed by the outermost tick's

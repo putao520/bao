@@ -391,6 +391,9 @@ struct us_socket_t *us_socket_tls_feed(us_socket_r s, const char *data, int leng
 /* Send ClientHello after adopt_tls. Separate so the caller can repoint the
  * ext slot before any dispatch can fire. */
 void us_socket_start_tls_handshake(us_socket_r s) nonnull_fn_decl;
+/* (upstream 77ec53a40e) Call it from on_open. A shutdown before the first
+ * handshake step sends its FIN after that step. */
+void us_socket_set_first_flight_before_fin(us_socket_r s) nonnull_fn_decl;
 
 /* ── Listen ───────────────────────────────────────────────────────────────
  * The listener owns: an embedded group for accepted sockets, the SSL_CTX

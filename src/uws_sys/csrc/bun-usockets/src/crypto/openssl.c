@@ -734,6 +734,11 @@ static int BIO_s_custom_write(BIO *bio, const char *data, int length) {
 
   BIO_clear_retry_flags(bio);
   if (!written) {
+    if (!us_internal_socket_can_raw_write(loop_ssl_data->ssl_socket)) {
+      /* (upstream a11362e365) Sealed after our FIN, so it can never leave. A
+       * retry would wait for a writable event that never comes. */
+      return length;
+    }
     BIO_set_retry_write(bio);
     return -1;
   }
@@ -760,6 +765,12 @@ static int ssl_flush_write_batch(struct loop_ssl_data *loop_ssl_data, struct us_
   if (written < 0) written = 0;
   if ((unsigned int)written < len) {
     unsigned int remainder = len - (unsigned int)written;
+    if (!us_internal_socket_can_raw_write(s)) {
+      /* (upstream a11362e365) Sealed after our FIN, so it can never leave. A
+       * spill would hold the loop's one spill slot, and us_internal_ssl_close
+       * would wait for it. */
+      return 0;
+    }
     if (loop_ssl_data->ssl_spill_owner) {
       /* The spill slot is already another socket's (a re-entrant JS region
        * produced one between the entry-time gate and this flush).
@@ -1782,6 +1793,14 @@ int us_socket_alpn_is_h2(struct us_socket_t *s) {
   return len == 2 && proto[0] == 'h' && proto[1] == '2';
 }
 
+/* (upstream 77ec53a40e) Mark that the first handshake step is still due, so
+ * a shutdown before it sends its FIN after that step. Call it from on_open,
+ * before the handshake is driven; no-op otherwise (the flag is consumed by
+ * the kick in us_internal_ssl_on_open). */
+void us_socket_set_first_flight_before_fin(struct us_socket_t *s) {
+  s->ssl_first_flight_before_fin = 1;
+}
+
 /* ── Per-socket SSL attach/detach ────────────────────────────────────────── */
 
 void us_internal_ssl_attach(struct us_socket_t *s, SSL_CTX *ctx,
@@ -1858,6 +1877,8 @@ void us_internal_ssl_attach(struct us_socket_t *s, SSL_CTX *ctx,
   s->ssl_in_use = 0;
   s->ssl_pending_detach = 0;
   s->ssl_pending_close_code = 0;
+  s->ssl_first_flight_before_fin = 0;
+  s->ssl_shutdown_after_first_flight = 0;
   s->ssl_is_server = is_client ? 0 : 1;
 }
 
@@ -2363,6 +2384,15 @@ struct us_socket_t *us_internal_ssl_on_open(struct us_socket_t *s, int is_client
   /* Kick the handshake immediately — some peers stall waiting for ClientHello. */
   ssl_set_loop_data(result);
   ssl_update_handshake(result, 1);
+  /* (upstream 77ec53a40e) The first handshake step has now gone out: consume
+   * a shutdown an on_open listener deferred behind it, so its FIN follows the
+   * ClientHello instead of beating it (node sends the ClientHello first). */
+  if (ssl_gone(result)) return result;
+  result->ssl_first_flight_before_fin = 0;
+  if (result->ssl_shutdown_after_first_flight) {
+    result->ssl_shutdown_after_first_flight = 0;
+    us_internal_ssl_shutdown(result);
+  }
   return result;
 }
 
@@ -2941,6 +2971,12 @@ int us_internal_ssl_write(struct us_socket_t *s, const char *data, int length) {
 
 void us_internal_ssl_shutdown(struct us_socket_t *s) {
   if (us_socket_is_closed(s) || us_internal_ssl_is_shut_down(s)) return;
+  /* (upstream 77ec53a40e) The first handshake step is still due — hold the
+   * FIN back until it has gone out (consumed in us_internal_ssl_on_open). */
+  if (s->ssl_first_flight_before_fin) {
+    s->ssl_shutdown_after_first_flight = 1;
+    return;
+  }
 
   /* Spilled ciphertext is data the layers above already count as written;
    * a FIN/close_notify now would cut it off. Finish the shutdown from the

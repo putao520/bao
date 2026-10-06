@@ -296,6 +296,12 @@ impl us_socket_t {
         c::us_socket_start_tls_handshake(self);
     }
 
+    /// (upstream 77ec53a40e) A shutdown before the first handshake step sends
+    /// its FIN after that step.
+    pub fn set_first_flight_before_fin(&mut self) {
+        c::us_socket_set_first_flight_before_fin(self);
+    }
+
     /// Tee inbound ciphertext to `us_dispatch_ssl_raw_tap` before `SSL_read`
     /// consumes it, so the `[raw, tls]` pair from `upgradeTLS` can surface
     /// encrypted bytes to the original net.Socket `data` listener.
@@ -536,6 +542,7 @@ mod c {
             ext_size: i32,
         ) -> *mut us_socket_t;
         pub(super) safe fn us_socket_start_tls_handshake(s: &mut us_socket_t);
+        pub(super) safe fn us_socket_set_first_flight_before_fin(s: &mut us_socket_t);
     }
 }
 

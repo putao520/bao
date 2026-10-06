@@ -506,6 +506,15 @@ impl<const IS_SSL: bool> NewSocketHandler<IS_SSL> {
         }
     }
 
+    /// (upstream 77ec53a40e) A shutdown before the first handshake step sends
+    /// its FIN after that step. Call from on_open, before the handshake is
+    /// driven; no-op otherwise.
+    pub fn set_first_flight_before_fin(&self) {
+        if let InternalSocket::Connected(s) = self.socket {
+            sock(s).set_first_flight_before_fin();
+        }
+    }
+
     /// `SSL*` if this is a TLS socket, else `None`.
     #[inline]
     pub fn ssl(&self) -> Option<*mut bun_boringssl_sys::SSL> {

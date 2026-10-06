@@ -85,6 +85,8 @@ void *us_internal_ssl_sni_userdata(struct us_socket_t *s) {
 
 void us_socket_start_tls_handshake(struct us_socket_t *s) { (void)s; }
 
+void us_socket_set_first_flight_before_fin(struct us_socket_t *s) { (void)s; }
+
 struct us_bun_verify_error_t us_socket_verify_error(struct us_socket_t *s) {
     (void)s;
     struct us_bun_verify_error_t err = {0, NULL, NULL};
