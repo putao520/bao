@@ -21,6 +21,7 @@ use servo_constellation_traits::{
 use servo_url::{ImmutableOrigin, ServoUrl};
 use stylo_atoms::Atom;
 
+use crate::dom::bindings::codegen::Bindings::ServiceWorkerBinding::ServiceWorkerState;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerContainerBinding::{
     RegistrationOptions, ServiceWorkerContainerMethods,
 };
@@ -428,6 +429,33 @@ impl ServiceWorkerContainer {
 
     fn handle_algorithm_result(&self, cx: &mut JSContext, result: ServiceWorkerAlgorithmResult) {
         match result {
+            // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update
+            // Registration State relay — the manager set the installing worker
+            // on this registration. Fire "updatefound" on the client's
+            // ServiceWorkerRegistration object. Delivered as its own FIFO
+            // message AFTER the register promise's resolve message, so the
+            // registering page's promise handler (which attaches the
+            // updatefound listener) has already run. Must not consume a
+            // pending job promise.
+            ServiceWorkerAlgorithmResult::UpdateFound { registration_id } => {
+                if let Some(registration) = self
+                    .global()
+                    .get_serviceworker_registration_by_id(registration_id)
+                {
+                    registration.upcast().fire_event(cx, atom!("updatefound"));
+                }
+            },
+            // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update
+            // Worker State relay — the worker thread reported script
+            // evaluation + activate dispatch complete. Transition the DOM
+            // ServiceWorker object to "activated" and fire "statechange"
+            // (workers were observably stuck at "installing" forever before
+            // this relay existed). Must not consume a pending job promise.
+            ServiceWorkerAlgorithmResult::WorkerActivated { worker_id } => {
+                if let Some(worker) = self.global().get_serviceworker_by_id(worker_id) {
+                    worker.update_state(cx, ServiceWorkerState::Activated);
+                }
+            },
             ServiceWorkerAlgorithmResult::Job(job_result) => {
                 let promise = match self.pending_algorithm_results.borrow_mut().pop_front() {
                     Some(PendingAlgorithmResultPromise::Job(promise)) => Some(promise.root(cx)),

@@ -82,6 +82,17 @@ impl ServiceWorker {
         service_worker.upcast().fire_event(cx, atom!("error"));
     }
 
+    /// BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04):
+    /// <https://w3c.github.io/ServiceWorker/#update-worker-state> — set the
+    /// state of the service worker and fire "statechange" on this
+    /// ServiceWorker object. Upstream never implemented the algorithm (the
+    /// `state` cell is written exactly once, at construction), so workers
+    /// were observably stuck at "installing" forever.
+    pub(crate) fn update_state(&self, cx: &mut JSContext, state: ServiceWorkerState) {
+        self.state.set(state);
+        self.upcast().fire_event(cx, atom!("statechange"));
+    }
+
     pub(crate) fn get_script_url(&self) -> ServoUrl {
         ServoUrl::parse(&self.script_url.borrow().clone()).unwrap()
     }

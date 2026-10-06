@@ -115,6 +115,18 @@ impl ServiceWorkerRegistration {
         *self.installing.borrow_mut() = Some(Dom::from_ref(worker));
     }
 
+    // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): waiting/active slot
+    // setters — companions of `set_installing` for the spec's
+    // Get-the-Service-Worker-Registration-Object steps 2.7/2.8 (upstream left
+    // both TODO).
+    pub(crate) fn set_waiting(&self, worker: &ServiceWorker) {
+        *self.waiting.borrow_mut() = Some(Dom::from_ref(worker));
+    }
+
+    pub(crate) fn set_active(&self, worker: &ServiceWorker) {
+        *self.active.borrow_mut() = Some(Dom::from_ref(worker));
+    }
+
     pub(crate) fn get_navigation_preload_header_value(&self) -> ByteString {
         self.navigation_preload_header_value.borrow().clone()
     }

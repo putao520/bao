@@ -445,6 +445,26 @@ impl ServiceWorkerManager {
                     self.handle_client_gone(client_url, client_pipeline);
                 },
             },
+            // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): relay the
+            // worker-thread-evidenced "script evaluated + activate dispatched"
+            // report to the registering client as Update Worker State →
+            // "activated". Reuses the algorithm-result channel (same as
+            // MessageFromWorker); the client's pending job-promise queue is
+            // not touched.
+            ServiceWorkerMsg::WorkerEvaluated { worker_id } => {
+                let owning_registration = self.registrations.values().find(|registration| {
+                    registration
+                        .get_newest_worker()
+                        .is_some_and(|worker| worker.id == worker_id)
+                });
+                if let Some(registration) = owning_registration {
+                    let _ = registration
+                        .client
+                        .send(ServiceWorkerAlgorithmResult::WorkerActivated { worker_id });
+                } else {
+                    warn!("No registration found for evaluated service worker.");
+                }
+            },
             ServiceWorkerMsg::Exit => return false,
         }
         true
@@ -843,6 +863,18 @@ impl ServiceWorkerManager {
         {
             warn!("Failed to send resolve job promise result to script.");
         }
+
+        // BAO PATCH (REQ-BRW-004 lifecycle wave, 2026-10-04): Update
+        // Registration State set the installing worker above (null → worker);
+        // the spec queues an "updatefound" event on the registration's
+        // ServiceWorkerRegistration objects at that point. Sent AFTER the
+        // resolve so the registering page's promise handler — which attaches
+        // its updatefound listener (wait_for_update in the WPT SW test
+        // helpers) — runs in the resolve task's microtasks first; the two
+        // callback deliveries are FIFO, so the event lands in a later task.
+        let _ = client.send(ServiceWorkerAlgorithmResult::UpdateFound {
+            registration_id: registration.id,
+        });
 
         // Step 21: Wait for all the tasks queued by Update Worker State invoked in this algorithm to have executed.
         // TODO: queue tasks above and wait for them to execute.
