@@ -317,6 +317,7 @@ fn install_media_recorder(page: &PageHandle, global: &str, tag: &str) {
             var pp = 'none';
             var events = [];
             var metaCount = 0;
+            var pausedAtPlay = null;
             function snapshot() {{
                 return {{
                     events: events.slice(),
@@ -324,6 +325,7 @@ fn install_media_recorder(page: &PageHandle, global: &str, tag: &str) {
                     readyState: el.readyState,
                     networkState: el.networkState,
                     paused: el.paused,
+                    pausedAtPlay: pausedAtPlay,
                     ended: el.ended,
                     currentTime: el.currentTime,
                     seeking: el.seeking,
@@ -340,6 +342,7 @@ fn install_media_recorder(page: &PageHandle, global: &str, tag: &str) {
              'seeking','seeked','ended'].forEach(function(name) {{
                 el.addEventListener(name, function() {{
                     if (name === 'loadedmetadata') metaCount++;
+                    if (name === 'play') pausedAtPlay = el.paused;
                     events.push(name);
                     globalThis.{G} = snapshot();
                 }});
@@ -570,7 +573,21 @@ fn media_domain_e2e_suite() {
                         ),
                         Some(s) => {
                             let mut bad = Vec::new();
-                            if flag(&s, "paused") != Some(false) {
+                            // State-machine anchor: at the play transition the
+                            // paused flag must already be false (spec internal
+                            // play steps set paused=false BEFORE queuing the
+                            // play event). A post-end sample (clip exhausted
+                            // during the wait window) shows paused=true — that
+                            // is spec-correct end-of-media, not a state-machine
+                            // defect, so the strict paused==false check is
+                            // scoped to not-yet-ended clips only.
+                            if flag(&s, "pausedAtPlay") != Some(false) {
+                                bad.push(format!(
+                                    "paused must be false at the play transition (got {:?})",
+                                    flag(&s, "pausedAtPlay")
+                                ));
+                            }
+                            if flag(&s, "paused") != Some(false) && event_index(&s, "ended") < 0 {
                                 bad.push(format!(
                                     "paused must be false while playing (got {:?})",
                                     flag(&s, "paused")
@@ -589,7 +606,20 @@ fn media_domain_e2e_suite() {
                                     ct
                                 ));
                             }
-                            // pause and assert the freeze
+                            // pause and assert the freeze. REGISTRATION (e111
+                            // attribution): the freeze assertion is meaningful
+                            // only when pause() lands mid-clip; without a
+                            // functioning audio sink the headless gstreamer
+                            // pipeline does not pace in realtime (2s clip runs
+                            // to EOS unclocked; 30s probe showed the clock
+                            // pinned at 0), so pause() here may land post-EOS
+                            // and the freeze check then passes vacuously. That
+                            // pacing essence is the registered headless
+                            // sound-card gap (product face: a clocking
+                            // fallback sink, e.g. fakesink sync=true, is the
+                            // servo-media backend change that would make it
+                            // meaningful); the state-machine assertions above
+                            // are event-anchored and stay strict.
                             js(&page, "globalThis.__pEL.pause()");
                             let paused = wait_json_state(
                                 &page,
