@@ -176,6 +176,23 @@ impl Navigator {
         reflect_dom_object(cx, Box::new(Navigator::new_inherited()), window)
     }
 
+    /// BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave): eager
+    /// `navigator.serviceWorker` container creation (+ manager enrollment)
+    /// per document. The lazy getter could only enroll documents that touch
+    /// the SW API; the navigation-time controller assignment must reach
+    /// exactly the documents that never do. Called from
+    /// `ScriptThread::load` after the document is bound to the window —
+    /// windows are REPLACED across navigations (`window_for_replacement`),
+    /// so this runs the enrollment explicitly every time instead of relying
+    /// on the constructor side effect (an existing container would
+    /// short-circuit and the new document would never enroll).
+    pub(crate) fn enroll_service_worker_container(&self, cx: &mut JSContext) {
+        let container =
+            self.service_worker
+                .or_init(|| ServiceWorkerContainer::new(cx, &self.global()));
+        container.enroll_with_manager();
+    }
+
     #[cfg(feature = "webxr")]
     pub(crate) fn xr(&self) -> Option<DomRoot<XRSystem>> {
         self.xr.get()

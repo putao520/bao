@@ -16,6 +16,7 @@ use crossbeam_channel::{Sender, select, unbounded};
 use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg};
 use fonts::FontContext;
 use net_traits::{CoreResourceMsg, CustomResponseMediator};
+use net_traits::request::RequestMode;
 use servo_base::generic_channel::{self, GenericCallback, GenericSender, RoutedReceiver};
 use servo_base::id::{PipelineId, PipelineNamespace, ServiceWorkerId, ServiceWorkerRegistrationId};
 use servo_config::pref;
@@ -311,16 +312,68 @@ impl ServiceWorkerManager {
     }
 
     fn handle_message_from_resource(&mut self, mediator: CustomResponseMediator) -> bool {
-        if serviceworker_enabled() &&
-            let Some(scope) = self.get_matching_scope(&mediator.load_url) &&
-            let Some(registration) = self.registrations.get(&scope) &&
-            let Some(ref worker) = registration.active_worker
-        {
-            worker.send_message(ServiceWorkerScriptMsg::Response(mediator));
-            return true;
+        if serviceworker_enabled() {
+            // BAO PATCH (REQ-BRW-004 e112 client-scope mediation wave): the
+            // interception registration differs by request kind, mirroring
+            // <https://w3c.github.io/ServiceWorker/#on-fetch-request-algorithm>:
+            //   * navigation requests (mode "navigate") are matched by the
+            //     REQUEST URL's scope — the navigation-time worker selection;
+            //   * every other request is matched by the CLIENT's controlled
+            //     state — the registration whose scope matches the request's
+            //     client's creation URL (steps 4.2-4.5). A client that
+            //     matches no registration is NOT controlled: its in-scope
+            //     fetches pass through to the network even when some other
+            //     registration's scope covers the URL (the WPT
+            //     audio-worklet-service-worker-interception subtest-2 shape:
+            //     "addModule() on a non-controlled document should not be
+            //     intercepted ... even if the script is under the service
+            //     worker scope").
+            //
+            // A fetch whose client pipeline is unknown to the enrolled set
+            // (dedicated/shared worker realms — worker environments carry no
+            // `ServiceWorkerContainer` and enroll nothing — and infra fetches
+            // with no pipeline stamp) keeps the legacy scope-only routing:
+            // worker-environment controlled-state inheritance is a separate,
+            // unlanded face (owner-chain enrollment), and legacy behavior is
+            // exactly what those realms have been answering with.
+            let scope = if matches!(mediator.mode, RequestMode::Navigate) {
+                self.get_matching_scope(&mediator.load_url)
+            } else {
+                self.get_scope_for_controlled_client(&mediator)
+            };
+            if let Some(scope) = scope &&
+                let Some(registration) = self.registrations.get(&scope) &&
+                let Some(ref worker) = registration.active_worker
+            {
+                worker.send_message(ServiceWorkerScriptMsg::Response(mediator));
+                return true;
+            }
         }
         let _ = mediator.response_chan.send(None);
         true
+    }
+
+    /// BAO PATCH (REQ-BRW-004 e112 client-scope mediation wave): the
+    /// interception registration for a NON-navigation request — the
+    /// registration matching the requesting client's creation URL
+    /// (<https://w3c.github.io/ServiceWorker/#on-fetch-request-algorithm>
+    /// steps 4.2-4.5), longest scope wins. A fetch whose client pipeline is
+    /// not enrolled (worker realms, infra fetches without a pipeline stamp)
+    /// falls back to the legacy request-URL scope match.
+    fn get_scope_for_controlled_client(&self, mediator: &CustomResponseMediator) -> Option<ServoUrl> {
+        let Some(pipeline) = mediator.client_pipeline else {
+            return self.get_matching_scope(&mediator.load_url);
+        };
+        let client = self
+            .clients
+            .iter()
+            .find(|client| client.client_pipeline == pipeline)?;
+        let client_url_string = client.client_url.as_str();
+        self.registrations
+            .keys()
+            .filter(|scope| client_url_string.starts_with(scope.as_str()))
+            .max_by_key(|scope| scope.as_str().len())
+            .cloned()
     }
 
     fn receive_message(&mut self) -> generic_channel::ReceiveResult<Message> {
@@ -561,10 +614,25 @@ impl ServiceWorkerManager {
         // (observed live: fetch-destination-worker's scope
         // `resources/dummy.html` collides with the iframe's creation URL).
         if enroll_only {
+            // BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave):
+            // answer the enrollment with the registration controlling this
+            // client (if any) — the navigation-time controller assignment.
+            // <https://w3c.github.io/ServiceWorker/#setup-environment-settings-object>
+            // makes a client controlled from birth when its creation URL
+            // matches a registration whose active worker exists; upstream's
+            // TODO ("navigation SW-ification") leaves the controller null for
+            // any page that never touches the SW API. The dedicated answer
+            // variant never collides with the container's FIFO job/ready
+            // pairing (the container arm does not consume a pending slot —
+            // same discipline as UpdateFound / WorkerActivated).
+            let registration = self.active_registration_for_client(&storage_key, &client_url);
             // Upsert by (client URL, enrolling pipeline): a re-enrollment from
             // a newer document with the same creation URL replaces the stale
             // callback and the removal identity of the older document.
-            self.enroll_client(client_url, client_pipeline, result_handler);
+            self.enroll_client(client_url, client_pipeline, result_handler.clone());
+            let _ = result_handler.send(ServiceWorkerAlgorithmResult::EnrolledClientController {
+                registration,
+            });
             return;
         }
 
@@ -665,6 +733,54 @@ impl ServiceWorkerManager {
         {
             warn!("Failed to send match registration result to script.");
         }
+    }
+
+    /// BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave): the
+    /// registration controlling `client_url`, if any — the longest registered
+    /// scope (same storage key/origin) whose ACTIVE worker exists, per
+    /// <https://w3c.github.io/ServiceWorker/#match-service-worker-registration>
+    /// + <https://w3c.github.io/ServiceWorker/#dfn-active-worker>. Answer for
+    /// the enrollment ping (see the `enroll_only` arm); `None` leaves the
+    /// client uncontrolled (`navigator.serviceWorker.controller` stays null —
+    /// the WPT non-controlled-document subtest shape).
+    fn active_registration_for_client(
+        &self,
+        storage_key: &ImmutableOrigin,
+        client_url: &ServoUrl,
+    ) -> Option<ServiceWorkerRegistrationInfo> {
+        let client_url_string = client_url.as_str();
+        let mut best: Option<(&ServoUrl, &ServiceWorkerRegistration)> = None;
+        for (scope, registration) in &self.registrations {
+            if scope.origin() != *storage_key {
+                continue;
+            }
+            if !client_url_string.starts_with(scope.as_str()) {
+                continue;
+            }
+            if registration.active_worker.is_none() {
+                continue;
+            }
+            if best.is_none_or(|(best_scope, _)| scope.as_str().len() > best_scope.as_str().len())
+            {
+                best = Some((scope, registration));
+            }
+        }
+        let (scope, registration) = best?;
+        let active_worker = registration.active_worker.as_ref()?;
+        Some(ServiceWorkerRegistrationInfo {
+            scope_url: scope.clone(),
+            script_url: active_worker.script_url.clone(),
+            storage_key: storage_key.clone(),
+            id: registration.id,
+            installing_worker: registration
+                .installing_worker
+                .as_ref()
+                .map(|worker| worker.id),
+            waiting_worker: registration.waiting_worker.as_ref().map(|worker| worker.id),
+            active_worker: Some(active_worker.id),
+            client_url: registration.client_url.clone(),
+            client_urls: Vec::new(),
+        })
     }
 
     /// BAO PATCH (REQ-BRW-004 e75 unenroll teardown, user ruling 2026-10-05):

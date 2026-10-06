@@ -3994,16 +3994,25 @@ impl ScriptThread {
             // hold).
             let global_scope = document.window().as_global_scope();
             if let Some(storage_key) = global_scope.obtain_storage_key() {
+                // BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave)
+                // — removal-identity fix: the window is REPLACED across
+                // navigations (`window_for_replacement`), so the shared
+                // global's `creation_url()`/`pipeline_id()` at teardown are
+                // the SUCCESSOR document's identity, not this pipeline's.
+                // Reading them here unenrolled the LIVE successor's client
+                // entry the moment the replaced pipeline exited (observed:
+                // popup initial-about:blank exit wiped the real document's
+                // enrollment before its first worklet fetch). The removal key
+                // must be the DYING document's: its URL and the EXITING
+                // pipeline id — exactly the identity its own load enrolled
+                // with.
                 let _ = global_scope
                     .script_to_constellation_chan()
                     .send(ScriptToConstellationMessage::ServiceWorkerAlgorithm(
                         ServiceWorkerAlgorithm::ClientGone {
                             storage_key,
-                            client_url: global_scope.creation_url(),
-                            // Same accessor as the enrollment stamp
-                            // (`enroll_with_manager`), so the removal key
-                            // always matches what was registered.
-                            client_pipeline: global_scope.pipeline_id(),
+                            client_url: document.url(),
+                            client_pipeline: pipeline_id,
                         },
                     ));
             }
@@ -4460,6 +4469,17 @@ impl ScriptThread {
 
         // Step 10. Set window's associated Document to document.
         window.init_document(&document);
+
+        // BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave): eager
+        // navigator.serviceWorker container creation + manager enrollment per
+        // document — the navigation-time controller assignment face
+        // (<https://w3c.github.io/ServiceWorker/#setup-environment-settings-object>;
+        // see `Window::enroll_service_worker_container`). The window here may
+        // be a replacement window whose creation URL this load just updated,
+        // so the per-document re-enrollment carries the CURRENT document URL,
+        // never the initial about:blank one; the replaced pipeline's exit
+        // removes its own (dead) entry via the dying-identity `ClientGone`.
+        window.enroll_service_worker_container(cx);
 
         let iframe = incomplete.parent_info.and_then(|parent_id| {
             self.documents

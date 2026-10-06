@@ -4033,6 +4033,24 @@ impl Window {
         WindowBinding::Wrap::<crate::DomTypeHolder>(cx, &origin, win)
     }
 
+    /// BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave): eager
+    /// `navigator.serviceWorker` container creation + manager enrollment.
+    /// Called once per document, right after the document is bound to this
+    /// window (`ScriptThread::load` → `init_document`) — the navigation-time
+    /// controller assignment face of
+    /// <https://w3c.github.io/ServiceWorker/#setup-environment-settings-object>:
+    /// a document whose creation URL matches a registration with an active
+    /// worker is controlled at birth, and the enrollment answer assigns the
+    /// controller. The lazy getter can never deliver that for the exact
+    /// documents that never touch the SW API (the WPT
+    /// worklets/service-worker-interception controlled-document shapes).
+    /// NOT called from `Window::new` itself: the window's document (whose
+    /// URL backs the storage key) does not exist yet there.
+    pub(crate) fn enroll_service_worker_container(&self, cx: &mut JSContext) {
+        let navigator = self.Navigator(cx);
+        navigator.enroll_service_worker_container(cx);
+    }
+
     pub(crate) fn task_manager(&self) -> Rc<TaskManager> {
         self.Document().task_manager()
     }

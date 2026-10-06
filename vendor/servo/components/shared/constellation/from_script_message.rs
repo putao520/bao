@@ -450,6 +450,20 @@ pub enum ServiceWorkerAlgorithmResult {
     WorkerActivated {
         worker_id: ServiceWorkerId,
     },
+
+    /// BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave): the
+    /// answer to a container enrollment ping carrying the registration (if
+    /// any) whose scope matches the enrolling client's creation URL and whose
+    /// ACTIVE worker exists — the navigation-time controller assignment face
+    /// (<https://w3c.github.io/ServiceWorker/#setup-environment-settings-object>:
+    /// a client whose creation URL matches such a registration is controlled
+    /// by it from birth, so `navigator.serviceWorker.controller` observes the
+    /// worker without the document ever touching the SW API). Not an
+    /// algorithm result; re-using algo channel for convenience. Must NOT
+    /// consume a pending job promise.
+    EnrolledClientController {
+        registration: Option<ServiceWorkerRegistrationInfo>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]

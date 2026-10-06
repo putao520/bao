@@ -101,13 +101,17 @@ impl ServiceWorkerContainer {
         );
         // BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling
         // 2026-10-05): enroll this container with the origin's service worker
-        // manager as a matchable client the moment it exists. Every document
-        // that touches `navigator.serviceWorker` (register / getRegistration /
-        // onmessage / matchAll) creates its container first, so this is the
-        // single choke point that makes iframe subdocument containers visible
-        // to the manager's client set — without it a SW's
-        // `clients.matchAll({includeUncontrolled: true})` could never reach
-        // them and worker→client messages time out (e69 attribution).
+        // manager as a matchable client the moment it exists. Since the e112
+        // navigation-time controller wave every WINDOW document enrolls
+        // eagerly per document (`ScriptThread::load` →
+        // `Window::enroll_service_worker_container` →
+        // `Navigator::enroll_service_worker_container`), so every same-origin
+        // document is visible to the manager's client set — a SW's
+        // `clients.matchAll({includeUncontrolled: true})` reaches iframe
+        // subdocuments (e69 attribution) and the enrollment answer carries
+        // the navigation-time controller (the e112 face). Containers created
+        // lazily elsewhere (any direct `navigator.serviceWorker` touch)
+        // enroll through this same choke point.
         container.enroll_with_manager();
         container
     }
@@ -115,15 +119,29 @@ impl ServiceWorkerContainer {
     /// BAO PATCH (REQ-BRW-004 e70 multi-client wave, user ruling 2026-10-05):
     /// fire-and-forget enrollment ping. Reuses the
     /// `MatchServiceWorkerRegistration` algorithm shape (its `enroll_only`
-    /// flag makes the manager answer nothing), so no new constellation
-    /// routing arm is required. The container's algorithm-result callback
-    /// doubles as the message-delivery channel the manager multicasts
-    /// `MessageFromWorker` through.
-    fn enroll_with_manager(&self) {
+    /// flag makes the manager answer nothing — since the e112
+    /// navigation-time controller wave it answers with the client's
+    /// controlling registration), so no new constellation routing arm is
+    /// required. The container's algorithm-result callback doubles as the
+    /// message-delivery channel the manager multicasts `MessageFromWorker`
+    /// through.
+    pub(crate) fn enroll_with_manager(&self) {
         let global = self.global();
         let Some(storage_key) = global.obtain_storage_key() else {
             return;
         };
+        // BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave): the
+        // per-document re-enrollment must carry a callback whose captured
+        // task source belongs to the LIVE document. The callback is created
+        // once per container and closes over the document-scoped
+        // dom-manipulation task source (with its canceller); a replaced
+        // document (`set_up_a_window_environment_settings_object` →
+        // `detach_window`) cancels those cancellers, so every answer routed
+        // through the stale callback — the navigation-time controller answer
+        // included — would be silently dropped by `SendableTaskSource::queue`.
+        // Resetting forces `ensure_callback` to bind a fresh source; the
+        // manager's client upsert then swaps the delivery channel.
+        *self.callback.borrow_mut() = None;
         let result_handler = self.ensure_callback();
         let _ = global.script_to_constellation_chan().send(
             ScriptToConstellationMessage::ServiceWorkerAlgorithm(
@@ -268,14 +286,17 @@ impl ServiceWorkerContainer {
     /// getRegistration match) carries an active worker whose scope prefixes
     /// this global's URL, store the page-side ServiceWorker object for that
     /// worker as this container's controller.
-    /// Boundary (deliberately minimal — spec claim()/clients territory):
-    /// only the container that registered or queried is refreshed, since the
-    /// manager keeps a single client callback per registration; a page that
-    /// never touches the SW API keeps `controller === null` (navigation
-    /// SW-ification is not implemented upstream); the attribute is never
-    /// cleared — unregister leaves the stale object in place while
-    /// interception itself stops at the manager (which drops the
-    /// registration).
+    /// Boundary: the push paths cover the registering/queried container and —
+    /// since the e112 navigation-time controller wave — every container at
+    /// enrollment time (the manager answers the enrollment ping with the
+    /// registration controlling the client's creation URL,
+    /// <https://w3c.github.io/ServiceWorker/#setup-environment-settings-object>,
+    /// so a page that never touches the SW API is still controlled when a
+    /// matching active registration exists). Still deliberately minimal (spec
+    /// claim()/clients territory): the attribute is never cleared —
+    /// unregister leaves the stale object in place while interception itself
+    /// stops at the manager (which drops the registration); multi-registration
+    /// claim()/clients settling semantics are not implemented.
     fn refresh_controller(
         &self,
         cx: &mut JSContext,
@@ -483,6 +504,20 @@ impl ServiceWorkerContainer {
                         let promise = promise.root(cx);
                         self.handle_ready_match_result(cx, registration_info, &promise);
                     },
+                }
+            },
+            // BAO PATCH (REQ-BRW-004 e112 navigation-time controller wave):
+            // the enrollment answer — the registration controlling this
+            // client's creation URL at container-creation time (if any).
+            // Assigns `navigator.serviceWorker.controller` for documents that
+            // never touch the SW API (the navigation-time worker semantics of
+            // <https://w3c.github.io/ServiceWorker/#setup-environment-settings-object>,
+            // which upstream's TODO leaves unimplemented). Must not consume a
+            // pending job promise — same discipline as UpdateFound /
+            // WorkerActivated.
+            ServiceWorkerAlgorithmResult::EnrolledClientController { registration } => {
+                if let Some(info) = registration {
+                    self.refresh_controller(cx, &info.script_url, &info.scope_url, info.active_worker);
                 }
             },
             ServiceWorkerAlgorithmResult::MessageFromWorker {

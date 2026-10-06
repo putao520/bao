@@ -139,6 +139,15 @@ pub struct CustomResponseMediator {
     /// `"navigate"` — the Sec-Fetch-Dest/Mode face.
     pub destination: Destination,
     pub mode: RequestMode,
+    /// Bao vendor patch (REQ-BRW-004 e112 client-scope mediation wave): the
+    /// requesting client's pipeline, when the fetch was issued from a script
+    /// realm. The manager routes non-navigation mediation by the CLIENT's
+    /// controlled state (<https://w3c.github.io/ServiceWorker/#on-fetch-request-algorithm>
+    /// step 4: the registration matching the request's client's creation URL,
+    /// not the request URL), and the enrolled client set is keyed by pipeline
+    /// — so the client identity travels with the mediator. `None` = an infra
+    /// fetch with no script client, which keeps the legacy scope-only routing.
+    pub client_pipeline: Option<PipelineId>,
 }
 
 /// [Policies](https://w3c.github.io/webappsec-referrer-policy/#referrer-policy-states)
