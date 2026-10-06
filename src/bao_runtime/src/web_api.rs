@@ -2286,7 +2286,6 @@ unsafe fn report_type_error(cx: *mut JSContext, message: &str) {
     // consumed for the duration of the JS_ReportErrorNumberUTF8 call.
     static FORMAT_STRING: &::std::ffi::CStr = c"{0}";
 
-    // SAFETY: read of a static; never moved or mutated after first access.
     unsafe extern "C" fn get_type_error_format(
         _user_ref: *mut ::std::os::raw::c_void,
         _error_number: u32,
@@ -2297,7 +2296,11 @@ unsafe fn report_type_error(cx: *mut JSContext, message: &str) {
             argCount: 1,
             exnType: JSExnType::JSEXN_TYPEERR as i16,
         };
-        unsafe { &raw const FORMAT }
+        // Taking a raw pointer to the static is itself safe; the static is
+        // never moved or mutated after this first access (it's initialized
+        // once), so the pointer is only dereferenced through the SM error
+        // machinery which treats it as read-only.
+        &raw const FORMAT
     }
 
     // SAFETY: JS_ReportErrorNumberUTF8 is the standard SpiderMonkey API for
