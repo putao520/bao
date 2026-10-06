@@ -372,6 +372,27 @@ pub(crate) fn Fetch(
     // Step 1. Let p be a new promise.
     let promise = Promise::new_in_realm(cx);
 
+    // BAO PATCH (e118 / REQ-BRW-004 criterion 19 — destination preservation
+    // on the SW re-fetch wire, 2026-10-06): the Request constructor's
+    // step-12 rebuild resets `destination` to the empty string (spec +
+    // Chromium parity for the JS-visible `new Request(r).destination`
+    // face, which must stay ""), but the WIRE request a service worker
+    // re-fetches via `respondWith(fetch(event.request))` must carry the
+    // ORIGINAL destination. Real-Chromium oracle (2026-10-06 probe,
+    // google-chrome headless + local fixture): input face "worker",
+    // constructor face "", re-fetch wire `Sec-Fetch-Dest: worker`, SW-realm
+    // plain string fetch wire "empty". Blink tracks this as
+    // `original_destination` on FetchRequestData/ResourceRequest
+    // (fetch_manager.cc plumbs it through to the network request); the
+    // minimal equivalent here re-stamps the wire request from the INPUT
+    // Request object before dispatch. Only the SW realm can hold a Request
+    // with a non-empty destination (the mediated `event.request`), so this
+    // gate reproduces Chromium exactly and cannot touch page-realm fetches.
+    let input_request_destination = match (&input, global.is::<ServiceWorkerGlobalScope>()) {
+        (RequestInfo::Request(r), true) => Some(r.request().destination),
+        _ => None,
+    };
+
     // Step 7. Let responseObject be null.
     // NOTE: We do initialize the object earlier so we can use it to track errors.
     let response = Response::new_fetch_response(cx, global);
@@ -416,6 +437,12 @@ pub(crate) fn Fetch(
     //         service-workers mode to "none".
     if global.is::<ServiceWorkerGlobalScope>() {
         request_builder.service_workers_mode = ServiceWorkersMode::None;
+        // BAO PATCH (e118): see the `input_request_destination` capture
+        // above — restore the input request's destination onto the wire
+        // request after the constructor's spec-mandated reset.
+        if let Some(destination) = input_request_destination {
+            request_builder.destination = destination;
+        }
     }
 
     // Step 8. Let relevantRealm be this’s relevant realm.

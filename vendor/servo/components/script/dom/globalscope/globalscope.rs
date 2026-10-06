@@ -44,6 +44,7 @@ use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder, RequestClient,
+    ServiceWorkersMode,
 };
 use net_traits::{CoreResourceMsg, CoreResourceThread, ReferrerPolicy, ResourceThreads};
 use profile_traits::{
@@ -3093,6 +3094,26 @@ impl GlobalScope {
         context: Listener,
         task_source: SendableTaskSource,
     ) {
+        // BAO PATCH (REQ-BRW-004 C19 S2b, user ruling 2026-09-09; dissolved
+        // by the a7272f16 vendor snapshot swap, replayed 2026-10-06 e118):
+        // the fetch spec applies "if globalObject is a
+        // ServiceWorkerGlobalScope object, set request's service-workers
+        // mode to 'none'" at the fetch algorithm level, for every request
+        // the SW global initiates. Upstream only implements it on the
+        // `fetch()` DOM entry (fetch/fetch.rs step 6), leaving e.g. sync XHR
+        // to self-mediate: the SW thread is then blocked inside the XHR
+        // event pump and can never answer its own mediator (a 30 s
+        // HANDLE_FETCH deadlock per request — the SW probe publish and the
+        // worklet-module `__publish` both die here). Downgrade in this
+        // single choke point every script-initiated NetworkListener fetch
+        // from any global funnels through (the pre-snapshot form applied it
+        // in `fetch_with_network_listener`; the current tree inlines that
+        // path into `GlobalScope::fetch`).
+        let request_builder = if self.is::<ServiceWorkerGlobalScope>() {
+            request_builder.service_workers_mode(ServiceWorkersMode::None)
+        } else {
+            request_builder
+        };
         self.fetch_group_mut().fetch(
             request_builder,
             NetworkListener::new(context, task_source, self),
