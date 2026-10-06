@@ -137,6 +137,7 @@ use crate::dom::customelementregistry::{
 use crate::dom::document::focus::FocusableArea;
 use crate::dom::document::{Document, HasBrowsingContext, IsHTMLDocument, RenderingUpdateReason};
 use crate::dom::element::Element;
+use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmliframeelement::{HTMLIFrameElement, IframeContext, ProcessingMode};
 use crate::dom::node::{Node, NodeTraits};
@@ -1313,12 +1314,73 @@ impl ScriptThread {
                 if initial_insertion == Some(true) && frame_element.is_initial_blank_document() {
                     frame_element.run_iframe_load_event_steps(cx);
                 }
+            } else if window_proxy.parent().is_none() {
+                // BAO PATCH (REQ-BRW-002 js-popup load contract, replayed
+                // 2026-10-06 — the a7272f16 snapshot swap dropped this
+                // top-level arm). Top-level (container-less) navigable: the
+                // navigation completed without creating a document, so the
+                // navigable keeps its initial about:blank document. That
+                // document never passes through the load-event steps of "the
+                // end" (`Document::maybe_queue_document_completion` defers
+                // the initial about:blank document to browsing-context
+                // creation, which does not deliver a load event), so signal
+                // load completion here — the top-level counterpart of the
+                // iframe arm above. Without it a popup opened with a
+                // javascript: URL whose script returns a non-string never
+                // fires `load` (fetch/fetch-later/new-window.https.window.html
+                // blank-window variants).
+                Self::fire_load_event_for_unloaded_initial_document(cx, &window_proxy);
             }
             // Step 8.2. Return.
             return false;
         }
 
         true
+    }
+
+    /// BAO PATCH (REQ-BRW-002 js-popup load contract): fire the window `load`
+    /// event for the navigable's active document when a top-level
+    /// `javascript:` URL navigation completed without creating a new document
+    /// (`navigate-to-a-javascript:-url` with `newDocument` null) and that
+    /// document still owes its load event.
+    ///
+    /// Only the initial `about:blank` document qualifies: any real document's
+    /// load event belongs to the normal `the end` pipeline, and firing again
+    /// for a later no-change navigation would double-deliver.
+    fn fire_load_event_for_unloaded_initial_document(
+        cx: &mut js::context::JSContext,
+        window_proxy: &WindowProxy,
+    ) {
+        let Some(document) = window_proxy.document() else {
+            return;
+        };
+        if !document.is_initial_about_blank() {
+            return;
+        }
+        let window = document.window();
+        if !window.is_alive() {
+            return;
+        }
+        // Load-timing markers double as the fire-once guard (mirrors the load
+        // timing markers "the end" records around the same event).
+        let timing = document.navigation_timing();
+        if timing.load_event_start.get().is_none() {
+            timing.load_event_start.set(Some(CrossProcessInstant::now()));
+        }
+        // "the end" step 9.5. Fire an event named load at window, with legacy
+        // target override flag set.
+        let load_event = Event::new(
+            cx,
+            window.upcast(),
+            atom!("load"),
+            EventBubbles::DoesNotBubble,
+            EventCancelable::NotCancelable,
+        );
+        load_event.set_trusted(true);
+        window.dispatch_event_with_target_override(cx, &load_event);
+        if timing.load_event_end.get().is_none() {
+            timing.load_event_end.set(Some(CrossProcessInstant::now()));
+        }
     }
 
     pub(crate) fn get_top_level_for_browsing_context(
