@@ -565,24 +565,27 @@ pub(crate) fn instantiate_processor(
             JS_SetProperty(cx, params_ref.handle(), name.as_ptr(), value.handle());
         }
     }
-    let heap = |obj: *mut JSObject| {
-        let slot = Heap::default();
-        slot.set(obj);
-        slot
-    };
-
+    // (e127) Register-then-set for the five GC `Heap` slots. `Heap::set`'s
+    // post-write barrier registers the slot's *current* address in the GC
+    // store buffer, and mozjs-sys (`jsgc.rs:341-345`) documents
+    // constructing a temporary `Heap`, setting it and then moving it as
+    // unsafe. The previous `heap()` closure did exactly that on this
+    // function's stack frame: the registered stack-address edges dangled
+    // after the struct was moved into the registry, and every later
+    // worklet-thread minor GC then read arbitrary stack remnants through
+    // them (minting stale OBJECT values into the traced root set — the
+    // e126/e127 minor-GC SIGSEGV) and wrote promoted pointers back through
+    // them, corrupting live frames. The slots are now created empty; the
+    // struct reaches its final registry address first, and only then are
+    // the slots written — from values that stayed rooted the whole window
+    // (`instance`, `instance_roots`, and the worklet global's reflector
+    // handle). No JS runs between registration and the write-back.
     let instance_data = ProcessorInstanceData {
-        instance: heap(instance.get()),
-        global: heap(
-            scope
-                .upcast::<crate::dom::globalscope::GlobalScope>()
-                .reflector()
-                .get_jsobject()
-                .get(),
-        ),
-        inputs_array: heap(instance_roots[inputs_array_index].to_object()),
-        outputs_array: heap(instance_roots[outputs_array_index].to_object()),
-        params_object: heap(instance_roots[params_object_index].to_object()),
+        instance: Heap::default(),
+        global: Heap::default(),
+        inputs_array: Heap::default(),
+        outputs_array: Heap::default(),
+        params_object: Heap::default(),
         input_arrays: input_leaf_indices
             .iter()
             .map(|port| {
@@ -606,6 +609,22 @@ pub(crate) fn instantiate_processor(
         port: crate::dom::bindings::root::Dom::from_ref(&*port),
     };
     scope.register_processor_instance(node_key, instance_data);
+    let global_obj = scope
+        .upcast::<crate::dom::globalscope::GlobalScope>()
+        .reflector()
+        .get_jsobject();
+    if !scope.set_instance_heap_slots(
+        node_key,
+        instance.get(),
+        global_obj.get(),
+        instance_roots[inputs_array_index].to_object(),
+        instance_roots[outputs_array_index].to_object(),
+        instance_roots[params_object_index].to_object(),
+    ) {
+        debug!("AudioWorklet instance heap slot finalization failed for node {node_key}.");
+        latch_failure(&node, &bridge, &main_sender);
+        return;
+    }
 
     // Route the processor-side port through the conduit's `to_main` ring
     // (lane 0 — the node's own port pair).

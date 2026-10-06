@@ -451,6 +451,39 @@ impl AudioWorkletGlobalScope {
             .insert(node_key, Box::new(data));
     }
 
+    /// (e127) Post-registration write of the instance's five GC `Heap`
+    /// slots — the register-then-set discipline. `Heap::set`'s post-write
+    /// barrier registers the slot's current address in the store buffer,
+    /// and mozjs-sys (`jsgc.rs:341-345`) forbids setting a temporary
+    /// `Heap` and then moving it, so these slots must only be written once
+    /// the `ProcessorInstanceData` box has reached its final registry
+    /// address (writing them on the stack-constructed struct left dangling
+    /// stack-address store-buffer edges that every later worklet minor GC
+    /// read and wrote through — the e126/e127 SIGSEGV class). The caller
+    /// guarantees no JS runs between registration and this call.
+    pub(crate) fn set_instance_heap_slots(
+        &self,
+        node_key: u64,
+        instance: *mut JSObject,
+        global: *mut JSObject,
+        inputs_array: *mut JSObject,
+        outputs_array: *mut JSObject,
+        params_object: *mut JSObject,
+    ) -> bool {
+        let mut instances = self.processor_instances.borrow_mut();
+        instances
+            .0
+            .get_mut(&node_key)
+            .map(|inst| {
+                inst.instance.set(instance);
+                inst.global.set(global);
+                inst.inputs_array.set(inputs_array);
+                inst.outputs_array.set(outputs_array);
+                inst.params_object.set(params_object);
+            })
+            .is_some()
+    }
+
     /// Register the block-rate pump for a node (worklet thread).
     pub(crate) fn register_pump(
         &self,
