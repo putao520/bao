@@ -1277,9 +1277,7 @@ unsafe fn url_to_js(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
                 rooted!(&in(cx_ref) let sp_r = sp_obj);
                 rooted!(&in(cx_ref) let obj_r = obj);
                 let mut host_val = ObjectValue(obj_r.get());
-                unsafe {
-                    JS_SetReservedSlot(sp_r.get(), SLOT_SP_HOST, &mut host_val);
-                }
+                JS_SetReservedSlot(sp_r.get(), SLOT_SP_HOST, &mut host_val);
                 let sp_val = ObjectValue(sp_r.get());
                 rooted!(&in(cx_ref) let sp_v = sp_val);
                 JS_DefineProperty(
@@ -2634,7 +2632,7 @@ unsafe fn sp_string_snapshot_iterator<'a, I: Iterator<Item = &'a String>>(
             if js.is_null() {
                 continue;
             }
-            let sv = StringValue(unsafe { &*js });
+            let sv = StringValue(&*js);
             rooted!(&in(cx_ref) let sv_root = sv);
             JS_DefineElement(
                 cx,

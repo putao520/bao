@@ -332,9 +332,7 @@ pub fn pump_embedder_thread(cx: *mut JSContext) {
     //    enters the woken event's realm), where global-property reads and
     //    dispatch would otherwise silently no-op (page-realm setImmediate
     //    black, shadow_axis_probe_tests I axis).
-    unsafe {
-        drain_bao_timers(cx);
-    }
+    drain_bao_timers(cx);
     // 3. One non-blocking tick — dispatch pending ConcurrentTasks (fetch
     //    resolves). `tick_without_idle` never blocks (zero epoll timeout,
     //    BCE-007-R3).

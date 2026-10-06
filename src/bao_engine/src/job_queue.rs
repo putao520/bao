@@ -414,8 +414,9 @@ unsafe fn run_one_bao_job(cx: *mut JSContext) -> bool {
                 if !exn.is_undefined() {
                     if let Some(&hook) = UNCAUGHT_HOOK.get() {
                         // SAFETY: cx is live (trap contract); hook roots its
-                        // argument before running JS.
-                        unsafe { hook(cx, exn) };
+                        // argument before running JS. (unsafe fn call, covered
+                        // by the enclosing unsafe block above.)
+                        hook(cx, exn);
                     }
                 }
             }
@@ -584,12 +585,12 @@ unsafe fn drain_next_ticks(cx: *mut JSContext) -> usize {
                 }
                 (
                     if gval.is_object() && !gval.is_null() {
-                        unsafe { gval.to_object() }
+                        gval.to_object()
                     } else {
                         ptr::null_mut()
                     },
                     if cval.is_object() && !cval.is_null() {
-                        unsafe { cval.to_object() }
+                        cval.to_object()
                     } else {
                         ptr::null_mut()
                     },

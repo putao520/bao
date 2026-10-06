@@ -251,7 +251,7 @@ unsafe fn base_dir_from_private_cx(
     if !referencing_private.is_string() {
         return None;
     }
-    let url_jsstr = unsafe { referencing_private.to_string() };
+    let url_jsstr = referencing_private.to_string();
     let Some(jsstr) = NonNull::new(url_jsstr) else {
         return None;
     };
@@ -2068,7 +2068,7 @@ unsafe extern "C" fn host_populate_import_meta(
         // `require` function (installed by bao_runtime) as a non-enumerable
         // property of `import.meta`, so ESM code can do
         // `import.meta.require("fs")` without going through dynamic import().
-        let global_obj = unsafe { CurrentGlobalOrNull(raw_cx) };
+        let global_obj = CurrentGlobalOrNull(raw_cx);
         if !global_obj.is_null() {
             rooted!(in(raw_cx) let global_root = global_obj);
             let mut require_val = mozjs::jsval::UndefinedValue();
@@ -2076,29 +2076,25 @@ unsafe extern "C" fn host_populate_import_meta(
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &mut require_val,
             };
-            let got = unsafe {
-                mozjs_sys::jsapi::JS_GetProperty(
-                    raw_cx,
-                    global_root.handle().into(),
-                    c"require".as_ptr(),
-                    require_h,
-                )
-            };
+            let got = mozjs_sys::jsapi::JS_GetProperty(
+                raw_cx,
+                global_root.handle().into(),
+                c"require".as_ptr(),
+                require_h,
+            );
             if got && require_val.is_object() {
                 let require_obj_val = require_val;
                 // BCE-20260619-012: require_obj_val may contain GC-managed object; must be rooted.
                 rooted!(&in(wrapped_cx) let require_obj_root = require_obj_val);
                 // Non-enumerable — `import.meta.require` is a function reference,
                 // not a data property that should serialize.
-                let _ = unsafe {
-                    JS_DefineProperty(
-                        raw_cx,
-                        meta_object,
-                        c"require".as_ptr(),
-                        require_obj_root.handle().into(),
-                        0,
-                    )
-                };
+                let _ = JS_DefineProperty(
+                    raw_cx,
+                    meta_object,
+                    c"require".as_ptr(),
+                    require_obj_root.handle().into(),
+                    0,
+                );
             }
         }
         true
@@ -3051,9 +3047,9 @@ fn check_module_evaluation_promise(
 
 fn extract_module_error(cx: &mut mozjs::context::JSContext) -> JsError {
     rooted!(&in(cx) let mut exn = UndefinedValue());
-    if let ::std::option::Option::Some(info) = unsafe {
+    if let ::std::option::Option::Some(info) =
         mozjs::rust::error_info_from_exception_stack(cx, exn.handle_mut().into())
-    } {
+    {
         JsError {
             message: info.message,
             filename: info.filename,

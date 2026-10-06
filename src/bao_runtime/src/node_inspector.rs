@@ -93,7 +93,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             // Native constructors need an explicit object `prototype`
             // (methods live on it so instances resolve them through the
             // prototype chain).
-            rooted!(&in(cx) let proto = unsafe { w2::JS_NewPlainObject(cx) });
+            rooted!(&in(cx) let proto = w2::JS_NewPlainObject(cx));
             if !proto.get().is_null() {
                 w2::JS_DefineFunction(
                     cx,

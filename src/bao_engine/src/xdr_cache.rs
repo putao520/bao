@@ -148,7 +148,7 @@ unsafe extern "C" fn bao_process_build_id(build_id: *mut jsapi::BuildIdCharVecto
 /// `None` = SM declined: the persistent layer stays disabled (fail-closed).
 fn process_build_id() -> Option<&'static [u8]> {
     BUILD_ID
-        .get_or_init(|| unsafe {
+        .get_or_init(|| {
             unsafe {
                 jsapi::SetProcessBuildIdOp(Some(bao_process_build_id));
             }

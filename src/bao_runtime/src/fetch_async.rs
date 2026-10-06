@@ -1829,7 +1829,7 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
         .as_ref()
         .map(|g| g.get(0))
         .filter(|v| v.is_object() && !v.is_null())
-        .map(|v| unsafe { v.to_object() })
+        .map(|v| v.to_object())
         .unwrap_or_else(|| unsafe { &*this }.origin_global);
     if !origin_global.is_null() && crate::timers::is_global_discarded(origin_global) {
         crate::timers::concurrent_zombie_suppressed_fetch_add();
@@ -2402,7 +2402,7 @@ unsafe fn process_stream_event(this: *mut PendingFetch) {
                     .unwrap()
                     .done_release_pending
                     .load(AtomicOrdering::Acquire);
-            let node_linked = unsafe { &*this }
+            let node_linked = (&*this)
                 .has_schedule_callback
                 .load(AtomicOrdering::Acquire);
             PENDING.with(|p| {

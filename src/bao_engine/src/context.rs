@@ -269,7 +269,7 @@ pub fn thread_realm_global() -> Option<*mut mozjs::jsapi::JSObject> {
         let g = c.peek()?;
         let v = g.vals[0];
         if v.is_object() && !v.is_null() {
-            Some(unsafe { v.to_object() })
+            Some(v.to_object())
         } else {
             None
         }

@@ -73,7 +73,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             // Native constructors need an explicit object `prototype` —
             // `new Hash(...)` resolves `this` from it (same pattern as
             // vm.Script).
-            rooted!(&in(cx) let proto = unsafe { w2::JS_NewPlainObject(cx) });
+            rooted!(&in(cx) let proto = w2::JS_NewPlainObject(cx));
             if !proto.get().is_null() {
                 rooted!(&in(cx) let pv = mozjs::jsval::ObjectValue(proto.get()));
                 JS_DefineProperty(
