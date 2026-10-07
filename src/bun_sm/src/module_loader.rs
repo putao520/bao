@@ -1034,7 +1034,17 @@ unsafe fn load_requested_modules_sync(cx: *mut JSContext, module: Handle<*mut JS
 /// whose `payload` argument routes completion:
 ///   - GraphLoadingStateRecordObject → ContinueModuleLoading (static graph)
 ///   - PromiseObject → ContinueDynamicImport (dynamic `import()`): the
-///     ENGINE performs link + evaluate + promise resolution.
+///     ENGINE performs link + evaluate + promise resolution — but ONLY
+///     that (Modules.cpp ContinueDynamicImport "Step 3" comment: "The
+///     module dependencies has been loaded in the host layer, so we only
+///     need to do _linkAndEvaluate_ part defined in the spec"). A fresh
+///     record (status New) handed straight through makes
+///     LinkAndEvaluateDynamicImport's JS::ModuleLink throw
+///     JSMSG_BAD_MODULE_STATUS and the import() promise reject forever
+///     (e139), so the dynamic payload drives the same synchronous graph
+///     load the eval entry paths use before handing the record back; on an
+///     already-loaded record InnerModuleLoading's status gate (New-only
+///     entry) makes that drive a counter-decrement no-op.
 /// `usePromise=true` preserves the SM140 job-based chaining (TLA-aware),
 /// drained by bao's existing RunJobs points — behavior parity with the
 /// removed SM140 flow where this file drove ModuleLink / ModuleEvaluate /
@@ -1084,6 +1094,32 @@ unsafe extern "C" fn host_load_imported_module(
     }
 
     rooted!(in(raw_cx) let module_root = module);
+
+    // e139 (REQ-ENG-001): for a dynamic `import()` payload (a promise —
+    // distinct from the GraphLoadingState payload of static graph loads,
+    // where the ENGINE keeps driving InnerModuleLoading), SM153's
+    // ContinueDynamicImport only performs link + evaluate: the host must
+    // deliver the record with its graph load ALREADY complete. A fresh
+    // record (status New) passed straight through fails
+    // LinkAndEvaluateDynamicImport's JS::ModuleLink with
+    // JSMSG_BAD_MODULE_STATUS ("module record has unexpected status: New")
+    // and the import() promise rejects forever. Drive the same synchronous
+    // graph load the eval entry paths use; on an already-registered record
+    // (cache hit, Unlinked/Evaluated) InnerModuleLoading's status gate —
+    // only status-New modules enter the loading pass — makes this a pure
+    // counter-decrement no-op.
+    let dynamic_payload = payload.get().is_object() && {
+        rooted!(in(raw_cx) let payload_obj = payload.get().to_object());
+        IsPromiseObject(payload_obj.handle())
+    };
+    if dynamic_payload && !load_requested_modules_sync(raw_cx, module_root.handle().into()) {
+        // load_rejected_cb left the pending exception; returning false
+        // routes the failure through the payload (promise rejection for
+        // import(), graph-loading failure otherwise) via
+        // js::HostLoadImportedModule's error path.
+        return false;
+    }
+
     mozjs_sys::jsapi::JS::FinishLoadingImportedModule(
         raw_cx,
         referrer,

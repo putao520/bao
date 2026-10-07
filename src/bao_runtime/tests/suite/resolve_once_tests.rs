@@ -329,10 +329,10 @@ fn require_esm_then_import_single_instance() {
 /// and the graph machinery evaluates it. Phase 2 requires the same path:
 /// require must serve the registered record's namespace (identity-equal to
 /// the import-side namespace object) and the body must still have run
-/// exactly once. (Dynamic `import()` of a fresh module is a separate,
-/// pre-existing hook-layer defect — the load hook hands `New` records to
-/// SM's ContinueDynamicImport, which requires graph-loaded records — and is
-/// reported as an adjacent surface, not pinned here.)
+/// exactly once. (Dynamic `import()` of a fresh module — the adjacent
+/// surface this test reported — was fixed in e139: the load hook now
+/// drives the graph load for dynamic payloads before handing the record
+/// to SM's ContinueDynamicImport; see the e139 pins below.)
 #[test]
 fn import_then_require_esm_single_instance() {
     bun_runtime::install_exit_handler();
@@ -430,6 +430,181 @@ fn require_esm_back_import_from_dependency_single_instance() {
         hits, 1.0,
         "require entry body must evaluate exactly once across the cycle (got {} evaluations)",
         hits
+    );
+}
+
+/// e139 (REQ-ENG-001): dynamic `import()` of a FRESH module (never
+/// statically imported, required or evaluated — not in the module cache)
+/// must resolve and evaluate the module, including its static dependency
+/// graph. SM153 contract (Modules.cpp `ContinueDynamicImport`, the
+/// "Step 3" comment: "The module dependencies has been loaded in the host
+/// layer, so we only need to do _linkAndEvaluate_ part defined in the
+/// spec"): when the host hands a module to
+/// `JS::FinishLoadingImportedModule` with a promise payload, the record's
+/// graph load must ALREADY be complete — `LinkAndEvaluateDynamicImport`
+/// goes straight to `JS::ModuleLink`, which throws JSMSG_BAD_MODULE_STATUS
+/// on a status=New record (`ModuleLink`'s step-1 status gate). Pre-fix
+/// anatomy: `host_load_imported_module` compiled the fresh record (status
+/// New) and passed it directly to FinishLoadingImportedModule, so every
+/// dynamic import of an uncached module rejected; the existing suite's
+/// only dynamic-import pins (e136/e138) all hit already-Evaluated cache
+/// entries and never exercised the fresh path. The fix drives the same
+/// graph load the eval entry paths use (`load_requested_modules_sync`,
+/// JS::LoadRequestedModules) on the dynamic payload before handing the
+/// record to the engine.
+
+/// Dynamic import of a fresh module with a static dependency: the promise
+/// must RESOLVE (no rejection), the fresh body and its dependency body
+/// each evaluate exactly once, and the resolved namespace carries the
+/// module's exports. The rejection handler records the error so a pre-fix
+/// RED names the actual engine error (JSMSG_BAD_MODULE_STATUS).
+#[test]
+fn dynamic_import_fresh_module_resolves_and_evaluates() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("leaf.mjs"),
+        "globalThis.__leafHits = (globalThis.__leafHits | 0) + 1;\n\
+         export const leaf = 42;\n",
+    )
+    .expect("write leaf.mjs");
+    std::fs::write(
+        root.join("fresh.mjs"),
+        "import { leaf } from \"./leaf.mjs\";\n\
+         globalThis.__freshHits = (globalThis.__freshHits | 0) + 1;\n\
+         export const hits = globalThis.__freshHits;\n\
+         export const leafSum = leaf + 1;\n",
+    )
+    .expect("write fresh.mjs");
+
+    // The probe entry only fires the dynamic import; fresh.mjs is loaded
+    // exclusively through the import() path (fresh — not in the cache).
+    let probe_src = concat!(
+        "import(\"./fresh.mjs\").then((ns) => {\n",
+        "  globalThis.__nsHits = ns.hits;\n",
+        "  globalThis.__nsLeafSum = ns.leafSum;\n",
+        "  globalThis.__done = true;\n",
+        "}, (e) => {\n",
+        "  globalThis.__err = String(e);\n",
+        "  globalThis.__done = true;\n",
+        "});\n",
+    );
+    let probe_path = root.join("probe.mjs").to_string_lossy().into_owned();
+
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+
+    ModuleLoader::eval_module_in_realm(&mut cx, probe_src, &probe_path, None, global.handle())
+        .expect("probe entry evaluates");
+
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__done === true"),
+        "dynamic import continuation did not settle in the job drain"
+    );
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__err === undefined"),
+        "dynamic import of a fresh module must resolve, got rejection: {:?}",
+        ctx.eval("globalThis.__err", "<e139-err>")
+            .ok()
+            .map(|v| format!("{:?}", v))
+            .unwrap_or_else(|| "<unreadable>".into())
+    );
+    let fresh_hits = num_probe(&mut ctx, "globalThis.__freshHits | 0");
+    assert_eq!(
+        fresh_hits, 1.0,
+        "fresh body must evaluate exactly once (got {} evaluations)",
+        fresh_hits
+    );
+    let leaf_hits = num_probe(&mut ctx, "globalThis.__leafHits | 0");
+    assert_eq!(
+        leaf_hits, 1.0,
+        "fresh module's static dependency must evaluate exactly once (got {})",
+        leaf_hits
+    );
+    let ns_hits = num_probe(&mut ctx, "globalThis.__nsHits | 0");
+    assert_eq!(
+        ns_hits, 1.0,
+        "resolved namespace must be the fresh record (ns.hits={}, expected 1)",
+        ns_hits
+    );
+    let ns_leaf = num_probe(&mut ctx, "globalThis.__nsLeafSum | 0");
+    assert_eq!(
+        ns_leaf, 43.0,
+        "namespace must carry the module exports through its dependency (ns.leafSum={}, expected 43)",
+        ns_leaf
+    );
+}
+
+/// Two dynamic imports of the same fresh path from one probe: the first
+/// loads the record (graph-driven), the second must hit the module cache
+/// (same record instance) — the body evaluates exactly once and both
+/// promises resolve to the IDENTICAL namespace object (Node/spec: one URL
+/// ⇒ one module record).
+#[test]
+fn dynamic_import_fresh_module_twice_single_instance() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("fresh.mjs"),
+        "globalThis.__hits = (globalThis.__hits | 0) + 1;\n\
+         export const hits = globalThis.__hits;\n\
+         export const marker = {};\n",
+    )
+    .expect("write fresh.mjs");
+
+    let probe_src = concat!(
+        "globalThis.__count = 0;\n",
+        "const p1 = import(\"./fresh.mjs\");\n",
+        "const p2 = import(\"./fresh.mjs\");\n",
+        "Promise.all([p1, p2]).then(([ns1, ns2]) => {\n",
+        "  globalThis.__nsSame = (ns1 === ns2);\n",
+        "  globalThis.__markerSame = (ns1.marker === ns2.marker);\n",
+        "  globalThis.__done = true;\n",
+        "}, (e) => {\n",
+        "  globalThis.__err = String(e);\n",
+        "  globalThis.__done = true;\n",
+        "});\n",
+    );
+    let probe_path = root.join("probe.mjs").to_string_lossy().into_owned();
+
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+
+    ModuleLoader::eval_module_in_realm(&mut cx, probe_src, &probe_path, None, global.handle())
+        .expect("probe entry evaluates");
+
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__done === true"),
+        "dynamic import continuations did not settle in the job drain"
+    );
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__err === undefined"),
+        "both dynamic imports must resolve, got rejection: {:?}",
+        ctx.eval("globalThis.__err", "<e139-err>")
+            .ok()
+            .map(|v| format!("{:?}", v))
+            .unwrap_or_else(|| "<unreadable>".into())
+    );
+    let hits = num_probe(&mut ctx, "globalThis.__hits | 0");
+    assert_eq!(
+        hits, 1.0,
+        "fresh body must evaluate exactly once across both imports (got {})",
+        hits
+    );
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__nsSame === true"),
+        "both dynamic imports must resolve to the same namespace object \
+         (second import compiled a second instance)"
+    );
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__markerSame === true"),
+        "export binding cells must be shared across both imports (second instance)"
     );
 }
 
