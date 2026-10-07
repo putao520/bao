@@ -905,52 +905,92 @@ impl StealthHooks {
         )
     }
 
-    /// `window.chrome` spoof — real desktop Chrome shape (own enumerable data
-    /// property of Window carrying app / runtime / loadTimes / csi). Its own
-    /// realm guards make it inert outside page realms (real Chrome workers
-    /// have no window.chrome either) and idempotent across re-injections.
+    /// `window.chrome` spoof — real Chrome vanilla-page shape (own enumerable
+    /// data property of Window carrying loadTimes / csi / app, in that key
+    /// order). Its own realm guards make it inert outside page realms (real
+    /// Chrome workers have no window.chrome either) and idempotent across
+    /// re-injections.
+    ///
+    /// e135 oracle (real Chrome 149/150 stable, headless + headful — probes
+    /// under /tmp/e135-chrome-probe): every loadTimes/csi timestamp is a
+    /// REAL navigation-timing value (requestTime=navigationStart,
+    /// commitLoadTime=responseStart, finishDocumentLoadTime=
+    /// domContentLoadedEventEnd, finishLoadTime=loadEventEnd, firstPaintTime
+    /// = the first-paint entry — seconds-truncated, 0 until the event
+    /// fired), csi's onload key is `onloadT`, and the vanilla page carries
+    /// NO runtime member (runtime exists only in extension contexts; the
+    /// e124-era engine_props face already deletes it as a ChromeDriver
+    /// signal — this face agrees with it now).
     const CHROME_SURFACE_JS: &str = r#"
-  // window.chrome (e130): bot.sannysoft.com's "Chrome (New)" row fails on
-  // plain absence; deeper probes (creepjs et al.) compare the member set, so
-  // a bare {} is not enough — mirror the documented vanilla-page shape.
+  // window.chrome (e130 shape, e135 oracle real-valued): bot.sannysoft.com's
+  // "Chrome (New)" row fails on plain absence; deeper probes (creepjs et al.)
+  // compare the member set, so a bare {} is not enough. Member set and every
+  // timestamp mirror the real vanilla-page API — navigation-timing deep
+  // cross-validation cannot separate them from the native one.
   if (typeof window !== 'undefined' && typeof Plugin !== 'undefined' && typeof MimeType !== 'undefined'
       && !(typeof window.chrome !== 'undefined' && window.chrome)) {
     function baoChromeLoadTimes() {
       var t = (typeof performance !== 'undefined' && performance.timing) ? performance.timing : null;
-      var base = (t && t.fetchStart) ? (t.fetchStart / 1000) : (Date.now() / 1000);
+      if (!t) { return {}; }
+      var firstPaintMs = 0;
+      try {
+        var paints = performance.getEntriesByType('paint');
+        for (var i = 0; i < paints.length; i++) {
+          if (paints[i].name === 'first-paint') { firstPaintMs = t.navigationStart + paints[i].startTime; break; }
+        }
+      } catch (e) {}
+      // connection family follows the page's egress protocol: https rides
+      // the stealth TLS stack (h2 ALPN), plain http is the HTTP/1.1 bridge,
+      // non-network schemes carry no negotiated protocol
+      var proto = (window.location && window.location.protocol) || '';
+      var https = proto === 'https:';
+      var network = proto === 'https:' || proto === 'http:';
+      var navType = 'Other';
+      try {
+        var nt = (performance.navigation && typeof performance.navigation.type === 'number') ? performance.navigation.type : 0;
+        if (nt === 1) { navType = 'Reload'; } else if (nt === 2) { navType = 'BackForward'; }
+      } catch (e) {}
       return {
-        requestTime: base,
-        startLoadTime: base,
-        commitLoadTime: base + 0.048,
-        finishDocumentLoadTime: base + 0.212,
-        finishLoadTime: base + 0.247,
-        firstPaintTime: base + 0.156,
+        requestTime: t.navigationStart / 1000,
+        startLoadTime: t.navigationStart / 1000,
+        commitLoadTime: t.responseStart / 1000,
+        finishDocumentLoadTime: t.domContentLoadedEventEnd / 1000,
+        finishLoadTime: t.loadEventEnd / 1000,
+        firstPaintTime: firstPaintMs / 1000,
         firstPaintAfterLoadTime: 0,
-        navigationType: 'Other',
-        wasFetchedViaSpdy: true,
-        wasNpnNegotiated: true,
-        npnNegotiatedProtocol: 'h2',
+        navigationType: navType,
+        wasFetchedViaSpdy: https,
+        wasNpnNegotiated: https,
+        npnNegotiatedProtocol: https ? 'h2' : (network ? 'unknown' : ''),
         wasAlternateProtocolAvailable: false,
-        connectionInfo: 'h2'
+        connectionInfo: network ? (https ? 'h2' : 'http/1.1') : 'unknown'
       };
     }
+    function baoChromeCsi() {
+      var t = (typeof performance !== 'undefined' && performance.timing) ? performance.timing : null;
+      var start = t ? t.navigationStart : 0;
+      var onload = t ? t.loadEventEnd : 0;
+      var pageT = (typeof performance !== 'undefined' && performance.now)
+        ? performance.now() / 1000
+        : (start ? Math.max(0, Date.now() - start) / 1000 : 0);
+      return { startE: start, onloadT: onload, pageT: pageT, tran: 15 };
+    }
     var baoChrome = {
+      loadTimes: baoChromeLoadTimes,
+      csi: baoChromeCsi,
       app: {
         isInstalled: false,
-        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
         getDetails: function() { return null; },
         getIsInstalled: function() { return false; },
-        installState: function(callback) { if (typeof callback === 'function') { callback('not_installed'); } }
-      },
-      runtime: {},
-      csi: function() {
-        var t = (typeof performance !== 'undefined' && performance.timing) ? performance.timing : null;
-        var start = (t && t.navigationStart) ? t.navigationStart : 0;
-        var onload = (t && t.loadEventEnd) ? t.loadEventEnd : 0;
-        return { startE: start, onloadE: onload, pageT: Math.max(0, onload - start) / 1000, tran: 15 };
-      },
-      loadTimes: baoChromeLoadTimes
+        installState: function(callback) {
+          if (typeof callback === 'function') {
+            setTimeout(function() { callback('not_installed'); }, 0);
+          }
+        },
+        runningState: function() { return 'cannot_run'; },
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+      }
     };
     try {
       Object.defineProperty(window, 'chrome', { value: baoChrome, writable: true, enumerable: true, configurable: false });
@@ -1701,23 +1741,114 @@ mod tests {
             js.contains("Object.defineProperty(window, 'chrome'"),
             "chrome-profile plugin payload must define window.chrome (sannysoft Chrome row)"
         );
-        // Real desktop Chrome shape: app / runtime / loadTimes / csi members.
-        for member in ["app:", "runtime:", "csi:", "loadTimes"] {
+        // e135 oracle (real Chrome 149/150, headless + headful): the
+        // vanilla-page chrome own-key set is exactly [loadTimes, csi, app]
+        // — in that order — with NO runtime member (extension contexts
+        // only; carrying one is a ChromeDriver-class detection vector).
+        for member in ["loadTimes", "csi", "app"] {
             assert!(
-                js.contains(member),
+                js.contains(&format!("{}:", member)),
                 "window.chrome spoof must carry the {} member (real Chrome shape)",
                 member
             );
         }
+        let load_times_idx = js.find("loadTimes:").expect("loadTimes key");
+        let csi_idx = js.find("csi:").expect("csi key");
+        let app_idx = js.find("app:").expect("app key");
+        assert!(
+            load_times_idx < csi_idx && csi_idx < app_idx,
+            "window.chrome member order must be loadTimes, csi, app (real own-key order)"
+        );
+        assert!(
+            !js.contains("runtime:"),
+            "window.chrome must NOT carry a runtime member — real vanilla-page Chrome has \
+             none and its presence is an automation signal (engine_props deletes it)"
+        );
+        // app member set: installState + runningState both present (running
+        // state returns 'cannot_run' on a vanilla page).
         assert!(
             js.contains("installState"),
             "window.chrome.app must carry installState (documented vanilla-page shape)"
+        );
+        assert!(
+            js.contains("runningState"),
+            "window.chrome.app must carry runningState (e135 oracle member)"
+        );
+        assert!(
+            js.contains("'cannot_run'"),
+            "window.chrome.app.runningState must return 'cannot_run' (vanilla page)"
         );
         // Worker-safety: the section must be inert outside page realms (real
         // Chrome workers have no window.chrome) — internal window guard.
         assert!(
             js.contains("typeof window !== 'undefined'"),
             "window.chrome section must guard on typeof window (worker realms)"
+        );
+    }
+
+    // ── e135: loadTimes/csi real-value derivation (oracle Chrome 149/150) ──
+
+    #[test]
+    fn chrome_surface_loadtimes_csi_derive_from_real_timing() {
+        let hooks = chrome_hooks();
+        let js = hooks.plugin_js();
+        // loadTimes timestamps must come from the page's own navigation
+        // timing (per-field mapping locked):
+        //   requestTime/startLoadTime ← navigationStart
+        //   commitLoadTime            ← responseStart
+        //   finishDocumentLoadTime    ← domContentLoadedEventEnd
+        //   finishLoadTime            ← loadEventEnd
+        //   firstPaintTime            ← first-paint paint-timing entry
+        for source in [
+            "t.navigationStart / 1000",
+            "t.responseStart / 1000",
+            "t.domContentLoadedEventEnd / 1000",
+            "t.loadEventEnd / 1000",
+        ] {
+            assert!(
+                js.contains(source),
+                "loadTimes must derive its timestamps from the real timing field ({})",
+                source
+            );
+        }
+        assert!(
+            js.contains("getEntriesByType('paint')"),
+            "firstPaintTime must come from the paint-timing entries (0 before first paint)"
+        );
+        // csi: the real API's onload key is `onloadT` (NOT onloadE) and
+        // pageT is the elapsed time at call, not a load-delta.
+        assert!(
+            js.contains("onloadT:"),
+            "csi must use the real key onloadT (oracle: startE/onloadT/pageT/tran)"
+        );
+        assert!(
+            !js.contains("onloadE:"),
+            "csi must NOT use the wrong key onloadE — real Chrome has onloadT"
+        );
+        assert!(
+            js.contains("performance.now() / 1000"),
+            "csi.pageT must be the elapsed time at call (performance.now based)"
+        );
+        // Synthetic fixed offsets are gone — real values only.
+        for synthetic in ["+ 0.048", "+ 0.212", "+ 0.247", "+ 0.156"] {
+            assert!(
+                !js.contains(synthetic),
+                "loadTimes must not carry the synthetic fixed offset {} (navigation-timing \
+                 cross-validation detects it)",
+                synthetic
+            );
+        }
+        // Connection family follows the page protocol instead of a
+        // hardcoded h2 (real Chrome reports http/1.1 + no-NPN on plain http).
+        assert!(
+            js.contains("'http/1.1'") && js.contains("'unknown'"),
+            "loadTimes connection family must cover the plain-http shape (http/1.1 + unknown)"
+        );
+        // installState invokes its callback asynchronously (oracle: the
+        // callback does not fire synchronously).
+        assert!(
+            js.contains("setTimeout(function() { callback('not_installed'); }, 0);"),
+            "app.installState must invoke its callback asynchronously (oracle form)"
         );
     }
 

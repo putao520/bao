@@ -5132,7 +5132,17 @@ impl WebViewDelegate for BaoWebViewDelegate {
     }
 
     fn request_permission(&self, _webview: WebView, request: PermissionRequest) {
-        request.allow();
+        // e135 oracle (real headless Chrome 149/150): permission prompts
+        // auto-resolve DENIED in headless — Notification.requestPermission()
+        // resolves "denied" and geolocation fails PERMISSION_DENIED, with no
+        // prompt UI possible (probes under /tmp/e135-chrome-probe). The
+        // former auto-allow resolved "granted" — a state no real headless
+        // Chrome produces — and servo caches it into the permission store,
+        // flipping later permissions.query results to "granted" too.
+        // Denying keeps the static Notification.permission at "default"
+        // until a page actually requests (what bot.sannysoft.com reads),
+        // and matches the real headless resolution exactly.
+        request.deny();
     }
 
     // @trace REQ-LIB-001 [entity:PagePool] [entity:BaoServoDelegate]
