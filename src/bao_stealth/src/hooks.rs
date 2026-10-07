@@ -921,6 +921,25 @@ impl StealthHooks {
     /// NO runtime member (runtime exists only in extension contexts; the
     /// e124-era engine_props face already deletes it as a ChromeDriver
     /// signal — this face agrees with it now).
+    ///
+    /// e141 native-toString facade: real Chrome answers every toString
+    /// channel with the `[native code]` form and INHERITS toString (no own
+    /// property — oracle /tmp/e141-tostring-probe, Chrome 150 headless:
+    /// loadTimes/csi own props [length, name, prototype], name '', `new`
+    /// yields a plain object; app methods own props [length, name], no
+    /// prototype, `new` throws). A per-function own toString would lose the
+    /// adversarial channel `Function.prototype.toString.call(f)` (it
+    /// bypasses own properties) and would itself surface as an
+    /// own-property differential, so every spoofed function is exposed
+    /// through a Proxy carrier instead: the engine renders its anonymous
+    /// `[native code]` form through all three channels for callable
+    /// proxies (the string is engine-generated — there is no patch text to
+    /// find), and the trap-less proxy forwards every introspection to a
+    /// target whose own-property shape mirrors the oracle table above.
+    /// Residual, unreachable from JS in either engine (bound/proxy
+    /// carriers render anonymous in V8 too): real Chrome shows the NAMED
+    /// native form (`function getDetails() { [native code] }`) for app
+    /// methods.
     const CHROME_SURFACE_JS: &str = r#"
   // window.chrome (e130 shape, e135 oracle real-valued): bot.sannysoft.com's
   // "Chrome (New)" row fails on plain absence; deeper probes (creepjs et al.)
@@ -975,19 +994,47 @@ impl StealthHooks {
         : (start ? Math.max(0, Date.now() - start) / 1000 : 0);
       return { startE: start, onloadT: onload, pageT: pageT, tran: 15 };
     }
+    // e141 native-toString facade carrier: every spoofed function is
+    // exposed as a Proxy over a shape-matched plain target. The engine
+    // itself renders the anonymous [native code] form for callable proxies
+    // on every channel — Function.prototype.toString.call(f), f.toString()
+    // and ''+f are all engine-generated and mutually equal, so the
+    // adversarial F.p.toString.call channel (which bypasses any own
+    // toString a per-function patch would install) is covered with zero
+    // patch text in the page. The trap-less proxy forwards every
+    // introspection trap to the target: constructible carriers carry own
+    // [name, prototype, length] with name '' (oracle: chrome.loadTimes /
+    // chrome.csi — `new` yields a plain object); method carriers use an
+    // arrow target (own [name, length], no prototype, `new` throws —
+    // oracle: the four chrome.app methods).
+    function baoMakeNative(impl, name, constructible) {
+      var target;
+      if (constructible) {
+        // plain-function target: own [name, prototype, length], `new` works
+        target = function() {};
+      } else {
+        // arrow target: own [name, length] only — no prototype property,
+        // not constructible (`new` throws), mirroring the app methods
+        target = () => undefined;
+      }
+      Object.defineProperty(target, 'name', { value: name, configurable: true });
+      return new Proxy(target, {
+        apply: function(t, thisArg, args) { return impl.apply(thisArg, args); }
+      });
+    }
     var baoChrome = {
-      loadTimes: baoChromeLoadTimes,
-      csi: baoChromeCsi,
+      loadTimes: baoMakeNative(baoChromeLoadTimes, '', true),
+      csi: baoMakeNative(baoChromeCsi, '', true),
       app: {
         isInstalled: false,
-        getDetails: function() { return null; },
-        getIsInstalled: function() { return false; },
-        installState: function(callback) {
+        getDetails: baoMakeNative(function() { return null; }, 'getDetails', false),
+        getIsInstalled: baoMakeNative(function() { return false; }, 'getIsInstalled', false),
+        installState: baoMakeNative(function(callback) {
           if (typeof callback === 'function') {
             setTimeout(function() { callback('not_installed'); }, 0);
           }
-        },
-        runningState: function() { return 'cannot_run'; },
+        }, 'installState', false),
+        runningState: baoMakeNative(function() { return 'cannot_run'; }, 'runningState', false),
         InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
         RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
       }
@@ -2358,6 +2405,307 @@ mod tests {
             ff.clientrects_js(),
             ch.clientrects_js(),
             "Firefox and Chrome should produce different clientrects JS (different seeds)"
+        );
+    }
+
+    // ── e141: chrome.* native-toString facade ──────────────────────
+
+    #[test]
+    fn chrome_surface_spoofed_functions_ride_native_carriers() {
+        let hooks = chrome_hooks();
+        let js = hooks.plugin_js();
+        // loadTimes/csi: constructible carriers with name '' (oracle: own
+        // [name, prototype, length], `new` yields a plain object).
+        for carrier in [
+            "baoMakeNative(baoChromeLoadTimes, '', true)",
+            "baoMakeNative(baoChromeCsi, '', true)",
+        ] {
+            assert!(
+                js.contains(carrier),
+                "loadTimes/csi must ride the constructible native carrier ({})",
+                carrier
+            );
+        }
+        // app methods: non-constructible arrow carriers with the method
+        // name (oracle: own [name, length], no prototype, `new` throws).
+        for method in ["getDetails", "getIsInstalled", "installState", "runningState"] {
+            assert!(
+                js.contains(&format!("'{}', false)", method)),
+                "app.{} must ride the non-constructible native carrier",
+                method
+            );
+        }
+        // Code-only view of the section (line comments stripped) for the
+        // no-facade-implementation locks.
+        let code_only: String = StealthHooks::CHROME_SURFACE_JS
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(idx) => &l[..idx],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The facade must NOT be an own-property toString patch: real Chrome
+        // INHERITS toString on every chrome.* function (oracle round1 —
+        // getOwnPropertyDescriptor(f, 'toString') is undefined), and an own
+        // toString would also lose the adversarial
+        // Function.prototype.toString.call channel.
+        assert!(
+            !code_only.contains("toString"),
+            "the chrome surface must not install any toString facade of its own — \
+             the carrier's engine-rendered native form covers every channel"
+        );
+        // And no global monkey-patch: Function.prototype.toString must stay
+        // the pristine engine builtin (a global patch would itself be a
+        // detection vector).
+        assert!(
+            !code_only.contains("Function.prototype.toString"),
+            "the chrome surface must not touch Function.prototype.toString"
+        );
+    }
+
+    /// e141 JS-level oracle-parity lock: evaluates the real
+    /// CHROME_SURFACE_JS against a stubbed page environment inside
+    /// SpiderMonkey and asserts the facade's observable surface matches the
+    /// live-Chrome oracle table (probes under /tmp/e141-tostring-probe,
+    /// Chrome 150 headless).
+    #[test]
+    fn chrome_surface_native_tostring_facade_oracle_parity() {
+        use bao_engine::context::JsContext;
+        use bao_engine::value::JsValue;
+
+        let mut ctx = JsContext::for_test().expect("JsContext");
+        // Stubs for the section's page-realm guards + real-value
+        // derivations; the probe reports as one JSON string so a single
+        // eval carries the whole oracle-parity table.
+        let probe = format!(
+            r#"(function() {{
+  var window = {{ location: {{ protocol: 'https:' }} }};
+  var Plugin = function() {{}};
+  var MimeType = function() {{}};
+  var performance = {{
+    timing: {{ navigationStart: 1759000000000, responseStart: 1759000000100,
+               domContentLoadedEventEnd: 1759000000500, loadEventEnd: 1759000000900 }},
+    getEntriesByType: function(t) {{ return t === 'paint' ? [{{ name: 'first-paint', startTime: 200 }}] : []; }},
+    navigation: {{ type: 1 }},
+    now: function() {{ return 1234.5; }}
+  }};
+  var pumped = [];
+  var setTimeout = function(fn, ms) {{ pumped.push(fn); }};
+{section}
+  var ch = window.chrome;
+  var fns = {{
+    loadTimes: ch.loadTimes, csi: ch.csi,
+    getDetails: ch.app.getDetails, getIsInstalled: ch.app.getIsInstalled,
+    installState: ch.app.installState, runningState: ch.app.runningState
+  }};
+  var R = {{ channels: {{}}, constructible: {{}}, nameShape: {{}} }};
+  var leaks = [];
+  Object.keys(fns).forEach(function(k) {{
+    var f = fns[k];
+    var call = Function.prototype.toString.call(f);
+    var method = f.toString();
+    var coerce = '' + f;
+    R.channels[k] = {{
+      native: call.indexOf('[native code]') !== -1 && method.indexOf('[native code]') !== -1
+        && coerce.indexOf('[native code]') !== -1,
+      equal: call === method && method === coerce,
+      ownToString: !!Object.getOwnPropertyDescriptor(f, 'toString')
+    }};
+    if (call.indexOf('bao') !== -1 || method.indexOf('bao') !== -1 || coerce.indexOf('bao') !== -1) {{
+      leaks.push(k);
+    }}
+    R.constructible[k] = {{
+      new: (function() {{ try {{ new f(); return 'yes'; }} catch (e) {{ return 'throws'; }} }})(),
+      hasPrototype: Object.getOwnPropertyNames(f).indexOf('prototype') !== -1
+    }};
+    R.nameShape[k] = {{
+      name: f.name, length: f.length,
+      own: JSON.stringify(Object.getOwnPropertyNames(f))
+    }};
+  }});
+  R.leaks = leaks;
+  R.chromeKeys = Object.keys(ch);
+  R.appKeys = Object.keys(ch.app);
+  R.values = {{
+    loadTimes: ch.loadTimes(),
+    csi: ch.csi(),
+    getDetails: ch.app.getDetails(),
+    getIsInstalled: ch.app.getIsInstalled(),
+    runningState: ch.app.runningState()
+  }};
+  ch.app.installState(function(s) {{ R.installStateCb = s; }});
+  R.installStateAsync = pumped.length === 1;
+  if (pumped.length) {{ pumped[0](); }}
+  R.globalUntouched = {{
+    plainSrcVisible: Function.prototype.toString.call(function marker() {{ return 2; }})
+      .indexOf('return 2') !== -1,
+    selfNative: Function.prototype.toString.call(Function.prototype.toString)
+      .indexOf('[native code]') !== -1
+  }};
+  return JSON.stringify(R);
+}})();"#,
+            section = StealthHooks::CHROME_SURFACE_JS.trim()
+        );
+        let raw = match ctx.eval(&probe, "<e141-chrome-facade>") {
+            Ok(JsValue::String(s)) => s,
+            other => panic!("probe eval failed: {:?}", other),
+        };
+        JsContext::shutdown_thread_sm();
+
+        let r: serde_json::Value = serde_json::from_str(&raw).expect("probe JSON");
+        // Three channels, every surface function: engine-rendered native
+        // form, mutually equal, no own toString, no 'bao' identifier leak.
+        for k in [
+            "loadTimes",
+            "csi",
+            "getDetails",
+            "getIsInstalled",
+            "installState",
+            "runningState",
+        ] {
+            let c = &r["channels"][k];
+            assert_eq!(
+                c["native"].as_bool(),
+                Some(true),
+                "{}: every toString channel must render the [native code] form",
+                k
+            );
+            assert_eq!(
+                c["equal"].as_bool(),
+                Some(true),
+                "{}: F.p.toString.call / f.toString() / ''+f must be mutually equal",
+                k
+            );
+            assert_eq!(
+                c["ownToString"].as_bool(),
+                Some(false),
+                "{}: toString must stay inherited (real Chrome has no own toString)",
+                k
+            );
+        }
+        assert_eq!(
+            r["leaks"].as_array().map(Vec::as_slice),
+            Some(&[] as &[serde_json::Value]),
+            "no surface function may leak the bao* identifier through any channel"
+        );
+        // Oracle constructibility table: loadTimes/csi constructible with a
+        // prototype own prop; the four app methods non-constructible
+        // without one.
+        for k in ["loadTimes", "csi"] {
+            assert_eq!(
+                r["constructible"][k]["new"].as_str(),
+                Some("yes"),
+                "{}: real Chrome's `new` yields a plain object (oracle round2)",
+                k
+            );
+            assert_eq!(
+                r["constructible"][k]["hasPrototype"].as_bool(),
+                Some(true),
+                "{}: own props carry [name, prototype, length] (oracle)",
+                k
+            );
+            assert_eq!(
+                r["nameShape"][k]["name"].as_str(),
+                Some(""),
+                "{}: real name is ''",
+                k
+            );
+            assert_eq!(
+                r["nameShape"][k]["length"].as_u64(),
+                Some(0),
+                "{}: real length is 0",
+                k
+            );
+        }
+        for (k, name) in [
+            ("getDetails", "getDetails"),
+            ("getIsInstalled", "getIsInstalled"),
+            ("installState", "installState"),
+            ("runningState", "runningState"),
+        ] {
+            assert_eq!(
+                r["constructible"][k]["new"].as_str(),
+                Some("throws"),
+                "{}: real app methods are not constructors (oracle round2)",
+                k
+            );
+            assert_eq!(
+                r["constructible"][k]["hasPrototype"].as_bool(),
+                Some(false),
+                "{}: own props are [name, length] only (oracle round3)",
+                k
+            );
+            assert_eq!(
+                r["nameShape"][k]["name"].as_str(),
+                Some(name),
+                "{}: real name",
+                k
+            );
+            assert_eq!(
+                r["nameShape"][k]["length"].as_u64(),
+                Some(0),
+                "{}: real length is 0",
+                k
+            );
+        }
+        // Member sets keep the e135 shape (order included).
+        assert_eq!(
+            r["chromeKeys"],
+            serde_json::json!(["loadTimes", "csi", "app"]),
+            "chrome own-key order must stay loadTimes, csi, app"
+        );
+        assert_eq!(
+            r["appKeys"],
+            serde_json::json!(["isInstalled", "getDetails", "getIsInstalled", "installState",
+                               "runningState", "InstallState", "RunningState"]),
+            "app member set must stay the e135 shape"
+        );
+        // Values are still the e135 real-value derivations.
+        assert_eq!(
+            r["values"]["loadTimes"]["requestTime"].as_f64(),
+            Some(1759000000.0),
+            "requestTime = navigationStart/1000"
+        );
+        assert_eq!(
+            r["values"]["loadTimes"]["navigationType"], "Reload",
+            "navigationType follows performance.navigation.type"
+        );
+        let csi = &r["values"]["csi"];
+        assert_eq!(csi["startE"].as_u64(), Some(1759000000000u64));
+        assert_eq!(csi["onloadT"].as_u64(), Some(1759000000900u64));
+        assert_eq!(csi["tran"].as_u64(), Some(15));
+        assert_eq!(r["values"]["getDetails"], serde_json::Value::Null);
+        assert_eq!(
+            r["values"]["getIsInstalled"].as_bool(),
+            Some(false),
+            "getIsInstalled() must return false (vanilla page)"
+        );
+        assert_eq!(
+            r["values"]["runningState"].as_str(),
+            Some("cannot_run"),
+            "runningState() must return 'cannot_run' (vanilla page)"
+        );
+        assert_eq!(
+            r["installStateAsync"].as_bool(),
+            Some(true),
+            "installState must queue its callback asynchronously"
+        );
+        assert_eq!(
+            r["installStateCb"].as_str(),
+            Some("not_installed"),
+            "installState callback fires with 'not_installed'"
+        );
+        // The facade must not have touched the global surface.
+        assert_eq!(
+            r["globalUntouched"]["plainSrcVisible"].as_bool(),
+            Some(true),
+            "plain functions must still render their source (no global toString patch)"
+        );
+        assert_eq!(
+            r["globalUntouched"]["selfNative"].as_bool(),
+            Some(true),
+            "Function.prototype.toString itself must stay the pristine native"
         );
     }
 }
