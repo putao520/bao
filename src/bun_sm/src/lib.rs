@@ -144,7 +144,8 @@ pub use host_call::{from_js_host_call, to_js_host_call, to_js_host_fn_result};
 pub use host_fn::JSHostFn;
 pub use hot_reloader::{HotReloader, ImportWatcher};
 pub use module_loader::{
-    GlobalSetupFn, JobQueueDrainFn, ModuleLoader, PostEvalHook, ResolverFn, set_job_queue_drain,
+    GlobalSetupFn, JobQueueDrainFn, ModuleLoader, PostEvalHook, ResolverFn,
+    lookup_entry_module_cache, register_entry_module_cache, set_job_queue_drain,
 };
 pub use system_error::SysErrorJsc;
 pub use system_error::SystemError;

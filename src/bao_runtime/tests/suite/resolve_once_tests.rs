@@ -224,6 +224,215 @@ fn entry_back_import_from_dependency_single_instance() {
     );
 }
 
+/// e138 (REQ-ENG-001): require() of an ESM module must join the SAME module
+/// registry the import hook uses (Node ≥22 require(esm) semantics: require
+/// and import share one module registry; same URL ⇒ one module record).
+/// Pre-fix anatomy (e136's reported adjacent surface): `load_esm_module`
+/// compiled the entry OUTSIDE the module cache and keyed only the require
+/// cache, so the import side (dynamic `import()` or a static import through
+/// any dependent) missed the registry and compiled a SECOND instance from
+/// disk — the body evaluated twice and the two namespaces diverged (a
+/// require-vs-import observable fingerprint vs Node). Three pins:
+///
+/// 1. require-first, dual spelling: `require("./sub/../esm.mjs")` then
+///    `import("./esm.mjs")` → one evaluation, shared namespace identity;
+/// 2. import-first: `import("./esm.mjs")` then `require("./esm.mjs")` →
+///    require must serve the registered record's namespace, not compile
+///    a second instance;
+/// 3. back-import through a dependent during the require-driven graph load
+///    (require entry → sibling → entry static cycle) → each body exactly
+///    once — the require-side twin of e136's eval-entry pin.
+
+/// Require-first, dual spelling. Phase 1 requires the ESM under a
+/// `sub/../` spelling (require resolver); phase 2 dynamically imports it
+/// under the plain spelling (import hook) from a separate probe entry whose
+/// continuation settles in eval_module_in_realm's job drain. The canonical
+/// key must collapse the two spellings: one evaluation, and the import
+/// namespace must be IDENTICAL to the require-returned namespace (SM hands
+/// out one namespace object per module record).
+#[test]
+fn require_esm_then_import_single_instance() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("sub")).expect("mkdir sub");
+    std::fs::write(
+        root.join("esm.mjs"),
+        "globalThis.__hits = (globalThis.__hits | 0) + 1;\n\
+         export const hits = globalThis.__hits;\n\
+         export const marker = {};\n",
+    )
+    .expect("write esm.mjs");
+
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+    // The require cache keys by REQUIRE_DIR-relative resolution: point it
+    // at the temp dir so the relative spelling resolves there.
+    bun_runtime::require::set_require_dir(root.to_path_buf());
+
+    // Phase 1: require() compiles the entry (pre-fix: outside the module
+    // registry — only the require cache learns about it).
+    ctx.eval(
+        "globalThis.__reqNs = require(\"./sub/../esm.mjs\");",
+        "<e138-require-first>",
+    )
+    .expect("require(esm) phase must load");
+
+    // Phase 2: import() under a DIFFERENT spelling must resolve to the SAME
+    // record (canonicalized key), not compile a second instance from disk.
+    let probe_src = concat!(
+        "import(\"./esm.mjs\").then((ns) => {\n",
+        "  globalThis.__importHits = ns.hits;\n",
+        "  globalThis.__importSame = (ns === globalThis.__reqNs);\n",
+        "  globalThis.__importMarkerSame = (ns.marker === globalThis.__reqNs.marker);\n",
+        "  globalThis.__done = true;\n",
+        "});\n",
+    );
+    let probe_path = root.join("probe.mjs").to_string_lossy().into_owned();
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+    ModuleLoader::eval_module_in_realm(&mut cx, probe_src, &probe_path, None, global.handle())
+        .expect("probe entry evaluates");
+
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__done === true"),
+        "import continuation did not settle in the job drain"
+    );
+    let hits = num_probe(&mut ctx, "globalThis.__hits | 0");
+    assert_eq!(
+        hits, 1.0,
+        "esm body must evaluate exactly once across require+import (got {})",
+        hits
+    );
+    let import_hits = num_probe(&mut ctx, "globalThis.__importHits | 0");
+    assert_eq!(
+        import_hits, 1.0,
+        "import namespace must be the require-side instance (ns.hits={}, expected 1)",
+        import_hits
+    );
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__importSame === true"),
+        "import namespace must be identical to the require-returned namespace \
+         (ns !== require exports => second instance was compiled)"
+    );
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__importMarkerSame === true"),
+        "binding-cell identity must match across require/import (second instance)"
+    );
+}
+
+/// Import-first. Phase 1 statically imports the ESM from a probe entry —
+/// the import hook compiles AND registers the record in the module cache,
+/// and the graph machinery evaluates it. Phase 2 requires the same path:
+/// require must serve the registered record's namespace (identity-equal to
+/// the import-side namespace object) and the body must still have run
+/// exactly once. (Dynamic `import()` of a fresh module is a separate,
+/// pre-existing hook-layer defect — the load hook hands `New` records to
+/// SM's ContinueDynamicImport, which requires graph-loaded records — and is
+/// reported as an adjacent surface, not pinned here.)
+#[test]
+fn import_then_require_esm_single_instance() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("esm.mjs"),
+        "globalThis.__hits = (globalThis.__hits | 0) + 1;\n\
+         export const hits = globalThis.__hits;\n",
+    )
+    .expect("write esm.mjs");
+
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+
+    // Phase 1: static import first — the hook registers the record and the
+    // graph machinery evaluates it as part of the probe's graph.
+    let probe_src = concat!(
+        "import * as ns from \"./esm.mjs\";\n",
+        "globalThis.__importNs = ns;\n",
+    );
+    let probe_path = root.join("probe.mjs").to_string_lossy().into_owned();
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+    ModuleLoader::eval_module_in_realm(&mut cx, probe_src, &probe_path, None, global.handle())
+        .expect("probe entry evaluates");
+
+    // Phase 2: require() must hit the registry, not compile anew.
+    bun_runtime::require::set_require_dir(root.to_path_buf());
+    let src = r#"
+        var m = require("./esm.mjs");
+        if (m !== globalThis.__importNs) {
+            throw new Error("require(esm) served a second instance (namespace identity broken)");
+        }
+        if (globalThis.__hits !== 1) {
+            throw new Error("esm body evaluated " + globalThis.__hits + " times");
+        }
+        "import-then-require-ok"
+        "#;
+    let r = ctx
+        .eval(src, "<e138-require-second>")
+        .expect("require after import must serve the registered record");
+    match r {
+        bao_engine::value::JsValue::String(s) => assert_eq!(s, "import-then-require-ok"),
+        other => panic!("expected ok marker string, got {:?}", other),
+    }
+}
+
+/// Back-import through a dependent during the require-driven graph load:
+/// the require entry imports ./sibling.mjs, sibling imports the entry back.
+/// The require-compiled entry must be registered in the module cache BEFORE
+/// graph load, so sibling's back-import resolves to THIS instance — the
+/// entry body evaluates exactly once. Pre-fix, the back-import compiled a
+/// second entry instance from disk (the disk copy evaluated first as
+/// sibling's dependency, then the require-side body ran again).
+#[test]
+fn require_esm_back_import_from_dependency_single_instance() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("sibling.mjs"),
+        "import \"./main.mjs\";\n\
+         globalThis.__siblingRan = (globalThis.__siblingRan | 0) + 1;\n",
+    )
+    .expect("write sibling.mjs");
+    std::fs::write(
+        root.join("main.mjs"),
+        "import \"./sibling.mjs\";\n\
+         globalThis.__hits = (globalThis.__hits | 0) + 1;\n",
+    )
+    .expect("write main.mjs");
+
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+    bun_runtime::require::set_require_dir(root.to_path_buf());
+
+    ctx.eval("require(\"./main.mjs\");", "<e138-cycle>").expect(
+        "cyclic require entry graph must load, link and evaluate",
+    );
+
+    let sibling_ran = num_probe(&mut ctx, "globalThis.__siblingRan | 0");
+    assert_eq!(
+        sibling_ran, 1.0,
+        "sibling body must evaluate exactly once (got {} evaluations)",
+        sibling_ran
+    );
+    let hits = num_probe(&mut ctx, "globalThis.__hits | 0");
+    assert_eq!(
+        hits, 1.0,
+        "require entry body must evaluate exactly once across the cycle (got {} evaluations)",
+        hits
+    );
+}
+
 /// `require()` of an ES module is the upstream segfault trigger
 /// (`Module._resolveFilename` returning `dir + "/./esm.mjs"` etc.). In bao
 /// it must load, return the live namespace, and the require cache key

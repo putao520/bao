@@ -168,9 +168,26 @@ fn module_cache_key(path: &Path) -> String {
 /// BEFORE graph loading (`load_requested_modules_sync`): the back-import
 /// fires during that pass. Per-realm semantics come free from the cache's
 /// global-property store (`module_cache_insert` targets the current global).
-fn register_entry_module_cache(raw_cx: *mut JSContext, module: *mut JSObject, abs_filename: &Path) {
+///
+/// e138: also the require(esm) entry registration (require.rs
+/// `load_esm_module`) — same form, same single-source key; require and
+/// import share one module registry (Node ≥22 require(esm) semantics).
+pub fn register_entry_module_cache(raw_cx: *mut JSContext, module: *mut JSObject, abs_filename: &Path) {
     let cache_key = module_cache_key(abs_filename);
     module_cache_insert(raw_cx, &cache_key, module);
+}
+
+/// e138 (REQ-ENG-001): require(esm) bridge — look up the module cache by
+/// absolute path under the SAME single-source key form the import hook
+/// (`load_module_record_sync`) uses. A hit means the path was already
+/// compiled into a module record (by the import hook, or an earlier
+/// eval/require entry); the caller must serve that instance instead of
+/// compiling a second one (Node ≥22 require(esm): require and import share
+/// one module registry; same URL ⇒ one module record). The path may be any
+/// spelling — `module_cache_key` canonicalizes (idempotent on canonical).
+pub fn lookup_entry_module_cache(raw_cx: *mut JSContext, abs_filename: &Path) -> Option<*mut JSObject> {
+    let cache_key = module_cache_key(abs_filename);
+    module_cache_get(raw_cx, &cache_key).filter(|m| !m.is_null())
 }
 
 // ============================================================================

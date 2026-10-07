@@ -916,6 +916,37 @@ unsafe fn load_esm_module(cx: *mut JSContext, source: &str, path: &Path) -> Opti
     use mozjs::glue::NewCompileOptions;
     use mozjs::rust::transform_str_to_source_text;
 
+    // @trace REQ-ENG-001 [entity:ModuleRegistry] — e138: require(esm) joins
+    // the SAME module registry the import hook uses (Node ≥22 require(esm)
+    // semantics: require and import share one registry; same URL ⇒ one
+    // module record). Import-first: if the module cache already holds this
+    // path (compiled by the import hook or an earlier entry), serve THAT
+    // instance instead of compiling a second one from the source below —
+    // ModuleLink/ModuleEvaluate are no-ops on an already-evaluated record,
+    // and the namespace is the live one import() resolves.
+    if let Some(existing) = bao_engine::module_loader::lookup_entry_module_cache(cx, path) {
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let existing_root = existing);
+        if !mozjs_sys::jsapi::JS::ModuleLink(cx, existing_root.handle().into()) {
+            JS_ClearPendingException(cx);
+            return None;
+        }
+        let mut hit_rval = UndefinedValue();
+        let hit_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut hit_rval,
+        };
+        if !mozjs_sys::jsapi::JS::ModuleEvaluate(cx, existing_root.handle().into(), hit_h) {
+            JS_ClearPendingException(cx);
+            return None;
+        }
+        // Drain microtasks so a first evaluation (record compiled but never
+        // evaluated) completes synchronously, mirroring the miss path.
+        mozjs_sys::jsapi::js::RunJobs(cx);
+        let ns = mozjs_sys::jsapi::JS::GetModuleNamespace(cx, existing_root.handle().into());
+        return if ns.is_null() { None } else { Some(ns) };
+    }
+
     // Compile as ESM module.
     let filename_str = path.to_string_lossy().into_owned();
     let c_filename = ZBox::from_bytes(filename_str.as_bytes());
@@ -941,6 +972,15 @@ unsafe fn load_esm_module(cx: *mut JSContext, source: &str, path: &Path) -> Opti
             mozjs_sys::jsapi::JS::SetModulePrivate(module, &val as *const _);
         }
     }
+
+    // @trace REQ-ENG-001 [entity:ModuleRegistry] — e138: require-first —
+    // register THIS instance in the module registry under the same
+    // canonicalized-path key the import hook uses, BEFORE graph load: a
+    // dependent's static back-import during load_requested_modules_sync and
+    // any later import() of the same path must resolve to this instance,
+    // not compile a second one from disk (single-instance semantics; the
+    // same registration form the eval_module* entries apply since e136).
+    bao_engine::module_loader::register_entry_module_cache(cx, module, path);
 
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let module_root = module);
