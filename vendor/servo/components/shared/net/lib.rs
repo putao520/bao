@@ -1031,18 +1031,35 @@ impl FetchThread {
         response_init: Option<ResponseInit>,
         callback: BoxedFetchCallback,
     ) {
-        let _ = FETCH_THREAD.get_or_init(FetchThread::spawn).sender.send(
-            ToFetchThreadMessage::StartFetch(
-                request,
-                response_init,
-                callback,
-                core_resource_thread.clone(),
-            ),
+        let mut message = ToFetchThreadMessage::StartFetch(
+            request,
+            response_init,
+            callback,
+            core_resource_thread.clone(),
         );
+        let mut fetch_thread = FETCH_THREAD.lock().unwrap();
+        loop {
+            let Some(handle) = fetch_thread.as_ref() else {
+                *fetch_thread = Some(FetchThread::spawn());
+                continue;
+            };
+            match handle.sender.send(message) {
+                Ok(()) => return,
+                Err(send_error) => {
+                    // The multiplexer thread is gone (a previous instance's
+                    // shutdown exited it, or its run loop broke on a dead
+                    // resource thread). `SendError` hands the undelivered
+                    // message back, so the request is not lost: respawn the
+                    // thread and retry on the fresh handle.
+                    message = send_error.0;
+                    *fetch_thread = Some(FetchThread::spawn());
+                },
+            }
+        }
     }
 
     fn cancel_async_fetch(request_ids: Vec<RequestId>, core_resource_thread: &CoreResourceThread) {
-        if let Some(fetch_thread) = FETCH_THREAD.get() {
+        if let Some(fetch_thread) = FETCH_THREAD.lock().unwrap().as_ref() {
             let _ = fetch_thread.sender.send(ToFetchThreadMessage::Cancel(
                 request_ids,
                 core_resource_thread.clone(),
@@ -1051,8 +1068,13 @@ impl FetchThread {
     }
 
     /// If the `FetchThread` is running, send the exit message and wait for it to exit.
+    ///
+    /// BAO NOTE (e134): this clears the slot, so a subsequent `fetch_async`
+    /// respawns the thread instead of reusing the dead handle (process-exit
+    /// callers only; instance shutdown no longer calls this — see
+    /// `Constellation::run`).
     pub fn exit() {
-        let Some(fetch_thread) = FETCH_THREAD.get() else {
+        let Some(fetch_thread) = FETCH_THREAD.lock().unwrap().take() else {
             return;
         };
         let _ = fetch_thread.sender.send(ToFetchThreadMessage::Exit);
@@ -1069,7 +1091,21 @@ struct FetchThreadHandle {
     join_handle: RwLock<Option<JoinHandle<()>>>,
 }
 
-static FETCH_THREAD: OnceLock<FetchThreadHandle> = OnceLock::new();
+// BAO PATCH (e134, REQ-BRW-002 multi-runtime): the FetchThread is a
+// PROCESS-wide async-fetch multiplexer — every request carries its own
+// `core_resource_thread`, so the thread itself is shared by all Servo
+// instances in the process. Upstream stored the handle in a `OnceLock` and
+// `Constellation`'s instance shutdown called `FetchThread::exit()`, which
+// permanently killed the thread while leaving the dead handle cached: a
+// SECOND Servo instance in the same process (embedder multi-runtime shape)
+// then had every `fetch_async` call silently drop its request
+// (`sender.send` on the dead handle fails into `let _ =`), so all of that
+// instance's network loads — initial page loads included — never started.
+// The slot is re-armable: `fetch_async` respawns the thread when the
+// previous one is gone (instance shutdown, or the run loop's break on a
+// dead resource thread).
+static FETCH_THREAD: std::sync::Mutex<Option<FetchThreadHandle>> =
+    std::sync::Mutex::new(None);
 
 /// Instruct the fetch thread to start a new asynchronous fetch request.
 pub fn fetch_async(

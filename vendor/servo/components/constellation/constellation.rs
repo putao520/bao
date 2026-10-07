@@ -806,12 +806,33 @@ where
         }
         self.handle_shutdown();
 
-        if !opts::get().multiprocess {
+        // BAO PATCH (e134, REQ-BRW-002 multi-runtime): do NOT tear down the
+        // process-global services at Constellation-instance shutdown. Upstream
+        // assumed one constellation per process; an embedder that drops one
+        // Servo instance and builds another in the same process poisoned the
+        // new instance deterministically:
+        //  - `FetchThread::exit()` killed the process-wide async-fetch
+        //    multiplexer while its `OnceLock`-cached handle stayed dead —
+        //    every fetch of the next instance silently dropped, so ALL its
+        //    network loads (initial page loads included) never started
+        //    (e134 hop-probe attribution; the shared/net FetchThread slot is
+        //    now re-armable as defense-in-depth);
+        //  - `ROUTER.shutdown()` permanently closed the process-global IPC
+        //    router — every later `ROUTER.add_typed_route` silently no-ops
+        //    (ipc router.rs `add_route` returns early once `shutdown` is set),
+        //    breaking request/response-body routing for later instances;
+        //  - `StyleThreadPool::shutdown()` drained the shared style rayon
+        //    pool, degrading every later instance to sequential styling.
+        // The ScriptThread's own exit path already guards its identical
+        // `ROUTER.shutdown()` call behind `opts::get().multiprocess` with the
+        // same rationale ("single process ... there is only one ROUTER, so we
+        // should not shut it down"); the Constellation missed the same guard.
+        // These services die with the process; instance shutdown leaves them
+        // resident.
+        if opts::get().multiprocess {
             style::global_style_data::StyleThreadPool::shutdown();
+            FetchThread::exit();
         }
-
-        // Shut down the `FetchThread` if it has been started at any time.
-        FetchThread::exit();
 
         // Note: the last thing the constellation does, is asking the embedder to
         // shut down. This helps ensure we've shut down all our internal threads before
@@ -2905,8 +2926,17 @@ where
             warn!("Exit private web storage thread failed ({:?})", e);
         }
 
-        debug!("Shutting-down IPC router thread in constellation.");
-        ROUTER.shutdown();
+        // BAO PATCH (e134, REQ-BRW-002 multi-runtime): only the multiprocess
+        // content process may close the process-global IPC router — in
+        // single-process mode there is exactly one ROUTER for the whole
+        // process and every Servo instance's routes flow through it; shutting
+        // it down at instance shutdown makes every later
+        // `ROUTER.add_typed_route` silently no-op (same guard and rationale
+        // as the ScriptThread's exit path).
+        if opts::get().multiprocess {
+            debug!("Shutting-down IPC router thread in constellation.");
+            ROUTER.shutdown();
+        }
 
         debug!("Shutting-down the async runtime in constellation.");
         self.async_runtime.shutdown();

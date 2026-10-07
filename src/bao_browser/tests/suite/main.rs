@@ -72,6 +72,7 @@ mod media_e2e_tests;
 mod module_css_text_tests;
 mod mouse_bezier_e2e_tests;
 mod multi_page_security_e2e_tests;
+mod multi_runtime_initial_load_tests;
 mod opaque_origin_startup_regression_tests;
 mod page_lifecycle_tests;
 mod page_net_bun_fingerprint_e2e_tests;
