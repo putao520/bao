@@ -121,3 +121,70 @@ automatic-pull / process-getter / process-parameters / zero-outputs / frozen-arr
 ### F6. 基础设施事件
 - **/tmp/e121 整车再次被外部清扫**(venv/meta/296M raw logs 全失)——本波重建:venv 私建于 /tmp/e122/venv、meta 从 vendor ini 树 + manifestupdate(rebuild=True) 重生成(MANIFEST.json 40M,webaudio 全域在案)、launcher run_e122.py。/tmp/e122-cdp-probe.py 等散置 /tmp 根的探针也被清(载具资产必须全部私有化进 /tmp/e122)。
 - e122 CDP 探针流水(probe.py + /tmp/e122-http/*):构造器首发/echo 对照/throw 探针/计数器/options 双向/分配-only/持续 post/离线长渲染——归因链的可复算载体。
+
+## G. e137 WPT campaign 基线重锚(stylo 0cb50925b 收敛后的 ini 期望对齐,2026-10-07,REQ-BRW-002)
+
+e128 终报遗留⑤清偿:stylo 0cb50925b 落地(d3b752e0)后 WPT 期望基线重锚。
+
+### G1. 拓扑真相(差分定位前置考古,修正任务书的基准表述)
+
+- **参考仓本地 main @29b280def = 上游 2026-08-13 快照(4842b770e)+ 仅 3 条 bao agent ini 提交(e74/e80/e91)**;与 origin/main 的 merge-base 即 4842b770e,界外 887 commit。任务书所说「cssom/font ~40 ini 删除+progress pref 翻转随参考仓 29b280def 已收敛」实为**随 648de26fa 血缘已收敛**(=e128 vendor 收敛基,在 origin/main 线上、不在 29b280def 祖先链内)。
+- e128 吸收窗(240a37393→648de26fa,12 commit)本身**零 webaudio meta 变更**;全部改善面落在 4842b770e→240a 子窗口,由六个 media-audio/script 提交携带(ba2b2be24/acbfcae6e/fa06b1bfd/e7c05ec62/c66473652/12bd2ae9a),bao 侧经选择性吸收(e101 delay_node+periodic_wave=435707b6、H 收敛批、e128)落地。
+- 真实「~40」构成:webaudio 面 203(29b/e121 同步态)vs 163(648d 终态)= 净 40 文件差(47 D+7 A);cssom+css-fonts 删除 21(另 css-nesting/cssom-view 边缘 3);progress-computed.html.ini 1 子测期望删除(非字面 pref 翻转)。
+
+### G2. 修复落地映射(引擎侧实证,决定删/留)
+
+| 上游提交 | 修复 | 本仓 vendor 状态 | 判定 |
+|---|---|---|---|
+| 12bd2ae9a #47957 DelayNode | delay_node/mod.rs == 648d(+bao tests) | ✓ 在 | 删 |
+| c66473652 #48510 PannerNode cone gain | panner_node.rs == 648d | ✓ 在 | 删 |
+| acbfcae6e #47492 PeriodicWave | periodic_wave.rs == 648d(+bao tests) | ✓ 在 | 删 |
+| ba2b2be24 #46870 decodeAudioData detached | baseaudiocontext decode 面 == 648d(diff=bao AudioWorklet 增量+C15 签名形) | ✓ 在 | 删 |
+| e7c05ec62 #48347 AudioParam automation | **param.rs=旧基底+bao WorkletParam;oscillator/constant_source 缺 4 行 update_parameters** | ✗ 缺 | 留 |
+| fa06b1bfd #48351 clamping/NaN | param.rs val_range+audio_node SetParamRange 缺 | ✗ 缺 | 留 |
+| b2170f023 #47743 CSSOM parentRule | cssrule.rs == 648d | ✓ 在(cssom 面,本仓无 ini 载体) | 跑验 |
+| c749c02ff #47388 @font-face descriptors | fontface.rs == 648d | ✓ 在(font 面,无载体) | 跑验 |
+| progress-computed 子测删除 | stylo css-values progress() computed(`layout_css_progress_function_enabled` 在 --enable-experimental-web-platform-features 集内,wptrunner 形态默认开) | ✓ 跑验 | 跑验 |
+
+### G3. 重锚动作(vendor meta/webaudio,203→175)
+
+- **删除 28 ini**(跑验证据=全部子测实绿):delaynode 族 13 + panner 族 8 + periodicwave/oscillator 族 5 + detached ×2;含静态判保守而跑验推翻的两件:panner-automation-position(全绿)、k-rate-delay(14/14 绿)。
+- **更新 3 ini 到 648d 终态内容**:idlharness.https.window.js.ini(删 DelayNode/PeriodicWave IDL 陈旧 FAIL;复验 112 翻 0 红与 e121 读数一致)、automation-rate([DelayNode] 子测翻绿)、automation-changes([Listener.positionX.setValue] 翻绿)。
+- **保留 19**:15 个 #48347/#48351 缺失族(EXPFAIL,bao 真红如期望)+ 4 个残留红面(k-rate-biquad-connection/k-rate-oscillator-connections/k-rate-panner-connections/constant-source-output——含超出 ini 覆盖的 unexpected-FAIL,见 G6 登记)。
+- **保留 2 M 面(测试树漂移绑定)**:rendersizehint-smoke、audioworklet-messageport——648d ini 配对**新测试内容**(768000Hz 子测族移除/wasm 变体),campaign tests 树(=参考树=vendor tests,Aug-13)为旧内容,套新 ini 会错配;登记待 tests 树更新波。
+- **跳过 7 个 648d 新增面(A)**:6 个测试文件在参考树缺失(messageport-wasm/no-coop-coep/oversized-resample/incremental-rendering ×2/interrupt-when-created-hidden)+ ctor-offlineaudiocontext 测试内容已变;「本仓无对应面的不动」。
+- e122 的 11 文件本地登记面零触碰(47 删面与其零交集,已核)。
+
+### G4. 跑验读数(binary=/tmp/e137/bao,f7b3da75 worktree 钉 HEAD `--profile test-ci --locked` 自建,sha256 d190dfba6b3cc9f68d51f50bce15847d6ca733afffafb1a5fc660effef40c789,173773144B,processorOptions/audioWorklet/addModule/registerProcessor 探针 4/4)
+
+| 面 | 读数 |
+|---|---|
+| webaudio 47 候选(6 chunk × proc4,timeout×6) | 47/47 启动:28 全绿(7 GREEN+21 全绿翻转,含 2 个 file 级 exp-TIMEOUT→OK)/ 15 EXPFAIL(param 族真红)/ 4 残留红;**零 CRASH 零进程死亡** |
+| 重锚后删除面抽样 6(delaynode/ctor-oscillator/periodicWave/panner-azimuth/k-rate-delay/detached) | **6/6 ran as expected** |
+| M 面 3 复验 | 3/3 OK,0 unexpected-red;58 翻=AudioWorklet IDL 面(bao 有上游无)按 e122 F4 惯例保留可见性 |
+| cssom 代表 4(cssom-fontfacerule/-constructors/CSSStyleRule/computed-style-set-property) | **全绿**(27/27 子测 PASS;#47388/#47743 修复实证) |
+| font 代表 3(font-family-computed/font-face-src-list/slnt-variable) | **全绿**(stylo 0cb50925b font-family 引号重做实证) |
+| progress-computed(648d ini 覆盖) | 翻转子测 `calc(progress(50%, 0px, 100px) * 10px)` **PASS**(翻转成立);`50px` 子测 FAIL-as-expected(servo 终态同病);**1 个本仓侧 unexpected-FAIL**:`sign(1001em - 10lh * progress(...)) * 4` 族(lh/rex/ex 字体相关单位,同族兄弟子测全绿——疑字体度量环境依赖或边界舍入,登记) |
+
+### G5. 载具重建(e121/e122 全灭后第三次重建)+ 新教训
+
+1. 载具私有化 /tmp/e137(venv+私有 manifest 161506 items 39M+launcher run_e137.py+gate-and-run.sh);manifest 用 `wptmanifest.manifest.load_and_update(tests_root, manifest_path, url_base="/", working_copy=True, rebuild=True, cache_root=私有)`。
+2. **bao 无 `-M` 旗标**:servo glue multiprocess=True 会给二进制追加 servo 内部架构旗标 `-M`,bao clap 拒收→进程秒退→「WebDriver not accessible」300s×N。修法=launcher multiprocess=False(并行靠 --processes,wptrunner 侧)。
+3. **prefs-file f64 强转缺陷(bao 层,src/bao_browser/webdriver_host.rs apply_pref_overrides)**:数值 pref 一律 parse::<f64>,servo 仓 resources/wpt-prefs.json 的 `editing_caret_blink_time: 0`(i64 schema)变 0.0 → serde 拒绝 → 启动失败。上游 PrefValue=枚举(类型宽容),bao fork=serde 强 schema——真缺陷,修复合同另案(越本任务边界)。**历史解密:整代 campaign(e67~e122)都从私有 CWD 跑,find_wpt_prefs 找不到文件→跳过(上游同形告警),实际从未消费 wpt test prefs**;本波同形规避(CWD=/tmp/e137/cwd)。
+4. **multi-global `.window.js` 显式路径形态**:manifest 枚举为 `.window.html`(每 global 一 URL),传 `.js` 形态→「Unable to find any tests」;idlharness 单跑须传 `webaudio/idlharness.https.window.html`。
+5. mozlog raw log 语义:`expected` 字段仅 status≠expected 时存在,缺席=如期望(分析器初版反解,已修 analyze2.py)。
+
+### G6. 登记面(不修,后续合同)
+
+- **#48347/#48351 吸收缺口**:param.rs(automation 事件插入/更新+val_range clamping)+oscillator/constant_source 各 4 行+audio_node SetParamRange 三方合并(bao WorkletParam patch 冲突面,需 3-way merge 合同);吸收后 15 EXPFAIL+4 残留面预期翻绿、随下一轮重锚删除。
+- 4 残留红面的 unexpected-FAIL 部分(超 ini 覆盖:biquad 7/osc-conn 8/panner-conn 6/constant-source 1)。
+- progress `* 4` 子测本仓侧红(字体单位族,需 servo CI 环境对照定性)。
+- **参考仓 meta 快进需求**:本地 main 停在 2026-08-13+3 提交,cssom/font/progress 改善(以及一切 887 界外 commit 的期望面)不在其树内;后续 cssom/font campaign 若以参考树 meta 为 oracle 会系统性报 unexpected-PASS 波(正向漂移噪音)。快进/对齐动作属参考仓边界,本任务不可触。
+- rendersizehint/messageport 2 M 面+7 A 面:待 campaign tests 树更新波(参考树 tests 同为 Aug-13)。
+- 参考仓工作树 2 脏文件(M Cargo.lock + M fetch-destination-worker.https.html.ini,他波在途,未触碰)。
+
+### G7. 交付
+
+- vendor meta/webaudio:203→175 ini(28 删+3 更新),与 648d 终态差=19 保留(#48347/51 缺失族+4 残留)+2 测试树漂移 M 面+11 e122 本地面;7 A 面未引入(无测试载体)。
+- cssom/font/progress:只读跑验交付(本仓无载体),「删除已修面/翻转成立」在 bao HEAD 实证。
+- 本地 commit(禁 push);载具 /tmp/e137(半衰期资产:raw logs wa-0..5/c1-cssom/mface/idl3/verify-* + 分账文件)。
