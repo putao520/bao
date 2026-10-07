@@ -81,6 +81,149 @@ fn import_spellings_collapse_to_single_module_instance() {
         .expect("three spellings must load as one module, evaluated once");
 }
 
+/// e136 (REQ-ENG-001): entry modules compiled directly by the eval_module*
+/// entries must join the module cache under the SAME canonicalized-path key
+/// the import hook uses. Two pins below:
+///
+/// 1. `import()` of the entry's own path from inside the entry body must
+///    resolve to THE SAME module record — the entry body evaluates exactly
+///    once and the self-import namespace identity matches (same export
+///    binding cells), instead of compiling a second instance from disk.
+///    Node/spec: one URL ⇒ one module instance.
+///
+/// 2. a static back-import through a dependent (entry → sibling → entry)
+///    during graph load must hit the same cache — the entry body still
+///    evaluates exactly once.
+///
+/// Pre-fix anatomy: `eval_module_in_realm` compiled the entry from the
+/// caller's source but never registered it in the module cache, so any
+/// by-path import of the entry (self or back) missed the cache and compiled
+/// a SECOND instance from disk — the body ran twice and the two namespaces
+/// diverged (an import-detectable fingerprint vs Node).
+
+/// Probe helper: evaluate a boolean expression in the persistent realm.
+fn bool_probe(ctx: &mut JsContext, expr: &str) -> bool {
+    match ctx.eval(expr, "<e136-probe>").expect("probe eval") {
+        bao_engine::value::JsValue::Bool(b) => b,
+        other => panic!("probe `{}` returned {:?}, expected bool", expr, other),
+    }
+}
+
+/// Probe helper: evaluate a numeric expression in the persistent realm.
+fn num_probe(ctx: &mut JsContext, expr: &str) -> f64 {
+    match ctx.eval(expr, "<e136-probe>").expect("probe eval") {
+        bao_engine::value::JsValue::Number(n) => n,
+        other => panic!("probe `{}` returned {:?}, expected number", expr, other),
+    }
+}
+
+/// Dynamic `import()` of the entry's own path, fired from the entry body:
+/// the continuation must settle inside the post-evaluation job drain, the
+/// entry body must have run exactly ONCE, and the resolved namespace must
+/// be the entry's own record (ns.hits === 1, ns.marker === marker). A
+/// second disk-compiled instance would run the body again (hits === 2) and
+/// hand back its own fresh `marker` object (identity mismatch).
+#[test]
+fn entry_dynamic_self_import_single_instance() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    // The import hook reads from DISK, so the entry must also exist as a
+    // file — exactly the `bao run main.mjs` shape (source passed in, same
+    // bytes on disk).
+    let main_src = concat!(
+        "globalThis.__hits = (globalThis.__hits | 0) + 1;\n",
+        "export const hits = globalThis.__hits;\n",
+        "export const marker = {};\n",
+        "import(\"./main.mjs\").then((ns) => {\n",
+        "  globalThis.__nsHits = ns.hits;\n",
+        "  globalThis.__nsMarkerSame = (ns.marker === marker);\n",
+        "  globalThis.__done = true;\n",
+        "});\n",
+    );
+    std::fs::write(root.join("main.mjs"), main_src).expect("write main.mjs");
+    let main_path = root.join("main.mjs").to_string_lossy().into_owned();
+
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+
+    ModuleLoader::eval_module_in_realm(&mut cx, main_src, &main_path, None, global.handle())
+        .expect("entry module evaluates");
+
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__done === true"),
+        "dynamic import continuation did not settle in the job drain"
+    );
+    let hits = num_probe(&mut ctx, "globalThis.__hits | 0");
+    assert_eq!(
+        hits, 1.0,
+        "entry body must evaluate exactly once (got {} evaluations)",
+        hits
+    );
+    let ns_hits = num_probe(&mut ctx, "globalThis.__nsHits | 0");
+    assert_eq!(
+        ns_hits, 1.0,
+        "self-import namespace must be the entry instance (ns.hits={}, expected 1)",
+        ns_hits
+    );
+    assert!(
+        bool_probe(&mut ctx, "globalThis.__nsMarkerSame === true"),
+        "self-import namespace identity must match the entry record \
+         (ns.marker !== marker => second instance was compiled)"
+    );
+}
+
+/// Static back-import through a dependent: entry imports ./sibling.mjs,
+/// sibling imports ./entry back. Side-effect-only module bodies keep the
+/// cycle free of TDZ hazards (the entry's top level runs after sibling in
+/// the cycle). Assertions stay on the Rust side: the entry body must run
+/// exactly ONCE. Pre-fix, sibling's back-import compiled a second entry
+/// instance from disk — the disk copy evaluated first (as sibling's
+/// dependency), then the real entry body ran again (2 evaluations).
+#[test]
+fn entry_back_import_from_dependency_single_instance() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("sibling.mjs"),
+        "import \"./main.mjs\";\n\
+         globalThis.__siblingRan = (globalThis.__siblingRan | 0) + 1;\n",
+    )
+    .expect("write sibling.mjs");
+    let main_src = concat!(
+        "import \"./sibling.mjs\";\n",
+        "globalThis.__hits = (globalThis.__hits | 0) + 1;\n",
+    );
+    // The entry must exist on disk for the (pre-fix) disk-compile path to
+    // be exercisable at all — same bytes as the in-memory source.
+    std::fs::write(root.join("main.mjs"), main_src).expect("write main.mjs");
+    let main_path = root.join("main.mjs").to_string_lossy().into_owned();
+
+    let mut ctx = make_ctx();
+    ctx.eval("void 0;", "<realm-init>").expect("realm init");
+    let global_ptr = thread_realm_global().expect("realm global");
+    let mut cx = ctx.cx();
+    rooted!(&in(cx) let global = global_ptr);
+
+    ModuleLoader::eval_module_in_realm(&mut cx, main_src, &main_path, None, global.handle())
+        .expect("cyclic entry graph loads, links and evaluates");
+
+    let sibling_ran = num_probe(&mut ctx, "globalThis.__siblingRan | 0");
+    assert_eq!(
+        sibling_ran, 1.0,
+        "sibling body must evaluate exactly once (got {} evaluations)",
+        sibling_ran
+    );
+    let hits = num_probe(&mut ctx, "globalThis.__hits | 0");
+    assert_eq!(
+        hits, 1.0,
+        "entry body must evaluate exactly once across the cycle (got {} evaluations)",
+        hits
+    );
+}
+
 /// `require()` of an ES module is the upstream segfault trigger
 /// (`Module._resolveFilename` returning `dir + "/./esm.mjs"` etc.). In bao
 /// it must load, return the live namespace, and the require cache key

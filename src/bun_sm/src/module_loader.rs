@@ -142,6 +142,37 @@ fn module_cache_get(cx: *mut JSContext, key: &str) -> Option<*mut JSObject> {
     }
 }
 
+/// Single source of the module-cache key form: the CANONICALIZED filesystem
+/// path as a string. Canonicalization resolves symlinks and `.`/`..`
+/// components, so `./x`, `sub/../x` and `/abs/x` spellings of one file
+/// collapse to one key. Idempotent on an already-canonical path. Used by
+/// both the import hook (`load_module_record_sync`) and the eval entry
+/// registration below — the two sides MUST derive identical keys or the
+/// single-instance contract breaks (Node/spec: same URL ⇒ same module
+/// record).
+fn module_cache_key(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// e136 (REQ-ENG-001): register a directly-compiled ENTRY module in the
+/// module cache. The eval_module* entries compile the entry from the
+/// caller's source; without this registration the entry is invisible to the
+/// import hook, so any by-path import of the entry (a dynamic
+/// `import("./main.mjs")` from its own body, or a dependent's static
+/// back-import during graph load) misses the cache and compiles a SECOND
+/// instance from disk — the entry body evaluates twice and namespace
+/// identity diverges (an import-observable fingerprint vs Node). Must run
+/// BEFORE graph loading (`load_requested_modules_sync`): the back-import
+/// fires during that pass. Per-realm semantics come free from the cache's
+/// global-property store (`module_cache_insert` targets the current global).
+fn register_entry_module_cache(raw_cx: *mut JSContext, module: *mut JSObject, abs_filename: &Path) {
+    let cache_key = module_cache_key(abs_filename);
+    module_cache_insert(raw_cx, &cache_key, module);
+}
+
 // ============================================================================
 // BUG-ENG-365: SM Module API compliance helpers
 //
@@ -429,6 +460,18 @@ impl ModuleLoader {
             )
         };
 
+        // e136 (REQ-ENG-001): register the entry under the same
+        // canonicalized-path key the import hook uses, so a self/back-import
+        // during graph load resolves to THIS instance instead of compiling a
+        // second record from disk (single-instance semantics).
+        unsafe {
+            register_entry_module_cache(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &abs_filename,
+            )
+        };
+
         rooted!(&in(realm_cx) let mut rval = UndefinedValue());
 
         // SM153: graph-load first (New -> Unlinked), then link.
@@ -575,6 +618,18 @@ impl ModuleLoader {
             )
         };
 
+        // e136 (REQ-ENG-001): register the entry under the same
+        // canonicalized-path key the import hook uses, so a self/back-import
+        // during graph load resolves to THIS instance instead of compiling a
+        // second record from disk (single-instance semantics).
+        unsafe {
+            register_entry_module_cache(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &abs_filename,
+            )
+        };
+
         rooted!(&in(realm_cx) let mut rval = UndefinedValue());
 
         // SM153: graph-load first (New -> Unlinked), then link.
@@ -704,6 +759,18 @@ impl ModuleLoader {
                 realm_cx.raw_cx_no_gc(),
                 module_obj.handle().get(),
                 &entry_url,
+            )
+        };
+
+        // e136 (REQ-ENG-001): register the entry under the same
+        // canonicalized-path key the import hook uses, so a self/back-import
+        // during graph load resolves to THIS instance instead of compiling a
+        // second record from disk (single-instance semantics).
+        unsafe {
+            register_entry_module_cache(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &abs_filename,
             )
         };
 
@@ -837,6 +904,18 @@ impl ModuleLoader {
                 realm_cx.raw_cx_no_gc(),
                 module_obj.handle().get(),
                 &entry_url,
+            )
+        };
+
+        // e136 (REQ-ENG-001): register the entry under the same
+        // canonicalized-path key the import hook uses, so a self/back-import
+        // during graph load resolves to THIS instance instead of compiling a
+        // second record from disk (single-instance semantics).
+        unsafe {
+            register_entry_module_cache(
+                realm_cx.raw_cx_no_gc(),
+                module_obj.handle().get(),
+                &abs_filename,
             )
         };
 
@@ -1230,7 +1309,9 @@ export default _m;
     };
 
     let canonical = path.canonicalize().unwrap_or(path.clone());
-    let cache_key = canonical.to_string_lossy().into_owned();
+    // e136: key derivation is single-sourced in module_cache_key (the entry
+    // registration below must produce the identical key form).
+    let cache_key = module_cache_key(&canonical);
 
     let cached = module_cache_get(raw_cx, &cache_key);
     if let Some(existing) = cached
