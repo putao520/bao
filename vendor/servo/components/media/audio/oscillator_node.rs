@@ -142,11 +142,12 @@ impl AudioNodeEngine for OscillatorNode {
             while let Some(mut frame) = iter.next() {
                 let tick = frame.tick();
                 if tick < start_at {
+                    // AudioParam must still be updated because they are a function of time.
+                    self.update_parameters(info, frame.tick());
                     continue;
-                } else if tick > stop_at {
+                } else if tick >= stop_at {
                     break;
                 }
-
                 if self.update_parameters(info, tick) {
                     oscillator_frequency = self.compute_oscillator_frequency(sample_rate);
                     step = two_pi * oscillator_frequency / sample_rate;
@@ -181,4 +182,93 @@ impl AudioNodeEngine for OscillatorNode {
         AudioScheduledSourceNode: handle_source_node_message,
         OscillatorNode: handle_oscillator_message
     );
+}
+
+#[cfg(test)]
+mod krate_connection_tests {
+    use super::*;
+    use crate::audio_node::{AudioNodeEngine, AudioNodeMessage, AudioScheduledSourceNodeMessage, BlockInfo, ChannelInfo};
+    use crate::block::{Chunk, FRAMES_PER_BLOCK_USIZE, Tick};
+    use crate::constant_source_node::{ConstantSourceNode, ConstantSourceNodeOptions};
+    use crate::param::{ParamRate, ParamType, RampKind, UserAutomationEvent};
+
+    fn block_info(block: u64) -> BlockInfo {
+        BlockInfo {
+            sample_rate: 8192.,
+            frame: Tick(block * FRAMES_PER_BLOCK_USIZE as u64),
+            time: (block * FRAMES_PER_BLOCK_USIZE as u64) as f64 / 8192.,
+        }
+    }
+
+    fn schedule_ramp(param: &mut crate::param::Param) {
+        param.insert_event(UserAutomationEvent::SetValueAtTime(100., 0.).convert_to_event(8192.));
+        param.insert_event(
+            UserAutomationEvent::RampToValueAtTime(RampKind::Linear, 2000., 0.078125)
+                .convert_to_event(8192.),
+        );
+    }
+
+    fn started(node: &mut ConstantSourceNode) {
+        node.message(
+            AudioNodeMessage::AudioScheduledSourceNode(AudioScheduledSourceNodeMessage::Start(0.)),
+            8192.,
+        );
+    }
+
+    /// WPT k-rate-oscillator-connections Test 1 shape: a k-rate frequency
+    /// driven by an automated ConstantSourceNode input must sample-match a
+    /// k-rate frequency with the equivalent timeline automation.
+    ///
+    /// Regression guard for the #48347 timeline rewrite: the ramp anchor
+    /// (`event_start_time`) used to be snapshotted at the evaluation tick,
+    /// so the k-rate path (evaluated once per block) anchored at the block
+    /// boundary while the a-rate modulator anchored a tick later — the two
+    /// paths computed different frequencies from the second block on.
+    #[test]
+    fn krate_frequency_input_matches_automated_reference() {
+        let channel_info = ChannelInfo::default();
+        let options = OscillatorNodeOptions {
+            oscillator_type: OscillatorType::Sine,
+            freq: 0.,
+            detune: 0.,
+        };
+
+        let mut ref_osc = OscillatorNode::new(options.clone(), channel_info.clone());
+        ref_osc.frequency.set_rate(ParamRate::KRate);
+        schedule_ramp(ref_osc.get_param(ParamType::Frequency));
+        ref_osc.start(Tick(0));
+
+        let mut test_osc = OscillatorNode::new(options, channel_info.clone());
+        test_osc.frequency.set_rate(ParamRate::KRate);
+        test_osc.start(Tick(0));
+
+        let mut modulator =
+            ConstantSourceNode::new(ConstantSourceNodeOptions { offset: 0. }, channel_info);
+        schedule_ramp(modulator.get_param(ParamType::Offset));
+        started(&mut modulator);
+
+        let mut first_bad = None;
+        for block in 0..5u64 {
+            let info = block_info(block);
+            let mod_out = modulator.process(Chunk::default(), &info);
+            test_osc
+                .get_param(ParamType::Frequency)
+                .add_block(mod_out.blocks[0].clone());
+            let ref_out = ref_osc.process(Chunk::default(), &info);
+            let test_out = test_osc.process(Chunk::default(), &info);
+            for frame in 0..FRAMES_PER_BLOCK_USIZE {
+                let expected = ref_out.blocks[0].data_chan_frame(frame, 0);
+                let actual = test_out.blocks[0].data_chan_frame(frame, 0);
+                if expected != actual && first_bad.is_none() {
+                    first_bad = Some((block, frame, expected, actual));
+                }
+            }
+        }
+        if let Some((block, frame, expected, actual)) = first_bad {
+            panic!(
+                "k-rate input diverged at block {block} frame {frame}: \
+                 expected {expected}, got {actual}"
+            );
+        }
+    }
 }
