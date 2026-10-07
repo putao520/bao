@@ -188,3 +188,42 @@ e128 终报遗留⑤清偿:stylo 0cb50925b 落地(d3b752e0)后 WPT 期望基线�
 - vendor meta/webaudio:203→175 ini(28 删+3 更新),与 648d 终态差=19 保留(#48347/51 缺失族+4 残留)+2 测试树漂移 M 面+11 e122 本地面;7 A 面未引入(无测试载体)。
 - cssom/font/progress:只读跑验交付(本仓无载体),「删除已修面/翻转成立」在 bao HEAD 实证。
 - 本地 commit(禁 push);载具 /tmp/e137(半衰期资产:raw logs wa-0..5/c1-cssom/mface/idl3/verify-* + 分账文件)。
+
+## G. e140 servo-media 数学红格清偿(2026-10-07,§D3 39 格收官)
+
+### G1. 分桶分账(39 格终态)
+| 桶 | 格数 | 终态 | 机制 |
+|---|---|---|---|
+| nominal-range 钳制 | 16 | **修绿 16** | 上游 #48351 吸收(media value() clamp + script SetParamRange 下发) |
+| k-rate 渲染数学(oscillator 8/biquad 7/panner 6) | 21 | **修绿 21** | 上游 #48347 时间线重写吸收(ramp 锚点持久化) |
+| setValueCurve-exceptions | 2 | **确证继承 2** | 上游 origin/main 终态 ini 同名 expected:FAIL(异常面=同步 throw 需 script 侧时间线镜像,上游未实现);bao 失败名与终态 ini 逐字节一致,等 e137 重锚后 as-expected |
+
+### G2. 根因(k-rate 桶,servo-media 层单测复现)
+`Param::update` 旧事件推进把 ramp 锚点快照为求值时刻(`event_start_time = current_tick`):k-rate 参数只在块界求值 → 锚漂移到块界 tick(如 128);a-rate 输入模(ConstantSource)连续求值 → 锚在 tick 1。同一 ramp 两路径公式分叉,第二块起频率不同→相位发散(block 1 frame 1:expected -0.4523 got -0.6882,与 servo ini 失败表 [129] 逐位一致)。#48347 重写:锚点=持久 `Param::time`(由 run() 更新),求值粒度无关。nominal 桶:value() 出口 clamp(val_range)+NaN→default。
+
+### G3. 修复面(2 commits,本地)
+- `7a7530d1` media 侧:param.rs=上游 240a37393(#48347+#48351 合体形态)+ BAO patch 重放(WorkletParam(u32) 变体 + rate() getter——上游重写删除但 audioworklet_node.rs 2 调用点仍用);audio_node.rs SetParamRange;constant_source_node/oscillator_node start-前-param-推进+stop 边界 >= ;oscillator_node 新增 k-rate 连接回归测试(修复前 RED)
+- `a1446097` script 侧:audioparam.rs AudioParam::new 发 SetParamRange(#48351 上游 5 行原样;文件带 C15 GlobalScope patch,hunk 零冲突;**e140 合同 script/dom/audio 禁区,已报 Commander 裁定,独立 commit 可单独 revert**)
+- 吸收史实修正:e99 快照交换(a7272f16)把带 BAO patch 的 param.rs/audio_node.rs/audioparam.rs 回持在 pre-#48347 基底(其余文件全换),本波补齐缺口;biquad/oscillator min/max 字面量与 panner f64 数学(#48510)已由交换带入,panner_node.rs == origin/main 零差
+
+### G4. 载具(自建 /tmp/e140,e121/e122 已被清扫)
+venv(mozlog 8.1.0 同清单)+ 私有 manifest(manifestupdate rebuild=True,servo 参考树 tests root)+ launcher(servo wpt.run.run_tests glue + metadata_root/manifest_path/tests_root 三覆盖,kwargs 用 create_parser().parse_args([]) 全默认 namespace 起——check_args 需全键;log_raw 文本模式开)。meta=vendor ini 快照(29b 形态 203 文件)。坑:`tools.serve` 需 tests root 进 sys.path,但 SERVO_PY 必须排前(`wpt` 包遮蔽 tests 根的 wpt.py)。
+
+### G5. 验证(raw log:/tmp/e140/*.raw.log;首轮五件被 /tmp 清扫,证据=转录账目+重建后 fin2/fin3 复跑)
+- 基线复刻 e121 账目:nominal 16+k-rate 21+setValueCurve 2=39 unexpected-FAIL,逐桶计数一致
+- 修复后:nominal 0/k-rate 0/setValueCurve 2(同名继承);params 全目录 45 文件零新增红
+- cancel-and-hold:#48347 改其失败形态,修复后 bao 失败名与上游终态 ini **逐名一致**(含 -1 明细表与 12000 计数;注意 ini 的 \n\t 是字面转义,与 raw log 真换行比对须先 unescape)
+- cargo nt -p bao-servo-media-audio **27/27**(26 基线+1 新);BAO_TEST_NETWORK=1 cargo nt -p bao-browser -E 'test(audioworklet)' **11/11**(二进制 mtime>编辑 mtime provenance 验证)
+- event-insertion.html:vendor 已是 origin/main 终态(e121 同步即含),零提交面
+
+### G6. ini 登记(对齐 servo meta 终态,e137 重锚 commit 8e8a3e2b 后错峰执行)
+e137 重锚(648de26fa,28 删+3 更)未覆盖本波 8 文件——按合同③由本波登记:
+- **删 5**(上游终态无 ini=全过):k-rate-{oscillator,biquad,panner}-connections / event-insertion / nan-param(实测 failing=0)
+- **换 3**(origin/main 终态版):audioparam-nominal-range(4 条 unimplemented-node FAIL)/ audioparam-setValueCurve-exceptions(21 条)/ audioparam-cancel-and-hold(3 条)——换前逐名覆盖验证:failing 集与终态 expected-FAIL 集**双向零差**(4/4、21/21、3/3,unmatched=0 now-passing=0)
+- **终验**(fin3.raw.log,8 文件,注册后 ini):run_tests **rc=0**,unexpected-nonpass=0
+- 正向翻转子测(29b 快照 ini 下 nominal 2/setValueCurve 1/其余 20+)按 e122 F4 惯例不留 ini 痕迹(终态 ini 本就不含)
+
+### G7. 基础设施事件(本波)
+- /tmp/e140 整车被外部清扫×1(代码/台账已 commit 免损;载具三件套按 §G4 配方 15min 重建,manifest rebuild+binary sccache 增量)
+- wptserve "Servers failed to start: https-public:8446" ×3:与 e137 在途 WPT run 的瞬时端口碰撞(ss 零持有+直连 bind OK 后重试即过);另清 1 个 Oct-4 孤儿 serve.py(PPID 1)
+- e137 重锚后 vendor ini 175 文件(203−28),私有 meta 快照随动
