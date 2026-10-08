@@ -949,6 +949,18 @@
         </ul>
       </div>
 
+      <div id="req-brw-050" data-req="REQ-BRW-050" data-req-status="specified" data-req-domain="BRW" data-req-category="business" data-req-entity="EditContext" data-req-api="new EditContext(options),HTMLElement.editContext" data-groundedin="PRD-REQ-EDITCONTEXT-API">
+        <h3>REQ-BRW-050: EditContext JS API(编辑生态 Chromium parity,fork 自研)</h3>
+        <p>W3C EditContext API-1 的实装(上游 servo 零实现,fork 自治自研;反指纹锚:Chromium 121+ 默认启用,缺位=探测向量)。来源:e149 侦察报告(/tmp/e149-editingcontext-recon.md §5 立法草稿)。</p>
+        <h4>验收标准</h4>
+        <ul>
+          <li id="editcontext-构造器与事件语义" data-criterion="EditContext 构造器可建;绑定元素后 beforeinput/textupdate/textformatupdate 按 W3C API-1 语义派发" data-criterion-id="REQ-BRW-050-C1">EditContext 构造器可建;绑定元素后 beforeinput/textupdate/textformatupdate 按 W3C API-1 语义派发</li>
+          <li id="editcontext-属性挂点" data-criterion="HTMLElement.editContext 可读写,解绑恢复传统编辑路径" data-criterion-id="REQ-BRW-050-C2">HTMLElement.editContext 可读写,解绑恢复传统编辑路径</li>
+          <li id="与驱动链互通" data-criterion="CDP Input.insertText/键投递驱动的编辑结果经 EditContext 观测面可验证" data-criterion-id="REQ-BRW-050-C3">CDP Input.insertText/键投递驱动的编辑结果经 EditContext 观测面可验证</li>
+          <li id="chromium-parity-面" data-criterion="原型面/getOwnPropertyNames 与真 Chrome 逐格不可区分" data-criterion-id="REQ-BRW-050-C4">原型面/getOwnPropertyNames 与真 Chrome 逐格不可区分</li>
+        </ul>
+      </div>
+
       <!-- ============================================================ -->
       <h2>§5 Stealth 需求</h2>
       <!-- ============================================================ -->
