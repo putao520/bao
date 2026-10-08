@@ -70,3 +70,12 @@
 2. `manifest.load_and_update(write_manifest=True)` 自写盘,手动 `m.write(f)` 会 AttributeError(MANIFEST v9 层级树格式,条目按 type→目录→文件组织,旧扁平解析读数为零);
 3. gen_manifest 依赖 pyyaml(multiprocessing worker 内 import,venv 必装);
 4. campaign 前置检查项新增:**pref 门域扫描**——目标域的关键 API 若有 `[Pref=]` webidl 门或 `pref!` 调用,先核实 servo WPT 跑法的 pref 激活路径与 bao 消费面,否则读数整体空心。
+
+
+## 裁定 A 执行态(2026-10-08,Commander 接管段;e150 429 限流体假)
+
+- A1 pref 管道修复:2886b1c1(BrowserConfig/BaoConfig pref_overrides 字段)+lib.rs:368 apply_pref_overrides_to 消费面(四文件)已 commit
+- A2 重跑读数:rerun3 五域 raw log 归档(/tmp/e150/rerun3/)。形态=**pref 激活大面积活化双向洗牌**:subtest unexpected-PASS(exp FAIL)≈1935 正向(vs unexpected-FAIL≈1240 负);file 级 ec2/ct2 unexpected-FAIL=0(crashtests 9 TIMEOUT 全消);rn2 85152 子测 PASS(语义红 10546=servo-parity 正常态)
+- ini 重锚:manifest_update=True kwargs 通路未生效(ot3 stdout 零 update 痕迹,待 e150 恢复后调通);edit-context 面 e151 ini 已在 vendor(差集仅该面 10 条);其余 149 ini 重锚待 update 通路调通或 analyze 驱动手改
+- e2e armed skip 自激活验证:pref 落地后重跑确认(待 e150)
+- 残留移交:e150(23:09 限流重置后)完成 ini 重锚+e2e 自激活确认+终报
