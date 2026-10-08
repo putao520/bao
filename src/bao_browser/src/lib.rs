@@ -17,6 +17,7 @@ mod page;
 mod page_pool;
 mod phase_watch;
 mod permission;
+pub mod prefs;
 mod runtime_bridge;
 mod screenshot;
 pub mod screencast;
@@ -364,7 +365,7 @@ impl BrowserRuntime {
         // application (`webdriver_host::apply_pref_overrides` from
         // `run_browser_entry`) would otherwise be wiped by the reset.
         // Fail-closed: a bad override aborts BrowserRuntime::new.
-        preferences = crate::webdriver_host::apply_pref_overrides_to(
+        preferences = crate::prefs::apply_pref_overrides_to(
             preferences,
             &config.pref_overrides,
         )
