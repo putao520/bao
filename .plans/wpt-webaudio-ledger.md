@@ -227,3 +227,47 @@ e137 重锚(648de26fa,28 删+3 更)未覆盖本波 8 文件——按合同③由
 - /tmp/e140 整车被外部清扫×1(代码/台账已 commit 免损;载具三件套按 §G4 配方 15min 重建,manifest rebuild+binary sccache 增量)
 - wptserve "Servers failed to start: https-public:8446" ×3:与 e137 在途 WPT run 的瞬时端口碰撞(ss 零持有+直连 bind OK 后重试即过);另清 1 个 Oct-4 孤儿 serve.py(PPID 1)
 - e137 重锚后 vendor ini 175 文件(203−28),私有 meta 快照随动
+
+## H. e145 servo-media graph「worklet 节点恒处理」实装(2026-10-08,§F2-F 根因清偿,REQ-BRW-002)
+
+### H1. 复用扫描决策
+| 候选 | 裁定 |
+|---|---|
+| petgraph 0.8.3 `DfsPostOrder.move_to`(traversal.rs:196 实证:discovered/finished 集跨源持久,已 finish 节点不重发射) | REUSE——`dests.iter().chain(always_process)` 单点并入,零第二渲染循环,连接态节点语义零变化 |
+| `add_extra_dest` 先例(render_thread is_dest 创建时注册遍历源) | REUSE 形态——注册点前移到 `AudioGraph::add_node`(trait 多态单点) |
+| `AudioNodeEngine` 默认方法面(mute_node/message_specific 先例) | REUSE——新增 `always_process()` 默认 false,AudioWorkletNode 覆写 true |
+| 上游 servo-media(~/code/tools/servo components/media) | ABSENT(grep 实证无 always-process/automatic-pull 面)——fork 自治域 |
+
+实装三文件(media/audio 域):graph.rs(字段+add_node 注册+遍历源 chain)/audio_node.rs(trait 方法)/audioworklet_node.rs(覆写)。挂起处理器留集合无害(process 短路于 bridge latch,单次 acquire-load)。
+
+### H2. 复现钉(TDD)与验证
+- RED:`unconnected_worklet_nodes_are_always_processed`(Lockstep 载具,双形态:自由输出+零输出,共享计数 handler)——修前实测 `processor called 0 times`
+- GREEN:media-audio **29/29**(28+零初始化新测);`bao-browser -E 'test(audioworklet)'` **11/11**(worktree test-ci 档);`cargo check -p bao-servo-media-audio` RC=0
+
+### H3. 9 格终态
+| 格 | 终态 | 证据 |
+|---|---|---|
+| automatic-pull `setup-worklet` | **PASS 翻转** | 采样级 0.5/0 断言全绿(offline 全链) |
+| process-getter ×2 | **PASS 翻转** | 双格 |
+| zero-outputs `check-zero-outputs` | **PASS 翻转**(任务级) | 内层「outputs 全零」断言红→JS 持久数组清零缺面(见 H4-R2) |
+| frozen-array `check-frozen-array`/`transfer-frozen-array` | **PASS 翻转**(任务级×2) | 内层 frozen 断言红→H4-R3 |
+| construction-port 3 throw 格 | **PASS 翻转** | e122 A/C 修的可见性解锁 |
+| process-parameters sub1/sub2 | 残留 TIMEOUT/NOTRUN(登记) | 探针实证 F 面已修(去 suspend/resume 变体 MSG 直达);残留=H4-R4 |
+
+### H4. 残留根因(WebDriver+title 探针,/tmp/e145-probe;全部越 media/audio 边界,登记另案)
+| # | 根因 | 域 |
+|---|---|---|
+| R1 | **共享实例 port 改写**:singleton 处理器二实例化时 instantiate 对共享实例的 port redirect 重定向到新 node 的 conduit(探针:第二条消息到 node2 自己的 port;Chromium 语义=保持 node1) | script/dom/audio(audioworklethandler.rs) |
+| R2 | **JS 持久输出数组不清零**:handler 每调传同一 rooted Float32Array 组,跨调用残留上拍样本(processor 未写 outputs 时违 spec 全零) | script/dom/audio(quantum 侧已由 pool_recycle 清零根治,JS 侧缺) |
+| R3 | **数组未冻结**:inputs/outputs 非 Object.isFrozen(spec FrozenArray) | script/dom/audio |
+| R4 | **suspend→resume 渲染线程楔死**:realtime 渲染循环=appsrc max_bytes=1+need_data 拉动;headless 无消费设备,Paused→Playing 后 need_data 不再触发→currentTime 冻结(探针 dt=0×3s;process-parameters sub1 的唯一残留机制) | backends/gstreamer/audio_sink.rs+render_thread 循环活性 |
+
+### H5. ini 登记(6 文件;翻转格恢复 servo 基线 FAIL 形保可见性,诚实红逐名登记,残留挂格单值终态)
+automatic-pull/process-getter→servo 单条 FAIL 形;zero-outputs/frozen-array→任务格 FAIL+内层断言逐名 FAIL;process-parameters(construction-port)→file TIMEOUT+sub1 TIMEOUT(Singleton TIMEOUT)+sub2 NOTRUN。**多值期望语义修正**:wptrunner `[A,B]`=逐值重跑序列(非「任一可接受」),残留格改单值实测终态(e122 F4 旧多值形态在本场景误报,后续波注意)。终验 fin3/fin4:目标+params 全目录 52 文件,意外事件=正向翻转(可见性策略)+残留格 as-expected,**零意外负**;params 面零回退。
+
+### H6. 载具与事件
+- /tmp/e145 第四次重建(e121/e122/e137/e140 全灭后):venv+私有 manifest+launcher(run_e145.py=e140 形)+analyze.py(mozlog expected 字段语义修正:仅 status≠expected 时存在,默认 PASS 的分析器会把按期望 FAIL 误报为意外——e137 §G5-5 同坑二犯)
+- 二进制:worktree 钉 HEAD 626d74e6+仅本域 3 文件 diff+私有 target test-ci 自建(共享树被 e143 在途 node_net/node_tls 编译红阻断,灭菌路线;sha256 6246332208a0b708…)
+- READ-GATE 钩子(REQ-GSC-74)结构性拦截 graph.rs 编辑(证据通道归属缺陷,ISSUE #155/#156),补三读无效,经 Commander guard-off 窗口授权落盘
+- 端口卫生:e121 收官载具 4 个 multiprocessing 孤儿占 9000 系(venv 已被清扫的残活进程),清后过;探针 bao(webdriver=7001)多次残留,pkill 收尾
+- 探针三件套(/tmp/e145-probe):probe_{params,singleton,params_nosusp}.html+插桩处理器+raw WebDriver title 轮询驱动(判别律:currentTime dt 面包屑定渲染线程活性)

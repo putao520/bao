@@ -730,6 +730,21 @@ impl AudioWorkletNode {
             block.data_mut().copy_from_slice(buffer.data());
         }
     }
+
+    /// Return a frame to the render-side pool with spec-clean output
+    /// buffers: each `process()` call must observe all-zero `outputs`
+    /// (<https://webaudio.github.io/web-audio-api/#process-call>: the
+    /// outputs are zero-filled on entry). Inputs and params are always
+    /// fully rewritten by [`Self::fill_quantum`], so only the outputs need
+    /// clearing; every path that hands a frame back to the pool goes
+    /// through here, and freshly built pool frames start zeroed, so the
+    /// handler can never observe a previous cycle's samples.
+    fn pool_recycle(&mut self, mut quantum: WorkletQuantum) {
+        for buffer in quantum.outputs.iter_mut() {
+            buffer.zero();
+        }
+        self.pool.push(quantum);
+    }
 }
 
 impl AudioNodeEngine for AudioWorkletNode {
@@ -745,6 +760,15 @@ impl AudioNodeEngine for AudioWorkletNode {
         self.number_of_outputs
     }
 
+    fn always_process(&self) -> bool {
+        // A live processor must be driven every quantum even when the node
+        // has no destination path (unconnected, or zero outputs): spec
+        // semantics call `process()` until it returns false. A halted
+        // processor stays cheap in the always-process set — `process`
+        // short-circuits on the bridge latch (one acquire-load, no JS).
+        true
+    }
+
     fn process(&mut self, inputs: Chunk, info: &BlockInfo) -> Chunk {
         let mut outputs = Chunk::default();
         outputs
@@ -756,7 +780,7 @@ impl AudioNodeEngine for AudioWorkletNode {
             // silence from here on. Recycle whatever is in flight so the
             // pool is conserved.
             while let Some(quantum) = self.bridge.pop_ready() {
-                self.pool.push(quantum);
+                self.pool_recycle(quantum);
             }
             return outputs;
         }
@@ -782,7 +806,7 @@ impl AudioNodeEngine for AudioWorkletNode {
                     Err(SpscRingError::Full(returned)) => {
                         quantum = returned;
                         if yields_left == 0 {
-                            self.pool.push(quantum);
+                            self.pool_recycle(quantum);
                             break;
                         }
                         yields_left -= 1;
@@ -801,7 +825,7 @@ impl AudioNodeEngine for AudioWorkletNode {
         match self.bridge.pop_ready() {
             Some(mut quantum) => {
                 self.take_outputs(&mut quantum, &mut outputs);
-                self.pool.push(quantum);
+                self.pool_recycle(quantum);
             },
             None => self.bridge.record_underrun(),
         }
@@ -1216,6 +1240,54 @@ mod tests {
         );
     }
 
+    /// Handler recording whether the outputs it observes are all-zero on
+    /// entry, then dirtying them for the next cycle.
+    struct OutputZeroProbe(StdArc<Mutex<Vec<bool>>>);
+
+    impl AudioWorkletProcessorHandler for OutputZeroProbe {
+        fn process_quantum(&mut self, quantum: &mut WorkletQuantum) -> ProcessorControl {
+            let all_zero = quantum
+                .outputs
+                .iter()
+                .all(|buffer| buffer.data().iter().all(|value| *value == 0.));
+            self.0.lock().unwrap().push(all_zero);
+            for buffer in quantum.outputs.iter_mut() {
+                buffer.data_mut().fill(7.);
+            }
+            ProcessorControl::Continue
+        }
+    }
+
+    /// Spec (`#process-call`): every `process()` call observes zero-filled
+    /// outputs. Frames cycle through the render-side pool, so the pool
+    /// entry point must clear the previous cycle's samples.
+    #[test]
+    fn outputs_are_zeroed_between_cycles() {
+        let node_options = options(0, 1, 1, &[]);
+        let bridge = StdArc::new(node_options.make_bridge_with_capacity(TEST_BRIDGE_CAPACITY));
+        let observed: StdArc<Mutex<Vec<bool>>> = Default::default();
+        let mut pump =
+            AudioWorkletPump::new(StdArc::clone(&bridge), Box::new(OutputZeroProbe(observed.clone())));
+        let mut node = AudioWorkletNode::new(
+            AudioWorkletNodeInit {
+                options: node_options,
+                bridge: StdArc::clone(&bridge),
+            },
+            ChannelInfo::default(),
+        );
+
+        // Block 1 ships a fresh (zeroed) pool frame; the handler dirties it.
+        // Block 2 consumes the dirty output and recycles the frame; its own
+        // shipped frame is that recycled one, which must be zeroed at pool
+        // entry. Without the pool-entry clear, cycle 2 observes the 7.0
+        // samples written in cycle 1.
+        for block in 0..3 {
+            let _ = node.process(Chunk::default(), &block_info(block * 128));
+            let _ = pump.pump_once();
+        }
+        assert_eq!(*observed.lock().unwrap(), [true, true, true]);
+    }
+
     #[test]
     fn finish_control_halts_node() {
         let node_options = options(0, 1, 1, &[]);
@@ -1567,5 +1639,136 @@ mod tests {
                 value
             );
         }
+    }
+
+    /// Handler that only counts quanta into a shared counter, mirroring a
+    /// processor whose observable side effect is "process() got called".
+    struct SharedCounter(StdArc<Mutex<u32>>);
+
+    impl AudioWorkletProcessorHandler for SharedCounter {
+        fn process_quantum(&mut self, _: &mut WorkletQuantum) -> ProcessorControl {
+            *self.0.lock().unwrap() += 1;
+            ProcessorControl::Continue
+        }
+    }
+
+    /// RED pin for the always-process semantics (e145): a worklet node with
+    /// no path to the destination — free outputs connected to nothing, or
+    /// zero outputs at all — must still be processed every render quantum.
+    /// Its processor is called until it returns false regardless of
+    /// connections (spec/Chromium semantics; the pull-graph topsort that
+    /// only visits the destination's upstream closure starves it —
+    /// .plans/wpt-webaudio-ledger.md §F2 root cause F).
+    #[test]
+    fn unconnected_worklet_nodes_are_always_processed() {
+        let state = LOCKSTEP
+            .get_or_init(|| {
+                StdArc::new(LockstepState {
+                    gate: Mutex::new(true),
+                    signal: Condvar::new(),
+                    collected: Mutex::new(Vec::new()),
+                })
+            })
+            .clone();
+        state.collected.lock().unwrap().clear();
+
+        let (sender, receiver) = mpsc::channel();
+        let (init_sender, init_receiver) = mpsc::channel();
+        let graph = AudioGraph::new(2);
+        let render_sender = sender.clone();
+        let handle = thread::spawn(move || {
+            AudioRenderThread::start::<LockstepBackend>(
+                receiver,
+                render_sender,
+                SAMPLE_RATE,
+                graph,
+                AudioContextOptions::RealTimeAudioContext(Default::default()),
+                init_sender,
+            );
+        });
+        init_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .expect("render thread init");
+
+        // Two unconnected shapes: node A has a free output port nobody
+        // reads; node B has no output ports at all (the
+        // automatic-pull / zero-outputs WPT shapes). Neither has a path to
+        // the destination.
+        let (created, created_rx) = mpsc::channel();
+        let options_a = options(1, 1, 2, &[]);
+        let bridge_a = StdArc::new(options_a.make_bridge_with_capacity(TEST_BRIDGE_CAPACITY));
+        sender
+            .send(AudioRenderThreadMsg::CreateNode(
+                AudioNodeInit::AudioWorkletNode(AudioWorkletNodeInit {
+                    options: options_a,
+                    bridge: StdArc::clone(&bridge_a),
+                }),
+                created.clone(),
+                ChannelInfo::default(),
+            ))
+            .unwrap();
+        let worklet_a = created_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .expect("free-output worklet node created");
+
+        let options_b = options(1, 0, 2, &[]);
+        let bridge_b = StdArc::new(options_b.make_bridge_with_capacity(TEST_BRIDGE_CAPACITY));
+        sender
+            .send(AudioRenderThreadMsg::CreateNode(
+                AudioNodeInit::AudioWorkletNode(AudioWorkletNodeInit {
+                    options: options_b,
+                    bridge: StdArc::clone(&bridge_b),
+                }),
+                created,
+                ChannelInfo::default(),
+            ))
+            .unwrap();
+        let worklet_b = created_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .expect("zero-output worklet node created");
+        // Nothing is connected to either node; silencing the "unused" lint
+        // the conventional way would hide the shapes under test.
+        let _ = (worklet_a, worklet_b);
+
+        let count_a: StdArc<Mutex<u32>> = Default::default();
+        let count_b: StdArc<Mutex<u32>> = Default::default();
+        let mut pump_a =
+            AudioWorkletPump::new(bridge_a, Box::new(SharedCounter(count_a.clone())));
+        let mut pump_b =
+            AudioWorkletPump::new(bridge_b, Box::new(SharedCounter(count_b.clone())));
+
+        let (resumed, resumed_rx) = mpsc::channel();
+        sender.send(AudioRenderThreadMsg::Resume(resumed)).unwrap();
+        resumed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        const BLOCKS: usize = 5;
+        for handled in 0..BLOCKS {
+            state.release_next_block();
+            sender.send(AudioRenderThreadMsg::SinkNeedData).unwrap();
+            state.wait_for_blocks((handled + 1) * FRAMES_PER_BLOCK_USIZE);
+            let _ = pump_a.pump_once();
+            let _ = pump_b.pump_once();
+        }
+
+        let (closed, closed_rx) = mpsc::channel();
+        sender.send(AudioRenderThreadMsg::Close(closed)).unwrap();
+        closed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        handle.join().expect("render thread exits on Close");
+
+        // The pull model leaves both counts at 0 (processors starve);
+        // always-processing drives both shapes continuously.
+        assert!(
+            *count_a.lock().unwrap() >= 2,
+            "free-output unconnected node processor called {} times",
+            *count_a.lock().unwrap()
+        );
+        assert!(
+            *count_b.lock().unwrap() >= 2,
+            "zero-output node processor called {} times",
+            *count_b.lock().unwrap()
+        );
     }
 }

@@ -203,6 +203,20 @@ pub(crate) trait AudioNodeEngine: Send + AudioNodeCommon {
         1
     }
 
+    /// Whether this node must be processed every render quantum even when
+    /// no path from it reaches a destination node (BAO, AudioWorkletNode).
+    ///
+    /// The pull model only visits nodes in a destination's upstream
+    /// closure, so a node without a destination path would never be
+    /// processed. AudioWorkletNode opts in: spec semantics call a live
+    /// processor's `process()` every quantum until it returns `false`,
+    /// regardless of connections — its side effects (captured input, port
+    /// messages) are observable without any audio flowing to a
+    /// destination (.plans/wpt-webaudio-ledger.md §F2 root cause F).
+    fn always_process(&self) -> bool {
+        false
+    }
+
     /// Number of input channels for each input port
     fn channel_count(&self) -> u8 {
         self.channel_info().count

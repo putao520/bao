@@ -118,6 +118,13 @@ pub struct AudioGraph {
     graph: StableGraph<Node, Edge>,
     dest_id: NodeId,
     dests: Vec<NodeId>,
+    /// Nodes whose engine returned `always_process()` at creation. They are
+    /// used as additional traversal sources in [`AudioGraph::process`] so a
+    /// live worklet processor is called every render quantum even without a
+    /// destination path. Nodes are never removed from the graph, so the set
+    /// only grows like the graph itself; a halted worklet processor stays
+    /// cheap here (its `process` short-circuits on the bridge latch).
+    always_process: Vec<NodeId>,
     listener_id: NodeId,
 }
 
@@ -189,13 +196,19 @@ impl AudioGraph {
             graph,
             dest_id,
             dests: vec![dest_id],
+            always_process: Vec::new(),
             listener_id,
         }
     }
 
     /// Create a node, obtain its id
     pub(crate) fn add_node(&mut self, node: Box<dyn AudioNodeEngine>) -> NodeId {
-        NodeId(self.graph.add_node(Node::new(node)))
+        let always_process = node.always_process();
+        let id = NodeId(self.graph.add_node(Node::new(node)));
+        if always_process {
+            self.always_process.push(id);
+        }
+        id
     }
 
     /// Connect an output port to an input port
@@ -382,8 +395,14 @@ impl AudioGraph {
 
         let mut visit = DfsPostOrder::empty(reversed);
 
-        for dest in &self.dests {
-            visit.move_to(dest.0);
+        // Destination-attached subgraphs render first, then the
+        // always-process sources cover the nodes no destination can reach
+        // (unconnected or zero-output worklet nodes). The DFS keeps its
+        // discovered/finished maps across `move_to`, so every node is still
+        // processed exactly once per quantum — a worklet node attached to a
+        // destination is not processed twice.
+        for source in self.dests.iter().chain(self.always_process.iter()) {
+            visit.move_to(source.0);
 
             while let Some(ix) = visit.next(reversed) {
                 let mut curr = self.graph[ix].node.borrow_mut();
