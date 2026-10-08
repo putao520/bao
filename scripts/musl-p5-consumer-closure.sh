@@ -53,7 +53,9 @@ ensure_container() {
   fi
   echo "[musl-p5] creating container $CONTAINER from $IMAGE (§1)"
   # §2:repo 只读挂载 /src,零树写
-  docker run -d --name "$CONTAINER" -v "$REPO_ROOT:/src:ro" "$IMAGE" tail -f /dev/null >/dev/null
+  # --init(#54):docker-init(tini)作 PID1 收割 docker exec 孤儿子进程,
+  # 防 git/rustfmt 等构建子进程僵尸无界累积(~10 个/天)
+  docker run -d --init --name "$CONTAINER" -v "$REPO_ROOT:/src:ro" "$IMAGE" tail -f /dev/null >/dev/null
   docker exec "$CONTAINER" apk add $APK_SET
   # §1:rustup 钉版(musl-native host 工具链;minimal+rustfmt+clippy)
   docker exec "$CONTAINER" sh -c '

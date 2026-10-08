@@ -37,7 +37,8 @@ fi
 if [ "$MODE" != "--local" ]; then
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
     say "container $CONTAINER from $IMAGE (host repo mounted :ro at /host-repo for the clone)"
-    if ! docker run -d --name "$CONTAINER" -v "$REPO:/host-repo:ro" "$IMAGE" sleep infinity >/dev/null 2>&1; then
+    # --init(#54 同类横扫):docker-init(tini)作 PID1 收割 exec 孤儿子进程,防僵尸累积
+    if ! docker run -d --init --name "$CONTAINER" -v "$REPO:/host-repo:ro" "$IMAGE" sleep infinity >/dev/null 2>&1; then
         say "RED: container start failed (image pull?) — degraded to --local"
         MODE="--local"
     fi
