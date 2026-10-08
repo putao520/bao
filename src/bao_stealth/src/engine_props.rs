@@ -1,7 +1,11 @@
 // @trace REQ-STL-007 [api:engine-layer stealth properties]
 // Engine-layer native property injection via mozjs FFI.
-// JSPROP_PERMANENT ≡ configurable:false → JS Object.defineProperty throws TypeError.
-// Navigator/Screen/WebGL/CDP: zero JS injection, all properties are accessor (getter-only) with PERMANENT flag.
+// Chromium-parity placement (e148 oracle, Chrome 150): navigator/screen members are
+// accessor (getter-only) properties on the INTERFACE PROTOTYPE with {enumerable:
+// true, configurable: true} — the instances carry zero own names; window
+// .devicePixelRatio is an own accessor with the same attrs. The in-place
+// prototype replacement removes the native servo accessor (which the old
+// own-instance shadow left reachable — a native-value leak).
 // Canvas/Audio: JS-layer prototype hook injection via evaluate_script (requires DOM API access).
 
 // BUG-ENG-366 / REQ-SEC-002: Compartment isolation is unconditional.
@@ -1087,41 +1091,95 @@ unsafe extern "C" fn webgl_get_supported_extensions_override(
 // ---------------------------------------------------------------------------
 
 /// Define a getter-only accessor property with JSPROP_PERMANENT | JSPROP_ENUMERATE.
-unsafe fn define_permanent_getter(
+unsafe fn define_stealth_getter(
     cx: *mut JSContext,
     obj: HandleObject,
     name: &str,
     getter: JSNative,
+    obj_proto: *mut JSObject,
+    on_prototype: bool,
 ) -> bool {
     let c_name = bun_core::ZBox::from_bytes(name.as_bytes());
-    // Remove existing property (servo defines navigator.userAgent etc.
-    // as configurable). SpiderMonkey forbids changing configurable:true
-    // to configurable:false (PERMANENT), so we must delete first.
-    // However, if the property is already PERMANENT (e.g., from a prior
-    // install_stealth_props call), delete will fail silently — skip it.
+    let wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &wrapped_cx;
+
+    // Resolve the Chrome-parity target. `on_prototype` selects the shape the
+    // oracle observed for this surface: navigator/screen members live on the
+    // interface prototype (Navigator.prototype / Screen.prototype /
+    // WorkerNavigator.prototype); window.devicePixelRatio is an OWN accessor
+    // on the global.
+    // BCE (error.rs:74 pattern): a failed prototype probe (throwing proxy
+    // hook) leaves a pending exception — consume it and fall back to the
+    // instance.
+    let mut target: *mut JSObject = *obj.ptr;
+    if on_prototype {
+        let mut proto: *mut JSObject = ptr::null_mut();
+        if !JS_GetPrototype(
+            cx,
+            obj,
+            MutableHandle::<*mut JSObject> {
+                _phantom_0: PhantomData,
+                ptr: &mut proto,
+            },
+        ) {
+            JS_ClearPendingException(cx);
+            proto = ptr::null_mut();
+        }
+        // Plain test-mode object (ensure_subobject fallback — no servo DOM):
+        // its prototype IS the realm's Object.prototype; defining there would
+        // pollute every object in the realm. Fall back to the instance.
+        if !proto.is_null() && !ptr::eq(proto, obj_proto) {
+            target = proto;
+        }
+    }
+    rooted!(&in(cx_ref) let target_root = target);
+
+    // Remove the existing property on the target — the native servo
+    // prototype accessor (configurable per WebIDL) or a prior stealth
+    // install (configurable since the e148 alignment). Replaces the native
+    // accessor IN PLACE: the old own-instance shadow left it reachable via
+    // `Object.getOwnPropertyDescriptor(Navigator.prototype, name).get
+    // .call(navigator)` — a native-value leak.
     let mut op_result = ObjectOpResult::default();
-    let deleted = JS_DeleteProperty(cx, obj, c_name.as_ptr(), &mut op_result);
+    let deleted = JS_DeleteProperty(
+        cx,
+        target_root.handle().into(),
+        c_name.as_ptr(),
+        &mut op_result,
+    );
     if !deleted || !op_result.ok() {
-        // Delete failed — property may already be PERMANENT.
-        // The subsequent JS_DefineProperty1 will also fail safely,
-        // returning false without corrupting state.
+        // Delete refused (unforgeable member / intercepted by the DOM proxy).
+        // The subsequent JS_DefineProperty1 fails safely, returning false
+        // without corrupting state.
         //
-        // BCE (P0 browser startup panic, servo error.rs:74): a failed
-        // delete on a DOM host object (unforgeable / intercepted by the
-        // DOM proxy) can leave a pending exception — a throwing delete
-        // hook returns false WITH the exception pending. Consume it:
+        // BCE (P0 browser startup panic, servo error.rs:74): a failed delete
+        // on a DOM host object can leave a pending exception — a throwing
+        // delete hook returns false WITH the exception pending. Consume it:
         // "delete refused" is a handled outcome here, not an error to
         // propagate, and a stale pending exception detonates servo's
-        // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception`
-        // on the next error path, killing the ScriptThread at page init.
+        // `assert!(!JS_IsExceptionPending)` in `throw_dom_exception` on the
+        // next error path, killing the ScriptThread at page init.
         JS_ClearPendingException(cx);
     }
-    let attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-    let ok = JS_DefineProperty1(cx, obj, c_name.as_ptr(), getter, None, attrs);
+    // Chrome descriptor parity (e148 oracle, Chrome 150): enumerable +
+    // configurable. PERMANENT would itself be the fingerprint — Chrome's
+    // WebIDL accessors are configurable, and a page-level `delete` then
+    // yields `undefined` exactly like Chrome (never a native value, which
+    // the in-place replacement already guarantees).
+    let attrs = JSPROP_ENUMERATE as u32;
+    let ok = JS_DefineProperty1(
+        cx,
+        target_root.handle().into(),
+        c_name.as_ptr(),
+        getter,
+        None,
+        attrs,
+    );
     if !ok && JS_IsExceptionPending(cx) {
-        // BCE (error.rs:74): same contract — a refused define may leave
-        // the exception pending. This is a best-effort override; a
-        // rejected define must not poison the shared ScriptThread cx.
+        // BCE (error.rs:74): same contract — a refused define may leave the
+        // exception pending. This is a best-effort override; a rejected
+        // define must not poison the shared ScriptThread cx.
         JS_ClearPendingException(cx);
     }
     ok
@@ -1519,7 +1577,12 @@ unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool 
 // Public API: install_stealth_props
 // ---------------------------------------------------------------------------
 
-/// Install all stealth properties as PERMANENT accessor getters on the global.
+/// Install all stealth properties as accessor getters with Chromium-parity
+/// placement (e148 oracle, Chrome 150): navigator/screen members go on the
+/// INTERFACE PROTOTYPE (Navigator.prototype / Screen.prototype — Chrome
+/// instances carry zero own names) with {enumerable: true, configurable:
+/// true}; window.devicePixelRatio stays an OWN accessor on the global
+/// (Chrome parity) with the same attrs.
 ///
 /// # Safety
 /// - `cx` must be a valid JSContext on the current thread.
@@ -1531,56 +1594,93 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
     rooted!(&in(wrapped_cx) let global_root = global);
     let mut all_ok = true;
 
+    // The realm's Object.prototype — the plain-test-object sentinel for
+    // define_stealth_getter's placement decision (see there).
+    let mut obj_proto: *mut JSObject = ptr::null_mut();
+    JS_GetClassPrototype(
+        cx,
+        JSProtoKey::JSProto_Object,
+        MutableHandle::<*mut JSObject> {
+            _phantom_0: PhantomData,
+            ptr: &mut obj_proto,
+        },
+    );
 
     // --- Navigator properties ---
     let nav = ensure_subobject(cx, global_root.handle().into(), "navigator");
     if !nav.is_null() {
         rooted!(&in(wrapped_cx) let nav_root = nav);
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             nav_root.handle().into(),
             "webdriver",
             Some(getter_webdriver),
+            obj_proto,
+            true,
         );
-        all_ok &=
-            define_permanent_getter(cx, nav_root.handle().into(), "userAgent", Some(getter_ua));
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
+            cx,
+            nav_root.handle().into(),
+            "userAgent",
+            Some(getter_ua),
+            obj_proto,
+            true,
+        );
+        all_ok &= define_stealth_getter(
             cx,
             nav_root.handle().into(),
             "platform",
             Some(getter_platform),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             nav_root.handle().into(),
             "language",
             Some(getter_language),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             nav_root.handle().into(),
             "hardwareConcurrency",
             Some(getter_hwc),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             nav_root.handle().into(),
             "maxTouchPoints",
             Some(getter_touch),
+            obj_proto,
+            true,
         );
-        all_ok &=
-            define_permanent_getter(cx, nav_root.handle().into(), "vendor", Some(getter_vendor));
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
+            cx,
+            nav_root.handle().into(),
+            "vendor",
+            Some(getter_vendor),
+            obj_proto,
+            true,
+        );
+        all_ok &= define_stealth_getter(
             cx,
             nav_root.handle().into(),
             "languages",
             Some(getter_languages),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             nav_root.handle().into(),
             "deviceMemory",
             Some(getter_device_memory),
+            obj_proto,
+            true,
         );
     }
 
@@ -1588,46 +1688,67 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
     let screen = ensure_subobject(cx, global_root.handle().into(), "screen");
     if !screen.is_null() {
         rooted!(&in(wrapped_cx) let scr_root = screen);
-        all_ok &=
-            define_permanent_getter(cx, scr_root.handle().into(), "width", Some(getter_screen_w));
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
+            cx,
+            scr_root.handle().into(),
+            "width",
+            Some(getter_screen_w),
+            obj_proto,
+            true,
+        );
+        all_ok &= define_stealth_getter(
             cx,
             scr_root.handle().into(),
             "height",
             Some(getter_screen_h),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             scr_root.handle().into(),
             "availWidth",
             Some(getter_avail_w),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             scr_root.handle().into(),
             "availHeight",
             Some(getter_avail_h),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             scr_root.handle().into(),
             "colorDepth",
             Some(getter_color_depth),
+            obj_proto,
+            true,
         );
-        all_ok &= define_permanent_getter(
+        all_ok &= define_stealth_getter(
             cx,
             scr_root.handle().into(),
             "pixelDepth",
             Some(getter_color_depth),
+            obj_proto,
+            true,
         );
     }
 
-    // --- Window.devicePixelRatio ---
-    all_ok &= define_permanent_getter(
+    // --- Window.devicePixelRatio (own accessor on the global — Chrome parity) ---
+    // The existing own define path (delete + define) already REPLACES the
+    // servo accessor in place, so only the attrs need the parity alignment
+    // (enumerable + configurable — same descriptor Chrome exposes).
+    all_ok &= define_stealth_getter(
         cx,
         global_root.handle().into(),
         "devicePixelRatio",
         Some(getter_dpr),
+        obj_proto,
+        false,
     );
 
     // --- WebGL prototype override ---

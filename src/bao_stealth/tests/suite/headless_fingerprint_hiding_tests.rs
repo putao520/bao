@@ -413,13 +413,16 @@ fn headless_webdriver_forced_false_in_hooks() {
 
     // Assert — must override webdriver to false
     assert!(
-        js.contains("__bao_def(nav, 'webdriver'") && js.contains("return false"),
+        js.contains("__bao_def(__nav_t, 'webdriver'") && js.contains("return false"),
         "navigator.webdriver must be overridden to false — headless webdriver leak"
     );
-    // Override must be configurable:false (anti-anti-detect)
+    // Override must carry Chrome descriptor attrs (e148 oracle: Chrome's
+    // Navigator.prototype accessors are enumerable + configurable —
+    // configurable:false was itself a distinguishable face; re-assignment
+    // stays impossible via the get-only accessor)
     assert!(
-        js.contains("configurable: false"),
-        "webdriver override must be configurable:false — anti-anti-detect"
+        js.contains("enumerable: true, configurable: true"),
+        "webdriver override must carry Chrome descriptor attrs — anti-anti-detect"
     );
 }
 

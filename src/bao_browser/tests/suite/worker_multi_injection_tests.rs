@@ -28,9 +28,10 @@
 //                'dbgRenderer' — the e36 gate: the saved "original" must stay
 //                the servo native, proving the multi delivery never re-saved
 //                the JS hook into the original slot (no double-define loop)
-//   permgetter=  navigator.userAgent is a non-configurable accessor
-//                (define_permanent_getter "prior install" arm kept the first
-//                getter across repeated deliveries)
+//   permgetter=  navigator.userAgent is a configurable+enumerable accessor on
+//                the interface PROTOTYPE, zero instance own-names (e148
+//                Chromium-parity placement — value stability across repeated
+//                deliveries comes from the realm-keyed profile getter)
 //
 // Environment gating: real servo rendering requires DISPLAY (Xvfb).
 // Skipped unless BAO_TEST_NETWORK=1 and DISPLAY are present.
@@ -135,8 +136,10 @@ var __r = (function () {
       var orig = WebGLRenderingContext.prototype.__originalGetParameter__;
       origNative = (typeof orig === 'function' && String(orig).indexOf('dbgRenderer') === -1) ? 1 : 0;
     }
-    var d = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-    var permGetter = d && d.configurable === false && typeof d.get === 'function' ? 1 : 0;
+    var pd = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), 'userAgent');
+    var ownD = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+    var permGetter = pd && pd.configurable === true && pd.enumerable === true
+      && typeof pd.get === 'function' && !ownD ? 1 : 0;
     return 'OK|ua=' + ua + '|audiohooked=' + (audioHooked ? 1 : 0)
          + '|wglhooked=' + wglHooked + '|orignative=' + origNative
          + '|permgetter=' + permGetter;
@@ -169,8 +172,10 @@ const WORKER_PROBE_B: &str = r#"
       var origFn = WebGLRenderingContext.prototype.__originalGetParameter__;
       origOk = (typeof origFn === 'function' && ('' + origFn).indexOf('dbgRenderer') === -1) ? '1' : '0';
     }
-    var desc = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-    var permOk = desc && desc.configurable === false && typeof desc.get === 'function' ? '1' : '0';
+    var pd = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), 'userAgent');
+    var ownD = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+    var permOk = pd && pd.configurable === true && pd.enumerable === true
+      && typeof pd.get === 'function' && !ownD ? '1' : '0';
     out = 'OK|ua=' + uaStr + '|audiohooked=' + (audioOk ? '1' : '0')
         + '|wglhooked=' + wglOk + '|orignative=' + origOk
         + '|permgetter=' + permOk + '|hwc=' + hwc;
@@ -270,8 +275,9 @@ fn assert_full_injection(tag: &str, r: &str, main_ua: &str) {
     );
     assert!(
         r.contains("|permgetter=1|") || r.ends_with("|permgetter=1"),
-        "{tag}: navigator.userAgent must stay a non-configurable accessor \
-         getter (define_permanent_getter prior-install arm held), got: {r}"
+        "{tag}: navigator.userAgent must be a configurable+enumerable accessor \
+         on the interface PROTOTYPE with zero instance own-names (e148 \
+         Chromium-parity placement — Chrome 150 oracle), got: {r}"
     );
 }
 

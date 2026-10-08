@@ -33,6 +33,7 @@ mod stealth_edge_case_tests;
 mod stealth_engine_integration_tests;
 mod stealth_integration_tests;
 mod stealth_js_injection_profile_consistency_tests;
+mod stealth_placement_parity_tests;
 mod stealth_profile_composition_tests;
 mod stencil_cache_equivalence_tests;
 mod stealth_tests;

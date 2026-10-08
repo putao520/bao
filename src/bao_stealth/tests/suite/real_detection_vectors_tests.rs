@@ -57,7 +57,7 @@ fn sannysoft_webdriver_flag_hidden_in_hooks_js() {
     // Act — bot.sannysoft.com probes `navigator.webdriver`
     // Assert — hook must force navigator.webdriver to false (NOT undefined, NOT true)
     assert!(
-        js.contains("__bao_def(nav, 'webdriver'"),
+        js.contains("__bao_def(__nav_t, 'webdriver'"),
         "navigator JS must override navigator.webdriver — sannysoft WebDriver row"
     );
     // Must return literal false (boolean), not "false" string, not undefined
@@ -66,11 +66,15 @@ fn sannysoft_webdriver_flag_hidden_in_hooks_js() {
         "navigator.webdriver hook must `return false` — got: {}",
         js
     );
-    // Must use Object.defineProperty with configurable:false — sannysoft tests
-    // re-assignment which a plain `navigator.webdriver = false` would not survive.
+    // Must use Object.defineProperty with Chrome descriptor attrs (e148
+    // oracle, Chrome 150: Navigator.prototype accessors are enumerable +
+    // configurable — configurable:false was itself a distinguishing face).
+    // Re-assignment still never survives: the override is a get-only
+    // accessor, so `navigator.webdriver = x` is a silent no-op.
     assert!(
-        js.contains("configurable: false"),
-        "webdriver override must be non-configurable — sannysoft anti-anti-detect"
+        js.contains("enumerable: true, configurable: true"),
+        "webdriver override must carry Chrome descriptor attrs — sannysoft \
+         anti-anti-detect via get-only accessor"
     );
 }
 
@@ -153,13 +157,13 @@ fn sannysoft_navigator_languages_is_nonempty_array() {
     );
     let js = hooks.navigator_js();
     assert!(
-        js.contains("__bao_def(nav, 'languages'"),
+        js.contains("__bao_def(__nav_t, 'languages'"),
         "navigator JS must override languages — sannysoft Languages row"
     );
     // Languages JSON literal must start with [ and end with ]
     let langs_line = js
         .lines()
-        .find(|l| l.contains("__bao_def(nav, 'languages'"))
+        .find(|l| l.contains("__bao_def(__nav_t, 'languages'"))
         .unwrap_or("");
     assert!(
         langs_line.contains("[") || js.contains("[\"en-US\""),

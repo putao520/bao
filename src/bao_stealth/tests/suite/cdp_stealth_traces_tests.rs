@@ -52,9 +52,10 @@ fn cdp_webdriver_override_forced_false() {
     let js = hooks.navigator_js();
 
     // Assert — must override webdriver to false
-    // (guarded define: __bao_def(nav, ...) — receiver alias for navigator)
+    // (guarded define: __bao_def(__nav_t, ...) — proto-targeted receiver,
+    // e148 Chromium-parity placement)
     assert!(
-        js.contains("__bao_def(nav, 'webdriver'"),
+        js.contains("__bao_def(__nav_t, 'webdriver'"),
         "navigator.webdriver override must be present in hooks — CDP webdriver leak"
     );
     // Must return boolean false (not "false" string, not undefined)
@@ -96,13 +97,16 @@ fn cdp_webdriver_override_non_configurable() {
     // Find the webdriver line
     let webdriver_line = js
         .lines()
-        .find(|l| l.contains("__bao_def(nav, 'webdriver'"))
+        .find(|l| l.contains("__bao_def(__nav_t, 'webdriver'"))
         .unwrap_or("");
 
-    // Assert — must use configurable: false (anti-anti-detect)
+    // Assert — must carry Chrome descriptor attrs (e148 oracle: Chrome's
+    // Navigator.prototype accessors are enumerable + configurable; a
+    // configurable:false descriptor was itself a CDP-detectable face)
     assert!(
-        webdriver_line.contains("configurable: false"),
-        "navigator.webdriver override must be configurable:false — CDP anti-anti-detect, got: {}",
+        webdriver_line.contains("enumerable: true, configurable: true"),
+        "navigator.webdriver override must carry Chrome descriptor attrs — CDP \
+         anti-anti-detect, got: {}",
         webdriver_line
     );
 }
@@ -336,11 +340,11 @@ fn cdp_combined_js_has_all_overrides() {
         "Combined JS must include audio getChannelData override"
     );
     assert!(
-        combined.contains("__bao_def(nav, 'userAgent'"),
+        combined.contains("__bao_def(__nav_t, 'userAgent'"),
         "Combined JS must include navigator.userAgent override"
     );
     assert!(
-        combined.contains("__bao_def(nav, 'webdriver'"),
+        combined.contains("__bao_def(__nav_t, 'webdriver'"),
         "Combined JS must include navigator.webdriver override (CDP leak prevention)"
     );
 }
@@ -527,7 +531,7 @@ fn cdp_all_screen_properties_overridden() {
         "pixelDepth",
     ] {
         assert!(
-            js.contains(&format!("__bao_def(scr, '{}'", prop)),
+            js.contains(&format!("__bao_def(__scr_t, '{}'", prop)),
             "screen.{} must be overridden — CDP screen probe",
             prop
         );
@@ -584,7 +588,7 @@ fn cdp_all_navigator_properties_overridden() {
         "webdriver",
     ] {
         assert!(
-            js.contains(&format!("__bao_def(nav, '{}'", prop)),
+            js.contains(&format!("__bao_def(__nav_t, '{}'", prop)),
             "navigator.{} must be overridden — CDP navigator probe",
             prop
         );
