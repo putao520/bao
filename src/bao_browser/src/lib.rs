@@ -339,6 +339,36 @@ impl BrowserRuntime {
         // 'prompt'`). Same flip precedent as the seven above.
         // REQ-BRW-002 rendering-face API gap closure (e130).
         preferences.dom_notification_enabled = true;
+        // `dom_exec_command_enabled` defaults to false upstream
+        // (servoshell EXPERIMENTAL_PREFS); the vendor editing engine is
+        // REAL and upstream-terminal (EditingContext + execCommand 25
+        // commands + selection, 2026-10-06 snapshot swap, e149 recon
+        // §1.3 byte-verified). The pref gates BOTH the
+        // `document.execCommand`/`queryCommand*` webidl face AND
+        // `Document::perform_editing_action` — every Document-context
+        // editing action (contenteditable/designMode typing via
+        // `EditingAction::InsertText`, Enter/paragraph, delete, arrows).
+        // Chromium AND Firefox both ship execCommand; a missing surface is
+        // itself a probe vector (anti-fingerprint constitution A), and the
+        // servo WPT meta expectations for the editing domain are generated
+        // with the pref ON (wptrunner passes
+        // `--enable-experimental-web-platform-features` unconditionally).
+        // User ruling 2026-10-08 ruling A (e150 campaign root finding).
+        // Same flip precedent as the eight above.
+        preferences.dom_exec_command_enabled = true;
+
+        // CLI pref overrides (user ruling 2026-10-08 ruling A): applied on
+        // top of the curated flips. `Servo::new` ends with
+        // `prefs::set(builder.preferences.unwrap_or_default())`, so THIS is
+        // the only durable injection point — the pre-launch global
+        // application (`webdriver_host::apply_pref_overrides` from
+        // `run_browser_entry`) would otherwise be wiped by the reset.
+        // Fail-closed: a bad override aborts BrowserRuntime::new.
+        preferences = crate::webdriver_host::apply_pref_overrides_to(
+            preferences,
+            &config.pref_overrides,
+        )
+        .map_err(BrowserError::Init)?;
 
         let servo: Rc<Servo> = Rc::new(if servo_already_initialized {
             // Already initialized. `Servo::new` (servo.rs:877) ALWAYS calls

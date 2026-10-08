@@ -24,6 +24,13 @@ pub struct BaoConfig {
     /// the WPT tooling CA for strict TLS verification. `None` keeps servo's
     /// default trust roots.
     pub certificate_path: Option<String>,
+    /// Raw pref overrides (`--pref=K=V` vocabulary, user ruling 2026-10-08
+    /// ruling A): applied on top of the curated `ServoBuilder::preferences`
+    /// flips inside `BrowserRuntime::new`. Without this the CLI pref surface
+    /// is dead — `Servo::new` ends with `prefs::set(builder_preferences)`,
+    /// which overwrites any global pref state the CLI had applied earlier.
+    /// Empty = curated flips only (no behavioral delta for library callers).
+    pub pref_overrides: Vec<(String, String)>,
 }
 
 impl Default for BaoConfig {
@@ -37,6 +44,7 @@ impl Default for BaoConfig {
             stealth_profile: None,
             ignore_certificate_errors: false,
             certificate_path: None,
+            pref_overrides: Vec::new(),
         }
     }
 }
@@ -93,6 +101,11 @@ pub struct BrowserConfig {
     /// the WPT tooling CA for strict TLS verification. `None` keeps servo's
     /// default trust roots.
     pub certificate_path: Option<String>,
+    /// Raw pref overrides for the WebDriver/WPT entry (`--pref=K=V` plus the
+    /// `--enable-experimental-web-platform-features` expansion, done in
+    /// `bao_cli`): carried into `BaoConfig::pref_overrides` so they survive
+    /// `Servo::new`'s preferences reset (see `BaoConfig::pref_overrides`).
+    pub pref_overrides: Vec<(String, String)>,
 }
 
 impl Default for BrowserConfig {
@@ -107,6 +120,7 @@ impl Default for BrowserConfig {
             webdriver_port: None,
             ignore_certificate_errors: false,
             certificate_path: None,
+            pref_overrides: Vec::new(),
         }
     }
 }
@@ -125,6 +139,7 @@ impl From<BrowserConfig> for BaoConfig {
             // keeps the fail-closed default.
             ignore_certificate_errors: bc.ignore_certificate_errors,
             certificate_path: bc.certificate_path,
+            pref_overrides: bc.pref_overrides,
         }
     }
 }

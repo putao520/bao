@@ -789,6 +789,36 @@ fn run_browser(
     }
 }
 
+/// Preferences activated by `--enable-experimental-web-platform-features`
+/// (mirror of servoshell's EXPERIMENTAL_PREFS, ports/servoshell/prefs.rs —
+/// keep in sync on vendor snapshot updates). wptrunner's servo product
+/// passes the flag unconditionally, so the expansion is what puts any
+/// pref-gated WPT domain (editing via `dom_exec_command_enabled`, …) on the
+/// same footing as upstream servo's own test runs. Schema-mismatch names
+/// are serde no-ops on the vendor `Preferences`.
+const EXPERIMENTAL_PREFS: &[&str] = &[
+    "dom_async_clipboard_enabled",
+    "dom_exec_command_enabled",
+    "dom_fontface_enabled",
+    "dom_indexeddb_enabled",
+    "dom_intersection_observer_enabled",
+    "dom_navigator_protocol_handlers_enabled",
+    "dom_notification_enabled",
+    "dom_offscreen_canvas_enabled",
+    "dom_permissions_enabled",
+    "dom_sanitizer_enabled",
+    "dom_storage_manager_api_enabled",
+    "dom_webgl2_enabled",
+    "dom_webgpu_enabled",
+    "layout_css_alpha_color_function_enabled",
+    "layout_css_attr_enabled",
+    "layout_css_ellipse_corners_enabled",
+    "layout_css_progress_function_enabled",
+    "layout_columns_enabled",
+    "layout_container_queries_enabled",
+    "layout_variable_fonts_enabled",
+];
+
 /// WPT official-toolchain face (REQ-BRW-002): the servoshell-compatible
 /// browser entry — apply pref plumbing, translate the wptrunner command line
 /// into a `BrowserConfig`, and hand the process to the WebDriver run loop.
@@ -821,6 +851,22 @@ fn run_browser_entry(cli: &Cli) -> ::std::result::Result<(), i32> {
             }
         }
     }
+    // `--enable-experimental-web-platform-features` (user ruling 2026-10-08
+    // ruling A): the flag was previously accepted for entry dispatch but
+    // never consumed — servoshell expands it to its EXPERIMENTAL_PREFS list
+    // (ports/servoshell/prefs.rs), which is how servo's WPT runs activate
+    // pref-gated domains (wptrunner passes the flag unconditionally). Mirror
+    // that expansion onto the same override list; schema-mismatch names are
+    // serde no-ops (the vendor Preferences has no deny_unknown_fields).
+    if cli.enable_experimental_web_platform_features {
+        for name in EXPERIMENTAL_PREFS {
+            pref_overrides.push(((*name).to_string(), "true".to_string()));
+        }
+    }
+    // Early fail-closed validation of the override values against the
+    // Preferences schema (the durable application happens on the
+    // ServoBuilder preferences inside BrowserRuntime::new — Servo::new's
+    // prefs::set would wipe a purely global application).
     if let Err(error) = bao_browser::webdriver_host::apply_pref_overrides(&pref_overrides) {
         eprintln!("bao: {error}");
         return Err(2);
@@ -856,6 +902,10 @@ fn run_browser_entry(cli: &Cli) -> ::std::result::Result<(), i32> {
         webdriver_port: cli.webdriver,
         ignore_certificate_errors: cli.ignore_certificate_errors,
         certificate_path: cli.certificate_path.clone(),
+        // Durable pref surface (user ruling 2026-10-08 ruling A): rides the
+        // ServoBuilder preferences so `Servo::new`'s prefs reset cannot wipe
+        // it (see BrowserRuntime::new).
+        pref_overrides,
     };
     if let Err(e) = bao_browser::run_browser(config) {
         eprintln!("Error: {}", e);

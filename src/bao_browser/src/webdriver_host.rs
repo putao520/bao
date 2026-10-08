@@ -594,8 +594,29 @@ pub fn apply_pref_overrides(overrides: &[(String, String)]) -> Result<(), String
     if overrides.is_empty() {
         return Ok(());
     }
-    let mut value = serde_json::to_value(servo::prefs::get().clone())
-        .map_err(|e| format!("serializing current prefs failed: {e}"))?;
+    let merged = apply_pref_overrides_to(servo::prefs::get().clone(), overrides)?;
+    servo::prefs::set(merged);
+    Ok(())
+}
+
+/// Apply raw `--pref=K=V` overrides onto a `Preferences` value and return the
+/// merged result (same coercion as [`apply_pref_overrides`]; schema-mismatch
+/// names are ignored by serde and land as no-ops). Shared core for the two
+/// consumers that must not drift: the global pre-launch application above
+/// (fail-closed early validation) and the `ServoBuilder::preferences`
+/// construction in `BrowserRuntime::new` — `Servo::new` ends with
+/// `prefs::set(builder_preferences)`, so a builder-side application is the
+/// only form of override that survives the reset (user ruling 2026-10-08
+/// ruling A: the CLI pref surface was otherwise dead for the browser entry).
+pub fn apply_pref_overrides_to(
+    mut preferences: Preferences,
+    overrides: &[(String, String)],
+) -> Result<Preferences, String> {
+    if overrides.is_empty() {
+        return Ok(preferences);
+    }
+    let mut value = serde_json::to_value(&preferences)
+        .map_err(|e| format!("serializing builder prefs failed: {e}"))?;
     let serde_json::Value::Object(ref mut map) = value else {
         return Err("prefs did not serialize to a JSON object".into());
     };
@@ -612,10 +633,9 @@ pub fn apply_pref_overrides(overrides: &[(String, String)]) -> Result<(), String
         };
         map.insert(key.clone(), coerced);
     }
-    let merged: Preferences = serde_json::from_value(value)
+    preferences = serde_json::from_value(value)
         .map_err(|e| format!("pref overrides do not match the Preferences schema: {e}"))?;
-    servo::prefs::set(merged);
-    Ok(())
+    Ok(preferences)
 }
 
 /// Load a wpt `--prefs-file` (JSON object of pref → raw value) into the same
