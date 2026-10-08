@@ -932,6 +932,23 @@
         <p>关联实体: <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="cdptarget" href="./06-CDP-SERVER#cdptarget">CdpTarget</a></p>
       </div>
 
+      <div id="req-eng-013" data-req="REQ-ENG-013" data-req-status="specified" data-req-domain="ENG" data-req-category="business" data-req-entity="TlsSocket" data-req-api="new tls.TLSSocket(socket,options)" data-groundedin="PRD-REQ-TLS-SOCKET-WRAP">
+        <h3>REQ-ENG-013: TLSSocket 包裹升级(客户端 TLS 原地升级)</h3>
+        <p>node:tls TLSSocket 构造器接受现有已连接 socket 原地升级为 TLS 客户端连接(Node parity;上游 bun ffe2f15470/#37664,triage 停报项经用户 2026-10-08 立法指令转正)。</p>
+        <h4>验收标准</h4>
+        <ul>
+          <li id="tlssocket-包裹已连接-socket" data-criterion="new TLSSocket(已连接 net.Socket, options) 返回 TLS 客户端 socket 并对既有连接发起 TLS 握手" data-criterion-id="REQ-ENG-013-C1">
+            new TLSSocket(已连接 net.Socket, options) 返回 TLS 客户端 socket 并对既有连接发起 TLS 握手
+          </li>
+          <li id="secureconnect-握手完成事件" data-criterion="secureConnect 事件在握手完成后触发;authorized/协议版本可观察" data-criterion-id="REQ-ENG-013-C2">
+            secureConnect 事件在握手完成后触发;authorized/协议版本可观察
+          </li>
+          <li id="升级期数据不丢" data-criterion="升级窗口的明文阶段数据经缓冲在 TLS 通道续传不丢失" data-criterion-id="REQ-ENG-013-C3">
+            升级窗口的明文阶段数据经缓冲在 TLS 通道续传不丢失
+          </li>
+        </ul>
+      </div>
+
       <!-- ============================================================ -->
       <h2>§5 Stealth 需求</h2>
       <!-- ============================================================ -->
