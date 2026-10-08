@@ -80,4 +80,5 @@
 - e2e armed skip 自激活验证:**已实证**(worktree 2f86f149+ 链,`--no-capture` 单测):contenteditable state=`"text":"Hi"`+trusted keydown/input 双事件流——Document 编辑引擎真活,armed 门零改动转真断言;四测 4/4 全真绿(RC=0)
 - 指纹快查(裁定要求):双证据——源级零耦合(bao_stealth 仓 `dom_exec_command|servo::prefs` 引用=0)+行为面 bao_stealth canvas/navigator/screen deep 套件 41/41 绿(pref 翻转不改指纹读数;execCommand 是功能面非指纹属性)
 - rerun4(首轮验证,保守规则 meta):849 tests/821 as-expected(96.7%)/sub unexpected-PASS 残留 1504(保守规则产物,见上①)→ 触发规则精化;unexpected-FAIL 1240 稳定(分歧集)
-- rerun5(终态验证,精化后 meta 136 ini):五域复跑中
+- **rerun5(终态验证,精化后 meta 136 ini,worktree@51b1f37d 二进制)——campaign 收口读数**:849 tests **840 as-expected(98.9%)/9 unexpected-FAIL 文件(全 other 域)**;子测 **113704 as-expected + 1240 unexpected-FAIL + 1 TIMEOUT + 2 NOTRUN,unexpected-PASS=0**(正翻吸收彻底,零噪音)。红面三轮恒定(rerun3/4/5 逐子测零漂移实证,inserthtml 全量 diff=0)=**确定性分歧集**:ot 991/ws 166/run 83 子测(plaintext-only delete 族/execCommand 语义细节),后续合同域;二进制重建插曲:/tmp/e147-wt-target 整体被清扫(第五次载具资产损失)→ /tmp/e150-target 冷建 21min(sccache 温)
+- 载具资产损失实录(本波×2):22:2x e147-wt-target 清扫(首轮);00:1x 同目录再次清扫致 rerun5 首发空跑——/private 载具半衰期纪律再证;脚本坑:sed 派生 rerun5.sh 只换 tag 未换目录前缀,日志写入 rerun4/{ec5..rn5}(与 ec4.* 并存零覆盖,实为幸运)
