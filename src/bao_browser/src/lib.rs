@@ -19,6 +19,7 @@ mod phase_watch;
 mod permission;
 mod runtime_bridge;
 mod screenshot;
+pub mod screencast;
 #[cfg(feature = "webdriver")]
 pub mod webdriver_host;
 mod ws_registry;
@@ -864,6 +865,11 @@ impl BrowserRuntime {
             start.elapsed() < max_wait
         } {
             self.servo.spin_event_loop();
+            // REQ-CDP-009 screencast tick BEFORE the repaint sweep: the
+            // capture path composites on demand (consuming the latch), so
+            // polling first keeps change detection exact (this pump has no
+            // WS event path — memory clients only).
+            screencast::drive(&self.page_pool, None);
             // Headless redraw leg: composite any webview servo requested a frame
             // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
             self.page_pool.paint_pages_needing_repaint();
@@ -916,6 +922,9 @@ impl BrowserRuntime {
         let start = std::time::Instant::now();
         while start.elapsed() < duration {
             self.servo.spin_event_loop();
+            // REQ-CDP-009 screencast tick BEFORE the repaint sweep (same
+            // ordering rationale as `run`; memory clients only here too).
+            screencast::drive(&self.page_pool, None);
             // Headless redraw leg: composite any webview servo requested a frame
             // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
             self.page_pool.paint_pages_needing_repaint();
@@ -953,6 +962,21 @@ impl BrowserRuntime {
 
         while start.elapsed() < max_wait {
             self.servo.spin_event_loop();
+            // REQ-CDP-009 screencast tick BEFORE the repaint sweep (capture
+            // consumes the latch; ordering rationale as `run`). WS-origin
+            // frames ride the same target-scoped routing as servo events.
+            let ws_sink = |target: &str, method: &str, params: serde_json::Value| {
+                match event_demux.as_ref() {
+                    Some(registry) => registry.broadcast_for_target(
+                        broadcaster.as_ref(),
+                        target,
+                        method,
+                        params,
+                    ),
+                    None => broadcaster.send_page_event(target, method, params),
+                }
+            };
+            screencast::drive(&self.page_pool, Some(&ws_sink));
             // Headless redraw leg: composite any webview servo requested a frame
             // for (refresh-driver heartbeat — see PagePool::paint_pages_needing_repaint).
             // Without this the pipeline is boot-once: rAF ticks and screenshot

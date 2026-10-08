@@ -6,6 +6,7 @@
 //!
 //! @trace REQ-BAO-API-007 [level:integration]
 
+use bao_cdp_client::bridge::e_class::{is_e_class, E_CLASS_METHODS};
 use bao_cdp_client::bridge::{BridgeError, MockServoBackend, ServoBackend};
 use bao_cdp_client::dispatch_command;
 use serde_json::json;
@@ -326,22 +327,43 @@ fn e_page_stop_css_coverage() {
     assert_e_class("Page.stopCSSCoverage");
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Page screencast trio — REQ-CDP-009: 已接入 bao 宿主侧帧生产域,
+// 不再属于 E 类(实现语义锁:E-class 集合不含 + 分类翻转)
+// ════════════════════════════════════════════════════════════════════
+
 #[test]
-fn e_page_start_screencast() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Page.startScreencast");
+fn screencast_trio_no_longer_e_class_after_req_cdp_009() {
+    // REQ-CDP-009: 三方法实装在 bao_browser 宿主侧(memory:// 与 WS 两个
+    // dispatch 面拦截),不再按 servo 能力缺失分类。E-class 常量集合与
+    // 分类函数双面断言。
+    // @trace REQ-CDP-009 [domain:Page] [level:integration]
+    for method in [
+        "Page.startScreencast",
+        "Page.stopScreencast",
+        "Page.screencastFrameAck",
+    ] {
+        let (domain, command) = method.split_once('.').unwrap();
+        assert!(
+            !E_CLASS_METHODS.contains(&method),
+            "{method} must not be registered in E_CLASS_METHODS after REQ-CDP-009"
+        );
+        assert!(
+            !is_e_class(domain, command),
+            "{method} must not classify as E-class after REQ-CDP-009"
+        );
+    }
 }
 
 #[test]
-fn e_page_stop_screencast() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Page.stopScreencast");
+fn screencast_trio_not_supported_error_is_gone_on_e_class_face() {
+    // 语义锁:该面(ServoBackend dispatch)对三方法不再产生「servo 不支持」
+    // 的 NotSupported 错误。实现面 = 宿主侧 bao_browser(memory://bao /
+    // WS),见 bao_browser tests/suite/screencast_tests.rs 七 criteria 锁。
+    // @trace REQ-CDP-009 [domain:Page] [level:integration]
+    assert_not_e_class("Page.startScreencast");
+    assert_not_e_class("Page.stopScreencast");
+    assert_not_e_class("Page.screencastFrameAck");
 }
 
 // ════════════════════════════════════════════════════════════════════

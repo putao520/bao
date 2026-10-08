@@ -528,6 +528,17 @@ impl PageInner {
     }
 
     pub fn take_screenshot(&self, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {
+        self.touch();
+        encode_image(&self.capture_frame()?, format)
+    }
+
+    /// Raw viewport capture (REQ-CDP-009 screencast frame source): composite
+    /// on demand (the `Painter::render` heartbeat — the same primitive
+    /// `take_screenshot` composites with) and return the un-encoded RGBA
+    /// frame. The screencast change gate digests this raw form so
+    /// downscaling/encoding can never hide a content change.
+    // @trace REQ-CDP-009 [entity:PageHandle]
+    pub fn capture_frame(&self) -> Result<image::RgbaImage, BrowserError> {
         self.webview.paint();
 
         let saved = Rc::new(RefCell::new(None));
@@ -545,7 +556,7 @@ impl PageInner {
             .map_err(|e| BrowserError::Rendering(format!("{e:?}")))?;
 
         self.touch();
-        encode_image(&image, format)
+        Ok(image)
     }
 
     /// Reload the page via servo's WebView::reload().
@@ -1793,6 +1804,14 @@ impl PageHandle {
 
     pub fn take_screenshot(&self, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {
         self.with_inner(|inner| inner.take_screenshot(format))
+    }
+
+    /// Raw viewport capture — the screencast frame source (REQ-CDP-009).
+    /// Same composite + capture chain as [`Self::take_screenshot`] minus the
+    /// encode step, so the change gate sees the exact pixels.
+    // @trace REQ-CDP-009 [entity:PageHandle]
+    pub fn capture_frame(&self) -> Result<image::RgbaImage, BrowserError> {
+        self.with_inner(|inner| inner.capture_frame())
     }
 
     pub fn page_title(&self) -> Option<String> {

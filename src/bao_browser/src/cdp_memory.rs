@@ -74,6 +74,15 @@ impl InMemoryBridge for MemoryCdpBridge {
     ) -> InMemoryBridgeResponse {
         let owned_default = self.default_target.lock().unwrap().clone();
         let target = session_id.unwrap_or(&owned_default);
+        // REQ-CDP-009: the screencast trio is served by bao_browser's own
+        // frame-production domain BEFORE the bao_cdp dispatch (which has no
+        // screencast handler) — registration touches only process-global
+        // plain state, so this dispatch-thread call never reaches servo.
+        // @trace REQ-CDP-009 [level:library]
+        if let Some(response) = crate::screencast::dispatch_memory_command(method, &params, target)
+        {
+            return response;
+        }
         let msg = CdpMessage {
             id: Some(0),
             method: method.to_string(),

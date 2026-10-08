@@ -535,6 +535,19 @@ impl RegistryDispatch for BaoWsRegistry {
             None => ws_target_id.to_string(),
         };
 
+        // REQ-CDP-009: the screencast trio is served by bao_browser's own
+        // frame-production domain BEFORE the bao_cdp dispatch (which has no
+        // screencast handler). Target validation mirrors the
+        // session-command face: unresolvable targets fail closed.
+        // @trace REQ-CDP-009 [level:library]
+        let null_params = Value::Null;
+        let sc_params = msg.params.as_ref().unwrap_or(&null_params);
+        if let Some(result) =
+            crate::screencast::dispatch_ws_command(&msg.method, sc_params, &target_id)
+        {
+            return Some(result);
+        }
+
         // Real command face: bao_cdp's servo-bridge-backed domain dispatch.
         let response =
             bao_cdp::handle_command(msg.clone(), &target_id, &msg.params, Some(&self.bridge));

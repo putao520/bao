@@ -81,6 +81,44 @@ pub fn process_memory_bridge() -> Option<Arc<dyn InMemoryBridge>> {
         .map(|(_, b)| Arc::clone(b))
 }
 
+// ── process-global memory event sender slot ─────────────────────────────────
+//
+// The memory:// transport's event channel was designed for the HOST side to
+// push CDP events (`InMemoryTransport::event_sender` — "供 servo 端向 CDP
+// client 推送事件"), but the transport is created client-side inside
+// `connect`, so the host could never actually reach the sender. This slot
+// closes that gap for event-producing host features (REQ-CDP-009
+// Page.screencastFrame): every eager memory:// connect registers its
+// transport's event sender here (last-writer-wins, mirroring the bridge
+// slot's documented single-client shape), and the host runtime pushes
+// synthesized CdpEvents through [`process_memory_event_sender`].
+//
+// Lifecycle: no teardown — a sender whose client dropped is detected by the
+// pusher via the send error (mpsc receiver gone) and treated as "client
+// vanished" (fail-closed upstream), and any newer connect replaces the slot.
+
+static PROCESS_MEMORY_EVENT_SENDER: std::sync::Mutex<
+    Option<std::sync::mpsc::Sender<crate::transport::CdpEvent>>,
+> = std::sync::Mutex::new(None);
+
+/// Register (replace) the process-global memory event sender. Called by the
+/// eager memory:// connect paths with the fresh transport's event sender.
+fn set_process_memory_event_sender(sender: std::sync::mpsc::Sender<crate::transport::CdpEvent>) {
+    *PROCESS_MEMORY_EVENT_SENDER.lock().unwrap() = Some(sender);
+}
+
+/// Clone out the live memory event sender, if any (host-side push face for
+/// synthesized CDP events such as `Page.screencastFrame`).
+///
+/// @trace REQ-CDP-009 [interface:Transport]
+pub fn process_memory_event_sender() -> Option<std::sync::mpsc::Sender<crate::transport::CdpEvent>> {
+    PROCESS_MEMORY_EVENT_SENDER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+}
+
 /// CDP Browser 实例。
 ///
 /// 代表一次成功的 `connect` —— 持有解析后的 URL、Connection 和 transport 类型。
@@ -122,6 +160,10 @@ impl Browser {
         if parsed.scheme == "memory" {
             if let Some(bridge) = process_memory_bridge() {
                 let transport = InMemoryTransport::new(bridge);
+                // REQ-CDP-009: publish the transport's event sender so the
+                // host runtime can push synthesized CDP events
+                // (Page.screencastFrame) to this client.
+                set_process_memory_event_sender(transport.event_sender());
                 let config = ConnectionConfig {
                     default_timeout_ms: 30_000,
                     transport_kind: TransportKind::InMemory,
@@ -153,6 +195,8 @@ impl Browser {
         let parsed = Self::route(url)?;
         if parsed.scheme == "memory" {
             let transport = InMemoryTransport::new(bridge);
+            // REQ-CDP-009: same event-sender publication as the eager path.
+            set_process_memory_event_sender(transport.event_sender());
             let config = ConnectionConfig {
                 default_timeout_ms: 30_000,
                 transport_kind: TransportKind::InMemory,

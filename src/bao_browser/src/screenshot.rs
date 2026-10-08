@@ -5,6 +5,7 @@ use image::{ImageFormat, RgbaImage};
 
 use crate::error::BrowserError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenshotFormat {
     Png,
     Jpeg,
@@ -12,6 +13,22 @@ pub enum ScreenshotFormat {
 }
 
 pub fn encode_image(image: &RgbaImage, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {
+    encode_image_with_quality(image, format, DEFAULT_JPEG_QUALITY)
+}
+
+/// Default JPEG quality for the plain `encode_image` face (screencast
+/// carries its own `quality` param per the CDP spec, Chrome default 80).
+const DEFAULT_JPEG_QUALITY: u8 = 80;
+
+/// Encode with an explicit JPEG quality (1..=100, CDP `Page.captureScreenshot`
+/// / `Page.startScreencast` `quality` param — REQ-CDP-009). PNG and WebP
+/// ignore the quality knob (lossless / fixed-quality codecs).
+// @trace REQ-CDP-009 [criterion:format 参数支持 jpeg 与 png]
+pub fn encode_image_with_quality(
+    image: &RgbaImage,
+    format: ScreenshotFormat,
+    jpeg_quality: u8,
+) -> Result<Vec<u8>, BrowserError> {
     let mut buf = Cursor::new(Vec::with_capacity(
         image.width() as usize * image.height() as usize,
     ));
@@ -21,7 +38,9 @@ pub fn encode_image(image: &RgbaImage, format: ScreenshotFormat) -> Result<Vec<u
             .map_err(|e| BrowserError::Rendering(format!("PNG encode failed: {e}")))?,
         ScreenshotFormat::Jpeg => {
             let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
-            rgb.write_to(&mut buf, ImageFormat::Jpeg)
+            let encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, jpeg_quality);
+            rgb.write_with_encoder(encoder)
                 .map_err(|e| BrowserError::Rendering(format!("JPEG encode failed: {e}")))?;
         }
         ScreenshotFormat::WebP => image
@@ -96,6 +115,27 @@ mod tests {
         let _ = encode_image(&img, ScreenshotFormat::Png);
         let _ = encode_image(&img, ScreenshotFormat::Jpeg);
         let _ = encode_image(&img, ScreenshotFormat::WebP);
+    }
+
+    // @trace REQ-CDP-009 [criterion:format 参数支持 jpeg 与 png]
+    #[test]
+    fn encode_with_quality_both_formats_valid_magic() {
+        let img = red_image(64, 64);
+        let jpeg = encode_image_with_quality(&img, ScreenshotFormat::Jpeg, 60).unwrap();
+        assert_eq!(&jpeg[0..2], &[0xFF, 0xD8]);
+        let png = encode_image_with_quality(&img, ScreenshotFormat::Png, 60).unwrap();
+        assert_eq!(&png[0..4], &[0x89, 0x50, 0x4E, 0x47]);
+    }
+
+    // @trace REQ-CDP-009 [criterion:format 参数支持 jpeg 与 png]
+    #[test]
+    fn encode_jpeg_lower_quality_is_not_larger() {
+        let img = red_image(200, 200);
+        // A noise-free solid frame can compress to identical size at both
+        // qualities, but a LOWER quality must never inflate the output.
+        let hi = encode_image_with_quality(&img, ScreenshotFormat::Jpeg, 95).unwrap().len();
+        let lo = encode_image_with_quality(&img, ScreenshotFormat::Jpeg, 20).unwrap().len();
+        assert!(lo <= hi, "quality 20 ({lo}B) must not exceed quality 95 ({hi}B)");
     }
 
     #[test]

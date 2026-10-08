@@ -11,6 +11,11 @@
 //!   在 Bao 编译配置下未启用
 //! - **Debugger 已接入(BUG-CDP-006)**:Debugger domain 9 method 已接入 servo SM
 //!   Debugger API,不再属于 E 类。详见 `debugger_handlers`。
+//! - **Screencast 已接入(REQ-CDP-009)**:Page.startScreencast / stopScreencast /
+//!   screencastFrameAck 不再属于 E 类——screencast 是 bao 自有的帧生产域
+//!   (pump 循环 repaint-latch 采集),实装在宿主侧 dispatch 面
+//!   (bao_browser 的 memory bridge / WS registry 拦截 + `screencast`
+//!   模块),不经本 crate 的 ServoBackend dispatch(该面无事件通道)。
 //!
 //! 所有 E 类返回 `BridgeError::NotSupported`,dispatcher 映射为 JSON-RPC error code -32601。
 //!
@@ -18,7 +23,7 @@
 //!
 //! | Domain | Methods |
 //! |--------|---------|
-//! | Page | printToPDF, start/stopJSCoverage, start/stopCSSCoverage, start/stopScreencast, screencastFrameAck, handleJavaScriptDialog, printToPDFAndDownload |
+//! | Page | printToPDF, start/stopJSCoverage, start/stopCSSCoverage, handleJavaScriptDialog, printToPDFAndDownload |
 //! | HeapProfiler | enable, disable, startTrackingHeapObjects, stopTrackingHeapObjects, takeHeapSnapshot, getObjectByHeapObjectId, getSamplingProfile, startSampling, stopSampling, collectGarbage (domain 全集拦截) |
 //! | Profiler | enable, disable, start, stop, setSamplingInterval, getBestEffortCoverage (domain 全集拦截) |
 //! | DOMStorage | getDOMStorageItems, setDOMStorageItem, removeDOMStorageItem, clearDOMStorageItems (domain 全集拦截) |
@@ -29,6 +34,7 @@
 //!
 //! @trace REQ-BAO-API-007 [level:library]
 //! @trace BUG-CDP-006 [domain:Debugger]
+//! @trace REQ-CDP-009 [level:library]
 
 use super::error::BridgeError;
 
@@ -64,9 +70,10 @@ pub const E_CLASS_METHODS: &[&str] = &[
     "Page.stopJSCoverage",
     "Page.startCSSCoverage",
     "Page.stopCSSCoverage",
-    "Page.startScreencast", // servo 无 screencast
-    "Page.stopScreencast",
-    "Page.screencastFrameAck",
+    // Page.startScreencast / stopScreencast / screencastFrameAck 移出 E 类
+    // (REQ-CDP-009):screencast 实装在 bao_browser 宿主侧帧生产域,经
+    // memory:// 与 WS 两个 dispatch 面拦截提供,不再按 servo 能力缺失分类。
+    // @trace REQ-CDP-009 [level:library]
     "Page.handleJavaScriptDialog", // servo 在 bao 配置下未启用 dialog actor
     "Page.printToPDFAndDownload",
     // Performance 域 servo 无 actor

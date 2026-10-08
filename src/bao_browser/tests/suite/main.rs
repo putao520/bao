@@ -98,6 +98,7 @@ mod realworld_full_stack_tests;
 mod rendering_pipeline_tests;
 mod runtime_bridge_deep_tests;
 mod screenshot_permission_error_tests;
+mod screencast_tests;
 mod security_sandbox_tests;
 mod servo_render_pipeline_tests;
 mod timer_window_replacement_tests;
