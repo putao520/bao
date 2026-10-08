@@ -305,6 +305,12 @@ impl StealthHooks {
   var __nav_t = nav ? __bao_target(nav) : null;
   var __scr_t = scr ? __bao_target(scr) : null;
 
+  // e148-R1: the proto targeting stays (with Face A PERMANENT these defines
+  // throw "can't redefine non-configurable property" and are swallowed by
+  // __bao_def — the native getters survive, and the navigator INSTANCE
+  // never gains own props; with configurable targets this define REPLACED
+  // the native getters and SIGSEGV'd under PagePool churn — see
+  // define_stealth_getter's bisect note).
   if (__nav_t) {{
   __bao_def(__nav_t, 'userAgent', {{ get: function() {{ return {ua:?}; }}, enumerable: true, configurable: true }});
   __bao_def(__nav_t, 'platform', {{ get: function() {{ return {platform:?}; }}, enumerable: true, configurable: true }});

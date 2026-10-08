@@ -4,9 +4,11 @@
 //
 // Oracle (probe, Chrome 150 — /tmp/e148-nav-placement-probe, committed in
 // the e148 commit message): every covered navigator/screen member is an
-// accessor on the INTERFACE PROTOTYPE with {enumerable: true, configurable:
-// true}; the navigator instance carries ZERO own names; window
-// .devicePixelRatio is an own accessor with the same attrs.
+// accessor on the INTERFACE PROTOTYPE; the navigator instance carries ZERO
+// own names. Placement + enumerability are aligned; configurable stays
+// FALSE — PERMANENT is load-bearing (e148-R1 bisect: the configurable
+// variant SIGSEGV'd under PagePool churn), a registered Chrome-parity
+// residual on that descriptor sub-face.
 //
 // The pre-e148 own-instance placement had two visible faces:
 //   1. Object.getOwnPropertyNames(navigator) listed every covered member
@@ -77,7 +79,11 @@ fn stealth_getters_chromium_placement_parity() {
         var d = Object.getOwnPropertyDescriptor(p, 'userAgent');
         var out = [];
         out.push('protoHasGetter=' + (d && typeof d.get === 'function'));
-        out.push('conf=' + (d && d.configurable === true));
+        // e148-R1: configurable stays FALSE (PERMANENT is load-bearing — the
+        // configurable variant SIGSEGV'd under PagePool churn; see
+        // define_stealth_getter's bisect note). Registered Chrome-parity
+        // residual on this descriptor sub-face.
+        out.push('confFalse=' + (d && d.configurable === false));
         out.push('enum=' + (d && d.enumerable === true));
         out.push('ownAbsent=' + (Object.getOwnPropertyDescriptor(navigator, 'userAgent') === undefined));
         // The 15 getter-covered members must not appear as own names (other
@@ -90,25 +96,27 @@ fn stealth_getters_chromium_placement_parity() {
         out.push('coveredNotOwn=' + (covered.every(function (n) { return own.indexOf(n) === -1; })));
         out.push('valueIsProfile=' + (navigator.userAgent === __EXPECT_UA__));
         out.push('nativeReplaced=' + (d.get.call(navigator) === navigator.userAgent));
-        // Chrome-shaped delete: property gone (undefined) — never the native
-        // host value (the leak vector this placement closes).
+        // PERMANENT (e148-R1): a page-level delete is refused (Chrome would
+        // allow it and yield undefined — registered residual). The
+        // anti-leak property still holds: the surviving accessor is OURS,
+        // never the native host value.
         var del = delete p.userAgent;
-        out.push('deleteTrue=' + (del === true));
-        out.push('afterDeleteUndefined=' + (navigator.userAgent === undefined));
+        out.push('deleteRefused=' + (del === false));
+        out.push('valueSurvivesDelete=' + (navigator.userAgent === __EXPECT_UA__));
         out.join('|');
         "#
         .replace("__EXPECT_UA__", &format!("{:?}", profile.navigator.user_agent)),
     );
     for field in [
         "protoHasGetter=true",
-        "conf=true",
+        "confFalse=true",
         "enum=true",
         "ownAbsent=true",
         "coveredNotOwn=true",
         "valueIsProfile=true",
         "nativeReplaced=true",
-        "deleteTrue=true",
-        "afterDeleteUndefined=true",
+        "deleteRefused=true",
+        "valueSurvivesDelete=true",
     ] {
         assert!(
             report.contains(&format!("{field}|")) || report.ends_with(field),
@@ -125,9 +133,14 @@ fn stealth_getters_chromium_placement_parity() {
         rooted!(&in(cxm) let g_root2 = global);
         let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root2.handle());
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-        assert!(unsafe {
+        // Return value NOT asserted: the global's devicePixelRatio slot is
+        // already PERMANENT from phase A — the re-install's dpr define is
+        // refused (prior-install arm, expected) and install_stealth_props
+        // reports false while the fresh plain navigator still got its
+        // defines (asserted behaviorally below).
+        let _ = unsafe {
             bao_stealth::engine_props::install_stealth_props(realm_cx.raw_cx(), global)
-        });
+        };
     }
 
     let report_b = eval_str(

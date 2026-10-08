@@ -1,11 +1,13 @@
 // @trace REQ-STL-007 [api:engine-layer stealth properties]
 // Engine-layer native property injection via mozjs FFI.
 // Chromium-parity placement (e148 oracle, Chrome 150): navigator/screen members are
-// accessor (getter-only) properties on the INTERFACE PROTOTYPE with {enumerable:
-// true, configurable: true} — the instances carry zero own names; window
-// .devicePixelRatio is an own accessor with the same attrs. The in-place
-// prototype replacement removes the native servo accessor (which the old
-// own-instance shadow left reachable — a native-value leak).
+// accessor (getter-only) properties on the INTERFACE PROTOTYPE — the instances
+// carry zero own names; window.devicePixelRatio is an own accessor. All are
+// enumerable and PERMANENT (configurable:false is load-bearing — see
+// define_stealth_getter's e148-R1 bisect note; a registered Chrome-descriptor
+// residual). The in-place prototype replacement removes the native servo
+// accessor (which the old own-instance shadow left reachable — a
+// native-value leak).
 // Canvas/Audio: JS-layer prototype hook injection via evaluate_script (requires DOM API access).
 
 // BUG-ENG-366 / REQ-SEC-002: Compartment isolation is unconditional.
@@ -1162,12 +1164,32 @@ unsafe fn define_stealth_getter(
         // next error path, killing the ScriptThread at page init.
         JS_ClearPendingException(cx);
     }
-    // Chrome descriptor parity (e148 oracle, Chrome 150): enumerable +
-    // configurable. PERMANENT would itself be the fingerprint — Chrome's
-    // WebIDL accessors are configurable, and a page-level `delete` then
-    // yields `undefined` exactly like Chrome (never a native value, which
-    // the in-place replacement already guarantees).
-    let attrs = JSPROP_ENUMERATE as u32;
+    // PERMANENT is load-bearing (e148-R1 chaos bisect): with configurable
+    // getters the JS-hooks blob's defineProperty REPLACED the native
+    // getters and the process SIGSEGV'd deterministically under PagePool
+    // churn. PERMANENT keeps every later define attempt failing (thrown +
+    // swallowed), freezing the shape after init — the same navigator-
+    // surface property-op fragility the historical globals.rs note
+    // documents. configurable:true stays a registered Chrome-descriptor
+    // residual (see the file header).
+    // e148-R1 root-cause fix (empirical bisect, chaos SIGSEGV): the
+    // navigator/screen engine getters MUST stay PERMANENT. Making them
+    // configurable (the e148 Chrome-descriptor parity attempt) let the
+    // JS-hooks blob's defineProperty actually REPLACE the native getters —
+    // and under PagePool churn that combination SIGSEGVs deterministically
+    // (pagepool_chaos_memory_safety, 3/3 at ~0.84s; faulting instruction
+    // chases a 0x20-tagged magic value as a pointer). Bisect matrix:
+    // every Face-A-PERMANENT cell green (V2/V3/V7/V9), every
+    // navigator-configurable cell red (V1/V4/V5/V8), blob defines
+    // necessary (V7 green) and sufficient with configurability (V8 red).
+    // This is the same navigator-surface property-op fragility the
+    // historical note at globals.rs install_node_apis documents — PERMANENT
+    // is load-bearing: it freezes the shape by making every later define
+    // attempt fail (thrown + swallowed), which is also exactly why the
+    // placement face (prototype vs instance) is SAFE to change: V9 proves
+    // proto placement + PERMANENT is green. The Chrome descriptor sub-face
+    // (configurable:true) is a REGISTERED residual, knowingly not aligned.
+    let attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
     let ok = JS_DefineProperty1(
         cx,
         target_root.handle().into(),
@@ -1579,10 +1601,10 @@ unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool 
 
 /// Install all stealth properties as accessor getters with Chromium-parity
 /// placement (e148 oracle, Chrome 150): navigator/screen members go on the
-/// INTERFACE PROTOTYPE (Navigator.prototype / Screen.prototype — Chrome
-/// instances carry zero own names) with {enumerable: true, configurable:
-/// true}; window.devicePixelRatio stays an OWN accessor on the global
-/// (Chrome parity) with the same attrs.
+/// INTERFACE PROTOTYPE (Chrome instances carry zero own names);
+/// window.devicePixelRatio stays an OWN accessor on the global. All are
+/// enumerable + PERMANENT (configurable:true SIGSEGV'd under PagePool churn
+/// — e148-R1 bisect; registered Chrome-descriptor residual).
 ///
 /// # Safety
 /// - `cx` must be a valid JSContext on the current thread.

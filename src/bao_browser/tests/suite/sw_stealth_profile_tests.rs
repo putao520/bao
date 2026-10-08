@@ -1497,7 +1497,7 @@ fn sw_scope_injector_starvation_after_dedicated_worker_live() {
              } \
              var pd = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), 'userAgent'); \
              var ownD = Object.getOwnPropertyDescriptor(navigator, 'userAgent'); \
-             var permGetter = pd && pd.configurable === true && pd.enumerable === true \
+             var permGetter = pd && pd.configurable === false && pd.enumerable === true \
                && typeof pd.get === 'function' && !ownD ? 1 : 0; \
              e.respondWith(new Response( \
                'SWPROBE|ua=' + ua + '|audiohooked=' + (audioHooked ? 1 : 0) \
@@ -1665,7 +1665,7 @@ fn sw_scope_injector_starvation_after_dedicated_worker_live() {
     );
     assert!(
         body.contains("|permgetter=1|") || body.ends_with("|permgetter=1"),
-        "④ navigator.userAgent must be a configurable+enumerable accessor on \
+        "④ navigator.userAgent must be a non-configurable+enumerable accessor on \
          the interface PROTOTYPE with zero instance own-names in the SW realm \
          (e148 Chromium-parity placement — Chrome 150 oracle), got: \
          {body}"

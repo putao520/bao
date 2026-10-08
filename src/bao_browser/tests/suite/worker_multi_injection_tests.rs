@@ -28,7 +28,7 @@
 //                'dbgRenderer' — the e36 gate: the saved "original" must stay
 //                the servo native, proving the multi delivery never re-saved
 //                the JS hook into the original slot (no double-define loop)
-//   permgetter=  navigator.userAgent is a configurable+enumerable accessor on
+//   permgetter=  navigator.userAgent is a non-configurable+enumerable accessor on
 //                the interface PROTOTYPE, zero instance own-names (e148
 //                Chromium-parity placement — value stability across repeated
 //                deliveries comes from the realm-keyed profile getter)
@@ -138,7 +138,7 @@ var __r = (function () {
     }
     var pd = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), 'userAgent');
     var ownD = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-    var permGetter = pd && pd.configurable === true && pd.enumerable === true
+    var permGetter = pd && pd.configurable === false && pd.enumerable === true
       && typeof pd.get === 'function' && !ownD ? 1 : 0;
     return 'OK|ua=' + ua + '|audiohooked=' + (audioHooked ? 1 : 0)
          + '|wglhooked=' + wglHooked + '|orignative=' + origNative
@@ -174,7 +174,7 @@ const WORKER_PROBE_B: &str = r#"
     }
     var pd = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), 'userAgent');
     var ownD = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-    var permOk = pd && pd.configurable === true && pd.enumerable === true
+    var permOk = pd && pd.configurable === false && pd.enumerable === true
       && typeof pd.get === 'function' && !ownD ? '1' : '0';
     out = 'OK|ua=' + uaStr + '|audiohooked=' + (audioOk ? '1' : '0')
         + '|wglhooked=' + wglOk + '|orignative=' + origOk
@@ -275,7 +275,7 @@ fn assert_full_injection(tag: &str, r: &str, main_ua: &str) {
     );
     assert!(
         r.contains("|permgetter=1|") || r.ends_with("|permgetter=1"),
-        "{tag}: navigator.userAgent must be a configurable+enumerable accessor \
+        "{tag}: navigator.userAgent must be a non-configurable+enumerable accessor \
          on the interface PROTOTYPE with zero instance own-names (e148 \
          Chromium-parity placement — Chrome 150 oracle), got: {r}"
     );
