@@ -902,6 +902,36 @@
         </div>
       </div>
 
+      <div id="req-cdp-009" data-req="REQ-CDP-009" data-req-status="specified" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpSession,CdpTarget" data-req-api="Page.startScreencast,Page.stopScreencast,Page.screencastFrameAck,Page.screencastFrame" data-groundedin="PRD-REQ-CDP-SCREENCAST">
+        <h3>REQ-CDP-009: CDP screencast 变化驱动帧流</h3>
+        <p>CDP screencast 语义的 headless 观察面:Page.startScreencast 建立变化驱动帧流(页面内容变化才出新帧,非定时轮询),maxFrameRate 上限可设,帧经 Page.screencastFrame 事件下发、消费方以 Page.screencastFrameAck 确认参与出帧节流,Page.stopScreencast 终止并释放。(来源:putao520/bao issue #55,PRD-REQ-CDP-SCREENCAST;现状基线=三方法 E-class MethodNotFound,e_class.rs 登记)</p>
+        <h4>验收标准</h4>
+        <ul>
+          <li id="startscreencast-建立变化驱动帧流会话" data-criterion="Page.startScreencast 建立 change-driven 帧流会话:页面内容变化才出新帧" data-criterion-id="REQ-CDP-009-C1">
+            Page.startScreencast 建立 change-driven 帧流会话:页面内容变化才出新帧
+          </li>
+          <li id="maxframerate-上限可设且生效" data-criterion="maxFrameRate 上限可设且生效(出帧频率不超过上限)" data-criterion-id="REQ-CDP-009-C2">
+            maxFrameRate 上限可设且生效(出帧频率不超过上限)
+          </li>
+          <li id="帧经-screencastframe-事件下发" data-criterion="帧经 Page.screencastFrame 事件下发(data 含 base64 帧与 metadata)" data-criterion-id="REQ-CDP-009-C3">
+            帧经 Page.screencastFrame 事件下发(data 含 base64 帧与 metadata)
+          </li>
+          <li id="screencastframeack-确认参与节流" data-criterion="Page.screencastFrameAck 确认参与出帧节流(未 ack 不无限出帧)" data-criterion-id="REQ-CDP-009-C4">
+            Page.screencastFrameAck 确认参与出帧节流(未 ack 不无限出帧)
+          </li>
+          <li id="stopscreencast-终止并释放" data-criterion="Page.stopScreencast 终止会话停止帧生产,资源正常释放" data-criterion-id="REQ-CDP-009-C5">
+            Page.stopScreencast 终止会话停止帧生产,资源正常释放
+          </li>
+          <li id="format-支持-jpeg-与-png" data-criterion="format 参数支持 jpeg 与 png" data-criterion-id="REQ-CDP-009-C6">
+            format 参数支持 jpeg 与 png
+          </li>
+          <li id="headless-环境可用" data-criterion="headless 环境(无真实显示器形态)可用" data-criterion-id="REQ-CDP-009-C7">
+            headless 环境(无真实显示器形态)可用
+          </li>
+        </ul>
+        <p>关联实体: <a data-xref-type="entity" data-xref-id="cdpsession" href="./04-DATA-MODEL#cdpsession">CdpSession</a>, <a data-xref-type="entity" data-xref-id="cdptarget" href="./06-CDP-SERVER#cdptarget">CdpTarget</a></p>
+      </div>
+
       <!-- ============================================================ -->
       <h2>§5 Stealth 需求</h2>
       <!-- ============================================================ -->
