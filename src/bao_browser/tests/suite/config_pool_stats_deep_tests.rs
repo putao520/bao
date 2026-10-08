@@ -192,6 +192,7 @@ fn test_browser_config_custom() {
         webdriver_port: None,
         ignore_certificate_errors: false,
         certificate_path: None,
+        pref_overrides: Vec::new(),
     };
     assert_eq!(config.cdp_port, 8080);
     assert!(!config.headless);
@@ -233,6 +234,7 @@ fn test_browser_config_to_bao_config() {
         webdriver_port: None,
         ignore_certificate_errors: false,
         certificate_path: None,
+        pref_overrides: Vec::new(),
     };
     let bao: BaoConfig = bc.into();
     assert_eq!(bao.cdp_port, Some(9333));

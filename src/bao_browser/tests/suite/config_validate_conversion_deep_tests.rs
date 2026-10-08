@@ -268,6 +268,7 @@ fn test_from_preserves_all_fields() {
         webdriver_port: None,
         ignore_certificate_errors: false,
         certificate_path: None,
+        pref_overrides: Vec::new(),
     };
     let bao: BaoConfig = bc.into();
     assert_eq!(bao.cdp_port, Some(9999));

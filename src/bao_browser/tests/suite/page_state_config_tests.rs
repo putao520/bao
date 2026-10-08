@@ -122,6 +122,7 @@ fn test_bao_config_custom_values() {
         stealth_profile: None,
         ignore_certificate_errors: false,
         certificate_path: None,
+        pref_overrides: Vec::new(),
     };
     assert_eq!(config.cdp_port, Some(9222));
     assert_eq!(config.max_pages, 5);
