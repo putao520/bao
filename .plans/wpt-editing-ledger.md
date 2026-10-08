@@ -76,6 +76,8 @@
 
 - A1 pref 管道修复:2886b1c1(BrowserConfig/BaoConfig pref_overrides 字段)+lib.rs:368 apply_pref_overrides_to 消费面(四文件)已 commit
 - A2 重跑读数:rerun3 五域 raw log 归档(/tmp/e150/rerun3/)。形态=**pref 激活大面积活化双向洗牌**:subtest unexpected-PASS(exp FAIL)≈1935 正向(vs unexpected-FAIL≈1240 负);file 级 ec2/ct2 unexpected-FAIL=0(crashtests 9 TIMEOUT 全消);rn2 85152 子测 PASS(语义红 10546=servo-parity 正常态)
-- ini 重锚:manifest_update=True kwargs 通路未生效(ot3 stdout 零 update 痕迹,待 e150 恢复后调通);edit-context 面 e151 ini 已在 vendor(差集仅该面 10 条);其余 149 ini 重锚待 update 通路调通或 analyze 驱动手改
-- e2e armed skip 自激活验证:pref 落地后重跑确认(待 e150)
-- 残留移交:e150(23:09 限流重置后)完成 ini 重锚+e2e 自激活确认+终报
+- ini 重锚(终态):/tmp/e150/reanchor_ini.py(wptmanifest parse/serialize round-trip 字节恒等验证后使用)。策略=**正翻吸收+红保持**(campaign 惯例 e122 F4/e147 I5):子测条目任一观察 PASS 即移除(变体分裂格吸收后失败变体保持可见红——红可见性优先于正翻噪音);file 级期望全部变体 OK/PASS 才移除;其余(FAIL/TIMEOUT/NOTRUN/未观察)保留 servo 期望=分歧格可见红。edit-context 面先与参考仓 e151 终态同步。**两轮调试**:①保守全观察规则在混合文件留 1504 正翻噪音→改任一观察;②子测名变体键 bug——run 域 ini 是分页变体节(`?1-1000`/`?1001-last`),观察键 strip 变体永不匹配(首轮仅吸收 405)→观察按全名+剥离双键、匹配按节名带变体(更精确:变体内 FAIL 不被他变体 PASS 吸收)。终态:**77 文件改动(+74/-6014),21 文件删**(5=e151 面+16 全绿清空),**1939 子测条目+20 file 级吸收**,纯红 22298 条保留(run 域 ini 分页节全量,as-expected servo-parity 红主体);vendor ini 157→136
+- e2e armed skip 自激活验证:**已实证**(worktree 2f86f149+ 链,`--no-capture` 单测):contenteditable state=`"text":"Hi"`+trusted keydown/input 双事件流——Document 编辑引擎真活,armed 门零改动转真断言;四测 4/4 全真绿(RC=0)
+- 指纹快查(裁定要求):双证据——源级零耦合(bao_stealth 仓 `dom_exec_command|servo::prefs` 引用=0)+行为面 bao_stealth canvas/navigator/screen deep 套件 41/41 绿(pref 翻转不改指纹读数;execCommand 是功能面非指纹属性)
+- rerun4(首轮验证,保守规则 meta):849 tests/821 as-expected(96.7%)/sub unexpected-PASS 残留 1504(保守规则产物,见上①)→ 触发规则精化;unexpected-FAIL 1240 稳定(分歧集)
+- rerun5(终态验证,精化后 meta 136 ini):五域复跑中
