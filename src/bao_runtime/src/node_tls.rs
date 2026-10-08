@@ -380,8 +380,8 @@ impl ConnShared {
     }
 }
 
-/// Which JS surface a `ServerShared` feeds. The driver treats both kinds
-/// identically (a conn to drive + events to queue); only the JS-thread
+/// Which JS surface a `ServerShared` feeds. The driver treats all kinds of
+/// conn identically (a conn to drive + events to queue); only the JS-thread
 /// tasklet branches on it.
 enum ServerKind {
     /// `tls.createServer().listen()` — events are emitted on the server
@@ -391,6 +391,14 @@ enum ServerKind {
     /// pending Promise: SecureConnection resolves it with the socket,
     /// ClientError (pre-socket) rejects it.
     ClientConnect,
+    /// `new tls.TLSSocket(socket, options)` wrap upgrade (REQ-ENG-013):
+    /// a client TLS handshake driven over a net.Socket's EXISTING
+    /// connection (STARTTLS shape, upstream bun ffe2f15470). The TLSSocket
+    /// is the ctor-built object registered in TLS_CONNS at call time;
+    /// `server_obj_root` holds a second root of that same object (the
+    /// tasklet's realm anchor). No Promise anywhere — the socket IS the
+    /// synchronous return value. 1:1 (one ServerShared per wrap).
+    WrapClient,
 }
 
 /// Server-wide cross-thread state. Fields marked JS-thread-only are never
@@ -1567,10 +1575,12 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                         cipher_version,
                         peer_cert,
                     } = info;
-                    // ClientConnect: the socket object is created HERE (the
-                    // client side has no Connection event) and the pending
-                    // Promise resolves with it.
-                    let is_client = matches!(s.kind, ServerKind::ClientConnect);
+                    // ClientConnect / WrapClient: the socket object exists
+                    // from call time (tls.connect's early build / the wrap
+                    // ctor's own `this`) — the fallback build below only
+                    // covers a registry miss.
+                    let is_client =
+                        matches!(s.kind, ServerKind::ClientConnect | ServerKind::WrapClient);
                     let mut socket_ptr = tls_socket_ptr_for(conn_id);
                     if socket_ptr.is_null() && is_client {
                         let socket = tls_build_socket_js(realm_cx.raw_cx(), conn_id);
@@ -1642,25 +1652,30 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                         })
                         .unwrap_or_else(|| ObjectValue(socket_ptr));
                     if is_client {
-                        // Strip the `then` forwarder BEFORE resolving: the
-                        // value handed to ResolvePromise is the socket, and
-                        // a thenable would be assimilated via socket.then →
-                        // promise.then → resolve-waiting-on-itself (deadlock).
-                        // After this point the socket is a plain Node-shaped
-                        // TLSSocket (no then — Node parity).
-                        rooted!(&in(realm_cx) let sock_h = socket_ptr);
-                        rooted!(&in(realm_cx) let undef = UndefinedValue());
-                        JS_DefineProperty(
-                            cx,
-                            sock_h.handle().into(),
-                            c"then".as_ptr(),
-                            undef.handle().into(),
-                            0,
-                        );
-                        rooted!(&in(realm_cx) let sv = socket_val);
-                        JS::ResolvePromise(cx, server_root.handle().into(), sv.handle().into());
-                        // Node parity: the client TLSSocket emits
-                        // 'secureConnect' once the handshake completes.
+                        if matches!(s.kind, ServerKind::ClientConnect) {
+                            // Strip the `then` forwarder BEFORE resolving: the
+                            // value handed to ResolvePromise is the socket, and
+                            // a thenable would be assimilated via socket.then →
+                            // promise.then → resolve-waiting-on-itself (deadlock).
+                            // After this point the socket is a plain Node-shaped
+                            // TLSSocket (no then — Node parity). Wrap-ctor
+                            // sockets never got a forwarder and have no
+                            // pending Promise — nothing to strip or resolve.
+                            rooted!(&in(realm_cx) let sock_h = socket_ptr);
+                            rooted!(&in(realm_cx) let undef = UndefinedValue());
+                            JS_DefineProperty(
+                                cx,
+                                sock_h.handle().into(),
+                                c"then".as_ptr(),
+                                undef.handle().into(),
+                                0,
+                            );
+                            rooted!(&in(realm_cx) let sv = socket_val);
+                            JS::ResolvePromise(cx, server_root.handle().into(), sv.handle().into());
+                        }
+                        // Node parity (and REQ-ENG-013-C2): the client
+                        // TLSSocket emits 'secureConnect' once the handshake
+                        // completes.
                         tls_emit_js(cx, socket_ptr, "secureConnect", &[]);
                     } else {
                         tls_emit_js(cx, server_root.get(), "secureConnection", &[socket_val]);
@@ -1696,10 +1711,11 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                         // The guard's Drop unroots (liveness-guarded).
                         drop(entry);
                     }
-                    if matches!(s.kind, ServerKind::ClientConnect) {
+                    if matches!(s.kind, ServerKind::ClientConnect | ServerKind::WrapClient) {
                         // Final JS-thread consumer on the client path (no
-                        // ServerClosed event): release the Promise root and
-                        // drop the registry Arc.
+                        // ServerClosed event): release the rooted object
+                        // (ClientConnect's Promise / WrapClient's realm
+                        // anchor) and drop the registry Arc.
                         drop(s.server_obj_root.take());
                         TLS_SERVER_REGISTRY.with(|r| {
                             r.borrow_mut().remove(&s.server_id);
@@ -1710,19 +1726,26 @@ unsafe fn tls_event_tasklet(ptr: *mut ServerShared) {
                     let err_obj = tls_build_error_js(cx, &message);
                     let socket_val =
                         TLS_CONNS.with(|m| m.borrow().get(&conn_id).and_then(|e| e.socket_root.as_ref().map(|g| g.get(0))));
-                    if matches!(s.kind, ServerKind::ClientConnect) {
+                    if matches!(s.kind, ServerKind::ClientConnect | ServerKind::WrapClient) {
                         if let Some(sv) = socket_val.filter(|v| v.is_object()) {
                             // Node emits 'error' on the client TLSSocket —
                             // the early-socket shape now ALWAYS has a socket
-                            // registered, handshake failures included.
+                            // registered, handshake failures included. A wrap
+                            // socket additionally loses `authorized`: the
+                            // handshake that would have proven it failed.
+                            if matches!(s.kind, ServerKind::WrapClient) {
+                                tls_set_bool_prop(cx, sv.to_object(), "authorized", false);
+                            }
                             tls_emit_js(cx, sv.to_object(), "error", &[ObjectValue(err_obj)]);
                         }
                         // Reject the pending Promise in every failure mode
                         // (connect-refused, handshake failure, post-handshake
                         // protocol error). Rejecting an already-settled
                         // Promise is a no-op, so this composes with the
-                        // legacy promise shape.
-                        tls_reject_promise(cx, realm_cx, server_root.get(), &message);
+                        // legacy promise shape. (WrapClient: no Promise.)
+                        if matches!(s.kind, ServerKind::ClientConnect) {
+                            tls_reject_promise(cx, realm_cx, server_root.get(), &message);
+                        }
                     } else if let Some(sv) = socket_val.filter(|v| v.is_object()) {
                         tls_emit_js(cx, server_root.get(), "tlsClientError", &[ObjectValue(err_obj), sv]);
                     } else {
@@ -2694,8 +2717,365 @@ unsafe extern "C" fn tls_socket_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSV
         0,
     );
 
+    // ── REQ-ENG-013: wrap upgrade (client TLS in-place upgrade) ──
+    // `new TLSSocket(connectedSocket, options)` upgrades the existing
+    // connection to TLS in place (Node's STARTTLS shape, upstream bun
+    // ffe2f15470): the ctor takes over the net.Socket's TCP connection,
+    // registers this object as the conn's TLSSocket, and the shared
+    // bao-tls-driver drives the client handshake over the SAME connection —
+    // the ctor IS where the upgrade starts (upstream's rule; the mysql
+    // STARTTLS driver relies on it). A call with no socket argument keeps
+    // the legacy inert-object shape.
+    if argc > 0 && (*args.get(0).ptr).is_object() {
+        rooted!(&in(cx_ref) let sock = (*args.get(0).ptr).to_object());
+        let opts_ptr = if argc > 1 && (*args.get(1).ptr).is_object() {
+            (*args.get(1).ptr).to_object()
+        } else {
+            ::std::ptr::null_mut()
+        };
+        if let Err(msg) = unsafe { tls_wrap_upgrade(cx, cx_ref, obj.get(), sock.get(), opts_ptr) } {
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            args.rval().set(UndefinedValue());
+            return false;
+        }
+    }
+
     args.rval().set(ObjectValue(obj.get()));
     true
+}
+
+/// REQ-ENG-013 (TLSSocket wrap upgrade): the client TLS in-place upgrade
+/// body for `new TLSSocket(connectedSocket, options)`. Takes over the
+/// net.Socket's existing TCP connection (`node_net::net_socket_upgrade_
+/// takeover` — dup'd fd keeps the TCP conn alive while the uSockets
+/// registration closes, plaintext RX buffer drained), registers the
+/// ctor-built object as the conn's TLSSocket, and hands the connection to
+/// the shared bao-tls-driver — the identical machinery `tls.connect` uses
+/// (TlsClient → TlsConnection → AddClientConn), zero hand-written TLS.
+///
+/// Upgrade-window semantics (SPEC REQ-ENG-013-C3, both directions):
+/// - writes on the TLSSocket before the handshake completes park in
+///   `pending_writes` and are flushed over the TLS channel only once the
+///   handshake turns Active (the driver's park-and-flush — the ssl_in_use
+///   ordering);
+/// - plaintext bytes that arrived on the net.Socket but were never read by
+///   the JS poll chain are re-delivered as the FIRST 'data' event on this
+///   socket, queued ahead of SecureConnection in the same FIFO channel —
+///   nothing received before the upgrade is lost.
+///
+/// Failure modes are loud: a socket that is not a live bao net.Socket, a
+/// destroyed socket, or `isServer: true` (client-side upgrade is the SPEC
+/// scope) throw from the ctor; a takeover failure after registration
+/// unwinds every registry/root inserted here (the plain socket stays live);
+/// an async handshake failure arrives as 'error' (+ authorized=false) via
+/// the ClientError tasklet.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn tls_wrap_upgrade(
+    cx: *mut JSContext,
+    cx_ref: &mut mozjs::context::JSContext,
+    obj: *mut JSObject,
+    sock: *mut JSObject,
+    opts: *mut JSObject,
+) -> ::std::result::Result<(), String> {
+    rooted!(&in(cx_ref) let sock_root = sock);
+    rooted!(&in(cx_ref) let obj_root = obj);
+
+    // ── the wrapped socket must be a live bao net.Socket ──
+    // `_ptr` carries the us_socket_t* as a double (NET_JS IIFE contract).
+    let mut ptr_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        sock_root.handle().into(),
+        c"_ptr".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut ptr_val,
+        },
+    );
+    if !ptr_val.is_double() || ptr_val.to_double() <= 0.0 {
+        return Err("tls: TLSSocket wrap requires a live connected net.Socket".to_string());
+    }
+    let sock_ptr = ptr_val.to_double() as usize;
+    let mut destroyed_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        sock_root.handle().into(),
+        c"destroyed".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut destroyed_val,
+        },
+    );
+    if destroyed_val.is_boolean() && destroyed_val.to_boolean() {
+        return Err("tls: TLSSocket wrap on a destroyed socket".to_string());
+    }
+
+    // ── options (same face as tls.connect) ──
+    let mut servername: Option<String> = None;
+    let mut reject_unauthorized = true;
+    let mut ca_pems: Vec<String> = Vec::new();
+    if !opts.is_null() {
+        rooted!(&in(cx_ref) let opts_root = opts);
+        // isServer: client-side upgrade is the SPEC scope — refuse loudly
+        // instead of silently driving a client handshake on a server conn.
+        let mut is_server = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"isServer".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut is_server,
+            },
+        );
+        if is_server.is_boolean() && is_server.to_boolean() {
+            return Err(
+                "tls: TLSSocket server-side wrap is not supported (client upgrade only)"
+                    .to_string(),
+            );
+        }
+        let mut sn = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"servername".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut sn,
+            },
+        );
+        if sn.is_string() {
+            servername = Some(crate::js_to_rust_string(cx, sn));
+        }
+        let mut ra = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"rejectUnauthorized".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ra,
+            },
+        );
+        if ra.is_boolean() {
+            reject_unauthorized = ra.to_boolean();
+        }
+        // ca: a PEM string or an array of PEM strings (tls.connect's face).
+        let mut ca = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            opts_root.handle().into(),
+            c"ca".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ca,
+            },
+        );
+        if ca.is_string() {
+            ca_pems.push(crate::js_to_rust_string(cx, ca));
+        } else if ca.is_object() {
+            rooted!(&in(cx_ref) let arr = ca.to_object());
+            let mut i: u32 = 0;
+            loop {
+                let mut elem = UndefinedValue();
+                JS_GetElement(
+                    cx,
+                    arr.handle().into(),
+                    i,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut elem,
+                    },
+                );
+                if elem.is_undefined() {
+                    break;
+                }
+                if elem.is_string() {
+                    ca_pems.push(crate::js_to_rust_string(cx, elem));
+                }
+                i += 1;
+            }
+        }
+    }
+
+    // Verification hostname: options.servername, else the net.Socket's
+    // remote peer, else tls.connect's localhost fallback.
+    let verify_host = if let Some(name) = &servername {
+        name.clone()
+    } else {
+        let mut ra = UndefinedValue();
+        JS_GetProperty(
+            cx,
+            sock_root.handle().into(),
+            c"remoteAddress".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ra,
+            },
+        );
+        if ra.is_string() {
+            crate::js_to_rust_string(cx, ra)
+        } else {
+            "localhost".to_string()
+        }
+    };
+
+    // ── client TLS setup (no I/O — same construction face as tls.connect) ──
+    let client = TlsClient::new().map_err(|e| format!("tls: client init failed: {}", e))?;
+    for pem in &ca_pems {
+        for der in pem_parse_certs(pem) {
+            if !client.add_trusted_der(&der) {
+                return Err("tls: add_trusted_der failed".to_string());
+            }
+        }
+    }
+    let mut conn =
+        TlsConnection::new_client(&client, servername.as_deref().unwrap_or(&verify_host))
+            .map_err(|e| format!("tls: new_client failed: {}", e))?;
+    if reject_unauthorized {
+        // BoringSSL clients verify nothing unless explicitly enabled; the
+        // handshake then only completes when chain+hostname verified —
+        // which is what makes the ctor-time `authorized` below honest.
+        if !conn.set_verify_peer(&verify_host) {
+            return Err("tls: set_verify_peer failed".to_string());
+        }
+    } else {
+        conn.set_verify_off();
+    }
+    let Some(handle) = tls_driver_acquire() else {
+        return Err("tls: TLS driver unavailable".to_string());
+    };
+
+    // ── identity + registration (roots BEFORE the takeover: a failure below
+    // leaves the plain socket fully live) ──
+    let conn_id = NEXT_TLS_ID.fetch_add(1, Ordering::Relaxed);
+    let obj_val = ObjectValue(obj);
+    let socket_root = match RawValueRootGuard::new(
+        cx,
+        ::std::slice::from_ref(&obj_val),
+        c"TLSSocket.object",
+    ) {
+        Some(g) => g,
+        None => return Err("tls: rooting the wrap TLSSocket failed".to_string()),
+    };
+    // Second root of the same object: the tasklet's realm anchor
+    // (ServerShared.server_obj_root). Two independent root slots on one
+    // object is fine — the GC updates both; each unroots at its own drop.
+    let realm_root = match RawValueRootGuard::new(
+        cx,
+        ::std::slice::from_ref(&obj_val),
+        c"TLSSocket.wrap",
+    ) {
+        Some(g) => g,
+        None => return Err("tls: rooting the wrap realm anchor failed".to_string()),
+    };
+
+    let conn_shared = Arc::new(ConnShared::new());
+    let loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static> =
+        crate::timers::with_event_loop(|loop_| loop_ as *const _);
+    let server_id = NEXT_TLS_ID.fetch_add(1, Ordering::Relaxed);
+    let shared = Arc::new(ServerShared {
+        server_id,
+        kind: ServerKind::WrapClient,
+        cx,
+        server_obj_root: Some(realm_root),
+        sni_fn_root: None,
+        client_conn: Some(Arc::clone(&conn_shared)),
+        mini_loop_ptr: loop_ptr,
+        concurrent_task:
+            bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
+        task_scheduled: AtomicBool::new(false),
+        events: Mutex::new(Vec::new()),
+        closing: AtomicBool::new(false),
+        sni_ctx_cache: Mutex::new(HashMap::new()),
+        alpn_wire: None,
+    });
+    TLS_SERVER_REGISTRY.with(|r| {
+        r.borrow_mut().insert(server_id, Arc::clone(&shared));
+    });
+    TLS_CONNS.with(|m| {
+        m.borrow_mut().insert(
+            conn_id,
+            JsConn {
+                shared: Arc::clone(&conn_shared),
+                socket_root: Some(socket_root),
+            },
+        );
+    });
+
+    // ── connection takeover (fd ownership moves to the driver) ──
+    let (stream, pending_plain) = match crate::node_net::net_socket_upgrade_takeover(sock_ptr) {
+        Some(v) => v,
+        None => {
+            // Unwind every registration above; the plain socket stays live
+            // (the ctor error is a refused upgrade, not a kill).
+            TLS_SERVER_REGISTRY.with(|r| {
+                r.borrow_mut().remove(&server_id);
+            });
+            TLS_CONNS.with(|m| {
+                m.borrow_mut().remove(&conn_id);
+            });
+            return Err("tls: TLSSocket wrap fd takeover failed".to_string());
+        }
+    };
+    // Stop the plain socket's JS poll chain: its `_ptr` is gone (the
+    // takeover closed the uSockets socket); the TLSSocket owns the
+    // connection from here. The wrapped object keeps its identity — it
+    // just never sees data again (Node surface).
+    rooted!(&in(cx_ref) let zero = DoubleValue(0.0));
+    JS_DefineProperty(
+        cx,
+        sock_root.handle().into(),
+        c"_ptr".as_ptr(),
+        zero.handle().into(),
+        0,
+    );
+
+    // ── this object IS the TLSSocket: stamp the dispatch identity ──
+    rooted!(&in(cx_ref) let cid = DoubleValue(conn_id as f64));
+    JS_DefineProperty(
+        cx,
+        obj_root.handle().into(),
+        c"_connId".as_ptr(),
+        cid.handle().into(),
+        0,
+    );
+    // authorized mirrors the verification mode: with rejectUnauthorized the
+    // handshake only completes when the chain+hostname verified — true from
+    // here on; an async handshake failure flips it back (ClientError arm).
+    tls_set_bool_prop(cx, obj, "authorized", reject_unauthorized);
+    tls_set_bool_prop(cx, obj, "destroyed", false);
+
+    // Plaintext-phase bytes drained at the takeover: re-deliver through this
+    // socket as the first 'data' event (FIFO — ahead of SecureConnection,
+    // so the pre-upgrade phase stays observable in order, nothing lost).
+    if !pending_plain.is_empty() {
+        tls_push_event(
+            &shared,
+            TlsEvent::Data {
+                conn_id,
+                bytes: pending_plain,
+            },
+        );
+    }
+
+    // Hand the EXISTING connection to the driver: AddClientConn's first
+    // drive puts the ClientHello on the wire and the handshake proceeds on
+    // the same TCP connection (secureConnect lands via the tasklet).
+    handle
+        .cmds
+        .lock()
+        .unwrap()
+        .push(DriverCmd::AddClientConn(
+            conn_id,
+            stream,
+            shared,
+            conn_shared,
+            conn,
+        ));
+    tls_driver_wake();
+    Ok(())
 }
 
 /// tls.connect(options) — TLS client connect with ALPN negotiation, SNI,

@@ -7,6 +7,7 @@
 
 use ::std::cell::{Cell, RefCell};
 use ::std::collections::HashMap;
+use ::std::net::TcpStream;
 use ::std::ptr::{self, NonNull};
 use bun_core::ZBox;
 
@@ -199,6 +200,90 @@ impl Drop for NetCleanup {
         NET_EOF_SOCKETS.with(|e| e.borrow_mut().clear());
         NET_CX.with(|c| c.set(None));
     }
+}
+
+// ──────────────────── TLSSocket wrap takeover (REQ-ENG-013) ────────────────────
+
+/// Hand a live connected net.Socket's TCP connection over to the tls driver
+/// for the in-place client upgrade (`new tls.TLSSocket(socket, options)`,
+/// Node's STARTTLS shape).
+///
+/// Ownership transfer, one synchronous call on the JS thread (no loop tick
+/// can interleave — the vtable only fires from loop ticks on this thread):
+///
+/// 1. drain the socket's undelivered plaintext-phase RX buffer
+///    (`NET_INCOMING_DATA` — bytes the vtable buffered but the JS poll chain
+///    never read) so nothing received before the upgrade is lost; the caller
+///    re-delivers them through the TLSSocket;
+/// 2. duplicate the fd — the dup keeps the TCP connection itself alive
+///    across the uSockets teardown below (closing one of two dup'd
+///    descriptors only drops one reference);
+/// 3. close the uSockets registration: synchronously unlinks the socket from
+///    its group, stops the poll (epoll deregistration), closes the ORIGINAL
+///    fd and fires on_close (NET_* cleanup, same thread). Calling from the
+///    JS thread outside a loop tick is safe under the same contract as
+///    net_on_connect_error's close: this thread is the only driver of the
+///    loop.
+///
+/// Returns the driver-owned stream plus the drained plaintext bytes; `None`
+/// when the socket is not a live registered net.Socket or the fd could not
+/// be duplicated (the caller fails loudly — never a wrong-handle handoff).
+pub fn net_socket_upgrade_takeover(sock_ptr: usize) -> Option<(TcpStream, Vec<u8>)> {
+    if !NET_SOCKETS.with(|m| m.borrow().contains_key(&sock_ptr)) {
+        return None;
+    }
+    // Drain BEFORE the close (order matters: on_close removes the buffer).
+    let pending = NET_INCOMING_DATA
+        .with(|m| m.borrow_mut().remove(&sock_ptr))
+        .unwrap_or_default();
+    // SAFETY: sock_ptr is a live us_socket_t (NET_SOCKETS just confirmed the
+    // registration net_on_open installed and net_on_close has not removed).
+    let fd = unsafe { (*(sock_ptr as *mut us_socket_t)).get_fd() };
+    let dup = dup_socket_fd(fd)?;
+    // SAFETY: same live-socket proof as get_fd above.
+    unsafe { (*(sock_ptr as *mut us_socket_t)).close(CloseCode::Normal) };
+    Some((stream_from_raw(dup), pending))
+}
+
+/// Duplicate a connected socket descriptor for the TLS driver takeover.
+/// The duplicate shares the kernel socket state (TCP connection, queues)
+/// with the original — closing either leaves the other fully functional.
+#[cfg(unix)]
+fn dup_socket_fd(fd: bun_core::Fd) -> Option<::std::os::fd::RawFd> {
+    // Fd's posix backing is the raw descriptor (FdBacking = i32).
+    // SAFETY: fd.0 is a live socket descriptor; dup(2) only copies it.
+    let d = unsafe { libc::dup(fd.0) };
+    if d < 0 {
+        None
+    } else {
+        Some(d)
+    }
+}
+
+/// Adopt the duplicate as an owned blocking-by-default std stream (the tls
+/// driver flips it nonblocking when it registers the conn — same as every
+/// `tls.connect` stream it owns).
+#[cfg(unix)]
+fn stream_from_raw(dup: ::std::os::fd::RawFd) -> TcpStream {
+    use ::std::os::fd::FromRawFd;
+    // SAFETY: dup owns the descriptor; the stream closes it on drop.
+    unsafe { TcpStream::from_raw_fd(dup) }
+}
+
+/// The winsock duplicate primitive (WSADuplicateSocketW/WSASocketW) has no
+/// binding in bun_windows_sys yet, so the windows takeover face is
+/// explicitly unavailable — `None` maps to a loud caller-side error, never
+/// a silent wrong-handle handoff. Lands with the windows-wave binding work.
+#[cfg(windows)]
+fn dup_socket_fd(_fd: bun_core::Fd) -> Option<::std::os::windows::io::RawSocket> {
+    None
+}
+
+#[cfg(windows)]
+fn stream_from_raw(dup: ::std::os::windows::io::RawSocket) -> TcpStream {
+    use ::std::os::windows::io::FromRawSocket;
+    // SAFETY: dup owns the socket handle; the stream closes it on drop.
+    unsafe { TcpStream::from_raw_socket(dup) }
 }
 
 // ──────────────────── VTable callbacks ────────────────────
