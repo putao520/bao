@@ -27,7 +27,11 @@
 //
 // 3. Request/Response body storage: Bodies are stored as _bodyText (string)
 //    or _bodyBytes (Uint8Array) private slots. The text/json/arrayBuffer/blob
-//    methods return Promises per the WHATWG spec.
+//    methods return Promises per the WHATWG spec. A Response may also be
+//    constructed with a JS ReadableStream body (WHATWG constructor
+//    body-as-stream): the stream itself is parked on _bodyUserStream and
+//    surfaced as-is by the body getter; the mixin drains it through
+//    getReader() (the same read channel as the Request face's stream body).
 //
 // 4. Method handling: the constructor validates init.method against the
 //    bun_http::Method table (IANA method registry) and THROWS on unknown
@@ -535,14 +539,34 @@ pub fn install_fetch_classes(
         throw new TypeError('Failed to construct \'Response\': FormData response bodies are not supported (multipart serialization is wired for fetch/Request send paths only).');
       } else if (_bao_is_urlsearchparams(body)) {
         this._bodyText = body.toString();
+      } else if (_bao_is_readable_stream(body)) {
+        // ReadableStream body — the WHATWG constructor body-as-stream form
+        // (extraction step: "If object is disturbed or locked, then throw a
+        // TypeError"). The stream itself IS the body, parked on
+        // `_bodyUserStream` — a distinct slot from `_bodyStreamSource`, which
+        // on Response is fetch_async's native pull holder (a JS stream must
+        // not be wrapped by `__baoFetchBodyPull`). The body getter surfaces
+        // this exact stream; text()/json()/arrayBuffer()/blob() drain it
+        // through getReader() — the same read channel as the Request face's
+        // stream-body branch.
+        if (body.locked) {
+          throw new TypeError('Failed to construct \'Response\': body\'s stream is disturbed or locked.');
+        }
+        this._bodyUserStream = body;
       } else if (typeof body === 'object' && typeof body.text === 'function') {
         this._bodyBlob = body;
       }
     }
 
-    // bodyUsed getter
+    // bodyUsed getter — for a user-provided stream body, "used" is the
+    // JS-observable half of the spec's "disturbed or locked": true once a
+    // consumer has called getReader() on the stream (locked) or a mixin
+    // method has drained it.
     Object.defineProperty(this, 'bodyUsed', {
-      get: function() { return this._bodyUsed; },
+      get: function() {
+        return !!(this._bodyUsed ||
+          (this._bodyUserStream && this._bodyUserStream.locked));
+      },
       enumerable: true
     });
 
@@ -561,6 +585,12 @@ pub fn install_fetch_classes(
     // stream per access would double-consume a live body).
     Object.defineProperty(this, 'body', {
       get: function() {
+        // User-provided JS ReadableStream body: the stream itself is the
+        // body — the same object on every access (WHATWG body identity).
+        // Checked BEFORE the used-flag for the same reason as the Request
+        // face's stream branch: the mixin drain (text() etc.) runs with
+        // _bodyUsed already set and still needs to reach the stream.
+        if (this._bodyUserStream) return this._bodyUserStream;
         if (this._bodyStreamSource) {
           if (!this._bodyStream) {
             var src = this._bodyStreamSource;
@@ -630,8 +660,11 @@ pub fn install_fetch_classes(
   };
 
   _g.Response.prototype.text = function text() {
-    if (this._bodyStreamSource) {
-      if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable'));
+    if (this._bodyStreamSource || this._bodyUserStream) {
+      if (this._bodyUsed ||
+          (this._bodyUserStream && this._bodyUserStream.locked)) {
+        return Promise.reject(new TypeError('Body is unusable'));
+      }
       this._bodyUsed = true;
       var dec = new TextDecoder();
       var self = this;
@@ -657,8 +690,11 @@ pub fn install_fetch_classes(
   };
 
   _g.Response.prototype.arrayBuffer = function arrayBuffer() {
-    if (this._bodyStreamSource) {
-      if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable'));
+    if (this._bodyStreamSource || this._bodyUserStream) {
+      if (this._bodyUsed ||
+          (this._bodyUserStream && this._bodyUserStream.locked)) {
+        return Promise.reject(new TypeError('Body is unusable'));
+      }
       this._bodyUsed = true;
       return _bao_drain_stream(this, function(chunks, chunk) {
         chunks.push(chunk);
@@ -684,7 +720,7 @@ pub fn install_fetch_classes(
   };
 
   _g.Response.prototype.blob = function blob() {
-    if (this._bodyStreamSource) {
+    if (this._bodyStreamSource || this._bodyUserStream) {
       var type = this.headers.get('content-type') || '';
       return this.arrayBuffer().then(function(buf) {
         return new _g.Blob([new Uint8Array(buf)], { type: type });
@@ -702,10 +738,11 @@ pub fn install_fetch_classes(
     if (this._bodyUsed) {
       throw new TypeError('Cannot clone a used Response');
     }
-    if (this._bodyStreamSource) {
+    if (this._bodyStreamSource || this._bodyUserStream) {
       // A streaming body is a single-consumer live transport stream — it
       // cannot be duplicated (WHATWG clone would tee, which needs two
-      // independent consumers of one socket).
+      // independent consumers of one socket). A user-provided JS stream
+      // gets the same loud refusal — never a silently shared stream.
       throw new TypeError('Cannot clone a Response with a streaming body');
     }
     var cloned = new _g.Response(this._bodySource, {
