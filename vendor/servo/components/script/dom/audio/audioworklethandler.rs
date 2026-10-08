@@ -38,6 +38,7 @@ use js::jsval::{ObjectValue, UndefinedValue};
 use js::realm::AutoRealm;
 use js::rust::wrappers2::{
     Call, Construct1, JS_ClearPendingException, JS_GetPendingException, JS_IsExceptionPending,
+    NewArrayObject,
 };
 use servo_media::audio::audioworklet_node::{
     AudioWorkletBridge, AudioWorkletPump, AudioWorkletProcessorHandler, ProcessorControl,
@@ -159,11 +160,15 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
         // SAFETY: see Send — same-thread borrow of the scope owning this
         // pump entry.
         let scope = unsafe { &*self.scope };
-        let Some(inst) = scope.instance_data(self.node_key) else {
-            // The instance data vanished (teardown raced the pump): halt
-            // honestly instead of dereferencing anything.
-            self.bridge.signal_processor_error();
-            return ProcessorControl::Finish;
+        let global_ptr = match scope.instance_data(self.node_key) {
+            Some(inst) => std::ptr::NonNull::new(inst.global.get())
+                .expect("Processor instance global is null"),
+            None => {
+                // The instance data vanished (teardown raced the pump): halt
+                // honestly instead of dereferencing anything.
+                self.bridge.signal_processor_error();
+                return ProcessorControl::Finish;
+            },
         };
 
         // This thread's own runtime context (the worklet thread's Runtime
@@ -171,12 +176,39 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
         // SAFETY: one JSContext per worklet thread, live for the call.
         let mut thread_cx = unsafe { JSContext::get_from_thread() }
             .expect("AudioWorklet pump running off the worklet thread");
-        let mut realm = AutoRealm::new(
-            &mut thread_cx,
-            std::ptr::NonNull::new(inst.global.get())
-                .expect("Processor instance global is null"),
-        );
+        let mut realm = AutoRealm::new(&mut thread_cx, global_ptr);
         let cx = &mut *realm;
+
+        // (e147) The spec's dynamic input face: `inputs[p]` is empty while
+        // port `p` has no connection and carries the connected bus's channel
+        // count otherwise. Reshape the JS argument arrays when this
+        // quantum's live per-port counts differ from the current shape
+        // (steady state: one Vec compare, no allocation).
+        let (inputs_stale, outputs_stale) = scope
+            .instance_data(self.node_key)
+            .map(|inst| {
+                (
+                    inst.input_live.as_slice() != &quantum.input_live[..],
+                    inst.output_live.as_slice() != &quantum.output_live[..],
+                )
+            })
+            .unwrap_or((true, true));
+        if inputs_stale &&
+            !rebuild_input_arrays(cx, scope, self.node_key, &quantum.input_live)
+        {
+            self.report_processor_error(None);
+            return ProcessorControl::Finish;
+        }
+        if outputs_stale &&
+            !rebuild_output_arrays(cx, scope, self.node_key, &quantum.output_live)
+        {
+            self.report_processor_error(None);
+            return ProcessorControl::Finish;
+        }
+        let Some(inst) = scope.instance_data(self.node_key) else {
+            self.bridge.signal_processor_error();
+            return ProcessorControl::Finish;
+        };
 
         // Re-read `process` fresh every block: the spec resolves the property
         // per call, so a processor swapping `this.process` is honoured.
@@ -263,6 +295,184 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
         }
         ProcessorControl::Continue
     }
+}
+
+/// (e147, shared with the per-quantum input rebuild) Create one rooted
+/// `Float32Array(len)` and return its index into `roots`.
+fn make_channel_array_index(
+    cx: &mut JSContext,
+    len: usize,
+    roots: &mut js::gc::RootedVec<'_, js::jsval::JSVal>,
+) -> Option<usize> {
+    rooted!(&in(cx) let mut array = null_mut::<JSObject>());
+    let zeros = vec![0.; len];
+    if crate::dom::bindings::buffer_source::create_buffer_source::<js::typedarray::Float32>(
+        cx,
+        &zeros,
+        array.handle_mut(),
+    )
+    .is_err()
+        || array.get().is_null()
+    {
+        return None;
+    }
+    roots.push(ObjectValue(array.get()));
+    Some(roots.len() - 1)
+}
+
+#[expect(unsafe_code)]
+fn outer_array_index(
+    cx: &mut JSContext,
+    roots: &mut js::gc::RootedVec<'_, js::jsval::JSVal>,
+    indices: &[usize],
+) -> Option<usize> {
+    rooted_vec!(let mut values);
+    for &index in indices {
+        values.push(roots[index]);
+    }
+    let array = unsafe { NewArrayObject(cx, &HandleValueArray::from(&values)) };
+    if array.is_null() {
+        return None;
+    }
+    roots.push(ObjectValue(array));
+    Some(roots.len() - 1)
+}
+
+fn rooted_channel(
+    cx: &mut JSContext,
+    roots: &js::gc::RootedVec<'_, js::jsval::JSVal>,
+    index: usize,
+) -> crate::dom::bindings::buffer_source::HeapBufferSource<js::typedarray::Float32> {
+    rooted!(&in(cx) let obj = roots[index].to_object());
+    crate::dom::bindings::buffer_source::HeapBufferSource::<js::typedarray::Float32>::new(
+        obj.handle(),
+    )
+}
+
+/// (e147) Rebuild one instance's JS `inputs` argument face for a new
+/// per-port channel shape — the spec's dynamic input face (`inputs[p]` is
+/// empty while port `p` has no connection, and carries the connected bus's
+/// channel count otherwise). Runs on the worklet thread before `process()`;
+/// the fresh containers are frozen exactly like the instantiation-time
+/// ones. GC discipline (the e126/e127 window): everything stays rooted in
+/// `roots` across every allocation, the channel handles are derived last
+/// from the rooted values (boxed `Heap`s, move-safe by construction), and
+/// the inline `inputs_array` slot is written at its final registry address
+/// inside [`AudioWorkletGlobalScope::update_input_face`].
+pub(crate) fn rebuild_input_arrays(
+    cx: &mut JSContext,
+    scope: &AudioWorkletGlobalScope,
+    node_key: u64,
+    live: &[u8],
+) -> bool {
+    use js::rust::wrappers2::JS_FreezeObject;
+
+    rooted_vec!(let mut roots);
+    let mut leaf_indices: Vec<Vec<usize>> = Vec::with_capacity(live.len());
+    for &channels in live {
+        let mut port_indices = Vec::with_capacity(channels as usize);
+        for _ in 0..channels {
+            match make_channel_array_index(cx, 128, &mut roots) {
+                Some(index) => port_indices.push(index),
+                None => return false,
+            }
+        }
+        leaf_indices.push(port_indices);
+    }
+    let mut port_wrapper_indices = Vec::with_capacity(leaf_indices.len());
+    for port_indices in &leaf_indices {
+        match outer_array_index(cx, &mut roots, port_indices) {
+            Some(index) => port_wrapper_indices.push(index),
+            None => return false,
+        }
+    }
+    let Some(outer_index) = outer_array_index(cx, &mut roots, &port_wrapper_indices) else {
+        return false;
+    };
+    // Freeze the containers from rooted values (the FrozenArray face).
+    let mut frozen = {
+        rooted!(&in(cx) let outer_obj = roots[outer_index].to_object());
+        unsafe { JS_FreezeObject(cx, outer_obj.handle()) }
+    };
+    for &port_index in &port_wrapper_indices {
+        rooted!(&in(cx) let port_obj = roots[port_index].to_object());
+        frozen &= unsafe { JS_FreezeObject(cx, port_obj.handle()) };
+    }
+    if !frozen {
+        return false;
+    }
+    // Derive the channel handles last — post-GC addresses, never pre-GC
+    // copies.
+    let arrays = leaf_indices
+        .iter()
+        .map(|port| {
+            port
+                .iter()
+                .map(|&index| rooted_channel(cx, &roots, index))
+                .collect()
+        })
+        .collect();
+    rooted!(&in(cx) let outer_final = roots[outer_index].to_object());
+    scope.update_input_face(node_key, outer_final.get(), arrays, live)
+}
+
+/// (e147) The output-face twin of [`rebuild_input_arrays`]: reshape the JS
+/// `outputs` argument arrays to the quantum's live per-port channel counts
+/// (explicit `outputChannelCount`, else the spec's computed count). The
+/// fresh channel arrays start zeroed — the per-block read-back zeroes them
+/// afterwards, so a processor that skips writing sees zeros.
+pub(crate) fn rebuild_output_arrays(
+    cx: &mut JSContext,
+    scope: &AudioWorkletGlobalScope,
+    node_key: u64,
+    live: &[u8],
+) -> bool {
+    use js::rust::wrappers2::JS_FreezeObject;
+
+    rooted_vec!(let mut roots);
+    let mut leaf_indices: Vec<Vec<usize>> = Vec::with_capacity(live.len());
+    for &channels in live {
+        let mut port_indices = Vec::with_capacity(channels as usize);
+        for _ in 0..channels {
+            match make_channel_array_index(cx, 128, &mut roots) {
+                Some(index) => port_indices.push(index),
+                None => return false,
+            }
+        }
+        leaf_indices.push(port_indices);
+    }
+    let mut port_wrapper_indices = Vec::with_capacity(leaf_indices.len());
+    for port_indices in &leaf_indices {
+        match outer_array_index(cx, &mut roots, port_indices) {
+            Some(index) => port_wrapper_indices.push(index),
+            None => return false,
+        }
+    }
+    let Some(outer_index) = outer_array_index(cx, &mut roots, &port_wrapper_indices) else {
+        return false;
+    };
+    let mut frozen = {
+        rooted!(&in(cx) let outer_obj = roots[outer_index].to_object());
+        unsafe { JS_FreezeObject(cx, outer_obj.handle()) }
+    };
+    for &port_index in &port_wrapper_indices {
+        rooted!(&in(cx) let port_obj = roots[port_index].to_object());
+        frozen &= unsafe { JS_FreezeObject(cx, port_obj.handle()) };
+    }
+    if !frozen {
+        return false;
+    }
+    let arrays = leaf_indices
+        .iter()
+        .map(|port| {
+            port
+                .iter()
+                .map(|&index| rooted_channel(cx, &roots, index))
+                .collect()
+        })
+        .collect();
+    rooted!(&in(cx) let outer_final = roots[outer_index].to_object());
+    scope.update_output_face(node_key, outer_final.get(), arrays, live)
 }
 
 /// Instantiate the processor for one node (worklet thread). Runs inside a
@@ -409,53 +619,6 @@ pub(crate) fn instantiate_processor(
     // the rooted values so they carry post-GC addresses, never pre-GC
     // copies; raw copies never span an allocation.
     rooted_vec!(let mut instance_roots);
-    fn make_channel_array_index(
-        cx: &mut JSContext,
-        len: usize,
-        roots: &mut js::gc::RootedVec<'_, js::jsval::JSVal>,
-    ) -> Option<usize> {
-        rooted!(&in(cx) let mut array = null_mut::<JSObject>());
-        let zeros = vec![0.; len];
-        if crate::dom::bindings::buffer_source::create_buffer_source::<js::typedarray::Float32>(
-            cx,
-            &zeros,
-            array.handle_mut(),
-        )
-        .is_err()
-            || array.get().is_null()
-        {
-            return None;
-        }
-        roots.push(ObjectValue(array.get()));
-        Some(roots.len() - 1)
-    }
-    #[expect(unsafe_code)]
-    fn outer_array_index(
-        cx: &mut JSContext,
-        roots: &mut js::gc::RootedVec<'_, js::jsval::JSVal>,
-        indices: &[usize],
-    ) -> Option<usize> {
-        rooted_vec!(let mut values);
-        for &index in indices {
-            values.push(roots[index]);
-        }
-        let array = unsafe { NewArrayObject(cx, &HandleValueArray::from(&values)) };
-        if array.is_null() {
-            return None;
-        }
-        roots.push(ObjectValue(array));
-        Some(roots.len() - 1)
-    }
-    fn rooted_channel(
-        cx: &mut JSContext,
-        roots: &js::gc::RootedVec<'_, js::jsval::JSVal>,
-        index: usize,
-    ) -> crate::dom::bindings::buffer_source::HeapBufferSource<js::typedarray::Float32> {
-        rooted!(&in(cx) let obj = roots[index].to_object());
-        crate::dom::bindings::buffer_source::HeapBufferSource::<js::typedarray::Float32>::new(
-            obj.handle(),
-        )
-    }
 
     let mut input_leaf_indices: Vec<Vec<usize>> = Vec::with_capacity(shape.input_ports as usize);
     for _ in 0..shape.input_ports {
@@ -606,6 +769,10 @@ pub(crate) fn instantiate_processor(
             .iter()
             .map(|&index| rooted_channel(cx, &instance_roots, index))
             .collect(),
+        input_live: (0..shape.input_ports)
+            .map(|_| shape.input_channels)
+            .collect(),
+        output_live: shape.output_channels.clone(),
         port: crate::dom::bindings::root::Dom::from_ref(&*port),
     };
     scope.register_processor_instance(node_key, instance_data);
@@ -626,12 +793,64 @@ pub(crate) fn instantiate_processor(
         return;
     }
 
+    // (e147) The spec hands `process()` frozen array containers
+    // (`Object.isFrozen(inputs) && Object.isFrozen(inputs[0])` — the
+    // FrozenArray shape): freeze the outer argument arrays and every
+    // port-level wrapper once, before the first scheduling. The channel
+    // `Float32Array`s and their buffers stay writable/transferable (the
+    // pump's input copy, output read-back and zeroing write through the
+    // typed-array views, which container freezing does not touch).
+    {
+        use js::rust::wrappers2::JS_FreezeObject;
+        fn freeze_argument_containers(
+            cx: &mut JSContext,
+            roots: &js::gc::RootedVec<'_, js::jsval::JSVal>,
+            outer: usize,
+            ports: &[usize],
+        ) -> bool {
+            let mut ok = true;
+            rooted!(&in(cx) let outer_obj = roots[outer].to_object());
+            ok &= unsafe { JS_FreezeObject(cx, outer_obj.handle()) };
+            for &port in ports {
+                rooted!(&in(cx) let port_obj = roots[port].to_object());
+                ok &= unsafe { JS_FreezeObject(cx, port_obj.handle()) };
+            }
+            ok
+        }
+        let frozen_inputs = freeze_argument_containers(
+            cx,
+            &instance_roots,
+            inputs_array_index,
+            &input_port_indices,
+        );
+        let frozen_outputs = freeze_argument_containers(
+            cx,
+            &instance_roots,
+            outputs_array_index,
+            &output_port_indices,
+        );
+        if !frozen_inputs || !frozen_outputs {
+            debug!("AudioWorklet argument array freezing failed for node {node_key}.");
+            latch_failure(&node, &bridge, &main_sender);
+            return;
+        }
+    }
+
     // Route the processor-side port through the conduit's `to_main` ring
-    // (lane 0 — the node's own port pair).
-    port.set_bao_port_redirect(PortRedirect {
-        conduit: conduit.clone(),
-        direction: PortDirection::ToMain { lane: 0 },
-    });
+    // (lane 0 — the node's own port pair). (e147) First wiring wins: a
+    // singleton-style shared instance hands the SAME port object to every
+    // node that instantiates it, and re-wiring it here would steal the
+    // routing of the first node's conduit (probe: the second message landed
+    // on node2's port; Chromium keeps node1). A fresh instance's port was
+    // already wired to this same conduit/lane by the base-construction
+    // handoff, so the guard is a no-op there; a bare un-entangled port (the
+    // exotic construction shapes) still gets wired.
+    if !port.has_bao_port_redirect() {
+        port.set_bao_port_redirect(PortRedirect {
+            conduit: conduit.clone(),
+            direction: PortDirection::ToMain { lane: 0 },
+        });
+    }
 
     // Wake hook: the render bridge (quantum pushes) and the node port's
     // postMessage path notify this closure, which posts the pump-drain

@@ -271,3 +271,50 @@ automatic-pull/process-getter→servo 单条 FAIL 形;zero-outputs/frozen-array�
 - READ-GATE 钩子(REQ-GSC-74)结构性拦截 graph.rs 编辑(证据通道归属缺陷,ISSUE #155/#156),补三读无效,经 Commander guard-off 窗口授权落盘
 - 端口卫生:e121 收官载具 4 个 multiprocessing 孤儿占 9000 系(venv 已被清扫的残活进程),清后过;探针 bao(webdriver=7001)多次残留,pkill 收尾
 - 探针三件套(/tmp/e145-probe):probe_{params,singleton,params_nosusp}.html+插桩处理器+raw WebDriver title 轮询驱动(判别律:currentTime dt 面包屑定渲染线程活性)
+
+## I. e147 webaudio 继承面 fork 自治自研——setValueCurve 同步 throw + process-parameters 五根因(2026-10-08,REQ-BRW-002,登记面清偿批⑫)
+
+### I1. 复用扫描决策
+| 候选 | 裁定 |
+|---|---|
+| setValueCurve 同步 throw = AudioParam(servo script 侧)自带 state Cell 旁加 timeline 镜像(RefCell<Vec> 纯 f64 数据),调度入口守卫+记录;渲染真源仍是 servo-media param.rs,镜像只答 throw 判定(零第二时间线推进) | REUSE 形态——e140 a1446097「script 侧字段+入口消息」同文件同面先例 |
+| R1 port first-wins = MessagePort 既有 bao_port_redirect RefCell(加 has_bao_port_redirect 只读探针),零第二注册表 | REUSE |
+| R2 输出清零 = ProcessorInstanceData::read_outputs 既有 typed-array view 面(as_mut_slice_safe) | REUSE |
+| R3 冻结 = wrappers2::JS_FreezeObject 既有绑定 | REUSE |
+| R4(登记为 render loop need_data)= **归因修正**:独立 gst 探针(probe_seq.py,PTS buffer+精确 Playing→Paused→Playing 序列)证明管线面 resume 后 need_data 正常复活;真根因=script 侧 BaseAudioContext::state 属性只经 ack 任务异步更新,同 JS turn 的 suspend();…;resume() 使 Resume step-3 守卫读到 stale Running 早退,Resume 消息从未发出→渲染线程永久 Suspended(pipeline 停 PAUSED,need_data 静默,currentTime 冻结;GetCurrentTime 有应答=线程活)。修复=requested_state 同步阴影 Cell(spec [[control thread state]]) | REUSE 形态(修正归因后零 render_thread/sink 改动) |
+| R5(探针新发现,登记根因清单外)=JS inputs/outputs 参数数组形状:未连接输入 port 恒 2×Float32Array(128)(spec 要空数组);0 输入节点输出恒 2(spec 要 computed=1) | REUSE 形态——WorkletQuantum 携带 input_live/output_live(Vec<u8> 纯数据),script 侧既有持久数组构建 helper 提升模块级复用,形状失配才 rebuild |
+
+上游状态:setValueCurve 同步 throw(上游 ini 21 条 expected:FAIL)与 AudioWorklet 参数面全部上游缺席(§H4 考古)——fork 自治域确认(用户裁决 2026-10-08)。
+
+### I2. 逐根分账(RED 钉→修复→翻转)
+| 根 | RED(证据) | 修复 | GREEN |
+|---|---|---|---|
+| setValueCurve 同步 throw | vendor ini 21 条 expected:FAIL(X 前缀键形态) | audioparam.rs 时间线镜像:调度入口(4 方法+value setter)curve 覆盖检查→NotSupportedError 同步 throw;curve 冲突(点事件严格内含/曲线正长度相交)→throw;cancel 剪枝(events >=/> cancel;curves 仅 end<=cancel 存活——cancel 落在曲线内=整条移除);value setter webidl [SetterThrows];current_time_or_default(渲染线程已死不 panic) | setValueCurve-exceptions 7/7 task 全断言 PASS |
+| R1 共享实例 port 改写 | singleton 探针:msg1>N2PORT-GOT>timeout(第二条消息到 node2 的 port) | instantiate 的 lane-0 重定向加 first-wins(has_bao_port_redirect 探针);fresh 实例的 port 已由 base 构造 handoff 同参布线=零漂移 | msg1>msg2>DONE(3 次稳定) |
+| R2 JS 持久输出数组不清零 | zero-outputs ini 内层断言红 | read_outputs 改 copy-then-fill(0.)(as_mut_slice_safe;超出 quantum 通道数的通道也清) | check-zero-outputs PASS(3/3 稳定) |
+| R3 数组未冻结 | frozen-array ini 内层断言红 | instantiate 冻结 inputs/outputs 外层+port 层容器(channel Float32Array/buffer 保持可写可 transfer) | check-frozen-array+transfer-frozen-array 双 PASS(3/3 稳定) |
+| R4 suspend→resume 楔死 | params 探针 dt=0×3s 无 MSG(§H4 判别律) | baseaudiocontext/audiocontext:requested_state 阴影(suspend/resume 成功发消息后同步置位);Resume step-3 守卫=requested∧attr 双 Running(仅落定态早退);Suspend step-3 守卫=requested;step-4 autoplay 门移除(旧流程死代码;保留 is_allowed_to_start attr 形态给构造 auto-resume 位) | params 探针 MSG;process-parameters sub1+sub2+file 全 PASS |
+| R5 参数数组形状 | 形状探针:in[0].len=2(要 0) | media:WorkletQuantum.input_live(fill_quantum:is_silence∧chan<=1→0,容量截断)/output_live(显式 outputChannelCount 或 computed=max(inputs,无连接=1),QuantumShape.output_computed 显式标记;take_outputs 按 live 通道拷贝);script:ProcessorInstanceData.input_live/output_live,形状失配 rebuild_input_arrays/rebuild_output_arrays(冻结同 R3;HeapBufferSource=boxed Heap 移动安全;inputs_array/outputs_array 内联槽 registry 终址写入=e127 纪律) | process-parameters 双 subtest PASS(0 输入节点 outputs[].length=1) |
+
+### I3. 修复中撞出的两个次生回归(均根治)
+1. suspend-resume「resuming a running online context」:首版守卫只读 requested→构造 auto-resume 在途时(await 微任务先于 ack 宏任务)attr 未落定→断言 suspended。修=双条件守卫(见 I2-R4)。
+2. cancel-scheduled-values「cancel1: cancel setValueCurve」:首版剪枝保留 start<cancel 的跨点曲线→曲线中段再调度被 throw。修=curves 仅 end<=cancel 存活(cancel 落在曲线内=整条移除,WPT 断言注释即此语义)。
+
+### I4. 回归账(base1=HEAD 基线二进制 vs fin1,同载具同分析器,A/B 差分)
+- **新负 0**(基线 180 意外负 vs 终态 140→fin3 残留 11 全为基线一致的 pre-existing 红族:onerror/options/promises/node-construction X 形态/sharedarraybuffer 多值族);两个修复期回归(I3)已根治复验。
+- 正向 64(fin1):五目标文件+级联(suspend-after-construct/exponentialRamp 族/worklet interface 批)。
+- **param-getter-overridden 形态注记**:vendor ini 本就 expected: FAIL(上游终态同);本波使其实在 FAIL↔PASS 摆动(正向方向)——机制=offline 渲染 sprint 与 worklet 首块竞态+本波 render 线程每块簿记微增;真语义面(invalid param getter→节点失效)上游缺席,登记为后续候选,ini 不动(expected:FAIL 仍真)。
+- promise-methods-after-discard:挂点从 suspend() FAIL 后移到 suspend() 即挂(同族文件级 TIMEOUT,上游同挂);ini 按实测终态改形态(suspend TIMEOUT/resume+close NOTRUN)。
+- mozlog 口径修正:as-expected 时 expected 字段缺席——分析器默认 PASS 会把按预期红误计意外负;A/B 差分两侧同口径仍成立。X 前缀 ini 子测键永不匹配日志名(servo meta 导出残迹)。
+
+### I5. ini 登记(34 删+1 形态改;对齐 e140 §G6/e122 F4 惯例)
+- **删 34**(全绿实测:setValueCurve-exceptions/process-parameters/zero-outputs/frozen-array/cancel-scheduled-values 五目标+k-rate 族 4+ramp 族 4+worklet interface 级联 16+audioparam-size 类 4+denormals/registerprocessor-constructor .window.js 2;机械核对每个 ini 键的实测态,header 级 expected 键亦核——audioparam-iterable/postmessage-sharedarraybuffer 两误删经 fin2 暴露后恢复)。
+- promise-methods-after-discard 形态改(见 I4)。
+- 混合文件(onerror/options/messageport/constructor-options/audioparam-size/node-construction)保留 ini:正向翻转子测不留痕(e122 F4)。
+
+### I6. 验证与载具
+- cargo nt -p bao-servo-media-audio **29/29**;BAO_TEST_NETWORK=1 cargo nt -p bao-browser -E 'test(audioworklet)' **11/11**(worktree test-ci 档)。
+- WPT 终验 fin3(注册后 ini 快照):三目录 97 as-expected+残留 11 意外负全为基线一致 pre-existing 族,**零本波新负**;终验 RC≠0 仅因残留正向翻转与 pre-existing 族。
+- 二进制:worktree /tmp/e147-wt 钉 HEAD abe913ad+仅本域 9 文件 diff(共享树被 e148 在途 bao_stealth 编译红阻断,灭菌路线=e145 先例);基线对照二进制同 worktree scoped-restore 建。
+- 载具两度全灭重建(/tmp 清扫×2):探针 /tmp/e147-probe+独立 gst 探针(probe_seq.py 复刻 PTS/max-bytes=1 精确序列,证管线面无罪);WPT 载具 /tmp/e147-wpt-veh(venv+servo requirements+editable vendored wptrunner+tests-tree wpt manifest -p 私有+meta 快照多值压平——旧 mozlog 8.1.0 不收 known_intermittent list)。
+- 端口卫生:7080/7001 探针孤儿反复清(pkill 自匹配陷阱:pattern 含自身命令行→自杀,字符类规避);8447 被 32 天 frog-preview 孤儿 http.server 占,清后过。

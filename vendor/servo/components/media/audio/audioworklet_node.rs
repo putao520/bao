@@ -202,6 +202,9 @@ impl AudioWorkletNodeOptions {
                 output_channels: (0..self.number_of_outputs)
                     .map(|port| self.output_channels(port))
                     .collect(),
+                output_computed: (0..self.number_of_outputs)
+                    .map(|port| self.output_channel_count.get(port as usize).is_none())
+                    .collect(),
                 params: self.params.len(),
             },
             capacity,
@@ -297,6 +300,19 @@ pub struct WorkletQuantum {
     /// the same value in every slot; a-rate parameters carry the per-frame
     /// timeline values.
     pub params: Box<[WorkletBuffer]>,
+    /// (e147) Per-input-port live channel count for this quantum: the
+    /// channel count of the bus actually connected to the port, `0` when
+    /// the port has no connection this block. The spec's `process()`
+    /// argument shape (`inputs[p]` is empty for an unconnected port) is
+    /// derived from this on the script side; the buffers above stay laid
+    /// out at the declared channel count.
+    pub input_live: Box<[u8]>,
+    /// (e147) Per-output-port live channel count for this quantum: the
+    /// explicit `outputChannelCount` entry where given, else the spec's
+    /// `computedNumberOfChannels` (max of the connected inputs' channels, 1
+    /// with no connections), capped at the buffer layout. Same script-side
+    /// consumption as `input_live`.
+    pub output_live: Box<[u8]>,
 }
 
 /// Buffer layout shared by a bridge and its pooled quanta.
@@ -305,6 +321,13 @@ pub(crate) struct QuantumShape {
     inputs: u32,
     input_channels: u8,
     output_channels: Vec<u8>,
+    /// (e147) Per-output-port "computed" marker: `true` when the port has no
+    /// explicit `outputChannelCount` entry and its live channel count is the
+    /// spec's `computedNumberOfChannels` (max of the connected inputs'
+    /// channels, 1 with no connections) — recomputed every quantum. The
+    /// `output_channels` layout of such a port is the capacity
+    /// (`input_channel_count`), the live count travels on the quantum.
+    output_computed: Vec<bool>,
     params: usize,
 }
 
@@ -689,8 +712,21 @@ impl AudioWorkletNode {
         quantum.time = info.time;
         for (port, buffer) in quantum.inputs.iter_mut().enumerate() {
             let Some(block) = inputs.blocks.get(port) else {
+                quantum.input_live[port] = 0;
                 buffer.zero();
                 continue;
+            };
+            // (e147) The spec exposes the connected bus's channel count: an
+            // unconnected input port keeps the graph's default placeholder
+            // block (a 1-channel silent `Block::default()`), which reads as
+            // "no connection" here. A connected-but-silent multi-channel bus
+            // keeps its channel count. The count is capped at the buffer
+            // layout (a wider bus is truncated by the copy below anyway, as
+            // it has always been).
+            quantum.input_live[port] = if block.is_silence() && block.chan_count() <= 1 {
+                0
+            } else {
+                block.chan_count().min(buffer.channels())
             };
             if block.is_silence() {
                 buffer.zero();
@@ -718,16 +754,43 @@ impl AudioWorkletNode {
                 }
             }
         }
+
+        // (e147) The output face's live channel counts: explicit
+        // `outputChannelCount` ports keep their entry; computed ports get
+        // the spec's `computedNumberOfChannels` — the max of the connected
+        // inputs' channel counts (capped at the buffer capacity), 1 with no
+        // connections.
+        let computed = quantum
+            .input_live
+            .iter()
+            .copied()
+            .fold(1u8, |acc, live| acc.max(live));
+        let output_computed = &self.bridge.shape().output_computed;
+        for (port, buffer) in quantum.outputs.iter().enumerate() {
+            quantum.output_live[port] = if output_computed.get(port) == Some(&true) {
+                computed.min(buffer.channels())
+            } else {
+                buffer.channels()
+            };
+        }
     }
 
     /// Write a completed quantum's outputs into the chunk the graph expects.
-    fn take_outputs(&self, quantum: &mut WorkletQuantum, outputs: &mut Chunk) {
+    /// (e147) Each output block takes the port's live channel count
+    /// (explicit `outputChannelCount` or the computed value), not the buffer
+    /// layout.
+    fn take_outputs(&mut self, quantum: &mut WorkletQuantum, outputs: &mut Chunk) {
         for (port, buffer) in quantum.outputs.iter().enumerate() {
             let Some(block) = outputs.blocks.get_mut(port) else {
                 break;
             };
-            block.resize_silence(buffer.channels());
-            block.data_mut().copy_from_slice(buffer.data());
+            let live = quantum.output_live[port];
+            block.resize_silence(live);
+            for channel in 0..live {
+                block
+                    .data_chan_mut(channel)
+                    .copy_from_slice(buffer.chan(channel));
+            }
         }
     }
 
@@ -852,6 +915,12 @@ impl QuantumShape {
             time: 0.,
             inputs: (0..self.inputs)
                 .map(|_| WorkletBuffer::new(self.input_channels))
+                .collect(),
+            input_live: (0..self.inputs).map(|_| self.input_channels).collect(),
+            output_live: self
+                .output_channels
+                .iter()
+                .copied()
                 .collect(),
             outputs: self
                 .output_channels

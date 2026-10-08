@@ -156,6 +156,22 @@ pub(crate) struct ProcessorInstanceData {
     #[ignore_malloc_size_of = "JS-heap payload, wrapper is a slot"]
     pub(crate) param_arrays:
         Vec<crate::dom::bindings::buffer_source::HeapBufferSource<Float32>>,
+    /// (e147) The per-port channel counts the JS `inputs` argument arrays
+    /// are currently shaped to — the spec's dynamic input face: `inputs[p]`
+    /// is empty while port `p` has no connection, and carries the connected
+    /// bus's channel count otherwise. Compared against every quantum's
+    /// `WorkletQuantum::input_live`; a mismatch rebuilds the input arrays
+    /// before `process()` runs.
+    #[no_trace = "plain shape data"]
+    pub(crate) input_live: Vec<u8>,
+    /// (e147) The per-port channel counts the JS `outputs` argument arrays
+    /// are currently shaped to (see
+    /// [`WorkletQuantum::output_live`](servo_media::audio::audioworklet_node::WorkletQuantum)):
+    /// the explicit `outputChannelCount` entry, else the spec's computed
+    /// count. Compared every quantum; a mismatch rebuilds before
+    /// `process()`.
+    #[no_trace = "plain shape data"]
+    pub(crate) output_live: Vec<u8>,
     /// The processor-side port (its `postMessage` is redirected through the
     /// node's conduit).
     pub(crate) port: Dom<MessagePort>,
@@ -212,26 +228,35 @@ impl ProcessorInstanceData {
         true
     }
 
-    /// Copy the processor's output arrays back into the quantum. Called after
-    /// `process()` returned without throwing; a GC inside the call has been
-    /// reflected into the traced slots already.
+    /// Copy the processor's output arrays back into the quantum, then zero
+    /// them. Called after `process()` returned without throwing; a GC inside
+    /// the call has been reflected into the traced slots already.
+    ///
+    /// (e147) The zeroing is the spec's "outputs are zero-initialized for
+    /// each `process()` call" face on the JS side: the arrays are persistent
+    /// across quanta, so a processor that exits without writing (the
+    /// zero-outputs pulse shape) must not see — or render — the previous
+    /// quantum's samples. The channel `Float32Array`s stay writable (only
+    /// the array *containers* are frozen); zeroing writes through the same
+    /// typed-array views the pump uses.
     pub(crate) fn read_outputs(&self, cx: &JSContext, quantum: &mut WorkletQuantum) {
         for (port, buffers) in self.output_arrays.iter().enumerate() {
             let Some(quantum_output) = quantum.outputs.get_mut(port) else {
                 break;
             };
             for (channel, arr) in buffers.iter().enumerate() {
-                if channel >= quantum_output.channels() as usize {
-                    break;
+                let Ok(mut view) = arr.get_typed_array() else {
+                    continue;
+                };
+                let Some(slice) = view.as_mut_slice_safe(cx.no_gc()) else {
+                    continue;
+                };
+                if channel < quantum_output.channels() as usize {
+                    let len = slice.len().min(FRAMES_PER_BLOCK_USIZE);
+                    quantum_output.chan_mut(channel as u8)[..len]
+                        .copy_from_slice(&slice[..len]);
                 }
-                let Ok(view) = arr.get_typed_array() else {
-                    continue;
-                };
-                let Some(slice) = view.as_slice_safe(cx.no_gc()) else {
-                    continue;
-                };
-                let len = slice.len().min(FRAMES_PER_BLOCK_USIZE);
-                quantum_output.chan_mut(channel as u8)[..len].copy_from_slice(&slice[..len]);
+                slice.fill(0.);
             }
         }
     }
@@ -449,6 +474,47 @@ impl AudioWorkletGlobalScope {
         self.processor_instances
             .borrow_mut()
             .insert(node_key, Box::new(data));
+    }
+
+    /// (e147) Swap one registered instance's JS `inputs` argument face to a
+    /// new per-port channel shape (see
+    /// [`ProcessorInstanceData::input_live`]). The `inputs_array` inline
+    /// `Heap` slot is written here — at its final registry address (the
+    /// e127 register-then-set discipline); the channel handles are boxed
+    /// `Heap`s, safe to move into the field.
+    pub(crate) fn update_input_face(
+        &self,
+        node_key: u64,
+        outer: *mut JSObject,
+        arrays: Vec<Vec<crate::dom::bindings::buffer_source::HeapBufferSource<Float32>>>,
+        live: &[u8],
+    ) -> bool {
+        let mut instances = self.processor_instances.borrow_mut();
+        let Some(inst) = instances.0.get_mut(&node_key) else {
+            return false;
+        };
+        inst.inputs_array.set(outer);
+        inst.input_arrays = arrays;
+        inst.input_live = live.to_vec();
+        true
+    }
+
+    /// (e147) The output-face twin of [`Self::update_input_face`].
+    pub(crate) fn update_output_face(
+        &self,
+        node_key: u64,
+        outer: *mut JSObject,
+        arrays: Vec<Vec<crate::dom::bindings::buffer_source::HeapBufferSource<Float32>>>,
+        live: &[u8],
+    ) -> bool {
+        let mut instances = self.processor_instances.borrow_mut();
+        let Some(inst) = instances.0.get_mut(&node_key) else {
+            return false;
+        };
+        inst.outputs_array.set(outer);
+        inst.output_arrays = arrays;
+        inst.output_live = live.to_vec();
+        true
     }
 
     /// (e127) Post-registration write of the instance's five GC `Heap`

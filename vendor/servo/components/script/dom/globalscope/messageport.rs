@@ -109,6 +109,15 @@ impl MessagePort {
         *self.bao_port_redirect.borrow_mut() = Some(redirect);
     }
 
+    /// (Bao e147) Whether this port already carries a conduit redirect. The
+    /// AudioWorklet instantiation face uses this to keep the *first* wiring
+    /// of a shared processor-instance port (the singleton-ctor shape): a
+    /// second node instantiating the same shared instance must not steal its
+    /// port routing.
+    pub(crate) fn has_bao_port_redirect(&self) -> bool {
+        self.bao_port_redirect.borrow().is_some()
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#disentangle>
     pub(crate) fn disentangle(&self) -> Option<MessagePortId> {
         // Disentangle initiatorPort and otherPort, so that they are no longer entangled or associated with each other.

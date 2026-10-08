@@ -214,6 +214,18 @@ impl AudioContext {
         rx.recv().unwrap()
     }
 
+    /// (e147, REQ-BRW-002) The context time, or `None` when the render
+    /// thread is gone (closed context) — the non-panicking face the
+    /// AudioParam value setter's during-curve guard consumes, so a setter
+    /// on a closed context cannot newly panic the script thread.
+    pub fn current_time_or_default(&self) -> Option<f64> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(AudioRenderThreadMsg::GetCurrentTime(tx))
+            .ok()?;
+        rx.recv().ok()
+    }
+
     pub fn create_node(&self, node_type: AudioNodeInit, ch: ChannelInfo) -> Option<NodeId> {
         let (tx, rx) = mpsc::channel();
         let _ = self

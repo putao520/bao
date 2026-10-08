@@ -124,6 +124,16 @@ pub(crate) struct BaseAudioContext {
     /// throw when trying to do things on the context when the context has just
     /// been "closed()".
     state: Cell<AudioContextState>,
+    /// (e147, REQ-BRW-002) The *requested* control-thread state — the spec's
+    /// `[[control thread state]]`, updated synchronously by the
+    /// `suspend()`/`resume()` calls, unlike [`Self::state`] whose attribute
+    /// mirror only lands through the render-thread ack tasks. The
+    /// early-return guards and the autoplay gate read this shadow: reading
+    /// the attribute let a same-task `suspend(); …; resume()` sequence eat
+    /// the resume (the suspend's ack task cannot run mid-script), parking
+    /// the render thread in Suspended with the sink pipeline Paused —
+    /// `currentTime` frozen and `need-data` silent forever.
+    requested_state: Cell<AudioContextState>,
     channel_count: u32,
 }
 
@@ -156,6 +166,7 @@ impl BaseAudioContext {
             decode_resolvers: Default::default(),
             sample_rate,
             state: Cell::new(AudioContextState::Suspended),
+            requested_state: Cell::new(AudioContextState::Suspended),
             channel_count: channel_count.into(),
         })
     }
@@ -248,12 +259,26 @@ impl BaseAudioContext {
         self.state.set(state);
     }
 
+    /// (e147) Synchronously record a `suspend()`/`resume()` request on the
+    /// requested-state shadow (see [`Self::requested_state`]). Called only
+    /// after the render-thread message was successfully sent.
+    pub(crate) fn set_requested_state(&self, state: AudioContextState) {
+        self.requested_state.set(state);
+    }
+
+    /// (e147) The requested control-thread state (spec
+    /// `[[control thread state]]`).
+    pub(crate) fn requested_state(&self) -> AudioContextState {
+        self.requested_state.get()
+    }
+
     pub(crate) fn resume(&self) {
         let this = Trusted::new(self);
         // Set the rendering thread state to 'running' and start
         // rendering the audio graph.
         match self.audio_context_impl.lock().unwrap().resume() {
             Some(()) => {
+                self.requested_state.set(AudioContextState::Running);
                 self.take_pending_resume_promises(Ok(()));
                 self.global().task_manager().dom_manipulation_task_source().queue(
                     task!(resume_success: move |cx| {
@@ -343,18 +368,31 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
             return promise;
         }
 
-        // Step 3.
-        if self.state.get() == AudioContextState::Running {
+        // Step 3. (e147) Early-return only on a *settled* running state: the
+        // attribute mirror must agree with the requested state. Reading the
+        // attribute alone would eat a resume issued in the same task as a
+        // suspend (the suspend's ack task cannot run mid-script); reading
+        // the requested state alone would resolve before the in-flight
+        // construction auto-resume's ack task has set the attribute (a
+        // same-microtask `await context.resume()` after construction reads
+        // "suspended" and fails). Both agree ⇒ nothing is in flight.
+        if self.requested_state() == AudioContextState::Running &&
+            self.state.get() == AudioContextState::Running
+        {
             promise.resolve_native(cx, &());
             return promise;
         }
 
         self.push_pending_resume_promise(&promise);
 
-        // Step 4.
-        if !self.is_allowed_to_start() {
-            return promise;
-        }
+        // Step 4. (e147) No autoplay gate blocks this call: servo has no
+        // gesture tracking (the gate is the construction auto-resume's
+        // `is_allowed_to_start`, still attr-based), and a resume with the
+        // construction auto-resume still in flight (attribute not yet
+        // settled) must go through `resume()` so the settle task resolves
+        // the promise — blocking here left it pending forever. The
+        // render-side resume is idempotent (an already-running thread
+        // no-ops on a second Resume).
 
         // Steps 5 and 6.
         self.resume();

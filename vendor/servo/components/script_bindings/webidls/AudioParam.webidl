@@ -15,7 +15,9 @@ enum AutomationRate {
 // offline audio node family (REQ-BRW-004 C15, user ruling 2026-09-09).
 [Exposed=(Window,Worker)]
 interface AudioParam {
-             attribute float value;
+             // (e147) The spec's value-setter face throws NotSupportedError
+             // during a scheduled setValueCurve interval.
+             [SetterThrows] attribute float value;
              [SetterThrows] attribute AutomationRate automationRate;
     readonly attribute float defaultValue;
     readonly attribute float minValue;

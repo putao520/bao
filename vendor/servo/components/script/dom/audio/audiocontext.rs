@@ -150,8 +150,11 @@ impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
             return promise;
         }
 
-        // Step 3.
-        if self.context.State() == AudioContextState::Suspended {
+        // Step 3. (e147) The *requested* state — see
+        // `BaseAudioContext::requested_state`: the attribute mirror lands
+        // through the ack task and a same-task suspend() has not touched it
+        // yet, so this guard must not read it.
+        if self.context.requested_state() == AudioContextState::Suspended {
             promise.resolve_native(cx, &());
             return promise;
         }
@@ -160,6 +163,7 @@ impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
         let trusted_promise = TrustedPromise::from(&promise);
         match self.context.audio_context_impl().lock().unwrap().suspend() {
             Some(_) => {
+                self.context.set_requested_state(AudioContextState::Suspended);
                 let base_context = Trusted::new(&self.context);
                 let context = Trusted::new(self);
                 self.global().task_manager().dom_manipulation_task_source().queue(
