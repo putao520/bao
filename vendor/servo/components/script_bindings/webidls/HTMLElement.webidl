@@ -36,6 +36,9 @@ interface HTMLElement : Element {
 
   [Throws] ElementInternals attachInternals();
 
+  // https://w3c.github.io/edit-context/#dom-htmlelement-editcontext
+  [Throws] attribute EditContext? editContext;
+
   // The popover API
   // undefined showPopover(optional ShowPopoverOptions options = {});
   // undefined hidePopover();

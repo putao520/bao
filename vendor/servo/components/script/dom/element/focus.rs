@@ -107,9 +107,13 @@ impl Element {
                 // >  - Editing hosts
                 // > -  Elements with a draggable attribute set, if that would enable the user agent to allow
                 // >    the user to begin drag operations for those elements without the use of a pointing device
+                // Associating an EditContext makes the element an editing host
+                // (<https://w3c.github.io/edit-context/#editcontext-associate>), so it
+                // becomes a focusable area without a tabindex attribute.
                 self.downcast::<HTMLElement>().is_some_and(|html_element| {
                     html_element.is_a_summary_for_its_parent_details() ||
-                        html_element.is_editing_host()
+                        html_element.is_editing_host() ||
+                        html_element.attached_edit_context().is_some()
                 }) || self.get_string_attribute(&local_name!("draggable")) == "true"
             },
         };

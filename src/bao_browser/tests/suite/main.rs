@@ -50,6 +50,7 @@ mod browser_runtime_tests;
 mod cdp_debugger_fidelity_tests;
 mod cdp_ws_command_face_tests;
 mod click_human_e2e_tests;
+mod editcontext_api_tests;
 mod compartment_isolation_tests;
 mod config_boundary_deep_tests;
 mod config_deep_tests;

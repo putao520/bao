@@ -45,6 +45,7 @@ use crate::dom::document::focus::FocusableArea;
 use crate::dom::document_event_handler::character_to_code;
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::domstringmap::DOMStringMap;
+use crate::dom::editcontext::EditContext;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{
     AttributeMutation, CustomElementCreationMode, Element, ElementCreator,
@@ -75,11 +76,39 @@ use crate::dom::text::Text;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement};
 use crate::event_loop::script_thread::ScriptThread;
 
+/// Local names that accept an associated EditContext: valid shadow host
+/// names plus `canvas`
+/// (<https://w3c.github.io/edit-context/#editcontext-allowed-element>).
+const EDIT_CONTEXT_ALLOWED_ELEMENTS: &[LocalName] = &[
+    local_name!("article"),
+    local_name!("aside"),
+    local_name!("blockquote"),
+    local_name!("body"),
+    local_name!("canvas"),
+    local_name!("div"),
+    local_name!("footer"),
+    local_name!("h1"),
+    local_name!("h2"),
+    local_name!("h3"),
+    local_name!("h4"),
+    local_name!("h5"),
+    local_name!("h6"),
+    local_name!("header"),
+    local_name!("main"),
+    local_name!("nav"),
+    local_name!("p"),
+    local_name!("section"),
+    local_name!("span"),
+];
+
 #[dom_struct]
 pub(crate) struct HTMLElement {
     element: Element,
     style_decl: MutNullableDom<CSSStyleDeclaration>,
     dataset: MutNullableDom<DOMStringMap>,
+    /// The associated [`EditContext`], set via the `editContext` attribute
+    /// (<https://w3c.github.io/edit-context/#dom-htmlelement-editcontext>).
+    edit_context: MutNullableDom<EditContext>,
 }
 
 impl HTMLElement {
@@ -107,6 +136,7 @@ impl HTMLElement {
             ),
             style_decl: Default::default(),
             dataset: Default::default(),
+            edit_context: Default::default(),
         }
     }
 
@@ -205,6 +235,19 @@ impl HTMLElement {
             return internals;
         };
         element_internals
+    }
+
+    /// The [`EditContext`] associated with this element via the `editContext`
+    /// attribute, if any (<https://w3c.github.io/edit-context/#dom-htmlelement-editcontext>).
+    pub(crate) fn attached_edit_context(&self) -> Option<DomRoot<EditContext>> {
+        self.edit_context.get()
+    }
+
+    /// Whether this element's local name is an EditContext allowed element:
+    /// a valid shadow host name or `canvas`
+    /// (<https://w3c.github.io/edit-context/#editcontext-allowed-element>).
+    fn is_edit_context_allowed_element(&self) -> bool {
+        EDIT_CONTEXT_ALLOWED_ELEMENTS.contains(self.as_element().local_name())
     }
 }
 
@@ -748,6 +791,59 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
     fn IsContentEditable(&self) -> bool {
         // > The isContentEditable IDL attribute, on getting, must return true if the element is either an editing host or editable, and false otherwise.
         self.upcast::<Node>().is_editable_or_editing_host()
+    }
+
+    /// <https://w3c.github.io/edit-context/#dom-htmlelement-editcontext>
+    fn GetEditContext(&self, _cx: &mut JSContext) -> Fallible<Option<DomRoot<EditContext>>> {
+        Ok(self.edit_context.get())
+    }
+
+    /// <https://w3c.github.io/edit-context/#dom-htmlelement-editcontext>
+    ///
+    /// Association algorithm: throwing for disallowed elements, the no-op
+    /// same-element reassignment, the single-element invariant on the
+    /// EditContext side, and the detach-then-attach switch.
+    fn SetEditContext(&self, _cx: &mut JSContext, value: Option<&EditContext>) -> ErrorResult {
+        // Step 1. If element's local name is not a valid shadow host name and
+        // is not "canvas", then throw a "NotSupportedError" DOMException.
+        if !self.is_edit_context_allowed_element() {
+            return Err(Error::NotSupported(Some(
+                "Element does not support editContext".into(),
+            )));
+        }
+
+        let Some(edit_context) = value else {
+            // Setting null: run the dissociate steps on any current association.
+            if let Some(current) = self.edit_context.get() {
+                current.dissociate_from_element(self);
+            }
+            self.edit_context.set(None);
+            return Ok(());
+        };
+
+        // Step 2. If editContext's associated element is this element, return.
+        if let Some(associated) = edit_context.associated_element() {
+            if &*associated == self {
+                return Ok(());
+            }
+            // Step 3. If editContext's associated element is another element,
+            // then throw a "NotSupportedError" DOMException.
+            return Err(Error::NotSupported(Some(
+                "EditContext is already associated with another element".into(),
+            )));
+        }
+
+        // Step 4. Let oldContext be element's edit context.
+        // Step 5. Dissociate oldContext from element.
+        if let Some(current) = self.edit_context.get() {
+            current.dissociate_from_element(self);
+        }
+
+        // Step 6. Associate editContext with element.
+        edit_context.associate_with_element(self);
+        // Step 7. Set element's edit context to editContext.
+        self.edit_context.set(Some(edit_context));
+        Ok(())
     }
 
     /// <https://html.spec.whatwg.org/multipage#dom-attachinternals>

@@ -2065,6 +2065,15 @@ impl DocumentEventHandler {
 
         let event = &event.event;
         if let Some(editing_action) = editing_action_from_keyboard_event(event) {
+            // An EditContext attached to the focused event target intercepts the
+            // raw-text inputTypes and no DOM mutation happens
+            // (<https://w3c.github.io/edit-context/#handle-input-for-editcontext>).
+            if let Some(html_element) = node.downcast::<HTMLElement>() &&
+                let Some(edit_context) = html_element.attached_edit_context() &&
+                edit_context.handle_editing_action(cx, &html_element, &editing_action)
+            {
+                return input_event_result | InputEventResult::Consumed;
+            }
             let editing_host = document.editing_context(cx.no_gc(), node);
             if editing_host.perform_editing_action(cx, editing_action) {
                 return input_event_result | InputEventResult::Consumed;
