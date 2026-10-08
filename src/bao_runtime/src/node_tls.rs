@@ -2006,7 +2006,7 @@ unsafe fn tls_emit_js(cx: *mut JSContext, obj: *mut JSObject, name: &str, args: 
         elements_: call_vals.as_ptr(),
     };
     let mut rval = UndefinedValue();
-    JS_CallFunctionValue(
+    let ok = JS_CallFunctionValue(
         cx,
         obj_root.handle().into(),
         emit_root.handle().into(),
@@ -2016,7 +2016,29 @@ unsafe fn tls_emit_js(cx: *mut JSContext, obj: *mut JSObject, name: &str, args: 
             ptr: &mut rval,
         },
     );
-    JS_ClearPendingException(cx);
+    if !ok {
+        // e148 / Node parity (e143 registration): the emit call threw — either
+        // ee_emit's own unhandled-'error' throw (emit('error') with no
+        // listener throws, the ERR_UNHANDLED_ERROR surface) or a listener
+        // throw that escaped the emitter. Node routes both to the uncaught-
+        // exception path (process.on('uncaughtException') or stderr + exit 1
+        // — "Emitted 'error' event on TLSSocket without a listener" crashes);
+        // clearing silently hid dead sockets/servers from the process. Same
+        // routing as bun_listen / node_events listener throws.
+        let mut exn = UndefinedValue();
+        JS_GetPendingException(
+            cx,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut exn,
+            },
+        );
+        JS_ClearPendingException(cx);
+        rooted!(&in(cx_ref) let reason_root = exn);
+        if !exn.is_undefined() {
+            crate::uncaught::route_uncaught_exception(cx, exn);
+        }
+    }
 }
 
 /// Dispatch the user SNICallback: `SNICallback(servername, cb)` with
