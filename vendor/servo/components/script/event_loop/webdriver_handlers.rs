@@ -255,12 +255,22 @@ fn get_known_element(
         .ok_or(ErrorStatus::NoSuchWindow)?;
     // Step 1. If not node reference is known with session, session's current browsing context,
     // and reference return error with error code no such element.
-    if !ScriptThread::has_node_id(pipeline, &node_id) {
+    if !ScriptThread::has_node_id(pipeline, &node_id) &&
+        !ScriptThread::has_node_id_in_any_pipeline(&node_id)
+    {
         return Err(ErrorStatus::NoSuchElement);
     }
     // Step 2.Let node be the result of get a node with session,
     // session's current browsing context, and reference.
-    let node = find_node_by_unique_id_in_document(&doc, node_id);
+    //
+    // The node may live in a descendant browsing context: an element that was
+    // moved into an iframe keeps its node reference (the id registry is keyed
+    // by the pipeline that minted it), so on a miss in the current document
+    // the descendant documents are searched for the same already-minted id
+    // (no new ids are minted by the fallback).
+    let node = find_node_by_unique_id_in_document(&doc, node_id.clone()).or_else(|| {
+        find_node_by_unique_id_in_descendant_documents(documents, &doc, &node_id)
+    });
 
     // Step 3. If node is not null and node does not implement Element
     // return error with error code no such element.
@@ -292,6 +302,61 @@ pub(crate) fn find_node_by_unique_id_in_document(
         .upcast::<Node>()
         .traverse_preorder(ShadowIncluding::Yes)
         .find(|node| node.unique_id(pipeline) == node_id)
+}
+
+/// Search the documents of `root`'s descendant browsing contexts for a node
+/// whose already-minted unique id is `node_id`. Unlike
+/// [`find_node_by_unique_id_in_document`] this never *mints* ids for the
+/// traversed nodes: the node must have been assigned a reference before.
+fn find_node_by_unique_id_in_descendant_documents(
+    documents: &DocumentCollection,
+    root: &Document,
+    node_id: &str,
+) -> Option<DomRoot<Node>> {
+    let root_pipeline = root.window().pipeline_id();
+    let mut found = None;
+    for (pipeline, document) in documents.iter() {
+        if pipeline == root_pipeline || !is_descendant_document(documents, root_pipeline, pipeline)
+        {
+            continue;
+        }
+        let node = document
+            .upcast::<Node>()
+            .traverse_preorder(ShadowIncluding::Yes)
+            .find(|node| {
+                node.unique_id_if_already_present().as_deref() == Some(node_id)
+            });
+        if node.is_some() {
+            found = node;
+            break;
+        }
+    }
+    found
+}
+
+/// Whether `pipeline`'s document is rooted in the document tree under
+/// `root_pipeline` (walking the iframe pipeline edges).
+fn is_descendant_document(
+    documents: &DocumentCollection,
+    root_pipeline: PipelineId,
+    pipeline: PipelineId,
+) -> bool {
+    let mut frontier = vec![root_pipeline];
+    while let Some(current) = frontier.pop() {
+        let Some(document) = documents.find_document(current) else {
+            continue;
+        };
+        for iframe in document.iframes().iter() {
+            let Some(child) = iframe.pipeline_id() else {
+                continue;
+            };
+            if child == pipeline {
+                return true;
+            }
+            frontier.push(child);
+        }
+    }
+    false
 }
 
 /// <https://w3c.github.io/webdriver/#dfn-link-text-selector>

@@ -14,10 +14,12 @@ use keyboard_types::{
     Key, KeyState, KeyboardEvent as KeyboardTypesEvent, Modifiers, NamedKey, ShortcutMatcher,
 };
 use layout_api::QueryMsg;
+use script_bindings::codegen::GenericBindings::CharacterDataBinding::CharacterDataMethods;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::codegen::GenericBindings::UIEventBinding::UIEventMethods as _;
+use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
 use script_bindings::dom::UnrootedDom;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::DomRoot;
@@ -25,22 +27,37 @@ use script_bindings::str::DOMString;
 use servo_base::generic_channel::GenericCallback;
 use servo_base::text::Utf32CodeUnitsOrNodeOffset;
 
+use crate::dom::characterdata::CharacterData;
 use crate::dom::clipboardevent::ClipboardEventType;
+use crate::dom::editcontext::fire_beforeinput_on_element;
 use crate::dom::event::{EventBubbles, EventCancelable};
 use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
 use crate::dom::inputevent::HitTestResult;
+use crate::dom::inputevent::InputEvent;
+use crate::dom::text::Text;
 use crate::dom::text_control::TextControlElement;
 use crate::dom::text_input::{InputEventType, IsComposing};
 use crate::dom::types::{
-    ClipboardEvent, DataTransfer, Event, EventTarget, HTMLInputElement, HTMLTextAreaElement,
-    MouseEvent, UIEvent,
+    ClipboardEvent, DataTransfer, Event, EventTarget, HTMLElement, HTMLInputElement,
+    HTMLTextAreaElement, MouseEvent, UIEvent,
 };
+use crate::dom::iterators::ShadowIncluding;
 use crate::dom::{Document, Node, NodeTraits};
 use crate::drag::document_selection_drag::{
     DocumentSelectionDragHandler, adjust_anchor_for_user_select,
 };
 use crate::drag::drag_data_store::{DragDataStore, Kind, Mode};
 use crate::drag::drag_gesture::{DragGesture, DragHandler};
+
+/// Whether `focused` has a contenteditable editing host ancestor (used by
+/// the paste routing: the caret of the focused editor receives the paste even
+/// when the focused element itself carries `contenteditable="false"`).
+fn focused_is_inside_contenteditable_ancestor(focused: &Node) -> bool {
+    focused
+        .inclusive_ancestors(ShadowIncluding::No)
+        .skip(1)
+        .any(|ancestor| ancestor.is_editing_host())
+}
 
 #[cfg(target_os = "macos")]
 pub(crate) const CMD_OR_CONTROL: Modifiers = Modifiers::META;
@@ -194,29 +211,17 @@ impl Document {
                     }
                 },
                 ClipboardEventType::Paste => {
-                    if editing_context.has_selection_or_cursor() &&
-                        editing_context.pasting_enabled() &&
-                        let Some(text_content) = clipboard_event.text_content()
-                    {
-                        let canceled =
-                            editing_context.fire_paste_beforeinput_event(cx, &text_content);
-                        if canceled {
-                            return InputEventResult::empty();
+                    if let Some(text_content) = clipboard_event.text_content() {
+                        // The paste handler above may have moved focus to
+                        // another editor, detached the EditContext, or
+                        // changed editability of an ancestor: resolve the
+                        // destination from the *current* state, which is
+                        // what every browser does for contenteditable
+                        // (edit-context-paste-handler-changes-active
+                        // contract).
+                        if self.paste_into_current_editing_context(cx, &text_content) {
+                            event.mark_as_handled();
                         }
-
-                        // Step 3.1. If there is a selection or cursor in an editable context
-                        // where pasting is enabled, then
-                        // Step 3.1.1. Insert the most suitable content found on the
-                        // clipboard, if any, into the context.
-                        editing_context.insert_content(cx, &text_content);
-
-                        // Step 3.1.2. Queue tasks to fire any events that should fire due to
-                        // the modification, see §5.3 Integration with other scripts and
-                        // events for details.
-                        editing_context.fire_paste_events(&text_content);
-
-                        // This is how `true` is returned from this function.
-                        event.mark_as_handled();
                     }
                 },
                 _ => (),
@@ -256,8 +261,122 @@ impl Document {
         event.flags().into()
     }
 
+    /// Insert pasted `text` into the editor that is the target *now*: an
+    /// EditContext editing host (text update + `textupdate`, no DOM
+    /// mutation), a text control, or a contenteditable editing host (DOM
+    /// insertion through the exec-command insert pipeline). Returns `true`
+    /// when the paste was consumed.
+    fn paste_into_current_editing_context(&self, cx: &mut JSContext, text: &str) -> bool {
+        let event_target = self.event_handler().target_for_events_following_focus();
+        let Some(focused) = event_target.downcast::<Node>() else {
+            return false;
+        };
+
+        // Text controls are their own editing islands: an `<input>` or
+        // `<textarea>` inside an EditContext host takes the paste itself.
+        let editing_context = self.editing_context(cx.no_gc(), &focused);
+        if let EditingContext::TextControl(..) = editing_context {
+            if !(editing_context.has_selection_or_cursor() &&
+                editing_context.pasting_enabled())
+            {
+                return false;
+            }
+            if editing_context.fire_paste_beforeinput_event(cx, text) {
+                return false;
+            }
+            editing_context.insert_content(cx, text);
+            editing_context.fire_paste_events(text);
+            return true;
+        }
+
+        // An EditContext editing host (the focused element or an ancestor of
+        // it) takes the paste into the EditContext's own text state.
+        if let Some(editing_host) = focused.editing_host_of() &&
+            let Some(html_element) = editing_host.downcast::<HTMLElement>() &&
+            let Some(edit_context) = html_element.attached_edit_context()
+        {
+            // A canceled `beforeinput` (insertFromPaste) leaves the paste
+            // unconsumed.
+            return !edit_context.handle_paste(cx, &html_element, text);
+        }
+
+        // A contenteditable region: paste inserts at the caret of the focused
+        // editor, even when an editability change during the paste handler
+        // left the focused element outside the exec-command enabled rules
+        // (a `contenteditable="false"` island inside a freshly contenteditable
+        // ancestor — the caret is already there, matching Chromium).
+        if focused.editing_host_of().is_none() &&
+            !focused_is_inside_contenteditable_ancestor(&focused)
+        {
+            return false;
+        }
+        let Some(selection) = self.GetSelection(cx) else {
+            return false;
+        };
+        let focus_inside_focused_element = selection.GetFocusNode(cx).is_some_and(|node| {
+            node.inclusive_ancestors(ShadowIncluding::No)
+                .any(|ancestor| &*ancestor == &*focused)
+        });
+        let collapsed_inside = focus_inside_focused_element && selection.IsCollapsed(cx);
+        if !collapsed_inside {
+            if focus_inside_focused_element && let Some(focus_node) = selection.GetFocusNode(cx) {
+                let focus_offset = selection.FocusOffset(cx);
+                let _ = selection.Collapse(cx, Some(&focus_node), focus_offset);
+            } else {
+                let _ = selection.Collapse(cx, Some(&focused), 0);
+            }
+        }
+
+        // Fire a cancelable `beforeinput` (insertFromPaste) at the focused
+        // editor; a canceled paste is not consumed.
+        let Some(focused_html) = focused.downcast::<HTMLElement>() else {
+            return false;
+        };
+        if fire_beforeinput_on_element(cx, focused_html, Some(text), "insertFromPaste", Vec::new())
+        {
+            return false;
+        }
+
+        // Insert the text at the collapsed caret: into a text node, or as a
+        // new text node at the caret position.
+        let Some(range) = selection.active_range(cx) else {
+            return false;
+        };
+        let inserted = if let Some(text_node) = range.start_container().downcast::<Text>() {
+            text_node
+                .upcast::<CharacterData>()
+                .InsertData(cx, range.start_offset(), DOMString::from(text))
+                .is_ok()
+        } else {
+            let new_text = self.CreateTextNode(cx, DOMString::from(text));
+            range.InsertNode(cx, new_text.upcast::<Node>()).is_ok()
+        };
+        if !inserted {
+            return false;
+        }
+
+        // Fire the trailing `input` (insertFromPaste) at the focused editor.
+        let input_event = InputEvent::new(
+            cx,
+            &self.window(),
+            None,
+            atom!("input"),
+            true,
+            false,
+            Some(&self.window()),
+            0,
+            Some(DOMString::from(text)),
+            false,
+            DOMString::from_static("insertFromPaste"),
+        );
+        let input_event = input_event.upcast::<Event>();
+        input_event.set_trusted(true);
+        input_event.fire(cx, focused.upcast::<EventTarget>());
+        true
+    }
+
     /// <https://www.w3.org/TR/clipboard-apis/#fire-a-clipboard-event>
-    fn fire_clipboard_event(
+    pub(crate) fn fire_clipboard_event(
         &self,
         cx: &mut JSContext,
         target: &EventTarget,
@@ -766,7 +885,15 @@ impl EditingContext {
             EditingContext::TextControl(element) => element
                 .text_control_element()
                 .perform_editing_action(cx, action),
-            EditingContext::Document(document) => document.perform_editing_action(cx, &action),
+            EditingContext::Document(document) => {
+                // Arrow keys over a DOM selection inside an editable region
+                // are bidi-resolved visual caret motion
+                // (REQ-BRW-050 P1 caret association).
+                if let EditingAction::MoveCursor(direction, motion, modify_selection) = action {
+                    return document.perform_caret_motion(cx, direction, motion, modify_selection);
+                }
+                document.perform_editing_action(cx, &action)
+            },
         }
     }
 

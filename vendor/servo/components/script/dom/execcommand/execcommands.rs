@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use cssparser::match_ignore_ascii_case;
+use embedder_traits::{ClipboardAction, InputEventResult};
 use js::context::JSContext;
 use script_bindings::inheritance::Castable;
 
@@ -12,8 +13,10 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
+use crate::dom::clipboardevent::ClipboardEventType;
 use crate::dom::comment::Comment;
 use crate::dom::document::Document;
+use crate::dom::document::editing::EditingContext;
 use crate::dom::event::Event;
 use crate::dom::event::inputevent::InputEvent;
 use crate::dom::execcommand::basecommand::CommandName;
@@ -105,6 +108,20 @@ impl Node {
 }
 
 impl Document {
+    /// Whether the active range sits inside an EditContext editing host:
+    /// editing commands are disabled there and their queries always report
+    /// false / the empty string (Chromium parity,
+    /// `edit-context/edit-context-execCommand.tentative.https.html`).
+    fn active_range_is_in_edit_context_host(&self, cx: &mut JSContext) -> bool {
+        self.GetSelection(cx)
+            .and_then(|selection| selection.active_range(cx))
+            .and_then(|range| range.start_container().editing_host_of())
+            .is_some_and(|host| {
+                host.downcast::<HTMLElement>()
+                    .is_some_and(|host| host.attached_edit_context().is_some())
+            })
+    }
+
     /// <https://w3c.github.io/editing/docs/execCommand/#enabled>
     fn selection_if_command_is_enabled(
         &self,
@@ -124,11 +141,21 @@ impl Document {
         // > its start node is either editable or an editing host,
         let start_container_editing_host = range.start_container().editing_host_of()?;
         // > the editing host of its start node is not an EditContext editing host,
-        // TODO
+        if start_container_editing_host
+            .downcast::<HTMLElement>()
+            .is_some_and(|host| host.attached_edit_context().is_some())
+        {
+            return None;
+        }
         // > its end node is either editable or an editing host,
         let end_container_editing_host = range.end_container().editing_host_of()?;
         // > the editing host of its end node is not an EditContext editing host,
-        // TODO
+        if end_container_editing_host
+            .downcast::<HTMLElement>()
+            .is_some_and(|host| host.attached_edit_context().is_some())
+        {
+            return None;
+        }
         // > and there is some editing host that is an inclusive ancestor of both its start node and its end node.
         // TODO
 
@@ -147,6 +174,57 @@ impl Document {
         }
     }
 
+    /// Execute the `copy`/`cut` clipboard commands
+    /// (<https://w3c.github.io/editing/docs/execCommand/#clipboard-commands>).
+    /// Both dispatch the trusted clipboard event; inside an EditContext
+    /// editing host `copy` still writes the DOM selection to the clipboard
+    /// while `cut` changes neither the DOM nor the clipboard and reports
+    /// success (Chromium: "cut always returns true regardless of whether it
+    /// did anything").
+    fn exec_clipboard_command(&self, cx: &mut JSContext, command_id: &DOMString) -> bool {
+        let is_cut = command_id.str() == "cut";
+        let event_target = self.event_handler().target_for_events_following_focus();
+        if is_cut && self.active_range_is_in_edit_context_host(cx) {
+            self.fire_clipboard_event(cx, &event_target, ClipboardEventType::Cut);
+            return true;
+        }
+        let action = if is_cut {
+            ClipboardAction::Cut
+        } else {
+            ClipboardAction::Copy
+        };
+        let Some(node) = event_target.downcast::<Node>() else {
+            return false;
+        };
+        let editing_context = self.editing_context(cx.no_gc(), node);
+        // The clipboard commands are only enabled for editable content: a
+        // selection outside any editing region reports failure
+        // (exec-command-without-editable-element contract), while a selection
+        // in a text control, a contenteditable or an EditContext editing
+        // host runs the clipboard event machinery.
+        let selection_is_editable = matches!(editing_context, EditingContext::TextControl(..)) ||
+            self.active_range_is_in_edit_context_host(cx) ||
+            self.GetSelection(cx)
+                .and_then(|selection| selection.active_range(cx))
+                .and_then(|range| range.start_container().editing_host_of())
+                .is_some();
+        if !selection_is_editable {
+            // The trusted clipboard event still fires on the executed
+            // document, but the command reports failure
+            // (exec-command-without-editable-element: the event fires while
+            // execCommand returns false).
+            let event_type = if is_cut {
+                ClipboardEventType::Cut
+            } else {
+                ClipboardEventType::Copy
+            };
+            self.fire_clipboard_event(cx, &event_target, event_type);
+            return false;
+        }
+        self.handle_clipboard_action(cx, &editing_context, action)
+            .contains(InputEventResult::Consumed)
+    }
+
     /// <https://w3c.github.io/editing/docs/execCommand/#supported>
     fn command_if_command_is_supported(&self, command_id: &DOMString) -> Option<CommandName> {
         // https://w3c.github.io/editing/docs/execCommand/#methods-to-query-and-execute-commands
@@ -154,7 +232,9 @@ impl Document {
         Some(match_ignore_ascii_case! { &command_id.str(),
             "backcolor" => CommandName::BackColor,
             "bold" => CommandName::Bold,
+            "copy" => CommandName::Copy,
             "createlink" => CommandName::CreateLink,
+            "cut" => CommandName::Cut,
             "delete" => CommandName::Delete,
             "defaultparagraphseparator" => CommandName::DefaultParagraphSeparator,
             "fontname" => CommandName::FontName,
@@ -209,6 +289,10 @@ impl DocumentExecCommandSupport for Document {
     fn is_command_indeterminate(&self, cx: &mut JSContext, command_id: DOMString) -> bool {
         // Step 1. If command is not supported or has no indeterminacy, return false.
         // Step 2. Return true if command is indeterminate, otherwise false.
+        // Inside an EditContext editing host queries always report false.
+        if self.active_range_is_in_edit_context_host(cx) {
+            return false;
+        }
         self.command_if_command_is_supported(&command_id)
             .is_some_and(|command| command.is_indeterminate(cx, self))
     }
@@ -219,6 +303,10 @@ impl DocumentExecCommandSupport for Document {
         let Some(command) = self.command_if_command_is_supported(&command_id) else {
             return false;
         };
+        // Inside an EditContext editing host queries always report false.
+        if self.active_range_is_in_edit_context_host(cx) {
+            return false;
+        }
         let Some(state) = command.current_state(cx, self) else {
             return false;
         };
@@ -233,6 +321,11 @@ impl DocumentExecCommandSupport for Document {
         let Some(command) = self.command_if_command_is_supported(&command_id) else {
             return DOMString::new();
         };
+        // Inside an EditContext editing host queries always report the empty
+        // string.
+        if self.active_range_is_in_edit_context_host(cx) {
+            return DOMString::new();
+        }
         let Some(value) = command.current_value(cx, self) else {
             return DOMString::new();
         };
@@ -270,6 +363,11 @@ impl DocumentExecCommandSupport for Document {
         command_id: DOMString,
         value: DOMString,
     ) -> bool {
+        // The clipboard commands run the clipboard event machinery instead of
+        // the editing-command pipeline.
+        if command_id.str() == "copy" || command_id.str() == "cut" {
+            return self.exec_clipboard_command(cx, &command_id);
+        }
         let window = self.window();
         // Step 3. If command is not supported or not enabled, return false.
         let Some((command, mut selection)) = self.check_support_and_enabled(cx, &command_id) else {

@@ -2065,10 +2065,25 @@ impl DocumentEventHandler {
 
         let event = &event.event;
         if let Some(editing_action) = editing_action_from_keyboard_event(event) {
-            // An EditContext attached to the focused event target intercepts the
-            // raw-text inputTypes and no DOM mutation happens
+            // An EditContext attached to the *editing host* of the focused
+            // event target intercepts the raw-text inputTypes and no DOM
+            // mutation happens
             // (<https://w3c.github.io/edit-context/#handle-input-for-editcontext>).
-            if let Some(html_element) = node.downcast::<HTMLElement>() &&
+            // The host is an ancestor of the focused node when typing into an
+            // editable child of the EditContext's associated element — the
+            // activation walk resolves to the outermost context of the
+            // editable chain, so the associated element receives the events.
+            // Text controls are their own editing islands: an `<input>` or
+            // `<textarea>` inside an EditContext host receives the events
+            // itself.
+            let focused_is_text_control = node
+                .downcast::<crate::dom::types::HTMLTextAreaElement>()
+                .is_some() ||
+                node.downcast::<HTMLInputElement>()
+                    .is_some_and(|input| input.is_textual_or_password());
+            if !focused_is_text_control &&
+                let Some(editing_host) = node.editing_host_of() &&
+                let Some(html_element) = editing_host.downcast::<HTMLElement>() &&
                 let Some(edit_context) = html_element.attached_edit_context() &&
                 edit_context.handle_editing_action(cx, &html_element, &editing_action)
             {

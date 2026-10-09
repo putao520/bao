@@ -13,6 +13,7 @@ pub(crate) mod documentorshadowroot;
 pub(crate) mod documenttype;
 pub(crate) mod domimplementation;
 pub(crate) mod domparser;
+pub(crate) mod caret_motion;
 pub(crate) mod editing;
 pub(crate) mod focus;
 mod iframe_collection;

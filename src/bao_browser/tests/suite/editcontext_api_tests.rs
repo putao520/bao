@@ -1,5 +1,5 @@
 // @trace REQ-BRW-050 [criterion:editcontext-api-p0] live
-// EditContext JS API (W3C EditContext API-1, Bao fork self-build) — four
+// EditContext JS API (W3C EditContext API-1, Bao fork self-build) — five
 // locks over the real servo engine:
 //   C1 constructor surface (EditContext/TextFormat/TextUpdateEvent/
 //      TextFormatUpdateEvent dictionary init + defaults + enum validation)
@@ -10,6 +10,11 @@
 //   C4 driver interop: real trusted keyboard delivery into a focused
 //      EditContext element fires beforeinput + textupdate and performs NO
 //      DOM mutation (the defining EditContext contract).
+//   C5 P1 faces: getTargetRanges StaticRange population, editability
+//      inheritance (outermost EC/CE boundary receives the events),
+//      execCommand EditContext disable linkage, bidi caret association
+//      over the DOM selection mirror, and paste routing into the current
+//      editor (plain text, no DOM mutation).
 //
 // Gated like the rest of the live servo suite:
 //   BAO_TEST_NETWORK=1 xvfb-run cargo nt -p bao-browser \
@@ -557,5 +562,346 @@ window.__focused = (document.activeElement === div);
     assert!(
         !cancel_state.contains("z"),
         "canceling beforeinput must leave text unchanged (state={cancel_state})"
+    );
+}
+
+
+/// A plain-character key press with `Ctrl` held (the copy/cut/paste editing
+/// actions are Control-modified on Linux).
+fn ctrl_char(page: &PageHandle, ch: char, code: Code) {
+    page.dispatch_key_event_full(
+        KeyState::Down,
+        Key::Character(ch.to_string()),
+        code,
+        Location::Standard,
+        Modifiers::CONTROL,
+        false,
+    );
+    page.dispatch_key_event_full(
+        KeyState::Up,
+        Key::Character(ch.to_string()),
+        code,
+        Location::Standard,
+        Modifiers::CONTROL,
+        false,
+    );
+}
+
+/// A named-key press (arrows, backspace, delete) with no modifiers.
+fn named_key(page: &PageHandle, named: servo::NamedKey, code: Code) {
+    let key = Key::Named(named);
+    page.dispatch_key_event_full(
+        KeyState::Down,
+        key.clone(),
+        code,
+        Location::Standard,
+        Modifiers::empty(),
+        false,
+    );
+    page.dispatch_key_event_full(
+        KeyState::Up,
+        key,
+        code,
+        Location::Standard,
+        Modifiers::empty(),
+        false,
+    );
+}
+
+/// @trace REQ-BRW-050 [criterion:editcontext-c5-p1-faces] live
+///
+/// C5: the P1 faces over the real engine —
+///   (1) `beforeinput.getTargetRanges()` carries one StaticRange covering
+///       the EditContext selection for insertText on a div host (none on a
+///       canvas host and none for backspace);
+///   (2) editability inheritance: typing into an editable child of an
+///       EditContext host routes `beforeinput`/`textupdate` to the host —
+///       the outermost EditContext wins, including over a nested
+///       EditContext or a nested contenteditable;
+///   (3) execCommand linkage: queries report false/empty and commands stay
+///       disabled while the selection is inside an EditContext host;
+///   (4) bidi caret association: after inserting digits into mixed
+///       direction text, ArrowLeft lands before the last inserted digit;
+///   (5) paste routing: text copied from a contenteditable pastes into the
+///       focused EditContext host as plain text (`textupdate`, no DOM
+///       mutation).
+#[test]
+fn editcontext_api_c5_p1_faces() {
+    if should_skip() {
+        return;
+    }
+    let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
+
+    let (_runtime, page) = make_page(
+        r#"<!DOCTYPE html><html><body>
+<div id="host" style="width:200px;height:40px;"></div>
+<canvas id="canvas" width="40" height="40"></canvas>
+<div id="wrap1" style="width:200px;height:20px;"><div id="child" tabindex="0"></div></div>
+<div id="wrap2" style="width:200px;height:20px;"><div id="cechild" contenteditable="" tabindex="0"></div></div>
+<div id="wrap3" style="width:200px;height:20px;"><div id="ecchild" tabindex="0"></div></div>
+<div id="bidi" style="width:200px;height:20px;"></div>
+<div id="src" contenteditable style="width:200px;height:20px;">Copied text</div>
+<div id="host2" style="width:200px;height:20px;"></div>
+<script>
+window.__checks = [];
+window.check = function(name, cond) { window.__checks.push((cond ? 'ok:' : 'FAIL:') + name); };
+</script>
+</body></html>"#,
+    );
+
+    // ---- Face 1: getTargetRanges StaticRange population. ----
+    page.evaluate_js_web(
+        r#"
+        var host = document.getElementById('host');
+        var ec = new EditContext();
+        ec.updateText(0, 0, 'xy');
+        ec.updateSelection(1, 2);
+        window.__divRanges = null;
+        host.addEventListener('beforeinput', function(e) {
+            window.__divRanges = e.getTargetRanges().map(function(r) {
+                return [r.startContainer === host, r.endContainer === host, r.startOffset, r.endOffset];
+            });
+        });
+        host.editContext = ec;
+        host.focus();
+        var canvas = document.getElementById('canvas');
+        window.__canvasRanges = null;
+        canvas.addEventListener('beforeinput', function(e) {
+            window.__canvasRanges = e.getTargetRanges().length;
+        });
+        canvas.editContext = new EditContext();
+        "#,
+    )
+    .expect("face1 wiring must eval");
+
+    type_char(&page, 'z');
+    poll_until_contains(&page, "String(ec.text === 'xz')", "true", 5_000);
+    let div_ranges = page
+        .evaluate_js_web("JSON.stringify(window.__divRanges)")
+        .unwrap_or_default();
+    eprintln!("[editcontext-c5] face1 div ranges = {div_ranges}");
+    assert!(
+        div_ranges.contains("[true,true,1,2]"),
+        "insertText on a div host must expose one StaticRange over the EditContext selection (got {div_ranges})"
+    );
+
+    // Backspace exposes no target ranges (the delete range is author-owned).
+    named_key(&page, servo::NamedKey::Backspace, Code::Backspace);
+    poll_until_contains(&page, "String(ec.text === 'x')", "true", 5_000);
+    let backspace_ranges = page
+        .evaluate_js_web("JSON.stringify(window.__divRanges)")
+        .unwrap_or_default();
+    assert!(
+        backspace_ranges.contains("[]"),
+        "backspace must expose no target ranges (got {backspace_ranges})"
+    );
+
+    // Canvas hosts expose no target ranges (no DOM selection exists there).
+    page.evaluate_js_web("document.getElementById('canvas').focus();")
+        .expect("canvas focus must eval");
+    type_char(&page, 'q');
+    poll_until_contains(
+        &page,
+        "String(document.getElementById('canvas').editContext.text === 'q')",
+        "true",
+        5_000,
+    );
+    let canvas_ranges = page
+        .evaluate_js_web("String(window.__canvasRanges)")
+        .unwrap_or_default();
+    eprintln!("[editcontext-c5] face1 canvas ranges = {canvas_ranges}");
+    assert!(
+        canvas_ranges.contains("0"),
+        "insertText on a canvas host must expose no target ranges (got {canvas_ranges})"
+    );
+
+    // ---- Face 2: editability inheritance. ----
+    page.evaluate_js_web(
+        r#"
+        ['wrap1', 'wrap2', 'wrap3'].forEach(function(id) {
+            var wrap = document.getElementById(id);
+            var ctx = new EditContext();
+            wrap.editContext = ctx;
+            wrap.addEventListener('beforeinput', function(e) {
+                window.check('face2.bi.' + id, e.target === wrap);
+            });
+            ctx.addEventListener('textupdate', function(e) {
+                window.check('face2.tu.' + id, true);
+            });
+        });
+        var ecchild = document.getElementById('ecchild');
+        ecchild.editContext = new EditContext();
+        ecchild.editContext.addEventListener('textupdate', function(e) {
+            window.check('face2.inner-ec-got-textupdate', false);
+        });
+        ecchild.addEventListener('beforeinput', function(e) {
+            window.check('face2.inner-got-beforeinput', false);
+        });
+        "#,
+    )
+    .expect("face2 wiring must eval");
+    for (element, expected) in [
+        ("document.getElementById('child')", "a"),
+        ("document.getElementById('cechild')", "b"),
+        ("document.getElementById('ecchild')", "c"),
+    ] {
+        page.evaluate_js_web(&format!("{element}.focus();"))
+            .expect("face2 focus must eval");
+        type_char(&page, expected.chars().next().unwrap());
+        let wrap_id = match element {
+            e if e.contains("child'") && !e.contains("cechild") && !e.contains("ecchild") => "wrap1",
+            e if e.contains("cechild") => "wrap2",
+            _ => "wrap3",
+        };
+        poll_until_contains(
+            &page,
+            &format!(
+                "String(document.getElementById('{wrap_id}').editContext.text === '{expected}')"
+            ),
+            "true",
+            5_000,
+        );
+    }
+    let face2 = page
+        .evaluate_js_web("JSON.stringify(window.__checks)")
+        .unwrap_or_default();
+    eprintln!("[editcontext-c5] face2 = {face2}");
+    assert!(
+        face2.contains("ok:face2.bi.wrap1") &&
+            face2.contains("ok:face2.tu.wrap1") &&
+            face2.contains("ok:face2.bi.wrap2") &&
+            face2.contains("ok:face2.tu.wrap2") &&
+            face2.contains("ok:face2.bi.wrap3") &&
+            face2.contains("ok:face2.tu.wrap3") &&
+            !face2.contains("FAIL"),
+        "typing into editable children must route events to the outermost EditContext host (got {face2})"
+    );
+
+    // ---- Face 3: execCommand EditContext disable linkage. ----
+    let face3 = page
+        .evaluate_js_web(
+            r#"
+        var host3 = document.getElementById('host');
+        host3.innerHTML = '<b>ab</b>c';
+        host3.focus();
+        var selection = window.getSelection();
+        selection.setBaseAndExtent(host3.firstChild.firstChild, 0, host3.firstChild.firstChild, 1);
+        var fired = false;
+        host3.editContext.addEventListener('textupdate', function() { fired = true; });
+        var out = [];
+        out.push('enabled=' + document.queryCommandEnabled('inserttext'));
+        out.push('bold=' + document.queryCommandState('bold'));
+        out.push('forecolor=' + JSON.stringify(document.queryCommandValue('forecolor')));
+        out.push('indeterm=' + document.queryCommandIndeterm('bold'));
+        var execResult = document.execCommand('inserttext', false, 'X');
+        out.push('exec=' + execResult + ';fired=' + fired + ';html=' + JSON.stringify(host3.innerHTML));
+        out.join('|')
+        "#,
+        )
+        .unwrap_or_default();
+    eprintln!("[editcontext-c5] face3 = {face3}");
+    assert!(
+        face3.contains("enabled=false") &&
+            face3.contains("bold=false") &&
+            face3.contains("forecolor=\"\"") &&
+            face3.contains("indeterm=false") &&
+            face3.contains("exec=false;fired=false") &&
+            !face3.contains("FAIL"),
+        "execCommand must be disabled and report false/empty inside an EditContext host (got {face3})"
+    );
+
+    // ---- Face 4: bidi caret association. ----
+    page.evaluate_js_web(
+        r#"
+        var bidi = document.getElementById('bidi');
+        var bidiEc = new EditContext();
+        bidi.editContext = bidiEc;
+        bidiEc.addEventListener('textupdate', function(e) {
+            bidi.textContent = bidiEc.text;
+            getSelection().setBaseAndExtent(bidi.firstChild, bidiEc.selectionStart,
+                                            bidi.firstChild, bidiEc.selectionEnd);
+        });
+        bidi.textContent = 'aאבגa';
+        bidi.focus();
+        getSelection().collapse(bidi.firstChild, 2);
+        bidiEc.updateText(0, bidiEc.text.length, 'aאבגa');
+        bidiEc.updateSelection(2, 2);
+        "#,
+    )
+    .expect("face4 wiring must eval");
+    type_char(&page, '1');
+    type_char(&page, '2');
+    type_char(&page, '3');
+    poll_until_contains(
+        &page,
+        "document.getElementById('bidi').editContext.text",
+        "123",
+        5_000,
+    );
+    named_key(&page, servo::NamedKey::ArrowLeft, Code::ArrowLeft);
+    std::thread::sleep(Duration::from_millis(300));
+    let face4 = page
+        .evaluate_js_web(
+            r#"(function() {
+            var bidi = document.getElementById('bidi');
+            var ec4 = bidi.editContext;
+            var focusOffset = getSelection().focusOffset;
+            return JSON.stringify({
+                text: ec4.text,
+                offset: focusOffset,
+                charAfter: bidi.textContent[focusOffset],
+                focusIsText: getSelection().focusNode === bidi.firstChild,
+            });
+        })()"#,
+        )
+        .unwrap_or_default();
+    eprintln!("[editcontext-c5] face4 = {face4}");
+    assert!(
+        face4.contains("123") &&
+            face4.contains("\"offset\":4") && face4.contains("\"charAfter\":\"3\"") &&
+            face4.contains("\"focusIsText\":true"),
+        "ArrowLeft after inserting digits must land before the last inserted digit (got {face4})"
+    );
+
+    // ---- Face 5: paste routing into the EditContext host. ----
+    page.evaluate_js_web(
+        r#"
+        var src = document.getElementById('src');
+        src.focus();
+        getSelection().selectAllChildren(src);
+        var host2 = document.getElementById('host2');
+        var pasteEc = new EditContext();
+        host2.editContext = pasteEc;
+        window.__pasteTextupdate = 0;
+        pasteEc.addEventListener('textupdate', function() { window.__pasteTextupdate++; });
+        host2.addEventListener('beforeinput', function(e) {
+            window.__pasteInputType = e.inputType;
+        });
+        "#,
+    )
+    .expect("face5 wiring must eval");
+    ctrl_char(&page, 'c', Code::KeyC);
+    std::thread::sleep(Duration::from_millis(300));
+    page.evaluate_js_web("document.getElementById('host2').focus();")
+        .expect("face5 focus must eval");
+    ctrl_char(&page, 'v', Code::KeyV);
+    poll_until_contains(&page, "window.__pasteTextupdate", "1", 5_000);
+    let face5 = page
+        .evaluate_js_web(
+            r#"JSON.stringify({
+            text: document.getElementById('host2').editContext.text,
+            dom: document.getElementById('host2').textContent,
+            count: window.__pasteTextupdate,
+            inputType: window.__pasteInputType,
+        })"#,
+        )
+        .unwrap_or_default();
+    eprintln!("[editcontext-c5] face5 = {face5}");
+    assert!(
+        face5.contains("\"text\":\"Copied text\"") &&
+            face5.contains("\"dom\":\"\"") &&
+            face5.contains("\"count\":1") &&
+            face5.contains("insertFromPaste"),
+        "paste must route into the EditContext as plain text with no DOM mutation (got {face5})"
     );
 }

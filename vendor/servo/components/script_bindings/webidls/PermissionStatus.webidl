@@ -28,6 +28,8 @@ enum PermissionName {
   "persistent-storage",
   "screen-wake-lock",
   "gamepad",
+  "clipboard-read",
+  "clipboard-write",
 };
 
 [Pref="dom_permissions_enabled", Exposed=(Window,Worker)]

@@ -396,6 +396,8 @@ impl Convert<PermissionFeature> for PermissionName {
                 PermissionFeature::ScreenWakeLock(WakeLockType::Screen)
             },
             PermissionName::Gamepad => PermissionFeature::Gamepad,
+            PermissionName::Clipboard_read => PermissionFeature::ClipboardRead,
+            PermissionName::Clipboard_write => PermissionFeature::ClipboardWrite,
         }
     }
 }

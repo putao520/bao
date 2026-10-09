@@ -207,9 +207,31 @@ impl HTMLElement {
     /// <https://html.spec.whatwg.org/multipage/#editing-host>
     pub(crate) fn is_editing_host(&self) -> bool {
         // > An editing host is either an HTML element with its contenteditable attribute in the true state or plaintext-only state,
-        matches!(&*self.ContentEditable().str(), "true" | "plaintext-only")
         // > or a child HTML element of a Document whose design mode enabled is true.
-        // TODO
+        // TODO: design mode
+        let has_edit_context = self.attached_edit_context().is_some();
+        let is_contenteditable =
+            matches!(&*self.ContentEditable().str(), "true" | "plaintext-only");
+        if !has_edit_context && !is_contenteditable {
+            return false;
+        }
+        // An EditContext editing host is the outer boundary of an editable
+        // region (<https://w3c.github.io/edit-context/#editcontext-associate>):
+        // "If an EditContext's associated element's parent is editable ...
+        // that EditContext can't become the active EditContext". Likewise,
+        // contenteditable on a child of an editable region is a no-op (its
+        // editability is inherited and the outer region receives the events),
+        // matching Chromium: the nested attribute never creates a new editing
+        // host.
+        !self.parent_is_editable_or_editing_host()
+    }
+
+    /// Whether this element's parent is part of an editable region (either an
+    /// editing host itself or an editable node inside one).
+    fn parent_is_editable_or_editing_host(&self) -> bool {
+        self.upcast::<Node>()
+            .GetParentNode()
+            .is_some_and(|parent| parent.is_editable_or_editing_host())
     }
 
     pub(crate) fn previously_focused_element(&self, no_gc: &NoGC) -> Option<DomRoot<Element>> {

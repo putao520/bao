@@ -1500,6 +1500,21 @@ impl ScriptThread {
         })
     }
 
+    /// Whether `node_id` is registered in *any* pipeline's node-id registry.
+    /// Node references are UUIDs minted by the pipeline that first exposed
+    /// the node; an element adopted into a descendant browsing context keeps
+    /// its reference, so lookups from another pipeline must still recognize
+    /// it (Bao fork, REQ-BRW-050 P1 iframe migration).
+    pub(crate) fn has_node_id_in_any_pipeline(node_id: &str) -> bool {
+        with_script_thread(|script_thread| {
+            script_thread
+                .pipeline_to_node_ids
+                .borrow()
+                .values()
+                .any(|node_ids| node_ids.contains(node_id))
+        })
+    }
+
     pub(crate) fn save_node_id(pipeline: PipelineId, node_id: String) {
         with_script_thread(|script_thread| {
             script_thread

@@ -33,8 +33,10 @@ use crate::dom::event::inputevent::InputEvent;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::geometry::domrect::DOMRect;
+use crate::dom::html::htmlcanvaselement::HTMLCanvasElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::staticrange::StaticRange;
 use crate::dom::textupdateevent::TextUpdateEvent;
 use crate::dom::types::Window;
 
@@ -45,6 +47,20 @@ pub(crate) struct EditContextRectData {
     y: f64,
     width: f64,
     height: f64,
+}
+
+/// Which character a bidi caret position is associated with, determining its
+/// visual slot when the two neighbours of a logical caret offset resolve to
+/// different visual positions (<https://drafts.csswg.org/css-writing-modes-4/#caret>,
+/// "Before" = associated with the character before the offset, "After" = with
+/// the character after it). `Default` lets the caret-motion algorithm resolve
+/// the slot from the bidi levels alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, JSTraceable, MallocSizeOf)]
+pub(crate) enum EditContextCaretAssociation {
+    #[default]
+    Default,
+    Before,
+    After,
 }
 
 impl EditContextRectData {
@@ -81,6 +97,11 @@ pub(crate) struct EditContext {
     /// The single element this EditContext is associated with via
     /// `HTMLElement.editContext`, if any.
     associated_element: MutNullableDom<HTMLElement>,
+    /// Which side of a bidi boundary the caret is visually attached to,
+    /// consumed by caret motion over the author's DOM selection mirror
+    /// (Bao fork, REQ-BRW-050 P1). Updated by user-agent text updates and
+    /// reset by author calls to `updateSelection()`.
+    caret_association: Cell<EditContextCaretAssociation>,
 }
 
 impl EditContext {
@@ -95,6 +116,7 @@ impl EditContext {
             control_bounds: DomRefCell::new(EditContextRectData::default()),
             selection_bounds: DomRefCell::new(EditContextRectData::default()),
             associated_element: MutNullableDom::default(),
+            caret_association: Cell::new(EditContextCaretAssociation::Default),
         }
     }
 
@@ -183,6 +205,11 @@ impl EditContext {
 
     /// Apply the state change and fire a trusted `textupdate` event at this
     /// EditContext, <https://w3c.github.io/edit-context/#update-the-text-edit-context>.
+    /// `caret_association` records which side of a bidi boundary the caret is
+    /// attached to following the edit ("before" for insertions and backwards
+    /// deletions, "after" for forwards deletions — the Chromium caret
+    /// association contract exercised by
+    /// `edit-context/edit-context-bidi-caret-association.tentative.html`).
     fn apply_update_and_fire_textupdate(
         &self,
         cx: &mut JSContext,
@@ -191,10 +218,12 @@ impl EditContext {
         new_text: &str,
         selection_start: u32,
         selection_end: u32,
+        caret_association: EditContextCaretAssociation,
     ) {
         self.replace_text_range(range_start, range_end, new_text);
         self.selection_start.set(selection_start);
         self.selection_end.set(selection_end);
+        self.caret_association.set(caret_association);
 
         let global = self.global();
         let window = global.as_window();
@@ -244,7 +273,13 @@ impl EditContext {
             _ => "deleteContentForward",
         };
 
-        if fire_beforeinput_on_element(cx, element, data, input_type) {
+        // The target ranges of the `beforeinput`: a single StaticRange
+        // covering the EditContext's selection for insertions; none for
+        // deletions and none inside `<canvas>`, where no DOM selection can
+        // exist (Chromium parity).
+        let target_ranges = self.target_ranges_for_insert(cx, element, action);
+
+        if fire_beforeinput_on_element(cx, element, data, input_type, target_ranges) {
             // Canceled: the EditContext still consumed the key.
             return true;
         }
@@ -261,7 +296,15 @@ impl EditContext {
         match action {
             EditingAction::InsertText(text) => {
                 let caret = range_start.saturating_add(text.encode_utf16().count() as u32);
-                self.apply_update_and_fire_textupdate(cx, range_start, range_end, text, caret, caret);
+                self.apply_update_and_fire_textupdate(
+                    cx,
+                    range_start,
+                    range_end,
+                    text,
+                    caret,
+                    caret,
+                    EditContextCaretAssociation::Before,
+                );
             },
             EditingAction::Backspace(_) if range_start == range_end => {
                 // Collapsed: delete the previous UTF-16 code point.
@@ -276,6 +319,7 @@ impl EditContext {
                     "",
                     delete_start,
                     delete_start,
+                    EditContextCaretAssociation::Before,
                 );
             },
             EditingAction::Backspace(_) => {
@@ -286,6 +330,7 @@ impl EditContext {
                     "",
                     range_start,
                     range_start,
+                    EditContextCaretAssociation::Before,
                 );
             },
             EditingAction::Delete if range_start == range_end => {
@@ -301,6 +346,7 @@ impl EditContext {
                     "",
                     range_start,
                     range_start,
+                    EditContextCaretAssociation::After,
                 );
             },
             EditingAction::Delete => {
@@ -311,11 +357,85 @@ impl EditContext {
                     "",
                     range_start,
                     range_start,
+                    EditContextCaretAssociation::After,
                 );
             },
             _ => unreachable!("Non-text actions returned early above"),
         }
         true
+    }
+
+    /// The target ranges a `beforeinput` for `action` at `element` carries:
+    /// one collapsed-over-the-selection StaticRange rooted at `element` for
+    /// `insertText`, none otherwise and never for `<canvas>` hosts.
+    fn target_ranges_for_insert(
+        &self,
+        cx: &mut JSContext,
+        element: &HTMLElement,
+        action: &EditingAction,
+    ) -> Vec<DomRoot<StaticRange>> {
+        if !matches!(action, EditingAction::InsertText(..)) ||
+            element.upcast::<Node>().is::<HTMLCanvasElement>()
+        {
+            return Vec::new();
+        }
+        let text_length = self.text_length_utf16();
+        let selection_start = self.selection_start.get().min(text_length);
+        let selection_end = self.selection_end.get().min(text_length);
+        let node = element.upcast::<Node>();
+        vec![StaticRange::new(
+            cx,
+            &element.owner_document(),
+            node,
+            selection_start.min(selection_end),
+            node,
+            selection_start.max(selection_end),
+        )]
+    }
+
+    /// Which character the caret is visually attached to at a bidi boundary,
+    /// for caret motion over the DOM selection inside an EditContext host.
+    pub(crate) fn caret_association(&self) -> EditContextCaretAssociation {
+        self.caret_association.get()
+    }
+
+    /// Set the caret association (used by caret motion when it lands on a
+    /// bidi boundary).
+    pub(crate) fn set_caret_association(&self, association: EditContextCaretAssociation) {
+        self.caret_association.set(association);
+    }
+
+    /// Handle a trusted paste of `text` into this EditContext after the
+    /// `paste` ClipboardEvent was dispatched (and not canceled): fire a
+    /// cancelable `beforeinput` (`insertFromPaste`) at `element`, then update
+    /// the EditContext text and fire `textupdate`. The DOM is never mutated.
+    /// Returns `true` iff the `beforeinput` was canceled.
+    pub(crate) fn handle_paste(&self, cx: &mut JSContext, element: &HTMLElement, text: &str) -> bool {
+        if fire_beforeinput_on_element(
+            cx,
+            element,
+            Some(text),
+            "insertFromPaste",
+            Vec::new(),
+        ) {
+            return true;
+        }
+        let text_length = self.text_length_utf16();
+        let selection_start = self.selection_start.get().min(text_length);
+        let selection_end = self.selection_end.get().min(text_length);
+        let range_start = selection_start.min(selection_end);
+        let range_end = selection_start.max(selection_end);
+        let caret = range_start.saturating_add(text.encode_utf16().count() as u32);
+        self.apply_update_and_fire_textupdate(
+            cx,
+            range_start,
+            range_end,
+            text,
+            caret,
+            caret,
+            EditContextCaretAssociation::Before,
+        );
+        false
     }
 }
 
@@ -347,13 +467,16 @@ fn next_utf16_code_point(text: &DOMString, index: u32) -> u32 {
 }
 
 /// Fire a cancelable `beforeinput` on `element` mirroring the text-control
-/// firing path. Returns `true` iff the event was canceled or the element was
-/// hidden by a listener.
+/// firing path. `target_ranges` are exposed through
+/// `InputEvent.getTargetRanges()` (EditContext insertions carry the
+/// selection range). Returns `true` iff the event was canceled or the element
+/// was hidden by a listener.
 pub(crate) fn fire_beforeinput_on_element(
     cx: &mut JSContext,
     element: &HTMLElement,
     data: Option<&str>,
     input_type: &str,
+    target_ranges: Vec<DomRoot<StaticRange>>,
 ) -> bool {
     let target = element.upcast::<EventTarget>();
     let window = element.owner_window();
@@ -370,6 +493,7 @@ pub(crate) fn fire_beforeinput_on_element(
         false,
         DOMString::from(input_type),
     );
+    event.set_target_ranges(target_ranges);
     let event = event.upcast::<Event>();
     event.set_composed(true);
     event.set_trusted(true);
@@ -428,6 +552,11 @@ impl EditContextMethods<crate::DomTypeHolder> for EditContext {
     fn UpdateSelection(&self, start: u32, end: u32) {
         self.selection_start.set(start);
         self.selection_end.set(end);
+        // An author-driven selection change invalidates the caret association
+        // recorded by the last user-agent edit: when the textupdate handler
+        // reverts an edit and resets the selection, the caret association must
+        // not change (bidi caret association contract).
+        self.caret_association.set(EditContextCaretAssociation::Default);
     }
 
     /// <https://w3c.github.io/edit-context/#dom-editcontext-updatecontrolbounds>
