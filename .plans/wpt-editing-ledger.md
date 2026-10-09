@@ -144,3 +144,22 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **判别回归**(fix vs baseline 同批对照):exec-command-with-text-editor 356 fail-side 与 plaintext-only 40+16+8 unexpected 在**基线二进制计数恒等**=scratch 环境既有红面(e154 登记残面),零本波回归;edit-context paste 家族+edit-context-input 零 unexpected;suite 真执行(xvfb-run,16.71s)editing_e2e 4/4+editcontext c1-c5 5/5;xvfb 假绿陷阱实录:无 DISPLAY=should_skip 静默 ok(0.00s),BAO_TEST_NETWORK 单独设仍假绿,必须 xvfb-run。
 
 **邻接观察(未触碰,候选后续)**:①contenteditable insertFromPaste 的 data 应为 null(规范表格;现为 Some(text))——plaintext-only beforeinput 40+8 格正卡此断言,是独立登记面;②clipboard text/html 格式周流缺(GetClipboardText 仅 text/plain);③InputEventInit.dataTransfer 构造器字典成员被忽略(脚本构造事件恒 null)。
+
+### e160(insertFromPaste data=null 清偿,e159 邻接观察①,2026-10-10 03:xx)
+
+**spec 矩阵核验**(w3c.github.io/input-events 权威表,editor's draft):data/dataTransfer 按 **host 类型×inputType** 双维——contenteditable host 的剪贴板 inputType(insertFromPaste/insertFromDrop/insertTranspose/insertReplacementText/insertFromYank)=data **null**+dataTransfer 预填充(ReadOnly,text/html+text/plain+text/uri-list);`<input>`/`<textarea>` 行=data=插入文本+dataTransfer **null**。WPT 双测一致钉死:plaintext-only 两文件断 contenteditable `data===null`;data_transfer_on_input_event(textarea 分支)断 `data==="copyMe"`。任务头「data 分支按 inputType 分派」的精确形态=按 host 分派(text-control 面保持 Some 是 WPT 钉死的合法形态,非遗漏)。
+
+**修复面**(vendor 2 文件 3 站点,全部是 contenteditable/EditContext host 侧;text-control fire_paste_beforeinput_event/fire_paste_events 与 execCommand 路径[后者本就 None]零触碰):
+- `editcontext.rs` handle_paste:beforeinput data Some(text)→None
+- `document/editing.rs` contenteditable paste beforeinput:Some(text)→None
+- `document/editing.rs` contenteditable 尾部 input:Some(DOMString)→None
+
+**RED→POST 实测**(test-ci 二进制,wptrunner 官方 oracle,/var/tmp/e160-probe):
+- RED(HEAD=46ccbaac):paste.https 28 beforeinput+nested 4 beforeinput 全 FAIL 于 `assert_equals: data should be null expected null but got "abc"`——台账归因实证
+- POST:断言迁至 `assert_true: dataTransfer should have the copied HTML source`(邻接观察② text/html 周流缺成为这些格的**新首卡点**);data=null 修复生效
+- **ini 翻转**:paste.https.html.ini 56 条→40 条(wptmanifest AST 通道,双 run[post-fix+regression]一致 PASS 的 16 条单行 pasted-result 格删除,40 条仍 FAIL 保持;round-trip 验证+keep/drop 集合断言);nested ini 零变化(8 格仍 FAIL:4 beforeinput 于 text/html+4 innerHTML 于嵌套粘贴语义)
+- 「40+8 大面积翻正」的实测边界:beforeinput 格修复后仍红于邻接②(clipboard 管线 SetClipboardText/GetClipboardText 纯 text 单格式,text/html 从不到达 dataTransfer)——独立登记面,非本波范围
+
+**回归**(全绿):editing 五域全锁 680 文件(other 508/run 120/edit-context 13/plaintext-only 38/event.html)0 文件级意外,49 subtest 意外**全部为 unexpected PASS**(正向:e154 登记 edit-context 16+styled-inline 1+nested-styling 16+paste.https 16),零意外红;e159 dataTransfer 面 OK/subtest PASS 保持;exec-command-with-text-editor 0 意外;suite 真执行(BAO_TEST_NETWORK=1+xvfb+--nocapture 状态行全真)editing_e2e 4/4+editcontext c1-c5 5/5(11.67s);cargo check -p bao-servo-script RC=0 触碰文件零警告;suite 0.00s 假绿陷阱复现实录:BAO_TEST_NETWORK 未设→should_skip 早退,必须 env+xvfb+--nocapture 三件套验真。
+
+**残留登记(未触碰)**:邻接②(text/html 周流)现为 plaintext-only beforeinput 32 格(28+4)首卡点;clipboard 时序 flake 实录(RED run 3 格 pre-wrap 单行格 stale-clipboard got "AabcdefB",POST+regression 两轮 16/16 全 PASS——flake 率约 1/3 run,独立 embedder clipboard 时序面);typed contenteditable input data=null 系 execCommand 形(上游对齐问题,非本波面)。

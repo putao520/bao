@@ -416,10 +416,14 @@ impl EditContext {
         // (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
         let data_transfer =
             DataTransfer::new_readonly_clipboard_text(cx, &element.owner_window(), text);
+        // `data` is null for clipboard inputTypes at an editing host: the
+        // payload travels through `dataTransfer` instead
+        // (<https://w3c.github.io/input-events/#interface-InputEvent-Attributes>
+        // — text controls keep `data`, editing hosts do not).
         if fire_beforeinput_on_element(
             cx,
             element,
-            Some(text),
+            None,
             "insertFromPaste",
             Some(&data_transfer),
             Vec::new(),

@@ -335,10 +335,14 @@ impl Document {
         // The prepopulated clipboard payload of the `beforeinput`
         // (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
         let data_transfer = DataTransfer::new_readonly_clipboard_text(cx, &self.window(), text);
+        // `data` is null for clipboard inputTypes at a contenteditable host:
+        // the payload travels through `dataTransfer` instead
+        // (<https://w3c.github.io/input-events/#interface-InputEvent-Attributes>
+        // — text controls keep `data`, editing hosts do not).
         if fire_beforeinput_on_element(
             cx,
             focused_html,
-            Some(text),
+            None,
             "insertFromPaste",
             Some(&data_transfer),
             Vec::new(),
@@ -365,7 +369,9 @@ impl Document {
         }
 
         // Fire the trailing `input` (insertFromPaste) at the focused editor,
-        // carrying its own clipboard payload.
+        // carrying its own clipboard payload. `data` is null here for the
+        // same reason as on the `beforeinput`: the payload travels through
+        // `dataTransfer` at a contenteditable host.
         let input_event = InputEvent::new(
             cx,
             &self.window(),
@@ -375,7 +381,7 @@ impl Document {
             false,
             Some(&self.window()),
             0,
-            Some(DOMString::from(text)),
+            None,
             false,
             DOMString::from_static("insertFromPaste"),
         );
