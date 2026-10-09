@@ -90,7 +90,6 @@ pub mod initialize;
 pub mod ipc;
 pub mod js_object;
 pub mod module_loader;
-pub mod node_path;
 pub mod rare_data;
 pub mod regular_expression;
 pub mod resolved_source;
