@@ -760,4 +760,21 @@ mod tests {
         assert_eq!(stats.active, 0);
         assert_eq!(stats.idle, stats.total_created);
     }
+
+    // ─── PoolStats ─────────────────────────────────────────────────
+    // @trace REQ-LIB-001 [req:REQ-LIB-001] [level:unit]
+
+    #[test]
+    fn test_pool_stats_fields() {
+        let stats = crate::page_pool::PoolStats {
+            active: 3,
+            idle: 1,
+            total_created: 5,
+            total_destroyed: 2,
+        };
+        assert_eq!(stats.active, 3);
+        assert_eq!(stats.idle, 1);
+        assert_eq!(stats.total_created, 5);
+        assert_eq!(stats.total_destroyed, 2);
+    }
 }
