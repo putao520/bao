@@ -14,12 +14,12 @@
 // 4. stop() is clean and idempotent, and drops the liveness token.
 
 use bao_engine::context::JsContext;
-use std::cell::Cell;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 #[path = "common/mod.rs"]
 mod common;
+use common::bounded_drain_hook;
 
 use common::eval_str;
 
@@ -34,36 +34,10 @@ fn pump(ctx: &mut JsContext, passes: usize) {
     }
 }
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — the production CLI pump path (timer
-/// callbacks dispatch with the realm entered; a bare-Rust pump silently
-/// drops them — see net_echo_e2e_tests).
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    for _ in 0..60 {
-        HOOK_BUDGET.with(|b| b.set(budget));
-        if eval_str(ctx, js_condition) == "y" {
-            return true;
-        }
-    }
-    false
+    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
 }
 
 /// Full Bun.listen TCP lifecycle: real port, idle accept of a real inbound

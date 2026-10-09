@@ -8,30 +8,14 @@
 // same pattern as child_process_spawn_events_tests.rs.
 
 use bao_engine::context::JsContext;
-use std::cell::Cell;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 #[path = "common/mod.rs"]
 mod common;
+use common::HOOK_BUDGET;
+use common::bounded_drain_hook;
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn eval_str(ctx: &mut JsContext, source: &str) -> String {
     common::eval_str_int_named(ctx, source, "<wave-a>")
@@ -42,13 +26,7 @@ fn eval_ok(ctx: &mut JsContext, source: &str) -> bool {
 }
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    for _ in 0..120 {
-        HOOK_BUDGET.with(|b| b.set(budget));
-        if eval_str(ctx, js_condition) == "y" {
-            return true;
-        }
-    }
-    false
+    common::wait_until_with(ctx, js_condition, budget, 120, eval_str)
 }
 
 /// One event-loop tick: each ctx.eval triggers the post-eval drain hook,

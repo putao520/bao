@@ -15,20 +15,13 @@
 //   3. Negative-spread i32 values (INT32_MIN..INT32_MAX) — signed LE reads,
 //      tristate comparator (no x-y overflow).
 
-use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::setup_ctx;
+
 use common::eval_string_full as eval_string;
 
-
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx
-}
 
 /// qsort over a JS Buffer: view ptr base + js_function comparator slot, the
 /// comparator reading element memory through toBuffer. The sort must run for

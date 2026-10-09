@@ -12,13 +12,14 @@
 //     keeps running (exit untouched, later socket events still dispatch)
 
 use bao_engine::context::JsContext;
-use std::cell::Cell;
 use std::io::Write;
 use std::net::TcpStream;
 use std::net::UdpSocket;
 use std::time::Duration;
 #[path = "common/mod.rs"]
 mod common;
+use common::HOOK_BUDGET;
+use common::bounded_drain_hook;
 
 use common::eval_str;
 
@@ -45,29 +46,7 @@ fn pump(ctx: &mut JsContext, passes: usize) {
     }
 }
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — the production CLI pump shape. The UDP
-/// dispatch path (udp_on_data payload allocation + invoke_js_callback) runs
-/// with the realm entered by the eval's AutoRealm; a bare-Rust pump leaves
-/// no realm current and SIGSEGVs the allocation (same class the listen
-/// tests root in net_echo_e2e_tests).
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 /// Bun.listen TCP server on an ephemeral port whose data handler throws.
 /// Returns the bound port.

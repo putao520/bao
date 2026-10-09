@@ -5,30 +5,17 @@
 // The old implementation returned the path STRING synchronously (callers
 // doing .then got a function-less string) and threw synchronously on failure.
 
-use std::time::Duration;
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::drive_event_loop;
+
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     common::eval_string_dbg_named(ctx, source, "<sqlite-backup>")
 }
 
-/// Drive the JS thread's MiniEventLoop so already-settled promise .then jobs
-/// run (RunJobs flushes the microtask queue; fetch e2e pattern).
-fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
-    let cx_raw = ctx.raw_cx();
-    for _ in 0..max_iters {
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        bun_runtime::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
 
 fn escape_path(p: &str) -> String {
     p.replace('\\', "\\\\").replace('"', "\\\"")

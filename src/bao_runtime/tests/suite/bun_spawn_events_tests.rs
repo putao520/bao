@@ -18,33 +18,16 @@
 //   * `exited` is a Promise<number> that never blocks the JS thread.
 
 use bao_engine::context::JsContext;
-use std::cell::Cell;
 #[path = "common/mod.rs"]
 mod common;
+
+use common::setup_ctx_bounded as setup_ctx;
+use common::HOOK_BUDGET;
 
 use common::eval_str;
 
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — the production CLI pump path (see
-/// net_echo_e2e_tests for why a bare-Rust pump silently drops timers).
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
     // Deadline-driven (not iteration-driven): with the binary's tests
@@ -62,14 +45,6 @@ fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
     false
 }
 
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx.set_post_eval_hook(bounded_drain_hook);
-    ctx
-}
 
 #[test]
 fn bun_spawn_event_surface_lifecycle() {

@@ -26,26 +26,14 @@ use bao_engine::value::JsValue;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::drive_event_loop;
+
 fn make_ctx() -> JsContext {
     let mut ctx = JsContext::for_test().expect("JsContext::for_test");
     ctx.set_global_setup(bun_runtime::globals::install_all);
     ctx
 }
 
-/// Drive the JS thread's MiniEventLoop for a few iterations (ConcurrentTask
-/// dispatch), yielding between iterations.
-fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
-    let cx_raw = ctx.raw_cx();
-    for _ in 0..max_iters {
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        bun_runtime::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
 
 /// Deadline-based pump: keep driving the JS thread's MiniEventLoop until
 /// `cond` (checked once per round) holds, or `timeout` wall-clock elapses.

@@ -23,16 +23,10 @@ use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::setup_ctx;
+
 use common::eval_string_full as eval_string;
 
-
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx
-}
 
 /// Production-shaped pump: keep calling `timers::drain_and_check` while the
 /// loop reports liveness (this is the eval loop's keep-alive contract). Once

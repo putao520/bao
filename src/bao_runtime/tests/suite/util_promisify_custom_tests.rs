@@ -21,16 +21,10 @@ use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::setup_ctx;
+
 use common::eval_string_full as eval_string;
 
-
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx
-}
 
 /// Production-shaped pump (fs_async_callback_tests precedent) — the dns
 /// lookup promise resolves synchronously underneath, but its `.then`

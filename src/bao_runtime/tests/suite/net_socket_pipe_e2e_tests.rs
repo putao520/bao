@@ -15,43 +15,19 @@
 //      poll chain is halted, no byte loss across the pause window.
 
 use bao_engine::context::JsContext;
-use std::cell::Cell;
 #[path = "common/mod.rs"]
 mod common;
+
+use common::setup_ctx_bounded as setup_ctx;
+use common::HOOK_BUDGET;
 
 use common::eval_str;
 
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — the production pump path (same as
-/// net_echo_e2e_tests): the tail loop must run inside the AutoRealm so
-/// timer callbacks dispatch with the realm entered.
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    for _ in 0..60 {
-        HOOK_BUDGET.with(|b| b.set(budget));
-        if eval_str(ctx, js_condition) == "y" {
-            return true;
-        }
-    }
-    false
+    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
 }
 
 fn settle(ctx: &mut JsContext, budget: usize) {
@@ -59,14 +35,6 @@ fn settle(ctx: &mut JsContext, budget: usize) {
     let _ = eval_str(ctx, "'settle'");
 }
 
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx.set_post_eval_hook(bounded_drain_hook);
-    ctx
-}
 
 /// Both pipe directions over one TCP connection: the CLIENT socket is the
 /// pipe DESTINATION (fs.createReadStream.pipe(client)) and the SERVER

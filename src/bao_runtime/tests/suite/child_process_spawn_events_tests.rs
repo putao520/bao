@@ -11,43 +11,17 @@
 // Native FFI untouched.
 
 use bao_engine::context::JsContext;
-use std::cell::Cell;
 #[path = "common/mod.rs"]
 mod common;
+use common::bounded_drain_hook;
 
 use common::eval_str;
 
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook (the production CLI pump path — see
-/// net_echo_e2e_tests for why a bare-Rust pump silently drops timer
-/// callbacks): the ChildProcess poll chain is setTimeout-driven.
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    for _ in 0..60 {
-        HOOK_BUDGET.with(|b| b.set(budget));
-        if eval_str(ctx, js_condition) == "y" {
-            return true;
-        }
-    }
-    false
+    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
 }
 
 /// Full event lifecycle: real /bin/sh child, stdout 'data' bytes, 'exit'

@@ -18,46 +18,18 @@
 // net_echo_e2e_tests); the echo roundtrip's timers/polls all fire through it.
 
 use bao_engine::context::JsContext;
-use std::cell::Cell;
 #[path = "common/mod.rs"]
 mod common;
+use common::bounded_drain_hook;
 
 fn eval_str(ctx: &mut JsContext, code: &str) -> String {
     common::eval_str_named(ctx, code, "<net-options-e2e>")
 }
 
-thread_local! {
-    /// Iteration budget for `bounded_drain_hook` (fn-pointer hooks cannot
-    /// capture state; tests run single-threaded per context).
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — the PRODUCTION pump path (the CLI installs
-/// `post_eval_drain_then_exit` the same way). See net_echo_e2e_tests.rs for
-/// why driving through the entered realm is load-bearing.
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, budget: usize) -> bool {
-    for _ in 0..60 {
-        HOOK_BUDGET.with(|b| b.set(budget));
-        if eval_str(ctx, js_condition) == "y" {
-            return true;
-        }
-    }
-    false
+    common::wait_until_with(ctx, js_condition, budget, 60, eval_str)
 }
 
 fn make_ctx() -> JsContext {

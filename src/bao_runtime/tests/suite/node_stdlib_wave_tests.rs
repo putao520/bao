@@ -9,7 +9,11 @@
 
 use bao_engine::context::JsContext;
 use common::{make_ctx, CHECK_SCAFFOLD};
+#[path = "common/mod.rs"]
+mod test_common;
 
+use test_common::HOOK_BUDGET;
+use test_common::bounded_drain_hook;
 /// run_checks with a false-green guard: a top-level JS throw makes
 /// eval_string return "" which plain run_checks accepts as "no failures"
 /// (that is exactly how the EINVAL truncate bug first slipped through —
@@ -280,24 +284,7 @@ fn events_error_emit_semantics() {
 // production pump): an uncaught throw from a setTimeout callback is routed
 // through route_uncaught_exception by the timer dispatcher, so a registered
 // process.on('uncaughtException') observes it. Same wire as the CLI.
-thread_local! {
-    static HOOK_BUDGET: ::std::cell::Cell<usize> = const { ::std::cell::Cell::new(0) };
-}
 
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 #[test]
 fn events_error_routes_to_uncaught_handler() {

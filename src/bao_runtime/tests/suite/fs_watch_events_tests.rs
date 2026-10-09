@@ -7,36 +7,19 @@
 // production pump path (post_eval_hook → timers::drain_and_check →
 // node_fs::fs_watch_pump_all), with real file writes in tempdirs.
 
-use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::setup_ctx_bounded as setup_ctx;
+use common::HOOK_BUDGET;
+
 use common::eval_string_dbg as eval_string;
 
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — the production pump path (timers +
-/// fs.watch events ride the same drain_and_check tick).
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 /// Pump the loop until `js_condition` yields 'y' or the deadline passes.
 fn wait_until(ctx: &mut JsContext, js_condition: &str, per_eval_budget: usize) -> bool {
@@ -51,14 +34,6 @@ fn wait_until(ctx: &mut JsContext, js_condition: &str, per_eval_budget: usize) -
     false
 }
 
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx.set_post_eval_hook(bounded_drain_hook);
-    ctx
-}
 
 fn js_escape(p: &std::path::Path) -> String {
     p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")

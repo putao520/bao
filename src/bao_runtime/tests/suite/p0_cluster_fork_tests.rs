@@ -14,36 +14,18 @@
 // path (a bare Rust tick pump silently drops JS timer callbacks — see
 // net_echo_e2e_tests).
 
-use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
+use common::HOOK_BUDGET;
+use common::bounded_drain_hook;
 
 use common::eval_string_dbg as eval_string;
 
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — the production CLI pump path (the cluster
-/// event pump is a 10ms setInterval driven by drain_and_check).
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 /// Pump the event loop via repeated (post-eval-hook driven) evals until
 /// `js_condition` yields 'y', the wall-clock deadline passes, or the eval

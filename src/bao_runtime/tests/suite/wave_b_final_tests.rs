@@ -21,6 +21,8 @@ use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::setup_ctx;
+
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     common::eval_string_full_named(ctx, source, "<wave-b>")
 }
@@ -33,13 +35,6 @@ fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
     }
 }
 
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // Item 1 — punycode: RFC 3492 真算法(ground truth 与 npm/Node 内置一致)

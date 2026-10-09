@@ -13,20 +13,13 @@
 //     per node_stream.rs Writable.end), and ServerResponse.destroy must
 //     emit 'close' at all (it previously never did).
 
-use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::setup_ctx;
+
 use common::eval_string_full as eval_string;
 
-
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx
-}
 
 fn js_escape(p: &std::path::Path) -> String {
     p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")

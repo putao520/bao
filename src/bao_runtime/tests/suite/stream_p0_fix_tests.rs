@@ -19,13 +19,13 @@
 // No HTTPThread is ever scheduled (data: URLs are short-circuited locally),
 // so no shutdown_for_exit/process::exit dance is needed.
 
-use std::time::Duration;
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
-use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
+
+use common::drive_event_loop_drain as drive_event_loop;
 
 use common::eval_string_full as eval_string;
 
@@ -37,33 +37,6 @@ fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
     }
 }
 
-/// Drive timers (realm-entered drain_and_check), the MiniEventLoop and
-/// microtasks (js::RunJobs) so promise/timer-based assertions settle.
-/// Mirrors the two-part pump in fetch_abort_e2e_tests / fetch_e2e_tests.
-fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
-    let cx_raw = ctx.raw_cx();
-    for _ in 0..max_iters {
-        {
-            let mut cxm = ctx.cx();
-            let global = bao_engine::context::thread_realm_global();
-            if let Some(g) = global {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                bun_runtime::timers::drain_and_check(realm_cx);
-            } else {
-                bun_runtime::timers::drain_and_check(&mut cxm);
-            }
-        }
-        bun_runtime::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
 
 #[test]
 fn test_stream_p0_fixes() {

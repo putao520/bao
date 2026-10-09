@@ -14,34 +14,18 @@
 // pins); the primary stays alive while workers run and exits cleanly once
 // they exit. These tests fork REAL bao child processes.
 
-use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
+use common::HOOK_BUDGET;
+use common::bounded_drain_hook;
 
 use common::eval_string_dbg as eval_string;
 
 
-thread_local! {
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn wait_until(ctx: &mut JsContext, js_condition: &str, per_eval_budget: usize) -> bool {
     let deadline = Instant::now() + Duration::from_secs(30);

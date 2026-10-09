@@ -6,7 +6,6 @@ use bao_engine::value::JsValue;
 #[path = "common/mod.rs"]
 mod common;
 
-use common::eval_number;
 use common::eval_string_full as eval_string;
 
 

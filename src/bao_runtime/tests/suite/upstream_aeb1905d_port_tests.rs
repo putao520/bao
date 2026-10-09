@@ -22,36 +22,15 @@
 // p0_refused_net_close_tests); server lifecycle assertions depend on
 // pump-delivered events.
 
-use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
+use common::HOOK_BUDGET;
+use common::bounded_drain_hook;
 
-thread_local! {
-    /// Iteration budget for `bounded_drain_hook` (fn-pointer hooks cannot
-    /// capture state; tests run single-threaded per context).
-    static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
-}
 
-/// Bounded post-eval drain hook — drives `drain_and_check` (timers, loop
-/// tick, ConcurrentTask drain) inside the eval's AutoRealm, `budget` times
-/// per eval call.
-fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
-    let exhausted = HOOK_BUDGET.with(|b| {
-        let n = b.get();
-        if n == 0 {
-            return true;
-        }
-        b.set(n - 1);
-        false
-    });
-    if exhausted {
-        return false;
-    }
-    bun_runtime::timers::drain_and_check(cx)
-}
 
 fn eval_str(ctx: &mut JsContext, code: &str) -> String {
     common::eval_str_named(ctx, code, "<upstream-aeb1905d-port>")

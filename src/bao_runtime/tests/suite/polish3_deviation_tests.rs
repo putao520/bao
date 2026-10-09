@@ -11,53 +11,18 @@
 //   C. bun:sqlite backup 返回目标路径字符串(终审 probe 同款钉死;
 //      与 wave_b_final_tests item 5 互补,防报告层再漏)。
 
-use std::time::Duration;
 
 use bao_engine::context::JsContext;
-use mozjs::rooted;
 #[path = "common/mod.rs"]
 mod common;
+
+use common::setup_ctx;
+use common::drive_event_loop_drain as drive_event_loop;
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     common::eval_string_full_named(ctx, source, "<polish3>")
 }
 
-/// Microtask + timer + event-loop pump (stream_p0_fix_tests pattern verbatim):
-/// the Readable flow start, async generators and promise callbacks all settle
-/// through the job queue, so a realm-entered drain_and_check + tick + RunJobs
-/// per iteration is required.
-fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
-    let cx_raw = ctx.raw_cx();
-    for _ in 0..max_iters {
-        {
-            let mut cxm = ctx.cx();
-            let global = bao_engine::context::thread_realm_global();
-            if let Some(g) = global {
-                rooted!(&in(cxm) let g_root = g);
-                let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cxm, g_root.handle());
-                let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-                bun_runtime::timers::drain_and_check(realm_cx);
-            } else {
-                bun_runtime::timers::drain_and_check(&mut cxm);
-            }
-        }
-        bun_runtime::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
-fn setup_ctx() -> JsContext {
-    bun_runtime::install_exit_handler();
-    bun_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bun_runtime::globals::install_all);
-    ctx
-}
 
 fn js_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")

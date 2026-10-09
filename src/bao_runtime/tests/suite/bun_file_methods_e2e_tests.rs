@@ -8,30 +8,17 @@
 //
 // Single #[test] body (mozjs thread-singleton rule, same as bun_api_tests).
 
-use std::time::Duration;
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
+use common::drive_event_loop;
+
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     common::eval_string_full_named(ctx, source, "<bunfile>")
 }
 
-/// Drive the JS thread's MiniEventLoop so already-settled promise .then jobs
-/// run (fetch e2e pattern — RunJobs flushes the microtask queue).
-fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
-    let cx_raw = ctx.raw_cx();
-    for _ in 0..max_iters {
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        bun_runtime::timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
 
 fn escape_path(p: &str) -> String {
     p.replace('\\', "\\\\").replace('"', "\\\"")

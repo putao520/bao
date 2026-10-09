@@ -18,9 +18,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bao_engine::context::JsContext;
-use bun_runtime::timers;
 #[path = "common/mod.rs"]
 mod common;
+
+use common::drive_event_loop;
 
 use common::eval_string_full as eval_string;
 
@@ -68,20 +69,6 @@ fn start_test_http_server(response_body: &'static [u8]) -> (u16, Arc<AtomicBool>
     (port, shutdown)
 }
 
-
-/// Drive the JS thread's MiniEventLoop for up to `max_iters` iterations.
-fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
-    let cx_raw = ctx.raw_cx();
-    for _ in 0..max_iters {
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // Phase 1: Synchronous http_request (no HTTPThread) — verifies TCP connect

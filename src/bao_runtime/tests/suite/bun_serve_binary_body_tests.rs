@@ -17,27 +17,14 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use bao_engine::context::JsContext;
-use bun_runtime::timers;
 #[path = "common/mod.rs"]
 mod common;
+
+use common::drive_event_loop;
 
 use common::eval_number;
 use common::eval_string_full as eval_string;
 
-
-/// Drive the JS thread's MiniEventLoop (fetch e2e pattern).
-fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {
-    let cx_raw = ctx.raw_cx();
-    for _ in 0..max_iters {
-        unsafe {
-            mozjs_sys::jsapi::js::RunJobs(cx_raw);
-        }
-        timers::with_event_loop(|loop_| {
-            loop_.tick_without_idle(std::ptr::null_mut());
-        });
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
 
 /// One raw HTTP/1.1 GET, pumping the JS-thread MiniEventLoop between read
 /// attempts (the uWS dispatch only runs when the loop ticks — a blocking

@@ -10,7 +10,6 @@ use bao_engine::value::JsValue;
 #[path = "common/mod.rs"]
 mod common;
 
-use common::eval_number;
 use common::eval_string;
 
 fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
