@@ -31,6 +31,7 @@ use bao_boringssl_bridge::{TlsServer, generate_self_signed_pem, pem_parse_certs}
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
+use common::capture_server::request_complete;
 
 /// One served connection: the ClientHello SNI name + the (lossy) HTTP/1.1
 /// request bytes decrypted off the wire ("" when the client aborted before
@@ -42,24 +43,6 @@ struct ConnRecord {
 }
 
 type Records = Arc<Mutex<Vec<ConnRecord>>>;
-
-/// True once `buf` holds a complete HTTP/1.1 request (header block and, when
-/// Content-Length is present, the full body) — same contract as
-/// fetch_init_e2e_tests.
-fn request_complete(buf: &[u8]) -> bool {
-    let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
-    let clen = head.lines().find_map(|l| {
-        l.strip_prefix("content-length:")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-    });
-    match clen {
-        Some(n) => buf.len() >= pos + 4 + n,
-        None => true,
-    }
-}
 
 /// Serve exactly one HTTPS connection: drive the memory-BIO TlsConnection
 /// over `stream`, capture SNI + request, answer with a fixed 200 and a clean

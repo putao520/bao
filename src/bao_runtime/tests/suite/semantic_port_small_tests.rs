@@ -36,6 +36,7 @@ use bao_boringssl_bridge::{TlsServer, generate_self_signed_pem};
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
+use common::capture_server::request_complete;
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     common::eval_string_full_named(ctx, source, "<semantic-port-small>")
@@ -291,23 +292,6 @@ fn zlib_one_shot_exact_size_output_locks() {
 
 /// One served connection: the (lossy) request head decrypted off the wire.
 type ConnRecords = Arc<Mutex<Vec<String>>>;
-
-/// True once `buf` holds a complete HTTP/1.1 request (same contract as
-/// fetch_tls_init_e2e_tests).
-fn request_complete(buf: &[u8]) -> bool {
-    let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
-    let clen = head.lines().find_map(|l| {
-        l.strip_prefix("content-length:")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-    });
-    match clen {
-        Some(n) => buf.len() >= pos + 4 + n,
-        None => true,
-    }
-}
 
 /// Serve exactly one HTTPS connection: handshake, read the request, answer
 /// a fixed 200 + close_notify, record the request head. One record = one

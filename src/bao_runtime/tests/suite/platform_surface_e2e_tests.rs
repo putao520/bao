@@ -67,7 +67,7 @@ fn start_oneshot_server(raw_response: &'static str) -> (u16, Arc<Mutex<Option<Ve
                     Ok(0) => break,
                     Ok(n) => {
                         buf.extend_from_slice(&chunk[..n]);
-                        if let Some(pos) = find_sub(&buf, b"\r\n\r\n") {
+                        if let Some(pos) = common::capture_server::find_sub(&buf, b"\r\n\r\n") {
                             // headers complete; body per Content-Length if any
                             let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
                             let clen = head.lines().find_map(|l| {
@@ -92,10 +92,6 @@ fn start_oneshot_server(raw_response: &'static str) -> (u16, Arc<Mutex<Option<Ve
         }
     });
     (port, captured)
-}
-
-fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 #[test]

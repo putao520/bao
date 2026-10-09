@@ -26,6 +26,8 @@
 
 #![allow(dead_code)]
 
+pub mod capture_server;
+
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
 

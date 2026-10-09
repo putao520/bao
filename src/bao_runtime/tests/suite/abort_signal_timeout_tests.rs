@@ -32,27 +32,7 @@ mod common;
 use common::eval_string_full as eval_string;
 
 type Captured = Arc<Mutex<Vec<String>>>;
-
-fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-/// True once `buf` holds a complete HTTP/1.1 request (full header block
-/// and, when Content-Length is present, the full body).
-fn request_complete(buf: &[u8]) -> bool {
-    let Some(pos) = find_sub(buf, b"\r\n\r\n") else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
-    let clen = head.lines().find_map(|l| {
-        l.strip_prefix("content-length:")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-    });
-    match clen {
-        Some(n) => buf.len() >= pos + 4 + n,
-        None => true,
-    }
-}
+use common::capture_server::request_complete;
 
 const SLOW_DELAY_MS: u64 = 800;
 
