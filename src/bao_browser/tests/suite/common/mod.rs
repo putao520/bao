@@ -2,6 +2,7 @@
 // Test helper utilities for deterministic wait conditions.
 // Replaces magic-number sleep polling with explicit timeout + predicate.
 
+pub mod client_hello;
 pub mod h2_server;
 
 use std::thread;
