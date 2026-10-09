@@ -440,7 +440,7 @@ fn build_http_server(
 
         let cx = ud.cx;
         if cx.is_null() {
-            eprintln!("[bun:listen] fetch handler registered but cx is null — responding 500");
+            log::error!("[bun:listen] fetch handler registered but cx is null — responding 500");
             (*res_mut).write_status(b"500 Internal Server Error");
             (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"no JS context", true);
@@ -455,7 +455,7 @@ fn build_http_server(
         let global = match bao_engine::context::thread_realm_global() {
             Some(g) if !g.is_null() => g,
             _ => {
-                eprintln!("[bun:listen] no JS realm on this thread — responding 500");
+                log::error!("[bun:listen] no JS realm on this thread — responding 500");
                 (*res_mut).write_status(b"500 Internal Server Error");
                 (*res_mut).write_header(b"Content-Type", b"text/plain");
                 (*res_mut).end(b"no JS realm", true);
@@ -475,7 +475,7 @@ fn build_http_server(
         let fetch_handler = match ud.fetch_handler() {
             Some(h) if !h.is_null() => h,
             _ => {
-                eprintln!("[bun:listen] fetch handler registered but unresolvable — responding 500");
+                log::error!("[bun:listen] fetch handler registered but unresolvable — responding 500");
                 (*res_mut).write_status(b"500 Internal Server Error");
                 (*res_mut).write_header(b"Content-Type", b"text/plain");
                 (*res_mut).end(b"fetch handler unavailable", true);

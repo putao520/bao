@@ -1591,7 +1591,7 @@ unsafe fn h2_res_collect_body(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8>
         } else if elem.is_object() {
             match crate::node_buffer::collect_byte_view(cx, elem) {
                 Some(bytes) => out.extend_from_slice(&bytes),
-                None => eprintln!("[node:http2] response body chunk {} was not extractable", i),
+                None => log::warn!("[node:http2] response body chunk {} was not extractable", i),
             }
         }
     }
@@ -1686,7 +1686,7 @@ unsafe extern "C" fn uws_h2_route_handler(
         _ => {
             // No realm on this thread → no JS server should exist here.
             // Explicit 500 (never a silent return → uWS std::terminate).
-            eprintln!("[node:http2] no JS realm on this thread — responding 500");
+            log::error!("[node:http2] no JS realm on this thread — responding 500");
             (*res_mut).write_status(b"500 Internal Server Error");
             (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"no JS realm", true);
@@ -1703,7 +1703,7 @@ unsafe extern "C" fn uws_h2_route_handler(
     // Now inside the realm: CurrentGlobalOrNull = persistent global, so the
     // GcStore lookups resolve the registered server global and stream handler.
     let Some(global) = ud.global() else {
-        eprintln!(
+        log::error!(
             "[node:http2] server global unavailable (key {}) — responding 500",
             ud.global_key
         );
@@ -1713,7 +1713,7 @@ unsafe extern "C" fn uws_h2_route_handler(
         return;
     };
     if global.is_null() {
-        eprintln!("[node:http2] server global null — responding 500");
+        log::error!("[node:http2] server global null — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
         (*res_mut).end(b"no server global", true);
@@ -1723,7 +1723,7 @@ unsafe extern "C" fn uws_h2_route_handler(
     let Some(handler) = ud.handler() else {
         // Registered-but-unresolvable handler must fail explicitly — never a
         // silent return (crash) and never a fake response.
-        eprintln!(
+        log::error!(
             "[node:http2] stream handler unavailable (key {}) — responding 500",
             ud.handler_key
         );
@@ -1733,7 +1733,7 @@ unsafe extern "C" fn uws_h2_route_handler(
         return;
     };
     if handler.is_null() {
-        eprintln!("[node:http2] stream handler null — responding 500");
+        log::error!("[node:http2] stream handler null — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
         (*res_mut).end(b"no stream handler", true);
@@ -1770,7 +1770,7 @@ unsafe extern "C" fn uws_h2_route_handler(
     // Http2ServerRequest is itself a stream (req.stream === this surface).
     rooted!(&in(cx_ref) let stream_obj = w2::JS_NewPlainObject(cx_ref));
     if stream_obj.get().is_null() {
-        eprintln!("[node:http2] stream object allocation failed — responding 500");
+        log::error!("[node:http2] stream object allocation failed — responding 500");
         h2_respond_500(&mut *res_mut, b"stream allocation failed");
         return;
     }
@@ -1956,7 +1956,7 @@ unsafe extern "C" fn uws_h2_route_handler(
     // uWS Response (node's Http2ServerResponse surface).
     rooted!(&in(cx_ref) let res_obj = w2::JS_NewPlainObject(cx_ref));
     if res_obj.get().is_null() {
-        eprintln!("[node:http2] response object allocation failed — responding 500");
+        log::error!("[node:http2] response object allocation failed — responding 500");
         h2_respond_500(&mut *res_mut, b"response allocation failed");
         return;
     }
@@ -2096,7 +2096,7 @@ unsafe extern "C" fn uws_h2_route_handler(
         // Handler threw — explicit 500 (never silent terminate; the uWS
         // unanswered-request path is std::terminate → mozalloc_abort).
         JS_ClearPendingException(raw_cx);
-        eprintln!("[node:http2] request handler threw — responding 500");
+        log::error!("[node:http2] request handler threw — responding 500");
         if !(*res_mut).state().is_http_end_called() {
             h2_respond_500(&mut *res_mut, b"request handler threw");
         }
@@ -2126,7 +2126,7 @@ unsafe extern "C" fn uws_h2_route_handler(
     h2_set_bool_prop(raw_cx, stream_obj.get(), "_bodyEnded", true);
     h2_emit_event(raw_cx, stream_obj.get(), "end", None);
     if !(*res_mut).state().is_http_end_called() {
-        eprintln!("[node:http2] request handler returned without responding — responding 500");
+        log::error!("[node:http2] request handler returned without responding — responding 500");
         h2_respond_500(&mut *res_mut, b"handler did not respond");
     }
     h2_req_finish(raw_cx, req_id, Some(&mut *res_mut));
@@ -2191,7 +2191,7 @@ unsafe fn h2_on_data(
     // Body fully delivered and the handler still has not responded —
     // explicit 500 (never fall through to uWS std::terminate).
     if !res.state().is_http_end_called() {
-        eprintln!("[node:http2] request handler returned without responding — responding 500");
+        log::error!("[node:http2] request handler returned without responding — responding 500");
         h2_respond_500(res, b"handler did not respond");
         h2_req_finish(cx, id, Some(res));
     }
@@ -2296,7 +2296,7 @@ unsafe fn h2_emit_server_stream(
     );
     if !ok {
         JS_ClearPendingException(cx);
-        eprintln!("[node:http2] server 'stream' listener threw (cleared)");
+        log::warn!("[node:http2] server 'stream' listener threw (cleared)");
     }
 }
 
@@ -3498,7 +3498,7 @@ unsafe extern "C" fn uws_h2_listen_callback(
     let realm_global = match bao_engine::context::thread_realm_global() {
         Some(g) if !g.is_null() => g,
         _ => {
-            eprintln!("[node:http2] listen callback: no JS realm — cannot fire JS callback");
+            log::error!("[node:http2] listen callback: no JS realm — cannot fire JS callback");
             gc_store_remove_ns(cx, "http2", &cb_key);
             gc_store_remove_ns(cx, "http2", &server_key);
             return;
@@ -3523,7 +3523,7 @@ unsafe extern "C" fn uws_h2_listen_callback(
 
     if listen_socket.is_null() {
         // Bind failed: node calls cb(err) and emits 'error' on the server.
-        eprintln!("[node:http2] listen failed (bind error)");
+        log::error!("[node:http2] listen failed (bind error)");
         rooted!(&in(cx_ref) let err_obj = w2::JS_NewPlainObject(cx_ref));
         if !err_obj.get().is_null() {
             let c_code = ZBox::from_bytes("EADDRINUSE".as_bytes());

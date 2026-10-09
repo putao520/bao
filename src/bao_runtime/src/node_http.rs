@@ -1238,7 +1238,7 @@ unsafe fn server_req_body_chunk(
         // registered nothing and returned — gets an explicit 500, never a
         // silent hang. Suppressed when the response already completed.
         if !res.state().is_http_end_called() {
-            eprintln!("[node:http] request handler did not respond — responding 500");
+            log::error!("[node:http] request handler did not respond — responding 500");
             res.write_status(b"500 Internal Server Error");
             res.write_header(b"Content-Type", b"text/plain");
             res.end(b"request handler did not respond", true);
@@ -1341,7 +1341,7 @@ unsafe extern "C" fn uws_route_handler(
         _ => {
             // No realm on this thread → no JS server should exist here.
             // Explicit 500 (never a silent return → uWS std::terminate).
-            eprintln!("[node:http] no JS realm on this thread — responding 500");
+            log::error!("[node:http] no JS realm on this thread — responding 500");
             (*res_mut).write_status(b"500 Internal Server Error");
             (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"no JS realm", true);
@@ -1362,7 +1362,7 @@ unsafe extern "C" fn uws_route_handler(
         _ => {
             // Registered-but-unresolvable handler must fail explicitly —
             // never a silent return (crash) and never a fake response.
-            eprintln!(
+            log::error!(
                 "[node:http] request handler unavailable (key {}) — responding 500",
                 ud.handler_key
             );
@@ -1847,7 +1847,7 @@ unsafe extern "C" fn uws_route_handler(
         // registry re-check makes the late uWS callback a no-op).
         server_req_body_teardown(res as usize);
         JS_ClearPendingException(raw_cx);
-        eprintln!("[node:http] request handler threw — responding 500");
+        log::error!("[node:http] request handler threw — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
         (*res_mut).end(b"request handler threw", true);
@@ -2164,7 +2164,7 @@ unsafe fn res_collect_body(cx: *mut JSContext, obj: *mut JSObject) -> Vec<u8> {
                 // Unreachable in practice: res_append_chunk only stores
                 // strings and Uint8Array parts. Skip nothing silently — the
                 // count is logged so a future regression is visible.
-                None => eprintln!("[node:http] response body chunk {} was not extractable", i),
+                None => log::warn!("[node:http] response body chunk {} was not extractable", i),
             }
         }
     }

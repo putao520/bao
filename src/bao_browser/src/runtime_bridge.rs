@@ -1892,7 +1892,7 @@ unsafe fn install_all_native(
             // Engine rejected the locale tag: report loudly instead of
             // silently continuing on the host-derived locale (an identity
             // leak would otherwise be invisible).
-            eprintln!(
+            log::error!(
                 "[stealth] JS_SetDefaultLocale rejected locale tag {:?} — \
                  Intl identity falls back to host locale",
                 profile.locale.locale

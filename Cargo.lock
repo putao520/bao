@@ -2461,6 +2461,7 @@ dependencies = [
  "bun_uws_sys",
  "bun_windows_sys",
  "libc",
+ "log",
 ]
 
 [[package]]

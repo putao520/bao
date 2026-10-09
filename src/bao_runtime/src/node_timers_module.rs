@@ -232,18 +232,18 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
         let opts =
             mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<timers_promisify_custom>".as_ptr(), 1);
         if opts.is_null() {
-            eprintln!("[node_timers_module] promisify-custom wiring skipped: no compile options");
+            log::warn!("[node_timers_module] promisify-custom wiring skipped: no compile options");
             return;
         }
         let evaluated = JS::Evaluate2(cx.raw_cx(), opts, &mut stamp_js, factory_h);
         mozjs::glue::DeleteCompileOptions(opts);
         if !evaluated || !factory_val.is_object() {
-            eprintln!("[node_timers_module] promisify-custom wiring factory evaluation failed");
+            log::warn!("[node_timers_module] promisify-custom wiring factory evaluation failed");
             return;
         }
         let global = CurrentGlobalOrNull(cx.raw_cx());
         if global.is_null() {
-            eprintln!("[node_timers_module] promisify-custom wiring skipped: null global");
+            log::warn!("[node_timers_module] promisify-custom wiring skipped: null global");
             return;
         }
         rooted!(&in(cx) let global_root = global);
@@ -304,7 +304,7 @@ pub fn stamp_promisify_customs(cx: &mut mozjs::context::JSContext, promises_obj:
             } else {
                 String::new()
             };
-            eprintln!(
+            log::warn!(
                 "[node_timers_module] promisify-custom wiring call failed: {}",
                 if exn_msg.is_empty() { "<no message>" } else { &exn_msg }
             );

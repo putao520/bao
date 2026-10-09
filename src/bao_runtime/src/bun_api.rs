@@ -5015,7 +5015,7 @@ unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
 
     let cx = ud.cx;
     if cx.is_null() {
-        eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
+        log::error!("[bun:serve] fetch handler registered but cx is null — responding 500");
         state.outcome = ServePhase1Outcome::DeferredFail {
             status: "500 Internal Server Error",
             body: "no JS context",
@@ -5073,7 +5073,7 @@ unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
         let fetch_handler = match ud.fetch_handler() {
             Some(h) if !h.is_null() => h,
             _ => {
-                eprintln!(
+                log::error!(
                     "[bun:serve] fetch handler registered but unresolvable — responding 500"
                 );
                 return ServePhase1Outcome::DeferredFail {
@@ -5209,7 +5209,7 @@ unsafe fn serve_dispatch_headers(st: *mut ServeRequestState) {
         None => {
             // No realm (runtime teardown in progress) — fail-closed 500 at
             // body-complete; nothing JS-reachable remains to dispatch.
-            eprintln!("[bun:serve] no JS realm on this thread — responding 500");
+            log::error!("[bun:serve] no JS realm on this thread — responding 500");
             (*st).outcome = ServePhase1Outcome::DeferredFail {
                 status: "500 Internal Server Error",
                 body: "no JS realm",
@@ -5263,7 +5263,7 @@ unsafe fn serve_finish_and_respond(res_mut: &mut Response<false>, st: *mut Serve
     }
 
     if cx.is_null() {
-        eprintln!("[bun:serve] fetch handler registered but cx is null — responding 500");
+        log::error!("[bun:serve] fetch handler registered but cx is null — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
         (*res_mut).end(b"no JS context", true);
@@ -5326,7 +5326,7 @@ unsafe fn serve_finish_and_respond(res_mut: &mut Response<false>, st: *mut Serve
         // progress): the teardown it would have done is ours. Fail-closed
         // 500 — the parked faces cannot be resolved, and a silent default
         // would impersonate the handler.
-        eprintln!("[bun:serve] no JS realm on this thread — responding 500");
+        log::error!("[bun:serve] no JS realm on this thread — responding 500");
         (*res_mut).write_status(b"500 Internal Server Error");
         (*res_mut).write_header(b"Content-Type", b"text/plain");
         (*res_mut).end(b"no JS realm", true);

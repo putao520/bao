@@ -516,7 +516,7 @@ pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
             .to_string_lossy()
             .into_owned()
     };
-    eprintln!("warn: ignoring extra certs from {filename_str}, load failed: {error_str}");
+    log::warn!("warn: ignoring extra certs from {filename_str}, load failed: {error_str}");
 }
 
 /// BoringSSL CRYPTO_EX_free callback (openssl.c `us_ctx_cache_ex_idx`).

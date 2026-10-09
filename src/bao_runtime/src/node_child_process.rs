@@ -659,7 +659,7 @@ pub(crate) fn register_async_child(pid: i32, stdout_fd: c_int, stderr_fd: c_int,
             // Fail-closed visibility: the child's pipes will not drain — say so
             // loudly instead of letting a 64KB pipe-buffer deadlock surface as
             // a silent hang.
-            eprintln!(
+            log::error!(
                 "[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer",
                 pid, e
             );
@@ -752,7 +752,7 @@ pub(crate) fn register_async_child(
             // Fail-closed visibility: the child's pipes will not drain — say so
             // loudly instead of letting a 64KB pipe-buffer deadlock surface as
             // a silent hang.
-            eprintln!(
+            log::error!(
                 "[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer",
                 pid, e
             );
@@ -1074,7 +1074,7 @@ pub(crate) fn cleanup_for_token(token: u64) -> usize {
             CpReap::Unkillable => {
                 // Loud, honest residual — keep the entry so no phantom sweep
                 // can double-kill, and the poll thread keeps its fds.
-                eprintln!(
+                log::warn!(
                     "[bao] runtime-drop sweep: child {} (token {}) survived SIGTERM+SIGKILL — registry entry kept",
                     pid, token
                 );
@@ -1473,7 +1473,7 @@ unsafe fn js_wants_ipc(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> bool
         }
 
         if !stdio_val.is_object() {
-            eprintln!("[dbg3] stdio not object: is_string={} is_undef={} is_null={}", stdio_val.is_string(), stdio_val.is_undefined(), stdio_val.is_null());
+            log::debug!("[dbg3] stdio not object: is_string={} is_undef={} is_null={}", stdio_val.is_string(), stdio_val.is_undefined(), stdio_val.is_null());
         }
         // 3) Legacy shorthand
         for slot in [c"stdin".as_ptr(), c"stdout".as_ptr(), c"stderr".as_ptr()].iter() {
