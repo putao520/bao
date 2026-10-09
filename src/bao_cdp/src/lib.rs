@@ -32,10 +32,9 @@ pub use cdp_server::{BaoEvent, CdpServer, ConsoleMessage};
 
 // JSON-RPC 2.0 wire types are owned by `cdp-server` and re-exported here.
 // TASK-4-CDP removed the byte-for-byte duplicate definitions that used to
-// live in `bao_cdp::protocol`. The codec helpers (parse_message/
-// serialize_response/serialize_event) stay in `bao_cdp::protocol` as thin
-// wrappers over these types (the cdp-server `protocol` module is private,
-// so its functions cannot be re-exported directly).
+// live in `bao_cdp::protocol`. Since M4 (e152 audit DUP-CODEC-WRAPPERS) the
+// cdp-server `protocol` module is `pub`, so the codec helpers are re-exported
+// directly — no re-implementation in `bao_cdp::protocol` remains.
 pub use cdp_server::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 
 // WebSocket surface — re-exported from `bun_uws` (REQ-CDP-UWS-001).
@@ -55,8 +54,8 @@ mod router;
 pub mod servo_bridge;
 
 // BAO-specific 11-domain CDP command dispatch + JSON-RPC 2.0 codec helpers.
-// Wire types come from cdp_server (re-exported above); the codec helpers are
-// thin serde wrappers in `bao_cdp::protocol`.
+// Wire types and codec helpers are single-sourced from cdp_server and
+// re-exported through `bao_cdp::protocol`.
 pub use protocol::{handle_command, parse_message, serialize_event, serialize_response};
 pub use router::{BackendKind, CdpRouter, CdpSession, ExternalBrowser};
 pub use servo_bridge::{

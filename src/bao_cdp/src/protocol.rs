@@ -22,25 +22,30 @@
 //
 // What remains here is the *BAO-specific* domain dispatch — `handle_command`
 // routes the 11 CDP domains to servo-bridge-backed handlers (Page.navigate,
-// Runtime.evaluate, DOM.getDocument, ...) — plus thin serde wrappers for the
-// codec helpers (the cdp-server `protocol` module is private, so its
-// `parse_message`/`serialize_response`/`serialize_event` cannot be re-exported
-// and are re-implemented here against the shared `cdp_server` wire types).
+// Runtime.evaluate, DOM.getDocument, ...). The codec (parse_message/
+// serialize_response/serialize_event), the ok/error response constructors
+// and the shared JSON-RPC 2.0 error codes are single-sourced from
+// `cdp_server::protocol` (M4, e152 audit DUP-CODEC-WRAPPERS): that module is
+// `pub`, so nothing codec-shaped is re-implemented here anymore. Only
+// ERR_NOT_SUPPORTED (-32000, Chrome "server error") stays local — it is a
+// BAO-specific code cdp-server does not define.
+//
 // Re-export the JSON-RPC 2.0 wire types so internal modules (`backend.rs`,
 // `router.rs`) and the crate root can refer to them as `protocol::CdpError`
 // etc. These ARE `cdp_server` types — no duplicate definitions.
-pub use cdp_server::{CdpError, CdpEvent, CdpMessage, CdpResponse};
+pub use cdp_server::{
+    parse_message, serialize_event, serialize_response, CdpError, CdpEvent, CdpMessage,
+    CdpResponse,
+};
+// Private before M4, private after: same items, now imported instead of
+// re-implemented. ERR_INVALID_PARAMS keeps pub(crate) reach for devtools_dom.
+use cdp_server::{error_response, ok_response, ERR_METHOD_NOT_FOUND};
+pub(crate) use cdp_server::ERR_INVALID_PARAMS;
 use serde_json::Value;
 
 use crate::devtools_dom;
 use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
-// JSON-RPC 2.0 error code: method not found (per spec §5.1).
-const ERR_METHOD_NOT_FOUND: i64 = -32601;
-// JSON-RPC 2.0 error code: parse error (fallback on serialize failure).
-const ERR_PARSE_ERROR: i64 = -32700;
-// JSON-RPC 2.0 error code: invalid params.
-pub(crate) const ERR_INVALID_PARAMS: i64 = -32602;
 // Chrome DevTools "server error" code used for not-supported commands.
 pub(crate) const ERR_NOT_SUPPORTED: i64 = -32000;
 
@@ -50,51 +55,6 @@ fn not_supported(method: &str, reason: &str) -> CdpError {
     CdpError {
         code: ERR_NOT_SUPPORTED,
         message: format!("'{method}' not supported: {reason}"),
-    }
-}
-
-/// Parse a raw JSON-RPC 2.0 request string into a [`CdpMessage`].
-///
-/// Returns `None` on malformed JSON. Thin serde wrapper over the shared
-/// `cdp_server::CdpMessage` type.
-pub fn parse_message(raw: &str) -> Option<CdpMessage> {
-    serde_json::from_str(raw).ok()
-}
-
-/// Serialize a [`CdpResponse`] to a JSON-RPC 2.0 string.
-///
-/// Falls back to a parse-error envelope on serializer failure (cannot happen
-/// for the well-formed responses produced by `handle_command`, but kept for
-/// defense-in-depth).
-pub fn serialize_response(resp: &CdpResponse) -> String {
-    serde_json::to_string(resp).unwrap_or_else(|_| {
-        format!(r#"{{"id":null,"error":{{"code":{ERR_PARSE_ERROR},"message":"serialize error"}}}}"#)
-    })
-}
-
-/// Serialize a CDP event notification to a JSON string.
-pub fn serialize_event(ev: &CdpEvent) -> String {
-    serde_json::to_string(ev).unwrap_or_else(|_| "{}".into())
-}
-
-/// Build a success response carrying `result`.
-fn ok_response(id: Option<i64>, result: Value) -> CdpResponse {
-    CdpResponse {
-        id,
-        result: Some(result),
-        error: None,
-    }
-}
-
-/// Build an error response carrying `code` + `message`.
-fn error_response(id: Option<i64>, code: i64, message: impl Into<String>) -> CdpResponse {
-    CdpResponse {
-        id,
-        result: None,
-        error: Some(CdpError {
-            code,
-            message: message.into(),
-        }),
     }
 }
 

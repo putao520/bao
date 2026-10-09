@@ -23,6 +23,7 @@ mod protocol_all_domains_internal_backend_tests;
 mod protocol_domain_handler_deep_tests;
 mod protocol_edge_case_tests;
 mod protocol_message_deep_tests;
+mod protocol_codec_single_source_tests;
 mod protocol_serialize_boundary_tests;
 mod protocol_subcommand_full_coverage_tests;
 mod router_backend_deep_tests;

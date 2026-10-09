@@ -9,7 +9,11 @@ use serde_json::Value;
 
 pub mod bao_event;
 mod event;
-mod protocol;
+// `pub` since M4 (e152 audit DUP-CODEC-WRAPPERS): downstream crates
+// (bao_cdp) re-export the codec/constructors directly instead of
+// re-implementing them. Every item was already re-exported at the crate
+// root, so this widens nothing but the module path itself.
+pub mod protocol;
 mod registry;
 mod server;
 mod session;
