@@ -710,23 +710,13 @@ fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     }))
 }
 
-fn cmd_evaluate(
-    page: &PageHandle,
-    expression: &str,
-    return_by_value: bool,
-) -> Result<Value, String> {
-    // Web-scope evaluation (REQ-SEC-002/003): CDP Runtime.evaluate is the
-    // page's DevTools console — it must run in the Page Realm WITHOUT Node
-    // API injection. (The privileged evaluate_js face is bao-internal only
-    // and additionally does not survive navigation.)
-    if return_by_value {
-        // Both branches run the user expression inside an in-page envelope:
-        // a throw is captured in-realm and reported as a CDP exceptionDetails
-        // (0-origin line/column + stackTrace parsed off Error.stack) instead
-        // of collapsing into a generic -32603 bridge error that buries the
-        // diagnostics in its message text.
-        let expr_json = serde_json::to_string(expression).unwrap_or_default();
-        let js = format!(
+/// returnByValue=true evaluate envelope JS: the user expression runs
+/// inside an in-page try/catch envelope — a throw is captured in-realm and
+/// reported as a CDP exceptionDetails (0-origin line/column + stackTrace
+/// parsed off Error.stack) instead of collapsing into a generic -32603
+/// bridge error that buries the diagnostics in its message text.
+fn evaluate_by_value_envelope_js(expr_json: &str) -> String {
+    format!(
             r#"(function() {{
                 try {{
                     var r = eval({expr_json});
@@ -765,31 +755,31 @@ fn cmd_evaluate(
                     }});
                 }}
             }})()"#,
-        );
-        let out = page.evaluate_js_web(&js).map_err(to_browser_error)?;
-        let mut envelope: Value = serde_json::from_str(&out).map_err(|e| {
-            format!("Runtime.evaluate: envelope unparseable: {e} (got: {out:.200})")
-        })?;
-        let undefined_result = envelope["result"]["undefined_result"]
-            .as_bool()
-            .unwrap_or(false);
-        let value = envelope["result"]["value"].take();
-        let (value_type, value) = if undefined_result {
-            ("undefined".to_string(), Value::Null)
-        } else {
-            (json_type(&value).to_string(), value)
-        };
-        envelope["result"] = serde_json::json!({ "type": value_type, "value": value });
-        Ok(envelope)
+    )
+}
+
+/// Normalize the by-value envelope result face: consume the internal
+/// `undefined_result` marker, map the carried value to its CDP `type`, and
+/// leave `exceptionDetails` untouched.
+fn normalize_by_value_envelope(mut envelope: Value) -> Value {
+    let undefined_result = envelope["result"]["undefined_result"]
+        .as_bool()
+        .unwrap_or(false);
+    let value = envelope["result"]["value"].take();
+    let (value_type, value) = if undefined_result {
+        ("undefined".to_string(), Value::Null)
     } else {
-        // returnByValue=false: hand back a full RemoteObject with a
-        // registry-pinned objectId. This is the Playwright evaluateHandle
-        // path — the utilityScript handle is minted here and then driven via
-        // Runtime.callFunctionOn (objectId roundtrip).
-        page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
-            .map_err(to_browser_error)?;
-        let expr_json = serde_json::to_string(expression).unwrap_or_default();
-        let js = format!(
+        (json_type(&value).to_string(), value)
+    };
+    envelope["result"] = serde_json::json!({ "type": value_type, "value": value });
+    envelope
+}
+
+/// returnByValue=false handle-wrapper JS: wraps the evaluation result via
+/// the page-realm registry (`window.__bao_cdp.wrap`) so the returned
+/// RemoteObject carries a registry-pinned objectId.
+fn evaluate_handle_wrapper_js(expr_json: &str) -> String {
+    format!(
             r#"(function() {{
                 try {{
                     var r = eval({expr_json});
@@ -799,7 +789,35 @@ fn cmd_evaluate(
                     return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((e && e.message) || e), exception: exObj, exceptionId: 0 }} }});
                 }}
             }})()"#,
-        );
+    )
+}
+
+fn cmd_evaluate(
+    page: &PageHandle,
+    expression: &str,
+    return_by_value: bool,
+) -> Result<Value, String> {
+    // Web-scope evaluation (REQ-SEC-002/003): CDP Runtime.evaluate is the
+    // page's DevTools console — it must run in the Page Realm WITHOUT Node
+    // API injection. (The privileged evaluate_js face is bao-internal only
+    // and additionally does not survive navigation.)
+    if return_by_value {
+        let expr_json = serde_json::to_string(expression).unwrap_or_default();
+        let js = evaluate_by_value_envelope_js(&expr_json);
+        let out = page.evaluate_js_web(&js).map_err(to_browser_error)?;
+        let envelope: Value = serde_json::from_str(&out).map_err(|e| {
+            format!("Runtime.evaluate: envelope unparseable: {e} (got: {out:.200})")
+        })?;
+        Ok(normalize_by_value_envelope(envelope))
+    } else {
+        // returnByValue=false: hand back a full RemoteObject with a
+        // registry-pinned objectId. This is the Playwright evaluateHandle
+        // path — the utilityScript handle is minted here and then driven via
+        // Runtime.callFunctionOn (objectId roundtrip).
+        page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
+            .map_err(to_browser_error)?;
+        let expr_json = serde_json::to_string(expression).unwrap_or_default();
+        let js = evaluate_handle_wrapper_js(&expr_json);
         let out = page.evaluate_js_web(&js).map_err(to_browser_error)?;
         serde_json::from_str(&out).map_err(|e| {
             format!("Runtime.evaluate: handle wrapper unparseable: {e} (got: {out:.200})")
@@ -1492,17 +1510,10 @@ fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
 /// method) selects the bytecode offset; when a column is requested the
 /// offsets are filtered by `getOffsetLocation().columnNumber`. The returned
 /// location is the REAL resolved offset location, not the request echo.
-fn cmd_debugger_set_breakpoint(
-    page: &PageHandle,
-    url: Option<&str>,
-    url_regex: Option<&str>,
-    line: u32,
-    column: Option<u32>,
-) -> Result<Value, String> {
-    // Build a script filter: match by url (exact) or urlRegex, fall back to
-    // line-range match (SM line numbers are 1-origin; `line` is CDP 0-origin).
-    let sm_line = line + 1;
-    let url_filter = match (url, url_regex) {
+/// Build a script filter: match by url (exact) or urlRegex, fall back to
+/// line-range match (SM line numbers are 1-origin; `line` is CDP 0-origin).
+fn breakpoint_url_filter(url: Option<&str>, url_regex: Option<&str>, sm_line: u32) -> String {
+    match (url, url_regex) {
         (Some(u), _) => format!("s.url === {}", serde_json::to_string(u).unwrap_or_default()),
         (None, Some(r)) => format!(
             "new RegExp({}).test(s.url)",
@@ -1511,12 +1522,20 @@ fn cmd_debugger_set_breakpoint(
         (None, None) => {
             format!("s.startLine <= {sm_line} && {sm_line} <= s.startLine + s.lineCount - 1")
         }
-    };
-    let col = column.unwrap_or(0);
-    let has_column = column.is_some();
-    // Fail-closed glue: no catch-all swallow. Unmatched script / empty line
-    // offsets surface as explicit errors — never a fake '{}' success.
-    let js = format!(
+    }
+}
+
+/// Breakpoint-binding JS payload. Fail-closed glue: no catch-all swallow.
+/// Unmatched script / empty line offsets surface as explicit errors —
+/// never a fake '{}' success.
+fn debugger_set_breakpoint_js(
+    url_filter: &str,
+    sm_line: u32,
+    has_column: bool,
+    col: u32,
+    line: u32,
+) -> String {
+    format!(
         r#"(function() {{
     try {{
     if (!__bao_dbg) throw new Error('Debugger.enable required before setting breakpoints');
@@ -1563,12 +1582,21 @@ fn cmd_debugger_set_breakpoint(
     throw new Error('no script matched the breakpoint location (url/urlRegex/line {line}); diag: ' + diag);
     }} catch (e) {{ return 'ERR: ' + (e && e.message ? e.message : String(e)); }}
 }})()"#,
-        url_filter = url_filter,
-        sm_line = sm_line,
-        has_column = has_column,
-        col = col,
-        line = line,
-    );
+    )
+}
+
+fn cmd_debugger_set_breakpoint(
+    page: &PageHandle,
+    url: Option<&str>,
+    url_regex: Option<&str>,
+    line: u32,
+    column: Option<u32>,
+) -> Result<Value, String> {
+    let sm_line = line + 1;
+    let url_filter = breakpoint_url_filter(url, url_regex, sm_line);
+    let col = column.unwrap_or(0);
+    let has_column = column.is_some();
+    let js = debugger_set_breakpoint_js(&url_filter, sm_line, has_column, col, line);
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     // The glue reports failures as 'ERR: <reason>' return strings (the
     // node-realm evaluate face drops JS exception messages) — surface them
@@ -1815,9 +1843,12 @@ fn cmd_css_get_computed_style(page: &PageHandle, node_id: i64) -> Result<Value, 
     parse_js_result(&result)
 }
 
-fn cmd_css_get_matched_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
-    let node_ref = resolve_node_by_id(page, node_id)?;
-    let js = format!(
+/// CSS.getMatchedStylesForNode payload: walks document.styleSheets for
+/// selector-matching rules (origin regular vs user-agent by sheet href) and
+/// the element inline style; every face failure collapses to the empty
+/// matchedCSSRules/inlineStyle-null shape.
+fn css_get_matched_styles_js(node_ref: &str) -> String {
+    format!(
         r#"(function() {{
             var el = {node_ref};
             if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null}});
@@ -1869,15 +1900,20 @@ fn cmd_css_get_matched_styles(page: &PageHandle, node_id: i64) -> Result<Value, 
                 return JSON.stringify({{"matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null}});
             }}
         }})()"#,
-        node_ref = node_ref
-    );
+    )
+}
+
+fn cmd_css_get_matched_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
+    let node_ref = resolve_node_by_id(page, node_id)?;
+    let js = css_get_matched_styles_js(&node_ref);
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
 
-fn cmd_css_get_inline_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
-    let node_ref = resolve_node_by_id(page, node_id)?;
-    let js = format!(
+/// CSS.getInlineStylesForNode payload: the element inline style plus an
+/// attributesStyle parsed off the raw `style` attribute text.
+fn css_get_inline_styles_js(node_ref: &str) -> String {
+    format!(
         r#"(function() {{
             var el = {node_ref};
             if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"inlineStyle": null}});
@@ -1919,8 +1955,12 @@ fn cmd_css_get_inline_styles(page: &PageHandle, node_id: i64) -> Result<Value, S
                 return JSON.stringify({{"inlineStyle": null}});
             }}
         }})()"#,
-        node_ref = node_ref
-    );
+    )
+}
+
+fn cmd_css_get_inline_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
+    let node_ref = resolve_node_by_id(page, node_id)?;
+    let js = css_get_inline_styles_js(&node_ref);
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
@@ -2039,23 +2079,16 @@ fn resolve_object_by_id(object_id: &str) -> String {
     }
 }
 
-fn cmd_runtime_get_properties(
-    page: &PageHandle,
-    object_id: &str,
-    own_properties: Option<bool>,
-) -> Result<Value, String> {
-    page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
-        .map_err(to_browser_error)?;
-    let obj_ref = resolve_object_by_id(object_id);
-    let own = own_properties.unwrap_or(true);
-    // Property enumeration: own=true → getOwnPropertyNames (own properties,
-    // data + accessors); own=false → for-in (own + inherited enumerables).
-    // Every property value becomes a real RemoteObject — object/function
-    // values are registered in the page registry, so the returned objectIds
-    // roundtrip through callFunctionOn/getProperties (the previous code
-    // fabricated ids it never stored, and resolving them always gave null).
-    // Web-scope evaluation per REQ-SEC-002/003 (registry is page-realm).
-    let js = format!(
+/// Runtime.getProperties payload. Property enumeration: own=true ->
+/// getOwnPropertyNames (own properties, data + accessors); own=false ->
+/// for-in (own + inherited enumerables). Every property value becomes a
+/// real RemoteObject — object/function values are registered in the page
+/// registry, so the returned objectIds roundtrip through
+/// callFunctionOn/getProperties (the previous code fabricated ids it never
+/// stored, and resolving them always gave null). Web-scope evaluation per
+/// REQ-SEC-002/003 (registry is page-realm).
+fn runtime_get_properties_js(obj_ref: &str, own: bool) -> String {
+    format!(
         r#"(function() {{
             try {{
                 var obj = {obj_ref};
@@ -2091,9 +2124,19 @@ fn cmd_runtime_get_properties(
                 return JSON.stringify({{ "result": [] }});
             }}
         }})()"#,
-        obj_ref = obj_ref,
-        own = own,
-    );
+    )
+}
+
+fn cmd_runtime_get_properties(
+    page: &PageHandle,
+    object_id: &str,
+    own_properties: Option<bool>,
+) -> Result<Value, String> {
+    page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
+        .map_err(to_browser_error)?;
+    let obj_ref = resolve_object_by_id(object_id);
+    let own = own_properties.unwrap_or(true);
+    let js = runtime_get_properties_js(&obj_ref, own);
     let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
@@ -2131,36 +2174,11 @@ fn call_argument_expr(arg: &Value) -> Result<String, String> {
     Ok("undefined".to_string())
 }
 
-fn cmd_runtime_call_function_on(
-    page: &PageHandle,
-    object_id: Option<&str>,
-    execution_context_id: Option<i64>,
-    function_declaration: &str,
-    arguments: Option<&Value>,
-    return_by_value: Option<bool>,
-    await_promise: Option<bool>,
-    object_group: Option<&str>,
-) -> Result<Value, String> {
-    // The page realm's security contract (REQ-SEC-002/003): page-facing CDP
-    // evaluation runs web-scope — evaluate_js_web, never the Node-realm
-    // privileged face. The registry must exist before any object reference
-    // is resolved; installing is idempotent.
-    page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
-        .map_err(to_browser_error)?;
-
-    // `this` for the call: objectId wins. executionContextId alone means
-    // this=undefined (single page-realm context — DEVIATION: the servo
-    // embedder exposes no isolated worlds, so all context ids evaluate
-    // against the page realm).
-    let _ctx = execution_context_id; // single-realm: routing is the page itself
-    let this_expr = match object_id {
-        Some(oid) => resolve_object_by_id(oid),
-        None => "undefined".to_string(),
-    };
-    let oid_given = object_id.is_some();
-
-    // CDP CallArgument materialization ({value} / {unserializableValue} /
-    // {objectId}).
+/// Materialize the CDP `arguments` array into a JS array-literal string:
+/// each entry goes through `call_argument_expr` ({value} /
+/// {unserializableValue} / {objectId}); a non-array `arguments` value is a
+/// caller error; None -> "[]".
+fn materialize_call_arguments(arguments: Option<&Value>) -> Result<String, String> {
     let mut args_js = String::from("[");
     if let Some(Value::Array(arr)) = arguments {
         let parts: Vec<String> = arr
@@ -2174,16 +2192,22 @@ fn cmd_runtime_call_function_on(
         ));
     }
     args_js.push(']');
+    Ok(args_js)
+}
 
-    let rbv = return_by_value.unwrap_or(false);
-    let await_js = await_promise.unwrap_or(false);
-    let group_json =
-        serde_json::to_string(object_group.unwrap_or("")).unwrap_or_else(|_| "\"..\"".into());
-    let func_json = serde_json::to_string(function_declaration).unwrap_or_default();
-
-    // functionDeclaration is a stringized function ("function(a, b) { ... }");
-    // it is called with the materialized arguments on the resolved `this`.
-    let js = format!(
+/// Runtime.callFunctionOn payload. functionDeclaration is a stringized
+/// function ("function(a, b) { ... }"); it is called with the materialized
+/// arguments on the resolved `this`.
+fn runtime_call_function_on_js(
+    this_expr: &str,
+    oid_given: bool,
+    args_js: &str,
+    func_json: &str,
+    rbv: bool,
+    await_js: bool,
+    group_json: &str,
+) -> String {
+    format!(
         r#"(function() {{
             try {{
                 var fn = Function('return (' + {func_json} + ')')();
@@ -2214,13 +2238,52 @@ fn cmd_runtime_call_function_on(
                 return JSON.stringify({{ result: {{ type: 'undefined' }}, exceptionDetails: {{ text: String((e && e.message) || e), exception: exObj, exceptionId: 0 }} }});
             }}
         }})()"#,
-        this_expr = this_expr,
-        oid_given = oid_given,
-        args_js = args_js,
-        func_json = func_json,
-        rbv = rbv,
-        await_js = await_js,
-        group_json = group_json,
+    )
+}
+
+fn cmd_runtime_call_function_on(
+    page: &PageHandle,
+    object_id: Option<&str>,
+    execution_context_id: Option<i64>,
+    function_declaration: &str,
+    arguments: Option<&Value>,
+    return_by_value: Option<bool>,
+    await_promise: Option<bool>,
+    object_group: Option<&str>,
+) -> Result<Value, String> {
+    // The page realm's security contract (REQ-SEC-002/003): page-facing CDP
+    // evaluation runs web-scope — evaluate_js_web, never the Node-realm
+    // privileged face. The registry must exist before any object reference
+    // is resolved; installing is idempotent.
+    page.evaluate_js_web(CDP_REGISTRY_PRELUDE)
+        .map_err(to_browser_error)?;
+
+    // `this` for the call: objectId wins. executionContextId alone means
+    // this=undefined (single page-realm context — DEVIATION: the servo
+    // embedder exposes no isolated worlds, so all context ids evaluate
+    // against the page realm).
+    let _ctx = execution_context_id; // single-realm: routing is the page itself
+    let this_expr = match object_id {
+        Some(oid) => resolve_object_by_id(oid),
+        None => "undefined".to_string(),
+    };
+    let oid_given = object_id.is_some();
+
+    let args_js = materialize_call_arguments(arguments)?;
+    let rbv = return_by_value.unwrap_or(false);
+    let await_js = await_promise.unwrap_or(false);
+    let group_json =
+        serde_json::to_string(object_group.unwrap_or("")).unwrap_or_else(|_| "\"..\"".into());
+    let func_json = serde_json::to_string(function_declaration).unwrap_or_default();
+
+    let js = runtime_call_function_on_js(
+        &this_expr,
+        oid_given,
+        &args_js,
+        &func_json,
+        rbv,
+        await_js,
+        &group_json,
     );
     let result = page.evaluate_js_web(&js).map_err(to_browser_error)?;
     // The wrapper always returns JSON.stringify({result/exceptionDetails}) —
