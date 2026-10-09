@@ -25,6 +25,10 @@ use std::path::PathBuf;
 use bao_engine::context::JsContext;
 use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
+
+use common::eval_number;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,12 +44,6 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     }
 }
 
-fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::Number(n)) => n,
-        _ => f64::NAN,
-    }
-}
 
 fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
     match ctx.eval(source, "<test>") {

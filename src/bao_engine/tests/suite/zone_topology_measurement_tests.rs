@@ -15,20 +15,13 @@
 
 use bao_engine::context::JsContext;
 use bao_engine::memory_stats::collect_runtime_stats;
-use bao_engine::value::JsValue;
 use mozjs::jsapi::{CurrentGlobalOrNull, JS_GetProperty};
 use mozjs::rooted;
+#[path = "common/mod.rs"]
+mod common;
 
 fn eval_string(cx: &mut JsContext, source: &str) -> String {
-    match cx.eval(source, "<zone_topology>") {
-        Ok(JsValue::String(sv)) => sv,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(other) => format!("{:?}", other),
-        Err(e) => format!("<error: {}>", e.message),
-    }
+    common::eval_string_debug_named(cx, source, "<zone_topology>")
 }
 use bun_sm::ModuleLoader;
 

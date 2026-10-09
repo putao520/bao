@@ -20,19 +20,13 @@
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
 // ─── 辅助求值 ──────────────────────────────────────────────────────────────
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<fusion>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(other) => format!("{:?}", other),
-        Err(e) => format!("<error: {}>", e.message),
-    }
+    common::eval_string_debug_named(ctx, source, "<fusion>")
 }
 
 fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
