@@ -13,6 +13,7 @@ use js::context::{JSContext, NoGC};
 use keyboard_types::{
     Key, KeyState, KeyboardEvent as KeyboardTypesEvent, Modifiers, NamedKey, ShortcutMatcher,
 };
+use html5ever::serialize as html_serialize;
 use layout_api::QueryMsg;
 use script_bindings::codegen::GenericBindings::CharacterDataBinding::CharacterDataMethods;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
@@ -168,6 +169,13 @@ impl Document {
                             self.webview_id(),
                             selection,
                         ));
+                        // The alternate text/html format of the same selection.
+                        if let Some(selection_html) = editing_context.selection_html_content(cx) {
+                            self.send_to_embedder(EmbedderMsg::SetClipboardHtml(
+                                self.webview_id(),
+                                selection_html,
+                            ));
+                        }
                     }
                     // Step 3.2. Fire a clipboard event named clipboardchange
                     self.fire_clipboard_event(cx, &event_target, ClipboardEventType::Change);
@@ -193,6 +201,13 @@ impl Document {
                             self.webview_id(),
                             selection,
                         ));
+                        // The alternate text/html format of the same selection.
+                        if let Some(selection_html) = editing_context.selection_html_content(cx) {
+                            self.send_to_embedder(EmbedderMsg::SetClipboardHtml(
+                                self.webview_id(),
+                                selection_html,
+                            ));
+                        }
 
                         // Step 3.1.2. Remove the contents of the selection from the document
                         // and collapse the selection.
@@ -212,6 +227,7 @@ impl Document {
                 },
                 ClipboardEventType::Paste => {
                     if let Some(text_content) = clipboard_event.text_content() {
+                        let html_content = clipboard_event.html_content();
                         // The paste handler above may have moved focus to
                         // another editor, detached the EditContext, or
                         // changed editability of an ancestor: resolve the
@@ -219,7 +235,11 @@ impl Document {
                         // what every browser does for contenteditable
                         // (edit-context-paste-handler-changes-active
                         // contract).
-                        if self.paste_into_current_editing_context(cx, &text_content) {
+                        if self.paste_into_current_editing_context(
+                            cx,
+                            &text_content,
+                            html_content.as_deref(),
+                        ) {
                             event.mark_as_handled();
                         }
                     }
@@ -266,7 +286,12 @@ impl Document {
     /// mutation), a text control, or a contenteditable editing host (DOM
     /// insertion through the exec-command insert pipeline). Returns `true`
     /// when the paste was consumed.
-    fn paste_into_current_editing_context(&self, cx: &mut JSContext, text: &str) -> bool {
+    fn paste_into_current_editing_context(
+        &self,
+        cx: &mut JSContext,
+        text: &str,
+        html: Option<&str>,
+    ) -> bool {
         let event_target = self.event_handler().target_for_events_following_focus();
         let Some(focused) = event_target.downcast::<Node>() else {
             return false;
@@ -297,7 +322,7 @@ impl Document {
         {
             // A canceled `beforeinput` (insertFromPaste) leaves the paste
             // unconsumed.
-            return !edit_context.handle_paste(cx, &html_element, text);
+            return !edit_context.handle_paste(cx, &html_element, text, html);
         }
 
         // A contenteditable region: paste inserts at the caret of the focused
@@ -334,7 +359,7 @@ impl Document {
         };
         // The prepopulated clipboard payload of the `beforeinput`
         // (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
-        let data_transfer = DataTransfer::new_readonly_clipboard_text(cx, &self.window(), text);
+        let data_transfer = DataTransfer::new_readonly_clipboard(cx, &self.window(), text, html);
         // `data` is null for clipboard inputTypes at a contenteditable host:
         // the payload travels through `dataTransfer` instead
         // (<https://w3c.github.io/input-events/#interface-InputEvent-Attributes>
@@ -385,7 +410,8 @@ impl Document {
             false,
             DOMString::from_static("insertFromPaste"),
         );
-        let input_data_transfer = DataTransfer::new_readonly_clipboard_text(cx, &self.window(), text);
+        let input_data_transfer =
+            DataTransfer::new_readonly_clipboard(cx, &self.window(), text, html);
         input_event.set_data_transfer(Some(&input_data_transfer));
         let input_event = input_event.upcast::<Event>();
         input_event.set_trusted(true);
@@ -435,6 +461,17 @@ impl Document {
                     .recv()
                     .map(Result::unwrap_or_default)
                     .unwrap_or_default();
+                // The clipboard's HTML representation, empty when it has none.
+                let (html_callback, html_receiver) =
+                    GenericCallback::new_blocking().expect("Could not create callback");
+                self.send_to_embedder(EmbedderMsg::GetClipboardHtml(
+                    self.webview_id(),
+                    html_callback,
+                ));
+                let html_contents = html_receiver
+                    .recv()
+                    .map(Result::unwrap_or_default)
+                    .unwrap_or_default();
 
                 // Step 7.1.1
                 drag_data_store.set_mode(Mode::ReadOnly);
@@ -448,7 +485,12 @@ impl Document {
                     let _ = drag_data_store.add(Kind::Text { data, type_ });
 
                     // Step 7.1.2.1.2 TODO If clipboard-part represents file references, then for each file reference
-                    // Step 7.1.2.1.3 TODO If clipboard-part contains HTML- or XHTML-formatted text then
+                    // Step 7.1.2.1.3 If clipboard-part contains HTML- or XHTML-formatted text then
+                    if !html_contents.is_empty() {
+                        let data = DOMString::from(html_contents);
+                        let type_ = DOMString::from_static("text/html");
+                        let _ = drag_data_store.add(Kind::Text { data, type_ });
+                    }
 
                     // Step 7.1.3 Update clipboard-event-data’s files to match clipboard-event-data’s items
                     // Step 7.1.4 Update clipboard-event-data’s types to match clipboard-event-data’s items
@@ -489,14 +531,23 @@ impl Document {
             // Step 1.2
             for item in drag_data_store.iter_item_list() {
                 match item {
-                    Kind::Text { data, .. } => {
+                    Kind::Text { data, type_ } => {
                         // Step 1.2.1.1 Ensure encoding is correct per OS and locale conventions
                         // Step 1.2.1.2 Normalize line endings according to platform conventions
-                        // Step 1.2.1.3
-                        self.send_to_embedder(EmbedderMsg::SetClipboardText(
-                            self.webview_id(),
-                            data.to_string(),
-                        ));
+                        // Step 1.2.1.3 Place the part on the clipboard with the OS-specific
+                        // format matching its type: `text/html` parts go to the clipboard's
+                        // HTML representation, everything else to the text one.
+                        if type_.str() == "text/html" {
+                            self.send_to_embedder(EmbedderMsg::SetClipboardHtml(
+                                self.webview_id(),
+                                data.to_string(),
+                            ));
+                        } else {
+                            self.send_to_embedder(EmbedderMsg::SetClipboardText(
+                                self.webview_id(),
+                                data.to_string(),
+                            ));
+                        }
                     },
                     Kind::File { .. } => {
                         // Step 1.2.2 If data is of a type listed in the mandatory data types list, then
@@ -713,6 +764,42 @@ impl EditingContext {
                 .selection()
                 .map(|selection| selection.Stringifier(cx).to_string())
                 .filter(|selection| !selection.is_empty()),
+        }
+    }
+
+    /// The alternate `text/html` serialization of the selected contents, for the
+    /// system clipboard's HTML representation ("Implementations should create
+    /// alternate text/html and text/plain clipboard formats when content in a web
+    /// page is selected",
+    /// <https://www.w3.org/TR/clipboard-apis/#clipboard-actions>).
+    pub(crate) fn selection_html_content(&self, cx: &mut JSContext) -> Option<String> {
+        match self {
+            // Text control values have no HTML serialization of their own.
+            EditingContext::TextControl(..) => None,
+            EditingContext::Document(document) => {
+                let selection = document.selection()?;
+                let mut html = String::new();
+                for index in 0..selection.RangeCount() {
+                    let Ok(range) = selection.GetRangeAt(cx, index) else {
+                        return None;
+                    };
+                    let Ok(fragment) = range.CloneContents(cx) else {
+                        return None;
+                    };
+                    html.push_str(
+                        &fragment
+                            .upcast::<Node>()
+                            .html_serialize(
+                                cx,
+                                html_serialize::TraversalScope::ChildrenOnly(None),
+                                false,
+                                Vec::new(),
+                            )
+                            .to_string(),
+                    );
+                }
+                (!html.is_empty()).then_some(html)
+            },
         }
     }
 

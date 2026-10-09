@@ -411,11 +411,17 @@ impl EditContext {
     /// cancelable `beforeinput` (`insertFromPaste`) at `element`, then update
     /// the EditContext text and fire `textupdate`. The DOM is never mutated.
     /// Returns `true` iff the `beforeinput` was canceled.
-    pub(crate) fn handle_paste(&self, cx: &mut JSContext, element: &HTMLElement, text: &str) -> bool {
+    pub(crate) fn handle_paste(
+        &self,
+        cx: &mut JSContext,
+        element: &HTMLElement,
+        text: &str,
+        html: Option<&str>,
+    ) -> bool {
         // The prepopulated clipboard payload of the `beforeinput`
         // (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
         let data_transfer =
-            DataTransfer::new_readonly_clipboard_text(cx, &element.owner_window(), text);
+            DataTransfer::new_readonly_clipboard(cx, &element.owner_window(), text, html);
         // `data` is null for clipboard inputTypes at an editing host: the
         // payload travels through `dataTransfer` instead
         // (<https://w3c.github.io/input-events/#interface-InputEvent-Attributes>

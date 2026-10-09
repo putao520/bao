@@ -92,10 +92,11 @@ impl DataTransfer {
     /// with a clipboard inputType (`insertFromPaste`) on contenteditable
     /// hosts. The drag data store is in read-only mode
     /// (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
-    pub(crate) fn new_readonly_clipboard_text(
+    pub(crate) fn new_readonly_clipboard(
         cx: &mut JSContext,
         window: &Window,
         text: &str,
+        html: Option<&str>,
     ) -> DomRoot<DataTransfer> {
         let mut drag_data_store = DragDataStore::new();
         drag_data_store.set_mode(Mode::ReadOnly);
@@ -103,6 +104,17 @@ impl DataTransfer {
             data: DOMString::from(text),
             type_: DOMString::from_static("text/plain"),
         });
+        // The alternate `text/html` clipboard representation, when the system
+        // clipboard carries one (Step 7.1.2.1.3 of
+        // <https://www.w3.org/TR/clipboard-apis/#fire-a-clipboard-event>).
+        if let Some(html) = html &&
+            !html.is_empty()
+        {
+            let _ = drag_data_store.add(Kind::Text {
+                data: DOMString::from(html),
+                type_: DOMString::from_static("text/html"),
+            });
+        }
         DataTransfer::new(cx, window, Rc::new(RefCell::new(Some(drag_data_store))))
     }
 

@@ -493,6 +493,11 @@ pub enum EmbedderMsg {
     GetClipboardText(WebViewId, GenericCallback<Result<String, String>>),
     /// Sets system clipboard contents
     SetClipboardText(WebViewId, String),
+    /// Gets the system clipboard's HTML representation, or an empty string when the
+    /// clipboard has no HTML representation
+    GetClipboardHtml(WebViewId, GenericCallback<Result<String, String>>),
+    /// Sets system clipboard HTML contents
+    SetClipboardHtml(WebViewId, String),
     /// Changes the cursor.
     SetCursor(WebViewId, Cursor),
     /// A favicon was detected

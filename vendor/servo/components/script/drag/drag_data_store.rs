@@ -63,7 +63,7 @@ impl Kind {
         }
     }
 
-    fn text_type_matches(&self, text_type: &DOMString) -> bool {
+    pub(crate) fn text_type_matches(&self, text_type: &DOMString) -> bool {
         matches!(self, Kind::Text { type_, .. } if type_.eq(text_type))
     }
 

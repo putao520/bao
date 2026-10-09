@@ -120,11 +120,27 @@ impl ClipboardEvent {
     /// Returns the text content of this [`ClipboardEvent`]'s [`DataTransfer`] object if
     /// any exists.
     pub(crate) fn text_content(&self) -> Option<String> {
+        self.clipboard_content(DOMString::from_static("text/plain"))
+    }
+
+    /// Returns the `text/html` content of this [`ClipboardEvent`]'s [`DataTransfer`]
+    /// object if any exists.
+    pub(crate) fn html_content(&self) -> Option<String> {
+        self.clipboard_content(DOMString::from_static("text/html"))
+    }
+
+    /// Returns the clipboard content of the given type, if the [`DataTransfer`] has a
+    /// non-empty text representation of it.
+    fn clipboard_content(&self, type_: DOMString) -> Option<String> {
         self.clipboard_data()?
             .data_store()?
             .iter_item_list()
             .find_map(|item| match item {
-                Kind::Text { data, .. } if !data.is_empty() => Some(data.to_string()),
+                Kind::Text { data, .. }
+                    if !data.is_empty() && item.text_type_matches(&type_) =>
+                {
+                    Some(data.to_string())
+                }
                 _ => None,
             })
     }
