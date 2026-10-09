@@ -36,9 +36,6 @@
 mod common;
 use common::client_hello::{CaptureServer, ClientHello};
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -285,89 +282,26 @@ fn per_page_divergent_wire_profiles_live() {
 //    divergent-profile page coexists
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Minimal plain-HTTP fixture for the SW origin: `/` → page HTML,
-/// `/sw.js` → the templated SW script (same shape as
-/// sw_stealth_profile_tests' fixture, trimmed to the two paths used here).
-struct SwOriginFixture {
-    shutdown: Arc<AtomicBool>,
-    sw_script: Arc<Mutex<Option<String>>>,
-    port: u16,
+/// Minimal plain-HTTP fixture for the SW origin (shared skeleton in
+/// common/http_fixture.rs): `/` → page HTML, `/sw.js` → the templated SW
+/// script (same shape as sw_stealth_profile_tests' fixture, trimmed to the
+/// two paths used here).
+fn spawn_sw_origin_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn(
+        "sw-origin-fixture",
+        Arc::new(|path: &str, script: Option<&str>| -> (&'static str, String) {
+            if path.starts_with("/sw.js") {
+                // Unset script serves an empty JS body (unwrap_or_default).
+                ("application/javascript", script.unwrap_or("").to_string())
+            } else {
+                (
+                    "text/html",
+                    "<html><body>sw origin fixture</body></html>".to_string(),
+                )
+            }
+        }),
+    )
 }
-
-impl SwOriginFixture {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind sw origin fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let sw_script: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let shutdown_c = Arc::clone(&shutdown);
-        let script_c = Arc::clone(&sw_script);
-        std::thread::Builder::new()
-            .name("sw-origin-fixture".into())
-            .spawn(move || {
-                while !shutdown_c.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_nonblocking(false);
-                            let _ = tcp.set_read_timeout(Some(Duration::from_millis(300)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 2048];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none() &&
-                                Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            let body: String = if path.starts_with("/sw.js") {
-                                script_c.lock().unwrap().clone().unwrap_or_default()
-                            } else {
-                                "<html><body>sw origin fixture</body></html>".into()
-                            };
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                if path.starts_with("/sw.js") {
-                                    "application/javascript"
-                                } else {
-                                    "text/html"
-                                },
-                                body.len()
-                            );
-                            let _ = tcp.write_all(response.as_bytes());
-                            let _ = tcp.write_all(body.as_bytes());
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        },
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        },
-                        Err(_) => return,
-                    }
-                }
-            })
-            .expect("spawn sw origin fixture");
-        SwOriginFixture {
-            shutdown,
-            sw_script,
-            port,
-        }
-    }
-
-    fn set_script(&self, script: String) {
-        *self.sw_script.lock().unwrap() = Some(script);
-    }
-}
-
 /// @trace REQ-BRW-004 [criterion:19] [level:integration] SW-realm egress
 /// rides the REGISTERING page's stealth profile under multi-page profile
 /// divergence (R53-A ownership ruling, live wire capture)
@@ -391,7 +325,7 @@ fn sw_egress_rides_host_page_profile_under_divergence_live() {
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
     bun_core::Output::init_test();
 
-    let fixture = SwOriginFixture::spawn();
+    let fixture = spawn_sw_origin_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     let capture_sw = CaptureServer::spawn();
     fixture.set_script(format!(

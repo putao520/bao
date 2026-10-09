@@ -53,10 +53,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
@@ -65,106 +62,23 @@ use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PageHandle};
 // Minimal H1 fixture: per-path JS worker scripts + hit log
 // ---------------------------------------------------------------------------
 
-struct RealmApiFixture {
-    shutdown: Arc<AtomicBool>,
-    hits: Arc<Mutex<Vec<String>>>,
-    port: u16,
+fn spawn_realm_api_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn(
+        "realm-api-fixture",
+        Arc::new(|path: &str, _script: Option<&str>| -> (&'static str, String) {
+            // Worker scripts MUST be served with a JavaScript MIME — both
+            // the classic worker script fetch and importScripts enforce
+            // SCRIPT_JS_MIMES (htmlscriptelement.rs).
+            match path {
+                "/wk_c8.js" => ("application/javascript", WK_C8_BODY.to_string()),
+                "/wk_import.js" => ("application/javascript", WK_IMPORT_BODY.to_string()),
+                "/wk_msg.js" => ("application/javascript", WK_MSG_BODY.to_string()),
+                "/helper.js" => ("application/javascript", HELPER_JS_BODY.to_string()),
+                _ => ("text/plain", "ok".to_string()),
+            }
+        }),
+    )
 }
-
-impl RealmApiFixture {
-    /// Routes: path → (mime, body). Worker scripts MUST be served with a
-    /// JavaScript MIME — both the classic worker script fetch and
-    /// importScripts enforce SCRIPT_JS_MIMES (htmlscriptelement.rs).
-    fn route(path: &str) -> (&'static str, String) {
-        match path {
-            "/wk_c8.js" => ("application/javascript", WK_C8_BODY.to_string()),
-            "/wk_import.js" => ("application/javascript", WK_IMPORT_BODY.to_string()),
-            "/wk_msg.js" => ("application/javascript", WK_MSG_BODY.to_string()),
-            "/helper.js" => ("application/javascript", HELPER_JS_BODY.to_string()),
-            _ => ("text/plain", "ok".to_string()),
-        }
-    }
-
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind realm-api fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let (s2, h2) = (Arc::clone(&shutdown), Arc::clone(&hits));
-        std::thread::Builder::new()
-            .name("realm-api-fixture".into())
-            .spawn(move || {
-                while !s2.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_read_timeout(Some(Duration::from_secs(2)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 4096];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none()
-                                && Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|l| l.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            h2.lock().unwrap().push(path.clone());
-                            let (ct, body) = Self::route(&path);
-                            let resp = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
-                                len = body.len(),
-                            );
-                            let _ = tcp.write_all(resp.as_bytes());
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(_) => return,
-                    }
-                }
-            })
-            .expect("spawn realm-api fixture thread");
-        RealmApiFixture {
-            shutdown,
-            hits,
-            port,
-        }
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{}", self.port, path)
-    }
-
-    fn origin(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-
-    fn saw(&self, path: &str) -> bool {
-        self.hits.lock().unwrap().iter().any(|p| p == path)
-    }
-
-    fn hits(&self) -> Vec<String> {
-        self.hits.lock().unwrap().clone()
-    }
-}
-
-impl Drop for RealmApiFixture {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Served worker script bodies
 // ---------------------------------------------------------------------------
@@ -520,7 +434,7 @@ fn worker_realm_api_c2_page_to_worker_postmessage_echo() {
     if should_skip() {
         return;
     }
-    let fixture = RealmApiFixture::spawn();
+    let fixture = spawn_realm_api_fixture();
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
@@ -548,10 +462,10 @@ fn worker_realm_api_c2_page_to_worker_postmessage_echo() {
         panic!(
             "c2: NO worker verdict arrived — page→worker postMessage never reached \
              worker onmessage (early-message queue or delivery gap). fixture: {:?}",
-            fixture.hits()
+            fixture.recorded_paths()
         )
     });
-    eprintln!("[c2] rx={rx} hits={:?}", fixture.hits());
+    eprintln!("[c2] rx={rx} hits={:?}", fixture.recorded_paths());
 
     let echo = rx
         .split(";;")
@@ -560,7 +474,7 @@ fn worker_realm_api_c2_page_to_worker_postmessage_echo() {
             panic!(
                 "c2: no C2ECHO verdict in worker traffic (got {rx:?}) — echo request \
                  lost or worker errored; fixture: {:?}",
-                fixture.hits()
+                fixture.recorded_paths()
             )
         });
     assert_eq!(
@@ -599,7 +513,7 @@ fn worker_realm_api_c6_structured_clone_roundtrip_five_types() {
     if should_skip() {
         return;
     }
-    let fixture = RealmApiFixture::spawn();
+    let fixture = spawn_realm_api_fixture();
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
@@ -627,7 +541,7 @@ fn worker_realm_api_c6_structured_clone_roundtrip_five_types() {
         panic!(
             "c6: worker never delivered its CLONEIN verdict (page→worker structured \
              clone delivery gap). fixture: {:?}",
-            fixture.hits()
+            fixture.recorded_paths()
         )
     });
     eprintln!("[c6-clone-in] {clonein}");
@@ -644,7 +558,7 @@ fn worker_realm_api_c6_structured_clone_roundtrip_five_types() {
             panic!(
                 "c6: worker→page structured clone object never arrived or page-side \
                  verification never ran. fixture: {:?}",
-                fixture.hits()
+                fixture.recorded_paths()
             )
         });
     eprintln!("[c6-clone-out] {cloneout}");
@@ -676,7 +590,7 @@ fn worker_realm_api_c6_import_scripts_helper_globals() {
     if should_skip() {
         return;
     }
-    let fixture = RealmApiFixture::spawn();
+    let fixture = spawn_realm_api_fixture();
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
@@ -715,17 +629,17 @@ fn worker_realm_api_c6_import_scripts_helper_globals() {
                 "c6-import: worker verdict never arrived — importScripts('/helper.js') \
                  may have wedged the worker script evaluation (sync load). \
                  fixture: {:?}",
-                fixture.hits()
+                fixture.recorded_paths()
             )
         });
-    eprintln!("[c6-import] {verdict} hits={:?}", fixture.hits());
+    eprintln!("[c6-import] {verdict} hits={:?}", fixture.recorded_paths());
 
     // Two-sided proof: the helper fetch actually hit the server.
     assert!(
         fixture.saw("/helper.js"),
         "c6-import: fixture never saw /helper.js (importScripts fetch never \
          egressed): {:?}",
-        fixture.hits()
+        fixture.recorded_paths()
     );
     assert!(
         verdict.starts_with("C6IMPORT|"),
@@ -773,7 +687,7 @@ fn worker_realm_api_c8_crypto_performance_location() {
     if should_skip() {
         return;
     }
-    let fixture = RealmApiFixture::spawn();
+    let fixture = spawn_realm_api_fixture();
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
     let page = runtime
         .create_page(&PageConfig {
@@ -811,10 +725,10 @@ fn worker_realm_api_c8_crypto_performance_location() {
             panic!(
                 "c8: worker verdict never arrived (worker script wedged or \
                  postMessage gap). fixture: {:?}",
-                fixture.hits()
+                fixture.recorded_paths()
             )
         });
-    eprintln!("[c8] {verdict} hits={:?}", fixture.hits());
+    eprintln!("[c8] {verdict} hits={:?}", fixture.recorded_paths());
 
     if let Some(t) = verdict
         .strip_prefix("C8|")

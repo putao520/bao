@@ -31,10 +31,9 @@
 //     -E 'test(audioworklet_tests)'
 
 #![allow(dead_code)]
+#[path = "common/mod.rs"]
+mod common;
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -341,134 +340,64 @@ function __publish(origin) {
 /// service worker, `/dummy` module target (served with a JS MIME so the
 /// engine module path is exercised end to end), `/aw-sw-probe` verdict
 /// sink.
-struct AwHttpFixture {
-    shutdown: Arc<AtomicBool>,
-    paths: Arc<Mutex<Vec<String>>>,
-    origin: Arc<Mutex<String>>,
-    port: u16,
+fn spawn_aw_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn_with_headers(
+        "aw-fixture",
+        Arc::new(|path: &str, origin: Option<&str>| -> (&'static str, String) {
+            let origin = origin.unwrap_or("");
+            if path.starts_with("/processor.js") {
+                ("text/javascript", PROCESSOR_JS.replace("__ORIGIN__", origin))
+            } else if path.starts_with("/echo-processor.js") {
+                ("text/javascript", ECHO_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/throw-processor.js") {
+                ("text/javascript", THROW_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/port-processor.js") {
+                ("text/javascript", PORT_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/ctor-post-processor.js") {
+                ("text/javascript", CTOR_POST_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/this-state-processor.js") {
+                ("text/javascript", THIS_STATE_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/opts-processor.js") {
+                ("text/javascript", OPTS_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/nested-opts-processor.js") {
+                ("text/javascript", NESTED_OPTS_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/pipo-processor.js") {
+                ("text/javascript", PIPO_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/invalid-param-processor.js") {
+                ("text/javascript", INVALID_PARAM_PROCESSOR_JS.to_string())
+            } else if path.starts_with("/sw.js") {
+                ("application/javascript", AW_SW_JS.replace("__ORIGIN__", origin))
+            } else if path.starts_with("/dummy") {
+                // JS MIME: keeps the engine module MIME face in
+                // play (the WPT wptserve serves its bare
+                // `dummy` as octet-stream — a test-data
+                // artifact this fixture removes).
+                ("text/javascript", String::new())
+            } else {
+                ("text/html", "<html><body>aw fixture</body></html>".to_string())
+            }
+        }),
+        &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Service-Worker-Allowed", "/"),
+        ],
+    )
 }
 
-impl AwHttpFixture {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind audio worklet fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let origin: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-        let shutdown_c = Arc::clone(&shutdown);
-        let paths_c = Arc::clone(&paths);
-        let origin_c = Arc::clone(&origin);
-        std::thread::Builder::new()
-            .name("aw-fixture".into())
-            .spawn(move || {
-                while !shutdown_c.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_read_timeout(Some(Duration::from_millis(300)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 4096];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none() &&
-                                Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            paths_c.lock().unwrap().push(path.clone());
-                            let origin = origin_c.lock().unwrap().clone();
-                            let (ct, body): (&str, String) = if path.starts_with("/processor.js")
-                            {
-                                ("text/javascript", PROCESSOR_JS.replace("__ORIGIN__", &origin))
-                            } else if path.starts_with("/echo-processor.js") {
-                                ("text/javascript", ECHO_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/throw-processor.js") {
-                                ("text/javascript", THROW_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/port-processor.js") {
-                                ("text/javascript", PORT_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/ctor-post-processor.js") {
-                                ("text/javascript", CTOR_POST_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/this-state-processor.js") {
-                                ("text/javascript", THIS_STATE_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/opts-processor.js") {
-                                ("text/javascript", OPTS_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/nested-opts-processor.js") {
-                                ("text/javascript", NESTED_OPTS_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/pipo-processor.js") {
-                                ("text/javascript", PIPO_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/invalid-param-processor.js") {
-                                ("text/javascript", INVALID_PARAM_PROCESSOR_JS.to_string())
-                            } else if path.starts_with("/sw.js") {
-                                ("application/javascript", AW_SW_JS.replace("__ORIGIN__", &origin))
-                            } else if path.starts_with("/dummy") {
-                                // JS MIME: keeps the engine module MIME face in
-                                // play (the WPT wptserve serves its bare
-                                // `dummy` as octet-stream — a test-data
-                                // artifact this fixture removes).
-                                ("text/javascript", String::new())
-                            } else {
-                                ("text/html", "<html><body>aw fixture</body></html>".into())
-                            };
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nAccess-Control-Allow-Origin: *\r\nService-Worker-Allowed: /\r\nConnection: close\r\n\r\n",
-                                ct = ct,
-                                len = body.len(),
-                            );
-                            let _ = tcp.write_all(response.as_bytes());
-                            let _ = tcp.write_all(body.as_bytes());
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        },
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        },
-                        Err(_) => return,
-                    }
-                }
-            })
-            .expect("spawn audio worklet fixture thread");
-        AwHttpFixture {
-            shutdown,
-            paths,
-            origin,
-            port,
-        }
-    }
-
-    fn set_origin(&self, origin: String) {
-        *self.origin.lock().unwrap() = origin;
-    }
-
-    fn recorded_paths(&self) -> Vec<String> {
-        self.paths.lock().unwrap().clone()
-    }
-
-    fn probe_result(&self, sink: &str) -> Option<String> {
-        self.recorded_paths()
-            .into_iter()
-            .find(|p| p.starts_with(sink))
-            .map(|p| {
-                let raw = p.trim_start_matches(sink).trim_start_matches("?result=");
-                urldecode(raw)
-            })
-    }
+/// The first probe-sink request's decoded `result` JSON.
+fn probe_result(
+    fixture: &common::http_fixture::HttpFixture,
+    sink: &str,
+) -> Option<String> {
+    fixture
+        .recorded_paths()
+        .into_iter()
+        .find(|p| p.starts_with(sink))
+        .map(|p| {
+            let raw = p.trim_start_matches(sink).trim_start_matches("?result=");
+            urldecode(raw)
+        })
 }
-
-impl Drop for AwHttpFixture {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
-}
-
 fn urldecode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -558,7 +487,7 @@ fn audioworklet_surface_addmodule_and_scope_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_origin(origin.clone());
 
@@ -646,7 +575,7 @@ fn audioworklet_module_fetch_destination_via_sw_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_origin(origin.clone());
 
@@ -702,7 +631,7 @@ fn audioworklet_module_fetch_destination_via_sw_live() {
     // The SW's own record of the observed destination.
     let sw_verdict =
         wait_for(
-            || fixture.probe_result("/aw-sw-probe"),
+            || probe_result(&fixture, "/aw-sw-probe"),
             Duration::from_secs(20),
             "SW destination probe publish (/aw-sw-probe)",
         )
@@ -734,7 +663,7 @@ fn audioworklet_node_constructs_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_origin(origin.clone());
 
@@ -807,7 +736,7 @@ fn audioworklet_node_constructs_live() {
 /// Shared live-runtime setup for the 段(3) wiring scenarios: fixture + page
 /// with the named processor module already added to the context's worklet.
 fn spawn_wired_page(
-    fixture: &AwHttpFixture,
+    fixture: &common::http_fixture::HttpFixture,
     runtime: &BrowserRuntime,
     module_path: &str,
 ) -> PageHandle {
@@ -855,7 +784,7 @@ fn audioworklet_render_echo_and_parameters_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -947,7 +876,7 @@ fn audioworklet_processorerror_fires_once_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -997,7 +926,7 @@ fn audioworklet_port_roundtrip_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -1047,7 +976,7 @@ fn audioworklet_processor_options_simple_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -1105,7 +1034,7 @@ fn audioworklet_processor_options_nested_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -1164,7 +1093,7 @@ fn audioworklet_processor_options_port_in_port_roundtrip_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -1241,7 +1170,7 @@ fn audioworklet_ctor_port_message_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -1288,7 +1217,7 @@ fn audioworklet_process_this_binding_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");
@@ -1356,7 +1285,7 @@ fn audioworklet_invalid_param_getter_invalidates_node_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = AwHttpFixture::spawn();
+    let fixture = spawn_aw_fixture();
     fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
     let runtime = BrowserRuntime::new(BaoConfig::default())
         .expect("gated live test: BrowserRuntime::new must succeed");

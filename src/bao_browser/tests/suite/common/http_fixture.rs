@@ -51,6 +51,18 @@ impl HttpFixture {
     /// Spawn the fixture under `name` (thread name + bind-expect label,
     /// keeping log attribution identical to the former per-file copies).
     pub fn spawn(name: &str, route: RouteFn) -> Self {
+        Self::spawn_with_headers(name, route, &[])
+    }
+
+    /// [`HttpFixture::spawn`] with extra response headers, emitted between
+    /// `Content-Length` and `Connection: close` (wire order preserved from
+    /// the per-file copies that carried them — e.g. the audioworklet
+    /// fixture's `Access-Control-Allow-Origin` + `Service-Worker-Allowed`).
+    pub fn spawn_with_headers(name: &str, route: RouteFn, extra_headers: &[(&str, &str)]) -> Self {
+        let extra_headers: Vec<(String, String)> = extra_headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let listener = TcpListener::bind("127.0.0.1:0")
             .unwrap_or_else(|e| panic!("bind {name} fixture: {e}"));
         let port = listener.local_addr().unwrap().port();
@@ -110,11 +122,15 @@ impl HttpFixture {
                             let sw_script_body = script_c.lock().unwrap().clone();
                             let (content_type, body) =
                                 route(&path, sw_script_body.as_deref());
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+                            let mut response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\n",
                                 ct = content_type,
                                 len = body.len()
                             );
+                            for (k, v) in &extra_headers {
+                                response.push_str(&format!("{k}: {v}\r\n"));
+                            }
+                            response.push_str("Connection: close\r\n\r\n");
                             let _ = tcp.write_all(response.as_bytes());
                             let _ = tcp.write_all(body.as_bytes());
                             let _ = tcp.shutdown(std::net::Shutdown::Both);
@@ -142,6 +158,13 @@ impl HttpFixture {
         *self.sw_script.lock().unwrap() = Some(script);
     }
 
+    /// Alias of [`HttpFixture::set_script`] for fixtures whose templating
+    /// slot carries a page origin (audioworklet's `__ORIGIN__` replace) —
+    /// one slot, both templating uses.
+    pub fn set_origin(&self, origin: String) {
+        self.set_script(origin);
+    }
+
     pub fn recorded_paths(&self) -> Vec<String> {
         self.paths.lock().unwrap().clone()
     }
@@ -150,6 +173,21 @@ impl HttpFixture {
     /// destination face reads the wire header the egress carried.
     pub fn recorded_dests(&self) -> Vec<(String, Option<String>)> {
         self.dests.lock().unwrap().clone()
+    }
+
+    /// Absolute URL for `path` on this fixture.
+    pub fn url(&self, path: &str) -> String {
+        format!("http://127.0.0.1:{}{}", self.port, path)
+    }
+
+    /// The fixture's HTTP origin (`http://127.0.0.1:<port>`).
+    pub fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// True iff a request with EXACTLY this path was recorded.
+    pub fn saw(&self, path: &str) -> bool {
+        self.paths.lock().unwrap().iter().any(|p| p == path)
     }
 
     pub fn count(&self) -> usize {
