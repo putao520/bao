@@ -73,6 +73,10 @@ struct WebdriverBridge {
     /// Input events whose DOM handling the delegate must acknowledge
     /// (`notify_input_event_handled`).
     pending_input_events: HashMap<InputEventId, Sender<()>>,
+    /// Input events whose handled edge fired with no waiter registered —
+    /// replayed by the dispatch arm's insert (see
+    /// [`notify_input_event_handled`]).
+    handled_input_events: std::collections::HashSet<InputEventId>,
     /// The single in-flight WebDriver script evaluation's response channel —
     /// servoshell's interrupt face for "user prompt during script
     /// evaluation" (a dialog resolves the evaluation with null).
@@ -146,10 +150,27 @@ pub fn notify_traversal_complete(traversal_id: TraversalId) {
 
 /// `WebViewDelegate::notify_input_event_handled` — acknowledge the pending
 /// WebDriver input event.
+///
+/// The handled edge can arrive before the dispatch arm registers the
+/// event's sender: the ScriptThread finishes the key handling and reports
+/// `InputEventsHandled` (routed to the delegate independently of the pump
+/// thread) while the pump is still between `webdriver_dispatch_input_event`
+/// and the `pending_input_events` insert. Without the latch the edge is
+/// dropped and `wait_for_input_event_handled`'s unbounded `recv` wedges the
+/// serial dispatcher forever — the input-event twin of the e26 load-status
+/// livelock (same lost-edge race, same latch-replay fix; WPT editing red
+/// face 2026-10-09: keydown-hides-editor tests TIMEOUT under load).
 pub fn notify_input_event_handled(event_id: InputEventId) {
     with_bridge(|bridge| {
         if let Some(sender) = bridge.pending_input_events.remove(&event_id) {
             let _ = sender.send(());
+        } else {
+            // Edge before waiter — latch it for replay at insert time.
+            // Events dispatched without a response sender (the non-blocking
+            // touch path) may latch without ever being drained: one leaked
+            // `usize` per such event, the same bounded-growth trade-off as
+            // `completed_loads`.
+            bridge.handled_input_events.insert(event_id);
         }
     });
 }
@@ -161,8 +182,21 @@ pub fn notify_input_event_handled(event_id: InputEventId) {
 /// dialog blocks page load).
 pub fn show_embedder_control(webview_id: WebViewId, control: EmbedderControl) {
     with_bridge(|bridge| {
-        if let Some(response_sender) = &bridge.script_interrupt {
-            let _ = response_sender.send(Ok(servo::JSValue::Null));
+        // Only a user prompt (a script-initiated dialog) interrupts an
+        // in-flight script evaluation (servoshell: `show_embedder_control`'s
+        // webdriver branch gates `interrupt_webdriver_script_evaluation` on
+        // `SimpleDialog` — the WebDriver spec's "user prompt during script
+        // evaluation resolves it with null"). Interrupting on other controls
+        // breaks the wptrunner testdriver protocol: `InputMethod` fires every
+        // time an editable element is focused, and its phantom null resolves
+        // the pending async-script poll out-of-band — the page's next
+        // testdriver message then lands in the dead evaluation's channel and
+        // `performActions` never runs (keydown-hides-editor test family,
+        // 2026-10-09 e154 forensics).
+        if matches!(control, EmbedderControl::SimpleDialog(..)) {
+            if let Some(response_sender) = &bridge.script_interrupt {
+                let _ = response_sender.send(Ok(servo::JSValue::Null));
+            }
         }
 
         let is_blocking = matches!(
@@ -447,9 +481,17 @@ impl WebDriverHost {
                                 (event_id, response_sender)
                             {
                                 with_bridge(|bridge| {
-                                    bridge
-                                        .pending_input_events
-                                        .insert(event_id, response_sender);
+                                    if bridge.handled_input_events.remove(&event_id) {
+                                        // The handled edge raced ahead of this
+                                        // insert — replay it so the dispatcher's
+                                        // `recv` resolves instead of waiting on a
+                                        // notification that already fired.
+                                        let _ = response_sender.send(());
+                                    } else {
+                                        bridge
+                                            .pending_input_events
+                                            .insert(event_id, response_sender);
+                                    }
                                 });
                             }
                         }

@@ -82,3 +82,39 @@
 - rerun4(首轮验证,保守规则 meta):849 tests/821 as-expected(96.7%)/sub unexpected-PASS 残留 1504(保守规则产物,见上①)→ 触发规则精化;unexpected-FAIL 1240 稳定(分歧集)
 - **rerun5(终态验证,精化后 meta 136 ini,worktree@51b1f37d 二进制)——campaign 收口读数**:849 tests **840 as-expected(98.9%)/9 unexpected-FAIL 文件(全 other 域)**;子测 **113704 as-expected + 1240 unexpected-FAIL + 1 TIMEOUT + 2 NOTRUN,unexpected-PASS=0**(正翻吸收彻底,零噪音)。红面三轮恒定(rerun3/4/5 逐子测零漂移实证,inserthtml 全量 diff=0)=**确定性分歧集**:ot 991/ws 166/run 83 子测(plaintext-only delete 族/execCommand 语义细节),后续合同域;二进制重建插曲:/tmp/e147-wt-target 整体被清扫(第五次载具资产损失)→ /tmp/e150-target 冷建 21min(sccache 温)
 - 载具资产损失实录(本波×2):22:2x e147-wt-target 清扫(首轮);00:1x 同目录再次清扫致 rerun5 首发空跑——/private 载具半衰期纪律再证;脚本坑:sed 派生 rerun5.sh 只换 tag 未换目录前缀,日志写入 rerun4/{ec5..rn5}(与 ec4.* 并存零覆盖,实为幸运)
+
+## e154 清偿(2026-10-10,REQ-BRW-002 登记面清偿批⑰)
+
+### 根因裁定:1240 = 继承面(锚时代错位),非 bao 引擎缺口
+
+e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commits 的 stale 态(file 级 CRASH/TIMEOUT 期望);重锚吸收 CRASH 正翻后子测落回默认 expected-PASS,才形成「1240 意外红」。**逐子测对照 origin/main ini:1240 格全部 = 上游最新态同样 expected FAIL**(insertlinebreak-with-white-space-style 456/insertparagraph-with-white-space-style 400/editing-around-select-element 100/ws inserttext 165/rn inserttext 67+styling 16/其余 ~40)。正翻面 33 格全在 edit-context(e151 面,e150 已吸收)。
+
+**ini 终态**:以 origin/main 为锚重建 vendor meta/editing(非 edit-context 子树),吸收 bao 正翻;event.html(顶层,e150 五域路径漏覆盖)首次纳入并补跑验证(ev7:35 as-expected FAIL+145 PASS 零意外)。第三次吸收(rerun7 观察):+24 格正翻清除,other/insertparagraph.html.ini 全吸收删除。edit-context 子树保持 e151/e153 锚(ec7 观察 16 格 exp-FAIL→PASS 漂移,归 e153 面处理)。
+
+### 真分歧面修复:webdriver script_interrupt 门控(挂死族根治)
+
+**症状族**:edit-in-textcontrol(4 变体)/setting-value(4)/exec-command-with-text-editor(3)/input-in-text-control(3)等一切「聚焦可编辑元素 + testdriver 按键」测试 TIMEOUT——rerun5 只显 1 变体(4 进程并发下竞态形状),隔离复现全量。
+
+**取证链**:test-ci-dbg 符号档构建(/var/tmp,21min)→ gdb 全线程深栈:dispatcher 阻塞在 `handle_execute_async_script` 的无界 wait;Script#1/主循环空闲;runner 日志序列 `None→complete` 且全程零 action 消息(performActions 从未被 runner 收到)→ wptrunner classic testdriver 协议(message-queue.js 单消费回调)被**幻影 null** 失步:页面下一条消息落入已死求值通道。
+
+**根因**:bao `show_embedder_control` 对**一切** EmbedderControl 无条件把在飞脚本求值解为 null;servoshell 参考形(ports/servoshell/running_app_state.rs:837)只对 `SimpleDialog` 门控。`InputMethod` 控件在**聚焦可编辑元素**时触发(editor.select() → run_the_focusing_steps)——正是本族测试的共同前置。修复=门控对齐 servoshell(webdriver_host.rs,SimpleDialog-only)。
+
+**配套硬化**:input-event 完成边沿 latch(`handled_input_events`,镜像 e26 completed_loads——notify 可先于 pump insert 到达的丢边类;共享前未单独证fire,防御层)。
+
+### 残留登记(非本波面)
+
+- **data_transfer_on_input_event 1 格**(file ERROR):InputEvent.dataTransfer 在 paste 路径为 null——引擎语义缺口,上游已实现(bao 未);保持可见红,后续合同域。
+- **32 格归因 e153 EditContext P1 commit(1622b097)**:execcommands.rs(+102)/inputevent.rs 改动翻转 exec-command-with-text-editor 26 格(rerun5 时过)+ exec-command-without-editable 4 格 + run/insertparagraph 1 格;已如实上报归属,不由本波代修。
+- **8 格 file 级 CRASH/ERROR**(insert-list-preserving 等):4 进程负载假红(隔离复跑全绿),环境面。
+
+### 回归证据
+
+- rerun7(修复后全五域+event.html):ws 0 意外红/rn 1(e153 面)/ev 0/ec 0(ct 全 as-expected);ot 意外=32(e153+data_transfer)+8(负载)。
+- editing_e2e **4/4 真绿**(含两测 pref 激活后真断言);editcontext 锁 c1-c5 **5/5**;`cargo check -p bao-browser --features webdriver` RC=0;test-ci/test-ci-dbg 双档构建 RC=0。
+- 隔离复跑(残面 10 文件,processes=1):挂死族 16 文件全 OK。
+
+### 教训
+
+1. **载具必须 /var/tmp**:本波 /tmp/e150(载具+raw log 全量)与 /tmp/e154-dbg-target(16G 符号档)双双被清扫(第六/七次载具损失);重建于 /var/tmp/e154-veh(venv 拷贝+manifest rebuild 39M+meta 拷贝,配方在本文件§A+gen_manifest.py)。
+2. **meta 锚时代校验**:吸收 CRASH 正翻前先核锚仓与 origin/main 的 ini 时代差(git ls-tree 对照),stale 锚吸收会把上游已知红变成「意外红」。
+3. gdb `thread find` 不切线程,-batch 用 `thread apply all bt N` 提取;挂死窗口用 timeout-multiplier 拉宽+新鲜 PID 集(OLD 集排除)防抓孤儿。
