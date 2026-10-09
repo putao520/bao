@@ -8,22 +8,72 @@ use crate::profile::{
 };
 use crate::webgl_audio::{AudioProfile, WebGLProfile};
 
-pub struct StealthHooks {
-    audio_js: String,
-    navigator_js: String,
-    font_js: String,
-    battery_js: String,
-    webrtc_js: String,
-    timing_js: String,
-    clientrects_js: String,
-    screen_display_js: String,
-    plugin_js: String,
-    speech_js: String,
-    media_devices_js: String,
-    permissions_js: String,
-    webgl_context_js: String,
-    connection_js: String,
-    iframe_js: String,
+/// Segment table (M9 install_* 宏收敛, e165, REQ-BRW-049; repays the e152
+/// audit §二 finding that the 15 hook-segment names were hand-repeated four
+/// times — struct fields, per-segment getters, and `combined_js`'s capacity
+/// + concatenation). The bare field list below is the single source for
+/// those three mechanical mirrors; the constructor mapping (`field =>
+/// builder(args)`) stays explicit in `from_profile` because the builder
+/// argument shapes are per-segment data, not boilerplate.
+///
+/// Byte-parity contract: the generated getters and `combined_js` are the
+/// statement-for-statement equivalents of the hand-written forms they
+/// replaced — same getter bodies, same segment order with `\n` separators
+/// between segments (no trailing newline after the last), same capacity
+/// formula (sum of segment lens + 16 slack). Pinned by the face-lock suite
+/// (JS-injection profile-consistency tests) and the e165 pre/post capture
+/// diff (48/48 artifacts byte-identical).
+macro_rules! stealth_hook_segments {
+    ( $first:ident $(, $rest:ident )* $(,)? ) => {
+        pub struct StealthHooks {
+            $first: String,
+            $( $rest: String, )*
+        }
+
+        impl StealthHooks {
+            pub fn $first(&self) -> &str {
+                &self.$first
+            }
+
+            $(
+                pub fn $rest(&self) -> &str {
+                    &self.$rest
+                }
+            )*
+
+            pub fn combined_js(&self) -> String {
+                // Byte-parity with the hand-written form: '\n' BETWEEN
+                // segments only — the last segment gets NO trailing newline
+                // (pinned by the e165 capture diff).
+                let mut out =
+                    String::with_capacity(16 + self.$first.len() $( + self.$rest.len() )*);
+                out.push_str(&self.$first);
+                $(
+                    out.push('\n');
+                    out.push_str(&self.$rest);
+                )*
+                out
+            }
+        }
+    };
+}
+
+stealth_hook_segments! {
+    audio_js,
+    navigator_js,
+    font_js,
+    battery_js,
+    webrtc_js,
+    timing_js,
+    clientrects_js,
+    screen_display_js,
+    plugin_js,
+    speech_js,
+    media_devices_js,
+    permissions_js,
+    webgl_context_js,
+    connection_js,
+    iframe_js,
 }
 
 impl StealthHooks {
@@ -75,117 +125,6 @@ impl StealthHooks {
             connection_js: Self::build_connection_js(connection),
             iframe_js: Self::build_iframe_js(iframe),
         }
-    }
-
-    pub fn audio_js(&self) -> &str {
-        &self.audio_js
-    }
-
-    pub fn navigator_js(&self) -> &str {
-        &self.navigator_js
-    }
-
-    pub fn font_js(&self) -> &str {
-        &self.font_js
-    }
-
-    pub fn battery_js(&self) -> &str {
-        &self.battery_js
-    }
-
-    pub fn webrtc_js(&self) -> &str {
-        &self.webrtc_js
-    }
-
-    pub fn timing_js(&self) -> &str {
-        &self.timing_js
-    }
-
-    pub fn clientrects_js(&self) -> &str {
-        &self.clientrects_js
-    }
-
-    pub fn screen_display_js(&self) -> &str {
-        &self.screen_display_js
-    }
-
-    pub fn plugin_js(&self) -> &str {
-        &self.plugin_js
-    }
-
-    pub fn speech_js(&self) -> &str {
-        &self.speech_js
-    }
-
-    pub fn media_devices_js(&self) -> &str {
-        &self.media_devices_js
-    }
-
-    pub fn permissions_js(&self) -> &str {
-        &self.permissions_js
-    }
-
-    pub fn webgl_context_js(&self) -> &str {
-        &self.webgl_context_js
-    }
-
-    pub fn connection_js(&self) -> &str {
-        &self.connection_js
-    }
-
-    pub fn iframe_js(&self) -> &str {
-        &self.iframe_js
-    }
-
-    pub fn combined_js(&self) -> String {
-        let mut out = String::with_capacity(
-            self.audio_js.len()
-                + self.navigator_js.len()
-                + self.font_js.len()
-                + self.battery_js.len()
-                + self.webrtc_js.len()
-                + self.timing_js.len()
-                + self.clientrects_js.len()
-                + self.screen_display_js.len()
-                + self.plugin_js.len()
-                + self.speech_js.len()
-                + self.media_devices_js.len()
-                + self.permissions_js.len()
-                + self.webgl_context_js.len()
-                + self.connection_js.len()
-                + self.iframe_js.len()
-                + 16,
-        );
-        out.push_str(&self.audio_js);
-        out.push('\n');
-        out.push_str(&self.navigator_js);
-        out.push('\n');
-        out.push_str(&self.font_js);
-        out.push('\n');
-        out.push_str(&self.battery_js);
-        out.push('\n');
-        out.push_str(&self.webrtc_js);
-        out.push('\n');
-        out.push_str(&self.timing_js);
-        out.push('\n');
-        out.push_str(&self.clientrects_js);
-        out.push('\n');
-        out.push_str(&self.screen_display_js);
-        out.push('\n');
-        out.push_str(&self.plugin_js);
-        out.push('\n');
-        out.push_str(&self.speech_js);
-        out.push('\n');
-        out.push_str(&self.media_devices_js);
-        out.push('\n');
-        out.push_str(&self.permissions_js);
-        out.push('\n');
-        out.push_str(&self.webgl_context_js);
-        out.push('\n');
-        out.push_str(&self.connection_js);
-        out.push('\n');
-        out.push_str(&self.iframe_js);
-        out
     }
 
     // ── Canvas hooks ──────────────────────────────────────────────

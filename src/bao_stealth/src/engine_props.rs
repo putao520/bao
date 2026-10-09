@@ -1599,6 +1599,29 @@ unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool 
 // Public API: install_stealth_props
 // ---------------------------------------------------------------------------
 
+/// Table-driven install for the isomorphic `define_stealth_getter` call
+/// sites (M9 install_* 宏收敛, e165, REQ-BRW-049; repays the e152 audit §二
+/// install-boilerplate finding): every `(name, getter)` pair on one rooted
+/// target expands to the exact statement the hand-written blocks contained —
+/// same order, same `all_ok &=` accumulation, same prototype placement
+/// (`on_prototype = true`). The JS-descriptor semantics live entirely in
+/// `define_stealth_getter` (e148-R1: PERMANENT is load-bearing; placement
+/// face proto-vs-instance) and are untouched here.
+macro_rules! install_getters_on {
+    ($cx:expr, $all_ok:ident, $target:ident, $obj_proto:expr, $( ($name:literal, $getter:ident) ),* $(,)?) => {
+        $(
+            $all_ok &= define_stealth_getter(
+                $cx,
+                $target.handle().into(),
+                $name,
+                Some($getter),
+                $obj_proto,
+                true,
+            );
+        )*
+    };
+}
+
 /// Install all stealth properties as accessor getters with Chromium-parity
 /// placement (e148 oracle, Chrome 150): navigator/screen members go on the
 /// INTERFACE PROTOTYPE (Chrome instances carry zero own names);
@@ -1632,77 +1655,16 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
     let nav = ensure_subobject(cx, global_root.handle().into(), "navigator");
     if !nav.is_null() {
         rooted!(&in(wrapped_cx) let nav_root = nav);
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "webdriver",
-            Some(getter_webdriver),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "userAgent",
-            Some(getter_ua),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "platform",
-            Some(getter_platform),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "language",
-            Some(getter_language),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "hardwareConcurrency",
-            Some(getter_hwc),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "maxTouchPoints",
-            Some(getter_touch),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "vendor",
-            Some(getter_vendor),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "languages",
-            Some(getter_languages),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            nav_root.handle().into(),
-            "deviceMemory",
-            Some(getter_device_memory),
-            obj_proto,
-            true,
+        install_getters_on!(cx, all_ok, nav_root, obj_proto,
+            ("webdriver", getter_webdriver),
+            ("userAgent", getter_ua),
+            ("platform", getter_platform),
+            ("language", getter_language),
+            ("hardwareConcurrency", getter_hwc),
+            ("maxTouchPoints", getter_touch),
+            ("vendor", getter_vendor),
+            ("languages", getter_languages),
+            ("deviceMemory", getter_device_memory),
         );
     }
 
@@ -1710,53 +1672,13 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
     let screen = ensure_subobject(cx, global_root.handle().into(), "screen");
     if !screen.is_null() {
         rooted!(&in(wrapped_cx) let scr_root = screen);
-        all_ok &= define_stealth_getter(
-            cx,
-            scr_root.handle().into(),
-            "width",
-            Some(getter_screen_w),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            scr_root.handle().into(),
-            "height",
-            Some(getter_screen_h),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            scr_root.handle().into(),
-            "availWidth",
-            Some(getter_avail_w),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            scr_root.handle().into(),
-            "availHeight",
-            Some(getter_avail_h),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            scr_root.handle().into(),
-            "colorDepth",
-            Some(getter_color_depth),
-            obj_proto,
-            true,
-        );
-        all_ok &= define_stealth_getter(
-            cx,
-            scr_root.handle().into(),
-            "pixelDepth",
-            Some(getter_color_depth),
-            obj_proto,
-            true,
+        install_getters_on!(cx, all_ok, scr_root, obj_proto,
+            ("width", getter_screen_w),
+            ("height", getter_screen_h),
+            ("availWidth", getter_avail_w),
+            ("availHeight", getter_avail_h),
+            ("colorDepth", getter_color_depth),
+            ("pixelDepth", getter_color_depth),
         );
     }
 
