@@ -4,6 +4,7 @@
 
 pub mod client_hello;
 pub mod h2_server;
+pub mod http_fixture;
 
 use std::thread;
 use std::time::{Duration, Instant};

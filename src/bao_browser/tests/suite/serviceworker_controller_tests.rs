@@ -46,11 +46,11 @@
 //     -E 'test(serviceworker_controller)'
 
 #![allow(dead_code)]
+#[path = "common/mod.rs"]
+mod common;
+
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -74,82 +74,25 @@ fn should_skip() -> bool {
 const SW_SCRIPT_V1: &str = "var swControllerTag = 'v1';";
 const SW_SCRIPT_V2: &str = "var swControllerTag = 'v2';";
 
-/// Minimal HTTP fixture: `/` → page HTML, `/sw.js` → v1 script, `/sw2.js` →
-/// v2 script. Same shape as the mediation fixture, minus the API probes.
-struct SwControllerFixture {
-    shutdown: Arc<AtomicBool>,
-    port: u16,
-}
-
-impl SwControllerFixture {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind sw controller fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_c = Arc::clone(&shutdown);
-        std::thread::Builder::new()
-            .name("sw-controller-fixture".into())
-            .spawn(move || {
-                while !shutdown_c.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_nonblocking(false);
-                            let _ = tcp.set_read_timeout(Some(Duration::from_millis(300)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 2048];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none() &&
-                                Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            let (content_type, body): (&str, String) = if path.starts_with("/sw.js") {
-                                ("application/javascript", SW_SCRIPT_V1.into())
-                            } else if path.starts_with("/sw2.js") {
-                                ("application/javascript", SW_SCRIPT_V2.into())
-                            } else {
-                                (
-                                    "text/html",
-                                    "<html><body>sw-controller fixture</body></html>".into(),
-                                )
-                            };
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
-                                ct = content_type,
-                                len = body.len()
-                            );
-                            let _ = tcp.write_all(response.as_bytes());
-                            let _ = tcp.write_all(body.as_bytes());
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        },
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        },
-                        Err(_) => return,
-                    }
-                }
-            })
-            .expect("spawn sw controller fixture thread");
-        SwControllerFixture { shutdown, port }
-    }
-}
-
-impl Drop for SwControllerFixture {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
+/// Minimal HTTP fixture (shared skeleton in common/http_fixture.rs): `/` →
+/// page HTML, `/sw.js` → v1 script, `/sw2.js` → v2 script. Same shape as the
+/// mediation fixture, minus the API probes.
+fn spawn_sw_controller_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn(
+        "sw-controller-fixture",
+        Arc::new(|path: &str, _script: Option<&str>| -> (&'static str, String) {
+            if path.starts_with("/sw.js") {
+                ("application/javascript", SW_SCRIPT_V1.into())
+            } else if path.starts_with("/sw2.js") {
+                ("application/javascript", SW_SCRIPT_V2.into())
+            } else {
+                (
+                    "text/html",
+                    "<html><body>sw-controller fixture</body></html>".into(),
+                )
+            }
+        }),
+    )
 }
 
 fn wait_for<F: Fn() -> Option<T>, T>(poll: F, timeout: Duration, what: &str) -> Option<T> {
@@ -228,7 +171,7 @@ fn c19_sw_controller_assignment_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = SwControllerFixture::spawn();
+    let fixture = spawn_sw_controller_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
 
     let runtime = BrowserRuntime::new(BaoConfig::default())
@@ -281,7 +224,7 @@ fn c19_sw_controller_assignment_live() {
 
     // ③ NO-SW-PAGE — a page on a different origin (fresh fixture, no
     // registration) reads null.
-    let fixture2 = SwControllerFixture::spawn();
+    let fixture2 = spawn_sw_controller_fixture();
     let origin2 = format!("http://127.0.0.1:{}/", fixture2.port);
     let page2 = runtime
         .create_page(&PageConfig {

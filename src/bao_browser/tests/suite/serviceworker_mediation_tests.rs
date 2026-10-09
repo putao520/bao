@@ -53,11 +53,11 @@
 //     -E 'test(serviceworker_mediation)'
 
 #![allow(dead_code)]
+#[path = "common/mod.rs"]
+mod common;
+
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -151,137 +151,36 @@ self.onmessage = function () {
 };
 "#;
 
-/// Minimal multi-path HTTP fixture: `/` → page HTML, `/sw.js` → SW script,
-/// the `/api/*` probes → fixed native bodies, everything else recorded.
-struct SwMediationFixture {
-    shutdown: Arc<AtomicBool>,
-    paths: Arc<Mutex<Vec<String>>>,
-    /// (path, sec-fetch-dest header value) per request — the e71 destination
-    /// face reads the wire header the re-fetch egressed with.
-    dests: Arc<Mutex<Vec<(String, Option<String>)>>>,
-    sw_script: Arc<Mutex<Option<String>>>,
-    port: u16,
-}
-
-impl SwMediationFixture {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind sw mediation fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let dests: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::new(Mutex::new(Vec::new()));
-        let sw_script: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let shutdown_c = Arc::clone(&shutdown);
-        let paths_c = Arc::clone(&paths);
-        let dests_c = Arc::clone(&dests);
-        let script_c = Arc::clone(&sw_script);
-        std::thread::Builder::new()
-            .name("sw-mediation-fixture".into())
-            .spawn(move || {
-                while !shutdown_c.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_nonblocking(false);
-                            let _ = tcp.set_read_timeout(Some(Duration::from_millis(300)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 2048];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none() &&
-                                Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            paths_c.lock().unwrap().push(path.clone());
-                            // e71: capture the request's sec-fetch-dest
-                            // header (lowercased scan; header order/value
-                            // casing varies across stacks).
-                            let lower = head.to_lowercase();
-                            let dest = lower
-                                .lines()
-                                .find_map(|l| {
-                                    l.trim()
-                                        .strip_prefix("sec-fetch-dest:")
-                                        .map(|v| v.trim().to_string())
-                                });
-                            dests_c.lock().unwrap().push((path.clone(), dest));
-                            let sw_script_body = script_c.lock().unwrap().clone();
-                            let (content_type, body): (&str, String) = if path.starts_with("/sw.js")
-                            {
-                                match sw_script_body {
-                                    Some(script) => ("application/javascript", script),
-                                    None => ("text/plain", "sw script not set".into()),
-                                }
-                            } else if path.starts_with("/api/data") {
-                                ("text/plain", NATIVE_DATA_BODY.into())
-                            } else if path.starts_with("/api/passthrough") {
-                                ("text/plain", NATIVE_PASSTHROUGH_BODY.into())
-                            } else if path.starts_with("/api/proxied") {
-                                ("text/plain", NATIVE_PROXIED_BODY.into())
-                            } else if path.starts_with("/api/wscript") {
-                                // Valid worker script so the re-fetched
-                                // worker boots cleanly once it arrives.
-                                ("application/javascript", "postMessage('w71-ok');".into())
-                            } else {
-                                (
-                                    "text/html",
-                                    "<html><body>sw-mediation fixture</body></html>".into(),
-                                )
-                            };
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
-                                ct = content_type,
-                                len = body.len()
-                            );
-                            let _ = tcp.write_all(response.as_bytes());
-                            let _ = tcp.write_all(body.as_bytes());
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        },
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        },
-                        Err(_) => return,
-                    }
+/// Minimal multi-path HTTP fixture (shared skeleton in common/http_fixture.rs):
+/// `/` → page HTML, `/sw.js` → SW script, the `/api/*` probes → fixed native
+/// bodies, everything else recorded (incl. the sec-fetch-dest log).
+fn spawn_sw_mediation_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn(
+        "sw-mediation-fixture",
+        Arc::new(|path: &str, script: Option<&str>| -> (&'static str, String) {
+            if path.starts_with("/sw.js") {
+                match script {
+                    Some(script) => ("application/javascript", script.to_string()),
+                    None => ("text/plain", "sw script not set".into()),
                 }
-            })
-            .expect("spawn sw mediation fixture thread");
-        SwMediationFixture {
-            shutdown,
-            paths,
-            dests,
-            sw_script,
-            port,
-        }
-    }
-
-    fn set_script(&self, script: String) {
-        *self.sw_script.lock().unwrap() = Some(script);
-    }
-
-    fn recorded_paths(&self) -> Vec<String> {
-        self.paths.lock().unwrap().clone()
-    }
-
-    fn recorded_requests(&self) -> Vec<(String, Option<String>)> {
-        self.dests.lock().unwrap().clone()
-    }
-}
-
-impl Drop for SwMediationFixture {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
+            } else if path.starts_with("/api/data") {
+                ("text/plain", NATIVE_DATA_BODY.into())
+            } else if path.starts_with("/api/passthrough") {
+                ("text/plain", NATIVE_PASSTHROUGH_BODY.into())
+            } else if path.starts_with("/api/proxied") {
+                ("text/plain", NATIVE_PROXIED_BODY.into())
+            } else if path.starts_with("/api/wscript") {
+                // Valid worker script so the re-fetched worker boots cleanly
+                // once it arrives.
+                ("application/javascript", "postMessage('w71-ok');".into())
+            } else {
+                (
+                    "text/html",
+                    "<html><body>sw-mediation fixture</body></html>".into(),
+                )
+            }
+        }),
+    )
 }
 
 fn wait_for<F: Fn() -> Option<T>, T>(poll: F, timeout: Duration, what: &str) -> Option<T> {
@@ -333,7 +232,7 @@ fn c19_sw_mediates_page_fetch_end_to_end_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = SwMediationFixture::spawn();
+    let fixture = spawn_sw_mediation_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_script(SW_SCRIPT_JS.to_owned());
 
@@ -488,7 +387,7 @@ fn c19_sw_refetch_preserves_destination_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = SwMediationFixture::spawn();
+    let fixture = spawn_sw_mediation_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_script(E71_SW_SCRIPT_JS.to_owned());
 
@@ -565,7 +464,7 @@ fn c19_sw_refetch_preserves_destination_live() {
     let reqs = wait_for(
         || {
             let _ = page.evaluate_js_web("void 0");
-            let reqs = fixture.recorded_requests();
+            let reqs = fixture.recorded_dests();
             let has_marker = reqs.iter().any(|(p, _)| p.starts_with("/api/e71marker"));
             let has_refetch = reqs.iter().any(|(p, _)| p.starts_with("/api/wscript"));
             (has_marker && has_refetch).then_some(reqs)
@@ -573,7 +472,7 @@ fn c19_sw_refetch_preserves_destination_live() {
         Duration::from_secs(45),
         "SW re-fetch + marker egress",
     )
-    .unwrap_or_else(|| fixture.recorded_requests());
+    .unwrap_or_else(|| fixture.recorded_dests());
     eprintln!("[e71-dest] fixture requests = {reqs:?}");
 
     // INPUT face — the mediated Request carried destination "worker".
@@ -637,7 +536,7 @@ fn c19_sw_postmessage_targets_enrolled_client_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = SwMediationFixture::spawn();
+    let fixture = spawn_sw_mediation_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_script(E73_SW_SCRIPT_JS.to_owned());
 
@@ -844,7 +743,7 @@ fn c19_sw_unenrolls_dead_client_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = SwMediationFixture::spawn();
+    let fixture = spawn_sw_mediation_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_script(E75_SW_SCRIPT_JS.to_owned());
 

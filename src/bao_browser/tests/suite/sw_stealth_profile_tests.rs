@@ -59,8 +59,6 @@
 mod common;
 use common::client_hello::CaptureServer;
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -163,114 +161,34 @@ fn register_sw(page: &bao_browser::PageHandle, path: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Plain-HTTP fixture: `/` → page HTML, `/sw.js` → templated SW script,
-// `/api/*` → native marker bodies, everything else recorded.
-// (Same shape as serviceworker_mediation_tests' fixture.)
+// Plain-HTTP fixture (shared skeleton in common/http_fixture.rs): `/` → page
+// HTML, `/sw.js` → templated SW script, `/api/*` → native marker bodies,
+// everything else recorded.
 // ---------------------------------------------------------------------------
 
-struct SwC19HttpFixture {
-    shutdown: Arc<AtomicBool>,
-    paths: Arc<Mutex<Vec<String>>>,
-    sw_script: Arc<Mutex<Option<String>>>,
-    port: u16,
-}
-
-impl SwC19HttpFixture {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind sw c19 fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sw_script: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let shutdown_c = Arc::clone(&shutdown);
-        let paths_c = Arc::clone(&paths);
-        let script_c = Arc::clone(&sw_script);
-        std::thread::Builder::new()
-            .name("sw-c19-fixture".into())
-            .spawn(move || {
-                while !shutdown_c.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_nonblocking(false);
-                            let _ = tcp.set_read_timeout(Some(Duration::from_millis(300)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 2048];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none() &&
-                                Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            paths_c.lock().unwrap().push(path.clone());
-                            let sw_script_body = script_c.lock().unwrap().clone();
-                            let (content_type, body): (&str, String) =
-                                if path.starts_with("/sw.js") {
-                                    match sw_script_body {
-                                        Some(script) => ("application/javascript", script),
-                                        None => ("text/plain", "sw script not set".into()),
-                                    }
-                                } else if path.starts_with("/api/forward") {
-                                    ("text/plain", "NATIVE_FORWARD_BODY".into())
-                                } else if path.starts_with("/api/data") {
-                                    ("text/plain", "NATIVE_DATA_BODY".into())
-                                } else if path.starts_with("/api/inherit") {
-                                    ("text/plain", "NATIVE_INHERIT_BODY".into())
-                                } else {
-                                    (
-                                        "text/html",
-                                        "<html><body>sw-c19 fixture</body></html>".into(),
-                                    )
-                                };
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
-                                ct = content_type,
-                                len = body.len()
-                            );
-                            let _ = tcp.write_all(response.as_bytes());
-                            let _ = tcp.write_all(body.as_bytes());
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        },
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        },
-                        Err(_) => return,
-                    }
+fn spawn_sw_c19_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn(
+        "sw-c19-fixture",
+        Arc::new(|path: &str, script: Option<&str>| -> (&'static str, String) {
+            if path.starts_with("/sw.js") {
+                match script {
+                    Some(script) => ("application/javascript", script.to_string()),
+                    None => ("text/plain", "sw script not set".into()),
                 }
-            })
-            .expect("spawn sw c19 fixture thread");
-        SwC19HttpFixture {
-            shutdown,
-            paths,
-            sw_script,
-            port,
-        }
-    }
-
-    fn set_script(&self, script: String) {
-        *self.sw_script.lock().unwrap() = Some(script);
-    }
-
-    fn recorded_paths(&self) -> Vec<String> {
-        self.paths.lock().unwrap().clone()
-    }
-}
-
-impl Drop for SwC19HttpFixture {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
+            } else if path.starts_with("/api/forward") {
+                ("text/plain", "NATIVE_FORWARD_BODY".into())
+            } else if path.starts_with("/api/data") {
+                ("text/plain", "NATIVE_DATA_BODY".into())
+            } else if path.starts_with("/api/inherit") {
+                ("text/plain", "NATIVE_INHERIT_BODY".into())
+            } else {
+                (
+                    "text/html",
+                    "<html><body>sw-c19 fixture</body></html>".into(),
+                )
+            }
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +232,7 @@ fn c19_sub1_sw_forwarded_fetch_rides_page_tls_h2_profile_live() {
     // sink (same leg as page_net_bun_fingerprint_e2e_tests).
     bun_core::Output::init_test();
 
-    let fixture = SwC19HttpFixture::spawn();
+    let fixture = spawn_sw_c19_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     let direct_capture = CaptureServer::spawn();
     let sw_capture = CaptureServer::spawn();
@@ -636,7 +554,7 @@ fn c19_sub2_cdp_network_observability_of_sw_intercepted_fetch_live() {
 
     // The SW intercepts /api/data with a synthetic 201 (the mediation
     // test's ① shape).
-    let fixture = SwC19HttpFixture::spawn();
+    let fixture = spawn_sw_c19_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_script(
         "self.addEventListener('fetch', function (e) { \
@@ -907,7 +825,7 @@ fn c19_sub3_sw_cross_page_inheritance_and_terminate_deregistration_live() {
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
     bun_core::Output::init_test();
 
-    let fixture = SwC19HttpFixture::spawn();
+    let fixture = spawn_sw_c19_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     fixture.set_script(
         "self.addEventListener('fetch', function (e) { \
@@ -1175,7 +1093,7 @@ fn sw_scope_injector_starvation_after_dedicated_worker_live() {
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
     bun_core::Output::init_test();
 
-    let fixture = SwC19HttpFixture::spawn();
+    let fixture = spawn_sw_c19_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     // The SW answers /api/starve with the FULL injection probe computed in
     // the SW realm (the worker_multi_injection probe form, returned through

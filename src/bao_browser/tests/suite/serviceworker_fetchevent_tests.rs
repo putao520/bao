@@ -33,11 +33,11 @@
 //     -E 'test(serviceworker_fetchevent)'
 
 #![allow(dead_code)]
+#[path = "common/mod.rs"]
+mod common;
+
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -126,115 +126,44 @@ if (typeof fetch === 'function') {
 }
 "#;
 
-/// Minimal multi-path HTTP fixture: `/` → page HTML, `/sw.js` → SW script,
-/// anything else recorded (the probe publishes via `/sw-probe?result=…`,
-/// heartbeats via `/sw-heartbeat`, failures via `/sw-probe-error`).
-struct SwHttpFixture {
-    shutdown: Arc<AtomicBool>,
-    paths: Arc<Mutex<Vec<String>>>,
-    sw_script: Arc<Mutex<Option<String>>>,
-    port: u16,
-}
-
-impl SwHttpFixture {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind sw fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sw_script: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let shutdown_c = Arc::clone(&shutdown);
-        let paths_c = Arc::clone(&paths);
-        let script_c = Arc::clone(&sw_script);
-        std::thread::Builder::new()
-            .name("sw-fixture".into())
-            .spawn(move || {
-                while !shutdown_c.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_nonblocking(false);
-                            let _ = tcp.set_read_timeout(Some(Duration::from_millis(300)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 2048];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none() &&
-                                Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            paths_c.lock().unwrap().push(path.clone());
-                            let sw_script_body = script_c.lock().unwrap().clone();
-                            let (content_type, body): (&str, String) =
-                                if path.starts_with("/sw.js") {
-                                    match sw_script_body {
-                                        Some(script) => ("application/javascript", script),
-                                        None => (
-                                            "text/plain",
-                                            "sw fixture script not set".into(),
-                                        ),
-                                    }
-                                } else {
-                                    (
-                                        "text/html",
-                                        "<html><body>sw-fetch-event fixture</body></html>".into(),
-                                    )
-                                };
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
-                                ct = content_type,
-                                len = body.len()
-                            );
-                            let _ = tcp.write_all(response.as_bytes());
-                            let _ = tcp.write_all(body.as_bytes());
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        },
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        },
-                        Err(_) => return,
-                    }
+/// Minimal multi-path HTTP fixture (shared skeleton in common/http_fixture.rs):
+/// `/` → page HTML, `/sw.js` → SW script, anything else recorded (the probe
+/// publishes via `/sw-probe?result=…`, heartbeats via `/sw-heartbeat`,
+/// failures via `/sw-probe-error`).
+fn spawn_sw_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn(
+        "sw-fixture",
+        Arc::new(|path: &str, script: Option<&str>| -> (&'static str, String) {
+            if path.starts_with("/sw.js") {
+                match script {
+                    Some(script) => ("application/javascript", script.to_string()),
+                    None => (
+                        "text/plain",
+                        "sw fixture script not set".into(),
+                    ),
                 }
-            })
-            .expect("spawn sw fixture thread");
-        SwHttpFixture {
-            shutdown,
-            paths,
-            sw_script,
-            port,
-        }
-    }
-
-    fn set_script(&self, script: String) {
-        *self.sw_script.lock().unwrap() = Some(script);
-    }
-
-    fn recorded_paths(&self) -> Vec<String> {
-        self.paths.lock().unwrap().clone()
-    }
-
-    /// Returns the decoded `result` JSON of the first `/sw-probe` request.
-    fn probe_result(&self) -> Option<String> {
-        self.recorded_paths()
-            .into_iter()
-            .find(|p| p.starts_with("/sw-probe?result="))
-            .map(|p| {
-                let raw = p.trim_start_matches("/sw-probe?result=");
-                urldecode(raw)
-            })
-    }
+            } else {
+                (
+                    "text/html",
+                    "<html><body>sw-fetch-event fixture</body></html>".into(),
+                )
+            }
+        }),
+    )
 }
+
+/// Returns the decoded `result` JSON of the first `/sw-probe` request.
+fn probe_result(fixture: &common::http_fixture::HttpFixture) -> Option<String> {
+    fixture
+        .recorded_paths()
+        .into_iter()
+        .find(|p| p.starts_with("/sw-probe?result="))
+        .map(|p| {
+            let raw = p.trim_start_matches("/sw-probe?result=");
+            urldecode(raw)
+        })
+}
+
 
 fn urldecode(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -266,12 +195,6 @@ fn urldecode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-impl Drop for SwHttpFixture {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
 }
 
 fn wait_for<F: Fn() -> Option<T>, T>(mut poll: F, timeout: Duration, what: &str) -> Option<T> {
@@ -309,7 +232,7 @@ fn c19_sw_realm_exposes_fetchevent_pipeline_live() {
     }
     let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let fixture = SwHttpFixture::spawn();
+    let fixture = spawn_sw_fixture();
     let origin = format!("http://127.0.0.1:{}/", fixture.port);
     // The script is templated with the origin AFTER the port is known; the
     // accept thread picks it up before any request can arrive (the page that
@@ -360,7 +283,7 @@ fn c19_sw_realm_exposes_fetchevent_pipeline_live() {
 
     // The SW probe publishes its verdict through the fixture.
     let verdict = wait_for(
-        || fixture.probe_result(),
+        || probe_result(&fixture),
         Duration::from_secs(25),
         "SW probe publish (/sw-probe?result=…)",
     )

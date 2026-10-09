@@ -42,11 +42,7 @@
 mod common;
 use common::client_hello::CaptureServer;
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig, PagePool, PageState};
@@ -58,97 +54,17 @@ use bao_stealth::StealthProfile;
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Plain-HTTP fixture: records request paths for the hyper-path destinations
+// Plain-HTTP fixture (shared skeleton in common/http_fixture.rs): records
+// request paths for the hyper-path destinations
 // ---------------------------------------------------------------------------
 
-struct HttpFixture {
-    port: u16,
-    shutdown: Arc<AtomicBool>,
-    paths: Arc<Mutex<Vec<String>>>,
-    count: Arc<AtomicUsize>,
-}
-
-impl HttpFixture {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind http fixture");
-        let port = listener.local_addr().unwrap().port();
-        let _ = listener.set_nonblocking(true);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let count = Arc::new(AtomicUsize::new(0));
-        let shutdown_c = Arc::clone(&shutdown);
-        let paths_c = Arc::clone(&paths);
-        let count_c = Arc::clone(&count);
-        std::thread::Builder::new()
-            .name("http-fixture".into())
-            .spawn(move || {
-                while !shutdown_c.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut tcp, _)) => {
-                            let _ = tcp.set_nonblocking(false);
-                            let _ = tcp.set_read_timeout(Some(Duration::from_millis(300)));
-                            let mut buf = Vec::new();
-                            let mut tmp = [0u8; 2048];
-                            let deadline = Instant::now() + Duration::from_secs(2);
-                            while buf.windows(4).position(|w| w == b"\r\n\r\n").is_none() &&
-                                Instant::now() < deadline
-                            {
-                                match tcp.read(&mut tmp) {
-                                    Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            let head = String::from_utf8_lossy(&buf).to_string();
-                            let path = head
-                                .lines()
-                                .next()
-                                .and_then(|line| line.split_whitespace().nth(1))
-                                .unwrap_or("")
-                                .to_string();
-                            if !path.is_empty() {
-                                paths_c.lock().unwrap().push(path.clone());
-                                count_c.fetch_add(1, Ordering::SeqCst);
-                            }
-                            let body = b"";
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                body.len()
-                            );
-                            let _ = tcp.write_all(response.as_bytes());
-                            let _ = tcp.write_all(body);
-                            let _ = tcp.shutdown(std::net::Shutdown::Both);
-                        },
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        },
-                        Err(_) => return,
-                    }
-                }
-            })
-            .expect("spawn http-fixture");
-        HttpFixture {
-            port,
-            shutdown,
-            paths,
-            count,
-        }
-    }
-
-    fn wait_for_count(&self, n: usize, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if self.count.load(Ordering::SeqCst) >= n {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        false
-    }
-
-    fn paths(&self) -> Vec<String> {
-        self.paths.lock().unwrap().clone()
-    }
+fn spawn_http_fixture() -> common::http_fixture::HttpFixture {
+    common::http_fixture::HttpFixture::spawn(
+        "http-fixture",
+        Arc::new(|_path: &str, _script: Option<&str>| -> (&'static str, String) {
+            ("text/plain", String::new())
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +111,7 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     let img_capture = CaptureServer::spawn();
     let css_capture = CaptureServer::spawn();
     let fetch_capture = CaptureServer::spawn();
-    let fixture = HttpFixture::spawn();
+    let fixture = spawn_http_fixture();
 
     let config = BaoConfig::default();
     let runtime = match BrowserRuntime::new(config) {
@@ -265,7 +181,7 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
         }
         false
     };
-    let wait_fixturing = |fixture: &HttpFixture, n: usize, timeout: Duration| -> bool {
+    let wait_fixturing = |fixture: &common::http_fixture::HttpFixture, n: usize, timeout: Duration| -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if fixture.wait_for_count(n, Duration::from_millis(200)) {
@@ -385,9 +301,9 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     assert!(
         wait_fixturing(&fixture, 2, Duration::from_secs(15)),
         "hyper-path fixture did not receive script+xhr (paths so far: {:?})",
-        fixture.paths()
+        fixture.recorded_paths()
     );
-    eprintln!("[fp-e2e] fixture got script+xhr: {:?}", fixture.paths());
+    eprintln!("[fp-e2e] fixture got script+xhr: {:?}", fixture.recorded_paths());
     let fetch_hello = fetch_capture
         .parsed()
         .into_iter()
@@ -435,9 +351,9 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     assert_eq!(
         bridge_count, 5,
         "bridge must have driven img+css+script+xhr+fetch (got {bridge_count}; fixture paths: {:?})",
-        fixture.paths()
+        fixture.recorded_paths()
     );
-    let paths = fixture.paths();
+    let paths = fixture.recorded_paths();
     assert!(
         paths.iter().any(|p| p.contains("script_probe")),
         "script request missing from fixture: {paths:?}"
@@ -525,7 +441,7 @@ fn page_net_bun_same_fingerprint_and_destination_pilot() {
     img_capture.stop();
     css_capture.stop();
     fetch_capture.stop();
-    fixture.shutdown.store(true, Ordering::SeqCst);
+    fixture.stop();
     eprintln!("[fp-e2e] === ALL ASSERTIONS PASSED ===");
 
     // Shutdown: every assertion above already ran and printed the banner.
