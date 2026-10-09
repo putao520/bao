@@ -11,7 +11,9 @@ use script_bindings::cformat;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_media::audio::audio_node::{AudioNodeMessage, AudioNodeType};
 use servo_media::audio::graph::NodeId;
-use servo_media::audio::param::{ParamRate, ParamType, RampKind, UserAutomationEvent};
+use servo_media::audio::param::{
+    ParamRate, ParamTimelineMirror, ParamType, RampKind, UserAutomationEvent,
+};
 
 use crate::conversions::Convert;
 use crate::dom::audio::baseaudiocontext::BaseAudioContext;
@@ -37,20 +39,19 @@ pub(crate) struct AudioParam {
     default_value: f32,
     min_value: f32,
     max_value: f32,
-    /// (e147, REQ-BRW-002) Script-side mirror of the scheduled automation
-    /// timeline, for the spec's *synchronous* `NotSupportedError` faces: a
-    /// scheduling call during the interval of an existing `setValueCurve`
-    /// event throws before anything reaches the render thread (servo-media
-    /// keeps the real timeline — this mirror only answers the throw guards).
-    /// Curves are `(start, start + duration)` intervals; every other event
-    /// contributes its scheduling time as a point. Plain `f64` data — no GC
-    /// payload (`#[no_trace]`).
+    /// (e147/e162, REQ-BRW-002) Script-side mirror of the scheduled
+    /// automation timeline, for the spec's *synchronous*
+    /// `NotSupportedError` faces: a scheduling call during the interval of
+    /// an existing `setValueCurve` event throws before anything reaches the
+    /// render thread (servo-media keeps the real timeline — this mirror
+    /// only answers the throw guards). (e162) The guard/pruning RULES live
+    /// single-source in `servo_media::audio::param::ParamTimelineMirror`,
+    /// next to the real timeline (DUP-AUDIO-TIMELINE audit); this field is
+    /// the per-param state only. Plain `f64` data — no GC payload
+    /// (`#[no_trace]`).
     #[no_trace = "Plain f64 scheduling data — no GC payload to trace"]
     #[ignore_malloc_size_of = "plain f64 scheduling data"]
-    timeline_curves: RefCell<Vec<(f64, f64)>>,
-    #[no_trace = "Plain f64 scheduling data — no GC payload to trace"]
-    #[ignore_malloc_size_of = "plain f64 scheduling data"]
-    timeline_events: RefCell<Vec<f64>>,
+    timeline: RefCell<ParamTimelineMirror>,
 }
 
 impl AudioParam {
@@ -75,8 +76,7 @@ impl AudioParam {
             default_value,
             min_value,
             max_value,
-            timeline_curves: RefCell::default(),
-            timeline_events: RefCell::default(),
+            timeline: RefCell::default(),
         }
     }
 
@@ -133,65 +133,6 @@ impl AudioParam {
     pub(crate) fn param_type(&self) -> ParamType {
         self.param
     }
-
-    /// (e147) Spec `NotSupportedError` guard for scheduling a point event:
-    /// throws when `time` falls inside the interval of a scheduled
-    /// `setValueCurve` event (interval `[start, start + duration)`: the
-    /// start is inclusive — the value setter during a curve starting "now"
-    /// throws — the end is exclusive — an event at the curve's end is the
-    /// next event and is fine).
-    fn timeline_curve_covers(&self, time: f64) -> bool {
-        self.timeline_curves
-            .borrow()
-            .iter()
-            .any(|&(start, end)| start <= time && time < end)
-    }
-
-    /// (e147) Record a scheduled point event (setValue/ramp end/setTarget
-    /// start) on the mirror.
-    fn timeline_record_event(&self, time: f64) {
-        self.timeline_events.borrow_mut().push(time);
-    }
-
-    /// (e147) Spec `NotSupportedError` guard for scheduling a
-    /// `setValueCurve` event: throws when the new curve's interval overlaps
-    /// any scheduled event (point strictly inside — a curve may start at an
-    /// event's time) or any scheduled curve (positive-length intersection —
-    /// back-to-back curves at a shared endpoint are fine).
-    fn timeline_curve_conflicts(&self, start: f64, duration: f64) -> bool {
-        let end = start + duration;
-        self.timeline_events
-            .borrow()
-            .iter()
-            .any(|&time| start < time && time < end) ||
-            self.timeline_curves
-                .borrow()
-                .iter()
-                .any(|&(other_start, other_end)| start < other_end && other_start < end)
-    }
-
-    /// (e147) Record a scheduled `setValueCurve` interval on the mirror.
-    fn timeline_record_curve(&self, start: f64, duration: f64) {
-        self.timeline_curves.borrow_mut().push((start, start + duration));
-    }
-
-    /// (e147) `cancelScheduledValues`/`cancelAndHoldAtTime` prune the mirror
-    /// the way the spec prunes the timeline: every event whose scheduling
-    /// time is past the cancel point is removed (`>=` for
-    /// `cancelScheduledValues`, `>` for the hold variant), so re-scheduling
-    /// after a cancel is not blocked by removed events. A curve is dropped
-    /// unless it ends at or before the cancel point — cancelling *inside*
-    /// a curve removes the whole curve event (the WPT
-    /// `cancel-scheduled-values` "cancel setValueCurve" face: scheduling
-    /// inside the cancelled curve's interval must not throw).
-    fn timeline_cancel_from(&self, cancel_time: f64, inclusive: bool) {
-        self.timeline_events
-            .borrow_mut()
-            .retain(|&time| if inclusive { time < cancel_time } else { time <= cancel_time });
-        self.timeline_curves
-            .borrow_mut()
-            .retain(|&(_, end)| end <= cancel_time);
-    }
 }
 
 impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
@@ -244,7 +185,7 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
             .unwrap()
             .current_time_or_default();
         if let Some(now) = now &&
-            self.timeline_curve_covers(now)
+            self.timeline.borrow().curve_covers(now)
         {
             return Err(Error::NotSupported(None));
         }
@@ -282,14 +223,14 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
                 *start_time
             )));
         }
-        if self.timeline_curve_covers(*start_time) {
+        if self.timeline.borrow().curve_covers(*start_time) {
             return Err(Error::NotSupported(None));
         }
         self.message_node(AudioNodeMessage::SetParam(
             self.param,
             UserAutomationEvent::SetValueAtTime(*value, *start_time),
         ));
-        self.timeline_record_event(*start_time);
+        self.timeline.borrow_mut().record_event(*start_time);
         Ok(DomRoot::from_ref(self))
     }
 
@@ -305,14 +246,14 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
                 *end_time
             )));
         }
-        if self.timeline_curve_covers(*end_time) {
+        if self.timeline.borrow().curve_covers(*end_time) {
             return Err(Error::NotSupported(None));
         }
         self.message_node(AudioNodeMessage::SetParam(
             self.param,
             UserAutomationEvent::RampToValueAtTime(RampKind::Linear, *value, *end_time),
         ));
-        self.timeline_record_event(*end_time);
+        self.timeline.borrow_mut().record_event(*end_time);
         Ok(DomRoot::from_ref(self))
     }
 
@@ -334,14 +275,14 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
                 *value
             )));
         }
-        if self.timeline_curve_covers(*end_time) {
+        if self.timeline.borrow().curve_covers(*end_time) {
             return Err(Error::NotSupported(None));
         }
         self.message_node(AudioNodeMessage::SetParam(
             self.param,
             UserAutomationEvent::RampToValueAtTime(RampKind::Exponential, *value, *end_time),
         ));
-        self.timeline_record_event(*end_time);
+        self.timeline.borrow_mut().record_event(*end_time);
         Ok(DomRoot::from_ref(self))
     }
 
@@ -364,14 +305,14 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
                 *time_constant
             )));
         }
-        if self.timeline_curve_covers(*start_time) {
+        if self.timeline.borrow().curve_covers(*start_time) {
             return Err(Error::NotSupported(None));
         }
         self.message_node(AudioNodeMessage::SetParam(
             self.param,
             UserAutomationEvent::SetTargetAtTime(*target, *start_time, (*time_constant).into()),
         ));
-        self.timeline_record_event(*start_time);
+        self.timeline.borrow_mut().record_event(*start_time);
         Ok(DomRoot::from_ref(self))
     }
 
@@ -398,7 +339,7 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
                 *end_time
             )));
         }
-        if self.timeline_curve_conflicts(*start_time, *end_time) {
+        if self.timeline.borrow().curve_conflicts(*start_time, *end_time) {
             return Err(Error::NotSupported(None));
         }
         self.message_node(AudioNodeMessage::SetParam(
@@ -409,7 +350,7 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
                 *end_time,
             ),
         ));
-        self.timeline_record_curve(*start_time, *end_time);
+        self.timeline.borrow_mut().record_curve(*start_time, *end_time);
         Ok(DomRoot::from_ref(self))
     }
 
@@ -425,7 +366,7 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
             self.param,
             UserAutomationEvent::CancelScheduledValues(*cancel_time),
         ));
-        self.timeline_cancel_from(*cancel_time, true);
+        self.timeline.borrow_mut().cancel_from(*cancel_time, true);
         Ok(DomRoot::from_ref(self))
     }
 
@@ -441,7 +382,7 @@ impl AudioParamMethods<crate::DomTypeHolder> for AudioParam {
             self.param,
             UserAutomationEvent::CancelAndHoldAtTime(*cancel_time),
         ));
-        self.timeline_cancel_from(*cancel_time, false);
+        self.timeline.borrow_mut().cancel_from(*cancel_time, false);
         Ok(DomRoot::from_ref(self))
     }
 }

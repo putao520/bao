@@ -725,3 +725,182 @@ impl AutomationEvent {
         }
     }
 }
+
+/// (BAO, e162/REQ-BRW-002) Script-side mirror of an AudioParam's scheduled
+/// automation timeline, for the spec's *synchronous* `NotSupportedError`
+/// faces (e147's throw guards). Single rule source: the DOM `AudioParam`
+/// binding holds a `RefCell<ParamTimelineMirror>` and consults these rules
+/// before anything reaches the render thread — the real timeline stays in
+/// [`Param::events`] on the audio thread; keeping the mirror rules in this
+/// file (next to the real timeline) is the anti-drift point audited as
+/// DUP-AUDIO-TIMELINE. Plain `f64` data, no GC payload.
+///
+/// Curves are `(start, start + duration)` intervals; every other event
+/// contributes its scheduling time as a point.
+#[derive(Debug, Default, MallocSizeOf)]
+pub struct ParamTimelineMirror {
+    curves: Vec<(f64, f64)>,
+    events: Vec<f64>,
+}
+
+impl ParamTimelineMirror {
+    /// (e147) Spec `NotSupportedError` guard for scheduling a point event:
+    /// throws when `time` falls inside the interval of a scheduled
+    /// `setValueCurve` event (interval `[start, start + duration)`: the
+    /// start is inclusive — the value setter during a curve starting "now"
+    /// throws — the end is exclusive — an event at the curve's end is the
+    /// next event and is fine).
+    pub fn curve_covers(&self, time: f64) -> bool {
+        self.curves.iter().any(|&(start, end)| start <= time && time < end)
+    }
+
+    /// (e147) Record a scheduled point event (setValue/ramp end/setTarget
+    /// start) on the mirror.
+    pub fn record_event(&mut self, time: f64) {
+        self.events.push(time);
+    }
+
+    /// (e147) Spec `NotSupportedError` guard for scheduling a
+    /// `setValueCurve` event: throws when the new curve's interval overlaps
+    /// any scheduled event (point strictly inside — a curve may start at an
+    /// event's time) or any scheduled curve (positive-length intersection —
+    /// back-to-back curves at a shared endpoint are fine).
+    pub fn curve_conflicts(&self, start: f64, duration: f64) -> bool {
+        let end = start + duration;
+        self.events.iter().any(|&time| start < time && time < end) ||
+            self.curves
+                .iter()
+                .any(|&(other_start, other_end)| start < other_end && other_start < end)
+    }
+
+    /// (e147) Record a scheduled `setValueCurve` interval on the mirror.
+    pub fn record_curve(&mut self, start: f64, duration: f64) {
+        self.curves.push((start, start + duration));
+    }
+
+    /// (e147) `cancelScheduledValues`/`cancelAndHoldAtTime` prune the mirror
+    /// the way the spec prunes the timeline: every event whose scheduling
+    /// time is past the cancel point is removed (`>=` for
+    /// `cancelScheduledValues`, `>` for the hold variant), so re-scheduling
+    /// after a cancel is not blocked by removed events. A curve is dropped
+    /// unless it ends at or before the cancel point — cancelling *inside*
+    /// a curve removes the whole curve event (the WPT
+    /// `cancel-scheduled-values` "cancel setValueCurve" face: scheduling
+    /// inside the cancelled curve's interval must not throw).
+    pub fn cancel_from(&mut self, cancel_time: f64, inclusive: bool) {
+        self.events
+            .retain(|&time| if inclusive { time < cancel_time } else { time <= cancel_time });
+        self.curves.retain(|&(_, end)| end <= cancel_time);
+    }
+}
+
+#[cfg(test)]
+mod timeline_mirror_tests {
+    // (BAO, e162) Rule pins for `ParamTimelineMirror` — the per-rule semantic
+    // diff evidence for the e162 single-sourcing move (rule bodies moved
+    // verbatim from script/dom/audio/audioparam.rs; these tests pin each
+    // boundary decision so any future edit of the rules fails loudly here,
+    // next to the real timeline).
+    use super::ParamTimelineMirror;
+
+    /// Interval is half-open `[start, start + duration)`: the start is
+    /// inclusive, the end exclusive.
+    #[test]
+    fn curve_covers_half_open_interval() {
+        let mut mirror = ParamTimelineMirror::default();
+        mirror.record_curve(1., 2.); // covers [1, 3)
+        assert!(mirror.curve_covers(1.), "curve start is inclusive");
+        assert!(mirror.curve_covers(2.5));
+        assert!(!mirror.curve_covers(3.), "curve end is exclusive");
+        assert!(!mirror.curve_covers(0.5));
+        assert!(!mirror.curve_covers(3.5));
+    }
+
+    /// A curve covering a time in any of several scheduled curves throws.
+    #[test]
+    fn curve_covers_any_scheduled_curve() {
+        let mut mirror = ParamTimelineMirror::default();
+        mirror.record_curve(1., 1.); // [1, 2)
+        mirror.record_curve(10., 5.); // [10, 15)
+        assert!(mirror.curve_covers(12.));
+        assert!(!mirror.curve_covers(7.));
+    }
+
+    /// A point event exactly at the new curve's start or end time is fine
+    /// (strictly-inside only); back-to-back is legal.
+    #[test]
+    fn curve_conflicts_point_strictly_inside() {
+        let mut mirror = ParamTimelineMirror::default();
+        mirror.record_event(1.);
+        mirror.record_event(3.);
+        // Interval (1, 3): neither 1 nor 3 is strictly inside.
+        assert!(!mirror.curve_conflicts(1., 2.), "curve may start at an event's time");
+        assert!(!mirror.curve_conflicts(2., 1.), "curve may end at an event's time");
+        assert!(mirror.curve_conflicts(0.5, 1.5), "point 1.0 strictly inside (0.5, 2.0)");
+        assert!(mirror.curve_conflicts(2.5, 1.), "point 3.0 strictly inside (2.5, 3.5)");
+    }
+
+    /// Curves need a positive-length intersection to conflict: shared
+    /// endpoints (back-to-back curves) are fine.
+    #[test]
+    fn curve_conflicts_curve_positive_length_intersection() {
+        let mut mirror = ParamTimelineMirror::default();
+        mirror.record_curve(2., 2.); // [2, 4)
+        assert!(!mirror.curve_conflicts(0., 2.), "shared endpoint (0,2)/(2,4) is fine");
+        assert!(mirror.curve_conflicts(0., 2.5), "(0, 2.5) overlaps [2, 4)");
+        assert!(mirror.curve_conflicts(3., 1.), "(3, 4) overlaps [2, 4)");
+        assert!(!mirror.curve_conflicts(4., 1.), "shared endpoint (4,5)/(2,4) is fine");
+    }
+
+    /// `cancelScheduledValues` (inclusive) removes events at the cancel
+    /// time too; curves survive only when they end at or before it.
+    #[test]
+    fn cancel_scheduled_values_is_inclusive() {
+        let mut mirror = ParamTimelineMirror::default();
+        mirror.record_event(0.5);
+        mirror.record_event(1.);
+        mirror.record_event(1.5);
+        mirror.record_curve(0.2, 0.6); // [0.2, 0.8) — ends before cancel
+        mirror.record_curve(1., 2.); // [1, 3) — covers the cancel point
+        mirror.cancel_from(1.5, true);
+        // Events kept: < 1.5 → {0.5, 1.0} — observable through conflicts.
+        assert!(!mirror.curve_conflicts(1.55, 1.), "event at 1.5 removed (inclusive)");
+        assert!(!mirror.curve_conflicts(1.6, 1.), "event at 2.0+ never existed");
+        assert!(
+            mirror.curve_conflicts(0.6, 0.8),
+            "event 1.0 strictly inside (0.6, 1.4) survived"
+        );
+        // Curve [1, 3) removed entirely; [0.2, 0.8) survived.
+        assert!(!mirror.curve_covers(2.), "curve covering the cancel point is removed");
+        assert!(mirror.curve_covers(0.5), "curve ending before the cancel point survived");
+    }
+
+    /// `cancelAndHoldAtTime` (exclusive) keeps an event scheduled exactly
+    /// at the cancel time.
+    #[test]
+    fn cancel_and_hold_is_exclusive() {
+        let mut mirror = ParamTimelineMirror::default();
+        mirror.record_event(0.5);
+        mirror.record_event(1.);
+        mirror.record_event(1.5);
+        mirror.cancel_from(1., false);
+        assert!(
+            mirror.curve_conflicts(0.6, 0.8),
+            "event at 1.0 (== cancel time) survived the hold variant"
+        );
+        assert!(!mirror.curve_conflicts(1.2, 0.3), "event at 1.5 removed (> cancel time)");
+    }
+
+    /// The WPT `cancel-scheduled-values` "cancel setValueCurve" face:
+    /// after cancelling inside a curve, scheduling inside the cancelled
+    /// curve's interval must not throw.
+    #[test]
+    fn reschedule_inside_cancelled_curve_interval_is_free() {
+        let mut mirror = ParamTimelineMirror::default();
+        mirror.record_curve(1., 3.); // [1, 4)
+        assert!(mirror.curve_covers(2.5));
+        mirror.cancel_from(2., true);
+        assert!(!mirror.curve_covers(2.5), "whole curve removed by an interior cancel");
+        assert!(!mirror.curve_conflicts(2.5, 0.5), "rescheduling in the freed interval is legal");
+    }
+}
