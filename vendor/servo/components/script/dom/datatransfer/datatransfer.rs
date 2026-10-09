@@ -23,7 +23,7 @@ use crate::dom::element::Element;
 use crate::dom::filelist::FileList;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::window::Window;
-use crate::drag::drag_data_store::{DragDataStore, Mode};
+use crate::drag::drag_data_store::{DragDataStore, Kind, Mode};
 
 const VALID_DROP_EFFECTS: [&str; 4] = ["none", "copy", "link", "move"];
 const VALID_EFFECTS_ALLOWED: [&str; 9] = [
@@ -85,6 +85,25 @@ impl DataTransfer {
         data_store: Rc<RefCell<Option<DragDataStore>>>,
     ) -> DomRoot<DataTransfer> {
         Self::new_with_proto(cx, window, None, data_store)
+    }
+
+    /// A read-only clipboard payload carrying `text` as `text/plain`: the
+    /// prepopulated DataTransfer of trusted `beforeinput`/`input` events
+    /// with a clipboard inputType (`insertFromPaste`) on contenteditable
+    /// hosts. The drag data store is in read-only mode
+    /// (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
+    pub(crate) fn new_readonly_clipboard_text(
+        cx: &mut JSContext,
+        window: &Window,
+        text: &str,
+    ) -> DomRoot<DataTransfer> {
+        let mut drag_data_store = DragDataStore::new();
+        drag_data_store.set_mode(Mode::ReadOnly);
+        let _ = drag_data_store.add(Kind::Text {
+            data: DOMString::from(text),
+            type_: DOMString::from_static("text/plain"),
+        });
+        DataTransfer::new(cx, window, Rc::new(RefCell::new(Some(drag_data_store))))
     }
 
     pub(crate) fn data_store(&self) -> Option<Ref<'_, DragDataStore>> {

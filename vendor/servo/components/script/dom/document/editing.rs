@@ -332,8 +332,17 @@ impl Document {
         let Some(focused_html) = focused.downcast::<HTMLElement>() else {
             return false;
         };
-        if fire_beforeinput_on_element(cx, focused_html, Some(text), "insertFromPaste", Vec::new())
-        {
+        // The prepopulated clipboard payload of the `beforeinput`
+        // (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
+        let data_transfer = DataTransfer::new_readonly_clipboard_text(cx, &self.window(), text);
+        if fire_beforeinput_on_element(
+            cx,
+            focused_html,
+            Some(text),
+            "insertFromPaste",
+            Some(&data_transfer),
+            Vec::new(),
+        ) {
             return false;
         }
 
@@ -355,7 +364,8 @@ impl Document {
             return false;
         }
 
-        // Fire the trailing `input` (insertFromPaste) at the focused editor.
+        // Fire the trailing `input` (insertFromPaste) at the focused editor,
+        // carrying its own clipboard payload.
         let input_event = InputEvent::new(
             cx,
             &self.window(),
@@ -369,6 +379,8 @@ impl Document {
             false,
             DOMString::from_static("insertFromPaste"),
         );
+        let input_data_transfer = DataTransfer::new_readonly_clipboard_text(cx, &self.window(), text);
+        input_event.set_data_transfer(Some(&input_data_transfer));
         let input_event = input_event.upcast::<Event>();
         input_event.set_trusted(true);
         input_event.fire(cx, focused.upcast::<EventTarget>());

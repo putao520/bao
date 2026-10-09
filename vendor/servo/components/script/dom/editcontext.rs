@@ -28,6 +28,7 @@ use crate::dom::bindings::codegen::Bindings::EditContextBinding::EditContextMeth
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::datatransfer::DataTransfer;
 use crate::dom::event::{Event, EventBubbles, EventCancelable, EventFlags};
 use crate::dom::event::inputevent::InputEvent;
 use crate::dom::eventtarget::EventTarget;
@@ -279,7 +280,7 @@ impl EditContext {
         // exist (Chromium parity).
         let target_ranges = self.target_ranges_for_insert(cx, element, action);
 
-        if fire_beforeinput_on_element(cx, element, data, input_type, target_ranges) {
+        if fire_beforeinput_on_element(cx, element, data, input_type, None, target_ranges) {
             // Canceled: the EditContext still consumed the key.
             return true;
         }
@@ -411,11 +412,16 @@ impl EditContext {
     /// the EditContext text and fire `textupdate`. The DOM is never mutated.
     /// Returns `true` iff the `beforeinput` was canceled.
     pub(crate) fn handle_paste(&self, cx: &mut JSContext, element: &HTMLElement, text: &str) -> bool {
+        // The prepopulated clipboard payload of the `beforeinput`
+        // (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
+        let data_transfer =
+            DataTransfer::new_readonly_clipboard_text(cx, &element.owner_window(), text);
         if fire_beforeinput_on_element(
             cx,
             element,
             Some(text),
             "insertFromPaste",
+            Some(&data_transfer),
             Vec::new(),
         ) {
             return true;
@@ -469,13 +475,15 @@ fn next_utf16_code_point(text: &DOMString, index: u32) -> u32 {
 /// Fire a cancelable `beforeinput` on `element` mirroring the text-control
 /// firing path. `target_ranges` are exposed through
 /// `InputEvent.getTargetRanges()` (EditContext insertions carry the
-/// selection range). Returns `true` iff the event was canceled or the element
-/// was hidden by a listener.
+/// selection range); `data_transfer` is the clipboard payload exposed
+/// through `InputEvent.dataTransfer` for clipboard inputTypes. Returns
+/// `true` iff the event was canceled or the element was hidden by a listener.
 pub(crate) fn fire_beforeinput_on_element(
     cx: &mut JSContext,
     element: &HTMLElement,
     data: Option<&str>,
     input_type: &str,
+    data_transfer: Option<&DataTransfer>,
     target_ranges: Vec<DomRoot<StaticRange>>,
 ) -> bool {
     let target = element.upcast::<EventTarget>();
@@ -493,6 +501,7 @@ pub(crate) fn fire_beforeinput_on_element(
         false,
         DOMString::from(input_type),
     );
+    event.set_data_transfer(data_transfer);
     event.set_target_ranges(target_ranges);
     let event = event.upcast::<Event>();
     event.set_composed(true);

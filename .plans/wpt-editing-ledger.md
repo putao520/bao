@@ -128,3 +128,19 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **残留唯一格**:data_transfer_on_input_event(file ERROR,InputEvent.dataTransfer paste 路径 null)——引擎语义缺口,上游已实现,后续合同域;campaign 惯例保持可见红。
 
 **吸收脚本护栏教训**:origin/main 派生的吸收会冲掉非 origin/main 来源的手工登记(劈裂格)——吸收后必须重放登记步骤(顺序:吸收→重加→验证)。
+
+### e159(data_transfer 单格清偿,2026-10-10 02:5x)
+
+**残留唯一格清偿**:data_transfer_on_input_event_with_insertfrompaste_type.html file ERROR→**OK/subtest PASS**(contenteditable listener `assert_not_equals(e.dataTransfer,null)` 过 + `getData("text")=="copyMe"` 过;textarea 分支 dataTransfer=null/data="copyMe" 语义保持)。
+
+**RED 钉**(e154-final 二进制,vendor meta):file ERROR=`assert_not_equals: got disallowed value null`(line 23)——比 e154 观察的 `inputType insertText` 更进一步(e153 1622b097 paste re-resolve 已收 inputType 面),唯一残点=dataTransfer null。**上游对照实证**:origin/main(e197b55c2)inputevent.rs GetDataTransfer 仍 TODO+None——任务头「上游已实现」不成立,本波为 fork 自治实现(fork 自维护裁决面),非吸收重放。
+
+**修复面**(vendor 4 文件):
+- `event/inputevent.rs`:data_transfer 字段(MutNullableDom<DataTransfer>,镜像 target_ranges 的 UA-only setter 形)+GetDataTransfer 真身
+- `datatransfer/datatransfer.rs`:new_readonly_clipboard_text 构造器(ReadOnly DragDataStore+text/plain 条目;input-events 规范:预填充 DataTransfer 的 drag data store 为 read-only)
+- `document/editing.rs`:contenteditable paste 分支 beforeinput(fire_beforeinput_on_element 新 data_transfer 参)+尾部 input 各携独立 payload
+- `editcontext.rs`:fire_beforeinput_on_element 签名扩展(Option<&DataTransfer>);EditContext handle_paste 同携(text-control 分支刻意不携——规范:仅 contenteditable host 预填充)
+
+**判别回归**(fix vs baseline 同批对照):exec-command-with-text-editor 356 fail-side 与 plaintext-only 40+16+8 unexpected 在**基线二进制计数恒等**=scratch 环境既有红面(e154 登记残面),零本波回归;edit-context paste 家族+edit-context-input 零 unexpected;suite 真执行(xvfb-run,16.71s)editing_e2e 4/4+editcontext c1-c5 5/5;xvfb 假绿陷阱实录:无 DISPLAY=should_skip 静默 ok(0.00s),BAO_TEST_NETWORK 单独设仍假绿,必须 xvfb-run。
+
+**邻接观察(未触碰,候选后续)**:①contenteditable insertFromPaste 的 data 应为 null(规范表格;现为 Some(text))——plaintext-only beforeinput 40+8 格正卡此断言,是独立登记面;②clipboard text/html 格式周流缺(GetClipboardText 仅 text/plain);③InputEventInit.dataTransfer 构造器字典成员被忽略(脚本构造事件恒 null)。

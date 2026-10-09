@@ -15,7 +15,7 @@ use style_traits::CSSPixel;
 use crate::dom::bindings::codegen::Bindings::InputEventBinding::{self, InputEventMethods};
 use crate::dom::bindings::codegen::Bindings::UIEventBinding::UIEvent_Binding::UIEventMethods;
 use crate::dom::bindings::error::Fallible;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::datatransfer::DataTransfer;
 use crate::dom::node::Node;
@@ -35,6 +35,11 @@ pub(crate) struct InputEvent {
     /// covers the EditContext's selection in UTF-16 code units
     /// (Bao fork, REQ-BRW-050 P1).
     target_ranges: script_bindings::cell::DomRefCell<Vec<Dom<StaticRange>>>,
+    /// Clipboard payload of a trusted `beforeinput`/`input` with a clipboard
+    /// inputType (`insertFromPaste`) fired at a contenteditable host
+    /// (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
+    /// Only the user agent sets this; script-constructed events keep `null`.
+    data_transfer: MutNullableDom<DataTransfer>,
 }
 
 impl InputEvent {
@@ -60,6 +65,7 @@ impl InputEvent {
                 is_composing,
                 input_type,
                 target_ranges: script_bindings::cell::DomRefCell::new(Vec::new()),
+                data_transfer: MutNullableDom::default(),
             }),
             window,
             proto,
@@ -77,6 +83,13 @@ impl InputEvent {
             .into_iter()
             .map(|range| Dom::from_ref(&*range))
             .collect();
+    }
+
+    /// Set the clipboard payload carried by a trusted `beforeinput`/`input`
+    /// with a clipboard inputType. Only the user agent sets this;
+    /// script-constructed events keep `null`.
+    pub(crate) fn set_data_transfer(&self, data_transfer: Option<&DataTransfer>) {
+        self.data_transfer.set(data_transfer);
     }
 }
 
@@ -122,8 +135,7 @@ impl InputEventMethods<crate::DomTypeHolder> for InputEvent {
 
     /// <https://w3c.github.io/input-events/#dom-inputevent-datatransfer>
     fn GetDataTransfer(&self) -> Option<DomRoot<DataTransfer>> {
-        // TODO: Populate dataTransfer for contenteditable
-        None
+        self.data_transfer.get()
     }
 
     /// <https://w3c.github.io/input-events/#dom-inputevent-gettargetranges>
