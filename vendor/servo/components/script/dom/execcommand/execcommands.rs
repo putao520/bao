@@ -5,6 +5,7 @@
 use cssparser::match_ignore_ascii_case;
 use embedder_traits::{ClipboardAction, InputEventResult};
 use js::context::JSContext;
+use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::inheritance::Castable;
 
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
@@ -18,6 +19,7 @@ use crate::dom::comment::Comment;
 use crate::dom::document::Document;
 use crate::dom::document::editing::EditingContext;
 use crate::dom::event::Event;
+use crate::dom::eventtarget::EventTarget;
 use crate::dom::event::inputevent::InputEvent;
 use crate::dom::execcommand::basecommand::CommandName;
 use crate::dom::execcommand::commands::fontsize::maybe_normalize_pixels;
@@ -136,6 +138,19 @@ impl Document {
         if is_command_listed_in_miscellaneous_section(command_name) {
             return Some(selection);
         }
+        // The clipboard commands are additionally enabled for text controls
+        // with an uncollapsed selection: their selection is internal to the
+        // control and has no DOM active range
+        // (exec-command-with-text-editor contract).
+        if matches!(command_name, CommandName::Copy | CommandName::Cut) {
+            let focused = self.event_handler().target_for_events_following_focus();
+            if let Some(node) = focused.downcast::<Node>() &&
+                EditingContext::try_from(&*node)
+                    .is_ok_and(|context| context.has_uncollapsed_selection())
+            {
+                return Some(selection);
+            }
+        }
         // > The other commands defined here are enabled if the active range is not null,
         let range = selection.active_range(cx)?;
         // > its start node is either editable or an editing host,
@@ -221,8 +236,76 @@ impl Document {
             self.fire_clipboard_event(cx, &event_target, event_type);
             return false;
         }
+        if let EditingContext::TextControl(..) = editing_context {
+            return self.exec_clipboard_command_on_text_control(cx, &event_target, is_cut);
+        }
         self.handle_clipboard_action(cx, &editing_context, action)
             .contains(InputEventResult::Consumed)
+    }
+
+    /// The execCommand form of copy/cut for text controls: unlike the
+    /// keyboard shortcut it fires *no* `beforeinput` — only the clipboard
+    /// event, the selection removal (cut) and the trailing `input`
+    /// (`deleteByCut`); a password field cuts its selection and masks it
+    /// from the clipboard while `copy` still reports success
+    /// (edit-context/exec-command-with-text-editor contract).
+    fn exec_clipboard_command_on_text_control(
+        &self,
+        cx: &mut JSContext,
+        event_target: &EventTarget,
+        is_cut: bool,
+    ) -> bool {
+        let event_type = if is_cut {
+            ClipboardEventType::Cut
+        } else {
+            ClipboardEventType::Copy
+        };
+        let clipboard_event = self.fire_clipboard_event(cx, event_target, event_type);
+        let event = clipboard_event.upcast::<Event>();
+        if event.DefaultPrevented() {
+            return false;
+        }
+        let Some(node) = event_target.downcast::<Node>() else {
+            return false;
+        };
+        let editing_context = self.editing_context(cx.no_gc(), node);
+        // A password field's selection content is masked (not observable),
+        // so emptiness is decided by the selection itself, not its text; its
+        // `copy` still reports success while writing nothing.
+        if !editing_context.has_uncollapsed_selection() {
+            return false;
+        }
+        if editing_context.copying_enabled() &&
+            let Some(selection) = editing_context.selection_content(cx)
+        {
+            self.send_to_embedder(embedder_traits::EmbedderMsg::SetClipboardText(
+                self.webview_id(),
+                selection,
+            ));
+        }
+        if is_cut {
+            editing_context.remove_the_contents_of_the_selection(cx);
+            // The execCommand form fires the trailing `input` synchronously
+            // (the keyboard shortcut queues it instead): the editor contract
+            // asserts `input.inputType` right after execCommand returns.
+            let input_event = InputEvent::new(
+                cx,
+                &self.window(),
+                None,
+                atom!("input"),
+                true,
+                false,
+                Some(&self.window()),
+                0,
+                None,
+                false,
+                DOMString::from_static("deleteByCut"),
+            );
+            let input_event = input_event.upcast::<Event>();
+            input_event.set_trusted(true);
+            input_event.fire(cx, event_target);
+        }
+        true
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#supported>
