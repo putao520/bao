@@ -85,6 +85,9 @@ pub use browser::Browser;
 //
 // @trace REQ-BAO-API-001 [level:library]
 pub use bridge::BridgeError;
+// M1 接线(REQ-CDP-001):死宇宙派发面的生产通道 backend — 宿主 runtime
+// 把它与 BridgeSender 一起装进 CDPRdpBridge 即获得真 servo 后端。
+pub use bridge::BridgeSenderBackend;
 pub use error::{CdpError, ConnectError, Result};
 
 // ─── Transport 抽象 ──────────────────────────────────────────────────────

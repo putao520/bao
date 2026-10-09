@@ -75,6 +75,12 @@ fn next_session_id() -> String {
 ///   route to the target `Target.attachToTarget` bound that session to.
 pub struct BaoWsRegistry {
     bridge: BridgeSender,
+    /// M1 wiring (REQ-CDP-001, user ruling "留并接线"): the parallel-universe
+    /// dispatcher mounted as the -32601 fallback arm on the WS face too —
+    /// its backend is the SAME production channel (BridgeSenderBackend over
+    /// `bridge`), so B-class methods (Page.title / ElementHandle.* /
+    /// JSHandle.*) served here terminate in the single servo truth.
+    rdp: bao_cdp_client::bridge::CDPRdpBridge,
     /// Flattened-session routing table: CDP sessionId → target id.
     attached_sessions: Mutex<HashMap<String, String>>,
     /// Created isolated-world names per session — re-announced per document
@@ -91,6 +97,9 @@ pub struct BaoWsRegistry {
 impl BaoWsRegistry {
     pub fn new(bridge: BridgeSender) -> Self {
         BaoWsRegistry {
+            rdp: bao_cdp_client::bridge::CDPRdpBridge::new(std::sync::Arc::new(
+                bao_cdp_client::bridge::BridgeSenderBackend::new(bridge.clone()),
+            )),
             bridge,
             attached_sessions: Mutex::new(HashMap::new()),
             session_worlds: Mutex::new(HashMap::new()),
@@ -551,11 +560,38 @@ impl RegistryDispatch for BaoWsRegistry {
         // Real command face: bao_cdp's servo-bridge-backed domain dispatch.
         let response =
             bao_cdp::handle_command(msg.clone(), &target_id, &msg.params, Some(&self.bridge));
-        let result = match (response.result, response.error) {
+        let mut result = match (response.result, response.error) {
             (Some(result), _) => Ok(result),
             (None, Some(err)) => Err(err),
             (None, None) => Ok(json!({})),
         };
+        // M1 wiring (REQ-CDP-001): -32601 is the ONLY fall-through — the
+        // parallel universe serves what the production core doesn't know
+        // (B-class Playwright surface); explicit not-supported verdicts stay
+        // authoritative. A universe miss keeps the production error.
+        if let Err(err) = &result {
+            if err.code == -32601 {
+                let fallback_params = msg.params.clone().unwrap_or(Value::Null);
+                match self
+                    .rdp
+                    .dispatch(&target_id, &msg.method, fallback_params)
+                {
+                    Ok(v) => result = Ok(v),
+                    // Universe miss — the production "'X.y' wasn't found"
+                    // verdict in `result` stays as-is.
+                    Err(
+                        bao_cdp_client::bridge::BridgeError::MethodNotFound(_)
+                        | bao_cdp_client::bridge::BridgeError::InvalidMethod(_),
+                    ) => {}
+                    Err(e) => {
+                        result = Err(CdpError {
+                            code: e.cdp_error_code() as i64,
+                            message: e.message(),
+                        })
+                    }
+                }
+            }
+        }
 
         // Post-command lifecycle events (the "events 按需" face Playwright's
         // init/navigation sequences are driven by).

@@ -9,6 +9,7 @@
 //! - [`eval_synthesizer`]:IIFE 安全封装 + JSON.stringify 参数化
 //! - [`e_class`]:E 类 31+ method servo 不支持标记
 //! - [`servo_backend`]:ServoBackend trait + MockServoBackend + 数据结构
+//! - [`bridge_sender_backend`]:ServoBackend 的生产通道实现(BridgeCommand 挂接,M1 接线 REQ-CDP-001)
 //! - [`event_translator`]:servo 7 类事件 → CDP event 转换 + EventSubscriber
 //! - [`error`]:BridgeError + CDP error code 映射
 //!
@@ -40,6 +41,7 @@
 
 pub mod a_class_handlers;
 pub mod b_class_handlers;
+pub mod bridge_sender_backend;
 pub mod cdp_rdp_bridge;
 pub mod command_dispatcher;
 pub mod debugger_handlers;
@@ -49,6 +51,7 @@ pub mod eval_synthesizer;
 pub mod event_translator;
 pub mod servo_backend;
 
+pub use bridge_sender_backend::BridgeSenderBackend;
 pub use cdp_rdp_bridge::CDPRdpBridge;
 pub use command_dispatcher::dispatch_command;
 pub use error::{
