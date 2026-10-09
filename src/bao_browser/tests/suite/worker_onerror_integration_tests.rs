@@ -38,6 +38,7 @@ use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use common::encode_worker_body;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -123,23 +124,6 @@ fn make_worker_driver(worker_script_body: &str) -> String {
     )
 }
 
-/// Encode a raw JS worker body into a URL-safe form suitable for a `data:` URL.
-fn encode_worker_body(raw: &str) -> String {
-    // Minimal percent-encoding sufficient for our short worker scripts.
-    let mut out = String::with_capacity(raw.len());
-    for b in raw.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{:02X}", b));
-            }
-        }
-    }
-    out
-}
 
 /// Poll `window.__onerrorResult` until it is non-null or the timeout elapses.
 /// Returns the captured JSON string, or an empty string on timeout.

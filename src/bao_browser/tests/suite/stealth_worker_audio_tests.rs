@@ -48,6 +48,7 @@ use bao_stealth::{AudioProfile, StealthProfile};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use common::encode_worker_body;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -80,22 +81,6 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     }
 }
 
-/// URL-encode a JS worker body for a data: URL (minimal percent-encoding).
-fn encode_worker_body(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for b in raw.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{:02X}", b));
-            }
-        }
-    }
-    out
-}
 
 /// The servo JS bridge may return a JS string value as `"..."` (quoted). Strip
 /// a single outer quote pair if present so the caller sees the raw value.

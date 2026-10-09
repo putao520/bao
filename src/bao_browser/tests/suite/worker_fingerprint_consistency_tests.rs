@@ -40,6 +40,7 @@ use bao_stealth::StealthProfile;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use common::encode_worker_body;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -117,22 +118,6 @@ fn make_worker_body(canonical_expr: &str) -> String {
     format!("var __fp = {expr}; self.postMessage(__fp);", expr = canonical_expr)
 }
 
-/// URL-encode a JS worker body for data: URL (minimal percent-encoding).
-fn encode_worker_body(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for b in raw.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{:02X}", b));
-            }
-        }
-    }
-    out
-}
 
 /// Page-side driver: create the Worker from a data: URL and wire
 /// `w.onmessage` → `window.__workerFP` (worker→main digest sink) and

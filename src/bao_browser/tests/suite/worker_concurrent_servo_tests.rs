@@ -28,6 +28,7 @@ use bao_browser::{
 use std::sync::Mutex;
 use std::time::Duration;
 
+use common::encode_worker_body;
 #[path = "common/mod.rs"]
 mod common;
 
@@ -64,22 +65,6 @@ fn lock_serializer() -> std::sync::MutexGuard<'static, ()> {
     }
 }
 
-/// URL-encode a JS worker body for data: URL (minimal percent-encoding).
-fn encode_worker_body(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for b in raw.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{:02X}", b));
-            }
-        }
-    }
-    out
-}
 
 /// Make JS that creates N workers in parallel via Promise.all, each running the
 /// given script body (URL-encoded), and waits for all to settle.
