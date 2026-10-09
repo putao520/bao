@@ -118,3 +118,13 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 1. **载具必须 /var/tmp**:本波 /tmp/e150(载具+raw log 全量)与 /tmp/e154-dbg-target(16G 符号档)双双被清扫(第六/七次载具损失);重建于 /var/tmp/e154-veh(venv 拷贝+manifest rebuild 39M+meta 拷贝,配方在本文件§A+gen_manifest.py)。
 2. **meta 锚时代校验**:吸收 CRASH 正翻前先核锚仓与 origin/main 的 ini 时代差(git ls-tree 对照),stale 锚吸收会把上游已知红变成「意外红」。
 3. gdb `thread find` 不切线程,-batch 用 `thread apply all bt N` 提取;挂死窗口用 timeout-multiplier 拉宽+新鲜 PID 集(OLD 集排除)防抓孤儿。
+
+### e154-续(e153 移交两项清偿,2026-10-10 02:0x)
+
+**①劈裂登记路径根治**:e153 原登记落 `other/insertparagraph.html.ini`——锚的测试不存在(两树均无 other/insertparagraph.html,真身=run/insertparagraph.html;我在主吸收中按"全吸收死文件"删除)。已在正确路径重建:`run/insertparagraph.html.ini` §?4001-5000 增 `[["insertparagraph",""]] "<ul contenteditable><li>{}<br></ul>" compare innerHTML expected: FAIL`(wptmanifest 库编程插入,round-trip 验证);ipcheck2 全变体跑实证:精确格 FAIL 且 exp-field 缺失=登记生效,零 unexpected。
+
+**②cut/copy 26+4 格归属终裁与清偿**:我 crface 复跑(隔离,确定性复现 30 格)归因 e153 1622b097;e153 接报回来提交 **dc09ae19**(exec_clipboard_command_on_text_control:execCommand 版 cut 不 fire beforeinput/uncollapsed 门/non-editable false)。撞车实录:其间该文件有未提交 +65 行在制编辑(mtime 活动态),我 SendMessage 挂起避让,01:52 自行提交化解。修后复验(postfix 跑,重建二进制):exec-command-with-text-editor 3 变体 + exec-command-without-editable + 挂死族全部 OK 零 unexpected;修后吸收 36 格(supported/enabled 正翻,392→356 条);回归 editing_e2e 4/4 + editcontext 锁 5/5。
+
+**残留唯一格**:data_transfer_on_input_event(file ERROR,InputEvent.dataTransfer paste 路径 null)——引擎语义缺口,上游已实现,后续合同域;campaign 惯例保持可见红。
+
+**吸收脚本护栏教训**:origin/main 派生的吸收会冲掉非 origin/main 来源的手工登记(劈裂格)——吸收后必须重放登记步骤(顺序:吸收→重加→验证)。
