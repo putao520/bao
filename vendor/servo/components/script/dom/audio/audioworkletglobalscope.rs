@@ -152,10 +152,14 @@ pub(crate) struct ProcessorInstanceData {
     #[ignore_malloc_size_of = "JS-heap payload, wrapper is a slot"]
     pub(crate) output_arrays:
         Vec<Vec<crate::dom::bindings::buffer_source::HeapBufferSource<Float32>>>,
-    /// Per-parameter arrays (k-rate length 1, a-rate length 128).
-    #[ignore_malloc_size_of = "JS-heap payload, wrapper is a slot"]
-    pub(crate) param_arrays:
-        Vec<crate::dom::bindings::buffer_source::HeapBufferSource<Float32>>,
+    /// (e155) Declared parameter faces: name + the array length `process()`
+    /// exposes for it (k-rate 1, a-rate 128). The per-quantum parameters
+    /// read-back validates the JS params object against this face and
+    /// rebuilds it on mismatch (the crbug.com/1151069 semantics); the arrays
+    /// themselves are owned by the params object — the copy path always goes
+    /// through a fresh property `Get`, so no Rust-side handles are kept.
+    #[no_trace = "plain shape data"]
+    pub(crate) param_shapes: Vec<(std::ffi::CString, usize)>,
     /// (e147) The per-port channel counts the JS `inputs` argument arrays
     /// are currently shaped to — the spec's dynamic input face: `inputs[p]`
     /// is empty while port `p` has no connection, and carries the connected
@@ -178,11 +182,13 @@ pub(crate) struct ProcessorInstanceData {
 }
 
 impl ProcessorInstanceData {
-    /// Copy the quantum's inputs and parameter timelines into the persistent
-    /// arrays. No JS runs in here (typed-array view reads only), so the
-    /// borrows are short by construction. Returns `false` when an array is
-    /// missing/neutered (the caller latches the failure).
-    #[expect(unsafe_code)]
+    /// Copy the quantum's inputs into the persistent channel arrays. No JS
+    /// runs in here (typed-array view reads only), so the borrows are short
+    /// by construction. Returns `false` when an array is missing/neutered
+    /// (the caller latches the failure). (e155) The parameter timelines moved
+    /// out of this copy: they are written through the per-quantum
+    /// parameters read-back in [`crate::dom::audio::audioworklethandler`],
+    /// which resolves each declared name off the JS params object.
     pub(crate) fn write_inputs(&self, cx: &JSContext, quantum: &WorkletQuantum) -> bool {
         for (port, buffers) in self.input_arrays.iter().enumerate() {
             let Some(quantum_input) = quantum.inputs.get(port) else {
@@ -203,26 +209,6 @@ impl ProcessorInstanceData {
                 } else {
                     slice.fill(0.);
                 }
-            }
-        }
-        for (index, arr) in self.param_arrays.iter().enumerate() {
-            let Some(quantum_param) = quantum.params.get(index) else {
-                break;
-            };
-            let Ok(mut view) = arr.get_typed_array() else {
-                return false;
-            };
-            let Some(slice) = view.as_mut_slice_safe(cx.no_gc()) else {
-                return false;
-            };
-            if slice.len() == 1 {
-                // k-rate: the spec exposes a single-element array; the media
-                // face fills all 128 slots with the uniform value.
-                slice[0] = quantum_param.data()[0];
-            } else {
-                let timeline = quantum_param.data();
-                let len = slice.len().min(timeline.len());
-                slice[..len].copy_from_slice(&timeline[..len]);
             }
         }
         true
@@ -515,6 +501,25 @@ impl AudioWorkletGlobalScope {
         inst.output_arrays = arrays;
         inst.output_live = live.to_vec();
         true
+    }
+
+    /// (e155) Swap one registered instance's JS `parameters` argument object
+    /// for a freshly built one (the rebuild half of the crbug.com/1151069
+    /// read-back: an own-data-property clone, frozen, shadowing any
+    /// page-installed `Object.prototype` accessor). Same discipline as
+    /// [`Self::update_input_face`]: the inline `params_object` `Heap` slot is
+    /// written here, at its final registry address.
+    pub(crate) fn update_params_face(
+        &self,
+        node_key: u64,
+        params_object: *mut JSObject,
+    ) -> bool {
+        let mut instances = self.processor_instances.borrow_mut();
+        instances
+            .0
+            .get_mut(&node_key)
+            .map(|inst| inst.params_object.set(params_object))
+            .is_some()
     }
 
     /// (e127) Post-registration write of the instance's five GC `Heap`

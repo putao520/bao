@@ -239,6 +239,76 @@ registerProcessor('pipo-processor', class extends AudioWorkletProcessor {
 });
 "#;
 
+/// (e155) The invalid-parameters-getter module, mirroring the WPT
+/// `invalid-param-array-processor.js` byte-for-byte in behavior: the class's
+/// static `parameterDescriptors` returns `[]` for the first registration and
+/// `[{name: 'invalidParam'}]` for the second, the constructor hands back a
+/// shared singleton, and an `Object.prototype` accessor feeds the engine's
+/// parameters read-back a 128-sample array on the first fetch and a
+/// 256-sample one on the second. The second class is the throwing-getter
+/// variant: its accessor always throws, which the rebuild face must absorb
+/// by shadowing it with an own data property (the node keeps rendering).
+const INVALID_PARAM_PROCESSOR_JS: &str = r#"
+let singleton = undefined;
+let secondFetch = false;
+let useDescriptor = false;
+
+class InvalidParamArrayProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    if (useDescriptor)
+      return [{name: 'invalidParam'}];
+    useDescriptor = true;
+    return [];
+  }
+  constructor() {
+    super();
+    if (singleton === undefined)
+      singleton = this;
+    return singleton;
+  }
+  process(inputs, outputs) {
+    const output = outputs[0];
+    for (let channel = 0; channel < output.length; ++channel)
+      output[channel].fill(1);
+    return false;
+  }
+}
+
+Object.defineProperty(Object.prototype, 'invalidParam', {'get': () => {
+  if (secondFetch)
+    return new Float32Array(256);
+  secondFetch = true;
+  return new Float32Array(128);
+}});
+
+registerProcessor('invalid-param-array-1', InvalidParamArrayProcessor);
+registerProcessor('invalid-param-array-2', InvalidParamArrayProcessor);
+
+let throwUseDescriptor = false;
+
+class ThrowingParamProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    if (throwUseDescriptor)
+      return [{name: 'throwParam'}];
+    throwUseDescriptor = true;
+    return [];
+  }
+  process(inputs, outputs) {
+    const output = outputs[0];
+    for (let channel = 0; channel < output.length; ++channel)
+      output[channel].fill(1);
+    return true;
+  }
+}
+
+Object.defineProperty(Object.prototype, 'throwParam', {'get': () => {
+  throw new Error('invalid parameters getter');
+}});
+
+registerProcessor('invalid-throw-1', ThrowingParamProcessor);
+registerProcessor('invalid-throw-2', ThrowingParamProcessor);
+"#;
+
 /// Service worker: asserts the module fetch destination the same way the WPT
 /// fetch-destination worker does, and responds with the pass-through fetch
 /// when it matches. Records the observed destination for the fixture probe.
@@ -336,6 +406,8 @@ impl AwHttpFixture {
                                 ("text/javascript", NESTED_OPTS_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/pipo-processor.js") {
                                 ("text/javascript", PIPO_PROCESSOR_JS.to_string())
+                            } else if path.starts_with("/invalid-param-processor.js") {
+                                ("text/javascript", INVALID_PARAM_PROCESSOR_JS.to_string())
                             } else if path.starts_with("/sw.js") {
                                 ("application/javascript", AW_SW_JS.replace("__ORIGIN__", &origin))
                             } else if path.starts_with("/dummy") {
@@ -1254,5 +1326,134 @@ fn audioworklet_process_this_binding_live() {
         result.contains("\"count\":10"),
         "process() must run with this bound to the instance (own-field counter reaches 10 and \
          posts from this.port), got: {result}"
+    );
+}
+
+/// @trace REQ-BRW-002 [criterion:audioworklet-invalid-param-getter-invalidation] live
+///
+/// (e155) The spec's parameters-argument read-back face, mirroring the
+/// reference implementation of crbug.com/1151069 (the WPT
+/// `audioworkletprocessor-param-getter-overridden` semantics): before every
+/// `process()` call the engine re-reads each declared parameter property off
+/// the JS params object. A page-defined `Object.prototype` accessor
+/// intercepts that read.
+///
+/// Variant A (wrong-length array on the second fetch): the match check is
+/// fed a valid 128-sample array and the copy a 256-sample one — the
+/// processor is INVALIDATED: `process()` never runs, the rendered buffer is
+/// silent and `processorerror` fires exactly once (the node outputs silence
+/// for the rest of its lifetime).
+///
+/// Variant B (always-throwing getter): the match check fails, the engine
+/// rebuilds the params object with own data properties (shadowing the
+/// accessor, CreateDataProperty semantics) — the node keeps rendering (the
+/// buffer is NOT silent and no error fires). Runs on its own context: an
+/// OfflineAudioContext renders exactly once.
+#[test]
+fn audioworklet_invalid_param_getter_invalidates_node_live() {
+    if should_skip() {
+        return;
+    }
+    let _guard = TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture = AwHttpFixture::spawn();
+    fixture.set_origin(format!("http://127.0.0.1:{}/", fixture.port));
+    let runtime = BrowserRuntime::new(BaoConfig::default())
+        .expect("gated live test: BrowserRuntime::new must succeed");
+    let page = spawn_wired_page(&fixture, &runtime, "invalid-param-processor.js");
+
+    let result = eval_pending(
+        &page,
+        r#"window.__probe = 'pending'; (async function() {
+             try {
+               var module = window.location.origin + '/invalid-param-processor.js';
+
+               // Variant A: the 128-then-256 getter feeds the read-back.
+               var ctxA = new OfflineAudioContext(1, 12800, 16000);
+               await ctxA.audioWorklet.addModule(module);
+               var buffer = new AudioBuffer({
+                 length: 2, numberOfChannels: 1, sampleRate: ctxA.sampleRate
+               });
+               buffer.getChannelData(0)[0] = 1;
+               var source = new AudioBufferSourceNode(ctxA, {buffer: buffer, loop: true});
+               source.start();
+               var n1 = new AudioWorkletNode(ctxA, 'invalid-param-array-1');
+               var n2 = new AudioWorkletNode(ctxA, 'invalid-param-array-2');
+               n1.connect(n2).connect(ctxA.destination);
+               source.connect(n2.parameters.get('invalidParam'));
+               var fired = 0;
+               n2.onprocessorerror = function () { ++fired; };
+               var bufA = await ctxA.startRendering();
+               var dA = bufA.getChannelData(0);
+               var nonzeroA = 0;
+               for (var i = 0; i < dA.length; ++i) if (dA[i] !== 0) ++nonzeroA;
+
+               // Variant B: an always-throwing getter — absorbed by the
+               // rebuild (own data property shadows the accessor).
+               var ctxB = new OfflineAudioContext(1, 12800, 16000);
+               await ctxB.audioWorklet.addModule(module);
+               var bufferB = new AudioBuffer({
+                 length: 2, numberOfChannels: 1, sampleRate: ctxB.sampleRate
+               });
+               bufferB.getChannelData(0)[0] = 1;
+               var sourceB = new AudioBufferSourceNode(ctxB, {buffer: bufferB, loop: true});
+               sourceB.start();
+               var t1 = new AudioWorkletNode(ctxB, 'invalid-throw-1');
+               var t2 = new AudioWorkletNode(ctxB, 'invalid-throw-2');
+               t1.connect(t2).connect(ctxB.destination);
+               sourceB.connect(t2.parameters.get('throwParam'));
+               var throwFired = 0;
+               t2.onprocessorerror = function () { ++throwFired; };
+               var bufB = await ctxB.startRendering();
+               var dB = bufB.getChannelData(0);
+               var nonzeroB = 0;
+               for (var j = 0; j < dB.length; ++j) if (dB[j] !== 0) ++nonzeroB;
+
+               window.__probe = JSON.stringify({
+                 stage: 'done', nonzeroA: nonzeroA, fired: fired,
+                 nonzeroB: nonzeroB, throwFired: throwFired
+               });
+             } catch (e) { window.__probe = 'threw:' + e; }
+           })();"#,
+        Duration::from_secs(40),
+        "invalid param getter invalidation",
+    );
+
+    eprintln!("[aw-test] invalid param getter = {result}");
+    let nonzero_a: f64 = result
+        .split("\"nonzeroA\":")
+        .nth(1)
+        .and_then(|rest| rest.split([',', '}']).next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1.);
+    let fired: f64 = result
+        .split("\"fired\":")
+        .nth(1)
+        .and_then(|rest| rest.split([',', '}']).next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1.);
+    assert!(
+        nonzero_a == 0. && fired == 1.,
+        "a wrong-length parameters getter must invalidate the node: process() never runs, the \
+         render is silent (nonzeroA={nonzero_a}) and processorerror fires once (fired={fired}), \
+         got: {result}"
+    );
+    let nonzero_b: f64 = result
+        .split("\"nonzeroB\":")
+        .nth(1)
+        .and_then(|rest| rest.split([',', '}']).next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1.);
+    let throw_fired: f64 = result
+        .split("\"throwFired\":")
+        .nth(1)
+        .and_then(|rest| rest.split([',', '}']).next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1.);
+    assert!(
+        nonzero_b > 0. && throw_fired == 0.,
+        "a throwing parameters getter must be absorbed by the params-object rebuild (own data \
+         property shadows the accessor): the node keeps rendering (nonzeroB={nonzero_b}, \
+         throwFired={throw_fired}), got: {result}"
     );
 }

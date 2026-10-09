@@ -205,6 +205,21 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
             self.report_processor_error(None);
             return ProcessorControl::Finish;
         }
+
+        // (e155) The parameters read-back face (crbug.com/1151069 semantics):
+        // match → rebuild → copy, per declared name, BEFORE `process` is
+        // looked up. A copy failure invalidates the node — silence for the
+        // rest of its lifetime, `process()` never invoked again.
+        if !sync_param_face(cx, scope, self.node_key, quantum) {
+            self.report_processor_error(Some(ErrorInfo {
+                message: "process(): Failed to copy parameter data.".to_owned(),
+                filename: String::new(),
+                lineno: 0,
+                column: 0,
+            }));
+            return ProcessorControl::Finish;
+        }
+
         let Some(inst) = scope.instance_data(self.node_key) else {
             self.bridge.signal_processor_error();
             return ProcessorControl::Finish;
@@ -473,6 +488,179 @@ pub(crate) fn rebuild_output_arrays(
         .collect();
     rooted!(&in(cx) let outer_final = roots[outer_index].to_object());
     scope.update_output_face(node_key, outer_final.get(), arrays, live)
+}
+
+/// (e155) Read one declared parameter property off the JS `parameters`
+/// object. `Get` resolves through the prototype chain, so a page-installed
+/// `Object.prototype` accessor runs here (the crbug.com/1151069 face): a
+/// throwing getter is cleared and counts as absent, and anything that is not
+/// a live `Float32Array` of exactly the declared length (k-rate 1, a-rate
+/// 128) is rejected. A detached buffer reads as length 0, which fails every
+/// declared length.
+fn get_param_array(
+    cx: &mut JSContext,
+    params: js::rust::Handle<*mut JSObject>,
+    name: &std::ffi::CStr,
+    expected_len: usize,
+) -> Option<js::typedarray::TypedArray<js::typedarray::Float32, *mut JSObject>> {
+    rooted!(&in(cx) let mut value = UndefinedValue());
+    if get_property_jsval(cx, params, name, value.handle_mut()).is_err() {
+        // The accessor threw: the reference implementation catches this in
+        // its TryCatch and treats the property as unusable.
+        unsafe { JS_ClearPendingException(cx) };
+        return None;
+    }
+    if !value.is_object() {
+        return None;
+    }
+    rooted!(&in(cx) let object = value.to_object());
+    let array = js::typedarray::TypedArray::<
+        js::typedarray::Float32,
+        *mut JSObject,
+    >::from(object.get());
+    match array {
+        Ok(array) if array.len() == expected_len => Some(array),
+        _ => None,
+    }
+}
+
+/// (e155) Swap the JS `parameters` argument object for a freshly built one:
+/// own data properties (`DefineOwnProperty` — an `Object.prototype`
+/// accessor cannot intercept it; the reference clone's `CreateDataProperty`),
+/// frozen per the spec's freeze-parameter-object step. The GC discipline
+/// matches the e147 input/output rebuilds: every fresh object stays rooted
+/// through the window, and the inline `params_object` `Heap` slot is written
+/// at its final registry address inside
+/// [`AudioWorkletGlobalScope::update_params_face`].
+pub(crate) fn rebuild_param_arrays(
+    cx: &mut JSContext,
+    scope: &AudioWorkletGlobalScope,
+    node_key: u64,
+) -> bool {
+    use js::jsapi::JSPROP_ENUMERATE;
+    use js::rust::wrappers2::{JS_DefineProperty, JS_FreezeObject, JS_NewObject};
+
+    let Some(shapes) = scope.instance_data(node_key).map(|inst| inst.param_shapes.clone())
+    else {
+        return false;
+    };
+    rooted_vec!(let mut roots);
+    let mut leaf_indices = Vec::with_capacity(shapes.len());
+    for (_, len) in &shapes {
+        match make_channel_array_index(cx, *len, &mut roots) {
+            Some(index) => leaf_indices.push(index),
+            None => return false,
+        }
+    }
+    let params_object = unsafe { JS_NewObject(cx, std::ptr::null()) };
+    if params_object.is_null() {
+        return false;
+    }
+    roots.push(ObjectValue(params_object));
+    let params_object_index = roots.len() - 1;
+    for (index, (name, _)) in shapes.iter().enumerate() {
+        if name.as_bytes().is_empty() {
+            continue;
+        }
+        rooted!(&in(cx) let value = roots[leaf_indices[index]]);
+        rooted!(&in(cx) let params_ref = roots[params_object_index].to_object());
+        if !unsafe {
+            JS_DefineProperty(
+                cx,
+                params_ref.handle(),
+                name.as_ptr(),
+                value.handle(),
+                JSPROP_ENUMERATE as _,
+            )
+        } {
+            return false;
+        }
+    }
+    // The spec's SetIntegrityLevel(parameter, frozen) — the arrays and their
+    // buffers stay writable (the per-quantum copy writes through the views).
+    rooted!(&in(cx) let params_final = roots[params_object_index].to_object());
+    if !unsafe { JS_FreezeObject(cx, params_final.handle()) } {
+        return false;
+    }
+    scope.update_params_face(node_key, params_final.get())
+}
+
+/// (e155) The per-quantum `parameters` read-back — the crbug.com/1151069
+/// semantics the upstream lacks (the node stayed live and kept rendering
+/// through any page-mangled parameter property):
+///
+/// * match: every declared name must resolve to a live `Float32Array` of the
+///   declared length;
+/// * rebuild: a failed match swaps the params object for a fresh own-data
+///   property one, shadowing whatever the page put on the prototype (the
+///   rebuild result is advisory, exactly like the reference clone — the copy
+///   below is the authority);
+/// * copy: the quantum's timeline values are written into whatever each
+///   property now resolves to. A failure here invalidates the processor:
+///   `process()` is never invoked again, the node latches `processorerror`
+///   and outputs silence for the rest of its lifetime.
+fn sync_param_face(
+    cx: &mut JSContext,
+    scope: &AudioWorkletGlobalScope,
+    node_key: u64,
+    quantum: &WorkletQuantum,
+) -> bool {
+    // Phase 1 — match. The borrow is scoped: a rebuild swaps the face
+    // through `update_params_face`'s own mutable borrow.
+    let mut matched = true;
+    {
+        let Some(inst) = scope.instance_data(node_key) else {
+            return false;
+        };
+        if inst.params_object.get().is_null() {
+            return false;
+        }
+        for (name, len) in inst.param_shapes.iter() {
+            if name.as_bytes().is_empty() {
+                continue;
+            }
+            rooted!(&in(cx) let params = inst.params_object.get());
+            if get_param_array(cx, params.handle(), name, *len).is_none() {
+                matched = false;
+                break;
+            }
+        }
+    }
+    if !matched {
+        rebuild_param_arrays(cx, scope, node_key);
+    }
+    // Phase 2 — copy into whatever each property resolves to now.
+    let Some(inst) = scope.instance_data(node_key) else {
+        return false;
+    };
+    if inst.params_object.get().is_null() {
+        return false;
+    }
+    for (index, (name, len)) in inst.param_shapes.iter().enumerate() {
+        let Some(quantum_param) = quantum.params.get(index) else {
+            break;
+        };
+        if name.as_bytes().is_empty() {
+            continue;
+        }
+        rooted!(&in(cx) let params = inst.params_object.get());
+        let Some(mut array) = get_param_array(cx, params.handle(), name, *len) else {
+            return false;
+        };
+        let Some(slice) = array.as_mut_slice_safe(cx.no_gc()) else {
+            return false;
+        };
+        if slice.len() == 1 {
+            // k-rate: the spec exposes a single-element array; the media
+            // face fills all 128 slots with the uniform value.
+            slice[0] = quantum_param.data()[0];
+        } else {
+            let timeline = quantum_param.data();
+            let len = slice.len().min(timeline.len());
+            slice[..len].copy_from_slice(&timeline[..len]);
+        }
+    }
+    true
 }
 
 /// Instantiate the processor for one node (worklet thread). Runs inside a
@@ -765,9 +953,18 @@ pub(crate) fn instantiate_processor(
                     .collect()
             })
             .collect(),
-        param_arrays: param_leaf_indices
+        param_shapes: shape
+            .params
             .iter()
-            .map(|&index| rooted_channel(cx, &instance_roots, index))
+            .map(|param| {
+                let len = if param.rate == ParamRate::KRate { 1 } else { 128 };
+                // An interior-NUL name (pathological WebIDL edge) has no C
+                // face: the empty sentinel skips that name in the read-back
+                // while keeping this vector index-aligned with
+                // `quantum.params` (the pre-e155 Set loop skipped it the
+                // same way — no property, node keeps working).
+                (std::ffi::CString::new(param.name.as_str()).unwrap_or_default(), len)
+            })
             .collect(),
         input_live: (0..shape.input_ports)
             .map(|_| shape.input_channels)
@@ -829,7 +1026,15 @@ pub(crate) fn instantiate_processor(
             outputs_array_index,
             &output_port_indices,
         );
-        if !frozen_inputs || !frozen_outputs {
+        // (e155) The `parameters` object gets the same spec face
+        // (SetIntegrityLevel(parameter, frozen) — the reference clone always
+        // freezes what reaches `process()`); its `Float32Array`s stay
+        // writable through their buffers.
+        let frozen_params = {
+            rooted!(&in(cx) let params_obj = instance_roots[params_object_index].to_object());
+            unsafe { JS_FreezeObject(cx, params_obj.handle()) }
+        };
+        if !frozen_inputs || !frozen_outputs || !frozen_params {
             debug!("AudioWorklet argument array freezing failed for node {node_key}.");
             latch_failure(&node, &bridge, &main_sender);
             return;
