@@ -39,18 +39,11 @@
 // directly, per the registered gap's scenario.
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<rsb>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(JsValue::Object(_)) => "[object]".to_string(),
-        Err(e) => format!("ERROR:{}", e.message),
-    }
+    common::eval_string_full_named(ctx, source, "<rsb>")
 }
 
 fn pump_until_done(ctx: &mut JsContext, deadline_ms: u64) -> bool {

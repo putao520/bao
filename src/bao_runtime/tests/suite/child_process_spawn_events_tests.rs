@@ -11,18 +11,12 @@
 // Native FFI untouched.
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use std::cell::Cell;
+#[path = "common/mod.rs"]
+mod common;
 
-fn eval_str(ctx: &mut JsContext, code: &str) -> String {
-    match ctx.eval(code, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(v) => format!("{:?}", v),
-        Err(e) => format!("ERROR: {:?}", e),
-    }
-}
+use common::eval_str;
+
 
 thread_local! {
     static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };

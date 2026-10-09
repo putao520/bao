@@ -23,6 +23,8 @@ use std::time::Duration;
 use bao_boringssl_bridge::{TlsClient, TlsConnection, generate_self_signed_pem, pem_parse_certs};
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
 fn make_ctx() -> JsContext {
     let mut ctx = JsContext::for_test().expect("JsContext::for_test");
@@ -211,15 +213,7 @@ fn run_client_with_pump(
 }
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<tls-sni-test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(JsValue::Object(_)) => "[object]".to_string(),
-        Err(e) => format!("ERROR:{}", e.message),
-    }
+    common::eval_string_full_named(ctx, source, "<tls-sni-test>")
 }
 
 // ─── 1. SNICallback selects the certificate per SNI name ───────────────

@@ -11,20 +11,14 @@
 // guards, listen-callback firing, and request concurrency.
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
+#[path = "common/mod.rs"]
+mod common;
 
-fn eval_str(ctx: &mut JsContext, code: &str) -> String {
-    match ctx.eval(code, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(v) => format!("{:?}", v),
-        Err(e) => format!("ERROR: {:?}", e),
-    }
-}
+use common::eval_str;
+
 
 /// Pump the unified event loop (uWS sockets + timers + jobs) so the
 /// in-process server accepts, parses, streams bodies and responds.

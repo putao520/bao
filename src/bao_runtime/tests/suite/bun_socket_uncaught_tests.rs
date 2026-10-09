@@ -12,12 +12,15 @@
 //     keeps running (exit untouched, later socket events still dispatch)
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use std::cell::Cell;
 use std::io::Write;
 use std::net::TcpStream;
 use std::net::UdpSocket;
 use std::time::Duration;
+#[path = "common/mod.rs"]
+mod common;
+
+use common::eval_str;
 
 fn make_ctx() -> JsContext {
     bun_runtime::install_exit_handler();
@@ -28,15 +31,6 @@ fn make_ctx() -> JsContext {
     ctx
 }
 
-fn eval_str(ctx: &mut JsContext, code: &str) -> String {
-    match ctx.eval(code, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(v) => format!("{:?}", v),
-        Err(e) => format!("ERROR: {:?}", e),
-    }
-}
 
 /// Pump the unified event loop (uWS sockets + timers + jobs) so socket
 /// dispatch runs on this thread. Stops early once an exit was requested —

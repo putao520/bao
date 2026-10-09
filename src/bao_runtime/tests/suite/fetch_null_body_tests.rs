@@ -16,8 +16,9 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use bun_runtime::timers;
+#[path = "common/mod.rs"]
+mod common;
 
 /// Raw-wire server: answers by path (HEAD requests get the HEAD wire shape).
 /// Honest keep-alive — one connection may carry several sequential probes
@@ -90,15 +91,7 @@ fn start_wire_server() -> u16 {
 }
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<nb>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true".into() } else { "false".into() },
-        Ok(JsValue::Null) => "null".into(),
-        Ok(JsValue::Undefined) => "undefined".into(),
-        Ok(JsValue::Object(_)) => "[object]".into(),
-        Err(e) => format!("ERROR:{}", e.message),
-    }
+    common::eval_string_full_named(ctx, source, "<nb>")
 }
 
 /// Drive the event loop until `__nb_done` is set (fetch e2e pump pattern).

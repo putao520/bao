@@ -13,6 +13,11 @@ use std::time::Duration;
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
 use bun_runtime::timers;
+#[path = "common/mod.rs"]
+mod common;
+
+use common::eval_number;
+use common::eval_string_full as eval_string;
 
 fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
     match ctx.eval(source, "<test>") {
@@ -22,24 +27,6 @@ fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
     }
 }
 
-fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(JsValue::Object(_)) => "[object]".to_string(),
-        Err(e) => format!("ERROR:{}", e.message),
-    }
-}
-
-fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::Number(n)) => n,
-        _ => f64::NAN,
-    }
-}
 
 /// Drive the JS thread's MiniEventLoop (fetch e2e pattern).
 fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {

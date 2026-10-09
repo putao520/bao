@@ -27,7 +27,8 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
 thread_local! {
     /// Iteration budget for `bounded_drain_hook` (fn-pointer hooks cannot
@@ -54,13 +55,7 @@ fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
 }
 
 fn eval_str(ctx: &mut JsContext, code: &str) -> String {
-    match ctx.eval(code, "<p0-refused-net-close>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(v) => format!("{:?}", v),
-        Err(e) => format!("ERROR: {:?}", e),
-    }
+    common::eval_str_named(ctx, code, "<p0-refused-net-close>")
 }
 
 /// Eval `js_condition` ('y'/'n') with `budget` hook iterations per eval;

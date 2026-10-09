@@ -29,6 +29,10 @@ use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
+#[path = "common/mod.rs"]
+mod common;
+
+use common::eval_string;
 
 fn make_ctx() -> JsContext {
     bun_core::output::init_test();
@@ -80,15 +84,6 @@ fn pump_until(ctx: &mut JsContext, timeout: Duration, cond: impl Fn(&mut JsConte
     true
 }
 
-/// Evaluate a JS expression that must yield a string.
-fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        _ => String::new(),
-    }
-}
 
 /// Evaluate a JS expression that must yield a boolean.
 fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {

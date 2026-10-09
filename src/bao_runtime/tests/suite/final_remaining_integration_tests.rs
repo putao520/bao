@@ -6,8 +6,11 @@
 // T8: CDP enum dispatch
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use std::sync::OnceLock;
+#[path = "common/mod.rs"]
+mod common;
+
+use common::eval_string;
 
 static TEST_SERIAL_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
 fn test_serial_lock() -> &'static std::sync::Mutex<()> {
@@ -18,14 +21,6 @@ fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
     test_serial_lock().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        _ => String::new(),
-    }
-}
 
 // ─── T2: SecureContext real implementation ────────────────────────────────
 

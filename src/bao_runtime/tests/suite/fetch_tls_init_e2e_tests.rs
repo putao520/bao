@@ -29,7 +29,8 @@ use std::time::{Duration, Instant};
 
 use bao_boringssl_bridge::{TlsServer, generate_self_signed_pem, pem_parse_certs};
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
 /// One served connection: the ClientHello SNI name + the (lossy) HTTP/1.1
 /// request bytes decrypted off the wire ("" when the client aborted before
@@ -196,15 +197,7 @@ fn start_tls_capture_server(cert: &str, key: &str) -> (u16, Records) {
 }
 
 fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<fetch-tls-test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(JsValue::Object(_)) => "[object]".to_string(),
-        Err(e) => format!("ERROR:{}", e.message),
-    }
+    common::eval_string_full_named(ctx, source, "<fetch-tls-test>")
 }
 
 /// Escape a PEM string for embedding in a JS double-quoted string literal.

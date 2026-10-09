@@ -18,8 +18,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use bun_runtime::timers;
+#[path = "common/mod.rs"]
+mod common;
+
+use common::eval_string_full as eval_string;
 
 /// Spin up a trivial HTTP/1.1 server on a random port.
 /// Returns (port, shutdown_flag) — set shutdown_flag to true to stop.
@@ -65,17 +68,6 @@ fn start_test_http_server(response_body: &'static [u8]) -> (u16, Arc<AtomicBool>
     (port, shutdown)
 }
 
-fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(JsValue::Object(_)) => "[object]".to_string(),
-        Err(e) => format!("ERROR:{}", e.message),
-    }
-}
 
 /// Drive the JS thread's MiniEventLoop for up to `max_iters` iterations.
 fn drive_event_loop(ctx: &mut JsContext, max_iters: usize) {

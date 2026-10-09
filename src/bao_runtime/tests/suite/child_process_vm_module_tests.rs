@@ -3,15 +3,12 @@
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
-fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        _ => String::new(),
-    }
-}
+use common::eval_number;
+use common::eval_string;
+
 
 fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
     match ctx.eval(source, "<test>") {
@@ -20,12 +17,6 @@ fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
     }
 }
 
-fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::Number(n)) => n,
-        _ => f64::NAN,
-    }
-}
 
 #[test]
 fn test_child_process_vm_module_zlib_deep() {

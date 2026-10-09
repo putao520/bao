@@ -2,16 +2,11 @@
 // ES Language feature tests: verify SpiderMonkey engine supports key JS features
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
-fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        _ => String::new(),
-    }
-}
+use common::eval_string;
+
 
 #[test]
 fn test_es_language_features() {

@@ -18,17 +18,12 @@
 // net_echo_e2e_tests); the echo roundtrip's timers/polls all fire through it.
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use std::cell::Cell;
+#[path = "common/mod.rs"]
+mod common;
 
 fn eval_str(ctx: &mut JsContext, code: &str) -> String {
-    match ctx.eval(code, "<net-options-e2e>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(v) => format!("{:?}", v),
-        Err(e) => format!("ERROR: {:?}", e),
-    }
+    common::eval_str_named(ctx, code, "<net-options-e2e>")
 }
 
 thread_local! {

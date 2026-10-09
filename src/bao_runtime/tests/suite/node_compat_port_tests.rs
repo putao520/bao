@@ -8,8 +8,9 @@
 // `// SKIPPED(bao-divergence): ...` and collected in the port report.
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use std::cell::Cell;
+#[path = "common/mod.rs"]
+mod common;
 
 thread_local! {
     static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
@@ -45,26 +46,7 @@ fn make_ctx_with_pump() -> JsContext {
 }
 
 fn eval_str(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<node-compat-port>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => {
-            // integral numbers must not print as "1.0"
-            if n.fract() == 0.0 && n.abs() < 1e15 {
-                format!("{}", n as i64)
-            } else {
-                format!("{}", n)
-            }
-        }
-        Ok(JsValue::Bool(b)) => {
-            if b {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
-        }
-        Ok(_) => String::new(),
-        Err(_) => "<eval-error>".to_string(),
-    }
+    common::eval_str_int_named(ctx, source, "<node-compat-port>")
 }
 
 /// Evaluate `body` in a fresh check-accumulator scope: `body` must call

@@ -16,20 +16,12 @@
 use std::time::Duration;
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use mozjs::rooted;
+#[path = "common/mod.rs"]
+mod common;
 
-fn eval_string(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(JsValue::Null) => "null".to_string(),
-        Ok(JsValue::Undefined) => "undefined".to_string(),
-        Ok(JsValue::Object(_)) => "[object]".to_string(),
-        Err(e) => format!("ERROR:{}", e.message),
-    }
-}
+use common::eval_string_full as eval_string;
+
 
 /// Drive timers (realm-entered drain_and_check), the MiniEventLoop and
 /// microtasks (js::RunJobs) so promise rejections settle. Mirrors the pump

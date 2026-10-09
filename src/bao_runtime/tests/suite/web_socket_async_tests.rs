@@ -22,23 +22,17 @@
 use bao_boringssl_bridge::connection::{TlsConnection, TlsState};
 use bao_boringssl_bridge::server::TlsServer;
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use bun_uws::ws_codec::{apply_mask, FrameDecoder, FrameEncoder};
 use bun_uws::ws_handshake::server_handshake;
 use mozjs::rooted;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
+#[path = "common/mod.rs"]
+mod common;
 
-fn eval_str(ctx: &mut JsContext, code: &str) -> String {
-    match ctx.eval(code, "<test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(v) => format!("{:?}", v),
-        Err(e) => format!("ERROR: {:?}", e),
-    }
-}
+use common::eval_str;
+
 
 /// Pump the event loop (timers + jobs + the WebSocket drain pump) until
 /// `probe` (a JS expression) evaluates truthy, or the budget runs out.

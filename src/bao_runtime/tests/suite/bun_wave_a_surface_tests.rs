@@ -8,10 +8,11 @@
 // same pattern as child_process_spawn_events_tests.rs.
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 use std::cell::Cell;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+#[path = "common/mod.rs"]
+mod common;
 
 thread_local! {
     static HOOK_BUDGET: Cell<usize> = const { Cell::new(0) };
@@ -33,26 +34,7 @@ fn bounded_drain_hook(cx: &mut mozjs::context::JSContext) -> bool {
 }
 
 fn eval_str(ctx: &mut JsContext, source: &str) -> String {
-    match ctx.eval(source, "<wave-a>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => {
-            // integral numbers must not print as "1.0"
-            if n.fract() == 0.0 && n.abs() < 1e15 {
-                format!("{}", n as i64)
-            } else {
-                format!("{}", n)
-            }
-        }
-        Ok(JsValue::Bool(b)) => {
-            if b {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
-        }
-        Ok(_) => String::new(),
-        Err(_) => "<eval-error>".to_string(),
-    }
+    common::eval_str_int_named(ctx, source, "<wave-a>")
 }
 
 fn eval_ok(ctx: &mut JsContext, source: &str) -> bool {

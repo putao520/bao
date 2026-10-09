@@ -27,7 +27,8 @@ use std::time::Duration;
 
 use bao_boringssl_bridge::generate_self_signed_pem;
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
+#[path = "common/mod.rs"]
+mod common;
 
 fn make_ctx() -> JsContext {
     let mut ctx = JsContext::for_test().expect("JsContext::for_test");
@@ -36,13 +37,7 @@ fn make_ctx() -> JsContext {
 }
 
 fn eval_str(ctx: &mut JsContext, code: &str) -> String {
-    match ctx.eval(code, "<p0-client-test>") {
-        Ok(JsValue::String(s)) => s,
-        Ok(JsValue::Number(n)) => format!("{}", n),
-        Ok(JsValue::Bool(b)) => if b { "true" } else { "false" }.to_string(),
-        Ok(v) => format!("{:?}", v),
-        Err(e) => format!("ERROR: {:?}", e),
-    }
+    common::eval_str_named(ctx, code, "<p0-client-test>")
 }
 
 /// Pump the unified event loop (uWS sockets + timers + jobs + microtasks).
