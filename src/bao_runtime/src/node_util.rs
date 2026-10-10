@@ -547,6 +547,26 @@ t.isCryptoKey=function(){return false};
 // The IIFE returns a callable assert function with all methods attached; it
 // is cached as both `assert` and `assert/strict` (the strict alias exposes
 // strict-only variants under `assert.strict`).
+
+// Table-driven factory for the legacy native stub registrations on the
+// placeholder assert object (e171, REQ-BRW-049): each row is
+// (js name, native fn, nargs) and expands to the exact JS_DefineFunction
+// call the handwritten block used — same order, same attrs.
+macro_rules! register_assert_stubs {
+    ($cx:expr, $obj:expr; $(($cname:expr, $fn:ident, $nargs:expr))*) => {
+        $(
+            w2::JS_DefineFunction(
+                $cx,
+                $obj.handle(),
+                $cname.as_ptr(),
+                Some($fn),
+                $nargs,
+                0,
+            );
+        )*
+    };
+}
+
 pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     // Keep the legacy native stubs referenced so we don't drop the function
     // pointer table (used as fallback by tests that import assert directly).
@@ -1230,109 +1250,20 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     // the JS-based assert above supersedes them in practice (cached as the
     // primary `assert` builtin).
     unsafe {
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"ok".as_ptr(),
-            Some(assert_ok),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"equal".as_ptr(),
-            Some(assert_equal),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"notEqual".as_ptr(),
-            Some(assert_not_equal),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"deepEqual".as_ptr(),
-            Some(assert_deep_equal),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"notDeepEqual".as_ptr(),
-            Some(assert_not_deep_equal),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"strictEqual".as_ptr(),
-            Some(assert_strict_equal),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"notStrictEqual".as_ptr(),
-            Some(assert_not_strict_equal),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"throws".as_ptr(),
-            Some(assert_throws),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"rejects".as_ptr(),
-            Some(assert_rejects),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"doesNotThrow".as_ptr(),
-            Some(assert_does_not_throw),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"fail".as_ptr(),
-            Some(assert_fail),
-            0,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"ifError".as_ptr(),
-            Some(assert_if_error),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            assert_obj.handle(),
-            c"deepStrictEqual".as_ptr(),
-            Some(assert_deep_equal),
-            2,
-            0,
+        register_assert_stubs!(cx, assert_obj;
+            (c"ok", assert_ok, 1)
+            (c"equal", assert_equal, 2)
+            (c"notEqual", assert_not_equal, 2)
+            (c"deepEqual", assert_deep_equal, 2)
+            (c"notDeepEqual", assert_noop, 2)
+            (c"strictEqual", assert_strict_equal, 2)
+            (c"notStrictEqual", assert_not_strict_equal, 2)
+            (c"throws", assert_noop, 1)
+            (c"rejects", assert_rejects, 1)
+            (c"doesNotThrow", assert_noop, 1)
+            (c"fail", assert_fail, 0)
+            (c"ifError", assert_if_error, 1)
+            (c"deepStrictEqual", assert_deep_equal, 2)
         );
 
         rooted!(&in(cx) let strict_val = ObjectValue(assert_obj.get()));
@@ -2297,66 +2228,53 @@ unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     true
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc >= 2 {
-        let a = jsval_to_display(cx, *args.get(0).ptr);
-        let b = jsval_to_display(cx, *args.get(1).ptr);
-        if a != b {
-            let msg = format!("{} == {}", a, b);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
-            return false;
+// Shared shape for the binary display-compare stubs (e171, REQ-BRW-049):
+// gate on two args, render both sides via jsval_to_display, report
+// "AssertionError: <msg>" when the $fail_when closure says the rendered
+// strings fail. The closures take (&String, &String) — macro hygiene keeps
+// call-site tokens from seeing the macro's own `a`/`b` locals, so the
+// condition/message travel as values (same form as type_check_fn!'s $check).
+// Semantics are identical to the handwritten bodies it replaced
+// (equal/notEqual had a formatted message, deepEqual a fixed one; only the
+// ZBox construction path differs, from_vec vs from_bytes, producing the same
+// NUL-terminated payload).
+macro_rules! binary_display_assert {
+    ($name:ident, $fail_when:expr, $msg:expr) => {
+        #[allow(unsafe_op_in_unsafe_fn)]
+        unsafe extern "C" fn $name(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+            let args = CallArgs::from_vp(vp, argc);
+            if argc >= 2 {
+                let a = jsval_to_display(cx, *args.get(0).ptr);
+                let b = jsval_to_display(cx, *args.get(1).ptr);
+                if $fail_when(&a, &b) {
+                    let msg = $msg(&a, &b);
+                    let c_msg = ZBox::from_bytes(msg.as_bytes());
+                    JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
+                    return false;
+                }
+            }
+            args.rval().set(UndefinedValue());
+            true
         }
-    }
-    args.rval().set(UndefinedValue());
-    true
+    };
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_not_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc >= 2 {
-        let a = jsval_to_display(cx, *args.get(0).ptr);
-        let b = jsval_to_display(cx, *args.get(1).ptr);
-        if a == b {
-            let msg = format!("{} != {}", a, b);
-            let c_msg = ZBox::from_bytes(msg.as_bytes());
-            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
-            return false;
-        }
-    }
-    args.rval().set(UndefinedValue());
-    true
-}
+binary_display_assert!(assert_equal, |a, b| a != b, |a, b| format!("{} == {}", a, b));
+binary_display_assert!(assert_not_equal, |a, b| a == b, |a, b| format!("{} != {}", a, b));
+binary_display_assert!(
+    assert_deep_equal,
+    |a, b| a != b,
+    |_a, _b| "Expected values to be deeply equal".to_string()
+);
 
+/// Shared no-op body for the legacy placeholder stubs whose JS-level twin in
+/// the IIFE library fully supersedes them (notDeepEqual / throws /
+/// doesNotThrow): consume the call, return undefined. One Rust symbol
+/// registered under three names — the JS-visible name comes from the
+/// registration table, not the symbol, so behavior is identical to the three
+/// handwritten copies it replaced (e171, REQ-BRW-049).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_deep_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc >= 2 {
-        let a = jsval_to_display(cx, *args.get(0).ptr);
-        let b = jsval_to_display(cx, *args.get(1).ptr);
-        if a != b {
-            let c_msg = ZBox::from_vec(
-                "Expected values to be deeply equal"
-                    .to_string()
-                    .into_bytes(),
-            );
-            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
-            return false;
-        }
-    }
-    args.rval().set(UndefinedValue());
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_not_deep_equal(
-    _cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
+unsafe extern "C" fn assert_noop(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     args.rval().set(UndefinedValue());
     true
@@ -2430,13 +2348,6 @@ unsafe extern "C" fn assert_not_strict_equal(
         JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
         return false;
     }
-    args.rval().set(UndefinedValue());
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_throws(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
     args.rval().set(UndefinedValue());
     true
 }
@@ -2597,17 +2508,6 @@ unsafe extern "C" fn assert_rejects(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_does_not_throw(
-    _cx: *mut JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn assert_fail(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     JS_ReportErrorUTF8(cx, c"AssertionError: fail".as_ptr());
@@ -2627,11 +2527,6 @@ unsafe extern "C" fn assert_if_error(cx: *mut JSContext, argc: u32, vp: *mut JSV
     }
     args.rval().set(UndefinedValue());
     true
-}
-
-#[allow(unsafe_op_in_unsafe_fn, dead_code)]
-unsafe extern "C" fn assert_function(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    assert_ok(cx, argc, vp)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
