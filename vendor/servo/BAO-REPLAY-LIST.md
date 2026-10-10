@@ -41,7 +41,7 @@
 
 ### 3.2 script_thread / embedder 桥面（最大单一回放面）
 - `script/event_loop/script_thread.rs`：embedder 脚本/Worker 回调注册与 drain（含第二 drain 点）、router_proxy 安装（BCE-20260627-009）、`bao_run_in_script_settings`（BCE-20260910-004）、RED-1 realm-discard cancel 桥、W15 shrink 钩子、`EMBEDDER_NEW_DOCUMENT_SCRIPTS` new-document 注入层（REQ-CDP-004）、per-Worker injector 双层（REQ-BRW-004 e43）
-- `components/servo/lib.rs` 361 行 embedder API + `servo/servo.rs` W27 join-spin 有界化（目标树 line 884 仍无 deadline，实测未溶解）
+- `components/servo/lib.rs` 361 行 embedder API + `servo/servo.rs` W27 join-spin 有界化（~~目标树 line 884 仍无 deadline，实测未溶解~~ **已回放 2026-10-11 e170**：15s deadline + 泄漏日志 + eprintln 双发;未回放窗内 e157 全量 suite 的 bce004_stress_ten_navigations 84min 楔死即此面——归因见 `shared/base/id.rs` e170 patch 注释,AB-BA 根修一并落地）
 - `script/dom/window/window.rs`、`constellation/constellation.rs`、`shared/constellation/*`、`shared/base/{lib,ipc_router}.rs`（ipc_router 保留在树，dormant）、`shared/script/lib.rs`、`shared/net/lib.rs`、`messaging.rs` SW 同步 DOM 通道（上游 generic-channel 形态需重锚）
 - `script/engine/handle.rs`：bao 幂等 JSEngineSetup 形态（上游自有 handle.rs 内容不同，需按上游新位重放）
 

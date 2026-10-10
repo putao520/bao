@@ -888,12 +888,56 @@ impl ServoInner {
     }
 }
 
+// BAO PATCH (fork-maintained, 2026-09-29, W27): bounded join wait — see the
+// Drop impl below.
+const SERVO_DROP_JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+
 impl Drop for ServoInner {
+    // BAO PATCH (fork-maintained, 2026-09-29, W27): bounded join wait.
+    // Upstream's spin has NO timeout — a dead or wedged servo thread (one
+    // that can no longer process the Exit message and join) keeps
+    // `spin_event_loop()` returning true FOREVER and runtime teardown hangs
+    // (live evidence: >13 min spin, W16 forensics — the root in that case
+    // was the W28 font-promise panic killing Script#2; both panic classes
+    // are now eradicated, so the hang no longer reproduces, but ANY future
+    // thread-death/wedge defect re-opens the unbounded-hang class). Liveness
+    // over perfect reclamation: after SERVO_DROP_JOIN_TIMEOUT the spin is
+    // abandoned, the wedged thread is LEAKED (loudly logged below — never a
+    // silent skip, never a panic) and teardown continues. 15s matches the
+    // repo's bounded-wait convention (wait_for_navigation / churn pipeline).
+    //
+    // Replayed 2026-10-11 (e170): the e99 absorb snapshot swap (a7272f16)
+    // restored the upstream unbounded form; e157's suite run then wedged
+    // bce004_stress_ten_navigations for 84 min in this exact spin (gdb:
+    // test thread parked at this site, constellation deadlocked on the
+    // pipeline-namespace installer — see the companion id.rs patch). This
+    // replay was the pending BAO-REPLAY-LIST.md line-44 item.
     fn drop(&mut self) {
         self.constellation_proxy
             .send(EmbedderToConstellationMessage::Exit);
         self.shutdown_state.set(ShutdownState::ShuttingDown);
+        let deadline = std::time::Instant::now() + SERVO_DROP_JOIN_TIMEOUT;
         while self.spin_event_loop() {
+            if std::time::Instant::now() >= deadline {
+                log::error!(
+                    "ServoInner::drop: shutdown did not complete within {:?} — abandoning the \
+                     join spin and continuing teardown. The wedged servo thread is LEAKED. \
+                     Typical cause: a thread died or is parked on a never-completing \
+                     operation (e.g. an in-flight load on a never-responding connection); \
+                     find the culprit thread in this process's thread list.",
+                    SERVO_DROP_JOIN_TIMEOUT
+                );
+                // Crash-forensics dual emit (e170, e166 exception class): a
+                // wedged-teardown event must be visible in test harnesses,
+                // which install no logger — log::error! alone made e157's
+                // 84-min wedge leave zero in-process evidence.
+                eprintln!(
+                    "ServoInner::drop: shutdown did not complete within {:?} — abandoning the \
+                     join spin and continuing teardown. The wedged servo thread is LEAKED.",
+                    SERVO_DROP_JOIN_TIMEOUT
+                );
+                break;
+            }
             std::thread::sleep(Duration::from_micros(500));
         }
     }

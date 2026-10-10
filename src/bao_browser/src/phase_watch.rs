@@ -197,7 +197,7 @@ pub fn spawn_watchdog() {
                         // The routing forensics dump: which phase, which
                         // page, how long, and what every thread in the
                         // process is waiting on right now.
-                        log::error!(
+                        let alert = format!(
                             "[page-watchdog] page pipeline STALLED: phase={} \
                              page={} elapsed={}ms (budget {}ms) — thread \
                              states follow",
@@ -209,6 +209,17 @@ pub fn spawn_watchdog() {
                             elapsed,
                             phase_budget().as_millis(),
                         );
+                        log::error!("{alert}");
+                        // Crash-forensics exception (e166 registry class,
+                        // e170 2026-10-11): a wedged process's last words
+                        // must not depend on an embedder installing a
+                        // logger. Test harnesses install none — log::error!
+                        // alone made e157's 84-min suite wedge leave ZERO
+                        // in-process evidence, forcing external gdb
+                        // attribution. stderr is captured by every test
+                        // runner (nextest/libtest) and survives the
+                        // liveness SIGKILL that follows.
+                        eprintln!("{alert}");
                         dump_thread_states();
                     }
                 }
@@ -257,6 +268,8 @@ fn dump_thread_states() {
     }
     for line in lines {
         log::error!("[page-watchdog] {line}");
+        // Crash-forensics dual emit — see the stall alert above (e170).
+        eprintln!("[page-watchdog] {line}");
     }
 }
 

@@ -125,20 +125,33 @@ macro_rules! namespace_id {
 pub struct PipelineNamespaceRequest(pub GenericSender<PipelineNamespaceId>);
 
 /// A per-process installer of pipeline-namespaces.
+///
+/// BAO PATCH (fork-maintained, 2026-10-11, e170): the shared
+/// (namespace_sender, namespace_receiver) pair is gone — each request now
+/// carries its OWN fresh response channel, so the blocking wait happens with
+/// the installer lock RELEASED. Upstream held the lock across the `recv()`
+/// that waits for the constellation, which is an AB-BA deadlock whenever the
+/// constellation contends for the same lock — and it does, inside
+/// `ScriptThread::create` → `set_installer_sender` during every pipeline
+/// spawn. Live evidence (14/14 wedged runs under suite-load, e157's 84-min
+/// bce004_stress_ten_navigations wedge): a freshly-booted
+/// ServiceWorkerManager thread parks in `auto_install` holding the lock
+/// (waiting for the constellation to answer) while the constellation parks
+/// in `set_installer_sender` (waiting for the lock) — Exit is never
+/// processed and runtime teardown hangs forever. The upstream comment
+/// arguing the hold-across-recv is safe ("the constellation already acting
+/// as a global lock ... only being able to handle one request at a time")
+/// is exactly the assumption this deadlock falsifies. Per-request channels
+/// also make concurrent installs strictly safer than the serialized
+/// shared-channel pairing they replace.
 pub struct PipelineNamespaceInstaller {
     request_sender: Option<GenericSender<PipelineNamespaceRequest>>,
-    namespace_sender: GenericSender<PipelineNamespaceId>,
-    namespace_receiver: GenericReceiver<PipelineNamespaceId>,
 }
 
 impl Default for PipelineNamespaceInstaller {
     fn default() -> Self {
-        let (namespace_sender, namespace_receiver) =
-            generic_channel::channel().expect("PipelineNamespaceInstaller channel failure");
         Self {
             request_sender: None,
-            namespace_sender,
-            namespace_receiver,
         }
     }
 }
@@ -149,16 +162,16 @@ impl PipelineNamespaceInstaller {
         self.request_sender = Some(sender);
     }
 
-    /// Install a namespace, requesting a new Id from the constellation.
-    pub fn install_namespace(&self) {
+    /// Send the namespace request and return THIS request's private response
+    /// receiver. The caller MUST wait on it with the installer lock released
+    /// (see `PipelineNamespace::auto_install`).
+    pub fn send_namespace_request(&self) -> GenericReceiver<PipelineNamespaceId> {
         match self.request_sender.as_ref() {
             Some(sender) => {
-                let _ = sender.send(PipelineNamespaceRequest(self.namespace_sender.clone()));
-                let namespace_id = self
-                    .namespace_receiver
-                    .recv()
-                    .expect("The constellation to make a pipeline namespace id available");
-                PipelineNamespace::install(namespace_id);
+                let (namespace_sender, namespace_receiver) = generic_channel::channel()
+                    .expect("PipelineNamespaceInstaller channel failure");
+                let _ = sender.send(PipelineNamespaceRequest(namespace_sender));
+                namespace_receiver
             },
             None => unreachable!("PipelineNamespaceInstaller should have a request_sender setup"),
         }
@@ -236,15 +249,22 @@ impl PipelineNamespace {
 
     /// Install a namespace in the current thread, without requiring having a namespace Id ready.
     /// Panics if called more than once per thread.
+    ///
+    /// BAO PATCH (fork-maintained, 2026-10-11, e170): the wait for the
+    /// constellation's answer happens with the installer lock RELEASED.
+    /// Upstream held it across the blocking recv (see the removed comment
+    /// below, whose safety argument the AB-BA deadlock falsified); holding
+    /// it deadlocks against the constellation's own
+    /// `set_installer_sender` call inside `ScriptThread::create` during
+    /// pipeline spawns — under load, any freshly-booted SW-manager / worker /
+    /// audio-worklet thread parking here while the constellation spawns a
+    /// pipeline wedged the whole browser forever.
     pub fn auto_install() {
-        // Note that holding the lock for the duration of the call is irrelevant to performance,
-        // since a thread would have to block on the ipc-response from the constellation,
-        // with the constellation already acting as a global lock on namespace ids,
-        // and only being able to handle one request at a time.
-        //
-        // Hence, any other thread attempting to concurrently install a namespace
-        // would have to wait for the current call to finish, regardless of the lock held here.
-        PIPELINE_NAMESPACE_INSTALLER.lock().install_namespace();
+        let namespace_receiver = PIPELINE_NAMESPACE_INSTALLER.lock().send_namespace_request();
+        let namespace_id = namespace_receiver
+            .recv()
+            .expect("The constellation to make a pipeline namespace id available");
+        PipelineNamespace::install(namespace_id);
     }
 
     fn next_index(&mut self) -> NonZeroU32 {
