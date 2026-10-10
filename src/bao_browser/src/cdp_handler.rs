@@ -7,7 +7,7 @@ use base64::Engine;
 use serde_json::Value;
 use servo::{
     Code, CookieSource, Key, KeyState, Location, Modifiers, MouseButton, MouseButtonAction,
-    NamedKey, StorageType,
+    NamedKey, SiteDataManager, StorageType,
 };
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -137,16 +137,13 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::StopLoading { .. } => Err(
             "Page.stopLoading not supported: servo WebView has no stop-loading API".into(),
         ),
-        BridgeCommand::ClosePage { target_id } => {
-            let id = parse_target_id(&target_id);
-            match id {
-                Some(id) => {
-                    let _ = pool.close_page(id);
-                    Ok(serde_json::json!({}))
-                }
-                None => Err(format!("invalid target_id: {target_id}")),
+        BridgeCommand::ClosePage { target_id } => match parse_target_id(&target_id) {
+            Some(id) => {
+                let _ = pool.close_page(id);
+                ok_empty()
             }
-        }
+            None => Err(format!("invalid target_id: {target_id}")),
+        },
         // Cookie commands — bridge to servo SiteDataManager
         BridgeCommand::GetCookies { target_id, urls } => {
             with_page(pool, &target_id, |page| cmd_get_cookies(page, &urls))
@@ -2485,26 +2482,31 @@ fn cmd_get_cookies(page: &PageHandle, urls: &[String]) -> Result<Value, String> 
             }
         }
     } else {
-        // Collect cookies for each URL, deduplicating by (name, domain, path)
-        let mut seen = HashSet::new();
-        let mut result = Vec::new();
-        for url_str in urls {
-            if let Ok(parsed) = url::Url::parse(url_str) {
-                for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
-                    let key = (
-                        c.name().to_string(),
-                        c.domain().unwrap_or("").to_string(),
-                        c.path().unwrap_or("").to_string(),
-                    );
-                    if seen.insert(key) {
-                        result.push(cookie_to_cdp(&c));
-                    }
+        cookies_for_urls_deduped(sdm, urls)
+    };
+    Ok(serde_json::json!({ "cookies": cookies }))
+}
+
+/// Multi-URL arm of Network.getCookies: collect cookies for each URL,
+/// deduplicating by (name, domain, path).
+fn cookies_for_urls_deduped(sdm: &SiteDataManager, urls: &[String]) -> Vec<Value> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for url_str in urls {
+        if let Ok(parsed) = url::Url::parse(url_str) {
+            for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
+                let key = (
+                    c.name().to_string(),
+                    c.domain().unwrap_or("").to_string(),
+                    c.path().unwrap_or("").to_string(),
+                );
+                if seen.insert(key) {
+                    result.push(cookie_to_cdp(&c));
                 }
             }
         }
-        result
-    };
-    Ok(serde_json::json!({ "cookies": cookies }))
+    }
+    result
 }
 
 /// Network.getAllCookies — retrieve all cookies from the cookie jar.
@@ -2571,42 +2573,55 @@ fn cmd_delete_cookie(page: &PageHandle, name: &str, url: Option<&str>) -> Result
     if let Some(url_str) = url {
         let parsed =
             url::Url::parse(url_str).map_err(|e| format!("invalid URL for deleteCookies: {e}"))?;
-        // Get current cookies for this URL
+        // Get current cookies for this URL, then clear all cookies for this site
+        // and re-set the ones that don't match the name
         let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
-        // Clear all cookies for this site, then re-set the ones that don't match the name
         let site = parsed.host_str().unwrap_or("");
-        sdm.clear_site_data(&[site], StorageType::Cookies);
-        // Re-set cookies that don't match the name to delete
-        for c in current {
-            if c.name() != name {
-                sdm.set_cookie_for_url(parsed.clone(), c, None);
-            }
-        }
+        clear_site_cookies_excluding(sdm, &parsed, site, current, name);
     } else {
         // No URL — clear cookies for all sites matching the name
         let site_data = sdm.site_data(StorageType::Cookies);
         for sd in site_data {
-            let site_name = sd.name();
-            let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://") {
-                site_name.clone()
-            } else {
-                format!("https://{site_name}")
-            };
-            if let Ok(parsed) = url::Url::parse(&url_str) {
-                let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
-                let has_match = current.iter().any(|c| c.name() == name);
-                if has_match {
-                    sdm.clear_site_data(&[&site_name], StorageType::Cookies);
-                    for c in current {
-                        if c.name() != name {
-                            sdm.set_cookie_for_url(parsed.clone(), c, None);
-                        }
-                    }
-                }
-            }
+            delete_cookie_for_site(sdm, sd.name(), name);
         }
     }
     Ok(serde_json::json!({}))
+}
+
+/// No-URL arm of Network.deleteCookies, per site-data entry: if the site holds
+/// a cookie with the target name, clear its cookies and re-set only the
+/// non-matching ones.
+fn delete_cookie_for_site(sdm: &SiteDataManager, site_name: String, name: &str) {
+    let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://") {
+        site_name.clone()
+    } else {
+        format!("https://{site_name}")
+    };
+    let Ok(parsed) = url::Url::parse(&url_str) else {
+        return;
+    };
+    let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
+    let has_match = current.iter().any(|c| c.name() == name);
+    if has_match {
+        clear_site_cookies_excluding(sdm, &parsed, &site_name, current, name);
+    }
+}
+
+/// Shared tail of both Network.deleteCookies arms: clear cookies for `site`,
+/// then re-set every snapshot cookie whose name differs from `name`.
+fn clear_site_cookies_excluding(
+    sdm: &SiteDataManager,
+    parsed: &url::Url,
+    site: &str,
+    current: Vec<cookie::Cookie<'static>>,
+    name: &str,
+) {
+    sdm.clear_site_data(&[site], StorageType::Cookies);
+    for c in current {
+        if c.name() != name {
+            sdm.set_cookie_for_url(parsed.clone(), c, None);
+        }
+    }
 }
 
 /// Network.setCacheDisabled — clear cache when cache_disabled is true.
