@@ -33,7 +33,7 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::comparator::compare_dom_positions;
 use crate::dom::document::Document;
 use crate::dom::eventtarget::EventTarget;
-use crate::dom::iterators::{PrePostIteration, UnrootedFollowingFlatTreeNodesTraversal};
+use crate::dom::iterators::{PrePostIteration, ShadowIncluding, UnrootedFollowingFlatTreeNodesTraversal};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::range::Range;
 use crate::dom::selection_range::{SelectionBoundary, SelectionRange};
@@ -1421,6 +1421,66 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
             let Some(text) = character_data.rendered_text(range) else {
                 continue;
             };
+            string.push_str(&text);
+        }
+
+        string
+    }
+}
+
+impl Selection {
+    /// The plain-text serialization of the selected contents for the system
+    /// clipboard's text/plain format ("Implementations should create
+    /// alternate text/html and text/plain clipboard formats when content in
+    /// a web page is selected",
+    /// <https://www.w3.org/TR/clipboard-apis/#clipboard-actions>).
+    ///
+    /// This mirrors the stringifier above, with one addition: rendered text
+    /// runs that belong to different nearest block ancestors are separated
+    /// by a single LF, so the line structure of a multi-block selection
+    /// survives the copy (selecting `<div>abc</div><div>def</div>` yields
+    /// "abc\ndef", not "abcdef"). Only this clipboard path gets the
+    /// separators: `Selection.toString()` keeps the plain concatenation.
+    pub(crate) fn clipboard_text(&self, cx: &mut JSContext) -> DOMString {
+        let Some(visible_selection) =
+            FlatTreeSelection::from_selection_if_renderable(cx.no_gc(), self)
+        else {
+            return DOMString::new();
+        };
+
+        // Flush all layout before stringifying so that rendered text is up-to-date.
+        self.document.window().layout_reflow(QueryMsg::StyleQuery);
+
+        let mut user_select_cache = Default::default();
+        let mut string = DOMString::new();
+        let mut block_of_previous_run: Option<DomRoot<Node>> = None;
+        for node in visible_selection.traversal() {
+            let Some(character_data) = node.downcast::<CharacterData>() else {
+                continue;
+            };
+
+            if node.used_user_select(cx.no_gc(), &mut user_select_cache) == UsedUserSelect::None {
+                continue;
+            }
+
+            let range = visible_selection.range_for_character_data(character_data);
+            let Some(text) = character_data.rendered_text(range) else {
+                continue;
+            };
+            if text.is_empty() {
+                continue;
+            }
+
+            let block_of_run = node
+                .inclusive_ancestors(ShadowIncluding::No)
+                .find(|ancestor| ancestor.is_block_node());
+            if let (Some(previous), Some(current)) = (&block_of_previous_run, &block_of_run) &&
+                &**previous != &**current
+            {
+                string.push_str("\u{000A}");
+            }
+            block_of_previous_run = block_of_run;
+
             string.push_str(&text);
         }
 

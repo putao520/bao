@@ -18,6 +18,7 @@ use layout_api::QueryMsg;
 use script_bindings::codegen::GenericBindings::CharacterDataBinding::CharacterDataMethods;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
+use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::codegen::GenericBindings::UIEventBinding::UIEventMethods as _;
 use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
@@ -27,10 +28,12 @@ use script_bindings::root::DomRoot;
 use script_bindings::str::DOMString;
 use servo_base::generic_channel::GenericCallback;
 use servo_base::text::Utf32CodeUnitsOrNodeOffset;
+use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 
 use crate::dom::characterdata::CharacterData;
 use crate::dom::clipboardevent::ClipboardEventType;
 use crate::dom::editcontext::fire_beforeinput_on_element;
+use crate::dom::element::Element;
 use crate::dom::event::{EventBubbles, EventCancelable};
 use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
 use crate::dom::inputevent::HitTestResult;
@@ -375,12 +378,51 @@ impl Document {
             return false;
         }
 
+        // In a white-space-collapsing editing host (white-space: normal) a
+        // raw LF in the pasted text would render as a space, so every LF
+        // must become a `br` element; hosts that keep line feeds
+        // (pre/pre-wrap/pre-line) take the literal LF
+        // (WPT editing/plaintext-only/paste.https.html: the white-space=
+        // normal arm only accepts `<br>` line forms, the pre* arms accept
+        // `\n`).
+        let collapses_line_feeds = focused_html
+            .upcast::<Element>()
+            .style()
+            .is_some_and(|style| {
+                style.get_inherited_text().white_space_collapse ==
+                    WhiteSpaceCollapse::Collapse
+            });
+
         // Insert the text at the collapsed caret: into a text node, or as a
         // new text node at the caret position.
         let Some(range) = selection.active_range(cx) else {
             return false;
         };
-        let inserted = if let Some(text_node) = range.start_container().downcast::<Text>() {
+        let inserted = if collapses_line_feeds && text.contains('\u{000A}') {
+            // The line-broken form: text pieces separated by `br` elements,
+            // inserted as one fragment (Range.insertNode splits a text-node
+            // caret container and inserts the fragment's children there).
+            let fragment = self.CreateDocumentFragment(cx);
+            let fragment_node = fragment.upcast::<Node>();
+            for (index, piece) in text.split('\u{000A}').enumerate() {
+                if index > 0 {
+                    let br = self.create_element(cx, "br");
+                    if fragment_node.AppendChild(cx, br.upcast::<Node>()).is_err() {
+                        unreachable!("Must always be able to append");
+                    }
+                }
+                if !piece.is_empty() {
+                    let piece_text = self.CreateTextNode(cx, DOMString::from(piece));
+                    if fragment_node
+                        .AppendChild(cx, piece_text.upcast::<Node>())
+                        .is_err()
+                    {
+                        unreachable!("Must always be able to append");
+                    }
+                }
+            }
+            range.InsertNode(cx, fragment_node).is_ok()
+        } else if let Some(text_node) = range.start_container().downcast::<Text>() {
             text_node
                 .upcast::<CharacterData>()
                 .InsertData(cx, range.start_offset(), DOMString::from(text))
@@ -762,7 +804,7 @@ impl EditingContext {
                 .selection_content(),
             EditingContext::Document(document) => document
                 .selection()
-                .map(|selection| selection.Stringifier(cx).to_string())
+                .map(|selection| selection.clipboard_text(cx).to_string())
                 .filter(|selection| !selection.is_empty()),
         }
     }

@@ -2254,9 +2254,26 @@ impl Node {
         if self.is_editing_host() {
             return false;
         }
-        // > it does not have a contenteditable attribute set to the false state;
         let html_element = self.downcast::<HTMLElement>();
+        // > it does not have a contenteditable attribute set to the false state;
         if html_element.is_some_and(|el| el.ContentEditable().str() == "false") {
+            return false;
+        }
+        // An element carrying its own contenteditable attribute in the true
+        // or plaintext-only state is an editing boundary even when it sits
+        // inside an editable region, where the nested attribute does not
+        // create a new editing host (`is_editing_host` above: the outer host
+        // owns the events, the inheritance form). Like an editing host, it
+        // is never plain editable content, so the editing-command algorithms
+        // treat it as a boundary: split-the-parent stops at it instead of
+        // splitting its children out of it (WPT
+        // editing/run/insertparagraph.html
+        // `[["insertparagraph",""]] "<ul contenteditable><li>{}<br></ul>"`
+        // must stay unchanged — the `<ul contenteditable>` nested inside the
+        // harness editing host keeps its `<li>`).
+        if html_element.is_some_and(|el| {
+            matches!(&*el.ContentEditable().str(), "true" | "plaintext-only")
+        }) {
             return false;
         }
         // > its parent is an editing host or editable;
