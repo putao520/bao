@@ -406,10 +406,11 @@ J3「biquad-automation 确定性红(全树首盖)」清偿。取证先行:双格
 
 ### L2. 证据链
 - **campaign 原始面**(wa-aa.raw.log 2026-10-09 13:58:36.628):4 个独立浏览器进程(独立 --webdriver 端口)的 execute/async 在途请求同一毫秒窗(2ms)全数 RemoteDisconnected;4 浏览器均在 pp 变体 1-11s 处;零 stderr;journalctl 内核零事件。判读修正:J3 原「全 cross-origin」不准——实为 suspended-hide-show×2(same-origin nested visibility+cross-origin direct zero-size)+resume-while-hidden×2(cross-origin direct display+nested zero-size);「Stopping runner process」后的 code 0 = wptrunner Python executor 子进程退出,非浏览器。
-- **rep6 复现面**(2026-10-11 03:27,attempt 6,campaign 形态逐位复刻,HEAD 65cf00e7 二进制):3 浏览器(1874339/1874364/1874341)在 interrupt-when-hidden 变体中死线(+70s)触发 `Browser not responding, setting status to CRASH`(executors/base.py:236;executor `window/handles` 2s 探测收非 timeout OSError=连接级失败);第 4 浏览器(M-0)同窗以另一形态躺枪——**2×300s init 楔死**(browser 启动+TCP 连上但 NewSession/init 300s 不完成,init_failed×2 后第三次才成;dispatcher 串行楔死类,e26 lost-edge 族候选);第 4 代浏览器 1940576 于 03:37:58 再 CRASH(cross-origin direct display 变体)。全程零 stderr。
+- **rep6 复现面**(2026-10-11 03:27,attempt 6,HEAD 65cf00e7 二进制):3 浏览器(1874339/1874364/1874341)在 interrupt-when-hidden 变体中死线(+70s)触发 `Browser not responding, setting status to CRASH`(executors/base.py:236;executor `window/handles` 2s 探测收非 timeout OSError=连接级失败);第 4 浏览器(M-0)同窗以另一形态躺枪——**2×300s init 楔死**(browser 启动+TCP 连上但 NewSession/init 300s 不完成,init_failed×2 后第三次才成;**后经窗口核对=端口污染面**,见下);第 4 代浏览器 1940576 于 03:37:58 再 CRASH(cross-origin direct display 变体)。全程零 stderr。
+- **rep6 触发窗=跨会话端口污染窗(事后归档,e176 通报互证)**:rep6.stdout 首部 9 条 `Address already in use`(http×4/https×4/wss×1,2× No sockets activated)——rep6 启动(03:26)时 e176 修复验证 battery(03:2x-04:0x)持有 wptserve 全端口集,本波 wptserve 绑定失败,浏览器页面资源由**兄弟会话的 wptserve** 服务(同 tests 树,结果语义有效但环境非独占);rep4/rep5(03:00-03:25)端口零冲突=独占干净。**触发模型修正**:两次已知触发(campaign 13:58:36≈e153 载具搭建窗;rep6 03:26-03:44≈e176 battery 窗)均与兄弟 WPT 基建并发窗重合——**flake 触发=跨 wptserve 争用/churn 环境**(外源服务器服务本方页面+并发重载),非纯「全 chunk 负载」;M-0 的 300s init 楔死由此面直接解释(初始 about:blank 装载挂在外源/争用服务器上),撤回其 e26 lost-edge 候选登记。**机制结论不变**(进程内 fd 16 杂散 close 与谁服务页面无关);按需复现载体已立=自持争用(holder.sh:自有 wptserve 持全端口集,chain6 以 close-auditor 跑争用形态,rep31+)。
 - **形态判读关键**:executor 在途 execute/async 连接存活至死线(若进程死/SIGKILL,在途轮询会提前收 FIN 出 traceback CRASH——未发生)+死线时新连接 refused(listener 死)=杂散 close 命中 listener 的签名;campaign 形态(在途请求被 FIN)=命中连接 fd 的签名。
 - **killprobe 正向复现**(/var/tmp/e177-veh/killprobe.sh):SIGKILL+在途 execute/async→curl exit 52(Empty reply)+listener 瞬时 refused+零 stderr——机制库条目(证明 SIGKILL 可复刻 campaign 形态,但 rep6 形态证明根因非外杀)。
-- **复现统计**:campaign 1/5 chunk;本波 22+ 全 chunk attempt 中 1 次触发(rep6,4 CRASH+2 init 楔死)——稀疏负载形态;sc-pp(纯 pp 子集)0/72——**全 chunk 邻域负载是触发条件**(与 e155c 稳定性分账一致);strace 包裹(rep3/7-12)与 LD_PRELOAD close-audit(rep15-22)均未触发(strace 扰动或纯稀疏)。
+- **复现统计**:campaign 1/5 chunk;本波 22+ 全 chunk attempt 中 1 次触发(rep6,4 CRASH+2 init 楔死,**且该次在端口污染窗内**)——独占窗内 21+ attempt 零触发;sc-pp(纯 pp 子集)0/72;strace 包裹(rep3/7-12)与 close-audit(rep15-22)独占窗均未触发——**独占窗触发率≈0,争用窗 1/1**(样本尚小,chain6 自持争用形态按需加压中)。
 
 ### L3. 附带发现(真缺陷,完整定性,另案处置):SIGTERM/SIGINT 信号吞没
 vendored `webdriver_server::start_server` → registry `webdriver 0.54::server::start` 的 "webdriver server" 线程在 `current_thread().enable_io()` runtime 内经 `ShutdownSignal::new()` 注册 tokio 进程级 SIGINT/SIGTERM handler(strace rt_sigaction 实证:启动后 ~350ms 实测,负载敏感可达数秒=注册竞态窗,窗内 TERM=默认死亡 143;SIGINT+SIGTERM 成对装 handler)。后果:
@@ -424,6 +425,6 @@ vendored `webdriver_server::start_server` → registry `webdriver 0.54::server::
 - 中途事件:rep3 撞 e176 WPT 端口互斥(PORT-BUSY 让位);探针残留 12 进程精确清扫(391xx-393xx 端口锚定,误伤零);repro_shim 首版 rm 通配符误删 shim 自身(glob 修正 closelog.[0-9]*)。
 
 ### L5. 处置
-- **归因=引擎侧杂散 close(fd 生命周期)缺陷,已复现,机制空间已收敛至唯一幸存解释,根因捕获(哪一子系统双重 close)由就位仪器续跑**(触发即 auto_capture 出符号化凶手栈)。campaign aa/ab 的 RemoteDisconnected 形态归并同族(连接 fd 受害);「外部 SIGKILL」降级为 aa 形态的低概率竞争假说。
+- **归因=引擎侧杂散 close(fd 生命周期)缺陷,已复现(争用窗),机制空间已收敛至唯一幸存解释,根因捕获(哪一子系统双重 close)由就位仪器续跑**(chain6 自持争用形态+close-auditor,触发即 auto_capture 出符号化凶手栈)。campaign aa/ab 的 RemoteDisconnected 形态归并同族(连接 fd 受害);「外部 SIGKILL」降级为 aa 形态的低概率竞争假说;**触发面=跨 wptserve 争用窗**(两次触发均与兄弟 WPT 并发窗重合,含 mtime 佐证→机制化)。**波间纪律教训**:固定端口集的 ss 门有秒级竞态窗(双方各自过门后对撞)——WPT 槽位互斥需文件锁级互斥(两车对撞已发生两次:e176 窗+rep6 窗,双向污染)。
 - **零代码改动、零 ini 改动**(CRASH 非产品期望态;ini 无载体即正确);SIGTERM 吞没独立登记(L3,修复候选留档);M-0 init 楔死(300s×2)登记 e26 lost-edge 族候选。
 - 复现/稳定性读数:22+ attempt 全 chunk 除 rep6 外零意外,与 J3 稳定性分账共同支撑「稀疏负载 flake」定性;修复落地后须全 chunk N 连跑+涉面回归(媒体/浏览器套件)。
