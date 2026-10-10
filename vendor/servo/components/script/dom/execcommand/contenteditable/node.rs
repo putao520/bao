@@ -11,6 +11,7 @@ use js::context::{JSContext, NoGC};
 use script_bindings::codegen::GenericBindings::RangeBinding::RangeMethods;
 use script_bindings::inheritance::Castable;
 use style::attr::parse_legacy_color;
+use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::values::specified::box_::DisplayOutside;
 
 use crate::dom::Document;
@@ -1561,6 +1562,110 @@ impl Node {
     pub(crate) fn is_invisible(&self, no_gc: &NoGC) -> bool {
         // > Something is invisible if it is a node that is not visible.
         !self.is_visible(no_gc)
+    }
+
+    /// <https://w3c.github.io/editing/docs/execCommand/#collapsed-line-break>
+    /// A collapsed line break is a br that begins a line box which has
+    /// nothing else in it, and therefore has zero height. Approximated
+    /// structurally: no visible inline content follows the node within its
+    /// nearest block ancestor — reaching a following block node (or the end
+    /// of the block) bounds the line box with nothing else in it.
+    ///
+    /// Also used for the line-feed form of a line break (a lone `\n` Text
+    /// node at the end of a white-space-preserving block), which has the
+    /// same "the line it begins is empty" rendering property.
+    pub(crate) fn is_collapsed_line_break(&self, no_gc: &NoGC) -> bool {
+        if !self.is::<HTMLBRElement>() && !self.is_lone_line_feed_text() {
+            return false;
+        }
+        let Some(block) = self.block_node_of() else {
+            return false;
+        };
+        for following in self.following_nodes_unrooted(no_gc, &block, ShadowIncluding::No) {
+            if following.is_block_node() {
+                return true;
+            }
+            // A rendered element following in the flow — even an empty one,
+            // whose box still participates in the line — means the line box
+            // the collapsed candidate begins has something else in it (a
+            // br, an img, an empty-but-padded span). Elements whose display
+            // is none are nothing.
+            if let Some(element) = following.downcast::<Element>() {
+                if element.resolved_display_value() != Some(DisplayOutside::None) {
+                    return false;
+                }
+                continue;
+            }
+            // Whitespace-only text never puts content in the break's line
+            // box unless its line feeds are preserved content: in
+            // white-space-preserving contexts a literal `\n` is a rendered
+            // break, so it keeps the line alive. Otherwise (collapsing
+            // contexts, or where style data is unavailable) the whitespace
+            // collapses away or renders as a trailing space, neither of
+            // which keeps the line alive — skip it.
+            if let Some(text) = following.downcast::<Text>() {
+                let data = text.data();
+                if data.bytes().all(|b| b.is_ascii_whitespace()) {
+                    let line_feed_is_content = data.contains('\n') &&
+                        following
+                            .GetParentElement()
+                            .as_deref()
+                            .and_then(Element::style)
+                            .is_some_and(|style| {
+                                style.get_inherited_text().white_space_collapse !=
+                                    WhiteSpaceCollapse::Collapse
+                            });
+                    if !line_feed_is_content {
+                        continue;
+                    }
+                }
+            }
+            if following.is_visible(no_gc) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Whether this is a Text node whose data consists only of line feeds
+    /// (the white-space-preserving form of a line break).
+    fn is_lone_line_feed_text(&self) -> bool {
+        self.downcast::<Text>()
+            .is_some_and(|text| !text.data().is_empty() && text.data().bytes().all(|b| b == b'\n'))
+    }
+
+    /// Whether a literal line feed inserted at this node's position would be
+    /// preserved by the computed `white-space` of its governing element
+    /// (pre/pre-wrap/pre-line/break-spaces preserve newlines, only
+    /// white-space-collapse: collapse drops them).
+    ///
+    /// The pre-family elements are excluded: their significance comes from
+    /// the UA stylesheet and the editing-command behavior there is br-based
+    /// (WPT editing/run conformance lock), while an author-specified
+    /// `white-space: pre*` takes the line-feed form
+    /// (WPT editing/other/insertlinebreak-with-white-space-style,
+    /// Chrome-91 anchored).
+    pub(crate) fn line_feed_is_significant(&self) -> bool {
+        let parent = self.GetParentElement();
+        let governing = match self.downcast::<Element>() {
+            Some(element) => Some(element),
+            None => parent.as_deref(),
+        };
+        let Some(governing) = governing else {
+            return false;
+        };
+        if matches!(
+            *governing.local_name(),
+            local_name!("pre") |
+                local_name!("listing") |
+                local_name!("xmp") |
+                local_name!("textarea")
+        ) {
+            return false;
+        }
+        governing.style().is_some_and(|style| {
+            style.get_inherited_text().white_space_collapse != WhiteSpaceCollapse::Collapse
+        })
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#formattable-node>

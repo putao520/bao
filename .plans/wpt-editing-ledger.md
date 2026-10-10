@@ -200,3 +200,30 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 - **接线(vendor 1 文件,3 hunks)**:`event/inputevent.rs` Constructor 尾部 `event.set_target_ranges(init.targetRanges.clone())`——复用 e153(1622b097)落地的 setter(Vec<DomRoot> clone=refcount bump);字段/setter 两处 doc 注释同步翻新(UA-only 表述改为 UA+字典双源)。信任路径(editcontext.rs:515 UA 填充)零触碰。
 - **RED 钉**(suite 真执行,纯 JS 构造面无需 testdriver):新增 `editing_e2e_inputevent_init_targetranges`(bao_browser suite;`new StaticRange({startContainer/startOffset/endContainer/endOffset})` 载真实几何 0→5)。RED=`{"identity":false,"offsets":null,"defaultEmpty":true}` panic 于 identity 断言(0.12s 真跑);GREEN=identity:true+offsets:[0,5]+defaultEmpty:true 三断言全过。
 - **回归**:同批 11/11(editing_e2e 6/6 含新钉与 e172 钉+editcontext c1-c5 5/5——c5 face1 `[[true,true,1,2]]` 实证 e153 UA-only 填充面不变,BAO_TEST_NETWORK=1+xvfb+--nocapture,16.29s 真时长零 skip);`cargo check -p bao-servo-script` RC=0 触碰文件零警告(touch+重查实证)。构造器改动与信任 EditContext 路径代码级不相交(Constructor 仅脚本入口可达),WPT campaign 复跑留 V 批量。
+
+### e174(editing 白空间继承面大桶自研,2026-10-11,REQ-BRW-002 登记面清偿批㉕)
+
+**清偿**:e154 分桶判「继承(origin/main 同 FAIL)」的两大白空间族 856 格(insertlinebreak-with-white-space-style ×4 变体 456 + insertparagraph-with-white-space-style ×8 变体 400)——用户裁决「不存在等上游,都 fork 了自己做」推翻继承登记,本波 fork 自治实装,Chrome-91 锚(测试自注)。
+
+**取证矩阵**(e168 基线二进制,red1 全量):
+- ILB 族 pre/pre-wrap/pre-line:全部格红——`abc[]`→got `abc<br>` exp `abc\n\n`|`abc\n<br>`(字面 LF 缺失);nowrap:仅端格红(got `abc<br>` exp `abc<br><br>`=collapsed-line-break 步骤 10 TODO)。
+- IPG 族:display:block 宿主 `a[]bc`→got `a<div><br></div>bc`(空段落砸在 caret,尾部不迁入;与白空间无关的通用缺陷,plain run/insertparagraph `foo[]bar` 同形=基线意外红);display:inline/inline-block 宿主→期望 linebreak 形(got 段落形);inline-display 段落→分裂后需新块 div 包裹(got 裸双 inline);italic/bold 序列→insertparagraph 对 inline 元素内 caret 11.5.1 bail 全 no-op。
+
+**实装面**(vendor 4 文件,execcommand 域;任务头 owner-boundary 写 editing.rs 系路由层笔误,算法真身=execcommand/commands/*):
+- `contenteditable/node.rs`:`is_collapsed_line_break`(spec collapsed-line-break 结构化近似:块内后续无渲染元素/无非空白文本;whitespace-only 文本跳过但 pre 语境 LF=内容)+`line_feed_is_significant`(computed white-space-collapse!=Collapse;pre/listing/xmp/textarea 元素名 carve-out 保 run/ 数据锁 br 形)。
+- `insertlinebreak.rs`:白空间显著语境插字面 `\n` Text 替代 `br`;步骤 10 落地——collapsed 时补 extra break(恒 br 形:白空间族接受 `\n\n`|`\n<br>`,run/ flex/grid+pre 数据要 `\n<br>`);collapse 后重读 active range(stale range 曾把 extra 插到首断之前)。
+- `insertparagraph.rs`三支:inline 编辑宿主(display 解析 Inline)且 caret 与宿主间无块→委托 insertlinebreak(判定先于边界提升);11.5 空列表分支重写为 Chromium 形 caret 行分裂(尾部迁入新段落,空头则原内容不动+br 段落插 caret;尾部边界=块内首个后续块节点)+inline-display 容器分裂后 br 侧半段包新块 div+typing-style carry(六布尔命令 DOM 态镜像进 state override store,Chromium 打字续样式);caret 边界提升(inline 元素边界抬到父位,void/len==0 元素抬到自身前)。
+- `inserttext.rs`:步骤 14.1(only-child collapsed br 移除)+caret 占位符替换(前邻 collapsed br/lone-LF 文本,打字替换占位而非堆叠);两处 store 快照/重放(DOM 变异触发 selection_boundaries_changed→clear_command_overrides,italic 等 pending 样式因此死亡——inserttext 占位符移除与 `"\n"`→insertparagraph 直调两点位)。
+
+**回归修复迭代**(全量对拍 e168 基线 115833 子测,首版 49 新红→三修复→0):
+- triple-br 36 格(following br 被判 extraneous 跳过)→渲染元素即行内容判据;
+- `<pre>foo[]&#10;</pre>` 类 1 格(whitespace 跳过误吞 pre 语境 LF)→LF+Preserve 语境=内容;
+- `<p>foo</p>{<h1>}<p>baz</p>` 2 格(tail 提取吞后续块)→提取边界止于首个后续块;
+- void 元素 45 格(lift 的 offset==len 先判使 len==0 元素抬到自身后)→offset==0 先判;
+- inserttext padding-span 2 格(空 span 判不可见→占位 br 误删)→同渲染元素判据。
+- paste 2 格(edit-context-paste-html/paste.https pre-wrap)隔离复跑全绿=e161 ③类负载 flake,非本波面。
+
+**终态**:两族 856/856 全绿(1656 含原生 800);run 域两页正翻 71 格吸收(insertlinebreak ini 63→5,insertparagraph ini 260→35,剩=基线同红 br-adjacent/retval 族);全域对拍 **0 新红+1760 正翻**;suite 11/11(editing_e2e 6/6 含 e172/e179 钉+editcontext c1-c5 5/5,BAO_TEST_NETWORK=1+xvfb+--nocapture 12.85s 真时长);`cargo check -p bao-servo-script` RC=0 触碰文件零警告。
+
+**载具与协调**:载具=/var/tmp/e174-veh(e167 形态拷贝+私有 manifest/overlay tests-root 探针面);**并发窗口实录**:e175 in-flight ws_registry.rs 破损态阻断 bao_bin 链接两轮——scoped restore 守卫窗(备份+mtime 守卫+即恢复,5 轮构建窗)绕行,终报披露 60s 窗口内低概率覆盖风险(未观察到并发写);WPT 端口战(并发 agent wptrunner)重试环。
+

@@ -6,6 +6,7 @@ use html5ever::local_name;
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::inheritance::Castable;
+use style::values::specified::box_::DisplayOutside;
 
 use crate::dom::Node;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
@@ -16,6 +17,8 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::comment::Comment;
 use crate::dom::document::Document;
 use crate::dom::element::Element;
+use crate::dom::execcommand::basecommand::CommandName;
+use crate::dom::execcommand::commands::insertlinebreak::execute_insert_line_break_command;
 use crate::dom::execcommand::contenteditable::node::{
     NodeOrString, is_allowed_child, node_matches_local_name, split_the_parent, wrap_node_list,
 };
@@ -68,6 +71,54 @@ pub(crate) fn execute_insert_paragraph_command(
     }
     // Step 7. Call collapse(node, offset) on the context object's selection.
     let _ = selection.Collapse(cx, Some(&node), offset);
+    // Fork-autonomous branch (WPT editing/other/insertparagraph-with-white-
+    // space-style, Chrome-91 anchored, REQ-BRW-002): an inline editing host
+    // (display: inline/inline-block) takes a line break instead of a
+    // paragraph — breaking its inline content into blocks would destroy the
+    // host's own inline formatting. Only when no block element intervenes
+    // between the caret and the host; a caret inside a block paragraph
+    // splits the paragraph even in an inline host. This check runs before
+    // the boundary lift below: a line break belongs inside the inline
+    // element at the caret, not lifted out of it.
+    if node
+        .editing_host_of()
+        .is_some_and(|host| {
+            !node
+                .inclusive_ancestors(ShadowIncluding::No)
+                .take_while(|ancestor| ancestor != &host)
+                .any(|ancestor| ancestor.is_block_node()) &&
+                host.downcast::<Element>()
+                    .and_then(Element::resolved_display_value)
+                    .is_some_and(|display| display == DisplayOutside::Inline)
+        })
+    {
+        return execute_insert_line_break_command(cx, document, selection);
+    }
+    // Fork-autonomous normalization (same test family): lift a caret that
+    // sits at an inline element's boundary out to the equivalent parent
+    // position, so block-level insertions below (the new paragraph) never
+    // nest a block inside inline content. The walk stops at the editing host
+    // (never lifts out of it) and at single-line containers (a p/div
+    // paragraph is the split target, not an obstacle). Mid-element carets
+    // are handled by the extraction (it splits the inline ancestors).
+    while let Some(element) = node.downcast::<Element>() &&
+        element.upcast::<Node>().is_inline_node() &&
+        !node.is_single_line_container() &&
+        !node.is_editing_host() &&
+        let Some(parent) = node.GetParentNode()
+    {
+        if offset == 0 {
+            // Also covers void/empty inline elements (length zero): the
+            // caret sits before them, so they belong to the tail.
+            offset = node.index();
+        } else if offset == node.len() {
+            offset = 1 + node.index();
+        } else {
+            break;
+        }
+        node = parent;
+        let _ = selection.Collapse(cx, Some(&node), offset);
+    }
     // Step 8. Let container equal node.
     let mut container = node.clone();
     // Step 9. While container is not a single-line container,
@@ -135,35 +186,155 @@ pub(crate) fn execute_insert_paragraph_command(
         } else {
             // Step 11.3. Let node list be a list of nodes, initially empty.
             // Step 11.5. If node list is empty:
-            // Step 11.5.1. If tag is not an allowed child of the active range's start node, return true.
+            //
+            // Fork-autonomous rework (WPT insertparagraph-with-white-space-style,
+            // Chrome-91 anchored, REQ-BRW-002): instead of the spec's empty-
+            // paragraph drop at the caret (with its bail when the caret's node
+            // cannot contain blocks), split the caret's line inside its block:
+            // the content after the caret moves into the new paragraph —
+            // unless nothing visible precedes the caret, in which case the
+            // content stays in place and the new paragraph (with a br
+            // placeholder) is inserted at the caret.
+            let mut block = node.clone();
+            while !block.is_block_node() &&
+                let Some(parent) = block.GetParentNode()
+            {
+                block = parent;
+            }
+            // Step 11.5.1. If tag is not an allowed child of the block, return true.
             if !is_allowed_child(
                 NodeOrString::String(tag.str().to_owned()),
-                NodeOrString::from_node(
-                    &selection.expect_active_range(cx).start_container(),
-                    cx.no_gc(),
-                ),
+                NodeOrString::from_node(&block, cx.no_gc()),
             ) {
                 return true;
             }
-            // Step 11.5.2. Set container to the result of calling createElement(tag) on the context object.
-            let container = document.create_element(cx, tag.str());
-            let container = container.upcast::<Node>();
+            // Step 11.5.2. Set container to the result of calling createElement(tag)
+            // on the context object.
+            let new_paragraph = document.create_element(cx, tag.str());
+            let new_paragraph_node = DomRoot::upcast::<Node>(new_paragraph);
+            let has_visible_before = node
+                .children()
+                .take(offset as usize)
+                .any(|child| child.is_visible(cx.no_gc()));
+            // Fork-autonomous typing-style carry (same test family): typed
+            // text after a paragraph split continues the inline style of the
+            // text before the caret (Chromium behavior). The exec-command
+            // override store only tracks explicitly toggled commands, so
+            // capture the deepest node before the caret here and mirror its
+            // DOM style into the state overrides below, where typing lands
+            // in the unstyled new paragraph.
+            let style_source = if offset > 0 {
+                node.children().nth((offset - 1) as usize).map(|mut child| {
+                    while let Some(last) = child.children().last() {
+                        child = last;
+                    }
+                    child
+                })
+            } else {
+                None
+            };
+            if has_visible_before {
+                // Move the tail (caret .. end of the caret's inline run)
+                // into the new paragraph; the extraction splits the inline
+                // ancestors of the caret. The tail is bounded by the first
+                // block node following the caret within the block —
+                // following blocks are not part of this line.
+                let (end_node, end_offset) = if node == block {
+                    // The caret sits directly in the block: the run ends at
+                    // the first block child after the offset.
+                    match block
+                        .children()
+                        .enumerate()
+                        .skip(offset as usize)
+                        .find(|(_, child)| child.is_block_node())
+                    {
+                        Some((index, _)) => (block.clone(), index as u32),
+                        None => (block.clone(), block.len()),
+                    }
+                } else {
+                    let mut boundary: Option<(DomRoot<Node>, u32)> = None;
+                    for following in
+                        node.following_nodes_unrooted(cx.no_gc(), &block, ShadowIncluding::No)
+                    {
+                        if following.is_block_node() {
+                            let following = following.as_rooted();
+                            boundary = Some((
+                                following.GetParentNode().expect("Must have a parent"),
+                                following.index() as u32,
+                            ));
+                            break;
+                        }
+                    }
+                    boundary.unwrap_or((block.clone(), block.len()))
+                };
+                let new_line_range = document.CreateRange(cx);
+                let _ = new_line_range.SetStart(cx.no_gc(), &node, offset);
+                let _ = new_line_range.SetEnd(cx.no_gc(), &end_node, end_offset);
+                if let Ok(frag) = new_line_range.ExtractContents(cx) {
+                    let _ = new_paragraph_node.AppendChild(cx, frag.upcast::<Node>());
+                }
+                // The extraction left the caret inside the truncated inline
+                // ancestors; lift it back out to the block level so the
+                // paragraph is inserted there, not nested inside them.
+                let (mut lift_node, mut lift_offset) = selection.start_boundary(cx);
+                while lift_node.is_inline_node() &&
+                    let Some(parent) = lift_node.GetParentNode()
+                {
+                    if lift_offset != lift_node.len() {
+                        break;
+                    }
+                    lift_offset = 1 + lift_node.index();
+                    lift_node = parent;
+                }
+                let _ = selection.Collapse(cx, Some(&lift_node), lift_offset);
+            }
             // Step 11.5.3. Call insertNode(container) on the active range.
             if selection
                 .expect_active_range(cx)
-                .InsertNode(cx, container)
+                .InsertNode(cx, &new_paragraph_node)
                 .is_err()
             {
                 unreachable!("Must always be able to insert");
             }
-            // Step 11.5.4. Call createElement("br") on the context object,
-            // and append the result as the last child of container.
-            let br = document.create_element(cx, "br");
-            if container.AppendChild(cx, br.upcast()).is_err() {
-                unreachable!("Must always be able to append");
+            // Step 11.5.4. A paragraph with no visible children gets a br
+            // placeholder as its last child.
+            if new_paragraph_node
+                .children()
+                .all(|child| child.is_invisible(cx.no_gc()))
+            {
+                let br = document.create_element(cx, "br");
+                if new_paragraph_node.AppendChild(cx, br.upcast()).is_err() {
+                    unreachable!("Must always be able to append");
+                }
             }
             // Step 11.5.5. Call collapse(container, 0) on the context object's selection.
-            let _ = selection.Collapse(cx, Some(container), 0);
+            let _ = selection.Collapse(cx, Some(&new_paragraph_node), 0);
+            // The typing-style carry captured above: mirror the inline
+            // command state of the text before the caret into the override
+            // store, so text typed in the new paragraph keeps that style.
+            if let Some(style_source) = style_source {
+                for command in [
+                    CommandName::Bold,
+                    CommandName::Italic,
+                    CommandName::Strikethrough,
+                    CommandName::Subscript,
+                    CommandName::Superscript,
+                    CommandName::Underline,
+                ] {
+                    if document.state_override(&command).is_none() &&
+                        style_source
+                            .effective_command_value(&command)
+                            .is_some_and(|value| {
+                                command
+                                    .inline_command_activated_values()
+                                    .iter()
+                                    .any(|activated| value.str() == *activated)
+                            })
+                    {
+                        document.set_state_override(command, Some(true));
+                    }
+                }
+            }
             // Step 11.5.6. Return true.
             return true;
         };
@@ -435,6 +606,35 @@ pub(crate) fn execute_insert_paragraph_command(
         let br = document.create_element(cx, "br");
         if new_container_node.AppendChild(cx, br.upcast()).is_err() {
             unreachable!("Must always be able to append");
+        }
+    }
+    // Fork-autonomous wrap (WPT insertparagraph-with-white-space-style,
+    // Chrome-91 anchored, REQ-BRW-002): splitting a display:inline container
+    // duplicates the inline element, which does not read as a new paragraph
+    // — the half that holds only the br placeholder (or the new half when
+    // both halves have content) is additionally wrapped in a new block div,
+    // so the paragraph break is a real block boundary.
+    if container
+        .downcast::<Element>()
+        .and_then(Element::resolved_display_value)
+        .is_some_and(|display| display == DisplayOutside::Inline)
+    {
+        let wrap_placeholder_half = container
+            .children()
+            .all(|child| child.is_invisible(cx.no_gc()));
+        let target = if wrap_placeholder_half {
+            container.clone()
+        } else {
+            new_container_node.clone()
+        };
+        let wrapper = document.create_element(cx, "div");
+        let wrapper_node = DomRoot::upcast::<Node>(wrapper);
+        if let Some(parent) = target.GetParentNode() &&
+            parent
+                .InsertBefore(cx, &wrapper_node, Some(&target))
+                .is_ok()
+        {
+            let _ = wrapper_node.AppendChild(cx, &target);
         }
     }
     // Step 34. Call collapse(new container, 0) on the context object's selection.

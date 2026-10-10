@@ -5,6 +5,7 @@
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::CharacterDataBinding::CharacterDataMethods;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
+use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::inheritance::Castable;
 
@@ -66,13 +67,84 @@ pub(crate) fn execute_insert_text_command(
 
     // Step 5. If value is a newline (U+000A), take the action for the insertParagraph command and return true.
     if value == "\n" {
+        // The paragraph command re-collapses the selection several times,
+        // which resets the document's command overrides (boundary point
+        // changed). Its wrapped execution would re-apply them, but this
+        // call site invokes it directly, so snapshot and restore the store
+        // here: a pending typing style (e.g. italic) must survive into the
+        // text typed after the paragraph break.
+        let newline_overrides = CommandName::record_current_overrides(document);
         execute_insert_paragraph_command(cx, document, selection);
+        for override_state in newline_overrides {
+            match override_state.value {
+                crate::dom::execcommand::basecommand::BoolOrOptionalString::Bool(bool_) => {
+                    document.set_state_override(override_state.command, Some(bool_));
+                },
+                crate::dom::execcommand::basecommand::BoolOrOptionalString::OptionalString(
+                    optional_string,
+                ) => {
+                    document.set_value_override(override_state.command, optional_string);
+                },
+            }
+        }
         return true;
     }
 
     // Step 6. Let node and offset be the active range's start node and offset.
     let mut node = active_range.start_container();
     let mut offset = active_range.start_offset();
+
+    // Fork-autonomous placeholder replacement (WPT editing/other/
+    // insertparagraph-with-white-space-style + insertlinebreak-with-white-
+    // space-style, Chrome-91 anchored, REQ-BRW-002): typing on the empty
+    // last line replaces the line's placeholder break — the collapsed-line-
+    // break `br`, or a lone line-feed Text node in white-space-preserving
+    // contexts — instead of stacking the text after it, which would leave
+    // the placeholder rendering as an extra empty line.
+    //
+    // The removal mutates the DOM under the selection, which resets the
+    // document's command overrides (a boundary point changed); snapshot the
+    // store first and re-apply it after, so a pending typing style (e.g.
+    // italic) survives into the inserted text.
+    let placeholder_overrides = CommandName::record_current_overrides(document);
+    let removed_placeholder = if node.is_collapsed_line_break(cx.no_gc()) &&
+        node.downcast::<Text>().is_some()
+    {
+        // The caret sits inside the lone line-feed placeholder itself.
+        let parent = node.GetParentNode();
+        let index = node.index();
+        node.remove_self(cx);
+        if let Some(parent) = parent {
+            node = parent;
+            offset = index as u32;
+            true
+        } else {
+            false
+        }
+    } else if offset > 0 &&
+        let Some(placeholder) = node.children().nth((offset - 1) as usize) &&
+        placeholder.is_collapsed_line_break(cx.no_gc())
+    {
+        placeholder.remove_self(cx);
+        offset -= 1;
+        true
+    } else {
+        false
+    };
+    if removed_placeholder {
+        for override_state in placeholder_overrides {
+            match override_state.value {
+                crate::dom::execcommand::basecommand::BoolOrOptionalString::Bool(bool_) => {
+                    document.set_state_override(override_state.command, Some(bool_));
+                },
+                crate::dom::execcommand::basecommand::BoolOrOptionalString::OptionalString(
+                    optional_string,
+                ) => {
+                    document.set_value_override(override_state.command, optional_string);
+                },
+            }
+        }
+    }
 
     // Step 7. If node has a child whose index is offset − 1, and that child is a Text node, set node to that child, then set offset to node's length.
     if offset > 0 &&
@@ -141,7 +213,12 @@ pub(crate) fn execute_insert_text_command(
     // Step 14. Otherwise:
     else {
         // Step 14.1. If node has only one child, which is a collapsed line break, remove its child from it.
-        // TODO: Implement this.
+        if node.children_count() == 1 &&
+            let Some(only_child) = node.children().next() &&
+            only_child.is_collapsed_line_break(cx.no_gc())
+        {
+            only_child.remove_self(cx);
+        }
 
         // Step 14.2. Let text be the result of calling createTextNode(value) on the context object.
         let text = document.CreateTextNode(cx, value.clone());
