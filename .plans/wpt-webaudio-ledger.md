@@ -389,42 +389,37 @@ J3「biquad-automation 确定性红(全树首盖)」清偿。取证先行:双格
 - READ-GATE guard-off 窗口(team-lead 授权,e145 §H6 先例):marker 被 sibling 逃生口竞态消费×2(共享文件单点),按授权 re-touch;删除权归主会话。
 - 上游同形双缺陷(fork 就地修,ISSUE 反馈禁令豁免依据=自维护 fork 裁决):biquad 出界环 + acquire detach——上游吸收波如遇 servo 修复需对拍本 §K4 形态。
 
-## L. e177 permission-policy CRASH 负载 flake 归因(2026-10-11,REQ-BRW-002,J3 登记面清偿批)
+## L. e177 permission-policy CRASH 负载 flake 归因终态(2026-10-11,REQ-BRW-002,J3 登记面清偿批)
 
-### L1. 结论
-**引擎侧 fd 生命周期缺陷(杂散 close,候选=双重 close 后 fd 号复用受害),受害 fd 决定可观测形态;已复现,根因捕获仪器就位待触发**——负载下 permission-policy 测试族(iframe+AudioContext+跨源 pipeline 高churn)触发进程内对 WebDriver listener fd(实测恒 fd=16)或连接 fd 的错误 close:
-- 命中 listener fd(fd 16)→存量连接照活、新连接 refused→executor 死线(70s)+is_alive 连接级失败→`Browser not responding` 无 traceback CRASH(rep6 形态,3 浏览器同窗);
-- 命中连接 fd→在途 execute/async 收 clean FIN→`RemoteDisconnected` 带 traceback CRASH(campaign aa 4 连+ab 1 例形态)。
+### L1. 终判:WPT harness 伪 CRASH 类(wptrunner executor `is_alive` 把「dispatcher 忙」当「浏览器死」),零引擎缺陷——争用环境按需复现 2/2,三重法证(closelog/gdb/stop-log)互证
+**完整机制链(每一环实证)**:
+1. **触发面=跨 wptserve 争用窗**(自持争用 holder_loop 复现器 2/2 按需触发;独占窗 24 attempt 零触发):争用/慢服务使 pp 测试页面装载挂起→testharness 永不回报→每个 execute/async 轮询耗尽 session script timeout(~65s,wptrunner set_timeout(60+extra))。
+2. registry webdriver 0.54 的 **dispatcher 单线程串行**——一个 65s 命令占满,一切后续命令(含探活)排队超时。
+3. executor 死线(60+2×5=70s)到→`base.py:236` 调 executor 侧 `is_alive`(executorwebdriver.py:1142):`GET window/handles` timeout=2,排队 2s 超时→**`except (OSError, …, socket.timeout, …): return False`——超时被当死亡**(与浏览器侧 servo.py:143 `except Timeout: return True`(当挂起)语义**相反**,上游两处 is_alive 自相矛盾)→「Browser not responding, setting status to CRASH」。
+4. **浏览器全程健康**:gdb 活体栈全部线程正常等待(tokio-runtime×6/Constellation/llvmpipe/全 servo 线程无异常);closelog(LD_PRELOAD 全量 close 审计)listener fd(恒 16)bind 后**零 close、零 fd 异常**;listener 全程 BOUND(fd_watch 未捕获 unbound;manager 侧 /status 是 read-timeout 非 refused)。
+5. campaign aa 的 RemoteDisconnected 带 traceback 变体=同链另一出口:transport 阻塞复用关闭舞步(`_last_request_is_blocked→close()` 斩断 executor 在途轮询)或轮询自身连接级异常→run_func 异常臂→is_alive(同 2s 超时→False)→CRASH+traceback。
+6. 善后:stop→/status 3s 超时→「Hanged server. Killing instead.」→SIGTERM(**被 L3 吞没机制吞掉,no-op**)→5-11s 后 SIGKILL——SIGTERM 吞没只拖慢善后,非 CRASH 因。
+**上游对偶**:servo.py:143 注释自认「Server is waiting for response of the previous command. It happens with ~0.1% probability in our CI runs」——忙 dispatcher 形似挂死是上游已知形态;bao 观测率(campaign 4/48+1/93×5≈1%)同量级。
 
-**判别排除台账(全部实证,含中途推翻的假说)**:
-1. 进程内 panic(webdriver 0.54 warp 任务/dispatcher 双线程 4 个 panic! 点):必打 stderr→process_output,全量日志零命中——排除。
-2. 自退出(exit 0):run 循环仅由 `WebDriverCommandMsg::Shutdown`(HTTP `/servo/shutdown` 扩展路由)终止,vendored servo `process::exit` 全是 exit(1) 面——排除。
-3. 外部 SIGKILL:killprobe 可复刻 campaign 签名(curl exit 52+listener 瞬时 refused+零 stderr),但**无法产生 rep6 形态**(SIGKILL 关闭全部 socket,executor 在途连接不可能存活到死线)——对 rep6 排除;对 campaign aa 形态保留为低概率竞争假说(mtime 相关性证据弱:兄弟载具活动窗重合只能发现候选不能定罪)。
-4. **外部 SIGTERM+Quit 链(runtime teardown)**:被双向实证排除——空闲 dispatcher 态 TERM(listener 5s 后仍 listening,进程活)+忙碌 dispatcher 态 TERM(在途请求 30s script-timeout 完整送达,warp 无恙):`ShutdownSignal.recv()` 在 `enable_io`-only runtime 上永不 resolve,**registry webdriver 的优雅关停半边在 bao 是死代码**(吞没机制见 L3),Quit/runtime-drop 无任何路径可达——排除。
-5. tokio epoll fd 死亡:listener 内核侧仍 bound→新连接进 backlog→2s 探测=timeout→is_alive True→EXTERNAL-TIMEOUT 形态,非 CRASH——排除。
-6. **杂散 close(fd 16)(唯一幸存解释)**:与 rep6(存量连接活+listener refused+进程活+零 stderr)及 campaign(连接 FIN+进程活+listener 活,后续 `/servo/shutdown` 可达)双形态全吻合;fd 16 为进程早期分配的 listener 号,任何「早期 fd 双重 close→号被 listener 复用→陈旧第二次 close」链条都命中它。
+### L2. 判读修正史(三次翻转,全部留档)
+1. 初判「外部 SIGKILL 扫杀」(排除法+killprobe 正向复刻+mtime 相关)——被 rep6 形态推翻(SIGKILL 必杀在途连接,rep6 存量连接活到死线);mtime 相关只能发现候选不能定罪。
+2. 二判「引擎侧杂散 close(fd 16 受害)」(rep6「新连接 refused」读数+机制空间排除)——被自证法证推翻:closelog 显示 listener fd 从未被 close(“killers after bind: 0”×3 浏览器);「refused」实为 2s **探活超时**(except 同捕,不可区分);gdb 活体栈零异常。
+3. 终判(本节 L1):争用→慢/挂测试→串行 dispatcher 长命令占满→executor is_alive 2s 超时判死→伪 CRASH。e176 的污染通报是翻转钥匙(rep6 触发窗=其 battery 持端口窗,页面由其 wptserve 服务)。
+- M-0 的 2×300s init 楔死=争用面直接产物(初始 about:blank 装载挂在外源/争用服务器→wait_document_ready 300s),非 e26 lost-edge。
+- **判读纪律沉淀**:wptrunner「CRASH」分类三源(harness 杀/外杀/伪 CRASH)必须经 is_alive 语义分型;raw log 的「CRASH」字样本身零引擎含义;探活超时与连接拒绝在 except 层不可区分,取证必须读 manager 侧 stop 序列(「status request timed out」=read-timeout=dispatcher 忙,非进程死)。
 
-### L2. 证据链
-- **campaign 原始面**(wa-aa.raw.log 2026-10-09 13:58:36.628):4 个独立浏览器进程(独立 --webdriver 端口)的 execute/async 在途请求同一毫秒窗(2ms)全数 RemoteDisconnected;4 浏览器均在 pp 变体 1-11s 处;零 stderr;journalctl 内核零事件。判读修正:J3 原「全 cross-origin」不准——实为 suspended-hide-show×2(same-origin nested visibility+cross-origin direct zero-size)+resume-while-hidden×2(cross-origin direct display+nested zero-size);「Stopping runner process」后的 code 0 = wptrunner Python executor 子进程退出,非浏览器。
-- **rep6 复现面**(2026-10-11 03:27,attempt 6,HEAD 65cf00e7 二进制):3 浏览器(1874339/1874364/1874341)在 interrupt-when-hidden 变体中死线(+70s)触发 `Browser not responding, setting status to CRASH`(executors/base.py:236;executor `window/handles` 2s 探测收非 timeout OSError=连接级失败);第 4 浏览器(M-0)同窗以另一形态躺枪——**2×300s init 楔死**(browser 启动+TCP 连上但 NewSession/init 300s 不完成,init_failed×2 后第三次才成;**后经窗口核对=端口污染面**,见下);第 4 代浏览器 1940576 于 03:37:58 再 CRASH(cross-origin direct display 变体)。全程零 stderr。
-- **rep6 触发窗=跨会话端口污染窗(事后归档,e176 通报互证)**:rep6.stdout 首部 9 条 `Address already in use`(http×4/https×4/wss×1,2× No sockets activated)——rep6 启动(03:26)时 e176 修复验证 battery(03:2x-04:0x)持有 wptserve 全端口集,本波 wptserve 绑定失败,浏览器页面资源由**兄弟会话的 wptserve** 服务(同 tests 树,结果语义有效但环境非独占);rep4/rep5(03:00-03:25)端口零冲突=独占干净。**触发模型修正**:两次已知触发(campaign 13:58:36≈e153 载具搭建窗;rep6 03:26-03:44≈e176 battery 窗)均与兄弟 WPT 基建并发窗重合——**flake 触发=跨 wptserve 争用/churn 环境**(外源服务器服务本方页面+并发重载),非纯「全 chunk 负载」;M-0 的 300s init 楔死由此面直接解释(初始 about:blank 装载挂在外源/争用服务器上),撤回其 e26 lost-edge 候选登记。**机制结论不变**(进程内 fd 16 杂散 close 与谁服务页面无关);按需复现载体已立=自持争用(holder.sh:自有 wptserve 持全端口集,chain6 以 close-auditor 跑争用形态,rep31+)。
-- **形态判读关键**:executor 在途 execute/async 连接存活至死线(若进程死/SIGKILL,在途轮询会提前收 FIN 出 traceback CRASH——未发生)+死线时新连接 refused(listener 死)=杂散 close 命中 listener 的签名;campaign 形态(在途请求被 FIN)=命中连接 fd 的签名。
-- **killprobe 正向复现**(/var/tmp/e177-veh/killprobe.sh):SIGKILL+在途 execute/async→curl exit 52(Empty reply)+listener 瞬时 refused+零 stderr——机制库条目(证明 SIGKILL 可复刻 campaign 形态,但 rep6 形态证明根因非外杀)。
-- **复现统计**:campaign 1/5 chunk;本波 22+ 全 chunk attempt 中 1 次触发(rep6,4 CRASH+2 init 楔死,**且该次在端口污染窗内**)——独占窗内 21+ attempt 零触发;sc-pp(纯 pp 子集)0/72;strace 包裹(rep3/7-12)与 close-audit(rep15-22)独占窗均未触发——**独占窗触发率≈0,争用窗 1/1**(样本尚小,chain6 自持争用形态按需加压中)。
+### L3. 附带真缺陷(完整定性,另案处置):SIGTERM/SIGINT 信号吞没
+vendored `webdriver_server::start_server` → registry `webdriver 0.54::server::start` 的 "webdriver server" 线程在 `current_thread().enable_io()` runtime 内经 `ShutdownSignal::new()` 注册 tokio 进程级 SIGINT/SIGTERM handler(strace rt_sigaction 实证:启动后 ~350ms 实测,负载敏感可达数秒=注册竞态窗,窗内 TERM=默认死亡 143)。后果:
+- **SIGTERM/SIGINT 完全无效**:handler 吞信号,`recv()` 永不 resolve(空闲/忙碌 dispatcher 双态实证)——进程不退出、warp 不关停、零可观测效应;wptrunner mozprocess 的 SIGTERM 兜底 no-op,浏览器终止全靠 `/servo/shutdown` 路由或 5s 后 SIGKILL;外部 TERM 清扫后进程残留空转(本波 12 个残留进程各烧一核实证,已精确清扫)。
+- 修复候选(未实施):registry crate 不可改(非 vendored);bao 侧 `WebDriverHost::start`(src/bao_browser/src/webdriver_host.rs)覆装自定义 TERM/INT handler(最后注册者胜)→ 置 exit_scheduled 走优雅退出。
 
-### L3. 附带发现(真缺陷,完整定性,另案处置):SIGTERM/SIGINT 信号吞没
-vendored `webdriver_server::start_server` → registry `webdriver 0.54::server::start` 的 "webdriver server" 线程在 `current_thread().enable_io()` runtime 内经 `ShutdownSignal::new()` 注册 tokio 进程级 SIGINT/SIGTERM handler(strace rt_sigaction 实证:启动后 ~350ms 实测,负载敏感可达数秒=注册竞态窗,窗内 TERM=默认死亡 143;SIGINT+SIGTERM 成对装 handler)。后果:
-- **SIGTERM/SIGINT 完全无效**:handler 吞信号,`recv()` 永不 resolve(空闲/忙碌 dispatcher 双态实证)——进程不退出、warp 不关停、无任何可观测效应;wptrunner mozprocess 的 SIGTERM 兜底 no-op,浏览器终止全靠 `/servo/shutdown` 路由或 5s 后 SIGKILL;外部 TERM 清扫后进程残留空转(本波 12 个探针残留进程各烧一核实证,已按端口精确清扫)。
-- 修复候选(未实施,越 e177 owner 边界):registry crate 不可改(非 vendored);bao 侧 `WebDriverHost::start`(src/bao_browser/src/webdriver_host.rs)后覆装自定义 TERM/INT handler(最后注册者胜)→ 置 exit_scheduled 走优雅退出,恢复 mozprocess kill 语义。登记后续合同候选。
-
-### L4. 载具与仪器(全部移交,根因捕获续跑)
-- 基座:worktree /var/tmp/e177-wt 钉 HEAD 65cf00e7,`--profile test-ci` 私有 target(19m21s RC=0,sha256 f0792193588612e832db,provenance=源 mtime 早于二进制+F2 探针串);载具 /var/tmp/e177-veh(run_e177.py=e155 launcher 形+meta/manifest 拷贝+chunk-aa 原样+--processes 4 --timeout-multiplier 6)。
-- **close-auditor v3**(/var/tmp/e177-veh/closelog.{c,so},LD_PRELOAD):全 close()/close_range()/bind() 拦截,带 caller 返回地址+exe load base(离线 addr2line 符号化);listener fd 识别=bind 行后 close(fd=16) 即凶手,活体浏览器验证零误报(killers after bind: 0)。
-- **killer_find.py**:pid+port→bind 行定位→post-bind close(16) 枚举+符号化;**auto_capture.sh** 常驻:rep*.raw.log 一现 CRASH 即自动对 closelog 跑 killer_find 落盘(closelog 逐 attempt 清理,防证据丢失);fd_watch.sh(listener 丢失即抓 fd diff+gdb 栈)。
-- chain4/chain5:shim attempt 循环(15-22 已跑,23-30 排队),CRASH 触发即停;loadgen 8×nice spinner 维持 campaign 级负载。
-- 中途事件:rep3 撞 e176 WPT 端口互斥(PORT-BUSY 让位);探针残留 12 进程精确清扫(391xx-393xx 端口锚定,误伤零);repro_shim 首版 rm 通配符误删 shim 自身(glob 修正 closelog.[0-9]*)。
+### L4. 载具与仪器(全留 /var/tmp/e177-veh,可复用)
+- 基座:worktree /var/tmp/e177-wt 钉 HEAD 65cf00e7,test-ci 私有 target(19m21s RC=0,sha256 f0792193588612e832db,provenance 三点验证);载具=e155 launcher 形+chunk-aa 原样(93 测试×4 进程×multiplier 6)。
+- **自持争用复现器(holder_loop.sh×3 错峰)**:自有 wptrunner 跑 360s 挂死测试持续占 wptserve 全端口集(TestEnvironment 全真路由);争用形态 2/2 触发(rep41/42 各 3-4 CRASH),独占形态 0/24——**该 flake 从「稀疏运气」变为「按需复现」**。
+- 法证仪器:close-auditor v3(LD_PRELOAD close/close_range/bind 拦截+caller 符号化,活体零误报)、killer_find.py(bind 后 close(listener-fd) 枚举)、auto_capture v3(CRASH 一现即 gdb 全栈活体捕获,~1s 延迟窗口靠 SIGTERM 吞没的 5-11s 存活期)、fd_watch、analyze.py。
+- 中途事件:e176 端口窗对撞两起(双向,已互报;固定端口集 ss 门有秒级竞态窗,波间互斥需文件锁级);pgrep/-f 自匹配坑两次(shell 命令行含模式串=假存活判读);repro_shim rm 通配符误删自身(glob 修正)。
 
 ### L5. 处置
-- **归因=引擎侧杂散 close(fd 生命周期)缺陷,已复现(争用窗),机制空间已收敛至唯一幸存解释,根因捕获(哪一子系统双重 close)由就位仪器续跑**(chain6 自持争用形态+close-auditor,触发即 auto_capture 出符号化凶手栈)。campaign aa/ab 的 RemoteDisconnected 形态归并同族(连接 fd 受害);「外部 SIGKILL」降级为 aa 形态的低概率竞争假说;**触发面=跨 wptserve 争用窗**(两次触发均与兄弟 WPT 并发窗重合,含 mtime 佐证→机制化)。**波间纪律教训**:固定端口集的 ss 门有秒级竞态窗(双方各自过门后对撞)——WPT 槽位互斥需文件锁级互斥(两车对撞已发生两次:e176 窗+rep6 窗,双向污染)。
-- **零代码改动、零 ini 改动**(CRASH 非产品期望态;ini 无载体即正确);SIGTERM 吞没独立登记(L3,修复候选留档);M-0 init 楔死(300s×2)登记 e26 lost-edge 族候选。
-- 复现/稳定性读数:22+ attempt 全 chunk 除 rep6 外零意外,与 J3 稳定性分账共同支撑「稀疏负载 flake」定性;修复落地后须全 chunk N 连跑+涉面回归(媒体/浏览器套件)。
+- **登记关闭:WPT harness 伪 CRASH 类(executor is_alive 超时判死 × dispatcher 忙),争用环境触发,零引擎缺陷**——permission-policy 测试只是争用窗内最容易挂到死线的族(页面重、轮询多);promise-methods-after-discard 的 campaign CRASH-1 同因连坐收口。零代码改动、零 ini 改动(CRASH 非产品期望态,harness 伪分类不该入期望)。
+- 上游面:wptrunner executorwebdriver.py:1153 与 browsers/servo.py:143 的 is_alive 超时语义矛盾是 harness 侧根(候选上游 issue,按上游反馈纪律另案);SIGTERM 吞没(L3)独立登记。
+- 稳定读数:独占窗 24 attempt 全绿(93×24=2232 测试零意外)+e155c sc-pp 0/72——**独占环境零 flake,争用环境按需复现**,J3「负载 flake」定性精确化为「争用 flake」。
