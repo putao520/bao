@@ -37,8 +37,9 @@ pub(crate) struct InputEvent {
     target_ranges: script_bindings::cell::DomRefCell<Vec<Dom<StaticRange>>>,
     /// Clipboard payload of a trusted `beforeinput`/`input` with a clipboard
     /// inputType (`insertFromPaste`) fired at a contenteditable host
-    /// (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
-    /// Only the user agent sets this; script-constructed events keep `null`.
+    /// (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>),
+    /// or of the `InputEventInit.dataTransfer` dictionary member carried by
+    /// a script-constructed event (absent member defaults to `null`).
     data_transfer: MutNullableDom<DataTransfer>,
 }
 
@@ -86,8 +87,8 @@ impl InputEvent {
     }
 
     /// Set the clipboard payload carried by a trusted `beforeinput`/`input`
-    /// with a clipboard inputType. Only the user agent sets this;
-    /// script-constructed events keep `null`.
+    /// with a clipboard inputType (user agent), or by the constructor's
+    /// `InputEventInit.dataTransfer` dictionary member (script).
     pub(crate) fn set_data_transfer(&self, data_transfer: Option<&DataTransfer>) {
         self.data_transfer.set(data_transfer);
     }
@@ -115,6 +116,10 @@ impl InputEventMethods<crate::DomTypeHolder> for InputEvent {
             init.isComposing,
             init.inputType.clone(),
         );
+        // The `InputEventInit.dataTransfer` dictionary member initializes the
+        // `dataTransfer` attribute
+        // (<https://w3c.github.io/input-events/#dom-inputeventinit-datatransfer>).
+        event.set_data_transfer(init.dataTransfer.as_deref());
         Ok(event)
     }
 

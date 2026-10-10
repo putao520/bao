@@ -366,6 +366,57 @@ fn editing_e2e_enter_key_paragraph_in_contenteditable() {
     );
 }
 
+/// @trace REQ-BRW-002 [criterion:inputevent-init-datatransfer] live
+///
+/// The `InputEventInit.dataTransfer` dictionary member must be consumed by
+/// the `InputEvent` constructor (input-events spec dictionary): a
+/// script-constructed event carries the passed `DataTransfer` instance
+/// (identity + payload round-trip), and the absent member defaults to
+/// `null`. e159 邻接观察③清偿 pin — the UA-only setter path (trusted
+/// clipboard events) is covered by the WPT insertFromPaste campaign; this
+/// pin holds the script-construction face.
+#[test]
+fn editing_e2e_inputevent_init_datatransfer() {
+    if should_skip() {
+        return;
+    }
+    let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
+
+    let html = r#"<!DOCTYPE html><html><body><script>
+window.__probe = function(){
+  var dt = new DataTransfer();
+  dt.setData('text/plain', 'payload');
+  var withDt = new InputEvent('beforeinput',
+                              {inputType: 'insertFromPaste', dataTransfer: dt});
+  var withoutDt = new InputEvent('beforeinput',
+                                 {inputType: 'insertText', data: 'x'});
+  return JSON.stringify({
+    identity: withDt.dataTransfer === dt,
+    payload: withDt.dataTransfer ? withDt.dataTransfer.getData('text/plain') : null,
+    defaultNull: withoutDt.dataTransfer === null
+  });
+};
+</script></body></html>"#;
+    let (_runtime, page) = make_page(&data_url(html));
+
+    let state = page
+        .evaluate_js_web("window.__probe()")
+        .expect("probe eval must run");
+    eprintln!("[editing-e2e] inputevent init dataTransfer = {state}");
+    assert!(
+        state.contains("\"identity\":true"),
+        "constructor must carry the InputEventInit.dataTransfer member: {state}"
+    );
+    assert!(
+        state.contains("\"payload\":\"payload\""),
+        "the carried DataTransfer must be the passed instance (getData round-trip): {state}"
+    );
+    assert!(
+        state.contains("\"defaultNull\":true"),
+        "absent dictionary member must default to null: {state}"
+    );
+}
+
 /// @trace REQ-BRW-002 [criterion:password-clipboard-guard] live
 ///
 /// The copying_enabled/cutting_enabled guards (57a307695): Ctrl+C/Ctrl+X on a

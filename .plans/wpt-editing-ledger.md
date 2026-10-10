@@ -182,3 +182,12 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 - 环境注:READ-GATE 双宿主缺口(ISSUE #155/#156)阻断执行体写面两轮,三读实质完成后经 Commander 裁定 A 开逃生口续行(窗口 Commander 管理删除)。
 
 **回归证据**:RED/POST 同 meta 双 run(目标 13 格逐格钉)+五域 680 文件 baseline↔post 逐子测 diff(114312 子测对拍:**0 新增红**,2 格 ③类 flake 隔离 3/3 绿)+e153 ④ 锁(inheritability 8/0 全绿;exec-command-with-text-editor 356/exec-command-without-editable 20 fail-side 与 baseline 恒等=注册期望)+suite 真执行(BAO_TEST_NETWORK=1+xvfb+--no-capture)editing_e2e 4/4+editcontext c1-c5 5/5=9/9(引擎信号 `clipboardchange:2,deleteByCut:1` 在);`cargo check -p bao-servo-script` RC=0 触碰文件零警告;载具=/var/tmp/e167-veh(meta 拷贝自 vendor+MANIFEST 复用 e154-veh;载具教训再证:/tmp 不可放)。
+
+### e172(InputEventInit.dataTransfer 构造器字典清偿,e159 邻接观察③,2026-10-11,REQ-BRW-002 登记面清偿批㉔)
+
+**清偿**:脚本构造 `new InputEvent(type, {dataTransfer: dt})` 的字典成员被丢弃(构造器不消费 `init.dataTransfer`,脚本构造事件恒 null)。
+
+- **上游对照实证**:origin/main(~/code/tools/servo git show)Constructor 与 fork 逐字同形——同样不消费 `init.dataTransfer`,且其 GetDataTransfer(109 行)仍 TODO+None;codegen 字典面(成员声明+`Option<DomRoot<DataTransfer>>` 解析)两侧均齐——纯 Rust 构造器接线缺口,fork 自治(同 e159 裁定谱系),非吸收重放。
+- **接线(vendor 1 文件,3 hunks)**:`event/inputevent.rs` Constructor 尾部 `event.set_data_transfer(init.dataTransfer.as_deref())`——复用 e159(46ccbaac)落地的 setter;字段/setter 两处 doc 注释同步翻新(UA-only 表述改为 UA+字典双源)。信任路径(editing.rs/editcontext.rs 经 `InputEvent::new`+`set_data_transfer`)零触碰。
+- **RED 钉**(suite 真执行,非 WPT 载具——纯 JS 构造面无需 testdriver):新增 `editing_e2e_inputevent_init_datatransfer`(bao_browser suite;`new DataTransfer()`+`setData` 载真实 payload)。RED=`{"identity":false,"payload":null,"defaultNull":true}` panic 于 identity 断言(0.149s 真跑);GREEN=identity:true+payload round-trip+defaultNull:true 三断言全过。
+- **回归**:同批 10/10(editing_e2e 5/5 含新钉+editcontext c1-c5 5/5,BAO_TEST_NETWORK=1+xvfb+--nocapture,13.8s 真时长零 skip);`cargo check -p bao-servo-script` RC=0 触碰文件零警告。e159 WPT 格(data_transfer_on_input_event insertFromPaste)保持未单测——构造器改动与信任 paste 路径代码级不相交(Constructor 仅脚本入口可达),WPT campaign 复跑留 V 批量。
