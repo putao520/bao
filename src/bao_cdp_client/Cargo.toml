@@ -32,6 +32,11 @@ bun_uws = { path = "../uws", version = "^0.2.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# URL glob matching for the waitFor* family (Playwright `**/api/*` patterns;
+# M1 P1 event-subscription face, REQ-CDP-001). Already resolved in the
+# workspace lock — zero new resolution.
+glob = "0.3"
+
 # Logging (Bun workspace 标准)
 log = "0.4"
 

@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use bao_browser::cdp_memory::MemoryCdpBridge;
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeReceiver, BridgeResponse};
+use bao_cdp::CdpMessage;
 use bao_cdp_client::browser::{clear_process_memory_bridge, set_process_memory_bridge, Browser};
 use bao_cdp_client::transport::in_memory::InMemoryBridgeResponse;
 use cdp_server::{EventSender, RegistryDispatch};
@@ -327,6 +328,146 @@ fn memory_bridge_direct_dispatch_serves_and_preserves() {
         InMemoryBridgeResponse::Err(e) => assert!(e.contains("wasn't found")),
         InMemoryBridgeResponse::Ok(_) => panic!("unknown method must fail"),
     }
+
+    drop(responder);
+}
+
+// ─── M1 P1:waitFor* 事件订阅面(translate → tap → waitFor,REQ-CDP-001)───
+
+/// M1 P1 wiring 形状锁:宿主泵对每个 translate 产出的 CDP 事件调用
+/// `tap.observe`(与 WS 广播同一事件流)。事件源用真 `translate`(单一
+/// 语义源),非手写 params。
+fn feed_translated_event(tap: &bao_cdp_client::bridge::CdpEventTap, url: &str) {
+    let servo_event = bao_cdp_client::bridge::ServoEvent::NetworkRequest {
+        target_id: "1".to_string(),
+        request_id: "req-7".to_string(),
+        url: url.to_string(),
+        method: "GET".to_string(),
+        headers: [("host".to_string(), "x".to_string())].into_iter().collect(),
+        post_data: None,
+        resource_type: "Document".to_string(),
+        frame_id: "main-1".to_string(),
+    };
+    // 与 run_with_bridge 泵同一组合:translate → observe(target, method, params)。
+    for ev in bao_cdp_client::bridge::translate(servo_event) {
+        tap.observe("1", &ev.method, &ev.params);
+    }
+}
+
+/// WS 面:waitFor* 经生产入口(dispatch_command → -32601 fallback)在
+/// registry 的事件 tap 上等到真实 translate 事件并返回其 params。
+///
+/// 锁三面:①tap 在 WS 生产入口存在(registry.event_tap)②waitFor* 消费
+/// tap(事件订阅实装,占位 OK 已替换)③事件形状 = translate 真源。
+///
+/// @trace REQ-CDP-001 [level:integration]
+#[test]
+fn ws_entry_wait_for_request_resolves_on_translated_event_tap() {
+    let (sender, receiver) = bridge_channel(Duration::from_secs(5));
+    let (seen_tx, _seen_rx) = mpsc::channel::<String>();
+    let responder = spawn_shape_responder(receiver, seen_tx);
+
+    let registry = Arc::new(bao_browser::BaoWsRegistry::new(sender));
+    let tap = registry
+        .event_tap()
+        .expect("WS registry must expose the fallback universe's event tap");
+
+    let dispatch_registry = registry.clone();
+    let waiter = std::thread::spawn(move || {
+        // Page-endpoint shape(target "1")— waitFor 的 tap 订阅按命令解析的
+        // target 注册,事件也按 servo 事件流的 target(十进制页 id)喂入。
+        let m = CdpMessage {
+            id: None,
+            method: "Page.waitForRequest".to_string(),
+            params: Some(json!({"url": "**/api/*"})),
+            session_id: None,
+        };
+        dispatch_registry
+            .dispatch_message(&m, "1", &NopSender)
+            .expect("waitForRequest must be served on the WS face")
+            .expect("waitForRequest must answer Ok with the event params")
+    });
+
+    // 等待者注册后喂入(泵时序:事件在等待之后到达)。
+    std::thread::sleep(Duration::from_millis(80));
+    feed_translated_event(&tap, "https://x/static/logo.png"); // 不匹配 → 不得 resolve
+    std::thread::sleep(Duration::from_millis(50));
+    feed_translated_event(&tap, "https://x/api/data"); // 匹配 → resolve
+
+    let result = waiter.join().expect("waiter must not panic");
+    assert_eq!(result["requestId"], "req-7");
+    assert_eq!(result["request"]["url"], "https://x/api/data");
+    assert_eq!(result["type"], "Document", "translate's real event shape");
+
+    drop(responder);
+}
+
+/// memory:// 面:同一 tap 组合在 MemoryCdpBridge 上可达(waitFor* 的
+/// 第二生产入口)。
+///
+/// @trace REQ-CDP-001 [level:integration]
+#[test]
+fn memory_entry_wait_for_request_resolves_on_translated_event_tap() {
+    let (sender, receiver) = bridge_channel(Duration::from_secs(5));
+    let (seen_tx, _seen_rx) = mpsc::channel::<String>();
+    let responder = spawn_shape_responder(receiver, seen_tx);
+
+    let bridge: Arc<MemoryCdpBridge> = MemoryCdpBridge::new_with_sender("1", sender);
+    let tap = bridge
+        .event_tap()
+        .expect("memory bridge must expose the fallback universe's event tap");
+
+    use bao_cdp_client::transport::in_memory::InMemoryBridge;
+    let dispatch_bridge = bridge.clone();
+    let waiter = std::thread::spawn(move || {
+        dispatch_bridge.dispatch_command("Page.waitForRequest", json!({"url": "**/api/*"}), Some("1"))
+    });
+
+    std::thread::sleep(Duration::from_millis(80));
+    feed_translated_event(&tap, "https://x/api/data");
+
+    match waiter.join().expect("waiter must not panic") {
+        InMemoryBridgeResponse::Ok(v) => {
+            assert_eq!(v["requestId"], "req-7");
+            assert_eq!(v["request"]["url"], "https://x/api/data");
+        }
+        InMemoryBridgeResponse::Err(e) => panic!("waitForRequest must resolve, got: {e}"),
+    }
+
+    drop(responder);
+}
+
+/// waitFor* 超时面:无事件到达 → 有界 Timeout,不悬挂派发线程。
+///
+/// @trace REQ-CDP-001 [level:integration]
+#[test]
+fn ws_entry_wait_for_request_times_out_bounded() {
+    let (sender, receiver) = bridge_channel(Duration::from_secs(5));
+    let (seen_tx, _seen_rx) = mpsc::channel::<String>();
+    let responder = spawn_shape_responder(receiver, seen_tx);
+
+    let registry = bao_browser::BaoWsRegistry::new(sender);
+    let start = std::time::Instant::now();
+    let m = CdpMessage {
+        id: None,
+        method: "Page.waitForRequest".to_string(),
+        params: Some(json!({"timeout": 150})),
+        session_id: None,
+    };
+    let err = registry
+        .dispatch_message(&m, "1", &NopSender)
+        .expect("dispatch must produce a verdict")
+        .expect_err("no event → timeout");
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "timeout must be bounded, took {:?}",
+        start.elapsed()
+    );
+    assert!(
+        err.message.contains("Timeout"),
+        "timeout verdict shape, got: {}",
+        err.message
+    );
 
     drop(responder);
 }

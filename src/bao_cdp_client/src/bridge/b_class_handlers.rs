@@ -203,62 +203,372 @@ pub fn page_set_viewport(
 }
 
 // ════════════════════════════════════════════════════════════════════
-// 等待类 — 5 method(本地状态占位/事件订阅抽象)
+// 等待类 — 5 method + 2 ElementHandle method(M1 P1 事件订阅实装,REQ-CDP-001)
 // ════════════════════════════════════════════════════════════════════
 
-/// Page.waitForLoadState — 本地等待事件(TASK-5 + TASK-4 实现),当前返回 OK。
+/// waitFor* 默认超时(ms)— Playwright 默认同值(30s)。
+const WAIT_FOR_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// waitFor* 超时上限(ms)— 命令派发线程的服务端等待必须有界(无取消面,
+/// 禁无限等待;客户端要更长语义时自行重试)。
+const WAIT_FOR_MAX_TIMEOUT_MS: u64 = 600_000;
+
+/// `waitForLoadState(networkidle)` 的网络静默窗口(ms)— Playwright 同值
+/// (500ms 无网络活动 = idle)。
+const NETWORK_IDLE_QUIET_MS: u64 = 500;
+
+/// ElementHandle.waitFor* 的 DOM 轮询间隔(ms)。
+const ELEMENT_POLL_INTERVAL_MS: u64 = 100;
+
+/// networkidle 的网络活动事件集 — 任一到达即重置静默窗(translate 的
+/// 4 个 Network 事件面)。
+const NETWORK_ACTIVITY_METHODS: [&str; 4] = [
+    "Network.requestWillBeSent",
+    "Network.responseReceived",
+    "Network.loadingFinished",
+    "Network.loadingFailed",
+];
+
+/// 读取 `timeout` 参数(ms;缺省 30s,上限 600s;`0` = 仅立即探测,
+/// 文档化偏差:Playwright 的 0=无限在服务端等价于无限占用派发线程,
+/// 无取消面故不提供)。
+fn wait_timeout_ms(params: &Value) -> u64 {
+    let requested = params
+        .get("timeout")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(WAIT_FOR_DEFAULT_TIMEOUT_MS);
+    requested.min(WAIT_FOR_MAX_TIMEOUT_MS)
+}
+
+/// Playwright URL glob 模式(`**/api/*`)→ 匹配闭包。
+///
+/// `glob::Pattern` 全串匹配语义与 Playwright 对齐(`*` 不跨 `/`,`**`
+/// 跨任意)。模式畸形(如未闭合 `[`)时退化为全等比较 — 不伪造宽松匹配。
+fn url_matcher(pattern: &str) -> impl Fn(&str) -> bool + Send {
+    let compiled = glob::Pattern::new(pattern).ok();
+    let owned = pattern.to_string();
+    move |url: &str| match &compiled {
+        Some(p) => p.matches(url),
+        // 畸形模式:全等(唯一诚实字面语义)。
+        None => url == owned,
+    }
+}
+
+/// backend 上的字符串探针(runtime_evaluate + value 剥壳;returnByValue
+/// 通道保证基本类型内联)。
+fn probe_string(
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    expression: &str,
+) -> Result<Option<String>, BridgeError> {
+    let r = backend.runtime_evaluate(target_id, expression)?;
+    Ok(r
+        .result
+        .value
+        .and_then(|v| v.as_str().map(|s| s.to_string())))
+}
+
+/// backend 事件面的统一入口 — 无 tap 的 backend 上 waitFor* 诚实失败
+/// (M1 P1 前是占位 OK,禁回退)。
+fn require_tap<'a>(
+    backend: &'a dyn ServoBackend,
+    method: &str,
+) -> Result<&'a std::sync::Arc<super::event_translator::CdpEventTap>, BridgeError> {
+    backend.event_tap().ok_or_else(|| {
+        BridgeError::NotSupported(format!(
+            "{method}: backend has no CDP event tap (host event pump not wired)"
+        ))
+    })
+}
+
+/// Page.waitForLoadState — 等待文档加载状态。
+///
+/// - `state=load`(默认):`document.readyState == 'complete'` 立即返回;
+///   否则等待 `Page.lifecycleEvent name='load'`(translate 的
+///   FrameStoppedLoading 配对事件)。
+/// - `state=domcontentloaded`:readyState ∈ {interactive, complete} 立即
+///   返回;否则等待 load 信号 — **文档化偏差**:servo 事件面把两个里程碑
+///   塌缩进 frameStoppedLoading 一个信号,本等待在 load 到达时 resolve
+///   (不早于真实 DOMContentLoaded,不伪造时点)。
+/// - `state=networkidle`:500ms 网络静默窗(Playwright 同语义:静默窗口
+///   内任一 Network 活动事件重置窗口)。
+///
+/// 返回 `{}`(Playwright 同形 void)。超时 = `Timeout`。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.waitForLoadState]
+/// @trace REQ-CDP-001 [level:library]
 pub fn page_wait_for_load_state(
-    _backend: &dyn ServoBackend,
-    _target_id: &str,
-    _params: &Value,
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Object(Default::default()))
+    let state = params
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("load")
+        .to_string();
+    let timeout_ms = wait_timeout_ms(params);
+    match state.as_str() {
+        "load" => {
+            if probe_string(backend, target_id, "document.readyState")?
+                .map(|s| s == "complete")
+                .unwrap_or(false)
+            {
+                return Ok(json!({}));
+            }
+            let tap = require_tap(backend, "Page.waitForLoadState")?;
+            tap.wait(
+                target_id,
+                &["Page.lifecycleEvent", "Page.loadEventFired"],
+                Box::new(|p| {
+                    // lifecycleEvent 按 name 门控;loadEventFired 无 name
+                    // 参数(translate 与 FrameStoppedLoading 配对同刻)。
+                    match p.get("name").and_then(|v| v.as_str()) {
+                        Some(name) => name == "load",
+                        None => true,
+                    }
+                }),
+                std::time::Duration::from_millis(timeout_ms),
+            )?;
+            Ok(json!({}))
+        }
+        "domcontentloaded" => {
+            // 偏差见 doc:resolve 于 load 信号(不早于真实 DOMContentLoaded)。
+            if probe_string(backend, target_id, "document.readyState")?
+                .map(|s| s == "interactive" || s == "complete")
+                .unwrap_or(false)
+            {
+                return Ok(json!({}));
+            }
+            let tap = require_tap(backend, "Page.waitForLoadState")?;
+            tap.wait(
+                target_id,
+                &["Page.lifecycleEvent", "Page.loadEventFired"],
+                Box::new(|p| match p.get("name").and_then(|v| v.as_str()) {
+                    Some(name) => name == "load",
+                    None => true,
+                }),
+                std::time::Duration::from_millis(timeout_ms),
+            )?;
+            Ok(json!({}))
+        }
+        "networkidle" => {
+            let tap = require_tap(backend, "Page.waitForLoadState")?;
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+            loop {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(BridgeError::Timeout(format!(
+                        "Page.waitForLoadState(networkidle): no idle window within {timeout_ms}ms"
+                    )));
+                }
+                let quiet = std::cmp::min(
+                    std::time::Duration::from_millis(NETWORK_IDLE_QUIET_MS),
+                    deadline - now,
+                );
+                match tap.wait(
+                    target_id,
+                    &NETWORK_ACTIVITY_METHODS,
+                    Box::new(|_| true),
+                    quiet,
+                ) {
+                    Ok(_) => continue, // 网络活动 → 重置静默窗
+                    Err(BridgeError::Timeout(_)) => return Ok(json!({})),
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        other => Err(BridgeError::InvalidParams(format!(
+            "Page.waitForLoadState: unsupported state {other:?} (load | domcontentloaded | networkidle)"
+        ))),
+    }
 }
 
-/// Page.waitForURL — 等待 URL 匹配(TASK-4 实现)。
+/// Page.waitForURL — 等待主 frame 导航到匹配 URL。
+///
+/// 当前 URL 已匹配 → 立即返回(Playwright 同形)。否则等待主 frame 的
+/// `Page.frameNavigated`(`frame.id == main-<target>`,REQ-CDP-004 单一
+/// frame 命名)且 `frame.url` 匹配 `url` glob。返回 `{}`。超时 = `Timeout`。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.waitForURL]
+/// @trace REQ-CDP-001 [level:library]
 pub fn page_wait_for_url(
-    _backend: &dyn ServoBackend,
-    _target_id: &str,
-    _params: &Value,
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Object(Default::default()))
+    let pattern = params
+        .get("url")
+        .or_else(|| params.get("pattern"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            BridgeError::InvalidParams("Page.waitForURL: missing string field: url".into())
+        })?
+        .to_string();
+    let matcher = url_matcher(&pattern);
+    // 立即探测:当前 URL 已匹配则不等待(Playwright 语义)。
+    if probe_string(backend, target_id, "location.href")?
+        .map(|u| matcher(&u))
+        .unwrap_or(false)
+    {
+        return Ok(json!({}));
+    }
+    let tap = require_tap(backend, "Page.waitForURL")?;
+    let main_frame = bao_cdp::servo_bridge::main_frame_id_for_target(target_id);
+    tap.wait(
+        target_id,
+        &["Page.frameNavigated"],
+        Box::new(move |p| {
+            let frame_matches = p
+                .get("frame")
+                .and_then(|f| f.get("id"))
+                .and_then(|v| v.as_str())
+                .map(|fid| fid == main_frame)
+                .unwrap_or(false);
+            let url_matches = p
+                .get("frame")
+                .and_then(|f| f.get("url"))
+                .and_then(|v| v.as_str())
+                .map(|u| matcher(u))
+                .unwrap_or(false);
+            frame_matches && url_matches
+        }),
+        std::time::Duration::from_millis(wait_timeout_ms(params)),
+    )?;
+    Ok(json!({}))
 }
 
-/// Page.waitForRequest — 等待 Network.requestWillBeSent 事件(TASK-4 实现)。
+/// Page.waitForRequest — 等待 URL 匹配的 `Network.requestWillBeSent`。
+///
+/// 返回**事件 params 本体**(requestId/request/timestamp/… — CDP 事件
+/// 形状;Playwright 的 Request 对象在本桥面即其协议源)。`url` 缺省 =
+/// 首个请求。超时 = `Timeout`。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.waitForRequest]
+/// @trace REQ-CDP-001 [level:library]
 pub fn page_wait_for_request(
-    _backend: &dyn ServoBackend,
-    _target_id: &str,
-    _params: &Value,
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Object(Default::default()))
+    let tap = require_tap(backend, "Page.waitForRequest")?;
+    let matcher = params
+        .get("url")
+        .or_else(|| params.get("pattern"))
+        .and_then(|v| v.as_str())
+        .map(url_matcher);
+    tap.wait(
+        target_id,
+        &["Network.requestWillBeSent"],
+        Box::new(move |p| {
+            match &matcher {
+                Some(m) => p
+                    .get("request")
+                    .and_then(|r| r.get("url"))
+                    .and_then(|v| v.as_str())
+                    .map(|u| m(u))
+                    .unwrap_or(false),
+                None => true,
+            }
+        }),
+        std::time::Duration::from_millis(wait_timeout_ms(params)),
+    )
 }
 
-/// Page.waitForResponse — 等待 Network.responseReceived 事件(TASK-4 实现)。
+/// Page.waitForResponse — 等待 URL 匹配的 `Network.responseReceived`。
+///
+/// 返回事件 params 本体(requestId/response/…)。`url` 缺省 = 首个响应。
+/// 超时 = `Timeout`。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.waitForResponse]
+/// @trace REQ-CDP-001 [level:library]
 pub fn page_wait_for_response(
-    _backend: &dyn ServoBackend,
-    _target_id: &str,
-    _params: &Value,
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Object(Default::default()))
+    let tap = require_tap(backend, "Page.waitForResponse")?;
+    let matcher = params
+        .get("url")
+        .or_else(|| params.get("pattern"))
+        .and_then(|v| v.as_str())
+        .map(url_matcher);
+    tap.wait(
+        target_id,
+        &["Network.responseReceived"],
+        Box::new(move |p| {
+            match &matcher {
+                Some(m) => p
+                    .get("response")
+                    .and_then(|r| r.get("url"))
+                    .and_then(|v| v.as_str())
+                    .map(|u| m(u))
+                    .unwrap_or(false),
+                None => true,
+            }
+        }),
+        std::time::Duration::from_millis(wait_timeout_ms(params)),
+    )
 }
 
-/// Page.waitForEvent — 等待任意 CDP 事件(TASK-4 实现)。
+/// Page.waitForEvent — 等待任意 CDP 事件。
+///
+/// `event` 接受两种形态:
+/// - **裸 CDP method**(含 `.`):按字面等待(如 `Network.responseReceived`)。
+/// - **Playwright 事件名**:按下表映射到 translate 产出的事件面:
+///   `console`→Log.entryAdded / `pageerror`→Runtime.exceptionThrown /
+///   `request`→Network.requestWillBeSent / `requestfailed`→Network.loadingFailed /
+///   `requestfinished`→Network.loadingFinished / `response`→Network.responseReceived /
+///   `load`→Page.loadEventFired / `domcontentloaded`→load 信号(servo 面
+///   塌缩偏差,同 waitForLoadState)/ `framenavigated`→Page.frameNavigated。
+///
+/// 事件面没有信号的名字(frameattached 等)→ InvalidParams(诚实拒绝,
+/// 禁静默挂到超时)。返回事件 params 本体。
 ///
 /// @trace REQ-BAO-API-005 [method:Page.waitForEvent]
+/// @trace REQ-CDP-001 [level:library]
 pub fn page_wait_for_event(
-    _backend: &dyn ServoBackend,
-    _target_id: &str,
-    _params: &Value,
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Object(Default::default()))
+    let event = params
+        .get("event")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            BridgeError::InvalidParams("Page.waitForEvent: missing string field: event".into())
+        })?;
+    let methods: Vec<String> = if event.contains('.') {
+        vec![event.to_string()]
+    } else {
+        let mapped: &[&str] = match event {
+            "console" => &["Log.entryAdded"],
+            "pageerror" => &["Runtime.exceptionThrown"],
+            "request" => &["Network.requestWillBeSent"],
+            "requestfailed" => &["Network.loadingFailed"],
+            "requestfinished" => &["Network.loadingFinished"],
+            "response" => &["Network.responseReceived"],
+            "load" => &["Page.loadEventFired"],
+            // servo 事件面塌缩偏差:同 waitForLoadState(domcontentloaded)。
+            "domcontentloaded" => &["Page.loadEventFired"],
+            "framenavigated" => &["Page.frameNavigated"],
+            other => {
+                return Err(BridgeError::InvalidParams(format!(
+                    "Page.waitForEvent: no CDP event signal for {other:?} on this event face"
+                )))
+            }
+        };
+        mapped.iter().map(|s| s.to_string()).collect()
+    };
+    let tap = require_tap(backend, "Page.waitForEvent")?;
+    let method_refs: Vec<&str> = methods.iter().map(|s| s.as_str()).collect();
+    tap.wait(
+        target_id,
+        &method_refs,
+        Box::new(|_| true),
+        std::time::Duration::from_millis(wait_timeout_ms(params)),
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -881,26 +1191,135 @@ pub fn element_is_visible(
     Ok(evaluate_to_cdp_json(&r))
 }
 
-/// ElementHandle.waitForElementState — 本地等待(TASK-4 实现)。
+/// ElementHandle.waitForElementState — 等待元素进入目标状态(DOM 轮询)。
+///
+/// `state` ∈ {visible, hidden, enabled, disabled, editable} — 每轮用
+/// `Runtime.callFunctionOn` 在 objectId 上跑与同名 is_* 谓词逐字一致的
+/// JS 体(单一语义源);立即首探,100ms 间隔重探,deadline 截止。
+/// Playwright 的 `stable` 状态需要两帧几何对比,本面无帧信号 → 诚实
+/// InvalidParams。返回 `{}`。超时 = `Timeout`。
 ///
 /// @trace REQ-BAO-API-005 [method:ElementHandle.waitForElementState]
+/// @trace REQ-CDP-001 [level:library]
 pub fn element_wait_for_element_state(
-    _backend: &dyn ServoBackend,
-    _target_id: &str,
-    _params: &Value,
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Object(Default::default()))
+    let object_id = get_str(params, "objectId")?;
+    let state = params
+        .get("state")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            BridgeError::InvalidParams(
+                "ElementHandle.waitForElementState: missing string field: state".into(),
+            )
+        })?
+        .to_string();
+    // 与 is_* 处理器逐字一致的谓词体(单一语义源 — 修改须双侧同步)。
+    let body: &str = match state.as_str() {
+        "visible" => {
+            "if(!this){return false;} var r=this.getBoundingClientRect(); var s=window.getComputedStyle(this); return (r.width>0&&r.height>0)&&s.visibility!=='hidden'&&s.display!=='none';"
+        }
+        "hidden" => {
+            "if(!this){return true;} var r=this.getBoundingClientRect(); var s=window.getComputedStyle(this); return (r.width===0||r.height===0)||s.visibility==='hidden'||s.display==='none';"
+        }
+        "enabled" => "return !!(this && !this.disabled);",
+        "disabled" => "return !!(this && this.disabled);",
+        "editable" => "return !!(this && !this.disabled && !this.readOnly);",
+        other => {
+            return Err(BridgeError::InvalidParams(format!(
+                "ElementHandle.waitForElementState: unsupported state {other:?} \
+                 (visible | hidden | enabled | disabled | editable; 'stable' has no \
+                 frame signal on this face)"
+            )))
+        }
+    };
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(wait_timeout_ms(params));
+    loop {
+        let r = backend.runtime_call_function_on(target_id, &object_id, body, &[])?;
+        if r.result.value.as_ref().and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Ok(json!({}));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(BridgeError::Timeout(format!(
+                "ElementHandle.waitForElementState({state}): condition unmet within {}ms",
+                wait_timeout_ms(params)
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(ELEMENT_POLL_INTERVAL_MS));
+    }
 }
 
-/// ElementHandle.waitForSelector — 本地轮询(TASK-4 实现)。
+/// ElementHandle.waitForSelector — 等待 selector 命中目标状态(DOM 轮询)。
+///
+/// `state` ∈ {visible(默认), attached, hidden, detached}:
+/// - attached:`DOM.querySelector` 命中;
+/// - visible:命中且可见(可见性谓词经 evaluate,与 is_visible 语义一致);
+/// - hidden:未命中或不可见;detached:未命中(从 DOM 移除)。
+///
+/// 命中返回 `{"nodeId": n}`(通道语义:1=命中/0=未命中,同 DOM.querySelector
+/// 处理器);hidden/detached 命中返回 `{"nodeId": 0}`。超时 = `Timeout`。
 ///
 /// @trace REQ-BAO-API-005 [method:ElementHandle.waitForSelector]
+/// @trace REQ-CDP-001 [level:library]
 pub fn element_wait_for_selector(
-    _backend: &dyn ServoBackend,
-    _target_id: &str,
-    _params: &Value,
+    backend: &dyn ServoBackend,
+    target_id: &str,
+    params: &Value,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Object(Default::default()))
+    let selector = get_str(params, "selector")?;
+    let state = params
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("visible")
+        .to_string();
+    if !matches!(state.as_str(), "visible" | "attached" | "hidden" | "detached") {
+        return Err(BridgeError::InvalidParams(format!(
+            "ElementHandle.waitForSelector: unsupported state {state:?} \
+             (visible | attached | hidden | detached)"
+        )));
+    }
+    // 可见性谓词(与 is_visible 语义一致,selector 参数走 __args 注入)。
+    let visibility_expr = build_iife_with_args(
+        "var s=__args[0]; var el=document.querySelector(s); if(!el){return false;} \
+         var r=el.getBoundingClientRect(); var cs=window.getComputedStyle(el); \
+         return (r.width>0&&r.height>0)&&cs.visibility!=='hidden'&&cs.display!=='none';",
+        &[json!(selector)],
+    )?;
+    let is_visible = |b: &dyn ServoBackend| -> Result<bool, BridgeError> {
+        let r = b.runtime_evaluate(target_id, &visibility_expr)?;
+        Ok(r.result.value.as_ref().and_then(|v| v.as_bool()).unwrap_or(false))
+    };
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(wait_timeout_ms(params));
+    loop {
+        let found = backend
+            .dom_query_selector(target_id, 0, &selector)?
+            .unwrap_or(0);
+        let satisfied = match state.as_str() {
+            // attached:命中即满足。
+            "attached" => found != 0,
+            // visible:命中且可见。
+            "visible" => found != 0 && is_visible(backend)?,
+            // hidden:未命中或不可见。
+            "hidden" => found == 0 || !is_visible(backend)?,
+            // detached:从 DOM 移除(未命中)。
+            "detached" => found == 0,
+            other => unreachable!("state validated above: {other}"),
+        };
+        if satisfied {
+            return Ok(json!({ "nodeId": found }));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(BridgeError::Timeout(format!(
+                "ElementHandle.waitForSelector({state}): condition unmet within {}ms",
+                wait_timeout_ms(params)
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(ELEMENT_POLL_INTERVAL_MS));
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1335,18 +1754,80 @@ mod tests {
         assert!(r["result"].is_object());
     }
 
-    #[test]
-    fn element_wait_for_element_state_returns_empty() {
-        let b = backend();
-        let r = element_wait_for_element_state(&b, "1", &json!({"state":"visible"})).unwrap();
-        assert_eq!(r.as_object().unwrap().len(), 0);
+    /// waitFor* 单测的带 tap backend(事件由测试线程喂入)。
+    fn backend_with_tap()
+    -> (MockServoBackend, std::sync::Arc<super::super::event_translator::CdpEventTap>) {
+        let mut b = MockServoBackend::new();
+        b.add_target("1");
+        let tap = std::sync::Arc::new(super::super::event_translator::CdpEventTap::new());
+        b.event_tap = Some(tap.clone());
+        (b, tap)
     }
 
+    /// 状态谓词满足 → 轮询立即返回(M1 P1 实装替换占位 OK 锁)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
     #[test]
-    fn element_wait_for_selector_returns_empty() {
-        let b = backend();
-        let r = element_wait_for_selector(&b, "1", &json!({"selector":"div"})).unwrap();
+    fn element_wait_for_element_state_polls_until_true() {
+        let mut b = MockServoBackend::new();
+        b.add_target("1");
+        b.call_function_on_value = Some(json!(true));
+        let r = element_wait_for_element_state(
+            &b,
+            "1",
+            &json!({"objectId":"obj1","state":"visible","timeout": 500}),
+        )
+        .unwrap();
         assert_eq!(r.as_object().unwrap().len(), 0);
+        let log = b.call_log.lock().unwrap();
+        assert!(
+            log.iter()
+                .any(|(_, m, _)| m == "runtime_call_function_on"),
+            "state predicate must poll via Runtime.callFunctionOn"
+        );
+    }
+
+    /// 状态谓词恒不满足(mock 默认 callFunctionOn value=None)+ 有界
+    /// timeout → Timeout 错误(禁无限轮询)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn element_wait_for_element_state_times_out() {
+        let b = backend();
+        let err = element_wait_for_element_state(
+            &b,
+            "1",
+            &json!({"objectId":"obj1","state":"enabled","timeout": 120}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, BridgeError::Timeout(_)), "got: {err:?}");
+    }
+
+    /// selector 命中(mock 通道语义 nodeId=2)→ 返回 nodeId。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn element_wait_for_selector_attached_returns_node_id() {
+        let b = backend();
+        // MockServoBackend.dom_query_selector 默认命中(返回 Some(2))。
+        let r = element_wait_for_selector(
+            &b,
+            "1",
+            &json!({"selector":"div","state":"attached","timeout": 500}),
+        )
+        .unwrap();
+        assert_eq!(r["nodeId"], 2);
+    }
+
+    /// 无事件面 backend → Page.waitFor* 诚实 NotSupported(M1 P1 前的
+    /// 占位 OK 已替换;缺 tap 不允许假成功)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn page_wait_for_request_without_tap_is_not_supported() {
+        let b = backend();
+        let err = page_wait_for_request(&b, "1", &json!({"url":"**/api/*"})).unwrap_err();
+        assert!(matches!(err, BridgeError::NotSupported(_)), "got: {err:?}");
     }
 
     // ── JSHandle ──
@@ -1491,39 +1972,169 @@ mod tests {
         assert_eq!(r.as_object().unwrap().len(), 0);
     }
 
+    /// waitForLoadState(load):readyState 探针不满足(mock 回显表达式)→
+    /// 在 tap 上等到 lifecycleEvent name=load 才返回。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
     #[test]
-    fn page_wait_for_load_state_returns_empty() {
-        let b = backend();
-        let r = page_wait_for_load_state(&b, "1", &json!({"state":"load"})).unwrap();
+    fn page_wait_for_load_state_resolves_on_load_lifecycle_event() {
+        let (b, tap) = backend_with_tap();
+        let feeder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            // 先喂 name=init(不得 resolve),再喂 name=load(必须 resolve)。
+            tap.observe(
+                "1",
+                "Page.lifecycleEvent",
+                &json!({ "frameId": "main-1", "loaderId": "loader-1", "name": "init" }),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            tap.observe(
+                "1",
+                "Page.lifecycleEvent",
+                &json!({ "frameId": "main-1", "loaderId": "loader-1", "name": "load" }),
+            );
+        });
+        let r = page_wait_for_load_state(&b, "1", &json!({"state":"load","timeout": 2000}))
+            .unwrap();
         assert_eq!(r.as_object().unwrap().len(), 0);
+        feeder.join().unwrap();
     }
 
+    /// waitForLoadState(networkidle):500ms 静默窗(无网络活动)→ 空转
+    /// 即 resolve;窗口内喂 Network 活动事件则重置。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
     #[test]
-    fn page_wait_for_url_returns_empty() {
-        let b = backend();
-        let r = page_wait_for_url(&b, "1", &json!({"url":"**/*"})).unwrap();
+    fn page_wait_for_load_state_networkidle_resolves_on_quiet_window() {
+        let (b, tap) = backend_with_tap();
+        let start = std::time::Instant::now();
+        let r = page_wait_for_load_state(
+            &b,
+            "1",
+            &json!({"state":"networkidle","timeout": 5000}),
+        )
+        .unwrap();
+        // 静默窗 500ms 是 resolve 的下界(Playwright 同语义)。
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(400),
+            "networkidle must respect the quiet window, resolved in {:?}",
+            start.elapsed()
+        );
         assert_eq!(r.as_object().unwrap().len(), 0);
+        assert_eq!(tap.waiter_count(), 0);
     }
 
+    /// waitForURL:主 frame 导航事件带匹配 URL → resolve;子 frame 的
+    /// 同 URL 导航不得 resolve(主帧过滤)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
     #[test]
-    fn page_wait_for_request_returns_empty() {
-        let b = backend();
-        let r = page_wait_for_request(&b, "1", &json!({"url":"**/api/*"})).unwrap();
-        assert_eq!(r.as_object().unwrap().len(), 0);
+    fn page_wait_for_url_filters_to_main_frame() {
+        let (b, tap) = backend_with_tap();
+        let feeder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            // 子 frame iframe 导航:URL 匹配但 frame.id != main-1 → 不 resolve。
+            tap.observe(
+                "1",
+                "Page.frameNavigated",
+                &json!({ "frame": { "id": "frame-child", "url": "https://x/done" } }),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            // 主 frame 导航:resolve。
+            tap.observe(
+                "1",
+                "Page.frameNavigated",
+                &json!({ "frame": { "id": "main-1", "url": "https://x/done" } }),
+            );
+        });
+        page_wait_for_url(&b, "1", &json!({"url":"**/done","timeout": 2000})).unwrap();
+        feeder.join().unwrap();
     }
 
+    /// waitForRequest:URL glob 匹配的 requestWillBeSent → 返回事件 params
+    /// 本体;不匹配的请求不得 resolve。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
     #[test]
-    fn page_wait_for_response_returns_empty() {
-        let b = backend();
-        let r = page_wait_for_response(&b, "1", &json!({"url":"**/api/*"})).unwrap();
-        assert_eq!(r.as_object().unwrap().len(), 0);
+    fn page_wait_for_request_returns_matching_event_params() {
+        let (b, tap) = backend_with_tap();
+        let feeder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            tap.observe(
+                "1",
+                "Network.requestWillBeSent",
+                &json!({ "requestId": "r-wrong", "request": { "url": "https://x/static/logo.png" } }),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            tap.observe(
+                "1",
+                "Network.requestWillBeSent",
+                &json!({ "requestId": "r-1", "request": { "url": "https://x/api/data" } }),
+            );
+        });
+        let r = page_wait_for_request(&b, "1", &json!({"url":"**/api/*","timeout": 2000}))
+            .unwrap();
+        assert_eq!(r["requestId"], "r-1");
+        assert_eq!(r["request"]["url"], "https://x/api/data");
+        feeder.join().unwrap();
     }
 
+    /// waitForResponse:URL 匹配的 responseReceived → 返回事件 params 本体。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
     #[test]
-    fn page_wait_for_event_returns_empty() {
-        let b = backend();
-        let r = page_wait_for_event(&b, "1", &json!({"event":"response"})).unwrap();
-        assert_eq!(r.as_object().unwrap().len(), 0);
+    fn page_wait_for_response_returns_matching_event_params() {
+        let (b, tap) = backend_with_tap();
+        let feeder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            tap.observe(
+                "1",
+                "Network.responseReceived",
+                &json!({
+                    "requestId": "r-1",
+                    "response": { "url": "https://x/api/data", "status": 200 }
+                }),
+            );
+        });
+        let r = page_wait_for_response(&b, "1", &json!({"url":"**/api/*","timeout": 2000}))
+            .unwrap();
+        assert_eq!(r["response"]["status"], 200);
+        feeder.join().unwrap();
+    }
+
+    /// waitForEvent:Playwright 名映射(response → Network.responseReceived)
+    /// + 事件面无信号的名字诚实 InvalidParams。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn page_wait_for_event_maps_playwright_names_and_rejects_unsignaled() {
+        let (b, tap) = backend_with_tap();
+        let feeder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            tap.observe(
+                "1",
+                "Network.responseReceived",
+                &json!({ "requestId": "r-1", "response": { "url": "https://x/", "status": 204 } }),
+            );
+        });
+        let r = page_wait_for_event(&b, "1", &json!({"event":"response","timeout": 2000})).unwrap();
+        assert_eq!(r["response"]["status"], 204);
+        feeder.join().unwrap();
+
+        // 事件面没有信号的名字 → 立即 InvalidParams(禁挂到超时)。
+        let err = page_wait_for_event(&b, "1", &json!({"event":"frameattached"})).unwrap_err();
+        assert!(matches!(err, BridgeError::InvalidParams(_)), "got: {err:?}");
+    }
+
+    /// waitFor* 超时:tap 上无事件 → Timeout(有界,不悬挂)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn page_wait_for_request_times_out() {
+        let (b, tap) = backend_with_tap();
+        let err = page_wait_for_request(&b, "1", &json!({"timeout": 100})).unwrap_err();
+        assert!(matches!(err, BridgeError::Timeout(_)), "got: {err:?}");
+        assert_eq!(tap.waiter_count(), 0, "timeout must unregister the waiter");
     }
 
     // ── 缺参数错误 ──

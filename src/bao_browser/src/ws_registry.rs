@@ -32,8 +32,15 @@ const ERR_TARGET_NOT_FOUND: i64 = -32000;
 /// `/devtools/browser` (see cdp-server `handle_connection`).
 const BROWSER_TARGET: &str = "__browser__";
 
-/// Domains served by `bao_cdp::protocol::handle_command`.
-const SERVED_DOMAINS: [&str; 21] = [
+/// Domains this registry serves — the method-reachability metadata table.
+/// Faces (M1 wiring, REQ-CDP-001):
+/// - 21 production domains handled by `bao_cdp::protocol::handle_command`;
+/// - `ElementHandle` / `JSHandle` (M1 P1): the B-class Playwright surface
+///   served by the `-32601` RDP fallback arm (`self.rdp`) — same production
+///   `BridgeCommand` channel, listed here so the domain metadata covers the
+///   full reachable method face (has_domain is advisory today — no call site
+///   gates on it; keeping the table complete is the honest metadata).
+const SERVED_DOMAINS: [&str; 23] = [
     "Target",
     "Page",
     "Runtime",
@@ -55,6 +62,8 @@ const SERVED_DOMAINS: [&str; 21] = [
     "SystemInfo",
     "ServiceWorker",
     "Browser",
+    "ElementHandle",
+    "JSHandle",
 ];
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -105,6 +114,16 @@ impl BaoWsRegistry {
             session_worlds: Mutex::new(HashMap::new()),
             auto_attach: Mutex::new(false),
         }
+    }
+
+    /// M1 P1 (REQ-CDP-001): the fallback universe's event tap. The runtime
+    /// pump (`run_with_bridge`) feeds every translated CDP event into it —
+    /// the same event stream WS sessions broadcast — and the `waitFor*`
+    /// family dispatched through `rdp` waits on it. `None` only when the
+    /// backend has no tap (not the shape `new` builds; kept for the trait's
+    /// honest default).
+    pub fn event_tap(&self) -> Option<std::sync::Arc<bao_cdp_client::bridge::CdpEventTap>> {
+        self.rdp.backend().event_tap().cloned()
     }
 
     /// Handle the session-table commands that only this registry can serve
@@ -1087,6 +1106,11 @@ mod tests {
         assert!(reg.has_domain("Runtime"));
         assert!(reg.has_domain("Target"));
         assert!(reg.has_domain("Browser"));
+        // M1 P1 (REQ-CDP-001): the -32601 fallback universe's B-class
+        // domains are part of the reachable method face — the metadata
+        // table must cover them.
+        assert!(reg.has_domain("ElementHandle"));
+        assert!(reg.has_domain("JSHandle"));
         assert!(!reg.has_domain("NotADomain"));
     }
 

@@ -550,6 +550,18 @@ pub trait ServoBackend: Send + Sync {
         target_id: &str,
         script_id: u32,
     ) -> Result<String, BridgeError>;
+
+    /// CDP 事件等待面(M1 P1,REQ-CDP-001):backend 宿主的事件 tap —
+    /// `Page.waitFor*` 族的等待载体。宿主事件泵(`run_with_bridge`)把
+    /// `translate` 产出的每个 CDP 事件喂入 tap,waitFor* 在 tap 上等待。
+    ///
+    /// 无事件面的后端返回 `None` → waitFor* 族以 `NotSupported` 诚实失败
+    /// (禁假成功,禁占位 OK)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    fn event_tap(&self) -> Option<&Arc<super::event_translator::CdpEventTap>> {
+        None
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -934,6 +946,17 @@ pub struct MockServoBackend {
     pub default_frame_id: String,
     /// 已存在的 target_id 集合 — page_* 命令查不到时返回 PageNotFound。
     pub known_targets: Mutex<Vec<String>>,
+
+    /// 可选事件等待面(M1 P1,REQ-CDP-001)— `Some(tap)` 时 waitFor* 族
+    /// 在该 tap 上等待(单测从喂入线程投递事件);`None`(默认)时 waitFor*
+    /// 诚实 NotSupported,与无事件面的生产 backend 同形。
+    pub event_tap: Option<Arc<super::event_translator::CdpEventTap>>,
+
+    /// 可选 callFunctionOn 返回值(M1 P1)— `Some(v)` 时 mock 的
+    /// `runtime_call_function_on` 把 `v` 作为 RemoteObject.value 返回
+    /// (waitForElementState 状态谓词的真/假单测面);`None`(默认)保持
+    /// 原 undefined 形状,既有测试零变化。
+    pub call_function_on_value: Option<Value>,
 }
 
 impl Default for MockServoBackend {
@@ -942,6 +965,8 @@ impl Default for MockServoBackend {
             call_log: Mutex::new(Vec::new()),
             default_frame_id: "FRAME_0".to_string(),
             known_targets: Mutex::new(vec!["1".to_string(), "default".to_string()]),
+            event_tap: None,
+            call_function_on_value: None,
         }
     }
 }
@@ -1118,7 +1143,16 @@ impl ServoBackend for MockServoBackend {
         self.ensure_target(target_id)?;
         Ok(EvaluateResult {
             result: RemoteObject {
-                type_: "undefined".to_string(),
+                // 可配置真值(M1 P1 waitForElementState 谓词面);缺省
+                // undefined 形状不变。
+                type_: (match &self.call_function_on_value {
+                    Some(Value::Bool(_)) => "boolean".to_string(),
+                    Some(Value::Number(_)) => "number".to_string(),
+                    Some(Value::String(_)) => "string".to_string(),
+                    Some(_) => "object".to_string(),
+                    None => "undefined".to_string(),
+                }),
+                value: self.call_function_on_value.clone(),
                 ..Default::default()
             },
             exception_details: None,
@@ -1697,6 +1731,12 @@ impl ServoBackend for MockServoBackend {
         );
         Ok(format!("// mock source for script {script_id}\n"))
     }
+
+    /// M1 P1(REQ-CDP-001):mock 的可选事件面 — waitFor* 单测用
+    /// `event_tap: Some(tap)` 装上即可等待测试线程喂入的事件。
+    fn event_tap(&self) -> Option<&Arc<super::event_translator::CdpEventTap>> {
+        self.event_tap.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -2108,5 +2148,10 @@ impl ServoBackend for Arc<dyn ServoBackend> {
         script_id: u32,
     ) -> Result<String, BridgeError> {
         (**self).debugger_get_script_source(target_id, script_id)
+    }
+    // M1 P1(REQ-CDP-001):事件面转发 — 缺此臂时 Arc<dyn> 包装层落到
+    // trait 默认 None,内层 backend 的 tap 会被静默遮蔽。
+    fn event_tap(&self) -> Option<&Arc<super::event_translator::CdpEventTap>> {
+        (**self).event_tap()
     }
 }

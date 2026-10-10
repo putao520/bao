@@ -1028,12 +1028,32 @@ impl BrowserRuntime {
             // Drain ServoEvent from the real event queue (Path B) and broadcast
             // as CDP events via the shared EventBroadcaster.
             // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+            //
+            // M1 P1 (REQ-CDP-001): the same translated events also feed the
+            // waitFor* event taps — the WS registry's fallback universe and
+            // the memory:// bridge each own one (per production entry), and
+            // `Page.waitFor*` commands wait on them. One translation, one
+            // truth: the tap sees exactly what WS sessions broadcast.
+            let wait_taps: Vec<std::sync::Arc<bao_cdp_client::bridge::CdpEventTap>> = [
+                // WS face (the registry this pump demuxes events through).
+                event_demux.as_ref().and_then(|r| r.event_tap()),
+                // memory:// face (the process-registry bridge, when alive).
+                self.cdp_bridge.as_ref().and_then(|b| b.event_tap()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             drain_servo_events(&servo_event_rx, |servo_event| {
                 // W43 flat-session demux: ServoEvents are target-scoped —
                 // route to every CDP session attached to that target (tagged),
                 // falling back to the untagged broadcast with no attachments.
                 let target_id = servo_event.target_id().to_string();
                 let cdp_events = translate(servo_event);
+                for cdp_event in &cdp_events {
+                    for tap in &wait_taps {
+                        tap.observe(&target_id, &cdp_event.method, &cdp_event.params);
+                    }
+                }
                 match event_demux.as_ref() {
                     Some(registry) => {
                         for cdp_event in cdp_events {

@@ -56,6 +56,10 @@ use super::servo_backend::{
 /// @trace REQ-BAO-API-004 [level:library]
 pub struct BridgeSenderBackend {
     sender: BridgeSender,
+    /// M1 P1(REQ-CDP-001):事件等待面 — waitFor* 族的 tap。宿主事件泵
+    /// 把 translate 产出的 CDP 事件喂入(见 [`Self::tap`]);命令派发线程
+    /// 在 [`Self::event_tap`] 上等待。与 sender 同生命周期。
+    tap: std::sync::Arc<super::event_translator::CdpEventTap>,
 }
 
 impl BridgeSenderBackend {
@@ -63,7 +67,19 @@ impl BridgeSenderBackend {
     ///
     /// @trace REQ-CDP-001 [level:library]
     pub fn new(sender: BridgeSender) -> Self {
-        Self { sender }
+        Self {
+            sender,
+            tap: std::sync::Arc::new(super::event_translator::CdpEventTap::new()),
+        }
+    }
+
+    /// 事件 tap 的宿主喂入口 — `run_with_bridge` 泵在每个 translate 产出
+    /// 的 CDP 事件上调用 `tap().observe(...)`(与 WS 广播同一事件流,
+    /// 零第二真值)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    pub fn tap(&self) -> &std::sync::Arc<super::event_translator::CdpEventTap> {
+        &self.tap
     }
 
     /// 发送命令并把响应归一为 `Ok(Value)` / `Err(BridgeError)`。
@@ -1130,6 +1146,13 @@ impl super::servo_backend::ServoBackend for BridgeSenderBackend {
             .and_then(|s| s.as_str())
             .unwrap_or("")
             .to_string())
+    }
+
+    /// M1 P1(REQ-CDP-001):生产 backend 自带事件 tap — 宿主事件泵
+    /// (`run_with_bridge`)经 [`BridgeSenderBackend::tap`] 喂入 translate
+    /// 产出的 CDP 事件,`Page.waitFor*` 在此等待。
+    fn event_tap(&self) -> Option<&std::sync::Arc<super::event_translator::CdpEventTap>> {
+        Some(&self.tap)
     }
 }
 

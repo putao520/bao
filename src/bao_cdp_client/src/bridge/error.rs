@@ -53,6 +53,14 @@ pub enum BridgeError {
     ServoError(String),
     /// 参数缺失或类型错误。
     InvalidParams(String),
+    /// 等待超时 — `Page.waitFor*` / `ElementHandle.waitFor*` 族在
+    /// `timeout` 窗口内未观察到目标状态/事件(M1 P1 事件订阅面)。
+    ///
+    /// 对应 Puppeteer/Playwright 的 TimeoutError 协议面:server error
+    /// (-32000)+ message 携带 "Timeout" 字样。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    Timeout(String),
 }
 
 impl BridgeError {
@@ -73,7 +81,8 @@ impl BridgeError {
             BridgeError::NotImplementedYet(_)
             | BridgeError::InvalidTargetId(_)
             | BridgeError::PageNotFound(_)
-            | BridgeError::ServoError(_) => CDP_ERR_SERVER_ERROR,
+            | BridgeError::ServoError(_)
+            | BridgeError::Timeout(_) => CDP_ERR_SERVER_ERROR,
         }
     }
 
@@ -88,6 +97,9 @@ impl BridgeError {
             BridgeError::PageNotFound(t) => format!("page not found: {t}"),
             BridgeError::ServoError(msg) => format!("servo error: {msg}"),
             BridgeError::InvalidParams(msg) => format!("invalid params: {msg}"),
+            // Puppeteer/Playwright 的 Timeout 协议形:客户端按 "Timeout"
+            // 字样归类 TimeoutError,消息体描述等待的目标。
+            BridgeError::Timeout(msg) => format!("Timeout: {msg}"),
         }
     }
 }

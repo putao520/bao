@@ -10,7 +10,7 @@
 //! - [`e_class`]:E 类 31+ method servo 不支持标记
 //! - [`servo_backend`]:ServoBackend trait + MockServoBackend + 数据结构
 //! - [`bridge_sender_backend`]:ServoBackend 的生产通道实现(BridgeCommand 挂接,M1 接线 REQ-CDP-001)
-//! - [`event_translator`]:servo 7 类事件 → CDP event 转换 + EventSubscriber
+//! - [`event_translator`]:servo 7 类事件 → CDP event 转换 + EventSubscriber + CdpEventTap(WS 事件等待面,M1 P1)
 //! - [`error`]:BridgeError + CDP error code 映射
 //!
 //! # 数据流
@@ -58,7 +58,7 @@ pub use error::{
     BridgeError, CDP_ERR_INVALID_PARAMS, CDP_ERR_METHOD_NOT_FOUND, CDP_ERR_SERVER_ERROR,
 };
 pub use event_translator::{
-    from_console_message, translate, ConsoleLevel, EventSubscriber, ServoEvent,
+    from_console_message, translate, CdpEventTap, ConsoleLevel, EventSubscriber, ServoEvent,
 };
 pub use servo_backend::{
     BoxModel, BreakpointResult, BridgeScreenshotFormat as ScreenshotFormat,

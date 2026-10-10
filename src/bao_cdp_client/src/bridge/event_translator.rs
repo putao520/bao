@@ -1431,6 +1431,158 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// §6.5 CdpEventTap — CDP 事件等待面(WS 事件流的订阅 tap,M1 P1 接线)
+// ---------------------------------------------------------------------------
+
+/// 单个等待者条目 — `wait` 注册的(one-shot)一次性订阅。
+struct TapWaiter {
+    id: u64,
+    /// 等待的目标页(与 `observe` 的 target_id 精确匹配;servo 事件流的
+    /// target 命名空间 = 十进制 CDP target id,与 waitFor* 命令的解析
+    /// target 同源,见 cdp_handler `cmd_network_enable` 的归属注释)。
+    target_id: String,
+    /// 等待的 CDP 事件 method 集合(一或多个;`Page.lifecycleEvent` 与
+    /// 4 个 `Network.*` 活动事件是典型多方法集)。
+    methods: Vec<String>,
+    /// 事件参数谓词(纯 JSON 检查,在 tap 锁内执行 — 禁任何回调重入)。
+    predicate: Box<dyn Fn(&Value) -> bool + Send>,
+    /// 一次性投递通道(容量 1;`observe` try_send 非阻塞投递)。
+    tx: mpsc::SyncSender<Value>,
+}
+
+/// CDP 事件等待面 — `translate` 产出的事件流的旁路 tap。
+///
+/// M1 P1 接线(REQ-CDP-001):`waitFor*` 族(`Page.waitForLoadState` /
+/// `waitForRequest` / `waitForResponse` / `waitForEvent` / `waitForURL`)
+/// 需要等待**已翻译的 CDP 事件**。本 tap 是该等待的载体:
+///
+/// - **喂入方**(宿主事件泵,`run_with_bridge`):每个 `translate` 产出的
+///   CDP 事件在广播给 WS 会话的同一时刻调 [`CdpEventTap::observe`] —
+///   等待者与 WS 客户端看到同一事件流,零第二翻译、零第二真值。
+/// - **等待方**(`waitFor*` 命令线程):[`CdpEventTap::wait`] 注册带谓词的
+///   one-shot 订阅并阻塞到事件到达或超时。
+///
+/// 线程模型:喂入在泵线程、等待在 CDP 命令派发线程(WS 连接线程 /
+/// memory:// 客户端线程)——两者永不同线程(泵不派发 CDP 命令),无死锁
+/// 环。谓词在 tap 锁内执行且为纯 JSON 检查,无重入。
+///
+/// 语义:one-shot — 一个等待者只被投递一次(首个匹配事件),投递即注销。
+/// 超时未命中同样注销(最后竞态送达在超时判定前再查一次接收端)。
+///
+/// @trace REQ-CDP-001 [level:library]
+/// @trace REQ-BAO-API-003 [level:library]
+pub struct CdpEventTap {
+    waiters: std::sync::Mutex<Vec<TapWaiter>>,
+    next_id: AtomicU64,
+}
+
+impl Default for CdpEventTap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CdpEventTap {
+    /// 构造空 tap(无等待者)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    pub fn new() -> Self {
+        CdpEventTap {
+            waiters: std::sync::Mutex::new(Vec::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    /// 喂入一个已翻译的 CDP 事件(泵线程调用)。
+    ///
+    /// 遍历等待者,首个 (target, method, predicate) 全匹配的等待者收到
+    /// 事件 params 的克隆并被注销(one-shot)。无匹配等待者 = no-op
+    /// (事件继续走广播路径,tap 不是事件的必经存储)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    pub fn observe(&self, target_id: &str, method: &str, params: &Value) {
+        let mut waiters = self.waiters.lock().unwrap_or_else(|p| p.into_inner());
+        let mut delivered = false;
+        waiters.retain(|w| {
+            if delivered {
+                return true;
+            }
+            let matches = w.target_id == target_id
+                && w.methods.iter().any(|m| m == method)
+                && (w.predicate)(params);
+            if matches {
+                // 容量 1 + one-shot:try_send 要么成功(送达),要么 Full
+                // (同一等待者的重复送达竞态——保留条目无意义,注销)。
+                let sent = w.tx.try_send(params.clone()).is_ok();
+                delivered = sent;
+                !sent
+            } else {
+                true
+            }
+        });
+    }
+
+    /// 注册 one-shot 等待并阻塞到事件到达或超时(命令派发线程调用)。
+    ///
+    /// - `methods`:等待的 CDP 事件 method 集合(非空;空集 = 调用方 bug,
+    ///   返回 `InvalidParams`)。
+    /// - `predicate`:事件 params 谓词(纯检查)。
+    /// - 返回:命中事件的 params;超时/断开 = [`BridgeError::Timeout`]。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    pub fn wait(
+        &self,
+        target_id: &str,
+        methods: &[&str],
+        predicate: Box<dyn Fn(&Value) -> bool + Send>,
+        timeout: std::time::Duration,
+    ) -> Result<Value, super::error::BridgeError> {
+        if methods.is_empty() {
+            return Err(super::error::BridgeError::InvalidParams(
+                "CdpEventTap::wait: empty method set".into(),
+            ));
+        }
+        let (tx, rx) = mpsc::sync_channel::<Value>(1);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut waiters = self.waiters.lock().unwrap_or_else(|p| p.into_inner());
+            waiters.push(TapWaiter {
+                id,
+                target_id: target_id.to_string(),
+                methods: methods.iter().map(|m| m.to_string()).collect(),
+                predicate,
+                tx,
+            });
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(params) => Ok(params),
+            Err(_) => {
+                // 超时(或喂入线程已 drop 全部 sender — 不可能:tap 与
+                // 等待者同生命周期)。先注销自己,再做一次最后竞态检查:
+                // observe 可能在 recv_timeout 判定超时之后、取锁之前完成
+                // 了投递(送达在通道里,条目已注销)。
+                {
+                    let mut waiters = self.waiters.lock().unwrap_or_else(|p| p.into_inner());
+                    waiters.retain(|w| w.id != id);
+                }
+                match rx.try_recv() {
+                    Ok(params) => Ok(params),
+                    Err(_) => Err(super::error::BridgeError::Timeout(format!(
+                        "waiting for CDP event {} on target {target_id}",
+                        methods.join("|")
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// 当前注册的等待者数(测试观测面)。
+    pub fn waiter_count(&self) -> usize {
+        self.waiters.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // §7 单元测试 — 7 类事件全覆盖
 // ---------------------------------------------------------------------------
 
@@ -2396,5 +2548,123 @@ mod tests {
         for m in expected {
             assert!(cdp_methods.contains(*m), "missing CDP method: {}", m);
         }
+    }
+
+    // ── §8 CdpEventTap(WS 事件等待面,M1 P1)──────────────────────
+
+    /// 命中投递:target + method + 谓词全匹配 → 等待者收到 params,
+    /// one-shot 注销,后续同形事件不再投递。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn cdp_event_tap_delivers_matching_event_once() {
+        let tap = CdpEventTap::new();
+        let tap = std::sync::Arc::new(tap);
+        let feeder = tap.clone();
+        let waiter = std::thread::spawn(move || {
+            tap.wait(
+                "1",
+                &["Network.requestWillBeSent"],
+                Box::new(|p| p["request"]["url"].as_str().unwrap_or("").contains("/api/")),
+                std::time::Duration::from_secs(2),
+            )
+        });
+        // 等待者注册后再喂(保证 observe 走到投递分支)。
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        feeder.observe(
+            "1",
+            "Network.requestWillBeSent",
+            &json!({ "requestId": "r1", "request": { "url": "https://x/api/data" } }),
+        );
+        // one-shot:同形第二事件不再投递(无等待者)。
+        feeder.observe(
+            "1",
+            "Network.requestWillBeSent",
+            &json!({ "requestId": "r2", "request": { "url": "https://x/api/other" } }),
+        );
+        let params = waiter.join().unwrap().expect("matching event must arrive");
+        assert_eq!(params["requestId"], "r1");
+        assert_eq!(feeder.waiter_count(), 0);
+    }
+
+    /// 隔离面:别的 target、别的方法、谓词不匹配 → 均不投递,等待者保持。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn cdp_event_tap_isolates_target_method_predicate() {
+        let tap = std::sync::Arc::new(CdpEventTap::new());
+        let waiter_tap = tap.clone();
+        let waiter = std::thread::spawn(move || {
+            waiter_tap.wait(
+                "1",
+                &["Page.lifecycleEvent"],
+                Box::new(|p| p["name"] == "load"),
+                std::time::Duration::from_millis(150),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        // 其他 target 的同方法事件。
+        tap.observe(
+            "2",
+            "Page.lifecycleEvent",
+            &json!({ "name": "load", "frameId": "f" }),
+        );
+        // 同 target 的其他方法。
+        tap.observe("1", "Page.frameNavigated", &json!({}));
+        // 同方法但谓词不匹配(name != load)。
+        tap.observe(
+            "1",
+            "Page.lifecycleEvent",
+            &json!({ "name": "init", "frameId": "f" }),
+        );
+        assert_eq!(tap.waiter_count(), 1, "no delivery may consume the waiter");
+        let err = waiter.join().unwrap().expect_err("timeout expected");
+        assert!(
+            matches!(err, super::super::error::BridgeError::Timeout(_)),
+            "expected Timeout, got: {err:?}"
+        );
+        assert_eq!(tap.waiter_count(), 0, "timeout must unregister the waiter");
+    }
+
+    /// 多方法集:method 集合中任一命中即投递(networkidle 活动面的形状)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn cdp_event_tap_matches_any_method_in_set() {
+        let tap = std::sync::Arc::new(CdpEventTap::new());
+        let waiter_tap = tap.clone();
+        let waiter = std::thread::spawn(move || {
+            waiter_tap.wait(
+                "1",
+                &[
+                    "Network.requestWillBeSent",
+                    "Network.responseReceived",
+                    "Network.loadingFinished",
+                ],
+                Box::new(|_| true),
+                std::time::Duration::from_secs(2),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        tap.observe("1", "Network.loadingFinished", &json!({ "requestId": "r9" }));
+        let params = waiter.join().unwrap().expect("set-member event must arrive");
+        assert_eq!(params["requestId"], "r9");
+    }
+
+    /// 先到事件不丢失:observe 先于 wait 注册到达的事件不投递(tap 不是
+    /// 存储,事件面语义 = 订阅之后的将来事件 — waitFor* 的文档化边界)。
+    ///
+    /// @trace REQ-CDP-001 [level:library]
+    #[test]
+    fn cdp_event_tap_pre_registration_event_is_not_replayed() {
+        let tap = CdpEventTap::new();
+        tap.observe("1", "Network.requestWillBeSent", &json!({ "requestId": "early" }));
+        let r = tap.wait(
+            "1",
+            &["Network.requestWillBeSent"],
+            Box::new(|_| true),
+            std::time::Duration::from_millis(100),
+        );
+        assert!(r.is_err(), "tap must be subscription-shaped, not a buffer");
     }
 }

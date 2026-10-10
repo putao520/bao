@@ -2346,6 +2346,7 @@ dependencies = [
  "bun_url",
  "bun_uws",
  "cdp-protocol",
+ "glob",
  "log",
  "serde",
  "serde_json",
