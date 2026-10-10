@@ -3837,6 +3837,95 @@ struct SendHandle(fsw_win::Handle);
 #[cfg(windows)]
 unsafe impl Send for SendHandle {}
 
+/// Parse one completed FILE_NOTIFY_INFORMATION chain and fan the node
+/// events out to every watcher sharing this directory handle (windows
+/// worker).
+#[cfg(windows)]
+fn fsw_win_dispatch_notify_buffer(
+    shared: &Arc<Mutex<FswShared>>,
+    wd: i32,
+    filter_name: &Option<String>,
+    buf: &[u8],
+) {
+    // FileName sits at offsetof == 3×u32 (12); the Rust mirror
+    // struct's size_of is 16 (repr(C) tail padding), so the name
+    // offset must be computed from the field offsets — advancing
+    // by size_of skipped two UTF-16 chars of every name
+    // ("one.txt" → "e.txt").
+    const NAME_OFFSET: usize = 3 * ::std::mem::size_of::<u32>();
+    let mut off: usize = 0;
+    while off + NAME_OFFSET <= buf.len() {
+        // SAFETY: the kernel guarantees the aligned entry
+        // chain inside a completed buffer.
+        let info = unsafe { &*(buf[off..].as_ptr() as *const fsw_win::FileNotifyInformation) };
+        let name_len = (info.FileNameLength as usize) / ::std::mem::size_of::<u16>();
+        let name_ptr = (buf[off..].as_ptr() as *const u16)
+            .wrapping_add(NAME_OFFSET / ::std::mem::size_of::<u16>());
+        // SAFETY: name_ptr spans name_len UTF-16 code units of
+        // the completed kernel buffer (kernel ABI guarantee).
+        let name_slice = unsafe { ::std::slice::from_raw_parts(name_ptr, name_len) };
+        let name = String::from_utf16_lossy(name_slice);
+        // File watches (parent-dir backend) only deliver the
+        // watched file's own events — every other sibling's
+        // write would otherwise surface as this watcher's
+        // event. Windows names are case-insensitive.
+        let name_matches = match filter_name {
+            Some(f) => name.eq_ignore_ascii_case(f),
+            None => true,
+        };
+        let event_type = match info.Action {
+            fsw_win::FILE_ACTION_MODIFIED => "change",
+            _ => {
+                // ADDED / REMOVED / RENAMED_* → rename (Node).
+                "rename"
+            }
+        };
+        if name_matches {
+            if let Ok(mut qg) = shared.lock() {
+                let ids: Vec<u64> = qg.wd_map.get(&wd).cloned().unwrap_or_default();
+                for id in ids {
+                    qg.queue.push_back(PendingFsEvent::Inotify {
+                        id,
+                        event_type,
+                        filename: Some(name.clone()),
+                    });
+                }
+            }
+        }
+        if info.NextEntryOffset == 0 {
+            break;
+        }
+        off += info.NextEntryOffset as usize;
+    }
+}
+
+/// Re-issue the overlapped directory read for the next batch (windows
+/// worker).
+#[cfg(windows)]
+fn fsw_win_reissue_dir_read(w: &mut FswDirWatch) {
+    use ::std::os::windows::ffi::OsStrExt;
+    unsafe {
+        let _wide: Vec<u16> = ::std::ffi::OsStr::new(&w.path)
+            .encode_wide()
+            .chain(::std::iter::once(0))
+            .collect();
+        fsw_win::ReadDirectoryChangesW(
+            w.handle,
+            (*w.buffer).as_mut_ptr().cast(),
+            w.buffer.len() as u32,
+            w.recursive as i32,
+            fsw_win::FILE_NOTIFY_CHANGE_FILE_NAME
+                | fsw_win::FILE_NOTIFY_CHANGE_DIR_NAME
+                | fsw_win::FILE_NOTIFY_CHANGE_ATTRIBUTES
+                | fsw_win::FILE_NOTIFY_CHANGE_SIZE
+                | fsw_win::FILE_NOTIFY_CHANGE_LAST_WRITE,
+            ::std::ptr::null_mut(),
+            &mut *w.overlapped,
+            ::std::ptr::null_mut(),
+        );
+    }
+}
+
 #[cfg(windows)]
 fn fsw_worker_main_windows(
     shared: Arc<Mutex<FswShared>>,
@@ -3933,88 +4022,12 @@ fn fsw_worker_main_windows(
                 };
                 if done != 0 && transferred > 0 {
                     // Parse the FILE_NOTIFY_INFORMATION chain → node events.
-                    // FileName sits at offsetof == 3×u32 (12); the Rust mirror
-                    // struct's size_of is 16 (repr(C) tail padding), so the
-                    // name offset must be computed from the field offsets —
-                    // advancing by size_of skipped two UTF-16 chars of every
-                    // name ("one.txt" → "e.txt").
-                    const NAME_OFFSET: usize = 3 * ::std::mem::size_of::<u32>();
-                    let mut off: usize = 0;
                     let buf: &[u8] = &w.buffer[..transferred as usize];
-                    while off + NAME_OFFSET <= buf.len() {
-                        // SAFETY: the kernel guarantees the aligned entry
-                        // chain inside a completed buffer.
-                        let info = unsafe {
-                            &*(buf[off..].as_ptr() as *const fsw_win::FileNotifyInformation)
-                        };
-                        let name_len =
-                            (info.FileNameLength as usize) / ::std::mem::size_of::<u16>();
-                        let name_ptr =
-                            (buf[off..].as_ptr() as *const u16)
-                                .wrapping_add(NAME_OFFSET / ::std::mem::size_of::<u16>());
-                        // SAFETY: name_ptr spans name_len UTF-16 code units of
-                        // the completed kernel buffer (kernel ABI guarantee).
-                        let name_slice =
-                            unsafe { ::std::slice::from_raw_parts(name_ptr, name_len) };
-                        let name =
-                            String::from_utf16_lossy(name_slice);
-                        // File watches (parent-dir backend) only deliver the
-                        // watched file's own events — every other sibling's
-                        // write would otherwise surface as this watcher's
-                        // event. Windows names are case-insensitive.
-                        let name_matches = match &w.filter_name {
-                            Some(f) => name.eq_ignore_ascii_case(f),
-                            None => true,
-                        };
-                        let event_type = match info.Action {
-                            fsw_win::FILE_ACTION_MODIFIED => "change",
-                            _ => {
-                                // ADDED / REMOVED / RENAMED_* → rename (Node).
-                                "rename"
-                            }
-                        };
-                        if name_matches {
-                            if let Ok(mut qg) = shared.lock() {
-                                let ids: Vec<u64> =
-                                    qg.wd_map.get(&w.wd).cloned().unwrap_or_default();
-                                for id in ids {
-                                    qg.queue.push_back(PendingFsEvent::Inotify {
-                                        id,
-                                        event_type,
-                                        filename: Some(name.clone()),
-                                    });
-                                }
-                            }
-                        }
-                        if info.NextEntryOffset == 0 {
-                            break;
-                        }
-                        off += info.NextEntryOffset as usize;
-                    }
+                    fsw_win_dispatch_notify_buffer(&shared, w.wd, &w.filter_name, buf);
                 }
                 if done != 0 {
                     // Re-issue the directory read for the next batch.
-                    use ::std::os::windows::ffi::OsStrExt;
-                    unsafe {
-                        let _wide: Vec<u16> = ::std::ffi::OsStr::new(&w.path)
-                            .encode_wide()
-                            .chain(::std::iter::once(0))
-                            .collect();
-                        fsw_win::ReadDirectoryChangesW(
-                            w.handle,
-                            (*w.buffer).as_mut_ptr().cast(),
-                            w.buffer.len() as u32,
-                            w.recursive as i32,
-                            fsw_win::FILE_NOTIFY_CHANGE_FILE_NAME
-                                | fsw_win::FILE_NOTIFY_CHANGE_DIR_NAME
-                                | fsw_win::FILE_NOTIFY_CHANGE_ATTRIBUTES
-                                | fsw_win::FILE_NOTIFY_CHANGE_SIZE
-                                | fsw_win::FILE_NOTIFY_CHANGE_LAST_WRITE,
-                            ::std::ptr::null_mut(),
-                            &mut *w.overlapped,
-                            ::std::ptr::null_mut(),
-                        );
-                    }
+                    fsw_win_reissue_dir_read(w);
                 }
             }
         }
@@ -4050,6 +4063,53 @@ fn fsw_worker_main_windows(
         }
     }
     // Worker exit: the wake event is hub-owned; nothing to close here.
+}
+
+/// Decode one inotify read batch into the shared queue, fanning every
+/// event out to EVERY watcher sharing this wd (same-path multi-watch: all
+/// watchers get their own event copy).
+#[cfg(not(windows))]
+fn fsw_decode_inotify_batch(buf: &[u8], shared: &Arc<Mutex<FswShared>>) {
+    let mut off = 0usize;
+    while off + ::std::mem::size_of::<libc::inotify_event>() <= buf.len() {
+        // SAFETY: the kernel guarantees struct-aligned inotify_event
+        // headers at these offsets (that is the inotify ABI).
+        let ev = unsafe { &*(buf[off..].as_ptr() as *const libc::inotify_event) };
+        let name: Option<String> = if ev.len > 0 {
+            let name_start = off + ::std::mem::size_of::<libc::inotify_event>();
+            let name_end = (name_start + ev.len as usize).min(buf.len());
+            let name_bytes: Vec<u8> = buf[name_start..name_end]
+                .iter()
+                .take_while(|&&b| b != 0)
+                .cloned()
+                .collect::<Vec<u8>>();
+            String::from_utf8(name_bytes).ok() // non-utf8 names are surfaced as absent (registered limit)
+        } else {
+            None
+        };
+        let ids: Vec<u64> = shared
+            .lock()
+            .ok()
+            .and_then(|g| g.wd_map.get(&ev.wd).cloned())
+            .unwrap_or_default();
+        for id in ids {
+            let event_type = if ev.mask & (libc::IN_MODIFY | libc::IN_ATTRIB) != 0 {
+                "change"
+            } else {
+                // CREATE / DELETE / MOVED_FROM / MOVED_TO /
+                // MOVE_SELF / DELETE_SELF / IGNORED → rename (Node).
+                "rename"
+            };
+            if let Ok(mut guard) = shared.lock() {
+                guard.queue.push_back(PendingFsEvent::Inotify {
+                    id,
+                    event_type,
+                    filename: name.clone(),
+                });
+            }
+        }
+        off += ::std::mem::size_of::<libc::inotify_event>() + ev.len as usize;
+    }
 }
 
 /// Worker thread: poll [inotify, wake] + stat-poll loop. Never touches JS.
@@ -4150,51 +4210,7 @@ fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) 
                 if n <= 0 {
                     break;
                 }
-                let buf = &inotify_buf[..n as usize];
-                let mut off = 0usize;
-                while off + ::std::mem::size_of::<libc::inotify_event>() <= buf.len() {
-                    // SAFETY: the kernel guarantees struct-aligned inotify_event
-                    // headers at these offsets (that is the inotify ABI).
-                    let ev = unsafe {
-                        &*(buf[off..].as_ptr() as *const libc::inotify_event)
-                    };
-                    let name: Option<String> = if ev.len > 0 {
-                        let name_start = off + ::std::mem::size_of::<libc::inotify_event>();
-                        let name_end = (name_start + ev.len as usize).min(buf.len());
-                        let name_bytes: Vec<u8> = buf[name_start..name_end]
-                            .iter()
-                            .take_while(|&&b| b != 0)
-                            .cloned()
-                            .collect::<Vec<u8>>();
-                        String::from_utf8(name_bytes).ok() // non-utf8 names are surfaced as absent (registered limit)
-                    } else {
-                        None
-                    };
-                    // Fan out to EVERY watcher sharing this wd (same-path
-                    // multi-watch: all watchers get their own event copy).
-                    let ids: Vec<u64> = shared
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.wd_map.get(&ev.wd).cloned())
-                        .unwrap_or_default();
-                    for id in ids {
-                        let event_type = if ev.mask & (libc::IN_MODIFY | libc::IN_ATTRIB) != 0 {
-                            "change"
-                        } else {
-                            // CREATE / DELETE / MOVED_FROM / MOVED_TO /
-                            // MOVE_SELF / DELETE_SELF / IGNORED → rename (Node).
-                            "rename"
-                        };
-                        if let Ok(mut guard) = shared.lock() {
-                            guard.queue.push_back(PendingFsEvent::Inotify {
-                                id,
-                                event_type,
-                                filename: name.clone(),
-                            });
-                        }
-                    }
-                    off += ::std::mem::size_of::<libc::inotify_event>() + ev.len as usize;
-                }
+                fsw_decode_inotify_batch(&inotify_buf[..n as usize], &shared);
             }
         }
 

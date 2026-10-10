@@ -933,6 +933,13 @@ fn tls_sni_ctx_for(
 
 // ─── driver main loop ───────────────────────────────────────────────────
 
+/// One poll-set slot's routing identity (driver main loop steps 2/6).
+enum Target {
+    Wake,
+    Listener(u64),
+    Conn(u64),
+}
+
 fn tls_driver_main(wake_read_fd: drv::Raw) {
     let mut servers: HashMap<u64, DriverServer> = HashMap::new();
     let mut conns: HashMap<u64, DriverConn> = HashMap::new();
@@ -1026,11 +1033,6 @@ fn tls_driver_main(wake_read_fd: drv::Raw) {
         // and exit, leaving every later listener unserved.
 
         // ── 2. build poll set ───────────────────────────────────────────
-        enum Target {
-            Wake,
-            Listener(u64),
-            Conn(u64),
-        }
         let mut fds: Vec<drv::PollFd> = Vec::with_capacity(2 + servers.len() + conns.len());
         let mut targets: Vec<Target> = Vec::with_capacity(fds.capacity());
         fds.push(drv::PollFd {
@@ -1101,129 +1103,154 @@ fn tls_driver_main(wake_read_fd: drv::Raw) {
 
         // ── 6. accept + socket I/O ─────────────────────────────────────
         if ready > 0 {
-            for i in 1..fds.len() {
-                let revents = fds[i].revents;
-                if revents == 0 {
-                    continue;
-                }
-                match &targets[i] {
-                    Target::Wake => {}
-                    Target::Listener(server_id) => {
-                        if revents & drv::POLLIN != 0 {
-                            tls_driver_accept(*server_id, &mut servers, &mut conns);
-                        }
-                    }
-                    Target::Conn(conn_id) => {
-                        let conn_id = *conn_id;
-                        if conns.get(&conn_id).is_none() {
-                            continue;
-                        }
-                        {
-                            let conn = conns.get_mut(&conn_id).unwrap();
-                            if revents & drv::POLLOUT != 0 {
-                                tls_conn_flush_out(conn);
-                            }
-                        }
-                        if revents & drv::POLLIN != 0 {
-                            let conn = conns.get_mut(&conn_id).unwrap();
-                            if !tls_conn_read_and_drive(conn) {
-                                if let Some(mut conn) = conns.remove(&conn_id) {
-                                    tls_conn_finish(&mut conn, true);
-                                }
-                                continue;
-                            }
-                        }
-                        if revents & (drv::POLLERR | drv::POLLHUP | drv::POLLNVAL) != 0 {
-                            // Error/hangup: drain any still-unread data,
-                            // then tear the connection down.
-                            let conn = conns.get_mut(&conn_id).unwrap();
-                            if !tls_conn_read_and_drive(conn) {
-                                if let Some(mut conn) = conns.remove(&conn_id) {
-                                    tls_conn_finish(&mut conn, true);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            tls_driver_dispatch_ready(&fds, &targets, &mut servers, &mut conns);
         }
 
         // ── 7. service pass: resolve/flush/finish transitions that do not
         //       depend on socket readiness ──────────────────────────────
         let conn_ids: Vec<u64> = conns.keys().copied().collect();
         for conn_id in conn_ids {
-            let Some(conn) = conns.get_mut(&conn_id) else {
-                continue;
-            };
-            // destroy(): immediate teardown, close_notify not required.
-            if conn.shared.want_destroy.load(Ordering::Acquire) {
+            tls_driver_service_conn_pass(&mut conns, conn_id);
+        }
+    }
+}
+
+/// Step-6 dispatch: accept + socket I/O for every signalled fd.
+fn tls_driver_dispatch_ready(
+    fds: &[drv::PollFd],
+    targets: &[Target],
+    servers: &mut HashMap<u64, DriverServer>,
+    conns: &mut HashMap<u64, DriverConn>,
+) {
+    for i in 1..fds.len() {
+        let revents = fds[i].revents;
+        if revents == 0 {
+            continue;
+        }
+        match &targets[i] {
+            Target::Wake => {}
+            Target::Listener(server_id) => {
+                if revents & drv::POLLIN != 0 {
+                    tls_driver_accept(*server_id, servers, conns);
+                }
+            }
+            Target::Conn(conn_id) => {
+                let conn_id = *conn_id;
+                if conns.contains_key(&conn_id) {
+                    tls_driver_service_conn_ready(conns, conn_id, revents);
+                }
+            }
+        }
+    }
+}
+
+/// Step-6 conn arm: flush the readable/writable transitions of one
+/// signalled conn, finishing and removing it when a drive pass fails (a
+/// failed POLLIN pass skips the error-drain arm — the conn is already
+/// gone, matching the original `continue`).
+fn tls_driver_service_conn_ready(
+    conns: &mut HashMap<u64, DriverConn>,
+    conn_id: u64,
+    revents: i16,
+) {
+    if revents & drv::POLLOUT != 0 {
+        tls_conn_flush_out(conns.get_mut(&conn_id).unwrap());
+    }
+    if revents & drv::POLLIN != 0 {
+        let conn = conns.get_mut(&conn_id).unwrap();
+        if !tls_conn_read_and_drive(conn) {
+            if let Some(mut conn) = conns.remove(&conn_id) {
+                tls_conn_finish(&mut conn, true);
+            }
+            return;
+        }
+    }
+    if revents & (drv::POLLERR | drv::POLLHUP | drv::POLLNVAL) != 0 {
+        // Error/hangup: drain any still-unread data, then tear the
+        // connection down.
+        let conn = conns.get_mut(&conn_id).unwrap();
+        if !tls_conn_read_and_drive(conn) {
+            if let Some(mut conn) = conns.remove(&conn_id) {
+                tls_conn_finish(&mut conn, true);
+            }
+        }
+    }
+}
+
+/// Step-7 service pass for one conn: destroy()/end()/SNI-park/flush
+/// transitions that do not depend on socket readiness. Removing the conn
+/// from the map ends its servicing for this pass.
+fn tls_driver_service_conn_pass(conns: &mut HashMap<u64, DriverConn>, conn_id: u64) {
+    let Some(conn) = conns.get_mut(&conn_id) else {
+        return;
+    };
+    // destroy(): immediate teardown, close_notify not required.
+    if conn.shared.want_destroy.load(Ordering::Acquire) {
+        if let Some(mut conn) = conns.remove(&conn_id) {
+            tls_conn_finish(&mut conn, true);
+        }
+        return;
+    }
+    // end(): flush parked writes, then close_notify, then close.
+    if conn.shared.want_end.load(Ordering::Acquire) && !conn.finishing {
+        conn.finishing = true;
+        tls_conn_flush_pending_writes(conn);
+        if !conn.close_notify_sent {
+            let _ = conn.tls.queue_close_notify();
+            conn.out_buf.extend(conn.tls.take_outgoing());
+            conn.close_notify_sent = true;
+        }
+    }
+    if conn.parked_for_sni {
+        let resolved = conn
+            .shared
+            .sni_result
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|_| ());
+        if resolved.is_some() {
+            conn.parked_for_sni = false;
+            if !tls_conn_drive(conn) {
                 if let Some(mut conn) = conns.remove(&conn_id) {
                     tls_conn_finish(&mut conn, true);
                 }
-                continue;
+                return;
             }
-            // end(): flush parked writes, then close_notify, then close.
-            if conn.shared.want_end.load(Ordering::Acquire) && !conn.finishing {
-                conn.finishing = true;
-                tls_conn_flush_pending_writes(conn);
-                if !conn.close_notify_sent {
-                    let _ = conn.tls.queue_close_notify();
-                    conn.out_buf.extend(conn.tls.take_outgoing());
-                    conn.close_notify_sent = true;
-                }
+        } else if conn
+            .sni_deadline
+            .map(|d| Instant::now() >= d)
+            .unwrap_or(false)
+        {
+            // SNICallback never resolved: fail closed, loudly.
+            tls_push_event(
+                &conn.server,
+                TlsEvent::ClientError {
+                    conn_id,
+                    message: format!(
+                        "SNICallback for '{}' did not resolve within {}s",
+                        conn.sni_servername.clone().unwrap_or_default(),
+                        SNI_DEADLINE.as_secs()
+                    ),
+                },
+            );
+            if let Some(mut conn) = conns.remove(&conn_id) {
+                tls_conn_finish(&mut conn, true);
             }
-            if conn.parked_for_sni {
-                let resolved = conn
-                    .shared
-                    .sni_result
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map(|_| ());
-                if resolved.is_some() {
-                    conn.parked_for_sni = false;
-                    if !tls_conn_drive(conn) {
-                        if let Some(mut conn) = conns.remove(&conn_id) {
-                            tls_conn_finish(&mut conn, true);
-                        }
-                        continue;
-                    }
-                } else if conn
-                    .sni_deadline
-                    .map(|d| Instant::now() >= d)
-                    .unwrap_or(false)
-                {
-                    // SNICallback never resolved: fail closed, loudly.
-                    tls_push_event(
-                        &conn.server,
-                        TlsEvent::ClientError {
-                            conn_id,
-                            message: format!(
-                                "SNICallback for '{}' did not resolve within {}s",
-                                conn.sni_servername.clone().unwrap_or_default(),
-                                SNI_DEADLINE.as_secs()
-                            ),
-                        },
-                    );
-                    if let Some(mut conn) = conns.remove(&conn_id) {
-                        tls_conn_finish(&mut conn, true);
-                    }
-                    continue;
-                }
-            }
-            // Flush parked JS writes whenever the handshake is done.
-            if conn.secure_reported && !conn.finishing {
-                tls_conn_flush_pending_writes(conn);
-            }
-            if !conn.out_buf.is_empty() {
-                tls_conn_flush_out(conn);
-            }
-            // finishing complete: close_notify flushed → close.
-            if conn.finishing && conn.out_buf.is_empty() && conn.close_notify_sent {
-                if let Some(mut conn) = conns.remove(&conn_id) {
-                    tls_conn_finish(&mut conn, true);
-                }
-            }
+            return;
+        }
+    }
+    // Flush parked JS writes whenever the handshake is done.
+    if conn.secure_reported && !conn.finishing {
+        tls_conn_flush_pending_writes(conn);
+    }
+    if !conn.out_buf.is_empty() {
+        tls_conn_flush_out(conn);
+    }
+    // finishing complete: close_notify flushed → close.
+    if conn.finishing && conn.out_buf.is_empty() && conn.close_notify_sent {
+        if let Some(mut conn) = conns.remove(&conn_id) {
+            tls_conn_finish(&mut conn, true);
         }
     }
 }

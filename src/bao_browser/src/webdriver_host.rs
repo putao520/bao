@@ -21,7 +21,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use crossbeam_channel::{Receiver, Sender};
 use servo::{
-    EmbedderControl, EmbedderControlId, EventLoopWaker, GenericSender, InputEventId,
+    EmbedderControl, EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId,
     NewWindowTypeHint, Preferences, SimpleDialog, TraversalId, WebDriverCommandMsg,
     WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand, WebDriverUserPrompt,
     WebDriverUserPromptAction, WebViewId,
@@ -280,6 +280,93 @@ pub struct WebDriverHost {
     receiver: Receiver<WebDriverCommandMsg>,
 }
 
+/// NewWindow arm: headless tab/window hints coincide, so both create a
+/// fresh about:blank page, answer the sender, register the optional
+/// load-status waiter (replay_latched = true: the new webview is
+/// brand-new, so a latched Complete can only be its initial about:blank
+/// load — exactly the edge this waiter exists to observe; dropping it
+/// here is the e26 livelock, see `WebdriverBridge::completed_loads`),
+/// and wait for the initial pipeline.
+fn webdriver_handle_new_window(runtime: &crate::BrowserRuntime, msg: WebDriverCommandMsg) {
+    let WebDriverCommandMsg::NewWindow(_type_hint, response_sender, load_status_sender) = msg
+    else {
+        return;
+    };
+    let new_page = url::Url::parse("about:blank")
+        .ok()
+        .and_then(|url| runtime.create_webdriver_page(url));
+    match new_page {
+        Some((webview_id, page)) => {
+            let _ = response_sender.send(webview_id);
+            if let Some(load_status_sender) = load_status_sender {
+                with_bridge(|bridge| {
+                    register_load_status_sender(bridge, webview_id, load_status_sender, true);
+                });
+            }
+            page.wait_for_pipeline_ready(std::time::Duration::from_secs(15))
+                .ok();
+        }
+        None => {
+            log::error!("[webdriver] NewWindow: page creation failed");
+            // Sender drop = the HTTP surface reports failure.
+        }
+    }
+}
+
+/// GoBack/GoForward arm tail: register the traversal's load-status sender
+/// with the bridge (resolved by `notify_traversal_complete`).
+fn webdriver_register_traversal(
+    traversal_id: TraversalId,
+    load_status_sender: GenericSender<WebDriverLoadStatus>,
+) {
+    with_bridge(|bridge| {
+        bridge.pending_traversals.insert(traversal_id, load_status_sender);
+    });
+}
+
+/// InputEvent arm: dispatch into the page and wire the response channel
+/// to the handled/pending race — the handled edge can race ahead of this
+/// insert, in which case it is replayed so the dispatcher's `recv`
+/// resolves instead of waiting on a notification that already fired.
+fn webdriver_handle_input_event(
+    runtime: &crate::BrowserRuntime,
+    webview_id: WebViewId,
+    input_event: InputEvent,
+    response_sender: Option<Sender<()>>,
+) {
+    match runtime.page_for_webview(webview_id) {
+        Some((_, page)) => {
+            let event_id = page.webdriver_dispatch_input_event(input_event);
+            if let (Some(event_id), Some(response_sender)) = (event_id, response_sender) {
+                with_bridge(|bridge| {
+                    if bridge.handled_input_events.remove(&event_id) {
+                        let _ = response_sender.send(());
+                    } else {
+                        bridge.pending_input_events.insert(event_id, response_sender);
+                    }
+                });
+            }
+        }
+        None => {
+            log::error!("[webdriver] InputEvent for unknown webview {webview_id:?}");
+        }
+    }
+}
+
+/// SendAlertText arm: update the active prompt dialog's current value.
+fn webdriver_handle_send_alert_text(webview_id: WebViewId, text: String) {
+    with_bridge(|bridge| {
+        if let Some(controls) = bridge.embedder_controls.get_mut(&webview_id) {
+            if let Some(EmbedderControl::SimpleDialog(SimpleDialog::Prompt(
+                ref mut prompt_dialog,
+            ))) = controls.last_mut()
+            {
+                prompt_dialog.set_current_value(&text);
+            }
+        }
+    });
+}
+
 impl WebDriverHost {
     /// Start the upstream WebDriver HTTP server for this process and return
     /// the host that must be drained from the event loop.
@@ -316,42 +403,9 @@ impl WebDriverHost {
                     // Engine-side: the constellation owns browsing contexts.
                     runtime.servo().execute_webdriver_command(msg);
                 }
-                WebDriverCommandMsg::NewWindow(
-                    type_hint,
-                    response_sender,
-                    load_status_sender,
-                ) => {
-                    let _ = type_hint; // bao is headless: tab/window hints coincide
-                    let new_page = url::Url::parse("about:blank")
-                        .ok()
-                        .and_then(|url| runtime.create_webdriver_page(url));
-                    match new_page {
-                        Some((webview_id, page)) => {
-                            let _ = response_sender.send(webview_id);
-                            if let Some(load_status_sender) = load_status_sender {
-                                // replay_latched = true: the new webview is
-                                // brand-new, so a latched Complete can only be
-                                // its initial about:blank load — exactly the
-                                // edge this waiter exists to observe. Dropping
-                                // it here is the e26 livelock (see
-                                // `WebdriverBridge::completed_loads`).
-                                with_bridge(|bridge| {
-                                    register_load_status_sender(
-                                        bridge,
-                                        webview_id,
-                                        load_status_sender,
-                                        true,
-                                    );
-                                });
-                            }
-                            page.wait_for_pipeline_ready(std::time::Duration::from_secs(15))
-                                .ok();
-                        }
-                        None => {
-                            log::error!("[webdriver] NewWindow: page creation failed");
-                            // Sender drop = the HTTP surface reports failure.
-                        }
-                    }
+                WebDriverCommandMsg::NewWindow(..) => {
+                    // bao is headless: tab/window hints coincide.
+                    webdriver_handle_new_window(runtime, msg);
                 }
                 WebDriverCommandMsg::CloseWebView(webview_id, response_sender) => {
                     if let Some((_, page)) = runtime.page_for_webview(webview_id) {
@@ -454,53 +508,19 @@ impl WebDriverHost {
                 WebDriverCommandMsg::GoBack(webview_id, load_status_sender) => {
                     if let Some((_, page)) = runtime.page_for_webview(webview_id) {
                         if let Some(traversal_id) = page.webdriver_go_back() {
-                            with_bridge(|bridge| {
-                                bridge
-                                    .pending_traversals
-                                    .insert(traversal_id, load_status_sender);
-                            });
+                            webdriver_register_traversal(traversal_id, load_status_sender);
                         }
                     }
                 }
                 WebDriverCommandMsg::GoForward(webview_id, load_status_sender) => {
                     if let Some((_, page)) = runtime.page_for_webview(webview_id) {
                         if let Some(traversal_id) = page.webdriver_go_forward() {
-                            with_bridge(|bridge| {
-                                bridge
-                                    .pending_traversals
-                                    .insert(traversal_id, load_status_sender);
-                            });
+                            webdriver_register_traversal(traversal_id, load_status_sender);
                         }
                     }
                 }
                 WebDriverCommandMsg::InputEvent(webview_id, input_event, response_sender) => {
-                    match runtime.page_for_webview(webview_id) {
-                        Some((_, page)) => {
-                            let event_id = page.webdriver_dispatch_input_event(input_event);
-                            if let (Some(event_id), Some(response_sender)) =
-                                (event_id, response_sender)
-                            {
-                                with_bridge(|bridge| {
-                                    if bridge.handled_input_events.remove(&event_id) {
-                                        // The handled edge raced ahead of this
-                                        // insert — replay it so the dispatcher's
-                                        // `recv` resolves instead of waiting on a
-                                        // notification that already fired.
-                                        let _ = response_sender.send(());
-                                    } else {
-                                        bridge
-                                            .pending_input_events
-                                            .insert(event_id, response_sender);
-                                    }
-                                });
-                            }
-                        }
-                        None => {
-                            log::error!(
-                                "[webdriver] InputEvent for unknown webview {webview_id:?}"
-                            );
-                        }
-                    }
+                    webdriver_handle_input_event(runtime, webview_id, input_event, response_sender);
                 }
                 WebDriverCommandMsg::ScriptCommand(_, ref script_command) => {
                     // Embedder-side bookkeeping BEFORE handing the command to
@@ -577,16 +597,7 @@ impl WebDriverHost {
                     let _ = response_sender.send(text.unwrap_or(None).ok_or(()));
                 }
                 WebDriverCommandMsg::SendAlertText(webview_id, text) => {
-                    with_bridge(|bridge| {
-                        if let Some(controls) = bridge.embedder_controls.get_mut(&webview_id) {
-                            if let Some(EmbedderControl::SimpleDialog(SimpleDialog::Prompt(
-                                ref mut prompt_dialog,
-                            ))) = controls.last_mut()
-                            {
-                                prompt_dialog.set_current_value(&text);
-                            }
-                        }
-                    });
+                    webdriver_handle_send_alert_text(webview_id, text);
                 }
                 WebDriverCommandMsg::TakeScreenshot(webview_id, rect, result_sender) => {
                     match runtime.page_for_webview(webview_id) {

@@ -145,69 +145,9 @@ impl CdpServer {
                 Err(e) => log::warn!("CDP accept error: {}", e),
             }
 
-            // Process existing sessions. The session map lock is released
-            // BEFORE processing: command dispatch may synchronously emit
-            // events through the EventBroadcaster, which locks the same map
-            // (deadlock if held here). Events land in per-session outboxes
-            // and are drained into the socket here, under the session lock.
-            let mut to_remove = Vec::new();
-            {
-                let session_list: Vec<_> = {
-                    match self.sessions.lock() {
-                        Ok(sessions) => sessions
-                            .iter()
-                            .map(|(id, h)| (id.clone(), Arc::clone(h)))
-                            .collect(),
-                        Err(_) => Vec::new(),
-                    }
-                };
-                for (id, handle) in session_list {
-                    let mut session = match handle.session.lock() {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    let event_sender: Box<dyn EventSender> = self.broadcaster.sender();
-                    if session
-                        .process(&self.registry, event_sender.as_ref())
-                        .is_err()
-                    {
-                        let domains = session.enabled_domains();
-                        let sid = session.session_id().to_string();
-                        session.begin_close();
-                        drop(session);
-                        to_remove.push(id);
-                        self.registry.notify_session_destroyed(&domains, &sid);
-                        continue;
-                    }
-                    // Drain queued events into the socket (gating applied
-                    // here, where the session state is readable).
-                    let drained: Vec<_> = match handle.outbox.lock() {
-                        Ok(mut outbox) => outbox.drain(..).collect(),
-                        Err(_) => Vec::new(),
-                    };
-                    for entry in drained {
-                        let deliver = if entry.browser_only {
-                            session.is_browser_session()
-                        } else {
-                            session.is_browser_session()
-                                || session.has_domain_enabled(&entry.domain)
-                        };
-                        if deliver {
-                            let _ = session.send_text(&entry.json);
-                        }
-                    }
-                }
-            }
-
-            for id in to_remove {
-                if let Ok(mut sessions) = self.sessions.lock() {
-                    if let Some(handle) = sessions.remove(&id) {
-                        if let Ok(mut s) = handle.session.lock() {
-                            s.finalize();
-                        }
-                    }
-                }
-            }
+            // Process existing sessions (see `process_sessions_once` for
+            // the lock-ordering and outbox-drain semantics).
+            self.process_sessions_once();
 
             // Drain typed console messages from servo delegates and broadcast as CDP events.
             // ConsoleMessage::Event variants are routed to domain-specific events via BaoEvent::broadcast().
@@ -219,38 +159,7 @@ impl CdpServer {
                             event.broadcast(&*self.broadcaster);
                         }
                         ConsoleMessage::Log { level, text } => {
-                            self.broadcaster.send_event(
-                                "Runtime.consoleAPICalled",
-                                serde_json::json!({
-                                    "type": match level.as_str() {
-                                        "debug" => "debug",
-                                        "info" => "info",
-                                        "warning" => "warning",
-                                        "error" => "error",
-                                        "verbose" => "verbose",
-                                        _ => "log",
-                                    },
-                                    "args": [serde_json::json!(text)],
-                                    "timestamp": std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis() as f64,
-                                }),
-                            );
-                            self.broadcaster.send_event(
-                                "Log.entryAdded",
-                                serde_json::json!({
-                                    "entry": {
-                                        "source": "javascript",
-                                        "level": level,
-                                        "text": text,
-                                        "timestamp": std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_millis() as f64,
-                                    }
-                                }),
-                            );
+                            self.broadcast_console_log(level, text);
                         }
                     }
                 }
@@ -277,6 +186,112 @@ impl CdpServer {
             }
         }
         Ok(())
+    }
+
+    /// ConsoleMessage::Log face: forward the servo console text as
+    /// Runtime.consoleAPICalled + Log.entryAdded CDP events.
+    fn broadcast_console_log(&self, level: String, text: String) {
+        self.broadcaster.send_event(
+            "Runtime.consoleAPICalled",
+            serde_json::json!({
+                "type": match level.as_str() {
+                    "debug" => "debug",
+                    "info" => "info",
+                    "warning" => "warning",
+                    "error" => "error",
+                    "verbose" => "verbose",
+                    _ => "log",
+                },
+                "args": [serde_json::json!(text)],
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as f64,
+            }),
+        );
+        self.broadcaster.send_event(
+            "Log.entryAdded",
+            serde_json::json!({
+                "entry": {
+                    "source": "javascript",
+                    "level": level,
+                    "text": text,
+                    "timestamp": std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as f64,
+                }
+            }),
+        );
+    }
+
+    /// Process existing sessions for one loop iteration: run each
+    /// session's pending commands, drain its outbox into the socket, then
+    /// finalize and remove the sessions whose process pass failed. The
+    /// session map lock is released BEFORE processing because command
+    /// dispatch may synchronously emit events through the
+    /// EventBroadcaster, which locks the same map (deadlock if held
+    /// here); events land in per-session outboxes and are drained into
+    /// the socket here, under the session lock.
+    fn process_sessions_once(&mut self) {
+        let mut to_remove = Vec::new();
+        {
+            let session_list: Vec<_> = {
+                match self.sessions.lock() {
+                    Ok(sessions) => sessions
+                        .iter()
+                        .map(|(id, h)| (id.clone(), Arc::clone(h)))
+                        .collect(),
+                    Err(_) => Vec::new(),
+                }
+            };
+            for (id, handle) in session_list {
+                let mut session = match handle.session.lock() {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let event_sender: Box<dyn EventSender> = self.broadcaster.sender();
+                if session
+                    .process(&self.registry, event_sender.as_ref())
+                    .is_err()
+                {
+                    let domains = session.enabled_domains();
+                    let sid = session.session_id().to_string();
+                    session.begin_close();
+                    drop(session);
+                    to_remove.push(id);
+                    self.registry.notify_session_destroyed(&domains, &sid);
+                    continue;
+                }
+                // Drain queued events into the socket (gating applied
+                // here, where the session state is readable).
+                let drained: Vec<_> = match handle.outbox.lock() {
+                    Ok(mut outbox) => outbox.drain(..).collect(),
+                    Err(_) => Vec::new(),
+                };
+                for entry in drained {
+                    let deliver = if entry.browser_only {
+                        session.is_browser_session()
+                    } else {
+                        session.is_browser_session()
+                            || session.has_domain_enabled(&entry.domain)
+                    };
+                    if deliver {
+                        let _ = session.send_text(&entry.json);
+                    }
+                }
+            }
+        }
+
+        for id in to_remove {
+            if let Ok(mut sessions) = self.sessions.lock() {
+                if let Some(handle) = sessions.remove(&id) {
+                    if let Ok(mut s) = handle.session.lock() {
+                        s.finalize();
+                    }
+                }
+            }
+        }
     }
 
     fn handle_connection(&self, mut stream: TcpStream) {

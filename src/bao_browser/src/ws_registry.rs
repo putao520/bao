@@ -438,6 +438,200 @@ impl BaoWsRegistry {
             None => event_sender.send_event(method, params),
         }
     }
+
+    /// Chrome-shape `Runtime.executionContextCreated` payload, shared by
+    /// the default-context announces and the isolated-world re-announces
+    /// (REQ-CDP-004 frame identity, never the PageId namespace).
+    fn emit_execution_context(
+        &self,
+        event_sender: &dyn EventSender,
+        sid: Option<&str>,
+        context_id: u64,
+        name: &str,
+        is_default: bool,
+        frame_id: &str,
+    ) {
+        self.emit(
+            event_sender,
+            sid,
+            "Runtime.executionContextCreated",
+            json!({
+                "context": {
+                    "id": context_id,
+                    "origin": "-",
+                    "name": name,
+                    "auxData": {
+                        "isDefault": is_default,
+                        "type": "default",
+                        "frameId": frame_id,
+                    },
+                }
+            }),
+        );
+    }
+
+    /// Chrome close semantics: Target.closeTarget must be followed by
+    /// Target.targetDestroyed (to everyone who saw the target) and
+    /// Target.detachedFromTarget (per attached session) — clients resolve
+    /// page.close() on the session-detach signal and hang forever without
+    /// it (puppeteer W40 S11 stall).
+    fn emit_target_closed_events(
+        &self,
+        event_sender: &dyn EventSender,
+        msg: &CdpMessage,
+        target_id: &str,
+    ) {
+        let closed_tid = msg
+            .params
+            .as_ref()
+            .and_then(|p| p.get("targetId"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(target_id)
+            .to_string();
+        self.emit(
+            event_sender,
+            None,
+            "Target.targetDestroyed",
+            json!({ "targetId": closed_tid }),
+        );
+        // Detach every CDP session bound to the closed target (Chrome
+        // closes them) — tagged per-session events plus table purge.
+        if let Ok(mut table) = self.attached_sessions.lock() {
+            let bound: Vec<String> = table
+                .iter()
+                .filter(|(_, t)| **t == closed_tid)
+                .map(|(s, _)| s.clone())
+                .collect();
+            for s in bound {
+                table.remove(&s);
+                // Chrome shape: detachedFromTarget arrives untagged on the
+                // parent connection (mirroring how the matching
+                // attachedToTarget was delivered) — puppeteer's Connection
+                // routes by the message sessionId tag to find the parent
+                // session, and a dying-session tag points at the wrong
+                // object. params.sessionId names the closed session.
+                self.emit(
+                    event_sender,
+                    None,
+                    "Target.detachedFromTarget",
+                    json!({
+                        "sessionId": s,
+                        "targetId": closed_tid,
+                    }),
+                );
+            }
+        }
+    }
+
+    /// Playwright's page-session init: Runtime.enable must be followed by
+    /// executionContextCreated or evaluate() has no context to bind to.
+    /// Chrome shape: auxData carries the owning frameId — clients
+    /// (Playwright/Puppeteer) bind the default context to the frame
+    /// through it. Same per-target frame identity the navigate response
+    /// and every frame event carry (REQ-CDP-004) — never the PageId
+    /// (targetId namespace).
+    fn emit_runtime_enabled_context(
+        &self,
+        event_sender: &dyn EventSender,
+        sid: Option<&str>,
+        target_id: &str,
+    ) {
+        let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        self.emit_execution_context(
+            event_sender,
+            sid,
+            context_id,
+            "",
+            true,
+            &main_frame_id_for_target(target_id),
+        );
+    }
+
+    /// Page.navigate command face: Chrome emits NO frame lifecycle events
+    /// from the command path — the browser process event stream is the
+    /// sole source (REQ-CDP-004). The real face (servo delegate → event
+    /// queue → pump) delivers frameStartedLoading / frameNavigated /
+    /// frameStoppedLoading with real load timing; the former command-face
+    /// synth pair was retired once real-path delivery was probe-proven
+    /// lossless. What stays here is the execution-context semantics the
+    /// real path has no equivalent for.
+    fn emit_page_navigate_contexts(
+        &self,
+        event_sender: &dyn EventSender,
+        sid: Option<&str>,
+        result: &Result<Value, CdpError>,
+        target_id: &str,
+    ) {
+        let Ok(r) = result else {
+            return;
+        };
+        // The response frameId is authoritative; the tolerance fallback
+        // derives the same per-target main frame id the real face reports
+        // (never the PageId — that is the targetId namespace).
+        let fid = r
+            .get("frameId")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&main_frame_id_for_target(target_id))
+            .to_string();
+        // Cross-document navigation replaces the document's execution
+        // contexts (Chrome semantics): clear the old ones and announce a
+        // fresh default context bound to the frame, or clients wait for a
+        // context that never comes after navigation.
+        self.emit(event_sender, sid, "Runtime.executionContextsCleared", json!({}));
+        let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        self.emit_execution_context(event_sender, sid, context_id, "", true, &fid);
+        // Chrome keeps isolated worlds alive across documents: re-announce
+        // each created world's context for the new document (clients bound
+        // their realms to contexts the navigation just destroyed and would
+        // hang without it).
+        let worlds = sid
+            .and_then(|sid| {
+                self.session_worlds
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(sid).cloned())
+            })
+            .unwrap_or_default();
+        for world_name in worlds {
+            let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            self.emit_execution_context(event_sender, sid, context_id, &world_name, false, &fid);
+        }
+    }
+
+    /// Auto-attach for programmatically created targets:
+    /// Target.createTarget → Target.attachedToTarget event so Playwright's
+    /// context.new_page() completes.
+    fn emit_target_created_attached(
+        &self,
+        event_sender: &dyn EventSender,
+        result: &Result<Value, CdpError>,
+    ) {
+        let auto = self.auto_attach.lock().map(|f| *f).unwrap_or(false);
+        if !auto {
+            return;
+        }
+        let Ok(r) = result else {
+            return;
+        };
+        if let Some(new_id) = r.get("targetId").and_then(|v| v.as_str()) {
+            let session_id = self.mint_session(new_id);
+            event_sender.send_event(
+                "Target.attachedToTarget",
+                json!({
+                    "sessionId": session_id,
+                    "targetInfo": {
+                        "targetId": new_id,
+                        "type": "page",
+                        "title": "",
+                        "url": "about:blank",
+                        "attached": true,
+                        "browserContextId": "bao-default-context",
+                    },
+                }),
+            );
+        }
+    }
 }
 
 fn require_param(params: &Option<Value>, key: &str) -> Result<String, CdpError> {
@@ -617,197 +811,27 @@ impl RegistryDispatch for BaoWsRegistry {
         if result.is_ok() {
             let sid = msg.session_id.as_deref();
             match msg.method.as_str() {
-                // Chrome close semantics: Target.closeTarget must be followed
-                // by Target.targetDestroyed (to everyone who saw the target)
-                // and Target.detachedFromTarget (per attached session) —
-                // clients resolve page.close() on the session-detach signal
-                // and hang forever without it (puppeteer W40 S11 stall).
+                // Chrome close semantics — see `emit_target_closed_events`.
                 "Target.closeTarget" => {
-                    let closed_tid = msg
-                        .params
-                        .as_ref()
-                        .and_then(|p| p.get("targetId"))
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or(&target_id)
-                        .to_string();
-                    self.emit(
-                        event_sender,
-                        None,
-                        "Target.targetDestroyed",
-                        json!({ "targetId": closed_tid }),
-                    );
-                    // Detach every CDP session bound to the closed target
-                    // (Chrome closes them) — tagged per-session events plus
-                    // table purge.
-                    if let Ok(mut table) = self.attached_sessions.lock() {
-                        let bound: Vec<String> = table
-                            .iter()
-                            .filter(|(_, t)| **t == closed_tid)
-                            .map(|(s, _)| s.clone())
-                            .collect();
-                        for s in bound {
-                            table.remove(&s);
-                            // Chrome shape: detachedFromTarget arrives untagged
-                            // on the parent connection (mirroring how the
-                            // matching attachedToTarget was delivered) —
-                            // puppeteer's Connection routes by the message
-                            // sessionId tag to find the parent session, and a
-                            // dying-session tag points at the wrong object.
-                            // params.sessionId names the closed session.
-                            self.emit(
-                                event_sender,
-                                None,
-                                "Target.detachedFromTarget",
-                                json!({
-                                    "sessionId": s,
-                                    "targetId": closed_tid,
-                                }),
-                            );
-                        }
-                    }
+                    self.emit_target_closed_events(event_sender, msg, &target_id);
                 }
-                // Playwright's page-session init: Runtime.enable must be
-                // followed by executionContextCreated or evaluate() has no
-                // context to bind to.
+                // Playwright page-session init — see
+                // `emit_runtime_enabled_context`.
                 "Runtime.enable" => {
-                    // Chrome shape: auxData carries the owning frameId —
-                    // clients (Playwright/Puppeteer) bind the default context
-                    // to the frame through it. Same per-target frame identity
-                    // the navigate response and every frame event carry
-                    // (REQ-CDP-004) — never the PageId (targetId namespace).
-                    let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
-                    self.emit(
-                        event_sender,
-                        sid,
-                        "Runtime.executionContextCreated",
-                        json!({
-                            "context": {
-                                "id": context_id,
-                                "origin": "-",
-                                "name": "",
-                                "auxData": {
-                                    "isDefault": true,
-                                    "type": "default",
-                                    "frameId": main_frame_id_for_target(&target_id),
-                                },
-                            }
-                        }),
-                    );
+                    self.emit_runtime_enabled_context(event_sender, sid, &target_id);
                 }
-                // Page.navigate command face: Chrome emits NO frame lifecycle
-                // events from the command path — the browser process event
-                // stream is the sole source (REQ-CDP-004). The real face
-                // (servo delegate → event queue → pump) delivers
-                // frameStartedLoading / frameNavigated / frameStoppedLoading
-                // with real load timing; the former command-face synth pair
-                // was retired once real-path delivery was probe-proven
-                // lossless. What stays here is the execution-context
-                // semantics the real path has no equivalent for.
+                // Command-face execution-context semantics — see
+                // `emit_page_navigate_contexts`.
                 "Page.navigate" => {
-                    if let Ok(ref r) = result {
-                        // The response frameId is authoritative; the tolerance
-                        // fallback derives the same per-target main frame id
-                        // the real face reports (never the PageId — that is
-                        // the targetId namespace).
-                        let fid = r
-                            .get("frameId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&main_frame_id_for_target(&target_id))
-                            .to_string();
-                        // Cross-document navigation replaces the document's
-                        // execution contexts (Chrome semantics): clear the old
-                        // ones and announce a fresh default context bound to
-                        // the frame, or clients wait for a context that never
-                        // comes after navigation.
-                        self.emit(
-                            event_sender,
-                            sid,
-                            "Runtime.executionContextsCleared",
-                            json!({}),
-                        );
-                        let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
-                        self.emit(
-                            event_sender,
-                            sid,
-                            "Runtime.executionContextCreated",
-                            json!({
-                                "context": {
-                                    "id": context_id,
-                                    "origin": "-",
-                                    "name": "",
-                                    "auxData": {
-                                        "isDefault": true,
-                                        "type": "default",
-                                        "frameId": fid,
-                                    },
-                                }
-                            }),
-                        );
-                        // Chrome keeps isolated worlds alive across documents:
-                        // re-announce each created world's context for the new
-                        // document (clients bound their realms to contexts the
-                        // navigation just destroyed and would hang without it).
-                        let worlds = sid
-                            .and_then(|sid| {
-                                self.session_worlds
-                                    .lock()
-                                    .ok()
-                                    .and_then(|m| m.get(sid).cloned())
-                            })
-                            .unwrap_or_default();
-                        for world_name in worlds {
-                            let context_id = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
-                            self.emit(
-                                event_sender,
-                                sid,
-                                "Runtime.executionContextCreated",
-                                json!({
-                                    "context": {
-                                        "id": context_id,
-                                        "origin": "-",
-                                        "name": world_name,
-                                        "auxData": {
-                                            "isDefault": false,
-                                            "frameId": fid,
-                                        },
-                                    }
-                                }),
-                            );
-                        }
-                    }
+                    self.emit_page_navigate_contexts(event_sender, sid, &result, &target_id);
                 }
-                // Auto-attach for programmatically created targets:
-                // Target.createTarget → Target.attachedToTarget event so
-                // Playwright's context.new_page() completes.
+                // Auto-attach — see `emit_target_created_attached`.
                 "Target.createTarget" => {
-                    let auto = self.auto_attach.lock().map(|f| *f).unwrap_or(false);
-                    if auto {
-                        if let Ok(ref r) = result {
-                            if let Some(new_id) = r.get("targetId").and_then(|v| v.as_str()) {
-                                let session_id = self.mint_session(new_id);
-                                event_sender.send_event(
-                                    "Target.attachedToTarget",
-                                    json!({
-                                        "sessionId": session_id,
-                                        "targetInfo": {
-                                            "targetId": new_id,
-                                            "type": "page",
-                                            "title": "",
-                                            "url": "about:blank",
-                                            "attached": true,
-                                            "browserContextId": "bao-default-context",
-                                        },
-                                    }),
-                                );
-                            }
-                        }
-                    }
+                    self.emit_target_created_attached(event_sender, &result);
                 }
                 _ => {}
             }
         }
-
         Some(result)
     }
 

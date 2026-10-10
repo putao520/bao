@@ -11,6 +11,127 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
+/// Point the Domain prototype at the events module's EventEmitter
+/// prototype (Domain inherits from EventEmitter when the events builtin is
+/// already installed; a missing events/EventEmitter face leaves the plain
+/// object prototype — every guard is a no-op fallthrough).
+fn inherit_domain_proto_from_events(cx: &mut mozjs::context::JSContext, proto_obj: *mut JSObject) {
+    unsafe {
+        let events_obj = crate::gc_store::gc_store_get(cx.raw_cx(), "builtin:events");
+        let Some(events) = events_obj else { return };
+        if events.is_null() {
+            return;
+        }
+        rooted!(&in(cx) let events_root = events);
+        let mut ee_proto = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            events_root.handle().into(),
+            c"EventEmitter".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ee_proto,
+            },
+        );
+        if !ee_proto.is_object() {
+            return;
+        }
+        rooted!(&in(cx) let ee_ctor = ee_proto.to_object());
+        let mut ee_proto_val = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            ee_ctor.handle().into(),
+            c"prototype".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ee_proto_val,
+            },
+        );
+        if !ee_proto_val.is_object() {
+            return;
+        }
+        rooted!(&in(cx) let ee_proto_obj = ee_proto_val.to_object());
+        rooted!(&in(cx) let proto_root = proto_obj);
+        JS_SetPrototype(
+            cx.raw_cx(),
+            proto_root.handle().into(),
+            ee_proto_obj.handle().into(),
+        );
+    }
+}
+
+/// Define the Domain-specific prototype methods (run/add/remove/bind/
+/// intercept/enter/exit/dispose).
+fn define_domain_proto_methods(cx: &mut mozjs::context::JSContext, proto_obj: *mut JSObject) {
+    unsafe {
+    rooted!(&in(cx) let proto_root = proto_obj);
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"run".as_ptr(),
+        Some(domain_run),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"add".as_ptr(),
+        Some(domain_add),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"remove".as_ptr(),
+        Some(domain_remove),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"bind".as_ptr(),
+        Some(domain_bind),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"intercept".as_ptr(),
+        Some(domain_intercept),
+        1,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"enter".as_ptr(),
+        Some(domain_enter),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"exit".as_ptr(),
+        Some(domain_exit),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    w2::JS_DefineFunction(
+        cx,
+        proto_root.handle(),
+        c"dispose".as_ptr(),
+        Some(domain_dispose),
+        0,
+        JSPROP_ENUMERATE as u32,
+    );
+    }
+}
+
 pub fn install(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let domain_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if domain_obj.get().is_null() {
@@ -44,109 +165,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             rooted!(&in(cx) let proto = w2::JS_NewPlainObject(cx));
             if !proto.get().is_null() {
                 // Inherit from EventEmitter
-                let events_obj = crate::gc_store::gc_store_get(cx.raw_cx(), "builtin:events");
-                if let Some(events) = events_obj {
-                    if !events.is_null() {
-                        rooted!(&in(cx) let events_root = events);
-                        let mut ee_proto = UndefinedValue();
-                        JS_GetProperty(
-                            cx.raw_cx(),
-                            events_root.handle().into(),
-                            c"EventEmitter".as_ptr(),
-                            MutableHandle::<Value> {
-                                _phantom_0: ::std::marker::PhantomData,
-                                ptr: &mut ee_proto,
-                            },
-                        );
-                        if ee_proto.is_object() {
-                            rooted!(&in(cx) let ee_ctor = ee_proto.to_object());
-                            let mut ee_proto_val = UndefinedValue();
-                            JS_GetProperty(
-                                cx.raw_cx(),
-                                ee_ctor.handle().into(),
-                                c"prototype".as_ptr(),
-                                MutableHandle::<Value> {
-                                    _phantom_0: ::std::marker::PhantomData,
-                                    ptr: &mut ee_proto_val,
-                                },
-                            );
-                            if ee_proto_val.is_object() {
-                                rooted!(&in(cx) let ee_proto_obj = ee_proto_val.to_object());
-                                JS_SetPrototype(
-                                    cx.raw_cx(),
-                                    proto.handle().into(),
-                                    ee_proto_obj.handle().into(),
-                                );
-                            }
-                        }
-                    }
-                }
+                inherit_domain_proto_from_events(cx, proto.get());
 
                 // Domain-specific methods
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"run".as_ptr(),
-                    Some(domain_run),
-                    1,
-                    JSPROP_ENUMERATE as u32,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"add".as_ptr(),
-                    Some(domain_add),
-                    1,
-                    JSPROP_ENUMERATE as u32,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"remove".as_ptr(),
-                    Some(domain_remove),
-                    1,
-                    JSPROP_ENUMERATE as u32,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"bind".as_ptr(),
-                    Some(domain_bind),
-                    1,
-                    JSPROP_ENUMERATE as u32,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"intercept".as_ptr(),
-                    Some(domain_intercept),
-                    1,
-                    JSPROP_ENUMERATE as u32,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"enter".as_ptr(),
-                    Some(domain_enter),
-                    0,
-                    JSPROP_ENUMERATE as u32,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"exit".as_ptr(),
-                    Some(domain_exit),
-                    0,
-                    JSPROP_ENUMERATE as u32,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    proto.handle(),
-                    c"dispose".as_ptr(),
-                    Some(domain_dispose),
-                    0,
-                    JSPROP_ENUMERATE as u32,
-                );
+                define_domain_proto_methods(cx, proto.get());
 
                 // Wire prototype
                 rooted!(&in(cx) let proto_val = ObjectValue(proto.get()));

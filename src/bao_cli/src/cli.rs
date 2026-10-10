@@ -640,6 +640,31 @@ fn parse_format(format: &str) -> bun_options_types::Format {
     }
 }
 
+/// Run one test file, render its report, and accumulate the counters
+/// (`bao test` per-file execution path shared by the discovery and
+/// explicit-files branches).
+fn run_one_test_file(
+    rt: &mut bun_runtime::NodeRuntime,
+    path_str: &str,
+    total_passed: &mut u32,
+    total_failed: &mut u32,
+) {
+    let report = rt.run_test_file(path_str);
+    flush_js_output();
+    match report {
+        Ok(report) => {
+            render_report(&report);
+            *total_passed += report.passed;
+            *total_failed += report.failed;
+        }
+        Err(e) => {
+            eprintln!("FAIL [{}]: {}", path_str, e);
+            *total_failed += 1;
+        }
+    }
+    bun_runtime::clear_exit();
+}
+
 fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i32> {
     let mut rt = bun_runtime::NodeRuntime::new().map_err(|_| {
         eprintln!("Error: Failed to initialize runtime");
@@ -683,20 +708,12 @@ fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i
                         {
                             let path_str = path.to_string_lossy().into_owned();
                             eprintln!("\n# {}", path_str);
-                            let report = rt.run_test_file(&path_str);
-                            flush_js_output();
-                            match report {
-                                Ok(report) => {
-                                    render_report(&report);
-                                    total_passed += report.passed;
-                                    total_failed += report.failed;
-                                }
-                                Err(e) => {
-                                    eprintln!("FAIL [{}]: {}", path_str, e);
-                                    total_failed += 1;
-                                }
-                            }
-                            bun_runtime::clear_exit();
+                            run_one_test_file(
+                                &mut rt,
+                                &path_str,
+                                &mut total_passed,
+                                &mut total_failed,
+                            );
                         }
                     }
                 }
@@ -716,20 +733,7 @@ fn run_test(eval: Option<&str>, files: &[String]) -> ::std::result::Result<(), i
         let mut total_failed: u32 = 0;
         for file in files {
             eprintln!("\n# {}", file);
-            let report = rt.run_test_file(file);
-            flush_js_output();
-            match report {
-                Ok(report) => {
-                    render_report(&report);
-                    total_passed += report.passed;
-                    total_failed += report.failed;
-                }
-                Err(e) => {
-                    eprintln!("FAIL [{}]: {}", file, e);
-                    total_failed += 1;
-                }
-            }
-            bun_runtime::clear_exit();
+            run_one_test_file(&mut rt, file, &mut total_passed, &mut total_failed);
         }
         eprintln!(
             "\n# Summary: {} passed, {} failed",

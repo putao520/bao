@@ -51,6 +51,27 @@ mod node_alg {
     ///
     /// `sep` is the OUTPUT separator ('/' posix, '\\' win32); on win32 both
     /// separators are recognized in the input.
+    /// `..`-segment pop of the normalizeString port: truncate `res` back
+    /// to its last output separator and recompute `lastSegmentLength`.
+    fn normalize_pop_segment(res: &mut Vec<u8>, last_segment_length: &mut usize, sep: u8) {
+        match res.iter().rposition(|&c| c == sep) {
+            None => {
+                res.clear();
+                *last_segment_length = 0;
+            }
+            Some(idx) => {
+                res.truncate(idx);
+                // node quirk (see bun's translation note):
+                // lastSegmentLength derives from a lastIndexOf over the
+                // truncated result.
+                *last_segment_length = match res.iter().rposition(|&c| c == sep) {
+                    None => res.len(),
+                    Some(inner) => res.len() - 1 - inner,
+                };
+            }
+        }
+    }
+
     pub fn normalize_string(path: &str, allow_above_root: bool, sep: u8, windows: bool) -> String {
         let bytes = path.as_bytes();
         let len = bytes.len();
@@ -87,23 +108,7 @@ mod node_alg {
                         && res[res.len() - 2] == b'.';
                     if !ends_with_dotdot {
                         if res.len() > 2 {
-                            match res.iter().rposition(|&c| c == sep) {
-                                None => {
-                                    res.clear();
-                                    last_segment_length = 0;
-                                }
-                                Some(idx) => {
-                                    res.truncate(idx);
-                                    // node quirk (see bun's translation note):
-                                    // lastSegmentLength derives from a
-                                    // lastIndexOf over the truncated result.
-                                    last_segment_length = match res.iter().rposition(|&c| c == sep)
-                                    {
-                                        None => res.len(),
-                                        Some(inner) => res.len() - 1 - inner,
-                                    };
-                                }
-                            }
+                            normalize_pop_segment(&mut res, &mut last_segment_length, sep);
                             last_slash = Some(i);
                             dots = Some(0);
                             i += 1;
@@ -453,6 +458,60 @@ mod node_alg {
         }
     }
 
+    /// Backward suffix scan shared by `basename` / `basename_windows`
+    /// (node path.zig basename port): scans from the tail matching the
+    /// suffix while locating the last segment start, then slices the
+    /// result the node way (`start == end` falls back to the first
+    /// non-slash end). Only reached with a non-empty suffix no longer
+    /// than the path; always returns the final answer.
+    fn basename_suffix_scan(path: &str, suffix: &str, start: usize, windows: bool) -> String {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        let sfx_bytes = suffix.as_bytes();
+        let mut start = start;
+        let mut end: Option<usize> = None;
+        let mut matched_slash = true;
+        let mut ext_idx: Option<usize> = Some(sfx_bytes.len() - 1);
+        let mut first_non_slash_end: Option<usize> = None;
+        let mut i = len as i64 - 1;
+        while i >= start as i64 {
+            let iu = i as usize;
+            let byte = bytes[iu];
+            if is_sep(byte, windows) {
+                if !matched_slash {
+                    start = iu + 1;
+                    break;
+                }
+            } else {
+                if first_non_slash_end.is_none() {
+                    matched_slash = false;
+                    first_non_slash_end = Some(iu + 1);
+                }
+                if let Some(ei) = ext_idx {
+                    if byte == sfx_bytes[ei] {
+                        if ei == 0 {
+                            end = Some(iu);
+                            ext_idx = None;
+                        } else {
+                            ext_idx = Some(ei - 1);
+                        }
+                    } else {
+                        ext_idx = None;
+                        end = first_non_slash_end;
+                    }
+                }
+            }
+            i -= 1;
+        }
+        if let Some(e) = end {
+            if start == e {
+                return path[start..first_non_slash_end.unwrap_or(len)].to_string();
+            }
+            return path[start..e].to_string();
+        }
+        path[start..len].to_string()
+    }
+
     /// node path.posix.basename / path.win32.basename — trailing separators
     /// are stripped before extraction ('/dir/' → 'dir'). `suffix` follows
     /// node's backward scan (the suffix must match the tail of the last
@@ -477,46 +536,7 @@ mod node_alg {
                 if sfx == path {
                     return String::new();
                 }
-                let sfx_bytes = sfx.as_bytes();
-                let mut ext_idx: Option<usize> = Some(sfx_len - 1);
-                let mut first_non_slash_end: Option<usize> = None;
-                let mut i = len as i64 - 1;
-                while i >= start as i64 {
-                    let iu = i as usize;
-                    let byte = bytes[iu];
-                    if byte == b'/' {
-                        if !matched_slash {
-                            start = iu + 1;
-                            break;
-                        }
-                    } else {
-                        if first_non_slash_end.is_none() {
-                            matched_slash = false;
-                            first_non_slash_end = Some(iu + 1);
-                        }
-                        if let Some(ei) = ext_idx {
-                            if byte == sfx_bytes[ei] {
-                                if ei == 0 {
-                                    end = Some(iu);
-                                    ext_idx = None;
-                                } else {
-                                    ext_idx = Some(ei - 1);
-                                }
-                            } else {
-                                ext_idx = None;
-                                end = first_non_slash_end;
-                            }
-                        }
-                    }
-                    i -= 1;
-                }
-                if let Some(e) = end {
-                    if start == e {
-                        return path[start..first_non_slash_end.unwrap_or(len)].to_string();
-                    }
-                    return path[start..e].to_string();
-                }
-                return path[start..len].to_string();
+                return basename_suffix_scan(path, sfx, start, windows);
             }
         }
 
@@ -560,46 +580,7 @@ mod node_alg {
                 if sfx == path {
                     return String::new();
                 }
-                let sfx_bytes = sfx.as_bytes();
-                let mut ext_idx: Option<usize> = Some(sfx_len - 1);
-                let mut first_non_slash_end: Option<usize> = None;
-                let mut i = len as i64 - 1;
-                while i >= start as i64 {
-                    let iu = i as usize;
-                    let byte = bytes[iu];
-                    if is_sep(byte, true) {
-                        if !matched_slash {
-                            start = iu + 1;
-                            break;
-                        }
-                    } else {
-                        if first_non_slash_end.is_none() {
-                            matched_slash = false;
-                            first_non_slash_end = Some(iu + 1);
-                        }
-                        if let Some(ei) = ext_idx {
-                            if byte == sfx_bytes[ei] {
-                                if ei == 0 {
-                                    end = Some(iu);
-                                    ext_idx = None;
-                                } else {
-                                    ext_idx = Some(ei - 1);
-                                }
-                            } else {
-                                ext_idx = None;
-                                end = first_non_slash_end;
-                            }
-                        }
-                    }
-                    i -= 1;
-                }
-                if let Some(e) = end {
-                    if start == e {
-                        return path[start..first_non_slash_end.unwrap_or(len)].to_string();
-                    }
-                    return path[start..e].to_string();
-                }
-                return path[start..len].to_string();
+                return basename_suffix_scan(path, sfx, start, true);
             }
         }
 

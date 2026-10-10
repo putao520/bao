@@ -657,6 +657,61 @@ mod netif {
     }
 }
 
+/// Unicast-address walk of one adapter (windows): pushes one `IfaceEntry`
+/// per AF_INET/AF_INET6 sockaddr onto the interface's entry list (other
+/// families are skipped, matching the node face).
+#[cfg(windows)]
+unsafe fn collect_adapter_unicast_addresses(
+    slot: &mut (String, String, bool, Vec<IfaceEntry>),
+    first_unicast: *mut IpAdapterUnicastAddress,
+) {
+    let mut uni = first_unicast;
+    while !uni.is_null() {
+        let u = &*uni;
+        let sa = u.address.lp_sockaddr;
+        if !sa.is_null() {
+            let family = (*sa).sa_family as u32;
+            match family {
+                2 => {
+                    // AF_INET — sockaddr_in {family u16, port u16, addr u32}
+                    let sin = sa.cast::<bun_windows_sys::ws2_32::sockaddr_in>();
+                    let octets = (*sin).sin_addr.s_addr.to_be();
+                    slot.3.push(IfaceEntry {
+                        address: format!(
+                            "{}.{}.{}.{}",
+                            (octets >> 24) & 0xff,
+                            (octets >> 16) & 0xff,
+                            (octets >> 8) & 0xff,
+                            octets & 0xff
+                        ),
+                        netmask: prefix_to_ipv4_mask(u.on_link_prefix_length),
+                        family: "IPv4",
+                        prefix_len: u.on_link_prefix_length,
+                        scopeid: None,
+                    });
+                }
+                23 => {
+                    // AF_INET6 — sockaddr_in6 {family,port,flowinfo,addr,scopeid}
+                    let sin6 = sa.cast::<bun_windows_sys::ws2_32::sockaddr_in6>();
+                    slot.3.push(IfaceEntry {
+                        address: ipv6_to_string(&(*sin6).sin6_addr),
+                        netmask: prefix_to_ipv6_mask(u.on_link_prefix_length),
+                        family: "IPv6",
+                        prefix_len: u.on_link_prefix_length,
+                        scopeid: if (*sin6).sin6_scope_id > 0 {
+                            Some((*sin6).sin6_scope_id)
+                        } else {
+                            None
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+        uni = u.next;
+    }
+}
+
 /// Windows counterpart of `collect_posix_ifaddrs` (node parity): friendly
 /// name, MAC, loopback flag and unicast address/netmask/cidr per adapter.
 #[cfg(windows)]
@@ -725,51 +780,7 @@ fn collect_adapters(ifaces: &mut Vec<(String, String, bool, Vec<IfaceEntry>)>) -
             if internal {
                 slot.2 = true;
             }
-            let mut uni = a.first_unicast_address;
-            while !uni.is_null() {
-                let u = &*uni;
-                let sa = u.address.lp_sockaddr;
-                if !sa.is_null() {
-                    let family = (*sa).sa_family as u32;
-                    match family {
-                        2 => {
-                            // AF_INET — sockaddr_in {family u16, port u16, addr u32}
-                            let sin = sa.cast::<bun_windows_sys::ws2_32::sockaddr_in>();
-                            let octets = (*sin).sin_addr.s_addr.to_be();
-                            slot.3.push(IfaceEntry {
-                                address: format!(
-                                    "{}.{}.{}.{}",
-                                    (octets >> 24) & 0xff,
-                                    (octets >> 16) & 0xff,
-                                    (octets >> 8) & 0xff,
-                                    octets & 0xff
-                                ),
-                                netmask: prefix_to_ipv4_mask(u.on_link_prefix_length),
-                                family: "IPv4",
-                                prefix_len: u.on_link_prefix_length,
-                                scopeid: None,
-                            });
-                        }
-                        23 => {
-                            // AF_INET6 — sockaddr_in6 {family,port,flowinfo,addr,scopeid}
-                            let sin6 = sa.cast::<bun_windows_sys::ws2_32::sockaddr_in6>();
-                            slot.3.push(IfaceEntry {
-                                address: ipv6_to_string(&(*sin6).sin6_addr),
-                                netmask: prefix_to_ipv6_mask(u.on_link_prefix_length),
-                                family: "IPv6",
-                                prefix_len: u.on_link_prefix_length,
-                                scopeid: if (*sin6).sin6_scope_id > 0 {
-                                    Some((*sin6).sin6_scope_id)
-                                } else {
-                                    None
-                                },
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-                uni = u.next;
-            }
+            collect_adapter_unicast_addresses(slot, a.first_unicast_address);
             cur = a.next;
         }
         true

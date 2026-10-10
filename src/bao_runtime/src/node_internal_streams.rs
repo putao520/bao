@@ -81,6 +81,89 @@ fn install_stream_alias(cx: &mut mozjs::context::JSContext, module_name: &str, p
     }
 }
 
+/// Emit the `_stream_wrap` deprecation warning via
+/// `process.emitWarning(message, type, code)` when both `process` and
+/// `process.emitWarning` are present (DEP0125 parity: a missing sink
+/// silently skips the warning — every guard below is a no-op fallthrough
+/// in the original guard-ladder form).
+///
+/// # Safety
+///
+/// Caller guarantees `cx` is a valid JSContext pointer on this thread.
+unsafe fn emit_stream_wrap_deprecation(cx: &mut mozjs::context::JSContext) {
+    let raw_cx = cx.raw_cx();
+    let global = CurrentGlobalOrNull(raw_cx);
+    if global.is_null() {
+        return;
+    }
+    rooted!(&in(cx) let global_root = global);
+    let mut process_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        global_root.handle().into(),
+        c"process".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut process_val,
+        },
+    );
+    if !process_val.is_object() {
+        return;
+    }
+    rooted!(&in(cx) let process_obj = process_val.to_object());
+    let mut emit_warning_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        process_obj.handle().into(),
+        c"emitWarning".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut emit_warning_val,
+        },
+    );
+    if !emit_warning_val.is_object() {
+        return;
+    }
+    rooted!(&in(cx) let ew_fn = emit_warning_val.to_object());
+    let msg_str = JS_NewStringCopyZ(raw_cx, c"The _stream_wrap module is deprecated.".as_ptr());
+    if msg_str.is_null() {
+        return;
+    }
+    let msg_val = mozjs::jsval::StringValue(&*msg_str);
+    rooted!(&in(cx) let msg_root = msg_val);
+    let type_str = JS_NewStringCopyZ(raw_cx, c"DeprecationWarning".as_ptr());
+    if type_str.is_null() {
+        return;
+    }
+    let type_val = mozjs::jsval::StringValue(&*type_str);
+    rooted!(&in(cx) let type_root = type_val);
+    let code_str = JS_NewStringCopyZ(raw_cx, c"DEP0125".as_ptr());
+    if code_str.is_null() {
+        return;
+    }
+    let code_val = mozjs::jsval::StringValue(&*code_str);
+    rooted!(&in(cx) let code_root = code_val);
+    let elems = [msg_root.get(), type_root.get(), code_root.get()];
+    let call_args = HandleValueArray {
+        length_: 3,
+        elements_: elems.as_ptr(),
+    };
+    let mut call_rval = UndefinedValue();
+    let call_rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut call_rval,
+    };
+    let ew_fn_val = ObjectValue(ew_fn.get());
+    rooted!(&in(cx) let ew_fn_val_root = ew_fn_val);
+    JS_CallFunctionValue(
+        raw_cx,
+        process_obj.handle().into(),
+        ew_fn_val_root.handle().into(),
+        &call_args,
+        call_rval_h,
+    );
+}
+
 /// `_stream_wrap` — deprecated module (DEP0125) that re-exports the entire
 /// `stream` module. Emits a deprecation warning, then caches the stream
 /// module object under `_stream_wrap`.
@@ -102,74 +185,7 @@ fn install_stream_wrap(cx: &mut mozjs::context::JSContext) {
 
     // Emit deprecation warning via process.emitWarning if available
     unsafe {
-        let raw_cx = cx.raw_cx();
-        let global = CurrentGlobalOrNull(raw_cx);
-        if !global.is_null() {
-            rooted!(&in(cx) let global_root = global);
-            let mut process_val = UndefinedValue();
-            JS_GetProperty(
-                raw_cx,
-                global_root.handle().into(),
-                c"process".as_ptr(),
-                MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut process_val,
-                },
-            );
-            if process_val.is_object() {
-                rooted!(&in(cx) let process_obj = process_val.to_object());
-                let mut emit_warning_val = UndefinedValue();
-                JS_GetProperty(
-                    raw_cx,
-                    process_obj.handle().into(),
-                    c"emitWarning".as_ptr(),
-                    MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &mut emit_warning_val,
-                    },
-                );
-                if emit_warning_val.is_object() {
-                    rooted!(&in(cx) let ew_fn = emit_warning_val.to_object());
-                    let msg_str = JS_NewStringCopyZ(
-                        raw_cx,
-                        c"The _stream_wrap module is deprecated.".as_ptr(),
-                    );
-                    if !msg_str.is_null() {
-                        let msg_val = mozjs::jsval::StringValue(&*msg_str);
-                        rooted!(&in(cx) let msg_root = msg_val);
-                        let type_str = JS_NewStringCopyZ(raw_cx, c"DeprecationWarning".as_ptr());
-                        if !type_str.is_null() {
-                            let type_val = mozjs::jsval::StringValue(&*type_str);
-                            rooted!(&in(cx) let type_root = type_val);
-                            let code_str = JS_NewStringCopyZ(raw_cx, c"DEP0125".as_ptr());
-                            if !code_str.is_null() {
-                                let code_val = mozjs::jsval::StringValue(&*code_str);
-                                rooted!(&in(cx) let code_root = code_val);
-                                let elems = [msg_root.get(), type_root.get(), code_root.get()];
-                                let call_args = HandleValueArray {
-                                    length_: 3,
-                                    elements_: elems.as_ptr(),
-                                };
-                                let mut call_rval = UndefinedValue();
-                                let call_rval_h = MutableHandle::<Value> {
-                                    _phantom_0: ::std::marker::PhantomData,
-                                    ptr: &mut call_rval,
-                                };
-                                let ew_fn_val = ObjectValue(ew_fn.get());
-                                rooted!(&in(cx) let ew_fn_val_root = ew_fn_val);
-                                JS_CallFunctionValue(
-                                    raw_cx,
-                                    process_obj.handle().into(),
-                                    ew_fn_val_root.handle().into(),
-                                    &call_args,
-                                    call_rval_h,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        emit_stream_wrap_deprecation(cx);
     }
 
     // Cache the entire stream module object as _stream_wrap

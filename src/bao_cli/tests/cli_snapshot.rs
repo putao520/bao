@@ -25,6 +25,40 @@ use std::process::{Command, Output};
 
 const GOLDEN_DIR: &str = "tests/golden/cli";
 
+/// Candidates from `.cargo/config.toml` [build] target-dir (both profiles,
+/// both OS spellings). The nested `if let` guards of the original ladder
+/// are no-op fallthroughs — early returns are equivalent.
+fn push_config_target_dir_candidates(
+    candidates: &mut Vec<std::path::PathBuf>,
+    root: &std::path::Path,
+) {
+    // .cargo/config.toml [build] target-dir (single-compile-universe shape).
+    let cfg = root.join(".cargo/config.toml");
+    let Ok(text) = std::fs::read_to_string(&cfg) else {
+        return;
+    };
+    let Some(line) = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("target-dir"))
+    else {
+        return;
+    };
+    let Some(idx) = line.find('"') else {
+        return;
+    };
+    let Some(dir) = line[idx + 1..].split('"').next() else {
+        return;
+    };
+    for profile in ["debug", "release"] {
+        for name in ["bao", "bao.exe"] {
+            let candidate = std::path::Path::new(dir).join(profile).join(name);
+            if candidate.is_file() {
+                candidates.push(candidate);
+            }
+        }
+    }
+}
+
 /// Locate the real `bao` binary (W8/p0-cluster find_bao_binary lineage:
 /// explicit override → sibling-of-test-exe → config target-dir → manifest
 /// target tree; both OS spellings probed everywhere).
@@ -48,24 +82,7 @@ fn find_bao_binary() -> std::path::PathBuf {
     }
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.parent().and_then(|p| p.parent()).expect("workspace root");
-    // .cargo/config.toml [build] target-dir (single-compile-universe shape).
-    let cfg = root.join(".cargo/config.toml");
-    if let Ok(text) = std::fs::read_to_string(&cfg) {
-        if let Some(line) = text.lines().find(|l| l.trim_start().starts_with("target-dir")) {
-            if let Some(idx) = line.find('"') {
-                if let Some(dir) = line[idx + 1..].split('"').next() {
-                    for profile in ["debug", "release"] {
-                        for name in ["bao", "bao.exe"] {
-                            let candidate = std::path::Path::new(dir).join(profile).join(name);
-                            if candidate.is_file() {
-                                candidates.push(candidate);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    push_config_target_dir_candidates(&mut candidates, root);
     let target = root.join("target");
     for profile in ["debug", "release"] {
         for name in ["bao", "bao.exe"] {
