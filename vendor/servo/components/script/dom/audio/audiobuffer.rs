@@ -30,13 +30,19 @@ use crate::realms::enter_auto_realm;
 pub(crate) const MIN_SAMPLE_RATE: f32 = 8000.;
 pub(crate) const MAX_SAMPLE_RATE: f32 = 192000.;
 
-/// The AudioBuffer keeps its data either in js_channels
-/// or in shared_channels if js_channels buffers are detached.
+/// The AudioBuffer keeps its data in js_channels, with a snapshot copy of
+/// that data in shared_channels when its contents have been acquired
+/// ("acquire the content") by some other API implementation (the media
+/// thread).
 ///
-/// js_channels buffers are (re)attached right before calling GetChannelData
-/// and remain attached until its contents are needed by some other API
-/// implementation. Follow <https://webaudio.github.io/web-audio-api/#acquire-the-content>
-/// to know in which situations js_channels buffers must be detached.
+/// js_channels buffers are attached right before calling GetChannelData.
+/// An acquire (BAO, e168) swaps the association out — the next
+/// GetChannelData re-attaches a fresh array from the snapshot, so
+/// post-acquire writes to a pre-captured array stay invisible — but the
+/// pre-captured array itself is never `JS_DetachArrayBuffer`ed and stays
+/// a readable array of the pre-acquire samples (Chromium/Firefox shape).
+/// Follow <https://webaudio.github.io/web-audio-api/#acquire-the-content>
+/// to know in which situations the contents are acquired.
 ///
 #[dom_struct]
 pub(crate) struct AudioBuffer {
@@ -44,8 +50,8 @@ pub(crate) struct AudioBuffer {
     /// Float32Arrays returned by calls to GetChannelData.
     #[ignore_malloc_size_of = "mozjs"]
     js_channels: DomRefCell<Vec<HeapBufferSource<Float32>>>,
-    /// Aggregates the data from js_channels.
-    /// This is `Some<T>` iff the buffers in js_channels are detached.
+    /// A snapshot copy of the js_channels data, held from the acquire
+    /// until `restore_js_channel_data` re-attaches fresh arrays from it.
     #[no_trace]
     #[conditional_malloc_size_of]
     shared_channels: DomRefCell<Option<Arc<ServoMediaAudioBuffer>>>,

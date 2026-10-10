@@ -162,60 +162,64 @@ impl BiquadFilterNode {
         let freq: f64 = self.frequency.value().into();
         let f0: f64 = freq * (2.0_f64).powf(self.detune.value() as f64 / 1200.);
         let fs: f64 = fs.into();
-        // clamp to nominal range
-        // https://webaudio.github.io/web-audio-api/#biquadfilternode
-        let f0 = if f0 > fs / 2. || !f0.is_finite() {
-            fs / 2.
-        } else if f0 < 0. {
-            0.
-        } else {
-            f0
-        };
-
         let normalized = f0 / fs;
+
+        // (BAO, e168/REQ-BRW-002) Out-of-band frequency takes the per-type
+        // boundary z-transform limit, mirroring Chromium `Biquad::Set*Params`
+        // (cutoff clamped into [0, 1] — bandpass clamps only below — so the
+        // boundary branches emit b0 = <limit>, a0 = 1, a1 = a2 = 0, killing
+        // the filter state). The upstream form clamped f0 to fs/2 and
+        // computed at omega0 = pi, which keeps the live (1 + z^-1)^2
+        // denominator pole ringing forever once the center frequency leaves
+        // the band (biquad-automation "automate-detune": bandpass swept past
+        // Nyquist rings to amplitude 14.5 where the reference expects
+        // silence).
+        let at_nyquist_or_above = !normalized.is_finite() || normalized >= 0.5;
+        let at_zero_or_below = normalized <= 0.;
+
         let a = 10.0_f64.powf(g / 40.);
 
         // the boundary values sometimes need limits to
         // be taken
         match self.filter {
             FilterType::LowPass => {
-                if normalized == 1. {
+                if at_nyquist_or_above {
                     self.constant_z_transform(1.);
                     return;
-                } else if normalized == 0. {
+                } else if at_zero_or_below {
                     self.constant_z_transform(0.);
                     return;
                 }
             },
             FilterType::HighPass => {
-                if normalized == 1. {
+                if at_nyquist_or_above {
                     self.constant_z_transform(0.);
                     return;
-                } else if normalized == 0. {
+                } else if at_zero_or_below {
                     self.constant_z_transform(1.);
                     return;
                 }
             },
             FilterType::LowShelf => {
-                if normalized == 1. {
+                if at_nyquist_or_above {
                     self.constant_z_transform(a * a);
                     return;
-                } else if normalized == 0. {
+                } else if at_zero_or_below {
                     self.constant_z_transform(1.);
                     return;
                 }
             },
             FilterType::HighShelf => {
-                if normalized == 1. {
+                if at_nyquist_or_above {
                     self.constant_z_transform(1.);
                     return;
-                } else if normalized == 0. {
+                } else if at_zero_or_below {
                     self.constant_z_transform(a * a);
                     return;
                 }
             },
             FilterType::Peaking => {
-                if normalized == 0. || normalized == 1. {
+                if at_zero_or_below || at_nyquist_or_above {
                     self.constant_z_transform(1.);
                     return;
                 } else if q <= 0. {
@@ -224,7 +228,7 @@ impl BiquadFilterNode {
                 }
             },
             FilterType::AllPass => {
-                if normalized == 0. || normalized == 1. {
+                if at_zero_or_below || at_nyquist_or_above {
                     self.constant_z_transform(1.);
                     return;
                 } else if q <= 0. {
@@ -233,7 +237,7 @@ impl BiquadFilterNode {
                 }
             },
             FilterType::Notch => {
-                if normalized == 0. || normalized == 1. {
+                if at_zero_or_below || at_nyquist_or_above {
                     self.constant_z_transform(1.);
                     return;
                 } else if q <= 0. {
@@ -242,7 +246,7 @@ impl BiquadFilterNode {
                 }
             },
             FilterType::BandPass => {
-                if normalized == 0. || normalized == 1. {
+                if at_zero_or_below || at_nyquist_or_above {
                     self.constant_z_transform(0.);
                     return;
                 } else if q <= 0. {
@@ -411,5 +415,86 @@ impl AudioNodeEngine for BiquadFilterNode {
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    // (BAO, e168/REQ-BRW-002) WPT biquad-automation "automate-detune" shape
+    // pin: a bandpass whose frequency*2^(detune/1200) sweeps past Nyquist
+    // must output exact zeros from the crossing on — the per-type boundary
+    // z-transform limit (b0 = 0, a1 = a2 = 0) kills the filter state.
+    // The old form clamped f0 to fs/2 and computed at omega0 = pi, leaving
+    // the live (1 + z^-1)^2 denominator pole ringing forever after the
+    // crossing (WPT failure form: amplitude 14.5 at the end of the render).
+    use super::*;
+    use crate::audio_node::{AudioNodeEngine, BlockInfo, ChannelInfo};
+    use crate::block::{Block, Chunk, Tick, FRAMES_PER_BLOCK_USIZE};
+    use crate::param::{ParamType, RampKind, UserAutomationEvent};
+
+    const FS: f32 = 16000.;
+
+    fn block_info(block: u64) -> BlockInfo {
+        BlockInfo {
+            sample_rate: FS,
+            frame: Tick(block * FRAMES_PER_BLOCK_USIZE as u64),
+            time: (block * FRAMES_PER_BLOCK_USIZE as u64) as f64 / FS as f64,
+        }
+    }
+
+    #[test]
+    fn bandpass_is_silent_once_frequency_passes_nyquist() {
+        // 4400 Hz center swept by a -12000..12000 cent detune ramp over
+        // 0.125s (2000 frames): f0 = 4400*2^(detune/1200) crosses 8000 Hz
+        // between frames 1086 (7987.9 Hz) and 1087 (8043.4 Hz).
+        let mut node = BiquadFilterNode::new(
+            BiquadFilterNodeOptions {
+                filter: FilterType::BandPass,
+                frequency: 4400.,
+                detune: 0.,
+                q: 1.,
+                gain: 0.,
+            },
+            ChannelInfo::default(),
+            FS,
+        );
+        let detune = node.get_param(ParamType::Detune);
+        detune.insert_event(
+            UserAutomationEvent::SetValueAtTime(-12000., 0.).convert_to_event(FS),
+        );
+        detune.insert_event(
+            UserAutomationEvent::RampToValueAtTime(RampKind::Linear, 12000., 0.125)
+                .convert_to_event(FS),
+        );
+
+        // 4400 Hz test tone, same shape as the WPT task.
+        let omega = 2. * PI * 4400. / FS as f64;
+
+        let mut charged = false;
+        let mut first_ring = None;
+        for block in 0..10u64 {
+            let info = block_info(block);
+            let tone: Vec<f32> = (0..FRAMES_PER_BLOCK_USIZE)
+                .map(|i| {
+                    let n = block as usize * FRAMES_PER_BLOCK_USIZE + i;
+                    (omega * n as f64).sin() as f32
+                })
+                .collect();
+            let out = node.process(Chunk::new(Block::for_vec(tone)), &info);
+            for frame in 0..FRAMES_PER_BLOCK_USIZE {
+                let n = block as usize * FRAMES_PER_BLOCK_USIZE + frame;
+                let sample = out.blocks[0].data_chan_frame(frame, 0);
+                if n < 1087 {
+                    charged |= sample != 0.;
+                } else if sample != 0. && first_ring.is_none() {
+                    first_ring = Some((n, sample));
+                }
+            }
+        }
+        assert!(charged, "filter must pass signal while in band (test setup)");
+        assert!(
+            first_ring.is_none(),
+            "output must be exactly zero once f0 passes Nyquist, rang at {first_ring:?}"
+        );
     }
 }

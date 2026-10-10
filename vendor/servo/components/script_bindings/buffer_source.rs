@@ -518,15 +518,22 @@ where
                 buffer.get()
             },
         });
+        // (BAO, e168/REQ-BRW-002) Acquire = copy the data and swap out the
+        // association, never `JS_DetachArrayBuffer`: the WebAudio spec's
+        // "acquire the content" takes the data for the media thread and
+        // detaches the AudioBuffer's *association* with the array (the next
+        // getChannelData re-attaches a fresh array from the snapshot, so
+        // post-acquire writes to a pre-captured array stay invisible — WPT
+        // acquire-the-content), while the pre-captured array itself remains
+        // a readable array of the pre-acquire samples (WPT biquad-automation
+        // "modulation" reads its pre-render modulator array in the
+        // verifier). The upstream form additionally called detach_buffer,
+        // zeroing the old array, which collapsed that verifier's reference
+        // to all zeros.
         let data = if let Ok(array) =
             array as Result<CustomAutoRooterGuard<'_, TypedArray<T, *mut JSObject>>, &mut ()>
         {
-            if let Some(data) = array.to_vec() {
-                let _ = self.detach_buffer(cx);
-                Ok(data)
-            } else {
-                Err(())
-            }
+            array.to_vec().ok_or(())
         } else {
             Err(())
         };

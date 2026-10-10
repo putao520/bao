@@ -351,3 +351,40 @@ automatic-pull/process-getter→servo 单条 FAIL 形;zero-outputs/frozen-array�
   - **audioworkletnode-construction**:「construction-before-module-loading」抛 NotSupportedError 而非 InvalidStateError(campaign 1 obs,机制确定性)——构造器错误类型映射缺口,登记候选。
 - **维持可见性(惯例面零动作)**:idlharness 58 AudioWorklet IDL 翻转(e137 G4 bao-独有面惯例)/ rendersizehint+messageport M 面(e137 G3 测试树漂移绑定)/ 混合文件正向翻转子测不留痕(e122 F4)。
 - **验证**:载具 meta 快照=动作前 vendor 形态,复跑判读按快照口径;vendor 动作后 ini 键集与 sc 实测态逐键对上(删 3 全绿/改 4 单值定型/新建 1 file 级)。
+
+## K. e168 biquad-automation detune+modulation 残余格清偿(2026-10-10,REQ-BRW-002,登记面清偿批尾——RED 取证→继承确证→fork 自治双修复,格全翻绿)
+
+J3「biquad-automation 确定性红(全树首盖)」清偿。取证先行:双格失败值与 origin/main ini **逐位一致**=继承形态(判别依据见 K2);按合同本应登记关闭,team-lead 依「继承真缺陷定性+修复形态明确」追加修复授权(用户「都 fork 了自己修」裁决引用,与 e145 §H6 guard-off 先例同链)——双修复落地,格全翻绿。
+
+### K1. RED 形态(binary=/var/tmp/e154-target/test-ci/bao=HEAD 音频面,provenance=源 mtime 早于二进制+vendor 树 clean+e155c 探针串;载具 /var/tmp/e168-veh=e167 launcher 形+meta 快照)
+- 6 任务终态与 J3 一致:freq/q/gain/all PASS+detune/modulation FAIL;X 长键+`2 out of 6` 摘要=3 意外格(HEAD ini 载 servo 旧失败表,e155c 可见性登记)。
+- **detune**:首错 index **1087**(恰为 f0=4400·2^(detune/1200) 线性扫 -12000→+12000 cents/0.125s 穿越 Nyquist 8000Hz 之帧;detune=1035.2 cents ⇔ frame 1086.3);Expected(reference)自 1087 起全零,Actual 环增幅,**Max AbsError 1.4533952713012695e+1 @3999**。
+- **modulation**:reference 自 index 1 全零(4000 帧全错),Actual=真实带通输出,**Max AbsError 8.2110029458999634e-1 @284**。
+
+### K2. 上游锚判别(origin/main 锚纪律)
+- ini:origin/main 同格 expected-FAIL,**记录失败值与 bao 实测逐位一致**(两格 Max/AbsError+[1]-[5] 实际值全同);`2 out of 6` 键=上游终态失败任务集同。code:`biquad_filter_node.rs` 与 origin/main **零差**;`audiobuffer.rs` 仅 C15 签名差。**判定=双格继承确证**——J3「#48347 吸收后残余缺口」假说证伪(modulation 零引擎缺陷,detune 为继承的边界语义缺陷);HEAD vendor ini 的 X 长键载 servo 更旧失败表(detune MaxAbsError 8.08 系),origin/main 已再生到与 bao 同形。
+
+### K3. 根因(探针流水 probe{1-5}.raw.log;probe-mod-readback.html 五版迭代,用后即删)
+- **detune=真引擎缺陷(继承)**:`update_coefficients` 把 f0 clamp 到 fs/2 → normalized 恰 0.5 → bandpass ω0=π:α=sin(π)/2q≈1.2e-16 → b0≈0、a1=+2、a2≈1 → **z=−1 双极点边缘稳定环**(扫频过谐振区增幅,终值 14.5);WPT reference(Chromium 模型)对 normalized∉(0,1) 给恒零输出(含状态清杀)。**Chromium 实文核对**(third_party/blink/renderer/platform/audio/biquad.cc,拉取核对):八类型 Set*Params 全部 ClampTo[0,1] 后走精确边界分支——唯 **SetBandpassParams 无上界 clamp**(仅 max(0,·)),frequency∉(0,1) → `SetNormalizedCoefficients(0,0,0,1,0,0)`(零输出+状态清杀)。
+- **modulation=零引擎缺陷**:真 reference 重建探针(公式重建 modulator/输入+逐帧系数+时变滤波):**errors=0/4000,max=0**——a-rate 调制渲染数学全对;`.value` 回读 4000 次循环探针零漂移(264/5/0)。失败 100%=**测试侧 reference 塌缩**:servo `acquire_data → detach_buffer` 剥掉 verifier 预捕的 `d=mbuffer.getChannelData(0)`(detached length=0 实证)→ d[k]=undefined → freq=NaN → `NaN>0&&NaN<1` false → 全帧零系数 → reference 全零。
+
+### K4. 修复(2 文件 + ini)
+- **①biquad 出界表**(media/audio/biquad_filter_node.rs):`normalized == 1./0.` 精确等值(旧 clamp 下系死分支,normalized≤0.5 恒不可达)→ 范围条件 `at_nyquist_or_above(!finite || ≥0.5)`/`at_zero_or_below(≤0)`,f0 clamp 块删除;八类型边界表逐型=Chromium(bandpass 出界恒零/peaking·notch·allpass 恒 1/lowpass 上界 wire 下界零/highpass 反之/lowshelf 上界 A² 下界 1/highshelf 反之;q≤0 内层分支次序不变=Chromium 嵌套同构)。带内计算路径零变化(全 biquad 目录回归实证)。
+- **②acquire copy-swap**(script_bindings/buffer_source.rs `acquire_data`,全树唯一调用方=AudioBuffer::acquire_contents):去 `detach_buffer` 调用——to_vec 快照+槽位置空(换出关联)保留。**首版纯 copy 形被 WPT acquire-the-content.html 否决**(acquire 后 JS 写不得经新 getChannelData 可见——该测试双 setter 格 FAIL)→ **swap 形双面兼得**:旧数组保持可读(modulation verifier 读预捕 d ✓)+新鲜 getChannelData 重挂快照(acquire 后写不可见 ✓)+`restore_js_channel_data` 既有重挂路径不变。audiobuffer.rs 不变量注释同步(js_channels=活真源,shared_channels=acquire 快照,数组本身永不被 detach)。decodeAudioData 输入 ArrayBuffer detach 面(baseaudiocontext.rs:622)不触(spec 明文要求,零影响)。
+- **ini 删除**:`biquad-automation.html.ini` 整文件(deletion-manifest ①replacement,实测终态=6/6 全绿;e140 §G6/e147 I5 删 ini 惯例)。
+
+### K5. RED/GREEN(media 单测钉,波内 1 红 1 绿)
+`bandpass_is_silent_once_frequency_passes_nyquist`(biquad_filter_node.rs 新 boundary_tests):修前实测 `rang at Some((1087, -0.023368616))`——**与 WPT actual[1087]=-2.3368615657091141e-2 逐位一致**(单元级复现 WPT 格);修后全绿,media-audio **37/37**(36 基线+1 新)。
+
+### K6. 回归(终态 binary=/var/tmp/e168-target/test-ci/bao,worktree 钉 HEAD 4a297215+3 文件 diff+私有 target)
+- **biquad-automation 6/6 任务 PASS**(6 tasks ran successfully,RC=0;baseline 同载具 4/6)——detune+modulation 双格翻绿。
+- WPT 四目录(biquad+params+audiobuffer+audiobuffersourcenode)97 文件:**95 OK+2 PASS,零意外 file-end**;唯一意外子测=active-processing 已注册 flake 双面(Setup graph 正翻+channel-count-after-stop 红;旧二进制 3 连 1P/2F vs 新 3 连 0P/3F,e155c J3 的 1P/3F 注册形态内,非回归)。
+- **acquire-the-content 与 pre-fix 基线零差**(双 setter 格 PASS 维持/ConvolverNode as-expected FAIL 维持——swap 形保旧通过面+修 modulation 面)。
+- setValueCurve-exceptions 文件级 OK(params 目录内);media-audio **37/37**;audioworklet 家族 **15/15**;`cargo check -p bao-servo-script-bindings -p bao-servo-script -p bao-servo-media-audio` RC=0。
+- 解码/其它 AudioBuffer 消费面:`get_channels`/`acquire_data` 调用方全树=audiobuffersourcenode.rs 3 站(均生命周期单发:set/start/ctor),ConvolverNode 走独立路径零差实证。
+
+### K7. 载具与事件
+- /var/tmp/e168-veh(launcher+meta+manifest 增量收放 probe;binary 保留 bao-fix,sha256 前缀 48e49d82e51a374f);worktree 10m07s 冷建+增量重建;probe HTML 五版(回读单次→循环→逐操作数→verbatim verifier→真 reference 重建)——归因链载体,参考树用后即删(git clean 复验)。
+- wptserve `h2:9000` TIME-WAIT 碰撞×2(等 75s 自清,e140 §G7 同类);**acquire-the-content 路径踩坑**:该测试在 the-audiobuffer-interface(非 sourcenode)目录,单文件基线跑错路径两轮「Unable to find any tests」。
+- READ-GATE guard-off 窗口(team-lead 授权,e145 §H6 先例):marker 被 sibling 逃生口竞态消费×2(共享文件单点),按授权 re-touch;删除权归主会话。
+- 上游同形双缺陷(fork 就地修,ISSUE 反馈禁令豁免依据=自维护 fork 裁决):biquad 出界环 + acquire detach——上游吸收波如遇 servo 修复需对拍本 §K4 形态。
