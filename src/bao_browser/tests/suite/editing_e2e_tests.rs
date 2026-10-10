@@ -417,6 +417,61 @@ window.__probe = function(){
     );
 }
 
+/// @trace REQ-BRW-002 [criterion:inputevent-init-targetranges] live
+///
+/// The `InputEventInit.targetRanges` dictionary member must be consumed by
+/// the `InputEvent` constructor (input-events spec: the dictionary members
+/// "initialize the corresponding attributes" of the event): a
+/// script-constructed event carries the passed `StaticRange` instance
+/// (identity + offset round-trip), and the absent member defaults to `[]`.
+/// e178 核验报告登记清偿 pin — the UA-only setter path (trusted EditContext
+/// `beforeinput`) is held by the editcontext c1-c5 suite; this pin holds
+/// the script-construction face.
+#[test]
+fn editing_e2e_inputevent_init_targetranges() {
+    if should_skip() {
+        return;
+    }
+    let _guard = serializer().lock().unwrap_or_else(|e| e.into_inner());
+
+    let html = r#"<!DOCTYPE html><html><body><script>
+window.__probe = function(){
+  var text = document.createTextNode('hello world');
+  var sr = new StaticRange({startContainer: text, startOffset: 0,
+                            endContainer: text, endOffset: 5});
+  var withRanges = new InputEvent('beforeinput',
+                                  {inputType: 'deleteContentBackward',
+                                   targetRanges: [sr]});
+  var without = new InputEvent('beforeinput',
+                               {inputType: 'insertText', data: 'x'});
+  var got = withRanges.getTargetRanges();
+  return JSON.stringify({
+    identity: got.length === 1 && got[0] === sr,
+    offsets: got.length === 1 ? [got[0].startOffset, got[0].endOffset] : null,
+    defaultEmpty: without.getTargetRanges().length === 0
+  });
+};
+</script></body></html>"#;
+    let (_runtime, page) = make_page(&data_url(html));
+
+    let state = page
+        .evaluate_js_web("window.__probe()")
+        .expect("probe eval must run");
+    eprintln!("[editing-e2e] inputevent init targetRanges = {state}");
+    assert!(
+        state.contains("\"identity\":true"),
+        "constructor must carry the InputEventInit.targetRanges member: {state}"
+    );
+    assert!(
+        state.contains("\"offsets\":[0,5]"),
+        "the carried StaticRange must keep its geometry (offset round-trip): {state}"
+    );
+    assert!(
+        state.contains("\"defaultEmpty\":true"),
+        "absent dictionary member must default to an empty list: {state}"
+    );
+}
+
 /// @trace REQ-BRW-002 [criterion:password-clipboard-guard] live
 ///
 /// The copying_enabled/cutting_enabled guards (57a307695): Ctrl+C/Ctrl+X on a

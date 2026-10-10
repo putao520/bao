@@ -30,9 +30,11 @@ pub(crate) struct InputEvent {
     is_composing: bool,
     input_type: DOMString,
     /// Target ranges of a trusted `beforeinput` dispatched by the user agent
-    /// (<https://w3c.github.io/input-events/#dom-inputevent-gettargetranges>).
-    /// Populated for EditContext editing hosts, where the single StaticRange
-    /// covers the EditContext's selection in UTF-16 code units
+    /// (<https://w3c.github.io/input-events/#dom-inputevent-gettargetranges>),
+    /// populated for EditContext editing hosts where the single StaticRange
+    /// covers the EditContext's selection in UTF-16 code units, or of the
+    /// `InputEventInit.targetRanges` dictionary member carried by a
+    /// script-constructed event (absent member defaults to `[]`)
     /// (Bao fork, REQ-BRW-050 P1).
     target_ranges: script_bindings::cell::DomRefCell<Vec<Dom<StaticRange>>>,
     /// Clipboard payload of a trusted `beforeinput`/`input` with a clipboard
@@ -77,8 +79,9 @@ impl InputEvent {
         event
     }
 
-    /// Set the target ranges carried by a trusted `beforeinput`. Only the
-    /// user agent sets these; script-constructed events keep an empty list.
+    /// Set the target ranges carried by a trusted `beforeinput` (user
+    /// agent), or by the constructor's `InputEventInit.targetRanges`
+    /// dictionary member (script).
     pub(crate) fn set_target_ranges(&self, ranges: Vec<DomRoot<StaticRange>>) {
         *self.target_ranges.borrow_mut() = ranges
             .into_iter()
@@ -120,6 +123,10 @@ impl InputEventMethods<crate::DomTypeHolder> for InputEvent {
         // `dataTransfer` attribute
         // (<https://w3c.github.io/input-events/#dom-inputeventinit-datatransfer>).
         event.set_data_transfer(init.dataTransfer.as_deref());
+        // The `InputEventInit.targetRanges` dictionary member initializes the
+        // ranges returned by `getTargetRanges()` (input-events spec: the
+        // dictionary members "initialize the corresponding attributes").
+        event.set_target_ranges(init.targetRanges.clone());
         Ok(event)
     }
 

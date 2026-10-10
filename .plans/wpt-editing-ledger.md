@@ -191,3 +191,12 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 - **接线(vendor 1 文件,3 hunks)**:`event/inputevent.rs` Constructor 尾部 `event.set_data_transfer(init.dataTransfer.as_deref())`——复用 e159(46ccbaac)落地的 setter;字段/setter 两处 doc 注释同步翻新(UA-only 表述改为 UA+字典双源)。信任路径(editing.rs/editcontext.rs 经 `InputEvent::new`+`set_data_transfer`)零触碰。
 - **RED 钉**(suite 真执行,非 WPT 载具——纯 JS 构造面无需 testdriver):新增 `editing_e2e_inputevent_init_datatransfer`(bao_browser suite;`new DataTransfer()`+`setData` 载真实 payload)。RED=`{"identity":false,"payload":null,"defaultNull":true}` panic 于 identity 断言(0.149s 真跑);GREEN=identity:true+payload round-trip+defaultNull:true 三断言全过。
 - **回归**:同批 10/10(editing_e2e 5/5 含新钉+editcontext c1-c5 5/5,BAO_TEST_NETWORK=1+xvfb+--nocapture,13.8s 真时长零 skip);`cargo check -p bao-servo-script` RC=0 触碰文件零警告。e159 WPT 格(data_transfer_on_input_event insertFromPaste)保持未单测——构造器改动与信任 paste 路径代码级不相交(Constructor 仅脚本入口可达),WPT campaign 复跑留 V 批量。
+
+### e179(InputEventInit.targetRanges 构造器字典清偿,e178 核验报告登记,2026-10-11,REQ-BRW-002 登记面清偿批㉕)
+
+**清偿**:脚本构造 `new InputEvent(type, {targetRanges: [sr]})` 的字典成员被丢弃(构造器不消费 `init.targetRanges`,脚本构造事件的 `getTargetRanges()` 恒 `[]`,与字典值无关)。e178 核验报告登记项。
+
+- **上游对照实证**:origin/main(~/code/tools/servo)Constructor 同样不消费 `init.targetRanges`,其 GetTargetRanges(115 行 TODO)恒 `Vec::new()` 且无 target_ranges 字段——上游整个 UA/字典双面皆缺(fork 已有 e153 P1 ① UA 面基座,唯字典面缺口);codegen 字典面(成员声明+`Vec<DomRoot<StaticRange>>` 解析,webidl :27 默认 `[]`)两侧均齐——纯 Rust 构造器接线缺口,fork 自治(同 e172 谱系),非吸收重放。spec 锚=input-events 字典注释:「targetRanges of {{InputEventInit}} initialize the corresponding attributes」。
+- **接线(vendor 1 文件,3 hunks)**:`event/inputevent.rs` Constructor 尾部 `event.set_target_ranges(init.targetRanges.clone())`——复用 e153(1622b097)落地的 setter(Vec<DomRoot> clone=refcount bump);字段/setter 两处 doc 注释同步翻新(UA-only 表述改为 UA+字典双源)。信任路径(editcontext.rs:515 UA 填充)零触碰。
+- **RED 钉**(suite 真执行,纯 JS 构造面无需 testdriver):新增 `editing_e2e_inputevent_init_targetranges`(bao_browser suite;`new StaticRange({startContainer/startOffset/endContainer/endOffset})` 载真实几何 0→5)。RED=`{"identity":false,"offsets":null,"defaultEmpty":true}` panic 于 identity 断言(0.12s 真跑);GREEN=identity:true+offsets:[0,5]+defaultEmpty:true 三断言全过。
+- **回归**:同批 11/11(editing_e2e 6/6 含新钉与 e172 钉+editcontext c1-c5 5/5——c5 face1 `[[true,true,1,2]]` 实证 e153 UA-only 填充面不变,BAO_TEST_NETWORK=1+xvfb+--nocapture,16.29s 真时长零 skip);`cargo check -p bao-servo-script` RC=0 触碰文件零警告(touch+重查实证)。构造器改动与信任 EditContext 路径代码级不相交(Constructor 仅脚本入口可达),WPT campaign 复跑留 V 批量。
