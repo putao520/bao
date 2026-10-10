@@ -23,6 +23,7 @@
 // data — the only cross-thread shapes allowed under the bao cross-thread
 // JSObject rule.
 
+use std::cell::Cell;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -299,6 +300,21 @@ pub(crate) struct AudioWorkletGlobalScope {
     #[no_trace]
     #[ignore_malloc_size_of = "media pump, no heap-owned GC payload"]
     audio_pumps: DomRefCell<Vec<NodePump>>,
+    /// (e176) The clock of the quantum whose `process()` call is currently
+    /// on this thread's stack: `(frame, time)` snapshotted from the
+    /// `WorkletQuantum` payload. `currentFrame`/`currentTime` read this
+    /// while set — the spec's clock for a block is fixed for the duration
+    /// of its `process()` call, while the previous live render-thread
+    /// roundtrip could advance *mid-call* (a processor reading the getter
+    /// twice — e.g. WPT's shared `worklet-recorder.js`, which sizes a
+    /// `Float32Array.set` offset from `currentFrame` — observed an
+    /// inconsistent pair across the recording's final block boundary and
+    /// threw "invalid or out-of-range index", latching processorerror and
+    /// silently muting the node). Outside `process()` (constructor bodies,
+    /// port handlers) the slot is empty and the getters keep the live
+    /// roundtrip.
+    #[ignore_malloc_size_of = "plain clock data"]
+    process_quantum_clock: Cell<Option<(u64, f64)>>,
     /// The in-flight instantiation's base-construction handoff (e122):
     /// installed by `instantiate_processor` *before* invoking the registered
     /// constructor, so the `AudioWorkletProcessor` base constructor wires
@@ -372,6 +388,7 @@ impl AudioWorkletGlobalScope {
             processor_instances: Default::default(),
             port_lane_ports: Default::default(),
             audio_pumps: DomRefCell::new(Vec::new()),
+            process_quantum_clock: Cell::new(None),
             pending_construction: DomRefCell::new(None),
         });
         let origin = global.worklet_global.origin();
@@ -380,6 +397,20 @@ impl AudioWorkletGlobalScope {
 
     pub(crate) fn audio(&self) -> &AudioWorkletScopeData {
         &self.audio
+    }
+
+    // ── e176: the in-flight quantum's clock (see the field docs) ──
+
+    /// Pin `currentFrame`/`currentTime` to `process()`'s quantum (worklet
+    /// thread, called by `WorkletProcessorHandler::process_quantum` right
+    /// before invoking `process()`).
+    pub(crate) fn pin_process_quantum_clock(&self, frame: u64, time: f64) {
+        self.process_quantum_clock.set(Some((frame, time)));
+    }
+
+    /// Release the pin when the `process()` call returns.
+    pub(crate) fn unpin_process_quantum_clock(&self) {
+        self.process_quantum_clock.set(None);
     }
 
     // ── e122: the in-flight instantiation's construction handoff ──
@@ -727,12 +758,21 @@ impl AudioWorkletGlobalScopeMethods<crate::DomTypeHolder> for AudioWorkletGlobal
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audioworkletglobalscope-currentframe>
     fn CurrentFrame(&self) -> Finite<f64> {
-        Finite::wrap(self.audio.sample_rate() as f64 * self.audio.current_time())
+        // (e176) Fixed for the duration of a `process()` call: the
+        // in-flight quantum's frame, falling back to the live render clock
+        // outside `process()` (see the `process_quantum_clock` field).
+        match self.process_quantum_clock.get() {
+            Some((frame, _)) => Finite::wrap(frame as f64),
+            None => Finite::wrap(self.audio.sample_rate() as f64 * self.audio.current_time()),
+        }
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audioworkletglobalscope-currenttime>
     fn CurrentTime(&self) -> Finite<f64> {
-        Finite::wrap(self.audio.current_time())
+        match self.process_quantum_clock.get() {
+            Some((_, time)) => Finite::wrap(time),
+            None => Finite::wrap(self.audio.current_time()),
+        }
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-audioworkletglobalscope-samplerate>

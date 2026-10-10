@@ -388,3 +388,41 @@ J3「biquad-automation 确定性红(全树首盖)」清偿。取证先行:双格
 - wptserve `h2:9000` TIME-WAIT 碰撞×2(等 75s 自清,e140 §G7 同类);**acquire-the-content 路径踩坑**:该测试在 the-audiobuffer-interface(非 sourcenode)目录,单文件基线跑错路径两轮「Unable to find any tests」。
 - READ-GATE guard-off 窗口(team-lead 授权,e145 §H6 先例):marker 被 sibling 逃生口竞态消费×2(共享文件单点),按授权 re-touch;删除权归主会话。
 - 上游同形双缺陷(fork 就地修,ISSUE 反馈禁令豁免依据=自维护 fork 裁决):biquad 出界环 + acquire detach——上游吸收波如遇 servo 修复需对拍本 §K4 形态。
+
+## M. e176 cors-check 三态 flake 归因根治(2026-10-11,REQ-BRW-002,J3 登记面清偿批——worklet 时钟 mid-call 漂移根因 + 根修)
+
+J3「cors-check 三态摆动 ERROR(campaign)/OK(sc 2/3)/TIMEOUT(sc 1)」清偿。同因连坐面:no-cors file 级摆动(J3 另一条登记)一并根治。
+
+### M1. 三态取证(proc1 隔离复现 + 插桩二进制 + 探针面包屑)
+- **隔离复现率**:e168 终态二进制(4a297215+3 文件 diff)proc1 单测 7 跑 4 TIMEOUT/3 OK——**非负载 flake**(e157 负载形态类证伪),是启动窗口内的本征竞态;OK 态恒 ~1.25s 完成,TIMEOUT 态烧满 harness 超时。
+- **探针面包屑**(cors-check-probe.https.html:verbatim 流程 + 每秒快照子测——快照嵌 subtest 名,PASS 行也进 raw log;探针页放参考树跑后删):TIMEOUT 态中 `ctx.state=running`、`ctx.currentTime` 正常推进(0.99→9.99s)、媒体元素 rs=4 正常播放(CORS 重定向抓取成功)、`recfin=false`——渲染线程/图/网络全活,**唯 worklet 处理器侧的 recordfinished 永不抵达**。
+- **插桩定位**(worktree 钉 HEAD 65cf00e7+eprintln 诊断 diff,私有 target test-ci):OK 态 `conduit.send dir=ToMain bytes=705896` 于 t=1.00s 抵达(完整链 send→notify_main→Script#4 dispatch→drain popped=1);TIMEOUT 态 **conduit.send 从未发生**(消息在 JS 侧就没发出),且 345 drains(=44100Hz 下 1s 录制的块数)后渲染侧 halt——worklet 泵在阈值块后被 `processor_halted` 短路。
+- **终局证据**:probe 页挂 `onprocessorerror` 监听 → TIMEOUT 态全部捕获 **`PROCERR:invalid or out-of-range index`**(SpiderMonkey TypedArray.set 越界抛掷),发生在录制收尾块(4 通道 41665 非零值断言前)。
+
+### M2. 根因(worklet `currentFrame` mid-call 漂移——单一致命竞态)
+`AudioWorkletGlobalScope.CurrentFrame` 原实现 = `sample_rate × audio.current_time()`,后者是**对渲染线程的同步 GetCurrentTime 往返**(context.rs:211)——读到的是**活体渲染时钟**,非当前块的帧号。WPT 共享 helper `worklet-recorder.js` 的 `process()` 三读 `currentFrame`(阈值判断/容量计算/set 偏移):
+```js
+if (this._recordBufferLength <= currentFrame) { post; return false; }  // 读1
+const capacity = buffer.length - currentFrame;                          // 读2
+buffer.set(inputChannel.slice(0, capacity), currentFrame);              // 读3
+```
+读1 与读3 之间渲染线程推进一个块界(2.7ms;getter 各自一次跨线程往返+循环体内 4 通道拷贝拉大窗口)→ 读1 见 <44100(走录制臂)、读3 见 ≥44100 → `capacity` 负/偏移越界 → TypedArray.set 抛 "invalid or out-of-range index" → e122 异常路径 `report_processor_error` → **processorerror 锁存+节点永久静音** → recordfinished 丢失 → audit 任务挂死 → TIMEOUT。OK/TO 二态 = 收尾块的读序是否跨块界(竞态窗占空比 ≈ 观测到的 ~50%)。三态中的 ERROR 极 = ini 期望值(campaign 实测形态 OK,e155c UNEXP(ERROR→OK) 在案),非独立故障面。
+
+**判别链完整排除的假说**(取证过程留档):①角色交换错投(servo worklet 三线程池 primary/hot/cold 换角色,泵状态不随角色走)——插桩实证 wake/drain 全落 instantiate 同线程,否决;②内存压力换角(MIN_GC_THRESHOLD=1MB,recordBuffer 768KB 边界)——变体 C(48KB 分配)仍 3/5 TIMEOUT,否决;③CORS/网络/媒体管线——面包屑 rs=4 + OK 态同链路,否决;④port 通道丢消息(ring 溢出/close 竞态)——conduit.send 未发生,否决。
+
+### M3. 根修(2 文件 47 行;spec 形态:块内时钟恒定)
+- `audioworkletglobalscope.rs`:`process_quantum_clock: Cell<Option<(u64, f64)>>` 槽 + pin/unpin;`CurrentFrame`/`CurrentTime` 在 pin 期间读**在飞量子载荷的 `(frame, time)`**(fill_quantum 自 BlockInfo 写入,WorkletQuantum:291——正是 spec 的块时钟),未 pin(构造器体/port handler 等 process() 外读者)保持活体往返回退。
+- `audioworklethandler.rs`:`process_quantum` 在 `Call(process)` 前后 pin/unpin——process() 体内任何多次读 `currentFrame`/`currentTime` 恒得同值,块间推进由泵逐块重 pin。
+- 复用面:量子载荷已有 frame/time 字段(零 media 侧改动);`state: Cell<AudioContextState>` 同构形态。
+
+### M4. 验证(修复二进制 = worktree 钉 HEAD 65cf00e7+仅本 2 文件 diff,私有 target test-ci,sha 前 174576728B@03:08)
+- **cors-check 稳定性**:proc1 12/12 OK(~1.25s,方差 <60ms)+ proc4 负载镜像(sc-light 6 测组形)3/3 OK + (修复+插桩形态 10/10;与 e177 载具端口互斥协调后净窗取证——首波 10/10 与 e177 rep3 时间重叠,判定保留但以净窗 12/12 为准)。
+- **no-cors 连坐面**:proc1 5/5 文件级 OK(子测红=4 通道非静音真红,taint 执行缺口登记域,41665/41537 采样窗计数抖动属内容抖非终态抖)。
+- **回归**(proc4,三目录 95 文件:the-audioworklet-interface 39+the-audioparam-interface 46+MESN 10,meta=删 ini 后 vendor 快照):**95/95 as-expected 零 unexpected**(sharedarraybuffer TIMEOUT 在 known_intermittent 内;分析器必须并读 `known_intermittent` 字段——mozlog 多值期望的第二载体,e176 分析器初版漏读教训)。
+- 单元:`cargo nt -p bao-servo-media-audio` **37/37**;`BAO_TEST_NETWORK=1 cargo nt --cargo-profile test-ci -p bao-browser -E 'test(audioworklet)'` **15/15**;主树 `cargo check -p bao-servo-script` RC=0。
+- **ini 动作(2 删)**:cors-check.https.html.ini + no-cors.https.html.ini——确定性终态(OK)解除 e155c J3 的「非确定性故维持 ERROR」封锁,循 e140 §G6/e147 I5 删 ini 惯例;no-cors 的 4 通道子测红保持 unexpected-FAIL 可见性(值表嵌名,逐子测键不可行)。
+
+### M5. 载具与教训
+- /var/tmp/e176-veh(venv 复制 e155+manifest 全量重建+meta2=删后 vendor 快照+portgate.sh 端口门);探针 HTML 五件(cors-check-probe{,-b,-c})参考树用后删;**面包屑嵌 subtest 名** = PASS 行取证通道(testdriver payload 不带 PASS 消息体)。
+- **端口互斥实战**:e177 载具同端口并发两次污染本波取证(「Address already in use」= wptserve 端口被夺;15s 形 TIMEOUT 即 https 端口损失形态)——跨 agent WPT 并行必须 ss 门+互斥窗([[wpt-vehicle-port-exclusivity]] 二犯实录)。
+- mozlog 三载体:expected(仅 mismatch 时存在)/known_intermittent(多值期望其余值)/status;分析器三坑齐录(e137 §G5-5 首坑,e176 二坑)。

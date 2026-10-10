@@ -272,6 +272,10 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
         // every WPT processor that touches `this` hung there).
         rooted!(&in(cx) let this_value = ObjectValue(instance_obj.get()));
         rooted!(&in(cx) let mut result = UndefinedValue());
+        // (e176) Pin the worklet clock to this quantum for the duration of
+        // `process()`: the getters must not roundtrip the live render clock
+        // mid-call (see `AudioWorkletGlobalScope::process_quantum_clock`).
+        scope.pin_process_quantum_clock(quantum.frame, quantum.time);
         unsafe {
             Call(
                 cx,
@@ -281,6 +285,7 @@ impl AudioWorkletProcessorHandler for WorkletProcessorHandler {
                 result.handle_mut(),
             );
         }
+        scope.unpin_process_quantum_clock();
 
         if unsafe { JS_IsExceptionPending(cx) } {
             // (e122) Capture the throw site before clearing: the spec's
