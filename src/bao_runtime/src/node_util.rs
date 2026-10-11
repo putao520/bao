@@ -10,6 +10,27 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
+// Table-driven factory for the native util registrations (e180, REQ-BRW-049):
+// each row is (js name, native fn, nargs) and expands to the exact
+// JS_DefineFunction call the handwritten block used — same order, same
+// attrs (register_assert_stubs! e171 form with the attrs column promoted
+// to a leading parameter: util's own face passes 0, util.types passes the
+// local `enumerate` binding).
+macro_rules! register_util_functions {
+    ($cx:expr, $obj:expr, $attrs:expr; $(($cname:expr, $fn:ident, $nargs:expr))*) => {
+        $(
+            w2::JS_DefineFunction(
+                $cx,
+                $obj.handle(),
+                $cname.as_ptr(),
+                Some($fn),
+                $nargs,
+                $attrs,
+            );
+        )*
+    };
+}
+
 pub fn install_util(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let util_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if util_obj.get().is_null() {
@@ -17,173 +38,28 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"inspect".as_ptr(),
-            Some(util_inspect),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isBoolean".as_ptr(),
-            Some(util_is_boolean),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isNumber".as_ptr(),
-            Some(util_is_number),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isString".as_ptr(),
-            Some(util_is_string),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isSymbol".as_ptr(),
-            Some(util_is_symbol),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isUndefined".as_ptr(),
-            Some(util_is_undefined),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isNull".as_ptr(),
-            Some(util_is_null),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isObject".as_ptr(),
-            Some(util_is_object),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isFunction".as_ptr(),
-            Some(util_is_function),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isArray".as_ptr(),
-            Some(util_is_array),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isDate".as_ptr(),
-            Some(util_is_date),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isRegExp".as_ptr(),
-            Some(util_is_regexp),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isError".as_ptr(),
-            Some(util_is_error),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"format".as_ptr(),
-            Some(util_format),
-            0,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"promisify".as_ptr(),
-            Some(util_promisify),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"callbackify".as_ptr(),
-            Some(util_callbackify),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"deprecate".as_ptr(),
-            Some(util_deprecate),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"getSystemErrorName".as_ptr(),
-            Some(util_get_system_error_name),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"parseArgs".as_ptr(),
-            Some(util_parse_args),
-            1,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"inherits".as_ptr(),
-            Some(util_inherits),
-            2,
-            0,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            util_obj.handle(),
-            c"isDeepStrictEqual".as_ptr(),
-            Some(util_is_deep_strict_equal),
-            2,
-            0,
+        register_util_functions!(cx, util_obj, 0;
+            (c"inspect", util_inspect, 2)
+            (c"isBoolean", util_is_boolean, 1)
+            (c"isNumber", util_is_number, 1)
+            (c"isString", util_is_string, 1)
+            (c"isSymbol", util_is_symbol, 1)
+            (c"isUndefined", util_is_undefined, 1)
+            (c"isNull", util_is_null, 1)
+            (c"isObject", util_is_object, 1)
+            (c"isFunction", util_is_function, 1)
+            (c"isArray", util_is_array, 1)
+            (c"isDate", util_is_date, 1)
+            (c"isRegExp", util_is_regexp, 1)
+            (c"isError", util_is_error, 1)
+            (c"format", util_format, 0)
+            (c"promisify", util_promisify, 1)
+            (c"callbackify", util_callbackify, 1)
+            (c"deprecate", util_deprecate, 2)
+            (c"getSystemErrorName", util_get_system_error_name, 1)
+            (c"parseArgs", util_parse_args, 1)
+            (c"inherits", util_inherits, 2)
+            (c"isDeepStrictEqual", util_is_deep_strict_equal, 2)
         );
 
         // util.types — native type checkers (12 Rust-backed)
@@ -191,101 +67,19 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
             rooted!(&in(cx) let types_obj = w2::JS_NewPlainObject(cx));
             if !types_obj.get().is_null() {
                 let enumerate = JSPROP_ENUMERATE as u32;
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isBoolean".as_ptr(),
-                    Some(util_is_boolean),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isNumber".as_ptr(),
-                    Some(util_is_number),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isString".as_ptr(),
-                    Some(util_is_string),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isSymbol".as_ptr(),
-                    Some(util_is_symbol),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isUndefined".as_ptr(),
-                    Some(util_is_undefined),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isNull".as_ptr(),
-                    Some(util_is_null),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isObject".as_ptr(),
-                    Some(util_is_object),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isFunction".as_ptr(),
-                    Some(util_is_function),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isArray".as_ptr(),
-                    Some(util_is_array),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isDate".as_ptr(),
-                    Some(util_is_date),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isRegExp".as_ptr(),
-                    Some(util_is_regexp),
-                    1,
-                    enumerate,
-                );
-                w2::JS_DefineFunction(
-                    cx,
-                    types_obj.handle(),
-                    c"isError".as_ptr(),
-                    Some(util_is_error),
-                    1,
-                    enumerate,
+                register_util_functions!(cx, types_obj, enumerate;
+                    (c"isBoolean", util_is_boolean, 1)
+                    (c"isNumber", util_is_number, 1)
+                    (c"isString", util_is_string, 1)
+                    (c"isSymbol", util_is_symbol, 1)
+                    (c"isUndefined", util_is_undefined, 1)
+                    (c"isNull", util_is_null, 1)
+                    (c"isObject", util_is_object, 1)
+                    (c"isFunction", util_is_function, 1)
+                    (c"isArray", util_is_array, 1)
+                    (c"isDate", util_is_date, 1)
+                    (c"isRegExp", util_is_regexp, 1)
+                    (c"isError", util_is_error, 1)
                 );
 
                 // Extended types via JS eval — factory function pattern
