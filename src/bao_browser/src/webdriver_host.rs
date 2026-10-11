@@ -367,10 +367,151 @@ fn webdriver_handle_send_alert_text(webview_id: WebViewId, text: String) {
     });
 }
 
+// ─── Host-process signal exit (REQ-CLI-002, e184) ───────────────────────────
+//
+// The registry WebDriver HTTP server (`webdriver 0.54::server::start`, spawned
+// by `webdriver_server::start_server` on its "WebDriverHttpServer" thread)
+// registers its own tokio SIGINT/SIGTERM streams and, on either signal, shuts
+// the HTTP face down and quits its dispatcher — e184 RED probe verified the
+// tokio path actually fires (TERM closed the listener socket). What nothing in
+// the process did was END THE PROCESS: bao's pump loop (`BrowserRuntime::run`,
+// webdriver mode) only stops on `exit_scheduled`, which no signal touched — so
+// every TERM/INT left an orphaned browser process spinning a core (the e177
+// residual-process class).
+//
+// The fix is a bao-owned SIGINT/SIGTERM face driving the existing graceful
+// exit: the handler flips a process-global flag, `drain` (called by the pump
+// every iteration) translates it into `runtime.schedule_exit()`, and a
+// watchdog hard-bounds the whole teardown at 5s (liveness over perfect
+// reclamation — the W27 bounded-join precedent) so a wedged teardown can never
+// resurrect the residual-process class.
+//
+// # Why `signal-hook-registry` and not a raw `libc::sigaction`
+//
+// Registration must coexist with the registry server's tokio handler no matter
+// which registers first. A raw `sigaction` REPLACES the previous disposition:
+// bao's handler installed here (before `start_server` spawns the server
+// thread) would be silently overwritten ~350ms later when the server thread's
+// `ShutdownSignal::new` routes through `signal_hook_registry::register` and
+// installs its trampoline. `signal-hook-registry` (the exact crate tokio
+// itself goes through) APPENDS to a per-signal action list under one shared
+// trampoline, so both actions run on every delivery, order-independently.
+// The action body is async-signal-safe by construction: one atomic store,
+// nothing else.
+#[cfg(unix)]
+mod signal_exit {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    /// Set from the signal handler; consumed by
+    /// [`WebDriverHost::drain`] → `runtime.schedule_exit()` and by the
+    /// watchdog's liveness bound.
+    static SIGNAL_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+    /// One-time install guard (a second runtime in the process must not
+    /// double-register the actions).
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    /// POSIX signal numbers, stable across every unix target bao builds for
+    /// (kept literal so the handler face carries no libc surface of its own).
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    /// Signal-handler body. Async-signal-safe: one relaxed atomic store —
+    /// the pump reads it within its 1ms iteration and does the real work in
+    /// normal context.
+    fn request_signal_exit() {
+        SIGNAL_EXIT_REQUESTED.store(true, Ordering::Relaxed);
+    }
+
+    /// Install the bao-side SIGINT/SIGTERM actions. Called from
+    /// `WebDriverHost::start` BEFORE `webdriver_server::start_server`, so the
+    /// trampoline exists before the server thread's tokio registration appends
+    /// to it (see the module doc: with the chaining registry, ordering cannot
+    /// break either side).
+    pub fn install() {
+        if INSTALLED.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let mut failed = false;
+        for signal in [SIGINT, SIGTERM] {
+            // SAFETY: `register` chains the action onto signal-hook's
+            // process-global registry; the action is async-signal-safe (one
+            // atomic store). The id is deliberately dropped without
+            // unregistering — the face lives for the whole process, and
+            // unregistering would leave the trampoline installed with no
+            // actor behind it.
+            if unsafe { signal_hook_registry::register(signal, request_signal_exit) }.is_err() {
+                failed = true;
+            }
+        }
+        if failed {
+            // Fail-loud degradation, never a silent fake success: the signal
+            // face is exactly what this module exists for.
+            log::error!("[webdriver] SIGINT/SIGTERM registration failed — signal exit degraded");
+            eprintln!("bao: webdriver signal handler registration failed — signal exit degraded");
+            return;
+        }
+        spawn_watchdog();
+    }
+
+    /// Watchdog poll cadence: both phases poll this flag; 50ms is noise
+    /// against the 5s bound and against the pump's 1ms exit latency.
+    const POLL: Duration = Duration::from_millis(50);
+    /// Whole-teardown liveness bound (contract: signal → process gone ≤5s).
+    const EXIT_GRACE: Duration = Duration::from_secs(5);
+
+    /// Liveness bound: once a signal asked for the exit, the graceful path
+    /// (pump break → runtime drop → process exit) must finish within
+    /// [`EXIT_GRACE`]; past that, hard-exit the way the harness's SIGKILL
+    /// fallback would — reclaiming the process beats perfect reclamation.
+    fn spawn_watchdog() {
+        let spawned = std::thread::Builder::new()
+            .name("bao-webdriver-sigwatch".to_string())
+            .spawn(|| {
+                // Armed phase: idle until the first signal asks for the exit.
+                while !SIGNAL_EXIT_REQUESTED.load(Ordering::Relaxed) {
+                    std::thread::sleep(POLL);
+                }
+                // Grace phase: the pump's drain turns the flag into
+                // `schedule_exit()` within one iteration; everything after is
+                // the existing teardown.
+                let start = std::time::Instant::now();
+                while start.elapsed() < EXIT_GRACE {
+                    std::thread::sleep(POLL);
+                }
+                log::error!(
+                    "[webdriver] signal-initiated exit exceeded the 5s bound — hard exit"
+                );
+                eprintln!("bao: webdriver signal exit exceeded the 5s bound — hard exit");
+                // SAFETY: liveness last resort — skips atexit/teardown exactly
+                // like the SIGKILL this replaces.
+                unsafe { libc::_exit(0) };
+            });
+        if spawned.is_err() {
+            // Degraded but loud: the drain face still exits the pump; only
+            // the hard bound is lost.
+            log::error!("[webdriver] signal-exit watchdog spawn failed — 5s bound unavailable");
+            eprintln!("bao: webdriver signal watchdog spawn failed");
+        }
+    }
+
+    /// Pump-side consumer: `true` once a signal asked for the exit.
+    pub fn exit_requested() -> bool {
+        SIGNAL_EXIT_REQUESTED.load(Ordering::Relaxed)
+    }
+}
+
 impl WebDriverHost {
     /// Start the upstream WebDriver HTTP server for this process and return
     /// the host that must be drained from the event loop.
     pub fn start(port: u16) -> Self {
+        // Bao-side SIGINT/SIGTERM face (see the `signal_exit` module doc):
+        // installed before the registry server spawns so the shared
+        // trampoline is ours first and the server thread's tokio registration
+        // appends to it.
+        #[cfg(unix)]
+        signal_exit::install();
         let preferences = servo::prefs::get().clone();
         let (embedder_sender, receiver) = crossbeam_channel::unbounded();
         webdriver_server::start_server(
@@ -387,6 +528,14 @@ impl WebDriverHost {
     /// (`Servo::execute_webdriver_command` — the constellation/script-thread
     /// face servo owns). Port of servoshell's `handle_webdriver_messages`.
     pub fn drain(&self, runtime: &crate::BrowserRuntime) {
+        // Signal exit face (REQ-CLI-002 e184): a delivered TERM/INT flipped
+        // the flag from the signal handler; translate it into the pump's
+        // existing exit path — the run loop reads `exit_scheduled` at its
+        // next 1ms iteration.
+        #[cfg(unix)]
+        if signal_exit::exit_requested() {
+            runtime.schedule_exit();
+        }
         while let Ok(msg) = self.receiver.try_recv() {
             match msg {
                 WebDriverCommandMsg::ResetAllCookies(sender) => {

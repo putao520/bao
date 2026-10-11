@@ -139,6 +139,7 @@ mod window_open_tests;
 mod https_popup_fetch_tests;
 mod js_popup_load_tests;
 mod popup_global_mislabel_tests;
+mod webdriver_signal_exit_e2e_tests;
 
 
 // Higher-tier soft-link providers are dev-deps nothing else `use`s in this

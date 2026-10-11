@@ -94,6 +94,20 @@ servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", v
 [target.'cfg(windows)'.dependencies]
 servo = { path = "../../vendor/servo/components/servo", package = "bao-servo", version = ">=0.5.25, <0.6.0", default-features = false, features = ["baked-in-resources", "no-wgl"] }
 
+# Host-process signal exit (REQ-CLI-002 e184): the webdriver host process must
+# terminate on SIGTERM/SIGINT — e177/e184: TERM closed the HTTP face but left
+# the browser process spinning a core, because nothing wired the signal to the
+# pump's exit. signal-hook-registry is the chaining registry tokio's own signal
+# face routes through: bao's action and the server thread's tokio action share
+# one trampoline regardless of registration order (a raw libc::sigaction would
+# be silently replaced by the later tokio install). unix-only: the defect
+# domain is the POSIX WPT vehicle; Windows console ctrl handling is a separate
+# face.
+[target.'cfg(unix)'.dependencies]
+signal-hook-registry = "1.4"
+# Watchdog liveness bound: _exit(2) skips a wedged atexit/teardown path.
+libc = "0.2"
+
 [dev-dependencies]
 bao_engine = { path = "../bao_engine", version = "^0.3.0" }
 # bao_cli_timeout_e2e_tests: kill(child, SIGINT) delivery for the

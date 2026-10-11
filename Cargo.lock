@@ -511,6 +511,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "signal-hook-registry",
  "url",
 ]
 
