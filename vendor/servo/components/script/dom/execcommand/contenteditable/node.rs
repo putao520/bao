@@ -929,10 +929,28 @@ pub(crate) fn restore_the_values(cx: &mut JSContext, values: Vec<RecordedValueAn
 
 impl HTMLBRElement {
     /// <https://w3c.github.io/editing/docs/execCommand/#extraneous-line-break>
-    fn is_extraneous_line_break(&self, _no_gc: &NoGC) -> bool {
+    ///
+    /// Layout form (ledger §e186; servo offsetHeight measurements, REQ-BRW-050
+    /// Chromium-parity anchor): `a<br>` renders exactly like `a` (a trailing
+    /// br adds no height), while `<p><br></p>` and each br of `<p>a<br><br></p>`
+    /// renders one line, and the spec's own example `foo<br><p>bar</p>` renders
+    /// without the break. A br renders the line box it terminates, so removing
+    /// it changes layout exactly when that line box had no other content — the
+    /// br is what gave its line height. The br is then also the spec's
+    /// collapsed line break ("begins a line box which has nothing else in
+    /// it"), which the collapsed-block-prop definition requires to be
+    /// non-extraneous.
+    ///
+    /// > extraneous ⇔ visible content precedes it on the line it terminates.
+    ///
+    /// A br met on the walk backward is always a true line boundary: a br
+    /// directly followed by another br is itself line-bearing, so the walk
+    /// never needs its visibility and the predicate stays a single acyclic
+    /// scan. Hidden (`display: none`) subtrees neither break lines nor show
+    /// content and are skipped wholesale.
+    pub(crate) fn is_extraneous_line_break(&self, no_gc: &NoGC) -> bool {
         let node = self.upcast::<Node>();
-        // > An extraneous line break is a br that has no visual effect, in that removing it from the DOM would not change layout,
-        // except that a br that is the sole child of an li is not extraneous.
+        // > except that a br that is the sole child of an li is not extraneous.
         if node
             .GetParentNode()
             .filter(|parent| parent.is::<HTMLLIElement>())
@@ -940,20 +958,97 @@ impl HTMLBRElement {
         {
             return false;
         }
-        // TODO: Figure out what this actually makes it have no visual effect
-        //
-        // e183: a structural approximation (br terminates a content-bearing
-        // line and nothing follows before the block boundary) was built and
-        // measured here — it flipped editing/run/insertparagraph.html 216 →
-        // 66 with zero file-local regression, but br visibility radiates
-        // through block-extend/line-break walks/delete placeholder logic
-        // across the whole editing suite (+184 unexpected in 17 files:
-        // join-different-white-space-style 96, ws-style 128, delete 24,
-        // forwarddelete 24, ...). Reverted pending a wave that rebalances
-        // those dependents; the placeholder logic that needed it lives
-        // locally in execcommand/commands/insertparagraph.rs
-        // (block_needs_placeholder).
-        !node.is_block_node()
+        // The white-space-style domain gate (§e174/e183 lesson #4, REQ-BRW-050):
+        // the Chrome-91 tentative data (insertparagraph-with-white-space-style
+        // et al.) owns every context carrying an explicit white-space
+        // declaration, where a br keeps the previous approximation; the
+        // Chrome-83 data carries no style attributes, so the two anchors are
+        // mutually exclusive on exactly this test and the layout form below
+        // never leaks into the styled domain.
+        if has_explicit_white_space_style(node) {
+            return !node.is_block_node();
+        }
+        // A br inside a display:none subtree has no layout effect by
+        // construction; the line scan below only sees rendered flow.
+        if node.is_in_display_none_region() {
+            return true;
+        }
+        self.has_visible_content_before_on_line(no_gc)
+    }
+
+    /// Whether visible content precedes this br on the line it terminates,
+    /// walking backward in tree order bounded by the nearest block ancestor
+    /// (both block boundaries and other brs end the line).
+    fn has_visible_content_before_on_line(&self, no_gc: &NoGC) -> bool {
+        let node = self.upcast::<Node>();
+        let mut cursor = DomRoot::from_ref(node);
+        loop {
+            let Some(mut candidate) = cursor.GetPreviousSibling() else {
+                // Climb: the line continues through inline ancestors only.
+                let Some(parent) = cursor.GetParentNode() else {
+                    return false;
+                };
+                if parent.is_block_node() {
+                    return false;
+                }
+                cursor = parent;
+                continue;
+            };
+            loop {
+                if candidate.is_in_display_none_region() {
+                    break; // skip the hidden subtree
+                }
+                if candidate.is::<HTMLBRElement>() || candidate.is_block_node() {
+                    return false; // line / block boundary
+                }
+                if let Some(text) = candidate.downcast::<Text>() {
+                    if !text.is_collapsed_whitespace_node(no_gc) {
+                        return true;
+                    }
+                    break; // collapsed whitespace shows nothing
+                }
+                match candidate.GetLastChild() {
+                    // Descend: only leaves (text, images) can show content.
+                    Some(child) => candidate = child,
+                    None => {
+                        if candidate.is::<HTMLImageElement>() {
+                            return true;
+                        }
+                        break; // childless inline element shows nothing
+                    }
+                }
+            }
+            // Exhausted (or skipped) this subtree; continue before it.
+            cursor = candidate;
+        }
+    }
+}
+
+pub(crate) fn has_explicit_white_space_style(node: &Node) -> bool {
+    let mut cursor = DomRoot::from_ref(node);
+    loop {
+        if let Some(element) = cursor.downcast::<Element>() {
+            let attrs = element.attrs();
+            if attrs.borrow().iter().any(|attr| {
+                attr.local_name() == &local_name!("style") &&
+                    attr.value().to_string()
+                        .split(';')
+                        .any(|decl| {
+                            decl.split_once(':').is_some_and(|(prop, _val)| {
+                                prop.trim().eq_ignore_ascii_case("white-space")
+                            })
+                        })
+            }) {
+                return true;
+            }
+        }
+        let Some(parent) = cursor.GetParentNode() else {
+            return false;
+        };
+        if parent.is_editing_host() {
+            return false;
+        }
+        cursor = parent;
     }
 }
 
@@ -1266,6 +1361,21 @@ impl Node {
         ) {
             return;
         }
+        // Chrome-83 anchor (WPT editing/run/fontsize.html `<p>[foo<p><br><p>bar]`
+        // family, REQ-BRW-050): a br that renders its own empty line takes no
+        // font size — Chrome leaves the empty block's placeholder br unwrapped
+        // and the selection reads indeterminate — while the color/face
+        // commands do wrap it (forecolor data expects
+        // `<font color=#0000ff><br></font>`). Abort for FontSize before the
+        // wrapper is built. Before this br was formattable the invisible
+        // abort above covered every br, so this restores the previously green
+        // fontsize behavior exactly.
+        if *command == CommandName::FontSize &&
+            self.is::<HTMLBRElement>() &&
+            !self.downcast::<HTMLBRElement>().unwrap().is_extraneous_line_break(cx.no_gc())
+        {
+            return;
+        }
         // Step 9. Let new parent be null.
         let mut new_parent = None;
         let document = self.owner_document();
@@ -1400,9 +1510,14 @@ impl Node {
             .downcast::<HTMLElement>()
             .expect("Must always create a HTML element");
         // Step 16. Insert new parent in node's parent before node.
-        if self
-            .GetParentNode()
-            .expect("Must always have a parent")
+        //
+        // The node can lose its parent to earlier steps of the same command
+        // flow (record/restore multitests detach styled shells mid-flight);
+        // a detached node has nothing to wrap — fail closed instead.
+        let Some(parent_of_node) = self.GetParentNode() else {
+            return;
+        };
+        if parent_of_node
             .InsertBefore(cx, new_parent.upcast(), Some(self))
             .is_err()
         {
@@ -1463,7 +1578,17 @@ impl Node {
         let new_parent = new_parent.upcast::<Node>();
         move_preserving_ranges(cx, self, |cx| new_parent.AppendChild(cx, self));
         // Step 21. If node is an Element and the effective command value of command for node is not loosely equivalent to new value:
-        if self.is::<Element>() &&
+        //
+        // Chrome-83 anchor (WPT editing/run/{forecolor,backcolor,hilitecolor,
+        // fontname}.html `<p>[foo<p><br><p>bar]` family, REQ-BRW-050): the
+        // undo arm never applies to a br — a br carries no specified command
+        // value of its own, so the re-check undoes the fresh color/face
+        // wrapper Chrome keeps on a rendered placeholder br. Before the br
+        // was formattable this arm was unreachable for brs (the invisible
+        // abort at Step 5 preceded it), so brs skipping Step 21 matches the
+        // previously green behavior exactly.
+        if !self.is::<HTMLBRElement>() &&
+            self.is::<Element>() &&
             !command.are_loosely_equivalent_values(
                 self.effective_command_value(command).as_ref(),
                 Some(new_value),

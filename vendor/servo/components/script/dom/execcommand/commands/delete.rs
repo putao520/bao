@@ -7,6 +7,7 @@ use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethod
 use script_bindings::inheritance::Castable;
 
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
+use crate::dom::Node;
 use crate::dom::document::Document;
 use crate::dom::element::Element;
 use crate::dom::execcommand::contenteditable::node::{
@@ -20,6 +21,46 @@ use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmltableelement::HTMLTableElement;
 use crate::dom::selection::Selection;
 use crate::dom::text::Text;
+
+/// Whether the backward-deletion walk may remove this node as the rendered
+/// line break the caret deletes: a br that gives its own empty line height
+/// (non-extraneous), or an inline shell whose only rendered content is such
+/// brs (`<b><br></b>`). Chromium anchor (REQ-BRW-050): Backspace/Delete over
+/// a rendered line break deletes the break — `<div><font><table><td>a</table>
+/// <br>{}<br><table><td>b</table></font></div>` deletes the preceding br,
+/// `<div><br><div>[]&nbsp;</div></div>` deletes the br before the caret while
+/// keeping both blocks, and `<b><br></b><div id=child>[]def` deletes the
+/// empty line including the wrapper (WPT editing/run/delete.html,
+/// editing/whitespaces/chrome-compat/delete-to-join-blocks.tentative.html,
+/// editing/other/delete-without-unwrapping-first-line-of-child-block.html).
+/// Collapsed-caret walks only: a non-collapsed selection never reaches these
+/// arms, so the delete-the-selection placeholder-br handling is untouched.
+fn is_removable_line_break_or_shell(node: &Node, no_gc: &js::context::NoGC) -> bool {
+    if !node.is_editable() ||
+        node.is_in_head_region() ||
+        node.is_in_display_none_region()
+    {
+        return false;
+    }
+    if let Some(br) = node.downcast::<HTMLBRElement>() {
+        return !br.is_extraneous_line_break(no_gc);
+    }
+    if !node.is::<Element>() || !node.is_inline_node() {
+        return false;
+    }
+    let mut has_rendered_break = false;
+    for child in node.children() {
+        if child.is_invisible(no_gc) {
+            continue;
+        }
+        if is_removable_line_break_or_shell(&child, no_gc) {
+            has_rendered_break = true;
+            continue;
+        }
+        return false;
+    }
+    has_rendered_break
+}
 
 /// <https://w3c.github.io/editing/docs/execCommand/#the-delete-command>
 pub(crate) fn execute_delete_command(
@@ -112,6 +153,19 @@ pub(crate) fn execute_delete_command(
             sibling.remove_self(cx);
             continue;
         }
+        // Chromium-compat extension (REQ-BRW-050): a rendered line break (or
+        // its inline shell) at the caret's previous position is the character
+        // Backspace deletes — remove it and finish the command, so exactly
+        // one break goes per delete and the surrounding blocks stay put
+        // (`<p>foo</p><br><p>[]bar</p>` keeps both paragraphs, the
+        // `<br><br>` family keeps its leading break).
+        if offset == 0 &&
+            let Some(sibling) = node.GetPreviousSibling() &&
+            is_removable_line_break_or_shell(&sibling, cx.no_gc())
+        {
+            sibling.remove_self(cx);
+            return true;
+        }
         // Step 4.2. Otherwise, if node has a child with index offset − 1 and that child is an editable invisible node,
         // remove that child from node, then subtract one from offset.
         if offset > 0 {
@@ -119,7 +173,7 @@ pub(crate) fn execute_delete_command(
                 .children_unrooted(cx.no_gc())
                 .nth(offset as usize - 1)
                 .map(|node| node.as_rooted());
-            if let Some(child) = child &&
+            if let Some(child) = child.clone() &&
                 child.is_editable() &&
                 child.is_invisible(cx.no_gc()) &&
                 !child.is_in_head_region()
@@ -127,6 +181,21 @@ pub(crate) fn execute_delete_command(
                 child.remove_self(cx);
                 offset -= 1;
                 continue;
+            }
+            // Chromium-compat extension (REQ-BRW-050), delete step 13's
+            // shape: a br preceded by a br or by a non-inline node is the
+            // rendered line break Backspace deletes
+            // (`<table>a</table><br>{}<br><table>b</table>` removes the
+            // break and leaves the tables).
+            if let Some(child) = child &&
+                child.is::<HTMLBRElement>() &&
+                is_removable_line_break_or_shell(&child, cx.no_gc()) &&
+                child.upcast::<Node>().GetPreviousSibling().is_some_and(|previous| {
+                    previous.is::<HTMLBRElement>() || !previous.is_inline_node()
+                })
+            {
+                child.remove_self(cx);
+                return true;
             }
         }
         // Step 4.3. Otherwise, if offset is zero and node is an inline node, or if node is an invisible node,

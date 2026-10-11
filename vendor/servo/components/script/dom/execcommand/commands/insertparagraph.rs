@@ -21,7 +21,8 @@ use crate::dom::element::Element;
 use crate::dom::execcommand::basecommand::CommandName;
 use crate::dom::execcommand::commands::insertlinebreak::execute_insert_line_break_command;
 use crate::dom::execcommand::contenteditable::node::{
-    NodeOrString, is_allowed_child, node_matches_local_name, split_the_parent, wrap_node_list,
+    NodeOrString, has_explicit_white_space_style, is_allowed_child, node_matches_local_name,
+    split_the_parent, wrap_node_list,
 };
 use crate::dom::html::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::html::htmlbrelement::HTMLBRElement;
@@ -967,33 +968,6 @@ fn append_placeholder(
 /// insertparagraph-with-white-space-style domain (Chrome-91 tentative data,
 /// e174 anchor), where the split keeps the e174 semantics; everywhere else
 /// the Chrome-83 split semantics apply (editing/run/insertparagraph.html).
-fn has_explicit_white_space_style(node: &Node) -> bool {
-    let mut cursor = DomRoot::from_ref(node);
-    loop {
-        if let Some(element) = cursor.downcast::<Element>() {
-            let attrs = element.attrs();
-            if attrs.borrow().iter().any(|attr| {
-                attr.local_name() == &local_name!("style") &&
-                    attr.value().to_string()
-                        .split(';')
-                        .any(|decl| {
-                            decl.split_once(':').is_some_and(|(prop, _val)| {
-                                prop.trim().eq_ignore_ascii_case("white-space")
-                            })
-                        })
-            }) {
-                return true;
-            }
-        }
-        let Some(parent) = cursor.GetParentNode() else {
-            return false;
-        };
-        if parent.is_editing_host() {
-            return false;
-        }
-        cursor = parent;
-    }
-}
 
 /// Embedded or invisible line content that nonetheless belongs to a line as
 /// its own element: the tentative void-element family splits before an

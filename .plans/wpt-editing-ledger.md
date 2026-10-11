@@ -329,3 +329,28 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **证据资产(留存)**:`~/code/tools/servo/tests/wpt/tests/editing/other/e187-probe.html`(computed-display 矩阵)+ `e187-probe2.html`(实际 insertParagraph 行为,documentElement.innerHTML 全景),已登记 `/var/tmp/e185-veh/meta/MANIFEST.json`(testharness 两项,共享载具附加面,如实披露);raw log `/tmp/e187-probe{,2}.raw.log`+console;Chrome 探针 `/tmp/e187-chrome-probe.html`。deletion-manifest:两探针文件+MANIFEST 两项待后续 flex 合同验收后清除。
 
 **教训**:①「样式层不可得」类归因必须先做 computed-style 直接探针再立项——e183 用引擎内部 Debug 形态(无元素归属记录)反推,方向错置;真 Chrome 同页面对照是本类分歧的一票判据(本机 `google-chrome --headless=new --dump-dom` 零依赖可用)。②wptrunner 私有 MANIFEST 增补测试文件可直接改 JSON(items.testharness 树 +sha1+[None,{}]),无需全量 manifest 重建。③ledger 残留分类的「探针实证」措辞必须落文件路径,否则下波无法复核证据链。
+
+### e186(is_extraneous_line_break 全局再平衡——br 可见性 spec 正确形态落地,e183 遗留债清偿,2026-10-12,REQ-BRW-050/REQ-BRW-002)
+
+**谓词终形(布局锚定,servo offsetHeight 实测,WD 探针 /tmp/e186-wd-probe.py)**:`a<br>` 与 `a` 同高(trailing br 零高度)、`<p><br></p>` 与 `a<br><br>` 每个 line-bearing br 各渲染一行、spec 自例 `foo<br><p>bar</p>` 渲染不含该 br——br 渲染它所终结的行盒,移除它改变布局 ⟺ 该行盒本无其他内容。故 **extraneous ⇔ 其行内(br 之前、同 block 之内)有可见内容**;非多余 ⟺ br 是其行的首个渲染物(spec "collapsed line break" 的结构等价形,与 collapsed-block-prop 定义自洽)。单次后向扫描(`has_visible_content_before_on_line`):行内遇 br/block 即停(前向 br 恒为真行界——直接后随另一 br 的 br 必自身 line-bearing,无需其可见性 ⟹ 判定天然无环)、display:none 子树整体跳过、Text 用 is_collapsed_whitespace_node、空 inline 壳跳过、img 即内容。e183 的转置近似("终止有内容行且其后无内容")被数据否定:其 mid-line br 可见性正是 8 格 insertparagraph 新红的来源。**white-space 域门**:显式 white-space 声明上下文(链至 editing host)保持旧近似(`!is_block_node()`),Chrome-83 数据零 style 属性 ⟹ 两代锚在该判据上互斥可测(e183 教训④沿用);`has_explicit_white_space_style` 自 insertparagraph.rs 上移 contenteditable/node.rs pub(crate) 单源。
+
+**依赖方再平衡(逐文件账)**:
+1. `commands/delete.rs` 后向 walk 4.1/4.2 加 `is_removable_at_caret`→终形 `is_removable_line_break_or_shell`(line-bearing br,或仅由其构成/不可见内容的 inline 壳如 `<b><br></b>`):**删除即 return true**(一次 Backspace 恰删一个渲染行界,4.1 无 prev 形状 guard——v3 的 guard 反而挡掉 `<br><br><div>[]` 族;4.2 保留 delete-step-13 形状:prev 是 br 或非 inline);9.2/16.1 维持 invisible-only(v3 全臂扩展曾致 delete 15 新红,已回退)。anchor:run/delete.html `<table>a</table><br>{}<br><table>b</table>`、chrome-compat/delete-to-join-blocks `<div><br><div>[]&nbsp;`、other/delete-without-unwrapping `<b><br></b><div id=child>[]def`。
+2. `contenteditable/node.rs` force_the_value 三点:①Step 16 前补 parent 再查(restoration.html multitest 流内节点被同命令流先行 detach 时 `Must always have a parent` panic——**CRASH 级,已根修**);②FontSize 对 line-bearing br 直接 abort(Chrome-83:fontsize 不给占位 br 施 font-size 且 indeterm=true);③Step 21 undo 臂跳过 br(br 无自身 specified value,复检恒撤新裹的 color/face wrapper;Chrome 保留 `<font color=#0000ff><br></font>`)。徽记:force 内 br 类判据全部锚 Chrome-83 数据文件。
+3. `commands/insertparagraph.rs`:仅 import 面单移植,域门逻辑零触碰(`block_needs_placeholder` 的显式 br 子句保留为 belt-and-braces)。
+
+**验收(RED→GREEN,基线=HEAD 63ffff8c3 干净重建 bao.e186-red,/var/tmp/e186-wt + 私有 target /var/tmp/e186-target,sccache;载具 /var/tmp/e186-veh,flock 端口互斥,--processes 3)**:
+- 目标文件:全域两轮 run/insertparagraph.html **79 → 66 意外**(13 清偿,0 新红),66 带 v5/v6 双二进制三跑稳定(79↔66 的 ±13 flake 带收敛到 66 侧);
+- 全域(editing 855 tests,red_full vs green_v6_full 逐文件对拍):**NEW-RED 仅 4 格/2 文件**(见残留登记),非目标文件逐字节保持;`cargo check --profile test-ci -p bao-servo-script` RC=0,三触碰文件零警告;
+- 大宗正向:run/delete +33、run/forwarddelete +25、run/insertparagraph +6、indent +4、bold/italic/strike/sub/sup/underline/createlink +2 各、other/delete +13(均 ini-expected:FAIL 翻 PASS,双跑稳定)——e183 时代 "delete 24/forwarddelete 24" 辐射族在本形态下反转为清偿;
+- **restoration.html CRASH 修复**(force Step-16 panic,v5 全量实证→v6 消失)。
+
+**ini 自治**:88 条双跑稳定 expected:FAIL 删除(run/delete 33、run/forwarddelete 25、run/insertparagraph 26、run/inserttext 4;probe6∩green_v6_full 逐 (variant,subtest) 配对),escape 语义 = `]`→`\]` 与 `\`→`\\`(inserttext 的 `"\\n"` 键实证);更新后定向复跑(载具 meta 副本 /var/tmp/e186-meta)四文件 unexpected-PASS 全归零、总数 67=66+1 逐格保持。
+
+**残留登记(4 格/2 文件,均非本波谓词回归面,root-cause 已闭合)**:
+1. run/forecolor.html + run/fontname.html 各 1(styleWithcss=false indeterm):execCommand 后 br 的 computed color 走 style() 缓存读取到 mutation 前 style(rgb(0,0,0)),styled text 读到 #0000ff → indeterm 误 true。**style 新鲜度域**(静态页 getComputedStyle(br) 实测正确 rgb(0,0,255),/tmp/e186-static-probe.py)——修复点在 style 查询/失效侧,超出本波编辑谓词 scope,独立小波候选;
+2. other/delete-without-unwrapping-first-line-of-child-block.html 2 格 getTargetRanges:**基线未执行的新暴露格**(baseline 该文件 207 subtest entries,v6 209——前序格行为修复后测试首次跑到这两格):servo 键盘 Backspace 路径的 beforeinput 不携带 target ranges(仅 EditContext 路径 set_target_ranges,execcommands.rs Step 4.2 构造点无 ranges)——beforeinput 功能缺口,非本波回归,独立功能波候选。
+
+**deletion-manifest**:无业务删除;ini 88 条 = 双跑 PASS 实证的 stale expected 替换(逐条 replacement)。工作树 /var/tmp/e186-wt(HEAD 63ffff8c3 快照)与 /var/tmp/e186-target(bao.e186-red/v6 及 probe 系二进制)、/var/tmp/e186-veh(全量 raw log ×3 + probe ×7)留证;EDA 探针 /tmp/e186-{wd,cell,style,indeterm,static}-probe.py。
+
+**教训**:①「全局谓词升级」的正确姿势=先把谓词收窄到数据可证的极小核(本波 v1 双臂→v2 单臂的收缩让 8 格辐射直接消失),再按逐格证据加依赖方分支——e183 的转置近似整面回滚,本波单臂形态零目标辐射;②迭代中间态的"新红"必须先验基线完备性再归因(delete-without-unwrapping 的 2 格基线根本没跑——celldiff 的集合差分把"未执行"计成"新红");③walk 双臂共享 continue 语义时,可见性集合扩容的臂必须独立复检推进语义(v3 的 9.2/16.1 全臂扩展 = delete 15 新红);④forecolor/fontsize 对同一 placeholder br 的相反期望(裹 vs 不裹)是 Chrome-83 数据的固有非对称,数据锚点必须落到 force_the_value 的具体 Step 上而不是谓词层。
