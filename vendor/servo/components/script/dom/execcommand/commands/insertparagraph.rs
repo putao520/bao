@@ -6,7 +6,7 @@ use html5ever::local_name;
 use js::context::{JSContext, NoGC};
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::inheritance::Castable;
-use style::values::specified::box_::DisplayOutside;
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
 
 use crate::dom::Node;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
@@ -118,6 +118,19 @@ pub(crate) fn execute_insert_paragraph_command(
     // The white-space-style domain gate (see has_explicit_white_space_style):
     // the e174 tentative-data semantics own every explicitly styled context.
     let ws_styled = has_explicit_white_space_style(&node);
+    // Chrome-142 flex/grid atomic items (editing/data/insertparagraph.js
+    // flex/grid scenarios, REQ-BRW-050): the caret's line lives in the flex
+    // or grid item — the caret's nearest block ancestor, blockified by the
+    // container — and the paragraph split is that item's sibling split, the
+    // container untouched (`<div style=display:flex><span>a[]bc</span></div>`
+    // → `<div style="display:flex"><span>a</span><span>bc</span></div>`) —
+    // not the container clone-and-split the container walk below produces.
+    // No paragraph element is created, so the separator value is irrelevant.
+    if !ws_styled &&
+        let Some(item) = flex_or_grid_item_ancestor(&node)
+    {
+        return split_flex_or_grid_item(cx, document, selection, &item, &node, offset);
+    }
     // The caret's inline ancestors: a placeholder line carries clones of
     // them so the typing context survives (`<p><b>foo[]</b></p>` →
     // `<p><b><br></b></p>`). Collected before the boundary lift promotes the
@@ -961,6 +974,78 @@ fn append_placeholder(
     if host.AppendChild(cx, br.upcast()).is_err() {
         unreachable!("Must always be able to append");
     }
+}
+
+/// The caret's nearest block ancestor when that block is an atomic flex or
+/// grid item: its parent is an element whose computed display lays items out
+/// (`flex`/`inline-flex`, `grid`/`inline-grid` — the inline variants share
+/// the inside value with the block ones). None when no block ancestor is
+/// found or the nearest block's parent is not an item container.
+fn flex_or_grid_item_ancestor(node: &Node) -> Option<DomRoot<Node>> {
+    let mut cursor = DomRoot::from_ref(node);
+    loop {
+        if cursor.is_block_node() {
+            let parent = cursor.GetParentNode()?;
+            let inside = parent
+                .downcast::<Element>()?
+                .resolved_display_inside_value()?;
+            return matches!(
+                inside,
+                DisplayInside::Flex | DisplayInside::Grid | DisplayInside::GridLanes
+            )
+            .then_some(cursor);
+        }
+        cursor = cursor.GetParentNode()?;
+    }
+}
+
+/// Chrome-142 flex/grid atomic item split (editing/data/insertparagraph.js
+/// flex/grid scenarios, REQ-BRW-050): the content after the caret moves into
+/// a clone of the item inserted right after it, the item keeps the content
+/// before the caret, and the container is untouched. A half that would
+/// render nothing takes a br placeholder (`[]abc` →
+/// `<span><br></span><span>abc</span>`, `abc[]` →
+/// `<span>abc</span><span><br></span>`), and the caret lands at the start of
+/// the tail half.
+fn split_flex_or_grid_item(
+    cx: &mut JSContext,
+    document: &Document,
+    selection: &Selection,
+    item: &Node,
+    node: &Node,
+    offset: u32,
+) -> bool {
+    let tail_node = item
+        .CloneNode(cx, false)
+        .expect("Must always be able to clone");
+    // The tail half (from the caret to the item's end) moves into the clone;
+    // the head half stays in the item.
+    let tail_range = document.CreateRange(cx);
+    let _ = tail_range.SetStart(cx.no_gc(), node, offset);
+    let _ = tail_range.SetEnd(cx.no_gc(), item, item.len());
+    if !tail_range.collapsed() &&
+        let Ok(frag) = tail_range.ExtractContents(cx)
+    {
+        let _ = tail_node.AppendChild(cx, frag.upcast::<Node>());
+    }
+    // The tail half follows the item as its immediate sibling.
+    if item
+        .GetParentNode()
+        .expect("Item must have a parent")
+        .InsertBefore(cx, &tail_node, item.GetNextSibling().as_deref())
+        .is_err()
+    {
+        unreachable!("Must always be able to insert");
+    }
+    // A half whose content renders no line gets a br placeholder.
+    if block_needs_placeholder(cx.no_gc(), item) {
+        append_placeholder(cx, document, item, &[], false);
+    }
+    if block_needs_placeholder(cx.no_gc(), &tail_node) {
+        append_placeholder(cx, document, &tail_node, &[], false);
+    }
+    let _ = selection.Collapse(cx, Some(&tail_node), 0);
+    true
 }
 
 /// Whether any element between the caret and its editing host carries an

@@ -8,7 +8,7 @@ use script_bindings::inheritance::Castable;
 use style::attr::AttrValue;
 use style::properties::{LonghandId, PropertyDeclaration, PropertyDeclarationId, ShorthandId};
 use style::values::specified::TextDecorationLine;
-use style::values::specified::box_::DisplayOutside;
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
 
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::inheritance::{ElementTypeId, HTMLElementTypeId, NodeTypeId};
@@ -25,6 +25,12 @@ use crate::dom::node::node::{Node, NodeTraits};
 impl Element {
     pub(crate) fn resolved_display_value(&self) -> Option<DisplayOutside> {
         self.style().map(|style| style.get_box().display.outside())
+    }
+
+    /// The computed display inside value of this element, if it has been
+    /// styled (None for detached or unstyled elements).
+    pub(crate) fn resolved_display_inside_value(&self) -> Option<DisplayInside> {
+        self.style().map(|style| style.get_box().display.inside())
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#specified-command-value>
