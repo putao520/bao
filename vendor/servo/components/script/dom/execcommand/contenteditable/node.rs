@@ -911,7 +911,7 @@ pub(crate) fn restore_the_values(cx: &mut JSContext, values: Vec<RecordedValueAn
 
 impl HTMLBRElement {
     /// <https://w3c.github.io/editing/docs/execCommand/#extraneous-line-break>
-    fn is_extraneous_line_break(&self) -> bool {
+    fn is_extraneous_line_break(&self, _no_gc: &NoGC) -> bool {
         let node = self.upcast::<Node>();
         // > An extraneous line break is a br that has no visual effect, in that removing it from the DOM would not change layout,
         // except that a br that is the sole child of an li is not extraneous.
@@ -923,6 +923,18 @@ impl HTMLBRElement {
             return false;
         }
         // TODO: Figure out what this actually makes it have no visual effect
+        //
+        // e183: a structural approximation (br terminates a content-bearing
+        // line and nothing follows before the block boundary) was built and
+        // measured here — it flipped editing/run/insertparagraph.html 216 →
+        // 66 with zero file-local regression, but br visibility radiates
+        // through block-extend/line-break walks/delete placeholder logic
+        // across the whole editing suite (+184 unexpected in 17 files:
+        // join-different-white-space-style 96, ws-style 128, delete 24,
+        // forwarddelete 24, ...). Reverted pending a wave that rebalances
+        // those dependents; the placeholder logic that needed it lives
+        // locally in execcommand/commands/insertparagraph.rs
+        // (block_needs_placeholder).
         !node.is_block_node()
     }
 }
@@ -1546,7 +1558,7 @@ impl Node {
         }
         if self
             .downcast::<HTMLBRElement>()
-            .is_some_and(|br| !br.is_extraneous_line_break())
+            .is_some_and(|br| !br.is_extraneous_line_break(no_gc))
         {
             return true;
         }
@@ -1853,7 +1865,7 @@ impl Node {
         // TODO: Check for collapsed line break
         if self
             .downcast::<HTMLBRElement>()
-            .is_some_and(|br| !br.is_extraneous_line_break())
+            .is_some_and(|br| !br.is_extraneous_line_break(no_gc))
         {
             return true;
         }
@@ -2345,7 +2357,7 @@ impl Node {
         loop {
             if ref_.is_invisible(cx.no_gc()) &&
                 ref_.downcast::<HTMLBRElement>()
-                    .is_none_or(|br| !br.is_extraneous_line_break()) &&
+                    .is_none_or(|br| !br.is_extraneous_line_break(cx.no_gc())) &&
                 let Some(parent) = parent.as_ref() &&
                 ref_ != *parent
             {
@@ -2360,7 +2372,7 @@ impl Node {
         // Step 5. If ref is an editable extraneous line break, remove it from its parent.
         if ref_.is_editable() &&
             ref_.downcast::<HTMLBRElement>()
-                .is_some_and(|br| br.is_extraneous_line_break())
+                .is_some_and(|br| br.is_extraneous_line_break(cx.no_gc()))
         {
             assert!(ref_.has_parent());
             ref_.remove_self(cx);
@@ -2381,7 +2393,7 @@ impl Node {
             if ref_.is_invisible(cx.no_gc()) &&
                 *ref_ != *self &&
                 ref_.downcast::<HTMLBRElement>()
-                    .is_none_or(|br| !br.is_extraneous_line_break()) &&
+                    .is_none_or(|br| !br.is_extraneous_line_break(cx.no_gc())) &&
                 let Some(parent_of_ref) = ref_.GetParentNode()
             {
                 ref_ = match ref_.preceding_nodes(&parent_of_ref).nth(0) {
@@ -2395,7 +2407,7 @@ impl Node {
         // Step 4. If ref is an editable extraneous line break:
         if ref_.is_editable() &&
             ref_.downcast::<HTMLBRElement>()
-                .is_some_and(|br| br.is_extraneous_line_break())
+                .is_some_and(|br| br.is_extraneous_line_break(cx.no_gc()))
         {
             // Step 4.1. While ref's parent is editable and invisible, set ref to its parent.
             loop {

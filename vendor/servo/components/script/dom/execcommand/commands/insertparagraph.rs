@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use html5ever::local_name;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::inheritance::Castable;
 use style::values::specified::box_::DisplayOutside;
@@ -23,6 +23,7 @@ use crate::dom::execcommand::commands::insertlinebreak::execute_insert_line_brea
 use crate::dom::execcommand::contenteditable::node::{
     NodeOrString, is_allowed_child, node_matches_local_name, split_the_parent, wrap_node_list,
 };
+use crate::dom::html::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::selection::Selection;
@@ -57,14 +58,32 @@ pub(crate) fn execute_insert_paragraph_command(
         return insert_paragraph_line_feeds(cx, document, selection);
     }
 
-    // Step 1. Delete the selection.
-    selection.delete_the_selection(
-        cx,
-        document,
-        Default::default(),
-        Default::default(),
-        Default::default(),
-    );
+    // The white-space-style domain gate (see has_explicit_white_space_style):
+    // the e174 tentative-data semantics own every explicitly styled context,
+    // so the gate is taken on the caret's surroundings before any mutation.
+    let ws_styled = selection
+        .active_range(cx)
+        .is_some_and(|range| has_explicit_white_space_style(&range.start_container()));
+    // Step 1. Delete the selection. Chrome-83 anchor (WPT editing/run/
+    // insertparagraph.html `a&nbsp;[] b` family, REQ-BRW-002): with a
+    // collapsed caret the deletion is empty — its only effect would be the
+    // whitespace canonicalization at the caret, which rewrites runs that
+    // Chrome leaves untouched across the paragraph split (the split-boundary
+    // rebalance below owns those). A real selection still deletes, and the
+    // white-space-style domain keeps the delete entirely.
+    if ws_styled ||
+        !selection
+            .active_range(cx)
+            .is_some_and(|range| range.collapsed())
+    {
+        selection.delete_the_selection(
+            cx,
+            document,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+    }
     // Step 3. Let node and offset be the active range's start node and offset.
     let (mut node, mut offset) = selection.start_boundary(cx);
     // Step 2. If the active range's start node is neither editable
@@ -95,6 +114,69 @@ pub(crate) fn execute_insert_paragraph_command(
     }
     // Step 7. Call collapse(node, offset) on the context object's selection.
     let _ = selection.Collapse(cx, Some(&node), offset);
+    // The white-space-style domain gate (see has_explicit_white_space_style):
+    // the e174 tentative-data semantics own every explicitly styled context.
+    let ws_styled = has_explicit_white_space_style(&node);
+    // The caret's inline ancestors: a placeholder line carries clones of
+    // them so the typing context survives (`<p><b>foo[]</b></p>` →
+    // `<p><b><br></b></p>`). Collected before the boundary lift promotes the
+    // caret out of the inline chain. Invisible shells (display:none, e.g. a
+    // script) are not typing context, and an anchor cuts the chain entirely —
+    // a new line after a link must not inherit the link or anything inside it
+    // (`<p><a><b>[]foo</b></a></p>` → `<p><br></p>`).
+    let inline_chain: Vec<DomRoot<Node>> = {
+        let mut chain: Vec<DomRoot<Node>> = Vec::new();
+        let mut cursor = node.clone();
+        loop {
+            // An anchor cuts the chain entirely — a new line after a link must
+            // not inherit the link or anything inside it
+            // (`<p><a><b>[]foo</b></a></p>` → `<p><br></p>`) — and so does any
+            // replaced or embedded element: it is content, not a typing
+            // context (non-splittable meter/progress/object/... keep their
+            // own line intact).
+            if cursor.is::<HTMLAnchorElement>() ||
+                cursor
+                    .downcast::<Element>()
+                    .is_some_and(|element| {
+                        matches!(
+                            *element.local_name(),
+                            local_name!("img") |
+                                local_name!("br") |
+                                local_name!("embed") |
+                                local_name!("object") |
+                                local_name!("iframe") |
+                                local_name!("video") |
+                                local_name!("audio") |
+                                local_name!("canvas") |
+                                local_name!("meter") |
+                                local_name!("progress") |
+                                local_name!("input") |
+                                local_name!("select") |
+                                local_name!("textarea") |
+                                local_name!("hr")
+                        )
+                    })
+            {
+                chain.clear();
+                break;
+            }
+            if cursor.is_inline_node() && !cursor.is_invisible(cx.no_gc()) {
+                chain.push(cursor.clone());
+            }
+            let Some(parent) = cursor.GetParentNode() else {
+                break;
+            };
+            if parent.is_block_node() ||
+                parent.is_single_line_container() ||
+                parent.is_editing_host()
+            {
+                break;
+            }
+            cursor = parent;
+        }
+        chain.reverse();
+        chain
+    };
     // Fork-autonomous branch (WPT editing/other/insertparagraph-with-white-
     // space-style, Chrome-91 anchored, REQ-BRW-002): an inline editing host
     // (display: inline/inline-block) takes a line break instead of a
@@ -211,14 +293,17 @@ pub(crate) fn execute_insert_paragraph_command(
             // Step 11.3. Let node list be a list of nodes, initially empty.
             // Step 11.5. If node list is empty:
             //
-            // Fork-autonomous rework (WPT insertparagraph-with-white-space-style,
-            // Chrome-91 anchored, REQ-BRW-002): instead of the spec's empty-
-            // paragraph drop at the caret (with its bail when the caret's node
-            // cannot contain blocks), split the caret's line inside its block:
-            // the content after the caret moves into the new paragraph —
-            // unless nothing visible precedes the caret, in which case the
-            // content stays in place and the new paragraph (with a br
-            // placeholder) is inserted at the caret.
+            // Fork-autonomous rework (WPT editing/run/insertparagraph.html,
+            // Chrome-83 anchored, REQ-BRW-002): instead of the spec's empty-
+            // paragraph drop at the caret, Chromium's createBlock: the
+            // caret's line is split into two halves, each wrapped in its own
+            // default single-line container. The head half runs from the
+            // nearest preceding br or block start to the caret; the tail half
+            // runs from the caret to the block's end (line-terminating brs
+            // included, following blocks excluded). An invisible-only tail —
+            // collapsed trailing whitespace, an emptied inline shell — is not
+            // a line of its own and stays with the head half, and a container
+            // whose only content is a moved br takes it as the placeholder.
             let mut block = node.clone();
             while !block.is_block_node() &&
                 let Some(parent) = block.GetParentNode()
@@ -232,14 +317,15 @@ pub(crate) fn execute_insert_paragraph_command(
             ) {
                 return true;
             }
-            // Step 11.5.2. Set container to the result of calling createElement(tag)
-            // on the context object.
-            let new_paragraph = document.create_element(cx, tag.str());
-            let new_paragraph_node = DomRoot::upcast::<Node>(new_paragraph);
-            let has_visible_before = node
-                .children()
-                .take(offset as usize)
-                .any(|child| child.is_visible(cx.no_gc()));
+            // Chrome-83 flex/grid atomic items (editing/run/insertparagraph.html
+            // display:flex family): the caret's line lives in the flex item —
+            // an inline child of the flex or grid container — and the split is
+            // a sibling split of that item with the container untouched
+            // (`<div style=display:flex><span>a[]bc</span></div>` →
+            // `<span>a</span><span>bc</span>`), not a paragraph pair inside the
+            // container. The head clone takes the content before the caret;
+            // the item keeps the tail; a side that would render nothing takes
+            // a br placeholder.
             // Fork-autonomous typing-style carry (same test family): typed
             // text after a paragraph split continues the inline style of the
             // text before the caret (Chromium behavior). The exec-command
@@ -257,78 +343,147 @@ pub(crate) fn execute_insert_paragraph_command(
             } else {
                 None
             };
-            if has_visible_before {
-                // Move the tail (caret .. end of the caret's inline run)
-                // into the new paragraph; the extraction splits the inline
-                // ancestors of the caret. The tail is bounded by the first
-                // block node following the caret within the block —
-                // following blocks are not part of this line.
-                let (end_node, end_offset) = if node == block {
-                    // The caret sits directly in the block: the run ends at
-                    // the first block child after the offset.
-                    match block
-                        .children()
-                        .enumerate()
-                        .skip(offset as usize)
-                        .find(|(_, child)| child.is_block_node())
-                    {
-                        Some((index, _)) => (block.clone(), index as u32),
-                        None => (block.clone(), block.len()),
-                    }
-                } else {
-                    let mut boundary: Option<(DomRoot<Node>, u32)> = None;
-                    for following in
-                        node.following_nodes_unrooted(cx.no_gc(), &block, ShadowIncluding::No)
-                    {
-                        if following.is_block_node() {
-                            let following = following.as_rooted();
-                            boundary = Some((
-                                following.GetParentNode().expect("Must have a parent"),
-                                following.index() as u32,
-                            ));
-                            break;
-                        }
-                    }
-                    boundary.unwrap_or((block.clone(), block.len()))
-                };
-                let new_line_range = document.CreateRange(cx);
-                let _ = new_line_range.SetStart(cx.no_gc(), &node, offset);
-                let _ = new_line_range.SetEnd(cx.no_gc(), &end_node, end_offset);
-                if let Ok(frag) = new_line_range.ExtractContents(cx) {
-                    let _ = new_paragraph_node.AppendChild(cx, frag.upcast::<Node>());
-                }
-                // The extraction left the caret inside the truncated inline
-                // ancestors; lift it back out to the block level so the
-                // paragraph is inserted there, not nested inside them.
-                let (mut lift_node, mut lift_offset) = selection.start_boundary(cx);
-                while lift_node.is_inline_node() &&
-                    let Some(parent) = lift_node.GetParentNode()
+            // The two half containers, created up front (the head element is
+            // appended to only once the head half has been extracted).
+            let head = document.create_element(cx, tag.str());
+            let head_node = DomRoot::upcast::<Node>(head);
+            // Tail half first: from the caret to the block's end, bounded
+            // exclusively by the first following block child — following
+            // blocks are not part of this line, line-terminating brs are.
+            // The tail is taken before the head container is inserted, so the
+            // walk never runs into it.
+            let (tail_node, tail_offset) = (node.clone(), offset);
+            let (end_node, end_offset) = if tail_node == block {
+                // The caret sits directly in the block: the line ends at
+                // the first block child after the offset.
+                match block
+                    .children()
+                    .enumerate()
+                    .skip(tail_offset as usize)
+                    .find(|(_, child)| child.is_block_node())
                 {
-                    if lift_offset != lift_node.len() {
+                    Some((index, _)) => (block.clone(), index as u32),
+                    None => (block.clone(), block.len()),
+                }
+            } else {
+                let mut boundary: Option<(DomRoot<Node>, u32)> = None;
+                for following in
+                    tail_node.following_nodes_unrooted(cx.no_gc(), &block, ShadowIncluding::No)
+                {
+                    if following.is_block_node() {
+                        let following = following.as_rooted();
+                        boundary = Some((
+                            following.GetParentNode().expect("Must have a parent"),
+                            following.index() as u32,
+                        ));
                         break;
                     }
-                    lift_offset = 1 + lift_node.index();
-                    lift_node = parent;
                 }
-                let _ = selection.Collapse(cx, Some(&lift_node), lift_offset);
+                boundary.unwrap_or((block.clone(), block.len()))
+            };
+            // Step 11.5.2. Set container to the result of calling createElement(tag)
+            // on the context object.
+            let new_paragraph = document.create_element(cx, tag.str());
+            let new_paragraph_node = DomRoot::upcast::<Node>(new_paragraph);
+            let mut tail_moved = false;
+            let tail_range = document.CreateRange(cx);
+            let _ = tail_range.SetStart(cx.no_gc(), &tail_node, tail_offset);
+            let _ = tail_range.SetEnd(cx.no_gc(), &end_node, end_offset);
+            if !tail_range.collapsed() &&
+                let Ok(frag) = tail_range.ExtractContents(cx)
+            {
+                let frag_node = frag.upcast::<Node>();
+                // An invisible-only tail renders no line: trailing collapsed
+                // whitespace or an emptied inline shell rides with the head
+                // half (`abc[] ` keeps its plain trailing space on the head
+                // line), while a tail with content moves and its leading
+                // whitespace run takes the Chrome-83 non-breaking form at the
+                // new line start via the rebalance below (`a[] b` → `&nbsp;b`).
+                tail_moved = if ws_styled {
+                    frag_node.children().count() > 0
+                } else {
+                    frag_node.children().any(|child| {
+                        (child.is_visible(cx.no_gc()) ||
+                            child.is::<HTMLBRElement>() ||
+                            is_embedded_line_content(&child)) &&
+                            has_non_whitespace_text(&child)
+                    })
+                };
+                let host: &Node = if tail_moved {
+                    &new_paragraph_node
+                } else {
+                    &head_node
+                };
+                let _ = host.AppendChild(cx, frag_node);
             }
-            // Step 11.5.3. Call insertNode(container) on the active range.
-            if selection
-                .expect_active_range(cx)
-                .InsertNode(cx, &new_paragraph_node)
+            // Head half: from the line start to the caret. The extraction
+            // splits the inline ancestors shared with the caret.
+            let head_range = document.CreateRange(cx);
+            let (head_start_node, head_start_offset) =
+                line_start_boundary(&node, offset, &block);
+            let _ = head_range.SetStart(cx.no_gc(), &head_start_node, head_start_offset);
+            let _ = head_range.SetEnd(cx.no_gc(), &node, offset);
+            if !head_range.collapsed() &&
+                let Ok(frag) = head_range.ExtractContents(cx)
+            {
+                let _ = head_node.AppendChild(cx, frag.upcast::<Node>());
+            }
+            // The extraction leaves the caret inside truncated inline
+            // ancestors: drop the shells it emptied, then lift to the block
+            // level so the head container lands there instead of nesting
+            // inside the split inline chain (`<b>foo[]bar</b>` → two divs
+            // carrying <b> halves, not divs inside the original <b>).
+            strip_emptied_inline_shells(cx, selection);
+            let (mut junction_node, mut junction_offset) = selection.start_boundary(cx);
+            while junction_node.is_inline_node() &&
+                !junction_node.is_editing_host() &&
+                let Some(parent) = junction_node.GetParentNode()
+            {
+                if junction_offset == 0 {
+                    junction_offset = junction_node.index();
+                } else if junction_offset == junction_node.len() {
+                    junction_offset = 1 + junction_node.index();
+                } else {
+                    break;
+                }
+                junction_node = parent;
+            }
+            insert_node_at(cx, &junction_node, junction_offset, &head_node);
+            if block_needs_placeholder(cx.no_gc(), &head_node) {
+                append_placeholder(cx, document, &head_node, &[], ws_styled);
+            }
+            // Step 11.5.3. The tail container follows the head container.
+            let tail_parent = head_node
+                .GetParentNode()
+                .expect("Head container must be in the tree");
+            if tail_parent
+                .InsertBefore(
+                    cx,
+                    &new_paragraph_node,
+                    head_node.GetNextSibling().as_deref(),
+                )
                 .is_err()
             {
                 unreachable!("Must always be able to insert");
             }
-            // Step 11.5.4. A paragraph with no visible children gets a br
-            // placeholder as its last child.
-            if new_paragraph_node
-                .children()
-                .all(|child| child.is_invisible(cx.no_gc()))
-            {
-                let br = document.create_element(cx, "br");
-                if new_paragraph_node.AppendChild(cx, br.upcast()).is_err() {
-                    unreachable!("Must always be able to append");
+            // Step 11.5.4. A container whose content renders no line gets a
+            // br placeholder; a moved br already is one.
+            if block_needs_placeholder(cx.no_gc(), &new_paragraph_node) {
+                append_placeholder(cx, document, &new_paragraph_node, &[], ws_styled);
+            }
+            // Chrome-83 split-boundary whitespace forms (same test family):
+            // when content moved into the tail, the head's trailing collapsible
+            // run becomes non-breaking at the new line end (`a []b` →
+            // `a&nbsp;`) and the tail's leading run takes the Chrome-83
+            // non-breaking-first form at the new line start (`a[] b` →
+            // `&nbsp;b`). A whitespace-only tail that stayed behind leaves the
+            // head untouched.
+            if tail_moved && !ws_styled {
+                if let Some((text, text_offset)) = deepest_last_text(&head_node) {
+                    text.canonicalize_whitespace(cx, text_offset, false);
+                }
+                if let Some((text, text_offset)) = deepest_first_text(&new_paragraph_node) {
+                    text.rebalance_whitespace_at(cx, text_offset);
                 }
             }
             // Step 11.5.5. Call collapse(container, 0) on the context object's selection.
@@ -501,7 +656,12 @@ pub(crate) fn execute_insert_paragraph_command(
         );
     }
     // Step 17. Let end of line be true if new line range contains either nothing or a single br, and false otherwise.
-    let end_of_line =
+    // "Contains" spans all contained nodes, not the common ancestor's element
+    // children: a range that starts inside the caret's own text node contains
+    // that text suffix, and the line is not over (Chrome-83:
+    // `<dl><dt><p>[]foo</dl>` stays dt, only `<dl><dt><p>foo[]</dl>` flips to
+    // dd).
+    let end_of_line = if ws_styled {
         new_line_range
             .contained_children(cx.no_gc())
             .is_ok_and(|contained_children| {
@@ -509,7 +669,43 @@ pub(crate) fn execute_insert_paragraph_command(
                 contained_children.is_empty() ||
                     (contained_children.len() == 1 &&
                         contained_children[0].is::<HTMLBRElement>())
-            });
+            })
+    } else {
+        let contained: Vec<DomRoot<Node>> = new_line_range
+            .contained_nodes(cx.no_gc())
+            .map(|node| node.as_rooted())
+            .collect();
+        contained.is_empty() ||
+            (contained.len() == 1 && contained[0].is::<HTMLBRElement>())
+    };
+    // Chrome-83 (editing/run/insertparagraph.html li/dt/dd inner-block
+    // family): splitting inside a block nested in a list item keeps the list
+    // structure — the new container is a sibling item of the same kind
+    // carrying a clone of the inner block chain (`<ul><li><div>foo[]</ul>` →
+    // `<li><div><br></div></li>`, `<dl><dt><p>[]foo</dl>` → `<dt><p>foo</p>
+    // </dt>`), instead of the spec's bare item or the dt/dd name flip. The
+    // extraction below targets the deepest clone.
+    let mut inner_chain: Vec<DomRoot<Node>> = Vec::new();
+    if !ws_styled &&
+        node_matches_local_name!(
+            container,
+            local_name!("li") | local_name!("dt") | local_name!("dd")
+        ) {
+        let mut cursor = node.clone();
+        loop {
+            if *cursor == *container {
+                break;
+            }
+            let Some(parent) = cursor.GetParentNode() else {
+                break;
+            };
+            if cursor.is_block_node() {
+                inner_chain.push(cursor.clone());
+            }
+            cursor = parent;
+        }
+        inner_chain.reverse();
+    }
     // Step 18. If the local name of container is "h1", "h2", "h3", "h4", "h5", or "h6",
     // and end of line is true, let new container name be the default single-line container name.
     let container_as_element = container
@@ -581,9 +777,73 @@ pub(crate) fn execute_insert_paragraph_command(
             descendant.remove_attribute_by_name(cx, &local_name!("id"));
         }
     }
+    // Chrome-83 li/dt/dd inner-block family: a tail that is empty or bare
+    // inline content belongs inside a clone of the inner block chain
+    // (`<ul><li><div>foo[]</ul>` → `<li><div><br></div></li>`), while a
+    // fragment that already carries the inner block (the caret sat at the
+    // block's start and the whole block moved) lands in the new container
+    // unwrapped (`<dl><dt><p>[]foo</dl>` → `<dt><p>foo</p></dt>`).
+    // Name-based, not resolved-display-based: the fragment's children are
+    // detached, and a detached element resolves no block display.
+    let frag_has_block = frag_as_node
+        .children()
+        .any(|child| child.is_prohibited_paragraph_child());
+    let extraction_target: DomRoot<Node> = if inner_chain.is_empty() || frag_has_block {
+        new_container_node.clone()
+    } else {
+        let mut host = new_container_node.clone();
+        for link in inner_chain.iter() {
+            let clone_node = link
+                .CloneNode(cx, false)
+                .expect("Must always be able to clone");
+            if host.AppendChild(cx, &clone_node).is_err() {
+                unreachable!("Must always be able to append");
+            }
+            host = clone_node;
+        }
+        host
+    };
+    // Chrome-83 tail rule (same anchor as the Step-11 branch): a tail that
+    // renders no line — collapsed trailing whitespace, an emptied inline
+    // shell — is not a line of its own and stays with the container
+    // (`<div>abc[] </div>` keeps its trailing space on the container's line,
+    // the new container takes a br placeholder). A tail with content moves,
+    // and both sides of the split then take the Chrome-83 whitespace forms:
+    // the container's trailing run becomes non-breaking at the new line end
+    // (`<div>a []b</div>` → `a&nbsp;`), the new container's leading run takes
+    // the non-breaking-first form at the new line start (`a[] b` → `&nbsp;b`).
+    // A fragment member that is a paragraph-level element counts as moved even
+    // when it renders nothing: the extraction of a caret at an inner block's
+    // end clones that block empty (`<dl><dt><p>foo[]</dl>` → `<p></p>`), and
+    // the empty clone belongs to the new container — the placeholder descent
+    // then gives it the br (`<dd><p><br></p></dd>`). Detached members resolve
+    // no display, so visibility alone cannot see them.
+    let tail_moved = if ws_styled {
+        frag_as_node.children().count() > 0
+    } else {
+        frag_as_node.children().any(|child| {
+            (child.is_visible(cx.no_gc()) ||
+                child.is::<HTMLBRElement>() ||
+                is_embedded_line_content(&child) ||
+                child.is_prohibited_paragraph_child()) && has_non_whitespace_text(&child)
+        })
+    };
+    let tail_host: &Node = if tail_moved {
+        &extraction_target
+    } else {
+        &container
+    };
     // Step 29. Call appendChild(frag) on new container.
-    if new_container_node.AppendChild(cx, frag_as_node).is_err() {
+    if tail_host.AppendChild(cx, frag_as_node).is_err() {
         unreachable!("Must always be able to append");
+    }
+    if tail_moved && !ws_styled {
+        if let Some((text, text_offset)) = deepest_last_text(&container) {
+            text.canonicalize_whitespace(cx, text_offset, false);
+        }
+        if let Some((text, text_offset)) = deepest_first_text(&extraction_target) {
+            text.rebalance_whitespace_at(cx, text_offset);
+        }
     }
     // Step 30. While container's lastChild is a prohibited paragraph child,
     // set container to its lastChild.
@@ -611,26 +871,16 @@ pub(crate) fn execute_insert_paragraph_command(
     // Step 32. If container has no visible children,
     // call createElement("br") on the context object,
     // and append the result as the last child of container.
-    if container
-        .children()
-        .all(|child| child.is_invisible(cx.no_gc()))
-    {
-        let br = document.create_element(cx, "br");
-        if container.AppendChild(cx, br.upcast()).is_err() {
-            unreachable!("Must always be able to append");
-        }
+    // A container whose only content is a moved br already renders a line —
+    // doubling it would show two (Chrome-83: `foo[]<br>` → `<div><br></div>`).
+    if block_needs_placeholder(cx.no_gc(), &container) {
+        append_placeholder(cx, document, &container, &inline_chain, ws_styled);
     }
     // Step 33. If new container has no visible children,
     // call createElement("br") on the context object,
     // and append the result as the last child of new container.
-    if new_container_node
-        .children()
-        .all(|child| child.is_invisible(cx.no_gc()))
-    {
-        let br = document.create_element(cx, "br");
-        if new_container_node.AppendChild(cx, br.upcast()).is_err() {
-            unreachable!("Must always be able to append");
-        }
+    if block_needs_placeholder(cx.no_gc(), &new_container_node) {
+        append_placeholder(cx, document, &new_container_node, &inline_chain, ws_styled);
     }
     // Fork-autonomous wrap (WPT insertparagraph-with-white-space-style,
     // Chrome-91 anchored, REQ-BRW-002): splitting a display:inline container
@@ -665,6 +915,257 @@ pub(crate) fn execute_insert_paragraph_command(
     let _ = selection.Collapse(cx, Some(&new_container_node), 0);
     // Step 35. Return true.
     true
+}
+
+
+/// A placeholder for a line that would render no content: the target's
+/// whitespace-only text is dropped (it renders nothing and Chrome-83 lines
+/// that carry only a caret keep only the br), and the caret's inline
+/// ancestors are cloned around the br so the placeholder line keeps the
+/// typing context (`<p><b>foo[]</b></p>` → `<p><b><br></b></p>`).
+fn append_placeholder(
+    cx: &mut JSContext,
+    document: &Document,
+    target: &Node,
+    chain: &[DomRoot<Node>],
+    ws_styled: bool,
+) {
+    if ws_styled {
+        let br = document.create_element(cx, "br");
+        if target.AppendChild(cx, br.upcast()).is_err() {
+            unreachable!("Must always be able to append");
+        }
+        return;
+    }
+    let whitespace_only: Vec<DomRoot<Node>> = target
+        .children()
+        .filter(|child| {
+            child.is::<Text>() && !has_non_whitespace_text(&child)
+        })
+        .collect();
+    for child in whitespace_only {
+        child.remove_self(cx);
+    }
+    let mut host = DomRoot::from_ref(target);
+    for link in chain {
+        let clone = link
+            .CloneNode(cx, false)
+            .expect("Must always be able to clone");
+        if host.AppendChild(cx, &clone).is_err() {
+            unreachable!("Must always be able to append");
+        }
+        host = clone;
+    }
+    let br = document.create_element(cx, "br");
+    if host.AppendChild(cx, br.upcast()).is_err() {
+        unreachable!("Must always be able to append");
+    }
+}
+
+/// Whether any element between the caret and its editing host carries an
+/// explicit `white-space` declaration in its `style` attribute. That is the
+/// insertparagraph-with-white-space-style domain (Chrome-91 tentative data,
+/// e174 anchor), where the split keeps the e174 semantics; everywhere else
+/// the Chrome-83 split semantics apply (editing/run/insertparagraph.html).
+fn has_explicit_white_space_style(node: &Node) -> bool {
+    let mut cursor = DomRoot::from_ref(node);
+    loop {
+        if let Some(element) = cursor.downcast::<Element>() {
+            let attrs = element.attrs();
+            if attrs.borrow().iter().any(|attr| {
+                attr.local_name() == &local_name!("style") &&
+                    attr.value().to_string()
+                        .split(';')
+                        .any(|decl| {
+                            decl.split_once(':').is_some_and(|(prop, _val)| {
+                                prop.trim().eq_ignore_ascii_case("white-space")
+                            })
+                        })
+            }) {
+                return true;
+            }
+        }
+        let Some(parent) = cursor.GetParentNode() else {
+            return false;
+        };
+        if parent.is_editing_host() {
+            return false;
+        }
+        cursor = parent;
+    }
+}
+
+/// Embedded or invisible line content that nonetheless belongs to a line as
+/// its own element: the tentative void-element family splits before an
+/// `embed`/`input`/`wbr` exactly as before an image.
+fn is_embedded_line_content(node: &Node) -> bool {
+    node.downcast::<Element>().is_some_and(|element| {
+        matches!(
+            *element.local_name(),
+            local_name!("embed") | local_name!("input") | local_name!("wbr")
+        )
+    })
+}
+
+/// A Text node whose data is all whitespace renders no content of its own —
+/// as a tail it is the line's trailing collapsed run, not a line of text.
+fn has_non_whitespace_text(node: &Node) -> bool {
+    !node
+        .downcast::<Text>()
+        .is_some_and(|text| text.data().chars().all(char::is_whitespace))
+}
+
+/// A container needs a br placeholder when its content would render no line:
+/// every child invisible and none of them a br. A moved br already gives the
+/// empty line its height, so it must not be doubled (Chrome-83: `foo[]<br>`
+/// yields `<div><br></div>`, not `<div><br><br></div>`).
+fn block_needs_placeholder(no_gc: &NoGC, node: &Node) -> bool {
+    // The br clause is explicit and does not lean on is_visible: a br in a
+    // container always renders a line here, regardless of the shared
+    // extraneous-line-break approximation (Chrome-83: `foo[]<br>` →
+    // `<div><br></div>`, never `<div><br><br></div>`).
+    !node.children().any(|child| {
+        child.is::<HTMLBRElement>() ||
+            is_embedded_line_content(&child) ||
+            child.is_visible(no_gc)
+    })
+}
+
+/// The node just before the boundary point (node, offset) in tree order,
+/// descending into descendants; None at the block start.
+fn node_before(node: &Node, offset: u32, block: &Node) -> Option<DomRoot<Node>> {
+    if offset > 0 {
+        if let Some(child) = node.children().nth(offset as usize - 1) {
+            let mut deepest = child;
+            while let Some(last) = deepest.children().last() {
+                deepest = last;
+            }
+            return Some(deepest);
+        }
+    }
+    if *node == *block {
+        return None;
+    }
+    // Climb to the previous position within the block.
+    let mut current = DomRoot::from_ref(node);
+    loop {
+        if let Some(previous) = current.GetPreviousSibling() {
+            let mut deepest = previous;
+            while let Some(last) = deepest.children().last() {
+                deepest = last;
+            }
+            return Some(deepest);
+        }
+        let Some(parent) = current.GetParentNode() else {
+            return None;
+        };
+        if *parent == *block {
+            return None;
+        }
+        current = parent;
+    }
+}
+
+/// The boundary point where the caret's line starts: the position just after
+/// the nearest preceding br or block node, walked in tree order within the
+/// block. Invisible inline leftovers do not bound a line and are walked past
+/// (they stay outside the head container).
+fn line_start_boundary(node: &Node, offset: u32, block: &Node) -> (DomRoot<Node>, u32) {
+    let mut current = node_before(node, offset, block);
+    while let Some(previous) = current {
+        if *previous == *block {
+            return (DomRoot::from_ref(block), 0);
+        }
+        if previous.is::<HTMLBRElement>() || previous.is_block_node() {
+            let parent = previous
+                .GetParentNode()
+                .expect("Must have a parent");
+            return lift_out_of_inline(&parent, previous.index() + 1);
+        }
+        current = previous.preceding_nodes(block).next();
+    }
+    (DomRoot::from_ref(block), 0)
+}
+
+/// A position at an inline element's edge moves out to the equivalent
+/// parent-level position, so block containers are never nested inside inline
+/// shells. Mid-element positions are left alone (the extraction splits them).
+fn lift_out_of_inline(node: &Node, offset: u32) -> (DomRoot<Node>, u32) {
+    let mut node = DomRoot::from_ref(node);
+    let mut offset = offset;
+    while node.is_inline_node() &&
+        !node.is_editing_host() &&
+        let Some(parent) = node.GetParentNode()
+    {
+        if offset == 0 {
+            offset = node.index();
+        } else if offset == node.len() {
+            offset = 1 + node.index();
+        } else {
+            break;
+        }
+        node = parent;
+    }
+    (node, offset)
+}
+
+fn insert_node_at(cx: &mut JSContext, node: &Node, offset: u32, new_node: &Node) {
+    let next = node.children().nth(offset as usize);
+    if node.InsertBefore(cx, new_node, next.as_deref()).is_err() {
+        unreachable!("Must always be able to insert");
+    }
+}
+
+/// Inline ancestors at the selection's start boundary that the head
+/// extraction emptied are removed, so no empty inline leftover survives the
+/// split (`<span>foo[]</span>` must not leave `<span></span>` behind).
+fn strip_emptied_inline_shells(cx: &mut JSContext, selection: &Selection) {
+    loop {
+        let (node, _) = selection.start_boundary(cx);
+        let Some(parent) = node.GetParentNode() else {
+            return;
+        };
+        let empty_shell = !node.is::<Text>() &&
+            node.is_inline_node() &&
+            node.children().all(|child| child.is_invisible(cx.no_gc())) &&
+            !node.children().any(|child| child.is::<HTMLBRElement>());
+        if !empty_shell {
+            return;
+        }
+        let index = node.index();
+        node.remove_self(cx);
+        let _ = selection.Collapse(cx, Some(&parent), index);
+    }
+}
+
+/// The deepest last text descendant and its end offset, for boundary
+/// canonicalization; None when the container ends with anything else.
+fn deepest_last_text(node: &Node) -> Option<(DomRoot<Node>, u32)> {
+    let mut deepest = DomRoot::from_ref(node);
+    loop {
+        match deepest.children().last() {
+            Some(last) => deepest = last,
+            None => break,
+        }
+    }
+    deepest
+        .downcast::<Text>()
+        .map(|text| (DomRoot::from_ref(text.upcast()), text.upcast::<Node>().len()))
+}
+
+/// The deepest first text descendant and a zero offset, for boundary
+/// rebalancing; None when the container starts with anything else.
+fn deepest_first_text(node: &Node) -> Option<(DomRoot<Node>, u32)> {
+    let mut deepest = DomRoot::from_ref(node);
+    loop {
+        match deepest.children().next() {
+            Some(first) => deepest = first,
+            None => break,
+        }
+    }
+    deepest
+        .downcast::<Text>()
+        .map(|text| (DomRoot::from_ref(text.upcast()), 0))
 }
 
 /// Chrome-compat line-feed insertion for visible raw-text elements (see the

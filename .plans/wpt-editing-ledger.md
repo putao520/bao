@@ -261,3 +261,33 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **回归证据**:final6 全域 855 tests 733 as-expected/117 意外(基线 717/133)——意外集=正翻吸收尾+2 登记红+基线同在的环境 ERROR(e174-probe/paste_text_with_text_transform/recursive-exec-command);suite 真执行(BAO_TEST_NETWORK=1+xvfb+--nocapture)editing_e2e 6/6+editcontext c1-c5 5/5=11/11(12.63s 真时长);`cargo check --profile test-ci -p bao-servo-script` RC=0 触改文件零新警告;`cargo check -p bao-browser --features webdriver` RC=0;载具=/var/tmp/e182-veh(e174 形态拷贝+meta 拷贝自 vendor;二进制 provenance:e182-target 硬链增量链,headclean/e182v4 双份存档)。
 
 **教训**:①载具二进制 swap 前必须查在跑 wptrunner(本波一次撞车=batch2 混合 provenance 作废重跑);②A/B 双跑基线必须**覆盖目标文件全集**(run/insertparagraph 不在首版基线→归因多走 5 轮二分);③已提交树与"波验证二进制"可能不一致——campaign 基线一律用**当轮干净重建**,禁复用往轮 target 二进制作对照。
+
+### e183(run/insertparagraph 216 红归因+根治,e174 provenance 异常定性,2026-10-12,REQ-BRW-050/REQ-BRW-002)
+
+**归因定性(双假说判定,证据链闭合)**:假说 A「丢失 hunk / 验证二进制 provenance 异常」**证伪**——e174 波自己的收口全量 run(/var/tmp/e174-veh/final_full.raw.log,bao.e174-target 二进制,run_final_reg.sh attempt CLEAN)在 /editing/run/insertparagraph.html 上就是 243 FAIL(216 意外+27 ini-expected),与 fe3ea1519 干净重建(headclean_full)及 HEAD 的 FAIL 集**逐子测字节级相同**(set 相等、expected-map 相等);§e182 的「e174-target 0 意外」记载为误读。假说 B 成立且更精确:**这 216 红从未被任何 ini 覆盖**(pre-e174 ini 260 项∩216=0,删除的 225 项∩216=0)——它们是该文件上早于 e174 的既有意外红,e174 的「0 新红」按净计数为真(only-in-final=0),ini 删除(260→35)与本 216 无交集。工程结论=已提交树的 insertparagraph 缺陷需就地根治(Chrome-83 锚=editing/data/insertparagraph.js,Chrome 生成数据)。
+
+**修复面**(vendor 2 文件,execcommand 域;基线=当轮干净重建 red_full 216 实证):
+- `commands/insertparagraph.rs`(核心重写):
+  1. **Step-11 createBlock 模型**(Chrome-83:caret 行两半各包默认单行容器):head 半段=行首(br/block 边界)到 caret,提取入 H;tail 半段=caret 到块尾(首个后续 block 排除,行尾 br 包含)提取入 T;invisible-only tail(纯空白/空壳)归 head(`abc[] ` 保头侧尾随空格,accepted 形 2);双容器占位规则。
+  2. **占位 br 判据** `block_needs_placeholder`:「无可见子元且无 br」——被移动的 br 本身就是占位(`foo[]<br>` → `<div><br></div>` 而非 `<div><br><br></div>`;旧全局 `is_extraneous_line_break` 恒真导致翻倍)。
+  3. **li/dt/dd 内块链**(`inner_chain`+`extraction_target`):caret 在列表项内块中时,新容器按 fragment 形态接链(空/裸 inline fragment → 克隆内块链承接 `<ul><li><div>foo[]</ul>` → `<li><div><br></div></li>`;fragment 自带内块(caret 在块首) → 直接落新容器 `<dl><dt><p>[]foo</dl>` → `<dt><p>foo</p></dt>`);spec step17 eol 改按**全部 contained nodes** 计(旧 contained_children 对文本内起点判空 → dt/dd 误翻转)。
+  4. **占位链**(`append_placeholder`+`inline_chain`):caret 的 inline 祖先链克隆包裹占位 br(`<p><b>foo[]</b></p>` → `<p><b><br></b></p>`);锚点与 replaced/embedded 元素切断整链(`<p><a><b>[]foo</b></a></p>` → `<p><br></p>`);fork 路径占位恒裸(`<span>foo[]</span>` → `<div><br></div>`);占位前剥纯空白文本。
+  5. **拆分边界空白形态**(Chrome-83):tail 移动时 head 尾随 run canonicalize 成 line-end 形(`a []b` → `a&nbsp;`)、tail 首 run 走 e182 `rebalance_whitespace_at`(`a[] b` → `&nbsp;b`);collapsed caret 跳过 delete_the_selection(spec canonicalize 在 caret 把 `a\u{a0}\u{a0}b` 重写为 SP 形,Chrome 不动)。
+  6. **ws-style 域门**(`has_explicit_white_space_style`):caret 至 host 间任一元素 style 属性声明 white-space → 整体回退 e174 语义(delete 照跑/tail 全移/裸占位/旧 eol/无链无空白形)——run/insertparagraph.html(Chrome-83 数据,零 white-space 样式)与 insertparagraph-with-white-space-style.tentative(e174 Chrome-91 tentative 数据)两代锚互不越界;**门后 e174 856 面 0 回归实测**。
+- `contenteditable/node.rs`:全局 `is_extraneous_line_break` 的结构性修正(br 终止有内容行且其后块界内无内容)曾落地并实测 216→66 零文件内回归,但 br 可见性经 block-extend/line-break walk/delete 占位逻辑辐射全 editing 套件(+184 意外/17 文件:join-different-ws-style 96、ws-style 128、delete 24、forwarddelete 24...),**回滚保留 `!is_block_node()` 近似并留证据注释**;`block_needs_placeholder` 的 br 子句本地化承接所需语义。修正本体+依赖方再平衡=独立后续波(注:签名 `no_gc` 参数为该次实验的接口残留,回滚后仅下划线形在用)。
+
+**验收(RED→GREEN)**:当轮干净重建(`CARGO_TARGET_DIR=/var/tmp/e183-target`,cargo build RC=0 零触碰文件警告;`cargo check --profile test-ci -p bao-servo-script` RC=0):
+- 目标文件:run/insertparagraph.html **216 → 79 意外**(137 清偿)+ **12 格 expected-FAIL 翻 PASS**(8→20)——两轮独立复跑(探针版/无探针版 final2)均 79;
+- **全域(editing 855 tests,载具 /var/tmp/e183-veh,--processes 3,flock 端口互斥)**:red_full(基线,当轮)222 意外 → v21_full **85 意外**(−137),**NEW-RED=∅、WORSE=∅**(逐文件对拍),非目标 3 文件(run/insertlinebreak 4、run/inserttext 1、whitespaces/keep-typed 1=§e182 登记残留)计数逐字节保持;
+- 中间回归全数归零的修正史:全局 br 可见性(+184/17 文件)→回滚本地化;ws-style 域(+163:ws-style 128+void 30+non-splittable 5)→域门;void 30(embed 可见性)→15(input/wbr)→**0**(is_embedded_line_content);non-splittable 5(meter 链克隆)→**0**(链切断);edit-context-paste 2/1+paste.https 3=§e167 登记 stale-clipboard flake(v20 出现,v21 消失,符合既判)。
+
+**残留登记(79,均已归因,证据 /tmp/e183-v*.json + /var/tmp/e183-veh)**:
+1. flex/grid 原子项 24(display:flex|inline-flex|grid|inline-grid 下 span 内 caret,exp=span 级分裂):servo 样式路径 `Element::style()` 对 flex 容器算得 `inside=Flow`(探针实证 "Display(514)"/inside Flow),Chrome-83 期望的 flex-item 分裂判据在 servo 计算样式层不可得——样式系统问题先行立项,检测原型的 style 属性文本匹配形态已验证可分裂但按 P-1 移除死代码;
+2. queryCommand 级联 13(dps/stylewithcss 的 before/after 值):Chrome 生成页的跨子测文档状态泄漏期望(dps=p 的 after 读回 p),我方引擎在 insertParagraph 场景读回 div——非 DOM 面,状态生命周期取证另行立项;
+3. div 容器白空间 6(`<div>[]  abc</div>` 类,accepted 多形):拆分边界的前后空白取舍在两代锚间逐格摇摆(`[] abc` 保 plain space、`a[] b` 要求 nbsp),域门后仍需逐格定夺;
+4. `<b id=x class=y>` 双属性 4:tail 侧克隆未按 spec step28  unset id(取 id/class 只留 class);
+5. 其余散格 ~12(`{}` 空行占位、`<p><!--comment-->`、blockquote 空、pre LF 形、`<div><p>foo[]` dps 泄漏级联等)。
+
+**deletion-manifest**:~/code/tools/servo/tests/editing/other/e174-probe*.html ×4——实测该目录不存在(tests/ 下无 editing/ 层),且全仓 find 零命中,**已被先行清理,本波无操作**。
+
+**教训**:①「波验证二进制 provenance 异常」的指控必须先查该波自己的收口 raw log——本次 §e182 的指控被 e174-final_full 原始日志一句话证伪;②「0 新红」的净计数口径会掩盖「ini 删除了未修复子测的期望」之外的场景(本例两集合不相交,红是历史遗留而非 e174 造的);③共享 helper(is_extraneous_line_break)的语义修正必须先做全域对拍再落——其正确形态是全 editing 域的一个待再平衡波,单波内的「正确」会以 17 文件 +184 的代价违反 file 级 0 回归;④两代 Chrome 锚(83 数据 vs 91 tentative)冲突用「样式域门」做域分离(white-space 显式样式=e174 域,无样式=Chrome-83 域),域判据必须在两域数据文件上互斥可测。
