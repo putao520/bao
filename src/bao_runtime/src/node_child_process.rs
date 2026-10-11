@@ -315,6 +315,80 @@ fn cp_stdio_pipe_close_child_ends(pairs: [&mut Option<CpStdioPipe>; 3]) {
 // arm Box-dropped a loop-linked `uv_pipe_t` whose pointer was the loop's
 // IOCP completion key; see CpStdioPipe's doc for the full mechanism.)
 
+/// Exit observation (WINRED flake root fix, 2026-09-26): this thread only
+/// READS the Status — it must never drive uv. The old body called
+/// update_status_on_windows here, whose fall-through invokes uv_close on the
+/// JS thread's loop from THIS thread: cross-thread libuv queue mutation
+/// (single-threaded loop contract), racing the loop's own tick → intermittent
+/// 0xC0000005 in uv__process_endgames (.200 wire-proven stack). Exit
+/// delivery is single-path: the loop's on_exit_uv fires on the JS thread
+/// (guaranteed ticked by drain's live-children branch) or cp_try_reap on the
+/// JS thread — both legal loop owners. This mirrors the unix twin's
+/// read-and-stash.
+#[cfg(windows)]
+fn cp_detect_exit_windows(state: &Arc<Mutex<AsyncChildState>>) {
+    let mut s = state.lock().unwrap();
+    if !s.child_exited {
+        if let Some(process) = s.process {
+            // SAFETY: read-only clone of the POD Status field; the
+            // write side is the loop's exit callback (JS thread) or
+            // cp_try_reap (JS thread).
+            let status = unsafe { (*process).status.clone() };
+            match status {
+                Status::Exited(exited) => {
+                    s.child_exited = true;
+                    s.reaped = Some((exited.code as i32, exited.signal as i32));
+                }
+                Status::Signaled(sig) => {
+                    s.child_exited = true;
+                    s.reaped = Some((-1, sig as i32));
+                }
+                _ => {}
+            }
+        }
+    }
+    cp_try_publish(&mut s);
+}
+
+/// One read from `handle` into `buf`: data lands in the named pipe's buffer
+/// (returns true = progress); EOF (broken pipe / zero-byte read) marks that
+/// pipe's EOF (with publish); transient errors retry on the next tick.
+#[cfg(windows)]
+fn cp_service_pipe_windows(
+    state: &Arc<Mutex<AsyncChildState>>,
+    is_stdout: bool,
+    handle: HANDLE,
+    buf: &mut [u8],
+) -> bool {
+    match cp_pipe_read(handle, buf) {
+        Ok(n) if n > 0 => {
+            let data = &buf[..n];
+            let mut s = state.lock().unwrap();
+            if is_stdout {
+                s.stdout_data.extend_from_slice(data);
+            } else {
+                s.stderr_data.extend_from_slice(data);
+            }
+            true
+        }
+        Ok(_) => {
+            // EOF (broken pipe / zero-byte read).
+            let mut s = state.lock().unwrap();
+            if is_stdout {
+                s.stdout_eof = true;
+            } else {
+                s.stderr_eof = true;
+            }
+            cp_try_publish(&mut s);
+            false
+        }
+        Err(_) => {
+            // Transient error — treat like EAGAIN: retry next tick.
+            false
+        }
+    }
+}
+
 #[cfg(windows)]
 fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
     const DRAIN_CHUNK: usize = 4096;
@@ -333,40 +407,7 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
         let pipes_drained =
             (stdout_eof || stdout_handle.is_null()) && (stderr_eof || stderr_handle.is_null());
 
-        // Exit observation (WINRED flake root fix, 2026-09-26): this
-        // thread only READS the Status — it must never drive uv. The old
-        // body called update_status_on_windows here, whose fall-through
-        // invokes uv_close on the JS thread's loop from THIS thread:
-        // cross-thread libuv queue mutation (single-threaded loop
-        // contract), racing the loop's own tick → intermittent
-        // 0xC0000005 in uv__process_endgames (.200 wire-proven stack).
-        // Exit delivery is single-path: the loop's on_exit_uv fires on
-        // the JS thread (guaranteed ticked by drain's live-children
-        // branch) or cp_try_reap on the JS thread — both legal loop
-        // owners. This thread mirrors the unix twin's read-and-stash.
-        {
-            let mut s = state.lock().unwrap();
-            if !s.child_exited {
-                if let Some(process) = s.process {
-                    // SAFETY: read-only clone of the POD Status field; the
-                    // write side is the loop's exit callback (JS thread) or
-                    // cp_try_reap (JS thread).
-                    let status = unsafe { (*process).status.clone() };
-                    match status {
-                        Status::Exited(exited) => {
-                            s.child_exited = true;
-                            s.reaped = Some((exited.code as i32, exited.signal as i32));
-                        }
-                        Status::Signaled(sig) => {
-                            s.child_exited = true;
-                            s.reaped = Some((-1, sig as i32));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            cp_try_publish(&mut s);
-        }
+        cp_detect_exit_windows(&state);
 
         if child_exited && pipes_drained {
             break;
@@ -394,32 +435,7 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 
         let mut made_progress = false;
         for (handle, is_stdout) in ready {
-            match cp_pipe_read(handle, &mut buf) {
-                Ok(n) if n > 0 => {
-                    made_progress = true;
-                    let data = &buf[..n];
-                    let mut s = state.lock().unwrap();
-                    if is_stdout {
-                        s.stdout_data.extend_from_slice(data);
-                    } else {
-                        s.stderr_data.extend_from_slice(data);
-                    }
-                }
-                Ok(_) => {
-                    // EOF (broken pipe / zero-byte read).
-                    let mut s = state.lock().unwrap();
-                    if is_stdout {
-                        s.stdout_eof = true;
-                    } else {
-                        s.stderr_eof = true;
-                    }
-                    cp_try_publish(&mut s);
-                }
-                Err(_) => {
-                    // Transient error — treat like EAGAIN: retry next tick.
-                    let _ = made_progress;
-                }
-            }
+            made_progress |= cp_service_pipe_windows(&state, is_stdout, handle, &mut buf);
         }
 
         if !made_progress {
@@ -446,6 +462,84 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
 }
 
 /// Background polling thread: reads from stdout/stderr pipes into shared AsyncChildState.
+/// Non-blocking waitpid under the state lock: when the child has exited,
+/// stash its status (`reaped`); `cp_try_publish` lifts it into exit_info
+/// once the pipes are drained.
+#[cfg(unix)]
+fn cp_detect_exit_unix(state: &Arc<Mutex<AsyncChildState>>) {
+    let mut s = state.lock().unwrap();
+    if !s.child_exited {
+        let mut wstatus: c_int = 0;
+        let ret = unsafe { libc::waitpid(s.pid, &mut wstatus, libc::WNOHANG) };
+        if ret == s.pid {
+            // Child has exited — stash the status; cp_try_publish
+            // lifts it into exit_info once the pipes are drained.
+            let exit_code = if libc::WIFEXITED(wstatus) {
+                libc::WEXITSTATUS(wstatus)
+            } else {
+                -1
+            };
+            let signal = if libc::WIFSIGNALED(wstatus) {
+                libc::WTERMSIG(wstatus)
+            } else {
+                0
+            };
+            s.child_exited = true;
+            s.reaped = Some((exit_code, signal));
+        }
+    }
+    cp_try_publish(&mut s);
+}
+
+/// Mark the named pipe's EOF (`which` is "stdout" / "stderr").
+#[cfg(unix)]
+fn cp_mark_eof(s: &mut AsyncChildState, which: &str) {
+    if which == "stdout" {
+        s.stdout_eof = true;
+    } else {
+        s.stderr_eof = true;
+    }
+}
+
+/// One read from `fd` into `buf`: data lands in the named pipe's buffer;
+/// EOF (or a non-EAGAIN error) marks that pipe's EOF (with publish);
+/// EAGAIN-family errors retry on the next tick.
+#[cfg(unix)]
+fn cp_service_fd(
+    state: &Arc<Mutex<AsyncChildState>>,
+    which: &str,
+    fd: i32,
+    buf: &mut [u8],
+) {
+    match unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, buf.len()) } {
+        n if n > 0 => {
+            let data = &buf[..n as usize];
+            let mut s = state.lock().unwrap();
+            if which == "stdout" {
+                s.stdout_data.extend_from_slice(data);
+            } else {
+                s.stderr_data.extend_from_slice(data);
+            }
+        }
+        0 => {
+            // EOF.
+            let mut s = state.lock().unwrap();
+            cp_mark_eof(&mut s, which);
+            cp_try_publish(&mut s);
+        }
+        _ => {
+            // EAGAIN or error.
+            let errno = unsafe { *libc::__errno_location() };
+            if errno != libc::EAGAIN && errno != libc::EWOULDBLOCK {
+                // Real error — treat as EOF.
+                let mut s = state.lock().unwrap();
+                cp_mark_eof(&mut s, which);
+                cp_try_publish(&mut s);
+            }
+        }
+    }
+}
+
 /// Uses Arc<Mutex<AsyncChildState>> for shared state with the JS thread.
 #[cfg(unix)]
 fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
@@ -466,37 +560,14 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
             (stdout_eof || stdout_fd < 0) && (stderr_eof || stderr_fd < 0);
 
         // Exit detection runs EVERY iteration, decoupled from pipe EOF. This
-        // block used to sit at the loop bottom (after fd processing), so the
+        // used to sit at the loop bottom (after fd processing), so the
         // empty-pollfds branch's `continue` skipped it entirely: once both
         // pipes EOF'd before the child was observed exiting (any fast child),
         // the thread spun in the 10ms sleep branch forever, the child
         // zombified, and exit/data events never reached JS (task #21 root
         // cause; strace "passed" only because syscall overhead let waitpid
         // win the race in the last fd-processing iteration).
-        {
-            let mut s = state.lock().unwrap();
-            if !s.child_exited {
-                let mut wstatus: c_int = 0;
-                let ret = unsafe { libc::waitpid(s.pid, &mut wstatus, libc::WNOHANG) };
-                if ret == s.pid {
-                    // Child has exited — stash the status; cp_try_publish
-                    // lifts it into exit_info once the pipes are drained.
-                    let exit_code = if libc::WIFEXITED(wstatus) {
-                        libc::WEXITSTATUS(wstatus)
-                    } else {
-                        -1
-                    };
-                    let signal = if libc::WIFSIGNALED(wstatus) {
-                        libc::WTERMSIG(wstatus)
-                    } else {
-                        0
-                    };
-                    s.child_exited = true;
-                    s.reaped = Some((exit_code, signal));
-                }
-            }
-            cp_try_publish(&mut s);
-        }
+        cp_detect_exit_unix(&state);
 
         // If child has exited and the pipes are drained, we're done.
         if child_exited && pipes_drained {
@@ -558,42 +629,7 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
             let which = fd_map[i];
             let fd = pfd.fd;
 
-            match unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, buf.len()) }
-            {
-                n if n > 0 => {
-                    let data = &buf[..n as usize];
-                    let mut s = state.lock().unwrap();
-                    if which == "stdout" {
-                        s.stdout_data.extend_from_slice(data);
-                    } else {
-                        s.stderr_data.extend_from_slice(data);
-                    }
-                }
-                0 => {
-                    // EOF.
-                    let mut s = state.lock().unwrap();
-                    if which == "stdout" {
-                        s.stdout_eof = true;
-                    } else {
-                        s.stderr_eof = true;
-                    }
-                    cp_try_publish(&mut s);
-                }
-                _ => {
-                    // EAGAIN or error.
-                    let errno = unsafe { *libc::__errno_location() };
-                    if errno != libc::EAGAIN && errno != libc::EWOULDBLOCK {
-                        // Real error — treat as EOF.
-                        let mut s = state.lock().unwrap();
-                        if which == "stdout" {
-                            s.stdout_eof = true;
-                        } else {
-                            s.stderr_eof = true;
-                        }
-                        cp_try_publish(&mut s);
-                    }
-                }
-            }
+            cp_service_fd(&state, which, fd, &mut buf);
         }
     }
 

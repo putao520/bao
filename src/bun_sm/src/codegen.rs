@@ -146,77 +146,98 @@ fn parse_block_properties(source: &str, block_name: &str) -> Vec<PropertyDef> {
             continue;
         }
 
-        if let Some(colon_pos) = trimmed.find(':') {
-            let name = trimmed[..colon_pos].trim().to_string();
-            if name.is_empty() || name == block_name {
-                i += 1;
-                continue;
-            }
+        let Some(colon_pos) = trimmed.find(':') else {
+            i += 1;
+            continue;
+        };
+        let name = trimmed[..colon_pos].trim().to_string();
+        if name.is_empty() || name == block_name {
+            i += 1;
+            continue;
+        }
 
-            let value_part = trimmed[colon_pos + 1..].trim();
-            if value_part.starts_with('{') {
-                // Collect multi-line block content
-                let mut block = value_part.to_string();
-                let mut depth = block.chars().filter(|c| *c == '{').count() as i32
-                    - block.chars().filter(|c| *c == '}').count() as i32;
-                let mut j = i + 1;
-                while depth > 0 && j < lines.len() {
-                    let next = lines[j].trim();
-                    depth += next.chars().filter(|c| *c == '{').count() as i32
-                        - next.chars().filter(|c| *c == '}').count() as i32;
-                    block.push(' ');
-                    block.push_str(next);
-                    j += 1;
-                }
-
-                if block.contains("getter:") {
-                    let fn_name = extract_string_value(&block, "getter");
-                    let cache = block.contains("cache: true");
-                    if block.contains("setter:") {
-                        let setter = extract_string_value(&block, "setter");
-                        props.push(PropertyDef {
-                            name,
-                            kind: PropertyKind::Accessor {
-                                getter: fn_name,
-                                setter,
-                                cache,
-                            },
-                        });
-                    } else {
-                        props.push(PropertyDef {
-                            name,
-                            kind: PropertyKind::Getter { fn_name, cache },
-                        });
-                    }
-                } else if block.contains("setter:") {
-                    let fn_name = extract_string_value(&block, "setter");
-                    props.push(PropertyDef {
-                        name,
-                        kind: PropertyKind::Setter { fn_name },
-                    });
-                } else if block.contains("fn:") {
-                    let fn_name = extract_string_value(&block, "fn");
-                    let length = extract_number_value(&block, "length");
-                    props.push(PropertyDef {
-                        name,
-                        kind: PropertyKind::Method { fn_name, length },
-                    });
-                }
-                i = j;
-                continue;
-            } else if value_part.starts_with('"') || value_part.starts_with('\'') {
-                props.push(PropertyDef {
-                    name,
-                    kind: PropertyKind::Value {
-                        value: value_part.trim_matches('"').trim_matches('\'').to_string(),
-                    },
-                });
+        let value_part = trimmed[colon_pos + 1..].trim();
+        if value_part.starts_with('{') {
+            // Collect multi-line block content
+            let (block, j) = collect_multiline_block(&lines, value_part, i);
+            if let Some(prop) = block_property(name, &block) {
+                props.push(prop);
             }
+            i = j;
+            continue;
+        } else if value_part.starts_with('"') || value_part.starts_with('\'') {
+            props.push(PropertyDef {
+                name,
+                kind: PropertyKind::Value {
+                    value: value_part.trim_matches('"').trim_matches('\'').to_string(),
+                },
+            });
         }
         i += 1;
     }
 
     props
+}
+
+/// Collect a multi-line `{` block starting with `value_part` on line
+/// `start`: lines are appended (space-joined, trimmed) until the brace
+/// delta re-balances or the source ends. Returns the joined block and the
+/// index of the first line after it.
+fn collect_multiline_block(lines: &[&str], value_part: &str, start: usize) -> (String, usize) {
+    let mut block = value_part.to_string();
+    let mut depth = block.chars().filter(|c| *c == '{').count() as i32
+        - block.chars().filter(|c| *c == '}').count() as i32;
+    let mut j = start + 1;
+    while depth > 0 && j < lines.len() {
+        let next = lines[j].trim();
+        depth += next.chars().filter(|c| *c == '{').count() as i32
+            - next.chars().filter(|c| *c == '}').count() as i32;
+        block.push(' ');
+        block.push_str(next);
+        j += 1;
+    }
+    (block, j)
+}
+
+/// Classify a multi-line property block (`getter:`/`setter:`/`fn:` /
+/// `cache:` keys) into its PropertyDef, or None when it matches no known
+/// property form.
+fn block_property(name: String, block: &str) -> Option<PropertyDef> {
+    if block.contains("getter:") {
+        let fn_name = extract_string_value(block, "getter");
+        let cache = block.contains("cache: true");
+        if block.contains("setter:") {
+            let setter = extract_string_value(block, "setter");
+            return Some(PropertyDef {
+                name,
+                kind: PropertyKind::Accessor {
+                    getter: fn_name,
+                    setter,
+                    cache,
+                },
+            });
+        }
+        return Some(PropertyDef {
+            name,
+            kind: PropertyKind::Getter { fn_name, cache },
+        });
+    }
+    if block.contains("setter:") {
+        let fn_name = extract_string_value(block, "setter");
+        return Some(PropertyDef {
+            name,
+            kind: PropertyKind::Setter { fn_name },
+        });
+    }
+    if block.contains("fn:") {
+        let fn_name = extract_string_value(block, "fn");
+        let length = extract_number_value(block, "length");
+        return Some(PropertyDef {
+            name,
+            kind: PropertyKind::Method { fn_name, length },
+        });
+    }
+    None
 }
 
 #[allow(clippy::collapsible_if)]

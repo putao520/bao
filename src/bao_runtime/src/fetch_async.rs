@@ -1646,6 +1646,29 @@ fn reclaim_async_http_boxes(async_http_box: *mut bun_http::AsyncHTTP<'static>) {
 /// The JS-thread wake is the same CAS + cross-thread ConcurrentTask enqueue
 /// as buffered mode (level-triggered: one queued run drains all staged
 /// state; the flag reset at run-start re-arms mid-run arrivals).
+/// Head snapshot from a metadata-carrying delivery: status line + header
+/// list, lossy-UTF8'd to owned strings.
+fn stream_head_from_metadata(metadata: &bun_http::HTTPResponseMetadata) -> StreamHead {
+    StreamHead {
+        status_code: metadata.response.status_code,
+        status_text: ::std::str::from_utf8(metadata.response.status)
+            .unwrap_or("")
+            .to_string(),
+        headers: metadata
+            .response
+            .headers
+            .list
+            .iter()
+            .map(|h| {
+                (
+                    ::std::str::from_utf8(h.name()).unwrap_or("").to_string(),
+                    ::std::str::from_utf8(h.value()).unwrap_or("").to_string(),
+                )
+            })
+            .collect(),
+    }
+}
+
 fn on_http_done_streaming(
     this: *mut PendingFetch,
     async_http_box: *mut bun_http::AsyncHTTP<'static>,
@@ -1677,24 +1700,7 @@ fn on_http_done_streaming(
             let mut g = state.shared.lock().unwrap();
             if g.head.is_none() {
                 if let Some(metadata) = result.metadata.as_ref() {
-                    g.head = Some(StreamHead {
-                        status_code: metadata.response.status_code,
-                        status_text: ::std::str::from_utf8(metadata.response.status)
-                            .unwrap_or("")
-                            .to_string(),
-                        headers: metadata
-                            .response
-                            .headers
-                            .list
-                            .iter()
-                            .map(|h| {
-                                (
-                                    ::std::str::from_utf8(h.name()).unwrap_or("").to_string(),
-                                    ::std::str::from_utf8(h.value()).unwrap_or("").to_string(),
-                                )
-                            })
-                            .collect(),
-                    });
+                    g.head = Some(stream_head_from_metadata(metadata));
                     wake = true;
                 }
                 // A metadata-less mid delivery (TLS cert progress) publishes

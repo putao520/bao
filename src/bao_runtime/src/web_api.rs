@@ -1003,68 +1003,71 @@ enum PumpAction {
     Closed(usize, ::std::option::Option<String>),
 }
 
+/// One pass over the thread's connections: the next pending pump action
+/// (completed background connect, inbound frame, or close), or None when
+/// every connection is idle.
+fn ws_pump_next_action(conns: &mut [WsEntry]) -> ::std::option::Option<PumpAction> {
+    for (idx, e) in conns.iter_mut().enumerate() {
+        // 1. Completed background connects (try_lock — the worker may still
+        //    hold the lock writing its outcome). Take the slot out first so
+        //    the MutexGuard borrow ends before the assignment below.
+        if e.connect_slot.is_some() {
+            let taken = e
+                .connect_slot
+                .as_ref()
+                .unwrap()
+                .try_lock()
+                .ok()
+                .and_then(|mut guard| guard.take());
+            if let ::std::option::Option::Some(res) = taken {
+                e.connect_slot = ::std::option::Option::None;
+                return ::std::option::Option::Some(PumpAction::ConnectDone(idx, res));
+            }
+            continue;
+        }
+        // 2. Inbound frames on open connections (non-blocking). Frames
+        //    received after a locally-initiated close are still delivered
+        //    (browser semantics: messages queue until the close handshake
+        //    completes).
+        let ::std::option::Option::Some(client) = &mut e.client else {
+            continue;
+        };
+        match client.read_message() {
+            Ok(WsMessage::Text(t)) => {
+                return ::std::option::Option::Some(PumpAction::TextMessage(idx, t))
+            }
+            Ok(WsMessage::Binary(b)) => {
+                return ::std::option::Option::Some(PumpAction::BinaryMessage(idx, b))
+            }
+            Ok(WsMessage::Close) => {
+                // Echo the close handshake unless we already sent our close
+                // frame (close_initiated).
+                if !e.close_initiated {
+                    let _ = client.close();
+                }
+                e.client = ::std::option::Option::None;
+                return ::std::option::Option::Some(PumpAction::Closed(idx, None));
+            }
+            Err(err) if err == "wouldblock" => continue,
+            Err(err) => {
+                // Transport error — explicit surface, never silent.
+                let _ = client.close();
+                e.client = ::std::option::Option::None;
+                return ::std::option::Option::Some(PumpAction::Closed(
+                    idx,
+                    ::std::option::Option::Some(err),
+                ));
+            }
+        }
+    }
+    ::std::option::Option::None
+}
+
 /// Pump all WebSockets on this thread. Called from `timers::drain_and_check`,
 /// `timers::drain_one_pass`, and the servo node-realm evaluate entry.
 pub fn ws_pump_all(raw_cx: *mut JSContext) {
     loop {
-        let action = WS_CONNECTIONS.with(|c| {
-            let mut conns = c.borrow_mut();
-            for (idx, e) in conns.iter_mut().enumerate() {
-                // 1. Completed background connects (try_lock — the worker
-                //    may still hold the lock writing its outcome). Take the
-                //    slot out first so the MutexGuard borrow ends before the
-                //    assignment below.
-                if e.connect_slot.is_some() {
-                    let taken = e
-                        .connect_slot
-                        .as_ref()
-                        .unwrap()
-                        .try_lock()
-                        .ok()
-                        .and_then(|mut guard| guard.take());
-                    if let ::std::option::Option::Some(res) = taken {
-                        e.connect_slot = ::std::option::Option::None;
-                        return ::std::option::Option::Some(PumpAction::ConnectDone(idx, res));
-                    }
-                    continue;
-                }
-                // 2. Inbound frames on open connections (non-blocking).
-                //    Frames received after a locally-initiated close are
-                //    still delivered (browser semantics: messages queue
-                //    until the close handshake completes).
-                let ::std::option::Option::Some(client) = &mut e.client else {
-                    continue;
-                };
-                match client.read_message() {
-                    Ok(WsMessage::Text(t)) => {
-                        return ::std::option::Option::Some(PumpAction::TextMessage(idx, t))
-                    }
-                    Ok(WsMessage::Binary(b)) => {
-                        return ::std::option::Option::Some(PumpAction::BinaryMessage(idx, b))
-                    }
-                    Ok(WsMessage::Close) => {
-                        // Echo the close handshake unless we already sent
-                        // our close frame (close_initiated).
-                        if !e.close_initiated {
-                            let _ = client.close();
-                        }
-                        e.client = ::std::option::Option::None;
-                        return ::std::option::Option::Some(PumpAction::Closed(idx, None));
-                    }
-                    Err(err) if err == "wouldblock" => continue,
-                    Err(err) => {
-                        // Transport error — explicit surface, never silent.
-                        let _ = client.close();
-                        e.client = ::std::option::Option::None;
-                        return ::std::option::Option::Some(PumpAction::Closed(
-                            idx,
-                            ::std::option::Option::Some(err),
-                        ));
-                    }
-                }
-            }
-            ::std::option::Option::None
-        });
+        let action = WS_CONNECTIONS.with(|c| ws_pump_next_action(&mut c.borrow_mut()));
 
         match action {
             ::std::option::Option::Some(PumpAction::ConnectDone(idx, res)) => unsafe {

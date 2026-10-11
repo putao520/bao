@@ -140,17 +140,8 @@ impl CdpBackend for ExternalBackend {
                             code: -32700,
                             message: format!("parse error: {e}"),
                         })?;
-                    if resp.get("id").and_then(|v| v.as_i64()) == Some(id) {
-                        if let Some(error) = resp.get("error") {
-                            return Err(CdpError {
-                                code: error["code"].as_i64().unwrap_or(-32603),
-                                message: error["message"]
-                                    .as_str()
-                                    .unwrap_or("unknown error")
-                                    .into(),
-                            });
-                        }
-                        return Ok(resp.get("result").cloned().unwrap_or(serde_json::json!({})));
+                    if let Some(outcome) = response_outcome_for_id(&resp, id) {
+                        return outcome;
                     }
                     // Different id or an event — keep polling.
                 }
@@ -171,6 +162,25 @@ impl CdpBackend for ExternalBackend {
             message: "response timeout".into(),
         })
     }
+}
+
+/// Outcome for a decoded frame whose `id` matches the awaited command id:
+/// `Some(Err)` on a protocol error object, `Some(Ok(result))` on success.
+/// None when the frame carries a different id (or none) — keep polling.
+fn response_outcome_for_id(
+    resp: &serde_json::Value,
+    id: i64,
+) -> Option<Result<serde_json::Value, CdpError>> {
+    if resp.get("id").and_then(|v| v.as_i64()) != Some(id) {
+        return None;
+    }
+    if let Some(error) = resp.get("error") {
+        return Some(Err(CdpError {
+            code: error["code"].as_i64().unwrap_or(-32603),
+            message: error["message"].as_str().unwrap_or("unknown error").into(),
+        }));
+    }
+    Some(Ok(resp.get("result").cloned().unwrap_or(serde_json::json!({}))))
 }
 
 // @trace TEST-CDP-004 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]

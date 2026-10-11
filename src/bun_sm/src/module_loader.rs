@@ -2566,18 +2566,7 @@ fn strip_ts_impl(source: &str) -> String {
 
         // Track brace nesting for multi-line constructs
         if skip_depth > 0 {
-            for ch in line.chars() {
-                match ch {
-                    '{' => skip_depth += 1,
-                    '}' => {
-                        skip_depth -= 1;
-                        if skip_depth == 0 {
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            skip_depth = scan_skip_depth(line, skip_depth);
             if skip_depth == 0 {
                 result.push('\n');
             }
@@ -2589,16 +2578,7 @@ fn strip_ts_impl(source: &str) -> String {
             || trimmed.starts_with("export interface ")
             || trimmed.starts_with("declare interface ")
         {
-            if trimmed.contains('{') {
-                let open = trimmed.matches('{').count() as i32;
-                let close = trimmed.matches('}').count() as i32;
-                if open > close {
-                    skip_depth = open - close;
-                }
-            } else {
-                // interface without opening brace on this line — skip until we find it
-                skip_depth = 1;
-            }
+            skip_depth = block_skip_depth(trimmed);
             continue;
         }
 
@@ -2613,11 +2593,7 @@ fn strip_ts_impl(source: &str) -> String {
                 continue;
             }
             // Multi-line type alias
-            let open = trimmed.matches('{').count() as i32;
-            let close = trimmed.matches('}').count() as i32;
-            if open > close {
-                skip_depth = open - close;
-            }
+            skip_depth = block_skip_depth(trimmed);
             continue;
         }
 
@@ -2628,15 +2604,7 @@ fn strip_ts_impl(source: &str) -> String {
 
         // Skip `declare module`, `declare global`, etc.
         if trimmed.starts_with("declare ") {
-            if trimmed.contains('{') {
-                let open = trimmed.matches('{').count() as i32;
-                let close = trimmed.matches('}').count() as i32;
-                if open > close {
-                    skip_depth = open - close;
-                }
-            } else {
-                skip_depth = 1;
-            }
+            skip_depth = block_skip_depth(trimmed);
             continue;
         }
 
@@ -2649,6 +2617,41 @@ fn strip_ts_impl(source: &str) -> String {
     }
 
     result
+}
+
+/// Advance a multi-line skip brace depth across `line`: every `{` re-deepens,
+/// the `}` that re-balances to zero stops the scan (chars after it are
+/// irrelevant — the skip ends either way).
+fn scan_skip_depth(line: &str, mut skip_depth: i32) -> i32 {
+    for ch in line.chars() {
+        match ch {
+            '{' => skip_depth += 1,
+            '}' => {
+                skip_depth -= 1;
+                if skip_depth == 0 {
+                    return skip_depth;
+                }
+            }
+            _ => {}
+        }
+    }
+    skip_depth
+}
+
+/// Skip depth after entering a multi-line block whose first line is
+/// `trimmed`: the positive brace delta when the line opens more than it
+/// closes, `1` when the block opens on a later line, `0` when the line is
+/// already balanced (nothing to skip past).
+fn block_skip_depth(trimmed: &str) -> i32 {
+    if !trimmed.contains('{') {
+        return 1;
+    }
+    let open = trimmed.matches('{').count() as i32;
+    let close = trimmed.matches('}').count() as i32;
+    if open > close {
+        return open - close;
+    }
+    0
 }
 
 /// Strip inline TypeScript type annotations from a single line.
@@ -2933,26 +2936,38 @@ fn strip_param_types(s: &str) -> String {
 
     // Variable declarations: `const/let/var name: Type =`
     for kw in &["const ", "let ", "var "] {
-        if let Some(pos) = result.find(kw) {
-            let after_kw = pos + kw.len();
-            if let Some(colon_pos) = result[after_kw..].find(':') {
-                let abs_colon = after_kw + colon_pos;
-                if let Some(eq_pos) = result[abs_colon..].find('=') {
-                    let abs_eq = abs_colon + eq_pos;
-                    if abs_eq + 1 < result.len() && result.as_bytes()[abs_eq + 1] != b'=' {
-                        if abs_eq + 1 >= result.len() || result.as_bytes()[abs_eq + 1] != b'>' {
-                            result = format!("{}{}", &result[..abs_colon], &result[abs_eq..]);
-                        }
-                    }
-                }
-            }
-        }
+        result = strip_var_decl_type(&result, kw);
     }
 
     // Parameter types: `name: Type,` and `name: Type)` and `name?: Type`
     result = strip_paren_type_annotations(&result);
 
     result
+}
+
+/// Drop the `: Type` in a single `kw name: Type =` declaration (`kw` is
+/// `const `/`let `/`var `). Returns `s` unchanged when no such annotated
+/// declaration is present; the two `=`-lookalike guards mirror the original
+/// nested form exactly (`==`, `=>`).
+fn strip_var_decl_type(s: &str, kw: &str) -> String {
+    let Some(pos) = s.find(kw) else {
+        return s.to_string();
+    };
+    let after_kw = pos + kw.len();
+    let Some(colon_pos) = s[after_kw..].find(':') else {
+        return s.to_string();
+    };
+    let abs_colon = after_kw + colon_pos;
+    let Some(eq_pos) = s[abs_colon..].find('=') else {
+        return s.to_string();
+    };
+    let abs_eq = abs_colon + eq_pos;
+    if abs_eq + 1 < s.len() && s.as_bytes()[abs_eq + 1] != b'=' {
+        if abs_eq + 1 >= s.len() || s.as_bytes()[abs_eq + 1] != b'>' {
+            return format!("{}{}", &s[..abs_colon], &s[abs_eq..]);
+        }
+    }
+    s.to_string()
 }
 
 /// Strip type annotations within parentheses (function parameters).
@@ -3038,40 +3053,54 @@ fn strip_generics(s: &str) -> String {
     let mut result = s.to_string();
 
     for kw in &["function ", "class ", "interface "] {
-        if let Some(pos) = result.find(kw) {
-            let after_kw = pos + kw.len();
-            let rest = &result[after_kw..];
-            let mut name_end = 0;
-            while name_end < rest.len()
-                && (rest.as_bytes()[name_end].is_ascii_alphanumeric()
-                    || rest.as_bytes()[name_end] == b'_')
-            {
-                name_end += 1;
-            }
-            if name_end < rest.len() && rest.as_bytes()[name_end] == b'<' {
-                let mut depth = 0;
-                let mut gt_pos = name_end;
-                for (idx, b) in rest[name_end..].bytes().enumerate() {
-                    match b {
-                        b'<' => depth += 1,
-                        b'>' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                gt_pos = name_end + idx + 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if gt_pos > name_end && depth == 0 {
-                    let abs_gt = after_kw + gt_pos;
-                    result = format!("{}{}", &result[..after_kw + name_end], &result[abs_gt..]);
-                }
-            }
-        }
+        result = strip_generics_kw(&result, kw);
     }
     result
+}
+
+/// Strip the `<...>` parameter list following `kw Name` in a single
+/// function/class/interface declaration. Returns `s` unchanged when the
+/// declaration has no generic list (or its `<` never closes).
+fn strip_generics_kw(s: &str, kw: &str) -> String {
+    let Some(pos) = s.find(kw) else {
+        return s.to_string();
+    };
+    let after_kw = pos + kw.len();
+    let rest = &s[after_kw..];
+    let mut name_end = 0;
+    while name_end < rest.len()
+        && (rest.as_bytes()[name_end].is_ascii_alphanumeric()
+            || rest.as_bytes()[name_end] == b'_')
+    {
+        name_end += 1;
+    }
+    if name_end >= rest.len() || rest.as_bytes()[name_end] != b'<' {
+        return s.to_string();
+    }
+    if let Some(gt_pos) = angle_list_close_pos(rest, name_end) {
+        let abs_gt = after_kw + gt_pos;
+        return format!("{}{}", &s[..after_kw + name_end], &s[abs_gt..]);
+    }
+    s.to_string()
+}
+
+/// Index just past the `>` matching the `<` at `open_pos` in `s` (nesting
+/// aware), or None when it never closes.
+fn angle_list_close_pos(s: &str, open_pos: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (idx, b) in s[open_pos..].bytes().enumerate() {
+        match b {
+            b'<' => depth += 1,
+            b'>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open_pos + idx + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Strip `implements Type` from class declarations.

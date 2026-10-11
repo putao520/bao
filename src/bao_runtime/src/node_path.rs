@@ -969,6 +969,38 @@ mod node_alg {
     /// lookup; `None` falls through to the process cwd exactly like a
     /// missing environment entry in node. Not host-gated: node ships this
     /// algorithm on every platform (`path.win32.resolve('C:\\a\\b', 'c') ===
+    /// Possible UNC root `\\<server>\<share>[tail]` — the `\\\\<server>\\<share>`
+    /// device string and the index just past the share, or None when the
+    /// bytes do not form one (either `\\`-run is empty or a separator run
+    /// trails the share).
+    fn parse_unc_root(bytes: &[u8], path: &str) -> Option<(String, usize)> {
+        let len = bytes.len();
+        let mut j = 2usize;
+        let mut last = j;
+        while j < len && !is_sep(bytes[j], true) {
+            j += 1;
+        }
+        if j >= len || j == last {
+            return None;
+        }
+        let first_part = &path[last..j];
+        last = j;
+        while j < len && is_sep(bytes[j], true) {
+            j += 1;
+        }
+        if j >= len || j == last {
+            return None;
+        }
+        last = j;
+        while j < len && !is_sep(bytes[j], true) {
+            j += 1;
+        }
+        if j == len || j != last {
+            return Some((format!("\\\\{}\\{}", first_part, &path[last..j]), j));
+        }
+        None
+    }
+
     /// 'C:\\a\\b\\c'` even on Linux — on a posix host the per-drive cwd
     /// lookup simply misses and the process cwd takes its place).
     pub fn resolve_win32(
@@ -1025,28 +1057,9 @@ mod node_alg {
                 is_absolute = true;
                 if is_sep(bytes[1], true) {
                     // Possible UNC root: \\<server>\<share>[tail].
-                    let mut j = 2usize;
-                    let mut last = j;
-                    while j < len && !is_sep(bytes[j], true) {
-                        j += 1;
-                    }
-                    if j < len && j != last {
-                        let first_part = &path[last..j];
-                        last = j;
-                        while j < len && is_sep(bytes[j], true) {
-                            j += 1;
-                        }
-                        if j < len && j != last {
-                            last = j;
-                            while j < len && !is_sep(bytes[j], true) {
-                                j += 1;
-                            }
-                            if j == len || j != last {
-                                device =
-                                    Some(format!("\\\\{}\\{}", first_part, &path[last..j]));
-                                root_end = j;
-                            }
-                        }
+                    if let Some((unc_device, j)) = parse_unc_root(bytes, &path) {
+                        device = Some(unc_device);
+                        root_end = j;
                     }
                 } else {
                     root_end = 1;

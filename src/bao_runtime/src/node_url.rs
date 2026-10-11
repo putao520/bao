@@ -4543,6 +4543,23 @@ fn rfc3986_split(
     (scheme, authority, rest.to_string(), query, fragment)
 }
 
+/// RFC 3986 §5.2.2/§5.2.3 path resolution for a non-empty reference path
+/// against the base (reference carries neither scheme nor authority).
+fn rfc3986_resolve_path(b_auth: &Option<String>, b_path: &str, r_path: &str) -> String {
+    if r_path.starts_with('/') {
+        return rfc3986_remove_dot_segments(r_path);
+    }
+    // §5.2.3 merge
+    let merged = match b_auth.is_some() && b_path.is_empty() {
+        true => format!("/{}", r_path),
+        false => match b_path.rfind('/') {
+            Some(i) => format!("{}{}", &b_path[..=i], r_path),
+            None => r_path.to_string(),
+        },
+    };
+    rfc3986_remove_dot_segments(&merged)
+}
+
 /// RFC 3986 §5.2.2 reference resolution, reassembled as a string.
 fn rfc3986_resolve(base: &str, reference: &str) -> String {
     let (b_scheme, b_auth, b_path, b_query, _b_frag) = rfc3986_split(base);
@@ -4566,19 +4583,7 @@ fn rfc3986_resolve(base: &str, reference: &str) -> String {
                 path = b_path.clone();
                 query = r_query.or(b_query);
             } else {
-                if r_path.starts_with('/') {
-                    path = rfc3986_remove_dot_segments(&r_path);
-                } else {
-                    // §5.2.3 merge
-                    let merged = match b_auth.is_some() && b_path.is_empty() {
-                        true => format!("/{}", r_path),
-                        false => match b_path.rfind('/') {
-                            Some(i) => format!("{}{}", &b_path[..=i], r_path),
-                            None => r_path.clone(),
-                        },
-                    };
-                    path = rfc3986_remove_dot_segments(&merged);
-                }
+                path = rfc3986_resolve_path(&b_auth, &b_path, &r_path);
                 query = r_query;
             }
             // §5.2.2: authority present and path empty → "/"

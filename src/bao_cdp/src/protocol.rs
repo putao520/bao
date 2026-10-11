@@ -238,24 +238,7 @@ fn handle_target(
                 }
                 None => target_infos.push(live_target_info(target_id, bridge)),
             }
-            // REQ-BRW-004: Include Worker sub-targets in Target.getTargets response
-            // @trace REQ-BRW-004 [criterion:19] Worker targets are CDP-observable
-            if let Some(b) = bridge {
-                if let Ok(worker_resp) = b
-                    .send(BridgeCommand::ListWorkerTargets {
-                        target_id: target_id.to_string(),
-                    })
-                    .result
-                {
-                    if let Some(workers) =
-                        worker_resp.get("workerTargets").and_then(|v| v.as_array())
-                    {
-                        for w in workers {
-                            target_infos.push(w.clone());
-                        }
-                    }
-                }
-            }
+            push_worker_target_infos(&mut target_infos, target_id, bridge);
             Ok(serde_json::json!({ "targetInfos": target_infos }))
         }
         "createTarget" => {
@@ -324,6 +307,33 @@ fn handle_target(
             code: -32601,
             message: format!("'Target.{}' wasn't found", command),
         }),
+    }
+}
+
+/// REQ-BRW-004: append Worker sub-targets to the Target.getTargets response
+/// (list miss / bridge-less → nothing appended).
+// @trace REQ-BRW-004 [criterion:19] Worker targets are CDP-observable
+fn push_worker_target_infos(
+    target_infos: &mut Vec<Value>,
+    target_id: &str,
+    bridge: Option<&BridgeSender>,
+) {
+    let Some(b) = bridge else {
+        return;
+    };
+    let Ok(worker_resp) = b
+        .send(BridgeCommand::ListWorkerTargets {
+            target_id: target_id.to_string(),
+        })
+        .result
+    else {
+        return;
+    };
+    let Some(workers) = worker_resp.get("workerTargets").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for w in workers {
+        target_infos.push(w.clone());
     }
 }
 

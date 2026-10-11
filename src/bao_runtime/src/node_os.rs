@@ -480,6 +480,40 @@ struct IfaceEntry {
 
 
 /// Node-shaped interface enumeration on POSIX via getifaddrs(3). Grouped per
+/// IPv4 netmask (dotted string, prefix length) from a getifaddrs netmask
+/// sockaddr, or `("0.0.0.0", 0)` when the entry carries none.
+#[cfg(not(windows))]
+fn ipv4_netmask(ifa_netmask: *const libc::sockaddr) -> (String, u8) {
+    if ifa_netmask.is_null() {
+        return ("0.0.0.0".to_string(), 0u8);
+    }
+    let snm = ifa_netmask as *const libc::sockaddr_in;
+    // SAFETY: netmask pointer comes from getifaddrs, valid until freeifaddrs.
+    unsafe {
+        let m = ipv4_to_string((*snm).sin_addr.s_addr);
+        let p = (*snm).sin_addr.s_addr.count_ones() as u8;
+        (m, p)
+    }
+}
+
+/// IPv6 netmask (string, prefix length) from a getifaddrs netmask sockaddr,
+/// or `("::", 0)` when the entry carries none.
+#[cfg(not(windows))]
+fn ipv6_netmask(ifa_netmask: *const libc::sockaddr) -> (String, u8) {
+    if ifa_netmask.is_null() {
+        return ("::".to_string(), 0u8);
+    }
+    let snm = ifa_netmask as *const libc::sockaddr_in6;
+    // SAFETY: netmask pointer comes from getifaddrs, valid until freeifaddrs.
+    unsafe {
+        let mut pl = 0u8;
+        for b in (*snm).sin6_addr.s6_addr.iter() {
+            pl += b.count_ones() as u8;
+        }
+        (ipv6_to_string(&(*snm).sin6_addr), pl)
+    }
+}
+
 /// interface name with the MAC from the AF_PACKET entry and IFF_LOOPBACK for
 /// `internal` (see the os_networkInterfaces BCE note above).
 #[cfg(not(windows))]
@@ -532,16 +566,7 @@ fn collect_posix_ifaddrs(
             libc::AF_INET => {
                 let sin = sa as *const libc::sockaddr_in;
                 let addr = unsafe { ipv4_to_string((*sin).sin_addr.s_addr) };
-                let (mask, prefix) = if ifa.ifa_netmask.is_null() {
-                    ("0.0.0.0".to_string(), 0u8)
-                } else {
-                    let snm = ifa.ifa_netmask as *const libc::sockaddr_in;
-                    unsafe {
-                        let m = ipv4_to_string((*snm).sin_addr.s_addr);
-                        let p = (*snm).sin_addr.s_addr.count_ones() as u8;
-                        (m, p)
-                    }
-                };
+                let (mask, prefix) = ipv4_netmask(ifa.ifa_netmask);
                 slot.3.push(IfaceEntry {
                     address: addr,
                     netmask: mask,
@@ -553,18 +578,7 @@ fn collect_posix_ifaddrs(
             libc::AF_INET6 => {
                 let sin6 = sa as *const libc::sockaddr_in6;
                 let addr = unsafe { ipv6_to_string(&(*sin6).sin6_addr) };
-                let (mask, prefix) = if ifa.ifa_netmask.is_null() {
-                    ("::".to_string(), 0u8)
-                } else {
-                    let snm = ifa.ifa_netmask as *const libc::sockaddr_in6;
-                    unsafe {
-                        let mut pl = 0u8;
-                        for b in (*snm).sin6_addr.s6_addr.iter() {
-                            pl += b.count_ones() as u8;
-                        }
-                        (ipv6_to_string(&(*snm).sin6_addr), pl)
-                    }
-                };
+                let (mask, prefix) = ipv6_netmask(ifa.ifa_netmask);
                 let scopeid = unsafe { (*sin6).sin6_scope_id };
                 slot.3.push(IfaceEntry {
                     address: addr,

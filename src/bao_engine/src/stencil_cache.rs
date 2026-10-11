@@ -267,13 +267,7 @@ pub fn evaluate_script_cached(
                     // reference becomes the cache entry's, the extra ref is
                     // the frame ref released after execution.
                     unsafe { jsapi::StencilAddRef(decoded) };
-                    CACHE.with(|c| {
-                        let mut cache = c.borrow_mut();
-                        if cache.owner_cx != raw_cx {
-                            cache.reset(raw_cx);
-                        }
-                        cache.insert(key, script, filename, line, decoded);
-                    });
+                    cache_insert(raw_cx, key, script, filename, line, decoded);
                     decoded
                 }
                 None => {
@@ -302,13 +296,7 @@ pub fn evaluate_script_cached(
                     // every failure path is counted + skipped, never fatal).
                     unsafe { xdr_cache::store(raw_cx, raw, script, filename, line) };
                     unsafe { jsapi::StencilAddRef(raw) }; // frame ref (cache keeps the addrefed one)
-                    CACHE.with(|c| {
-                        let mut cache = c.borrow_mut();
-                        if cache.owner_cx != raw_cx {
-                            cache.reset(raw_cx);
-                        }
-                        cache.insert(key, script, filename, line, raw);
-                    });
+                    cache_insert(raw_cx, key, script, filename, line, raw);
                     raw
                 }
             }
@@ -319,6 +307,26 @@ pub fn evaluate_script_cached(
     // Release the frame reference; the cache keeps its own.
     unsafe { jsapi::StencilRelease(stencil) };
     result
+}
+
+/// Insert a stencil under `key`, resetting the cache first when the owning
+/// context changed (the cache is thread-local but shared across realms and
+/// test contexts on the thread).
+fn cache_insert(
+    raw_cx: *mut jsapi::JSContext,
+    key: u64,
+    script: &str,
+    filename: &CStr,
+    line: u32,
+    stencil: *mut jsapi::Stencil,
+) {
+    CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        if cache.owner_cx != raw_cx {
+            cache.reset(raw_cx);
+        }
+        cache.insert(key, script, filename, line, stencil);
+    });
 }
 
 /// Instantiate `stencil` into `glob`'s realm and execute it — the per-realm

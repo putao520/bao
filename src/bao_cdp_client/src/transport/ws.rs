@@ -138,6 +138,35 @@ impl WebSocketTransport {
     fn write_text_frame(&mut self, payload: &str) -> Result<()> {
         self.client.send_text(payload).map_err(map_ws_err)
     }
+
+    /// 把事件帧排入 `pending_events`,留给后续 `recv_event` 消费。
+    fn queue_pending_event(&mut self, v: &Value) {
+        let method = v["method"].as_str().unwrap_or("").to_string();
+        let params = v.get("params").cloned().unwrap_or(Value::Null);
+        let session_id = v
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        let mut ev = CdpEvent::new(method, params);
+        if let Some(sid) = session_id {
+            ev = ev.with_session(sid);
+        }
+        self.pending_events.push_back(ev);
+    }
+}
+
+/// 响应帧与等待中命令 id 的匹配:`Some(Ok(result))` = 命中本命令的成功
+/// 响应,`Some(Err)` = 命中且携带 error 对象;`None` = 帧属于其他 id(单
+/// 线程模型下不应出现,丢弃)——继续轮询。
+fn response_for_id(v: &Value, id: u64) -> Option<Result<Value>> {
+    let resp_id = v.get("id").and_then(|i| i.as_u64())?;
+    if resp_id != id {
+        return None;
+    }
+    if let Some(err) = v.get("error") {
+        return Some(Err(CdpError::ProtocolError(err.to_string())));
+    }
+    Some(Ok(v.get("result").cloned().unwrap_or(Value::Null)))
 }
 
 impl Transport for WebSocketTransport {
@@ -181,32 +210,14 @@ impl Transport for WebSocketTransport {
                 None => continue, // WouldBlock — try again
                 Some(payload) => {
                     let v: Value = serde_json::from_slice(&payload)?;
-                    if let Some(resp_id) = v.get("id").and_then(|i| i.as_u64()) {
-                        if resp_id == id {
-                            if let Some(err) = v.get("error") {
-                                return Err(CdpError::ProtocolError(err.to_string()));
-                            }
-                            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
-                        }
-                        // Different id — unexpected in single-thread model; drop.
-                        continue;
+                    if let Some(outcome) = response_for_id(&v, id) {
+                        return outcome;
                     }
                     if v.get("method").is_some() {
                         // Event — queue for later recv_event.
-                        let method = v["method"].as_str().unwrap_or("").to_string();
-                        let params = v.get("params").cloned().unwrap_or(Value::Null);
-                        let session_id = v
-                            .get("sessionId")
-                            .and_then(|s| s.as_str())
-                            .map(|s| s.to_string());
-                        let mut ev = CdpEvent::new(method, params);
-                        if let Some(sid) = session_id {
-                            ev = ev.with_session(sid);
-                        }
-                        self.pending_events.push_back(ev);
-                        continue;
+                        self.queue_pending_event(&v);
                     }
-                    // Unknown frame structure — skip.
+                    // Different id or unknown frame structure — skip.
                     continue;
                 }
             }

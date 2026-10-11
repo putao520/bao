@@ -616,6 +616,27 @@ unsafe extern "C" fn yaml_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 // Bun.JSONC — comment + trailing-comma strip, then engine JSON.parse
 // ──────────────────────────────────────────────────────────────────────────
 
+/// Emit the comma at `bytes[i]`: trailing comma (`,` followed only by
+/// whitespace before a `}`/`]` closer) is dropped — the whitespace is
+/// emitted as-is and the closer's index returned; any other comma is pushed
+/// verbatim. Callers `continue` with the returned index (skipping the loop's
+/// `i += 1`).
+fn emit_comma(bytes: &[char], i: usize, out: &mut String) -> usize {
+    let mut j = i + 1;
+    while j < bytes.len() && bytes[j].is_whitespace() {
+        j += 1;
+    }
+    if j < bytes.len() && (bytes[j] == '}' || bytes[j] == ']') {
+        // skip the comma (emit the whitespace as-is)
+        for k in (i + 1)..j {
+            out.push(bytes[k]);
+        }
+        return j;
+    }
+    out.push(bytes[i]);
+    i + 1
+}
+
 /// Strip `//` and `/* */` comments (outside strings) and trailing commas
 /// (`,` directly followed by `}` / `]` outside strings). String state tracks
 /// `"` with backslash escapes; JSONC strings never use `'`.
@@ -672,21 +693,8 @@ fn strip_jsonc(input: &str) -> ::std::result::Result<String, String> {
                     i += 2;
                     continue;
                 } else if c == ',' {
-                    // Trailing comma: `,` followed only by whitespace before a
-                    // closer — drop the comma.
-                    let mut j = i + 1;
-                    while j < bytes.len() && bytes[j].is_whitespace() {
-                        j += 1;
-                    }
-                    if j < bytes.len() && (bytes[j] == '}' || bytes[j] == ']') {
-                        // skip the comma (emit the whitespace as-is)
-                        for k in (i + 1)..j {
-                            out.push(bytes[k]);
-                        }
-                        i = j;
-                        continue;
-                    }
-                    out.push(c);
+                    i = emit_comma(&bytes, i, &mut out);
+                    continue;
                 } else {
                     out.push(c);
                 }

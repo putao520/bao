@@ -833,31 +833,41 @@ impl PageInner {
                 }
             }
         } else {
-            let site_data = sdm.site_data(StorageType::Cookies);
-            for sd in site_data {
-                let site_name = sd.name();
-                let url_str =
-                    if site_name.starts_with("http://") || site_name.starts_with("https://") {
-                        site_name.clone()
-                    } else {
-                        format!("https://{site_name}")
-                    };
-                if let Ok(parsed) = url::Url::parse(&url_str) {
-                    let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
-                    let has_match = current.iter().any(|c| c.name() == name);
-                    if has_match {
-                        sdm.clear_site_data(&[&site_name], StorageType::Cookies);
-                        for c in current {
-                            if c.name() != name {
-                                sdm.set_cookie_for_url(parsed.clone(), c, None);
-                            }
-                        }
-                    }
-                }
-            }
+            self.delete_cookie_all_sites(name);
         }
         self.touch();
         Ok(())
+    }
+
+    /// url-less deleteCookie: clear each site whose cookie set matches
+    /// `name`, re-seeding every non-matching cookie (clear-site-data is
+    /// all-or-nothing per site).
+    fn delete_cookie_all_sites(&self, name: &str) {
+        let sdm = self.servo.site_data_manager();
+        let site_data = sdm.site_data(StorageType::Cookies);
+        for sd in site_data {
+            let site_name = sd.name();
+            let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://")
+            {
+                site_name.clone()
+            } else {
+                format!("https://{site_name}")
+            };
+            let Ok(parsed) = url::Url::parse(&url_str) else {
+                continue;
+            };
+            let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
+            let has_match = current.iter().any(|c| c.name() == name);
+            if !has_match {
+                continue;
+            }
+            sdm.clear_site_data(&[&site_name], StorageType::Cookies);
+            for c in current {
+                if c.name() != name {
+                    sdm.set_cookie_for_url(parsed.clone(), c, None);
+                }
+            }
+        }
     }
 
     /// Wait for an element matching the selector to appear in the DOM.
@@ -1617,59 +1627,7 @@ impl PageHandle {
                     .with_inner_opt(|inner| Some(inner.nav_seq.get()))
                     .unwrap_or(0);
                 if nav_seq > 0 {
-                    // #40 (BCE-20260910-003 companion): LoadStatus::Complete
-                    // alone can be the OLD pipeline's (or arrive before the
-                    // session-history commit), and the COMMIT (URLChanged →
-                    // embedder-visible url/title swap) is driven by the
-                    // script thread's rendering updates — which only tick
-                    // when script executes. A bare event-loop spin stalled
-                    // cross-pipeline navigations until some ~5s timer fired.
-                    // Exit contract: Complete AND the url moved (commit
-                    // observed); same-URL navigations (reload) fall back to
-                    // Complete held for COMMIT_GRACE. The per-few-spins
-                    // minimal evaluate is the tick — NOT a query, errors
-                    // pre-pipeline are expected and ignored. No GL composite
-                    // here (that is the deadlock primitive this BCE removes).
-                    const COMMIT_GRACE: Duration = Duration::from_millis(1_000);
-                    let url_at_entry = self.current_url();
-                    let mut complete_since: Option<Instant> = None;
-                    let mut ticks: u32 = 0;
-                    while start.elapsed() < timeout {
-                        let (loaded, url_now) = self
-                            .with_inner_opt(|inner| {
-                                Some((
-                                    inner.webview_state.borrow().load_status
-                                        == servo::LoadStatus::Complete,
-                                    inner.current_url(),
-                                ))
-                            })
-                            .unwrap_or((false, None));
-                        if loaded {
-                            let url_moved = match (&url_at_entry, &url_now) {
-                                (Some(a), Some(b)) => a != b,
-                                _ => false,
-                            };
-                            let held_long_enough =
-                                complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
-                            if url_moved || held_long_enough {
-                                break;
-                            }
-                            if complete_since.is_none() {
-                                complete_since = Some(Instant::now());
-                            }
-                        } else {
-                            complete_since = None;
-                        }
-                        self.with_inner(|inner| {
-                            inner.servo.spin_event_loop();
-                            Ok(())
-                        })?;
-                        ticks = ticks.wrapping_add(1);
-                        if ticks % 8 == 0 {
-                            let _ = self.evaluate_js_web(";");
-                        }
-                        std::thread::yield_now();
-                    }
+                    self.drive_to_commit(start, timeout)?;
                 }
                 return self.drain_callbacks().map(|_| ());
             }
@@ -1687,6 +1645,63 @@ impl PageHandle {
         Err(BrowserError::Init(
             "pipeline not ready after timeout".into(),
         ))
+    }
+
+    /// Phase 2 of `wait_for_pipeline_ready`: drive servo until the
+    /// navigation's load completes AND the commit is observed.
+    ///
+    /// #40 (BCE-20260910-003 companion): LoadStatus::Complete alone can be
+    /// the OLD pipeline's (or arrive before the session-history commit), and
+    /// the COMMIT (URLChanged → embedder-visible url/title swap) is driven by
+    /// the script thread's rendering updates — which only tick when script
+    /// executes. A bare event-loop spin stalled cross-pipeline navigations
+    /// until some ~5s timer fired. Exit contract: Complete AND the url moved
+    /// (commit observed); same-URL navigations (reload) fall back to Complete
+    /// held for COMMIT_GRACE. The per-few-spins minimal evaluate is the tick
+    /// — NOT a query, errors pre-pipeline are expected and ignored. No GL
+    /// composite here (that is the deadlock primitive this BCE removes).
+    fn drive_to_commit(&self, start: Instant, timeout: Duration) -> Result<(), BrowserError> {
+        const COMMIT_GRACE: Duration = Duration::from_millis(1_000);
+        let url_at_entry = self.current_url();
+        let mut complete_since: Option<Instant> = None;
+        let mut ticks: u32 = 0;
+        while start.elapsed() < timeout {
+            let (loaded, url_now) = self
+                .with_inner_opt(|inner| {
+                    Some((
+                        inner.webview_state.borrow().load_status
+                            == servo::LoadStatus::Complete,
+                        inner.current_url(),
+                    ))
+                })
+                .unwrap_or((false, None));
+            if loaded {
+                let url_moved = match (&url_at_entry, &url_now) {
+                    (Some(a), Some(b)) => a != b,
+                    _ => false,
+                };
+                let held_long_enough =
+                    complete_since.is_some_and(|t| t.elapsed() >= COMMIT_GRACE);
+                if url_moved || held_long_enough {
+                    break;
+                }
+                if complete_since.is_none() {
+                    complete_since = Some(Instant::now());
+                }
+            } else {
+                complete_since = None;
+            }
+            self.with_inner(|inner| {
+                inner.servo.spin_event_loop();
+                Ok(())
+            })?;
+            ticks = ticks.wrapping_add(1);
+            if ticks % 8 == 0 {
+                let _ = self.evaluate_js_web(";");
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
     }
 
     pub fn drain_callbacks(&self) -> Result<String, BrowserError> {

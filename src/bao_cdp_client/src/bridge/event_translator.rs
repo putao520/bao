@@ -375,17 +375,7 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
         } => {
             vec![CdpEvent {
                 method: "Log.entryAdded".into(),
-                params: json!({
-                    "entry": {
-                        "source": "javascript",
-                        "level": level.to_cdp_str(),
-                        "text": text,
-                        "url": url,
-                        "lineNumber": line.unwrap_or(0),
-                        "columnNumber": column.unwrap_or(0),
-                        "timestamp": current_timestamp_ms(),
-                    }
-                }),
+                params: console_entry_params(level, text, url, line, column),
                 session_id: Some(target_id),
             }]
         }
@@ -402,33 +392,9 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
             column,
             stack,
         } => {
-            let stack_trace = match &stack {
-                Some(s) => json!([{
-                    "functionName": "",
-                    "url": url.clone().unwrap_or_default(),
-                    "lineNumber": line.unwrap_or(0),
-                    "columnNumber": column.unwrap_or(0),
-                    "scriptName": s,
-                }]),
-                None => Value::Null,
-            };
             vec![CdpEvent {
                 method: "Runtime.exceptionThrown".into(),
-                params: json!({
-                    "timestamp": current_timestamp_ms(),
-                    "exceptionDetails": {
-                        "exceptionId": 0,
-                        "text": text,
-                        "lineNumber": line.unwrap_or(0),
-                        "columnNumber": column.unwrap_or(0),
-                        "url": url,
-                        "stackTrace": stack_trace,
-                        "exception": {
-                            "type": "string",
-                            "value": text,
-                        },
-                    }
-                }),
+                params: exception_thrown_params(text, url, line, column, stack),
                 session_id: Some(target_id),
             }]
         }
@@ -766,6 +732,62 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
             }]
         }
     }
+}
+
+/// §3.1 Console → Log.entryAdded params.
+fn console_entry_params(
+    level: ConsoleLevel,
+    text: String,
+    url: Option<String>,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> Value {
+    json!({
+        "entry": {
+            "source": "javascript",
+            "level": level.to_cdp_str(),
+            "text": text,
+            "url": url,
+            "lineNumber": line.unwrap_or(0),
+            "columnNumber": column.unwrap_or(0),
+            "timestamp": current_timestamp_ms(),
+        }
+    })
+}
+
+/// §3.2 PageError → Runtime.exceptionThrown params.
+fn exception_thrown_params(
+    text: String,
+    url: Option<String>,
+    line: Option<u32>,
+    column: Option<u32>,
+    stack: Option<String>,
+) -> Value {
+    let stack_trace = match &stack {
+        Some(s) => json!([{
+            "functionName": "",
+            "url": url.clone().unwrap_or_default(),
+            "lineNumber": line.unwrap_or(0),
+            "columnNumber": column.unwrap_or(0),
+            "scriptName": s,
+        }]),
+        None => Value::Null,
+    };
+    json!({
+        "timestamp": current_timestamp_ms(),
+        "exceptionDetails": {
+            "exceptionId": 0,
+            "text": text,
+            "lineNumber": line.unwrap_or(0),
+            "columnNumber": column.unwrap_or(0),
+            "url": url,
+            "stackTrace": stack_trace,
+            "exception": {
+                "type": "string",
+                "value": text,
+            },
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
