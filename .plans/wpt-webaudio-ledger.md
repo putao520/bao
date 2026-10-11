@@ -407,6 +407,7 @@ J3「biquad-automation 确定性红(全树首盖)」清偿。取证先行:双格
 3. 终判(本节 L1):争用→慢/挂测试→串行 dispatcher 长命令占满→executor is_alive 2s 超时判死→伪 CRASH。e176 的污染通报是翻转钥匙(rep6 触发窗=其 battery 持端口窗,页面由其 wptserve 服务)。
 - M-0 的 2×300s init 楔死=争用面直接产物(初始 about:blank 装载挂在外源/争用服务器→wait_document_ready 300s),非 e26 lost-edge。
 - **判读纪律沉淀**:wptrunner「CRASH」分类三源(harness 杀/外杀/伪 CRASH)必须经 is_alive 语义分型;raw log 的「CRASH」字样本身零引擎含义;探活超时与连接拒绝在 except 层不可区分,取证必须读 manager 侧 stop 序列(「status request timed out」=read-timeout=dispatcher 忙,非进程死)。
+- **争用窗分型边界(e176 交叉引用,2026-10-11)**:同在争用窗暴露的 flake 不自动归伪 CRASH 类——e176 的 cors-check/no-cors TIMEOUT 族=**真引擎缺陷**(页面内 PROCERR "invalid or out-of-range index" 实证+worklet 时钟 mid-call 漂移,插桩定位,根修 f8b755cb0 后 12/12),争用窗只是提高其触发采样密度(其窗内为端口持有方,并发负载反压出更满的确定性);本波 pp CRASH=伪 CRASH(进程三重法证健康)。分型判据=进程侧法证(closelog/gdb/stop 序列)而非触发环境。
 
 ### L3. 附带真缺陷(完整定性,另案处置):SIGTERM/SIGINT 信号吞没
 vendored `webdriver_server::start_server` → registry `webdriver 0.54::server::start` 的 "webdriver server" 线程在 `current_thread().enable_io()` runtime 内经 `ShutdownSignal::new()` 注册 tokio 进程级 SIGINT/SIGTERM handler(strace rt_sigaction 实证:启动后 ~350ms 实测,负载敏感可达数秒=注册竞态窗,窗内 TERM=默认死亡 143)。后果:
