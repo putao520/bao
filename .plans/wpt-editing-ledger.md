@@ -379,3 +379,24 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **验证边界**:本波零代码改动(域冲突),2 格未清偿(诚实口径);RED 探针四件套留存 /tmp/e189-*.py,e186-v6 二进制复跑可复现(after=true / rgb(0, 0, 0) / 全文档失效不救 / setAttribute 救 style 不救 indeterm)。
 
 **教训**:①「缓存读到旧值」类表象必须先做「全文档失效不救」判定实验再立新鲜度假说——specified value 缺失与 computed 缓存 stale 在单点读数上同形,一次全量 restyle 即可二分(e186 台账残留#1 的因果故事未经此实验,方向错置);②typed attribute 存储(AttrValue 枚举变体驱动 presentational hint)是 servo 的隐式契约:**内部代码设 HTML 属性必须走 typed parse 入口(set_attribute+typed AttrValue / make_*_setter 宏族),set_string_attribute 只对 parse_plain_attribute 映射为 String 的属性安全**——横扫时以「layout 侧 get_*_for_layout 的 AttrValue 变体 match」为判据逐一回溯生产者;③multi-source 等值比较(属性 raw string vs computed CSSOM 字符串)是格式漂移温床:任何「两读数路径」的等值判定必须先问双侧的序列化形态锚,raw `!=` 即为候选缺陷。
+
+### e188(insertParagraph flex/grid-item 原子分裂分支——e183 残留① 24 格清偿,2026-10-12,REQ-BRW-050)
+
+**清偿**:e183 残留分类①(flex/grid 原子项 24)按 §e187 改判根因(命令层缺 Chrome 的 item 原子分裂分支)根治。24 格=4 容器型(flex/inline-flex/grid/inline-grid)× 3 caret 位([]abc/a[]bc/abc[])× 2 paragraphseparator,全在 run/insertparagraph.html `?7001-last` chunk,锚=editing/data/insertparagraph.js:2586-2710(Chrome-142 注记)。
+
+**修复面**(vendor 2 文件,execcommand 域,§e187 判据一行谓词可达):
+- `contenteditable/element.rs`:补 `resolved_display_inside_value()` 访问器(`style().get_box().display.inside()`,与 `resolved_display_value` 同一路径,DisplayInside import);
+- `commands/insertparagraph.rs`:Step 7 归一化后(ws_styled 域门复算之后、inline_chain 采集之前)增 item 分裂分支——`flex_or_grid_item_ancestor`(caret 最近 block 祖先,其父元素 computed display inside∈{Flex,Grid,GridLanes}=原子 item)+ `split_flex_or_grid_item`:caret 后半段经 Range extractContents 迁入 item 的浅克隆(属性随行),插为 item 的紧邻兄弟,**容器零触碰**;空半侧 br 占位(`block_needs_placeholder`+`append_placeholder` 复用);caret collapse 到尾半段 0;ws_styled 域显式排除(e174 域门延续,e183 教训④)。现行为(容器克隆劈两个 div、style 属性随行,probe2 实证)被该分支前置短路。
+
+**验收(RED→GREEN,基线=HEAD a5d1a604e 干净重建,私有 CARGO_TARGET_DIR=/var/tmp/e188-target,sccache 温)**:
+- **24 格:RED 2/2 跑全 FAIL(24/24)→ GREEN 3/3 跑全 PASS(24/24),PASS 集逐字节恒等**——run/insertparagraph.html 66→42 unexpected-FAIL(fixed 24,与 flex/grid 族集合精确相等,零非 flex 旁效);caret 分布 []abc/a[]bc/abc[] 各 8;
+- **全域(editing 857 tests,--processes 3,flock 端口互斥,载具 /var/tmp/e186-veh run_full.sh)**:red2_full vs green_full 逐文件对拍 **NEW-RED=0、WORSE=0**(improved 恰 24;unexpected-PASS 249→249 恒等;unexpected-FAIL 文件数 163→163 恒等);
+- **insertlinebreak 同族保持**:34 flex/grid cells RED/GREEN 双侧全 PASS(0 unexpected 保持,§e187 回归面闭环);
+- `cargo check --profile test-ci -p bao-servo-script` RC=0,触碰文件零警告(41 条全为存量他文件);
+- 证据:/var/tmp/e188-veh/{red2_probe,red2_full,green_target1,green_full,green_target2,postdel_probe}.raw.log;二进制 bao.e188-red2(07:16,HEAD)/bao.e188-green(07:04,HEAD+2 文件)。
+
+**基线污染事故(如实披露,red2 重取)**:首轮"RED"构建(06:50 启动)在其 script crate 编译窗(rlib 落盘 06:59:43)之内被本波源码编辑(mtime 06:57:16/06:57:39)穿透——"RED"二进制实际含修复(首轮 red_full 中 24 格已 PASS);判据=源 mtime vs script rlib 落盘 mtime 对照 + 目标 chunk 行为探针(污染 RED 全 PASS)。处置:污染日志改名 red_full.POLLUTED-green-behavior.raw.log 存证,源码回退重建真 RED(bao.e188-red2,探针 24/24 FAIL 实证)后全量重跑基线。green 二进制(07:04)编译于全部编辑落定之后、回退之前,树字节与恢复态一致,行为探针 24/24 PASS×3 实证,继续有效。**二次教训:①`cargo build` 的 unit 编译序≠拓扑直觉(script 在 link 前最后一刻编译),"后台 build 未到我的文件"必须以 deps rlib 落盘 mtime 实证,不得以 console 编译行位置推断;②绿色构建漏带 CARGO_TARGET_DIR 落入共享默认 target(/var/cargo-builds/…)——产物已取回 pin 至私有目录,共享 target 同期被他者使用未被覆盖(cargo 文件锁保证原子),未构成污染但已登记操作偏差。**
+
+**deletion-manifest(已执行)**:~/code/tools/servo/tests/wpt/tests/editing/other/e187-probe.html + e187-probe2.html 删除(§e187 探针遗留,raw 证据 /tmp/e187-probe{,2}.raw.log 与 e186-veh 日志留存);/var/tmp/e185-veh/meta/MANIFEST.json 两项 items.testharness.editing.other 条目移除(备份 MANIFEST.json.e188-backup),postdel_probe 功能级复跑实证 manifest 可用。
+
+**登记面**:无新增红;e186 残留(66−24=42)中 queryCommand 级联 13/白空间 6/双属性 4/散格等维持原登记归属;§e187 的「修复判据后续合同」清偿完毕,两探针资产按 manifest 删除。
