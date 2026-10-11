@@ -2248,8 +2248,39 @@ impl Node {
             .is_some_and(HTMLElement::is_editing_host)
     }
 
+    /// Chrome-compat anchor (WPT editing/other/editing-around-select-element,
+    /// REQ-BRW-002): the internals of a select widget — everything strictly
+    /// inside a `select`, plus `optgroup`/`option` elements themselves — are
+    /// never editable, even when they carry a `contenteditable` attribute or
+    /// sit inside an editing host. Browsers do not allow editing `<select>`
+    /// internals. Deleting a whole widget selected as a unit from outside —
+    /// a range of exactly one `select` child in its parent — is handled by
+    /// the delete commands themselves, not by editability.
+    pub(crate) fn is_in_select_widget_internals(&self) -> bool {
+        if self.is::<Element>() &&
+            matches!(
+                *self.downcast::<Element>().unwrap().local_name(),
+                local_name!("select") | local_name!("optgroup") | local_name!("option")
+            )
+        {
+            return true;
+        }
+        self.ancestors()
+            .any(|node| node.is::<Element>() && {
+                let name = node.downcast::<Element>().unwrap().local_name();
+                *name == local_name!("select") ||
+                    *name == local_name!("optgroup") ||
+                    *name == local_name!("option")
+            })
+    }
+
     /// <https://w3c.github.io/editing/docs/execCommand/#editable>
     pub(crate) fn is_editable(&self) -> bool {
+        // Select widget internals are never editable (Chrome-compat, see
+        // `is_in_select_widget_internals`).
+        if self.is_in_select_widget_internals() {
+            return false;
+        }
         // > Something is editable if it is a node; it is not an editing host;
         if self.is_editing_host() {
             return false;

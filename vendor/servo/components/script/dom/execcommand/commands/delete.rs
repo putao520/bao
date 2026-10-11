@@ -30,6 +30,34 @@ pub(crate) fn execute_delete_command(
     let active_range = selection
         .active_range(cx)
         .expect("Must always have an active range");
+    // Chrome-compat anchor (WPT editing/other/editing-around-select-element,
+    // REQ-BRW-002): a range that starts or ends inside select widget
+    // internals must not modify anything — the unchanged DOM is the accepted
+    // outcome for every shape of that test. A selection that spans a whole
+    // `<select>` (the range is exactly its child list) deletes the widget as
+    // a unit instead.
+    if !active_range.collapsed() &&
+        active_range.start_container() == active_range.end_container() &&
+        active_range.start_offset() + 1 == active_range.end_offset() &&
+        let Some(widget) = active_range
+            .start_container()
+            .children()
+            .nth(active_range.start_offset() as usize) &&
+        widget.is::<Element>() &&
+        *widget.downcast::<Element>().unwrap().local_name() == local_name!("select")
+    {
+        let (parent, index) = (widget.GetParentNode(), widget.index());
+        widget.remove_self(cx);
+        if let Some(parent) = parent {
+            let _ = selection.Collapse(cx, Some(&parent), index as u32);
+        }
+        return true;
+    }
+    if active_range.start_container().is_in_select_widget_internals() ||
+        active_range.end_container().is_in_select_widget_internals()
+    {
+        return true;
+    }
     // Step 1. If the active range is not collapsed, delete the selection and return true.
     if !active_range.collapsed() {
         selection.delete_the_selection(

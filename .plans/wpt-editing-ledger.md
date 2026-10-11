@@ -227,3 +227,37 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 
 **载具与协调**:载具=/var/tmp/e174-veh(e167 形态拷贝+私有 manifest/overlay tests-root 探针面);**并发窗口实录**:e175 in-flight ws_registry.rs 破损态阻断 bao_bin 链接两轮——scoped restore 守卫窗(备份+mtime 守卫+即恢复,5 轮构建窗)绕行,终报披露 60s 窗口内低概率覆盖风险(未观察到并发写);WPT 端口战(并发 agent wptrunner)重试环。
 
+
+### e182(editing 继承散格三桶自研,2026-10-11,REQ-BRW-002 登记面清偿批㉖)
+
+**清偿**:e154 判「继承(origin/main 同 FAIL)」的三桶散格,用户裁决推翻继承登记(fork 自治=自研对象)。桶账(ws 165/run inserttext+styling 15 文件 83/ot 散格)按 e154 分桶账本精确对表:82 仍红(3 已被 e174 顺带翻)+ ot 面 e154 登记残面(select-element 100/delete-in-head 38/delete-in-html 27/ipg-in-head 54/paste 2)。
+
+**取证矩阵**(HEAD b8be6e27f 基线二进制,red_small+red_select+red_run 三轮):
+- ws inserttext 165 格=单根因:**规范 canonical 形态(SP-first)vs Chrome-83 形态(NB-first 交替)**;span 族 83 格加码:**跨节点 tree-walk**(spec canonicalize 吸收邻接节点 run)vs Chrome per-text-node 域;空串组 21 格=delete_the_selection 前置 canonicalize 副作用(非 no-op);insert "b" 族=spec 形态与 chrome 形态在 n=2(f,f) 恰合、n≥3 分歧+降级方向(插入非空格后邻接 run 需双向重规范化)。
+- run inserttext 64 红主根因:`<font size="7">` 包裹=restore 路径 `parse::<i32>("16px")` 恒败→fallback "7"(px 后缀未剥)+ 首子句 `value_override != optional_string` 在无 override 时恒真(两缺陷双修);字体+链接 3 格=restore 无条件重建 `<a>`;ILB xmp/script 2 格=retval false(spec 注释即写 return true,实现笔误)。
+- ot select-element 100 格=option/select/optgroup 内容可编辑(引擎删 option 文本/搬 select 入 p);ipg-in-head 54 格=title/style/script(可见 raw-text)内 insertparagraph 走块分裂而非 LF 插入(display 判据:invisible script 保持块分裂——run/insertparagraph `<script>foo[]bar</script>baz` 数据钉死)。
+
+**实装面**(vendor script 11 文件,execcommand 域+document/editing.rs+node/node.rs+selection.rs):
+- `contenteditable/node.rs`:`rebalance_whitespace_at`(Chrome-83 per-node 白空间规范化:NB-first 交替/节点尾 NB/lone-run 降级 SP/行首纯空格 run 坍缩单 NB/Preserve 语境跳过;UTF-16 域扫描,同长替换)。
+- `commands/inserttext.rs`:空串=无白空间机器(坍缩 no-op,非坍缩仍删选择);坍缩选择跳过 delete_the_selection(杜跨节点规范形态预写);select-internals 守卫+单 select 子整体删除;步骤 11 预插入 rebalance 删除(replaceData 按 DOM 规则把坍缩 caret 从 run 尾迁 run 首=插入点漂移根因);步骤 16/17→rebalance;步骤 19 改显式 collapse 到记忆的插入尾(rebalance 重写后边界漂移+行首坍缩缩长双护)。
+- `commands/insertlinebreak.rs`:xmp/script 步骤 3/4 retval false→true(spec 注释本就写 true)。
+- `commands/insertparagraph.rs`:可见 raw-text 元素(title/style/script,非 invisible)→`insert_paragraph_line_feeds`(字面 \n Text+collapsed 双喂;8 白空间变体全接受)。
+- `commands/{delete,forwarddelete}.rs`:select-internals 守卫+单 select 子整体删除臂。
+- `contenteditable/range.rs` restore:fontSize px 剥离(maybe_normalize_pixels 复用)+首子句限 override 在场;createLink 精化=override 存在且异,或无 override 且**插入点无锚上下文**(typing-around-link 37 格翻绿与 multitest createlink 链 18 格双满足的分界)。
+- `contenteditable/selection.rs` set_the_selection_value:纯白空间文本节点**边缘域**不样式化(两遍式:同源快照标记首/尾显著位前的 ws-only;text 节点;内部 ws 照常——`{<b>foo</b> <b>bar</b>}` 合并语义保全)。
+- `node/node.rs`:`is_in_select_widget_internals`(select/optgroup/option 自含+祖先是三者→不可编辑,含 contenteditable 属性载荷)。
+- `document/editing.rs`:paste 分支后置重读剪贴板(仅变更时采纳;embedder 写读时序未闭环=2 格登记)。
+
+**试错记录**(负结果如实):override 清除抑制两形态(全域/仅 DOM 变异路径)都使 run/insertparagraph 系大翻红,最终全撤——该收益面(multitest qCV 2 格+部分正翻)放弃登记。
+
+**终态分账**(final6 全域 vs headclean 全域双跑对拍,A/B 同载具同 meta):
+- **567 子测翻绿**:chrome-compat inserttext 165 全翻/select-element 100 全翻/inserttext 131/multitest 84/typing-around-link 37/ipg-in-head 20/insertparagraph-in-inline-editing-host 458+cannot-have-div 208+plaintext-only insertLineBreak 112 等 e174 基础上再正翻/ILB 3/11 styling 文件各 1(cefalse 格)/其余散格。
+- **file 级 0 回归**;子测新红 **2 格**(如实登记保持可见红,不写 ini):`run/inserttext nowrap foo&nbsp;[]` 格(chrome-compat 组 B 钉 NB-NB 与 run 数据钉 SP-NB 两代 Chrome 锚冲突)+`keep-typed-collapsible undo` 格(undo×rebalance 互作)。
+- **不可达/未清偿登记**(红可见性优先,后续合同域):delete-in-child-of-head 38(块连接 walk 需保留 meta/title/style/script/link/base/template 不可见元素且仍连接 div——walk 步 4.1/4.2/9.2/10.2/14.1 五删除点重构面)+delete-in-child-of-html 27(html/body 边界合并)+ipg-in-head 34(54−20)+paste-clipboard-change 2(embedder 剪贴板写读时序)+multitest backcolor qCV 2(override 生命周期,试错已证不可轻动)+dps qCV 2+stylewithcss qCS 1(跨 cell 顺序状态链)+delete foreColor qCV 3。
+- ini 终态:17 文件(11 改 6 删),−4425/+193;2 新红不登记(分歧可见红惯例)。
+
+**重大旁路发现(上报 Commander,非本波面)**:run/insertparagraph.html 216 子测红是 **fe3ea1519(e174)已提交树的既有状态**——e174-target 二进制(0 意外)与 fe3ea1519 干净重建(216 红)行为不一致=**e174 波验证所用二进制 provenance 异常**(其收口验证未反映已提交树);e174→HEAD(b8be6e27f)零 servo script commit,215 红与 e180/e181 bao 层重构无关(已排除:src 树还原 fe3ea1519 重建仍 216)。归属=已提交树在 e174 收口前已带此面(e174 二进制含未提交后丢失的 servo 状态?)。建议独立归因波。另:参考仓 tests/editing/other/ 残留 e174-probe*.html 4 个探针文件(双跑均 ERROR,环境面,建议清理)。
+
+**回归证据**:final6 全域 855 tests 733 as-expected/117 意外(基线 717/133)——意外集=正翻吸收尾+2 登记红+基线同在的环境 ERROR(e174-probe/paste_text_with_text_transform/recursive-exec-command);suite 真执行(BAO_TEST_NETWORK=1+xvfb+--nocapture)editing_e2e 6/6+editcontext c1-c5 5/5=11/11(12.63s 真时长);`cargo check --profile test-ci -p bao-servo-script` RC=0 触改文件零新警告;`cargo check -p bao-browser --features webdriver` RC=0;载具=/var/tmp/e182-veh(e174 形态拷贝+meta 拷贝自 vendor;二进制 provenance:e182-target 硬链增量链,headclean/e182v4 双份存档)。
+
+**教训**:①载具二进制 swap 前必须查在跑 wptrunner(本波一次撞车=batch2 混合 provenance 作废重跑);②A/B 双跑基线必须**覆盖目标文件全集**(run/insertparagraph 不在首版基线→归因多走 5 轮二分);③已提交树与"波验证二进制"可能不一致——campaign 基线一律用**当轮干净重建**,禁复用往轮 target 二进制作对照。

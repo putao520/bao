@@ -2235,6 +2235,99 @@ impl Node {
         }
     }
 
+    /// Chrome-83 anchored whitespace rebalancing for the inserttext path
+    /// (WPT editing/whitespaces/chrome-compat/inserttext.tentative.html,
+    /// REQ-BRW-002): the whitespace run around `offset` *within this text
+    /// node* is rewritten into the canonical visible form — a lone space
+    /// surrounded by non-whitespace stays a plain space, every other run
+    /// alternates non-breaking and plain spaces starting with the
+    /// non-breaking one, and a run ending at the end of the text node keeps
+    /// its last character non-breaking. Unlike `canonicalize_whitespace`
+    /// this never walks across node boundaries, matching the per-text-node
+    /// scope pinned by the Chrome-compat tests (a sibling node's whitespace
+    /// is never absorbed into the run around the caret).
+    pub(crate) fn rebalance_whitespace_at(&self, cx: &mut JSContext, offset: u32) {
+        // Only text nodes carry rebalanceable runs; anything else is a no-op.
+        let Some(text) = self.downcast::<Text>() else {
+            return;
+        };
+        if !self.is_editable_or_editing_host() {
+            return;
+        }
+        // Whitespace-preserving contexts (white-space: pre/pre-wrap semantics)
+        // do not collapse spaces, so runs there are already visible as typed.
+        let Some(style) = self
+            .GetParentNode()
+            .and_then(|parent| parent.downcast::<Element>().and_then(Element::style))
+        else {
+            return;
+        };
+        if style.get_inherited_text().white_space_collapse == WhiteSpaceCollapse::Preserve {
+            return;
+        }
+        let (start, length, replacement) = {
+            let data = text.data();
+            let units = data.encode_utf16().collect::<Vec<u16>>();
+            let is_whitespace = |unit: u16| unit == 0x0020 || unit == 0x00A0;
+            let mut start = (offset as usize).min(units.len());
+            while start > 0 && is_whitespace(units[start - 1]) {
+                start -= 1;
+            }
+            let mut end = (offset as usize).min(units.len());
+            while end < units.len() && is_whitespace(units[end]) {
+                end += 1;
+            }
+            if start == end {
+                return;
+            }
+            let length = end - start;
+            // A run of plain spaces at a line start is collapsible
+            // whitespace: consecutive plain spaces there render as nothing,
+            // so the whole run normalizes to the single non-breaking space
+            // that makes the one typed space visible (WPT
+            // editing/run/inserttext.html `" []foo"` / `"<div>[]  abc</div>"`
+            // expect `&nbsp;foo` / `&nbsp;abc`, REQ-BRW-002). Runs that begin
+            // with a non-breaking space are visible already and keep the
+            // alternating form.
+            let at_collapsible_line_start = start == 0 &&
+                units.first() == Some(&0x0020) &&
+                units[..end].iter().all(|&unit| unit == 0x0020) &&
+                self.follows_a_line_break(cx.no_gc());
+            let mut replacement = if at_collapsible_line_start {
+                "\u{00A0}".to_owned()
+            } else {
+                let mut replacement = String::with_capacity(length);
+                for index in 0..length {
+                    // A lone run between non-whitespace characters needs no
+                    // NBSP at all; everything else alternates from NBSP, with
+                    // the last character of a run that reaches the end of the
+                    // node forced to NBSP.
+                    let character = if length == 1 && start > 0 && end < units.len() {
+                        '\u{0020}'
+                    } else if index % 2 == 0 || (index + 1 == length && end == units.len()) {
+                        '\u{00A0}'
+                    } else {
+                        '\u{0020}'
+                    };
+                    replacement.push(character);
+                }
+                replacement
+            };
+            if String::from_utf16_lossy(&units[start..end]) == replacement {
+                return;
+            }
+            replacement.shrink_to_fit();
+            (start, length, replacement)
+        };
+        if text
+            .upcast::<CharacterData>()
+            .ReplaceData(cx, start as u32, length as u32, DOMString::from(replacement))
+            .is_err()
+        {
+            unreachable!("Invalid replacement for the whitespace run");
+        }
+    }
+
     /// <https://w3c.github.io/editing/docs/execCommand/#remove-extraneous-line-breaks-before>
     fn remove_extraneous_line_breaks_before(&self, cx: &mut JSContext) {
         let parent = self.GetParentNode();

@@ -852,9 +852,49 @@ impl Selection {
             });
         // Step 7. Let node list be all editable nodes effectively contained in the active range.
         // Step 8. For each node in node list:
+        //
+        // Chrome-compat edge carve-out (WPT editing/run/{bold,italic,...},
+        // `{ <span contenteditable="false">A</span> ; ... }` family,
+        // REQ-BRW-002): whitespace-only text nodes at the *leading or
+        // trailing edge* of the selection are not styled — Chrome's styler
+        // works on the visible extent of the selection, so the edge spaces
+        // stay plain while the ` ; ` runs between the non-editable spans
+        // get wrapped. Whitespace-only nodes interior to the selection are
+        // styled normally (`{<b>foo</b> <b>bar</b>}` must merge into one
+        // styled run including the space). The pre-pass below snapshots the
+        // same effectively-contained list the styling loop iterates and
+        // marks the edge zones.
+        let whitespace_edge_flags: Vec<bool> = {
+            let mut whitespace_only: Vec<bool> = Vec::new();
+            self.expect_active_range(cx)
+                .for_each_effectively_contained_child(cx, |_cx, child| {
+                    whitespace_only.push(child.downcast::<Text>().is_some_and(|text| {
+                        text.data()
+                            .bytes()
+                            .all(|byte| matches!(byte, b'\t' | b'\n' | b'\r' | b' '))
+                    }));
+                });
+            let first_significant = whitespace_only.iter().position(|flag| !flag);
+            let last_significant = whitespace_only.iter().rposition(|flag| !flag);
+            whitespace_only
+                .into_iter()
+                .enumerate()
+                .map(|(index, is_whitespace_only)| {
+                    is_whitespace_only &&
+                        (first_significant.is_none_or(|first| index < first) ||
+                            last_significant.is_none_or(|last| index > last))
+                })
+                .collect()
+        };
+        let mut child_index = 0usize;
         self.expect_active_range(cx)
             .for_each_effectively_contained_child(cx, |cx, child| {
-                if child.is_editable() {
+                let at_whitespace_edge = whitespace_edge_flags
+                    .get(child_index)
+                    .copied()
+                    .unwrap_or(false);
+                child_index += 1;
+                if child.is_editable() && !at_whitespace_edge {
                     // Step 8.1. Push down values on node.
                     child.push_down_values(cx, &command, new_value.clone());
                     // Step 8.2. If node is an allowed child of "span", force the value of node.

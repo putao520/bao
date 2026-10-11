@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use html5ever::local_name;
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::CharacterDataBinding::CharacterDataMethods;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
@@ -14,6 +15,7 @@ use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::characterdata::CharacterData;
 use crate::dom::document::Document;
+use crate::dom::element::Element;
 use crate::dom::execcommand::basecommand::CommandName;
 use crate::dom::execcommand::commands::insertparagraph::execute_insert_paragraph_command;
 use crate::dom::execcommand::contenteditable::selection::SelectionDeletionStripWrappers;
@@ -27,19 +29,82 @@ pub(crate) fn execute_insert_text_command(
     selection: &Selection,
     value: DOMString,
 ) -> bool {
-    // Step 1. Delete the selection, with strip wrappers false.
-    selection.delete_the_selection(
-        cx,
-        document,
-        Default::default(),
-        SelectionDeletionStripWrappers::NoStrip,
-        Default::default(),
-    );
-
-    // Step 2. If the active range's start node is neither editable nor an editing host, return true.
     let mut active_range = selection
         .active_range(cx)
         .expect("Must always have an active range.");
+
+    // Chrome-compat anchor (WPT editing/whitespaces/chrome-compat/
+    // inserttext.tentative.html, REQ-BRW-002): inserting the empty string
+    // does not run the whitespace machinery — the test pins that NBSPs
+    // around a collapsed caret survive untouched. A non-collapsed selection
+    // is still deleted first (editing/run/inserttext.html
+    // `[["inserttext",""]] "foo[bar]baz"` expects `foobaz`).
+    if value.is_empty() {
+        if !active_range.collapsed() {
+            selection.delete_the_selection(
+                cx,
+                document,
+                Default::default(),
+                SelectionDeletionStripWrappers::NoStrip,
+                Default::default(),
+            );
+        }
+        return true;
+    }
+
+    // Chrome-compat anchor (WPT editing/other/editing-around-select-element,
+    // REQ-BRW-002): a range that starts or ends inside select widget
+    // internals must not modify anything — the unchanged DOM is the accepted
+    // outcome for every shape of that test.
+    if active_range.start_container().is_in_select_widget_internals() ||
+        active_range.end_container().is_in_select_widget_internals()
+    {
+        return true;
+    }
+
+    // Step 1. Delete the selection, with strip wrappers false — but only
+    // when there is a selection to delete. For a collapsed caret the
+    // deletion pipeline is a no-op apart from its side effects, and its
+    // whitespace canonicalization (spec canonical form, walking across
+    // node boundaries) would rewrite the runs around the caret before the
+    // insert. Chrome's inserttext does not canonicalize before inserting,
+    // and the Chrome-compat tests pin the per-text-node scope.
+    if !active_range.collapsed() {
+        // A selection of exactly one whole `select` child removes the widget
+        // as a unit (Chrome-compat, editing-around-select-element); the
+        // generic deletion leaves the non-editable widget in place.
+        if active_range.start_container() == active_range.end_container() &&
+            active_range.start_offset() + 1 == active_range.end_offset() &&
+            let Some(widget) = active_range
+                .start_container()
+                .children()
+                .nth(active_range.start_offset() as usize) &&
+            widget.is::<Element>() &&
+            *widget.downcast::<Element>().unwrap().local_name() == local_name!("select")
+        {
+            let (parent, index) = (widget.GetParentNode(), widget.index());
+            widget.remove_self(cx);
+            if let Some(parent) = parent {
+                let _ = selection.Collapse(cx, Some(&parent), index as u32);
+            }
+            active_range = selection
+                .active_range(cx)
+                .expect("Must always have an active range.");
+        } else {
+            selection.delete_the_selection(
+                cx,
+                document,
+                Default::default(),
+                SelectionDeletionStripWrappers::NoStrip,
+                Default::default(),
+            );
+            active_range = selection
+                .active_range(cx)
+                .expect("Must always have an active range.");
+        }
+    }
+
+    // Step 2. If the active range's start node is neither editable nor an editing host, return true.
     if !active_range.start_container().is_editable_or_editing_host() {
         return true;
     }
@@ -171,8 +236,16 @@ pub(crate) fn execute_insert_text_command(
         unreachable!("Must always be able to collapse the selection");
     }
 
-    // Step 11. Canonicalize whitespace at (node, offset).
-    node.canonicalize_whitespace(cx, offset, Default::default());
+    // Step 11. Canonicalize whitespace at (node, offset) — intentionally
+    // skipped in the Chrome-compat form. Rewriting the run around the caret
+    // *before* the insertion goes through replaceData, and the DOM range
+    // mutation rules move a collapsed caret that sits at the end of the
+    // replaced run to its start — the insertion point then drifts to the
+    // front of the run (`a&nbsp;[]&nbsp;c` + insert "b" produced
+    // `ab&nbsp; c` instead of `a b c`, WPT editing/whitespaces/chrome-compat/
+    // inserttext.tentative.html). Chrome rebalances only after the insert,
+    // and the post-insert steps below cover every run adjacent to the
+    // insertion, so dropping the pre-insert pass is lossless.
 
     // Step 12. Let (node, offset) be the active range's start.
     active_range = selection
@@ -248,24 +321,38 @@ pub(crate) fn execute_insert_text_command(
     // Step 15. Restore states and values from overrides.
     active_range.restore_states_and_values(cx, selection, document, overrides);
 
-    // Step 16. Canonicalize whitespace at the active range's start, with fix collapsed space false.
+    // The rebalances below rewrite runs via replaceData, whose DOM range
+    // mutation rules move boundary points that sit at the end of the
+    // replaced run to its start. Remember the intended caret position (the
+    // end of the inserted text) so the collapse at the end lands after the
+    // inserted text even when a run was rewritten around it.
+    let (end_node, end_offset) = (active_range.end_container(), active_range.end_offset());
+    // Step 16. Canonicalize whitespace at the active range's start, with fix
+    // collapsed space false — Chrome-compat form (per-text-node rebalance).
     active_range
         .start_container()
-        .canonicalize_whitespace(cx, active_range.start_offset(), false);
+        .rebalance_whitespace_at(cx, active_range.start_offset());
 
-    // Step 17. Canonicalize whitespace at the active range's end, with fix collapsed space false.
+    // Step 17. Canonicalize whitespace at the active range's end, with fix
+    // collapsed space false — Chrome-compat form (per-text-node rebalance).
     active_range
         .end_container()
-        .canonicalize_whitespace(cx, active_range.end_offset(), false);
+        .rebalance_whitespace_at(cx, active_range.end_offset());
+
 
     // Step 18. If value is a space character, autolink the active range's start.
     if value == " " {
         // TODO: Implement autolink.
     }
 
-    // Step 19. Call collapseToEnd() on the context object's selection.
-    if selection.CollapseToEnd(cx).is_err() {
-        unreachable!("Must always be able to CollapseToEnd here.");
+    // Step 19. Call collapseToEnd() on the context object's selection —
+    // to the remembered end of the inserted text, clamped to the node's
+    // current length (the line-start whitespace collapse may have shrunk
+    // the run, and replaceData's boundary adjustments may have moved the
+    // live range's end to the start of the rewritten run).
+    let end_offset = end_offset.min(end_node.len());
+    if selection.Collapse(cx, Some(&end_node), end_offset).is_err() {
+        unreachable!("Must always be able to collapse the selection.");
     }
 
     // Step 20. Return true.

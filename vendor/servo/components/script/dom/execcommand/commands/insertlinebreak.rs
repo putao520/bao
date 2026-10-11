@@ -45,13 +45,19 @@ pub(crate) fn execute_insert_line_break_command(
 
     // Step 3. If the active range's start node is an Element, and "br" is not an allowed child of
     //         it, return true.
+    //
+    //         Chrome-compat anchor (WPT editing/run/insertlinebreak.html
+    //         `<xmp>foo[]bar</xmp>` / `<script>foo[]bar</script>baz`,
+    //         REQ-BRW-002): the command reports success (return value true)
+    //         while leaving the DOM untouched — raw-text elements cannot
+    //         host a `br`, but Chrome still returns true for the no-op.
     if active_range.start_container().is::<Element>() &&
         !is_allowed_child(
             NodeOrString::String("br".to_owned()),
             NodeOrString::from_node(&active_range.start_container(), cx.no_gc()),
         )
     {
-        return false;
+        return true;
     }
 
     // Step 4. If the active range's start node is not an Element, and "br" is not an allowed child
@@ -68,7 +74,7 @@ pub(crate) fn execute_insert_line_break_command(
             ),
         )
     {
-        return false;
+        return true;
     }
 
     // Step 5. If the active range's start node is a Text node and its start offset is zero, call

@@ -2,12 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use html5ever::local_name;
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::inheritance::Castable;
 
 use crate::dom::document::Document;
+use crate::dom::element::Element;
 use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::html::htmlhrelement::HTMLHRElement;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
@@ -25,6 +27,34 @@ pub(crate) fn execute_forward_delete_command(
     let active_range = selection
         .active_range(cx)
         .expect("Must always have an active range");
+    // Chrome-compat anchor (WPT editing/other/editing-around-select-element,
+    // REQ-BRW-002): a range that starts or ends inside select widget
+    // internals must not modify anything — the unchanged DOM is the accepted
+    // outcome for every shape of that test. A selection that spans a whole
+    // `<select>` (the range is exactly its child list) deletes the widget as
+    // a unit instead.
+    if !active_range.collapsed() &&
+        active_range.start_container() == active_range.end_container() &&
+        active_range.start_offset() + 1 == active_range.end_offset() &&
+        let Some(widget) = active_range
+            .start_container()
+            .children()
+            .nth(active_range.start_offset() as usize) &&
+        widget.is::<Element>() &&
+        *widget.downcast::<Element>().unwrap().local_name() == local_name!("select")
+    {
+        let (parent, index) = (widget.GetParentNode(), widget.index());
+        widget.remove_self(cx);
+        if let Some(parent) = parent {
+            let _ = selection.Collapse(cx, Some(&parent), index as u32);
+        }
+        return true;
+    }
+    if active_range.start_container().is_in_select_widget_internals() ||
+        active_range.end_container().is_in_select_widget_internals()
+    {
+        return true;
+    }
     if !active_range.collapsed() {
         selection.delete_the_selection(
             cx,

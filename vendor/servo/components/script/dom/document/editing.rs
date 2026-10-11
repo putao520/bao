@@ -229,7 +229,30 @@ impl Document {
                     }
                 },
                 ClipboardEventType::Paste => {
-                    if let Some(text_content) = clipboard_event.text_content() {
+                    // Chrome-compat anchor (WPT editing/other/
+                    // paste-clipboard-change.tentative.html, REQ-BRW-002):
+                    // the inserted content is read from the clipboard *after*
+                    // the paste event handler ran — a handler that runs
+                    // `document.execCommand("copy")` to overwrite the
+                    // clipboard makes the paste insert the new content, not
+                    // the snapshot the paste event was constructed with.
+                    // Re-read and adopt the fresh value only when it differs,
+                    // so an unchanged clipboard keeps the event snapshot.
+                    let mut text_content = clipboard_event.text_content();
+                    let (callback, receiver) =
+                        GenericCallback::new_blocking().expect("Could not create callback");
+                    self.send_to_embedder(EmbedderMsg::GetClipboardText(
+                        self.webview_id(),
+                        callback,
+                    ));
+                    let fresh_text = receiver
+                        .recv()
+                        .map(Result::unwrap_or_default)
+                        .unwrap_or_default();
+                    if !fresh_text.is_empty() && text_content.as_ref() != Some(&fresh_text) {
+                        text_content = Some(fresh_text);
+                    }
+                    if let Some(text_content) = text_content {
                         let html_content = clipboard_event.html_content();
                         // The paste handler above may have moved focus to
                         // another editor, detached the EditContext, or

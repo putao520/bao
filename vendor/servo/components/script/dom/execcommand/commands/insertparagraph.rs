@@ -14,6 +14,7 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
 use crate::dom::bindings::codegen::Bindings::TextBinding::TextMethods;
 use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::str::DOMString;
 use crate::dom::comment::Comment;
 use crate::dom::document::Document;
 use crate::dom::element::Element;
@@ -33,6 +34,29 @@ pub(crate) fn execute_insert_paragraph_command(
     document: &Document,
     selection: &Selection,
 ) -> bool {
+    // Chrome-compat anchor (WPT editing/other/
+    // insertparagraph-in-child-of-head.tentative.html, REQ-BRW-002): inside
+    // a *visible* raw-text element — title, style, script, which cannot host
+    // element children — the paragraph command inserts literal line feeds
+    // instead of splitting the block: one at the caret, plus a second when
+    // the caret's line would otherwise render empty. An invisible raw-text
+    // element (an unstyled script renders display:none) keeps the block
+    // splitting path (editing/run/insertparagraph.html
+    // `<script>foo[]bar</script>baz` splits into two scripts).
+    if let Some(active_range) = selection.active_range(cx) &&
+        let Some(raw_text_host) = active_range.start_container().inclusive_ancestors(
+            ShadowIncluding::No,
+        ).find(|ancestor| {
+            node_matches_local_name!(
+                ancestor,
+                local_name!("title") | local_name!("style") | local_name!("script")
+            )
+        }) &&
+        !raw_text_host.is_invisible(cx.no_gc())
+    {
+        return insert_paragraph_line_feeds(cx, document, selection);
+    }
+
     // Step 1. Delete the selection.
     selection.delete_the_selection(
         cx,
@@ -640,5 +664,38 @@ pub(crate) fn execute_insert_paragraph_command(
     // Step 34. Call collapse(new container, 0) on the context object's selection.
     let _ = selection.Collapse(cx, Some(&new_container_node), 0);
     // Step 35. Return true.
+    true
+}
+
+/// Chrome-compat line-feed insertion for visible raw-text elements (see the
+/// anchor comment on `execute_insert_paragraph_command`): insert a literal
+/// `\n` Text at the caret, and a second one when the caret's line would
+/// otherwise render empty (an empty host needs two feeds to show a line).
+fn insert_paragraph_line_feeds(
+    cx: &mut JSContext,
+    document: &Document,
+    selection: &Selection,
+) -> bool {
+    let line_feed = document.CreateTextNode(cx, DOMString::from_static("\n"));
+    let line_feed_node = DomRoot::upcast::<Node>(line_feed);
+    let mut active_range = selection
+        .active_range(cx)
+        .expect("Must always have an active range");
+    if active_range.InsertNode(cx, &line_feed_node).is_err() {
+        unreachable!("Must always be able to insert");
+    }
+    // Collapse inside the new text node, past the feed.
+    let _ = selection.Collapse(cx, Some(&line_feed_node), line_feed_node.len());
+    if line_feed_node.is_collapsed_line_break(cx.no_gc()) {
+        let extra_feed = document.CreateTextNode(cx, DOMString::from_static("\n"));
+        let extra_feed_node = DomRoot::upcast::<Node>(extra_feed);
+        active_range = selection
+            .active_range(cx)
+            .expect("Must always have an active range");
+        if active_range.InsertNode(cx, &extra_feed_node).is_err() {
+            unreachable!("Must always be able to insert");
+        }
+        let _ = selection.Collapse(cx, Some(&extra_feed_node), extra_feed_node.len());
+    }
     true
 }

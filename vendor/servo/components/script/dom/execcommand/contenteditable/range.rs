@@ -14,7 +14,7 @@ use crate::dom::document::Document;
 use crate::dom::execcommand::basecommand::{
     BoolOrOptionalString, CommandName, RecordedStateOfCommand,
 };
-use crate::dom::execcommand::commands::fontsize::legacy_font_size_for;
+use crate::dom::execcommand::commands::fontsize::{legacy_font_size_for, maybe_normalize_pixels};
 use crate::dom::html::htmllielement::HTMLLIElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::Node;
@@ -314,10 +314,32 @@ impl Range {
                             // and either there is a value override for "createLink" that is not equal to override,
                             // or there is no value override for "createLink" and node's effective command value
                             // for "createLink" is not equal to override: take the action for "createLink", with value equal to override.
+                            //
+                            // Chrome-compat carve-out (WPT editing/run/inserttext.html
+                            // `foo<font color=blue><a href=...>[bar]</a></font>baz`
+                            // family + editing/other/typing-around-link-element,
+                            // REQ-BRW-002): when an anchor already surrounds
+                            // the insertion point, the restore never re-wraps
+                            // the typed text in a link — typing at the edge of
+                            // or inside a link either keeps the DOM anchor
+                            // (collapsed caret) or drops it (the deletion's
+                            // wrapper cleanup). Re-creation only happens when
+                            // no anchor context exists at the node, which is
+                            // how a pending `createlink` keeps applying to
+                            // typed text (editing/run/multitest.html
+                            // `[["createlink",...],["indent",...],["inserttext","a"]]`
+                            // produces `<a href="...">a</a>`).
                             CommandName::CreateLink => {
                                 let value_override =
                                     context_object.value_override(&CommandName::CreateLink);
-                                if value_override != optional_string {
+                                let has_anchor_context = node
+                                    .effective_command_value(&CommandName::CreateLink)
+                                    .is_some();
+                                if value_override
+                                    .as_ref()
+                                    .is_some_and(|value| Some(value) != optional_string.as_ref()) ||
+                                    (value_override.is_none() && !has_anchor_context)
+                                {
                                     CommandName::CreateLink.execute(
                                         cx,
                                         context_object,
@@ -333,22 +355,37 @@ impl Range {
                             CommandName::FontSize => {
                                 let value_override =
                                     context_object.value_override(&CommandName::FontSize);
-                                if value_override != optional_string ||
-                                    (value_override.is_none() &&
-                                        !CommandName::FontSize.are_loosely_equivalent_values(
-                                            node.effective_command_value(&CommandName::FontSize)
-                                                .as_ref(),
-                                            optional_string.as_ref(),
-                                        ))
-                                {
+                                // The first disjunct only applies when a value override exists:
+                                // an absent override must fall through to the loose-equivalence
+                                // check, otherwise every restore would restyle (the recorded
+                                // effective value of unstyled text used to be force-converted to
+                                // legacy size "7" and wrap the inserted text in
+                                // `<font size="7">`; WPT editing/run/inserttext.html
+                                // `"foo[bar]baz"` expects a plain insert, REQ-BRW-002).
+                                let has_override_not_equal_to_recorded = value_override
+                                    .as_ref()
+                                    .is_some_and(|value| Some(value) != optional_string.as_ref());
+                                let needs_styling = value_override.is_none() &&
+                                    !CommandName::FontSize.are_loosely_equivalent_values(
+                                        node.effective_command_value(&CommandName::FontSize)
+                                            .as_ref(),
+                                        optional_string.as_ref(),
+                                    );
+                                if has_override_not_equal_to_recorded || needs_styling {
                                     // Step 2.5. Convert override to an integer number of pixels,
                                     // and set override to the legacy font size for the result.
+                                    // The recorded value is the resolved font-size (unit-bearing,
+                                    // e.g. "16px", or a keyword): normalize it instead of
+                                    // parsing it as a bare integer, which never succeeds and
+                                    // silently degraded to "7".
                                     let pixels = optional_string
-                                        .and_then(|value| value.parse::<i32>().ok())
-                                        .map(|value| {
-                                            legacy_font_size_for(value as f32, context_object)
+                                        .as_ref()
+                                        .and_then(|value| {
+                                            maybe_normalize_pixels(value, context_object)
                                         })
-                                        .unwrap_or(DOMString::from_static("7"));
+                                        .unwrap_or_else(|| {
+                                            legacy_font_size_for(16.0, context_object)
+                                        });
                                     // Step 2.6. Take the action for "fontSize", with value equal to override.
                                     CommandName::FontSize.execute(
                                         cx,
