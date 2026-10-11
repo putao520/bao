@@ -310,3 +310,22 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **关键判别律**(沉淀):①wpt raw log 解析——`expected` 字段缺省=与 ini 期望一致(as-expected);勿用「FAIL 且无 expected 字段=意外」的朴素口径(会把登记红误计为意外,首版 99→10→8 的计数摇摆源于此)。②「invisible caret」≠「不可见内容中的位置」:caret 有效性只看 display:none 链,内容级不可见(空白文本/折叠 br)不影响位置合法性。③head 区 invisible 保全规则域=祖先链含 head;body 内同名元素(script/style)照旧删除(delete.js `foo<script>bar</script>[]baz`→`fo[]baz` Chrome-83 锚)。④域边界:全 body 内容两侧 structural_side 同为 Body,flip 永不触发,正常合并方向零变化(全域 0 回归实证)。
 
 **验证**:cargo check --profile test-ci -p bao-servo-script RC=0,触碰文件零警告;全域双跑对拍 0 新红;三桶目标文件终态二进制两跑稳定(91 绿 + 8 登记);fd chunk CRASH 修复后 run/forwarddelete.html 全 8 chunk OK。
+
+### e187(flex/grid 24 格样式面假说证伪——根因改判 editing 命令层,域冲突上报,2026-10-12,REQ-BRW-050)
+
+**任务锚**:e183 残留分类①(flex/grid 原子项 24)按「servo 样式路径对 flex/grid 容器算 inside=Flow」假说立项样式面根修。
+
+**假说证伪(双引擎同探针直接实测)**:样式层(stylo display inside/outside + blockification)**零缺陷,已 Chromium parity**:
+- bao 侧探针(`/tmp/e187-probe.raw.log`,载具 e185-veh+e185-green 二进制):`display:flex` 容器 computed=`flex`、其 span computed=`block`(blockified)、`inline-flex|grid|inline-grid` 同构(span 恒 `block`)、`display:block` 下 span=`inline`(对照)、float span=`block`(blockify 第二臂)——全部正确。
+- **真 Chrome 逐字节同值**(`/tmp/e187-chrome-probe.html`,`google-chrome --headless=new --dump-dom` 实测):`host=flex|inline-flex|grid|inline-grid, span=block, spanFloat=block, block 控制组 span=inline` 与 bao 完全一致。
+- e183 的 "Display(514)" 探针证据重解读:514=outside Block+inside Flow=**blockified flex item**(正确形态),非容器缺 inside;当时归因方向错置。
+
+**真根因(改判)**:`execcommand/commands/insertparagraph.rs` 缺 Chrome 的 **flex/grid item 原子分支**。实测(probe2,`/tmp/e187-probe2.raw.log`):`<div style=display:flex><span>a[]bc</span></div>` → got `<div style=display:flex><span>a</span></div><div style=display:flex><span>bc</span></div>`(容器被克隆劈开,style 属性随行),期望(~/code/tools/servo/tests/wpt/tests/editing/data/insertparagraph.js:2586-2700,**Chrome-142 锚**)=`<div style="display:flex"><span>a</span><span>bc</span></div>`——item 就地兄弟分裂,容器零触碰。24 格=4 容器型 × 3 caret 位 × 2 paragraphseparator,同一分支全覆盖。机制:caret 的 block(blockified item)经 Step 9 容器爬升落到 div 后走标准容器劈开路径;Chromium 对 item-of-item-container 走 item 兄弟分裂。
+
+**修复判据(后续合同最小差分,一行谓词可达)**:servo 计算样式已含全部所需信号——caret 最近 block 祖先的父元素 `style.get_box().display.is_item_container()`(stylo `Display::is_item_container`,inside∈{Flex,Grid,GridLanes});现 `resolved_display_value`(execcommand/contenteditable/element.rs:26)只回 `DisplayOutside`,补一个 inside 访问器(或 `is_flex_grid_item` helper)即可。e183 曾以「style 属性文本匹配」原型实证 item 分裂形态可行(按 P-1 移除);正确形态=同一分裂路径换计算样式判据。**域归属:execcommand 命令面 = e186 并行禁触域,本波零代码改动,上报 Commander 裁决派发。**
+
+**回归面(后续合同输入)**:目标=insertparagraph 24 格清偿;insertlinebreak.js:873-935 同族 flex item 格(insertLineBreak 在 item 内插 br)当前 **0 unexpected**(green_full 实测)必须保持;全域 855 tests 逐文件对拍零新红。
+
+**证据资产(留存)**:`~/code/tools/servo/tests/wpt/tests/editing/other/e187-probe.html`(computed-display 矩阵)+ `e187-probe2.html`(实际 insertParagraph 行为,documentElement.innerHTML 全景),已登记 `/var/tmp/e185-veh/meta/MANIFEST.json`(testharness 两项,共享载具附加面,如实披露);raw log `/tmp/e187-probe{,2}.raw.log`+console;Chrome 探针 `/tmp/e187-chrome-probe.html`。deletion-manifest:两探针文件+MANIFEST 两项待后续 flex 合同验收后清除。
+
+**教训**:①「样式层不可得」类归因必须先做 computed-style 直接探针再立项——e183 用引擎内部 Debug 形态(无元素归属记录)反推,方向错置;真 Chrome 同页面对照是本类分歧的一票判据(本机 `google-chrome --headless=new --dump-dom` 零依赖可用)。②wptrunner 私有 MANIFEST 增补测试文件可直接改 JSON(items.testharness 树 +sha1+[None,{}]),无需全量 manifest 重建。③ledger 残留分类的「探针实证」措辞必须落文件路径,否则下波无法复核证据链。
