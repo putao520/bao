@@ -144,8 +144,8 @@ partial /*sealed*/ interface Document {
   // user interaction
   readonly attribute Window?/*Proxy?*/ defaultView;
   boolean hasFocus();
-  // [CEReactions]
-  // attribute DOMString designMode;
+  [CEReactions]
+  attribute DOMString designMode;
   [CEReactions, Throws, Pref="dom_exec_command_enabled"]
   boolean execCommand(DOMString commandId, optional boolean showUI = false, optional (TrustedHTML or DOMString) value = "");
   [Pref="dom_exec_command_enabled"] boolean queryCommandEnabled(DOMString commandId);

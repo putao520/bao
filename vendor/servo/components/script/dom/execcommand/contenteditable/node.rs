@@ -42,6 +42,18 @@ pub(crate) enum NodeOrString<'a> {
     Node(UnrootedDom<'a, Node>),
 }
 
+/// Which side of the document-structural boundary a node lives on
+/// (see [`Node::structural_side`]).
+#[derive(PartialEq)]
+pub(crate) enum StructuralSide {
+    /// The node is the `head` element or lies inside it.
+    Head,
+    /// The node is the `body` element or lies inside it.
+    Body,
+    /// Neither: the node lives at the `html` level or in detached content.
+    Other,
+}
+
 impl<'a> NodeOrString<'a> {
     pub(crate) fn from_node(node: &Node, no_gc: &'a NoGC) -> NodeOrString<'a> {
         NodeOrString::Node(UnrootedDom::from_ref(node, no_gc))
@@ -254,7 +266,13 @@ pub(crate) fn is_allowed_child(child: NodeOrString, parent: NodeOrString) -> boo
     }
     // Step 2. If parent is "script", "style", "plaintext", or "xmp",
     // or an HTML element with local name equal to one of those, and child is not a Text node, return false.
-    if node_or_string_matches_name!(parent, "script" | "style" | "plaintext" | "xmp") &&
+    //
+    // Chromium-compat extension (WPT editing/other/delete-in-child-of-head,
+    // REQ-BRW-050): `title` is added to this raw-text group. Its HTML
+    // content model is text-only, and Chromium never lets the deletion
+    // block-merge machinery treat a `title` as a span-bearing block
+    // (visible `<title>` elements are never joined with anything).
+    if node_or_string_matches_name!(parent, "script" | "style" | "plaintext" | "xmp" | "title") &&
         child.as_node().is_none_or(|node| !node.is::<Text>())
     {
         return false;
@@ -1574,6 +1592,62 @@ impl Node {
     pub(crate) fn is_invisible(&self, no_gc: &NoGC) -> bool {
         // > Something is invisible if it is a node that is not visible.
         !self.is_visible(no_gc)
+    }
+
+    /// Which side of the document-structural boundary this node lives on.
+    ///
+    /// Chromium-compat anchor (WPT editing/other/delete-in-child-of-head and
+    /// delete-in-child-of-html, REQ-BRW-050): the deletion walks must treat
+    /// the head region as document metadata — invisible nodes there
+    /// (`meta`/`title`/`style`/`script`/`link`/`base`/`template` and the
+    /// `head` element itself) are never removed and merges are directed INTO
+    /// the structural side, never dissolving `head`/`body`/`html`.
+    pub(crate) fn structural_side(&self) -> StructuralSide {
+        for ancestor in self.inclusive_ancestors(ShadowIncluding::No) {
+            if let Some(element) = ancestor.downcast::<Element>() {
+                match *element.local_name() {
+                    local_name!("head") => return StructuralSide::Head,
+                    local_name!("body") => return StructuralSide::Body,
+                    _ => {},
+                }
+            }
+        }
+        StructuralSide::Other
+    }
+
+    /// Whether this node is the `head` element or lies inside it.
+    pub(crate) fn is_in_head_region(&self) -> bool {
+        self.structural_side() == StructuralSide::Head
+    }
+
+    /// Whether this node is one of the document-structural elements
+    /// (`html`/`head`/`body`) that the deletion machinery never removes.
+    pub(crate) fn is_document_structural(&self) -> bool {
+        self.downcast::<Element>().is_some_and(|element| {
+            matches!(
+                *element.local_name(),
+                local_name!("html") | local_name!("head") | local_name!("body")
+            )
+        })
+    }
+
+    /// Whether this node's containing element chain crosses a `display: none`
+    /// element — the caret is then not at a *visible position*.
+    ///
+    /// Chromium-compat anchor (WPT editing/other/delete-in-child-of-head,
+    /// REQ-BRW-050): deletion establishes the previous/next visible position
+    /// relative to the caret; a caret parked inside invisible content (an
+    /// unstyled `<title>`, a `display:none` subtree) is not a real editing
+    /// position and the delete commands are a no-op there. Unlike
+    /// `is_invisible`, this deliberately ignores the node's own content
+    /// (a whitespace-only Text node is a perfectly valid caret position).
+    pub(crate) fn is_in_display_none_region(&self) -> bool {
+        self.inclusive_ancestors(ShadowIncluding::No).any(|ancestor| {
+            ancestor
+                .downcast::<Element>()
+                .and_then(Element::resolved_display_value)
+                .is_some_and(|display| display == DisplayOutside::None)
+        })
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#collapsed-line-break>

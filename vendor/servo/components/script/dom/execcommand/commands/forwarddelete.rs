@@ -66,6 +66,19 @@ pub(crate) fn execute_forward_delete_command(
         return true;
     }
 
+    // Chromium-compat anchor (WPT editing/other/delete-in-child-of-head,
+    // REQ-BRW-050): a caret whose containing chain crosses `display: none`
+    // (inside invisible content such as an unstyled `<title>`) is not a
+    // real editing position; Chromium's forward deletion establishes the
+    // next *visible* position relative to the caret and is a no-op when the
+    // caret itself is not at one.
+    if active_range
+        .start_container()
+        .is_in_display_none_region()
+    {
+        return true;
+    }
+
     // Step 2. Canonicalize whitespace at the active range's start.
     active_range
         .start_container()
@@ -79,10 +92,15 @@ pub(crate) fn execute_forward_delete_command(
     loop {
         // Step 4.1. If offset is the length of node and node's nextSibling is an editable invisible node,
         //           remove node's nextSibling from its parent.
+        //
+        // Chromium-compat anchor (delete-in-child-of-head): invisible nodes
+        // in the head region are document metadata — they are preserved
+        // transparently (the walk continues past them without removal).
         if offset == node.len() &&
             let Some(sibling) = node.GetNextSibling() &&
             sibling.is_editable() &&
-            sibling.is_invisible(cx.no_gc())
+            sibling.is_invisible(cx.no_gc()) &&
+            !sibling.is_in_head_region()
         {
             sibling.remove_self(cx);
             continue;
@@ -92,7 +110,8 @@ pub(crate) fn execute_forward_delete_command(
         //           remove that child from node.
         if let Some(child) = node.children().nth(offset as usize) &&
             child.is_editable() &&
-            child.is_invisible(cx.no_gc())
+            child.is_invisible(cx.no_gc()) &&
+            !child.is_in_head_region()
         {
             child.remove_self(cx);
             continue;
@@ -220,11 +239,23 @@ pub(crate) fn execute_forward_delete_command(
         }
 
         // Step 10.2. Otherwise, if end node has an editable invisible child with index end offset, remove it from end node.
+        //
+        // Chromium-compat anchor (delete-in-child-of-head): head-region
+        // invisible nodes are walked past transparently instead of removed.
         if let Some(child) = end_node.children().nth(end_offset as usize) &&
             child.is_editable() &&
             child.is_invisible(cx.no_gc())
         {
-            child.remove_self(cx);
+            if child.is_in_head_region() {
+                // Chromium-compat anchor (delete-in-child-of-head): the
+                // preserved head-region node is walked past transparently —
+                // the position moves beyond it (the node stays).
+                end_offset += 1;
+            } else {
+                child.remove_self(cx);
+                // The next child shifts into end_offset: re-examine the same
+                // offset (do NOT advance past the removal).
+            }
             continue;
         }
 
@@ -294,7 +325,13 @@ pub(crate) fn execute_forward_delete_command(
     // Step 14. While end node has a child with index end offset:
     while let Some(child) = end_node.children().nth(end_offset as usize) {
         // Step 14.1. If end node's child with index end offset is editable and invisible, remove it from end node.
-        if child.is_editable() && child.is_invisible(cx.no_gc()) {
+        //
+        // Chromium-compat anchor (delete-in-child-of-head): head-region
+        // invisible nodes are crossed transparently (the walk descends into
+        // them) instead of removed.
+        if child.is_editable() && child.is_invisible(cx.no_gc()) &&
+            !child.is_in_head_region()
+        {
             child.remove_self(cx);
             continue;
         }

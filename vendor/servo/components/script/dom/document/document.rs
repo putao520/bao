@@ -456,6 +456,9 @@ pub(crate) struct Document {
     stylesheets: DomRefCell<DocumentStylesheetSet<ServoStylesheetInDocument>>,
     stylesheet_list: MutNullableDom<StyleSheetList>,
     ready_state: Cell<DocumentReadyState>,
+    /// <https://html.spec.whatwg.org/multipage/#design-mode>
+    /// > Documents have a design mode enabled flag, which is initially false.
+    design_mode_enabled: Cell<bool>,
     /// The script element that is currently executing.
     current_script: MutNullableDom<HTMLScriptElement>,
     #[no_trace]
@@ -1044,6 +1047,28 @@ impl Document {
     #[inline]
     pub(crate) fn is_html_document(&self) -> bool {
         self.is_html_document
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#design-mode>
+    /// Whether this document's design mode enabled flag is set.
+    #[inline]
+    pub(crate) fn design_mode_enabled(&self) -> bool {
+        self.design_mode_enabled.get()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#enable-design-mode>
+    /// Sets the design mode enabled flag. While design mode is enabled the
+    /// document itself is an editing host
+    /// (<https://html.spec.whatwg.org/multipage/#editing-host>), so every
+    /// element in the document is editable unless a nested `contenteditable`
+    /// boundary says otherwise.
+    pub(crate) fn enable_design_mode(&self) {
+        self.design_mode_enabled.set(true);
+    }
+
+    /// Disables this document's design mode enabled flag.
+    pub(crate) fn disable_design_mode(&self) {
+        self.design_mode_enabled.set(false);
     }
 
     pub(crate) fn is_xhtml_document(&self) -> bool {
@@ -4142,6 +4167,9 @@ impl Document {
             // https://html.spec.whatwg.org/multipage/#current-document-readiness
             // > Each Document has a current document readiness, a string, initially "complete".
             ready_state: Cell::new(DocumentReadyState::Complete),
+            // https://html.spec.whatwg.org/multipage/#design-mode
+            // > Documents have a design mode enabled flag, which is initially false.
+            design_mode_enabled: Cell::new(false),
             current_script: Default::default(),
             current_the_end_loading_phase: Default::default(),
             pending_parsing_blocking_script: Default::default(),
@@ -6241,6 +6269,29 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     /// <https://html.spec.whatwg.org/multipage/#document.title>
     fn Title(&self) -> DOMString {
         self.title().unwrap_or_default()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-document-designmode>
+    /// > The designMode getter steps are to return "on" if this's design mode
+    /// > is enabled, or "off" otherwise.
+    fn DesignMode(&self) -> DOMString {
+        DOMString::from(if self.design_mode_enabled() { "on" } else { "off" })
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-document-designmode>
+    fn SetDesignMode(&self, value: DOMString) {
+        // > 1. Let value be the given value converted to ASCII lowercase.
+        let value = value.str().to_ascii_lowercase();
+        // > 2. If value is "on" and this's design mode is disabled, then enable
+        // >    design mode for this.
+        if value == "on" {
+            self.enable_design_mode();
+        } else if value == "off" {
+            // > 3. Otherwise, if value is "off" and this's design mode is
+            // >    enabled, then disable design mode for this.
+            self.disable_design_mode();
+        }
+        // > 4. Other values are ignored.
     }
 
     /// <https://html.spec.whatwg.org/multipage/#document.title>

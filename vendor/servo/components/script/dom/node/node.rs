@@ -2244,6 +2244,10 @@ impl Node {
 
     /// <https://html.spec.whatwg.org/multipage/#editing-host>
     pub(crate) fn is_editing_host(&self) -> bool {
+        // > A document whose design mode is enabled is an editing host.
+        if let Some(document) = self.downcast::<Document>() {
+            return document.design_mode_enabled();
+        }
         self.downcast::<HTMLElement>()
             .is_some_and(HTMLElement::is_editing_host)
     }

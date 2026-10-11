@@ -19,8 +19,8 @@ use crate::dom::characterdata::CharacterData;
 use crate::dom::document::Document;
 use crate::dom::execcommand::basecommand::CommandName;
 use crate::dom::execcommand::contenteditable::node::{
-    NodeOrString, is_allowed_child, move_preserving_ranges, record_the_values, restore_the_values,
-    split_the_parent,
+    NodeOrString, StructuralSide, is_allowed_child, move_preserving_ranges, record_the_values,
+    restore_the_values, split_the_parent,
 };
 use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::html::htmlelement::HTMLElement;
@@ -368,6 +368,14 @@ impl Selection {
             // `RootedVec<DomRoot<Node>>`. The type alias here doesn't upset test-tidy,
             // while also providing the necessary information to the compiler to work.
             type DomRootNode = DomRoot<Node>;
+            // Chromium-compat anchor (WPT editing/other/delete-in-child-of-head,
+            // REQ-BRW-050): invisible nodes in the head region are document
+            // metadata (`meta`/`title`/`style`/`script`/`link`/`base`/
+            // `template` and the `head` element itself) — a block join across
+            // them merges the neighboring blocks without removing them.
+            if node.is_in_head_region() {
+                continue;
+            }
             if node.is_editable() &&
                 !(node.is::<HTMLTableSectionElement>() ||
                     node.is::<HTMLTableRowElement>() ||
@@ -512,6 +520,7 @@ impl Selection {
                 // let parent equal end block, then remove end block from parent, then set end block to parent.
                 loop {
                     if end_block.is_editable() &&
+                        !end_block.is_document_structural() &&
                         start_block.children().all(|child| child != end_block) &&
                         let Some(parent) = end_block.GetParentNode() &&
                         parent.children_count() == 1
@@ -546,7 +555,10 @@ impl Selection {
                     }
                 }
                 // Step 32.4.3. If end block is editable, remove it from its parent.
-                if end_block.is_editable() {
+                //
+                // Chromium-compat anchor (delete-in-child-of-html): the
+                // document-structural elements are never removed.
+                if end_block.is_editable() && !end_block.is_document_structural() {
                     assert!(end_block.has_parent());
                     end_block.remove_self(cx);
                 }
@@ -687,6 +699,54 @@ impl Selection {
             values
         // Step 34. Otherwise:
         } else {
+            // Chromium-compat anchor (WPT editing/other/delete-in-child-of-html,
+            // REQ-BRW-050): a block merge never dissolves the
+            // document-structural side. When the end block lives in `<body>`
+            // (or the head region) and the start block does not, the content
+            // merges INTO the structural block and the plain block is
+            // removed — `<div>abc</div><body>def</body>` + backspace at the
+            // body boundary yields `<body>abcdef</body>`, never a removed
+            // `<body>`.
+            if end_block.structural_side() != StructuralSide::Other &&
+                start_block.structural_side() == StructuralSide::Other
+            {
+                // Flipped merge: prepend the start block's children to the
+                // end block, remove the emptied start block, and collapse at
+                // the merge point.
+                let values = record_the_values(start_block.children().collect());
+                loop {
+                    let Some(first_child) = start_block.children().nth(0) else {
+                        break;
+                    };
+                    let reference = end_block.children().nth(0);
+                    move_preserving_ranges(cx, &first_child, |cx| match reference {
+                        Some(ref reference) => {
+                            end_block.InsertBefore(cx, &first_child, Some(reference))
+                        },
+                        None => end_block.AppendChild(cx, &first_child),
+                    });
+                }
+                // Mirror step 34.5's emptied-chain climb, guarded to never
+                // remove the document-structural elements.
+                //
+                // (`start_block` itself is only unlinked here — steps 39/40
+                // below keep operating on the detached shell, which is
+                // unobservable.)
+                let mut block = start_block.clone();
+                loop {
+                    if block.children_count() == 0 &&
+                        !block.is_document_structural() &&
+                        let Some(parent) = block.GetParentNode()
+                    {
+                        block.remove_self(cx);
+                        block = parent;
+                        continue;
+                    }
+                    break;
+                }
+                let _ = self.Collapse(cx, Some(&end_block), 0);
+                values
+            } else {
             // Step 34.1. Call collapse() on the context object's selection,
             // with first argument start block and second argument start block's length.
             let _ = self.Collapse(cx, Some(&start_block), start_block.len());
@@ -719,9 +779,14 @@ impl Selection {
             // Step 34.5. While end block has no children,
             // let parent be the parent of end block, then remove end block from parent,
             // then set end block to parent.
+            //
+            // Chromium-compat anchor (delete-in-child-of-html): the climb
+            // never removes the document-structural elements (an emptied
+            // `<body>` survives).
             let mut end_block = end_block;
             loop {
                 if end_block.children_count() == 0 &&
+                    !end_block.is_document_structural() &&
                     let Some(parent) = end_block.GetParentNode()
                 {
                     assert!(end_block.has_parent());
@@ -733,6 +798,7 @@ impl Selection {
             }
 
             values
+            }
         };
 
         // Step 35.
