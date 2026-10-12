@@ -60,7 +60,14 @@ impl HTMLFontElement {
     pub(crate) fn parse_face_attribute(face_value: Atom) -> Vec<SingleFontFamily> {
         face_value
             .split(',')
-            .map(|string| Self::parse_single_face_value_from_string(string.trim()))
+            .filter_map(|string| {
+                let string = string.trim();
+                if string.is_empty() {
+                    None
+                } else {
+                    Some(Self::parse_single_face_value_from_string(string))
+                }
+            })
             .collect()
     }
 
@@ -76,7 +83,10 @@ impl HTMLFontElement {
         }
 
         let name = string.replace(['\'', '"'], "");
-        let syntax = if name == string {
+        // Names with leading, trailing, or consecutive white spaces must be
+        // marked quoted, or `ToCss` for `FamilyName` would serialize invalid
+        // identifiers (see the debug_assert in stylo's `Identifiers` arm).
+        let syntax = if name == string && name.split(' ').all(|part| !part.is_empty()) {
             FontFamilyNameSyntax::Identifiers
         } else {
             FontFamilyNameSyntax::Quoted
@@ -159,7 +169,9 @@ impl LayoutDom<'_, HTMLFontElement> {
             .upcast::<Element>()
             .get_attr_for_layout(&ns!(), &local_name!("face"));
         match face {
-            Some(AttrValue::Atom(s)) => Some(s.clone()),
+            // An empty face attribute synthesizes no font-family declaration,
+            // mirroring the `!face.is_empty()` convention in basecommand.rs.
+            Some(AttrValue::Atom(s)) if !s.is_empty() => Some(s.clone()),
             _ => None,
         }
     }
