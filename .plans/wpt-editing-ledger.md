@@ -465,3 +465,17 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **flake 登记(不修,载具负载时序类)**:①`/editing/edit-context/edit-context-paste-html.tentative.html`「Test that HTML is pasted into EditContext as plain text」(A 红 B/C 绿);②`/editing/plaintext-only/paste.https.html?white-space=pre-line`「Pasting 2 paragraphs」「Pasting 2 paragraphs into <b>」pasted result 双格(C 红 A/B 绿+3/3 隔离绿)。
 
 **证据**:/tmp/e193/{runA,runB,runC,iso_paste_1..3}.raw.log+console/attempts、delset.json、astreport.json、veh-meta-*.md5;二进制 /var/tmp/e193-target/test-ci/bao;工具 /tmp/e193/{passset.py,astdel.py}。ini 载具副本已同步 post-sweep 态。
+
+### e192(键盘驱动 beforeinput 携带 targetRanges——InputEvents L2 contenteditable 功能缺口清偿,9 格双跑翻转+全域对拍零差,2026-10-12,REQ-BRW-050)
+
+**归因(静态全集+运行时探针双证)**:键盘 Backspace/Delete/InsertText 在 contenteditable 的 beforeinput 唯一派发点=execcommands.rs Step 4.2(exec_command_for_command_id;链:run_default_keydown_handler:2067→EditingContext::Document::perform_editing_action(editing.rs:1058)→Document::perform_editing_action(editing.rs:640)→Step 4.2 构造 InputEvent 后无 set_target_ranges)。beforeinput 派发点全集恰 3 处:execcommands.rs(缺口面)/editcontext.rs(EditContext 路径,insertText 已填)/text_control.rs(spec Empty=正确,未动)。上游对照:origin/main inputevent.rs GetTargetRanges=硬编码 Vec::new()+TODO(fork 自研成立)。语义锚=InputEvents L2 "content that the event will modify if it is not canceled";text 控件+historyUndo/Redo=Empty。
+
+**实装(execcommands.rs +175/−9;delete.rs 仅可见性 token,已按授权条件预报告)**:`target_ranges_for_command`(Step 4.2 派发前调用,非塌缩=active range;塌缩+Delete=前兄弟 removable line-break/shell 臂(复用 delete.rs `is_removable_line_break_or_shell` pub(crate) 化,零语义 delta;caret 归一化落 text 节点 offset 0 时沿 inline 链爬升——运行时 eprintln 探针实证,已移除)+文本臂 (offset-1,offset);塌缩+ForwardDelete=文本臂 (offset,offset+1)+经 walk 内联下降(child at offset 为 Text),删除单元恰好清空 inline 壳时加宽到壳元素父级坐标(`` `<b>\n</b>[]{}` `` → (host,0)-(host,1),Chrome 唯一接受形));塌缩+其他命令与深 walk 形(隐形节点移除/块合并)=空(残留登记)。**cons 壳内快照陷阱教训**:首版加宽把坐标写进壳内 (b,0)-(b,1),Chrome 报父级坐标 (host,0)-(host,1)——元素单元 range 的坐标级=壳的父级。
+
+**验收**:RED=HEAD 6a020cc0f 干净重建(私有 CARGO_TARGET_DIR=/var/tmp/e192-target,binary 13:16:32;vendor script 零 diff、无源文件晚于二进制、并行 commit 986888d0c test-only 后置)。终态二进制对目标文件 **5 跑**(green3/green4 终版×2+green5/green6 ini 后×2+green_full)恒等:9 格全 PASS、population 209、ini 后 0 unexpected。**全域 editing 对拍(red_full vs green_full,冻结 meta 快照 /var/tmp/e192-meta-snap,flock CLEAN×1)**:population 115969=115969、**NEW-RED=0、WORSE=0、GONE=0、IMPROVED=恰 9**。9 格账=合同 2(getTargetRanges Backspace `<br><div id=child>[\]def`/`<b><br></b>[\]def`)+同族 br 变体 4(abc<br><br>、<br><br> 裸暴露格)+DeleteKey&preformat 5(前向文本臂 4+壳加宽 1)。
+
+**ini 自治(双跑背书,repo+载具副本双写,字节恒等门)**:11 条 expected:FAIL 删除——7 条 getTargetRanges(BackspaceKey&br 2+DeleteKey&preformat 5)+e193 留给本波的 4 条同文件外层 stale pin(`Backspace/document.execCommand("delete") at abc<br><br>/<br><br> []def` 外层删除断言,红绿双侧多跑恒 PASS);green6 终验 0 unexpected。
+
+**登记(未清偿残留,禁顺手扩面)**:①clipboard insertFromPaste/insertFromDrop 的 contenteditable beforeinput targetRanges(spec Non-empty,现空)——editing.rs fire_beforeinput_on_element paste 面,姊妹缺口独立波;②塌缩+非 delete 命令(insertText/insertParagraph/format* 等)与深 walk 形(隐形节点移除/块合并)的 targetRanges 仍空——Chrome 形非空,同属后续增量;③CDP Input.dispatchKeyEvent 面:与 testdriver 键投同收敛 run_default_keydown_handler,本修复一覆盖两载体(e194 形态登记,未单独立探针)。
+
+**证据**:二进制 /var/tmp/e192-target/test-ci/{bao.e192-red,bao};raw log /var/tmp/e186-veh/e192_{red,green1..6,red_full,green_full,probe}.{raw,console}.log+attempts;build log /tmp/e192-{red,green}-build.log;冻结 meta 快照 /var/tmp/e192-meta-snap;载具副本前态备份 /tmp/e192-veh-meta-before.ini。
