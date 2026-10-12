@@ -35,7 +35,12 @@ use crate::dom::text::Text;
 /// editing/other/delete-without-unwrapping-first-line-of-child-block.html).
 /// Collapsed-caret walks only: a non-collapsed selection never reaches these
 /// arms, so the delete-the-selection placeholder-br handling is untouched.
-fn is_removable_line_break_or_shell(node: &Node, no_gc: &js::context::NoGC) -> bool {
+///
+/// `pub(crate)` so the `beforeinput` target-range probe in `execcommands.rs`
+/// reuses the same predicate instead of a drifting copy (Bao fork,
+/// REQ-BRW-050): the range the probe reports must be the node this walk
+/// actually removes.
+pub(crate) fn is_removable_line_break_or_shell(node: &Node, no_gc: &js::context::NoGC) -> bool {
     if !node.is_editable() ||
         node.is_in_head_region() ||
         node.is_in_display_none_region()

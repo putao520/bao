@@ -22,11 +22,17 @@ use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::event::inputevent::InputEvent;
 use crate::dom::execcommand::basecommand::CommandName;
+use crate::dom::execcommand::commands::delete::is_removable_line_break_or_shell;
 use crate::dom::execcommand::commands::fontsize::maybe_normalize_pixels;
+use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::html::htmlelement::HTMLElement;
+use crate::dom::html::htmlhrelement::HTMLHRElement;
+use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::node::Node;
 use crate::dom::processinginstruction::ProcessingInstruction;
 use crate::dom::selection::Selection;
+use crate::dom::staticrange::StaticRange;
+use crate::dom::text::Text;
 
 /// <https://w3c.github.io/editing/docs/execCommand/#miscellaneous-commands>
 fn is_command_listed_in_miscellaneous_section(command_name: CommandName) -> bool {
@@ -100,6 +106,182 @@ fn mapped_value_of_command(command: CommandName) -> DOMString {
         _ => "",
     }
     .into()
+}
+
+/// The target ranges the `beforeinput` fired for `command` carries
+/// (<https://w3c.github.io/input-events/#dom-inputevent-gettargetranges>):
+/// "an array of StaticRanges representing the content that the event will
+/// modify if it is not canceled" when the editing host is a contenteditable
+/// node. A non-collapsed active range is the content the command deletes or
+/// replaces. For a collapsed caret only the deletion commands carry ranges
+/// here, via a read-only peek at the two arms of the delete walks whose
+/// deleted content is resolved without mutation (Bao fork, REQ-BRW-050):
+/// the rendered line break (or its inline shell) at the caret's previous
+/// position (`execute_delete_command`), and the single code unit of a text
+/// node either side of the caret (`execute_delete_command` /
+/// `execute_forward_delete_command`). Walk shapes that mutate before
+/// resolving (invisible-node removal, block merges) report no ranges, as do
+/// the non-deletion commands with a collapsed caret.
+fn target_ranges_for_command(
+    cx: &mut JSContext,
+    command: CommandName,
+    selection: &Selection,
+) -> Vec<DomRoot<StaticRange>> {
+    // "historyUndo"/"historyRedo" return an empty Array regardless of the
+    // editing host (input-events spec, getTargetRanges methods table).
+    if matches!(command, CommandName::Undo | CommandName::Redo) {
+        return Vec::new();
+    }
+    let Some(active_range) = selection.active_range(cx) else {
+        return Vec::new();
+    };
+    if !active_range.collapsed() {
+        let start_container = active_range.start_container();
+        let end_container = active_range.end_container();
+        return vec![StaticRange::new(
+            cx,
+            &start_container.owner_doc(),
+            &start_container,
+            active_range.start_offset(),
+            &end_container,
+            active_range.end_offset(),
+        )];
+    }
+
+    let node = active_range.start_container();
+    let offset = active_range.start_offset();
+    match command {
+        CommandName::Delete => {
+            // The text arm (or a br/hr/img unit before the caret in a
+            // block): the walk deletes the single unit/node before the
+            // caret.
+            if offset > 0 &&
+                offset <= node.len() &&
+                (node.is::<Text>() ||
+                    (node.is_block_node() &&
+                        node.children()
+                            .nth(offset as usize - 1)
+                            .is_some_and(|child| {
+                                child.is::<HTMLBRElement>() ||
+                                    child.is::<HTMLHRElement>() ||
+                                    child.is::<HTMLImageElement>()
+                            })))
+            {
+                return vec![StaticRange::new(
+                    cx,
+                    &node.owner_doc(),
+                    &node,
+                    offset - 1,
+                    &node,
+                    offset,
+                )];
+            }
+            if offset != 0 {
+                return Vec::new();
+            }
+            // The rendered-line-break arm: a br (or an inline shell whose
+            // only rendered content is such brs) at the caret's previous
+            // position is the character Backspace deletes, and the range
+            // spans exactly that node. The caret at offset 0 may sit inside
+            // a text node (position normalization), so the walk's level is
+            // reached by climbing out of inline content first (delete walk
+            // steps 4.1-4.3).
+            let mut cursor = node.clone();
+            loop {
+                if let Some(sibling) = cursor.GetPreviousSibling() {
+                    if is_removable_line_break_or_shell(&sibling, cx.no_gc()) &&
+                        let Some(parent) = sibling.GetParentNode()
+                    {
+                        let index = sibling.index();
+                        return vec![StaticRange::new(
+                            cx,
+                            &node.owner_doc(),
+                            &parent,
+                            index,
+                            &parent,
+                            index + 1,
+                        )];
+                    }
+                    return Vec::new();
+                }
+                // Climb per the delete walk's step 4.3: a caret at offset
+                // zero of an inline node continues at its parent.
+                if !cursor.is_inline_node() {
+                    return Vec::new();
+                }
+                let Some(parent) = cursor.GetParentNode() else {
+                    return Vec::new();
+                };
+                cursor = parent;
+            }
+        },
+        CommandName::ForwardDelete => {
+            // The text arm reached through the walk's inline descent (the
+            // caret's child is inline content): the code unit after the
+            // caret. A br/hr/img at the caret is removed as a unit.
+            let (container, start, end) = if node.is::<Text>() {
+                if offset >= node.len() {
+                    return Vec::new();
+                }
+                (node.clone(), offset, offset + 1)
+            } else if let Some(child) = node.children().nth(offset as usize) {
+                if child.is::<Text>() {
+                    if child.len() == 0 {
+                        return Vec::new();
+                    }
+                    (child, 0, 1)
+                } else if child.is::<HTMLBRElement>() ||
+                    child.is::<HTMLHRElement>() ||
+                    child.is::<HTMLImageElement>()
+                {
+                    (node.clone(), offset, offset + 1)
+                } else {
+                    return Vec::new();
+                }
+            } else {
+                return Vec::new();
+            };
+            // Widen to the inline shell when the deleted unit is the shell's
+            // entire content: the walk's cleanup prunes the emptied inline
+            // wrapper, and the affected range is then the shell element at
+            // its own parent's level (`<b>\n</b>[]\n<div>` — Chrome reports
+            // the `<b>` unit as (host, index) - (host, index + 1)).
+            if start == 0 && end == container.len() {
+                let mut shell = container.clone();
+                while let Some(parent) = shell.GetParentNode() {
+                    if parent.is_block_node() ||
+                        parent.children_count() != 1 ||
+                        !parent.GetFirstChild().is_some_and(|first| *first == *shell)
+                    {
+                        break;
+                    }
+                    shell = parent;
+                }
+                if *shell != *container &&
+                    let Some(shell_parent) = shell.GetParentNode()
+                {
+                    let index = shell.index();
+                    return vec![StaticRange::new(
+                        cx,
+                        &node.owner_doc(),
+                        &shell_parent,
+                        index,
+                        &shell_parent,
+                        index + 1,
+                    )];
+                }
+            }
+            vec![StaticRange::new(
+                cx,
+                &node.owner_doc(),
+                &container,
+                start,
+                &container,
+                end,
+            )]
+        },
+        _ => Vec::new(),
+    }
 }
 
 impl Node {
@@ -485,6 +667,11 @@ impl DocumentExecCommandSupport for Document {
                 false,
                 mapped_value_of_command(command),
             );
+            // The target ranges of the `beforeinput`: the content the event
+            // will modify if it is not canceled (Input Events Level 2,
+            // <https://w3c.github.io/input-events/#dom-inputevent-gettargetranges>;
+            // Bao fork, REQ-BRW-050).
+            event.set_target_ranges(target_ranges_for_command(cx, command, &selection));
             let event = event.upcast::<Event>();
             // Step 4.3. If the value returned by the previous step is false, return false.
             if !event.fire(cx, affected_editing_host.upcast()) {
