@@ -484,3 +484,35 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 
 - **paste.https.html:98/98 全 PASS 零钉零红**——e161 登记残留「paste.https 12」已被后续波(e167 clipboard 块分隔序列化/e186 谓词/e188 flex 分裂/e192 targetRanges 链)顺带全量清偿,该 strand 面清零。
 - **paste-when-nested-with-contenteditable-true.https.html:94 PASS+4 裸暴露 FAIL(无 ini 钉)**——嵌套粘贴 beforeinput text/html 语义(`pasting in contenteditable=…` 系),即 e161「nested 4 beforeinput」的存留面;与 strand② paste-clipboard-change/strand④ insertFromPaste targetRanges 同属 clipboard text/html 语义簇,e195 恢复后按此证据直接归并处置(证据 raw log /tmp/v_e195_s3_paste.raw.log)。
+
+### e195(editing 尾批收官:strand④ paste targetRanges 实装 + strand② paste-clipboard-change 引擎半边根治 + ①③⑤ 定性/普查,2026-10-12,REQ-BRW-050)
+
+**分面 commit**:① strand④ = `3b257255e`(editing.rs paste 面 + editcontext.rs EditContext paste 面);② strand② 引擎半边 = `312d7f119`(execcommands.rs canceled-copy 写回)。禁 push。
+
+**基线**:HEAD 1aea01c07 干净重建 bao.e195-red(私有 CARGO_TARGET_DIR=/var/tmp/e195-target;provenance:源 mtime < binary 15:01:29,零触碰文件警告);全域 855 tests attempt 1 CLEAN:uF 273 文件/20903 cell、uP 0、population 116824(与 §e193 cell 宇宙逐格同值,交叉验证成立)。冻结 meta 快照 /var/tmp/e195-meta-snap(vendor canonical rsync 恒等门 + md5)。
+
+**strand④(insertFromPaste targetRanges 姊妹缺口)——清偿**:
+- 实装双面:`paste_into_current_editing_context`(contenteditable host)与 `EditContext::handle_paste` 的 beforeinput 由空改携当前选择(派发前捕获 active range 为单一 StaticRange;spec 锚=input-events getTargetRanges「the content that the event will modify if it is not canceled」,Chrome 生成数据钉死非删除类 inputType=当前选择、塌缩含——input-events-get-target-ranges.html「Actions other than deletion should have current selection as target ranges」,`test2-5-test2-5` 格=塌缩 caret 亦报告)。EditContext 面把 `target_ranges_for_insert` 的选择段抽为 `edit_context_selection_target_ranges` 单源(canvas host 排除保持),insertText 与 insertFromPaste 共用——零语义 delta。
+- **insertFromDrop 定性**:全仓(vendor script)零 drop 编辑插入路径,该 inputType 无派发点——e192 残留①的 insertFromDrop 半边=不存在面,非缺口。
+- oracle:无 /editing 测试钉 paste targetRanges(editing 域 grep 全集=delete-without-unwrapping 9 格+edit-context-input insertText 格),临时探针 `/input-events/e195-paste-target-ranges-probe.html`(reference repo+冻结 MANIFEST 条目,deletion-manifest 已于收口删除):RED=assert length 1 got 0(1 跑);GREEN=contenteditable 面+EditContext 面 3/3 subtest ×2 跑(green5/green6)全 PASS+早期单面 2 跑 PASS。**EditContext 探针首版自身缺陷**(监听器漏挂 echost)致 2 跑 FAIL——探针 bug 非引擎,修后全绿。
+- ini 面:零改动(strand④ 无 /editing cell 翻转,加性 payload 不改既有行为——全域对拍实证)。
+
+**strand②(paste-clipboard-change 2)——引擎半边根治+双残面定性**:
+- **根因一(引擎缺陷,已修)**:`exec_clipboard_command_on_text_control` 在 copy/cut 事件被 canceled 时直接 return false,监听器 setData 的载荷被静默丢弃(取证二段:修前探针 `textctl-copy prevented=true` 且 `write_content_to_the_clipboard` 零调用;修后 `write t=… v=New text`+pump `set-recv v=New text`)。修复= canceled 分支补 `write_content_to_the_clipboard` 写回(镜像 handle_clipboard_action Step 4 canceled-Copy 臂;clipboard-apis canceled 分支义务);`write_content_to_the_clipboard` pub(crate) 化;返回值 false 保持(无 WPT 钉;exec-command-with-text-editor 零 preventDefault cell)。与 paste 臂既有的后置重读(e182)闭合:修复后链路=写回→重读采纳「New text」→插入。
+- **根因二(残面,scope 外登记)**:?id=text 修复后 1/5 跑 PASS,其余=**arboard/X11 后端微秒窗 set→get 竞态读空**——二代带时间戳探针四跑实证:pump 侧处理序 write→set-recv→get-recv 恒正确而读回为空(run1 fresh="" 于 set-recv 同毫秒;run2/4 snapshot="" 于自身 setup set 后 124ms-4s),叠加并行浏览器进程争用同一 X11 CLIPBOARD。后端定性:`cargo tree -i arboard` 实证 arboard 3.6.1 已链接,clipboard_delegate.rs linux+feature=arboard 模块活跃。**连带修正 §e167 判据**:「clipboard feature off→fallback 进程本地、跨进程污染不可能」不成立于 WPT 二进制(feature 统一后 arboard 活跃)——e167/e193 登记③类 stale-clipboard flake 的「同进程 fallback」排除柱塌,跨进程 X11 共享即其更简归因。修复域=servo 剪贴板后端面(clipboard_delegate.rs/servo.rs,scope 外):候选=进程内事务读写(镜像 Chromium in-process clipboard)或写读序号化。**缓解禁令**:未加重试/超时。
+- **根因三(?id=contenteditable,非本域)**:空 contenteditable 宿主零高→`test_driver.click` 报「element click intercepted」→async 在 click 处 abort,**paste 管线从未执行**(complete payload 仅含 click rejection,无 assert 记录;paste-arm 探针缺席旁证)。命中/布局域(空编辑宿主 caret 行盒),非 clipboard 域。
+- ini 面:零改动(?id=text 现为 flaky-pass,expected:FAIL pin 保留如实可见;无双跑 PASS 背书不删)。
+
+**strand①(qCV 族)——普查升级+设计登记,未实施(合同 stop 条款)**:§e182「8 格」登记对现实严重低估——当轮基线普查=**173 cell 四家族**:stylewithcss-qcs 71(before 态 expected false got true)、dps-qcv 49(expected "p" got "div" 跨 cell 状态泄漏形)、forecolor-qcv-delete 32+backcolor-qcv-multitest 21(value 序列化形:expected computed "rgb(165,42,42)" got 属性 raw "brown"=§e189 第二层 font 短路在 queryCommandValue 路径的存留,e190 B 层只归一了 indeterm 等值比较)。multitest cell 模型=同文档顺序执行(tests.js doSpecCell 每 cell 新 div 但 document 级命令状态共享),Chrome 期望值含其自身跨 cell 泄漏序。设计登记(后续独立合同,先取证 tests.js 状态模型再动代码):a) forecolor/backcolor 53 格走 §e189 已登记的「value 路径归一化为 computed 形态」候选(force Step-17 短路 load-bearing 两臂联动);b) dps/stylewithcss 120 格=命令状态生命周期取证(e182 override 试错负证据仍有效,禁轻动)。合同 stop「连续 2 轮零新证据 → 登记」:本轮产出=普查+家族形态+根因分型(新证据),实施面让位独立波。
+
+**strand③(text-html 残留定性)——主会话预取证段确认+钉态勘误**:paste.https.html 98/98 全绿(本波全域账零红,与 lead 预取证一致)=e161 登记 12 格已被 e167(块分隔)顺带全量清偿。paste-when-nested 4 格=嵌套粘贴 text/html 语义,**钉态勘误:非「无 ini 钉裸暴露」——vendor ini 有 4 条 expected:FAIL(raw log exp 字段缺省=as-expected 符合预期语义)**;根因双缺陷=paste 管线对 contenteditable 只插 text(忽略 text/html payload,`paste_into_current_editing_context` 的 html 参仅进 dataTransfer)+不替换非塌缩选择(e160 时代已登记的 replace-selection 缺口),4 格 got 形(`ABCabc` 未替换+纯文本)与该双因精确一致。归并处置:clipboard text/html 语义簇(与 strand② 数据通路残面同域),独立合同域。
+
+**strand⑤(塌缩非 delete 命令与深 walk 形)——定性登记**:语义锚已由 Chrome 生成数据钉死(input-events-get-target-ranges.html 第二 promise「Actions other than deletion should have current selection as target ranges」:insertText 塌缩=collapsed caret 本身 `test2-5-test2-5`、全选替换=全选段、bold=选段)——**e192 的「塌缩+非 delete=空」残留的 Chrome 正形=当前选择,与 strand④ paste 面同一谓词**(active range 直报,无 walk 需求);实现落点=execcommands.rs `target_ranges_for_command` 塌缩臂对非删除命令回当前选择(一行级),深 walk 形(隐形节点移除/块合并)仍需 walk 前解析=独立增量。本波未实施(合同=定性账),设计已可直落。
+
+**全域对拍(red_full vs green_full,同冻结 meta,flock attempt 1 CLEAN)**:uF cell **20903=20903 恒等**、uP 0=0;celldiff 仅 2 格反向 flake 翻转——NEW-RED 1(data_transfer_on_input_event_with_insertfrompaste_type 整文件 ERROR)=§e191 同格已登记③类负载 flake,**3/3 隔离复跑全绿**;FIXED 1(edit-context-paste-handler-changes-active「redirects focus」格)=同登记类反向。**确定性 NEW-RED=0、WORSE=0**。
+
+**deletion-manifest(已执行)**:/home/putao/code/tools/servo/tests/wpt/tests/input-events/e195-paste-target-ranges-probe.html 删除(探针收口,raw log 留证);冻结快照 MANIFEST 同步移除条目。**载具事故登记**:MANIFEST.json 曾以 json.dump 紧凑形重写(键序保持、JSON 等价;red_full 消费原始形、green_full 消费重写形——对 /editing 测试宇宙零差,celldiff population 恒等实证)。
+
+**证据**:二进制 /var/tmp/e195-target/test-ci/{bao.e195-red,bao.e195-green,bao.e195-probe,bao.e195-probe2};raw log /var/tmp/e195-veh/(red_full/green_full/ptr_probe_{red,green1..6}/pcc_green{1..3}/pcc_probe2_{1..4}/dt_iso_{1..3});build log /tmp/e195-{red,green,probe,probe2}-build.log;冻结 meta 快照 /var/tmp/e195-meta-snap。
+
+**教训**:①「登记 N 格」的台账数字会随波演进而失真——strand① 按 §e182 字面立项(8 格)实测 173 格,后续合同必须先跑当轮普查再定方案粒度;②「flaky 1/N」的格子必须先分型再定 ini 策略(本波 text 格=引擎缺陷已修+后端竞态残面,pin 保留=诚实可见;若误判纯 flake 删 pin 会把残面藏进 as-expected);③ WPT raw log `expected` 字段缺省=as-expected(ini 钉消费态),「无 expected 字段=意外」的朴素口径会把 ini 钉格误计——celldiff 的集合差分两侧同口径故相对结论有效,绝对数必须按 §e185 判读律核对;④ GenericCallback 阻塞往返的「FIFO 直觉」在跨后端(arboard/X11)边界不成立——写读时序类归因必须带时间戳探针到 pump/后端两侧,单侧脚本线程探针会得出「顺序正确但读回错误」的不可解矛盾。
