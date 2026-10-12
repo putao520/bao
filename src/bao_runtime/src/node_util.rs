@@ -10,13 +10,16 @@ use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
 
-// Table-driven factory for the native util registrations (e180, REQ-BRW-049):
+// Table-driven factory for native JS registrations (e180, REQ-BRW-049):
 // each row is (js name, native fn, nargs) and expands to the exact
 // JS_DefineFunction call the handwritten block used — same order, same
 // attrs (register_assert_stubs! e171 form with the attrs column promoted
 // to a leading parameter: util's own face passes 0, util.types passes the
 // local `enumerate` binding).
-macro_rules! register_util_functions {
+//
+// e201 REQ-ARCH-1: renamed to the domain-neutral `register_js_functions!`
+// and crate-shared so node_fs's registration walls reuse the same form.
+macro_rules! register_js_functions {
     ($cx:expr, $obj:expr, $attrs:expr; $(($cname:expr, $fn:ident, $nargs:expr))*) => {
         $(
             w2::JS_DefineFunction(
@@ -31,6 +34,8 @@ macro_rules! register_util_functions {
     };
 }
 
+pub(crate) use register_js_functions;
+
 pub fn install_util(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let util_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if util_obj.get().is_null() {
@@ -38,7 +43,7 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        register_util_functions!(cx, util_obj, 0;
+        register_js_functions!(cx, util_obj, 0;
             (c"inspect", util_inspect, 2)
             (c"isBoolean", util_is_boolean, 1)
             (c"isNumber", util_is_number, 1)
@@ -67,7 +72,7 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
             rooted!(&in(cx) let types_obj = w2::JS_NewPlainObject(cx));
             if !types_obj.get().is_null() {
                 let enumerate = JSPROP_ENUMERATE as u32;
-                register_util_functions!(cx, types_obj, enumerate;
+                register_js_functions!(cx, types_obj, enumerate;
                     (c"isBoolean", util_is_boolean, 1)
                     (c"isNumber", util_is_number, 1)
                     (c"isString", util_is_string, 1)
@@ -124,45 +129,7 @@ t.isExternal=function(){return false};
 t.isKeyObject=function(){return false};
 t.isCryptoKey=function(){return false};
 })"#;
-                let mut src = mozjs::rust::transform_str_to_source_text(types_src);
-                let mut factory_val = UndefinedValue();
-                let factory_h = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut factory_val,
-                };
-                let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<types>".as_ptr(), 1);
-                if !opts.is_null() {
-                    let global = CurrentGlobalOrNull(cx.raw_cx());
-                    if !global.is_null()
-                        && JS::Evaluate2(cx.raw_cx(), opts, &mut src, factory_h)
-                        && factory_val.is_object()
-                    {
-                        let wrapped_cx = mozjs::context::JSContext::from_ptr(
-                            NonNull::new_unchecked(cx.raw_cx()),
-                        );
-                        rooted!(&in(wrapped_cx) let global_root = global);
-                        rooted!(&in(wrapped_cx) let types_val_root = ObjectValue(types_obj.get()));
-                        let args_arr = HandleValueArray {
-                            length_: 1,
-                            elements_: &types_val_root.get() as *const Value,
-                        };
-                        let mut call_rval = UndefinedValue();
-                        let call_rval_h = MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut call_rval,
-                        };
-                        rooted!(&in(wrapped_cx) let factory_obj = factory_val.to_object());
-                        rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
-                        JS_CallFunctionValue(
-                            cx.raw_cx(),
-                            global_root.handle().into(),
-                            factory_obj_h.handle().into(),
-                            &args_arr,
-                            call_rval_h,
-                        );
-                    }
-                    mozjs::glue::DeleteCompileOptions(opts);
-                }
+                eval_js_factory_on_object(cx, types_src, c"<types>", types_obj.handle());
 
                 w2::JS_DefineProperty3(
                     cx,
@@ -243,89 +210,75 @@ t.isCryptoKey=function(){return false};
   }
   u.isDeepStrictEqual = isDeepStrictEqual;
 })"#;
-        let mut esrc = mozjs::rust::transform_str_to_source_text(util_extra_src);
-        let mut eval_rval = UndefinedValue();
-        let eval_h = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut eval_rval,
-        };
-        let eopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<util-extra>".as_ptr(), 1);
-        if !eopts.is_null() {
-            let global = CurrentGlobalOrNull(cx.raw_cx());
-            if !global.is_null()
-                && JS::Evaluate2(cx.raw_cx(), eopts, &mut esrc, eval_h)
-                && eval_rval.is_object()
-            {
-                let wrapped_cx =
-                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
-                rooted!(&in(wrapped_cx) let global_root = global);
-                rooted!(&in(wrapped_cx) let util_val_root = ObjectValue(util_obj.get()));
-                let args_arr = HandleValueArray {
-                    length_: 1,
-                    elements_: &util_val_root.get() as *const Value,
-                };
-                let mut call_rval = UndefinedValue();
-                let call_rval_h = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut call_rval,
-                };
-                rooted!(&in(wrapped_cx) let factory_obj = eval_rval.to_object());
-                rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
-                JS_CallFunctionValue(
-                    cx.raw_cx(),
-                    global_root.handle().into(),
-                    factory_obj_h.handle().into(),
-                    &args_arr,
-                    call_rval_h,
-                );
-            }
-            mozjs::glue::DeleteCompileOptions(eopts);
-        }
+        eval_js_factory_on_object(cx, util_extra_src, c"<util-extra>", util_obj.handle());
     }
 
     // @trace REQ-ENG-006 [api:util TextEncoder/TextDecoder] — Node re-exports
     // the global classes on the util module with identity preserved:
     // `util.TextEncoder === globalThis.TextEncoder` is true.
-    {
-        let global = unsafe { CurrentGlobalOrNull(cx.raw_cx()) };
-        if !global.is_null() {
-            // compile-fix by e-node-stdlib (parallel wave): missing unsafe
-            // wrapper on from_ptr/new_unchecked/raw_cx — semantics unchanged.
-            let wrapped_cx = unsafe {
-                mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()))
-            };
-            rooted!(&in(wrapped_cx) let global_root = global);
-            for name in ["TextEncoder", "TextDecoder"] {
-                let cname = ZBox::from_bytes(name.as_bytes());
-                let mut ctor = UndefinedValue();
-                unsafe {
-                    JS_GetProperty(
-                        cx.raw_cx(),
-                        global_root.handle().into(),
-                        cname.as_ptr(),
-                        MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &mut ctor,
-                        },
-                    );
-                }
-                if ctor.is_object() {
-                    rooted!(&in(wrapped_cx) let ctor_root = ctor);
-                    unsafe {
-                        JS_DefineProperty(
-                            cx.raw_cx(),
-                            util_obj.handle().into(),
-                            cname.as_ptr(),
-                            ctor_root.handle().into(),
-                            JSPROP_ENUMERATE as u32,
-                        );
-                    }
-                }
-            }
-        }
+    unsafe {
+        install_util_text_codecs(cx, util_obj.handle());
     }
 
     cache_builtin(cx, "util", util_obj.get());
+}
+
+/// Compile+evaluate a JS factory expression and invoke it with `target` as
+/// the sole argument (the factory mutates the target object in place —
+/// `util.types` extended checkers and the styleText/isDeepStrictEqual
+/// extensions are both attached through this factory pattern).
+///
+/// e201 REQ-ARCH-1: shared body of the two inline factory blocks that used
+/// to live in `install_util` (byte-identical control flow; only the source
+/// text, compile filename, and target object differed). Evaluation result
+/// is ignored by both callers, matching the original behavior.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn eval_js_factory_on_object(
+    cx: &mut mozjs::context::JSContext,
+    src: &str,
+    filename: &::std::ffi::CStr,
+    target: mozjs::rust::Handle<'_, *mut JSObject>,
+) -> bool {
+    let mut src_text = mozjs::rust::transform_str_to_source_text(src);
+    let mut factory_val = UndefinedValue();
+    let factory_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut factory_val,
+    };
+    let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), filename.as_ptr(), 1);
+    if opts.is_null() {
+        return false;
+    }
+    let global = CurrentGlobalOrNull(cx.raw_cx());
+    let evaluated = !global.is_null()
+        && JS::Evaluate2(cx.raw_cx(), opts, &mut src_text, factory_h)
+        && factory_val.is_object();
+    if evaluated {
+        let wrapped_cx =
+            mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+        rooted!(&in(wrapped_cx) let global_root = global);
+        rooted!(&in(wrapped_cx) let target_val_root = ObjectValue(target.get()));
+        let args_arr = HandleValueArray {
+            length_: 1,
+            elements_: &target_val_root.get() as *const Value,
+        };
+        let mut call_rval = UndefinedValue();
+        let call_rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut call_rval,
+        };
+        rooted!(&in(wrapped_cx) let factory_obj = factory_val.to_object());
+        rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
+        JS_CallFunctionValue(
+            cx.raw_cx(),
+            global_root.handle().into(),
+            factory_obj_h.handle().into(),
+            &args_arr,
+            call_rval_h,
+        );
+    }
+    mozjs::glue::DeleteCompileOptions(opts);
+    evaluated
 }
 
 // @trace REQ-ENG-007
@@ -2379,4 +2332,54 @@ unsafe extern "C" fn util_is_deep_strict_equal(
         };
     args.rval().set(BooleanValue(equal));
     true
+}
+
+/// Re-export the global TextEncoder/TextDecoder constructors onto the util
+/// module (Node identity contract: `util.TextEncoder === globalThis.TextEncoder`
+/// is true).
+///
+/// e201 REQ-ARCH-1: extracted from `install_util` (control flow unchanged;
+/// the `global.is_null()` nest level became a guard clause).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_util_text_codecs(
+    cx: &mut mozjs::context::JSContext,
+    util_obj: mozjs::rust::Handle<'_, *mut JSObject>,
+) {
+    let global = unsafe { CurrentGlobalOrNull(cx.raw_cx()) };
+    if global.is_null() {
+        return;
+    }
+    // compile-fix by e-node-stdlib (parallel wave): missing unsafe
+    // wrapper on from_ptr/new_unchecked/raw_cx — semantics unchanged.
+    let wrapped_cx = unsafe {
+        mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()))
+    };
+    rooted!(&in(wrapped_cx) let global_root = global);
+    for name in ["TextEncoder", "TextDecoder"] {
+        let cname = ZBox::from_bytes(name.as_bytes());
+        let mut ctor = UndefinedValue();
+        unsafe {
+            JS_GetProperty(
+                cx.raw_cx(),
+                global_root.handle().into(),
+                cname.as_ptr(),
+                MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut ctor,
+                },
+            );
+        }
+        if ctor.is_object() {
+            rooted!(&in(wrapped_cx) let ctor_root = ctor);
+            unsafe {
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    util_obj.into(),
+                    cname.as_ptr(),
+                    ctor_root.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+    }
 }

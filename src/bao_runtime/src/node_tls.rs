@@ -959,133 +959,26 @@ fn tls_driver_main(wake_read_fd: drv::Raw) {
     };
 
     loop {
-        // ── 1. take commands ────────────────────────────────────────────
-
-        {
-            let mut cmds = handle.cmds.lock().unwrap();
-            for cmd in cmds.drain(..) {
-                match cmd {
-                    DriverCmd::AddListener(listener, shared, base) => {
-                        let id = shared.server_id;
-                        servers.insert(id, DriverServer {
-                            server_id: id,
-                            listener,
-                            base,
-                            shared,
-                        });
-                    }
-                    DriverCmd::AddClientConn(conn_id, stream, shared, conn_shared, tls) => {
-                        // The ClientHello is only produced by the first
-                        // process() pass — drive the fresh conn once here so
-                        // the poll loop's POLLOUT flush gets it on the wire
-                        // (nothing else would wake an idle client conn).
-                        stream
-                            .set_nonblocking(true)
-                            .expect("client stream nonblocking");
-                        let mut conn = DriverConn {
-                            conn_id,
-                            stream,
-                            tls,
-                            shared: conn_shared,
-                            server: shared,
-                            parked_for_sni: false,
-                            sni_requested: false,
-                            sni_servername: None,
-                            sni_deadline: None,
-                            out_buf: Vec::new(),
-                            secure_reported: false,
-                            finishing: false,
-                            close_notify_sent: false,
-                        };
-                        if !tls_conn_drive(&mut conn) {
-                            // Handshake failed synchronously: ClientError is
-                            // already queued (tls_conn_drive pushes it).
-                            tls_conn_finish(&mut conn, true);
-                        } else {
-                            conns.insert(conn_id, conn);
-                        }
-                    }
-                    DriverCmd::RemoveServer(id) => remove_queue.push(id),
-                }
-            }
-        }
-        for id in remove_queue.drain(..) {
-            if let Some(ds) = servers.remove(&id) {
-                // Mark closing; close all connections of this server.
-                let dead: Vec<u64> = conns
-                    .values()
-                    .filter(|c| c.server.server_id == id)
-                    .map(|c| c.conn_id)
-                    .collect();
-                for cid in dead {
-                    if let Some(mut conn) = conns.remove(&cid) {
-                        tls_conn_finish(&mut conn, /*notify=*/ true);
-                    }
-                }
-                drop(ds.listener);
-                tls_push_event(&ds.shared, TlsEvent::ServerClosed);
-            }
-        }
+        // ── 1. take commands (e201 REQ-ARCH-1: extracted to
+        // `tls_driver_take_commands`) ──────────────────────────────────
+        tls_driver_take_commands(&handle, &mut servers, &mut conns, &mut remove_queue);
+        tls_driver_retire_servers(&mut servers, &mut conns, &mut remove_queue);
         // NOTE: no idle exit. The driver is a process-lifetime singleton
         // (the HTTPThread model): exiting when idle raced against the next
         // listen()'s AddListener command — the driver could observe
         // "no servers, no conns" after spawn but before the command landed
         // and exit, leaving every later listener unserved.
 
-        // ── 2. build poll set ───────────────────────────────────────────
-        let mut fds: Vec<drv::PollFd> = Vec::with_capacity(2 + servers.len() + conns.len());
-        let mut targets: Vec<Target> = Vec::with_capacity(fds.capacity());
-        fds.push(drv::PollFd {
-            fd: wake_read_fd,
-            events: drv::POLLIN,
-            revents: 0,
-        });
-        targets.push(Target::Wake);
-        for ds in servers.values() {
-            fds.push(drv::PollFd {
-                fd: drv::raw_of_listener(&ds.listener),
-                events: drv::POLLIN,
-                revents: 0,
-            });
-            targets.push(Target::Listener(ds.server_id));
-        }
-        for conn in conns.values() {
-            let mut events = 0;
-            if !conn.parked_for_sni && !conn.finishing {
-                events |= drv::POLLIN;
-            }
-            if !conn.out_buf.is_empty() {
-                events |= drv::POLLOUT;
-            }
-            if events != 0 {
-                fds.push(drv::PollFd {
-                    fd: drv::raw_of_stream(&conn.stream),
-                    events,
-                    revents: 0,
-                });
-                targets.push(Target::Conn(conn.conn_id));
-            }
-        }
+        // ── 2. build poll set (e201 REQ-ARCH-1: extracted to
+        // `tls_driver_build_poll_set`) ─────────────────────────────────────
+        let (mut fds, targets) = tls_driver_build_poll_set(wake_read_fd, &servers, &conns);
 
         // ── 3. timeout: block indefinitely (the wake pipe covers commands
         //       and JS-side writes; conn fds cover I/O) unless an SNI
         //       deadline is pending — the parked conn needs no I/O wake,
-        //       only the deadline check. ─────────────────────────────────
-        let mut timeout_ms: i32 = -1;
-        for conn in conns.values() {
-            if conn.parked_for_sni {
-                if let Some(deadline) = conn.sni_deadline {
-                    let remain = deadline.saturating_duration_since(Instant::now());
-                    let ms = remain.as_millis() as i32;
-                    if timeout_ms < 0 || ms < timeout_ms {
-                        timeout_ms = ms;
-                    }
-                }
-            }
-        }
-        if timeout_ms != -1 && timeout_ms < 0 {
-            timeout_ms = 0;
-        }
+        //       only the deadline check. e201 REQ-ARCH-1: extracted to
+        //       `tls_driver_sni_timeout` ──────────────────────────────────
+        let timeout_ms: i32 = tls_driver_sni_timeout(&conns);
 
         // ── 4. poll ─────────────────────────────────────────────────────
         let ready = drv::wait(fds.as_mut_ptr(), fds.len(), timeout_ms);
@@ -1113,6 +1006,166 @@ fn tls_driver_main(wake_read_fd: drv::Raw) {
             tls_driver_service_conn_pass(&mut conns, conn_id);
         }
     }
+}
+
+/// Step-1 drain: apply queued driver commands. `AddListener` registers a
+/// server; `AddClientConn` performs the first handshake drive inline (the
+/// ClientHello is only produced by the first process() pass — driving the
+/// fresh conn here gets it on the wire via the poll loop's POLLOUT flush;
+/// nothing else would wake an idle client conn) and inserts it unless the
+/// synchronous handshake already failed (ClientError is queued by
+/// `tls_conn_drive`); `RemoveServer` is deferred to the retire pass.
+///
+/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow and lock
+/// scope unchanged — the `cmds` mutex is held exactly as long as the
+/// original inline block held it).
+fn tls_driver_take_commands(
+    handle: &DriverHandle,
+    servers: &mut HashMap<u64, DriverServer>,
+    conns: &mut HashMap<u64, DriverConn>,
+    remove_queue: &mut Vec<u64>,
+) {
+    let mut cmds = handle.cmds.lock().unwrap();
+    for cmd in cmds.drain(..) {
+        match cmd {
+            DriverCmd::AddListener(listener, shared, base) => {
+                let id = shared.server_id;
+                servers.insert(id, DriverServer {
+                    server_id: id,
+                    listener,
+                    base,
+                    shared,
+                });
+            }
+            DriverCmd::AddClientConn(conn_id, stream, shared, conn_shared, tls) => {
+                stream
+                    .set_nonblocking(true)
+                    .expect("client stream nonblocking");
+                let mut conn = DriverConn {
+                    conn_id,
+                    stream,
+                    tls,
+                    shared: conn_shared,
+                    server: shared,
+                    parked_for_sni: false,
+                    sni_requested: false,
+                    sni_servername: None,
+                    sni_deadline: None,
+                    out_buf: Vec::new(),
+                    secure_reported: false,
+                    finishing: false,
+                    close_notify_sent: false,
+                };
+                if !tls_conn_drive(&mut conn) {
+                    tls_conn_finish(&mut conn, true);
+                } else {
+                    conns.insert(conn_id, conn);
+                }
+            }
+            DriverCmd::RemoveServer(id) => remove_queue.push(id),
+        }
+    }
+}
+
+/// Step-1.5: retire removed servers — finish every connection of the dead
+/// server, drop its listener, and report ServerClosed.
+///
+/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow
+/// unchanged).
+fn tls_driver_retire_servers(
+    servers: &mut HashMap<u64, DriverServer>,
+    conns: &mut HashMap<u64, DriverConn>,
+    remove_queue: &mut Vec<u64>,
+) {
+    for id in remove_queue.drain(..) {
+        if let Some(ds) = servers.remove(&id) {
+            // Mark closing; close all connections of this server.
+            let dead: Vec<u64> = conns
+                .values()
+                .filter(|c| c.server.server_id == id)
+                .map(|c| c.conn_id)
+                .collect();
+            for cid in dead {
+                if let Some(mut conn) = conns.remove(&cid) {
+                    tls_conn_finish(&mut conn, /*notify=*/ true);
+                }
+            }
+            drop(ds.listener);
+            tls_push_event(&ds.shared, TlsEvent::ServerClosed);
+        }
+    }
+}
+
+/// Step-2: build the poll set and its routing targets — wake fd first, then
+/// every listening server, then every live conn (POLLIN unless parked for
+/// SNI or finishing; POLLOUT when output is buffered).
+///
+/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow
+/// unchanged).
+fn tls_driver_build_poll_set(
+    wake_read_fd: drv::Raw,
+    servers: &HashMap<u64, DriverServer>,
+    conns: &HashMap<u64, DriverConn>,
+) -> (Vec<drv::PollFd>, Vec<Target>) {
+    let mut fds: Vec<drv::PollFd> = Vec::with_capacity(2 + servers.len() + conns.len());
+    let mut targets: Vec<Target> = Vec::with_capacity(fds.capacity());
+    fds.push(drv::PollFd {
+        fd: wake_read_fd,
+        events: drv::POLLIN,
+        revents: 0,
+    });
+    targets.push(Target::Wake);
+    for ds in servers.values() {
+        fds.push(drv::PollFd {
+            fd: drv::raw_of_listener(&ds.listener),
+            events: drv::POLLIN,
+            revents: 0,
+        });
+        targets.push(Target::Listener(ds.server_id));
+    }
+    for conn in conns.values() {
+        let mut events = 0;
+        if !conn.parked_for_sni && !conn.finishing {
+            events |= drv::POLLIN;
+        }
+        if !conn.out_buf.is_empty() {
+            events |= drv::POLLOUT;
+        }
+        if events != 0 {
+            fds.push(drv::PollFd {
+                fd: drv::raw_of_stream(&conn.stream),
+                events,
+                revents: 0,
+            });
+            targets.push(Target::Conn(conn.conn_id));
+        }
+    }
+    (fds, targets)
+}
+
+/// Step-3: poll timeout — block indefinitely (the wake pipe covers commands
+/// and JS-side writes; conn fds cover I/O) unless an SNI deadline is
+/// pending: the parked conn needs no I/O wake, only the deadline check.
+///
+/// e201 REQ-ARCH-1: extracted from `tls_driver_main` (control flow
+/// unchanged, including the defensive clamp).
+fn tls_driver_sni_timeout(conns: &HashMap<u64, DriverConn>) -> i32 {
+    let mut timeout_ms: i32 = -1;
+    for conn in conns.values() {
+        if conn.parked_for_sni {
+            if let Some(deadline) = conn.sni_deadline {
+                let remain = deadline.saturating_duration_since(Instant::now());
+                let ms = remain.as_millis() as i32;
+                if timeout_ms < 0 || ms < timeout_ms {
+                    timeout_ms = ms;
+                }
+            }
+        }
+    }
+    if timeout_ms != -1 && timeout_ms < 0 {
+        timeout_ms = 0;
+    }
+    timeout_ms
 }
 
 /// Step-6 dispatch: accept + socket I/O for every signalled fd.

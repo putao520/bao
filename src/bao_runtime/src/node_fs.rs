@@ -18,6 +18,7 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
+use crate::node_util::register_js_functions;
 
 // --- Async I/O infrastructure ---
 // Background I/O uses std::thread::spawn + Arc<Mutex<Option<Result>>> shared slot.
@@ -842,680 +843,98 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        // Sync methods
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readFileSync".as_ptr(),
-            Some(fs_read_file_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"writeFileSync".as_ptr(),
-            Some(fs_write_file_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"appendFileSync".as_ptr(),
-            Some(fs_append_file_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"existsSync".as_ptr(),
-            Some(fs_exists_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"mkdirSync".as_ptr(),
-            Some(fs_mkdir_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readdirSync".as_ptr(),
-            Some(fs_readdir_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"statSync".as_ptr(),
-            Some(fs_stat_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"lstatSync".as_ptr(),
-            Some(fs_lstat_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"unlinkSync".as_ptr(),
-            Some(fs_unlink_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"rmdirSync".as_ptr(),
-            Some(fs_rmdir_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"rmSync".as_ptr(),
-            Some(fs_rm_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"renameSync".as_ptr(),
-            Some(fs_rename_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"copyFileSync".as_ptr(),
-            Some(fs_copy_file_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"chmodSync".as_ptr(),
-            Some(fs_chmod_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"realpathSync".as_ptr(),
-            Some(fs_realpath_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readlinkSync".as_ptr(),
-            Some(fs_readlink_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"symlinkSync".as_ptr(),
-            Some(fs_symlink_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"linkSync".as_ptr(),
-            Some(fs_link_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"cpSync".as_ptr(),
-            Some(fs_cp_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"cp".as_ptr(),
-            Some(fs_cp),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"watch".as_ptr(),
-            Some(fs_watch),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"watchFile".as_ptr(),
-            Some(fs_watch_file),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"unwatchFile".as_ptr(),
-            Some(fs_unwatch_file),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"statfsSync".as_ptr(),
-            Some(fs_statfs_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"openSync".as_ptr(),
-            Some(fs_open_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"closeSync".as_ptr(),
-            Some(fs_close_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readSync".as_ptr(),
-            Some(fs_read_sync),
-            4,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"writeSync".as_ptr(),
-            Some(fs_write_sync),
-            4,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"mkdtempSync".as_ptr(),
-            Some(fs_mkdtemp_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fchmodSync".as_ptr(),
-            Some(fs_fchmod_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fchownSync".as_ptr(),
-            Some(fs_fchown_sync),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fdatasyncSync".as_ptr(),
-            Some(fs_fdatasync_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fsyncSync".as_ptr(),
-            Some(fs_fsync_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"ftruncateSync".as_ptr(),
-            Some(fs_ftruncate_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"truncateSync".as_ptr(),
-            Some(fs_truncate_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"opendirSync".as_ptr(),
-            Some(fs_opendir_sync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"futimesSync".as_ptr(),
-            Some(fs_futimes_sync),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"lchmodSync".as_ptr(),
-            Some(fs_lchmod_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"lchownSync".as_ptr(),
-            Some(fs_lchown_sync),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readvSync".as_ptr(),
-            Some(fs_readv_sync),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"writevSync".as_ptr(),
-            Some(fs_writev_sync),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"globSync".as_ptr(),
-            Some(fs_glob_sync),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"openAsBlob".as_ptr(),
-            Some(fs_open_as_blob),
-            2,
-            JSPROP_ENUMERATE as u32,
+        // Sync methods (e201 REQ-ARCH-1: table-driven registration — each row
+        // expands to the exact JS_DefineFunction call the handwritten wall used;
+        // same order, same attrs)
+        register_js_functions!(cx, fs_obj, JSPROP_ENUMERATE as u32;
+            (c"readFileSync", fs_read_file_sync, 1)
+            (c"writeFileSync", fs_write_file_sync, 2)
+            (c"appendFileSync", fs_append_file_sync, 2)
+            (c"existsSync", fs_exists_sync, 1)
+            (c"mkdirSync", fs_mkdir_sync, 1)
+            (c"readdirSync", fs_readdir_sync, 1)
+            (c"statSync", fs_stat_sync, 1)
+            (c"lstatSync", fs_lstat_sync, 1)
+            (c"unlinkSync", fs_unlink_sync, 1)
+            (c"rmdirSync", fs_rmdir_sync, 1)
+            (c"rmSync", fs_rm_sync, 1)
+            (c"renameSync", fs_rename_sync, 2)
+            (c"copyFileSync", fs_copy_file_sync, 2)
+            (c"chmodSync", fs_chmod_sync, 2)
+            (c"realpathSync", fs_realpath_sync, 1)
+            (c"readlinkSync", fs_readlink_sync, 1)
+            (c"symlinkSync", fs_symlink_sync, 2)
+            (c"linkSync", fs_link_sync, 2)
+            (c"cpSync", fs_cp_sync, 2)
+            (c"cp", fs_cp, 3)
+            (c"watch", fs_watch, 2)
+            (c"watchFile", fs_watch_file, 2)
+            (c"unwatchFile", fs_unwatch_file, 2)
+            (c"statfsSync", fs_statfs_sync, 1)
+            (c"openSync", fs_open_sync, 2)
+            (c"closeSync", fs_close_sync, 1)
+            (c"readSync", fs_read_sync, 4)
+            (c"writeSync", fs_write_sync, 4)
+            (c"mkdtempSync", fs_mkdtemp_sync, 1)
+            (c"fchmodSync", fs_fchmod_sync, 2)
+            (c"fchownSync", fs_fchown_sync, 3)
+            (c"fdatasyncSync", fs_fdatasync_sync, 1)
+            (c"fsyncSync", fs_fsync_sync, 1)
+            (c"ftruncateSync", fs_ftruncate_sync, 2)
+            (c"truncateSync", fs_truncate_sync, 2)
+            (c"opendirSync", fs_opendir_sync, 1)
+            (c"futimesSync", fs_futimes_sync, 3)
+            (c"lchmodSync", fs_lchmod_sync, 2)
+            (c"lchownSync", fs_lchown_sync, 3)
+            (c"readvSync", fs_readv_sync, 3)
+            (c"writevSync", fs_writev_sync, 3)
+            (c"globSync", fs_glob_sync, 2)
+            (c"openAsBlob", fs_open_as_blob, 2)
         );
 
         // Async methods
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readFile".as_ptr(),
-            Some(fs_read_file),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"writeFile".as_ptr(),
-            Some(fs_write_file),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"mkdir".as_ptr(),
-            Some(fs_mkdir),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"appendFile".as_ptr(),
-            Some(fs_append_file),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"access".as_ptr(),
-            Some(fs_access),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"chmod".as_ptr(),
-            Some(fs_chmod),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"chown".as_ptr(),
-            Some(fs_chown),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"close".as_ptr(),
-            Some(fs_close),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"copyFile".as_ptr(),
-            Some(fs_copy_file),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"exists".as_ptr(),
-            Some(fs_exists),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fchmod".as_ptr(),
-            Some(fs_fchmod),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fchown".as_ptr(),
-            Some(fs_fchown),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fdatasync".as_ptr(),
-            Some(fs_fdatasync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fstat".as_ptr(),
-            Some(fs_fstat),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"fsync".as_ptr(),
-            Some(fs_fsync),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"ftruncate".as_ptr(),
-            Some(fs_ftruncate),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"futimes".as_ptr(),
-            Some(fs_futimes),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"lchown".as_ptr(),
-            Some(fs_lchown),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"link".as_ptr(),
-            Some(fs_link),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"lstat".as_ptr(),
-            Some(fs_lstat),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"lutimes".as_ptr(),
-            Some(fs_lutimes),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"mkdtemp".as_ptr(),
-            Some(fs_mkdtemp),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"open".as_ptr(),
-            Some(fs_open),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"opendir".as_ptr(),
-            Some(fs_opendir),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"read".as_ptr(),
-            Some(fs_read),
-            4,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readdir".as_ptr(),
-            Some(fs_readdir),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readlink".as_ptr(),
-            Some(fs_readlink),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"readv".as_ptr(),
-            Some(fs_readv),
-            4,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"realpath".as_ptr(),
-            Some(fs_realpath),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"rename".as_ptr(),
-            Some(fs_rename),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"rm".as_ptr(),
-            Some(fs_rm),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"rmdir".as_ptr(),
-            Some(fs_rmdir),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"stat".as_ptr(),
-            Some(fs_stat),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"symlink".as_ptr(),
-            Some(fs_symlink),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"truncate".as_ptr(),
-            Some(fs_truncate),
-            2,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"unlink".as_ptr(),
-            Some(fs_unlink),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"utimes".as_ptr(),
-            Some(fs_utimes),
-            3,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"write".as_ptr(),
-            Some(fs_write),
-            4,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"writev".as_ptr(),
-            Some(fs_writev),
-            4,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"statfs".as_ptr(),
-            Some(fs_statfs),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
-        w2::JS_DefineFunction(
-            cx,
-            fs_obj.handle(),
-            c"glob".as_ptr(),
-            Some(fs_glob),
-            3,
-            JSPROP_ENUMERATE as u32,
+        register_js_functions!(cx, fs_obj, JSPROP_ENUMERATE as u32;
+            (c"readFile", fs_read_file, 2)
+            (c"writeFile", fs_write_file, 3)
+            (c"mkdir", fs_mkdir, 2)
+            (c"appendFile", fs_append_file, 3)
+            (c"access", fs_access, 2)
+            (c"chmod", fs_chmod, 2)
+            (c"chown", fs_chown, 3)
+            (c"close", fs_close, 1)
+            (c"copyFile", fs_copy_file, 2)
+            (c"exists", fs_exists, 1)
+            (c"fchmod", fs_fchmod, 2)
+            (c"fchown", fs_fchown, 3)
+            (c"fdatasync", fs_fdatasync, 1)
+            (c"fstat", fs_fstat, 1)
+            (c"fsync", fs_fsync, 1)
+            (c"ftruncate", fs_ftruncate, 2)
+            (c"futimes", fs_futimes, 3)
+            (c"lchown", fs_lchown, 3)
+            (c"link", fs_link, 2)
+            (c"lstat", fs_lstat, 1)
+            (c"lutimes", fs_lutimes, 3)
+            (c"mkdtemp", fs_mkdtemp, 1)
+            (c"open", fs_open, 3)
+            (c"opendir", fs_opendir, 1)
+            (c"read", fs_read, 4)
+            (c"readdir", fs_readdir, 2)
+            (c"readlink", fs_readlink, 1)
+            (c"readv", fs_readv, 4)
+            (c"realpath", fs_realpath, 1)
+            (c"rename", fs_rename, 2)
+            (c"rm", fs_rm, 2)
+            (c"rmdir", fs_rmdir, 1)
+            (c"stat", fs_stat, 1)
+            (c"symlink", fs_symlink, 2)
+            (c"truncate", fs_truncate, 2)
+            (c"unlink", fs_unlink, 1)
+            (c"utimes", fs_utimes, 3)
+            (c"write", fs_write, 4)
+            (c"writev", fs_writev, 4)
+            (c"statfs", fs_statfs, 1)
+            (c"glob", fs_glob, 3)
         );
 
         // Constants
@@ -1535,213 +954,33 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // fs.promises namespace
         rooted!(&in(cx) let promises_obj = w2::JS_NewPlainObject(cx));
         if !promises_obj.get().is_null() {
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"readFile".as_ptr(),
-                Some(fs_promises_read_file),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"writeFile".as_ptr(),
-                Some(fs_promises_write_file),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"stat".as_ptr(),
-                Some(fs_promises_stat),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"readdir".as_ptr(),
-                Some(fs_promises_readdir),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"mkdir".as_ptr(),
-                Some(fs_promises_mkdir),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"unlink".as_ptr(),
-                Some(fs_promises_unlink),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"rename".as_ptr(),
-                Some(fs_promises_rename),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"copyFile".as_ptr(),
-                Some(fs_promises_copy_file),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"lstat".as_ptr(),
-                Some(fs_promises_lstat),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"appendFile".as_ptr(),
-                Some(fs_promises_append_file),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"chmod".as_ptr(),
-                Some(fs_promises_chmod),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"chown".as_ptr(),
-                Some(fs_promises_chown),
-                3,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"access".as_ptr(),
-                Some(fs_promises_access),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"rm".as_ptr(),
-                Some(fs_promises_rm),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"rmdir".as_ptr(),
-                Some(fs_promises_rmdir),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"realpath".as_ptr(),
-                Some(fs_promises_realpath),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"readlink".as_ptr(),
-                Some(fs_promises_readlink),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"symlink".as_ptr(),
-                Some(fs_promises_symlink),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"link".as_ptr(),
-                Some(fs_promises_link),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"truncate".as_ptr(),
-                Some(fs_promises_truncate),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"utimes".as_ptr(),
-                Some(fs_promises_utimes),
-                3,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"mkdtemp".as_ptr(),
-                Some(fs_promises_mkdtemp),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"open".as_ptr(),
-                Some(fs_promises_open),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"read".as_ptr(),
-                Some(fs_promises_read),
-                4,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"write".as_ptr(),
-                Some(fs_promises_write),
-                4,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                promises_obj.handle(),
-                c"statfs".as_ptr(),
-                Some(fs_promises_statfs),
-                1,
-                JSPROP_ENUMERATE as u32,
+            register_js_functions!(cx, promises_obj, JSPROP_ENUMERATE as u32;
+                (c"readFile", fs_promises_read_file, 1)
+                (c"writeFile", fs_promises_write_file, 2)
+                (c"stat", fs_promises_stat, 1)
+                (c"readdir", fs_promises_readdir, 1)
+                (c"mkdir", fs_promises_mkdir, 1)
+                (c"unlink", fs_promises_unlink, 1)
+                (c"rename", fs_promises_rename, 2)
+                (c"copyFile", fs_promises_copy_file, 2)
+                (c"lstat", fs_promises_lstat, 1)
+                (c"appendFile", fs_promises_append_file, 2)
+                (c"chmod", fs_promises_chmod, 2)
+                (c"chown", fs_promises_chown, 3)
+                (c"access", fs_promises_access, 1)
+                (c"rm", fs_promises_rm, 1)
+                (c"rmdir", fs_promises_rmdir, 1)
+                (c"realpath", fs_promises_realpath, 1)
+                (c"readlink", fs_promises_readlink, 1)
+                (c"symlink", fs_promises_symlink, 2)
+                (c"link", fs_promises_link, 2)
+                (c"truncate", fs_promises_truncate, 2)
+                (c"utimes", fs_promises_utimes, 3)
+                (c"mkdtemp", fs_promises_mkdtemp, 1)
+                (c"open", fs_promises_open, 2)
+                (c"read", fs_promises_read, 4)
+                (c"write", fs_promises_write, 4)
+                (c"statfs", fs_promises_statfs, 1)
             );
 
             rooted!(&in(cx) let prom_val = mozjs::jsval::ObjectValue(promises_obj.get()));
@@ -1757,82 +996,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
     // Evaluate createReadStream/createWriteStream polyfill
     unsafe {
-        let global = JS::CurrentGlobalOrNull(cx.raw_cx());
-        if !global.is_null() {
-            rooted!(&in(cx) let global_rooted = global);
-            rooted!(&in(cx) let fs_val = mozjs::jsval::ObjectValue(fs_obj.get()));
-            JS_DefineProperty(
-                cx.raw_cx(),
-                global_rooted.handle().into(),
-                c"__fs_stream_ref".as_ptr(),
-                fs_val.handle().into(),
-                JSPROP_ENUMERATE as u32,
-            );
-            // Hidden native the polyfill captures in its closure for the
-            // binary-safe end() flush; deleted right after evaluation (the
-            // captured reference stays alive) so no API surface is added.
-            w2::JS_DefineFunction(
-                cx,
-                global_rooted.handle(),
-                c"__bao_fs_stream_flush".as_ptr(),
-                Some(fs_write_stream_flush),
-                2,
-                0,
-            );
-
-            let c_filename = ZBox::from_bytes("node:fs:streams".as_bytes());
-            let opts = NewCompileOptions(cx.raw_cx(), c_filename.as_ptr(), 1);
-            if !opts.is_null() {
-                let mut src = mozjs::rust::transform_str_to_source_text(FS_STREAM_JS);
-                let mut rval = UndefinedValue();
-                let rval_handle = MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &mut rval,
-                };
-                let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut src, rval_handle);
-                mozjs::glue::DeleteCompileOptions(opts);
-
-                if ok && rval.is_object() {
-                    let exports = rval.to_object();
-                    rooted!(&in(cx) let exports_rooted = exports);
-
-                    for name in &["createReadStream", "createWriteStream"] {
-                        let cname = ZBox::from_bytes(name.as_bytes());
-                        let mut val = UndefinedValue();
-                        JS_GetProperty(
-                            cx.raw_cx(),
-                            exports_rooted.handle().into(),
-                            cname.as_ptr(),
-                            MutableHandle::<Value> {
-                                _phantom_0: ::std::marker::PhantomData,
-                                ptr: &mut val,
-                            },
-                        );
-                        if !val.is_undefined() {
-                            rooted!(&in(cx) let val_root = val);
-                            JS_DefineProperty(
-                                cx.raw_cx(),
-                                fs_obj.handle().into(),
-                                cname.as_ptr(),
-                                val_root.handle().into(),
-                                JSPROP_ENUMERATE as u32,
-                            );
-                        }
-                    }
-                }
-            }
-
-            JS_DeleteProperty1(
-                cx.raw_cx(),
-                global_rooted.handle().into(),
-                c"__fs_stream_ref".as_ptr(),
-            );
-            JS_DeleteProperty1(
-                cx.raw_cx(),
-                global_rooted.handle().into(),
-                c"__bao_fs_stream_flush".as_ptr(),
-            );
-        }
+        install_fs_stream_polyfill(cx, fs_obj.handle());
     }
 
     cache_builtin(cx, "fs", fs_obj.get());
@@ -1841,230 +1005,151 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     // already defined on fs.promises. The sub-path module `require("fs/promises")`
     // gets its own top-level builtin with the promise methods directly on it.
     unsafe {
+        install_fs_promises_subpath(cx);
+    }
+}
+
+
+/// Build the `require("fs/promises")` top-level builtin: a plain object with
+/// the promise-based methods directly on it (same natives as `fs.promises`)
+/// plus the FileHandle constructor, cached under "fs/promises".
+///
+/// e201 REQ-ARCH-1: extracted from `install` (control flow unchanged; the
+/// registration wall collapsed to the shared table macro).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_fs_promises_subpath(cx: &mut mozjs::context::JSContext) {
+    unsafe {
         rooted!(&in(cx) let fsp_obj = w2::JS_NewPlainObject(cx));
         if !fsp_obj.get().is_null() {
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"readFile".as_ptr(),
-                Some(fs_promises_read_file),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"writeFile".as_ptr(),
-                Some(fs_promises_write_file),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"stat".as_ptr(),
-                Some(fs_promises_stat),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"readdir".as_ptr(),
-                Some(fs_promises_readdir),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"mkdir".as_ptr(),
-                Some(fs_promises_mkdir),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"unlink".as_ptr(),
-                Some(fs_promises_unlink),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"rename".as_ptr(),
-                Some(fs_promises_rename),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"copyFile".as_ptr(),
-                Some(fs_promises_copy_file),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"lstat".as_ptr(),
-                Some(fs_promises_lstat),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"appendFile".as_ptr(),
-                Some(fs_promises_append_file),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"chmod".as_ptr(),
-                Some(fs_promises_chmod),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"chown".as_ptr(),
-                Some(fs_promises_chown),
-                3,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"access".as_ptr(),
-                Some(fs_promises_access),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"rm".as_ptr(),
-                Some(fs_promises_rm),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"rmdir".as_ptr(),
-                Some(fs_promises_rmdir),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"realpath".as_ptr(),
-                Some(fs_promises_realpath),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"readlink".as_ptr(),
-                Some(fs_promises_readlink),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"symlink".as_ptr(),
-                Some(fs_promises_symlink),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"link".as_ptr(),
-                Some(fs_promises_link),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"truncate".as_ptr(),
-                Some(fs_promises_truncate),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"utimes".as_ptr(),
-                Some(fs_promises_utimes),
-                3,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"mkdtemp".as_ptr(),
-                Some(fs_promises_mkdtemp),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"open".as_ptr(),
-                Some(fs_promises_open),
-                2,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"read".as_ptr(),
-                Some(fs_promises_read),
-                4,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"write".as_ptr(),
-                Some(fs_promises_write),
-                4,
-                JSPROP_ENUMERATE as u32,
-            );
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"statfs".as_ptr(),
-                Some(fs_promises_statfs),
-                1,
-                JSPROP_ENUMERATE as u32,
-            );
+            register_js_functions!(cx, fsp_obj, JSPROP_ENUMERATE as u32;
+                (c"readFile", fs_promises_read_file, 1)
+                (c"writeFile", fs_promises_write_file, 2)
+                (c"stat", fs_promises_stat, 1)
+                (c"readdir", fs_promises_readdir, 1)
+                (c"mkdir", fs_promises_mkdir, 1)
+                (c"unlink", fs_promises_unlink, 1)
+                (c"rename", fs_promises_rename, 2)
+                (c"copyFile", fs_promises_copy_file, 2)
+                (c"lstat", fs_promises_lstat, 1)
+                (c"appendFile", fs_promises_append_file, 2)
+                (c"chmod", fs_promises_chmod, 2)
+                (c"chown", fs_promises_chown, 3)
+                (c"access", fs_promises_access, 1)
+                (c"rm", fs_promises_rm, 1)
+                (c"rmdir", fs_promises_rmdir, 1)
+                (c"realpath", fs_promises_realpath, 1)
+                (c"readlink", fs_promises_readlink, 1)
+                (c"symlink", fs_promises_symlink, 2)
+                (c"link", fs_promises_link, 2)
+                (c"truncate", fs_promises_truncate, 2)
+                (c"utimes", fs_promises_utimes, 3)
+                (c"mkdtemp", fs_promises_mkdtemp, 1)
+                (c"open", fs_promises_open, 2)
+                (c"read", fs_promises_read, 4)
+                (c"write", fs_promises_write, 4)
+                (c"statfs", fs_promises_statfs, 1)
 
-            // FileHandle class — wraps a file descriptor and provides
-            // promise-based read/write/close/stat etc.
-            w2::JS_DefineFunction(
-                cx,
-                fsp_obj.handle(),
-                c"FileHandle".as_ptr(),
-                Some(fs_promises_filehandle_ctor),
-                1,
-                JSPROP_ENUMERATE as u32,
+                // FileHandle class — wraps a file descriptor and provides
+                // promise-based read/write/close/stat etc.
+                (c"FileHandle", fs_promises_filehandle_ctor, 1)
             );
             cache_builtin(cx, "fs/promises", fsp_obj.get());
         }
     }
+}
+
+/// Evaluate the node:fs:streams polyfill and re-export its
+/// createReadStream/createWriteStream constructors onto the fs object.
+///
+/// The polyfill captures `__fs_stream_ref` (the fs object) and
+/// `__bao_fs_stream_flush` (binary-safe end() flush native) from the global
+/// object in its closure; both globals are deleted right after evaluation
+/// (the captured references stay alive) so no extra API surface remains.
+///
+/// e201 REQ-ARCH-1: extracted from `install` (control flow unchanged; the
+/// `global.is_null()` nest level became a guard clause).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_fs_stream_polyfill(
+    cx: &mut mozjs::context::JSContext,
+    fs_obj: mozjs::rust::Handle<'_, *mut JSObject>,
+) {
+    let global = JS::CurrentGlobalOrNull(cx.raw_cx());
+    if global.is_null() {
+        return;
+    }
+    rooted!(&in(cx) let global_rooted = global);
+    rooted!(&in(cx) let fs_val = mozjs::jsval::ObjectValue(fs_obj.get()));
+    JS_DefineProperty(
+        cx.raw_cx(),
+        global_rooted.handle().into(),
+        c"__fs_stream_ref".as_ptr(),
+        fs_val.handle().into(),
+        JSPROP_ENUMERATE as u32,
+    );
+    // Hidden native the polyfill captures in its closure for the
+    // binary-safe end() flush; deleted right after evaluation (the
+    // captured reference stays alive) so no API surface is added.
+    w2::JS_DefineFunction(
+        cx,
+        global_rooted.handle(),
+        c"__bao_fs_stream_flush".as_ptr(),
+        Some(fs_write_stream_flush),
+        2,
+        0,
+    );
+
+    let c_filename = ZBox::from_bytes("node:fs:streams".as_bytes());
+    let opts = NewCompileOptions(cx.raw_cx(), c_filename.as_ptr(), 1);
+    if !opts.is_null() {
+        let mut src = mozjs::rust::transform_str_to_source_text(FS_STREAM_JS);
+        let mut rval = UndefinedValue();
+        let rval_handle = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut src, rval_handle);
+        mozjs::glue::DeleteCompileOptions(opts);
+
+        if ok && rval.is_object() {
+            let exports = rval.to_object();
+            rooted!(&in(cx) let exports_rooted = exports);
+
+            for name in &["createReadStream", "createWriteStream"] {
+                let cname = ZBox::from_bytes(name.as_bytes());
+                let mut val = UndefinedValue();
+                JS_GetProperty(
+                    cx.raw_cx(),
+                    exports_rooted.handle().into(),
+                    cname.as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut val,
+                    },
+                );
+                if !val.is_undefined() {
+                    rooted!(&in(cx) let val_root = val);
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        fs_obj.into(),
+                        cname.as_ptr(),
+                        val_root.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+        }
+    }
+
+    JS_DeleteProperty1(
+        cx.raw_cx(),
+        global_rooted.handle().into(),
+        c"__fs_stream_ref".as_ptr(),
+    );
+    JS_DeleteProperty1(
+        cx.raw_cx(),
+        global_rooted.handle().into(),
+        c"__bao_fs_stream_flush".as_ptr(),
+    );
 }
 
 // --- Argument helpers ---
@@ -3926,6 +3011,107 @@ fn fsw_win_reissue_dir_read(w: &mut FswDirWatch) {
     }
 }
 
+/// One directory stat-poll registration (platform worker mains). Hoisted to
+/// module level from the two fn-local copies (e201 REQ-ARCH-1) so the shared
+/// command-drain helper can name it; fields unchanged.
+struct PollSpec {
+    id: u64,
+    path: PathBuf,
+    interval_ms: u64,
+    last: libc::stat,
+    next_due_ms: u128,
+}
+
+/// Fire queued StatChange events for every poll whose deadline elapsed and
+/// re-arm each fired poll. Shared tail of both platform worker mains.
+///
+/// e201 REQ-ARCH-1: extracted from the two worker mains (text-identical
+/// control flow).
+fn fsw_poll_due_dispatch(shared: &Arc<Mutex<FswShared>>, polls: &mut Vec<PollSpec>) {
+    let now = monotonic_ms();
+    let mut due: Vec<usize> = Vec::new();
+    for (i, p) in polls.iter().enumerate() {
+        if p.next_due_ms <= now {
+            due.push(i);
+        }
+    }
+    for i in due {
+        let Some(spec) = polls.get_mut(i) else { continue };
+        spec.next_due_ms = now + spec.interval_ms as u128;
+        let curr = match fsw_stat_path(&spec.path.to_string_lossy()) {
+            Some(st) => st,
+            None => fsw_zero_stat(),
+        };
+        if fsw_stat_changed(&spec.last, &curr) {
+            let prev = spec.last;
+            spec.last = curr;
+            fsw_queue_stat_change(shared, spec.id, prev, curr);
+        } else {
+            spec.last = curr;
+        }
+    }
+}
+
+/// Push one StatChange into the shared queue when the shared state lock is
+/// available; a poisoned lock drops the event exactly as the inline
+/// `if let Ok` form did.
+///
+/// e201 REQ-ARCH-1: keeps `fsw_poll_due_dispatch` within the P-2 nesting
+/// red line (the `PendingFsEvent::StatChange` literal cost one level).
+fn fsw_queue_stat_change(
+    shared: &Arc<Mutex<FswShared>>,
+    id: u64,
+    prev: libc::stat,
+    curr: libc::stat,
+) {
+    if let Ok(mut guard) = shared.lock() {
+        guard.queue.push_back(PendingFsEvent::StatChange {
+            id,
+            prev,
+            curr,
+        });
+    }
+}
+
+/// Drain pending watch commands (add/remove/shutdown) into `polls`. Returns
+/// true when a Shutdown command was seen — the caller exits the worker loop;
+/// as in the original inline form, the remaining commands of a shutdown
+/// batch are intentionally not applied.
+///
+/// e201 REQ-ARCH-1: shared body of the two platform worker mains
+/// (text-identical control flow), extracted so both hosts stay shallow.
+fn fsw_take_commands(shared: &Arc<Mutex<FswShared>>, polls: &mut Vec<PollSpec>) -> bool {
+    let mut commands: VecDeque<FswCommand> = VecDeque::new();
+    let mut shutdown = false;
+    if let Ok(mut guard) = shared.lock() {
+        ::std::mem::swap(&mut commands, &mut guard.commands);
+        shutdown = commands.iter().any(|c| matches!(c, FswCommand::Shutdown));
+        if shutdown {
+            guard.commands.clear();
+        }
+    }
+    if shutdown {
+        return true;
+    }
+    for cmd in commands {
+        match cmd {
+            FswCommand::AddPoll { id, path, interval_ms, baseline } => {
+                polls.retain(|p| p.id != id);
+                polls.push(PollSpec {
+                    id,
+                    path,
+                    interval_ms,
+                    last: baseline,
+                    next_due_ms: monotonic_ms().saturating_add(interval_ms as u128),
+                });
+            }
+            FswCommand::RemovePoll { id } => polls.retain(|p| p.id != id),
+            FswCommand::Shutdown => unreachable!("handled above"),
+        }
+    }
+    false
+}
+
 #[cfg(windows)]
 fn fsw_worker_main_windows(
     shared: Arc<Mutex<FswShared>>,
@@ -3933,46 +3119,14 @@ fn fsw_worker_main_windows(
     wake: SendHandle,
 ) {
     let wake_event = wake.0;
-    struct PollSpec {
-        id: u64,
-        path: PathBuf,
-        interval_ms: u64,
-        last: libc::stat,
-        next_due_ms: u128,
-    }
     let mut polls: Vec<PollSpec> = Vec::new();
 
     loop {
-        // Commands (poll adds/removals + shutdown) under a short lock.
-        {
-            let mut commands: VecDeque<FswCommand> = VecDeque::new();
-            let mut shutdown = false;
-            if let Ok(mut guard) = shared.lock() {
-                ::std::mem::swap(&mut commands, &mut guard.commands);
-                shutdown = commands.iter().any(|c| matches!(c, FswCommand::Shutdown));
-                if shutdown {
-                    guard.commands.clear();
-                }
-            }
-            if shutdown {
-                break;
-            }
-            for cmd in commands {
-                match cmd {
-                    FswCommand::AddPoll { id, path, interval_ms, baseline } => {
-                        polls.retain(|p| p.id != id);
-                        polls.push(PollSpec {
-                            id,
-                            path,
-                            interval_ms,
-                            last: baseline,
-                            next_due_ms: monotonic_ms().saturating_add(interval_ms as u128),
-                        });
-                    }
-                    FswCommand::RemovePoll { id } => polls.retain(|p| p.id != id),
-                    FswCommand::Shutdown => unreachable!("handled above"),
-                }
-            }
+        // Commands (poll adds/removals + shutdown) under a short lock (e201
+        // REQ-ARCH-1: extracted to `fsw_take_commands`; shutdown batch not
+        // applied, as before).
+        if fsw_take_commands(&shared, &mut polls) {
+            break;
         }
 
         // Timeout: soonest poll deadline, bounded (≤250ms) so newly added
@@ -4032,35 +3186,9 @@ fn fsw_worker_main_windows(
             }
         }
 
-        // Due stat polls (same predicate as the posix arm).
-        let now = monotonic_ms();
-        let mut due: Vec<usize> = Vec::new();
-        for (i, p) in polls.iter().enumerate() {
-            if p.next_due_ms <= now {
-                due.push(i);
-            }
-        }
-        for i in due {
-            let Some(spec) = polls.get_mut(i) else { continue };
-            spec.next_due_ms = now + spec.interval_ms as u128;
-            let curr = match fsw_stat_path(&spec.path.to_string_lossy()) {
-                Some(st) => st,
-                None => fsw_zero_stat(),
-            };
-            if fsw_stat_changed(&spec.last, &curr) {
-                let prev = spec.last;
-                spec.last = curr;
-                if let Ok(mut guard) = shared.lock() {
-                    guard.queue.push_back(PendingFsEvent::StatChange {
-                        id: spec.id,
-                        prev,
-                        curr,
-                    });
-                }
-            } else {
-                spec.last = curr;
-            }
-        }
+        // Due stat polls (same predicate as the posix arm; e201 REQ-ARCH-1:
+        // extracted to `fsw_poll_due_dispatch`).
+        fsw_poll_due_dispatch(&shared, &mut polls);
     }
     // Worker exit: the wake event is hub-owned; nothing to close here.
 }
@@ -4115,47 +3243,14 @@ fn fsw_decode_inotify_batch(buf: &[u8], shared: &Arc<Mutex<FswShared>>) {
 /// Worker thread: poll [inotify, wake] + stat-poll loop. Never touches JS.
 #[cfg(not(windows))]
 fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) {
-    struct PollSpec {
-        id: u64,
-        path: PathBuf,
-        interval_ms: u64,
-        last: libc::stat,
-        next_due_ms: u128,
-    }
     let mut polls: Vec<PollSpec> = Vec::new();
     let mut inotify_buf = [0u8; 64 * 1024];
 
     loop {
-        // Apply pending commands under a short lock.
-        {
-            let mut commands: VecDeque<FswCommand> = VecDeque::new();
-            let mut shutdown = false;
-            if let Ok(mut guard) = shared.lock() {
-                ::std::mem::swap(&mut commands, &mut guard.commands);
-                shutdown = commands.iter().any(|c| matches!(c, FswCommand::Shutdown));
-                if shutdown {
-                    guard.commands.clear();
-                }
-            }
-            if shutdown {
-                break;
-            }
-            for cmd in commands {
-                match cmd {
-                    FswCommand::AddPoll { id, path, interval_ms, baseline } => {
-                        polls.retain(|p| p.id != id);
-                        polls.push(PollSpec {
-                            id,
-                            path,
-                            interval_ms,
-                            last: baseline,
-                            next_due_ms: monotonic_ms().saturating_add(interval_ms as u128),
-                        });
-                    }
-                    FswCommand::RemovePoll { id } => polls.retain(|p| p.id != id),
-                    FswCommand::Shutdown => unreachable!("handled above"),
-                }
-            }
+        // Apply pending commands under a short lock (e201 REQ-ARCH-1:
+        // extracted to `fsw_take_commands`; shutdown batch not applied, as before).
+        if fsw_take_commands(&shared, &mut polls) {
+            break;
         }
 
         // Timeout: soonest poll deadline, else block until inotify/wake.
@@ -4214,35 +3309,8 @@ fn fsw_worker_main(shared: Arc<Mutex<FswShared>>, inotify_fd: i32, wake_r: i32) 
             }
         }
 
-        // Due stat polls.
-        let now = monotonic_ms();
-        let mut due: Vec<usize> = Vec::new();
-        for (i, p) in polls.iter().enumerate() {
-            if p.next_due_ms <= now {
-                due.push(i);
-            }
-        }
-        for i in due {
-            let Some(spec) = polls.get_mut(i) else { continue };
-            spec.next_due_ms = now + spec.interval_ms as u128;
-            let curr = match fsw_stat_path(&spec.path.to_string_lossy()) {
-                Some(st) => st,
-                None => fsw_zero_stat(),
-            };
-            if fsw_stat_changed(&spec.last, &curr) {
-                let prev = spec.last;
-                spec.last = curr;
-                if let Ok(mut guard) = shared.lock() {
-                    guard.queue.push_back(PendingFsEvent::StatChange {
-                        id: spec.id,
-                        prev,
-                        curr,
-                    });
-                }
-            } else {
-                spec.last = curr;
-            }
-        }
+        // Due stat polls (e201 REQ-ARCH-1: extracted to `fsw_poll_due_dispatch`).
+        fsw_poll_due_dispatch(&shared, &mut polls);
     }
     // Worker exit: drop our copy of the wake read-end.
     unsafe { libc::close(wake_r) };
