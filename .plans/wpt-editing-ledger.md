@@ -400,3 +400,27 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **deletion-manifest(已执行)**:~/code/tools/servo/tests/wpt/tests/editing/other/e187-probe.html + e187-probe2.html 删除(§e187 探针遗留,raw 证据 /tmp/e187-probe{,2}.raw.log 与 e186-veh 日志留存);/var/tmp/e185-veh/meta/MANIFEST.json 两项 items.testharness.editing.other 条目移除(备份 MANIFEST.json.e188-backup),postdel_probe 功能级复跑实证 manifest 可用。
 
 **登记面**:无新增红;e186 残留(66−24=42)中 queryCommand 级联 13/白空间 6/双属性 4/散格等维持原登记归属;§e187 的「修复判据后续合同」清偿完毕,两探针资产按 manifest 删除。
+
+### e190(forecolor/fontname 双层根修落地——font 属性 typed 存储+is_indeterminate 等值语义归一,2 意外格清偿+63 stale pin 自治;新暴露 face 合成 panic 类待裁,2026-10-12,REQ-BRW-050)
+
+**清偿(两层,均 §e189 判据)**:
+- **A 层(font 属性 untyped 存储)**:`force_the_value` Step 10.5/10.6(contenteditable/node.rs)color 臂 `set_string_attribute` → `set_attribute`+`AttrValue::from_legacy_color`、face 臂 → `set_atomic_attribute`(`AttrValue::Atom`)——镜像 `HTMLFontElement::parse_plain_attribute` typed 形态;presentational hint 合成(element.rs:1325/1353 只认 `AttrValue::Color`/`Atom` 变体)从此生效。
+- **B 层(indeterm 等值语义归一)**:`is_indeterminate`(basecommand.rs)逐对裸 `!=` → `are_equivalent_values`(spec "distinct effective command values" 的等值语义);`are_equivalent_values` 的 BackColor/ForeColor/HiliteColor 臂双 `parse_legacy_color` → 新 helper `parse_color_for_value_equivalence`(CSS 全形态解析先行(canvas `parse_color` 复用,`pub(super)`→`pub(crate)`+2d/mod.rs re-export 一行)+ legacy 兜底)——`parse_legacy_color` 对 rgb() 函数形态落 legacy 兜底算法产出垃圾字节的格式漂移类根修。Step-17 font 短路**零触碰**(load-bearing 保持,探针实证 innerHTML 属性形态无 style 属性)。
+- `cargo check --profile test-ci -p bao-servo-script` RC=0,触碰 4 文件零新警告(execcommand 2+canvas 2)。
+
+**验证**:
+- 探针(/tmp/e190-probe.py,ba.e190-green):t0_brCS=rgb(0,0,255)(RED rgb(0,0,0))、t0_indeterm=false(RED true,零 JS 修复)、fontname face 面 sans-serif 全通、innerHTML `<p><font color="#0000ff">…` Chrome 形。
+- 目标 2 格 2/2 跑分布(green_target1/2 逐字节恒等)+ e188 green_full 日志二源 RED 双跑一致(expected:PASS status:FAIL);`<p>[foo<p><br><p>bar]` indeterm 双格 FAIL→PASS。
+- **B 放宽正向连带 61 格**(全部 exp:FAIL→PASS 朝 Chrome parity,WPT 数据=Chrome 数据):forecolor 15(含 §e189 预测的 brown 双格 indeterm before——`parse_legacy_color("brown")` 与 computed `rgb(165, 42, 42)` 归一后等值)、backcolor 21、hilitecolor 23、fontname 3(stale pin 类);共 63 stale pin(双跑背书:full+run3 的 4802 格逐格恒等 + chunk1 三跑)经 wptmanifest AST 通道删除(vendor ini 4 文件 −189 行,round-trip 稳定断言),post-ini 确认跑 4 文件 unexpected-PASS **63→0**。载具 meta 副本(/var/tmp/e185-veh/meta)已同步。
+- 基线 provenance:HEAD(e538dc98a)≡65983b025 代码态零差(git diff 实证)→ e188-green 二进制+green_full 日志为有效基线;green 二进制私有 CARGO_TARGET_DIR=/var/tmp/e190-target。
+
+**新暴露缺陷类(全域 gate 唯一阻塞,scope 裁决待 lead)**:
+- 全域对拍(857→855 tests):NEW-RED=1——event.html OK→**CRASH**,`vendor/stylo/values/computed/font.rs:573`「Family name with leading, trailing, or consecutive white spaces should have been marked quoted by the parser」(Script#10 panic)。
+- **A/B 归因**:GREEN 二进制 `execCommand("fontName","","")` 即 panic(/tmp/e190-arm2-probe.py),基线同脚本正常(`<font face="">` innerHTML+value=serif)——命令路径新触发=A 层 face typed 化开启(face="" Atom → presentational hint → 合成声明 → to_css 断言);RED 二进制同 panic 面零暴露(face untyped String → 无 hint)。
+- **类预存实证**:基线二进制在纯静态 `<font face="">`+`getComputedStyle().fontFamily` 下**同样 panic**(stderr 实证)——§e189「27 调用点」普查未覆盖 face-family 合成面;类缺陷=`parse_single_face_value_from_string`(htmlfontelement.rs)对含空白名恒标 `Identifiers`(stylo to_css 对 Identifiers 的空段 debug_assert)+ 空段不过滤(`get_face` 对空 Atom 返回 `Some("")`,而 basecommand.rs FontFamily 短路早有 `!face.is_empty()` 约定——两处约定漂移)。
+- 待裁差分(1 文件 3 hunk,parse 侧根治非缓解):①`get_face` 空原子→None(event.html 命令面回归直修);②`parse_face_attribute` 过滤空段;③空白违约名标 `Quoted`(Chrome 对 `<font face="a  b">` 的 computed 序列化即引号形)。已上报 lead 3 次(含补丁终形),未落树(合同白名单=execcommand/+,htmlfontelement.rs=vendor 其他域)。
+- 上游候选(stylo vendor):`parse_legacy_color` Step 9 `input.as_bytes()[0]` 对 trim 后空串(如 `" "`)越界 panic——本波暴露面≤旧路径(B 层 CSS 解析先行),独立登记不本波修。
+
+**deletion-manifest**:ini 63 条 stale expected:FAIL 删除(双跑 PASS 实证逐条 replacement,见上);业务代码零删除。留证:/var/tmp/e190-veh(raw log ×5:red_target1/green_target1/2/3/green_full/green_post_ini)+/var/tmp/e190-target(bao.e190-green)+/tmp/e190-{probe,arm2-probe,cellset,flip-cells.txt}。
+
+**教训**:①typed 属性存储的 producer 侧修复(执行器路径设属性)必须同步审计 consumer 侧合成路径的 parse 不变量——layout-typed 变体是「producer 必须走 typed parse」与「consumer 假设 typed 值满足引擎不变量」的双向契约,e189 的普查只看了 producer 侧;②「B 层放宽语义」的红利面(61 格)远超目标 2 格,等值比较归一是多读数路径浏览器的系统性修复,e189 预测的「可能翻转既有 expected:FAIL indeterm 格」以 63 格兑现;③CRASH 归因必做基线同路径复现(arm2 probe 双二进制)——「静态路径同 panic」一条就划清了「本波引入类」与「本波新触发预存类」的归属线。

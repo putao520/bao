@@ -2714,7 +2714,7 @@ impl UnshapedTextRun<'_> {
 }
 
 /// <https://drafts.csswg.org/css-color/#parse-a-css-color-value>
-pub(super) fn parse_color(
+pub(crate) fn parse_color(
     canvas: Option<&HTMLCanvasElement>,
     string: &DOMString,
 ) -> Result<AbsoluteColor, ()> {

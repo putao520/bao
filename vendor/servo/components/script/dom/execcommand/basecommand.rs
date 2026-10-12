@@ -5,7 +5,7 @@
 use js::context::JSContext;
 use script_bindings::inheritance::Castable;
 use style::attr::parse_legacy_color;
-use style::color::ColorFlags;
+use style::color::{AbsoluteColor, ColorFlags};
 use style::properties::PropertyDeclarationId;
 use style::properties::generated::{LonghandId, ShorthandId};
 use style::values::specified::text::TextDecorationLine;
@@ -16,6 +16,7 @@ use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFontElementBinding::HTMLFontElementMethods;
 use crate::dom::bindings::str::DOMString;
+use crate::dom::canvas::parse_color;
 use crate::dom::document::Document;
 use crate::dom::element::Element;
 use crate::dom::execcommand::commands::backcolor::execute_backcolor_command;
@@ -393,7 +394,15 @@ impl CommandName {
                     at_least_two_different_effective_values = true;
                 }
                 if let Some(previous_effective_value) = &previous_effective_value {
-                    if &effective_command_value != previous_effective_value {
+                    // Distinctness is equivalence-based: the effective value of
+                    // a font element is the raw attribute string ("#0000ff")
+                    // while a computed-style reader yields the CSSOM form
+                    // ("rgb(0, 0, 255)") for the very same color, and a
+                    // textual comparison would flag the two as distinct.
+                    if !self.are_equivalent_values(
+                        Some(&effective_command_value),
+                        Some(previous_effective_value),
+                    ) {
                         at_least_two_different_effective_values = true;
                     }
                 } else {
@@ -516,13 +525,11 @@ impl CommandName {
                         // > Either both strings are valid CSS colors and have the same red, green, blue, and alpha components,
                         // > or neither string is a valid CSS color.
                         match (
-                            parse_legacy_color(&first_str.str()),
-                            parse_legacy_color(&second_str.str()),
+                            parse_color_for_value_equivalence(first_str),
+                            parse_color_for_value_equivalence(second_str),
                         ) {
-                            (Ok(first_legacy_color), Ok(second_legacy_color)) => {
-                                first_legacy_color == second_legacy_color
-                            },
-                            (Err(_), Err(_)) => true,
+                            (Some(first_color), Some(second_color)) => first_color == second_color,
+                            (None, None) => true,
                             _ => false,
                         }
                     },
@@ -804,4 +811,25 @@ impl CommandName {
             _ => vec![],
         }
     }
+}
+
+/// Parse a color string for the equivalent-values comparison, accepting both
+/// full CSS color syntax (keywords, `#hex`, `rgb()`/`rgba()`/`hsl()`/...
+/// functional forms) and, as a fallback, the HTML legacy color algorithm.
+///
+/// The readers of a command value produce different serializations of the same
+/// color: the `HTMLFontElement` short-circuit in
+/// `CssPropertyName::resolved_value_for_node` returns the raw attribute string
+/// ("#0000ff"), while computed-style readers return the CSSOM form
+/// ("rgb(0, 0, 255)"). `parse_legacy_color` alone cannot bridge the two: a
+/// functional form matches no keyword or hex shape and falls into the legacy
+/// fallback algorithm, which deterministically mangles it into a different
+/// color.
+///
+/// Returns `None` when the input is neither a valid CSS color nor a
+/// (deterministically parseable) legacy color.
+fn parse_color_for_value_equivalence(input: &DOMString) -> Option<AbsoluteColor> {
+    parse_color(None, input)
+        .or_else(|()| parse_legacy_color(&input.str()))
+        .ok()
 }

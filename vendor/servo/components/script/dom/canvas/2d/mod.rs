@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 mod canvas_state;
+pub(crate) use canvas_state::parse_color;
 pub(crate) mod canvasgradient;
 pub(crate) mod canvaspattern;
 pub(crate) mod canvasrenderingcontext2d;

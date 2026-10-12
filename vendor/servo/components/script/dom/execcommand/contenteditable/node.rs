@@ -10,7 +10,7 @@ use html5ever::local_name;
 use js::context::{JSContext, NoGC};
 use script_bindings::codegen::GenericBindings::RangeBinding::RangeMethods;
 use script_bindings::inheritance::Castable;
-use style::attr::parse_legacy_color;
+use style::attr::{AttrValue, parse_legacy_color};
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::values::specified::box_::DisplayOutside;
 
@@ -1415,10 +1415,19 @@ impl Node {
                         let new_font_element = document.create_element(cx, "font");
                         // Step 10.5.2. Set the color attribute of new parent to the result of applying the rules for
                         // serializing simple color values to new value (interpreted as a simple color).
-                        new_font_element.set_string_attribute(
+                        //
+                        // The attribute must be stored via the typed parse path
+                        // (`AttrValue::Color`, mirroring `HTMLFontElement::
+                        // parse_plain_attribute`): the presentational hint
+                        // synthesis reads the typed variant (`get_color`),
+                        // so an untyped `AttrValue::String` would never style
+                        // the element.
+                        new_font_element.set_attribute(
                             cx,
                             &local_name!("color"),
-                            serialize_to_simple_color(legacy_color),
+                            AttrValue::from_legacy_color(
+                                serialize_to_simple_color(legacy_color).into(),
+                            ),
                         );
                         new_parent = Some(new_font_element);
                     }
@@ -1428,7 +1437,12 @@ impl Node {
                 // then set the face attribute of new parent to new value.
                 CommandName::FontName => {
                     let new_font_element = document.create_element(cx, "font");
-                    new_font_element.set_string_attribute(
+                    // Typed parse path (`AttrValue::Atom`), mirroring
+                    // `HTMLFontElement::parse_plain_attribute`: the
+                    // presentational hint synthesis reads the typed variant
+                    // (`get_face`), so an untyped `AttrValue::String` would
+                    // never style the element.
+                    new_font_element.set_atomic_attribute(
                         cx,
                         &local_name!("face"),
                         new_value.clone(),
