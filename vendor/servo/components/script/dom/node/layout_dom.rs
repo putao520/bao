@@ -5,6 +5,7 @@
 //! Methods for layout of node
 
 use atomic_refcell::AtomicRef;
+use html5ever::ns;
 use layout_api::{
     GenericLayoutData, HTMLCanvasData, HTMLMediaData, LayoutElementType, LayoutNodeType,
     SVGElementData,
@@ -19,6 +20,7 @@ use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use servo_url::ServoUrl;
 use style::dom::OpaqueNode;
 use style::selector_parser::PseudoElement;
+use xml5ever::local_name;
 
 use crate::dom::bindings::inheritance::{CharacterDataTypeId, NodeTypeId};
 use crate::dom::bindings::root::{LayoutDom, ToLayout, ToLayoutOptional};
@@ -26,6 +28,7 @@ use crate::dom::document::Document;
 use crate::dom::element::Element;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::htmlcanvaselement::HTMLCanvasElement;
+use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmlslotelement::HTMLSlotElement;
@@ -246,6 +249,61 @@ impl<'dom> LayoutDom<'dom, Node> {
             .data_for_layout()
     }
 
+    /// Whether this node is an editing host, in a layout-safe form for box tree
+    /// construction. This is the layout thread mirror of `Node::is_editing_host` +
+    /// `HTMLElement::is_editing_host`: an HTML element with its `contenteditable`
+    /// attribute in the true or plaintext-only state is an editing host, unless an
+    /// inclusive ancestor of its parent is part of an editable region (a nested
+    /// `contenteditable` is a no-op; the outer host owns the region) or design mode
+    /// makes the document itself the host.
+    ///
+    /// This reads only `contenteditable` attribute states and the document design
+    /// mode flag via `*_for_layout` accessors; it cannot call the script predicate
+    /// because that walks the tree through `GetParentNode()`, which creates
+    /// `DomRoot`s on the layout thread. Unlike the script predicate this does not
+    /// consider `EditContext`-associated elements.
+    pub(crate) fn is_editing_host_for_layout(self) -> bool {
+        let Some(element) = self.downcast::<HTMLElement>() else {
+            return false;
+        };
+        if !matches!(
+            content_editable_state_for_layout(element.upcast()),
+            ContentEditableState::True | ContentEditableState::PlaintextOnly
+        ) {
+            return false;
+        }
+
+        // > node itself, if node is an editing host; or the nearest ancestor of
+        // > node that is an editing host, if node is editable.
+        //
+        // The parent chain must not be part of an editable region: walking the
+        // inclusive ancestors of the parent, the first `contenteditable` state
+        // boundary decides (`Node::editing_host_of`). A `contenteditable="false"`
+        // element is an editing boundary, so we are a host; an element in the true
+        // or plaintext-only state owns the editable region, so we are not.
+        let mut ancestor = self.parent_node_ref();
+        while let Some(node) = ancestor {
+            if node
+                .downcast::<Document>()
+                .is_some_and(|document| document.unsafe_get().design_mode_enabled())
+            {
+                // Design mode makes the document itself an editing host.
+                return false;
+            }
+            if let Some(html_element) = node.downcast::<HTMLElement>() {
+                match content_editable_state_for_layout(html_element.upcast()) {
+                    ContentEditableState::False => return true,
+                    ContentEditableState::True | ContentEditableState::PlaintextOnly => {
+                        return false
+                    },
+                    ContentEditableState::Inherit => {},
+                }
+            }
+            ancestor = node.parent_node_ref();
+        }
+        true
+    }
+
     #[expect(unsafe_code)]
     pub(crate) fn selection_for_text_node(&self) -> Option<RangeAny<Utf32CodeUnits>> {
         if let Some(shadow_root) = self.containing_shadow_root_for_layout() {
@@ -379,6 +437,35 @@ impl<'dom> LayoutDom<'dom, Node> {
 
     pub(crate) fn children_count(&self) -> u32 {
         self.unsafe_get().children_count()
+    }
+}
+
+/// The `contenteditable` attribute state of an element
+/// (<https://html.spec.whatwg.org/multipage/#attr-contenteditable>).
+#[derive(PartialEq)]
+enum ContentEditableState {
+    True,
+    PlaintextOnly,
+    False,
+    Inherit,
+}
+
+/// The `contenteditable` attribute state of this element, in a layout-safe form:
+/// an enumerated attribute matched ASCII case-insensitively, with missing or
+/// invalid values in the inherit state.
+fn content_editable_state_for_layout(element: LayoutDom<'_, Element>) -> ContentEditableState {
+    let Some(value) = element.get_attr_val_for_layout(&ns!(), &local_name!("contenteditable"))
+    else {
+        return ContentEditableState::Inherit;
+    };
+    if value.is_empty() || value.eq_ignore_ascii_case("true") {
+        ContentEditableState::True
+    } else if value.eq_ignore_ascii_case("plaintext-only") {
+        ContentEditableState::PlaintextOnly
+    } else if value.eq_ignore_ascii_case("false") {
+        ContentEditableState::False
+    } else {
+        ContentEditableState::Inherit
     }
 }
 

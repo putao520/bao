@@ -225,6 +225,12 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
     /// <https://html.spec.whatwg.org/multipage/#the-input-element-as-a-text-entry-widget>
     fn is_single_line_text_input(&self) -> bool;
 
+    /// Whether this node is an editing host (a `contenteditable` element in the true
+    /// or plaintext-only state that is not nested in an editable region). This is
+    /// used to give an empty editing host a caret line box so that it can be hit,
+    /// focused, and typed into (Chromium-compat).
+    fn is_editing_host(&self) -> bool;
+
     /// Whether or not this [`LayoutNode`] is in a user agent widget shadow DOM.
     fn is_root_of_user_agent_widget(&self) -> bool;
 

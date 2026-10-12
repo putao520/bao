@@ -184,6 +184,12 @@ pub(crate) struct InlineFormattingContext {
     /// text container.
     is_single_line_text_input: bool,
 
+    /// Whether or not this [`InlineFormattingContext`] belongs to an editing host. The
+    /// otherwise-phantom final line of such an IFC keeps the strut height ("caret line
+    /// box"), so that an empty editing host can be hit, focused, and typed into.
+    /// (Chromium-compat.)
+    is_editing_host: bool,
+
     /// Whether or not this is an [`InlineFormattingContext`] has right-to-left content, which
     /// will require reordering during layout.
     has_right_to_left_content: bool,
@@ -905,6 +911,12 @@ struct InlineFormattingContextLayout<'layout_data> {
     /// used to create a [`TextFragment`] to hold a caret on an otherwise empty line.
     caret_placeholder: Option<CaretPlaceholder>,
 
+    /// Whether the line currently being finished is the final line of the IFC. The final
+    /// line of an editing host's IFC keeps the strut height even when it is otherwise
+    /// phantom ("caret line box"), so that an empty editing host can be hit, focused,
+    /// and typed into (Chromium-compat).
+    finishing_ifc_final_line: bool,
+
     /// When a `<br>` element has `clear`, this needs to be applied after the linebreak,
     /// which will be processed *after* the `<br>` element is processed. This member
     /// stores any deferred `clear` to apply after a linebreak.
@@ -1077,6 +1089,11 @@ impl InlineFormattingContextLayout<'_> {
     }
 
     fn finish_last_line(&mut self) {
+        // Chromium-compat: the final line of an editing host's IFC keeps the strut
+        // height even when it is otherwise phantom ("caret line box"), so that an
+        // empty editing host can be hit, focused, and typed into.
+        self.finishing_ifc_final_line = self.ifc.is_editing_host;
+
         // First, process any deferred forced line breaks.
         self.possibly_flush_deferred_forced_line_break();
 
@@ -1132,7 +1149,12 @@ impl InlineFormattingContextLayout<'_> {
         // > positions of any descendant content (such as absolutely positioned boxes), and both the
         // > line box and its in-flow content must be treated as not existing for any other layout or
         // > rendering purpose.
-        let is_phantom_line = self.current_line.is_phantom();
+        // An editing host's otherwise-phantom final line keeps the strut height ("caret
+        // line box"), so that an empty host can be hit, focused, and typed into. Note
+        // that this does not apply to forced line breaks: a `<br>` already pushes the
+        // strut into its own line via `defer_forced_line_break_at_character_offset`.
+        let finishing_ifc_final_line = std::mem::take(&mut self.finishing_ifc_final_line);
+        let is_phantom_line = self.current_line.is_phantom() && !finishing_ifc_final_line;
         if !is_phantom_line {
             self.current_line.start_position.block += self.placement_state.current_margin.solve();
             self.placement_state.current_margin = CollapsedMargin::zero();
@@ -2061,6 +2083,7 @@ impl InlineFormattingContext {
             has_first_formatted_line,
             contains_floats: builder.contains_floats,
             is_single_line_text_input,
+            is_editing_host: builder.is_editing_host,
             has_right_to_left_content,
             tab_size_multiplier: Default::default(),
         }
@@ -2143,6 +2166,7 @@ impl InlineFormattingContext {
             current_line_segment: UnbreakableSegmentUnderConstruction::new(),
             force_line_break_before_new_content: false,
             caret_placeholder: None,
+            finishing_ifc_final_line: false,
             deferred_br_clear: Clear::None,
             have_deferred_soft_wrap_opportunity: false,
             depends_on_block_constraints: false,

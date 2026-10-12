@@ -100,6 +100,11 @@ pub(crate) struct InlineFormattingContextBuilder {
     /// completely collapsible whitespace. When that happens it can be ignored completely.
     pub is_empty: bool,
 
+    /// Whether this IFC belongs to an editing host. An empty editing host keeps a
+    /// caret line box so that it can be hit, focused, and typed into
+    /// (Chromium-compat).
+    pub is_editing_host: bool,
+
     /// Whether this inline formatting context should process the `::first-letter` pseudo-element.
     /// This typically starts as true, and then is set to false after processing `::first-letter`
     /// or encountering an atomic. But it can also be false from the very beginning if this inline

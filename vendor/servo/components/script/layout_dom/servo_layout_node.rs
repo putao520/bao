@@ -327,6 +327,10 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
         self.pseudo_element_chain.is_empty() && self.node.is_text_container_of_single_line_input()
     }
 
+    fn is_editing_host(&self) -> bool {
+        self.pseudo_element_chain.is_empty() && self.node.is_editing_host_for_layout()
+    }
+
     fn is_root_of_user_agent_widget(&self) -> bool {
         self.node.is_root_of_user_agent_widget()
     }

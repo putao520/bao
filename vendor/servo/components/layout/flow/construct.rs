@@ -267,6 +267,10 @@ impl<'dom, 'style> BlockContainerBuilder<'dom, 'style> {
                     self.context,
                     should_process_first_letter,
                 );
+                // An editing host's otherwise-phantom final IFC line keeps the strut
+                // height ("caret line box"), so that an empty host can be hit, focused,
+                // and typed into (Chromium-compat; see `BlockContainerBuilder::finish`).
+                builder.is_editing_host = self.info.node.is_editing_host();
                 for shared_inline_styles in self.display_contents_shared_styles.iter() {
                     builder.enter_display_contents(shared_inline_styles.clone());
                 }
@@ -288,7 +292,35 @@ impl<'dom, 'style> BlockContainerBuilder<'dom, 'style> {
 
         self.finish_anonymous_table_if_needed();
 
-        if let Some(inline_formatting_context) = self.finish_ongoing_inline_formatting_context() {
+        let mut inline_formatting_context = self.finish_ongoing_inline_formatting_context();
+
+        // Chromium-compat: an empty editing host still has a caret line box, so that
+        // it can be hit, focused, and typed into. An editing host whose content would
+        // otherwise be ignored completely (no children at all, or only collapsible
+        // whitespace) gets an inline formatting context; IFC layout then gives its
+        // otherwise-phantom final line the strut height (see
+        // `InlineFormattingContextLayout::finish_current_line_and_reset`).
+        let (info, context) = (self.info, self.context);
+        if inline_formatting_context.is_none() &&
+            info.node.is_editing_host() &&
+            self.block_level_boxes.is_empty()
+        {
+            let mut builder = InlineFormattingContextBuilder::new(
+                info,
+                context,
+                !self.have_already_seen_first_formatted_line,
+            );
+            builder.is_empty = false;
+            builder.is_editing_host = true;
+            inline_formatting_context = builder.finish(
+                context,
+                !self.have_already_seen_first_formatted_line,
+                info.node.is_single_line_text_input(),
+                info.style.to_bidi_level(),
+            );
+        }
+
+        if let Some(inline_formatting_context) = inline_formatting_context {
             // There are two options here. This block was composed of both one or more inline formatting contexts
             // and child blocks OR this block was a single inline formatting context. In the latter case, we
             // just return the inline formatting context as the block itself.
