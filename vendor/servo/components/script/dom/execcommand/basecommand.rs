@@ -135,7 +135,10 @@ impl RecordedStateOfCommand {
     }
 
     fn for_command_value_override(command: CommandName, document: &Document) -> Option<Self> {
-        let value_override = document.value_override(&command)?;
+        // The value override lives on the command's shared override slot
+        // (`CommandName::override_slot`), so a "hiliteColor" read observes a
+        // pending "backColor" override and vice versa.
+        let value_override = document.value_override(&command.override_slot())?;
         let value = Some(value_override).into();
         Some(Self { command, value })
     }
@@ -374,6 +377,24 @@ pub(crate) enum CommandName {
 }
 
 impl CommandName {
+    /// The value-override storage slot this command reads and writes.
+    ///
+    /// Chrome maps "hiliteColor" onto the same background-color editing state
+    /// as "backColor" (both commands share a single override slot in Blink),
+    /// so the last writer wins for both queries: WPT
+    /// editing/run/multitest.html `[["hilitecolor","aqua"],["backcolor","tan"],
+    /// ["inserttext","a"]]` reads `rgb(210, 180, 140)` ("tan") for
+    /// `queryCommandValue("hilitecolor")` AND `queryCommandValue("backcolor")`
+    /// afterwards, and the reversed order reads "aqua" for both
+    /// (REQ-BRW-050).
+    pub(crate) fn override_slot(self) -> Self {
+        if self == CommandName::HiliteColor {
+            CommandName::BackColor
+        } else {
+            self
+        }
+    }
+
     /// <https://w3c.github.io/editing/docs/execCommand/#indeterminate>
     pub(crate) fn is_indeterminate(&self, cx: &mut JSContext, document: &Document) -> bool {
         if !self.is_standard_inline_value_command() {
@@ -855,4 +876,16 @@ fn parse_color_for_value_equivalence(input: &DOMString) -> Option<AbsoluteColor>
     parse_color(None, input)
         .or_else(|()| parse_legacy_color(&input.str()))
         .ok()
+}
+
+/// Whether `input` is a valid CSS color for the backColor/hiliteColor actions
+/// (the editing spec's "valid CSS color": the value must parse as a CSS
+/// <color> — keywords, `#hex`, functional forms). The legacy HTML attribute
+/// algorithm is deliberately not consulted: bare-hex strings that only the
+/// legacy algorithm accepts take the spec's "#" prepend path instead. Chrome
+/// parity: `execCommand("hilitecolor", false, "aqua")` applies the keyword
+/// instead of returning false (WPT editing/run/multitest.html
+/// `[["hilitecolor","aqua"],...]` entries, REQ-BRW-050).
+pub(crate) fn is_valid_css_color(input: &DOMString) -> bool {
+    parse_color(None, input).is_ok()
 }

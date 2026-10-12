@@ -608,7 +608,11 @@ impl DocumentExecCommandSupport for Document {
             return DOMString::new();
         };
         // Step 3. If the value override for command is set, return it.
-        self.value_override(&command)
+        // The override lives on the command's shared slot
+        // (`CommandName::override_slot`): "hiliteColor" reads a pending
+        // "backColor" override and vice versa (Chrome parity, WPT
+        // editing/run/multitest.html aqua/tan entries, REQ-BRW-050).
+        self.value_override(&command.override_slot())
             .map(|value_override| {
                 // Step 2. If command is "fontSize" and its value override is set,
                 // convert the value override to an integer number of pixels and return the legacy font size for the result.

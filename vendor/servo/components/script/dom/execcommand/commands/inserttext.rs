@@ -148,7 +148,7 @@ pub(crate) fn execute_insert_text_command(
                 crate::dom::execcommand::basecommand::BoolOrOptionalString::OptionalString(
                     optional_string,
                 ) => {
-                    document.set_value_override(override_state.command, optional_string);
+                    document.set_value_override(override_state.command.override_slot(), optional_string);
                 },
             }
         }
@@ -205,7 +205,7 @@ pub(crate) fn execute_insert_text_command(
                 crate::dom::execcommand::basecommand::BoolOrOptionalString::OptionalString(
                     optional_string,
                 ) => {
-                    document.set_value_override(override_state.command, optional_string);
+                    document.set_value_override(override_state.command.override_slot(), optional_string);
                 },
             }
         }

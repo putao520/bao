@@ -871,7 +871,7 @@ impl Selection {
             }
             // Step 2.4. If new value is null, unset the value override (if any).
             // Step 2.5. Otherwise, if command is "createLink" or it has a value specified, set the value override to new value.
-            context_object.set_value_override(command, new_value);
+            context_object.set_value_override(command.override_slot(), new_value);
             // Step 2.6. Abort these steps.
             return;
         }

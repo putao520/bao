@@ -4,9 +4,9 @@
 
 use js::context::JSContext;
 
-use crate::dom::bindings::str::{DOMString, FromInputValueString};
+use crate::dom::bindings::str::DOMString;
 use crate::dom::document::Document;
-use crate::dom::execcommand::basecommand::CommandName;
+use crate::dom::execcommand::basecommand::{is_valid_css_color, CommandName};
 use crate::dom::selection::Selection;
 
 /// <https://w3c.github.io/editing/docs/execCommand/#the-hilitecolor-command>
@@ -17,7 +17,12 @@ pub(crate) fn execute_hilitecolor_command(
     value: DOMString,
 ) -> bool {
     // Step 1. If value is not a valid CSS color, prepend "#" to it.
-    let value = if !value.str().is_valid_simple_color_string() {
+    // "Valid CSS color" is the CSS <color> production (color keywords and
+    // functional forms included), not the HTML simple-color-attribute shape:
+    // `execCommand("hilitecolor", false, "aqua")` must apply the keyword
+    // rather than return false (Chrome parity, WPT editing/run/multitest.html
+    // aqua/tan entries, REQ-BRW-050).
+    let value = if !is_valid_css_color(&value) {
         ("#".to_owned() + &*value.str()).into()
     } else {
         value
@@ -25,7 +30,7 @@ pub(crate) fn execute_hilitecolor_command(
     // Step 2. If value is still not a valid CSS color, or if it is currentColor, return false.
     //
     // TODO: figure out what to do with currentColor
-    if !value.str().is_valid_simple_color_string() {
+    if !is_valid_css_color(&value) {
         return false;
     }
     // Step 3. Set the selection's value to value.

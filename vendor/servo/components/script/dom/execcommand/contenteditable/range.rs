@@ -431,7 +431,7 @@ impl Range {
                     },
                     // Step 3.2. If override is a string, set the value override for command to override.
                     BoolOrOptionalString::OptionalString(optional_string) => {
-                        context_object.set_value_override(override_state.command, optional_string)
+                        context_object.set_value_override(override_state.command.override_slot(), optional_string)
                     },
                 }
             }
