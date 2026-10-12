@@ -375,9 +375,24 @@ impl EditContext {
         element: &HTMLElement,
         action: &EditingAction,
     ) -> Vec<DomRoot<StaticRange>> {
-        if !matches!(action, EditingAction::InsertText(..)) ||
-            element.upcast::<Node>().is::<HTMLCanvasElement>()
-        {
+        // Only raw-text insertions carry ranges; deletions and canvas hosts
+        // (where no DOM selection can exist, Chromium parity) report none.
+        if !matches!(action, EditingAction::InsertText(..)) {
+            return Vec::new();
+        }
+        self.edit_context_selection_target_ranges(cx, element)
+    }
+
+    /// The target ranges an EditContext editing event carries: a single
+    /// StaticRange covering the EditContext's selection on its host element;
+    /// none inside `<canvas>`, where no DOM selection can exist
+    /// (Chromium parity).
+    fn edit_context_selection_target_ranges(
+        &self,
+        cx: &mut JSContext,
+        element: &HTMLElement,
+    ) -> Vec<DomRoot<StaticRange>> {
+        if element.upcast::<Node>().is::<HTMLCanvasElement>() {
             return Vec::new();
         }
         let text_length = self.text_length_utf16();
@@ -425,14 +440,19 @@ impl EditContext {
         // `data` is null for clipboard inputTypes at an editing host: the
         // payload travels through `dataTransfer` instead
         // (<https://w3c.github.io/input-events/#interface-InputEvent-Attributes>
-        // — text controls keep `data`, editing hosts do not).
+        // — text controls keep `data`, editing hosts do not). The target
+        // ranges are the EditContext selection the paste replaces or inserts
+        // at, same as the `insertText` path (input-events spec
+        // getTargetRanges: the content the event will modify if not
+        // canceled).
+        let target_ranges = self.edit_context_selection_target_ranges(cx, element);
         if fire_beforeinput_on_element(
             cx,
             element,
             None,
             "insertFromPaste",
             Some(&data_transfer),
-            Vec::new(),
+            target_ranges,
         ) {
             return true;
         }

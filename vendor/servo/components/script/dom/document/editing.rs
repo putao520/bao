@@ -38,6 +38,7 @@ use crate::dom::event::{EventBubbles, EventCancelable};
 use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::inputevent::InputEvent;
+use crate::dom::staticrange::StaticRange;
 use crate::dom::text::Text;
 use crate::dom::text_control::TextControlElement;
 use crate::dom::text_input::{InputEventType, IsComposing};
@@ -386,6 +387,29 @@ impl Document {
         // The prepopulated clipboard payload of the `beforeinput`
         // (<https://w3c.github.io/input-events/#dom-inputevent-datatransfer>).
         let data_transfer = DataTransfer::new_readonly_clipboard(cx, &self.window(), text, html);
+        // The target ranges of the `beforeinput`: the current selection,
+        // which the paste replaces or inserts at (input-events spec,
+        // getTargetRanges: "the content that the event will modify if it is
+        // not canceled"; Chrome's generated data pins the current selection
+        // — collapsed included — for every non-deletion inputType, WPT
+        // input-events/input-events-get-target-ranges.html "Actions other
+        // than deletion should have current selection as target ranges").
+        let target_ranges = selection
+            .active_range(cx)
+            .map(|range| {
+                let start_container = range.start_container();
+                let end_container = range.end_container();
+                StaticRange::new(
+                    cx,
+                    &start_container.owner_doc(),
+                    &start_container,
+                    range.start_offset(),
+                    &end_container,
+                    range.end_offset(),
+                )
+            })
+            .into_iter()
+            .collect();
         // `data` is null for clipboard inputTypes at a contenteditable host:
         // the payload travels through `dataTransfer` instead
         // (<https://w3c.github.io/input-events/#interface-InputEvent-Attributes>
@@ -396,7 +420,7 @@ impl Document {
             None,
             "insertFromPaste",
             Some(&data_transfer),
-            Vec::new(),
+            target_ranges,
         ) {
             return false;
         }
@@ -588,7 +612,7 @@ impl Document {
     }
 
     /// <https://www.w3.org/TR/clipboard-apis/#write-content-to-the-clipboard>
-    fn write_content_to_the_clipboard(&self, drag_data_store: &DragDataStore) {
+    pub(crate) fn write_content_to_the_clipboard(&self, drag_data_store: &DragDataStore) {
         // Step 1
         if drag_data_store.list_len() > 0 {
             // Step 1.1 Clear the clipboard.
