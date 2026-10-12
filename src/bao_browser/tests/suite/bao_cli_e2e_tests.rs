@@ -26,6 +26,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+#[path = "common/mod.rs"]
+mod common;
+
 const BAO_BIN: &str = "target/debug/bao";
 
 // ─── 辅助 — 定位 bao 二进制 ──────────────────────────────────────────────────
@@ -94,10 +97,12 @@ fn run_bao(args: &[&str], stdin: Option<&str>) -> std::io::Result<std::process::
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn()?;
+    // e204 reaping discipline: process-group spawn + PDEATHSIG + reap-on-drop
+    // (see common::GroupChild) — a panic mid-test must not orphan the child.
+    let mut child = common::GroupChild::spawn(&mut cmd)?;
     if let Some(input) = stdin {
         use std::io::Write;
-        let mut child_stdin = child.stdin.take().expect("stdin pipe");
+        let mut child_stdin = child.stdin().take().expect("stdin pipe");
         child_stdin.write_all(input.as_bytes())?;
         drop(child_stdin); // 关闭 stdin,触发 EOF
     }
@@ -404,7 +409,9 @@ fn bao_cli_browser_subcommand_starts() {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().expect("spawn bao browser");
+    // e204 reaping discipline: process-group spawn + PDEATHSIG + reap-on-drop
+    // (see common::GroupChild) — the assert below must not leak the engine.
+    let mut child = common::GroupChild::spawn(&mut cmd).expect("spawn bao browser");
 
     // 给 servo + CDP server 最多 5 秒初始化
     std::thread::sleep(Duration::from_secs(5));
@@ -412,9 +419,8 @@ fn bao_cli_browser_subcommand_starts() {
     // Assert: 端口可连(CDP server 已起)
     let connected = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok();
 
-    // 清理:杀子进程
-    let _ = child.kill();
-    let _ = child.wait();
+    // 清理:e204 组级收割——断言之前先杀组+收割,断言失败不得泄漏引擎进程
+    child.kill_group();
 
     assert!(connected, "bao browser --cdp-port {} must listen", port);
 }

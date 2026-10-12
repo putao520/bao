@@ -25,6 +25,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "common/mod.rs"]
+mod common;
+
 /// Whole-teardown liveness bound (mirrors the in-process watchdog constant).
 const EXIT_BOUND: Duration = Duration::from_secs(5);
 /// Engine bring-up until the WebDriver port listens (cold dev binary is slow;
@@ -82,16 +85,18 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Spawn `bao --webdriver <port>` with piped stdio.
-fn spawn_bao_webdriver(port: u16) -> std::process::Child {
+/// Spawn `bao --webdriver <port>` with piped stdio, in its own process group
+/// with PDEATHSIG armed (e204 reaping discipline — see `common::GroupChild`).
+fn spawn_bao_webdriver(port: u16) -> common::GroupChild {
     let bao = bao_path().expect("bao binary not found — run `cargo build -p bao_bin` first");
-    Command::new(bao)
-        .args(["--webdriver", &port.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bao --webdriver failed")
+    common::GroupChild::spawn(
+        Command::new(bao)
+            .args(["--webdriver", &port.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .expect("spawn bao --webdriver failed")
 }
 
 /// Block until the WebDriver port accepts (bounded), so the signal lands on a
@@ -111,9 +116,11 @@ fn wait_for_listen(port: u16) {
 }
 
 /// Deliver `signal` and require the child to be reaped within `EXIT_BOUND`.
-/// On breach: SIGKILL the child (never leak it into the suite) and fail with
+/// On breach: SIGKILL the whole process group (never leak it into the suite —
+/// e204: the kill itself was missing on this path, so pre-fix a breach orphaned
+/// the still-running `bao --webdriver` onto the shared display) and fail with
 /// its stderr head for forensics.
-fn assert_signal_exit(child: &mut std::process::Child, signal: i32, label: &str) {
+fn assert_signal_exit(child: &mut common::GroupChild, signal: i32, label: &str) {
     // SAFETY: kill(2) with a live child pid.
     unsafe {
         libc::kill(child.id() as i32, signal);
@@ -129,11 +136,16 @@ fn assert_signal_exit(child: &mut std::process::Child, signal: i32, label: &str)
                 return;
             }
             None => {
-                assert!(
-                    start.elapsed() < EXIT_BOUND,
-                    "{label}: process still alive {}s after the signal — the e177 residual-process class (status pending)",
-                    EXIT_BOUND.as_secs()
-                );
+                if start.elapsed() >= EXIT_BOUND {
+                    // e204: reap before failing. SIGKILL to the group also
+                    // terminates a SIGSTOPped child, so this is unconditional.
+                    child.kill_group();
+                    panic!(
+                        "{label}: process still alive {}s after the signal — the e177 residual-process class (status pending)",
+                        EXIT_BOUND.as_secs()
+                    );
+                    // (the GroupChild drop is then a no-op: already reaped)
+                }
                 std::thread::sleep(Duration::from_millis(25));
             }
         }

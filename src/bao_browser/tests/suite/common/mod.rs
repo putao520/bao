@@ -231,3 +231,169 @@ pub fn encode_worker_body(raw: &str) -> String {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// e204: test-host process reaping discipline (spawn/kill face, REQ-LIB-001)
+// ---------------------------------------------------------------------------
+
+/// A child process spawned with test-host reaping guarantees.
+///
+/// The spawn/kill e2e family (`bao_cli_e2e_tests` / `bao_cli_timeout_e2e_tests`
+/// / `webdriver_signal_exit_e2e_tests`) drives the real `bao` binary as a
+/// potentially long-lived subprocess (`bao browser` / `bao --webdriver` /
+/// runaway `while(true){}`). Pre-fix, every kill path signaled the single
+/// direct pid, which left three leak faces (e204 RED: a breach-path panic left
+/// `bao --webdriver` orphaned at PPID=1):
+///
+/// 1. **Panic/breach path** — an assertion between spawn and reap dropped the
+///    `Child` without killing: the orphaned engine process outlived the test
+///    and pollutes the shared X display for the rest of the battery.
+/// 2. **Test-process death** — a SIGKILLed test host (harness kill / OOM)
+///    orphaned the child; nothing in the tree had cleanup duty.
+/// 3. **Process trees** — a single-pid kill orphaned anything the child itself
+///    spawned.
+///
+/// `GroupChild` closes all three:
+///
+/// * own process group (`CommandExt::process_group(0)`) → `kill_group`
+///   SIGKILLs the whole tree, not just the direct pid;
+/// * PDEATHSIG (Linux) → a child whose test host died is SIGKILLed by the
+///   kernel, covering the one path `Drop` cannot reach;
+/// * reap-on-drop → `kill_group` + `wait()` runs even on the panic path, and
+///   is a no-op once the child was already reaped through this handle (the
+///   unreaped-zombie state is what pins the pid against reuse, so the
+///   `-pid` group signal is only ever sent while it is still ours).
+///
+/// Every new suite test that spawns a subprocess must go through this type —
+/// see the `.config/nextest.toml` process-hygiene note.
+// allow(dead_code): `common/mod.rs` is `#[path]`-included by ~30 sibling
+// modules (per-instance compilation), and most instances don't construct
+// this type — the dead-code lint would otherwise fire per non-using instance
+// (same shape as the pre-existing never-used helpers in this file).
+#[allow(dead_code)]
+pub struct GroupChild {
+    child: std::process::Child,
+    reaped: bool,
+}
+
+#[allow(dead_code)]
+impl GroupChild {
+    /// Spawn `cmd` with the reaping guarantees documented on the type.
+    /// Takes `&mut Command` so builder chains (`Command::new(..).args(..)`)
+    /// pass through directly (builder methods return `&mut Command`).
+    pub fn spawn(cmd: &mut std::process::Command) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Own process group: makes `kill_group` a whole-tree kill.
+            cmd.process_group(0);
+            #[cfg(target_os = "linux")]
+            {
+                let expected_ppid = std::process::id();
+                unsafe {
+                    cmd.pre_exec(move || {
+                        // SAFETY: prctl/kill/getppid are async-signal-safe and
+                        // run in our own child between fork and exec.
+                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                        if libc::getppid() as u32 != expected_ppid {
+                            // Parent died inside the fork→prctl window:
+                            // PDEATHSIG would never fire on its own.
+                            libc::kill(libc::getpid(), libc::SIGKILL);
+                        }
+                        Ok(())
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            child: cmd.spawn()?,
+            reaped: false,
+        })
+    }
+
+    /// The child's pid (which is also its process-group id).
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn stdin(&mut self) -> &mut Option<std::process::ChildStdin> {
+        &mut self.child.stdin
+    }
+
+    pub fn stdout(&mut self) -> &mut Option<std::process::ChildStdout> {
+        &mut self.child.stdout
+    }
+
+    pub fn stderr(&mut self) -> &mut Option<std::process::ChildStderr> {
+        &mut self.child.stderr
+    }
+
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let status = self.child.try_wait();
+        if matches!(&status, Ok(Some(_))) {
+            self.reaped = true;
+        }
+        status
+    }
+
+    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let status = self.child.wait();
+        if status.is_ok() {
+            self.reaped = true;
+        }
+        status
+    }
+
+    /// SIGKILL the child's whole process group and reap the direct child.
+    /// No-op once the child was already reaped through this handle.
+    pub fn kill_group(&mut self) {
+        if self.reaped {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            let pid = self.child.id() as i32;
+            if pid > 0 {
+                // SAFETY: kill(2) on our own child's process group (-pid).
+                // ESRCH (group already gone) is the benign already-exited case.
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.child.kill();
+        }
+        // Reap: no zombie left behind. SIGKILL also terminates a stopped
+        // (SIGSTOPped) child, so the breach path reaps unconditionally.
+        let _ = self.child.wait();
+        self.reaped = true;
+    }
+
+    /// Consume the handle, drain piped stdio, and reap
+    /// (`Child::wait_with_output` equivalent, same sequential-drain shape).
+    pub fn wait_with_output(mut self) -> std::io::Result<std::process::Output> {
+        use std::io::Read;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        if let Some(mut pipe) = self.child.stdout.take() {
+            let _ = pipe.read_to_end(&mut stdout);
+        }
+        if let Some(mut pipe) = self.child.stderr.take() {
+            let _ = pipe.read_to_end(&mut stderr);
+        }
+        let status = self.wait()?;
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+}
+
+impl Drop for GroupChild {
+    fn drop(&mut self) {
+        self.kill_group();
+    }
+}

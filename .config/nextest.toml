@@ -138,3 +138,19 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'package(bao-browser) and test(https_popup_fetch_settles_under_ignore_certificate_errors)'
 threads-required = "num-test-threads"
+
+# Process-hygiene convention (task: e204 spawn-family process-leak root fix,
+# REQ-LIB-001 test-infrastructure face, 2026-10-13):
+#
+# Every suite test that spawns a subprocess (`bao browser` / `bao --webdriver`
+# / runaway `while(true){}` / any future spawn point) must spawn it through
+# `common::GroupChild` (tests/suite/common/mod.rs): process-group spawn
+# (setpgid via CommandExt::process_group) + Linux PDEATHSIG + reap-on-drop +
+# group-level SIGKILL. Pre-fix, the spawn/kill e2e family killed the single
+# direct pid only, so a breach-path panic or a killed test host orphaned the
+# long-running engine process onto the shared X display (e204 RED: a
+# webdriver breach left `bao --webdriver` at PPID=1); leaked X/GL clients
+# then poisoned the display for the rest of the battery. Kill-path coverage is
+# now total: normal exit, breach/panic (Drop guard), test-host SIGKILL
+# (PDEATHSIG), and process trees (group kill). New spawn points that bypass
+# this helper reintroduce the leak class.

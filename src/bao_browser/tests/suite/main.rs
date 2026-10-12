@@ -153,3 +153,4 @@ mod webdriver_signal_exit_e2e_tests;
 fn link_higher_tier_seams() {
     bao_bundler::force_link_test_seams();
 }
+// e204 reaping discipline note (timestamp 0640)

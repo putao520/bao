@@ -35,6 +35,9 @@ use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "common/mod.rs"]
+mod common;
+
 /// Elapsed-window bounds shared by the runaway tests: the deadline (400ms)
 /// must be honored from below (>= 350ms — proves the script actually ran
 /// until the deadline, not an instant failure) and termination must arrive
@@ -102,21 +105,26 @@ fn bao_path() -> Option<PathBuf> {
     None
 }
 
-/// Spawn `bao <args>` with piped stdio. Panics (test fail) if spawn fails.
-fn spawn_bao(args: &[&str]) -> std::process::Child {
+/// Spawn `bao <args>` with piped stdio, in its own process group with
+/// PDEATHSIG armed (e204 reaping discipline — see `common::GroupChild`).
+/// Panics (test fail) if spawn fails.
+fn spawn_bao(args: &[&str]) -> common::GroupChild {
     let bao = bao_path().expect("bao binary not found — run `cargo build -p bao_bin` first");
-    Command::new(bao)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bao failed")
+    common::GroupChild::spawn(
+        Command::new(bao)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .expect("spawn bao failed")
 }
 
 /// Poll-wait with a hard deadline (never blocks forever on a hang
-/// regression): on deadline the child is SIGKILLed and `None` returned.
-fn wait_with_deadline(child: &mut std::process::Child, limit: Duration) -> Option<ExitStatus> {
+/// regression): on deadline the child's whole process group is SIGKILLed and
+/// the child reaped (e204: the breach path must never leak the runaway into
+/// the suite), then `None` returned.
+fn wait_with_deadline(child: &mut common::GroupChild, limit: Duration) -> Option<ExitStatus> {
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -125,8 +133,7 @@ fn wait_with_deadline(child: &mut std::process::Child, limit: Duration) -> Optio
             Err(_) => return None,
         }
         if start.elapsed() >= limit {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill_group();
             return None;
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -135,13 +142,13 @@ fn wait_with_deadline(child: &mut std::process::Child, limit: Duration) -> Optio
 
 /// Drain piped stdout/stderr after the child exited (runaway tests write
 /// nothing, so the pipes never fill — no deadlock while polling above).
-fn drain_pipes(child: &mut std::process::Child) -> (String, String) {
+fn drain_pipes(child: &mut common::GroupChild) -> (String, String) {
     let mut stdout = String::new();
     let mut stderr = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
+    if let Some(mut pipe) = child.stdout().take() {
         let _ = pipe.read_to_string(&mut stdout);
     }
-    if let Some(mut pipe) = child.stderr.take() {
+    if let Some(mut pipe) = child.stderr().take() {
         let _ = pipe.read_to_string(&mut stderr);
     }
     (stdout, stderr)
