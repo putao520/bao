@@ -280,7 +280,23 @@ fn target_ranges_for_command(
                 end,
             )]
         },
-        _ => Vec::new(),
+        _ => {
+            // Chromium parity (input-events spec, getTargetRanges methods
+            // table — "Actions other than deletion should have current
+            // selection as target ranges"; WPT
+            // input-events/input-events-get-target-ranges.html test 2
+            // `insertText` collapsed form `test2-5-test2-5`, REQ-BRW-050): a
+            // non-deletion command at a collapsed caret reports the collapsed
+            // caret itself as its single target range.
+            vec![StaticRange::new(
+                cx,
+                &node.owner_doc(),
+                &node,
+                offset,
+                &node,
+                offset,
+            )]
+        },
     }
 }
 
