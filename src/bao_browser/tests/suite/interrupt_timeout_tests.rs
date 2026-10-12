@@ -240,8 +240,16 @@ fn w3b_console_counters_per_realm_across_pages() {
     use std::sync::mpsc;
 
     let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
-    let (console_tx, console_rx) = mpsc::channel::<cdp_server::ConsoleMessage>();
-    runtime.set_console_log_channel(console_tx);
+    // Console observation window = the ServoEvent path (Path B). Since the
+    // run()/pump_cdp event-channel wiring (REQ-LIB-003) every runtime owns an
+    // event channel from `new()`, and the per-webview console arm routes
+    // plain logs to Path B whenever event_tx is set — console_log_tx (Path A)
+    // is the fallback for channel-less runtimes only. Replace the runtime's
+    // channel BEFORE create_page so both pages inherit it, then count from
+    // the ServoEvent::Console texts (same message body Path A used to
+    // deliver).
+    let (event_tx, event_rx) = mpsc::channel::<bao_cdp_client::bridge::ServoEvent>();
+    runtime.set_event_channel(event_tx);
 
     let pool: &PagePool = runtime.page_pool();
     let page_a = pool
@@ -266,12 +274,12 @@ fn w3b_console_counters_per_realm_across_pages() {
         .evaluate_js_web("console.count('w3b');")
         .expect("page B count eval");
 
-    // Drain the console channel (bounded) and collect the count log lines.
+    // Drain the ServoEvent channel (bounded) and collect the count log lines.
     let mut texts: Vec<String> = Vec::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
-        match console_rx.try_recv() {
-            Ok(cdp_server::ConsoleMessage::Log { text, .. }) => {
+        match event_rx.try_recv() {
+            Ok(bao_cdp_client::bridge::ServoEvent::Console { text, .. }) => {
                 if text.contains("w3b:") {
                     texts.push(text);
                 }
