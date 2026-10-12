@@ -424,3 +424,20 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **deletion-manifest**:ini 63 条 stale expected:FAIL 删除(双跑 PASS 实证逐条 replacement,见上);业务代码零删除。留证:/var/tmp/e190-veh(raw log ×5:red_target1/green_target1/2/3/green_full/green_post_ini)+/var/tmp/e190-target(bao.e190-green)+/tmp/e190-{probe,arm2-probe,cellset,flip-cells.txt}。
 
 **教训**:①typed 属性存储的 producer 侧修复(执行器路径设属性)必须同步审计 consumer 侧合成路径的 parse 不变量——layout-typed 变体是「producer 必须走 typed parse」与「consumer 假设 typed 值满足引擎不变量」的双向契约,e189 的普查只看了 producer 侧;②「B 层放宽语义」的红利面(61 格)远超目标 2 格,等值比较归一是多读数路径浏览器的系统性修复,e189 预测的「可能翻转既有 expected:FAIL indeterm 格」以 63 格兑现;③CRASH 归因必做基线同路径复现(arm2 probe 双二进制)——「静态路径同 panic」一条就划清了「本波引入类」与「本波新触发预存类」的归属线。
+
+### e191(face-parse 三 hunk 授权落地收口——e190 接管,2026-10-12,REQ-BRW-050)
+
+**落地面**(主会话 4 次授权+接管裁定后,e190 入向通道故障无接收证据;开工前树态核验与 §e190 记载一致,htmlfontelement.rs 零改动):
+- `htmlfontelement.rs` 三 hunk(§e190 终形,零设计改动):①`get_face` 空原子→None(镜像 basecommand `!face.is_empty()` 约定)②`parse_face_attribute` 空段过滤 ③空白违约名标 `Quoted`(`name.split(' ')` 逐段非空才 Identifiers,判据镜像 stylo to_css 断言)。
+- commit 分面:① e190 九文件(A/B 层+canvas widening+ini −189)= `4541ee75adc5fd673b6645602420544673028672`;② face-parse 三 hunk = `64088911c6b70629b5f1a1045523c6aa0c0d5862`;③ 本台账补记。禁 push。
+
+**复验账**(二进制 bao.e191-green,私有 CARGO_TARGET_DIR=/var/tmp/e190-target 复用 e190 暖缓存;provenance:源 mtime 12:14:53 < libscript rlib 12:18:11 < 二进制 12:18:14,构建窗清洁):
+- `cargo check --profile test-ci -p bao-servo-script` RC=0,触碰文件零警告。
+- RED 侧(前态二进制 bao.e190-green):facecrash 探针静态臂即崩(返回 null)+arm2 stderr 直证 font.rs:573 panic 复现。
+- GREEN 侧:facecrash `static_empty`="serif"(face="" 无声明回默认)、`static_dblspace`=`"a  b"` 引号形(Chrome parity);arm2 基线形 `<font face="">foo</font>`+value=serif+indeterm=false;两探针 stderr 零 panic。
+- event.html 定向:**OK**(CRASH→OK 翻转)。
+- 全域 post-sync 跑(855/855,载具 attempt 1 CLEAN):NEW-RED 唯一余项=other/data_transfer_on_input_event_with_insertfrompaste_type.html 整文件 ERROR 格——**3/3 隔离复跑全绿=③类并行负载 flake**(harness RemoteDisconnected teardown 形,§e167 已登记类,与 face-parse 域零交集);improved=1(event.html);uP 306→243 恰=63 pin 清除;forecolor/fontname `<p>[foo<p><br><p>bar]` 目标格全 PASS(expected:None 干净态)。
+
+**载具 meta 副本 stale 事故(如实登记)**:e190 §e190「载具 meta 副本已同步」声明与现状不符——green_post_ini(08:50,uP 63→0 确认)跑时 meta 为同步态,**10:50 被未知操作覆写回 pre-deletion 内容**(e190 会话后段,来源未查明);e191 首轮全域跑(12:31)消费 stale meta,4 文件 63 格以 uP 形态记账(行为面 PASS 不变,NEW-RED=0 不受影响)。处置:4 文件 ini 从 vendor 重同步(md5 逐文件一致)+全域 post-sync 净跑(12:45)取 canonical 账。**遗留**:载具 meta 副本与 vendor 在另 4 文件(delete/forwarddelete/insertparagraph/inserttext)存在 e190 范围外历史 drift(方向同为 meta 多 pin,早期波 ini 删除未同步载具;e190 基线 green_full 与 e191 跑共享同副本,对拍有效性不受影响)——后续波若全域对拍,建议先全树同步 meta 副本再取基线。
+
+**误跑事故(如实登记)**:e191 首轮全域调用漏传 `/editing` 路径(run_e183.py 空 test_list=整个 WPT manifest),发现于 test_start 计数(1804≠855)后立即终止清日志重跑;载具 run_full.sh 不强制测试面参数,为已知操作陷阱。
