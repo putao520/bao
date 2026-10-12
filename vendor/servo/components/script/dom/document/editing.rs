@@ -21,6 +21,8 @@ use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::codegen::GenericBindings::UIEventBinding::UIEventMethods as _;
+use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
+use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
 use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
 use script_bindings::dom::UnrootedDom;
 use script_bindings::inheritance::Castable;
@@ -36,6 +38,7 @@ use crate::dom::editcontext::fire_beforeinput_on_element;
 use crate::dom::element::Element;
 use crate::dom::event::{EventBubbles, EventCancelable};
 use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
+use crate::dom::html::htmlscriptelement::HTMLScriptElement;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::inputevent::InputEvent;
 use crate::dom::staticrange::StaticRange;
@@ -43,8 +46,8 @@ use crate::dom::text::Text;
 use crate::dom::text_control::TextControlElement;
 use crate::dom::text_input::{InputEventType, IsComposing};
 use crate::dom::types::{
-    ClipboardEvent, DataTransfer, Event, EventTarget, HTMLElement, HTMLInputElement,
-    HTMLTextAreaElement, MouseEvent, UIEvent,
+    ClipboardEvent, DataTransfer, DocumentFragment, Event, EventTarget, HTMLElement,
+    HTMLInputElement, HTMLTextAreaElement, MouseEvent, UIEvent,
 };
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::{Document, Node, NodeTraits};
@@ -62,6 +65,77 @@ fn focused_is_inside_contenteditable_ancestor(focused: &Node) -> bool {
         .inclusive_ancestors(ShadowIncluding::No)
         .skip(1)
         .any(|ancestor| ancestor.is_editing_host())
+}
+
+/// Whether a paste at the collapsed caret `start` keeps the rich (text/html)
+/// representation: the *outermost* element carrying a `contenteditable`
+/// attribute reachable without crossing a non-editable boundary decides
+/// (Chromium-compat anchor: WPT
+/// editing/plaintext-only/paste-when-nested-with-contenteditable-true.https.html
+/// — a `contenteditable="plaintext-only"` host nested in a
+/// `contenteditable="true"` host keeps formatting, a `contenteditable="true"`
+/// host nested in a plaintext-only host pastes plain text, and a
+/// `contenteditable="false"` island always bounds the region). Note the
+/// nested attribute decides here even though (per the editing-host
+/// inheritance rules) it does not create a new editing host: plain/format is
+/// a property of the whole editable region, not of event ownership.
+fn paste_destination_preserves_format(start: &Node) -> bool {
+    let mut preserves_format = true;
+    for ancestor in start.inclusive_ancestors(ShadowIncluding::No) {
+        if let Some(element) = ancestor.downcast::<HTMLElement>() {
+            match &*element.ContentEditable().str() {
+                "true" => {
+                    preserves_format = true;
+                    continue;
+                },
+                "plaintext-only" => {
+                    preserves_format = false;
+                    continue;
+                },
+                "false" => break,
+                _ => {},
+            }
+        }
+        // Leave the editable region at the body, the document, or a
+        // non-editable island. Carriers never reach this check: a
+        // `contenteditable` attribute in the true/plaintext-only state marks
+        // a paste-format boundary and both arms above `continue` past it
+        // (`is_editable` deliberately answers false for those carriers).
+        if !ancestor.is_editable() && !ancestor.is_editing_host() {
+            break;
+        }
+    }
+    preserves_format
+}
+
+/// Parse pasted `markup` against the caret context (createContextualFragment
+/// semantics: the start container itself, or its parent element for a text
+/// caret, as the fragment parsing context) with `script` elements stripped —
+/// Chromium's paste sanitizer removes executable content from pasted markup,
+/// and the plain-text insertion this pipeline used before could never
+/// introduce script nodes, so rich paste must not become a script injection
+/// vector.
+fn parse_paste_fragment(
+    cx: &mut JSContext,
+    document: &Document,
+    start_container: &Node,
+    markup: &str,
+) -> Option<DomRoot<DocumentFragment>> {
+    let element: Option<DomRoot<Element>> = start_container
+        .downcast::<Element>()
+        .map(DomRoot::from_ref)
+        .or_else(|| start_container.GetParentElement());
+    let context = Element::fragment_parsing_context(cx, document, element.as_deref());
+    let fragment = context.parse_fragment(DOMString::from(markup), cx).ok()?;
+    let script_nodes: Vec<DomRoot<HTMLScriptElement>> = fragment
+        .upcast::<Node>()
+        .traverse_preorder(ShadowIncluding::No)
+        .filter_map(|node| node.downcast::<HTMLScriptElement>().map(DomRoot::from_ref))
+        .collect();
+    for script in script_nodes {
+        script.upcast::<Element>().Remove(cx);
+    }
+    Some(fragment)
 }
 
 #[cfg(target_os = "macos")]
@@ -369,14 +443,16 @@ impl Document {
             node.inclusive_ancestors(ShadowIncluding::No)
                 .any(|ancestor| &*ancestor == &*focused)
         });
-        let collapsed_inside = focus_inside_focused_element && selection.IsCollapsed(cx);
-        if !collapsed_inside {
-            if focus_inside_focused_element && let Some(focus_node) = selection.GetFocusNode(cx) {
-                let focus_offset = selection.FocusOffset(cx);
-                let _ = selection.Collapse(cx, Some(&focus_node), focus_offset);
-            } else {
-                let _ = selection.Collapse(cx, Some(&focused), 0);
-            }
+        // A non-collapsed selection inside the editor is *replaced* by the
+        // paste, not collapsed away: the deletion happens after the
+        // cancelable `beforeinput` below (a canceled paste must not mutate).
+        // When the focus is somewhere else entirely (e.g. a paste handler
+        // re-routed focus), the insertion point normalizes to the focused
+        // editor itself — not to the stale focus node, which lives in the
+        // previous editor and would swallow the paste
+        // (edit-context-paste-handler-changes-active contract).
+        if !focus_inside_focused_element {
+            let _ = selection.Collapse(cx, Some(&focused), 0);
         }
 
         // Fire a cancelable `beforeinput` (insertFromPaste) at the focused
@@ -425,6 +501,34 @@ impl Document {
             return false;
         }
 
+        // Rich pastes: parse the text/html representation against the caret
+        // context *before* mutating anything, so a parse failure degrades to
+        // the plain-text path instead of leaving a deleted selection behind.
+        let Some(pre_delete_range) = selection.active_range(cx) else {
+            return false;
+        };
+        let rich_markup = html.filter(|markup| {
+            !markup.is_empty() &&
+                paste_destination_preserves_format(&pre_delete_range.start_container())
+        });
+        let prepared_fragment = rich_markup.and_then(|markup| {
+            parse_paste_fragment(
+                cx,
+                &pre_delete_range.start_container().owner_doc(),
+                &pre_delete_range.start_container(),
+                markup,
+            )
+        });
+
+        // The paste replaces the selection (delete-then-insert): a
+        // non-collapsed selection inside the editor is deleted first instead
+        // of being appended after (Chromium-compat anchor: WPT
+        // editing/plaintext-only/paste-when-nested-with-contenteditable-true.https.html
+        // — pasting over `[ABC]` must not produce `ABCabc`).
+        if !selection.IsCollapsed(cx) {
+            let _ = selection.DeleteFromDocument(cx);
+        }
+
         // In a white-space-collapsing editing host (white-space: normal) a
         // raw LF in the pasted text would render as a space, so every LF
         // must become a `br` element; hosts that keep line feeds
@@ -440,12 +544,15 @@ impl Document {
                     WhiteSpaceCollapse::Collapse
             });
 
-        // Insert the text at the collapsed caret: into a text node, or as a
-        // new text node at the caret position.
+        // Insert at the collapsed caret: the prepared text/html fragment when
+        // the destination preserves formatting, otherwise the text (into a
+        // text node, or as a new text node at the caret position).
         let Some(range) = selection.active_range(cx) else {
             return false;
         };
-        let inserted = if collapses_line_feeds && text.contains('\u{000A}') {
+        let inserted = if let Some(fragment) = prepared_fragment {
+            range.InsertNode(cx, fragment.upcast::<Node>()).is_ok()
+        } else if collapses_line_feeds && text.contains('\u{000A}') {
             // The line-broken form: text pieces separated by `br` elements,
             // inserted as one fragment (Range.insertNode splits a text-node
             // caret container and inserts the fragment's children there).

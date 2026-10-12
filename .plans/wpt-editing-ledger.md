@@ -516,3 +516,24 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **证据**:二进制 /var/tmp/e195-target/test-ci/{bao.e195-red,bao.e195-green,bao.e195-probe,bao.e195-probe2};raw log /var/tmp/e195-veh/(red_full/green_full/ptr_probe_{red,green1..6}/pcc_green{1..3}/pcc_probe2_{1..4}/dt_iso_{1..3});build log /tmp/e195-{red,green,probe,probe2}-build.log;冻结 meta 快照 /var/tmp/e195-meta-snap。
 
 **教训**:①「登记 N 格」的台账数字会随波演进而失真——strand① 按 §e182 字面立项(8 格)实测 173 格,后续合同必须先跑当轮普查再定方案粒度;②「flaky 1/N」的格子必须先分型再定 ini 策略(本波 text 格=引擎缺陷已修+后端竞态残面,pin 保留=诚实可见;若误判纯 flake 删 pin 会把残面藏进 as-expected);③ WPT raw log `expected` 字段缺省=as-expected(ini 钉消费态),「无 expected 字段=意外」的朴素口径会把 ini 钉格误计——celldiff 的集合差分两侧同口径故相对结论有效,绝对数必须按 §e185 判读律核对;④ GenericCallback 阻塞往返的「FIFO 直觉」在跨后端(arboard/X11)边界不成立——写读时序类归因必须带时间戳探针到 pump/后端两侧,单侧脚本线程探针会得出「顺序正确但读回错误」的不可解矛盾。
+
+### e197(嵌套粘贴双缺陷根修——paste 管线消费 text/html + 非塌缩选择删后插,4 格清偿+全域 NEW-RED=0,2026-10-12,REQ-BRW-050)
+
+**双缺陷与修法**(§e195 strand③ 勘误定性清偿;单文件 `document/editing.rs` paste_into_current_editing_context contenteditable 臂):
+1. **text/html 消费**:此前 html 形只进 beforeinput/input 的 dataTransfer 载体,插入恒走 text-only(4 格 got `ABCabc` 的 abc 半边)。新增 `parse_paste_fragment`(createContextualFragment 语义:`Element::fragment_parsing_context`+`Element::parse_fragment`,caret 容器或其父元素为上下文)+ **script 元素剥离**(Chromium paste sanitizer 的可执行内容子集——旧 text-only 插入永不可能引入 script 节点,rich paste 不得成为注入向量;parse 先于任何 DOM 突变,失败降级 text 路径)。**外层载体规则** `paste_destination_preserves_format`:自插入点上溯,`contenteditable="true"/"plaintext-only"` 属性载体逐个覆盖 plain/format 决策(最外层胜出),ce="false" 或非可编辑边界(body/html/document)即停——嵌套属性在此即边界,尽管(e153 继承规则)它不成事件宿主:plain/format 是整段可编辑区的属性,非事件归属。无载体默认保格式(designMode/纯 true 链)。WPT 锚=paste-when-nested-with-contenteditable-true.https.html 四格期望(plain 嵌 true→保格式;true 嵌 plain→纯文本;false 孤岛恒边界)。
+2. **非塌缩选择删后插**:此前 !collapsed_inside 直接 collapse 到 focus(got `ABCabc` 的 ABC 半边)。改为 beforeinput 取消门之后 `selection.DeleteFromDocument`(canceled paste 零突变保留;targetRanges 维持真实预贴选择,Chrome-true)。focus 在宿主之外时回退臂保持原语义 collapse(focused,0)。
+
+**中途回归一次(诚实记录)**:v1 重排 collapse 块时把 focus-外回退臂错改为 collapse 到遗留 focus 节点(promise_setup 里 input 的选区)→ paste 落进上一编辑器,edit-context-paste-handler-changes-active 后两格 v1 隔离 ×3 稳定 FAIL(got "")。red-iso ×3 全 PASS 钉死真回归 → v2 恢复原回退臂语义,5/5 ×3 全绿。教训:collapse 块的三臂语义(inside-collapsed/inside-noncollapsed/outside)各自承载不同契约,重排只能动 inside-noncollapsed 臂。
+
+**验证**(RED=e197-red(afdaeac79 干净重建,private CARGO_TARGET_DIR,cp -al 增量 2m13s,script crate 真重建级联,md5 e28c…/绿 01b4…;树 provenance:构建窗内 scope 文件仅本波 editing.rs,e196 basecommand.rs 19:42 落盘晚于 v2 构建 19:23 零混入);载具 /var/tmp/e197-veh(meta=e195-meta-snap 恒等拷贝+目标 ini 载具侧先行删除;flock+ss 门)):
+- 目标 4 格:RED ×2 全 FAIL(got `ABCabc` ×4,双因精确一致)→ GREEN v2 ×2 全 PASS(14/14)。
+- paste.https.html:RED 84 PASS/0 意外 ≡ GREEN v2 84/84 恒等(零回归;任务头「98/98」系旧口径,本波实测基线=84 格)。
+- 全域对拍 red_full↔green2_full:113,384 格,**NEW-RED=0**,status 差 6 格全正向:4 目标格 + anchor 格(html-text-copy-paste-of-anchor「Attribute href is missing」rich paste 直接受益,red-iso F×3→green-iso P×2 真改进)+ paste-html 格(经 red-iso P×3 证伪改进归因=red_full 负载 flake,双侧隔离恒 PASS;handler 格同族 flake 已在 e160 登记)。
+- uP 账:anchor 格 ini 钉 expected:FAIL 在 other/ 域=本波 scope 外,frozen-meta 账面留 uP 1 待该域合同清钉(双跑 PASS 背书已留:/var/tmp/e197-veh/iso_anchor_{red_1..3,g_1..2})。removing-inline-style 两格=单文件载入内 3 重复自变(双侧交错 P/F),内在 flaky 定性,与本波无关。
+- cargo check -p bao-servo-script RC=0,editing.rs 零警告。
+
+**deletion-manifest**:vendor ini 目标文件整删(4 格双跑 PASS 背书,循 e160 paste.https.ini 先例);无业务删除面。
+
+**证据**:二进制 /var/tmp/e197-target/test-ci/{bao.e197-red,bao.e197-green};raw log /var/tmp/e197-veh/(red_n1/n2、red_paste、red_full、green_n1/n2、green_paste、green_full(v1 回归谱系)、iso_handler_{1..3,_red_1..3,_g2_1..3}、iso_pastehtml_{1..3,_red_1..3}、iso_anchor_{red_1..3,g_1..2}、iso_removing_{1..3}、green2_n1/n2/paste/full);celldiff/fulldiff /var/tmp/e197-veh/{celldiff,fulldiff}.py;build log /tmp/e197-{red,green,green-build2,green-build3}.log;载具配方继承 e185(run_e183.py+E197_META_ROOT)。
+
+**教训**:①共享树并发期(E196 同仓在途)构建 provenance 必须 mtime 三点对照(我的源/他人源/构建时刻)——本次 e196 49 行 WIP 晚构建 19 分钟,账目清白靠的是核对而非假设;②重排多臂条件块前先给每臂标注其契约(此处 outside 臂承载 edit-context-paste-handler-changes-active),否则回退臂语义漂移成真回归;③正向翻转格的改进归因必须红侧隔离复跑钉稳定性——paste-html 格若未做 red-iso 会被误记为本波改进。
