@@ -67,11 +67,11 @@ impl MemoryCdpBridge {
     }
 
     /// M1 P1 (REQ-CDP-001): the fallback universe's event tap for the
-    /// memory:// face. `run_with_bridge` feeds every translated CDP event
-    /// into it (the same stream WS sessions see), so `waitFor*` commands
-    /// from memory:// clients resolve on real page events. Under the plain
-    /// `run()` pump no servo event channel is wired at all — the tap exists
-    /// but is never fed, and `waitFor*` degrades to an honest timeout.
+    /// memory:// face. Every runtime pump feeds its translated CDP events
+    /// into it — `run_with_bridge` (WS face, same stream the WS sessions
+    /// see) and `run` / `pump_cdp` (the runtime-owned servo event channel,
+    /// REQ-LIB-003) — so `waitFor*` commands from memory:// clients resolve
+    /// on real page events under any live pump.
     pub fn event_tap(&self) -> Option<std::sync::Arc<bao_cdp_client::bridge::CdpEventTap>> {
         self.rdp.backend().event_tap().cloned()
     }

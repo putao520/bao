@@ -32,7 +32,9 @@ use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
 // 自死锁。阻塞形态被线程模型排除,可靠队列是唯一无丢弃且无死锁的诚实形态。
 // 内存上界由泵节奏保证:每次 loop 迭代产生的的事件在下一段 `try_recv`
 // 循环内被全量排空,持续积压仅存在于「接了通道但从不 drain」的配置
-// (`run` / `pump_cdp` 不接线 `set_event_channel`,零事件,不构成积压面)。
+// (`run` / `pump_cdp` 泵每迭代排空 runtime 自有通道并喂事件 tap——REQ-LIB-003;
+// `set_event_channel` 替换后旧接收端 Disconnected,drain 为瞬时 no-op,
+// 同样不构成积压面)。
 //
 // 探针:投递计数三面对账——`servo_event_emitted_total()`(本面,producer)
 // == `servo_event_pumped_total()`(lib.rs 泵面,consumer)。REQ-CDP-004
