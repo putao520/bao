@@ -446,3 +446,22 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 
 - 落点:`src/bao_browser/tests/suite/face_parse_regression_live_tests.rs`(main.rs 注册)——§e190 条件 3「立持久回归面」裁量成立的载体(vendor 单测不可执行=登记判例,bao-browser suite live 测试=在位形态,镜像 audioworklet/editing_e2e live 先例:BAO_TEST_NETWORK+DISPLAY 双门+serializer)。三断言镜像 /tmp/e190-facecrash-probe.py 判定语义(data: URL 同文档形):①静态 `<font face="">` computed fontFamily=`serif`(无声明,零 panic——panic 类经 eval Err/15s 有界 spin 显形)②静态 `<font face="a  b">` 引号形 `"a  b"`(JSON 转义断言)③命令面 execCommand fontName "" value=`serif`+indeterm=false;另 err_* 捕获字段零出现断言(JS 侧异常非静默)。
 - 复验:`cargo check -p bao-browser --features webdriver --tests` RC=0 零新警告;`BAO_TEST_NETWORK=1 xvfb-run cargo nt -p bao-browser -E 'test(face_parse)'` **1 passed / 0 failed**(2021 skipped),探针实测值 `{"static_empty":"serif","static_dblspace":"\"a  b\"","cmd_innerHTML":"<font face=\"\">foo</font>","cmd_value":"serif","cmd_indeterm":false}` ≡ §e191 green 账逐字段一致;RED 侧对照引用 §e191(前态二进制静态臂即崩+font.rs:573 stderr),本面不重复 A/B。日志留证 /tmp/e194-face-parse-nt.log。
+
+### e193(meta stale-pin 机械清扫——vendor canonical uP 155 格双跑背书全清,e192 面 4 格留,2026-10-12,REQ-BRW-050)
+
+**范围校正(重要,e191 账口径修正)**:e191 全域账 uP=243 消费的是**部分 drift 载具 meta**;本波开工按 §e191 教训先全树同步载具 meta←vendor(`rsync -a --delete`,diff -rq 恒等,md5 快照留证),同步即剥掉 delete/forwarddelete/insertparagraph/inserttext 4 文件 88 个「vendor 本就没有的 drift pin」→ **vendor canonical stale-pin 宇宙=155 格/18 文件**(runA 实测,uF 面 20910/273 文件与 e191-green_full 逐字节同值,交叉验证成立)。
+
+**方法(纯 meta 面,零代码改动)**:
+- 干净重建 opt 二进制 bao.e193(`CARGO_TARGET_DIR=/var/tmp/e193-target cargo build --profile test-ci -p bao_bin`,10m44s;provenance:构建窗内 vendor+src 零源文件 mtime 晚于 libscript rlib 13:06:48 < 二进制 13:06:51,e188 判据;HEAD 6a020cc0f)。
+- 全域双跑 runA/runB(855 tests × 2,attempt 1 CLEAN × 2):**cell 宇宙逐格恒等**(116824=116824,only-A=0 only-B=0,唯一 changed 格=edit-context-paste-html exp:PASS 格 FAIL→PASS=A/B flake,非删除集)。
+- 155 格(PASS+exp:FAIL 双跑背书)经 **wptmanifest AST 通道**删除(/tmp/e193/astdel.py:parse→round-trip 字节恒等门→定位 KeyValueNode(单 ValueNode 'FAIL' 纯形,条件/List 形 REFUSE 拒触)→删 pin→空 subtest 壳连带删→空 section 连带删→serialize→re-parse 稳定断言;not_found 任一即整文件拒绝=fail-closed):**17 文件 −477 行,零插入行**(16 M+1 全空删=insertparagraph-in-child-of-html.tentative.html.ini 48 格即全部内容;每 pin 3 行形=§e190 形),vendor diff --numstat 全列 0/39 形。
+- **e192 邻接面隔离**:delete-without-unwrapping-first-line-of-child-block.html.ini 4 格全程跳过(vendor+载具两份零触碰,git diff 空)。
+
+**post-sweep 确认账(runC,attempt 1 CLEAN)**:
+- **uP 155→4,残留恰=e192 在途面 4 格**(delete-without-unwrapping),本波目标格 151 格全清归零。
+- FAIL 面恒等:uF 20910→20911;cell 级 diff(celldiff)= NEW-RED 仅 2 格——`plaintext-only/paste.https.html?white-space=pre-line`「Pasting 2 paragraphs…」×2,runC 单跑红;**3/3 隔离复跑全绿=③类并行负载 flake**(§e167 已登记类,非本波回归:meta-only 改动不可能改行为,同二进制 A/B 双跑均 PASS);另有 1 格 FIXED=即上述 A/B flake 格(edit-context-paste-html,C 跑转绿)。**确定性 NEW-RED=0**。
+- 载具 meta 全程受控:md5 快照三查(同步态≡runA/runB 消费态;post-sweep 态≡runC 消费态;runC 后零变化)。
+
+**flake 登记(不修,载具负载时序类)**:①`/editing/edit-context/edit-context-paste-html.tentative.html`「Test that HTML is pasted into EditContext as plain text」(A 红 B/C 绿);②`/editing/plaintext-only/paste.https.html?white-space=pre-line`「Pasting 2 paragraphs」「Pasting 2 paragraphs into <b>」pasted result 双格(C 红 A/B 绿+3/3 隔离绿)。
+
+**证据**:/tmp/e193/{runA,runB,runC,iso_paste_1..3}.raw.log+console/attempts、delset.json、astreport.json、veh-meta-*.md5;二进制 /var/tmp/e193-target/test-ci/bao;工具 /tmp/e193/{passset.py,astdel.py}。ini 载具副本已同步 post-sweep 态。
