@@ -137,6 +137,7 @@ mod servo_event_delivery_tests;
 mod webfont_double_load_tests;
 mod window_open_tests;
 mod https_popup_fetch_tests;
+mod face_parse_regression_live_tests;
 mod js_popup_load_tests;
 mod popup_global_mislabel_tests;
 mod webdriver_signal_exit_e2e_tests;
