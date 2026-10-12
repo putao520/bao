@@ -445,6 +445,19 @@ impl Document {
         let clipboard_event = self.fire_clipboard_event(cx, event_target, event_type);
         let event = clipboard_event.upcast::<Event>();
         if event.DefaultPrevented() {
+            // The event was canceled: the listener-provided clipboard data is
+            // the clipboard payload (clipboard-apis, the canceled-event
+            // branch: "call the write content to the clipboard algorithm"),
+            // mirroring the Document editing host path. Without this, an
+            // `execCommand("copy")` whose handler overwrites the clipboard
+            // data silently drops it (WPT
+            // editing/other/paste-clipboard-change.tentative.html: the paste
+            // then inserts the pre-handler snapshot instead of the fresh
+            // clipboard).
+            if let Some(clipboard_data) = clipboard_event.clipboard_data() {
+                let drag_data_store = clipboard_data.data_store().expect("This shouldn't fail");
+                self.write_content_to_the_clipboard(&drag_data_store);
+            }
             return false;
         }
         let Some(node) = event_target.downcast::<Node>() else {
