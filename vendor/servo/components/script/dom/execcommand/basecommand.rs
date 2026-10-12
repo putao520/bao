@@ -156,7 +156,26 @@ pub(crate) enum CssPropertyName {
 
 impl CssPropertyName {
     pub(crate) fn resolved_value_for_node(&self, element: &Element) -> Option<DOMString> {
-        let style = element.style()?;
+        let Some(style) = element.style() else {
+            // Unstyled elements (e.g. a font element created with
+            // `document.createElement` and not yet inserted into the document)
+            // have no computed style. `force_the_value` Step 17 queries the
+            // effective command value of such a just-inserted parent and relies
+            // on the attribute-carried value being visible there, so fall back
+            // to the font attribute form. A font element that is in the
+            // document never reaches this branch: its value is the computed
+            // color below, which resolves the color attribute's presentational
+            // hint (Chrome parity: `queryCommandValue("foreColor")` returns the
+            // used color, not the raw attribute; WPT editing/run/delete.html
+            // `<p><font color=brown>[]bar</font>` before-shape, REQ-BRW-050).
+            if let Some(ancestor_font) = element.downcast::<HTMLFontElement>() {
+                let color = ancestor_font.Color();
+                if !color.is_empty() {
+                    return Some(color);
+                }
+            }
+            return None;
+        };
 
         Some(
             match self {
@@ -178,18 +197,10 @@ impl CssPropertyName {
                     background_color.to_css_string()
                 },
                 CssPropertyName::Color => {
-                    // Detached font elements (e.g. does created with `document.createElement`
-                    // and not yet present in DOM) dont have a computed style for `color`.
-                    // Since we create detached parent elements and compute "effective command
-                    // value" for these elements, we need to special case this. Otherwise, we
-                    // would add both a `color` attribute and `color` style declaration
-                    // to a parent font element.
-                    if let Some(ancestor_font) = element.downcast::<HTMLFontElement>() {
-                        let color = ancestor_font.Color();
-                        if !color.is_empty() {
-                            return Some(color);
-                        }
-                    }
+                    // The computed color resolves the `color` attribute's
+                    // presentational hint (the attribute is stored typed, see
+                    // `force_the_value` Step 10.5), so both attribute- and
+                    // style-carried colors read back in the CSSOM form here.
                     style.get_color().to_css_string()
                 },
                 CssPropertyName::FontFamily => {
@@ -593,11 +604,23 @@ impl CommandName {
         // Step 4. For each command in the list "fontName", "fontSize", "foreColor", "hiliteColor",
         // in order: if there is a value override for command,
         // add (command, command's value override) to overrides.
+        //
+        // Bao fork deviation (REQ-BRW-050): the spec list omits "backColor",
+        // but Chrome's observable behavior restores a pending backColor value
+        // override across preserving commands — WPT
+        // editing/run/multitest.html `[["backcolor","#00FFFF"],["delete",""]]`
+        // records `rgb(0, 255, 255)` for `queryCommandValue("backcolor")`
+        // *after* the delete moved the caret (which cleared the override
+        // mid-action); same for the insertParagraph/justify* variants. Without
+        // recording backColor here, the mid-action clearing from
+        // `selection_boundaries_changed` is final and those queries return
+        // transparent.
         for command in [
             CommandName::FontName,
             CommandName::FontSize,
             CommandName::ForeColor,
             CommandName::HiliteColor,
+            CommandName::BackColor,
         ] {
             if let Some(value_override) =
                 RecordedStateOfCommand::for_command_value_override(command, document)
