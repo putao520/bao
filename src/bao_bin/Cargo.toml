@@ -15,3 +15,6 @@ path = "src/main.rs"
 
 [dependencies]
 bao_cli = { path = "../bao_cli", version = "0.1.0" }
+# REQ-CLI-001 (e200): env-gated logger init for the binary entry. Already in
+# the lock via bao-servo — zero new source, one dep-graph edge.
+env_logger = "0.11"

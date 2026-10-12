@@ -2284,6 +2284,7 @@ name = "bao_bin"
 version = "0.1.0"
 dependencies = [
  "bao_cli",
+ "env_logger",
 ]
 
 [[package]]

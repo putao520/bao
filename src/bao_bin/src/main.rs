@@ -28,6 +28,23 @@ pub static mut NvOptimusEnablement: i32 = 1;
 pub static mut AmdPowerXpressRequestHighPerformance: i32 = 1;
 
 fn main() {
+    // @trace REQ-CLI-001 (e200): single logger init covering every subcommand entry
+    // (`bao run`/`-e`/`build`/`test`/`browser`/`--webdriver`/`install`/
+    // `doctor`/`compat` all dispatch through `bao_cli::cli::run` below).
+    // Gate: `BAO_LOG` (level or `target=level` filter directives). Unset →
+    // `error` only: production `log::*` diagnostics stay silent by default
+    // (zero noise), and the CLI product-output channels (stdout results +
+    // clap/usage stderr, e166 exception ledger) never route through the
+    // logger. The `BUN_*` alias mechanism is deliberately untouched — brand
+    // rule keeps `BAO_*`-suffix aliasing inside NodeRuntime's env-alias step,
+    // not on the logger gate. `try_init` instead of `init` so a logger
+    // installed before us can never panic the CLI (servo's own install
+    // sites — `Servo::setup_logging` and the multiprocess-only `set_logger`
+    // — are not reached by bao today).
+    env_logger::Builder::from_env(env_logger::Env::new().filter_or("BAO_LOG", "error"))
+        .format_timestamp_secs()
+        .try_init()
+        .ok();
     if let Err(code) = bao_cli::cli::run() {
         std::process::exit(code);
     }
