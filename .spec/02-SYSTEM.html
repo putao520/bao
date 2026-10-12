@@ -7210,7 +7210,7 @@ Permission 配置:
   "chosen": "uWS C++ 保留(链接复用 C++ 二进制)",
   "rationale": "hyper 需 Tokio runtime,与 bao 的 FilePoll/uloop event loop 架构根本冲突,且违反 CLAUDE.md 铁律「uWS 链接复用 C++ 二进制」。Commander 用户决策:推翻原 SPEC,uWS 保留。衍生需求(bao_cdp 用 bun_uws 替换自写 ws_codec)已转 REQ-CDP-UWS-001 跟踪。本 DEC 由 REQ-PURE-009 转档归档(2026-08-22 grounding 终波:REQ 元素形态删除,决策语义与推翻记录全量保留)。",
   "dimension": "technical"
-}</script></section></main>
+}</script></section><section data-groundedin="PRD-REQ-MAINTAINABILITY" data-req-category="architecture" data-req-domain="ARCH" data-req-status="unknown" data-req="REQ-ARCH-1" id="req-arch-1"><h3>REQ-ARCH-1 代码卫生工程红线与存量深嵌套收敛</h3><p>工程红线(嵌套≤5/圈复杂度≤10/参数≤5)对 bao 自有代码层(src/ 非 vendor)全量适用。存量深嵌套(LSP 审计 nest≥7 残量,e164/e181 已清大头)按批次收敛:①每波清偿以纯结构变换落地(函数提取/卫语句化/表驱动),禁语义重写②触及 crate 的 suite/单测全绿为每波验收③算法性嵌套等不可收敛处逐处登记豁免理由④新增代码由 commit 门持续约束。用户裁决链:2026-10-10 LSP 审计指令+2026-10-12 四项呈报「立法后做」。</p><div data-criterion-id="REQ-ARCH-1-AC01" data-criterion="重构为纯结构变换:行为零变化(触及 crate suite/单测全绿),每次清偿波以行为不变式验收">重构为纯结构变换:行为零变化(触及 crate suite/单测全绿),每次清偿波以行为不变式验收</div><div data-criterion-id="REQ-ARCH-1-AC02" data-criterion="新增代码遵守工程红线(嵌套≤5/圈复杂度≤10):commit 门持续约束,存量逐波消解">新增代码遵守工程红线(嵌套≤5/圈复杂度≤10):commit 门持续约束,存量逐波消解</div><a data-xref-id="test-arch-1" data-xref-type="test" href="11-TESTING.html#test-arch-1">TEST-ARCH-1</a></section></main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
       <div id="test-pure-001" data-test="TEST-PURE-001" data-req-ref="REQ-PURE-001" data-test-categories="unit">

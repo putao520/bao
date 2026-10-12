@@ -39,15 +39,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aead-stream"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a901e5bcd15b4a9555a8f17a608d28ef92cf77bc4aa3b4a0c1a3fce1a9cc0bac"
-dependencies = [
- "aead",
-]
-
-[[package]]
 name = "aes"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -92,7 +83,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
- "getrandom 0.3.4",
  "once_cell",
  "version_check",
  "zerocopy",
@@ -273,9 +263,9 @@ dependencies = [
 
 [[package]]
 name = "argon2"
-version = "0.6.0-rc.8"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7af50940b73bf4e16c15c448a2b121c63f2d68e3e54b6a8731673cb4aa0cdff5"
+checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
 dependencies = [
  "base64ct",
  "blake2",
@@ -474,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "bao-browser"
-version = "0.3.3"
+version = "0.3.9"
 dependencies = [
  "bao-mozjs",
  "bao-servo",
@@ -490,6 +480,7 @@ dependencies = [
  "bun_sys",
  "cdp-server",
  "cookie 0.18.2",
+ "crossbeam-channel",
  "dashmap",
  "dpi",
  "euclid",
@@ -502,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "bao-core"
-version = "0.3.2"
+version = "0.3.12"
 dependencies = [
  "bao-browser",
  "bao_cdp",
@@ -559,8 +550,8 @@ dependencies = [
  "bao-mozjs-icu-collator",
  "cbindgen",
  "icu_locale_core",
- "tinystr 0.8.4",
- "writeable 0.6.4",
+ "tinystr",
+ "writeable",
 ]
 
 [[package]]
@@ -575,11 +566,11 @@ dependencies = [
  "displaydoc",
  "icu_locale",
  "icu_locale_core",
- "icu_properties 2.1.2",
- "icu_provider 2.3.1",
+ "icu_properties",
+ "icu_provider",
  "smallvec",
- "tinystr 0.8.4",
- "zerovec 0.11.8",
+ "tinystr",
+ "zerovec",
 ]
 
 [[package]]
@@ -594,9 +585,9 @@ dependencies = [
  "icu_casemap",
  "potential_utf",
  "serde",
- "yoke 0.8.3",
+ "yoke",
  "zerofrom",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -608,11 +599,11 @@ dependencies = [
  "bao-mozjs-utf16-iter",
  "bao-mozjs-utf8-iter",
  "displaydoc",
- "icu_properties 2.1.2",
- "icu_provider 2.3.1",
+ "icu_properties",
+ "icu_provider",
  "smallvec",
  "write16",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -645,7 +636,7 @@ dependencies = [
  "bao-mozjs-icu-collections",
  "cbindgen",
  "icu_casemap",
- "icu_properties 2.1.2",
+ "icu_properties",
 ]
 
 [[package]]
@@ -689,7 +680,7 @@ name = "bao-mozjs-unicode-bidi-ffi"
 version = "153.3.0"
 dependencies = [
  "cbindgen",
- "icu_properties 2.1.2",
+ "icu_properties",
  "unicode-bidi",
 ]
 
@@ -709,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo"
-version = "0.5.20"
+version = "0.5.25"
 dependencies = [
  "accesskit",
  "arboard",
@@ -757,7 +748,7 @@ dependencies = [
  "euclid",
  "gaol",
  "gstreamer",
- "http 1.5.0",
+ "http",
  "image",
  "keyboard-types",
  "log",
@@ -786,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-background-hang-monitor"
-version = "0.5.7"
+version = "0.5.19"
 dependencies = [
  "backtrace",
  "bao-servo-background-hang-monitor-api",
@@ -800,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-background-hang-monitor-api"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "serde",
@@ -808,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-base"
-version = "0.5.7"
+version = "0.5.18"
 dependencies = [
  "accesskit",
  "bao-ipc-channel",
@@ -833,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas"
-version = "0.5.10"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -858,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-canvas-traits"
-version = "0.5.8"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-fonts-traits",
@@ -880,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-config"
-version = "0.5.2"
+version = "0.5.13"
 dependencies = [
  "bao-servo-config-macro",
  "num_enum",
@@ -892,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-config-macro"
-version = "0.5.2"
+version = "0.5.4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -902,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation"
-version = "0.5.20"
+version = "0.5.27"
 dependencies = [
  "accesskit",
  "backtrace",
@@ -945,9 +936,9 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-constellation-traits"
-version = "0.5.9"
+version = "0.5.16"
 dependencies = [
- "bao-ipc-channel",
+ "accesskit",
  "bao-servo-base",
  "bao-servo-canvas-traits",
  "bao-servo-config",
@@ -966,7 +957,7 @@ dependencies = [
  "content-security-policy",
  "encoding_rs",
  "euclid",
- "http 1.5.0",
+ "http",
  "log",
  "malloc_size_of_derive",
  "rustc-hash",
@@ -979,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-default-resources"
-version = "0.5.7"
+version = "0.5.18"
 dependencies = [
  "bao-servo-embedder-traits",
 ]
@@ -995,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools"
-version = "0.5.19"
+version = "0.5.32"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1011,7 +1002,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "headers",
- "http 1.5.0",
+ "http",
  "log",
  "malloc_size_of_derive",
  "parking_lot",
@@ -1024,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-devtools-traits"
-version = "0.5.7"
+version = "0.5.14"
 dependencies = [
  "bao-servo-base",
  "bao-servo-embedder-traits",
@@ -1032,7 +1023,8 @@ dependencies = [
  "bao-servo-net-traits",
  "bao-servo-profile-traits",
  "bao-servo-url",
- "http 1.5.0",
+ "bytes",
+ "http",
  "malloc_size_of_derive",
  "serde",
  "uuid",
@@ -1050,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-embedder-traits"
-version = "0.5.7"
+version = "0.5.19"
 dependencies = [
  "accesskit",
  "bao-servo-base",
@@ -1065,7 +1057,7 @@ dependencies = [
  "cookie 0.18.2",
  "crossbeam-channel",
  "euclid",
- "http 1.5.0",
+ "http",
  "image",
  "inventory",
  "keyboard-types",
@@ -1083,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts"
-version = "0.5.11"
+version = "0.5.19"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -1107,8 +1099,8 @@ dependencies = [
  "fontsan",
  "freetype-sys",
  "harfbuzz-sys",
- "icu_locid",
- "icu_properties 1.5.1",
+ "icu_locale_core",
+ "icu_properties",
  "itertools 0.15.0",
  "libc",
  "log",
@@ -1119,14 +1111,14 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-text",
- "ohos-deviceinfo-sys",
+ "ohos-deviceinfo",
  "parking_lot",
  "postcard",
- "read-fonts",
+ "read-fonts 0.43.3",
  "rustc-hash",
  "serde",
- "servo_arc",
- "skrifa",
+ "servo_arc 0.5.0",
+ "skrifa 0.46.2",
  "smallvec",
  "stylo_atoms",
  "unicode-properties",
@@ -1141,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-fonts-traits"
-version = "0.5.8"
+version = "0.5.18"
 dependencies = [
  "atomic_refcell",
  "bao-servo-base",
@@ -1156,16 +1148,16 @@ dependencies = [
  "num-derive",
  "num-traits",
  "parking_lot",
- "read-fonts",
+ "read-fonts 0.43.3",
  "serde",
- "servo_arc",
+ "servo_arc 0.5.0",
  "uuid",
  "webrender_api",
 ]
 
 [[package]]
 name = "bao-servo-geometry"
-version = "0.5.5"
+version = "0.5.10"
 dependencies = [
  "app_units",
  "bao-servo-malloc-size-of",
@@ -1181,7 +1173,7 @@ version = "0.5.2"
 dependencies = [
  "cookie 0.18.2",
  "headers",
- "http 1.5.0",
+ "http",
  "hyper",
  "mime",
  "serde_bytes",
@@ -1199,7 +1191,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout"
-version = "0.5.19"
+version = "0.5.30"
 dependencies = [
  "accesskit",
  "app_units",
@@ -1225,9 +1217,9 @@ dependencies = [
  "bitflags 2.13.2",
  "data-url",
  "euclid",
- "icu_locid",
- "icu_properties 1.5.1",
- "icu_segmenter 1.5.0",
+ "icu_locale_core",
+ "icu_properties",
+ "icu_segmenter",
  "itertools 0.15.0",
  "kurbo",
  "log",
@@ -1236,12 +1228,12 @@ dependencies = [
  "num-traits",
  "once_cell",
  "parking_lot",
- "phf 0.13.1",
+ "phf 0.14.0",
  "rayon",
  "rustc-hash",
- "selectors 0.40.0",
+ "selectors 0.41.0",
  "serde",
- "servo_arc",
+ "servo_arc 0.5.0",
  "smallvec",
  "strum 0.28.0",
  "stylo_atoms",
@@ -1258,8 +1250,9 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-layout-api"
-version = "0.5.11"
+version = "0.5.19"
 dependencies = [
+ "accesskit",
  "app_units",
  "atomic_refcell",
  "bao-servo-background-hang-monitor-api",
@@ -1281,9 +1274,9 @@ dependencies = [
  "malloc_size_of_derive",
  "parking_lot",
  "rustc-hash",
- "selectors 0.40.0",
+ "selectors 0.41.0",
  "serde",
- "servo_arc",
+ "servo_arc 0.5.0",
  "stylo_traits",
  "uuid",
  "webrender_api",
@@ -1291,21 +1284,23 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-malloc-size-of"
-version = "0.5.6"
+version = "0.5.10"
 dependencies = [
  "app_units",
  "atomic_refcell",
  "bao-ipc-channel",
  "bao-servo-allocator",
  "bao-stylo",
+ "bytes",
  "content-security-policy",
+ "cookie 0.18.2",
  "crossbeam-channel",
  "data-url",
  "encoding_rs",
  "euclid",
- "http 1.5.0",
- "icu_locid",
- "indexmap",
+ "http",
+ "icu_locale_core",
+ "indexmap 2.14.2",
  "keyboard-types",
  "markup5ever",
  "memmap2",
@@ -1313,7 +1308,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "resvg",
- "servo_arc",
+ "servo_arc 0.5.0",
  "smallvec",
  "string_cache",
  "stylo_dom",
@@ -1335,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media"
-version = "0.5.7"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media-audio",
@@ -1347,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-audio"
-version = "0.5.7"
+version = "0.5.21"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1361,7 +1356,9 @@ dependencies = [
  "malloc_size_of_derive",
  "num-complex",
  "num-traits",
+ "parking_lot",
  "petgraph",
+ "realfft",
  "rustc-hash",
  "serde",
  "smallvec",
@@ -1379,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-dummy"
-version = "0.5.7"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1392,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer"
-version = "0.5.7"
+version = "0.5.16"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1423,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-servo-media-player",
  "gstreamer",
@@ -1431,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-android"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1444,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-gstreamer-render-unix"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-servo-media-gstreamer-render",
  "bao-servo-media-player",
@@ -1457,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-ohos"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-media",
@@ -1479,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-player"
-version = "0.5.7"
+version = "0.5.20"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1491,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-streams"
-version = "0.5.5"
+version = "0.5.12"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1500,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-thread"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1518,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-traits"
-version = "0.5.5"
+version = "0.5.12"
 dependencies = [
  "bao-servo-malloc-size-of",
  "malloc_size_of_derive",
@@ -1526,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-media-webrtc"
-version = "0.5.5"
+version = "0.5.10"
 dependencies = [
  "bao-servo-media-streams",
  "log",
@@ -1535,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-metrics"
-version = "0.5.10"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -1549,11 +1546,12 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net"
-version = "0.5.20"
+version = "0.5.37"
 dependencies = [
  "async-compression",
  "async-recursion",
  "async-tungstenite",
+ "aws-lc-rs",
  "bao-ipc-channel",
  "bao-servo-base",
  "bao-servo-config",
@@ -1588,9 +1586,10 @@ dependencies = [
  "futures-core",
  "futures-util",
  "headers",
- "http 1.5.0",
+ "http",
  "http-body-util",
  "hyper",
+ "hyper-rustls",
  "hyper-util",
  "imsz",
  "itertools 0.15.0",
@@ -1613,13 +1612,13 @@ dependencies = [
  "sea-query",
  "sea-query-rusqlite",
  "serde",
- "servo_arc",
- "sha2 0.11.0",
+ "servo_arc 0.5.0",
  "smallvec",
  "tempfile",
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tokio-util",
  "tower",
  "tungstenite 0.30.0",
@@ -1631,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-net-traits"
-version = "0.5.8"
+version = "0.5.17"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -1649,7 +1648,7 @@ dependencies = [
  "crossbeam-channel",
  "data-url",
  "headers",
- "http 1.5.0",
+ "http",
  "hyper-util",
  "log",
  "malloc_size_of_derive",
@@ -1660,10 +1659,12 @@ dependencies = [
  "rand 0.10.3",
  "resvg",
  "rustc-hash",
+ "rustls",
  "rustls-pki-types",
  "serde",
  "serde_bytes",
- "servo_arc",
+ "serde_with",
+ "servo_arc 0.5.0",
  "sys-locale",
  "tokio",
  "url",
@@ -1673,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint"
-version = "0.5.10"
+version = "0.5.16"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -1708,9 +1709,8 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-paint-api"
-version = "0.5.7"
+version = "0.5.16"
 dependencies = [
- "bao-ipc-channel",
  "bao-servo-base",
  "bao-servo-embedder-traits",
  "bao-servo-geometry",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-pixels"
-version = "0.5.7"
+version = "0.5.18"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-profile"
-version = "0.5.7"
+version = "0.5.19"
 dependencies = [
  "bao-servo-allocator",
  "bao-servo-base",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-profile-traits"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-allocator",
@@ -1788,8 +1788,9 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script"
-version = "0.5.21"
+version = "0.5.30"
 dependencies = [
+ "accesskit",
  "aes",
  "aes-gcm",
  "aes-kw",
@@ -1847,7 +1848,7 @@ dependencies = [
  "crossbeam-channel",
  "crypto-bigint",
  "cshake",
- "cssparser 0.37.0",
+ "cssparser 0.38.0",
  "ctr",
  "ctutils",
  "data-url",
@@ -1862,10 +1863,10 @@ dependencies = [
  "headers",
  "hkdf",
  "html5ever",
- "http 1.5.0",
+ "http",
  "httparse",
- "icu_locid",
- "indexmap",
+ "icu_locale_core",
+ "indexmap 2.14.2",
  "itertools 0.15.0",
  "k12",
  "keccak",
@@ -1889,7 +1890,7 @@ dependencies = [
  "p521",
  "parking_lot",
  "percent-encoding",
- "phf 0.13.1",
+ "phf 0.14.0",
  "pkcs8",
  "postcard",
  "rand 0.10.3",
@@ -1897,10 +1898,10 @@ dependencies = [
  "resvg",
  "rsa",
  "rustc-hash",
- "selectors 0.40.0",
+ "selectors 0.41.0",
  "serde",
  "serde_json",
- "servo_arc",
+ "servo_arc 0.5.0",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "sha3 0.12.0",
@@ -1933,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-bindings"
-version = "0.5.16"
+version = "0.5.23"
 dependencies = [
  "atomic_refcell",
  "bao-mozjs",
@@ -1951,21 +1952,21 @@ dependencies = [
  "crossbeam-channel",
  "encoding_rs",
  "html5ever",
- "indexmap",
+ "indexmap 2.14.2",
  "keyboard-types",
  "libc",
  "log",
  "malloc_size_of_derive",
  "num-traits",
  "parking_lot",
- "phf 0.13.1",
- "phf_codegen",
- "phf_shared 0.13.1",
+ "phf 0.14.0",
+ "phf_codegen 0.14.0",
+ "phf_shared 0.14.0",
  "regex",
  "rustc-hash",
  "serde",
  "serde_json",
- "servo_arc",
+ "servo_arc 0.5.0",
  "smallvec",
  "strum 0.28.0",
  "stylo_atoms",
@@ -1976,10 +1977,9 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-script-traits"
-version = "0.5.9"
+version = "0.5.15"
 dependencies = [
  "accesskit",
- "bao-ipc-channel",
  "bao-servo-base",
  "bao-servo-canvas-traits",
  "bao-servo-config",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage"
-version = "0.5.9"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-config",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-storage-traits"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-malloc-size-of",
@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-timers"
-version = "0.5.5"
+version = "0.5.10"
 dependencies = [
  "bao-servo-malloc-size-of",
  "crossbeam-channel",
@@ -2066,20 +2066,20 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-url"
-version = "0.5.6"
+version = "0.5.10"
 dependencies = [
  "bao-servo-malloc-size-of",
  "encoding_rs",
  "malloc_size_of_derive",
  "serde",
- "servo_arc",
+ "servo_arc 0.5.0",
  "url",
  "uuid",
 ]
 
 [[package]]
 name = "bao-servo-wakelock"
-version = "0.5.7"
+version = "0.5.17"
 dependencies = [
  "bao-servo-embedder-traits",
  "serde",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webgl"
-version = "0.5.8"
+version = "0.5.17"
 dependencies = [
  "bao-servo-base",
  "bao-servo-canvas-traits",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webvtt"
-version = "0.5.4"
+version = "0.5.7"
 dependencies = [
  "html5ever",
  "markup5ever",
@@ -2119,7 +2119,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-webxr-api"
-version = "0.5.7"
+version = "0.5.16"
 dependencies = [
  "bao-ipc-channel",
  "bao-servo-base",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "bao-servo-xpath"
-version = "0.5.6"
+version = "0.5.10"
 dependencies = [
  "bao-servo-malloc-size-of",
  "log",
@@ -2144,7 +2144,7 @@ dependencies = [
 
 [[package]]
 name = "bao-stylo"
-version = "0.20.2"
+version = "0.22.0"
 dependencies = [
  "app_units",
  "arrayvec",
@@ -2152,12 +2152,12 @@ dependencies = [
  "bao-stylo-derive",
  "bitflags 2.13.2",
  "byteorder",
- "cssparser 0.37.0",
+ "cssparser 0.38.0",
  "derive_more",
  "encoding_rs",
  "euclid",
- "icu_segmenter 2.1.2",
- "indexmap",
+ "icu_segmenter",
+ "indexmap 2.14.2",
  "itertools 0.14.0",
  "itoa",
  "log",
@@ -2173,9 +2173,9 @@ dependencies = [
  "rayon",
  "rayon-core",
  "rustc-hash",
- "selectors 0.40.0",
+ "selectors 0.41.0",
  "serde",
- "servo_arc",
+ "servo_arc 0.5.0",
  "smallbitvec",
  "smallvec",
  "static_assertions",
@@ -2199,7 +2199,7 @@ dependencies = [
 
 [[package]]
 name = "bao-stylo-derive"
-version = "0.20.1"
+version = "0.22.0"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "bao_boringssl_bridge"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bao_crypto",
  "bun_boringssl",
@@ -2224,7 +2224,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp"
-version = "0.3.2"
+version = "0.3.15"
 dependencies = [
  "bao_engine",
  "bun_uws",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "bao_cdp_client"
-version = "0.4.0"
+version = "0.4.5"
 dependencies = [
  "bao_cdp",
  "bao_engine",
@@ -2263,7 +2263,7 @@ dependencies = [
 
 [[package]]
 name = "bao_engine"
-version = "0.3.2"
+version = "0.3.4"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "bao_stealth"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -2306,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "bao_uloop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bun_dns",
  "bun_sys",
@@ -2515,6 +2515,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2572,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "bun_analytics"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -2590,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "bun_api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -2610,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "bun_ast"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "allocator-api2",
  "bitflags 2.13.2",
@@ -2648,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "bun_boringssl"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bun_alloc",
  "bun_boringssl_sys",
@@ -2672,7 +2681,7 @@ dependencies = [
 
 [[package]]
 name = "bun_brotli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "brotli",
  "bun_core",
@@ -2681,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bundler"
-version = "0.2.1"
+version = "0.2.4"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -2729,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "bun_bunfig"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bstr",
  "bun_alloc",
@@ -2820,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "bun_core"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -2857,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "bun_crash_handler"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -2883,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "bun_css"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "allocator-api2",
  "bitflags 2.13.2",
@@ -2929,7 +2938,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dns"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bun_alloc",
  "bun_cares_sys",
@@ -2944,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "bun_dotenv"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bstr",
  "bun_alloc",
@@ -2974,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "bun_event_loop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bun_collections",
  "bun_core",
@@ -2992,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "bun_exe_format"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bstr",
  "bun_core",
@@ -3006,7 +3015,7 @@ dependencies = [
 
 [[package]]
 name = "bun_glob"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3041,7 +3050,7 @@ dependencies = [
 
 [[package]]
 name = "bun_http"
-version = "0.2.2"
+version = "0.2.5"
 dependencies = [
  "bao_boringssl_bridge",
  "bstr",
@@ -3094,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3148,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "bun_install_types"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3164,7 +3173,7 @@ dependencies = [
 
 [[package]]
 name = "bun_io"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3190,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_parser"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3219,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "bun_js_printer"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "bstr",
  "bumpalo",
@@ -3255,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "bun_libarchive"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bstr",
  "bun_alloc",
@@ -3303,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "bun_md"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bun_alloc",
  "bun_collections",
@@ -3321,7 +3330,7 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_options_types"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "bstr",
  "bun_ast",
@@ -3355,7 +3364,7 @@ version = "0.1.0"
 
 [[package]]
 name = "bun_parsers"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bstr",
  "bumpalo",
@@ -3393,7 +3402,7 @@ dependencies = [
 
 [[package]]
 name = "bun_perf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3434,7 +3443,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolve_builtins"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bun_ast",
  "bun_core",
@@ -3444,7 +3453,7 @@ dependencies = [
 
 [[package]]
 name = "bun_resolver"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3486,7 +3495,7 @@ dependencies = [
 
 [[package]]
 name = "bun_router"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3511,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "bun_runtime"
-version = "0.5.0"
+version = "0.5.2"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3579,7 +3588,7 @@ dependencies = [
 
 [[package]]
 name = "bun_s3_signing"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3636,7 +3645,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sha_hmac"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bun_boringssl",
  "bun_boringssl_sys",
@@ -3669,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sm"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "bao-mozjs",
  "bao-mozjs-sys",
@@ -3688,7 +3697,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sourcemap"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "allocator-api2",
  "bstr",
@@ -3714,7 +3723,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -3737,7 +3746,7 @@ dependencies = [
 
 [[package]]
 name = "bun_spawn_sys"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bstr",
  "bun_analytics",
@@ -3752,7 +3761,7 @@ dependencies = [
 
 [[package]]
 name = "bun_standalone_graph"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3786,7 +3795,7 @@ dependencies = [
 
 [[package]]
 name = "bun_sys"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3811,7 +3820,7 @@ dependencies = [
 
 [[package]]
 name = "bun_threading"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3833,7 +3842,7 @@ dependencies = [
 
 [[package]]
 name = "bun_transpiler"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bun_bundler",
  "swc_common",
@@ -3860,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bstr",
  "bun_base64",
@@ -3877,7 +3886,7 @@ dependencies = [
 
 [[package]]
 name = "bun_uws_sys"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3899,7 +3908,7 @@ dependencies = [
 
 [[package]]
 name = "bun_watcher"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.13.2",
  "bstr",
@@ -3918,7 +3927,7 @@ dependencies = [
 
 [[package]]
 name = "bun_which"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bstr",
  "bun_core",
@@ -3941,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "bun_zlib"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "allocator-api2",
  "bun_alloc",
@@ -4006,6 +4015,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bytes-str"
@@ -4053,7 +4065,7 @@ checksum = "2ecb53484c9c167ba674026b656d8a27d7657a58e6066aa902bfb1a4aa00ae20"
 dependencies = [
  "clap",
  "heck 0.5.0",
- "indexmap",
+ "indexmap 2.14.2",
  "log",
  "proc-macro2",
  "quote",
@@ -4089,7 +4101,7 @@ dependencies = [
 
 [[package]]
 name = "cdp-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "log",
  "serde",
@@ -4165,9 +4177,9 @@ dependencies = [
 
 [[package]]
 name = "chardetng"
-version = "0.1.17"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14b8f0b65b7b08ae3c8187e8d77174de20cb6777864c6b832d8ad365999cf1ea"
+checksum = "13de944a44b5064ee5d3a5ceccc49a41bfec50f2580e66f82e87703acdb88b53"
 dependencies = [
  "cfg-if",
  "encoding_rs",
@@ -4384,9 +4396,9 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "content-security-policy"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6813ceff986382cd86f67722f308177253e8fab1954a2d51c5e386ffdb3e2d03"
+checksum = "9dd26eb56761db2c5288e97cfb8593fb411d3a7907ced6b6679512207ea8759c"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",
@@ -4642,14 +4654,14 @@ dependencies = [
 
 [[package]]
 name = "cssparser"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c9cdaae01d5ed7882b04d795e7f752f46ff52d2fa3b50a20d28c464510bba98"
+checksum = "11119743ad110e8c1bdccd930d7f5c30c99e5fc76a7b63ec9807e84eef0c5f59"
 dependencies = [
  "cssparser-macros 0.7.1",
  "dtoa-short",
  "itoa",
- "phf 0.13.1",
+ "phf 0.14.0",
  "serde",
  "smallvec",
 ]
@@ -4742,6 +4754,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
+dependencies = [
+ "darling_core 0.24.1",
+ "darling_macro 0.24.1",
+]
+
+[[package]]
 name = "darling_core"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4769,6 +4791,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling_core"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
+dependencies = [
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "darling_macro"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4788,6 +4823,17 @@ dependencies = [
  "darling_core 0.21.3",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
+dependencies = [
+ "darling_core 0.24.1",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -5064,6 +5110,12 @@ dependencies = [
  "winapi",
  "wio",
 ]
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecdsa"
@@ -5438,7 +5490,7 @@ checksum = "79c3c892f121fff406e5dd6b28c1b30096b95111c30701a899d4f2b18da6d1bd"
 dependencies = [
  "displaydoc",
  "smallvec",
- "writeable 0.6.4",
+ "writeable",
 ]
 
 [[package]]
@@ -5866,7 +5918,7 @@ dependencies = [
  "log",
  "peniko",
  "png",
- "skrifa",
+ "skrifa 0.44.0",
  "smallvec",
  "vello_common",
 ]
@@ -6222,8 +6274,8 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.5.0",
- "indexmap",
+ "http",
+ "indexmap 2.14.2",
  "slab",
  "tokio",
  "tokio-util",
@@ -6262,7 +6314,7 @@ checksum = "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
- "read-fonts",
+ "read-fonts 0.41.0",
  "smallvec",
 ]
 
@@ -6275,6 +6327,12 @@ dependencies = [
  "digest 0.11.3",
  "elliptic-curve",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 
 [[package]]
 name = "hashbrown"
@@ -6334,7 +6392,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "headers-core",
- "http 1.5.0",
+ "http",
  "httpdate",
  "mime",
  "sha1 0.10.7",
@@ -6346,7 +6404,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
 dependencies = [
- "http 1.5.0",
+ "http",
 ]
 
 [[package]]
@@ -6407,23 +6465,13 @@ dependencies = [
 
 [[package]]
 name = "html5ever"
-version = "0.39.0"
+version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46a1761807faccc9a19e86944bbf40610014066306f96edcdedc2fb714bcb7b8"
+checksum = "456a1a377e608e555d22ddab27ac0114bc7a7b4199078108e34c2aeae6c9b130"
 dependencies = [
  "log",
  "markup5ever",
-]
-
-[[package]]
-name = "http"
-version = "0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "601cbb57e577e2f5ef5be8e7b83f0f63994f25aa94d673e54a92d5c516d101f1"
-dependencies = [
- "bytes",
- "fnv",
- "itoa",
+ "memchr",
 ]
 
 [[package]]
@@ -6443,7 +6491,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
 dependencies = [
  "bytes",
- "http 1.5.0",
+ "http",
 ]
 
 [[package]]
@@ -6454,7 +6502,7 @@ checksum = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.5.0",
+ "http",
  "http-body",
  "pin-project-lite",
 ]
@@ -6494,14 +6542,32 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "h2",
- "http 1.5.0",
+ "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
  "tokio",
  "want",
+]
+
+[[package]]
+name = "hyper-rustls"
+version = "0.27.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfa8e654703247911e29c23fbeaa261834bd9bb74efba2f9acddc37bfb127f53"
+dependencies = [
+ "http",
+ "hyper",
+ "hyper-util",
+ "log",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -6514,7 +6580,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http 1.5.0",
+ "http",
  "http-body",
  "httparse",
  "hyper",
@@ -6563,11 +6629,11 @@ dependencies = [
  "icu_calendar_data",
  "icu_locale",
  "icu_locale_core",
- "icu_provider 2.3.1",
+ "icu_provider",
  "ixdtf",
  "serde",
- "tinystr 0.8.4",
- "zerovec 0.11.8",
+ "tinystr",
+ "zerovec",
 ]
 
 [[package]]
@@ -6595,13 +6661,13 @@ dependencies = [
  "icu_locale_core",
  "icu_normalizer",
  "icu_plurals",
- "icu_properties 2.1.2",
- "icu_provider 2.3.1",
+ "icu_properties",
+ "icu_provider",
  "icu_provider_adapters",
- "icu_segmenter 2.1.2",
+ "icu_segmenter",
  "icu_time",
- "tinystr 0.8.4",
- "writeable 0.6.4",
+ "tinystr",
+ "writeable",
 ]
 
 [[package]]
@@ -6611,13 +6677,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4ca9983e8bf51223c2f89014fa4eaa9e9b336c47f3af0d000538f86f841fba1"
 dependencies = [
  "icu_casemap_data",
- "icu_collections 2.1.1",
+ "icu_collections",
  "icu_locale_core",
- "icu_properties 2.1.2",
- "icu_provider 2.3.1",
+ "icu_properties",
+ "icu_provider",
  "potential_utf",
- "writeable 0.6.4",
- "zerovec 0.11.8",
+ "writeable",
+ "zerovec",
 ]
 
 [[package]]
@@ -6633,16 +6699,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "350406c88d370ea300ead7667472dec611223d823ae5ef33223a12521f0d80b3"
 dependencies = [
  "icu_collator_data",
- "icu_collections 2.1.1",
+ "icu_collections",
  "icu_locale",
  "icu_locale_core",
  "icu_normalizer",
- "icu_properties 2.1.2",
- "icu_provider 2.3.1",
+ "icu_properties",
+ "icu_provider",
  "smallvec",
  "utf16_iter",
  "utf8_iter",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -6653,18 +6719,6 @@ checksum = "5ab06f0e83a613efddba3e4913e00e43ed4001fae651cb7d40fc7e66b83b6fb9"
 
 [[package]]
 name = "icu_collections"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db2fa452206ebee18c4b5c2274dbf1de17008e874b4dc4f0aea9d01ca79e4526"
-dependencies = [
- "displaydoc",
- "yoke 0.7.5",
- "zerofrom",
- "zerovec 0.10.4",
-]
-
-[[package]]
-name = "icu_collections"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c6b649701667bbe825c3b7e6388cb521c23d88644678e83c0c4d0a621a34b43"
@@ -6672,9 +6726,9 @@ dependencies = [
  "displaydoc",
  "potential_utf",
  "serde",
- "yoke 0.8.3",
+ "yoke",
  "zerofrom",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -6692,12 +6746,12 @@ dependencies = [
  "icu_locale_core",
  "icu_pattern",
  "icu_plurals",
- "icu_provider 2.3.1",
+ "icu_provider",
  "icu_time",
  "potential_utf",
- "tinystr 0.8.4",
- "writeable 0.6.4",
- "zerovec 0.11.8",
+ "tinystr",
+ "writeable",
+ "zerovec",
 ]
 
 [[package]]
@@ -6716,9 +6770,9 @@ dependencies = [
  "icu_decimal_data",
  "icu_locale",
  "icu_locale_core",
- "icu_provider 2.3.1",
- "writeable 0.6.4",
- "zerovec 0.11.8",
+ "icu_provider",
+ "writeable",
+ "zerovec",
 ]
 
 [[package]]
@@ -6737,7 +6791,7 @@ dependencies = [
  "either",
  "fixed_decimal",
  "icu_casemap",
- "icu_collections 2.1.1",
+ "icu_collections",
  "icu_decimal",
  "icu_experimental_data",
  "icu_list",
@@ -6746,18 +6800,18 @@ dependencies = [
  "icu_normalizer",
  "icu_pattern",
  "icu_plurals",
- "icu_properties 2.1.2",
- "icu_provider 2.3.1",
- "litemap 0.8.3",
+ "icu_properties",
+ "icu_provider",
+ "litemap",
  "num-bigint",
  "num-rational",
  "num-traits",
  "potential_utf",
  "smallvec",
- "tinystr 0.8.4",
- "writeable 0.6.4",
+ "tinystr",
+ "writeable",
  "zerotrie",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -6774,10 +6828,10 @@ checksum = "d3a0b7b126e2fc42777d3c348611553d540bd3683caa39b387c5dd1036bb21a8"
 dependencies = [
  "icu_list_data",
  "icu_locale",
- "icu_provider 2.3.1",
+ "icu_provider",
  "regex-automata",
- "writeable 0.6.4",
- "zerovec 0.11.8",
+ "writeable",
+ "zerovec",
 ]
 
 [[package]]
@@ -6792,13 +6846,13 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "532b11722e350ab6bf916ba6eb0efe3ee54b932666afec989465f9243fe6dd60"
 dependencies = [
- "icu_collections 2.1.1",
+ "icu_collections",
  "icu_locale_core",
  "icu_locale_data",
- "icu_provider 2.3.1",
+ "icu_provider",
  "potential_utf",
- "tinystr 0.8.4",
- "zerovec 0.11.8",
+ "tinystr",
+ "zerovec",
 ]
 
 [[package]]
@@ -6808,11 +6862,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d56e28588da92eee5c3201a6eff33fabdd49b62269c8938d4ff050ce4d900deb"
 dependencies = [
  "displaydoc",
- "litemap 0.8.3",
+ "litemap",
  "serde",
- "tinystr 0.8.4",
- "writeable 0.6.4",
- "zerovec 0.11.8",
+ "tinystr",
+ "writeable",
+ "zerovec",
 ]
 
 [[package]]
@@ -6822,53 +6876,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c5f1d16b4c3a2642d3a719f18f6b06070ab0aef246a6418130c955ae08aa831"
 
 [[package]]
-name = "icu_locid"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13acbb8371917fc971be86fc8057c41a64b521c184808a698c02acc242dbf637"
-dependencies = [
- "displaydoc",
- "litemap 0.7.5",
- "tinystr 0.7.6",
- "writeable 0.5.5",
- "zerovec 0.10.4",
-]
-
-[[package]]
-name = "icu_locid_transform"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01d11ac35de8e40fdeda00d9e1e9d92525f3f9d887cdd7aa81d727596788b54e"
-dependencies = [
- "displaydoc",
- "icu_locid",
- "icu_locid_transform_data",
- "icu_provider 1.5.0",
- "tinystr 0.7.6",
- "zerovec 0.10.4",
-]
-
-[[package]]
-name = "icu_locid_transform_data"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7515e6d781098bf9f7205ab3fc7e9709d34554ae0b21ddbcb5febfa4bc7df11d"
-
-[[package]]
 name = "icu_normalizer"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f6c8828b67bf8908d82127b2054ea1b4427ff0230ee9141c54251934ab1b599"
 dependencies = [
- "icu_collections 2.1.1",
+ "icu_collections",
  "icu_normalizer_data",
- "icu_properties 2.1.2",
- "icu_provider 2.3.1",
+ "icu_properties",
+ "icu_provider",
  "smallvec",
  "utf16_iter",
  "utf8_iter",
  "write16",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -6886,9 +6907,9 @@ dependencies = [
  "displaydoc",
  "either",
  "serde",
- "writeable 0.6.4",
- "yoke 0.8.3",
- "zerovec 0.11.8",
+ "writeable",
+ "yoke",
+ "zerovec",
 ]
 
 [[package]]
@@ -6900,8 +6921,8 @@ dependencies = [
  "fixed_decimal",
  "icu_locale",
  "icu_plurals_data",
- "icu_provider 2.3.1",
- "zerovec 0.11.8",
+ "icu_provider",
+ "zerovec",
 ]
 
 [[package]]
@@ -6912,63 +6933,25 @@ checksum = "f018a98dccf7f0eb02ba06ac0ff67d102d8ded80734724305e924de304e12ff0"
 
 [[package]]
 name = "icu_properties"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93d6020766cfc6302c15dbbc9c8778c37e62c14427cb7f6e601d849e092aeef5"
-dependencies = [
- "displaydoc",
- "icu_collections 1.5.0",
- "icu_locid_transform",
- "icu_properties_data 1.5.1",
- "icu_provider 1.5.0",
- "tinystr 0.7.6",
- "zerovec 0.10.4",
-]
-
-[[package]]
-name = "icu_properties"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "020bfc02fe870ec3a66d93e677ccca0562506e5872c650f893269e08615d74ec"
 dependencies = [
- "icu_collections 2.1.1",
+ "icu_collections",
  "icu_locale_core",
- "icu_properties_data 2.1.2",
- "icu_provider 2.3.1",
+ "icu_properties_data",
+ "icu_provider",
  "serde",
  "unicode-bidi",
  "zerotrie",
- "zerovec 0.11.8",
+ "zerovec",
 ]
-
-[[package]]
-name = "icu_properties_data"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85fb8799753b75aee8d2a21d7c14d9f38921b54b3dbda10f5a3c7a7b82dba5e2"
 
 [[package]]
 name = "icu_properties_data"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "616c294cf8d725c6afcd8f55abc17c56464ef6211f9ed59cccffe534129c77af"
-
-[[package]]
-name = "icu_provider"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ed421c8a8ef78d3e2dbc98a973be2f3770cb42b606e3ab18d6237c4dfde68d9"
-dependencies = [
- "displaydoc",
- "icu_locid",
- "icu_provider_macros",
- "stable_deref_trait",
- "tinystr 0.7.6",
- "writeable 0.5.5",
- "yoke 0.7.5",
- "zerofrom",
- "zerovec 0.10.4",
-]
 
 [[package]]
 name = "icu_provider"
@@ -6980,11 +6963,11 @@ dependencies = [
  "icu_locale_core",
  "serde",
  "stable_deref_trait",
- "writeable 0.6.4",
- "yoke 0.8.3",
+ "writeable",
+ "yoke",
  "zerofrom",
  "zerotrie",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -6994,34 +6977,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37dafa75fcb2ca73939cf7e7f4967d30be122b5e1d10f2b344e0addca8fa9446"
 dependencies = [
  "icu_locale",
- "icu_provider 2.3.1",
-]
-
-[[package]]
-name = "icu_provider_macros"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ec89e9337638ecdc08744df490b221a7399bf8d164eb52a665454e60e075ad6"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "icu_segmenter"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a717725612346ffc2d7b42c94b820db6908048f39434504cb130e8b46256b0de"
-dependencies = [
- "core_maths",
- "displaydoc",
- "icu_collections 1.5.0",
- "icu_locid",
- "icu_provider 1.5.0",
- "icu_segmenter_data 1.5.1",
- "utf8_iter",
- "zerovec 0.10.4",
+ "icu_provider",
 ]
 
 [[package]]
@@ -7031,20 +6987,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a807a7488f3f758629ae86d99d9d30dce24da2fb2945d74c80a4f4a62c71db73"
 dependencies = [
  "core_maths",
- "icu_collections 2.1.1",
+ "icu_collections",
  "icu_locale",
- "icu_provider 2.3.1",
- "icu_segmenter_data 2.1.1",
+ "icu_provider",
+ "icu_segmenter_data",
  "potential_utf",
  "utf8_iter",
- "zerovec 0.11.8",
+ "zerovec",
 ]
-
-[[package]]
-name = "icu_segmenter_data"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1e52775179941363cc594e49ce99284d13d6948928d8e72c755f55e98caa1eb"
 
 [[package]]
 name = "icu_segmenter_data"
@@ -7062,12 +7012,12 @@ dependencies = [
  "displaydoc",
  "icu_calendar",
  "icu_locale_core",
- "icu_provider 2.3.1",
+ "icu_provider",
  "icu_time_data",
  "ixdtf",
  "serde",
  "zerotrie",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -7100,7 +7050,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3acae9609540aa318d1bc588455225fb2085b9ed0c4f6bd0d9d5bcd86f1a0344"
 dependencies = [
  "icu_normalizer",
- "icu_properties 2.1.2",
+ "icu_properties",
 ]
 
 [[package]]
@@ -7155,12 +7105,25 @@ checksum = "396dda16a82727ec2d14aabc1167832bb823d849c54a246ca0cff6cfb7bc697c"
 
 [[package]]
 name = "indexmap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
+dependencies = [
+ "autocfg",
+ "hashbrown 0.12.3",
+ "serde",
+]
+
+[[package]]
+name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -7265,10 +7228,12 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb-platform",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -7291,6 +7256,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "142bd39932ad231f10513df9ab62661fead8719872150b7ad02a2df79f4e141e"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
 ]
 
 [[package]]
@@ -7555,12 +7535,6 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "litemap"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23fb14cb19457329c82206317a5663005a4d404783dc74f4252769b0d5f42856"
-
-[[package]]
-name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
@@ -7611,9 +7585,9 @@ dependencies = [
 
 [[package]]
 name = "mach2"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
+checksum = "b0d28e293f2b8c9d2b2d1c0193bd3c1cbdc0d2cf396888dc01162f7cf9d6c3f3"
 
 [[package]]
 name = "malloc_buf"
@@ -7637,9 +7611,9 @@ dependencies = [
 
 [[package]]
 name = "markup5ever"
-version = "0.39.0"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7122d987ec5f704ee56f6e5b41a7d93722e9aae27ae07cafa4036c4d3f9757de"
+checksum = "0ab3dc68ac4a0f5719e560136778c1ee716e296030d75dbd4484e37e39e3a842"
 dependencies = [
  "log",
  "tendril",
@@ -7781,9 +7755,9 @@ dependencies = [
 
 [[package]]
 name = "mozangle"
-version = "0.6.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60b428c032f0af701a3ca440c92e7b552c25b2a5af2b08a85077ee8e9d2ae699"
+checksum = "d5892d91814b6681a2406067efec53abe9ba4fe8748dcd99e4f5a96a99a05ac0"
 dependencies = [
  "bindgen",
  "cc",
@@ -8131,17 +8105,23 @@ dependencies = [
 
 [[package]]
 name = "ocb3"
-version = "0.2.0-rc.3"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b07d573bb0b2f2f4158dadc1888df3bb55ae0a2e246c99af4d2870ee3892b17"
+checksum = "912ff80ac25d578d4c9e260650b9e6d65cea9f5b4a49ce9e88a2c5536e2326b2"
 dependencies = [
  "aead",
- "aead-stream",
  "cipher",
- "ctr",
+ "ctutils",
  "dbl",
- "subtle",
- "zeroize",
+]
+
+[[package]]
+name = "ohos-deviceinfo"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8e75dc6477dd4a8bafe2e7b1feb9cf10e882d3b15903e51f320a80015a59d93"
+dependencies = [
+ "ohos-deviceinfo-sys",
 ]
 
 [[package]]
@@ -8398,7 +8378,7 @@ checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
 dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
- "indexmap",
+ "indexmap 2.14.2",
  "serde",
 ]
 
@@ -8435,6 +8415,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
+dependencies = [
+ "phf_macros 0.14.0",
+ "phf_shared 0.14.0",
+ "serde",
+]
+
+[[package]]
 name = "phf_codegen"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8442,6 +8433,16 @@ checksum = "49aa7f9d80421bca176ca8dbfebe668cc7a2684708594ec9f3c0db0805d5d6e1"
 dependencies = [
  "phf_generator 0.13.1",
  "phf_shared 0.13.1",
+]
+
+[[package]]
+name = "phf_codegen"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b585a510fb76fdebead6897982ef2a03a21d8e6cbcca904999742a4afc6ffe"
+dependencies = [
+ "phf_generator 0.14.0",
+ "phf_shared 0.14.0",
 ]
 
 [[package]]
@@ -8462,6 +8463,16 @@ checksum = "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737"
 dependencies = [
  "fastrand",
  "phf_shared 0.13.1",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeb62e0959d5a1bebc965f4d15d9e2b7cea002b6b0f5ba8cde6cc26738467100"
+dependencies = [
+ "fastrand",
+ "phf_shared 0.14.0",
 ]
 
 [[package]]
@@ -8491,6 +8502,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf_macros"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fa8d0ca26d424d27630da600c6624696e7dec8bf7b3b492b383c5dc49e5e085"
+dependencies = [
+ "phf_generator 0.14.0",
+ "phf_shared 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8509,10 +8533,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf_shared"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
+dependencies = [
+ "siphasher 1.0.4",
+]
+
+[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
+
+[[package]]
+name = "pin-project"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924"
+dependencies = [
+ "pin-project-internal",
+]
+
+[[package]]
+name = "pin-project-internal"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "pin-project-lite"
@@ -8635,8 +8688,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
 dependencies = [
  "serde_core",
- "writeable 0.6.4",
- "zerovec 0.11.8",
+ "writeable",
+ "zerovec",
 ]
 
 [[package]]
@@ -8668,6 +8721,15 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "primal-check"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc0d895b311e3af9902528fbb8f928688abbd95872819320517cc24ca6b2bd08"
+dependencies = [
+ "num-integer",
 ]
 
 [[package]]
@@ -8808,13 +8870,13 @@ dependencies = [
 
 [[package]]
 name = "quick_cache"
-version = "0.6.24"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9c6658afe513a3b484e3abfdaa0d03ef3c0bbf017542c178dd55f94eb3051f9"
+checksum = "403c1a912fec895cafb223201e368234842acb9220aaf08ab042ae89ba5f135c"
 dependencies = [
- "ahash",
  "equivalent",
- "hashbrown 0.16.1",
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -8996,6 +9058,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "read-fonts"
+version = "0.43.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "005c8acf251756c478b0bf402885bfd88a1476020c4c7e6060edc1aa68da38ea"
+dependencies = [
+ "bytemuck",
+ "font-types",
+ "once_cell",
+]
+
+[[package]]
+name = "realfft"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f821338fddb99d089116342c46e9f1fbf3828dba077674613e734e01d6ea8677"
+dependencies = [
+ "rustfft",
+]
+
+[[package]]
 name = "reborrow"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9008,6 +9090,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -9182,6 +9284,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustfft"
+version = "6.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21db5f9893e91f41798c88680037dba611ca6674703c1a18601b01a72c8adb89"
+dependencies = [
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "primal-check",
+ "strength_reduce",
+ "transpose",
+]
+
+[[package]]
 name = "rustix"
 version = "0.38.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9313,6 +9429,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9406,29 +9546,27 @@ dependencies = [
  "log",
  "new_debug_unreachable",
  "phf 0.13.1",
- "phf_codegen",
+ "phf_codegen 0.13.1",
  "precomputed-hash",
  "rustc-hash",
- "servo_arc",
+ "servo_arc 0.4.3",
  "smallvec",
 ]
 
 [[package]]
 name = "selectors"
-version = "0.40.0"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeee001a77567bb05e71652718d3ff76d8697c151ac523e68e9513194eb2b75a"
+checksum = "8322aebea94a6cc288ff884e8a49bdbceef60206c400c6c46d22e62fc4fd91a6"
 dependencies = [
  "bitflags 2.13.2",
- "cssparser 0.37.0",
+ "cssparser 0.38.0",
  "derive_more",
  "log",
  "new_debug_unreachable",
- "phf 0.13.1",
- "phf_codegen",
  "precomputed-hash",
  "rustc-hash",
- "servo_arc",
+ "servo_arc 0.5.0",
  "smallvec",
  "to_shmem",
  "to_shmem_derive",
@@ -9492,7 +9630,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",
@@ -9510,6 +9648,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
+]
+
+[[package]]
+name = "serde_with"
+version = "3.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9adc193c780ef8f159aee8b61e2d5801aaa555e6eb0947fe45530ec506296f"
+dependencies = [
+ "base64 0.23.1",
+ "bs58",
+ "chrono",
+ "hex",
+ "indexmap 1.9.3",
+ "indexmap 2.14.2",
+ "jiff",
+ "schemars 0.9.0",
+ "schemars 1.2.2",
+ "serde_core",
+ "serde_json",
+ "serde_with_macros",
+ "time",
+]
+
+[[package]]
+name = "serde_with_macros"
+version = "3.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e17bbc68e28663bbbb90df47e058aa7eda4fb445b89fe70457bb94fbccf6e49"
+dependencies = [
+ "darling 0.24.1",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "serdect"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9524,6 +9707,15 @@ name = "servo_arc"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
+dependencies = [
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "servo_arc"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4eceb519ec34d8290aaf6e46f435102f2bfa63f22b05a144fb16ab266d3b198"
 dependencies = [
  "serde",
  "stable_deref_trait",
@@ -9624,6 +9816,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "signature"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9692,7 +9894,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68"
 dependencies = [
  "bytemuck",
- "read-fonts",
+ "read-fonts 0.41.0",
+]
+
+[[package]]
+name = "skrifa"
+version = "0.46.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4febebda507fb889c545a37a135517769d1391941013561292897961d1887d6"
+dependencies = [
+ "bytemuck",
+ "read-fonts 0.43.3",
 ]
 
 [[package]]
@@ -9815,6 +10027,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "strength_reduce"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82"
+
+[[package]]
 name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9825,25 +10043,25 @@ dependencies = [
 
 [[package]]
 name = "string_cache"
-version = "0.9.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a18596f8c785a729f2819c0f6a7eae6ebeebdfffbfe4214ae6b087f690e31901"
+checksum = "ffa8a5dbe8b3f0bbe29d4c3225daafaeead63afdc1b65fc4c01a1384166038e6"
 dependencies = [
  "new_debug_unreachable",
  "parking_lot",
- "phf_shared 0.13.1",
+ "phf_shared 0.14.0",
  "precomputed-hash",
  "serde",
 ]
 
 [[package]]
 name = "string_cache_codegen"
-version = "0.6.1"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "585635e46db231059f76c5849798146164652513eb9e8ab2685939dd90f29b69"
+checksum = "928dcdf75e47626b3617a976ec205d9f057584c371c1f23b782129268d0e6edc"
 dependencies = [
- "phf_generator 0.13.1",
- "phf_shared 0.13.1",
+ "phf_generator 0.14.0",
+ "phf_shared 0.14.0",
  "proc-macro2",
  "quote",
 ]
@@ -9910,7 +10128,7 @@ dependencies = [
 
 [[package]]
 name = "stylo_atoms"
-version = "0.20.0"
+version = "0.22.0"
 dependencies = [
  "string_cache",
  "string_cache_codegen",
@@ -9918,9 +10136,9 @@ dependencies = [
 
 [[package]]
 name = "stylo_dom"
-version = "0.20.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "346fde14a66fdc568ef79a8c81f8b6a35722a0906295bce2997df6c90c7b848f"
+checksum = "9febcb03f2b669ef06b3e8a5209e6280971ed55cecf83fbf3c0562fcf2aa2ec6"
 dependencies = [
  "bitflags 2.13.2",
  "stylo_malloc_size_of",
@@ -9928,15 +10146,16 @@ dependencies = [
 
 [[package]]
 name = "stylo_malloc_size_of"
-version = "0.20.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a1ee5ec323e0207ebaafff2210fec808214575d67cfe25e288d34a12010e2b3"
+checksum = "83ed69d55ee907599f093221004a28371925236f09f20961963020abf38bab6a"
 dependencies = [
  "app_units",
- "cssparser 0.37.0",
+ "cssparser 0.38.0",
  "euclid",
- "selectors 0.40.0",
- "servo_arc",
+ "parking_lot",
+ "selectors 0.41.0",
+ "servo_arc 0.5.0",
  "smallbitvec",
  "smallvec",
  "string_cache",
@@ -9946,27 +10165,27 @@ dependencies = [
 
 [[package]]
 name = "stylo_static_prefs"
-version = "0.20.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e017eb7fd506fa0fb0da653a6bc3793d9fc11edf92d4721c16b350432f8116f"
+checksum = "6767c48a1590461db79f8b434ccc5a2d65600a3b716751f7999b35ccead1e024"
 dependencies = [
  "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
 name = "stylo_traits"
-version = "0.20.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00a8d2ca5b29c7f5dd94ec66fbb256b274b76ecaab164417c92ce9a4586c8259"
+checksum = "645d6bfe40eb6e86ebe9f2d2adadcbced41bfa96175de7cb13d4d178d27bc83d"
 dependencies = [
  "app_units",
  "bitflags 2.13.2",
- "cssparser 0.37.0",
+ "cssparser 0.38.0",
  "euclid",
  "malloc_size_of_derive",
- "selectors 0.40.0",
+ "selectors 0.41.0",
  "serde",
- "servo_arc",
+ "servo_arc 0.5.0",
  "stylo_atoms",
  "stylo_malloc_size_of",
  "thin-vec",
@@ -9983,9 +10202,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "surfman"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ef7ecad967262d0b8bf1cbe753fe9b13ddf068606d30ceb370b87c73c5964b5"
+checksum = "7fe194717def845ecb64e7aeda3e2108c4b3b1584a01aa6e545e702cedca2a00"
 dependencies = [
  "bitflags 2.13.2",
  "cfg_aliases",
@@ -10090,7 +10309,7 @@ checksum = "6ee60aaa4eaea81fb9c730e64a0b88c363b5c237b774d114c97cba82f8655fdb"
 dependencies = [
  "anyhow",
  "bytes-str",
- "indexmap",
+ "indexmap 2.14.2",
  "serde",
  "serde_json",
  "swc_config_macro",
@@ -10201,7 +10420,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc20652dd5e4ca9d0b2964eaacfa8e319c51442a4e866fa37c6c367376f0b85b"
 dependencies = [
  "better_scoped_tls",
- "indexmap",
+ "indexmap 2.14.2",
  "once_cell",
  "par-core",
  "phf 0.11.3",
@@ -10224,7 +10443,7 @@ checksum = "8ccd84bf2208c1104f87ecf4c771772ed0d09232ce4b9d57c8dc544174d27ca4"
 dependencies = [
  "base64 0.22.1",
  "bytes-str",
- "indexmap",
+ "indexmap 2.14.2",
  "once_cell",
  "rustc-hash",
  "serde",
@@ -10266,7 +10485,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04108a8cd1db73a46e8703e146568e4966b4afbecd238fe5cc4a10bf7e39a42e"
 dependencies = [
  "dragonbox_ecma",
- "indexmap",
+ "indexmap 2.14.2",
  "num_cpus",
  "once_cell",
  "par-core",
@@ -10398,9 +10617,9 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c034e05f6ee85a12daa63863c2245797715075c70649947aa0da54f3f2ab1d0f"
+checksum = "639627c87f43b9181c811f40a6296409e093a17bc761214cba3c15df74f86b99"
 dependencies = [
  "arrayvec",
  "serde",
@@ -10606,23 +10825,13 @@ dependencies = [
 
 [[package]]
 name = "tinystr"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9117f5d4db391c1cf6927e7bea3db74b9a1c1add8f7eda9ffd5364f40f57b82f"
-dependencies = [
- "displaydoc",
- "zerovec 0.10.4",
-]
-
-[[package]]
-name = "tinystr"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1e27c91459209c2986af3dcf603a5a74a4368754ce37414f59acc971167f643"
 dependencies = [
  "displaydoc",
  "serde_core",
- "zerovec 0.11.8",
+ "zerovec",
 ]
 
 [[package]]
@@ -10633,12 +10842,12 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "to_shmem"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8c81cee0d28327337a94f3f32a1a77c03bbfd926510f3b42956f9d914e7810c"
+checksum = "bbf077da8dd01cc18453bd7d9bc3a945c262f5f344562e5f6deb3914b4dd6f14"
 dependencies = [
- "cssparser 0.37.0",
- "servo_arc",
+ "cssparser 0.38.0",
+ "servo_arc 0.5.0",
  "smallbitvec",
  "smallvec",
  "string_cache",
@@ -10647,9 +10856,9 @@ dependencies = [
 
 [[package]]
 name = "to_shmem_derive"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ba1f5563024b63bb6acb4558452d9ba737518c1d11fcc1861febe98d1e31cf4"
+checksum = "0f8e91a023810fd2019648410d00eea13a71f21d849e71d6d9ed936fb8061174"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -10668,6 +10877,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -10695,6 +10905,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10714,7 +10935,7 @@ version = "0.9.12+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "serde_core",
  "serde_spanned",
  "toml_datetime 0.7.5+spec-1.1.0",
@@ -10729,7 +10950,7 @@ version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "serde_core",
  "serde_spanned",
  "toml_datetime 1.1.1+spec-1.1.0",
@@ -10762,7 +10983,7 @@ version = "0.25.15+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
  "winnow 1.0.4",
@@ -10821,6 +11042,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -10851,6 +11073,16 @@ name = "tracy-rs"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce607aae8ab0ab3abf3a2723a9ab6f09bb8639ed83fdd888d857b8e556c868d8"
+
+[[package]]
+name = "transpose"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad61aed86bc3faea4300c7aee358b4c6d0c8d6ccc36524c96e4c92ccf26e77e"
+dependencies = [
+ "num-integer",
+ "strength_reduce",
+]
 
 [[package]]
 name = "tree_magic_mini"
@@ -10887,7 +11119,7 @@ checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.5.0",
+ "http",
  "httparse",
  "log",
  "rand 0.9.5",
@@ -10904,7 +11136,7 @@ checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.5.0",
+ "http",
  "httparse",
  "log",
  "rand 0.10.3",
@@ -11133,7 +11365,7 @@ dependencies = [
  "roxmltree 0.21.1",
  "simplecss",
  "siphasher 1.0.4",
- "skrifa",
+ "skrifa 0.44.0",
  "strict-num",
  "svgtypes",
  "tiny-skia-path",
@@ -11271,6 +11503,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
 dependencies = [
  "try-lock",
+]
+
+[[package]]
+name = "warp"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a808122a8a77eecdabaefd88ddb1913c4be5ea1465399f63ba64c7aa705fea"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "headers",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "log",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
+ "pin-project",
+ "scoped-tls",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tokio",
+ "tokio-util",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -11418,34 +11679,36 @@ dependencies = [
 
 [[package]]
 name = "web_atoms"
-version = "0.2.6"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba8b815c1b593dc0baf78dd0f4fc8fdb2de53198fb1163738093e9a311c33fb3"
+checksum = "7572660c8890448ba236b7376f27e389c6a7e1c70195622faced601f855c0ada"
 dependencies = [
- "phf 0.13.1",
- "phf_codegen",
+ "phf 0.14.0",
+ "phf_codegen 0.14.0",
  "string_cache",
  "string_cache_codegen",
 ]
 
 [[package]]
 name = "webdriver"
-version = "0.53.0"
+version = "0.54.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91d53921e1bef27512fa358179c9a22428d55778d2c2ae3c5c37a52b82ce6e92"
+checksum = "799eea1e97dc3b3505b178be76e301138ced2af3b62490d8d932ace71168a948"
 dependencies = [
  "base64 0.22.1",
  "bytes",
  "cookie 0.16.2",
- "http 0.2.12",
- "icu_segmenter 1.5.0",
+ "http",
+ "icu_segmenter",
  "log",
  "serde",
  "serde_derive",
  "serde_json",
  "thiserror 1.0.69",
  "time",
+ "tokio",
  "url",
+ "warp",
 ]
 
 [[package]]
@@ -12039,12 +12302,6 @@ dependencies = [
 
 [[package]]
 name = "writeable"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
-
-[[package]]
-name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
@@ -12159,9 +12416,9 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xml5ever"
-version = "0.39.0"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ab627f34ff61b80d756180d556f9c68801d836d271b3b8c094504ceca69d221"
+checksum = "73290529dc9bc6c6155bf77fdd70ce0061f98ad387586aa3104cddab29206961"
 dependencies = [
  "log",
  "markup5ever",
@@ -12192,37 +12449,13 @@ dependencies = [
 
 [[package]]
 name = "yoke"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "120e6aef9aa629e3d4f52dc8cc43a015c7724194c97dfaf45180d2daf2b77f40"
-dependencies = [
- "serde",
- "stable_deref_trait",
- "yoke-derive 0.7.5",
- "zerofrom",
-]
-
-[[package]]
-name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5"
 dependencies = [
  "stable_deref_trait",
- "yoke-derive 0.8.3",
+ "yoke-derive",
  "zerofrom",
-]
-
-[[package]]
-name = "yoke-derive"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2380878cad4ac9aac1e2435f3eb4020e8374b5f13c296cb75b4620ff8e229154"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "synstructure 0.13.2",
 ]
 
 [[package]]
@@ -12327,20 +12560,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ea269c3bd32f0a32c321907a2ae912ba6f4649bb0fc764a15627e99a7095a3f"
 dependencies = [
  "displaydoc",
- "yoke 0.8.3",
+ "yoke",
  "zerofrom",
- "zerovec 0.11.8",
-]
-
-[[package]]
-name = "zerovec"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa2b893d79df23bfb12d5461018d408ea19dfafe76c2c7ef6d4eba614f8ff079"
-dependencies = [
- "yoke 0.7.5",
- "zerofrom",
- "zerovec-derive 0.10.4",
+ "zerovec",
 ]
 
 [[package]]
@@ -12350,20 +12572,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb0464e17806c1d976d5cba29399c7f08e516e279e2ba493f63123b5fca67dd8"
 dependencies = [
  "serde",
- "yoke 0.8.3",
+ "yoke",
  "zerofrom",
- "zerovec-derive 0.11.6",
-]
-
-[[package]]
-name = "zerovec-derive"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e3c6377872d72510393f688a555d7097b0f741995c7a00f0407f786dd486b2d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "zerovec-derive",
 ]
 
 [[package]]
