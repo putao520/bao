@@ -22,6 +22,7 @@ use crate::dom::execcommand::contenteditable::node::{
     NodeOrString, StructuralSide, is_allowed_child, move_preserving_ranges, record_the_values,
     restore_the_values, split_the_parent,
 };
+use crate::dom::html::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmltablecellelement::HTMLTableCellElement;
@@ -827,6 +828,56 @@ impl Selection {
 
         // Step 40. Remove extraneous line breaks at the end of start block.
         start_block.remove_extraneous_line_breaks_at_the_end_of(cx);
+
+        // Chromium-compat anchor (WPT editing/run/delete.html
+        // `queryCommandValue("foreColor")/("fontSize") after` merge families,
+        // REQ-BRW-050): after a block merge the caret lands at the FIRST
+        // equivalent point of the deleted range's recorded start — the merge
+        // position expressed inside the deepest inline shell containing it
+        // (`<font color=blue>foo[]</font><font color=brown>bar</font>` =
+        // (font, 1)) — not at the block boundary the step 34 collapse
+        // produced ((p, 1) after the equivalent-point normalization of the
+        // walk start). The innerHTML is identical at both addresses, but only
+        // the in-shell address computes the shell's effective style (the
+        // boundary computes the block's, so queryCommandValue reads the
+        // block's black instead of the shell's color / resolves no font
+        // size).
+        //
+        // The descent stops at inline ELEMENTS: it never enters the Text
+        // node itself, because a collapsed caret at a text end (offset ==
+        // length) has no effectively-contained formattable node and the
+        // effective-command-value queries resolve to the empty string at
+        // that address (Chrome computes the inherited value there).
+        //
+        // Anchors are a descent barrier (WPT
+        // editing/other/typing-around-link-element-after-joining-paragraphs.html
+        // Backspace-in-anchor family, same wave): Chrome leaves the caret at
+        // the anchor's edge after a join, so typed text lands OUTSIDE the
+        // link (`<p><a href>foo</a>XY<span>bar</span></p>`) — descending
+        // into the anchor would put the typed text inside it.
+        //
+        // Chrome only does this for backward deletion; the forward path keeps
+        // the spec-shaped caret. A start point that no longer exists in the
+        // document (its node was removed by the merge) keeps the spec caret.
+        if direction == SelectionDeleteDirection::Backward &&
+            start_node.is_connected() &&
+            start_offset <= start_node.len()
+        {
+            let mut deepest_node = start_node;
+            let mut deepest_offset = start_offset;
+            while deepest_offset > 0 &&
+                !deepest_node.is::<HTMLAnchorElement>() &&
+                let Some(child) = deepest_node.children().nth(deepest_offset as usize - 1) &&
+                !child.is_empty() &&
+                child.is_inline_node() &&
+                !child.is::<Text>() &&
+                !child.is::<HTMLAnchorElement>()
+            {
+                deepest_offset = child.len();
+                deepest_node = child;
+            }
+            let _ = self.Collapse(cx, Some(&deepest_node), deepest_offset);
+        }
 
         // Step 41. Restore states and values from overrides.
         self.expect_active_range(cx)

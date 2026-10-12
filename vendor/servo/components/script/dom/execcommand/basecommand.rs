@@ -240,7 +240,24 @@ impl CssPropertyName {
                         .inclusive_ancestors(ShadowIncluding::No)
                         .find_map(|ancestor| {
                             if let Some(ancestor_font) = ancestor.downcast::<HTMLFontElement>() {
-                                Some(ancestor_font.Size())
+                                // A size-less font element is transparent for
+                                // size resolution: the walk must continue to
+                                // the ancestors (an inherited default resolves
+                                // there). Returning the empty attribute
+                                // string here truncates the walk and makes
+                                // queryCommandValue("fontSize") resolve to ""
+                                // inside such a font — Chrome computes the
+                                // inherited value instead (WPT
+                                // editing/run/delete.html
+                                // `<font color=blue>foo</font><p><font
+                                // size=5>[]bar</font>` fontSize-after cells,
+                                // reachable via the merge-caret landing,
+                                // REQ-BRW-050).
+                                let size = ancestor_font.Size();
+                                if !size.is_empty() {
+                                    return Some(size);
+                                }
+                                None
                             } else {
                                 self.value_set_for_style(ancestor.downcast::<Element>()?)
                             }
