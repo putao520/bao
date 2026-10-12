@@ -479,3 +479,8 @@ e150 的 meta 锚取自参考仓 working tree——落后 origin/main 887 commit
 **登记(未清偿残留,禁顺手扩面)**:①clipboard insertFromPaste/insertFromDrop 的 contenteditable beforeinput targetRanges(spec Non-empty,现空)——editing.rs fire_beforeinput_on_element paste 面,姊妹缺口独立波;②塌缩+非 delete 命令(insertText/insertParagraph/format* 等)与深 walk 形(隐形节点移除/块合并)的 targetRanges 仍空——Chrome 形非空,同属后续增量;③CDP Input.dispatchKeyEvent 面:与 testdriver 键投同收敛 run_default_keydown_handler,本修复一覆盖两载体(e194 形态登记,未单独立探针)。
 
 **证据**:二进制 /var/tmp/e192-target/test-ci/{bao.e192-red,bao};raw log /var/tmp/e186-veh/e192_{red,green1..6,red_full,green_full,probe}.{raw,console}.log+attempts;build log /tmp/e192-{red,green}-build.log;冻结 meta 快照 /var/tmp/e192-meta-snap;载具副本前态备份 /tmp/e192-veh-meta-before.ini。
+
+### §e195-strand③ 定性(主会话预取证,2026-10-12 13:5x,e192 二进制 1aea01c07 只读复跑)
+
+- **paste.https.html:98/98 全 PASS 零钉零红**——e161 登记残留「paste.https 12」已被后续波(e167 clipboard 块分隔序列化/e186 谓词/e188 flex 分裂/e192 targetRanges 链)顺带全量清偿,该 strand 面清零。
+- **paste-when-nested-with-contenteditable-true.https.html:94 PASS+4 裸暴露 FAIL(无 ini 钉)**——嵌套粘贴 beforeinput text/html 语义(`pasting in contenteditable=…` 系),即 e161「nested 4 beforeinput」的存留面;与 strand② paste-clipboard-change/strand④ insertFromPaste targetRanges 同属 clipboard text/html 语义簇,e195 恢复后按此证据直接归并处置(证据 raw log /tmp/v_e195_s3_paste.raw.log)。
