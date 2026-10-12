@@ -98,16 +98,21 @@ fn e2e_internal_basic_navigation_full_chain() {
     assert!(nav["frameId"].is_string(), "navigate returns frameId");
     assert!(nav["loaderId"].is_string(), "navigate returns loaderId");
 
-    // Step 5: 模拟 wait — Page.waitForLoadState(B 类,本地等待状态,返回空对象)
-    let wait = transport
+    // Step 5: 模拟 wait — Page.waitForLoadState(B 类事件订阅)。mock backend
+    // 无 CDP 事件 tap(宿主事件泵不在本进程——real 泵活于 bao_browser 的
+    // run()/pump_cdp/run_with_bridge),诚实裁定 = 协议层 NotSupported,
+    // 不伪造空对象(e18d48330 占位时代的断言形态已随实装废除)。
+    let wait_err = transport
         .send_command(
             "Page.waitForLoadState",
             json!({"state":"load"}),
             Some(target_id),
         )
-        .expect("wait_for_load_state");
-    // B 类某些 method(wait*)是本地状态机,返回空对象(无 backend 调用)
-    assert!(wait.is_object());
+        .unwrap_err();
+    assert!(
+        wait_err.to_string().contains("no CDP event tap"),
+        "waitForLoadState must degrade to the honest not-wired verdict, got: {wait_err}"
+    );
 
     // Step 6: 模拟 screenshot — Page.captureScreenshot(A 类)
     let shot = transport

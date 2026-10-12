@@ -752,30 +752,40 @@ fn inj_element_scroll_into_view_returns_object() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn inj_element_wait_for_element_state_returns_empty() {
+fn inj_element_wait_for_element_state_payload_rejected_by_state_whitelist() {
     // Arrange
     // @trace REQ-BAO-API-005 [method:ElementHandle.waitForElementState] [level:integration]
+    // e18d48330 实装后本方法是 DOM 状态轮询,state 参数过白名单
+    // (visible/hidden/enabled/disabled/editable):注入 payload 不是合法
+    // state → InvalidParams 协议形——payload 走到白名单校验被拒,不进
+    // 任何拼接代码,也不是占位空对象。
     // Act
-    let r = run(
+    let err = run(
         "ElementHandle.waitForElementState",
-        json!({"state": VEC_SINGLE_QUOTE_ALERT}),
+        json!({"objectId": "obj-1", "state": VEC_SINGLE_QUOTE_ALERT, "timeout": 50}),
     )
-    .unwrap();
+    .unwrap_err();
     // Assert
-    assert_eq!(r.as_object().unwrap().len(), 0);
+    assert!(
+        matches!(err, BridgeError::InvalidParams(ref m) if m.contains("unsupported state")),
+        "payload must be rejected by the state whitelist, got: {err}"
+    );
 }
 
 #[test]
-fn inj_element_wait_for_selector_returns_empty() {
+fn inj_element_wait_for_selector_payload_rides_poller_then_times_out() {
     // Arrange
     // Act
-    let r = run(
+    let err = run(
         "ElementHandle.waitForSelector",
-        json!({"selector": VEC_SINGLE_QUOTE_ALERT}),
+        json!({"selector": VEC_SINGLE_QUOTE_ALERT, "timeout": 50}),
     )
-    .unwrap();
+    .unwrap_err();
     // Assert
-    assert_eq!(r.as_object().unwrap().len(), 0);
+    assert!(
+        matches!(err, BridgeError::Timeout(_)),
+        "payload must ride the poller to a bounded Timeout, got: {err}"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -997,49 +1007,69 @@ fn inj_page_set_default_timeout_returns_empty() {
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
+// e18d48330 实装后 waitFor* 是事件订阅(等 CdpEventTap);本文件 mock 无
+// tap(宿主事件泵不在测试进程),诚实裁定 = NotSupported——不再是占位时代
+// 的空对象。等待语义的活锁在 cdp_universe_wiring_tests(translate→tap→wait
+// 真 resolve)。
+
 #[test]
-fn inj_page_wait_for_load_state_returns_empty() {
+fn inj_page_wait_for_load_state_not_supported_when_pump_unwired() {
     // Arrange
     // Act
-    let r = run("Page.waitForLoadState", json!({"state":"load"})).unwrap();
+    let err = run("Page.waitForLoadState", json!({"state":"load"})).unwrap_err();
     // Assert
-    assert_eq!(r.as_object().unwrap().len(), 0);
+    assert!(
+        matches!(err, BridgeError::NotSupported(ref m) if m.contains("no CDP event tap")),
+        "honest not-wired verdict expected, got: {err}"
+    );
 }
 
 #[test]
-fn inj_page_wait_for_url_returns_empty() {
+fn inj_page_wait_for_url_not_supported_when_pump_unwired() {
     // Arrange
     // Act
-    let r = run("Page.waitForURL", json!({"url":"**/api/*"})).unwrap();
+    let err = run("Page.waitForURL", json!({"url":"**/api/*"})).unwrap_err();
     // Assert
-    assert_eq!(r.as_object().unwrap().len(), 0);
+    assert!(
+        matches!(err, BridgeError::NotSupported(ref m) if m.contains("no CDP event tap")),
+        "honest not-wired verdict expected, got: {err}"
+    );
 }
 
 #[test]
-fn inj_page_wait_for_request_returns_empty() {
+fn inj_page_wait_for_request_not_supported_when_pump_unwired() {
     // Arrange
     // Act
-    let r = run("Page.waitForRequest", json!({"url":"**/api/*"})).unwrap();
+    let err = run("Page.waitForRequest", json!({"url":"**/api/*"})).unwrap_err();
     // Assert
-    assert_eq!(r.as_object().unwrap().len(), 0);
+    assert!(
+        matches!(err, BridgeError::NotSupported(ref m) if m.contains("no CDP event tap")),
+        "honest not-wired verdict expected, got: {err}"
+    );
 }
 
 #[test]
-fn inj_page_wait_for_response_returns_empty() {
+fn inj_page_wait_for_response_not_supported_when_pump_unwired() {
     // Arrange
     // Act
-    let r = run("Page.waitForResponse", json!({"url":"**/api/*"})).unwrap();
+    let err = run("Page.waitForResponse", json!({"url":"**/api/*"})).unwrap_err();
     // Assert
-    assert_eq!(r.as_object().unwrap().len(), 0);
+    assert!(
+        matches!(err, BridgeError::NotSupported(ref m) if m.contains("no CDP event tap")),
+        "honest not-wired verdict expected, got: {err}"
+    );
 }
 
 #[test]
-fn inj_page_wait_for_event_returns_empty() {
+fn inj_page_wait_for_event_not_supported_when_pump_unwired() {
     // Arrange
     // Act
-    let r = run("Page.waitForEvent", json!({"event":"response"})).unwrap();
+    let err = run("Page.waitForEvent", json!({"event":"response"})).unwrap_err();
     // Assert
-    assert_eq!(r.as_object().unwrap().len(), 0);
+    assert!(
+        matches!(err, BridgeError::NotSupported(ref m) if m.contains("no CDP event tap")),
+        "honest not-wired verdict expected, got: {err}"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════
