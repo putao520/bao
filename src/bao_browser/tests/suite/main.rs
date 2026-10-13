@@ -49,6 +49,7 @@ mod browser_core_unit_tests;
 mod browser_runtime_tests;
 mod cdp_debugger_fidelity_tests;
 mod cdp_run_pump_event_tests;
+mod cdp_screencast_input_loop_tests;
 mod cdp_universe_wiring_tests;
 mod cdp_ws_command_face_tests;
 mod click_human_e2e_tests;
