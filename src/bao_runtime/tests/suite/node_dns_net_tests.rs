@@ -94,3 +94,26 @@ fn test_node_dns_all() {
     );
     bun_runtime::shutdown_thread_sm();
 }
+
+/// e208 face ②: `__net_address`'s failure contract (per its own doc line and
+/// the `Server.prototype.address` wrapper's `if (addr)` truthiness test) is
+/// JS `null`. The predecessor returned `ObjectValue(null_mut())` — an
+/// OBJECT-TAGGED null JSVal, which is truthy to JS and whose property reads
+/// dereference a null object. The tag mismatch is observable without
+/// touching the payload: `a === null` must hold.
+#[test]
+fn net_address_invalid_handle_returns_js_null() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    let out = eval_string(
+        &mut ctx,
+        r#"
+        var a = __net_address(0);
+        (a === null) ? "null-ok" : ("bad:" + typeof a)
+        "#,
+    );
+    assert_eq!(out, "null-ok", "__net_address(0) must return JS null on the failure path");
+}

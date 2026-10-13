@@ -1411,7 +1411,12 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     if ptr_val == 0 {
-        args.rval().set(ObjectValue(::std::ptr::null_mut()));
+        // Failure contract is JS `null` (the doc line and the
+        // Server.prototype.address wrapper's `if (addr)` truthiness test).
+        // The predecessor returned `ObjectValue(null_mut())` — an
+        // OBJECT-TAGGED null JSVal: truthy to JS, and even `typeof` it
+        // dereferences the null payload (SIGSEGV, e208 face ② RED probe).
+        args.rval().set(NullValue());
         return true;
     }
 
