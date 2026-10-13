@@ -4,11 +4,12 @@
 //! Reuses bun_uws::App (HTTP), bun_uws_sys::SocketGroup (TCP),
 //! bun_uws_sys::udp::Socket (UDP) — no hand-written HTTP/TCP/UDP code.
 
-use ::std::cell::Cell;
+use ::std::cell::{Cell, RefCell};
 use ::std::collections::HashMap;
 use ::std::ptr::{self, NonNull};
 use ::std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
+use bao_engine::context::RawValueRootGuard;
 use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{
@@ -1085,8 +1086,20 @@ struct ConnectUserData {
     /// satisfies it structurally.
     group: SocketGroup,
     cx: *mut JSContext,
-    /// Pending Promise to resolve on open / reject on error.
-    promise: *mut JSObject,
+    /// Pending Promise to resolve on open / reject on error — RAW-ROOTED
+    /// (e208 face ①, the e206 rval-class adjacency). The predecessor stored
+    /// a bare `*mut JSObject` here: this box is reachable from the uWS
+    /// VTable callbacks across loop ticks (connect_on_open reads it AFTER
+    /// the user's `open` callback returns), long after this frame's stack
+    /// roots are gone, and any moving GC in that window (nursery
+    /// evacuation, `Bun.gc(true)` compacting Shrink) relocates the promise
+    /// while the raw copy stays at the pre-move address. The guard's slot
+    /// is the live copy — read it via [`Self::promise_obj`], never via a
+    /// snapshot. `promise_snapshot` carries the spawn-time value for the
+    /// degraded path (rooting failed) and reads null after settle-side
+    /// release.
+    promise_root: RefCell<Option<RawValueRootGuard>>,
+    promise_snapshot: Cell<JSVal>,
     /// Whether the promise has been settled (resolved or rejected).
     promise_settled: Cell<bool>,
     /// Whether the `end` event has been delivered to this connection's JS
@@ -1100,6 +1113,37 @@ struct ConnectUserData {
     /// same socket — without this guard the event fired twice and every
     /// open-time write duplicated its payload.
     open_fired: Cell<bool>,
+}
+
+impl ConnectUserData {
+    /// The live pending promise: the GC-updated raw-root slot when rooted,
+    /// the spawn snapshot on the degraded path (rooting failed), null once
+    /// settled and released.
+    fn promise_obj(&self) -> *mut JSObject {
+        let v = self
+            .promise_root
+            .borrow()
+            .as_ref()
+            .map_or_else(
+                || self.promise_snapshot.get(),
+                |g| g.get(0),
+            );
+        if v.is_object() && !v.is_null() {
+            v.to_object()
+        } else {
+            ::std::ptr::null_mut()
+        }
+    }
+
+    /// Settle-side release (deterministic settle points: the resolve arms
+    /// and every reject_connect_promise caller). The promise root's
+    /// lifecycle is spawn→settle — held past settle it would pin the
+    /// settled promise and the socket/Error value it resolved with for the
+    /// connection's whole life (fetch-promise-root-ring class). Idempotent.
+    fn settle_promise(&self) {
+        *self.promise_root.borrow_mut() = None;
+        self.promise_snapshot.set(UndefinedValue());
+    }
 }
 
 /// @trace REQ-BAO-API-017 [api:Bun.connect] Bun.connect(options) -> Promise<Socket>
@@ -1261,16 +1305,29 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // relocates the object and the bare local goes stale (stale-rval UB, e206).
     rooted!(&in(cx_ref) let promise_r = promise);
 
+    // Raw-root it for the CROSS-CALLBACK window (e208 face ①): ConnectUserData
+    // is reachable from the uWS VTable callbacks on later loop ticks — where no
+    // stack root of ours survives — and the wait loop below dispatches those
+    // callbacks from inside this very frame. A moving GC in that window must
+    // update the slot the callbacks read; the predecessor stored a bare
+    // pointer into the box and the VTable arms dereferenced moved-from cells.
+    let promise_root = RawValueRootGuard::new(
+        cx,
+        &[ObjectValue(promise)],
+        c"ConnectUserData.promise",
+    );
+    let promise_snapshot: JSVal =
+        promise_root.as_ref().map_or(ObjectValue(promise), |g| g.get(0));
+
     crate::timers::with_event_loop(|_| {});
 
     let loop_ = get_loop();
     if loop_.is_null() {
         // Reject the promise — no event loop
         unsafe {
-            reject_connect_promise(cx, promise, "Bun.connect: event loop not available");
+            reject_connect_promise(cx, promise_r.get(), "Bun.connect: event loop not available");
         }
-        rooted!(&in(cx_ref) let p = promise);
-        args.rval().set(ObjectValue(p.get()));
+        args.rval().set(ObjectValue(promise_r.get()));
         return true;
     }
 
@@ -1286,7 +1343,8 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         end_cb_key,
         group: SocketGroup::default(),
         cx,
-        promise,
+        promise_root: RefCell::new(promise_root),
+        promise_snapshot: Cell::new(promise_snapshot),
         promise_settled: Cell::new(false),
         end_delivered: Cell::new(false),
         open_fired: Cell::new(false),
@@ -1385,10 +1443,13 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
         let _ = unsafe { Box::from_raw(ud_ptr as *mut ConnectUserData) };
         unsafe {
-            reject_connect_promise(cx, promise, "Bun.connect: failed to create socket object");
+            reject_connect_promise(
+                cx,
+                promise_r.get(),
+                "Bun.connect: failed to create socket object",
+            );
         }
-        rooted!(&in(cx_ref) let p = promise);
-        args.rval().set(ObjectValue(p.get()));
+        args.rval().set(ObjectValue(promise_r.get()));
         return true;
     }
     let sock_h = socket_obj.handle().into();
@@ -1511,16 +1572,21 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         }
     }
 
-    // Store the socket object on user data so VTable callbacks can resolve the Promise with it
-    // We keep a rooted reference via the Promise resolution
-    unsafe {
-        (*(ud_ptr as *mut ConnectUserData)).promise = promise;
-    }
+    // The pending promise travels inside ConnectUserData as a raw root
+    // (promise_root / promise_snapshot) — the VTable callbacks read the
+    // live slot from the box; no bare re-store here (the predecessor
+    // re-stored the possibly-already-stale bare local, e208 face ①).
 
-    // If connect failed synchronously, reject the promise now
+    // If connect failed synchronously, reject the promise now. Live-slot
+    // read: the wait loop above may have dispatched callbacks that already
+    // settled and released the root — promise_obj() reads null then.
     if socket_key == 0 {
-        unsafe {
-            reject_connect_promise(cx, promise, "Bun.connect: connection failed");
+        let p = ud_ref.promise_obj();
+        if !p.is_null() {
+            unsafe {
+                reject_connect_promise(cx, p, "Bun.connect: connection failed");
+            }
+            ud_ref.settle_promise();
         }
     } else {
         // Resolve with the socket identity. Async connects registered the
@@ -1544,47 +1610,54 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     // terminates the socket.
                     if (*socket_ptr).remote_port() > 0 {
                         let store_key = listen_sock_store_key(socket_ptr);
+                        // Root the socket identity across the open-callback
+                        // window BEFORE any user JS runs: the miss branch
+                        // builds a BARE object and then invoke_js_callback
+                        // executes the user's `open` — a moving GC in there
+                        // leaves a bare `built` stale, and rooting it only
+                        // after the callback pins the pre-move address
+                        // (late-root = 假根, e206 判据②; the e208 carrier's
+                        // SIGSEGV backtrace lands exactly here —
+                        // ResolvePromiseInternal's Get(resolution, "then")
+                        // on the moved-from socket). Fetch-or-build first,
+                        // root, fire, then re-read the live slot.
                         let sock_obj = match gc_store_get(cx, &store_key) {
                             Some(o) if !o.is_null() => o,
-                            _ => {
-                                let built = build_tcp_socket_obj(
-                                    cx,
-                                    socket_ptr,
-                                    None,
-                                    Some(&store_key),
-                                );
-                                if !built.is_null() {
-                                    // Sync-connect arm: connect() completed
-                                    // immediately, so deliver open HERE — but
-                                    // exactly once (uWS still dispatches
-                                    // connect_on_open for this socket on the
-                                    // next loop pass; the flag there skips the
-                                    // re-fire).
-                                    if !ud_ref.open_fired.replace(true) {
-                                        let open_val = ObjectValue(built);
-                                        let _ = invoke_js_callback(
-                                            cx,
-                                            &ud_ref.open_cb_key,
-                                            &[open_val],
-                                        );
-                                    }
-                                }
-                                built
-                            }
+                            _ => build_tcp_socket_obj(cx, socket_ptr, None, Some(&store_key)),
                         };
-                        if !sock_obj.is_null() {
+                        rooted!(&in(cx_ref) let sock_r = sock_obj);
+                        if !sock_r.get().is_null() {
+                            // Sync-connect arm: connect() completed
+                            // immediately, so deliver open HERE — but
+                            // exactly once (uWS still dispatches
+                            // connect_on_open for this socket on the
+                            // next loop pass; the flag there skips the
+                            // re-fire).
+                            if !ud_ref.open_fired.replace(true) {
+                                let open_val = ObjectValue(sock_r.get());
+                                let _ = invoke_js_callback(
+                                    cx,
+                                    &ud_ref.open_cb_key,
+                                    &[open_val],
+                                );
+                            }
+                        }
+                        if !sock_r.get().is_null() {
                             let mut wrapped_cx_r = mozjs::context::JSContext::from_ptr(
                                 NonNull::new_unchecked(cx),
                             );
                             let cx_ref_r = &mut wrapped_cx_r;
-                            rooted!(&in(cx_ref_r) let p = promise);
-                            rooted!(&in(cx_ref_r) let val = ObjectValue(sock_obj));
+                            rooted!(&in(cx_ref_r) let val = ObjectValue(sock_r.get()));
                             mozjs_sys::jsapi::JS::ResolvePromise(
                                 cx,
-                                p.handle().into(),
+                                promise_r.handle().into(),
                                 val.handle().into(),
                             );
                             mozjs_sys::jsapi::js::RunJobs(cx);
+                            // Settled here either way (this arm, or the VTable
+                            // open arm during the wait loop) — release the
+                            // cross-callback root (spawn→settle lifecycle).
+                            ud_ref.settle_promise();
                         }
                     }
                 }
@@ -2734,12 +2807,16 @@ unsafe extern "C" fn tcp_on_connecting_error(
         let owner = unsafe { (*group_ptr).owner::<ConnectUserData>() as *const ConnectUserData };
         if !owner.is_null() {
             let ud = unsafe { &*owner };
-            if !ud.promise_settled.get() && !ud.promise.is_null() {
+            if !ud.promise_settled.get() {
+            let p = ud.promise_obj();
+            if !p.is_null() {
                 ud.promise_settled.set(true);
                 unsafe {
-                    reject_connect_promise(ud.cx, ud.promise, "Bun.connect: connecting error");
+                    reject_connect_promise(ud.cx, p, "Bun.connect: connecting error");
                 }
+                ud.settle_promise();
             }
+        }
         }
     }
 
@@ -2837,28 +2914,44 @@ unsafe extern "C" fn connect_on_open(
     }
 
     // Resolve the pending Promise with the socket identity.
-    // Bun.connect's own wait loop resolves the common paths (ud.promise is
-    // still null while that loop ticks through this callback); this arm
-    // covers dispatch orderings where the promise is already stored. Re-fetch
-    // the registered identity from GcStore instead of reusing a raw pointer
-    // across the open callback — invoke_js_callback can allocate (GC moves).
-    if !ud.promise_settled.get() && !ud.promise.is_null() {
-        ud.promise_settled.set(true);
-        let cx = ud.cx;
-        if !cx.is_null() {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let p = ud.promise);
-            let store_key = listen_sock_store_key(s);
-            let sock_obj = match gc_store_get(cx, &store_key) {
-                Some(o) if !o.is_null() => o,
-                _ => build_tcp_socket_obj(cx, s, None, None),
-            };
-            if !sock_obj.is_null() {
-                rooted!(&in(cx_ref) let val = ObjectValue(sock_obj));
-                mozjs_sys::jsapi::JS::ResolvePromise(cx, p.handle().into(), val.handle().into());
+    // Bun.connect's own wait loop resolves the common paths (the promise is
+    // already settled while that loop ticks through this callback); this arm
+    // covers dispatch orderings where the promise is still pending. The
+    // promise pointer comes from the live raw-root slot (ud.promise_obj()) —
+    // never a stored bare snapshot: the user's `open` callback above is a
+    // moving-GC window, and a bare copy read stale (e208 face ① RED probe:
+    // SIGSEGV in this exact arm). Re-fetch the registered identity from
+    // GcStore instead of reusing a raw pointer across the open callback —
+    // invoke_js_callback can allocate (GC moves).
+    if !ud.promise_settled.get() {
+        let p = ud.promise_obj();
+        if !p.is_null() {
+            ud.promise_settled.set(true);
+            let cx = ud.cx;
+            if !cx.is_null() {
+                let mut wrapped_cx =
+                    mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                let cx_ref = &mut wrapped_cx;
+                rooted!(&in(cx_ref) let p_root = p);
+                let store_key = listen_sock_store_key(s);
+                let sock_obj = match gc_store_get(cx, &store_key) {
+                    Some(o) if !o.is_null() => o,
+                    _ => build_tcp_socket_obj(cx, s, None, None),
+                };
+                if !sock_obj.is_null() {
+                    rooted!(&in(cx_ref) let val = ObjectValue(sock_obj));
+                    mozjs_sys::jsapi::JS::ResolvePromise(
+                        cx,
+                        p_root.handle().into(),
+                        val.handle().into(),
+                    );
+                }
+                mozjs_sys::jsapi::js::RunJobs(cx);
             }
-            mozjs_sys::jsapi::js::RunJobs(cx);
+            // Settled — release the cross-callback root (spawn→settle
+            // lifecycle; a root held past settle pins the settled promise
+            // and the socket value it resolved with).
+            ud.settle_promise();
         }
     }
 
@@ -3062,14 +3155,19 @@ unsafe extern "C" fn connect_on_connect_error(
     let code_val = Int32Value(code);
     let _ = invoke_js_callback(ud.cx, &ud.error_cb_key, &[code_val]);
 
-    // Reject the pending Promise with an error
-    if !ud.promise_settled.get() && !ud.promise.is_null() {
-        ud.promise_settled.set(true);
-        reject_connect_promise(
-            ud.cx,
-            ud.promise,
-            &format!("Bun.connect: connection error (code {})", code),
-        );
+    // Reject the pending Promise with an error (live raw-root slot read —
+    // the error callbacks are moving-GC windows too).
+    if !ud.promise_settled.get() {
+        let p = ud.promise_obj();
+        if !p.is_null() {
+            ud.promise_settled.set(true);
+            reject_connect_promise(
+                ud.cx,
+                p,
+                &format!("Bun.connect: connection error (code {})", code),
+            );
+            ud.settle_promise();
+        }
     }
 
     // BCE (connect-error socket spin — same class as HTTPContext's

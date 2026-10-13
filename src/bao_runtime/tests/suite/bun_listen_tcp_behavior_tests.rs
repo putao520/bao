@@ -266,3 +266,92 @@ fn bun_listen_accept_identity_and_bun_connect_roundtrip() {
         "server.stop() must drop the liveness token"
     );
 }
+
+/// e208 face ① (e206 adjacency): ConnectUserData carried the pending
+/// Bun.connect Promise as a bare `*mut JSObject`. The box is reachable from
+/// the uWS VTable callbacks across loop ticks — connect_on_open reads the
+/// stored pointer AFTER the user's `open` callback returns — so any moving
+/// GC inside that callback (nursery churn / `Bun.gc(true)` compaction, which
+/// relocates survivors) leaves the stored pointer at the pre-move address
+/// and the resolve arm dereferences a moved-from cell.
+///
+/// Carrier: a real loopback connect whose `open` callback first churns the
+/// nursery (forces an evacuation) and then runs `Bun.gc(true)` (compacting
+/// Shrink GC — moves survivors) before returning. Post-fix the VTable arm
+/// re-reads the raw-rooted slot, so the promise still resolves with a live
+/// socket identity and the roundtrip completes.
+#[test]
+fn bun_connect_promise_survives_gc_in_open_callback() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+    ctx.set_post_eval_hook(bounded_drain_hook);
+
+    let setup = eval_str(
+        &mut ctx,
+        r#"
+        globalThis.__log = [];
+        globalThis.__done = false;
+        globalThis.__resolved = false;
+        globalThis.__sockOk = false;
+        var server = Bun.listen({
+            port: 0, hostname: "127.0.0.1",
+            socket: {
+                open: function() {},
+                data: function(sock, data) { sock.write(data); },
+                close: function() {},
+                end: function(sock) { sock.end(); },
+            },
+        });
+        var conn = Bun.connect({
+            hostname: "127.0.0.1",
+            port: server.port,
+            socket: {
+                open: function(sock) {
+                    // Moving-GC storm inside the open callback: the VTable
+                    // resolve arm reads the stored promise AFTER this
+                    // returns. 30k nursery objects force an evacuation;
+                    // Bun.gc(true) is the compacting Shrink GC on top.
+                    for (var i = 0; i < 30000; i++) { ({ n: i }); }
+                    Bun.gc(true);
+                    globalThis.__log.push("open");
+                },
+                data: function(sock, data) {
+                    globalThis.__log.push("data");
+                    setTimeout(function() { sock.end(); }, 0);
+                },
+                close: function() {
+                    globalThis.__log.push("close");
+                    globalThis.__done = true;
+                },
+            },
+        });
+        conn.then(function(sock) {
+            globalThis.__resolved = true;
+            globalThis.__sockOk = !!(sock && typeof sock.write === "function"
+                && typeof sock.end === "function");
+            sock.write("ping");
+        }, function() {
+            globalThis.__log.push("unexpected-reject");
+            globalThis.__done = true;
+        });
+        "setup-ok"
+    "#,
+    );
+    assert_eq!(setup, "setup-ok");
+
+    let done = wait_until(&mut ctx, "globalThis.__done === true ? 'y' : 'n'", 120);
+    let log = eval_str(&mut ctx, "globalThis.__log.join('|')");
+    assert!(done, "connect roundtrip must complete; log: {log}");
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__resolved ? 'y' : 'n'"),
+        "y",
+        "Bun.connect promise must resolve after the open-callback GC storm; log: {log}"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__sockOk ? 'y' : 'n'"),
+        "y",
+        "resolved value must carry a live socket identity; log: {log}"
+    );
+}
