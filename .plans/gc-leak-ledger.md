@@ -26,3 +26,13 @@
 
 ## 处置裁定(主会话 2026-09-29)
 chunk 池线性驻留(~2.1 MB/realm,双 GC 不回落,decommit=0)= **known-limitation**:上游 SM chunk-pool 语义;生产调用面零 fresh-realm churn(e1 核实);影响面=测试/bench 长 context churn 场景。上游排查(arena/chunk decommit 触发条件)记 backlog 非阻断。与 soak 22KiB/cycle malloc 泄漏**互斥已证**(单上下文实验 vs 每页 runtime 销毁路径,两现象不同源)。
+
+## e207 spin 形嵌入者事件通道积压(2026-10-13 发现→当日根治;REQ-LIB-002)
+
+**形态**:e199(3aad40a57)起 `BrowserRuntime::new` 恒装 runtime 自有 servo 事件通道(无界可靠 mpsc,REQ-CDP-004 立法:永不丢弃、无高水位自弃),接收端留在 runtime 上且仅 run/run_until/pump_cdp/run_with_bridge 四个内置泵面显式 drain;`spin_event_loop` 包装与 PageHandle 13 个等待循环 spin 点——churn/soak 嵌入方的唯一泵形态——不排空,逐 cycle 永久积压(suite 负对照实测:console 事件 3 轮零 drain 即 emitted>pumped,积压真实非 vacuous)。
+
+**根治**:1423e97f3(基于 dad7fd576)——接收端+tap 移入 BaoServoDelegate(`install_runtime_event_drain`),一切 spin 面 spin 后即排空(`drain_runtime_events`);PageInner 增 servo_delegate 字段,`spin_and_drain` 覆盖 13 个等待循环点;`pump_servo_events_to_taps` 保留 pub 契约面(4c30afd5b)但 drain 体走 delegate 单真源。锁:`spin_face_drains_runtime_event_channel_no_backlog`(RED pre-fix → GREEN post-fix)。
+
+**判定**:必要性=可靠队列立法(REQ-CDP-004)排除有界/丢弃方案,排空责任必须由库侧全泵面承担;修复后缺省无漏,手动泵契约降为 belt-and-suspenders。
+
+**二分边界账(诚实线)**:三份 nightly soak(10-11 健康 vs 10-12/10-13 线性 ~11-15 MiB/min)的二进制均 git_dirty=true(工作树构建,含未提交 WIP);干净树 60min 双端探针(7343d4069 vs 3aad40a57,同机同协议并行)逐段同形——前 50min 线性 ~+20 KiB/cycle(基线增长相),50min 后 ~19k cycles 处同步出现 −200 MiB 级收缩(健康振荡形)。**nightly 泄漏形不可由任何干净 commit 复现**;本修封闭代码审计发现的唯一真实积压结构,nightly 形的 dirty-WIP 归因(10-12= c6eeb2994+当时 WIP;10-13=a166c7430+e205/e206 WIP)保持登记待dirty 重放窗。soak verdict 斜率门立法候选(§U)因此更必要:线性相/振荡相在 30min 窗内不可分辨,判定须看全程斜率+收缩存在性。
