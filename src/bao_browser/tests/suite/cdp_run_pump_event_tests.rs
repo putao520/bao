@@ -179,3 +179,55 @@ fn pump_cdp_face_wait_for_request_resolves_on_real_page_load() {
     assert_eq!(params["type"], "Document", "translate's real event shape");
     let _ = waiter.join();
 }
+
+/// 手动 spin 形嵌入者契约锁(REQ-LIB-003):嵌入者自驱
+/// `spin_event_loop` 循环时必须每迭代调 `pump_servo_events_to_taps` ——
+/// 通道是无界可靠队列(REQ-CDP-004 立法:永不丢弃、无高水位自弃),不
+/// drain 即无限积压(soak 10-12 线性泄漏的缺口本体)。锁两面:①不调
+/// drain 时 emitted>pumped(积压真实存在,非 vacuous)②调 drain 后
+/// emitted==pumped 且下一轮保持(不积压)。
+///
+/// @trace REQ-LIB-003 [level:e2e]
+#[test]
+fn manual_spin_embedder_drain_keeps_emitted_equal_pumped() {
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page");
+
+    for round in 0..3 {
+        // 事件产生面:console 输出经 per-webview delegate 落通道(手动 spin
+        // 形嵌入者的真实事件流——无内置泵替它 drain)。
+        page.evaluate_js_web(&format!("console.log('spin-drain-{round}');"))
+            .expect("console eval");
+        for _ in 0..8 {
+            runtime.spin_event_loop();
+        }
+
+        if round == 0 {
+            // 负对照(仅首轮):drain 之前通道里有未消费事件——积压形态
+            // 真实存在(证明断言非 vacuous)。
+            let emitted = bao_browser::servo_event_emitted_total();
+            let pumped = bao_browser::servo_event_pumped_total();
+            assert!(
+                emitted > pumped,
+                "precondition: undrained events must sit in the reliable queue \
+                 (emitted={emitted} pumped={pumped})"
+            );
+        }
+
+        // 嵌入者契约调用:每迭代 drain(translate → memory:// tap),排空到
+        // 当前发射数。
+        runtime.pump_servo_events_to_taps();
+
+        assert_eq!(
+            bao_browser::servo_event_emitted_total(),
+            bao_browser::servo_event_pumped_total(),
+            "round {round}: after the embedder drain, emitted must equal pumped \
+             (no backlog survives the per-iteration drain)"
+        );
+    }
+}

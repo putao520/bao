@@ -905,21 +905,42 @@ impl BrowserRuntime {
     }
 
     /// Pump-side servo event drain → translate → CDP event tap feed — the
-    /// `run()` / `pump_cdp` face of the M1 event pipeline (REQ-LIB-003).
+    /// `run()` / `pump_cdp` face of the M1 event pipeline (REQ-LIB-003),
+    /// public as the **manual-pump embedder contract**.
     ///
-    /// One translation, one truth: the tap sees exactly what the
-    /// `run_with_bridge` WS face sees — same `translate`, same
-    /// `observe(target, method, params)` shape. The WS face additionally
-    /// broadcasts; these pumps have no broadcaster, and their only
-    /// production tap is the memory:// bridge's (the WS registry tap is fed
-    /// by `run_with_bridge`, which owns the registry handle). Draining is
-    /// unconditional (the reliable queue must never accumulate); with the
-    /// channel replaced by an embedder's `set_event_channel` this receiver
-    /// is disconnected and the drain is an instant no-op.
+    /// # Embedder contract (manual `spin_event_loop` form)
+    ///
+    /// Since REQ-LIB-003 every runtime owns a servo event channel from
+    /// `new()` — the delegate pushes `ServoEvent`s into an **unbounded
+    /// reliable** queue (REQ-CDP-004: never blocks, never drops) from the
+    /// moment pages exist. The built-in pumps (`run` / `run_until` /
+    /// `pump_cdp` / `run_with_bridge`) drain it every iteration; an embedder
+    /// that drives the servo loop by hand (`runtime.servo().spin_event_loop()`
+    /// in its own loop — the bench/harness and test harness shape) MUST call
+    /// this method every iteration instead. Skipping it is not a correctness
+    /// bug but an unbounded memory leak: every page's console / frame /
+    /// network events accumulate in the queue forever (they carry heap
+    /// strings and never age out). There is deliberately **no high-water
+    /// self-drop fallback** — lossy delivery would violate the REQ-CDP-004
+    /// reliability legislation.
+    ///
+    /// Where the drained events go: translated (the same single `translate`
+    /// the WS face uses) and observed into the memory:// bridge's CDP event
+    /// tap — `waitFor*` from memory:// clients stay live under manual pumps
+    /// too. The WS face additionally broadcasts; this face has no
+    /// broadcaster, and the WS registry tap is fed by `run_with_bridge`
+    /// (which owns the registry handle). With the channel replaced by an
+    /// embedder's `set_event_channel`, this receiver is disconnected and the
+    /// drain is an instant no-op (the caller-owned receiver is the
+    /// embedder's to drain).
+    ///
+    /// Delivery accounting: `servo_event_emitted_total()` (producer) vs
+    /// `servo_event_pumped_total()` (this drain) — a manual pump is
+    /// leak-free exactly while the two deltas stay equal.
     ///
     /// @trace REQ-LIB-003 [req:REQ-LIB-003]
     /// @trace REQ-CDP-001 [req:REQ-CDP-001]
-    fn pump_servo_events_to_taps(&self) {
+    pub fn pump_servo_events_to_taps(&self) {
         let tap = self.cdp_bridge.as_ref().and_then(|b| b.event_tap());
         drain_servo_events(&self.servo_event_rx, move |servo_event| {
             let Some(tap) = &tap else { return };
