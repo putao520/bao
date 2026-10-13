@@ -17,7 +17,9 @@ use servo::{
 
 use bao_cdp::servo_bridge::main_frame_id_for_target;
 use bao_cdp::{BaoEvent, ConsoleMessage};
-use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
+use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent, translate};
+
+use crate::drain_servo_events;
 
 // ─── ServoEvent real 路径可靠投递(REQ-CDP-004 / REQ-CDP-006) ───────
 //
@@ -31,10 +33,13 @@ use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
 // `spin_event_loop()` 返回之后。回调内阻塞 send = 泵无法回到 drain 点 =
 // 自死锁。阻塞形态被线程模型排除,可靠队列是唯一无丢弃且无死锁的诚实形态。
 // 内存上界由泵节奏保证:每次 loop 迭代产生的的事件在下一段 `try_recv`
-// 循环内被全量排空,持续积压仅存在于「接了通道但从不 drain」的配置
-// (`run` / `pump_cdp` 泵每迭代排空 runtime 自有通道并喂事件 tap——REQ-LIB-003;
-// `set_event_channel` 替换后旧接收端 Disconnected,drain 为瞬时 no-op,
-// 同样不构成积压面)。
+// 循环内被全量排空。e207 前的边界是「接了通道但从不 drain」的配置可达成
+// 积压(`run`/`pump_cdp` 有显式 drain,但 `spin_event_loop`/PageHandle 等
+// 待循环形态不排空——churn/soak 嵌入方逐 cycle 线性积压 ~20 KiB/cycle,
+// REQ-LIB-002);e207 起 runtime 自有接收端移入本委托
+// (`install_runtime_event_drain`),**一切 spin 面spin 后即排空**
+// (`drain_runtime_events`),任何嵌入方循环形态下零积压可达。
+// `set_event_channel` 替换后旧接收端 Disconnected,drain 为瞬时 no-op。
 //
 // 探针:投递计数三面对账——`servo_event_emitted_total()`(本面,producer)
 // == `servo_event_pumped_total()`(lib.rs 泵面,consumer)。REQ-CDP-004
@@ -77,6 +82,20 @@ pub struct BaoServoDelegate {
     /// When set, console/url/load callbacks also push structured events here.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     event_tx: RefCell<Option<Sender<ServoEvent>>>,
+    /// Runtime-owned channel receiver + CDP event tap (Path B consumer side),
+    /// installed by `BrowserRuntime::new` (`install_runtime_event_drain`).
+    /// Owning the receiver HERE — on the delegate every pump face already
+    /// holds (runtime pumps and `PageHandle` wait loops alike) — is the e207
+    /// leak fix: every spin face drains right after its spin, so the
+    /// unbounded reliable queue can never accumulate behind an embedder loop
+    /// shape that never calls `run` / `pump_cdp` (page churn linear RSS leak,
+    /// ~20 KiB/cycle). @trace REQ-LIB-002 [req:REQ-LIB-002]
+    event_rx: RefCell<Option<Receiver<ServoEvent>>>,
+    /// Tap the runtime-owned drain feeds (see `event_rx`). `None` = events
+    /// are drained and dropped (no CDP client face installed — churn/soak
+    /// embedders; the queue must still drain, the tap is optional).
+    /// @trace REQ-LIB-002 [req:REQ-LIB-002]
+    event_tap: RefCell<Option<Arc<bao_cdp_client::bridge::CdpEventTap>>>,
     /// Global SharedWorker registry — keyed by (script_url, name).
     /// SharedWorkers span pages (DF-WK-7), so they must be tracked at the
     /// delegate level rather than per-page. When a page creates a SharedWorker,
@@ -101,6 +120,8 @@ impl Default for BaoServoDelegate {
             last_error: RefCell::new(None),
             console_log_tx: RefCell::new(None),
             event_tx: RefCell::new(None),
+            event_rx: RefCell::new(None),
+            event_tap: RefCell::new(None),
             shared_workers: RefCell::new(Vec::new()),
             service_workers: RefCell::new(Vec::new()),
         }
@@ -142,6 +163,50 @@ impl BaoServoDelegate {
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn event_tx(&self) -> Option<Sender<ServoEvent>> {
         self.event_tx.borrow().clone()
+    }
+
+    /// Install the runtime-owned event channel consumer side (e207,
+    /// REQ-LIB-002): `BrowserRuntime::new` hands the receiver and the CDP
+    /// event tap to the delegate so that EVERY spin face can drain right
+    /// after its spin (runtime pumps and `PageHandle` wait loops already hold
+    /// this delegate). Replaces the e199 shape where the receiver lived on
+    /// the runtime and only `run` / `pump_cdp` drained — page-churn
+    /// spin-shaped embedders accumulated ~20 KiB/cycle forever (linear RSS
+    /// leak, soak 10-12/10-13 evidence).
+    /// @trace REQ-LIB-002 [req:REQ-LIB-002]
+    pub fn install_runtime_event_drain(
+        &self,
+        rx: Receiver<ServoEvent>,
+        tap: Option<Arc<bao_cdp_client::bridge::CdpEventTap>>,
+    ) {
+        *self.event_rx.borrow_mut() = Some(rx);
+        *self.event_tap.borrow_mut() = tap;
+    }
+
+    /// Drain the runtime-owned event channel (e207 spin-face invariant,
+    /// REQ-LIB-002): every pump shape calls this right after its
+    /// `spin_event_loop`, so the unbounded reliable queue never accumulates.
+    /// With the channel replaced by an embedder's `set_event_channel` this
+    /// receiver is disconnected and the drain is an instant no-op (the
+    /// caller-owned receiver is drained by its own pump face, one truth).
+    /// @trace REQ-LIB-002 [req:REQ-LIB-002]
+    pub fn drain_runtime_events(&self) {
+        let tap = self.event_tap.borrow().clone();
+        let rx = self.event_rx.borrow();
+        let Some(rx) = rx.as_ref() else { return };
+        let Some(tap) = tap else {
+            // No CDP client face: still MUST drain (the queue is unbounded;
+            // draining without a tap drops nothing that was awaited — no
+            // waiter exists — but frees the buffered events).
+            drain_servo_events(rx, |_| {});
+            return;
+        };
+        drain_servo_events(rx, move |servo_event| {
+            let target_id = servo_event.target_id().to_string();
+            for cdp_event in translate(servo_event) {
+                tap.observe(&target_id, &cdp_event.method, &cdp_event.params);
+            }
+        });
     }
 
     // ─── SharedWorker Global Registry (REQ-BRW-004 / DF-WK-7) ────────

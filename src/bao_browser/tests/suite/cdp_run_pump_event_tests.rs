@@ -181,11 +181,15 @@ fn pump_cdp_face_wait_for_request_resolves_on_real_page_load() {
 }
 
 /// 手动 spin 形嵌入者契约锁(REQ-LIB-003):嵌入者自驱
-/// `spin_event_loop` 循环时必须每迭代调 `pump_servo_events_to_taps` ——
-/// 通道是无界可靠队列(REQ-CDP-004 立法:永不丢弃、无高水位自弃),不
-/// drain 即无限积压(soak 10-12 线性泄漏的缺口本体)。锁两面:①不调
-/// drain 时 emitted>pumped(积压真实存在,非 vacuous)②调 drain 后
-/// emitted==pumped 且下一轮保持(不积压)。
+/// `spin_event_loop` 循环时**可以**每迭代调 `pump_servo_events_to_taps` ——
+/// 通道是无界可靠队列(REQ-CDP-004 立法:永不丢弃、无高水位自弃)。
+/// e207(REQ-LIB-002)把接收端移入 delegate 并让一切 spin 面 spin 后即
+/// 排空后,「不 drain 即无限积压」不再是可达形态(e207 前 soak 10-12
+/// 线性泄漏的缺口本体;e207 后该缺口的负对照结构性不可达——任何
+/// evaluate/spin 产生的事件在下一次 spin 返回前已被自排空)。本锁改为
+/// 两面:①每轮 drain 后 emitted==pumped 且下一轮保持(显式契约面零
+/// 回归)②spin 产生的积压在 drain 前已被自排空(e207 被锁行为,由
+/// spin_face_drains_runtime_event_channel_no_backlog 承担主锁)。
 ///
 /// @trace REQ-LIB-003 [level:e2e]
 #[test]
@@ -208,14 +212,15 @@ fn manual_spin_embedder_drain_keeps_emitted_equal_pumped() {
         }
 
         if round == 0 {
-            // 负对照(仅首轮):drain 之前通道里有未消费事件——积压形态
-            // 真实存在(证明断言非 vacuous)。
-            let emitted = bao_browser::servo_event_emitted_total();
-            let pumped = bao_browser::servo_event_pumped_total();
-            assert!(
-                emitted > pumped,
-                "precondition: undrained events must sit in the reliable queue \
-                 (emitted={emitted} pumped={pumped})"
+            // e207 前的负对照(「drain 之前 emitted>pumped,积压真实存在」)
+            // 在 e207 下结构性不可达:一切 spin 面自排空,console 事件在
+            // evaluate 返回前已被 drain。此处锁 e207 的新行为——spin 形态
+            // 产生的积压不可达(emitted==pumped 恒成立)。
+            assert_eq!(
+                bao_browser::servo_event_emitted_total(),
+                bao_browser::servo_event_pumped_total(),
+                "round 0: spin faces must self-drain the queue (e207 REQ-LIB-002); \
+                 a backlog here would mean the spin-face drain regressed"
             );
         }
 
@@ -230,4 +235,59 @@ fn manual_spin_embedder_drain_keeps_emitted_equal_pumped() {
              (no backlog survives the per-iteration drain)"
         );
     }
+}
+
+/// e207 spin 面排空不变量(REQ-LIB-002):runtime 自有事件通道在任何嵌入方
+/// 循环形态下不得积压。churn/soak 嵌入方 = `PageHandle` 等待循环 + 裸
+/// `spin_event_loop`(从不调 `run`/`pump_cdp`)——e199 把接收端留在 runtime
+/// 上且仅 run/pump 面排空,该形态下每 cycle 线性积压 ~20 KiB(RSS 泄漏,
+/// 10-12/10-13 soak 证据);e207 起接收端在 delegate 上、一切 spin 面 spin
+/// 后即排空。本锁 = emitted == pumped 对账等式在 spin-only churn 下成立。
+///
+/// RED(修前):spin-only churn 后 emitted > pumped(积压 = 差值)。
+/// GREEN(修后):等式成立(队列零积压)。
+///
+/// @trace REQ-LIB-002 [level:e2e]
+#[test]
+fn spin_face_drains_runtime_event_channel_no_backlog() {
+    let _registry_guard = REGISTRY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let emitted_before = bao_browser::servo_event_emitted_total();
+    let pumped_before = bao_browser::servo_event_pumped_total();
+
+    // spin-only churn 形态:create → wait(裸 spin 循环)→ navigate →
+    // wait → close,循环间只有裸 spin——绝不触 run()/pump_cdp。
+    for i in 0..6 {
+        let page = runtime
+            .create_page(&PageConfig {
+                url: Some("about:blank".into()),
+                ..Default::default()
+            })
+            .unwrap_or_else(|e| panic!("iter {i}: create_page: {e}"));
+        page.wait_for_pipeline_ready(Duration::from_secs(15))
+            .unwrap_or_else(|e| panic!("iter {i}: pipeline ready: {e}"));
+        page.navigate("data:text/html,<h1 id=b>e207</h1>")
+            .unwrap_or_else(|e| panic!("iter {i}: navigate: {e}"));
+        page.wait_for_navigation(Duration::from_secs(15))
+            .unwrap_or_else(|e| panic!("iter {i}: load: {e}"));
+        runtime
+            .page_pool()
+            .close_page(page.id())
+            .unwrap_or_else(|e| panic!("iter {i}: close: {e}"));
+        // 裸 spin 面(嵌入方唯一泵形态)。
+        runtime.spin_event_loop();
+    }
+
+    let emitted = bao_browser::servo_event_emitted_total() - emitted_before;
+    let pumped = bao_browser::servo_event_pumped_total() - pumped_before;
+    assert!(
+        emitted > 0,
+        "churn must emit servo events through the runtime-owned channel (precondition)"
+    );
+    assert_eq!(
+        emitted, pumped,
+        "spin face must drain the runtime-owned channel (backlog = {} events)",
+        emitted - pumped
+    );
 }

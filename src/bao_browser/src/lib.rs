@@ -137,16 +137,12 @@ pub struct BrowserRuntime {
     /// Generation token for registry teardown (Drop clears only if this
     /// runtime's bridge is still the installed one).
     cdp_bridge_token: Option<usize>,
-    /// Receiver of the runtime-owned servo event channel (Path B). `new()`
-    /// installs the channel on the delegate so the `run()` / `pump_cdp`
-    /// pumps drain real servo events and feed the translated CDP events
-    /// into the production event tap (the memory:// waitFor* face — the
-    /// e18d48330 documented boundary "run() 泵无事件通道" closed here). An
-    /// embedder that later calls `set_event_channel` replaces the channel:
-    /// this receiver then ends up disconnected and its drain is a no-op
-    /// (the caller-owned receiver is drained by its own pump/embedder).
-    /// @trace REQ-LIB-003 [req:REQ-LIB-003]
-    servo_event_rx: std::sync::mpsc::Receiver<ServoEvent>,
+    /// (e207, REQ-LIB-002) The runtime-owned channel RECEIVER moved to the
+    /// servo delegate (`BaoServoDelegate::install_runtime_event_drain`) so
+    /// every spin face — not only `run` / `pump_cdp` — drains right after
+    /// its spin. e199 kept it here and only the run/pump loops drained:
+    /// spin-shaped embedders (soak/churn PagePool users) accumulated
+    /// ~20 KiB/cycle unboundedly (linear RSS leak).
     /// WPT official-toolchain face (REQ-BRW-002): when set, the run loops
     /// drain the WebDriver embedder channel in addition to the servo loop.
     /// Installed by `run_browser` before the loop starts.
@@ -569,15 +565,19 @@ impl BrowserRuntime {
                 cdp_bridge.clone() as std::sync::Arc<dyn bao_cdp_client::transport::InMemoryBridge>,
             );
 
-        // Runtime-owned servo event channel (Path B): the `run()` /
-        // `pump_cdp` pumps drain it every iteration and feed the translated
-        // CDP events into the production event tap, so memory:// clients'
-        // waitFor* resolve on real page events under the plain runtime pump
-        // (the e18d48330 documented boundary — "run() 泵无事件通道" — closed
-        // here). Pages created later inherit the channel through the
-        // delegate (`PageHandle` creation copies `servo_delegate.event_tx()`).
+        // Runtime-owned servo event channel (Path B, e199 REQ-LIB-003): the
+        // RECEIVER + tap install on the DELEGATE (e207, REQ-LIB-002) — every
+        // spin face drains right after its spin (runtime pumps AND the
+        // `PageHandle` wait loops, which is the churn/soak pump shape), so
+        // the unbounded reliable queue never accumulates regardless of the
+        // embedder loop shape. Pages created later inherit the channel
+        // through the delegate (`PageHandle` creation copies
+        // `servo_delegate.event_tx()`).
         // @trace REQ-LIB-003 [req:REQ-LIB-003]
+        // @trace REQ-LIB-002 [req:REQ-LIB-002]
         let (servo_event_tx, servo_event_rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let tap = cdp_bridge.event_tap();
+        delegate.install_runtime_event_drain(servo_event_rx, tap);
         let runtime = BrowserRuntime {
             servo,
             delegate,
@@ -586,7 +586,6 @@ impl BrowserRuntime {
             cdp_bridge: Some(cdp_bridge),
             cdp_bridge_rx: Some(cdp_bridge_rx),
             cdp_bridge_token: Some(cdp_bridge_token),
-            servo_event_rx,
             #[cfg(feature = "webdriver")]
             webdriver_host: std::cell::RefCell::new(None),
             exit_scheduled: std::cell::Cell::new(false),
@@ -856,6 +855,12 @@ impl BrowserRuntime {
 
     pub fn spin_event_loop(&self) {
         self.servo.spin_event_loop();
+        // e207 (REQ-LIB-002): the runtime-owned channel drains on EVERY spin
+        // face — this wrapper is the plain embedder primitive (soak/churn
+        // PagePool users, live tests); e199 drained only the run/pump loops
+        // and spin-shaped embedders accumulated the queue unboundedly
+        // (~20 KiB/cycle linear RSS leak).
+        self.delegate.drain_runtime_events();
     }
 
     /// Set the console log forwarding channel on the servo delegate.
@@ -889,8 +894,8 @@ impl BrowserRuntime {
     ///
     /// Replaces the runtime-owned channel installed by `new()`: the
     /// replaced sender's last clones drop with the delegate/page states it
-    /// was handed to, so the runtime's internal receiver disconnects and
-    /// its pump-side drain (`run` / `pump_cdp`) becomes a no-op. The
+    /// was handed to, so the delegate-installed receiver disconnects and
+    /// every spin-face drain becomes a no-op (e207 REQ-LIB-002). The
     /// caller-owned receiver is drained by its own pump shape
     /// (`run_with_bridge` takes it as a parameter).
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
@@ -938,17 +943,21 @@ impl BrowserRuntime {
     /// `servo_event_pumped_total()` (this drain) — a manual pump is
     /// leak-free exactly while the two deltas stay equal.
     ///
+    /// e207 (REQ-LIB-002): the receiver itself moved onto the servo delegate
+    /// (`install_runtime_event_drain`), and every built-in spin face — the
+    /// `PageHandle` wait loops and `Self::spin_event_loop` included — drains
+    /// through `drain_runtime_events` right after its spin. The manual-pump
+    /// contract above therefore degrades from load-bearing to
+    /// belt-and-suspenders: an embedder that skips this call no longer leaks
+    /// by default (the spin faces self-drain); calling it stays harmless
+    /// (drain of an empty queue) and remains the documented shape for
+    /// embedders that hold the runtime behind their own pump abstraction.
+    ///
     /// @trace REQ-LIB-003 [req:REQ-LIB-003]
     /// @trace REQ-CDP-001 [req:REQ-CDP-001]
+    /// @trace REQ-LIB-002 [req:REQ-LIB-002]
     pub fn pump_servo_events_to_taps(&self) {
-        let tap = self.cdp_bridge.as_ref().and_then(|b| b.event_tap());
-        drain_servo_events(&self.servo_event_rx, move |servo_event| {
-            let Some(tap) = &tap else { return };
-            let target_id = servo_event.target_id().to_string();
-            for cdp_event in translate(servo_event) {
-                tap.observe(&target_id, &cdp_event.method, &cdp_event.params);
-            }
-        });
+        self.delegate.drain_runtime_events();
     }
 
     pub fn run(&self) -> Result<(), BrowserError> {
@@ -1011,10 +1020,11 @@ impl BrowserRuntime {
             if let Some(rx) = &self.cdp_bridge_rx {
                 rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
             }
-            // REQ-LIB-003: drain the runtime-owned servo event channel and
-            // feed the translated CDP events into the production event tap
-            // (memory:// waitFor* liveness on this pump face).
-            self.pump_servo_events_to_taps();
+            // REQ-LIB-003 + e207 REQ-LIB-002: drain the runtime-owned servo
+            // event channel (delegate-owned receiver) and feed the translated
+            // CDP events into the production event tap (memory:// waitFor*
+            // liveness on this pump face).
+            self.delegate.drain_runtime_events();
             // WPT official-toolchain face (REQ-BRW-002): answer the
             // webdriver_server embedder channel between spins.
             #[cfg(feature = "webdriver")]
@@ -1070,9 +1080,9 @@ impl BrowserRuntime {
             if let Some(rx) = &self.cdp_bridge_rx {
                 rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
             }
-            // REQ-LIB-003: same servo-event → tap feed as `run` (the bounded
-            // pump face stays waitFor*-live).
-            self.pump_servo_events_to_taps();
+            // REQ-LIB-003 + e207 REQ-LIB-002: same delegate drain as `run`
+            // (the bounded pump face stays waitFor*-live).
+            self.delegate.drain_runtime_events();
             // Bounded poll — same cadence rationale as `run` (yield_now burned
             // a full core for the whole pump duration).
             std::thread::sleep(std::time::Duration::from_millis(1));

@@ -117,6 +117,11 @@ pub struct PageInner {
     pub servo: Rc<Servo>,
     pub rendering_context: Rc<SoftwareRenderingContext>,
     pub delegate: Rc<BaoWebViewDelegate>,
+    /// Runtime-level servo delegate (e207, REQ-LIB-002): every spin site on
+    /// this page drains the runtime-owned event channel right after its
+    /// spin (`spin_and_drain`) — the churn/soak pump shape is exactly these
+    /// wait loops, which e199's run/pump-only drains never covered.
+    pub servo_delegate: Rc<crate::delegate::BaoServoDelegate>,
     pub state: Rc<RefCell<PageState>>,
     pub webview_state: Rc<RefCell<BaoWebViewState>>,
     /// Monotonic navigation counter (navigate/reload/go_back/go_forward).
@@ -144,6 +149,15 @@ pub struct PageInner {
 }
 
 impl PageInner {
+    /// Spin the servo event loop and drain the runtime-owned event channel
+    /// (e207, REQ-LIB-002): single choke point for every PageInner wait-loop
+    /// spin so the unbounded reliable queue never accumulates behind the
+    /// churn/soak pump shape (e199 drained only the runtime run/pump loops).
+    pub(crate) fn spin_and_drain(&self) {
+        self.servo.spin_event_loop();
+        self.servo_delegate.drain_runtime_events();
+    }
+
     pub fn touch(&self) {
         *self.last_active_at.borrow_mut() = Instant::now();
     }
@@ -304,7 +318,7 @@ impl PageInner {
                     // on the embedder thread is the deadlock primitive (Mesa
                     // llvmpipe cond_wait, see spin_servo).
                     if attempt % 5 == 4 {
-                        self.servo.spin_event_loop();
+                        self.spin_and_drain();
                     }
                     continue;
                 }
@@ -888,12 +902,12 @@ impl PageInner {
                 Err(BrowserError::JavaScript(ref msg)) if msg.contains("InternalError") => {
                     // Pipeline not ready — spin and retry. #40: no GL
                     // composite on the embedder thread (deadlock primitive).
-                    self.servo.spin_event_loop();
+                    self.spin_and_drain();
                     continue;
                 }
                 Err(e) => return Err(e),
             }
-            self.servo.spin_event_loop();
+            self.spin_and_drain();
             std::thread::yield_now();
         }
         Err(BrowserError::Init(format!(
@@ -920,12 +934,12 @@ impl PageInner {
                 Ok(_) => {}
                 Err(BrowserError::JavaScript(ref msg)) if msg.contains("InternalError") => {
                     // #40: no GL composite on the embedder thread.
-                    self.servo.spin_event_loop();
+                    self.spin_and_drain();
                     continue;
                 }
                 Err(e) => return Err(e),
             }
-            self.servo.spin_event_loop();
+            self.spin_and_drain();
             std::thread::yield_now();
         }
         Err(BrowserError::Init(format!(
@@ -1021,7 +1035,7 @@ impl PageInner {
             // rasterizer workers idle (lost fence wakeup, headless/xvfb,
             // ~1/17k cycles), wedging the embedder thread inside ONE spin
             // iteration where no caller timeout can ever fire.
-            self.servo.spin_event_loop();
+            self.spin_and_drain();
             std::thread::yield_now();
         }
         Err(BrowserError::Init(format!(
@@ -1055,7 +1069,7 @@ impl PageInner {
         // #40: pump messages between down/up; no GL composite here (input
         // delivery is message-driven, the composite was visual-only and is
         // the deadlock primitive).
-        self.servo.spin_event_loop();
+        self.spin_and_drain();
         self.dispatch_mouse_event(MouseButtonAction::Up, MouseButton::Primary, x, y);
         Ok(())
     }
@@ -1082,7 +1096,7 @@ impl PageInner {
                 false,
             );
             // #40: message pump only — no GL composite (deadlock primitive).
-            self.servo.spin_event_loop();
+            self.spin_and_drain();
             self.dispatch_key_event_full(
                 KeyState::Up,
                 key,
@@ -1156,7 +1170,7 @@ impl PageInner {
             false,
         );
         // #40: message pump only — no GL composite (deadlock primitive).
-        self.servo.spin_event_loop();
+        self.spin_and_drain();
         self.dispatch_key_event_full(
             KeyState::Up,
             key_val,
@@ -1227,7 +1241,7 @@ impl PageInner {
                 // Allow servo to re-layout at the new viewport size.
                 // #40: layout is pipeline-driven (spin_event_loop); the
                 // explicit composite is done by take_screenshot itself.
-                self.servo.spin_event_loop();
+                self.spin_and_drain();
             }
         }
 
@@ -1320,7 +1334,7 @@ impl PageInner {
     ) -> Result<(), BrowserError> {
         let start = Instant::now();
         while callback() {
-            self.servo.spin_event_loop();
+            self.spin_and_drain();
             self.paint_if_needed();
             if start.elapsed() > timeout {
                 return Err(BrowserError::Init("operation timed out".into()));
@@ -1371,6 +1385,15 @@ fn new_rendering_context(
 }
 
 impl PageHandle {
+    /// Spin the servo event loop and drain the runtime-owned event channel
+    /// (e207, REQ-LIB-002) — the PageHandle-side twin of
+    /// `PageInner::spin_and_drain`; covers the wait-loop sites that spin via
+    /// the handle directly.
+    pub(crate) fn spin_and_drain(&self) {
+        self.servo.spin_event_loop();
+        self.delegate.drain_runtime_events();
+    }
+
     pub(crate) fn new(
         pool_weak: &std::rc::Weak<crate::page_pool::PagePool>,
         servo: Rc<Servo>,
@@ -1542,6 +1565,7 @@ impl PageHandle {
             servo: Rc::clone(&servo),
             rendering_context,
             delegate: webview_delegate,
+            servo_delegate: Rc::clone(&servo_delegate),
             state,
             webview_state,
             nav_seq: ::std::cell::Cell::new(0),
@@ -1633,10 +1657,7 @@ impl PageHandle {
             }
 
             // Not ready yet — spin event loop to process servo messages.
-            self.with_inner(|inner| {
-                inner.servo.spin_event_loop();
-                Ok(())
-            })?;
+            self.spin_and_drain();
 
             // Yield briefly to avoid CPU spinning (servo event loop is non-blocking).
             std::thread::yield_now();
@@ -1691,10 +1712,7 @@ impl PageHandle {
             } else {
                 complete_since = None;
             }
-            self.with_inner(|inner| {
-                inner.servo.spin_event_loop();
-                Ok(())
-            })?;
+            self.spin_and_drain();
             ticks = ticks.wrapping_add(1);
             if ticks % 8 == 0 {
                 let _ = self.evaluate_js_web(";");
