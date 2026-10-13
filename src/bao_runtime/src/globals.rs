@@ -3031,12 +3031,15 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             if view.is_null() {
                 return create_buffer_from_bytes(cx, &args, &[]);
             }
-            // Rebind the view's prototype to Buffer.prototype so it presents
-            // as a Buffer (instanceof checks, _isBuffer, fill/write/etc.).
-            set_buffer_proto(cx, view);
             let cx_ref =
                 mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            // Root the view BEFORE set_buffer_proto: JS_SetPrototype inside it is
+            // a GC point and a nursery GC relocates the view — a root captured
+            // after the call would pin a stale address (stale-rval UB, e206).
             rooted!(&in(cx_ref) let view_root = view);
+            // Rebind the view's prototype to Buffer.prototype so it presents
+            // as a Buffer (instanceof checks, _isBuffer, fill/write/etc.).
+            set_buffer_proto(cx, view_root.get());
             rooted!(&in(cx_ref) let is_buf = BooleanValue(true));
             JS_DefineProperty(
                 cx,
@@ -3045,7 +3048,7 @@ unsafe extern "C" fn buffer_from(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 is_buf.handle().into(),
                 0u32,
             );
-            args.rval().set(ObjectValue(view));
+            args.rval().set(ObjectValue(view_root.get()));
             true
         } else if is_view {
             // @trace REQ-ENG-005 [api:Buffer.from(TypedArray)] — Node.js
@@ -4237,10 +4240,12 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                 view_len,
             );
             if !view.is_null() {
-                set_buffer_proto(cx, view);
                 let cx_ref =
                     mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                // Root the view BEFORE set_buffer_proto (JS_SetPrototype is a GC
+                // point) so the root never pins a stale address (e206 class).
                 rooted!(&in(cx_ref) let view_root = view);
+                set_buffer_proto(cx, view_root.get());
                 rooted!(&in(cx_ref) let is_buf = BooleanValue(true));
                 JS_DefineProperty(
                     cx,
@@ -4249,7 +4254,7 @@ unsafe extern "C" fn buffer_slice(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                     is_buf.handle().into(),
                     0u32,
                 );
-                args.rval().set(ObjectValue(view));
+                args.rval().set(ObjectValue(view_root.get()));
                 return true;
             }
         }

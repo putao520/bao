@@ -1256,6 +1256,11 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return true;
     }
 
+    // Root the Promise for the whole Bun.connect build window below: socket
+    // construction, property defines and Evaluate are GC points — a nursery GC
+    // relocates the object and the bare local goes stale (stale-rval UB, e206).
+    rooted!(&in(cx_ref) let promise_r = promise);
+
     crate::timers::with_event_loop(|_| {});
 
     let loop_ = get_loop();
@@ -1768,9 +1773,9 @@ unsafe extern "C" fn bun_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         );
     }
 
-    // Return the Promise
-    rooted!(&in(cx_ref) let promise_root = promise);
-    args.rval().set(ObjectValue(promise_root.get()));
+    // Return the Promise — re-read the live address from the root created at
+    // entry (the build window above is full of GC points; e206 class).
+    args.rval().set(ObjectValue(promise_r.get()));
     true
 }
 

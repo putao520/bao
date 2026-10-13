@@ -447,6 +447,10 @@ unsafe extern "C" fn glob_scan(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     };
     let mut wrapped = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped;
+    // Root `arr` for the async-iterator wrap window below: NewCompileOptions /
+    // Evaluate2 / JS_CallFunctionValue are all GC points — a nursery GC
+    // relocates the array and the bare local would go stale (e206 class).
+    rooted!(&in(cx_ref) let arr_r = arr);
     let wrap_src = r#"(function(arr) {
   return {
     [Symbol.asyncIterator]: async function* () { yield* arr; },
@@ -456,7 +460,7 @@ unsafe extern "C" fn glob_scan(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let mut text = mozjs::rust::transform_str_to_source_text(wrap_src);
     let opts = mozjs::glue::NewCompileOptions(cx, c"<bun:glob-scan>".as_ptr(), 1);
     if opts.is_null() {
-        args.rval().set(ObjectValue(arr));
+        args.rval().set(ObjectValue(arr_r.get()));
         return true;
     }
     let mut ctor = UndefinedValue();
@@ -468,12 +472,12 @@ unsafe extern "C" fn glob_scan(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     mozjs::glue::DeleteCompileOptions(opts);
     if !ok || !ctor.is_object() {
         JS_ClearPendingException(cx);
-        args.rval().set(ObjectValue(arr));
+        args.rval().set(ObjectValue(arr_r.get()));
         return true;
     }
     rooted!(&in(cx_ref) let ctor_obj = ctor.to_object());
     rooted!(&in(cx_ref) let ctor_val = ObjectValue(ctor_obj.get()));
-    rooted!(&in(cx_ref) let arr_val = ObjectValue(arr));
+    rooted!(&in(cx_ref) let arr_val = ObjectValue(arr_r.get()));
     let call_vals = [arr_val.handle().get()];
     let call_arr = HandleValueArray {
         length_: 1,
@@ -494,7 +498,7 @@ unsafe extern "C" fn glob_scan(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         if !called {
             JS_ClearPendingException(cx);
         }
-        args.rval().set(ObjectValue(arr));
+        args.rval().set(ObjectValue(arr_r.get()));
         return true;
     }
     args.rval().set(out);

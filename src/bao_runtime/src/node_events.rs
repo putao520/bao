@@ -595,13 +595,19 @@ unsafe extern "C" fn event_emitter_constructor(
     // Try normal constructor path (new EventEmitter())
     let this = JS_NewObjectForConstructor(cx, &EMITTER_CLASS, &args);
     if !this.is_null() {
+        // set_state reads a hidden property (JS_GetProperty — a formal GC
+        // point); root `this` so the rval below re-reads the live address
+        // (stale-rval UB class, e206).
+        let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped;
+        rooted!(&in(cx_ref) let this_r = this);
         let state = EmitterState {
             listeners: HashMap::new(),
             once_flags: HashMap::new(),
             max_listeners: 10,
         };
-        set_state(cx, this, state);
-        args.rval().set(ObjectValue(this));
+        set_state(cx, this_r.get(), state);
+        args.rval().set(ObjectValue(this_r.get()));
         return true;
     }
 

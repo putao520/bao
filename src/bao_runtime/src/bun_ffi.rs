@@ -2614,7 +2614,9 @@ unsafe extern "C" fn ffi_to_buffer(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     rooted!(&in(cx_ref) let ab_root = ab);
     let view = mozjs_sys::jsapi::JS_NewUint8ArrayWithBuffer(cx, ab_root.handle().into(), 0, len as i64);
     if view.is_null() {
-        args.rval().set(ObjectValue(ab));
+        // JS_NewUint8ArrayWithBuffer is a GC point — `ab` may have moved since
+        // its creation; re-read from the root (stale-rval UB class, e206).
+        args.rval().set(ObjectValue(ab_root.get()));
         return true;
     }
     rooted!(&in(cx_ref) let view_r = view);

@@ -2854,25 +2854,29 @@ unsafe fn query_field_value(cx: *mut JSContext, search: &str, as_object: bool) -
 }
 
 /// Define the `query` property on a freshly built url.parse result object.
+///
+/// `obj` must be the caller's rooted handle, not a raw pointer snapshot:
+/// `query_field_value` allocates (JS_NewStringCopyN / build_query_object), and
+/// a minor GC there relocates the nursery object — the handle tracks the move
+/// while a pre-allocation raw pointer would go stale (stale-rval UB, e206).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn define_query_property(
     cx: *mut JSContext,
-    obj: *mut JSObject,
+    obj: mozjs::gc::HandleObject,
     search: &str,
     as_object: bool,
 ) {
-    if obj.is_null() {
+    if obj.get().is_null() {
         return;
     }
     let query_val = query_field_value(cx, search, as_object);
     let mut wrapped = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped;
-    rooted!(&in(cx_ref) let obj_r = obj);
     rooted!(&in(cx_ref) let q_root = query_val);
     let c_query = ZBox::from_bytes(b"query");
     JS_DefineProperty(
         cx,
-        obj_r.handle().into(),
+        obj.into(),
         c_query.as_ptr(),
         q_root.handle().into(),
         JSPROP_ENUMERATE as u32,
@@ -2978,8 +2982,8 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                         JSPROP_ENUMERATE as u32,
                     );
                 }
-                define_query_property(cx, obj_r.get(), &search, parse_query_string);
-                args.rval().set(ObjectValue(obj));
+                define_query_property(cx, obj_r.handle(), &search, parse_query_string);
+                args.rval().set(ObjectValue(obj_r.get()));
                 return true;
             }
             args.rval().set(mozjs::jsval::NullValue());
@@ -3063,9 +3067,9 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             }
         }
     }
-    define_query_property(cx, obj_r.get(), &state.search, parse_query_string);
+    define_query_property(cx, obj_r.handle(), &state.search, parse_query_string);
 
-    args.rval().set(ObjectValue(obj));
+    args.rval().set(ObjectValue(obj_r.get()));
     true
 }
 

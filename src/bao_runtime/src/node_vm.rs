@@ -767,9 +767,15 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         return true;
     }
 
+    // Root the sandbox across the whole contextify window: is_context_registered
+    // (symbol creation), JS_NewGlobalObject, collect_sandbox_properties and the
+    // property defines are all GC points — a nursery GC relocates the object and
+    // a bare local goes stale (stale-rval UB class, e206).
+    rooted!(&in(cx_ref) let sandbox_r = sandbox);
+
     // If already contextified, return as-is.
-    if is_context_registered(cx, sandbox) {
-        args.rval().set(ObjectValue(sandbox));
+    if is_context_registered(cx, sandbox_r.get()) {
+        args.rval().set(ObjectValue(sandbox_r.get()));
         return true;
     }
 
@@ -810,7 +816,7 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
     // entering AutoRealm). This is critical because the sandbox object lives
     // in the caller's compartment; iterating it from the sandbox realm would
     // see it through a CCW, which may not enumerate properties correctly.
-    let sandbox_props = collect_sandbox_properties(cx_ref, sandbox);
+    let sandbox_props = collect_sandbox_properties(cx_ref, sandbox_r.get());
 
     // Phase 2: Enter the new Realm and define collected properties on the
     // sandbox global. Values from the caller's realm are automatically wrapped
@@ -831,7 +837,7 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         apply_code_generation_restrictions(realm_cx, sandbox_global.get(), cgen_flags);
 
         // Register Rust-side metadata (baseline captured pre-seed).
-        register_context(sandbox, ::std::rc::Rc::new(baseline));
+        register_context(sandbox_r.get(), ::std::rc::Rc::new(baseline));
     }
 
     // Attach the GC edge in the sandbox object's compartment (the caller's
@@ -840,10 +846,10 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
     // A rejected define (e.g. a frozen sandbox) degrades to edge-absent on
     // later lookups — the realm is then simply re-created, never
     // dereferenced stale.
-    attach_context_edge(cx, sandbox, sandbox_global.get());
+    attach_context_edge(cx, sandbox_r.get(), sandbox_global.get());
 
     // Mark with __isVMContext for isContext() backwards compat.
-    rooted!(&in(cx_ref) let sandbox_root = sandbox);
+    rooted!(&in(cx_ref) let sandbox_root = sandbox_r.get());
     rooted!(&in(cx_ref) let marker = BooleanValue(true));
     JS_DefineProperty(
         cx,
@@ -1721,7 +1727,11 @@ unsafe extern "C" fn vm_script_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         fallback.get()
     };
 
-    // Store code and filename as hidden properties
+    // Store code and filename as hidden properties.
+    // Root `this_obj` for the window below: JS_NewStringCopyN and the property
+    // defines are GC points — a nursery GC relocates the object and a bare
+    // local (or a root captured from a stale address) goes stale (e206 class).
+    rooted!(&in(cx_ref) let this_obj_r = this_obj);
     let code_str = JS_NewStringCopyN(
         cx,
         code.as_ptr() as *const ::std::os::raw::c_char,
@@ -1729,10 +1739,9 @@ unsafe extern "C" fn vm_script_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     );
     if !code_str.is_null() {
         rooted!(&in(cx_ref) let cv = mozjs::jsval::StringValue(&*code_str));
-        rooted!(&in(cx_ref) let this_root = this_obj);
         JS_DefineProperty(
             cx,
-            this_root.handle().into(),
+            this_obj_r.handle().into(),
             c"__code".as_ptr(),
             cv.handle().into(),
             0,
@@ -1745,17 +1754,16 @@ unsafe extern "C" fn vm_script_ctor(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     );
     if !fn_str.is_null() {
         rooted!(&in(cx_ref) let fv = mozjs::jsval::StringValue(&*fn_str));
-        rooted!(&in(cx_ref) let this_root2 = this_obj);
         JS_DefineProperty(
             cx,
-            this_root2.handle().into(),
+            this_obj_r.handle().into(),
             c"__filename".as_ptr(),
             fv.handle().into(),
             0,
         );
     }
 
-    args.rval().set(ObjectValue(this_obj));
+    args.rval().set(ObjectValue(this_obj_r.get()));
     true
 }
 

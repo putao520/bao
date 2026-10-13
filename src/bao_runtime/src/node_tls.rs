@@ -3599,7 +3599,7 @@ unsafe extern "C" fn tls_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 }
             }
         }
-        args.rval().set(ObjectValue(early_socket));
+        args.rval().set(ObjectValue(sock_root.get()));
         return true;
     }
 
