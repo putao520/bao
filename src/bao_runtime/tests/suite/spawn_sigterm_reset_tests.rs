@@ -3,6 +3,7 @@
 #![cfg(unix)]
 
 // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:integration]
+// @trace REQ-ENG-047 [req:REQ-ENG-047] [level:integration] — Bun.spawn/spawnSync 子进程基础设施:spawn 时 POSIX_SPAWN_SETSIGDEF|SETSIGMASK 信号重置
 // W33 (#31/#32 tail, W17 slice): a spawned child must start from the
 // DEFAULT signal state even when the spawner host runs with hostile signal
 // state (SIGTERM/SIGINT SIG_IGN, SIGPIPE blocked) — execve only resets

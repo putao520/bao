@@ -412,6 +412,7 @@ pub fn thread_cache_counters() -> (u64, u64, u64) {
     })
 }
 
+// @trace REQ-ENG-012 [req:REQ-ENG-012] [level:integration] — Stencil XDR 持久化缓存:evaluate_script_cached 面回归(确定性观测载荷:patched builtin+闭包+全局 JSON 指纹)
 #[cfg(test)]
 mod tests {
     use super::*;

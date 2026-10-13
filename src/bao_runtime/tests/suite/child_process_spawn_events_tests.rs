@@ -3,6 +3,7 @@
 #![cfg(unix)]
 
 // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:integration]
+// @trace REQ-ENG-46 [req:REQ-ENG-46] [level:integration] — process/子进程能力全平台真实现:child_process.spawn EventEmitter 事件面(exit/close/data/kill)
 // child_process.spawn EventEmitter surface. cp_spawn returns a plain data
 // object — `child.on` was undefined and the CP_JS ChildProcess wrapper was
 // stored but never used (filed from the bbe20a81 sweep). The JS-layer wrap

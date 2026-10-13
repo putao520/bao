@@ -1,4 +1,5 @@
 // @trace TEST-ENG-007-NET-DEEP [req:REQ-ENG-007] [level:integration]
+// @trace REQ-ENG-23 [req:REQ-ENG-23] [level:integration] — Node.js net 模块 TCP/IPC 深度面
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]

@@ -2,6 +2,7 @@
 #![cfg(unix)]
 
 // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:integration]
+// @trace REQ-ENG-047 [req:REQ-ENG-047] [level:integration] — Bun.spawn/Bun.spawnSync 子进程基础设施:pipe stdio=socketpair(2)+spawn_process.rs 共享写路径
 // Upstream regression: bun 118fdd203a "child_process: report a failed child
 // stdin write with syscall write, as Node does (#40935)" (verified against
 // ~/code/rust/bun git show). A "pipe" child stdio is a socketpair(2) on POSIX

@@ -1,4 +1,5 @@
 // @trace TEST-BAO-API-017/018 [req:REQ-BAO-API-017,REQ-BAO-API-018] [level:integration]
+// @trace REQ-ENG-18 [req:REQ-ENG-18] [level:integration] — Bun.shell Shell API(同源 REQ-BAO-API-018,Shell/$ 解释器语义载体:Bun.$ template/数组双形态+ShellOutput)
 // P0 surface regressions (v-surface audit wave):
 //
 // 1. Bun.$ — template AND direct-array invocations SIGSEGV'd in
@@ -400,4 +401,36 @@ fn bun_connect_refused_rejects_and_terminates_socket() {
         !bun_runtime::node_http::has_active_servers(),
         "refused-connect socket must not keep the loop alive"
     );
+}
+
+// ──────────────────── Item 4: Bun.Shell class surface ────────────────────
+
+/// REQ-ENG-18 / REQ-BAO-API-018 AC C1+C2 direct probes (C3-C8 ride on the
+/// Bun.$ tests above): `Bun.Shell` must be installed as a function on the
+/// Bun object, and constructing one must yield a ShellInterpreter instance —
+/// the constructor stamps a numeric _shellId and installs the run/setenv/cd
+/// interpreter methods (construction itself spawns no subprocess).
+#[test]
+fn bun_shell_class_is_function_and_constructor_yields_interpreter() {
+    let mut ctx = fresh_ctx();
+
+    // C1: the Shell constructor is a function on Bun.
+    let c1 = eval_str(&mut ctx, "typeof Bun.Shell");
+    assert_eq!(c1, "function", "AC C1: typeof Bun.Shell");
+
+    // C2: new Bun.Shell() creates a ShellInterpreter instance (run/setenv/cd
+    // surface + per-instance _shellId); a throw surfaces as eval ERROR here.
+    let c2 = eval_str(
+        &mut ctx,
+        r#"
+        var s = new Bun.Shell();
+        (s !== null && typeof s === "object"
+            && typeof s.run === "function"
+            && typeof s.setenv === "function"
+            && typeof s.cd === "function"
+            && typeof s._shellId === "number")
+            ? "inst-ok" : "inst-FAIL"
+    "#,
+    );
+    assert_eq!(c2, "inst-ok", "AC C2: new Bun.Shell() instance surface");
 }

@@ -467,6 +467,7 @@ pub unsafe fn store(
 }
 
 // ─── Tests (REQ-ENG-012 C1/C2/C3/C4) ────────────────────────────────────────
+// @trace REQ-ENG-012 [req:REQ-ENG-012] [level:integration] — Stencil XDR 持久化缓存:c1 磁盘命中执行等价(encode→decode 往返)/ c2 冷启动 decode 优于重编译 / c3 截断与 build-id 陈旧 fail-closed 回退自愈 / c4 原子写(零临时文件残留)
 
 #[cfg(test)]
 mod tests {

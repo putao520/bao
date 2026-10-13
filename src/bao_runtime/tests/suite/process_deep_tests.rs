@@ -1,4 +1,5 @@
 // @trace TEST-ENG-007-PROC [req:REQ-ENG-007] [level:integration]
+// @trace REQ-ENG-46 [req:REQ-ENG-46] [level:integration] — process/子进程能力全平台真实现:process API 面(arch/platform/version/env/cwd/hrtime/uptime/memoryUsage)
 // Process API deep tests: arch, platform, version, env, cwd, hrtime, uptime, memoryUsage, etc.
 
 use bao_engine::context::JsContext;

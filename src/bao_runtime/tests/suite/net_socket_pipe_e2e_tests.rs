@@ -1,4 +1,5 @@
 // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:e2e]
+// @trace REQ-ENG-23 [req:REQ-ENG-23] [level:e2e] — Node.js net Socket Duplex 管道面(.pipe 双向/transform/pause-resume 零丢失)
 // net.Socket Duplex face — .pipe() on server-accepted connection sockets.
 // Rooted from the loud-gap audit: echo/write/on were REAL but pipe was
 // missing, so the canonical TCP→stream bridge (socket.pipe(file sink),
