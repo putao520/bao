@@ -26,12 +26,16 @@
 //! - `vm.compileFunction(code, params?, opts?)` → compile a function body
 
 use ::std::cell::RefCell;
+use ::std::collections::HashMap;
 use ::std::ptr::{self, NonNull};
+use ::std::sync::atomic::{AtomicU64, Ordering};
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::gc::RootedTraceableBox;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue};
+use mozjs::jsval::{
+    BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, UndefinedValue,
+};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
@@ -44,12 +48,12 @@ use crate::require::cache_builtin;
 // VM Context Registry (thread-local)
 // ──────────────────────────────────────────────────────────────────────────
 
-// Tracks contextified objects on this thread. Each entry maps a JSObject*
-// (the contextified sandbox) to the active code-generation policy
-// (REQ-ENG-011 criterion 8) and the baseline set of the realm global's own
-// keys at creation time (standard classes + realm intrinsics — captured
-// BEFORE sandbox seeding so that seeded and code-created keys both
-// propagate back on write-through).
+// Tracks contextified objects on this thread. The write-through metadata
+// (the baseline set of the realm global's own keys at creation time —
+// standard classes + realm intrinsics, captured BEFORE sandbox seeding so
+// that seeded and code-created keys both propagate back on write-through)
+// is keyed by a per-context id stamped on the live sandbox; see the BCE
+// note below for the full rooting history of this registry.
 //
 // BCE (SM-EVOLUTION #29 rooting inventory; same class as the R2 opt-profile
 // SIGSEVP / `trace_node_realm_roots` in bao_browser): the sandbox realm's
@@ -71,15 +75,28 @@ use crate::require::cache_builtin;
 // sandbox object (Node vm lifetime semantics), with no tracer registration
 // and no permanent pin. All lookups read the edge and unwrap the CCW, which
 // also kills the recycled-address false positive — a fresh object at the
-// same address cannot carry the edge. This Vec now holds only Rust-side
-// metadata (the global-key baseline) and is consulted only after the edge
-// proved the object is a live, genuine contextified sandbox. The
-// code-generation policy is NOT stored here: it is applied once at creation
-// time (`apply_code_generation_restrictions`) and never consulted again, so
-// storing it would be dead data.
+// same address cannot carry the edge. This map holds only Rust-side
+// write-through metadata (the
+// global-key baseline), keyed by a per-context id stamped as a hidden
+// property on the LIVE sandbox — NOT by the sandbox heap address (e208
+// face ③: an address key is invisible to the tracer and never updated by a
+// moving GC, so the first nursery evacuation / compaction after
+// createContext silently killed write-through for the rest of the
+// sandbox's life; e208's 64-context fleet probe demonstrates the loss).
+// Lookups gate on the edge first, then re-read the id from the live object.
+// The code-generation policy is NOT stored here: it is applied once at
+// creation time (`apply_code_generation_restrictions`) and never consulted
+// again, so storing it would be dead data.
 thread_local! {
-    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, ::std::rc::Rc<Vec<String>>)>> = RefCell::new(Vec::new());
+    static VM_CONTEXT_META: RefCell<HashMap<u64, ::std::rc::Rc<Vec<String>>>> = RefCell::new(HashMap::new());
 }
+
+/// Monotonic per-context id for the write-through metadata map. Entries are
+/// never removed (no Rust-side teardown hook exists — Node lifetime is
+/// sandbox-owned), so the map grows with the number of contexts ever
+/// created; ids are never reused, so a stale entry can only ever be
+/// unreachable, never mis-matched.
+static VM_CONTEXT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Description of the registered symbol carrying the context GC edge.
 /// Registered symbols are pinned by the runtime's symbol registry (same
@@ -87,15 +104,19 @@ thread_local! {
 /// bun_inspect_api), so the symbol itself needs no rooting.
 const VM_CONTEXT_SYMBOL_DESC: &[u8] = b"bao.vm.context.global";
 
-/// The registered-symbol jsid for the context edge, creating it on first
-/// use. Returns `None` only if the runtime could not create/look up the
+/// Description of the registered symbol carrying the per-context metadata id
+/// (write-through baseline lookup key). Same pinning as the edge symbol.
+const VM_CONTEXT_ID_SYMBOL_DESC: &[u8] = b"bao.vm.context.id";
+
+/// The registered-symbol jsid for a well-known bao vm marker, creating it on
+/// first use. Returns `None` only if the runtime could not create/look up the
 /// symbol (OOM); callers then degrade to "not contextified" (fail-safe:
 /// the realm is re-created on the next entry, never dereferenced stale).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn vm_context_symbol_id(cx: *mut JSContext) -> Option<jsid> {
+unsafe fn registered_symbol_jsid(cx: *mut JSContext, desc: &[u8]) -> Option<jsid> {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    let c_desc = bun_core::ZBox::from_bytes(VM_CONTEXT_SYMBOL_DESC);
+    let c_desc = bun_core::ZBox::from_bytes(desc);
     let sym = JS_NewStringCopyZ(cx, c_desc.as_ptr());
     if sym.is_null() {
         return None;
@@ -106,6 +127,18 @@ unsafe fn vm_context_symbol_id(cx: *mut JSContext) -> Option<jsid> {
         return None;
     }
     Some(mozjs::jsid::SymbolId(sym))
+}
+
+/// The registered-symbol jsid for the context edge.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn vm_context_symbol_id(cx: *mut JSContext) -> Option<jsid> {
+    unsafe { registered_symbol_jsid(cx, VM_CONTEXT_SYMBOL_DESC) }
+}
+
+/// The registered-symbol jsid for the per-context metadata id.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn vm_context_id_symbol_id(cx: *mut JSContext) -> Option<jsid> {
+    unsafe { registered_symbol_jsid(cx, VM_CONTEXT_ID_SYMBOL_DESC) }
 }
 
 /// Read the context GC edge off a candidate sandbox. Returns the sandbox
@@ -172,12 +205,83 @@ unsafe fn attach_context_edge(cx: *mut JSContext, sandbox: *mut JSObject, global
     );
 }
 
-/// Register a sandbox object as contextified (Rust-side metadata only: the
-/// global-key baseline). The GC edge is attached separately by
-/// `vm_create_context` — see the registry BCE note.
-fn register_context(sandbox: *mut JSObject, baseline: ::std::rc::Rc<Vec<String>>) {
-    VM_CONTEXT_MAP.with(|m| {
-        m.borrow_mut().push((sandbox, baseline));
+/// Stamp the per-context metadata id onto a sandbox:
+/// `sandbox[Symbol.for("bao.vm.context.id")] = <double id>`.
+///
+/// MUST run in the sandbox object's compartment (the caller's realm — same
+/// requirement as the edge attach), immediately after the edge attach.
+/// A rejected define (e.g. a frozen sandbox) simply leaves the id absent:
+/// `get_context_baseline` then returns None and write-through is skipped
+/// (fail-safe, same degradation as an absent edge).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn attach_context_id(cx: *mut JSContext, sandbox: *mut JSObject, id: u64) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let sb = sandbox);
+    let Some(id_sym) = (unsafe { vm_context_id_symbol_id(cx) }) else {
+        return;
+    };
+    rooted!(&in(cx_ref) let id_val = DoubleValue(id as f64));
+    unsafe {
+        JS_DefinePropertyById2(
+            cx,
+            sb.handle().into(),
+            Handle::from_marked_location(&id_sym),
+            id_val.handle().into(),
+            (JSPROP_READONLY | JSPROP_PERMANENT) as u32,
+        );
+    }
+}
+
+/// Read the per-context metadata id back off a LIVE sandbox. The property is
+/// read fresh per call — a moving GC can never desync this key (the
+/// predecessor keyed the map by the sandbox heap address, which any moving
+/// GC invalidated).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_context_id(cx: *mut JSContext, obj: *mut JSObject) -> Option<u64> {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let o = obj);
+    let Some(id_sym) = (unsafe { vm_context_id_symbol_id(cx) }) else {
+        return None;
+    };
+    let mut val = UndefinedValue();
+    if !JS_GetPropertyById(
+        cx,
+        o.handle().into(),
+        Handle::from_marked_location(&id_sym),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut val,
+        },
+    ) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+    if val.is_int32() {
+        return Some(val.to_int32() as u64);
+    }
+    if val.is_double() {
+        return Some(val.to_double() as u64);
+    }
+    None
+}
+
+/// Register a contextified sandbox's write-through metadata (the global-key
+/// baseline). The lookup key is a per-context id stamped as a hidden
+/// property on the LIVE sandbox — re-read fresh per call, so a moving GC can
+/// never desync it (the predecessor keyed the metadata map by the sandbox
+/// heap address, which any moving GC invalidated — e208 face ③). The GC
+/// edge is attached separately by `vm_create_context` just before this, so
+/// a lookup can only ever hit after both are in place; see the registry
+/// BCE note.
+fn register_context(cx: *mut JSContext, sandbox: *mut JSObject, baseline: ::std::rc::Rc<Vec<String>>) {
+    let id = VM_CONTEXT_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    unsafe {
+        attach_context_id(cx, sandbox, id);
+    }
+    VM_CONTEXT_META.with(|m| {
+        m.borrow_mut().insert(id, baseline);
     });
 }
 
@@ -197,21 +301,21 @@ unsafe fn get_context_global(cx: *mut JSContext, obj: *mut JSObject) -> Option<*
 
 /// Look up the global-key baseline for a contextified object. Gated on the
 /// edge first so metadata of a dead sandbox can never be matched by an
-/// object allocated at its recycled address.
+/// object allocated at its recycled address; the id then comes off the
+/// LIVE object (fresh property read), so a moving GC can never desync the
+/// metadata key (e208 face ③).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn get_context_baseline(
     cx: *mut JSContext,
     obj: *mut JSObject,
 ) -> Option<::std::rc::Rc<Vec<String>>> {
-    if read_context_edge(cx, obj).is_none() {
+    if unsafe { read_context_edge(cx, obj) }.is_none() {
         return None;
     }
-    VM_CONTEXT_MAP.with(|m| {
-        m.borrow()
-            .iter()
-            .find(|&&(s, _)| ptr::eq(s, obj))
-            .map(|&(_, ref b)| b.clone())
-    })
+    let Some(id) = (unsafe { read_context_id(cx, obj) }) else {
+        return None;
+    };
+    VM_CONTEXT_META.with(|m| m.borrow().get(&id).cloned())
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -819,9 +923,12 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
     let sandbox_props = collect_sandbox_properties(cx_ref, sandbox_r.get());
 
     // Phase 2: Enter the new Realm and define collected properties on the
-    // sandbox global. Values from the caller's realm are automatically wrapped
-    // as CCWs by SpiderMonkey when defined in the sandbox realm.
-    {
+    // sandbox global. Values from the caller's realm are automatically
+    // wrapped as CCWs by SpiderMonkey when defined in the sandbox realm. The
+    // block evaluates to the pre-seed baseline (hoisted out so the metadata
+    // registration can run outside the AutoRealm, in the sandbox object's
+    // own compartment — the same requirement as the edge attach).
+    let baseline = {
         let mut realm = AutoRealm::new_from_handle(cx_ref, sandbox_global.handle());
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
 
@@ -836,9 +943,9 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
         // Apply code-generation restrictions (eval/Function/WebAssembly).
         apply_code_generation_restrictions(realm_cx, sandbox_global.get(), cgen_flags);
 
-        // Register Rust-side metadata (baseline captured pre-seed).
-        register_context(sandbox_r.get(), ::std::rc::Rc::new(baseline));
-    }
+        // Pre-seed baseline hoisted out of the AutoRealm block.
+        baseline
+    };
 
     // Attach the GC edge in the sandbox object's compartment (the caller's
     // realm — the AutoRealm above has been dropped). This edge is what
@@ -847,6 +954,12 @@ unsafe extern "C" fn vm_create_context(cx: *mut JSContext, argc: u32, vp: *mut J
     // later lookups — the realm is then simply re-created, never
     // dereferenced stale.
     attach_context_edge(cx, sandbox_r.get(), sandbox_global.get());
+
+    // Rust-side write-through metadata (baseline captured pre-seed), keyed
+    // by the id stamped on the LIVE sandbox — the id property is re-read
+    // fresh per lookup, so a moving GC can never desync the key (e208
+    // face ③; the predecessor keyed by the heap address).
+    register_context(cx, sandbox_r.get(), ::std::rc::Rc::new(baseline));
 
     // Mark with __isVMContext for isContext() backwards compat.
     rooted!(&in(cx_ref) let sandbox_root = sandbox_r.get());

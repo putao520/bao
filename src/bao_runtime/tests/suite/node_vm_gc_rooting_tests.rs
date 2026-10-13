@@ -171,3 +171,74 @@ fn test_vm_gc_churn_many_contexts() {
         assert_eq!(out, format!("r{}:{}", round, round + 1));
     }
 }
+
+#[test]
+fn test_vm_write_through_survives_moving_gc() {
+    // e208 face ③: the write-through metadata (global-key baseline) was keyed
+    // by the sandbox HEAP ADDRESS captured at createContext. The live GC edge
+    // was already property-carried (liveness + identity, the #29 root fix),
+    // but the Vec key stayed a raw address — invisible to the tracer and
+    // never updated by a moving GC. Any relocation after registration (nursery
+    // evacuation on the next minor GC; `Bun.gc(true)` compacting Shrink) left
+    // the key at the pre-move address, the lookup missed, and write-through
+    // silently dropped for the rest of the sandbox's life (dev suites pass by
+    // GC-timing luck; the existing full-GC test below registers from a window
+    // where creation itself already tenured the sandbox).
+    //
+    // Carrier: warm the realm-creation path first, then register a second
+    // context from a quiet window, then move the sandbox out from under the
+    // registry (nursery churn + Bun.gc(true)) and require write-through.
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    // Fleet: 64 contexts registered from a quiet window, then a moving-GC
+    // storm over the whole set. Pre-fix, every sandbox whose arena the
+    // compaction relocated lost write-through silently; post-fix the id key
+    // is re-read from the live object per call, so all 64 must land.
+    let out = eval_string(
+        &mut ctx,
+        r#"
+        var vm = require('vm');
+        globalThis.sbs = [];
+        for (var i = 0; i < 64; i++) {
+            var s = { i: i };
+            vm.createContext(s);
+            globalThis.sbs.push(s);
+        }
+        // Moving-GC storm: nursery churn (evacuation) + two compacting
+        // Shrink GCs (`Bun.gc(true)` moves survivors — the documented
+        // THREAD_REALM_GLOBAL mover).
+        for (var i = 0; i < 20000; i++) { ({ n: i }); }
+        Bun.gc(true);
+        for (var i = 0; i < 20000; i++) { ({ n: i }); }
+        Bun.gc(true);
+        var ok = 0;
+        var miss = [];
+        for (var i = 0; i < 64; i++) {
+            vm.runInContext('globalThis.w = 7', globalThis.sbs[i]);
+            if (globalThis.sbs[i].w === 7) ok++; else miss.push(i);
+        }
+        // Realm health control (read direction — unaffected by write-through):
+        var ctl = vm.runInContext('7 * 6', globalThis.sbs[0]);
+        ok + '/64' + (miss.length ? ' miss:' + miss.join(',') : '') + ' ctl=' + ctl
+        "#,
+    );
+    assert_eq!(
+        out, "64/64 ctl=42",
+        "write-through must land on every sandbox across a moving-GC storm; got: {out}"
+    );
+
+    // Same contract after an explicit full GC on top.
+    force_full_gc(&mut ctx);
+    let out = eval_string(
+        &mut ctx,
+        r#"
+        var vm = require('vm');
+        vm.runInContext('globalThis.postGc = 9', globalThis.sbs[3]);
+        globalThis.sbs[3].postGc
+        "#,
+    );
+    assert_eq!(out, "9", "write-through must keep landing after a further full GC");
+}
