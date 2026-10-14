@@ -132,6 +132,7 @@ fn test_apply_to_pixel_max_channels_no_overflow() {
 
 // ---- Noise is small (amplitude = 0.001) ----
 
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C2] [req:REQ-STL-003] [level:unit]
 #[test]
 fn test_apply_to_pixel_noise_is_small_red() {
     let cn = CanvasNoise::new(42);
@@ -141,6 +142,7 @@ fn test_apply_to_pixel_noise_is_small_red() {
     assert!(diff <= 2, "Red noise too large: {}", diff);
 }
 
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C2] [req:REQ-STL-003] [level:unit]
 #[test]
 fn test_apply_to_pixel_noise_is_small_green() {
     let cn = CanvasNoise::new(42);
@@ -150,6 +152,7 @@ fn test_apply_to_pixel_noise_is_small_green() {
     assert!(diff <= 2, "Green noise too large: {}", diff);
 }
 
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C2] [req:REQ-STL-003] [level:unit]
 #[test]
 fn test_apply_to_pixel_noise_is_small_blue() {
     let cn = CanvasNoise::new(42);

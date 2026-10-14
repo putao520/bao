@@ -24,6 +24,8 @@ use bao_stealth::{Http2Fingerprint, StealthEngine, StealthHooks, StealthProfile,
 
 // ---- 1.1 Firefox JA3 must be the canonical Firefox 128 hash ----
 // @trace REQ-STL-001 [criterion:REQ-STL-001-C1] [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C3] [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C4] [req:REQ-STL-001] [level:integration]
 #[test]
 fn cloudflare_firefox_ja3_matches_known_browser_hash() {
     // Arrange — Cloudflare maintains a hash DB of JA3 fingerprints per browser.

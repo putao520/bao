@@ -327,6 +327,7 @@ fn test_stealth_profile_firefox_chrome_webgl_differ() {
     assert_ne!(ff.webgl.vendor, ch.webgl.vendor);
 }
 
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C4] [req:REQ-STL-003] [level:unit]
 #[test]
 fn test_stealth_profile_firefox_chrome_canvas_seeds_differ() {
     let ff = StealthProfile::firefox_default();

@@ -104,6 +104,7 @@ fn connect_and_drive(
     }
 }
 
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C5] [req:REQ-STL-001] [level:integration] 跨域载体:TLS 1.3/1.2 真握手(memory-BIO in-process loopback);bao_stealth 为 wire config 生产者,连接执行体在本域
 #[test]
 fn same_origin_second_connection_resumes() {
     let (server, client) = setup();

@@ -223,6 +223,7 @@ fn headless_canvas_noise_deterministic() {
 // getImageData/toDataURL/toBlob family while convertToBlob stayed
 // single-noised — a cross-path inconsistency. Live cross-path parity is
 // pinned in bao_browser stealth_offscreencanvas_tests (§7).
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C5] [req:REQ-STL-003] [level:integration]
 #[test]
 fn headless_canvas_js_segment_retired() {
     // Arrange — the combined blob is what gets injected into the page
@@ -385,6 +386,7 @@ fn headless_screen_color_depth_is_24() {
 
 // ---- 5.1 JS hooks force navigator.webdriver = false ----
 // @trace REQ-STL-004 [criterion:REQ-STL-004-C5] [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-007 [criterion:REQ-STL-007-C2] [req:REQ-STL-007] [level:integration]
 #[test]
 fn headless_webdriver_forced_false_in_hooks() {
     // Arrange — headless Chrome sets navigator.webdriver = true by default

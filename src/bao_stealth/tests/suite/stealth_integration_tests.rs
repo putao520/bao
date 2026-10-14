@@ -114,6 +114,7 @@ fn test_http2_settings_deterministic() {
 
 // ---- Behavior Simulator Reproducibility ----
 
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C4] [req:REQ-STL-006] [level:unit]
 #[test]
 fn test_mouse_path_reproducible_with_same_seed() {
     let bs1 = BehaviorSimulator::new(42);
@@ -123,6 +124,7 @@ fn test_mouse_path_reproducible_with_same_seed() {
     assert_eq!(path1, path2, "same seed should produce same mouse path");
 }
 
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C4] [req:REQ-STL-006] [level:unit]
 #[test]
 fn test_typing_delays_reproducible_with_same_seed() {
     let bs1 = BehaviorSimulator::new(99);
@@ -132,6 +134,7 @@ fn test_typing_delays_reproducible_with_same_seed() {
     assert_eq!(d1, d2, "same seed should produce same typing delays");
 }
 
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C4] [req:REQ-STL-006] [level:unit]
 #[test]
 fn test_scroll_deltas_reproducible_with_same_seed() {
     let bs1 = BehaviorSimulator::new(7);

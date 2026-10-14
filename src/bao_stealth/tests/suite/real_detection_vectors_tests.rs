@@ -468,6 +468,7 @@ fn pixelscan_max_touch_points_is_zero_for_desktop() {
 
 // ---- 4.1 navigator + screen + webgl must come from same profile ----
 // @trace REQ-STL-007 [req:REQ-STL-007] [level:integration]
+// @trace REQ-STL-007 [criterion:REQ-STL-007-C5] [req:REQ-STL-007] [level:integration]
 #[test]
 fn cross_service_profile_components_consistent() {
     // Arrange — both creepjs and pixelscan run multi-vector consistency checks.

@@ -69,6 +69,8 @@ fn str_eval(ctx: &mut JsContext, code: &str) -> String {
 // Single #[test] -- mozjs Runtime is per-process singleton
 // ═══════════════════════════════════════════════════════════════════════════
 
+// @trace REQ-STL-007 [criterion:REQ-STL-007-C3] [req:REQ-STL-007] [level:integration]
+// @trace REQ-STL-007 [criterion:REQ-STL-007-C4] [req:REQ-STL-007] [level:integration]
 #[test]
 fn cdp_stealth_diagnostic_all() {
     let mut report = Report::default();

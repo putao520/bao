@@ -257,6 +257,7 @@ fn typing_word_boundary_delays_larger() {
 
 // ---- 4. Scroll physics ----
 
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C3] [req:REQ-STL-006] [level:unit]
 #[test]
 fn scroll_velocity_exponentially_decays() {
     // Each delta should generally be smaller than the previous

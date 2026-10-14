@@ -7,6 +7,7 @@ mod common;
 use common::eval_string;
 
 
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C5] [req:REQ-STL-001] [level:integration] 跨域载体:node:tls 面真握手;bao_stealth 为 wire config 生产者,连接执行体在本域
 #[test]
 fn test_tls_deep() {
     // Force-exit semantics preserved via self-re-exec isolation
