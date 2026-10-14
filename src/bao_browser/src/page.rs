@@ -1374,6 +1374,11 @@ struct PageBlueprint {
     /// `None` — their initial about:blank load is spawned by the opener's
     /// ScriptThread from the creation response, not by the builder.
     initial_url: Option<url::Url>,
+    /// REQ-CDS-009 C6: the context resource partition this page belongs to
+    /// (`None` = the implicit default context). Carried into the servo
+    /// builder so the webview→partition attribution registers BEFORE the
+    /// initial navigation is dispatched.
+    partition: Option<servo::ContextPartitionId>,
 }
 
 fn new_rendering_context(
@@ -1401,6 +1406,7 @@ impl PageHandle {
         config: &PageConfig,
         default_viewport: PhysicalSize<u32>,
         id: usize,
+        partition: Option<servo::ContextPartitionId>,
     ) -> Result<Self, BrowserError> {
         let viewport = PhysicalSize::new(
             config.viewport_width.unwrap_or(default_viewport.width),
@@ -1434,6 +1440,7 @@ impl PageHandle {
                 stealth_profile: config.stealth_profile.clone(),
                 permission: config.permission.clone(),
                 initial_url,
+                partition,
             },
         )
     }
@@ -1453,6 +1460,7 @@ impl PageHandle {
         stealth_profile: Option<bao_stealth::StealthProfile>,
         permission: Option<crate::permission::Permission>,
         id: usize,
+        partition: Option<servo::ContextPartitionId>,
     ) -> Result<Self, BrowserError> {
         let rendering_context = new_rendering_context(viewport)?;
         let builder = request.builder(rendering_context.clone() as Rc<dyn RenderingContext>);
@@ -1468,6 +1476,7 @@ impl PageHandle {
                 stealth_profile,
                 permission,
                 initial_url: None,
+                partition,
             },
         )
     }
@@ -1487,6 +1496,7 @@ impl PageHandle {
             stealth_profile,
             permission,
             initial_url,
+            partition,
         } = blueprint;
         let webview_state = Rc::new(RefCell::new(BaoWebViewState::default()));
         // CDP target identity (REQ-CDP-004): every ServoEvent this webview's
@@ -1550,6 +1560,14 @@ impl PageHandle {
 
         if let Some(url) = initial_url.clone() {
             builder = builder.url(url);
+        }
+
+        // REQ-CDS-009 C6: attribute the webview to its context partition at
+        // build time — the registration lands inside `builder.build()` before
+        // the initial navigation is dispatched, so this page's very first
+        // fetch and cookie write already resolve to its partition.
+        if let Some(partition) = partition {
+            builder = builder.browser_context_partition(partition);
         }
 
         let webview = builder.build();
@@ -2221,6 +2239,10 @@ impl PageHandle {
                 // lifecycle discipline — without this, a closed page's
                 // noise config lingers in the paint-side registry).
                 servo::clear_canvas_noise_for_webview(wid);
+                // REQ-CDS-009 C6: drop the context-partition attribution
+                // (same lifecycle discipline — a closed page must not keep
+                // its webview→partition entry in the vendor registry).
+                servo::clear_context_partition_for_webview(wid);
                 if !cur_pg.is_null() {
                     pg = cur_pg;
                 }

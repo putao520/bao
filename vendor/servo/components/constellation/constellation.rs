@@ -984,7 +984,7 @@ where
             return Ok(event_loop);
         }
 
-        let event_loop = EventLoop::spawn(self, is_private)?;
+        let event_loop = EventLoop::spawn(self, is_private, Some(webview_id))?;
         if let Some(registered_domain_name) = registered_domain_name {
             self.set_event_loop(&event_loop, registered_domain_name, &webview_id);
         }

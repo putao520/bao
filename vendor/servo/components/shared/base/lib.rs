@@ -9,6 +9,7 @@
 //! You should almost never need to add a data type to this crate. Instead look for
 //! a more shared crate that has fewer dependents.
 
+pub mod context_partition;
 pub mod cross_process_instant;
 pub mod generic_channel;
 #[macro_use]

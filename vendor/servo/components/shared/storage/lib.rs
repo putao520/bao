@@ -2,9 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use malloc_size_of::malloc_size_of_is_0;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{self, GenericCallback, GenericSend, GenericSender, SendResult};
+use servo_base::id::ContextPartitionId;
 use servo_url::ImmutableOrigin;
 
 use crate::cache_storage::CacheStorageThreadMessage;
@@ -141,3 +146,36 @@ impl GenericSend<CacheStorageThreadMessage> for StorageThreads {
 
 // Ignore the sub-fields
 malloc_size_of_is_0!(StorageThreads);
+
+// ── BAO PATCH (REQ-CDS-009 C6): per-browser-context storage partitions ──
+//
+// One storage thread group per live browser-context partition, keyed by
+// [`ContextPartitionId`]. The constellation consults the registry at
+// event-loop spawn: a page attributed to an explicit browser context gets its
+// context's group (isolated webstorage / IndexedDB / CacheStorage), every
+// other page keeps the channel-implied public/private default. Groups are
+// ephemeral — created with no `config_dir`, so a disposed context persists
+// nothing to disk.
+
+static PARTITION_STORAGE_THREADS: LazyLock<RwLock<HashMap<ContextPartitionId, StorageThreads>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Register one context partition's storage thread group (created by the
+/// embedder-facing registration API at `Target.createBrowserContext` time).
+pub fn register_partition_storage_threads(partition: ContextPartitionId, threads: StorageThreads) {
+    PARTITION_STORAGE_THREADS.write().insert(partition, threads);
+}
+
+/// The storage group of a context partition, if one is live. `None` (context
+/// disposed, or the page was never attributed) falls back to the
+/// channel-implied default at the selection site.
+pub fn partition_storage_threads(partition: ContextPartitionId) -> Option<StorageThreads> {
+    PARTITION_STORAGE_THREADS.read().get(&partition).cloned()
+}
+
+/// Drop a context partition's storage group (context disposal). The group's
+/// threads stay parked until process exit — senders dropped, receivers
+/// disconnected — their in-memory state simply becomes unreachable.
+pub fn remove_partition_storage_threads(partition: ContextPartitionId) {
+    PARTITION_STORAGE_THREADS.write().remove(&partition);
+}

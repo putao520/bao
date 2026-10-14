@@ -137,6 +137,15 @@ impl PagePool {
             }
         }
 
+        // REQ-CDS-009 C6: resolve the context's resource partition now — the
+        // WebView must carry it at build time (the attribution registers
+        // before the initial navigation is dispatched; see
+        // `WebViewBuilder::browser_context_partition`).
+        let partition = config
+            .browser_context_id
+            .as_deref()
+            .and_then(|ctx| self.browser_contexts.borrow().partition_of_context(ctx));
+
         // SM-EVOLUTION #28 (verdict consumed 2026-09-10, REQ-STL identity
         // consistency): arm the CREATION-TIME engine timezone policy before
         // ANY realm of this page exists — `forceUTC_` is a per-realm
@@ -180,6 +189,7 @@ impl PagePool {
                 config,
                 self.default_viewport,
                 id,
+                partition,
             );
             crate::phase_watch::enter_phase(
                 crate::phase_watch::phase::CREATE_WAIT_READY,
@@ -343,6 +353,13 @@ impl PagePool {
         servo::set_force_utc_realms(force_utc);
         bao_engine::set_node_force_utc(force_utc);
 
+        // REQ-CDS-009 C6: the popup inherits the opener's context attribution
+        // (the delegate resolves it alongside the stealth inheritance) — and
+        // with it the opener's resource partition.
+        let partition = browser_context_id
+            .as_deref()
+            .and_then(|ctx| self.browser_contexts.borrow().partition_of_context(ctx));
+
         let id = {
             let mut next = self.next_id.borrow_mut();
             let id = *next;
@@ -365,6 +382,7 @@ impl PagePool {
                 stealth_profile.clone(),
                 permission,
                 id,
+                partition,
             );
             match p {
                 Ok(page) => page,
@@ -735,9 +753,15 @@ impl PagePool {
 
     // ── REQ-CDS-009: browser context lifecycle (bridge drain face) ──────
 
-    /// Target.createBrowserContext — mint an explicit context id.
+    /// Target.createBrowserContext — mint an explicit context id bound to a
+    /// fresh in-process resource partition (REQ-CDS-009 C6): its own cookie
+    /// jar / HTTP cache on the servo net side and its own webstorage /
+    /// IndexedDB / CacheStorage group on the storage side.
     pub fn create_browser_context(&self) -> String {
-        self.browser_contexts.borrow_mut().create_context()
+        let partition = self.servo.create_context_partition();
+        self.browser_contexts
+            .borrow_mut()
+            .create_context(partition)
     }
 
     /// Target.disposeBrowserContext — destroy the context and close every
@@ -750,6 +774,10 @@ impl PagePool {
     /// Unknown/default contexts fail closed with Chrome's "Failed to find
     /// browser context" error.
     pub fn dispose_browser_context(&self, id: &str) -> Result<Vec<usize>, BrowserError> {
+        // REQ-CDS-009 C6: capture the partition before the registry entry
+        // goes away — it is dropped after the member pages are closed, so no
+        // live page can still resolve to it.
+        let partition = self.browser_contexts.borrow().partition_of_context(id);
         let orphaned = self
             .browser_contexts
             .borrow_mut()
@@ -765,6 +793,9 @@ impl PagePool {
                     );
                 }
             }
+        }
+        if let Some(partition) = partition {
+            self.servo.dispose_context_partition(partition);
         }
         Ok(closed)
     }

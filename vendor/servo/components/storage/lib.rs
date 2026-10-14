@@ -12,5 +12,7 @@ mod webstorage;
 pub use cache_storage::CacheStorageThreadFactory;
 pub use client_storage::ClientStorageThreadFactory;
 pub(crate) use indexeddb::IndexedDBThreadFactory;
-pub use storage_thread::new_storage_threads;
+pub use storage_thread::{
+    create_partition_storage_threads, new_storage_threads, remove_partition_storage_threads,
+};
 pub(crate) use webstorage::WebStorageThreadFactory;

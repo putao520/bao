@@ -171,3 +171,69 @@ fn test_parse_hostsfile_with_end_of_line_whitespace() {
         *hosts_table.get("servo.test.server").unwrap()
     );
 }
+
+// ── BAO PATCH (REQ-CDS-009 C6): the page-attributed `ResourceThreads` view
+// stamps every message with the webview identity; the bare channel pair does
+// not. The stamp is the envelope the net router unwraps to resolve the
+// sending page's context partition.
+
+use net_traits::ResourceThreads;
+use servo_base::id::{WebViewId, TEST_BROWSING_CONTEXT_ID};
+
+fn c6_test_webview() -> WebViewId {
+    WebViewId::mock_for_testing(TEST_BROWSING_CONTEXT_ID)
+}
+
+#[test]
+fn c6_for_webview_view_stamps_every_message() {
+    let (sender, receiver) =
+        servo_base::generic_channel::channel::<CoreResourceMsg>().unwrap();
+    let threads = ResourceThreads::for_webview(sender, c6_test_webview());
+
+    let (ack, _ack_rx) = servo_base::generic_channel::channel().unwrap();
+    threads
+        .send(CoreResourceMsg::DeleteSessionCookies(ack))
+        .unwrap();
+
+    match receiver.recv().expect("message must arrive") {
+        CoreResourceMsg::Partition(webview_id, inner) => {
+            assert_eq!(webview_id, c6_test_webview());
+            assert!(
+                matches!(*inner, CoreResourceMsg::DeleteSessionCookies(_)),
+                "the payload must survive the envelope untouched"
+            );
+        },
+        other => panic!("stamped view must wrap messages, got {other:?}"),
+    }
+}
+
+#[test]
+fn c6_bare_channel_view_sends_unwrapped() {
+    let (sender, receiver) =
+        servo_base::generic_channel::channel::<CoreResourceMsg>().unwrap();
+    let threads = ResourceThreads::new(sender);
+
+    threads
+        .send(CoreResourceMsg::DeleteCookie(
+            servo_url::ServoUrl::parse("https://example.com/").unwrap(),
+            "name".to_owned(),
+        ))
+        .unwrap();
+
+    match receiver.recv().expect("message must arrive") {
+        CoreResourceMsg::DeleteCookie(_, name) => assert_eq!(name, "name"),
+        CoreResourceMsg::Partition(..) => {
+            panic!("the bare channel pair must never stamp messages")
+        },
+        other => panic!("unexpected message {other:?}"),
+    }
+}
+
+#[test]
+fn c6_stamped_view_clone_carries_the_stamp() {
+    let (sender, _receiver) =
+        servo_base::generic_channel::channel::<CoreResourceMsg>().unwrap();
+    let threads = ResourceThreads::for_webview(sender, c6_test_webview());
+    let clone = threads.clone();
+    assert_eq!(clone.partition, Some(c6_test_webview()));
+}

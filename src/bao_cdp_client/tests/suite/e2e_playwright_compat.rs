@@ -527,33 +527,300 @@ fn e2e_real_playwright_full_flow() {
     );
 }
 
-/// Playwright BrowserContext cookie 隔离(两 context 互不可见)。
+/// Playwright BrowserContext 直连生命周期 — REQ-CDS-009 C1-C5+C7 真断言。
 ///
-/// **delegate + 已登记产品缺口**(cov-audit-cdp-20261014 补实裁决):
-/// - 连接面/全流程面的真客户端 oracle 由 `e2e_real_playwright_full_flow` 注释
-///   所指的两个承担者覆盖(存在性断言同)。
-/// - **context 隔离面本身是真产品缺口,不得用脚本化 mock 伪造绿色**:竖排证据
-///   —— `bao_browser/src/ws_registry.rs`(W40 #11-D)明文 "Bao is a
-///   single-default-context server (no incognito/context isolation yet)":
-///   `Target.getBrowserContexts` 诚实返回空列表,`Target.createBrowserContext`
-///   未处理(落 not-found),真 playwright `browser.newContext()` 现状必失败;
-///   `Network.setCookie/getCookies`(bao_browser cdp_handler,经 servo
-///   SiteDataManager)是 default-context 全局面,无 per-context 隔离。
-///   缺口已上报 Commander,能力新增须经用户裁决;隔离面落地后本测试应改判
-///   接真断言。
+/// **改判**(原占位观察形态 → 隔离面落地后接真断言):协议面已实装
+/// (commit 39a45c9cf:BrowserContextRegistry + Target.createBrowserContext /
+/// disposeBrowserContext / getBrowserContexts 命令面 + createTarget
+/// (browserContextId) 归属贯通 + disposeBrowserContext closedTargetIds 驱动
+/// targetDestroyed / detachedFromTarget),本测试不再依赖委派锚,直接在真
+/// bao 引擎上按 Playwright 同款 wire 序列走完整 BrowserContext 生命周期:
 ///
-/// @trace REQ-CDP-001 [level:e2e]
+///   browser.newContext()  → Target.createBrowserContext(唯一 minted id)
+///   browser.newPage()     → Target.createTarget{browserContextId} +
+///                           Target.attachToTarget{flatten:true}
+///   上下文归属真值        → Target.getTargetInfo / getTargets 携
+///                           browserContextId
+///   context.close()       → Target.disposeBrowserContext → closedTargetIds
+///                           + Target.targetDestroyed / detachedFromTarget
+///
+/// 全程标准 CDP over WebSocket 直连 `/devtools/browser`——这本身就是
+/// criterion 7 的直连契约(无需任何 Playwright 适配层)。
+///
+/// 载具 = 真引擎 BAO_BIN(`bao browser --headless --cdp-port`,与
+/// bao_cli_e2e 同款);二进制缺失 → 测试失败(fail-closed,禁 skip)。
+///
+/// @trace REQ-CDS-009 [criterion:1,2,3,4,5,7] [level:e2e]
 #[test]
 fn e2e_real_playwright_browser_context_isolation() {
-    // Assert — 连接面/全流程面委派锚(context 隔离面无承担者,见上注)
-    assert_delegate_bearer(
-        "../bao_browser/tests/suite/puppeteer_e2e_tests.rs",
-        "puppeteer_real_lifecycle_e2e",
+    // ── 引擎进程收割 guard:panic unwind 也 kill+wait,防引擎进程泄漏 ──
+    struct EngineGuard(std::process::Child);
+    impl Drop for EngineGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    // ── BAO_BIN 定位(BAO_TEST_BAO_BIN 覆盖 → sibling profile →
+    // CARGO_TARGET_DIR 注入;与 bao_cli_*_e2e 同款探测序)──
+    let bao = (|| -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
+            let p = std::path::PathBuf::from(p);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        // suite exe 在 $TARGET/<profile>/deps/ — bao 在 $TARGET/<profile>/。
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
+                for name in ["bao", "bao.exe"] {
+                    let candidate = profile_dir.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
+            for profile in ["debug", "release"] {
+                for name in ["bao", "bao.exe"] {
+                    let candidate = std::path::Path::new(&t).join(profile).join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
+    })()
+    .expect(
+        "bao binary not found — build with `cargo build -p bao_bin` (or point \
+         BAO_TEST_BAO_BIN at the binary under test); REQ-CDS-009 e2e is \
+         fail-closed, no skip",
     );
-    assert_delegate_bearer(
-        "../bao_browser/tests/suite/playwright_full_flow_loop_tests.rs",
-        "playwright_style_full_flow_three_rounds",
+
+    // Arrange — spawn 真引擎(headless + 随机 CDP 端口)
+    let port = TcpListener::bind("127.0.0.1:0")
+        .expect("bind :0")
+        .local_addr()
+        .expect("local_addr")
+        .port();
+    let mut cmd = std::process::Command::new(&bao);
+    cmd.args(["browser", "--headless", "--cdp-port", &port.to_string()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn bao browser");
+    let mut guard = EngineGuard(child);
+    // drain 引擎 stdio(pipe buffer 填满会让引擎写日志时阻塞自己的泵)。
+    let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
+        guard
+            .0
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        guard
+            .0
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ];
+    for mut pipe in pipes.into_iter().flatten() {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+            }
+        });
+    }
+
+    // 等 CDP listener 就绪(bounded 30s;TCP accept = server 线程已起听)
+    let ready = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut ok = false;
+        while std::time::Instant::now() < deadline {
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                ok = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        ok
+    };
+    assert!(
+        ready,
+        "bao browser CDP server never listened on 127.0.0.1:{port}"
     );
+
+    // Act — Playwright 同款 browser-level WS 直连(bounded 重试)
+    let url = format!("ws://127.0.0.1:{port}/devtools/browser");
+    let mut t = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut connected = None;
+        while std::time::Instant::now() < deadline {
+            match WebSocketTransport::connect(&url) {
+                Ok(t) => {
+                    connected = Some(t);
+                    break;
+                }
+                Err(_) => thread::sleep(Duration::from_millis(200)),
+            }
+        }
+        connected.expect("ws connect /devtools/browser (bounded 10s retry)")
+    };
+    t.set_command_timeout(Duration::from_secs(30));
+    t.set_event_timeout(Duration::from_millis(200));
+
+    // ── C1:createBrowserContext 返回唯一 minted browserContextId ──
+    let mint = |t: &mut WebSocketTransport| {
+        t.send_command("Target.createBrowserContext", json!({}), None)
+            .expect("createBrowserContext")["browserContextId"]
+            .as_str()
+            .expect("browserContextId is a string")
+            .to_string()
+    };
+    let ctx1 = mint(&mut t);
+    assert!(
+        ctx1.starts_with("bao-context-") && ctx1 != "bao-default-context",
+        "C1: minted context id must be registry-fresh, got {ctx1}"
+    );
+    let ctx2 = mint(&mut t);
+    assert_ne!(
+        ctx1, ctx2,
+        "C1: two createBrowserContext calls mint distinct ids"
+    );
+
+    // ── C3:getBrowserContexts 真值(两个新建都在列)──
+    let listed = t
+        .send_command("Target.getBrowserContexts", json!({}), None)
+        .expect("getBrowserContexts");
+    let ids = listed["browserContextIds"].as_array().expect("id array");
+    assert!(
+        ids.iter().any(|v| v.as_str() == Some(ctx1.as_str())),
+        "C3: ctx1 listed, got {listed}"
+    );
+    assert!(
+        ids.iter().any(|v| v.as_str() == Some(ctx2.as_str())),
+        "C3: ctx2 listed, got {listed}"
+    );
+
+    // ── C4:createTarget 携 browserContextId → 在指定 context 内创建 ──
+    let created = t
+        .send_command(
+            "Target.createTarget",
+            json!({"url": "about:blank", "browserContextId": ctx1}),
+            None,
+        )
+        .expect("createTarget in ctx1");
+    let target_id = created["targetId"].as_str().expect("targetId").to_string();
+    assert!(!target_id.is_empty(), "C4: createTarget mints a target id");
+
+    // Playwright newPage 同款:attach(flat session)后才有 page 会话。
+    let attached = t
+        .send_command(
+            "Target.attachToTarget",
+            json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .expect("attachToTarget flatten");
+    let session = attached["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+    assert!(!session.is_empty(), "attach mints a flat session id");
+
+    // ── C5:getTargetInfo(单目标面)归属真值 = ctx1 ──
+    let info = t
+        .send_command(
+            "Target.getTargetInfo",
+            json!({"targetId": target_id}),
+            Some(&session),
+        )
+        .expect("getTargetInfo");
+    assert_eq!(
+        info["targetInfo"]["browserContextId"],
+        json!(ctx1),
+        "C5: getTargetInfo carries the owning context, got {info}"
+    );
+
+    // ── C5:getTargets(枚举面)归属真值 ──
+    let targets = t
+        .send_command("Target.getTargets", json!({}), None)
+        .expect("getTargets");
+    let infos = targets["targetInfos"].as_array().expect("targetInfos");
+    let ours = infos
+        .iter()
+        .find(|e| e["targetId"].as_str() == Some(target_id.as_str()))
+        .unwrap_or_else(|| panic!("C5: created target listed in getTargets: {targets}"));
+    assert_eq!(
+        ours["browserContextId"],
+        json!(ctx1),
+        "C5: getTargets entry carries the owning context, got {targets}"
+    );
+
+    // ── C2:disposeBrowserContext → closedTargetIds 连带(context.close())──
+    let disposed = t
+        .send_command(
+            "Target.disposeBrowserContext",
+            json!({"browserContextId": ctx1}),
+            None,
+        )
+        .expect("disposeBrowserContext");
+    let closed = disposed["closedTargetIds"]
+        .as_array()
+        .expect("closedTargetIds");
+    assert!(
+        closed.iter().any(|v| v.as_str() == Some(target_id.as_str())),
+        "C2: closedTargetIds names the context's page, got {disposed}"
+    );
+
+    // ── C2:关闭事件流(targetDestroyed + detachedFromTarget)——
+    // Playwright context.close() 的解析信号;事件与命令响应共线,
+    // send_command 期间到达者已在 pending 队列,这里抽干整窗。──
+    let mut destroyed = false;
+    let mut detached = false;
+    let ev_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < ev_deadline && !(destroyed && detached) {
+        match t.recv_event() {
+            Ok(Some(ev)) => {
+                let tid = ev.params["targetId"].as_str().unwrap_or("");
+                if ev.method == "Target.targetDestroyed" && tid == target_id {
+                    destroyed = true;
+                }
+                if ev.method == "Target.detachedFromTarget" && tid == target_id {
+                    detached = true;
+                }
+            }
+            Ok(None) => {} // 200ms read timeout — 下一轮
+            Err(e) => panic!("C2: wire error during close-event window: {e}"),
+        }
+    }
+    assert!(
+        destroyed,
+        "C2: Target.targetDestroyed for {target_id} within 15s"
+    );
+    assert!(
+        detached,
+        "C2: Target.detachedFromTarget for {target_id} within 15s"
+    );
+
+    // ── C3 销毁后真值:ctx1 退役,ctx2 幸存 ──
+    let listed = t
+        .send_command("Target.getBrowserContexts", json!({}), None)
+        .expect("getBrowserContexts after dispose");
+    let ids = listed["browserContextIds"].as_array().expect("id array");
+    assert!(
+        !ids.iter().any(|v| v.as_str() == Some(ctx1.as_str())),
+        "C3: disposed ctx1 must leave the registry, got {listed}"
+    );
+    assert!(
+        ids.iter().any(|v| v.as_str() == Some(ctx2.as_str())),
+        "C3: survivor ctx2 stays listed, got {listed}"
+    );
+
+    drop(guard); // 显式收割引擎(kill + wait)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -578,4 +845,290 @@ fn e2e_playwright_transport_kind_compatible() {
     // Assert
     assert_eq!(t.kind(), TransportKind::WebSocket);
     let _ = handle.join();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// §6 REQ-CDS-009 C6 — context 资源分区隔离判别(真引擎)
+// ════════════════════════════════════════════════════════════════════
+
+/// REQ-CDS-009 criterion 6 真值判别:不同 browserContextId 的 cookie /
+/// localStorage 互不污染;同 context 的第二个页面共享(判别「分区」而非
+/// 「每页隔离」);默认 context 页与显式 context 页互不可见。
+///
+/// 载具与 §4 同款:真引擎 BAO_BIN + browser-level WS 直连,隔离真值由
+/// 页面内的 document.cookie / localStorage 读写给出(HTTP origin 由测试内
+/// 置 mini server 提供——cookie/localStorage 都是 origin-scoped,同源不同
+/// context 的差值只能来自资源分区)。
+///
+/// @trace REQ-CDS-009 [criterion:6] [level:e2e]
+#[test]
+fn e2e_real_playwright_browser_context_partition_isolation() {
+    struct EngineGuard(std::process::Child);
+    impl Drop for EngineGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    // ── mini HTTP origin(cookie/localStorage 需要 tuple origin)──
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind origin :0");
+    let origin_port = listener.local_addr().expect("origin local_addr").port();
+    thread::spawn(move || {
+        let body = b"<html><body>c6-partition</body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+        }
+    });
+    let page_url = format!("http://127.0.0.1:{origin_port}/c6");
+
+    // ── 引擎进程(crop of §4:BANO_BIN 探测序 + guard + stdio drain)──
+    let bao = (|| -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("BAO_TEST_BAO_BIN") {
+            let p = std::path::PathBuf::from(p);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(profile_dir) = exe.parent().and_then(|d| d.parent()) {
+                for name in ["bao", "bao.exe"] {
+                    let candidate = profile_dir.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        if let Ok(t) = std::env::var("CARGO_TARGET_DIR") {
+            for profile in ["debug", "release"] {
+                for name in ["bao", "bao.exe"] {
+                    let candidate = std::path::Path::new(&t).join(profile).join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
+    })()
+    .expect(
+        "bao binary not found — build with `cargo build -p bao_bin`; \
+         REQ-CDS-009 C6 e2e is fail-closed, no skip",
+    );
+
+    let port = TcpListener::bind("127.0.0.1:0")
+        .expect("bind :0")
+        .local_addr()
+        .expect("local_addr")
+        .port();
+    let mut cmd = std::process::Command::new(&bao);
+    cmd.args(["browser", "--headless", "--cdp-port", &port.to_string()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn bao browser");
+    let mut guard = EngineGuard(child);
+    let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
+        guard
+            .0
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        guard
+            .0
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ];
+    for mut pipe in pipes.into_iter().flatten() {
+        thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+            }
+        });
+    }
+
+    let ready = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut ok = false;
+        while std::time::Instant::now() < deadline {
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                ok = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        ok
+    };
+    assert!(ready, "C6: CDP server never listened on 127.0.0.1:{port}");
+
+    let url = format!("ws://127.0.0.1:{port}/devtools/browser");
+    let mut t = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut connected = None;
+        while std::time::Instant::now() < deadline {
+            match WebSocketTransport::connect(&url) {
+                Ok(t) => {
+                    connected = Some(t);
+                    break;
+                }
+                Err(_) => thread::sleep(Duration::from_millis(200)),
+            }
+        }
+        connected.expect("C6: ws connect /devtools/browser")
+    };
+    t.set_command_timeout(Duration::from_secs(30));
+    t.set_event_timeout(Duration::from_millis(200));
+
+    // ── 建 4 页:ctx1 两页(正控)+ ctx2 一页 + 默认 context 一页 ──
+    let mint_ctx = |t: &mut WebSocketTransport| {
+        t.send_command("Target.createBrowserContext", json!({}), None)
+            .expect("createBrowserContext")["browserContextId"]
+            .as_str()
+            .expect("browserContextId")
+            .to_string()
+    };
+    let ctx1 = mint_ctx(&mut t);
+    let ctx2 = mint_ctx(&mut t);
+
+    let open_in = |t: &mut WebSocketTransport,
+                   ctx: Option<&str>|
+     -> String {
+        let mut params = json!({"url": page_url});
+        if let Some(ctx) = ctx {
+            params["browserContextId"] = json!(ctx);
+        }
+        let created = t
+            .send_command("Target.createTarget", params, None)
+            .expect("createTarget");
+        let target_id = created["targetId"].as_str().expect("targetId").to_string();
+        let attached = t
+            .send_command(
+                "Target.attachToTarget",
+                json!({"targetId": target_id, "flatten": true}),
+                None,
+            )
+            .expect("attachToTarget");
+        attached["sessionId"].as_str().expect("sessionId").to_string()
+    };
+
+    let s1a = open_in(&mut t, Some(ctx1.as_str())); // ctx1 页 A(写者)
+    let s1b = open_in(&mut t, Some(ctx1.as_str())); // ctx1 页 B(同 context 共享正控)
+    let s2 = open_in(&mut t, Some(ctx2.as_str())); // ctx2 页(隔离判别)
+    let sd = open_in(&mut t, None); // 默认 context 页(零回归面)
+
+    // ── 等各页 document 就绪(bounded 轮询;失败页会让后续断言带噪)──
+    let eval = |t: &mut WebSocketTransport,
+                session: &str,
+                expr: &str|
+     -> Value {
+        t.send_command(
+            "Runtime.evaluate",
+            json!({"expression": expr, "returnByValue": true}),
+            Some(session),
+        )
+        .unwrap_or_else(|e| panic!("Runtime.evaluate on {session}: {e}"))
+    };
+    let wait_loaded = |t: &mut WebSocketTransport, session: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut polls = 0u32;
+        while std::time::Instant::now() < deadline {
+            let state = eval(t, session, "document.readyState")["result"]["value"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            polls += 1;
+            if state == "complete" {
+                return;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        panic!("C6: page session {session} never reached complete");
+    };
+    for s in [&s1a, &s1b, &s2, &sd] {
+        wait_loaded(&mut t, s);
+    }
+
+    let eval_string = |t: &mut WebSocketTransport, session: &str, expr: &str| -> Option<String> {
+        eval(t, session, expr)["result"]["value"]
+            .as_str()
+            .map(|s| s.to_owned())
+    };
+
+    // ── 写:ctx1 页 A 置 cookie + localStorage ──
+    let wrote_cookie = eval_string(
+        &mut t,
+        &s1a,
+        "document.cookie = 'c6=ctx1; path=/'; document.cookie",
+    )
+    .unwrap_or_default();
+    assert!(
+        wrote_cookie.contains("c6=ctx1"),
+        "C6 正控: ctx1 页 A 写后必能读回自己的 cookie, got {wrote_cookie:?}"
+    );
+    eval(&mut t, &s1a, "localStorage.setItem('c6k','ctx1v')");
+
+    // ── 判别 1:同 context 第二页共享(cookie + storage)= 分区语义 ──
+    let s1b_cookie = eval_string(&mut t, &s1b, "document.cookie").unwrap_or_default();
+    assert!(
+        s1b_cookie.contains("c6=ctx1"),
+        "C6 正控: 同 context 页 B 必须共享页 A 的 cookie(分区而非每页隔离), got {s1b_cookie:?}"
+    );
+    let s1b_ls = eval_string(&mut t, &s1b, "localStorage.getItem('c6k')");
+    assert_eq!(
+        s1b_ls.as_deref(),
+        Some("ctx1v"),
+        "C6 正控: 同 context 页 B 必须共享 localStorage, got {s1b_ls:?}"
+    );
+
+    // ── 判别 2:跨 context 互不可见(cookie + storage)──
+    let s2_cookie = eval_string(&mut t, &s2, "document.cookie").unwrap_or_default();
+    assert!(
+        !s2_cookie.contains("c6=ctx1"),
+        "C6 隔离: ctx2 页不得读到 ctx1 的 cookie, got {s2_cookie:?}"
+    );
+    let s2_ls = eval_string(&mut t, &s2, "localStorage.getItem('c6k')");
+    assert_ne!(
+        s2_ls.as_deref(),
+        Some("ctx1v"),
+        "C6 隔离: ctx2 页不得读到 ctx1 的 localStorage, got {s2_ls:?}"
+    );
+
+    // ── 判别 3:显式 context ↔ 默认 context 互不可见(默认零回归面)──
+    let sd_cookie = eval_string(&mut t, &sd, "document.cookie").unwrap_or_default();
+    assert!(
+        !sd_cookie.contains("c6=ctx1"),
+        "C6 隔离: 默认 context 页不得读到 ctx1 的 cookie, got {sd_cookie:?}"
+    );
+
+    // ── 反向写读:默认页写,ctx 页读不到;默认页自己读得到 ──
+    let d_cookie = eval_string(
+        &mut t,
+        &sd,
+        "document.cookie = 'c6=default; path=/'; document.cookie",
+    )
+    .unwrap_or_default();
+    assert!(
+        d_cookie.contains("c6=default"),
+        "C6 正控: 默认页写后自己读回, got {d_cookie:?}"
+    );
+    let s1a_after = eval_string(&mut t, &s1a, "document.cookie").unwrap_or_default();
+    assert!(
+        !s1a_after.contains("c6=default"),
+        "C6 隔离: ctx1 页不得读到默认 context 的 cookie, got {s1a_after:?}"
+    );
+
+    drop(guard);
 }

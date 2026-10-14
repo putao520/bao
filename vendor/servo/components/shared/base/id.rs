@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use accesskit::{TreeId, Uuid};
@@ -613,6 +613,35 @@ impl ScriptEventLoopId {
 impl fmt::Display for ScriptEventLoopId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// BAO PATCH (REQ-CDS-009 C6): identity of one in-process browser context
+/// storage partition. A partition owns an isolated cookie jar / HTTP cache /
+/// HSTS / auth cache (net side) and webstorage + IndexedDB + CacheStorage
+/// group (storage side); every page created inside an explicit CDP browser
+/// context is mapped to its context's partition. The two implicit partitions
+/// (public / private) keep their pre-existing channel-driven wiring and never
+/// receive one of these ids.
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, PartialOrd, Ord, Serialize,
+)]
+pub struct ContextPartitionId(pub u64);
+
+static CONTEXT_PARTITION_ID: AtomicU64 = AtomicU64::new(1);
+
+impl ContextPartitionId {
+    /// Mint the next partition id. Ids are never reused within a process, so
+    /// a stale mapping (page closed, entry missed) can never alias a fresh
+    /// context.
+    pub fn new() -> Self {
+        Self(CONTEXT_PARTITION_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl fmt::Display for ContextPartitionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "partition-{}", self.0)
     }
 }
 

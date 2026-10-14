@@ -399,6 +399,20 @@ pub fn set_stealth_wire_config_for_webview(
 pub fn clear_stealth_wire_config_for_webview(webview_id: WebViewId) {
     net::connector::clear_stealth_wire_config_for_webview(webview_id);
 }
+
+/// BAO PATCH (REQ-CDS-009 C6): the browser context partition id — one
+/// in-process partition owning an isolated cookie jar / HTTP cache (net side)
+/// and webstorage / IndexedDB / CacheStorage group (storage side). Minted by
+/// [`Servo::create_context_partition`]; pages are attributed through
+/// [`WebViewBuilder::browser_context_partition`].
+pub use servo_base::id::ContextPartitionId;
+
+/// BAO PATCH (REQ-CDS-009 C6): drop a webview's context-partition attribution
+/// (page close; same lifecycle discipline as
+/// [`clear_stealth_wire_config_for_webview`]).
+pub fn clear_context_partition_for_webview(webview_id: WebViewId) {
+    servo_base::context_partition::clear_context_partition_for_webview(webview_id);
+}
 /// Set anti-fingerprinting canvas noise seed and amplitude (REQ-STL-003).
 /// The noise is applied at the servo rendering layer, undetectable from JS.
 pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {

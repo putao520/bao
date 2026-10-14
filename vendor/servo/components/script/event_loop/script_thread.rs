@@ -4315,12 +4315,26 @@ impl ScriptThread {
             None => {
                 Window::new(
                     cx,
-                    incomplete.webview_state,
+                    // Clone: the id is read below for the partitioned
+                    // resource-thread handle — the state itself moves into
+                    // the Window.
+                    incomplete.webview_state.clone(),
                     self.js_runtime.clone(),
                     self.senders.self_sender.clone(),
                     self.layout_factory.create(layout_config),
                     self.senders.image_cache_sender.clone(),
-                    self.resource_threads.clone(),
+                    // REQ-CDS-009 C6: a page-attributed resource-thread view —
+                    // every cookie-face message this global (and its workers)
+                    // sends is stamped with the webview identity, so the net
+                    // router serves it from the page's context partition.
+                    // document.cookie, CookieStore and the WebDriver cookie
+                    // commands all ride this handle; fetch-family messages
+                    // carry their identity in the RequestBuilder and are
+                    // resolved there.
+                    ResourceThreads::for_webview(
+                        self.resource_threads.core_thread.clone(),
+                        incomplete.webview_state.id,
+                    ),
                     self.storage_threads.clone(),
                     #[cfg(feature = "bluetooth")]
                     self.senders.bluetooth_sender.clone(),

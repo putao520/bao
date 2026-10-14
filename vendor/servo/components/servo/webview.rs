@@ -25,6 +25,7 @@ use paint_api::rendering_context::RenderingContext;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::WebViewId;
+use servo_base::id::ContextPartitionId;
 use servo_config::pref;
 use servo_constellation_traits::{
     EmbedderToConstellationMessage, HistoryTraversalSource, SessionHistoryTraversalRequest,
@@ -158,6 +159,13 @@ impl WebView {
             .register_rendering_context(builder.rendering_context.clone());
 
         let id = WebViewId::new(painter_id);
+        // BAO PATCH (REQ-CDS-009 C6): attribute the new webview to its context
+        // partition immediately — before the initial navigation is dispatched
+        // below (NewWebView message or popup responder), so no fetch or cookie
+        // write of this page can precede its attribution.
+        if let Some(partition) = builder.browser_context_partition {
+            servo_base::context_partition::set_context_partition_for_webview(id, partition);
+        }
         let webview = Self(Rc::new(RefCell::new(WebViewInner {
             id,
             servo: servo.clone(),
@@ -1091,6 +1099,12 @@ pub struct WebViewBuilder {
     create_new_webview_responder: Option<AutomaticResponder<Option<NewWebViewDetails>>>,
     user_content_manager: Option<Rc<UserContentManager>>,
     clipboard_delegate: Option<Rc<dyn ClipboardDelegate>>,
+    /// BAO PATCH (REQ-CDS-009 C6): the browser context partition the WebView
+    /// is being created inside, if any. Registered into the webview→partition
+    /// registry the moment the WebViewId exists — BEFORE the initial
+    /// navigation is dispatched (NewWebView / responder send) — so the page's
+    /// very first fetch and cookie write already land in its partition.
+    browser_context_partition: Option<ContextPartitionId>,
     #[cfg(feature = "gamepad")]
     gamepad_delegate: Option<Rc<dyn GamepadDelegate>>,
 }
@@ -1110,9 +1124,18 @@ impl WebViewBuilder {
             create_new_webview_responder: None,
             user_content_manager: None,
             clipboard_delegate: None,
+            browser_context_partition: None,
             #[cfg(feature = "gamepad")]
             gamepad_delegate: None,
         }
+    }
+
+    /// BAO PATCH (REQ-CDS-009 C6): attribute the WebView being created to a
+    /// browser context partition. See the field docs for why this must be set
+    /// on the builder and not after `build()`.
+    pub fn browser_context_partition(mut self, partition: ContextPartitionId) -> Self {
+        self.browser_context_partition = Some(partition);
+        self
     }
 
     pub(crate) fn new_for_create_request(

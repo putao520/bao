@@ -227,18 +227,28 @@ impl BaoWsRegistry {
             // served here — they fall through to the bridge-backed
             // bao_cdp dispatch (the context registry lives browser-side with
             // the PagePool, the single servo truth).
-            // W40 (#11-D): Puppeteer may query version/target info at the
-            // browser session; a stable single-line answer (mirroring
-            // /json/version) is the compatible face.
-            "Target.getTargetInfo" => Some(Ok(serde_json::json!({
-                "targetInfo": {
-                    "targetId": "bao-browser",
-                    "type": "browser",
-                    "title": "Bao",
-                    "url": "",
-                    "attached": true,
-                }
-            }))),
+            // W40 (#11-D) + REQ-CDS-009 C5: the static browser pseudo-target
+            // answer serves only the browser-level handshake (no session, no
+            // targetId). Session-bound or targeted queries fall through to
+            // the bridge-backed attribution arm (protocol.rs handle_target →
+            // GetTargetContextId), which carries the real browserContextId.
+            "Target.getTargetInfo"
+                if msg.session_id.is_none()
+                    && params
+                        .as_ref()
+                        .and_then(|p| p.get("targetId"))
+                        .is_none() =>
+            {
+                Some(Ok(serde_json::json!({
+                    "targetInfo": {
+                        "targetId": "bao-browser",
+                        "type": "browser",
+                        "title": "Bao",
+                        "url": "",
+                        "attached": true,
+                    }
+                })))
+            }
             // Page.createIsolatedWorld needs the event face (the new context
             // is announced via a session-scoped Runtime.executionContextCreated),
             // so it is served here rather than in the stateless dispatch.

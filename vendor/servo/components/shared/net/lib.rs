@@ -33,7 +33,7 @@ use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericOneshotSender, GenericSend, GenericSender,
     SendResult,
 };
-use servo_base::id::{CookieStoreId, HistoryStateId, PipelineId};
+use servo_base::id::{CookieStoreId, HistoryStateId, PipelineId, WebViewId};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
 
@@ -585,11 +585,32 @@ pub type CoreResourceThread = GenericSender<CoreResourceMsg>;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResourceThreads {
     pub core_thread: CoreResourceThread,
+    /// BAO PATCH (REQ-CDS-009 C6): when set, every message sent through this
+    /// handle is wrapped in [`CoreResourceMsg::Partition`] carrying this
+    /// webview identity. Page-attributed handles (Window globals, and the
+    /// workers that inherit them) stamp; the bare channel pair
+    /// (browser-level faces — NetworkManager / SiteDataManager / FetchThread)
+    /// does not, so its messages keep the channel-implied public/private
+    /// routing.
+    pub partition: Option<WebViewId>,
 }
 
 impl ResourceThreads {
     pub fn new(core_thread: CoreResourceThread) -> ResourceThreads {
-        ResourceThreads { core_thread }
+        ResourceThreads {
+            core_thread,
+            partition: None,
+        }
+    }
+
+    /// BAO PATCH (REQ-CDS-009 C6): a page-attributed view of the channel —
+    /// every send is stamped with the webview identity for partition
+    /// resolution on the net router side.
+    pub fn for_webview(core_thread: CoreResourceThread, webview_id: WebViewId) -> ResourceThreads {
+        ResourceThreads {
+            core_thread,
+            partition: Some(webview_id),
+        }
     }
 
     pub fn cache_entries(&self) -> Vec<CacheEntryDescriptor> {
@@ -725,8 +746,15 @@ impl ResourceThreads {
 }
 
 impl GenericSend<CoreResourceMsg> for ResourceThreads {
-    fn send(&self, msg: CoreResourceMsg) -> SendResult {
-        self.core_thread.send(msg)
+    fn send(&self, document_msg: CoreResourceMsg) -> SendResult {
+        // REQ-CDS-009 C6: page-attributed handles stamp every message so the
+        // net router can resolve the sending page's context partition.
+        match self.partition {
+            Some(webview_id) => self
+                .core_thread
+                .send(CoreResourceMsg::Partition(webview_id, Box::new(document_msg))),
+            None => self.core_thread.send(document_msg),
+        }
     }
 
     fn sender(&self) -> GenericSender<CoreResourceMsg> {
@@ -781,6 +809,16 @@ pub enum FetchChannels {
 pub enum CoreResourceMsg {
     Fetch(RequestBuilder, FetchChannels),
     Cancel(Vec<RequestId>),
+    /// BAO PATCH (REQ-CDS-009 C6): partition envelope. A page created inside
+    /// an explicit browser context stamps every message its global scope
+    /// sends with its own webview identity; the net router unwraps the
+    /// envelope, resolves the webview's [`servo_base::id::ContextPartitionId`]
+    /// and serves partition-relevant faces (the cookie store, HTTP cache,
+    /// HSTS, auth cache) from that context's `HttpState`. Only
+    /// page-attributed senders (`ResourceThreads::for_webview`) produce this
+    /// variant — the channel-implied public/private routing is untouched for
+    /// everything else, so un-partitioned pages keep the pre-C6 behavior.
+    Partition(WebViewId, Box<CoreResourceMsg>),
     /// Initiate a fetch in response to processing a redirection
     FetchRedirect(
         RequestBuilder,

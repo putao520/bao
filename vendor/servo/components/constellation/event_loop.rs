@@ -18,7 +18,7 @@ use media::WindowGLContext;
 use script_traits::{InitialScriptState, ScriptThreadMessage};
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{GenericReceiver, GenericSender, SendError};
-use servo_base::id::ScriptEventLoopId;
+use servo_base::id::{ScriptEventLoopId, WebViewId};
 #[cfg(feature = "multiprocess")]
 use servo_config::opts::{self, Opts};
 #[cfg(feature = "multiprocess")]
@@ -66,6 +66,7 @@ impl EventLoop {
     pub(crate) fn spawn<STF: ScriptThreadFactory, SWF: ServiceWorkerManagerFactory>(
         constellation: &mut Constellation<STF, SWF>,
         is_private: bool,
+        webview_id: Option<WebViewId>,
     ) -> Result<Rc<Self>, SendError> {
         let (script_chan, script_port) =
             servo_base::generic_channel::channel().expect("Pipeline script chan");
@@ -79,11 +80,22 @@ impl EventLoop {
         } else {
             constellation.public_resource_threads.clone()
         };
-        let storage_threads = if is_private {
-            constellation.private_storage_threads.clone()
-        } else {
-            constellation.public_storage_threads.clone()
-        };
+        // BAO PATCH (REQ-CDS-009 C6): a page attributed to an explicit
+        // browser context rides its context's own storage thread group
+        // (isolated webstorage / IndexedDB / CacheStorage); everything else
+        // keeps the channel-implied public/private default. Event loops are
+        // never shared across webviews, so one selection covers every
+        // pipeline the loop will ever host.
+        let storage_threads = webview_id
+            .and_then(servo_base::context_partition::context_partition_for_webview)
+            .and_then(storage_traits::partition_storage_threads)
+            .unwrap_or_else(|| {
+                if is_private {
+                    constellation.private_storage_threads.clone()
+                } else {
+                    constellation.public_storage_threads.clone()
+                }
+            });
 
         let event_loop_id = ScriptEventLoopId::new();
         let initial_script_state = InitialScriptState {

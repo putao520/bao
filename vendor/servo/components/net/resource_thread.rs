@@ -46,7 +46,8 @@ use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericReceiver, GenericReceiverSet,
     GenericSelectionResult,
 };
-use servo_base::id::CookieStoreId;
+use servo_base::context_partition;
+use servo_base::id::{ContextPartitionId, CookieStoreId, WebViewId};
 use servo_url::ServoUrl;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -166,6 +167,8 @@ pub fn new_core_resource_thread(
                 ignore_certificate_errors,
                 cancellation_listeners: Default::default(),
                 cookie_listeners: Default::default(),
+                embedder_proxy: embedder_proxy.clone(),
+                partition_states: Default::default(),
             };
 
             mem_profiler_chan.run_with_memory_reporting(
@@ -196,6 +199,14 @@ struct ResourceChannelManager {
     ignore_certificate_errors: bool,
     cancellation_listeners: FxHashMap<RequestId, Weak<CancellationListener>>,
     cookie_listeners: FxHashMap<CookieStoreId, GenericCallback<CookieAsyncResponse>>,
+    embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
+    /// BAO PATCH (REQ-CDS-009 C6): one `HttpState` per live browser-context
+    /// partition, materialized on the net thread the first time a message
+    /// attributed to that partition arrives. Each entry owns an isolated
+    /// cookie jar / HTTP cache / HSTS list / auth cache; entries are never
+    /// persisted (unlike the public default) and never reused across
+    /// partitions.
+    partition_states: FxHashMap<ContextPartitionId, Arc<HttpState>>,
 }
 
 /// This returns a tuple HttpState and a private HttpState.
@@ -205,38 +216,53 @@ fn create_http_states(
     ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> (Arc<HttpState>, Arc<HttpState>) {
+    let public = create_http_state(
+        config_dir,
+        HttpCacheAssignment::Public,
+        ca_certificates.clone(),
+        ignore_certificate_errors,
+        embedder_proxy.clone(),
+    );
+    let private = create_http_state(
+        None,
+        HttpCacheAssignment::Private,
+        ca_certificates,
+        ignore_certificate_errors,
+        embedder_proxy,
+    );
+    (Arc::new(public), Arc::new(private))
+}
+
+/// BAO PATCH (REQ-CDS-009 C6): one resource partition's `HttpState` — its own
+/// cookie jar, HTTP cache, HSTS list and auth cache. The channel-implied
+/// defaults (public persists its jar through `config_dir`; private is always
+/// fresh) and every browser-context partition share this one constructor.
+/// Context partitions pass `persist_config_dir: None` (ephemeral, like
+/// private) and the `Private` cache assignment (memory-only disk-cache face),
+/// so a disposed context leaves nothing on disk.
+fn create_http_state(
+    persist_config_dir: Option<&Path>,
+    assignment: HttpCacheAssignment,
+    ca_certificates: CACertificates<'static>,
+    ignore_certificate_errors: bool,
+    embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
+) -> HttpState {
     let mut hsts_list = HstsList::default();
     let mut auth_cache = AuthCache::default();
     let mut cookie_jar = CookieStorage::new(150);
-    if let Some(config_dir) = config_dir {
+    if let Some(config_dir) = persist_config_dir {
         servo_base::read_json_from_file(&mut auth_cache, config_dir, "auth_cache.json");
         servo_base::read_json_from_file(&mut hsts_list, config_dir, "hsts_list.json");
         servo_base::read_json_from_file(&mut cookie_jar, config_dir, "cookie_jar.json");
     }
 
     let override_manager = CertificateErrorOverrideManager::new();
-    let http_state = HttpState {
+    HttpState {
         hsts_list: RwLock::new(hsts_list),
         cookie_jar: RwLock::new(cookie_jar),
         auth_cache: RwLock::new(auth_cache),
         history_states: RwLock::new(FxHashMap::default()),
-        http_cache: HttpCache::new(HttpCacheAssignment::Public),
-        client: create_http_client(create_tls_config(
-            ca_certificates.clone(),
-            ignore_certificate_errors,
-            override_manager.clone(),
-        )),
-        override_manager,
-        embedder_proxy: embedder_proxy.clone(),
-    };
-
-    let override_manager = CertificateErrorOverrideManager::new();
-    let private_http_state = HttpState {
-        hsts_list: RwLock::new(HstsList::default()),
-        cookie_jar: RwLock::new(CookieStorage::new(150)),
-        auth_cache: RwLock::new(AuthCache::default()),
-        history_states: RwLock::new(FxHashMap::default()),
-        http_cache: HttpCache::new(HttpCacheAssignment::Private),
+        http_cache: HttpCache::new(assignment),
         client: create_http_client(create_tls_config(
             ca_certificates,
             ignore_certificate_errors,
@@ -244,9 +270,7 @@ fn create_http_states(
         )),
         override_manager,
         embedder_proxy,
-    };
-
-    (Arc::new(http_state), Arc::new(private_http_state))
+    }
 }
 
 impl ResourceChannelManager {
@@ -400,6 +424,73 @@ impl ResourceChannelManager {
         }
     }
 
+    /// BAO PATCH (REQ-CDS-009 C6): the `HttpState` serving a message
+    /// attributed to `webview_id` — the attributed context partition's own
+    /// state (materialized lazily, ephemeral and memory-only), or the
+    /// channel-implied default for pages that were never attributed to an
+    /// explicit browser context (the pre-C6 behavior, byte-identical).
+    fn partition_state_for_webview(
+        &mut self,
+        webview_id: Option<WebViewId>,
+        channel_state: &Arc<HttpState>,
+    ) -> Arc<HttpState> {
+        let Some(webview_id) = webview_id else {
+            return channel_state.clone();
+        };
+        let Some(partition) = context_partition::context_partition_for_webview(webview_id) else {
+            return channel_state.clone();
+        };
+        if let Some(state) = self.partition_states.get(&partition) {
+            return state.clone();
+        }
+        let state = Arc::new(create_http_state(
+            None,
+            HttpCacheAssignment::Private,
+            self.ca_certificates.clone(),
+            self.ignore_certificate_errors,
+            self.embedder_proxy.clone(),
+        ));
+        self.partition_states.insert(partition, state);
+        self.partition_states
+            .get(&partition)
+            .expect("partition state was just inserted")
+            .clone()
+    }
+
+    /// BAO PATCH (REQ-CDS-009 C6): resolve which `HttpState` serves `msg` and
+    /// unwrap any [`CoreResourceMsg::Partition`] envelope. Two attribution
+    /// carriers: the envelope's webview stamp (cookie faces — messages with
+    /// no identity of their own) and the fetch family's
+    /// `RequestBuilder::target_webview_id` (already carried end-to-end). The
+    /// channel-implied default wins for everything else, so the public and
+    /// private routing this function replaced is preserved verbatim.
+    fn resolve_partition(
+        &mut self,
+        msg: CoreResourceMsg,
+        channel_state: &Arc<HttpState>,
+    ) -> (CoreResourceMsg, Arc<HttpState>) {
+        // Fetch-family messages carry their page identity in the request
+        // itself — resolve without rewrapping.
+        let attributed = match &msg {
+            CoreResourceMsg::Fetch(request_builder, _)
+            | CoreResourceMsg::FetchRedirect(request_builder, _, _) => {
+                request_builder.target_webview_id
+            },
+            _ => None,
+        };
+        if attributed.is_some() {
+            let state = self.partition_state_for_webview(attributed, channel_state);
+            return (msg, state);
+        }
+        match msg {
+            CoreResourceMsg::Partition(webview_id, inner) => {
+                let state = self.partition_state_for_webview(Some(webview_id), channel_state);
+                (*inner, state)
+            },
+            msg => (msg, channel_state.clone()),
+        }
+    }
+
     /// Returns false if the thread should exit.
     fn process_msg(
         &mut self,
@@ -407,6 +498,8 @@ impl ResourceChannelManager {
         http_state: &Arc<HttpState>,
         protocols: Arc<ProtocolRegistry>,
     ) -> bool {
+        let (msg, http_state) = self.resolve_partition(msg, http_state);
+        let http_state = &http_state;
         match msg {
             CoreResourceMsg::Fetch(request_builder, channels) => match channels {
                 FetchChannels::ResponseMsg(sender) => {
@@ -683,6 +776,12 @@ impl ResourceChannelManager {
             CoreResourceMsg::CollectMemoryReport(_) |
             CoreResourceMsg::RevokeTokenForFile(..) |
             CoreResourceMsg::RefreshTokenForFile(..) => {},
+            // REQ-CDS-009 C6: partition envelopes are unwrapped by
+            // `resolve_partition` above — an envelope can never reach this
+            // match.
+            CoreResourceMsg::Partition(..) => {
+                unreachable!("partition envelope survived resolve_partition")
+            },
         }
         true
     }

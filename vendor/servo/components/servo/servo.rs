@@ -92,8 +92,9 @@ use servo_geometry::{
 use servo_media::ServoMedia;
 use servo_media::player::context::GlContext;
 use servo_wakelock::DefaultWakeLockDelegate;
-use storage::new_storage_threads;
+use storage::{create_partition_storage_threads, new_storage_threads, remove_partition_storage_threads};
 use storage_traits::StorageThreads;
+use servo_base::id::ContextPartitionId;
 #[cfg(feature = "multiprocess")]
 use style::global_style_data::StyleThreadPool;
 #[cfg(feature = "webxr")]
@@ -270,6 +271,11 @@ struct ServoInner {
     pending_handled_input_events: RefCell<Vec<PendingHandledInputEvent>>,
     /// An [`EventLoopWaker`] used to wake up the main embedder event loop.
     event_loop_waker: Box<dyn EventLoopWaker>,
+    /// BAO PATCH (REQ-CDS-009 C6): kept so the embedder-facing
+    /// context-partition registration API can spawn a browser context's
+    /// storage thread group at `Target.createBrowserContext` time, from the
+    /// embedder thread, without round-tripping through the constellation.
+    mem_profiler_chan: mem::ProfilerChan,
 }
 
 impl ServoInner {
@@ -1065,7 +1071,7 @@ impl Servo {
             constellation_embedder_proxy,
             paint_proxy,
             time_profiler_chan,
-            mem_profiler_chan,
+            mem_profiler_chan.clone(),
             devtools_sender,
             protocols,
             public_resource_threads.clone(),
@@ -1108,6 +1114,7 @@ impl Servo {
             _js_engine_setup: js_engine_setup,
             pending_handled_input_events: Default::default(),
             event_loop_waker,
+            mem_profiler_chan,
         }))
     }
 
@@ -1151,6 +1158,28 @@ impl Servo {
         self.0
             .constellation_proxy
             .send(EmbedderToConstellationMessage::CreateMemoryReport(snd));
+    }
+
+    /// BAO PATCH (REQ-CDS-009 C6): mint a new browser context partition and
+    /// spawn its (ephemeral, memory-only) storage thread group. Called by the
+    /// embedder at `Target.createBrowserContext` time; pages attributed to the
+    /// returned partition get their own cookie jar / HTTP cache (net side) and
+    /// webstorage / IndexedDB / CacheStorage group (storage side).
+    pub fn create_context_partition(&self) -> ContextPartitionId {
+        let partition = ContextPartitionId::new();
+        storage::create_partition_storage_threads(
+            partition,
+            self.0.mem_profiler_chan.clone(),
+            opts::get().temporary_storage,
+        );
+        partition
+    }
+
+    /// BAO PATCH (REQ-CDS-009 C6): drop a browser context partition's storage
+    /// registry entry (context disposal — the context's pages are closed
+    /// first, so no live page can still resolve to it).
+    pub fn dispose_context_partition(&self, partition: ContextPartitionId) {
+        storage::remove_partition_storage_threads(partition);
     }
 
     pub fn execute_webdriver_command(&self, command: WebDriverCommandMsg) {

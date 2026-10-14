@@ -7,15 +7,17 @@
 // REQ-PERF-002), because disposal must close the context's pages through the
 // pool and every attribution query happens on the bridge drain path.
 //
-// Isolation honesty (criterion 6): this registry partitions PAGE/TARGET
-// ownership only. Cookie/storage/cache partitioning is a servo resource-plane
-// dimension (the cookie jar is one process-global `RwLock<CookieStorage>` and
-// the storage/cache faces only know public/private) that this registry does
-// not and cannot fake.
+// Criterion 6 (resource partitioning): every explicit context owns one
+// in-process `ContextPartitionId` (minted via `Servo::create_context_partition`)
+// — its own cookie jar / HTTP cache on the servo net side and its own
+// webstorage / IndexedDB / CacheStorage group on the storage side. Pages are
+// attributed to their context's partition at WebView creation, so the implicit
+// default context (no partition) keeps the pre-C6 channel-driven behavior.
 
 use std::collections::HashMap;
 
 use bao_cdp::servo_bridge::DEFAULT_BROWSER_CONTEXT_ID;
+use servo::ContextPartitionId;
 
 /// One explicit browser context. Chrome keeps a disposeOnDetach flag on the
 /// wire; bao serves browser-level sessions only, so detach-driven disposal
@@ -23,6 +25,11 @@ use bao_cdp::servo_bridge::DEFAULT_BROWSER_CONTEXT_ID;
 #[derive(Debug)]
 struct BrowserContextEntry {
     id: String,
+    /// REQ-CDS-009 C6: the in-process resource partition this context owns —
+    /// isolated cookie jar / HTTP cache (servo net side) and webstorage /
+    /// IndexedDB / CacheStorage group (storage side). Minted at context
+    /// creation via `Servo::create_context_partition`.
+    partition: ContextPartitionId,
 }
 
 /// In-process browser context registry: explicit-context identities plus the
@@ -41,16 +48,26 @@ impl BrowserContextRegistry {
         Self::default()
     }
 
-    /// Mint a unique explicit context id (`bao-context-<n>`). The implicit
-    /// default id can never collide (different prefix, never minted here).
-    pub fn create_context(&mut self) -> String {
+    /// Mint a unique explicit context id (`bao-context-<n>`) bound to the
+    /// partition created for it. The implicit default id can never collide
+    /// (different prefix, never minted here).
+    pub fn create_context(&mut self, partition: ContextPartitionId) -> String {
         self.next_id += 1;
         let id = format!("bao-context-{:016x}", self.next_id);
         self.contexts.insert(
             id.clone(),
-            BrowserContextEntry { id: id.clone() },
+            BrowserContextEntry {
+                id: id.clone(),
+                partition,
+            },
         );
         id
+    }
+
+    /// The partition a context owns. `None` for the implicit default (pages
+    /// of the default context need no partition) and unknown ids.
+    pub fn partition_of_context(&self, id: &str) -> Option<ContextPartitionId> {
+        self.contexts.get(id).map(|entry| entry.partition)
     }
 
     /// Destroy one explicit context and return the ids of every page that
@@ -123,8 +140,8 @@ mod tests {
     #[test]
     fn create_context_mints_unique_non_default_ids() {
         let mut reg = BrowserContextRegistry::new();
-        let a = reg.create_context();
-        let b = reg.create_context();
+        let a = reg.create_context(ContextPartitionId::new());
+        let b = reg.create_context(ContextPartitionId::new());
         assert_ne!(a, b, "each create mints a fresh id");
         assert_ne!(a, DEFAULT_BROWSER_CONTEXT_ID);
         assert_ne!(b, DEFAULT_BROWSER_CONTEXT_ID);
@@ -138,8 +155,8 @@ mod tests {
     fn list_contexts_returns_explicit_only_sorted() {
         let mut reg = BrowserContextRegistry::new();
         assert!(reg.list_contexts().is_empty(), "default is implicit, never listed");
-        let a = reg.create_context();
-        let b = reg.create_context();
+        let a = reg.create_context(ContextPartitionId::new());
+        let b = reg.create_context(ContextPartitionId::new());
         assert_eq!(reg.list_contexts(), vec![a, b]); // mint order == sorted order
     }
 
@@ -147,7 +164,7 @@ mod tests {
     #[test]
     fn dispose_context_returns_member_pages_and_forgets_them() {
         let mut reg = BrowserContextRegistry::new();
-        let ctx = reg.create_context();
+        let ctx = reg.create_context(ContextPartitionId::new());
         reg.attribute_page(3, Some(&ctx));
         reg.attribute_page(4, Some(&ctx));
         reg.attribute_page(5, None); // default-context page — untouched
@@ -184,7 +201,7 @@ mod tests {
     #[test]
     fn attribute_page_records_only_known_explicit_contexts() {
         let mut reg = BrowserContextRegistry::new();
-        let ctx = reg.create_context();
+        let ctx = reg.create_context(ContextPartitionId::new());
         reg.attribute_page(7, Some(&ctx));
         assert_eq!(reg.context_of_page(7), ctx);
         // Unknown context: silently unrecorded (create_page validates before
@@ -203,7 +220,7 @@ mod tests {
     #[test]
     fn remove_page_drops_attribution_idempotently() {
         let mut reg = BrowserContextRegistry::new();
-        let ctx = reg.create_context();
+        let ctx = reg.create_context(ContextPartitionId::new());
         reg.attribute_page(2, Some(&ctx));
         reg.remove_page(2);
         reg.remove_page(2);
