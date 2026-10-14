@@ -15,7 +15,10 @@
 //! ## 测试策略
 //!
 //! - **Mock 路径**: 每个测试启动一个"一次性" mini HTTP/WS server(只服务一个请求然后退出)
-//! - **真实 Playwright 路径**: graceful skip,CI 启用 `BAO_TEST_PLAYWRIGHT=1`(eprintln + return)
+//! - **真实 Playwright 全流程**: delegate 形态(cov-audit-cdp-20261014 补实裁决)——
+//!   真客户端 oracle 由 bao_browser tests/suite 的 `puppeteer_real_lifecycle_e2e`
+//!   (真 Node puppeteer-core)与 `playwright_style_full_flow_three_rounds`
+//!   (hermetic 生产 CdpServer + 真 servo)承担;本文件 §4 只做存在性断言守护委派锚
 //!
 //! @trace REQ-BAO-API-002 [interface:Transport]
 //! @trace REQ-BAO-API-008 [level:integration]
@@ -474,38 +477,83 @@ fn e2e_playwright_set_auto_attach_receives_attached_events() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §4 真实 Playwright E2E — graceful skip + BAO_TEST_PLAYWRIGHT=1
+// §4 真实 Playwright E2E — delegate 形态(真客户端 oracle 由 bao_browser 承担)
 // ════════════════════════════════════════════════════════════════════
 
-/// 真实 Playwright(Node.js)E2E 测试。
-/// 启用方式:BAO_TEST_PLAYWRIGHT=1 + bao_cdp_server 在 9222 端口监听。
-/// 默认(无 BAO_TEST_PLAYWRIGHT)graceful skip(eprintln + return)。
-#[test]
-fn e2e_real_playwright_full_flow() {
-    // Arrange
-    // Act
-    if std::env::var("BAO_TEST_PLAYWRIGHT").as_deref() != Ok("1") {
-        eprintln!("[skip] 环境不可用: BAO_TEST_PLAYWRIGHT=1 not set + CDP server on 9222 (real playwright E2E)");
-        return;
-    }
-    // 占位:真实 Playwright(Node.js)流程测试。
-    // 接入后将:
-    // 1. spawn bao_cdp_server 监听 9222
-    // 2. 用 Node.js + playwright 连接 ws://127.0.0.1:9222
-    // 3. page.goto + page.screenshot
-    // 4. 验证 screenshot 是有效 PNG
-    // 当前 mock 路径已覆盖 attachToTarget + flat-mode 链路。
+/// Delegate 形态存在性断言:确认被指派的真客户端 oracle 承担者仍在场。
+///
+/// cov-audit-cdp-20261014 清理候选收口(占位测试补实):§4 两个
+/// e2e_real_playwright_* 测试从「env 门内零断言」占位改判为 delegate 形态——
+/// 真客户端全流程 oracle 已由 bao_browser tests/suite 两个承担者完整覆盖;
+/// 本 crate(bao_cdp_client)无 bao_browser / cdp-server 依赖,进程内无法构造
+/// 真 servo 全流程服务端(新增依赖超出合同 scope);本文件的 wire 面(HTTP
+/// discovery / browser-attach / flat-session / auto-attach)已由 §1-§3 覆盖。
+/// (与 e2e_internal_servo.rs 的同名 helper 同形——单套件二进制内两文件各持
+/// 一份,避免为 6 行 helper 触碰 main.rs 的 mod 声明。)
+fn assert_delegate_bearer(rel_path: &str, fn_name: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("delegate bearer missing: {} ({e})", path.display()));
+    assert!(
+        src.contains(&format!("fn {fn_name}")),
+        "delegate bearer {rel_path} no longer defines {fn_name} — re-audit the delegation"
+    );
 }
 
+/// 真实 Playwright 全流程(connect→goto→evaluate→screenshot PNG→network→disconnect)。
+///
+/// **delegate**(cov-audit-cdp-20261014 补实裁决):真客户端 oracle 由下述承担者
+/// 完整覆盖,本测试只做存在性断言守护委派锚:
+/// - `bao_browser/tests/suite/puppeteer_e2e_tests.rs::puppeteer_real_lifecycle_e2e`
+///   —— 真 Node puppeteer-core(connectOverCDP 同 wire 族)对真 servo 生产栈:
+///   connect→newPage→goto(loopback)→network→evaluate→type→screenshot PNG
+///   magic→close→disconnect;honest-skip 仅缺 node/npm。
+/// - `bao_browser/tests/suite/playwright_full_flow_loop_tests.rs::playwright_style_full_flow_three_rounds`
+///   —— hermetic 真 WS 面:生产 CdpServer + 真 servo,3 轮 navigate→
+///   frameNavigated 事件→settle→evaluate→input→loopback fetch→screenshot PNG
+///   →second nav→close。
+///
+/// @trace REQ-CDP-001 [level:e2e]
+#[test]
+fn e2e_real_playwright_full_flow() {
+    // Assert — 委派锚存在性(两承担者文件与测试函数仍在场)
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/puppeteer_e2e_tests.rs",
+        "puppeteer_real_lifecycle_e2e",
+    );
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/playwright_full_flow_loop_tests.rs",
+        "playwright_style_full_flow_three_rounds",
+    );
+}
+
+/// Playwright BrowserContext cookie 隔离(两 context 互不可见)。
+///
+/// **delegate + 已登记产品缺口**(cov-audit-cdp-20261014 补实裁决):
+/// - 连接面/全流程面的真客户端 oracle 由 `e2e_real_playwright_full_flow` 注释
+///   所指的两个承担者覆盖(存在性断言同)。
+/// - **context 隔离面本身是真产品缺口,不得用脚本化 mock 伪造绿色**:竖排证据
+///   —— `bao_browser/src/ws_registry.rs`(W40 #11-D)明文 "Bao is a
+///   single-default-context server (no incognito/context isolation yet)":
+///   `Target.getBrowserContexts` 诚实返回空列表,`Target.createBrowserContext`
+///   未处理(落 not-found),真 playwright `browser.newContext()` 现状必失败;
+///   `Network.setCookie/getCookies`(bao_browser cdp_handler,经 servo
+///   SiteDataManager)是 default-context 全局面,无 per-context 隔离。
+///   缺口已上报 Commander,能力新增须经用户裁决;隔离面落地后本测试应改判
+///   接真断言。
+///
+/// @trace REQ-CDP-001 [level:e2e]
 #[test]
 fn e2e_real_playwright_browser_context_isolation() {
-    // Arrange
-    // Act
-    if std::env::var("BAO_TEST_PLAYWRIGHT").as_deref() != Ok("1") {
-        eprintln!("[skip] 环境不可用: BAO_TEST_PLAYWRIGHT=1 not set (real playwright BrowserContext isolation E2E)");
-        return;
-    }
-    // 占位:验证两个 BrowserContext cookie 隔离
+    // Assert — 连接面/全流程面委派锚(context 隔离面无承担者,见上注)
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/puppeteer_e2e_tests.rs",
+        "puppeteer_real_lifecycle_e2e",
+    );
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/playwright_full_flow_loop_tests.rs",
+        "playwright_style_full_flow_three_rounds",
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════

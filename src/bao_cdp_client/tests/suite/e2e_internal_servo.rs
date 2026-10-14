@@ -15,7 +15,10 @@
 //!
 //! - **Mock 路径**: 用 MockServoBackend 模拟 servo,验证完整 dispatch 链路
 //!   (InMemoryTransport → CDPRdpBridge → command_dispatcher → backend)
-//! - **真 servo 路径**: 用 graceful skip 标记,CI 环境(有 servo 实例)启用(eprintln + return)
+//! - **真 servo 路径**: delegate 形态(cov-audit-cdp-20261014 补实裁决)——真
+//!   servo oracle 由 bao_browser tests/suite 的 `playwright_style_full_flow_three_rounds`
+//!   (hermetic 生产 CdpServer + 真 servo)与 `puppeteer_real_lifecycle_e2e`
+//!   (真 Node puppeteer-core)承担;§8 只做存在性断言守护委派锚
 //!
 //! @trace REQ-BAO-API-001 [level:integration]
 //! @trace REQ-BAO-API-002 [interface:Transport]
@@ -843,37 +846,76 @@ fn e2e_internal_injection_defense_newline_in_payload() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §8 真 servo 实例 E2E — graceful skip,CI 启用
+// §8 真 servo 实例 E2E — delegate 形态(真 servo oracle 由 bao_browser 承担)
 // ════════════════════════════════════════════════════════════════════
 
-/// 真 servo E2E:需要 PagePool + servo 实例。
-/// 当前 MockServoBackend 是 mock,真 servo 集成在 bao_browser 实现。
-/// CI 环境跑这个测试时设置 `BAO_TEST_REAL_SERVO=1`。
-/// 默认(无 BAO_TEST_REAL_SERVO)graceful skip(eprintln + return)。
-#[test]
-fn e2e_real_servo_full_navigation() {
-    // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
-    // Act
-    if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!(
-            "[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set + PagePool backend (real servo E2E)"
-        );
-        return;
-    }
-    // Assert — 占位:真 servo 集成需 bao_browser::PagePoolBackend。
-    // 接入后将执行 Page.navigate + captureScreenshot + 校验 PNG 头。
-    // 当前 Mock 路径已在 e2e_internal_basic_navigation_full_chain 完整覆盖。
+/// Delegate 形态存在性断言:确认被指派的真 servo oracle 承担者仍在场。
+///
+/// cov-audit-cdp-20261014 清理候选收口(占位测试补实):§8 两个
+/// e2e_real_servo_* 测试从「env 门内零断言」占位改判为 delegate 形态——
+/// 本 crate(bao_cdp_client)无 bao_browser 依赖,进程内无法构造真 servo
+/// 实例(新增依赖超出合同 scope);真 servo oracle 已由 bao_browser tests/suite
+/// 承担者完整覆盖,本文件 mock 导航/DOM 链已由 §1/§6 覆盖。
+/// (与 e2e_playwright_compat.rs 的同名 helper 同形——单套件二进制内两文件
+/// 各持一份,避免为 6 行 helper 触碰 main.rs 的 mod 声明。)
+fn assert_delegate_bearer(rel_path: &str, fn_name: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("delegate bearer missing: {} ({e})", path.display()));
+    assert!(
+        src.contains(&format!("fn {fn_name}")),
+        "delegate bearer {rel_path} no longer defines {fn_name} — re-audit the delegation"
+    );
 }
 
+/// 真 servo 全流程导航(navigate→settle→screenshot PNG→close)。
+///
+/// **delegate**(cov-audit-cdp-20261014 补实裁决):真 servo oracle 由下述承担者
+/// 完整覆盖,本测试只做存在性断言守护委派锚:
+/// - `bao_browser/tests/suite/playwright_full_flow_loop_tests.rs::playwright_style_full_flow_three_rounds`
+///   —— 生产 CdpServer + 真 servo backend,3 轮 navigate→frameNavigated 事件
+///   →settle→evaluate→input→loopback fetch→screenshot PNG magic→second nav
+///   →close,走的正是本 crate WebSocketTransport 的 wire 形态。
+/// - `bao_browser/tests/suite/puppeteer_e2e_tests.rs::puppeteer_real_lifecycle_e2e`
+///   —— 真 Node puppeteer-core 对真 servo:goto→screenshot PNG→disconnect。
+///
+/// @trace REQ-CDP-001 [level:e2e]
+#[test]
+fn e2e_real_servo_full_navigation() {
+    // Assert — 委派锚存在性(两承担者文件与测试函数仍在场)
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/playwright_full_flow_loop_tests.rs",
+        "playwright_style_full_flow_three_rounds",
+    );
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/puppeteer_e2e_tests.rs",
+        "puppeteer_real_lifecycle_e2e",
+    );
+}
+
+/// 真 servo DOM 查询(querySelector / getElementById 读面)。
+///
+/// **delegate**(cov-audit-cdp-20261014 补实裁决):
+/// - 真 servo DOM 读面由 `playwright_style_full_flow_three_rounds` 承担
+///   (settle 探针逐轮真读 `document.getElementById('mark').textContent` /
+///   `document.readyState` / `document.title` —— 与 DOM.querySelector 在真
+///   servo 上合成的同一 Runtime.evaluate 读面)。
+/// - 真 servo querySelectorAll→Node Array 互操作面由
+///   `bao_browser/tests/suite/dom_node_interop_tests.rs::dom_node_interop_full_chain`
+///   承担(@trace REQ-BRW-002 [level:e2e])。
+/// - 本 crate mock 面 DOM.querySelector 已由
+///   e2e_internal_dom_query_selector_returns_node 覆盖。
+///
+/// @trace REQ-CDP-001 [level:e2e]
 #[test]
 fn e2e_real_servo_dom_queryselector() {
-    // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
-    // Act
-    if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
-        eprintln!(
-            "[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set (real servo DOM querySelector E2E)"
-        );
-        return;
-    }
-    // Assert — 占位:真 servo 上 querySelector DOM 操作
+    // Assert — 委派锚存在性(两承担者文件与测试函数仍在场)
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/playwright_full_flow_loop_tests.rs",
+        "playwright_style_full_flow_three_rounds",
+    );
+    assert_delegate_bearer(
+        "../bao_browser/tests/suite/dom_node_interop_tests.rs",
+        "dom_node_interop_full_chain",
+    );
 }
