@@ -8,6 +8,8 @@
 //! - `runtime_conformance.rs` — Runtime domain 6 method
 //! - `dom_conformance.rs` — DOM domain 11 method
 //! - `network_conformance.rs` — Network domain 4 method
+//! - `overlay_conformance.rs` — Overlay domain(REQ-CDP-007-C6 截图标注高亮;
+//!   生产 bridge 通道线契约,真引擎像素验收委派 bao_browser tests)
 //! - `input_conformance.rs` — Input domain 4 method
 //! - `emulation_conformance.rs` — Emulation domain 4 method
 //! - `target_conformance.rs` — Target domain 6 method
@@ -41,6 +43,7 @@ mod emulation_conformance;
 mod input_conformance;
 mod log_conformance;
 mod network_conformance;
+mod overlay_conformance;
 mod page_conformance;
 mod runtime_conformance;
 mod target_conformance;
