@@ -399,3 +399,15 @@ reuse probe → Scan-Before-Code → TDD → `@trace` → Oracle Gate → commit
 ## 许可证
 
 MPL-2.0(SpiderMonkey + Servo) + MIT(Bun crates)
+
+## 领域资料库索引
+
+> 消费协议:`kb_query(techTag=...)` 动手前查 / `kb_inject` 派发注入(DEC-KB-DRIVEN-001);条目=官方规范契约+本仓实证坑;新增条目须登记本表(kb_index_check 对账锚)。
+
+| techTag | 文件 | 覆盖域 | lastVerified |
+|---|---|---|---|
+| spidermonkey-windows-jsapi-init | `.gsc/domain-knowledge/spidermonkey-windows-jsapi-init.md` | SM Windows JSAPI init | 2026-09-26 |
+| w3c-editing-media | `.gsc/domain-knowledge/w3c-editing-media.md` | EditContext/WebVTT/Selection/InputEvents 全语义+Chromium parity 坑 | 2026-10-14 |
+| tls-fingerprinting | `.gsc/domain-knowledge/tls-fingerprinting.md` | JA3/JA4 序列化/H2 AKAMAI 帧/浏览器基线锚+反指纹坑 | 2026-10-14 |
+| nodejs-compat | `.gsc/domain-knowledge/nodejs-compat.md` | dgram/net/vm/child_process/tls/process 官方契约+bao 实证态 | 2026-10-14 |
+| whatwg-core | `.gsc/domain-knowledge/whatwg-core.md` | fetch 算法/事件循环 microtask/DOM 导航+WPT 测试坑 | 2026-10-14 |
