@@ -560,100 +560,100 @@ fn test_dom_query_selector_empty_no_bridge() {
 
 #[test]
 fn test_fetch_enable_with_patterns() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the command routes through the servo bridge —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}]})));
     let err = resp.error.expect("must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 
 }
 
 #[test]
 fn test_fetch_enable_no_patterns() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the command routes through the servo bridge —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.enable", None);
     let err = resp.error.expect("must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 
 }
 
 #[test]
 fn test_fetch_continue_request() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.continueRequest", Some(json!({"requestId": "r1"})));
     let err = resp.error.expect("must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 
 }
 
 #[test]
 fn test_fetch_fail_request() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.failRequest", Some(json!({"requestId": "r2", "reason": "Aborted"})));
     let err = resp.error.expect("must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 
 }
 
 #[test]
 fn test_fetch_fulfill_request() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "responseCode": 200, "body": "hi"})));
     let err = resp.error.expect("must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 
 }
 
 #[test]
 fn test_fetch_fulfill_request_default_status() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.fulfillRequest", Some(json!({"requestId": "r3", "body": "hi"})));
     let err = resp.error.expect("must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 
 }
 
 #[test]
 fn test_fetch_take_response_body_as_stream() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: stream handles are not part of the P1 interception face —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r6"})));
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("stream handles"));
 
 }
 
 #[test]
 fn test_fetch_get_request_post_data() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the servo embedder request face carries no request body —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.getRequestPostData", Some(json!({"requestId": "r4"})));
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("no request body"));
 
 }
 
 #[test]
 fn test_fetch_continue_with_auth() {
-    // REQ-CDP contract: bao has no request interception facility —
+    // REQ-CDP contract: the auth interception facet is not wired —
     // explicit error, never a canned success.
     let resp = dispatch("Fetch.continueWithAuth", Some(json!({"requestId": "r5"})));
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("auth interception facet is not wired"));
 
 }
 
@@ -744,20 +744,34 @@ fn test_network_unknown_command() {
 
 #[test]
 fn test_overlay_highlight_node() {
-    let resp = dispatch("Overlay.highlightNode", None);
-    assert!(resp.result.is_some());
+    // REQ-CDP-007-C6: highlightNode is a real bridge command (screenshot
+    // annotation face) — with a valid node ref but no bridge the dispatch
+    // is an explicit -32603, never a canned ok.
+    let resp = dispatch("Overlay.highlightNode", Some(json!({"nodeId": 5})));
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
 fn test_overlay_hide_highlight() {
+    // REQ-CDP-007-C6: hideHighlight clears the browser-side highlight slot —
+    // without a bridge it is an explicit -32603, never a canned ok.
     let resp = dispatch("Overlay.hideHighlight", None);
-    assert!(resp.result.is_some());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
 fn test_overlay_set_inspect_mode() {
+    // REQ-CDP-007-C6: the hover→Overlay.nodeHighlightRequested event chain
+    // does not exist on this face — explicit -32000, never a canned ok.
     let resp = dispatch("Overlay.setInspectMode", None);
-    assert!(resp.result.is_some());
+    let err = resp.error.expect("explicit error required");
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("Overlay.setInspectMode"));
+    assert!(err.message.contains("nodeHighlightRequested"));
 }
 
 #[test]
@@ -2697,15 +2711,25 @@ fn test_network_cache_disabled_ok_headers_require_bridge() {
 
 #[test]
 fn test_network_emulate_and_intercept_noop() {
-    for cmd in [
-        "emulateNetworkConditions",
-        "setRequestInterception",
-        "continueInterceptedRequest",
-    ] {
-        let resp = dispatch(&format!("Network.{cmd}"), None);
-        assert!(resp.result.is_some(), "{cmd} must return a result");
-        assert!(resp.error.is_none());
-    }
+    // emulateNetworkConditions stays an accepted no-op (cache/offline
+    // emulation has no servo face, unrelated to interception). The two
+    // interception commands are real bridge commands now (REQ-CDP-006 C6):
+    // setRequestInterception arms the legacy slot (-32603 without a bridge,
+    // absent patterns = catch-all); continueInterceptedRequest without the
+    // resolution key is -32602.
+    let resp = dispatch("Network.emulateNetworkConditions", None);
+    assert!(resp.result.is_some(), "emulateNetworkConditions must stay an ok");
+    assert!(resp.error.is_none());
+    let resp = dispatch("Network.setRequestInterception", None);
+    let err = resp.error.expect("setRequestInterception must route through the bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
+    let resp = dispatch("Network.continueInterceptedRequest", None);
+    let err = resp
+        .error
+        .expect("continueInterceptedRequest requires the resolution key");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 }
 
 #[test]
@@ -2794,48 +2818,50 @@ fn test_debugger_enable_and_misc_default_shapes() {
 
 #[test]
 fn test_fetch_enable_disable_coverage() {
-    // Fetch.disable is an idempotent ok; Fetch.enable is an explicit error
-    // (no request interception facility).
+    // REQ-CDP-006 C6: both faces are real bridge commands now — the
+    // interception slot + pending drains live browser-side, so without a
+    // bridge each is -32603, never a canned ok.
     let resp = dispatch("Fetch.disable", None);
-    assert!(resp.result.is_some(), "Fetch.disable must return a result");
-    assert!(resp.error.is_none());
+    let err = resp.error.expect("Fetch.disable must route through the bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
     let resp = dispatch(
         "Fetch.enable",
         Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "*.js"}]})),
     );
     let err = resp.error.expect("Fetch.enable must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 
 }
 
 #[test]
 fn test_fetch_get_request_post_data_constant_shape() {
-    // REQ-CDP contract: no request interception facility — explicit error.
+    // REQ-CDP contract: the servo embedder request face carries no request body — explicit error.
     let resp = dispatch("Fetch.getRequestPostData", Some(json!({"requestId": "r-x"})));
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("no request body"));
 
 }
 
 #[test]
 fn test_fetch_continue_with_auth_constant_shape() {
-    // REQ-CDP contract: no request interception facility — explicit error.
+    // REQ-CDP contract: the auth interception facet is not wired — explicit error.
     let resp = dispatch("Fetch.continueWithAuth", Some(json!({"requestId": "r-y"})));
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("auth interception facet is not wired"));
 
 }
 
 #[test]
 fn test_fetch_take_response_bodyAsStream_naming() {
-    // REQ-CDP contract: no request interception facility — explicit error.
+    // REQ-CDP contract: stream handles are not part of the P1 interception face — explicit error.
     let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r-z"})));
     let err = resp.error.expect("must fail explicitly");
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("stream handles"));
 
 }
 

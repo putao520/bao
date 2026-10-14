@@ -804,39 +804,48 @@ fn test_overlay_enable_disable_response_empty() {
 }
 
 #[test]
-fn test_overlay_highlight_node_response_empty() {
+fn test_overlay_highlight_node_no_bridge_explicit_error() {
+    // REQ-CDP-007-C6: highlightNode is a real bridge command (screenshot
+    // annotation face) — with a valid node ref but no bridge the router
+    // surfaces the explicit -32603, never an empty-object canned result.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session
-            .send(&router, "Overlay.highlightNode", None)
-            .unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(
+            &router,
+            "Overlay.highlightNode",
+            Some(json!({"nodeId": 5})),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_overlay_hide_highlight_response_empty() {
+fn test_overlay_hide_highlight_no_bridge_explicit_error() {
+    // REQ-CDP-007-C6: hideHighlight clears the browser-side highlight slot —
+    // without a bridge it is an explicit -32603, never a canned result.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session
-            .send(&router, "Overlay.hideHighlight", None)
-            .unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "Overlay.hideHighlight", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge"));
 }
 
 #[test]
-fn test_overlay_set_inspect_mode_response_empty() {
+fn test_overlay_set_inspect_mode_not_supported() {
+    // REQ-CDP-007-C6: the hover→Overlay.nodeHighlightRequested event chain
+    // does not exist on this face — explicit -32000, never a canned result.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session
-            .send(&router, "Overlay.setInspectMode", None)
-            .unwrap(),
-        json!({})
-    );
+    let err = session
+        .send(&router, "Overlay.setInspectMode", None)
+        .unwrap_err();
+    assert_eq!(err.code, -32000);
+    assert!(err.message.contains("Overlay.setInspectMode"));
+    assert!(err.message.contains("nodeHighlightRequested"));
 }
 
 #[test]
@@ -926,55 +935,57 @@ fn test_log_unknown_command_error_code() {
 
 #[test]
 fn test_fetch_enable_no_patterns() {
-    // REQ-CDP contract: no request interception facility — explicit
+    // REQ-CDP contract: the command routes through the servo bridge — explicit
     // error through the internal backend, never a canned success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session.send(&router, "Fetch.enable", None).unwrap_err();
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 
 }
 
 #[test]
 fn test_fetch_enable_with_patterns() {
-    // REQ-CDP contract: no request interception facility — explicit
+    // REQ-CDP contract: the command routes through the servo bridge — explicit
     // error through the internal backend, never a canned success.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session.send(&router, "Fetch.enable", None).unwrap_err();
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 
 }
 
 #[test]
 fn test_fetch_disable_response_empty() {
+    // REQ-CDP-006 C6: Fetch.disable is a real bridge command (slot + pending
+    // drains live browser-side) — without a bridge: -32603, never an
+    // empty-ok.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
-    assert_eq!(
-        session.send(&router, "Fetch.disable", None).unwrap(),
-        json!({})
-    );
+    let err = session.send(&router, "Fetch.disable", None).unwrap_err();
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
 fn test_fetch_continue_request_fields() {
-    // REQ-CDP contract: no request interception facility — the
+    // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' — the
     // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
         .send(&router, "Fetch.continueRequest", Some(json!({"requestId": "r1"})))
         .unwrap_err();
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 
 }
 
 #[test]
 fn test_fetch_continue_with_response_fields() {
-    // REQ-CDP contract: no request interception facility — the
+    // REQ-CDP contract: a renamed fulfillRequest — phase-2, use Fetch.fulfillRequest — the
     // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
@@ -982,41 +993,41 @@ fn test_fetch_continue_with_response_fields() {
         .send(&router, "Fetch.continueWithResponse", Some(json!({"requestId": "r2"})))
         .unwrap_err();
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("phase-2"));
 
 }
 
 #[test]
 fn test_fetch_fail_request_fields() {
-    // REQ-CDP contract: no request interception facility — the
+    // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' — the
     // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
         .send(&router, "Fetch.failRequest", Some(json!({"requestId": "r3", "reason": "Aborted"})))
         .unwrap_err();
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 
 }
 
 #[test]
 fn test_fetch_fulfill_request_fields() {
-    // REQ-CDP contract: no request interception facility — the
+    // REQ-CDP contract: the resolution key is the pause-time 'interceptionId' — the
     // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
     let err = session
         .send(&router, "Fetch.fulfillRequest", Some(json!({"requestId": "r4", "responseCode": 200, "body": "hi"})))
         .unwrap_err();
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 
 }
 
 #[test]
 fn test_fetch_get_request_post_data_fields() {
-    // REQ-CDP contract: no request interception facility — the
+    // REQ-CDP contract: the servo embedder request face carries no request body — the
     // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
@@ -1024,13 +1035,13 @@ fn test_fetch_get_request_post_data_fields() {
         .send(&router, "Fetch.getRequestPostData", Some(json!({"requestId": "r5"})))
         .unwrap_err();
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("no request body"));
 
 }
 
 #[test]
 fn test_fetch_continue_with_auth_fields() {
-    // REQ-CDP contract: no request interception facility — the
+    // REQ-CDP contract: the auth interception facet is not wired — the
     // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
@@ -1038,13 +1049,13 @@ fn test_fetch_continue_with_auth_fields() {
         .send(&router, "Fetch.continueWithAuth", Some(json!({"requestId": "r6"})))
         .unwrap_err();
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("auth interception facet is not wired"));
 
 }
 
 #[test]
 fn test_fetch_take_response_body_as_stream_fields() {
-    // REQ-CDP contract: no request interception facility — the
+    // REQ-CDP contract: stream handles are not part of the P1 interception face — the
     // internal backend refuses explicitly, never canned success fields.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t1");
@@ -1052,7 +1063,7 @@ fn test_fetch_take_response_body_as_stream_fields() {
         .send(&router, "Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r7"})))
         .unwrap_err();
     assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert!(err.message.contains("stream handles"));
 
 }
 

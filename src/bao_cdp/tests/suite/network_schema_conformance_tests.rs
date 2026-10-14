@@ -726,10 +726,14 @@ fn network_set_request_interception_params_round_trip() {
     let wire = serde_json::to_value(&params).unwrap();
     assert_eq!(wire, json!({"patterns": [{"urlPattern": "*example.com"}]}));
 
+    // REQ-CDP-006 C6: the wire schema above is still the conformance anchor;
+    // the command itself is a real bridge command now (the legacy face of
+    // the Fetch facility), so without a bridge it is -32603 — the accepted
+    // no-op result object no longer exists.
     let resp = dispatch_no_bridge("Network.setRequestInterception", Some(wire));
-    assert!(resp.error.is_none());
-    let _: spec::SetRequestInterceptionReturnObject =
-        serde_json::from_value(resp.result.unwrap()).unwrap();
+    let err = resp.error.expect("must route through the servo bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 /// Network.continueInterceptedRequest(spec deprecated)— interceptionId
@@ -750,10 +754,14 @@ fn network_continue_intercepted_request_params_round_trip() {
     let wire = serde_json::to_value(&params).unwrap();
     assert_eq!(wire, json!({"interceptionId": "INT-1"}));
 
+    // REQ-CDP-006 C6: the wire schema above is still the conformance anchor;
+    // the command resolves through the same Fetch dispatch now, so without
+    // a bridge it is -32603 (the accepted no-op result object no longer
+    // exists).
     let resp = dispatch_no_bridge("Network.continueInterceptedRequest", Some(wire));
-    assert!(resp.error.is_none());
-    let _: spec::ContinueInterceptedRequestReturnObject =
-        serde_json::from_value(resp.result.unwrap()).unwrap();
+    let err = resp.error.expect("must route through the servo bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────

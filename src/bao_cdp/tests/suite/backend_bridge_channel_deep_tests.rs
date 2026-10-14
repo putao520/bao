@@ -130,12 +130,12 @@ fn test_internal_input_dispatch_mouse() {
 
 #[test]
 fn test_internal_fetch_enable() {
-    // Fetch.enable is an explicit error: no request interception facility
+    // Fetch.enable is an explicit error: the command routes through the servo bridge
     // (the servo embedder does not expose request pausing).
     let resp = dispatch("Fetch.enable", None);
     let err = resp.error.expect("Fetch.enable must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
@@ -961,7 +961,52 @@ fn test_css_domain_get_computed_style() {
 
 #[test]
 fn test_overlay_domain_highlight_node() {
-    let resp = dispatch("Overlay.highlightNode", None);
+    // REQ-CDP-007-C6: highlightNode is a real bridge command — the node ref
+    // + raw highlight spec ride to the browser annotation face. The mock
+    // must know the OverlayHighlightNode variant arm (the canned ok_empty
+    // fake success is eradicated; drain-race hardening serves until the
+    // command is processed).
+    let (sender, receiver) = bridge_channel(Duration::from_secs(5));
+    std::thread::spawn(move || loop {
+        let got = receiver.try_process(|cmd| match cmd {
+            BridgeCommand::OverlayHighlightNode {
+                target_id,
+                node_id,
+                object_id,
+                highlight_spec,
+            } => {
+                assert_eq!(target_id, "test-target");
+                assert_eq!(node_id, Some(5));
+                assert_eq!(object_id, None);
+                assert_eq!(
+                    highlight_spec,
+                    Some(json!({"borderColor": {"r": 255}}))
+                );
+                BridgeResponse { result: Ok(json!({})) }
+            }
+            _ => BridgeResponse {
+                result: Err("unexpected".into()),
+            },
+        });
+        if got {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    });
+
+    let msg = CdpMessage {
+        id: Some(1),
+        method: "Overlay.highlightNode".to_string(),
+        params: None,
+        session_id: None,
+    };
+    let params = Some(json!({"nodeId": 5, "highlightSpec": {"borderColor": {"r": 255}}}));
+    let resp = handle_command(msg, "test-target", &params, Some(&sender));
+    assert!(
+        resp.error.is_none(),
+        "highlightNode with a bridge must succeed: {:?}",
+        resp.error
+    );
     assert!(resp.result.is_some(), "highlightNode returns empty result");
 }
 
@@ -981,7 +1026,7 @@ fn test_debugger_domain_set_breakpoint_by_url_explicit_error() {
 }
 
 #[test]
-fn test_fetch_domain_enable_pattern_count_reflected() {
+fn test_fetch_domain_enable_pattern_count_bridge_arming() {
     // Fetch.enable is an explicit error regardless of pattern count — no
     // interception facility exists.
     let resp = dispatch(
@@ -989,12 +1034,12 @@ fn test_fetch_domain_enable_pattern_count_reflected() {
         Some(json!({"patterns":[{"urlPattern":"*"},{"requestStage":"Response"}]})),
     );
     let err = resp.error.expect("Fetch.enable must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
-fn test_fetch_domain_fail_request_echoes_reason() {
+fn test_fetch_domain_fail_request_missing_interception_id() {
     // failRequest is an explicit error — an interception that can never be
     // enabled can never be failed.
     let resp = dispatch(
@@ -1002,16 +1047,23 @@ fn test_fetch_domain_fail_request_echoes_reason() {
         Some(json!({"requestId":"r-1","reason":"Failed"})),
     );
     let err = resp.error.expect("Fetch.failRequest must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("missing required 'interceptionId'"));
 }
 
 #[test]
-fn test_fetch_domain_enable_no_patterns_zero_count() {
+fn test_fetch_domain_enable_no_patterns_catch_all_arming() {
+    // REQ-CDP-006 C6: Fetch.enable is a real bridge command. An omitted
+    // patterns param normalizes at the protocol layer to one catch-all
+    // Request-stage pattern (Chromium omitted-patterns semantics — intercept
+    // everything), so the command still routes through the bridge: without
+    // one there is no slot owner → -32603, never a canned "enabled".
     let resp = dispatch("Fetch.enable", None);
-    let err = resp.error.expect("Fetch.enable must fail explicitly");
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    let err = resp
+        .error
+        .expect("Fetch.enable must route through the servo bridge");
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 // ---- BridgeCommand variant coverage: multi-target + Debugger (REQ-CDP-003) ----

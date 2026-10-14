@@ -178,12 +178,12 @@ fn test_session_send_log_enable() {
 
 #[test]
 fn test_session_send_fetch_enable() {
-    // No request interception facility — explicit error, never a canned ok.
+    // The command routes through the servo bridge — explicit error, never a canned ok.
     let router = CdpRouter::new();
     let session = router.create_internal_session("t");
     let err = session.send(&router, "Fetch.enable", None).unwrap_err();
-    assert_eq!(err.code, -32000);
-    assert!(err.message.contains("no request interception facility"));
+    assert_eq!(err.code, -32603);
+    assert!(err.message.contains("no servo bridge connected"));
 }
 
 #[test]
