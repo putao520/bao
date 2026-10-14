@@ -159,3 +159,4 @@ mod target_domain_event_tests;
 mod editcontext_parity_tests;
 mod runtime_invariant_latency_tests;
 mod layout_geometry_tests;
+mod eng004_macro_micro_order_tests;

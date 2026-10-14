@@ -26,6 +26,19 @@
 //       flag is never silently ignored).
 //   T9  `bao run --module --timeout 400 -e`      → exit 124 (module eval
 //       entry: run_module_eval controlled path).
+//   T10 `run --module --timeout 30000 -e 'process.exit(0)'` → exit 0
+//       (AC03: an explicit orderly exit is not disturbed by the controlled-
+//       code precedence; the unused 30s deadline never fires).
+//   T11 `run --module --timeout 30000 -e 'process.exit(7)'` → exit 7
+//       (AC03: nonzero explicit codes pass through unshadowed).
+//   T12 module entry whose runaway timer callback records an unhandled
+//       rejection (flushed through the uncaught machinery after the
+//       interrupt → observable `request_exit(1)` side effect on stderr)
+//       and then spins into the deadline → exit **124**: the controlled
+//       code wins over the exit machinery's 1.
+//   T13 same composition under `--timeout 60000` + kill -INT (a
+//       writeFileSync marker pins the signal mid-callback) → exit **130**
+//       (Cancelled variant of the same precedence).
 //
 // **运行约束**: 测试需要预先 `cargo build -p bao_bin` 产出 bao 二进制。
 // 缺失时 skip 而非 fail(避免 CI 在未 build 时直接红)。
@@ -48,6 +61,16 @@ const MAX_ELAPSED_MS: u64 = 10_000;
 /// How long the SIGINT tests let the child spin before signaling (must be
 /// comfortably past engine bring-up so the kill lands mid-JS).
 const SPIN_BEFORE_SIGNAL_MS: u64 = 800;
+/// AC03 precedence-face deadline: 800ms leaves engine bring-up + module
+/// compile + the first pump tick comfortable headroom to register and fire
+/// the 0ms timer BEFORE the deadline, so the uncaught-route side effect
+/// (post-interrupt rejection flush) is guaranteed to be part of the run the
+/// deadline terminates.
+const PRIORITY_DEADLINE_MS: u64 = 800;
+/// Lower bound paired with PRIORITY_DEADLINE_MS: the runaway must actually
+/// run until the deadline (not die instantly) — same rationale as
+/// MIN_ELAPSED_MS above.
+const PRIORITY_MIN_ELAPSED_MS: u64 = 700;
 
 // ─── 辅助 — 定位 bao 二进制(与 bao_cli_e2e_tests 相同的定位序) ────────────
 
@@ -482,5 +505,187 @@ fn timeout_terminates_runaway_module_eval() {
         elapsed <= Duration::from_millis(MAX_ELAPSED_MS),
         "termination too late ({:?})",
         elapsed
+    );
+}
+
+// ─── T10/T11: 显式 process.exit(n) 在 armed --timeout 下不受优先序破坏 ──────
+
+/// @trace REQ-CLI-3 [level:e2e] — AC03 explicit-exit half: `process.exit(0)`
+/// under an armed (unused) `--timeout` still exits 0. The controlled-code
+/// precedence (`termination_exit` wins over the exit machinery) must never
+/// disturb an explicit, orderly exit that the control did not terminate —
+/// and finishing inside the 10s window is itself the proof the 30s deadline
+/// never fired.
+#[test]
+fn explicit_process_exit_zero_under_armed_timeout() {
+    let mut child = spawn_bao(&[
+        "run",
+        "--module",
+        "--timeout",
+        "30000",
+        "--eval",
+        "process.exit(0)",
+    ]);
+    let status = wait_with_deadline(&mut child, Duration::from_millis(MAX_ELAPSED_MS));
+    let (stdout, stderr) = drain_pipes(&mut child);
+    let Some(status) = status else {
+        panic!("process.exit(0) under armed --timeout did not finish");
+    };
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "explicit process.exit(0) must keep exit code 0 under armed --timeout; \
+         stdout={:?} stderr={:?}",
+        stdout,
+        stderr
+    );
+}
+
+/// @trace REQ-CLI-3 [level:e2e] — AC03 explicit-exit half, nonzero variant:
+/// `process.exit(7)` under an armed (unused) `--timeout` passes 7 through
+/// unshadowed — the precedence order must not flatten explicit nonzero exit
+/// codes onto the control mapping (124/130) either.
+#[test]
+fn explicit_process_exit_nonzero_under_armed_timeout() {
+    let mut child = spawn_bao(&[
+        "run",
+        "--module",
+        "--timeout",
+        "30000",
+        "--eval",
+        "process.exit(7)",
+    ]);
+    let status = wait_with_deadline(&mut child, Duration::from_millis(MAX_ELAPSED_MS));
+    let (stdout, stderr) = drain_pipes(&mut child);
+    let Some(status) = status else {
+        panic!("process.exit(7) under armed --timeout did not finish");
+    };
+    assert_eq!(
+        status.code(),
+        Some(7),
+        "explicit process.exit(7) must keep exit code 7 under armed --timeout; \
+         stdout={:?} stderr={:?}",
+        stdout,
+        stderr
+    );
+}
+
+// ─── T12: 受控终止码 124 优先于 module uncaught 路由的 request_exit(1) ──────
+
+/// @trace REQ-CLI-3 [level:e2e] — AC03 precedence half: a module entry whose
+/// runaway timer callback records an unhandled rejection FIRST, then spins
+/// into the deadline. The post-interrupt rejection flush routes through the
+/// uncaught machinery, whose `request_exit(1)` side effect is observable on
+/// stderr — and the exit must still be **124**: the controlled termination
+/// code is the truthful signal and wins over the exit machinery's 1. The
+/// stderr assertions make this a real precedence proof (both effects
+/// provably present in the same run), not a vacuous 124.
+#[test]
+fn deadline_beats_module_uncaught_request_exit_one() {
+    let start = Instant::now();
+    let mut child = spawn_bao(&[
+        "run",
+        "--module",
+        "--timeout",
+        &PRIORITY_DEADLINE_MS.to_string(),
+        "--eval",
+        "setTimeout(() => { Promise.reject(new Error('late')); while(true){} }, 0)",
+    ]);
+    let status = wait_with_deadline(&mut child, Duration::from_millis(MAX_ELAPSED_MS));
+    let elapsed = start.elapsed();
+    let (stdout, stderr) = drain_pipes(&mut child);
+    let Some(status) = status else {
+        panic!(
+            "priority-face runaway did not terminate within {}ms",
+            MAX_ELAPSED_MS
+        );
+    };
+    assert_eq!(
+        status.code(),
+        Some(124),
+        "controlled 124 must beat the uncaught route's request_exit(1); \
+         stdout={:?} stderr={:?}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stderr.contains("uncaught exception"),
+        "uncaught-route side effect (request_exit(1)) must be on stderr for \
+         this to be a precedence proof, got: {:?}",
+        stderr
+    );
+    assert!(
+        stderr.contains("deadline exceeded"),
+        "deadline termination must be on stderr, got: {:?}",
+        stderr
+    );
+    assert!(
+        elapsed >= Duration::from_millis(PRIORITY_MIN_ELAPSED_MS),
+        "terminated too early ({:?}) — deadline not honored from below",
+        elapsed
+    );
+}
+
+// ─── T13: 受控终止码 130(SIGINT→cancel)优先于 request_exit(1) ───────────────
+
+/// @trace REQ-CLI-3 [level:e2e] — AC03 precedence half, Cancelled variant:
+/// the same composition under an armed `--timeout 60000`, terminated by
+/// SIGINT→cancel, must exit **130** — beating the uncaught route's
+/// `request_exit(1)` side effect (128+SIGINT is the truthful signal). The
+/// file-marker handshake makes the signal deterministic: the timer callback
+/// `writeFileSync`es a marker (kernel-side, visible immediately — console
+/// output is only flushed at process exit and would never arrive mid-spin)
+/// BEFORE spinning, and kill -INT is delivered only once the marker proves
+/// the runaway callback is spinning inside the pump.
+#[test]
+#[cfg(unix)] // POSIX signal semantics — Windows equivalent is a separate mechanism
+fn sigint_cancel_beats_module_uncaught_request_exit_one() {
+    let marker = std::env::temp_dir().join(format!(
+        "bao-timeout-e2e-spin-{}-{}",
+        std::process::id(),
+        "sigint-priority"
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let js = format!(
+        "setTimeout(() => {{ require('node:fs').writeFileSync('{}', 'fired'); \
+         Promise.reject(new Error('late')); while(true){{}} }}, 0)",
+        marker.to_string_lossy()
+    );
+    let mut child = spawn_bao(&["run", "--module", "--timeout", "60000", "--eval", &js]);
+    let armed = common::wait_for_condition(Duration::from_secs(15), || marker.is_file());
+    assert!(
+        armed,
+        "timer callback never started spinning — cannot deliver a mid-callback SIGINT"
+    );
+    // SAFETY: signal delivery to our own child pid.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    let status = wait_with_deadline(&mut child, Duration::from_millis(MAX_ELAPSED_MS));
+    let (_stdout, stderr) = drain_pipes(&mut child);
+    let _ = std::fs::remove_file(&marker);
+    let Some(status) = status else {
+        panic!(
+            "priority-face runaway did not terminate after SIGINT within {}ms",
+            MAX_ELAPSED_MS
+        );
+    };
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "controlled 130 (128+SIGINT) must beat the uncaught route's \
+         request_exit(1); stderr={:?}",
+        stderr
+    );
+    assert!(
+        stderr.contains("uncaught exception"),
+        "uncaught-route side effect (request_exit(1)) must be on stderr for \
+         this to be a precedence proof, got: {:?}",
+        stderr
+    );
+    assert!(
+        stderr.contains("cancelled"),
+        "stable Cancelled termination error expected on stderr, got: {:?}",
+        stderr
     );
 }
