@@ -564,14 +564,14 @@ fn client_scenarios(ws_url: &str, origin: u16, tx: std::sync::mpsc::Sender<Resul
         // resolves to nothing; the eager identity validation must reject it
         // instead of silently arming a dead highlight (design §6).
         //
-        // Error class as-pinned: the Overlay face routes through the generic
-        // `bridge_send`, which maps every bridge error to JSON-RPC -32603
-        // (protocol.rs:131-138). Chrome's DevTools classifies
-        // "No node with given id found" as -32000 ServerError, and the DOM
-        // face's own error mapping does use -32000 (devtools_dom_css_tests
-        // asserts it) — the divergence is a registered face-consistency
-        // observation for the implementation side; the semantic anchor here
-        // is the message, which names the dead identity.
+        // Error class -32000: the page's identity verdicts are domain-owned —
+        // the browser side wraps the `__bao_err` outcome in
+        // `BridgeError::domain` (the Overlay identity resolution in
+        // cdp_handler.rs), and `bridge_send` maps
+        // `BridgeErrorKind::DomainError` to -32000, the code Chrome's
+        // DevTools uses for "No node with given id found" (transport-class
+        // plumbing failures stay -32603). The message names the dead
+        // identity — the semantic anchor.
         let r = send(
             &mut t,
             "Overlay.highlightNode",
@@ -581,8 +581,8 @@ fn client_scenarios(ws_url: &str, origin: u16, tx: std::sync::mpsc::Sender<Resul
             .get("error")
             .unwrap_or_else(|| panic!("unknown nodeId must fail explicitly, got: {r}"));
         assert_eq!(
-            err["code"], -32603,
-            "as-pinned: bridge_send's generic internal-error class (Chrome class would be -32000): {err}"
+            err["code"], -32000,
+            "domain-owned identity verdict → Chrome's ServerError class: {err}"
         );
         assert!(
             err["message"]

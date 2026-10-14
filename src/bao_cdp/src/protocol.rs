@@ -45,7 +45,7 @@ use serde_json::Value;
 use crate::devtools_dom;
 // FetchResolveAction: REQ-CDP-006 C6 — the Fetch domain and the legacy
 // Network interception face both resolve paused requests through it.
-use crate::servo_bridge::{BridgeCommand, BridgeSender, FetchResolveAction};
+use crate::servo_bridge::{BridgeCommand, BridgeErrorKind, BridgeSender, FetchResolveAction};
 
 // Chrome DevTools "server error" code used for not-supported commands.
 pub(crate) const ERR_NOT_SUPPORTED: i64 = -32000;
@@ -132,9 +132,18 @@ fn bridge_send(bridge: Option<&BridgeSender>, cmd: BridgeCommand) -> HandlerResu
     match bridge {
         Some(b) => {
             let resp = b.send(cmd);
+            // e234/e236: the Err payload carries its own class — transport
+            // faces (no bridge / closed / timeout) stay -32603, while
+            // domain-owned outcomes (Fetch.resolve UnknownId/Rejected,
+            // Overlay unknown node/object id) surface as -32000, the code
+            // Chrome's DevTools uses for the same class (the in-repo
+            // not-supported face shares the value).
             resp.result.map_err(|e| CdpError {
-                code: -32603,
-                message: e,
+                code: match e.kind {
+                    BridgeErrorKind::NoBridge => -32603,
+                    BridgeErrorKind::DomainError => ERR_NOT_SUPPORTED,
+                },
+                message: e.message,
             })
         }
         None => Err(CdpError {
@@ -4097,6 +4106,49 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.code, -32603);
         assert!(err.message.contains("no servo bridge connected"));
+    }
+
+    // 185b. bridge_send with a live bridge maps the Err payload's class:
+    //     domain-owned outcomes (Fetch.resolve UnknownId/Rejected, Overlay
+    //     unknown node) surface as -32000 with the message verbatim, while
+    //     transport-class faces stay -32603 (e234/e236; REQ-CDP-006/007).
+    #[test]
+    fn bridge_send_maps_error_kind_to_cdp_code() {
+        use crate::servo_bridge::BridgeError;
+        let (bridge, receiver) = bridge_channel(std::time::Duration::from_secs(2));
+        let responder = std::thread::spawn(move || {
+            receiver.recv_and_process(std::time::Duration::from_secs(2), |cmd| BridgeResponse {
+                result: Err(match cmd {
+                    BridgeCommand::FetchResolve { .. } => {
+                        BridgeError::domain(
+                            "unknown interceptionId: i-1 (never paused or already resolved)",
+                        )
+                    }
+                    _ => BridgeError::no_bridge("bridge response timeout"),
+                }),
+            })
+        });
+        // Domain-class face: Fetch.continueRequest with an unknown id.
+        let msg = cdp_msg(
+            90,
+            "Fetch.continueRequest",
+            Some(json!({"interceptionId": "i-1"})),
+        );
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, Some(&bridge));
+        let err = resp.error.expect("unknown interceptionId must fail explicitly");
+        assert_eq!(err.code, ERR_NOT_SUPPORTED, "domain class → -32000: {err:?}");
+        assert!(
+            err.message.contains("unknown interceptionId"),
+            "message verbatim: {err:?}"
+        );
+        // Control: transport-class face keeps -32603.
+        let msg = cdp_msg(91, "Page.navigate", Some(json!({"url": "https://example.com/"})));
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, Some(&bridge));
+        let err = resp.error.expect("transport failure must fail explicitly");
+        assert_eq!(err.code, -32603, "transport class → -32603: {err:?}");
+        responder.join().unwrap();
     }
 
     // ─── CdpMessage Debug trait ────────────────────────────────────────

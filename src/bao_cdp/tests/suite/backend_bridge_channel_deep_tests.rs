@@ -1431,7 +1431,7 @@ fn test_bridge_response_ok_null_value() {
 #[test]
 fn test_bridge_response_err_empty_string() {
     let resp = BridgeResponse {
-        result: Err(String::new()),
+        result: Err(String::new().into()),
     };
     assert!(resp.result.is_err());
     assert_eq!(resp.result.unwrap_err().len(), 0);
@@ -1441,7 +1441,7 @@ fn test_bridge_response_err_empty_string() {
 fn test_bridge_response_err_contains_unicode() {
     let msg = "通道关闭 💥".to_string();
     let resp = BridgeResponse {
-        result: Err(msg.clone()),
+        result: Err(msg.clone().into()),
     };
     assert_eq!(resp.result.unwrap_err(), msg);
 }

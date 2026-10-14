@@ -501,7 +501,7 @@ fn test_bridge_response_ok_null() {
 #[test]
 fn test_bridge_response_err_empty() {
     let resp = BridgeResponse {
-        result: Err(String::new()),
+        result: Err(String::new().into()),
     };
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().is_empty());

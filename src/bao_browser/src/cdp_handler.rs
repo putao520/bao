@@ -2,7 +2,8 @@
 // Runs on the main thread during the event loop to process CDP commands.
 
 use bao_cdp::servo_bridge::{
-    BridgeCommand, BridgeResponse, FetchPattern, FetchResolveAction, main_frame_id_for_target,
+    BridgeCommand, BridgeError, BridgeErrorKind, BridgeResponse, FetchPattern, FetchResolveAction,
+    main_frame_id_for_target,
 };
 use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
@@ -30,6 +31,36 @@ use crate::screenshot::{ScreenshotFormat, encode_image};
 
 /// Process a single bridge command by dispatching to the appropriate page in the pool.
 pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeResponse {
+    // Domain-classified faces (e234/e236) hoisted ahead of the transport-
+    // typed funnel: the page lookup stays -32603-class while the handler
+    // verdicts carry their own BridgeErrorKind (Fetch.resolve
+    // UnknownId/Rejected and Overlay unknown identity → -32000).
+    match cmd {
+        BridgeCommand::FetchResolve {
+            target_id,
+            interception_id,
+            action,
+        } => {
+            return BridgeResponse {
+                result: with_page_classified(pool, &target_id, |page| {
+                    cmd_fetch_resolve(page, &interception_id, action)
+                }),
+            };
+        }
+        BridgeCommand::OverlayHighlightNode {
+            target_id,
+            node_id,
+            object_id,
+            highlight_spec,
+        } => {
+            return BridgeResponse {
+                result: with_page_classified(pool, &target_id, |page| {
+                    cmd_overlay_highlight_node(page, node_id, object_id, highlight_spec)
+                }),
+            };
+        }
+        _ => {}
+    }
     let result = match cmd {
         // Multi-target management commands — operate on the pool, not a specific page
         BridgeCommand::CreateTarget { url } => cmd_create_target(pool, &url),
@@ -221,13 +252,6 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::FetchDisable { target_id } => {
             with_page(pool, &target_id, cmd_fetch_disable)
         }
-        BridgeCommand::FetchResolve {
-            target_id,
-            interception_id,
-            action,
-        } => with_page(pool, &target_id, |page| {
-            cmd_fetch_resolve(page, &interception_id, action)
-        }),
 
         // Storage domain — origin-scoped storage queries and clearing
         BridgeCommand::StorageGetStorageItemsForOrigin {
@@ -508,20 +532,20 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // ── Overlay domain (REQ-CDP-007-C6) — screenshot/screencast
         // annotation highlight. State commands only (CDP: no events): the
         // visual effect lands on the next capture through
-        // [`draw_page_highlight`].
-        BridgeCommand::OverlayHighlightNode {
-            target_id,
-            node_id,
-            object_id,
-            highlight_spec,
-        } => with_page(pool, &target_id, |page| {
-            cmd_overlay_highlight_node(page, node_id, object_id, highlight_spec)
-        }),
+        // [`draw_page_highlight`]. (Overlay.highlightNode itself is hoisted
+        // to the domain-classified dispatch above — e236.)
         BridgeCommand::OverlayHideHighlight { target_id } => {
             with_page(pool, &target_id, cmd_overlay_hide_highlight)
         }
+        // Domain-classified faces are dispatched above (e234/e236 hoist);
+        // the funnel itself is fail-closed if one ever lands here.
+        BridgeCommand::FetchResolve { .. } | BridgeCommand::OverlayHighlightNode { .. } => {
+            Err("domain-classified command reached the transport funnel".into())
+        }
     };
-    BridgeResponse { result }
+    BridgeResponse {
+        result: result.map_err(BridgeError::from),
+    }
 }
 
 /// Parse a string target_id into a usize page ID.
@@ -538,6 +562,23 @@ where
     let page = pool
         .get_page(id)
         .ok_or_else(|| format!("page not found: {target_id}"))?;
+    f(&page)
+}
+
+/// `with_page` for the two domain-classified faces (Fetch.resolve,
+/// Overlay.highlightNode — e234/e236): the page lookup itself stays
+/// transport-class (no page → no domain to own the error → -32603), while
+/// the handler outcome carries its own [`BridgeErrorKind`] (the resolution
+/// verdict / identity resolution is domain-owned → -32000).
+fn with_page_classified<F>(pool: &PagePool, target_id: &str, f: F) -> Result<Value, BridgeError>
+where
+    F: FnOnce(&PageHandle) -> Result<Value, BridgeError>,
+{
+    let id = parse_target_id(target_id)
+        .ok_or_else(|| BridgeError::no_bridge(format!("invalid target_id: {target_id}")))?;
+    let page = pool
+        .get_page(id)
+        .ok_or_else(|| BridgeError::no_bridge(format!("page not found: {target_id}")))?;
     f(&page)
 }
 
@@ -767,17 +808,20 @@ fn cmd_fetch_resolve(
     page: &PageHandle,
     interception_id: &str,
     action: FetchResolveAction,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     match page
         .webview_state()
         .borrow_mut()
         .fetch_resolve(interception_id, action)
     {
-        FetchResolveOutcome::Resolved => ok_empty(),
-        FetchResolveOutcome::UnknownId => Err(format!(
+        FetchResolveOutcome::Resolved => Ok(serde_json::json!({})),
+        // e234: an unknown / consumed identity is a domain-owned verdict —
+        // Chrome's DevTools classifies it -32000 ServerError, not the
+        // transport -32603.
+        FetchResolveOutcome::UnknownId => Err(BridgeError::domain(format!(
             "unknown interceptionId: {interception_id} (never paused or already resolved)"
-        )),
-        FetchResolveOutcome::Rejected(reason) => Err(reason),
+        ))),
+        FetchResolveOutcome::Rejected(reason) => Err(BridgeError::domain(reason)),
     }
 }
 
@@ -1052,20 +1096,30 @@ fn parse_overlay_quad(v: &Value, layer: &str) -> Result<OverlayQuad, String> {
 pub(crate) fn overlay_box_quads(
     page: &PageHandle,
     node: &OverlayNodeRef,
-) -> Result<BoxQuads, String> {
+) -> Result<BoxQuads, BridgeError> {
     let out = page
         .evaluate_js_web(&overlay_box_quads_js(node))
-        .map_err(to_browser_error)?;
-    let v: Value = serde_json::from_str(&out)
-        .map_err(|e| format!("Overlay: unparseable box-model output: {e} (got: {out:.200})"))?;
+        .map_err(|e| BridgeError::no_bridge(to_browser_error(e)))?;
+    let v: Value = serde_json::from_str(&out).map_err(|e| {
+        BridgeError::no_bridge(format!(
+            "Overlay: unparseable box-model output: {e} (got: {out:.200})"
+        ))
+    })?;
     if let Some(reason) = v.get("__bao_err").and_then(|e| e.as_str()) {
-        return Err(reason.to_string());
+        // e236: the page's identity verdicts are domain-owned (Chrome's
+        // DevTools classifies "No node with given id found" as -32000
+        // ServerError); the plumbing failures above stay transport-class.
+        return Err(BridgeError::domain(reason.to_string()));
     }
     Ok(BoxQuads {
-        content: parse_overlay_quad(v.get("content").unwrap_or(&Value::Null), "content")?,
-        padding: parse_overlay_quad(v.get("padding").unwrap_or(&Value::Null), "padding")?,
-        border: parse_overlay_quad(v.get("border").unwrap_or(&Value::Null), "border")?,
-        margin: parse_overlay_quad(v.get("margin").unwrap_or(&Value::Null), "margin")?,
+        content: parse_overlay_quad(v.get("content").unwrap_or(&Value::Null), "content")
+            .map_err(BridgeError::no_bridge)?,
+        padding: parse_overlay_quad(v.get("padding").unwrap_or(&Value::Null), "padding")
+            .map_err(BridgeError::no_bridge)?,
+        border: parse_overlay_quad(v.get("border").unwrap_or(&Value::Null), "border")
+            .map_err(BridgeError::no_bridge)?,
+        margin: parse_overlay_quad(v.get("margin").unwrap_or(&Value::Null), "margin")
+            .map_err(BridgeError::no_bridge)?,
     })
 }
 
@@ -1136,11 +1190,11 @@ fn cmd_overlay_highlight_node(
     node_id: Option<i64>,
     object_id: Option<String>,
     highlight_spec: Option<Value>,
-) -> Result<Value, String> {
-    let node = overlay_node_ref_from_parts(node_id, object_id)?;
+) -> Result<Value, BridgeError> {
+    let node = overlay_node_ref_from_parts(node_id, object_id).map_err(BridgeError::no_bridge)?;
     let spec = match &highlight_spec {
         None | Some(Value::Null) => HighlightSpec::default(),
-        Some(v) => parse_highlight_spec(v)?,
+        Some(v) => parse_highlight_spec(v).map_err(BridgeError::no_bridge)?,
     };
     overlay_box_quads(page, &node)?;
     page.webview_state().borrow_mut().highlight = Some(HighlightState { node, spec });

@@ -130,7 +130,7 @@ impl cdp_server::TargetProvider for ServoTargetProvider {
                     ),
                 })
             }
-            Err(e) => Err(e),
+            Err(e) => Err(e.message),
         }
     }
 

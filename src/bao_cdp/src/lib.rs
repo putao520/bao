@@ -59,5 +59,6 @@ pub mod servo_bridge;
 pub use protocol::{handle_command, parse_message, serialize_event, serialize_response};
 pub use router::{BackendKind, CdpRouter, CdpSession, ExternalBrowser};
 pub use servo_bridge::{
-    bridge_channel, BridgeCommand, BridgeReceiver, BridgeResponse, BridgeSender,
+    bridge_channel, BridgeCommand, BridgeError, BridgeErrorKind, BridgeReceiver, BridgeResponse,
+    BridgeSender,
 };

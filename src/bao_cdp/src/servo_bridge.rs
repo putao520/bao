@@ -484,10 +484,108 @@ pub enum BridgeCommand {
     },
 }
 
+/// Error-category class carried by a [`BridgeResponse`] failure (e234/e236).
+///
+/// The protocol layer used to map every bridge Err onto a uniform -32603 with
+/// only the message distinguishing faces. Chrome classifies domain-owned
+/// errors (Fetch.resolve UnknownId/Rejected, Overlay unknown node/object id,
+/// ...) as -32000 ServerError while transport faces (no bridge / channel
+/// closed / response timeout) stay -32603. The class rides inside the Err
+/// payload so `bridge_send` can pick the JSON-RPC code without re-parsing
+/// error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BridgeErrorKind {
+    /// Transport-class face — no bridge connected, channel closed, response
+    /// timeout. Maps to JSON-RPC -32603 at the protocol layer. The default
+    /// for every error not explicitly classified as domain-owned.
+    #[default]
+    NoBridge,
+    /// Domain-owned outcome (unknown interceptionId, rejected fulfillment,
+    /// unknown node/object id, ...) — maps to -32000 ServerError, the code
+    /// Chrome's DevTools uses for the same class.
+    DomainError,
+}
+
+/// A bridge-channel failure: the message plus its [`BridgeErrorKind`] class.
+///
+/// `From<&str>`/`From<String>` default to [`BridgeErrorKind::NoBridge`] so
+/// existing transport-class constructions keep their classification; the
+/// domain-classified faces construct via [`BridgeError::domain`].
+#[derive(Debug, Clone)]
+pub struct BridgeError {
+    /// The failure message, verbatim (the protocol layer forwards it as the
+    /// JSON-RPC error message).
+    pub message: String,
+    /// Which JSON-RPC error class this failure belongs to.
+    pub kind: BridgeErrorKind,
+}
+
+impl BridgeError {
+    /// Transport-class failure (no bridge / closed channel / timeout).
+    pub fn no_bridge(message: impl Into<String>) -> Self {
+        BridgeError {
+            message: message.into(),
+            kind: BridgeErrorKind::NoBridge,
+        }
+    }
+
+    /// Domain-owned outcome (Chrome's -32000 ServerError class).
+    pub fn domain(message: impl Into<String>) -> Self {
+        BridgeError {
+            message: message.into(),
+            kind: BridgeErrorKind::DomainError,
+        }
+    }
+}
+
+impl From<&str> for BridgeError {
+    fn from(message: &str) -> Self {
+        BridgeError::no_bridge(message)
+    }
+}
+
+impl From<String> for BridgeError {
+    fn from(message: String) -> Self {
+        BridgeError::no_bridge(message)
+    }
+}
+
+impl std::fmt::Display for BridgeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::ops::Deref for BridgeError {
+    type Target = String;
+
+    fn deref(&self) -> &String {
+        &self.message
+    }
+}
+
+impl PartialEq<str> for BridgeError {
+    fn eq(&self, other: &str) -> bool {
+        self.message == other
+    }
+}
+
+impl PartialEq<&str> for BridgeError {
+    fn eq(&self, other: &&str) -> bool {
+        self.message == *other
+    }
+}
+
+impl PartialEq<String> for BridgeError {
+    fn eq(&self, other: &String) -> bool {
+        &self.message == other
+    }
+}
+
 /// Response from the main thread back to the CDP server.
 #[derive(Debug)]
 pub struct BridgeResponse {
-    pub result: Result<Value, String>,
+    pub result: Result<Value, BridgeError>,
 }
 
 /// Internal request structure used for channel communication.
@@ -526,13 +624,13 @@ impl BridgeSender {
             .is_err()
         {
             return BridgeResponse {
-                result: Err("bridge channel closed".into()),
+                result: Err(BridgeError::no_bridge("bridge channel closed")),
             };
         }
         match resp_rx.recv_timeout(self.timeout) {
             Ok(resp) => resp,
             Err(_) => BridgeResponse {
-                result: Err("bridge response timeout".into()),
+                result: Err(BridgeError::no_bridge("bridge response timeout")),
             },
         }
     }
@@ -629,6 +727,39 @@ mod tests {
         BridgeResponse {
             result: Err(msg.into()),
         }
+    }
+
+    // 3b. BridgeError carrier: the explicit domain class survives the channel
+    //     round-trip and the From-defaults stay transport-class (e234/e236).
+    #[test]
+    fn bridge_error_kind_roundtrips_through_channel() {
+        let (sender, receiver) = bridge_channel(TIMEOUT);
+        std::thread::spawn(move || {
+            receiver.recv_and_process(TIMEOUT, |cmd| match cmd {
+                BridgeCommand::FetchResolve { .. } => BridgeResponse {
+                    result: Err(BridgeError::domain("unknown interceptionId: i-1")),
+                },
+                _ => BridgeResponse {
+                    result: Err(BridgeError::no_bridge("bridge channel closed")),
+                },
+            })
+        });
+        let resp = sender.send(BridgeCommand::FetchResolve {
+            target_id: TID.into(),
+            interception_id: "i-1".into(),
+            action: FetchResolveAction::Continue,
+        });
+        let err = resp.result.unwrap_err();
+        assert_eq!(err.kind, BridgeErrorKind::DomainError);
+        assert_eq!(err, "unknown interceptionId: i-1");
+        assert!(err.contains("interceptionId"));
+        // From-defaults keep the transport classification.
+        assert_eq!(BridgeError::from("boom").kind, BridgeErrorKind::NoBridge);
+        assert_eq!(
+            BridgeError::from(String::from("boom")).kind,
+            BridgeErrorKind::NoBridge
+        );
+        assert_eq!(BridgeError::no_bridge("x").to_string(), "x");
     }
 
     fn noop_handler(_: BridgeCommand) -> BridgeResponse {

@@ -1173,7 +1173,7 @@ mod tests {
         std::thread::spawn(move || {
             while rx.recv_and_process(Duration::from_millis(200), |cmd| {
                 BridgeResponse {
-                    result: answers(&cmd).ok_or_else(|| "unanswered".to_string()),
+                    result: answers(&cmd).ok_or_else(|| "unanswered".into()),
                 }
             }) {}
         })
