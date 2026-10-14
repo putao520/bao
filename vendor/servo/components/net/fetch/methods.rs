@@ -432,9 +432,11 @@ pub async fn main_fetch(
 
     // Servo internal: return a crash error when a crash error page is needed
     if let Some(ref details) = request.crash {
-        response = Some(Response::network_error(NetworkError::Crash(
-            details.clone(),
-        )));
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+        response = Some(crate::http_loader::bao_network_error_with_failed_tap(
+            request,
+            NetworkError::Crash(details.clone()),
+        ));
     }
 
     // Step 3: If request’s local-URLs-only flag is set and request’s
@@ -445,7 +447,11 @@ pub async fn main_fetch(
             "about" | "blob" | "data" | "filesystem"
         )
     {
-        response = Some(Response::network_error(NetworkError::UnsupportedScheme));
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+        response = Some(crate::http_loader::bao_network_error_with_failed_tap(
+            request,
+            NetworkError::UnsupportedScheme,
+        ));
     }
 
     // The request should have a valid policy_container associated with it.
@@ -511,14 +517,26 @@ pub async fn main_fetch(
 
         if check_result == csp::CheckResult::Blocked {
             warn!("Request blocked by CSP");
-            response = Some(Response::network_error(NetworkError::ContentSecurityPolicy))
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+            response = Some(crate::http_loader::bao_network_error_with_failed_tap(
+                request,
+                NetworkError::ContentSecurityPolicy,
+            ))
         }
     };
     if should_request_be_blocked_due_to_a_bad_port(&request.current_url()) {
-        response = Some(Response::network_error(NetworkError::InvalidPort));
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+        response = Some(crate::http_loader::bao_network_error_with_failed_tap(
+            request,
+            NetworkError::InvalidPort,
+        ));
     }
     if should_request_be_blocked_as_mixed_content(request, &context.protocols) {
-        response = Some(Response::network_error(NetworkError::MixedContent));
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+        response = Some(crate::http_loader::bao_network_error_with_failed_tap(
+            request,
+            NetworkError::MixedContent,
+        ));
     }
 
     // Step 8: If request’s referrer policy is the empty string, then set request’s referrer policy
@@ -606,11 +624,19 @@ pub async fn main_fetch(
                 // Substep 2. Return the result of running scheme fetch given fetchParams.
                 scheme_fetch(fetch_params, cache, target, done_chan, context).await
             } else if request.mode == RequestMode::SameOrigin {
-                Response::network_error(NetworkError::CrossOriginResponse)
+                // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+                crate::http_loader::bao_network_error_with_failed_tap(
+                    request,
+                    NetworkError::CrossOriginResponse,
+                )
             } else if request.mode == RequestMode::NoCors {
                 // Substep 1. If request's redirect mode is not "follow", then return a network error.
                 if request.redirect_mode != RedirectMode::Follow {
-                    Response::network_error(NetworkError::RedirectError)
+                    // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+                    crate::http_loader::bao_network_error_with_failed_tap(
+                        request,
+                        NetworkError::RedirectError,
+                    )
                 } else {
                     // Substep 2. Set request's response tainting to "opaque".
                     request.response_tainting = ResponseTainting::Opaque;
@@ -619,7 +645,11 @@ pub async fn main_fetch(
                     scheme_fetch(fetch_params, cache, target, done_chan, context).await
                 }
             } else if !matches!(current_scheme, "http" | "https") {
-                Response::network_error(NetworkError::UnsupportedScheme)
+                // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+                crate::http_loader::bao_network_error_with_failed_tap(
+                    request,
+                    NetworkError::UnsupportedScheme,
+                )
             } else if request.use_cors_preflight ||
                 (request.unsafe_request &&
                     (!is_cors_safelisted_method(&request.method) ||
@@ -835,7 +865,10 @@ pub async fn main_fetch(
 
     // Execute deferred rebinding of response.
     if let Some(error) = internal_error {
-        response = Response::network_error(error);
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap — the response
+        // was blocked at the response stage (nosniff / MIME / mixed content /
+        // CSP / partial-to-non-range).
+        response = crate::http_loader::bao_network_error_with_failed_tap(request, error);
     }
 
     // Step 19. If response is not a network error and any of the following returns blocked
@@ -850,7 +883,11 @@ pub async fn main_fetch(
         if response.termination_reason.is_none() &&
             !is_response_integrity_valid(integrity_metadata, &response)
         {
-            Response::network_error(NetworkError::SubresourceIntegrity)
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+            crate::http_loader::bao_network_error_with_failed_tap(
+                request,
+                NetworkError::SubresourceIntegrity,
+            )
         } else {
             response
         }
@@ -919,6 +956,29 @@ pub async fn main_fetch(
     response
 }
 
+/// BAO PATCH (REQ-CDP-006): one terminal Network event for a settled scheme
+/// response — `Network.loadingFinished` (with the actual body byte total,
+/// never a fabricated or zero placeholder) on success, `Network.loadingFailed`
+/// when the scheme handler errored the response. Called from the body-settled
+/// seams in `wait_for_response`.
+fn emit_scheme_terminal_event(
+    request_id: String,
+    webview_id: Option<String>,
+    response: &Response,
+    body_bytes: u64,
+) {
+    if let Some(error) = response.get_network_error().cloned() {
+        crate::http_loader::bao_emit_network_failed_tap(
+            request_id,
+            webview_id,
+            format!("{error:?}"),
+            response.aborted.load(Ordering::Acquire),
+        );
+    } else {
+        crate::http_loader::bao_emit_network_finished_tap(request_id, webview_id, body_bytes);
+    }
+}
+
 async fn wait_for_response(
     request: &Request,
     response: &mut Response,
@@ -926,14 +986,31 @@ async fn wait_for_response(
     done_chan: &mut DoneChannel,
     context: &FetchContext,
 ) {
+    // BAO PATCH (REQ-CDP-006): scheme-response terminal seam. Non-HTTP(S)
+    // scheme fetches (about:/blob:/file:/chrome:/custom protocol) settle
+    // without a network leg, so the network leg's own completion/failure seams
+    // never fire — the scheme path's one terminal Network event is emitted
+    // here, at the point the body settles (the byte total is the actual body
+    // size, never a fabricated or zero placeholder). `data:` URLs are skipped,
+    // mirroring the request-side tap (no `requestWillBeSent` is announced for
+    // data:, so no terminal event may be announced either — a terminal without
+    // its request would be an orphan on the CDP face).
+    let scheme_gate = !matches!(request.current_url().scheme(), "http" | "https" | "data");
+    let scheme_request_id = scheme_gate.then(|| request.id.0.to_string());
+    let scheme_webview_id = scheme_gate.then(|| request.target_webview_id.map(|id| id.to_string()));
     if let Some(ref mut ch) = *done_chan {
         let mut devtools_body = context.devtools_chan.as_ref().map(|_| Vec::new());
+        // BAO PATCH (REQ-CDP-006): the streamed scheme body never lands in
+        // `response.actual_response().body` — the honest byte total for the
+        // terminal tap is the accumulated payload chunks.
+        let mut scheme_streamed_bytes: u64 = 0;
         loop {
             match ch.1.recv().await {
                 Some(Data::ContentLength(length)) => {
                     target.process_response_length_hint(request, length);
                 },
                 Some(Data::Payload(bytes)) => {
+                    scheme_streamed_bytes += bytes.len() as u64;
                     if let Some(body) = devtools_body.as_mut() {
                         body.extend(&bytes);
                     }
@@ -949,10 +1026,30 @@ async fn wait_for_response(
                 },
                 Some(Data::Done) => {
                     send_response_to_devtools(request, context, response, devtools_body);
+                    // BAO PATCH (REQ-CDP-006): scheme-response terminal seam —
+                    // the body outcome is final here (Finish on success, Failed
+                    // when the scheme handler errored the response).
+                    if let Some(request_id) = scheme_request_id {
+                        emit_scheme_terminal_event(
+                            request_id,
+                            scheme_webview_id.flatten(),
+                            response,
+                            scheme_streamed_bytes,
+                        );
+                    }
                     break;
                 },
                 Some(Data::Cancelled) => {
                     response.aborted.store(true, Ordering::Release);
+                    // BAO PATCH (REQ-CDP-006): scheme-response cancellation seam.
+                    if let Some(request_id) = scheme_request_id {
+                        crate::http_loader::bao_emit_network_failed_tap(
+                            request_id,
+                            scheme_webview_id.flatten(),
+                            format!("{:?}", NetworkError::LoadCancelled),
+                            true,
+                        );
+                    }
                     break;
                 },
 
@@ -976,6 +1073,21 @@ async fn wait_for_response(
             },
             ResponseBody::Done(_) | ResponseBody::Empty => {},
             _ => unreachable!(),
+        }
+        // BAO PATCH (REQ-CDP-006): scheme-response terminal seam (no
+        // done-channel face — the body was already final on return; the empty
+        // body case is a real Finish with 0 bytes, e.g. `about:blank`).
+        if let Some(request_id) = scheme_request_id {
+            let body_bytes = match *response.actual_response().body.lock() {
+                ResponseBody::Done(ref body) => body.len() as u64,
+                _ => 0,
+            };
+            emit_scheme_terminal_event(
+                request_id,
+                scheme_webview_id.flatten(),
+                response,
+                body_bytes,
+            );
         }
     }
 }
@@ -1109,6 +1221,25 @@ async fn scheme_fetch(
     let url_and_blob_lock = request.current_url_with_blob_claim();
 
     let scheme = url_and_blob_lock.scheme();
+    // BAO PATCH (REQ-CDP-006): the HTTP(S) arm returns directly — its response
+    // settles on the network leg's own completion/failure seams
+    // (`http_network_fetch`). Every other arm below is a **scheme response**
+    // (about:/blob:/file:/chrome:/custom protocol) whose body settles without a
+    // network leg; its terminal Network event is emitted at the body-settled
+    // seam in `wait_for_response` (gated to non-HTTP(S) schemes).
+    if matches!(scheme, "http" | "https") {
+        return http_fetch(
+            fetch_params,
+            cache,
+            false,
+            false,
+            false,
+            target,
+            done_chan,
+            context,
+        )
+        .await;
+    }
     match scheme {
         "about" if url_and_blob_lock.path() == "blank" => {
             create_blank_reply(url_and_blob_lock.url(), request.timing_type())
@@ -1124,23 +1255,16 @@ async fn scheme_fetch(
             create_blank_reply(url_and_blob_lock.url(), request.timing_type())
         },
 
-        "http" | "https" => {
-            http_fetch(
-                fetch_params,
-                cache,
-                false,
-                false,
-                false,
-                target,
-                done_chan,
-                context,
-            )
-            .await
-        },
-
         _ => match context.protocols.get(scheme) {
             Some(handler) => handler.load(request, done_chan, context).await,
-            None => Response::network_error(NetworkError::UnsupportedScheme),
+            None => {
+                // BAO PATCH (REQ-CDP-006): scheme routing failure — no protocol
+                // handler for this scheme (e.g. `about:` other than blank/memory).
+                crate::http_loader::bao_network_error_with_failed_tap(
+                    request,
+                    NetworkError::UnsupportedScheme,
+                )
+            },
         },
     }
 }

@@ -297,6 +297,38 @@ pub(crate) fn bao_emit_network_failed_tap(
         });
     });
 }
+/// Failure-side tap emit + network-error construction, for **fetch-algorithm
+/// step failures** — a pure algorithm step (CSP / bad port / mixed content /
+/// CORS check / redirect loop / scheme routing) produced the network error
+/// before or without a network leg, so the network leg's own failure seams
+/// never fire. `canceled` is false: these are policy/routing failures, not
+/// load cancellations. `error_text` is the `NetworkError` Debug form.
+pub(crate) fn bao_network_error_with_failed_tap(
+    request: &Request,
+    error: NetworkError,
+) -> Response {
+    // Variant identity is the honest machine-readable error class for CDP
+    // consumers; the custom `Debug` impl renders prose (e.g. CorsGeneral →
+    // "CORS check failed"), which hides the class behind prose.
+    let error_text = match &error {
+        NetworkError::CorsGeneral => "CorsGeneral".to_string(),
+        NetworkError::CorsCredentials => "CorsCredentials".to_string(),
+        NetworkError::CorsAllowMethods => "CorsAllowMethods".to_string(),
+        NetworkError::CorsAllowHeaders => "CorsAllowHeaders".to_string(),
+        NetworkError::CorsMethod => "CorsMethod".to_string(),
+        NetworkError::CorsAuthorization => "CorsAuthorization".to_string(),
+        NetworkError::CrossOriginResponse => "CrossOriginResponse".to_string(),
+        ref other => format!("{other:?}"),
+    };
+    bao_emit_network_failed_tap(
+        request.id.0.to_string(),
+        request.target_webview_id.map(|id| id.to_string()),
+        error_text,
+        false,
+    );
+    Response::network_error(error)
+}
+
 // ── end BAO PATCH (REQ-BRW-004 C19-②) ──────────────────────────────────────
 
 /// The various states an entry of the HttpCache can be in.
@@ -954,7 +986,11 @@ pub(crate) async fn http_fetch(
                 || (res.url_list.len() > 1 && request.redirect_mode != RedirectMode::Follow)
                 || res.is_network_error()
             {
-                return Response::network_error(NetworkError::ConnectionFailure);
+                // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+                return bao_network_error_with_failed_tap(
+                    request,
+                    NetworkError::ConnectionFailure,
+                );
             }
 
             // Subsubstep 4
@@ -988,7 +1024,10 @@ pub(crate) async fn http_fetch(
                 let preflight_response = cors_preflight_fetch(request, cache, context).await;
                 // Step 4.1.2. If preflightResponse is a network error, then return preflightResponse.
                 if let Some(error) = preflight_response.get_network_error() {
-                    return Response::network_error(error.clone());
+                    // BAO PATCH (REQ-CDP-006): algorithm-step failure tap — the
+                    // preflight request is not surfaced on the request tap, so
+                    // the MAIN request's terminal failure is emitted here.
+                    return bao_network_error_with_failed_tap(request, error.clone());
                 }
             }
         }
@@ -1013,7 +1052,12 @@ pub(crate) async fn http_fetch(
         // Step 4.4. If request’s response tainting is "cors" and a CORS check for request
         // and response returns failure, then return a network error.
         if cors_flag && cors_check(&fetch_params.request, &fetch_result).is_err() {
-            return Response::network_error(NetworkError::CorsGeneral);
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap — CORS check
+            // failure (response received, but blocked).
+            return bao_network_error_with_failed_tap(
+                &fetch_params.request,
+                NetworkError::CorsGeneral,
+            );
         }
 
         // Step 4.5. If the TAO check for request and response returns failure,
@@ -1044,7 +1088,11 @@ pub(crate) async fn http_fetch(
             ) == CrossOriginResourcePolicy::Blocked
         })
     {
-        return Response::network_error(NetworkError::CrossOriginResponse);
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap — CORP blocked.
+        return bao_network_error_with_failed_tap(
+            &fetch_params.request,
+            NetworkError::CrossOriginResponse,
+        );
     }
 
     // Step 6. If internalResponse’s status is a redirect status:
@@ -1067,7 +1115,11 @@ pub(crate) async fn http_fetch(
         // Step 6.3. Switch on request’s redirect mode:
         response = match request.redirect_mode {
             // Step 6.3."error".1. Set response to a network error.
-            RedirectMode::Error => Response::network_error(NetworkError::RedirectError),
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap — redirect
+            // mode "error" rejects the redirect.
+            RedirectMode::Error => {
+                bao_network_error_with_failed_tap(request, NetworkError::RedirectError)
+            },
             RedirectMode::Manual => {
                 // Step 6.3."manual".1. If request’s mode is "navigate", then set fetchParams’s controller’s
                 // next manual redirect steps to run HTTP-redirect fetch given fetchParams and response.
@@ -1261,13 +1313,16 @@ pub async fn http_redirect_fetch(
         None => return response,
         // Step 5. If locationURL is failure, then return a network error.
         Some(Err(err)) => {
-            return Response::network_error(NetworkError::ResourceLoadError(
-                format!("Location URL parse failure: {err}"),
-            ));
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+            return bao_network_error_with_failed_tap(
+                request,
+                NetworkError::ResourceLoadError(format!("Location URL parse failure: {err}")),
+            );
         },
         // Step 6. If locationURL’s scheme is not an HTTP(S) scheme, then return a network error.
         Some(Ok(url)) if !matches!(url.scheme(), "http" | "https") => {
-            return Response::network_error(NetworkError::UnsupportedScheme);
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+            return bao_network_error_with_failed_tap(request, NetworkError::UnsupportedScheme);
         },
         Some(Ok(url)) => url,
     };
@@ -1285,7 +1340,8 @@ pub async fn http_redirect_fetch(
 
     // Step 7: If request’s redirect count is 20, then return a network error.
     if request.redirect_count >= 20 {
-        return Response::network_error(NetworkError::TooManyRedirects);
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap — redirect loop.
+        return bao_network_error_with_failed_tap(request, NetworkError::TooManyRedirects);
     }
 
     // Step 8: Increase request’s redirect count by 1.
@@ -1306,7 +1362,8 @@ pub async fn http_redirect_fetch(
     let has_credentials = has_credentials(&location_url);
 
     if request.mode == RequestMode::CorsMode && !same_origin && has_credentials {
-        return Response::network_error(NetworkError::CorsCredentials);
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+        return bao_network_error_with_failed_tap(request, NetworkError::CorsCredentials);
     }
 
     if cors_flag && location_url.origin() != request.current_url().origin() {
@@ -1315,7 +1372,8 @@ pub async fn http_redirect_fetch(
 
     // Step 10. If request’s response tainting is "cors" and locationURL includes credentials, then return a network error.
     if cors_flag && has_credentials {
-        return Response::network_error(NetworkError::CorsCredentials);
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+        return bao_network_error_with_failed_tap(request, NetworkError::CorsCredentials);
     }
 
     // Step 11: If internalResponse’s status is not 303, request’s body is non-null, and request’s
@@ -1323,7 +1381,8 @@ pub async fn http_redirect_fetch(
     if response.actual_response().status != StatusCode::SEE_OTHER
         && request.body.as_ref().is_some_and(|b| b.source_is_null())
     {
-        return Response::network_error(NetworkError::ConnectionFailure);
+        // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+        return bao_network_error_with_failed_tap(request, NetworkError::ConnectionFailure);
     }
 
     // Step 12. If one of the following is true
@@ -1528,7 +1587,11 @@ async fn http_network_or_cache_fetch(
             .unwrap_or_default();
         // Step 8.10.5. If the sum of contentLength and inflightKeepaliveBytes is greater than 64 kibibytes, then return a network error.
         if content_length + in_flight_keep_alive_bytes > 64 * 1024 {
-            return Response::network_error(NetworkError::TooManyInFlightKeepAliveRequests);
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+            return bao_network_error_with_failed_tap(
+                http_request,
+                NetworkError::TooManyInFlightKeepAliveRequests,
+            );
         }
     }
 
@@ -1653,7 +1716,11 @@ async fn http_network_or_cache_fetch(
             // Step 10.1 If httpRequest’s cache mode is "only-if-cached", then return a network error.
             if http_request.cache_mode == CacheMode::OnlyIfCached {
                 // Exit critical section of cache entry.
-                return Response::network_error(NetworkError::CacheError);
+                // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+                return bao_network_error_with_failed_tap(
+                    http_request,
+                    NetworkError::CacheError,
+                );
             }
 
             // Step 10.2 Let forwardResponse be the result of running HTTP-network fetch given httpFetchParams,
@@ -1728,6 +1795,34 @@ async fn http_network_or_cache_fetch(
     let http_request = &mut http_fetch_params.request;
     let mut response = response.unwrap();
 
+    // BAO PATCH (REQ-CDP-006): cache-hit completion seam — when the cache
+    // constructed the response (`should_wait`), no network leg ran for this
+    // request, so `http_network_fetch`'s body-drain Finish seam never fires.
+    // Emit the terminal `Network.loadingFinished` here, at the point where the
+    // response body is final (any in-flight store was awaited above). The byte
+    // total is the cached body length — a cache replay has no wire transfer,
+    // so the honest observable is the actual payload size, never a fabricated
+    // or zero placeholder. A cached response that failed (in-flight store
+    // errored, load cancelled) emits `Network.loadingFailed` instead.
+    if should_wait {
+        let request_id = http_request.id.0.to_string();
+        let webview_id = http_request.target_webview_id.map(|id| id.to_string());
+        if let Some(error) = response.get_network_error().cloned() {
+            bao_emit_network_failed_tap(
+                request_id,
+                webview_id,
+                format!("{error:?}"),
+                response.aborted.load(Ordering::Acquire),
+            );
+        } else {
+            let body_len = match *response.actual_response().body.lock() {
+                ResponseBody::Done(ref body) => body.len() as u64,
+                _ => 0,
+            };
+            bao_emit_network_finished_tap(request_id, webview_id, body_len);
+        }
+    }
+
     // Step 11. Set response’s URL list to a clone of httpRequest’s URL list.
     response.url_list = http_request
         .url_list
@@ -1764,7 +1859,8 @@ async fn http_network_or_cache_fetch(
             .as_ref()
             .is_some_and(|body| body.source_is_null())
         {
-            return Response::network_error(NetworkError::ConnectionFailure);
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+            return bao_network_error_with_failed_tap(request, NetworkError::ConnectionFailure);
         }
 
         // Step 14.3 If request’s use-URL-credentials flag is unset or isAuthenticationFetch is true, then:
@@ -1815,9 +1911,11 @@ async fn http_network_or_cache_fetch(
         // Step 15.1 If request’s traversable for user prompts is "no-traversable", then return a network error.
 
         if request.traversable_for_user_prompts == TraversableForUserPrompts::NoTraversable {
-            return Response::network_error(NetworkError::ResourceLoadError(
-                "Can't find Window object".into(),
-            ));
+            // BAO PATCH (REQ-CDP-006): algorithm-step failure tap.
+            return bao_network_error_with_failed_tap(
+                request,
+                NetworkError::ResourceLoadError("Can't find Window object".into()),
+            );
         }
 
         // (Step 15.2 does not exist, requires testing on Proxy-Authenticate headers)
@@ -2569,7 +2667,9 @@ async fn http_network_fetch(
                 bao_emit_network_failed_tap(
                     failed_request_id,
                     failed_webview_id,
-                    error.to_string(),
+                    // Debug form: the variant identity is the honest error
+                    // class (e.g. `CorsGeneral`), not its prose rendering.
+                    format!("{error:?}"),
                     failed_cancel_listener.cancelled(),
                 );
                 let _ = done_sender3.send(Data::Done);

@@ -44,6 +44,8 @@ type VerdictSlot = Arc<Mutex<Option<Result<Value, String>>>>;
 struct RawBytesFixture {
     port: u16,
     shutdown: Arc<AtomicBool>,
+    /// 每个被请求路径的命中记录(cache-hit 判别:二次加载不得再触网)。
+    hits: Arc<Mutex<Vec<String>>>,
 }
 
 impl RawBytesFixture {
@@ -56,6 +58,8 @@ impl RawBytesFixture {
         let port = listener.local_addr().unwrap().port();
         let _ = listener.set_nonblocking(true);
         let shutdown = Arc::new(AtomicBool::new(false));
+        let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let hits_c = Arc::clone(&hits);
         let shutdown_c = Arc::clone(&shutdown);
         std::thread::Builder::new()
             .name(name.to_string())
@@ -87,6 +91,7 @@ impl RawBytesFixture {
                                 .next()
                                 .unwrap_or("")
                                 .to_string();
+                            hits_c.lock().unwrap_or_else(|p| p.into_inner()).push(path.clone());
                             let Some((_, headers, body)) =
                                 routes.iter().find(|(p, _, _)| *p == path)
                             else {
@@ -118,11 +123,21 @@ impl RawBytesFixture {
                 }
             })
             .unwrap_or_else(|e| panic!("spawn {name} fixture thread: {e}"));
-        RawBytesFixture { port, shutdown }
+        RawBytesFixture { port, shutdown, hits }
     }
 
     fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{}", self.port, path)
+    }
+
+    /// 某路径被真实触达的网络次数(cache-hit 判别用)。
+    fn hit_count(&self, path: &str) -> usize {
+        self.hits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|p| p.as_str() == path)
+            .count()
     }
 }
 
@@ -307,4 +322,304 @@ fn gzip_bytes(payload: &[u8]) -> Vec<u8> {
         flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(payload).expect("gzip write");
     encoder.finish().expect("gzip finish")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 增面判别锁(e-loadfin2 合同):cache 命中 / scheme_fetch / 纯算法步失败
+// 三条缺口路径的 Finish/Failed 活体生产者。
+// ══════════════════════════════════════════════════════════════════════
+
+/// 两段等待线程:connect → Network.enable → [独立导航线程 300ms 后导航]
+/// → 等第一事件(first_event)→ 等第二事件(second_event)→ 两裁决入槽。
+/// 第二等待在首事件 resolve 后立刻注册;驱动侧再以延迟 evaluate 发起第二
+/// 请求(注册先于事件,同上文导航线程纪律)。
+fn spawn_two_stage_waiter(
+    first_slot: VerdictSlot,
+    second_slot: VerdictSlot,
+    nav_url: String,
+    first_event: &'static str,
+    second_event: &'static str,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut browser = match Browser::connect("memory://bao") {
+            Ok(b) => b,
+            Err(e) => {
+                *first_slot.lock().unwrap() = Some(Err(format!("connect: {e}")));
+                return;
+            },
+        };
+        if let Err(e) = browser.send_command("Network.enable", json!({})) {
+            *first_slot.lock().unwrap() = Some(Err(format!("Network.enable: {e}")));
+            return;
+        }
+        // 导航线程:注册(waitForEvent 落 tap)先于导航事件。
+        let navigator_url = nav_url.clone();
+        let navigator = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let Ok(mut b) = Browser::connect("memory://bao") else {
+                eprintln!("[loadfin2] navigator connect failed");
+                return;
+            };
+            if let Err(e) = b.send_command("Page.navigate", json!({ "url": navigator_url })) {
+                eprintln!("[loadfin2] navigate failed: {e}");
+            }
+        });
+        let first = match browser.send_command(
+            "Page.waitForEvent",
+            json!({ "event": first_event, "timeout": 20000 }),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                *first_slot.lock().unwrap() = Some(Err(format!("waitForEvent#1: {e}")));
+                let _ = navigator.join();
+                return;
+            },
+        };
+        *first_slot.lock().unwrap() = Some(Ok(first));
+        match browser.send_command(
+            "Page.waitForEvent",
+            json!({ "event": second_event, "timeout": 20000 }),
+        ) {
+            Ok(v) => *second_slot.lock().unwrap() = Some(Ok(v)),
+            Err(e) => *second_slot.lock().unwrap() = Some(Err(format!("waitForEvent#2: {e}"))),
+        }
+        let _ = navigator.join();
+    })
+}
+
+/// 泵直到裁决落地(30s 硬上界)。
+fn pump_slot(runtime: &BrowserRuntime, slot: &VerdictSlot) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let outcome = loop {
+        if let Some(outcome) = slot.lock().unwrap().take() {
+            break outcome;
+        }
+        if Instant::now() > deadline {
+            panic!("no waitForEvent verdict within the 30s pump window");
+        }
+        runtime.pump_cdp(Duration::from_millis(10));
+    };
+    outcome
+        .map_err(|e| format!("waitForEvent did not resolve on the pump face: {e}"))
+        .expect("waitForEvent must resolve")
+}
+
+/// 延迟 evaluate 线程:等 waiter 侧第二等待注册完成(500ms 注册窗,同
+/// 上文 300ms 导航线程纪律)后,经独立连接在页面里发起第二请求。
+fn spawn_delayed_evaluate(expr: String) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        let Ok(mut b) = Browser::connect("memory://bao") else {
+            eprintln!("[loadfin2] evaluator connect failed");
+            return;
+        };
+        if let Err(e) = b.send_command(
+            "Runtime.evaluate",
+            json!({ "expression": expr, "returnByValue": true }),
+        ) {
+            eprintln!("[loadfin2] evaluate failed: {e}");
+        }
+    })
+}
+
+/// 最小文档:无子资源,保证 requestfinished #1 就是文档本体。
+fn minimal_page(title: &str) -> Vec<u8> {
+    format!("<html><head><title>{title}</title></head><body>loadfin2</body></html>").into_bytes()
+}
+
+/// cache 命中(max-age 新鲜):第二次同 URL 加载不得触网,且其
+/// loadingFinished 携缓存体字节总量——值来源=缓存体长度,诚实非伪造。
+///
+/// @trace REQ-CDP-006 [level:e2e]
+#[test]
+fn cache_hit_loading_finished_reports_cached_body_bytes_without_network() {
+    let _registry_guard = REGISTRY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let cache_body = minimal_page("cache-hit-probe");
+    let body_len = cache_body.len() as u64;
+    let fixture = RawBytesFixture::spawn(
+        "loadfin2-cache-fixture",
+        vec![
+            (
+                "/cache",
+                vec![("Cache-Control", "public, max-age=60")],
+                cache_body,
+            ),
+        ],
+    );
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page");
+    let _ = page;
+
+    let first: VerdictSlot = Arc::new(Mutex::new(None));
+    let second: VerdictSlot = Arc::new(Mutex::new(None));
+    let waiter = spawn_two_stage_waiter(
+        Arc::clone(&first),
+        Arc::clone(&second),
+        fixture.url("/cache"),
+        "requestfinished",
+        "requestfinished",
+    );
+
+    // 第一格:文档本体 Finish(wire == body 恒等面)。
+    let doc_finish = pump_slot(&runtime, &first);
+    assert_eq!(
+        doc_finish["encodedDataLength"],
+        json!(body_len),
+        "document load must report the true body byte total, got: {doc_finish}"
+    );
+
+    // 第二格:同 URL 的 fetch() 由缓存回放——Finish 携缓存体长度,
+    // 且 fixture 不得再有 /cache 连接(未触网=cache-hit 判别)。
+    let evaluator = spawn_delayed_evaluate("fetch(location.href).then(r => r.text())".into());
+    let cache_finish = pump_slot(&runtime, &second);
+    let _ = evaluator.join();
+    let _ = waiter.join();
+
+    assert_eq!(
+        cache_finish["encodedDataLength"],
+        json!(body_len),
+        "cache-hit replay must report the cached body byte total (value source = \
+         cached body length, honest non-fabricated), got: {cache_finish}"
+    );
+    assert_eq!(
+        fixture.hit_count("/cache"),
+        1,
+        "the second load of /cache must be served from cache (exactly one network \
+         hit for the document load); a second hit means the cache path was not \
+         exercised and this test proved nothing"
+    );
+}
+
+/// scheme_fetch(blob:)响应 Finish:无网络腿(blob URL 永不触网),终态
+/// 事件携进程内载荷字节总量。
+///
+/// @trace REQ-CDP-006 [level:e2e]
+#[test]
+fn scheme_fetch_blob_loading_finished_reports_payload_bytes() {
+    let _registry_guard = REGISTRY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    const BLOB_PAYLOAD: &str = "hello-blob-payload";
+    let fixture = RawBytesFixture::spawn(
+        "loadfin2-blob-fixture",
+        vec![("/blobpage", vec![], minimal_page("blob-probe"))],
+    );
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page");
+    let _ = page;
+
+    let first: VerdictSlot = Arc::new(Mutex::new(None));
+    let second: VerdictSlot = Arc::new(Mutex::new(None));
+    let waiter = spawn_two_stage_waiter(
+        Arc::clone(&first),
+        Arc::clone(&second),
+        fixture.url("/blobpage"),
+        "requestfinished",
+        "requestfinished",
+    );
+
+    let _doc = pump_slot(&runtime, &first);
+
+    let evaluator = spawn_delayed_evaluate(format!(
+        "fetch(URL.createObjectURL(new Blob([{BLOB_PAYLOAD:?}])))\
+         .then(r => r.text())"
+    ));
+    let blob_finish = pump_slot(&runtime, &second);
+    let _ = evaluator.join();
+    let _ = waiter.join();
+
+    assert_eq!(
+        blob_finish["encodedDataLength"],
+        json!(BLOB_PAYLOAD.len() as u64),
+        "blob: scheme response must report its actual payload byte total \
+         (no network leg, in-process size), got: {blob_finish}"
+    );
+    assert_eq!(
+        fixture.hit_count("/blobpage"),
+        1,
+        "the blob fetch must never touch the network (only the document load \
+         hits the fixture)"
+    );
+}
+
+/// 纯算法步失败(CORS check):响应已到达但被算法步判死 →
+/// Network.loadingFailed(canceled=false,errorText=CorsGeneral)。
+///
+/// @trace REQ-CDP-006 [level:e2e]
+#[test]
+fn cors_algorithm_failure_emits_loading_failed() {
+    let _registry_guard = REGISTRY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // 跨源 = 第二 fixture(不同端口)。/blocked 响应 200 且不带 ACAO ——
+    // CORS check 必败(算法步,非网络错误)。
+    let cross = RawBytesFixture::spawn(
+        "loadfin2-cors-cross-fixture",
+        vec![("/blocked", vec![], minimal_page("cors-blocked"))],
+    );
+    let fixture = RawBytesFixture::spawn(
+        "loadfin2-cors-page-fixture",
+        vec![("/corspage", vec![], minimal_page("cors-page"))],
+    );
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: None,
+            ..Default::default()
+        })
+        .expect("page");
+    let _ = page;
+
+    let first: VerdictSlot = Arc::new(Mutex::new(None));
+    let second: VerdictSlot = Arc::new(Mutex::new(None));
+    let waiter = spawn_two_stage_waiter(
+        Arc::clone(&first),
+        Arc::clone(&second),
+        fixture.url("/corspage"),
+        "requestfinished",
+        "requestfailed",
+    );
+
+    let _doc = pump_slot(&runtime, &first);
+
+    let cross_url = cross.url("/blocked");
+    let evaluator = spawn_delayed_evaluate(format!(
+        "fetch({cross_url:?}).then(r => r.text()).catch(() => 'rejected')"
+    ));
+    let failed = pump_slot(&runtime, &second);
+    let _ = evaluator.join();
+    let _ = waiter.join();
+
+    let error_text = failed["errorText"].as_str().unwrap_or_default();
+    assert!(
+        error_text.contains("CorsGeneral"),
+        "CORS algorithm failure must surface as loadingFailed with the true \
+         error (CorsGeneral), got: {failed}"
+    );
+    assert_eq!(
+        failed["canceled"], json!(false),
+        "a CORS check failure is a policy failure, not a cancellation, got: {failed}"
+    );
+    assert!(
+        failed["requestId"].as_str().is_some_and(|id| !id.is_empty()),
+        "failed event must carry a real requestId, got: {failed}"
+    );
+    assert_eq!(
+        cross.hit_count("/blocked"),
+        1,
+        "the cross-origin response must have actually arrived (the failure is \
+         the CORS algorithm step, not a network error)"
+    );
 }
