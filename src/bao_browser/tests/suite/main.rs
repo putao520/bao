@@ -155,3 +155,4 @@ fn link_higher_tier_seams() {
     bao_bundler::force_link_test_seams();
 }
 // e204 reaping discipline note (timestamp 0640)
+mod target_domain_event_tests;
