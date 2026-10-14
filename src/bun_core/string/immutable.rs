@@ -2,6 +2,7 @@
 //! SIMD-accelerated immutable string utilities operating on `&[u8]` (NOT `&str`).
 
 use core::cmp::Ordering;
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use core::ffi::c_int;
 
 use crate::BoundedArray;

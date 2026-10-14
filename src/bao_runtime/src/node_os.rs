@@ -677,7 +677,7 @@ mod netif {
 #[cfg(windows)]
 unsafe fn collect_adapter_unicast_addresses(
     slot: &mut (String, String, bool, Vec<IfaceEntry>),
-    first_unicast: *mut IpAdapterUnicastAddress,
+    first_unicast: *mut netif::IpAdapterUnicastAddress,
 ) {
     let mut uni = first_unicast;
     while !uni.is_null() {
