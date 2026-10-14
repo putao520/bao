@@ -85,6 +85,7 @@ mod page_lifecycle_tests;
 mod page_net_bun_fingerprint_e2e_tests;
 mod page_net_bun_full_matrix_e2e_tests;
 mod page_net_bun_streaming_upload_e2e_tests;
+mod network_loading_finish_live_tests;
 mod pagepool_chaos_memory_safety_tests;
 mod page_pool_delegate_deep_tests;
 mod page_screenshot_deep_tests;

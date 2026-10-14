@@ -20,6 +20,8 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self};
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder, ZlibDecoder, ZstdDecoder};
 use bytes::Bytes;
@@ -156,6 +158,55 @@ impl Decoder {
         !matches!(self.inner, Inner::PlainText(_))
     }
 
+    /// Handle to the wire-byte counter shared with the underlying body
+    /// stream.
+    ///
+    /// The counter tracks raw (pre-decompression) bytes read from the body —
+    /// for an encoded response this is the compressed size, i.e. CDP's
+    /// `encodedDataLength`. The `Arc` keeps counting while the stream is
+    /// being consumed, so a caller that clones the handle before draining
+    /// the body can read the final total once the stream is exhausted.
+    ///
+    /// Takes `&mut self` because digging the body stream out of a framed
+    /// decompressor chain goes through `get_mut` accessors.
+    pub fn wire_byte_counter(&mut self) -> Arc<AtomicU64> {
+        // Compressed arms: `FramedRead::get_mut` → decompressor `get_mut` →
+        // `StreamReader::get_mut` → `Peekable::get_mut` (`BodyStream: Unpin`)
+        // → the body stream's counter.
+        match &mut self.inner {
+            Inner::PlainText(body) => body.total_read.clone(),
+            Inner::Pending(pending) => pending.body.get_mut().total_read.clone(),
+            Inner::Gzip(decoder) => decoder
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .total_read
+                .clone(),
+            Inner::Deflate(decoder) => decoder
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .total_read
+                .clone(),
+            Inner::Brotli(decoder) => decoder
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .total_read
+                .clone(),
+            Inner::Zstd(decoder) => decoder
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .get_mut()
+                .total_read
+                .clone(),
+        }
+    }
+
     /// Constructs a Decoder from a hyper response.
     ///
     /// A decoder is just a wrapper around the hyper response that knows
@@ -290,7 +341,10 @@ struct BodyStream {
     body: BoxedBody,
     is_secure_scheme: bool,
     content_length: Option<ContentLength>,
-    total_read: u64,
+    /// Raw (pre-decompression) bytes read from the wire. Shared via `Arc` so
+    /// a handle cloned out before the stream is consumed (see
+    /// `Decoder::wire_byte_counter`) observes the total at completion time.
+    total_read: Arc<AtomicU64>,
 }
 
 impl BodyStream {
@@ -301,7 +355,7 @@ impl BodyStream {
                 .boxed(),
             is_secure_scheme: false,
             content_length: None,
-            total_read: 0,
+            total_read: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -310,7 +364,7 @@ impl BodyStream {
             body,
             is_secure_scheme,
             content_length,
-            total_read: 0,
+            total_read: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -324,7 +378,7 @@ impl Stream for BodyStream {
                 let Ok(bytes) = bytes.into_data() else {
                     return Poll::Ready(None);
                 };
-                self.total_read += bytes.len() as u64;
+                self.total_read.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                 Poll::Ready(Some(Ok(bytes)))
             },
             Some(Err(err)) => {
@@ -334,7 +388,9 @@ impl Stream for BodyStream {
                 //
                 // The error can be safely ignored if we known that all content was received or is explicitly
                 // set in preferences.
-                let all_content_read = self.content_length.is_some_and(|c| c.0 == self.total_read);
+                let all_content_read = self
+                    .content_length
+                    .is_some_and(|c| c.0 == self.total_read.load(Ordering::Relaxed));
                 if self.is_secure_scheme && all_content_read {
                     let source = err.source();
                     let is_unexpected_eof = source

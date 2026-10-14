@@ -506,6 +506,7 @@ dependencies = [
  "dashmap",
  "dpi",
  "euclid",
+ "flate2",
  "http",
  "image",
  "libc",

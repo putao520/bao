@@ -137,6 +137,23 @@ pub enum BaoNetworkTapEvent {
         mime_type: String,
         webview_id: Option<String>,
     },
+    /// The body stream settled successfully — every wire byte consumed.
+    Finish {
+        request_id: String,
+        /// Raw (pre-decompression) body byte total — CDP `encodedDataLength`
+        /// semantics (the compressed size for an encoded response).
+        encoded_data_length: u64,
+        webview_id: Option<String>,
+    },
+    /// The request failed before or while streaming the body.
+    Failed {
+        request_id: String,
+        /// Human-readable failure text (the `NetworkError` Debug form).
+        error_text: String,
+        /// True when the failure was a load cancellation.
+        canceled: bool,
+        webview_id: Option<String>,
+    },
 }
 
 /// The embedder-installed tap. Called on fetch worker threads; must be cheap
@@ -240,6 +257,42 @@ pub(crate) fn bao_emit_network_response_tap(request: &Request, response: &Respon
             status_text,
             headers,
             mime_type,
+            webview_id,
+        });
+    });
+}
+
+/// Completion-side tap emit — the HTTP body stream settled successfully
+/// (`http_network_fetch`'s body-drain future resolved). `encoded_data_length`
+/// is the raw wire byte total read from `Decoder::wire_byte_counter`.
+pub(crate) fn bao_emit_network_finished_tap(
+    request_id: String,
+    webview_id: Option<String>,
+    encoded_data_length: u64,
+) {
+    with_network_tap(|tap| {
+        tap(BaoNetworkTapEvent::Finish {
+            request_id,
+            encoded_data_length,
+            webview_id,
+        });
+    });
+}
+
+/// Failure-side tap emit — the request failed before or while streaming the
+/// body (network error on the response, request-body stream termination,
+/// cancellation, body-stream error). `canceled` marks load cancellations.
+pub(crate) fn bao_emit_network_failed_tap(
+    request_id: String,
+    webview_id: Option<String>,
+    error_text: String,
+    canceled: bool,
+) {
+    with_network_tap(|tap| {
+        tap(BaoNetworkTapEvent::Failed {
+            request_id,
+            error_text,
+            canceled,
             webview_id,
         });
     });
@@ -2188,7 +2241,7 @@ async fn http_network_fetch(
     // Step 6. Let newConnection be "yes" if forceNewConnection is true; otherwise "no".
 
     // Step 7. Switch on request’s mode:
-    let (response_stream, msg) = match &request.mode {
+    let (mut response_stream, msg) = match &request.mode {
         // Let connection be the result of obtaining a WebSocket connection, given request’s current URL.
         RequestMode::WebSocket {
             protocols,
@@ -2229,9 +2282,17 @@ async fn http_network_fetch(
             {
                 Ok(response) => response,
                 Err(error) => {
-                    return Response::network_error(NetworkError::WebsocketConnectionFailure(
-                        format!("{error:?}"),
-                    ));
+                    let network_error =
+                        NetworkError::WebsocketConnectionFailure(format!("{error:?}"));
+                    // BAO PATCH (REQ-CDP-006): terminal-failure tap — the WS
+                    // handshake never produced a response.
+                    bao_emit_network_failed_tap(
+                        request_id.clone(),
+                        request.target_webview_id.map(|id| id.to_string()),
+                        format!("{network_error:?}"),
+                        false,
+                    );
+                    return Response::network_error(network_error);
                 },
             };
 
@@ -2277,7 +2338,18 @@ async fn http_network_fetch(
             .await
             {
                 Ok(wrapped_response) => wrapped_response,
-                Err(error) => return Response::network_error(error),
+                Err(error) => {
+                    // BAO PATCH (REQ-CDP-006): terminal-failure tap — the
+                    // bridge never produced a response (DNS / connection /
+                    // TLS / bad scheme).
+                    bao_emit_network_failed_tap(
+                        request_id.clone(),
+                        request.target_webview_id.map(|id| id.to_string()),
+                        format!("{error:?}"),
+                        false,
+                    );
+                    return Response::network_error(error);
+                },
             };
             (response_stream, msg)
         },
@@ -2293,7 +2365,17 @@ async fn http_network_fetch(
     // Check if there was an error while streaming the request body.
     //
     match fetch_terminated_receiver.recv().await {
-        Some(true) => return Response::network_error(NetworkError::ConnectionFailure),
+        Some(true) => {
+            // BAO PATCH (REQ-CDP-006): terminal-failure tap — the request
+            // body stream terminated with an error before a response.
+            bao_emit_network_failed_tap(
+                request_id.clone(),
+                request.target_webview_id.map(|id| id.to_string()),
+                format!("{:?}", NetworkError::ConnectionFailure),
+                false,
+            );
+            return Response::network_error(NetworkError::ConnectionFailure);
+        },
         Some(false) => {},
         _ => warn!("Failed to receive confirmation request was streamed without error."),
     }
@@ -2349,6 +2431,14 @@ async fn http_network_fetch(
     let devtools_sender = context.devtools_chan.clone();
     let cancellation_listener = context.cancellation_listener.clone();
     if cancellation_listener.cancelled() {
+        // BAO PATCH (REQ-CDP-006): terminal-failure tap — cancelled before a
+        // response existed.
+        bao_emit_network_failed_tap(
+            request_id.clone(),
+            request.target_webview_id.map(|id| id.to_string()),
+            format!("{:?}", NetworkError::LoadCancelled),
+            true,
+        );
         return Response::network_error(NetworkError::LoadCancelled);
     }
 
@@ -2394,6 +2484,16 @@ async fn http_network_fetch(
     *response_body.lock() = ResponseBody::Receiving(Vec::with_capacity(prealloc_size));
     let response_body2 = response_body.clone();
 
+    // BAO PATCH (REQ-CDP-006): wire-byte counter handles — cloned out of the
+    // stream BEFORE `into_body()` consumes it; the `Arc`s keep counting while
+    // the body drains and are final at the completion/failure seams below
+    // (the Finish emit carries the true wire size, never the decoded size).
+    let wire_byte_counter = response_stream.body_mut().wire_byte_counter();
+    let finish_webview_id = request.target_webview_id.map(|id| id.to_string());
+    let failed_request_id = request_id.clone();
+    let failed_webview_id = finish_webview_id.clone();
+    let failed_cancel_listener = cancellation_listener.clone();
+
     spawn_task(
         response_stream
             .into_body()
@@ -2435,6 +2535,14 @@ async fn http_network_fetch(
                     devtools_chan,
                 );
                 timing_ptr2.set_attribute(ResourceAttribute::ResponseEnd);
+                // BAO PATCH (REQ-CDP-006): body-read completion seam — the
+                // wire byte total is final here; this is the live
+                // `Network.loadingFinished` producer.
+                bao_emit_network_finished_tap(
+                    devtools_request.id.0.to_string(),
+                    finish_webview_id,
+                    wire_byte_counter.load(Ordering::Relaxed),
+                );
                 let _ = done_sender2.send(Data::Done);
                 future::ready(Ok(()))
             })
@@ -2454,6 +2562,16 @@ async fn http_network_fetch(
                 };
                 *body = ResponseBody::Done(completed_body);
                 timing_ptr3.set_attribute(ResourceAttribute::ResponseEnd);
+                // BAO PATCH (REQ-CDP-006): body-stream failure seam — any
+                // body error (decompression, aborted, connection reset) is a
+                // terminal `Network.loadingFailed`; `canceled` marks the
+                // aborted-by-listener arm.
+                bao_emit_network_failed_tap(
+                    failed_request_id,
+                    failed_webview_id,
+                    error.to_string(),
+                    failed_cancel_listener.cancelled(),
+                );
                 let _ = done_sender3.send(Data::Done);
             }),
     );

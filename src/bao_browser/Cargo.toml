@@ -135,6 +135,10 @@ servo-net = { path = "../../vendor/servo/components/net", package = "bao-servo-n
 # fetch_async::start).
 bun_url.workspace = true
 bun_threading.workspace = true
+# network_loading_finish_live_tests: gzip 压缩助手 — REQ-CDP-006 criterion #4
+# 判别锁(wire 字节 vs decoded 字节)需要 fixture 产真实 gzip 流
+# (flate2 workspace pin,rust_backend 与 bao_runtime 同后端)。
+flate2.workspace = true
 # link_higher_tier_seams (#28, win-cross lld-link): bun_bundler's CYCLEBREAK
 # faces (`JSBundlerPlugin__*` / `DevServerHandle__Bake__*` /
 # `VmLoaderCtx__Runtime__*` / `__bun_macro_context_*` / HMR) are owned by

@@ -852,6 +852,36 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
                 },
             );
         }
+        servo::BaoNetworkTapEvent::Finish {
+            request_id,
+            encoded_data_length,
+            webview_id: _,
+        } => {
+            send_servo_event(
+                &event_tx,
+                ServoEvent::NetworkLoadingFinish {
+                    target_id: page_target.clone(),
+                    request_id,
+                    encoded_data_length,
+                },
+            );
+        }
+        servo::BaoNetworkTapEvent::Failed {
+            request_id,
+            error_text,
+            canceled,
+            webview_id: _,
+        } => {
+            send_servo_event(
+                &event_tx,
+                ServoEvent::NetworkLoadingFail {
+                    target_id: page_target.clone(),
+                    request_id,
+                    error_text,
+                    canceled,
+                },
+            );
+        }
     });
     servo::set_network_event_tap(Some(tap));
     Ok(serde_json::json!({}))
