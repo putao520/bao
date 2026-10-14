@@ -11,6 +11,7 @@
 //! | SourceInfo | `Debugger.scriptParsed` |
 //! | FrameInfo | `Page.{frameNavigated, frameStartedLoading, frameStoppedLoading}` |
 //! | TimelineMarker | `Performance.metrics` |
+//! | Fetch 拦截(REQ-CDP-006) | `Fetch.requestPaused` / `Network.requestIntercepted` |
 //!
 //! ## 数据流(库层 InMemory 模式)
 //!
@@ -120,7 +121,8 @@ impl ConsoleLevel {
 // §2 ServoEvent — servo delegate 推送的事件枚举
 // ---------------------------------------------------------------------------
 
-/// servo 推送给 CDP client 的所有事件类型(REQ-BAO-API-003 的 7 类)。
+/// servo 推送给 CDP client 的所有事件类型(REQ-BAO-API-003 的 7 类
+/// + REQ-CDP-006 请求拦截 2 类)。
 ///
 /// 由 [`EventSubscriber`] 在 servo delegate 回调中构造,push 到 mpsc channel,
 /// 由 `InMemoryTransport::recv_event` 调用 [`translate`] 转换为 [`CdpEvent`]。
@@ -294,6 +296,46 @@ pub enum ServoEvent {
         start_time: f64,
         end_time: f64,
     },
+
+    // ── Fetch 拦截类(REQ-CDP-006) — 2 个子事件
+    /// 请求在拦截设施 pause 点被挂起(delegate `load_web_resource` 命中
+    /// 拦截 pattern 后发射,REQ-CDP-006)。
+    ///
+    /// → `Fetch.requestPaused`
+    ///
+    /// 双 id 语义(设计 §3.2/§4):`request_id` 复用 net tap 的请求身份,
+    /// 客户端按它关联同请求的 `Network.requestWillBeSent`;
+    /// `interception_id` 是拦截设施 mint 的决议键,`Fetch.continueRequest /
+    /// failRequest / fulfillRequest` 以它回指(与 Chromium Fetch 域「requestId
+    /// 即决议键」的合并形态有意不同,设计选择的拆分形态)。
+    ///
+    /// @trace REQ-CDP-006 [event:FetchInterception]
+    FetchRequestPaused {
+        target_id: String,
+        request_id: String,
+        interception_id: String,
+        url: String,
+        method: String,
+        headers: HashMap<String, String>,
+        resource_type: String,
+        is_redirect: bool,
+    },
+    /// 旧版 Network 拦截面事件(criterion 字面命名面,与
+    /// [`ServoEvent::FetchRequestPaused`] 同点发射,REQ-CDP-006)。
+    ///
+    /// → `Network.requestIntercepted`
+    ///
+    /// @trace REQ-CDP-006 [event:FetchInterception]
+    NetworkRequestIntercepted {
+        target_id: String,
+        request_id: String,
+        interception_id: String,
+        url: String,
+        method: String,
+        headers: HashMap<String, String>,
+        resource_type: String,
+        is_redirect: bool,
+    },
 }
 
 impl ServoEvent {
@@ -314,7 +356,9 @@ impl ServoEvent {
             | ServoEvent::FrameNavigated { target_id, .. }
             | ServoEvent::FrameStartedLoading { target_id, .. }
             | ServoEvent::FrameStoppedLoading { target_id, .. }
-            | ServoEvent::TimelineMarker { target_id, .. } => target_id,
+            | ServoEvent::TimelineMarker { target_id, .. }
+            | ServoEvent::FetchRequestPaused { target_id, .. }
+            | ServoEvent::NetworkRequestIntercepted { target_id, .. } => target_id,
         }
     }
 }
@@ -727,6 +771,76 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
                         {"name": format!("{}_duration_ms", name), "value": duration * 1000.0},
                     ],
                     "title": format!("servo-timeline-{}", name),
+                }),
+                session_id: Some(target_id),
+            }]
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        // §3.8 Fetch 拦截 → Fetch.requestPaused / Network.requestIntercepted
+        //     (REQ-CDP-006;事件序见设计 §4:位于 requestWillBeSent 之后、
+        //      continue/fail/fulfill 三决议的 response/loading 事件之前)
+        // ────────────────────────────────────────────────────────────────
+        // @trace REQ-CDP-006 [event:FetchInterception]
+        ServoEvent::FetchRequestPaused {
+            target_id,
+            request_id,
+            interception_id,
+            url,
+            method,
+            headers,
+            resource_type,
+            is_redirect,
+        } => {
+            vec![CdpEvent {
+                method: "Fetch.requestPaused".into(),
+                params: json!({
+                    // 关联键:与 Network.requestWillBeSent 同源(设计 §4)。
+                    "requestId": request_id,
+                    // 决议键:Fetch.continueRequest/failRequest/fulfillRequest
+                    // 以它回指(设计 §3.2/§5;拆分于 Chromium 的合并形态)。
+                    "interceptionId": interception_id,
+                    // CDP Network.Request 子集(WebResourceRequest 无 body,
+                    // postData 不发;设计 §2.2.5)。
+                    "request": {
+                        "url": url,
+                        "method": method,
+                        "headers": headers_to_json(&headers),
+                    },
+                    "resourceType": resource_type,
+                    // bao 附加面(Chromium Fetch.requestPaused 无此参数):
+                    // 事件源携带的重定向上下文,照实透出。
+                    "isRedirect": is_redirect,
+                }),
+                session_id: Some(target_id),
+            }]
+        }
+        // @trace REQ-CDP-006 [event:FetchInterception]
+        ServoEvent::NetworkRequestIntercepted {
+            target_id,
+            request_id,
+            interception_id,
+            url,
+            method,
+            headers,
+            resource_type,
+            is_redirect,
+        } => {
+            vec![CdpEvent {
+                method: "Network.requestIntercepted".into(),
+                params: json!({
+                    // legacy 规范首参;与本面决议命令的回指键同名。
+                    "interceptionId": interception_id,
+                    // legacy 规范无 requestId(bao 附加,与 Fetch 面同源,
+                    // 供客户端关联 requestWillBeSent)。
+                    "requestId": request_id,
+                    "request": {
+                        "url": url,
+                        "method": method,
+                        "headers": headers_to_json(&headers),
+                    },
+                    "resourceType": resource_type,
+                    "isRedirect": is_redirect,
                 }),
                 session_id: Some(target_id),
             }]
@@ -1379,9 +1493,12 @@ pub fn from_console_message(
                 name: None,
             }),
             // FetchRequestPaused / DebuggerPaused / SecurityCertificateError
-            // have no ServoEvent equivalent — these are CDP-specific events
-            // outside the 7 ServoEvent categories (REQ-BAO-API-003).
-            // They remain on the console_rx (Path A) broadcast path.
+            // have no adapter mapping here. The interception pause carrier is
+            // ServoEvent::FetchRequestPaused (REQ-CDP-006), constructed by the
+            // interception facility with a minted interception id that
+            // BaoEvent::FetchRequestPaused does not carry — fabricating one
+            // here would mint a fake resolution key. They remain on the
+            // console_rx (Path A) broadcast path.
             _ => None,
         },
     }
@@ -2091,6 +2208,88 @@ mod tests {
         assert!((duration_metric["value"].as_f64().unwrap() - 50500.0).abs() < 0.001);
     }
 
+    // ── §7.7b Fetch 拦截 → Fetch.requestPaused / Network.requestIntercepted
+    //    (REQ-CDP-006)──────────────────────────────────────────────────
+
+    // @trace REQ-CDP-006 [event:FetchInterception]
+    #[test]
+    fn translate_fetch_request_paused_produces_full_shape() {
+        let mut headers = HashMap::new();
+        headers.insert("Accept".into(), "*/*".into());
+        let ev = ServoEvent::FetchRequestPaused {
+            target_id: "T15".into(),
+            request_id: "REQ10".into(),
+            interception_id: "interception-1".into(),
+            url: "http://example.com/api".into(),
+            method: "GET".into(),
+            headers,
+            resource_type: "XHR".into(),
+            is_redirect: false,
+        };
+        let out = translate(ev);
+        assert_eq!(out.len(), 1, "FetchRequestPaused → exactly 1 CdpEvent");
+        let e = &out[0];
+        assert_eq!(e.method, "Fetch.requestPaused");
+        assert_eq!(e.session_id.as_deref(), Some("T15"));
+        // 双 id 都要在场:interceptionId 是决议键(客户端以它回指
+        // Fetch.continueRequest/failRequest/fulfillRequest,设计 §3.2/§5),
+        // requestId 是关联键(与 Network.requestWillBeSent 同源,设计 §4)。
+        assert_eq!(e.params["requestId"], "REQ10");
+        assert_eq!(e.params["interceptionId"], "interception-1");
+        // request 子对象(CDP Network.Request 形状)
+        let req = &e.params["request"];
+        assert_eq!(req["url"], "http://example.com/api");
+        assert_eq!(req["method"], "GET");
+        assert_eq!(req["headers"]["Accept"], "*/*");
+        assert_eq!(e.params["resourceType"], "XHR");
+        assert_eq!(e.params["isRedirect"], false);
+    }
+
+    #[test]
+    fn translate_fetch_request_paused_redirect_flag_carries() {
+        let ev = ServoEvent::FetchRequestPaused {
+            target_id: "T".into(),
+            request_id: "R".into(),
+            interception_id: "interception-2".into(),
+            url: "http://example.com/redirected".into(),
+            method: "GET".into(),
+            headers: HashMap::new(),
+            resource_type: "Document".into(),
+            is_redirect: true,
+        };
+        let out = translate(ev);
+        assert_eq!(out[0].method, "Fetch.requestPaused");
+        assert_eq!(out[0].params["isRedirect"], true);
+        assert_eq!(out[0].params["resourceType"], "Document");
+    }
+
+    // @trace REQ-CDP-006 [event:FetchInterception]
+    #[test]
+    fn translate_network_request_intercepted_produces_legacy_event() {
+        let ev = ServoEvent::NetworkRequestIntercepted {
+            target_id: "T16".into(),
+            request_id: "REQ11".into(),
+            interception_id: "interception-3".into(),
+            url: "http://example.com/legacy".into(),
+            method: "POST".into(),
+            headers: HashMap::new(),
+            resource_type: "Document".into(),
+            is_redirect: false,
+        };
+        let out = translate(ev);
+        assert_eq!(out.len(), 1);
+        let e = &out[0];
+        assert_eq!(e.method, "Network.requestIntercepted");
+        assert_eq!(e.session_id.as_deref(), Some("T16"));
+        assert_eq!(e.params["interceptionId"], "interception-3");
+        // requestId 是 bao 附加面(legacy 规范无此参数),与 Fetch 面同源。
+        assert_eq!(e.params["requestId"], "REQ11");
+        assert_eq!(e.params["request"]["url"], "http://example.com/legacy");
+        assert_eq!(e.params["request"]["method"], "POST");
+        assert_eq!(e.params["resourceType"], "Document");
+        assert_eq!(e.params["isRedirect"], false);
+    }
+
     // ── §7.8 target_id 一致性 ────────────────────────────────────────
 
     #[test]
@@ -2541,10 +2740,31 @@ mod tests {
                 start_time: 0.0,
                 end_time: 1.0,
             },
+            ServoEvent::FetchRequestPaused {
+                target_id: "T".into(),
+                request_id: "r".into(),
+                interception_id: "i".into(),
+                url: "u".into(),
+                method: "GET".into(),
+                headers: HashMap::new(),
+                resource_type: "Other".into(),
+                is_redirect: false,
+            },
+            ServoEvent::NetworkRequestIntercepted {
+                target_id: "T".into(),
+                request_id: "r".into(),
+                interception_id: "i".into(),
+                url: "u".into(),
+                method: "GET".into(),
+                headers: HashMap::new(),
+                resource_type: "Other".into(),
+                is_redirect: false,
+            },
         ];
-        // 13 样本 = 1 Console + 1 PageError + 4 Network + 2 Dom + 1 ScriptParsed
-        //          + 3 Frame + 1 Timeline = 13(覆盖 7 类)
-        assert_eq!(samples.len(), 13);
+        // 15 样本 = 1 Console + 1 PageError + 4 Network + 2 Dom + 1 ScriptParsed
+        //          + 3 Frame + 1 Timeline + 2 拦截(REQ-CDP-006)= 15
+        //          (覆盖 7 类 + 拦截类)
+        assert_eq!(samples.len(), 15);
         let mut cdp_methods = std::collections::HashSet::new();
         for s in samples {
             for ev in translate(s) {
@@ -2566,6 +2786,8 @@ mod tests {
             "Page.frameStartedLoading",
             "Page.frameStoppedLoading",
             "Performance.metrics",
+            "Fetch.requestPaused",
+            "Network.requestIntercepted",
         ];
         for m in expected {
             assert!(cdp_methods.contains(*m), "missing CDP method: {}", m);
