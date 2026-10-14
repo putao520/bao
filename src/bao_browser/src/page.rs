@@ -551,9 +551,19 @@ impl PageInner {
     /// `take_screenshot` composites with) and return the un-encoded RGBA
     /// frame. The screencast change gate digests this raw form so
     /// downscaling/encoding can never hide a content change.
+    ///
+    /// The composite is latched (`paint_if_needed`), not unconditional: the
+    /// screenshot request below runs servo's own readiness gate, which waits
+    /// for the rendering to be up-to-date and then forces its own
+    /// `ReadyForScreenshot` repaint to capture at the end of that composite.
+    /// Painting unconditionally here spent a second full GL composite per
+    /// capture whose output the screenshot never read — on the screencast
+    /// first-frame critical path that doubled the GL work for nothing (the
+    /// e-liveness margin face: fewer composites and scheduler hops on the
+    /// chain = wider distribution margin under host load).
     // @trace REQ-CDP-009 [entity:PageHandle]
     pub fn capture_frame(&self) -> Result<image::RgbaImage, BrowserError> {
-        self.webview.paint();
+        self.paint_if_needed();
 
         let saved = Rc::new(RefCell::new(None));
         let cb_saved = saved.clone();

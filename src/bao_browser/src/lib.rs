@@ -1000,6 +1000,15 @@ impl BrowserRuntime {
                 break;
             }
             self.servo.spin_event_loop();
+            // memory:// CDP commands (process-registry bridge) execute BEFORE
+            // the screencast tick so a session registered by a command is
+            // captured in the SAME pump iteration (the e-liveness first-frame
+            // margin face: the frame path loses one full iteration of
+            // latency, and command answers never queue behind a capture's
+            // blocking composite chain).
+            if let Some(rx) = &self.cdp_bridge_rx {
+                rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
+            }
             // REQ-CDP-009 screencast tick BEFORE the repaint sweep: the
             // capture path composites on demand (consuming the latch), so
             // polling first keeps change detection exact (this pump has no
@@ -1016,12 +1025,6 @@ impl BrowserRuntime {
             // event loop.
             self.page_pool.close_pending_pages();
             self.page_pool.init_pending_pages();
-            // memory:// CDP commands (process-registry bridge) execute here:
-            // the drain answers every in-process client command that routed
-            // through the bridge channel (Runtime.evaluate, Target listing…).
-            if let Some(rx) = &self.cdp_bridge_rx {
-                rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
-            }
             // REQ-LIB-003 + e207 REQ-LIB-002: drain the runtime-owned servo
             // event channel (delegate-owned receiver) and feed the translated
             // CDP events into the production event tap (memory:// waitFor*
@@ -1065,6 +1068,11 @@ impl BrowserRuntime {
         let start = std::time::Instant::now();
         while start.elapsed() < duration {
             self.servo.spin_event_loop();
+            // memory:// CDP bridge drain BEFORE the screencast tick (same
+            // same-iteration-capture rationale as `run_until`).
+            if let Some(rx) = &self.cdp_bridge_rx {
+                rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
+            }
             // REQ-CDP-009 screencast tick BEFORE the repaint sweep (same
             // ordering rationale as `run`; memory clients only here too).
             screencast::drive(&self.page_pool, None);
@@ -1079,9 +1087,6 @@ impl BrowserRuntime {
             // event loop.
             self.page_pool.close_pending_pages();
             self.page_pool.init_pending_pages();
-            if let Some(rx) = &self.cdp_bridge_rx {
-                rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
-            }
             // REQ-LIB-003 + e207 REQ-LIB-002: same delegate drain as `run`
             // (the bounded pump face stays waitFor*-live).
             self.delegate.drain_runtime_events();
@@ -1108,6 +1113,10 @@ impl BrowserRuntime {
 
         while start.elapsed() < max_wait {
             self.servo.spin_event_loop();
+            // Process pending CDP bridge commands BEFORE the screencast tick
+            // (same same-iteration-capture rationale as `run_until`).
+            bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
+
             // REQ-CDP-009 screencast tick BEFORE the repaint sweep (capture
             // consumes the latch; ordering rationale as `run`). WS-origin
             // frames ride the same target-scoped routing as servo events.
@@ -1136,9 +1145,6 @@ impl BrowserRuntime {
             // event loop.
             self.page_pool.close_pending_pages();
             self.page_pool.init_pending_pages();
-
-            // Process pending CDP bridge commands
-            bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
 
             // Drain ServoEvent from the real event queue (Path B) and broadcast
             // as CDP events via the shared EventBroadcaster.
