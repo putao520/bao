@@ -12,7 +12,7 @@ use servo::{
     AllowOrDenyRequest, ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntRect,
     DeviceIntSize, EmbedderControl, EmbedderControlId, InputEventId, InputEventResult, LoadStatus,
     NavigationRequest, PermissionRequest, ScreenGeometry, ServoDelegate, ServoError, TraversalId,
-    WebView, WebViewDelegate,
+    WebResourceLoad, WebView, WebViewDelegate,
 };
 
 use bao_cdp::servo_bridge::main_frame_id_for_target;
@@ -459,6 +459,119 @@ impl WebViewDelegate for BaoWebViewDelegate {
     fn notify_crashed(&self, _webview: WebView, reason: String, _backtrace: Option<String>) {
         log::error!("[webview] crashed: {reason}");
     }
+
+    // @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+    // Fetch 请求拦截面的 embedder 端(REQ-CDP-006,设计
+    // /tmp/cdp-006-interception-design.md §2.1 候选 A / §3.2):servo 为
+    // webview 关联的每个 HTTP(S) 请求发起的正式 embedder 往返 —— 不覆写时
+    // 继承上游 no-op,drop(load) 即默认 DoNotIntercept,与今天的行为字节
+    // 等价(零风险底座)。覆写后:槽 off / 不匹配 / 无事件路由 → 同一
+    // drop=放行;命中 → 暂存 pending + 发射启用旗标选定的 pause 事件
+    // (`Fetch.requestPaused` 或 legacy 面 `Network.requestIntercepted`),
+    // fetch 任务停在 responder 上等待 CDP 决议(continue/fail/fulfill 经
+    // `BaoWebViewState::fetch_resolve`)。
+    //
+    // 线程模型:本回调发生在泵线程(servo 以 `Rc<dyn WebViewDelegate>` 持有
+    // 委托,结构性 !Send —— servo_delegate.rs:35-58),与 `fetch_resolve`
+    // (BridgeCommand 泵线程消费)同线程 —— pending 注册表平字段即安全
+    // (webview_state.rs `pending_intercepted_loads` 字段注释,设计 §9 风险 1)。
+    //
+    // 事件序(设计 §4):Network.requestWillBeSent 由 C19-② net tap 在
+    // main_fetch step 1 发出(methods.rs:429),先于 intercept_request 往返
+    // (methods.rs:563)—— 两者先后进入同一无界 mpsc 事件通道,FIFO 保序,
+    // pause 事件恒在 requestWillBeSent 之后,无需重排。
+    fn load_web_resource(&self, _webview: WebView, load: WebResourceLoad) {
+        let matched = {
+            let state = self.state.borrow();
+            state.should_intercept(&load.request)
+        };
+        if !matched {
+            // 槽 off / 不匹配:drop = AutomaticResponder DoNotIntercept
+            // (= 不覆写时今天的行为,字节等价;零能力删除的默认臂)。
+            drop(load);
+            return;
+        }
+        // pause 许可门:无 CDP 身份或无事件通道的页,客户端永远收不到
+        // pause 事件 —— pause 等于无解楔死;fail-open 到 continue。
+        let (target_id, event_tx) = {
+            let state = self.state.borrow();
+            match pause_event_route(&state) {
+                Some(route) => route,
+                None => {
+                    log::debug!(
+                        "[fetch-intercept] pattern hit but no CDP event route (target/event_tx \
+                         absent) — passing through instead of wedging the request"
+                    );
+                    drop(load);
+                    return;
+                }
+            }
+        };
+        let info = {
+            let mut state = self.state.borrow_mut();
+            state.register_paused_load(load)
+        };
+        log::debug!(
+            "[fetch-intercept] paused {} {} ({} as {})",
+            info.method,
+            info.url,
+            info.interception_id,
+            info.resource_type
+        );
+        let event = paused_servo_event(target_id, info);
+        send_servo_event(&event_tx, event);
+    }
+}
+
+/// pause 许可门:页有 CDP 身份且有事件通道时返回 `(target_id, event_tx)`
+/// 路由,否则 None(fail-open 到 continue,防无解楔死)。
+fn pause_event_route(state: &BaoWebViewState) -> Option<(String, Sender<ServoEvent>)> {
+    let target_id = state.cdp_target()?;
+    let event_tx = state.event_tx.clone()?;
+    Some((target_id, event_tx))
+}
+
+/// 组装 pause 事件(独立纯函数使字段映射可单测 —— 真 `WebResourceLoad` 值
+/// 无法在无引擎测试中构造)。事件面由启用旗标选定:legacy_network_events
+/// → `Network.requestIntercepted`(criterion 字面命名面),否则
+/// `Fetch.requestPaused`(E2 BridgeCommand 落库形态;对设计 §5「双事件
+/// 同点发射」的裁定改形 —— 每 hit 只发所属启用面的事件,未启用的域不收
+/// 伪事件)。
+fn paused_servo_event(target_id: String, info: FetchPausedRequestInfo) -> ServoEvent {
+    let FetchPausedRequestInfo {
+        interception_id,
+        request_id,
+        url,
+        method,
+        headers,
+        resource_type,
+        is_redirect,
+        legacy_network_events,
+    } = info;
+    let resource_type = resource_type.to_string();
+    if legacy_network_events {
+        ServoEvent::NetworkRequestIntercepted {
+            target_id,
+            request_id,
+            interception_id,
+            url,
+            method,
+            headers,
+            resource_type,
+            is_redirect,
+        }
+    } else {
+        ServoEvent::FetchRequestPaused {
+            target_id,
+            request_id,
+            interception_id,
+            url,
+            method,
+            headers,
+            resource_type,
+            is_redirect,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -540,6 +653,105 @@ mod tests {
                 assert_eq!(lid, loader_id);
             }
             other => panic!("expected PageFrameNavigated, got {:?}", other),
+        }
+    }
+
+    // ─── Fetch 请求拦截面(REQ-CDP-006,设计 §3.2/§5)────────────────
+    // @trace REQ-CDP-006 [req:REQ-CDP-006] [entity:FetchInterception]
+    // [criterion:6] [level:unit]
+
+    #[test]
+    fn test_pause_event_route_gate() {
+        // 无 CDP 身份 / 无事件通道的页不 pause(fail-open 到 continue,
+        // 防无解楔死);双齐才放行。
+        let state = BaoWebViewState::default();
+        assert!(pause_event_route(&state).is_none());
+
+        let state = BaoWebViewState {
+            cdp_target_id: Some("7".to_string()),
+            ..Default::default()
+        };
+        assert!(pause_event_route(&state).is_none());
+
+        let (tx, _rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let state = BaoWebViewState {
+            cdp_target_id: Some("7".to_string()),
+            event_tx: Some(tx),
+            ..Default::default()
+        };
+        let (target_id, _event_tx) = pause_event_route(&state).expect("admissible");
+        assert_eq!(target_id, "7");
+    }
+
+    #[test]
+    fn test_paused_servo_event_carries_full_payload() {
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "text/html".to_string());
+        let info = FetchPausedRequestInfo {
+            interception_id: "interception-9".to_string(),
+            request_id: "cdpreq-9".to_string(),
+            url: "https://example.com/a?b=1".to_string(),
+            method: "GET".to_string(),
+            headers,
+            resource_type: "Document",
+            is_redirect: false,
+            legacy_network_events: false,
+        };
+        match paused_servo_event("7".to_string(), info) {
+            ServoEvent::FetchRequestPaused {
+                target_id,
+                request_id,
+                interception_id,
+                url,
+                method,
+                headers,
+                resource_type,
+                is_redirect,
+            } => {
+                assert_eq!(target_id, "7");
+                assert_eq!(request_id, "cdpreq-9");
+                assert_eq!(interception_id, "interception-9");
+                assert_eq!(url, "https://example.com/a?b=1");
+                assert_eq!(method, "GET");
+                assert_eq!(
+                    headers.get("content-type").map(String::as_str),
+                    Some("text/html")
+                );
+                assert_eq!(resource_type, "Document");
+                assert!(!is_redirect);
+            }
+            other => panic!("expected FetchRequestPaused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_paused_servo_event_legacy_flag_selects_network_face() {
+        // legacy_network_events=true → 命中发 Network.requestIntercepted
+        // (criterion 字面命名面),不发 Fetch.requestPaused。
+        let info = FetchPausedRequestInfo {
+            interception_id: "interception-1".to_string(),
+            request_id: "cdpreq-1".to_string(),
+            url: "https://example.com/".to_string(),
+            method: "GET".to_string(),
+            headers: HashMap::new(),
+            resource_type: "Document",
+            is_redirect: false,
+            legacy_network_events: true,
+        };
+        match paused_servo_event("7".to_string(), info) {
+            ServoEvent::NetworkRequestIntercepted {
+                target_id,
+                request_id,
+                interception_id,
+                resource_type,
+                ..
+            } => {
+                assert_eq!(target_id, "7");
+                assert_eq!(request_id, "cdpreq-1");
+                assert_eq!(interception_id, "interception-1");
+                assert_eq!(resource_type, "Document");
+            }
+            other => panic!("expected NetworkRequestIntercepted, got {other:?}"),
         }
     }
 }

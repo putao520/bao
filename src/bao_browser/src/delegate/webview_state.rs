@@ -12,12 +12,89 @@ use servo::{
     AllowOrDenyRequest, ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntRect,
     DeviceIntSize, EmbedderControl, EmbedderControlId, InputEventId, InputEventResult, LoadStatus,
     NavigationRequest, PermissionRequest, ScreenGeometry, ServoDelegate, ServoError, TraversalId,
-    WebView, WebViewDelegate,
+    WebResourceLoad, WebResourceRequest, WebResourceResponse, WebView, WebViewDelegate,
 };
 
 use bao_cdp::servo_bridge::main_frame_id_for_target;
 use bao_cdp::{BaoEvent, ConsoleMessage};
 use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
+
+// ─── Fetch 请求拦截设施(REQ-CDP-006,设计 /tmp/cdp-006-interception-design.md)───
+//
+// 拦截面 = servo 正式 embedder seam:`WebViewDelegate::load_web_resource`
+// 覆写(webview_delegate.rs)+ 本文件的拦截槽/pending 注册表/匹配纯函数/
+// resolve 入口。接入点选型与能力边界见设计 §2/§7;同线程不变量见
+// `pending_intercepted_loads` 字段注释(设计 §9 风险 1)。
+//
+// pattern/决议类型单源 = `bao_cdp::servo_bridge`(E2 落库的
+// `FetchPattern` / `FetchRequestStage` / `FetchResolveAction`;E2 注释明文
+// "browser side consumes these types directly")—— 禁平行双源。
+
+use bao_cdp::servo_bridge::{FetchPattern, FetchRequestStage, FetchResolveAction};
+
+/// 进程内单调 interceptionId 序列源(`"interception-{n}"`,设计 §3.2)。
+/// 进程级(非 per-page)使多页 id 不碰撞。
+static INTERCEPTION_ID_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// 进程内单调 paused requestId 序列源(`"cdpreq-{n:x}"`)。
+///
+/// 边界登记(设计 §4 偏差):vendor `WebResourceRequest` 不携带 net 侧
+/// `Request.id`(`request_interceptor.rs:89-97` 构造面只有
+/// method/url/headers/destination/referrer/main_frame/redirect),embedder
+/// 拿不到 C19-② tap 的同一身份 —— 与 `Network.requestWillBeSent` 的
+/// requestId 关联在 P1 不可能,只能 pause 点新鲜 mint。客户端按
+/// url+method 关联;真正关联需要 vendor 给 `WebResourceRequest` 加 id
+/// 载体(phase-2 vendor seam)。
+static PAUSED_REQUEST_ID_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// `Fetch.fulfillRequest` 解码后响应体上限(设计 §7/§9:超限显式错误,
+/// 不静默截断)。作用于 base64 解码后的字节数。
+pub(crate) const FETCH_FULFILL_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
+/// 拦截槽的有效配置(`Fetch.enable` / `Network.setRequestInterception`
+/// 落下来的形态)。
+/// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+#[derive(Clone, Debug)]
+pub struct FetchInterceptionSlot {
+    /// 空 = 不拦截任何请求(E2 协议层把「未带 patterns」归一化为一条
+    /// catch-all Request 阶段 pattern,显式空列表即字面义)。
+    pub patterns: Vec<FetchPattern>,
+    /// 命中事件选择旗标(E2 `BridgeCommand::FetchEnable` 的
+    /// `legacy_network_events`):true → 命中发 `Network.requestIntercepted`
+    /// (criterion 字面命名面);false → `Fetch.requestPaused`。每 hit 只发
+    /// 所属启用面的事件,未启用的域不收伪事件 —— 对设计 §5「双事件同点
+    /// 发射」的裁定改形(E2 落库形态,本侧跟随)。
+    pub legacy_network_events: bool,
+}
+
+/// `fetch_resolve` 的结果(调用方映射 CDP 错误码:UnknownId/Rejected → -32602)。
+/// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FetchResolveOutcome {
+    /// 命中并已应答(pending 移除)。
+    Resolved,
+    /// 未命中任何 pending(未知或已决议 id)。
+    UnknownId,
+    /// 参数越界(fulfill status 越界 / body 解码失败或超限 / 头非法);请求
+    /// 保持 paused,客户端可携合法载荷重试(Chromium 同语义:报错不消费
+    /// pause)。
+    Rejected(String),
+}
+
+/// pause 事件载荷(`register_paused_load` 返回,delegate 据此组装
+/// 槽旗标选定的那一枚事件)。
+pub(crate) struct FetchPausedRequestInfo {
+    pub interception_id: String,
+    pub request_id: String,
+    pub url: String,
+    pub method: String,
+    pub headers: HashMap<String, String>,
+    pub resource_type: &'static str,
+    pub is_redirect: bool,
+    /// 命中事件选择(取自启用时的 [`FetchInterceptionSlot::
+    /// legacy_network_events`])。
+    pub legacy_network_events: bool,
+}
 
 pub struct BaoWebViewState {
     pub url: Option<url::Url>,
@@ -141,6 +218,38 @@ pub struct BaoWebViewState {
     /// for CDP observability and stealth consistency verification (CRIT-STL-WK).
     /// @trace REQ-BRW-004 [entity:ServiceWorkerGlobalScope] DF-WK-8 / DF-WK-10
     pub(super) service_worker_scope: Option<ServiceWorkerGlobalScopeState>,
+    /// The single Overlay highlight slot (REQ-CDP-007-C6, design
+    /// /tmp/cdp-007-overlay-design.md §3.1): armed by `Overlay.highlightNode`
+    /// (each call replaces — one highlight at a time, Chromium semantics),
+    /// cleared by `Overlay.hideHighlight` and by every CDP navigation entry
+    /// (positional node ids do not survive a document change). Its only
+    /// visual carrier is the embedder-side frame annotation
+    /// (`cdp_handler::draw_page_highlight`) — nothing here touches the page
+    /// DOM or the servo display list (the stealth invariant, design §2.2).
+    /// A page close drops the state — and the slot — wholesale.
+    /// @trace REQ-CDP-007 [entity:PageHandle] [criterion:6]
+    pub highlight: Option<crate::overlay::HighlightState>,
+    /// Fetch 请求拦截槽(REQ-CDP-006,设计 /tmp/cdp-006-interception-design.md
+    /// §3.1):`None` = InterceptionOff(默认)。`Fetch.enable` /
+    /// `Network.setRequestInterception` 写入(后写者胜),`Fetch.disable` 清除。
+    /// 槽是 per-target(非 per-session)——两个 CDP session 对同一 target 各自
+    /// enable 时后写者胜,事件广播到当前事件通道所有订阅者(设计 §5 文档化偏差)。
+    pub(super) fetch_interception: Option<FetchInterceptionSlot>,
+    /// 已 pause、未决议的 `WebResourceLoad` 注册表,键 = interceptionId。
+    ///
+    /// 同线程不变量(设计 §9 风险 1 的文档验证):本字段只被两条泵线程路径
+    /// 触及 —— ① `WebViewDelegate::load_web_resource` 回调(servo 以
+    /// `Rc<dyn WebViewDelegate>` 持有委托,结构性 `!Send`,回调只发生在持有
+    /// WebView 的 embedder/泵线程,`servo_delegate.rs:35-58` 注释明文);
+    /// ② BridgeCommand 消费(cdp_handler 的 drain,同在泵线程)。整个
+    /// `BaoWebViewState` 经 `Rc<RefCell<_>>` 被这两条路径共享,`Rc` 结构性
+    /// 禁止跨线程 —— 平字段即安全,无需内层 `RefCell`/`Mutex`。若未来状态
+    /// 被改为 `Arc`/Send 形态,本注册表必须重设计(设计 §9 风险 1),禁静默
+    /// 换 `Mutex`(`WebResourceLoad` 的 Send 界未核实)。
+    ///
+    /// 任何 pending 在 `Fetch.disable` / 页面关闭(整个 state drop)时按
+    /// drop=DoNotIntercept 自然续行 —— 设计上不存在页面级楔死通道。
+    pub(super) pending_intercepted_loads: HashMap<String, WebResourceLoad>,
 }
 
 impl Default for BaoWebViewState {
@@ -169,6 +278,9 @@ impl Default for BaoWebViewState {
             web_workers: HashMap::new(),
             controlled_service_worker: None,
             service_worker_scope: None,
+            highlight: None,
+            fetch_interception: None,
+            pending_intercepted_loads: HashMap::new(),
         }
     }
 }
@@ -1241,6 +1353,446 @@ impl BaoWebViewState {
             scope.scope.navigator = WorkerNavigator::from_scope_config(config);
         }
     }
+
+    // ─── Fetch 请求拦截设施(REQ-CDP-006,设计 §3/§5)────────────────
+
+    /// `Fetch.enable{patterns}` / `Network.setRequestInterception{patterns}`:
+    /// 写拦截槽(替换语义,后写者胜 —— 设计 §5 多 session 偏差的登记形态)。
+    /// `legacy_network_events` 选定命中事件面(E2 BridgeCommand 落库形态,
+    /// 见 [`FetchInterceptionSlot::legacy_network_events`])。
+    ///
+    /// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+    pub fn fetch_enable(&mut self, patterns: Vec<FetchPattern>, legacy_network_events: bool) {
+        log::debug!(
+            "[fetch-intercept] enable: {} pattern(s), legacy={} (replaces previous config)",
+            patterns.len(),
+            legacy_network_events
+        );
+        self.fetch_interception = Some(FetchInterceptionSlot {
+            patterns,
+            legacy_network_events,
+        });
+    }
+
+    /// `Fetch.disable`:清拦截槽 + 排空 pending(每个 drop = DoNotIntercept =
+    /// 网络续行)。这是「任何时刻都能解困」的出口(设计 §3.2 不变量)。
+    ///
+    /// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+    pub fn fetch_disable(&mut self) {
+        self.fetch_interception = None;
+        self.drain_pending_intercepted_loads("Fetch.disable");
+    }
+
+    /// 排空 pending 注册表(每个挂起 load drop → `AutomaticResponder` 发
+    /// `DoNotIntercept` → 原始请求照常进网络;fetch 任务不被楔死)。
+    pub(crate) fn drain_pending_intercepted_loads(&mut self, reason: &str) {
+        if !self.pending_intercepted_loads.is_empty() {
+            let n = self.pending_intercepted_loads.len();
+            log::debug!(
+                "[fetch-intercept] draining {n} paused load(s): {reason} (each drop = DoNotIntercept)"
+            );
+            self.pending_intercepted_loads.clear();
+        }
+    }
+
+    /// pause 决策点:该请求在该阶段是否命中拦截(委托回调唯一入口;
+    /// pause 点恒为 Request 阶段 —— servo 拦截面在网络请求发出前)。
+    ///
+    /// 规则:槽 off → false;patterns 空 → false(E2 协议层已把「未带
+    /// patterns」归一化为 catch-all pattern,空列表即字面义「不拦截」);
+    /// 否则任一 pattern 全维命中。
+    ///
+    /// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+    pub(crate) fn should_intercept(&self, request: &WebResourceRequest) -> bool {
+        self.should_intercept_view(&InterceptRequestView {
+            url: &request.url,
+            resource_type: resource_type_for_request(request),
+        })
+    }
+
+    /// [`Self::should_intercept`] 的视图核心(无引擎测试构造面:
+    /// `WebResourceRequest` 的 destination 字段类型无法从 bao_browser 命名,
+    /// 测试无法直接构造 —— 经投影视图解耦;pause 阶段恒 Request)。
+    pub(crate) fn should_intercept_view(&self, view: &InterceptRequestView<'_>) -> bool {
+        let Some(slot) = &self.fetch_interception else {
+            return false;
+        };
+        slot.patterns
+            .iter()
+            .any(|pattern| pattern_matches_view(pattern, view, FetchRequestStage::Request))
+    }
+
+    /// 登记一个已命中的 pause:mint 双 id(interceptionId/requestId)、把
+    /// load 暂存进 pending 注册表(load 未 intercept,drop 默认 = continue),
+    /// 返回事件载荷供 delegate 发射槽旗标选定的那一枚事件。
+    ///
+    /// 必须先经 [`Self::should_intercept`] 命中后再调用(本方法不做二次匹配;
+    /// 无槽调用 = 编序失误,按 legacy=false 兜底取旗标是不可达面)。
+    ///
+    /// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+    pub(crate) fn register_paused_load(&mut self, load: WebResourceLoad) -> FetchPausedRequestInfo {
+        let interception_n = INTERCEPTION_ID_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+        let request_n = PAUSED_REQUEST_ID_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+        let interception_id = format!("interception-{interception_n}");
+        let request_id = format!("cdpreq-{request_n:x}");
+        let legacy_network_events = self
+            .fetch_interception
+            .as_ref()
+            .map(|slot| slot.legacy_network_events)
+            .unwrap_or(false);
+        let info = FetchPausedRequestInfo {
+            url: load.request.url.to_string(),
+            method: load.request.method.as_str().to_string(),
+            headers: request_header_pairs(&load.request),
+            resource_type: resource_type_for_request(&load.request),
+            is_redirect: load.request.is_redirect,
+            legacy_network_events,
+            interception_id: interception_id.clone(),
+            request_id,
+        };
+        self.pending_intercepted_loads.insert(interception_id, load);
+        info
+    }
+
+    /// 拦截决议入口(E4 经 `BridgeCommand::FetchResolve` 到达,同泵线程)。
+    /// 三向应答按 vendor 真实 API(`webview_delegate.rs:246-337`):
+    /// continue = drop(load) → `DoNotIntercept`;fail = intercept+cancel →
+    /// `LoadCancelled`;fulfill = intercept+send_body_data+finish。
+    ///
+    /// 浏览器侧义务(E2 落库契约):fulfill 的 `body` 是客户端原样的
+    /// base64 文本 —— 本侧解码(bao `base64` 0.22)并按
+    /// [`FETCH_FULFILL_BODY_LIMIT`] 对解码后字节数设上限;`response_headers`
+    /// 是 `{name: value}` JSON 对象,本侧展开为 wire 头。
+    ///
+    /// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+    pub fn fetch_resolve(
+        &mut self,
+        interception_id: &str,
+        action: FetchResolveAction,
+    ) -> FetchResolveOutcome {
+        if !self.pending_intercepted_loads.contains_key(interception_id) {
+            return FetchResolveOutcome::UnknownId;
+        }
+        // fulfill 载荷先解码/校验后消费:越界报 Rejected 且请求保持 paused
+        // (Chromium 同语义:报错不消费 pause;越界路径零副作用)。
+        let fulfillment = match &action {
+            FetchResolveAction::Continue | FetchResolveAction::Fail { .. } => None,
+            FetchResolveAction::Fulfill {
+                response_code,
+                status_message,
+                response_headers,
+                body,
+            } => match prepare_fulfillment(*response_code, status_message, response_headers, body) {
+                Ok(fulfillment) => Some(fulfillment),
+                Err(reason) => return FetchResolveOutcome::Rejected(reason),
+            },
+        };
+        let load = self
+            .pending_intercepted_loads
+            .remove(interception_id)
+            .expect("contains_key checked above");
+        match action {
+            // Continue 路径:drop(load) → AutomaticResponder 发 DoNotIntercept
+            // → 原始请求照常进网络(vendor webview_delegate.rs:254-257)。
+            FetchResolveAction::Continue => {
+                drop(load);
+            }
+            FetchResolveAction::Fail { error_reason } => {
+                log::debug!(
+                    "[fetch-intercept] failRequest {interception_id}: errorReason={} \
+                     (servo 面无错误码通道,page 侧统一表现为网络错误)",
+                    error_reason.as_deref().unwrap_or("<none>")
+                );
+                // intercept(Start)+ cancel(CancelLoad)→ net 侧
+                // `*response = Some(Response::network_error(LoadCancelled))`
+                // (vendor request_interceptor.rs:149-152)。
+                let url = load.request.url.clone();
+                let intercepted = load.intercept(WebResourceResponse::new(url));
+                intercepted.cancel();
+            }
+            FetchResolveAction::Fulfill { .. } => {
+                let Fulfillment {
+                    status_code,
+                    status_message,
+                    headers,
+                    body,
+                } = fulfillment.expect("Fulfill arm ⇒ prepared above");
+                let url = load.request.url.clone();
+                let mut response = WebResourceResponse::new(url);
+                response.status_code = status_code;
+                response.status_message = status_message;
+                response.headers = headers;
+                let mut intercepted = load.intercept(response);
+                if !body.is_empty() {
+                    intercepted.send_body_data(body);
+                }
+                intercepted.finish();
+            }
+        }
+        FetchResolveOutcome::Resolved
+    }
+}
+
+/// 已就绪的合成响应载荷(`prepare_fulfillment` 产出,resolve 的 Fulfill 臂
+/// 经字段赋值灌入 `WebResourceResponse` 消费)。`status_code`/`headers`
+/// 的字段类型来自 `http` crate —— 无法从 bao_browser 命名(servo 只
+/// glob re-export `embedder_traits` 的项,`http` 是其私有依赖),依赖一行
+/// `http = "1.4"` 已请示 Commander(主 lock 已有 http 1.4.1 节点,
+/// embedder_traits 自己 pin 同版本,零新增编译节点)。
+pub(crate) struct Fulfillment {
+    pub status_code: http::StatusCode,
+    pub status_message: Vec<u8>,
+    pub headers: http::HeaderMap,
+    pub body: Vec<u8>,
+}
+
+/// fulfill 载荷的解码与校验(纯函数):`response_code` 合法域(100..=999,
+/// `http::StatusCode` 的可表示域)+ body base64 解码 + 解码后上限
+/// ([`FETCH_FULFILL_BODY_LIMIT`])+ 响应头展开(`{name: value}` JSON 对象,
+/// 值必须全为字符串)。任一步失败 → Err(显式错误,请求保持 paused)。
+///
+/// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+pub(crate) fn prepare_fulfillment(
+    response_code: i64,
+    status_message: &Option<String>,
+    response_headers: &Option<serde_json::Value>,
+    body_base64: &Option<String>,
+) -> Result<Fulfillment, String> {
+    if !(100..=999).contains(&response_code) {
+        return Err(format!(
+            "invalid fulfill status code: {response_code} (expected 100..=999)"
+        ));
+    }
+    let status_code = match http::StatusCode::from_u16(response_code as u16) {
+        Ok(code) => code,
+        Err(e) => return Err(format!("invalid fulfill status code: {response_code} ({e})")),
+    };
+    let body = match body_base64 {
+        Some(text) => {
+            use base64::Engine as _;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(text.as_bytes())
+                .map_err(|e| format!("invalid fulfill body (base64): {e}"))?;
+            if decoded.len() > FETCH_FULFILL_BODY_LIMIT {
+                return Err(format!(
+                    "fulfill body {} bytes exceeds the {} MiB limit",
+                    decoded.len(),
+                    FETCH_FULFILL_BODY_LIMIT / (1024 * 1024)
+                ));
+            }
+            decoded
+        }
+        None => Vec::new(),
+    };
+    let mut headers = http::HeaderMap::new();
+    if let Some(value) = response_headers {
+        let Some(map) = value.as_object() else {
+            return Err("fulfill responseHeaders must be a {name: value} object".to_string());
+        };
+        for (name, header_value) in map {
+            let Some(header_value) = header_value.as_str() else {
+                return Err(format!("fulfill header {name:?} must be a string value"));
+            };
+            match (
+                http::HeaderName::try_from(name.as_str()),
+                http::HeaderValue::from_str(header_value),
+            ) {
+                (Ok(name), Ok(value)) => {
+                    headers.insert(name, value);
+                }
+                (Err(e), _) => {
+                    return Err(format!("invalid fulfill header {name:?}: {e}"));
+                }
+                (_, Err(e)) => {
+                    return Err(format!("invalid fulfill header {name:?}: {e}"));
+                }
+            }
+        }
+    }
+    Ok(Fulfillment {
+        status_code,
+        status_message: status_message
+            .as_deref()
+            .unwrap_or("OK")
+            .as_bytes()
+            .to_vec(),
+        headers,
+        body,
+    })
+}
+
+/// 请求头序列 → `HashMap<String, String>`(wire 形态,lossy-UTF8;与 C19-②
+/// tap 的 `bao_header_pairs` 同款语义)。经 `&WebResourceRequest` 间接携带
+/// `http::HeaderMap` 字段类型(该类型无法从 bao_browser 命名,见回报偏差 3)。
+fn request_header_pairs(request: &WebResourceRequest) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for (name, value) in request.headers.iter() {
+        map.insert(
+            name.as_str().to_string(),
+            String::from_utf8_lossy(value.as_bytes()).into_owned(),
+        );
+    }
+    map
+}
+
+/// 单请求的资源类型映射(`WebResourceRequest.destination` → CDP ResourceType)。
+fn resource_type_for_request(request: &WebResourceRequest) -> &'static str {
+    destination_debug_name_to_resource_type(&format!("{:?}", request.destination))
+}
+
+/// csp `Destination` 变体名 → CDP ResourceType 字符串(bao 侧独立实现;映射
+/// 表语义对齐 vendor `http_loader.rs` 的 `bao_destination_to_resource_type`,
+/// 使 `Fetch.requestPaused.resourceType` 与 `Network.requestWillBeSent.type`
+/// 输出一致)。
+///
+/// 以 `derive(Debug)` 变体名为键:fieldless enum 的 Debug 输出恒等于变体
+/// 标识符本身(csp 0.9.0 实测),而 `content_security_policy::Destination`
+/// 无法从 bao_browser 命名(非本 crate 依赖、全树无 re-export;两文件
+/// scope 约束)。未知名 → "Other"(与 vendor 表兜底臂同形)。
+fn destination_debug_name_to_resource_type(debug_name: &str) -> &'static str {
+    match debug_name {
+        "Document" | "Frame" | "IFrame" => "Document",
+        "Script" | "ServiceWorker" | "SharedWorker" | "Worker" | "Xslt" => "Script",
+        "Style" => "Stylesheet",
+        "Image" => "Image",
+        "Font" => "Font",
+        "Audio" | "Video" | "Track" => "Media",
+        "Manifest" => "Manifest",
+        "Json" | "Text" => "Fetch",
+        _ => "Other",
+    }
+}
+
+/// 匹配核心的输入视图(从 `WebResourceRequest` 投影;独立类型使纯函数可在
+/// 无引擎测试里构造)。
+pub(crate) struct InterceptRequestView<'a> {
+    pub url: &'a url::Url,
+    pub resource_type: &'static str,
+}
+
+/// 单条 pattern 对单请求的全维匹配(urlPattern × resourceType × stage)。
+/// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+fn pattern_matches_view(
+    pattern: &FetchPattern,
+    view: &InterceptRequestView<'_>,
+    stage: FetchRequestStage,
+) -> bool {
+    if pattern.request_stage != stage {
+        return false;
+    }
+    if let Some(resource_type) = &pattern.resource_type {
+        if resource_type != view.resource_type {
+            return false;
+        }
+    }
+    match &pattern.url_pattern {
+        Some(url_pattern) => url_pattern_matches(url_pattern, view.url),
+        None => true,
+    }
+}
+
+/// `Fetch.urlPattern` 全串通配匹配(Chromium 真值形态,X.8 裁定③;设计 §9
+/// 风险 3 的「协议/主机/路径分段」断言系误传,以 oracle 实测为准勘误):
+/// Chromium `fetch_handler.cc` → `DevToolsURLLoaderInterceptor::Pattern` →
+/// `base::MatchPattern(url.spec(), pattern)` —— 对 URL 的规范序列化形态
+/// (GURL::spec;`url::Url::as_str()` 同值)做**全串** glob,无协议/主机/路径
+/// 分段概念。
+///
+/// 通配语义 = `base::MatchPattern`(base/strings/pattern.cc 实测):
+/// - `*` = 零或多个任意字符;
+/// - `?` = 恰一个任意字符(CDP 文档只声明 `*`,Chromium 实现把 pattern 中
+///   的字面 `?` 也当单字符通配 —— 含 query 的 pattern 在 Chromium 同样有此
+///   现象,忠实对齐并在此登记);
+/// - `\` = 转义下一字符(`\*`/`\?`/`\\` 为字面);
+/// - 连续通配段合读:含 `*` 的段 = 任意长缺口;纯 `?` 段 = 恰好 n 字符的
+///   有界缺口。
+/// - 大小写敏感(URL 规范形态 scheme/host 已小写化,用户 pattern 按字面写);
+/// - 空 pattern = 不匹配任何;整段 `"*"` = 匹配一切。
+///
+/// @trace REQ-CDP-006 [entity:FetchInterception] [criterion:6]
+pub(crate) fn url_pattern_matches(pattern: &str, url: &url::Url) -> bool {
+    glob_matches(url.as_str(), pattern)
+}
+
+/// `base::MatchPattern` 的 Rust 实现(全串 glob;语义见
+/// [`url_pattern_matches`] 注释)。字面段 × 通配段(缺口预算)扫描;无界
+/// 段回溯尝试所有断点 —— 拦截 pattern 通常 1-2 个 `*`,最坏指数在实际输入
+/// 上不可达(Chromium 自身同为朴素实现,源码留有 TODO)。
+fn glob_matches(text: &str, pattern: &str) -> bool {
+    match_pattern_tokens(text.as_bytes(), &parse_glob_tokens(pattern), 0)
+}
+
+/// 已解析的 pattern 记号:字面段 / 通配段。
+#[derive(Debug, PartialEq, Eq)]
+enum GlobToken {
+    /// 字面字节段(转义已解:背斜杠不进段)。
+    Literal(Vec<u8>),
+    /// 连续通配段:`min` = 段内 `?` 个数(至少吃 min 字符);`unbounded` =
+    /// 段内含 `*`(缺口任意长)。
+    WildcardRun { min: usize, unbounded: bool },
+}
+
+/// 解析 pattern 为记号序列(`?`/`*` 分段,`\` 转义;孤立尾 `\` 按字面)。
+fn parse_glob_tokens(pattern: &str) -> Vec<GlobToken> {
+    let bytes = pattern.as_bytes();
+    let mut tokens: Vec<GlobToken> = Vec::new();
+    let mut literal: Vec<u8> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => {
+                // 转义:下一字符按字面入段,背斜杠本身不进段。
+                literal.push(bytes[i + 1]);
+                i += 2;
+            }
+            b'*' | b'?' => {
+                if !literal.is_empty() {
+                    tokens.push(GlobToken::Literal(std::mem::take(&mut literal)));
+                }
+                let (mut min, mut unbounded) = (0usize, false);
+                while i < bytes.len() && matches!(bytes[i], b'*' | b'?') {
+                    if bytes[i] == b'*' {
+                        unbounded = true;
+                    } else {
+                        min += 1;
+                    }
+                    i += 1;
+                }
+                tokens.push(GlobToken::WildcardRun { min, unbounded });
+            }
+            c => {
+                literal.push(c);
+                i += 1;
+            }
+        }
+    }
+    if !literal.is_empty() {
+        tokens.push(GlobToken::Literal(literal));
+    }
+    tokens
+}
+
+/// 记号序列匹配:`ti` 起从 text 匹配 `tokens`,全消费且 text 恰好耗尽为真。
+fn match_pattern_tokens(text: &[u8], tokens: &[GlobToken], ti: usize) -> bool {
+    match tokens.split_first() {
+        None => ti == text.len(),
+        Some((GlobToken::WildcardRun { min, unbounded }, rest)) => {
+            let after_min = ti + min;
+            if after_min > text.len() {
+                return false;
+            }
+            if !*unbounded {
+                return match_pattern_tokens(text, rest, after_min);
+            }
+            // 无界缺口:尝试每个断点(从最少消费起)。
+            (after_min..=text.len()).any(|split| match_pattern_tokens(text, rest, split))
+        }
+        Some((GlobToken::Literal(lit), rest)) => {
+            text.len() >= ti + lit.len()
+                && &text[ti..ti + lit.len()] == *lit
+                && match_pattern_tokens(text, rest, ti + lit.len())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1701,6 +2253,463 @@ mod tests {
                 .navigator()
                 .user_agent,
             "Bao/1.0"
+        );
+    }
+
+    // ─── Overlay highlight slot (REQ-CDP-007-C6) ─────────────────────
+    // @trace REQ-CDP-007 [req:REQ-CDP-007] [criterion:6] [level:unit]
+
+    #[test]
+    fn test_webview_state_highlight_slot_roundtrip() {
+        // Design §3.1: no highlight by default; highlightNode arms (replace),
+        // hideHighlight clears.
+        let mut state = BaoWebViewState::default();
+        assert!(state.highlight.is_none(), "no highlight by default");
+        state.highlight = Some(crate::overlay::HighlightState {
+            node: crate::overlay::OverlayNodeRef::NodeId(42),
+            spec: crate::overlay::HighlightSpec::default(),
+        });
+        assert_eq!(
+            state.highlight.as_ref().unwrap().node,
+            crate::overlay::OverlayNodeRef::NodeId(42)
+        );
+        // Replacement semantics: the single slot holds the newest highlight.
+        state.highlight = Some(crate::overlay::HighlightState {
+            node: crate::overlay::OverlayNodeRef::ObjectId("obj-7".to_string()),
+            spec: crate::overlay::HighlightSpec::default(),
+        });
+        assert_eq!(
+            state.highlight.as_ref().unwrap().node,
+            crate::overlay::OverlayNodeRef::ObjectId("obj-7".to_string())
+        );
+        state.highlight = None;
+        assert!(state.highlight.is_none());
+    }
+
+    // ─── Fetch 请求拦截设施:pattern 矩阵(REQ-CDP-006,设计 §3.1)────
+    // @trace REQ-CDP-006 [req:REQ-CDP-006] [entity:FetchInterception]
+    // [criterion:6] [level:unit]
+    //
+    // 纯函数矩阵(无引擎):urlPattern 通配 × resourceType × stage。
+    // `WebResourceRequest` 的 destination 字段类型无法从 bao_browser 命名,
+    // 测试经 `InterceptRequestView` 视图核心构造。pattern/阶段类型单源 =
+    // bao_cdp::servo_bridge(E2 落库形态)。
+
+    use bao_cdp::servo_bridge::{FetchRequestStage, FetchResolveAction};
+
+    fn parse_url(s: &str) -> url::Url {
+        url::Url::parse(s).expect("test url")
+    }
+
+    fn make_pattern(
+        url_pattern: Option<&str>,
+        resource_type: Option<&str>,
+        stage: FetchRequestStage,
+    ) -> FetchPattern {
+        FetchPattern {
+            url_pattern: url_pattern.map(str::to_string),
+            resource_type: resource_type.map(str::to_string),
+            request_stage: stage,
+        }
+    }
+
+    #[test]
+    fn test_url_pattern_wildcard_matrix_whole_string() {
+        // X.8 裁定③:Chromium 真值 = base::MatchPattern 全串 glob over
+        // URL 规范形态(无分段);矩阵按全串语义编码。
+        let u = |s: &str| url::Url::parse(s).expect("test url");
+
+        // 整段 "*" = 匹配一切;空 pattern = 不匹配任何。
+        assert!(url_pattern_matches("*", &u("https://example.com/a?b=1")));
+        assert!(!url_pattern_matches("", &u("https://example.com/")));
+
+        // 字面全串:规范形态尾随 `/` 参与逐字对照。
+        assert!(url_pattern_matches(
+            "https://example.com/",
+            &u("https://example.com/")
+        ));
+        // 无尾斜杠 pattern 不命中规范形态(spec 恒带 `/`)。
+        assert!(!url_pattern_matches(
+            "https://example.com",
+            &u("https://example.com/")
+        ));
+
+        // 尾部 `*`:前缀匹配(scheme/host/path 全字面)。
+        assert!(url_pattern_matches(
+            "https://example.com/*",
+            &u("https://example.com/")
+        ));
+        assert!(url_pattern_matches(
+            "https://example.com/*",
+            &u("https://example.com/a/b")
+        ));
+        assert!(url_pattern_matches(
+            "https://example.com/*",
+            &u("https://example.com/a?x=1")
+        ));
+        assert!(!url_pattern_matches(
+            "https://example.com/*",
+            &u("http://example.com/")
+        ));
+        assert!(!url_pattern_matches(
+            "https://example.com/*",
+            &u("https://other.com/")
+        ));
+        // 带显式端口:前缀字面失配(`.com/` vs `.com:`)→ 不命中。
+        assert!(!url_pattern_matches(
+            "https://example.com/*",
+            &u("https://example.com:8080/x")
+        ));
+
+        // 精确 path:query 使 spec 变长 → 不命中。
+        assert!(url_pattern_matches(
+            "https://example.com/api",
+            &u("https://example.com/api")
+        ));
+        assert!(!url_pattern_matches(
+            "https://example.com/api",
+            &u("https://example.com/api?x=1")
+        ));
+        assert!(!url_pattern_matches(
+            "https://example.com/api",
+            &u("https://example.com/api/extra")
+        ));
+
+        // 前缀通配(`*` 跨 `/` 与 `?`)。
+        assert!(url_pattern_matches(
+            "https://example.com/api*",
+            &u("https://example.com/api")
+        ));
+        assert!(url_pattern_matches(
+            "https://example.com/api*",
+            &u("https://example.com/api/x")
+        ));
+        assert!(url_pattern_matches(
+            "https://example.com/api*",
+            &u("https://example.com/api?x=1")
+        ));
+        assert!(url_pattern_matches(
+            "https://example.com/api*",
+            &u("https://example.com/apifoo")
+        ));
+
+        // scheme 通配(`*://`);无前导通配的 pattern 按字面前缀锚定 ——
+        // `example.com/*` 不命中带 scheme 的 spec(Chromium 同此;跨 scheme
+        // 匹配需写 `*example.com/*`)。
+        assert!(url_pattern_matches(
+            "*://example.com/*",
+            &u("http://example.com/")
+        ));
+        assert!(url_pattern_matches(
+            "*://example.com/*",
+            &u("https://example.com/")
+        ));
+        assert!(!url_pattern_matches(
+            "example.com/*",
+            &u("http://example.com/x")
+        ));
+        assert!(url_pattern_matches(
+            "*example.com/*",
+            &u("http://example.com/x")
+        ));
+        // 边界登记(Chromium 同现象):全串 glob 无 dot 边界 ——
+        // `*example.com/*` 同样命中 `notexample.com`(`example.com` 是其
+        // 字面子串)。host 后缀级约束在 Chromium glob 语义下不可表达。
+        assert!(url_pattern_matches(
+            "*example.com/*",
+            &u("https://notexample.com/")
+        ));
+
+        // 跨段自由 glob(全串语义的自然能力)。
+        assert!(url_pattern_matches(
+            "https://x.com/a*b",
+            &u("https://x.com/a/x/b")
+        ));
+        assert!(url_pattern_matches(
+            "*example.com/*",
+            &u("https://a.example.com/")
+        ));
+        assert!(url_pattern_matches(
+            "https://example.com/*token=abc",
+            &u("https://example.com/api?token=abc")
+        ));
+
+        // 大小写敏感(spec 规范形态已小写;大写 pattern 字面失配)。
+        assert!(!url_pattern_matches(
+            "https://EXAMPLE.com/*",
+            &u("https://example.com/")
+        ));
+        assert!(!url_pattern_matches(
+            "https://example.com/API",
+            &u("https://example.com/api")
+        ));
+
+        // `?` = 恰一字符通配(base::MatchPattern 语义;Chromium 同此,
+        // pattern 含字面 query 同样有此现象,注释登记)。
+        assert!(url_pattern_matches(
+            "https://example.com/api?x=1",
+            &u("https://example.com/apiXx=1")
+        ));
+    }
+
+    #[test]
+    fn test_glob_matches_semantics() {
+        // base::MatchPattern 语义:`*` 零或多、`?` 恰一、`\` 转义、
+        // 连续通配段合读(含 `*` 无界;纯 `?` 恰 n 字符)。
+        assert!(glob_matches("", ""));
+        assert!(glob_matches("", "*"));
+        assert!(glob_matches("abc", "abc"));
+        assert!(glob_matches("abc", "*"));
+        assert!(glob_matches("abc", "a*"));
+        assert!(glob_matches("abc", "*c"));
+        assert!(glob_matches("abc", "*b*"));
+        assert!(glob_matches("a/bc", "a*c"));
+        assert!(glob_matches("a/b", "*/b"));
+        assert!(glob_matches("abc", "a*b*c"));
+        assert!(!glob_matches("abc", ""));
+        assert!(!glob_matches("abc", "abd"));
+        assert!(!glob_matches("abc", "*b"));
+        // `?` = 恰一字符。
+        assert!(glob_matches("abc", "a?c"));
+        assert!(glob_matches("abc", "???"));
+        assert!(!glob_matches("ab", "a?c"));
+        assert!(!glob_matches("abcd", "a?c"));
+        // 通配段合读:纯 `?` 段 = 有界(恰 n);含 `*` = 无界。
+        assert!(glob_matches("ab", "??"));
+        assert!(!glob_matches("a", "??"));
+        assert!(!glob_matches("abc", "??"));
+        assert!(glob_matches("anything", "?*"));
+        // `\` 转义:`\*`/`\?`/`\\` 为字面。
+        assert!(glob_matches("a*b", "a\\*b"));
+        assert!(!glob_matches("axb", "a\\*b"));
+        assert!(glob_matches("a?b", "a\\?b"));
+        assert!(glob_matches("a\\b", "a\\\\b"));
+        // 孤立尾背斜杠按字面。
+        assert!(glob_matches("abc\\", "abc\\"));
+        assert!(!glob_matches("abc", "abc\\"));
+    }
+
+    #[test]
+    fn test_pattern_stage_filter_matrix() {
+        let script_url = parse_url("https://example.com/app.js");
+        let script_view = InterceptRequestView {
+            url: &script_url,
+            resource_type: "Script",
+        };
+        let image_url = parse_url("https://example.com/a.png");
+        let image_view = InterceptRequestView {
+            url: &image_url,
+            resource_type: "Image",
+        };
+
+        // Request 阶段 pattern 只在 Request 命中;Response 反之。
+        let request_pattern = make_pattern(
+            Some("https://example.com/*"),
+            None,
+            FetchRequestStage::Request,
+        );
+        let response_pattern = make_pattern(
+            Some("https://example.com/*"),
+            None,
+            FetchRequestStage::Response,
+        );
+        assert!(pattern_matches_view(
+            &request_pattern,
+            &script_view,
+            FetchRequestStage::Request
+        ));
+        assert!(!pattern_matches_view(
+            &request_pattern,
+            &script_view,
+            FetchRequestStage::Response
+        ));
+        assert!(pattern_matches_view(
+            &response_pattern,
+            &script_view,
+            FetchRequestStage::Response
+        ));
+        assert!(!pattern_matches_view(
+            &response_pattern,
+            &script_view,
+            FetchRequestStage::Request
+        ));
+
+        // resourceType 过滤。
+        let script_pattern = make_pattern(None, Some("Script"), FetchRequestStage::Request);
+        assert!(pattern_matches_view(
+            &script_pattern,
+            &script_view,
+            FetchRequestStage::Request
+        ));
+        assert!(!pattern_matches_view(
+            &script_pattern,
+            &image_view,
+            FetchRequestStage::Request
+        ));
+
+        // urlPattern 过滤。
+        let path_pattern = make_pattern(
+            Some("https://example.com/*.js"),
+            None,
+            FetchRequestStage::Request,
+        );
+        assert!(pattern_matches_view(
+            &path_pattern,
+            &script_view,
+            FetchRequestStage::Request
+        ));
+        assert!(!pattern_matches_view(
+            &path_pattern,
+            &image_view,
+            FetchRequestStage::Request
+        ));
+
+        // 三维 AND 组合:翻任何一维即不命中。
+        let combined = make_pattern(
+            Some("https://example.com/*"),
+            Some("Script"),
+            FetchRequestStage::Request,
+        );
+        assert!(pattern_matches_view(
+            &combined,
+            &script_view,
+            FetchRequestStage::Request
+        ));
+        assert!(!pattern_matches_view(
+            &combined,
+            &image_view,
+            FetchRequestStage::Request
+        ));
+        assert!(!pattern_matches_view(
+            &combined,
+            &script_view,
+            FetchRequestStage::Response
+        ));
+
+        // urlPattern 缺省(None)= URL 维不过滤。
+        let no_url = make_pattern(None, None, FetchRequestStage::Request);
+        assert!(pattern_matches_view(
+            &no_url,
+            &image_view,
+            FetchRequestStage::Request
+        ));
+    }
+
+    #[test]
+    fn test_interception_state_machine() {
+        let mut state = BaoWebViewState::default();
+        let script_url = parse_url("https://example.com/app.js");
+        let script_view = InterceptRequestView {
+            url: &script_url,
+            resource_type: "Script",
+        };
+
+        // 默认 InterceptionOff:恒不命中(= 不覆写时今天的行为)。
+        assert!(!state.should_intercept_view(&script_view));
+
+        // enable + 空 patterns = 字面义「不拦截」(E2 协议层把「未带
+        // patterns」归一化为 catch-all pattern;显式空列表即空)。
+        state.fetch_enable(Vec::new(), false);
+        assert!(!state.should_intercept_view(&script_view));
+
+        // catch-all pattern(urlPattern/resourceType 全 None)= 全命中。
+        state.fetch_enable(
+            vec![make_pattern(None, None, FetchRequestStage::Request)],
+            false,
+        );
+        assert!(state.should_intercept_view(&script_view));
+
+        // Response 阶段 pattern 在 Request pause 点永不命中(P1 边界)。
+        state.fetch_enable(
+            vec![make_pattern(
+                Some("*.example.com/*"),
+                None,
+                FetchRequestStage::Response,
+            )],
+            false,
+        );
+        assert!(!state.should_intercept_view(&script_view));
+
+        // 多 pattern 任一命中(全串 glob 形态:跨 scheme 需前导 `*`,
+        // `*.example.com/*` 不命中裸域 —— 见 url_pattern_matches 注释)。
+        state.fetch_enable(
+            vec![
+                make_pattern(
+                    Some("https://other.com/*"),
+                    None,
+                    FetchRequestStage::Request,
+                ),
+                make_pattern(Some("*example.com/*"), None, FetchRequestStage::Request),
+            ],
+            false,
+        );
+        assert!(state.should_intercept_view(&script_view));
+
+        // disable:回到 off。
+        state.fetch_disable();
+        assert!(!state.should_intercept_view(&script_view));
+    }
+
+    #[test]
+    fn test_fulfill_payload_validation_matrix() {
+        // status 合法域 100..=999(E2 传 i64,越域显式错误)。
+        assert!(prepare_fulfillment_errors(200, None, None, None).is_none());
+        assert!(prepare_fulfillment_errors(100, None, None, None).is_none());
+        assert!(prepare_fulfillment_errors(999, None, None, None).is_none());
+        assert!(prepare_fulfillment_errors(99, None, None, None).is_some());
+        assert!(prepare_fulfillment_errors(1000, None, None, None).is_some());
+        assert!(prepare_fulfillment_errors(0, None, None, None).is_some());
+        assert!(prepare_fulfillment_errors(60_000, None, None, None).is_some());
+
+        // body:合法 base64 / 非法 base64 / 解码后超限。
+        assert!(prepare_fulfillment_errors(200, None, None, Some("aGVsbG8=")).is_none());
+        assert!(prepare_fulfillment_errors(200, None, None, Some("!not-base64!")).is_some());
+        let big = "A".repeat(FETCH_FULFILL_BODY_LIMIT * 4 / 3 + 16);
+        assert!(prepare_fulfillment_errors(200, None, None, Some(big.as_str())).is_some());
+
+        // 响应头:对象形态全字符串值;非对象/非字符串值显式错误。
+        let headers = serde_json::json!({"content-type": "text/html"});
+        assert!(prepare_fulfillment_errors(200, None, Some(&headers), None).is_none());
+        let bad_headers = serde_json::json!({"x-num": 7});
+        assert!(prepare_fulfillment_errors(200, None, Some(&bad_headers), None).is_some());
+        assert!(prepare_fulfillment_errors(200, None, Some(&serde_json::json!([])), None).is_some());
+    }
+
+    /// `prepare_fulfillment` 的 Err 投影(status_code 恒 200,聚焦载荷校验)。
+    fn prepare_fulfillment_errors(
+        response_code: i64,
+        status_message: Option<&str>,
+        response_headers: Option<&serde_json::Value>,
+        body: Option<&str>,
+    ) -> Option<String> {
+        prepare_fulfillment(
+            response_code,
+            &status_message.map(str::to_string),
+            &response_headers.cloned(),
+            &body.map(str::to_string),
+        )
+        .err()
+    }
+
+    #[test]
+    fn test_fetch_resolve_unknown_id() {
+        let mut state = BaoWebViewState::default();
+        assert_eq!(
+            state.fetch_resolve("interception-1", FetchResolveAction::Continue),
+            FetchResolveOutcome::UnknownId
+        );
+        // 未知 id 优先于载荷校验(存在性先查)。
+        assert_eq!(
+            state.fetch_resolve(
+                "interception-1",
+                FetchResolveAction::Fulfill {
+                    response_code: 60_000,
+                    status_message: None,
+                    response_headers: None,
+                    body: None,
+                }
+            ),
+            FetchResolveOutcome::UnknownId
         );
     }
 }

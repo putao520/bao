@@ -42,6 +42,7 @@ use base64::Engine;
 use image::RgbaImage;
 use serde_json::{json, Value};
 
+use crate::page::PageHandle;
 use crate::page_pool::PagePool;
 use crate::screenshot::{encode_image_with_quality, ScreenshotFormat};
 
@@ -387,7 +388,7 @@ pub fn drive(pool: &PagePool, ws_sink: Option<&dyn Fn(&str, &str, Value)>) {
             continue;
         }
         match page.capture_frame() {
-            Ok(image) => process_capture(&target, &image, ws_sink),
+            Ok(mut image) => process_capture(&target, &page, &mut image, ws_sink),
             Err(e) => {
                 // Capture failure is observable and loud; the session stays
                 // (transient pipeline states exist mid-navigation) but no
@@ -406,7 +407,22 @@ fn drop_target_sessions(target: &str) {
 }
 
 /// Apply the per-session gates to one captured frame and emit what passes.
-fn process_capture(target: &str, image: &RgbaImage, ws_sink: Option<&dyn Fn(&str, &str, Value)>) {
+///
+/// REQ-CDP-007-C6: the target's armed Overlay highlight (if any) is drawn
+/// FIRST — before the change-gate digest and the downscale — so the
+/// annotation rides the original-resolution capture (design
+/// /tmp/cdp-007-overlay-design.md §4/§9: draw before any transform), a newly
+/// armed or cleared highlight registers as a pixel change (the digest sees
+/// it → a frame is emitted), and `build_frame`'s downscale runs on the
+/// already-annotated image. Held frames were annotated at capture time;
+/// re-emission never re-draws.
+fn process_capture(
+    target: &str,
+    page: &PageHandle,
+    image: &mut RgbaImage,
+    ws_sink: Option<&dyn Fn(&str, &str, Value)>,
+) {
+    crate::cdp_handler::draw_page_highlight(page, image);
     let digest = pixel_digest(image);
     let timestamp = MANAGER.started_at.elapsed().as_secs_f64();
     let mut emissions: Vec<(Origin, u64, Value)> = Vec::new();

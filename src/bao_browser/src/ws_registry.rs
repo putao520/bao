@@ -1104,6 +1104,10 @@ mod tests {
 
     #[test]
     fn fetch_domain_is_explicit_error() {
+        // REQ-CDP-006 C6: Fetch.enable is a real bridge command now (the
+        // interception slot lives browser-side). With a live-but-unresponsive
+        // bridge channel the face is the bridge timeout error, never a
+        // canned "enabled".
         let (tx, _rx) = bridge_channel(Duration::from_millis(100));
         let reg = BaoWsRegistry::new(tx);
         let sender = NopSender;
@@ -1119,7 +1123,8 @@ mod tests {
             )
             .unwrap()
             .unwrap_err();
-        assert!(err.message.contains("no request interception facility"));
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("bridge response timeout"));
     }
 
     #[test]

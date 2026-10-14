@@ -506,6 +506,7 @@ dependencies = [
  "dashmap",
  "dpi",
  "euclid",
+ "http",
  "image",
  "libc",
  "log",

@@ -1,7 +1,9 @@
 // @trace REQ-CDP-001  REQ-CDP-003: Bridge handler — routes BridgeCommand to servo WebView operations
 // Runs on the main thread during the event loop to process CDP commands.
 
-use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, main_frame_id_for_target};
+use bao_cdp::servo_bridge::{
+    BridgeCommand, BridgeResponse, FetchPattern, FetchResolveAction, main_frame_id_for_target,
+};
 use bao_cdp_client::bridge::ServoEvent;
 use base64::Engine;
 use serde_json::Value;
@@ -14,13 +16,17 @@ use std::str::FromStr;
 
 use crate::config::PageConfig;
 use crate::delegate::{
-    ServiceWorkerHandle, ServiceWorkerRegistrationId, ServiceWorkerRegistrationState,
-    send_servo_event,
+    FetchResolveOutcome, ServiceWorkerHandle, ServiceWorkerRegistrationId,
+    ServiceWorkerRegistrationState, send_servo_event,
 };
 use crate::error::BrowserError;
+use crate::overlay::{
+    BoxQuads, HighlightColor, HighlightSpec, HighlightState, OverlayNodeRef, OverlayQuad,
+    draw_highlight,
+};
 use crate::page::PageHandle;
 use crate::page_pool::PagePool;
-use crate::screenshot::ScreenshotFormat;
+use crate::screenshot::{ScreenshotFormat, encode_image};
 
 /// Process a single bridge command by dispatching to the appropriate page in the pool.
 pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeResponse {
@@ -197,6 +203,31 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::NetworkClearBrowserCookies { target_id } => {
             with_page(pool, &target_id, cmd_network_clear_browser_cookies)
         }
+
+        // Fetch domain — request-interception consumption (REQ-CDP-006 C6,
+        // design /tmp/cdp-006-interception-design.md §5). The interception
+        // slot and the pending-pause registry live on the page's
+        // BaoWebViewState; these arms are the pump-thread consumers of the
+        // bridge verbs. The legacy Network.setRequestInterception /
+        // continueInterceptedRequest face routes through the same verbs (the
+        // protocol layer normalizes both faces onto FetchEnable/FetchResolve).
+        BridgeCommand::FetchEnable {
+            target_id,
+            patterns,
+            legacy_network_events,
+        } => with_page(pool, &target_id, |page| {
+            cmd_fetch_enable(page, patterns, legacy_network_events)
+        }),
+        BridgeCommand::FetchDisable { target_id } => {
+            with_page(pool, &target_id, cmd_fetch_disable)
+        }
+        BridgeCommand::FetchResolve {
+            target_id,
+            interception_id,
+            action,
+        } => with_page(pool, &target_id, |page| {
+            cmd_fetch_resolve(page, &interception_id, action)
+        }),
 
         // Storage domain — origin-scoped storage queries and clearing
         BridgeCommand::StorageGetStorageItemsForOrigin {
@@ -473,6 +504,22 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         } => with_page(pool, &target_id, |page| {
             cmd_terminate_service_worker(page, &registration_id)
         }),
+
+        // ── Overlay domain (REQ-CDP-007-C6) — screenshot/screencast
+        // annotation highlight. State commands only (CDP: no events): the
+        // visual effect lands on the next capture through
+        // [`draw_page_highlight`].
+        BridgeCommand::OverlayHighlightNode {
+            target_id,
+            node_id,
+            object_id,
+            highlight_spec,
+        } => with_page(pool, &target_id, |page| {
+            cmd_overlay_highlight_node(page, node_id, object_id, highlight_spec)
+        }),
+        BridgeCommand::OverlayHideHighlight { target_id } => {
+            with_page(pool, &target_id, cmd_overlay_hide_highlight)
+        }
     };
     BridgeResponse { result }
 }
@@ -679,6 +726,61 @@ fn cmd_network_enable(page: &PageHandle) -> Result<Value, String> {
     Ok(serde_json::json!({}))
 }
 
+// ─── Fetch request-interception consumption (REQ-CDP-006 C6) ───────────────
+// The state-side machinery (slot, pending registry, pattern matching, the
+// resolve state machine and the fulfill payload validation) is E3's
+// `BaoWebViewState` surface — these helpers are the pure mapping layer from
+// the E2 bridge verbs onto it (design §5: the bridge is the single channel,
+// memory:// and WS share it).
+
+/// Fetch.enable / Network.setRequestInterception — arm the per-target
+/// interception slot (replace semantics, last enable wins — the documented
+/// multi-session deviation, design §5). Pattern/protocol validation already
+/// happened at the protocol layer; nothing here can fail.
+fn cmd_fetch_enable(
+    page: &PageHandle,
+    patterns: Vec<FetchPattern>,
+    legacy_network_events: bool,
+) -> Result<Value, String> {
+    page.webview_state()
+        .borrow_mut()
+        .fetch_enable(patterns, legacy_network_events);
+    ok_empty()
+}
+
+/// Fetch.disable — clear the slot and drain every pending pause (each held
+/// load drops = servo answers DoNotIntercept = the request proceeds; the
+/// disable-is-the-exit invariant, design §3.1). Idempotent.
+fn cmd_fetch_disable(page: &PageHandle) -> Result<Value, String> {
+    page.webview_state().borrow_mut().fetch_disable();
+    ok_empty()
+}
+
+/// Fetch.continueRequest / failRequest / fulfillRequest (and the legacy
+/// Network.continueInterceptedRequest) — resolve one paused request. The
+/// fulfillment payload validation (base64 decode + decoded-size cap) is
+/// inside `fetch_resolve` (E3 owns it); this face only maps the outcome:
+/// Resolved → ok, UnknownId / Rejected → an explicit error carrying the
+/// reason (the rejection keeps the request paused — the client may retry
+/// with a legal payload; Chromium parity: an error never consumes a pause).
+fn cmd_fetch_resolve(
+    page: &PageHandle,
+    interception_id: &str,
+    action: FetchResolveAction,
+) -> Result<Value, String> {
+    match page
+        .webview_state()
+        .borrow_mut()
+        .fetch_resolve(interception_id, action)
+    {
+        FetchResolveOutcome::Resolved => ok_empty(),
+        FetchResolveOutcome::UnknownId => Err(format!(
+            "unknown interceptionId: {interception_id} (never paused or already resolved)"
+        )),
+        FetchResolveOutcome::Rejected(reason) => Err(reason),
+    }
+}
+
 fn to_browser_error(e: BrowserError) -> String {
     format!("{e}")
 }
@@ -698,6 +800,11 @@ fn next_cdp_id(prefix: &str) -> String {
 
 fn cmd_navigate(page: &PageHandle, url: &str) -> Result<Value, String> {
     page.navigate(url).map_err(to_browser_error)?;
+    // Highlight lifecycle (REQ-CDP-007-C6, design §3.1): the navigation entry
+    // invalidates the slot (positional node ids do not survive a document
+    // change). Cleared after the entry is accepted so a failed navigation
+    // keeps the slot.
+    clear_page_highlight(page);
     Ok(serde_json::json!({
         // Same frame identity the event stream reports (REQ-CDP-004, derived
         // per target) — never the PageId, which lives in the targetId
@@ -828,9 +935,250 @@ fn cmd_screenshot(page: &PageHandle, format: &str) -> Result<Value, String> {
         "webp" => ScreenshotFormat::WebP,
         _ => ScreenshotFormat::Png,
     };
-    let bytes = page.take_screenshot(fmt).map_err(to_browser_error)?;
+    // Highlight hook (REQ-CDP-007-C6): `PageHandle::take_screenshot` is
+    // capture_frame + encode_image fused; the annotation step is pinned
+    // between the two — after the original-resolution RGBA production, before
+    // any encoding/transform (design /tmp/cdp-007-overlay-design.md §4/§9).
+    let mut image = page.capture_frame().map_err(to_browser_error)?;
+    draw_page_highlight(page, &mut image);
+    let bytes = encode_image(&image, fmt).map_err(to_browser_error)?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(serde_json::json!({ "data": b64 }))
+}
+
+// ---------------------------------------------------------------------------
+// Overlay domain commands (REQ-CDP-007-C6) — screenshot/screencast annotation
+// highlight (design /tmp/cdp-007-overlay-design.md §4).
+//
+// The highlight lives in a single state slot on the page's webview state
+// (`BaoWebViewState.highlight`); its only visual carrier is the embedder-side
+// frame annotation [`draw_page_highlight`] — the page DOM, the servo display
+// list and every page-observable surface stay untouched (the stealth
+// invariant). Geometry is re-resolved from the live DOM at every capture, so
+// the highlight follows DOM movement; a node that no longer resolves
+// (mutation / navigation / registry gone) skips the draw — the registered §6
+// boundary — while the COMMAND face validates identity eagerly (the
+// getBoxModel caliber: a resolution failure is an explicit error, never a
+// silently-armed dead highlight).
+
+/// The canonical positional node-id resolver — a byte-level mirror of the
+/// `bao_cdp` devtools_dom `IDENTITY_JS` prelude (`__baoResolve`), pinned to
+/// the source of truth by
+/// [`tests::overlay_resolver_js_is_byte_identical_to_devtools_dom`]. Both
+/// faces share ONE positional nodeId space; that prelude is crate-private in
+/// bao_cdp (upstream of this crate), so the resolver is mirrored and the
+/// mirror is compile-time-pinned by test against drift.
+const OVERLAY_RESOLVE_JS: &str = r#"var __baoResolve = function(id) {
+    if (!(typeof id === 'number' && Number.isSafeInteger(id) && id >= 1)) return null;
+    if (id === 1) return document;
+    var q = id - 1;
+    var parent = __baoResolve(Math.floor(q / 100));
+    if (!parent) return null;
+    return parent.childNodes[q % 100] || null;
+};
+"#;
+
+/// JS body resolving the highlight node and returning its four box-model
+/// boxes as `{x,y,w,h}` viewport-pixel objects — the same
+/// getBoundingClientRect + computed border/padding/margin derivation the
+/// `bao_cdp` `DOM.getBoxModel` face uses (axis-aligned boxes by
+/// construction). The objectId form reads the page-realm Runtime registry
+/// (`window.__bao_cdp`) — web-scope evaluation per REQ-SEC-002/003, the same
+/// dependency `DOM.getNodeForOwner` documents.
+fn overlay_box_quads_js(r#ref: &OverlayNodeRef) -> String {
+    let prelude = match r#ref {
+        // backendNodeId folds into the canonical positional id — in this
+        // identity space both fields carry the same value (the DOM face
+        // emits them equal), so the two forms resolve identically.
+        OverlayNodeRef::NodeId(id) | OverlayNodeRef::BackendNodeId(id) => format!(
+            r#"var el = __baoResolve({id});
+if (!el) return JSON.stringify({{__bao_err: "No node with given id found"}});"#
+        ),
+        OverlayNodeRef::ObjectId(oid) => {
+            let oid_json = serde_json::to_string(oid).unwrap_or_default();
+            format!(
+                r#"if (!window.__bao_cdp) return JSON.stringify({{__bao_err: "object registry not present: obtain objectIds via Runtime.evaluate(returnByValue:false) on this document"}});
+var el = window.__bao_cdp.get({oid_json});
+if (el === null || el === undefined) return JSON.stringify({{__bao_err: "No object with given id found"}});"#
+            )
+        }
+    };
+    format!(
+        r#"(function() {{
+{OVERLAY_RESOLVE_JS}{prelude}
+if (el.nodeType !== 1) return JSON.stringify({{__bao_err: "node is not an element (highlight box model requires an Element node)"}});
+var r = el.getBoundingClientRect();
+var cs = window.getComputedStyle(el);
+function px(name) {{ var v = parseFloat(cs.getPropertyValue(name)); return isNaN(v) ? 0 : v; }}
+var bl = px("border-left-width"), bt = px("border-top-width");
+var br = px("border-right-width"), bb = px("border-bottom-width");
+var pl = px("padding-left"), pt = px("padding-top");
+var pr = px("padding-right"), pb = px("padding-bottom");
+var ml = px("margin-left"), mt = px("margin-top");
+var mr = px("margin-right"), mb = px("margin-bottom");
+function box(x, y, w, h) {{ return {{x: x, y: y, w: w, h: h}}; }}
+return JSON.stringify({{
+  content: box(r.left + bl + pl, r.top + bt + pt, r.width - bl - br - pl - pr, r.height - bt - bb - pt - pb),
+  padding: box(r.left + bl, r.top + bt, r.width - bl - br, r.height - bt - bb),
+  border: box(r.left, r.top, r.width, r.height),
+  margin: box(r.left - ml, r.top - mt, r.width + ml + mr, r.height + mt + mb)
+}});
+}})()"#
+    )
+}
+
+/// Parse one `{x,y,w,h}` box-model layer into an [`OverlayQuad`].
+fn parse_overlay_quad(v: &Value, layer: &str) -> Result<OverlayQuad, String> {
+    let ch = |name: &str| -> Result<f32, String> {
+        v.get(name)
+            .and_then(|n| n.as_f64())
+            .map(|n| n as f32)
+            .ok_or_else(|| {
+                format!("Overlay: malformed box-model geometry ({layer}.{name} missing or not a number)")
+            })
+    };
+    Ok(OverlayQuad {
+        x: ch("x")?,
+        y: ch("y")?,
+        w: ch("w")?,
+        h: ch("h")?,
+    })
+}
+
+/// Resolve the live box-model quads for a highlighted node — the draw-time
+/// geometry source (design §4). Explicit errors on unknown ids / non-element
+/// nodes / missing registry (the `__bao_err` page-side dead-end channel is
+/// never flattened into a shape-only success).
+pub(crate) fn overlay_box_quads(
+    page: &PageHandle,
+    node: &OverlayNodeRef,
+) -> Result<BoxQuads, String> {
+    let out = page
+        .evaluate_js_web(&overlay_box_quads_js(node))
+        .map_err(to_browser_error)?;
+    let v: Value = serde_json::from_str(&out)
+        .map_err(|e| format!("Overlay: unparseable box-model output: {e} (got: {out:.200})"))?;
+    if let Some(reason) = v.get("__bao_err").and_then(|e| e.as_str()) {
+        return Err(reason.to_string());
+    }
+    Ok(BoxQuads {
+        content: parse_overlay_quad(v.get("content").unwrap_or(&Value::Null), "content")?,
+        padding: parse_overlay_quad(v.get("padding").unwrap_or(&Value::Null), "padding")?,
+        border: parse_overlay_quad(v.get("border").unwrap_or(&Value::Null), "border")?,
+        margin: parse_overlay_quad(v.get("margin").unwrap_or(&Value::Null), "margin")?,
+    })
+}
+
+/// Parse one CDP `DOM.RGBA` (`{r,g,b,a}` floats in 0..=1; `a` optional → 1.0
+/// per the CDP spec). Out-of-range channels are clamped by the paint face.
+fn parse_highlight_color(v: &Value, layer: &str) -> Result<HighlightColor, String> {
+    let ch = |name: &str| -> Result<f32, String> {
+        v.get(name)
+            .and_then(|n| n.as_f64())
+            .map(|n| n as f32)
+            .ok_or_else(|| {
+                format!("Overlay.highlightSpec: {layer}.{name} must be a number in 0..=1")
+            })
+    };
+    Ok(HighlightColor {
+        r: ch("r")?,
+        g: ch("g")?,
+        b: ch("b")?,
+        a: v.get("a")
+            .and_then(|n| n.as_f64())
+            .map(|n| n as f32)
+            .unwrap_or(1.0),
+    })
+}
+
+/// Parse the raw `Overlay.HighlightSpec` JSON the bridge carried (E2 keeps it
+/// as untyped serde JSON so bao_cdp stays decoupled from this paint face):
+/// each layer color independently; an absent layer falls back to that
+/// layer's DevTools palette color (Chromium's per-layer defaults).
+fn parse_highlight_spec(spec: &Value) -> Result<HighlightSpec, String> {
+    let defaults = HighlightSpec::default();
+    let layer = |name: &str, fallback: HighlightColor| -> Result<HighlightColor, String> {
+        match spec.get(name) {
+            None | Some(Value::Null) => Ok(fallback),
+            Some(c) => parse_highlight_color(c, name),
+        }
+    };
+    Ok(HighlightSpec {
+        content: layer("contentColor", defaults.content)?,
+        padding: layer("paddingColor", defaults.padding)?,
+        border: layer("borderColor", defaults.border)?,
+        margin: layer("marginColor", defaults.margin)?,
+    })
+}
+
+/// Assemble the highlight node identity from the bridge-carried forms
+/// (nodeId wins when both are present — the same tie-break the DOM face
+/// keeps; neither form, or an empty objectId, is an explicit error).
+fn overlay_node_ref_from_parts(
+    node_id: Option<i64>,
+    object_id: Option<String>,
+) -> Result<OverlayNodeRef, String> {
+    match (node_id, object_id) {
+        (Some(id), _) => Ok(OverlayNodeRef::NodeId(id)),
+        (None, Some(oid)) if !oid.is_empty() => Ok(OverlayNodeRef::ObjectId(oid)),
+        _ => Err(
+            "Overlay.highlightNode: missing required parameter: nodeId or objectId".into(),
+        ),
+    }
+}
+
+/// Overlay.highlightNode — arm the single per-target highlight slot (design
+/// §3.1). Identity is validated EAGERLY (unknown id / non-element / registry
+/// gone → explicit error), but the geometry is NOT stored: every capture
+/// re-resolves it from the live DOM (§6 highlight-follows-DOM).
+fn cmd_overlay_highlight_node(
+    page: &PageHandle,
+    node_id: Option<i64>,
+    object_id: Option<String>,
+    highlight_spec: Option<Value>,
+) -> Result<Value, String> {
+    let node = overlay_node_ref_from_parts(node_id, object_id)?;
+    let spec = match &highlight_spec {
+        None | Some(Value::Null) => HighlightSpec::default(),
+        Some(v) => parse_highlight_spec(v)?,
+    };
+    overlay_box_quads(page, &node)?;
+    page.webview_state().borrow_mut().highlight = Some(HighlightState { node, spec });
+    Ok(serde_json::json!({}))
+}
+
+/// Overlay.hideHighlight — clear the slot. Idempotent (clearing an empty
+/// slot is ok, Chrome parity).
+fn cmd_overlay_hide_highlight(page: &PageHandle) -> Result<Value, String> {
+    page.webview_state().borrow_mut().highlight = None;
+    Ok(serde_json::json!({}))
+}
+
+/// Highlight lifecycle (design §3.1): a navigation entry invalidates the
+/// slot — positional node ids do not survive a document change. Covers the
+/// CDP navigation face (navigate/reload/goBack/goForward, called after the
+/// navigation entry is accepted so a failed navigation keeps the slot); a
+/// page close drops the state — and the slot — wholesale.
+fn clear_page_highlight(page: &PageHandle) {
+    page.webview_state().borrow_mut().highlight = None;
+}
+
+/// Paint the page's armed highlight (if any) onto a freshly captured
+/// ORIGINAL-RESOLUTION frame — the single draw point shared by both capture
+/// faces (`cmd_screenshot` and the screencast `drive` tick), pinned to
+/// "after RGBA production, before any transform" (design §4/§9). Geometry is
+/// re-resolved per capture; a node that no longer resolves skips the draw
+/// (debug-logged) and never fails the capture.
+pub(crate) fn draw_page_highlight(page: &PageHandle, image: &mut image::RgbaImage) {
+    let Some(hl) = page.webview_state().borrow().highlight.clone() else {
+        return;
+    };
+    match overlay_box_quads(page, &hl.node) {
+        Ok(quads) => draw_highlight(image, &quads, &hl.spec),
+        Err(e) => log::debug!(
+            "[overlay] highlight draw skipped (node no longer resolvable): {e}"
+        ),
+    }
 }
 
 fn cmd_get_title(page: &PageHandle) -> Result<Value, String> {
@@ -1148,6 +1496,9 @@ fn cmd_remove_script(page: &PageHandle, identifier: &str) -> Result<Value, Strin
 /// Page.reload — real servo reload (WebView::reload), not a re-navigate.
 fn cmd_reload(page: &PageHandle) -> Result<Value, String> {
     page.reload().map_err(to_browser_error)?;
+    // Highlight lifecycle (REQ-CDP-007-C6): same navigation-entry
+    // invalidation as cmd_navigate.
+    clear_page_highlight(page);
     Ok(serde_json::json!({
         "frameId": main_frame_id_for_target(&page.id().to_string()),
         "loaderId": next_cdp_id("loader"),
@@ -1160,6 +1511,9 @@ fn cmd_go_back(page: &PageHandle) -> Result<Value, String> {
         return Err("cannot go back: no previous entry in session history".into());
     }
     page.go_back().map_err(to_browser_error)?;
+    // Highlight lifecycle (REQ-CDP-007-C6): session-history traversal is a
+    // document change — the slot does not survive it.
+    clear_page_highlight(page);
     Ok(serde_json::json!({
         "frameId": main_frame_id_for_target(&page.id().to_string())
     }))
@@ -1171,6 +1525,9 @@ fn cmd_go_forward(page: &PageHandle) -> Result<Value, String> {
         return Err("cannot go forward: no forward entry in session history".into());
     }
     page.go_forward().map_err(to_browser_error)?;
+    // Highlight lifecycle (REQ-CDP-007-C6): same document-change
+    // invalidation as go_back.
+    clear_page_highlight(page);
     Ok(serde_json::json!({
         "frameId": main_frame_id_for_target(&page.id().to_string())
     }))
@@ -3687,5 +4044,163 @@ mod tests {
         let id = super::parse_sw_registration_id("https://a.io/sw.js::/scope").unwrap();
         assert_eq!(id.script_url, "https://a.io/sw.js");
         assert_eq!(id.scope, "/scope");
+    }
+
+    // ─── Overlay domain (REQ-CDP-007-C6) — highlight slot + capture hooks ───
+    // @trace REQ-CDP-007 [req:REQ-CDP-007] [criterion:6] [level:unit]
+
+    #[test]
+    fn overlay_resolver_js_is_byte_identical_to_devtools_dom() {
+        // The mirrored `__baoResolve` must stay byte-identical to the bao_cdp
+        // devtools_dom identity prelude: ONE positional nodeId space serves
+        // every DOM-face id and the Overlay highlight — a drift would
+        // silently desynchronize the highlight from the rest of the CDP DOM
+        // surface.
+        let truth = include_str!("../../bao_cdp/src/devtools_dom.rs");
+        let start = truth
+            .find("var __baoResolve")
+            .expect("identity prelude moved in bao_cdp devtools_dom");
+        let end = truth[start..]
+            .find("var __baoCanonical")
+            .expect("__baoCanonical missing after __baoResolve");
+        let canonical = truth[start..start + end].trim_end();
+        assert!(
+            super::OVERLAY_RESOLVE_JS.contains(canonical),
+            "the mirrored resolver drifted from the devtools_dom source of truth"
+        );
+    }
+
+    #[test]
+    fn overlay_node_ref_from_parts_prefers_node_id() {
+        use crate::overlay::OverlayNodeRef;
+        // nodeId wins when both forms are present (the DOM-face tie-break).
+        assert_eq!(
+            super::overlay_node_ref_from_parts(Some(42), Some("obj-1".into())).unwrap(),
+            OverlayNodeRef::NodeId(42)
+        );
+        assert_eq!(
+            super::overlay_node_ref_from_parts(None, Some("obj-1".into())).unwrap(),
+            OverlayNodeRef::ObjectId("obj-1".into())
+        );
+        // Neither form — or an empty objectId — is an explicit error.
+        assert!(super::overlay_node_ref_from_parts(None, None).is_err());
+        assert!(super::overlay_node_ref_from_parts(None, Some(String::new())).is_err());
+    }
+
+    #[test]
+    fn parse_highlight_spec_absent_layers_fall_back_to_palette() {
+        let spec = super::parse_highlight_spec(&json!({})).unwrap();
+        assert_eq!(spec, crate::overlay::HighlightSpec::default());
+    }
+
+    #[test]
+    fn parse_highlight_spec_parses_given_layers_and_keeps_defaults() {
+        let spec = super::parse_highlight_spec(
+            &json!({"contentColor": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 0.5}}),
+        )
+        .unwrap();
+        let d = crate::overlay::HighlightSpec::default();
+        assert_eq!(
+            spec.content,
+            crate::overlay::HighlightColor::new(1.0, 0.0, 0.0, 0.5)
+        );
+        assert_eq!(spec.padding, d.padding);
+        assert_eq!(spec.border, d.border);
+        assert_eq!(spec.margin, d.margin);
+    }
+
+    #[test]
+    fn parse_highlight_spec_alpha_defaults_to_one() {
+        let spec =
+            super::parse_highlight_spec(&json!({"borderColor": {"r": 0.0, "g": 1.0, "b": 0.0}}))
+                .unwrap();
+        assert_eq!(spec.border.a, 1.0);
+    }
+
+    #[test]
+    fn parse_highlight_spec_malformed_color_is_explicit_error() {
+        // Non-numeric / missing channels fail the command — never a silent
+        // partial-color highlight.
+        assert!(super::parse_highlight_spec(&json!({"contentColor": {"r": "x"}})).is_err());
+        assert!(
+            super::parse_highlight_spec(&json!({"contentColor": {"g": 0.1, "b": 0.2}})).is_err()
+        );
+    }
+
+    #[test]
+    fn overlay_bridge_arms_dispatch_through_with_page() {
+        // Both Overlay commands ride the same with_page target resolution as
+        // every other page-scoped domain.
+        let source = include_str!("cdp_handler.rs");
+        assert!(
+            source.contains("BridgeCommand::OverlayHighlightNode {"),
+            "highlightNode must be dispatched to a page handler"
+        );
+        assert!(
+            source.contains("BridgeCommand::OverlayHideHighlight { target_id }"),
+            "hideHighlight must be dispatched to a page handler"
+        );
+        assert!(source.contains("cmd_overlay_highlight_node("));
+        assert!(source.contains("cmd_overlay_hide_highlight("));
+    }
+
+    #[test]
+    fn overlay_draw_is_pinned_before_any_transform() {
+        // Design §9 risk 1: the draw point is "original-resolution RGBA
+        // production → draw → encode/downscale". cmd_screenshot must capture
+        // the raw frame (not the fused take_screenshot), draw on it, then
+        // encode; the screencast tick must draw before the change-gate
+        // digest and build_frame's downscale.
+        let source = include_str!("cdp_handler.rs");
+        assert!(
+            source
+                .contains("let mut image = page.capture_frame().map_err(to_browser_error)?;"),
+            "cmd_screenshot must capture the raw RGBA frame to keep a draw seam"
+        );
+        assert!(
+            source.contains("draw_page_highlight(page, &mut image);"),
+            "cmd_screenshot must draw the highlight before encoding"
+        );
+        assert!(
+            source.contains("let bytes = encode_image(&image, fmt)"),
+            "cmd_screenshot must encode the annotated frame"
+        );
+        let sc = include_str!("screencast.rs");
+        let draw_at = sc
+            .find("crate::cdp_handler::draw_page_highlight(page, image);")
+            .expect("screencast must draw the highlight");
+        let digest_at = sc
+            .find("let digest = pixel_digest(image);")
+            .expect("change-gate digest site");
+        assert!(
+            draw_at < digest_at,
+            "the highlight must be drawn before the change-gate digest so an \
+             armed/cleared highlight registers as a pixel change"
+        );
+    }
+
+    #[test]
+    fn overlay_navigation_entries_clear_the_slot() {
+        // Design §3.1: a navigation entry invalidates the slot (node ids do
+        // not survive a document change) — every CDP navigation face clears
+        // it after the entry is accepted.
+        let source = include_str!("cdp_handler.rs");
+        for needle in [
+            "page.navigate(url).map_err(to_browser_error)?;",
+            "page.reload().map_err(to_browser_error)?;",
+            "page.go_back().map_err(to_browser_error)?;",
+            "page.go_forward().map_err(to_browser_error)?;",
+        ] {
+            let at = source.find(needle).unwrap_or_else(|| {
+                panic!("navigation entry site missing: {needle}")
+            });
+            let clear_at = source[at..]
+                .find("clear_page_highlight(page);")
+                .unwrap_or_else(|| panic!("{needle} must clear the highlight slot"));
+            assert!(
+                clear_at < source[at..].find("Ok(serde_json::json!({").unwrap_or(usize::MAX),
+                "{needle} must clear the slot on the success path"
+            );
+        }
     }
 }

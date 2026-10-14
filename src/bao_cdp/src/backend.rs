@@ -301,8 +301,10 @@ mod tests {
         assert_eq!(result, serde_json::json!({}));
     }
 
-    // 12. Fetch.enable → explicit error (no request interception facility —
-    //     never a canned enabled/patternCount success)
+    // 12. Fetch.enable (no bridge) → -32603 (REQ-CDP-006 C6: a real bridge
+    //     command — the interception slot lives browser-side, so arming it
+    //     without a bridge is -32603, never a canned enabled/patternCount
+    //     success)
     #[test]
     fn internal_backend_send_command_fetch_enable_returns_ok() {
         let backend = InternalBackend::new();
@@ -310,8 +312,8 @@ mod tests {
         let err = backend
             .send_command("Fetch.enable", &params, "test-target")
             .unwrap_err();
-        assert_eq!(err.code, -32000);
-        assert!(err.message.contains("no request interception facility"));
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge connected"));
     }
 
     // 13. ExternalBackend::new with invalid endpoint still constructs (connects lazily)

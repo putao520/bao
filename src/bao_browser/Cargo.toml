@@ -48,6 +48,12 @@ crossbeam-channel = "0.5"
 servo-url = { path = "../../vendor/servo/components/url", package = "bao-servo-url", version = ">=0.5.9, <0.6.0" }
 dpi = "0.1"
 url = "2"
+# REQ-CDP-006 拦截面(X.8 裁定① 2026-10-14):fulfill 臂构造
+# `WebResourceResponse{status_code, headers}` 需要 `http` crate 类型 ——
+# servo 只 glob re-export `embedder_traits` 的项,`http` 是其私有依赖,
+# 全树无 re-export。embedder_traits 自 pin `http = { version = "1.4" }`,
+# 1.4.1 已在主 lock(零新增编译节点)。
+http = "1.4"
 dashmap.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 base64 = "0.22"

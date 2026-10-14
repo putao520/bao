@@ -34,8 +34,7 @@
 // `router.rs`) and the crate root can refer to them as `protocol::CdpError`
 // etc. These ARE `cdp_server` types — no duplicate definitions.
 pub use cdp_server::{
-    parse_message, serialize_event, serialize_response, CdpError, CdpEvent, CdpMessage,
-    CdpResponse,
+    parse_message, serialize_event, serialize_response, CdpError, CdpMessage, CdpResponse,
 };
 // Private before M4, private after: same items, now imported instead of
 // re-implemented. ERR_INVALID_PARAMS keeps pub(crate) reach for devtools_dom.
@@ -44,7 +43,9 @@ pub(crate) use cdp_server::ERR_INVALID_PARAMS;
 use serde_json::Value;
 
 use crate::devtools_dom;
-use crate::servo_bridge::{BridgeCommand, BridgeSender};
+// FetchResolveAction: REQ-CDP-006 C6 — the Fetch domain and the legacy
+// Network interception face both resolve paused requests through it.
+use crate::servo_bridge::{BridgeCommand, BridgeSender, FetchResolveAction};
 
 // Chrome DevTools "server error" code used for not-supported commands.
 pub(crate) const ERR_NOT_SUPPORTED: i64 = -32000;
@@ -86,10 +87,12 @@ pub fn handle_command(
         "CSS" => handle_css(command, target_id, params, bridge),
         "Emulation" => handle_emulation(command, target_id, params, bridge),
         "Input" => handle_input(command, target_id, params, bridge),
-        "Overlay" => handle_overlay(command),
+        "Overlay" => handle_overlay(command, target_id, params, bridge),
         "Debugger" => handle_debugger(command, target_id, params, bridge),
         "Log" => handle_log(command),
-        "Fetch" => handle_fetch(command, params),
+        // REQ-CDP-006 C6: the Fetch interception commands are bridge-backed
+        // (the interception slot lives browser-side, design §5).
+        "Fetch" => handle_fetch(command, target_id, params, bridge),
         "Storage" => handle_storage(command, target_id, params, bridge),
         "Security" => handle_security(command, target_id, params, bridge),
         "Profiler" => handle_profiler(command, target_id, params, bridge),
@@ -1330,9 +1333,58 @@ fn handle_network(
         // legal deprecated implementation; Accept-Encoding is owned by the
         // servo net stack).
         "setAcceptedEncodings" | "clearAcceptedEncodingsOverride" => ok_empty(),
-        "emulateNetworkConditions" | "setRequestInterception" | "continueInterceptedRequest" => {
-            ok_empty()
+        // REQ-CDP-006 C6 (design §5): the legacy Network interception face
+        // shares the Fetch facility through the same bridge path —
+        // setRequestInterception arms the same per-target slot (hits emit
+        // Network.requestIntercepted, the POP6-C6 criterion wording), and
+        // continueInterceptedRequest resolves through the same dispatch.
+        "setRequestInterception" => {
+            let patterns = parse_interception_patterns(
+                params,
+                PatternFace::LegacyNetwork,
+                "Network.setRequestInterception",
+            )?;
+            bridge_send(
+                bridge,
+                BridgeCommand::FetchEnable {
+                    target_id: tid,
+                    patterns,
+                    legacy_network_events: true,
+                },
+            )
         }
+        "continueInterceptedRequest" => {
+            let interception_id = interception_id(params, "Network.continueInterceptedRequest")?;
+            reject_request_modification("Network.continueInterceptedRequest", params)?;
+            if params.as_ref().is_some_and(|p| p.get("rawResponse").is_some()) {
+                return Err(not_supported(
+                    "Network.continueInterceptedRequest",
+                    "raw HTTP wire-format response reassembly is phase-2 — the servo pause face answers with Fetch.fulfillRequest-shaped synthesized responses, not raw response bytes (design §7)",
+                ));
+            }
+            let action = match params.as_ref().and_then(|p| p.get("errorReason")) {
+                Some(Value::String(s)) => {
+                    FetchResolveAction::Fail { error_reason: Some(s.clone()) }
+                }
+                Some(_) => {
+                    return Err(invalid_params(
+                        "Network.continueInterceptedRequest: 'errorReason' must be a CDP ErrorReason string",
+                    ))
+                }
+                None => FetchResolveAction::Continue,
+            };
+            bridge_send(
+                bridge,
+                BridgeCommand::FetchResolve {
+                    target_id: tid,
+                    interception_id,
+                    action,
+                },
+            )
+        }
+        // Unrelated to interception: cache/offline emulation has no servo
+        // embedding face — accepted no-op, unchanged (design §5).
+        "emulateNetworkConditions" => ok_empty(),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Network.{}' wasn't found", command),
@@ -1692,16 +1744,82 @@ fn handle_input(
     }
 }
 
-fn handle_overlay(command: &str) -> HandlerResult {
+// REQ-CDP-007-C6: the Overlay domain's two state commands are real —
+// highlightNode routes the node ref + highlight spec to the browser layer
+// (screenshot/screencast annotation); hideHighlight clears that slot.
+// setInspectMode is an explicit unsupported: the hover→
+// Overlay.nodeHighlightRequested event chain does not exist on this face, so
+// a canned ok would be a fake success (design §6 boundary matrix).
+// @trace REQ-CDP-007 [criterion:C6]
+fn handle_overlay(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
+        // Domain lifecycle — no side-effect face on this server.
         "enable" | "disable" => ok_empty(),
-        "highlightNode" | "hideHighlight" | "setInspectMode" => ok_empty(),
+        // Node identity resolves through the same shared channel as
+        // DOM.getBoxModel (nodeId / objectId / backendNodeId ≡ canonical
+        // id); the highlight spec rides as raw JSON — its color semantics
+        // live on the browser paint face.
+        "highlightNode" => {
+            let (node_id, object_id) = match require_overlay_node_ref(params)? {
+                devtools_dom::NodeRef::NodeId(id) => (Some(id), None),
+                devtools_dom::NodeRef::ObjectId(oid) => (None, Some(oid)),
+            };
+            let highlight_spec = params
+                .as_ref()
+                .and_then(|p| p.get("highlightSpec"))
+                .cloned();
+            bridge_send(
+                bridge,
+                BridgeCommand::OverlayHighlightNode {
+                    target_id: tid,
+                    node_id,
+                    object_id,
+                    highlight_spec,
+                },
+            )
+        }
+        "hideHighlight" => bridge_send(
+            bridge,
+            BridgeCommand::OverlayHideHighlight { target_id: tid },
+        ),
+        "setInspectMode" => Err(not_supported(
+            "Overlay.setInspectMode",
+            "inspect mode needs the hover→Overlay.nodeHighlightRequested event chain, which does not exist on this face",
+        )),
+        // Known relaxation (design §6): acknowledged without effect; a
+        // phase-2 candidate for the annotation face (paused banner).
         "setPausedInDebuggerMessage" => ok_empty(),
         _ => Err(CdpError {
             code: -32601,
             message: format!("'Overlay.{}' wasn't found", command),
         }),
     }
+}
+
+/// Node-ref resolution for `Overlay.highlightNode`: the shared
+/// `require_node_ref` shapes with `backendNodeId` folded in (backendNodeId ≡
+/// canonical nodeId on this face — the DOM.resolveNode documented identity).
+/// None of the three accepted shapes present → -32602.
+fn require_overlay_node_ref(
+    params: &Option<Value>,
+) -> Result<devtools_dom::NodeRef, CdpError> {
+    devtools_dom::require_node_ref(params).or_else(|_| {
+        let backend = params
+            .as_ref()
+            .and_then(|p| p.get("backendNodeId"))
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| CdpError {
+                code: ERR_INVALID_PARAMS,
+                message: "missing required parameter: nodeId, objectId or backendNodeId".into(),
+            })?;
+        Ok(devtools_dom::NodeRef::NodeId(backend))
+    })
 }
 
 fn handle_debugger(
@@ -1932,27 +2050,334 @@ fn handle_log(command: &str) -> HandlerResult {
     }
 }
 
-fn handle_fetch(command: &str, _params: &Option<Value>) -> HandlerResult {
+// ─── REQ-CDP-006 C6: request interception command face (design §7) ──────
+// enable / disable / continueRequest / failRequest / fulfillRequest are
+// real: they carry the decision through the servo bridge to the per-target
+// interception slot in bao_browser. Four commands stay explicit errors —
+// the servo embedder request face genuinely lacks the backing facility
+// (no auth challenge channel, no request body on WebResourceRequest, no
+// response-body stream handles), and pretending otherwise would fabricate
+// success. Error-code split: a command whose backing facility does not
+// exist at all → -32000 not_supported; a real command whose params fall
+// outside the supported envelope → -32602.
+
+/// Upper bound for a `Fetch.fulfillRequest` body (design §7: explicit error
+/// past the cap, never a silent truncation). Checked here on the base64
+/// length (decoded ≈ len·3/4); the browser layer re-checks the exact
+/// decoded size after bun_base64 decoding.
+const FULFILL_BODY_MAX_DECODED_BYTES: usize = 8 * 1024 * 1024;
+/// 4·⌈N/3⌉ encoded chars for [`FULFILL_BODY_MAX_DECODED_BYTES`].
+const FULFILL_BODY_MAX_BASE64_CHARS: usize = (FULFILL_BODY_MAX_DECODED_BYTES / 3 + 1) * 4;
+
+fn invalid_params(message: impl std::fmt::Display) -> CdpError {
+    CdpError {
+        code: ERR_INVALID_PARAMS,
+        message: message.to_string(),
+    }
+}
+
+/// Which command face a `patterns` array is parsed for — the two faces
+/// share the pattern-object shape but differ in the stage key (design §5).
+#[derive(Clone, Copy)]
+enum PatternFace {
+    /// `Fetch.enable`: reads `requestStage` ("Request" | "Response").
+    Fetch,
+    /// Legacy `Network.setRequestInterception`: the stage is pinned to
+    /// Request (事件阶段恒 Request); a legacy `interceptionStage:
+    /// "HeadersReceived"` is an explicit error — the servo pause point is
+    /// request-time only.
+    LegacyNetwork,
+}
+
+/// Parse the `patterns` array shared by `Fetch.enable` and the legacy
+/// `Network.setRequestInterception` face into normalized
+/// [`BridgeCommand`]-carrier patterns. Absent `patterns` = one catch-all
+/// Request-stage pattern (Chromium omitted-patterns semantics); an explicit
+/// empty array stays empty (matches nothing). Every malformed entry is an
+/// explicit -32602 — never a silently dropped filter.
+/// @trace REQ-CDP-006 [criterion:6]
+fn parse_interception_patterns(
+    params: &Option<Value>,
+    face: PatternFace,
+    label: &str,
+) -> Result<Vec<crate::servo_bridge::FetchPattern>, CdpError> {
+    use crate::servo_bridge::{FetchPattern, FetchRequestStage};
+    // Absent or null `patterns` = one catch-all Request-stage pattern
+    // (Chromium omitted-patterns semantics; null ≡ absent for optional
+    // fields at this layer).
+    let patterns_val = params
+        .as_ref()
+        .and_then(|p| p.get("patterns"))
+        .filter(|v| !v.is_null());
+    let Some(patterns_val) = patterns_val else {
+        return Ok(vec![FetchPattern {
+            url_pattern: None,
+            resource_type: None,
+            request_stage: FetchRequestStage::Request,
+        }]);
+    };
+    let arr = patterns_val
+        .as_array()
+        .ok_or_else(|| invalid_params(format!("{label}: 'patterns' must be an array of pattern objects")))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let obj = entry.as_object().ok_or_else(|| {
+            invalid_params(format!(
+                "{label}: each pattern must be an object with optional urlPattern / resourceType / requestStage"
+            ))
+        })?;
+        let url_pattern = match obj.get("urlPattern") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => {
+                return Err(invalid_params(format!(
+                    "{label}: 'urlPattern' must be a string glob"
+                )))
+            }
+        };
+        let resource_type = match obj.get("resourceType") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            Some(_) => {
+                return Err(invalid_params(format!(
+                    "{label}: 'resourceType' must be a non-empty CDP ResourceType string"
+                )))
+            }
+        };
+        let request_stage = match face {
+            PatternFace::Fetch => match obj.get("requestStage") {
+                None | Some(Value::Null) => FetchRequestStage::Request,
+                Some(Value::String(s)) if s == "Request" => FetchRequestStage::Request,
+                Some(Value::String(s)) if s == "Response" => FetchRequestStage::Response,
+                Some(_) => {
+                    return Err(invalid_params(format!(
+                        "{label}: 'requestStage' must be \"Request\" or \"Response\""
+                    )))
+                }
+            },
+            PatternFace::LegacyNetwork => match obj.get("interceptionStage") {
+                None | Some(Value::Null) => FetchRequestStage::Request,
+                Some(Value::String(s)) if s == "Request" => FetchRequestStage::Request,
+                Some(_) => {
+                    return Err(invalid_params(format!(
+                        "{label}: interception stage must be \"Request\" — the servo pause point is request-time only, there is no headers-received pause"
+                    )))
+                }
+            },
+        };
+        out.push(FetchPattern {
+            url_pattern,
+            resource_type,
+            request_stage,
+        });
+    }
+    Ok(out)
+}
+
+/// `interceptionId` is the mandatory resolution key for every
+/// pause-resolution command — minted by the interception facility at pause
+/// time and carried on `Fetch.requestPaused` / `Network.requestIntercepted`.
+fn interception_id(params: &Option<Value>, label: &str) -> Result<String, CdpError> {
+    match params.as_ref().and_then(|p| p.get("interceptionId")) {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        Some(_) => Err(invalid_params(format!(
+            "{label}: 'interceptionId' must be a non-empty string"
+        ))),
+        None => Err(invalid_params(format!(
+            "{label}: missing required 'interceptionId' (the resolution key carried on Fetch.requestPaused / Network.requestIntercepted)"
+        ))),
+    }
+}
+
+/// Explicit -32602 for `Fetch.continueRequest` /
+/// `Network.continueInterceptedRequest` modification fields: the servo
+/// embedder request face can only let a paused request through or answer it
+/// with a synthesized response — it cannot re-issue a reconstructed request
+/// (design §7 capability boundary; never silently ignored params).
+fn reject_request_modification(command: &str, params: &Option<Value>) -> Result<(), CdpError> {
+    for field in ["url", "method", "postData", "headers"] {
+        if params.as_ref().is_some_and(|p| p.get(field).is_some()) {
+            return Err(invalid_params(format!(
+                "{command}: '{field}' request modification is not supported — the servo embedder request face can only let the paused request through or answer it with a synthesized response; it cannot re-issue a reconstructed request (design §7 boundary)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// REQ-CDP-006 C6: the Fetch interception command face. Real commands route
+/// through the servo bridge to the browser-side interception slot (design
+/// §5); capability-absent commands are explicit -32000 errors with the
+/// design §7 boundary declaration in the message.
+/// @trace REQ-CDP-006 [criterion:6]
+fn handle_fetch(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
+    use crate::servo_bridge::FetchResolveAction;
+    let tid = target_id.to_string();
     match command {
-        // Idempotent no-op: disabling an interception that was never enabled
-        // (and cannot be — see below) is truthful as an empty success.
-        "disable" => ok_empty(),
-        // The Fetch domain is request interception. bao has no interception
-        // facility: the servo embedder does not expose request pausing, so no
-        // request can be paused, continued, fulfilled or failed. Every
-        // interception command is an explicit error — never a canned success
-        // with fabricated "continued"/"fulfilled" flags (REQ-CDP contract:
-        // real implementation or explicit failure).
-        "enable"
-        | "continueRequest"
-        | "continueWithResponse"
-        | "failRequest"
-        | "fulfillRequest"
-        | "getRequestPostData"
-        | "continueWithAuth"
-        | "takeResponseBodyAsStream" => Err(not_supported(
-            &format!("Fetch.{command}"),
-            "bao has no request interception facility: the servo embedder does not expose request pausing, so requests cannot be paused, continued, fulfilled or failed",
+        // Real: arms the per-target interception slot (browser-side). Without
+        // a bridge there is no slot owner — -32603, never a canned "enabled".
+        "enable" => {
+            if params.as_ref().and_then(|p| p.get("handleAuthRequests"))
+                == Some(&Value::Bool(true))
+            {
+                return Err(invalid_params(
+                    "Fetch.enable: handleAuthRequests=true is not supported — the auth interception facet is not wired (no Fetch.authRequired event is ever emitted and Fetch.continueWithAuth is an explicit error; design §7)",
+                ));
+            }
+            let patterns = parse_interception_patterns(params, PatternFace::Fetch, "Fetch.enable")?;
+            bridge_send(
+                bridge,
+                BridgeCommand::FetchEnable {
+                    target_id: tid,
+                    patterns,
+                    legacy_network_events: false,
+                },
+            )
+        }
+        // Real: clears the slot and drains every pending pause (each held
+        // load drops = the request proceeds; design §3.1 disable-as-exit).
+        "disable" => bridge_send(bridge, BridgeCommand::FetchDisable { target_id: tid }),
+        // Real: drop the held load → servo answers DoNotIntercept → the
+        // original request proceeds into the net stack (design §3.2).
+        "continueRequest" => {
+            let interception_id = interception_id(params, "Fetch.continueRequest")?;
+            reject_request_modification("Fetch.continueRequest", params)?;
+            bridge_send(
+                bridge,
+                BridgeCommand::FetchResolve {
+                    target_id: tid,
+                    interception_id,
+                    action: FetchResolveAction::Continue,
+                },
+            )
+        }
+        // Real: intercept + cancel → net-side network error. errorReason is
+        // carried advisory-only (the servo face has no error-code channel;
+        // every fail is a plain network error — design §7).
+        "failRequest" => {
+            let interception_id = interception_id(params, "Fetch.failRequest")?;
+            let error_reason = match params.as_ref().and_then(|p| p.get("errorReason")) {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(_) => {
+                    return Err(invalid_params(
+                        "Fetch.failRequest: 'errorReason' must be a CDP ErrorReason string",
+                    ))
+                }
+            };
+            bridge_send(
+                bridge,
+                BridgeCommand::FetchResolve {
+                    target_id: tid,
+                    interception_id,
+                    action: FetchResolveAction::Fail { error_reason },
+                },
+            )
+        }
+        // Real: synthesize the response (status / headers / base64 body).
+        "fulfillRequest" => {
+            let interception_id = interception_id(params, "Fetch.fulfillRequest")?;
+            let response_code = match params.as_ref().and_then(|p| p.get("responseCode")) {
+                Some(Value::Number(n)) => match n.as_i64() {
+                    Some(c) => c,
+                    // Out-of-i64-range numbers are rejected, never
+                    // silently clamped into a fabricated status.
+                    None => {
+                        return Err(invalid_params(
+                            "Fetch.fulfillRequest: 'responseCode' must be an integer HTTP status",
+                        ))
+                    }
+                },
+                Some(_) => {
+                    return Err(invalid_params(
+                        "Fetch.fulfillRequest: 'responseCode' must be an integer HTTP status",
+                    ))
+                }
+                None => {
+                    return Err(invalid_params(
+                        "Fetch.fulfillRequest: missing required 'responseCode'",
+                    ))
+                }
+            };
+            let status_message = match params.as_ref().and_then(|p| p.get("responsePhrase")) {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(_) => {
+                    return Err(invalid_params(
+                        "Fetch.fulfillRequest: 'responsePhrase' must be a string",
+                    ))
+                }
+            };
+            let response_headers = match params.as_ref().and_then(|p| p.get("responseHeaders")) {
+                None | Some(Value::Null) => None,
+                Some(h @ Value::Object(_)) => {
+                    if h.as_object().is_some_and(|o| o.values().all(Value::is_string)) {
+                        Some(h.clone())
+                    } else {
+                        return Err(invalid_params(
+                            "Fetch.fulfillRequest: 'responseHeaders' values must be strings",
+                        ));
+                    }
+                }
+                Some(_) => {
+                    return Err(invalid_params(
+                        "Fetch.fulfillRequest: 'responseHeaders' must be an object of {name: value}",
+                    ))
+                }
+            };
+            let body = match params.as_ref().and_then(|p| p.get("body")) {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => {
+                    if s.len() > FULFILL_BODY_MAX_BASE64_CHARS {
+                        return Err(invalid_params(format!(
+                            "Fetch.fulfillRequest: body exceeds the 8 MiB cap (base64 length {} > {}); the browser layer re-checks the decoded size (design §7)",
+                            s.len(),
+                            FULFILL_BODY_MAX_BASE64_CHARS
+                        )));
+                    }
+                    Some(s.clone())
+                }
+                Some(_) => {
+                    return Err(invalid_params(
+                        "Fetch.fulfillRequest: 'body' must be a base64 string",
+                    ))
+                }
+            };
+            bridge_send(
+                bridge,
+                BridgeCommand::FetchResolve {
+                    target_id: tid,
+                    interception_id,
+                    action: FetchResolveAction::Fulfill {
+                        response_code,
+                        status_message,
+                        response_headers,
+                        body,
+                    },
+                },
+            )
+        }
+        // ─── Capability-absent faces: explicit errors, never fake success ───
+        "getRequestPostData" => Err(not_supported(
+            "Fetch.getRequestPostData",
+            "the servo embedder request face carries no request body (WebResourceRequest has method/url/headers only) — a vendor body carrier is phase-2 (design §7)",
+        )),
+        "continueWithAuth" => Err(not_supported(
+            "Fetch.continueWithAuth",
+            "the auth interception facet is not wired: Fetch.enable with handleAuthRequests=true is rejected the same way and no auth challenge is ever paused (design §7)",
+        )),
+        "takeResponseBodyAsStream" => Err(not_supported(
+            "Fetch.takeResponseBodyAsStream",
+            "stream handles are not part of the P1 interception face — a fulfillRequest client already holds the body it sent; capturing the network response body of a paused request is phase-2 (design §7)",
+        )),
+        "continueWithResponse" => Err(not_supported(
+            "Fetch.continueWithResponse",
+            "phase-2 (a renamed fulfillRequest) — use Fetch.fulfillRequest, which is the real synthesized-response path (design §7)",
         )),
         _ => Err(CdpError {
             code: -32601,
@@ -2261,6 +2686,9 @@ fn handle_service_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // CdpEvent lives in the crate-root re-export (lib.rs) since the protocol
+    // module's re-export was deduplicated; the tests below construct it.
+    use crate::CdpEvent;
     use serde_json::json;
 
     /// Sessionless CdpMessage fixture — the construction shape every
@@ -2468,10 +2896,12 @@ mod tests {
             (47, "Network.emulateNetworkConditions", None),
             // 120. Network.deleteCookies → ok empty
             (49, "Network.deleteCookies", None),
-            // 122. Network.setRequestInterception → ok empty
-            (51, "Network.setRequestInterception", None),
-            // 123. Network.continueInterceptedRequest → ok empty
-            (52, "Network.continueInterceptedRequest", None),
+            // 122/123. Network.setRequestInterception /
+            //     continueInterceptedRequest left this matrix (REQ-CDP-006
+            //     C6): both are real bridge commands now — setRequestInterception
+            //     without a bridge is -32603, continueInterceptedRequest
+            //     without an interceptionId is -32602 (see the fetch_
+            //     interception_ tests below).
             // 125. CSS.disable → ok empty
             (54, "CSS.disable", None),
             // 130. Emulation.clearDeviceMetricsOverride → ok empty
@@ -2499,12 +2929,10 @@ mod tests {
             (70, "Input.setIgnoreInputEvents", None),
             // 142. Input.setInterceptDrags → ok empty
             (71, "Input.setInterceptDrags", None),
-            // 144. Overlay.highlightNode → ok empty
-            (73, "Overlay.highlightNode", None),
-            // 145. Overlay.hideHighlight → ok empty
-            (74, "Overlay.hideHighlight", None),
-            // 146. Overlay.setInspectMode → ok empty
-            (75, "Overlay.setInspectMode", None),
+            // 144-146. Overlay.highlightNode / hideHighlight / setInspectMode
+            //     left this matrix (REQ-CDP-007-C6): the first two are real
+            //     bridge commands (-32603 without a bridge / -32602 without a
+            //     node ref); setInspectMode is -32000 (no hover→event chain).
             // 147. Overlay.setPausedInDebuggerMessage → ok empty
             (76, "Overlay.setPausedInDebuggerMessage", None),
             // 149. Debugger.disable → ok empty
@@ -2535,8 +2963,9 @@ mod tests {
             (94, "Log.startViolationsReport", None),
             // 166. Log.stopViolationsReport → ok empty
             (95, "Log.stopViolationsReport", None),
-            // 168. Fetch.disable → ok empty
-            (97, "Fetch.disable", None),
+            // 168. Fetch.disable left this matrix (REQ-CDP-006 C6): a real
+            //     bridge command now — without a bridge it is -32603 (the
+            //     slot + pending drains live browser-side).
             // 192. ServiceWorker.stopWorker (no bridge) → ok empty  @trace REQ-BRW-004 [criterion:19]
             (
                 5,
@@ -2622,23 +3051,25 @@ mod tests {
                 -32603,
                 "no servo bridge connected",
             ),
-            // 29. Fetch.enable (one pattern) → -32000 (the servo embedder
-            //     exposes no request pausing — never a canned "enabled")
+            // 29. Fetch.enable (one pattern) → -32603 (REQ-CDP-006 C6: a
+            //     real bridge command — the interception slot lives
+            //     browser-side, so arming it without a bridge is -32603,
+            //     never a canned "enabled")
             (
                 22,
                 "Fetch.enable",
                 Some(json!({"patterns": [{"urlPattern": "*"}]})),
-                -32000,
-                "no request interception facility",
+                -32603,
+                "no servo bridge connected",
             ),
-            // 30. Fetch.continueRequest → -32000 (an interception that can
-            //     never be enabled can never be continued)
+            // 30. Fetch.continueRequest (no bridge) → -32603 (real
+            //     resolution now: the held load lives browser-side)
             (
                 23,
                 "Fetch.continueRequest",
-                Some(json!({"requestId": "req-001"})),
-                -32000,
-                "no request interception facility",
+                Some(json!({"interceptionId": "interception-1"})),
+                -32603,
+                "no servo bridge connected",
             ),
             // 76. Target.attachToTarget (stateless face) → -32000 (session
             //     minting lives in bao_browser::ws_registry::BaoWsRegistry;
@@ -2660,75 +3091,75 @@ mod tests {
                 -32000,
                 "WS session registry",
             ),
-            // 169. Fetch.continueWithResponse → -32000 (never a canned
-            //      "continued" flag)
+            // 169. Fetch.continueWithResponse → -32000 (capability-absent
+            //      face: a renamed fulfillRequest, phase-2; use
+            //      Fetch.fulfillRequest)
             (
                 98,
                 "Fetch.continueWithResponse",
                 Some(json!({"requestId": "r1"})),
                 -32000,
-                "no request interception facility",
+                "phase-2",
             ),
-            // 170. Fetch.failRequest → -32000 (an interception that can
-            //      never be enabled can never be failed)
+            // 170. Fetch.failRequest (no bridge) → -32603 (real resolution
+            //      now; errorReason rides along advisory-only)
             (
                 99,
                 "Fetch.failRequest",
-                Some(json!({"requestId": "r2", "reason": "Aborted"})),
-                -32000,
-                "no request interception facility",
+                Some(json!({"interceptionId": "i2", "errorReason": "Aborted"})),
+                -32603,
+                "no servo bridge connected",
             ),
-            // 171. Fetch.fulfillRequest → -32000 (never a canned
-            //      "fulfilled" flag)
+            // 171. Fetch.fulfillRequest (no bridge) → -32603 (real
+            //      synthesized-response path now)
             (
                 100,
                 "Fetch.fulfillRequest",
-                Some(json!({"requestId": "r3", "responseCode": 404, "body": "dGVzdA=="})),
-                -32000,
-                "no request interception facility",
+                Some(
+                    json!({"interceptionId": "i3", "responseCode": 404, "body": "dGVzdA=="}),
+                ),
+                -32603,
+                "no servo bridge connected",
             ),
-            // 172. Fetch.getRequestPostData → -32000 (servo does not store
-            //      request bodies for embedder access — never empty-body ok)
+            // 172. Fetch.getRequestPostData → -32000 (capability-absent
+            //      face: the servo embedder request face carries no request
+            //      body — never empty-body ok)
             (
                 101,
                 "Fetch.getRequestPostData",
                 Some(json!({"requestId": "r4"})),
                 -32000,
-                "no request interception facility",
+                "no request body",
             ),
-            // 173. Fetch.continueWithAuth → -32000
+            // 173. Fetch.continueWithAuth → -32000 (capability-absent face:
+            //      the auth interception facet is not wired)
             (
                 102,
                 "Fetch.continueWithAuth",
                 Some(json!({"requestId": "r5"})),
                 -32000,
-                "no request interception facility",
+                "auth interception facet is not wired",
             ),
-            // 174. Fetch.takeResponseBodyAsStream → -32000 (never a
-            //      fabricated stream handle)
+            // 174. Fetch.takeResponseBodyAsStream → -32000
+            //      (capability-absent face: no stream handles in P1)
             (
                 103,
                 "Fetch.takeResponseBodyAsStream",
                 Some(json!({"requestId": "r6"})),
                 -32000,
-                "no request interception facility",
+                "stream handles",
             ),
-            // 175. Fetch.enable without patterns → -32000
-            (
-                104,
-                "Fetch.enable",
-                None,
-                -32000,
-                "no request interception facility",
-            ),
-            // 176. Fetch.enable with multiple patterns → -32000 (pattern
-            //      count is irrelevant without an interception facility)
+            // 175. Fetch.enable without patterns (no bridge) → -32603 (an
+            //      omitted patterns param is a catch-all pattern — still a
+            //      real bridge arming)
+            (104, "Fetch.enable", None, -32603, "no servo bridge connected"),
+            // 176. Fetch.enable with multiple patterns (no bridge) → -32603
             (
                 105,
                 "Fetch.enable",
                 Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]})),
-                -32000,
-                "no request interception facility",
+                -32603,
+                "no servo bridge connected",
             ),
         ];
         for (id, method, params, code, msg) in cases {
@@ -3744,5 +4175,511 @@ mod tests {
         let infos = result["targetInfos"].as_array().unwrap();
         assert!(infos.len() >= 1, "should at least have the page target");
         assert_eq!(infos[0]["targetId"], "t1");
+    }
+
+    // ─── Overlay domain (REQ-CDP-007-C6) ────────────────────────────────
+    // @trace REQ-CDP-007 [req:REQ-CDP-007] [level:unit] [criterion:C6]
+
+    // 195a. Overlay.highlightNode with a node ref but no bridge → -32603:
+    //     a real bridge command, never a canned ok.
+    #[test]
+    fn overlay_highlight_node_no_bridge() {
+        let resp = dispatch_no_bridge(
+            80,
+            "Overlay.highlightNode",
+            Some(json!({"nodeId": 5})),
+        );
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge connected"));
+    }
+
+    // 195b. Overlay.highlightNode without any node shape → -32602
+    //     (nodeId / objectId / backendNodeId all accepted, none present).
+    #[test]
+    fn overlay_highlight_node_missing_node_ref() {
+        let resp = dispatch_no_bridge(81, "Overlay.highlightNode", None);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("nodeId, objectId or backendNodeId"));
+    }
+
+    // 195c. Overlay.setInspectMode → -32000: the hover→
+    //     Overlay.nodeHighlightRequested event chain does not exist on this
+    //     face — explicit unsupported instead of a canned ok.
+    #[test]
+    fn overlay_set_inspect_mode_not_supported() {
+        let resp = dispatch_no_bridge(82, "Overlay.setInspectMode", None);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, ERR_NOT_SUPPORTED);
+        assert!(err.message.contains("Overlay.setInspectMode"));
+        assert!(err.message.contains("nodeHighlightRequested"));
+    }
+
+    // 195d. Overlay.highlightNode via backendNodeId folds to the canonical
+    //     id (DOM.resolveNode identity); the missing-bridge -32603 proves
+    //     param validation passed before the bridge check.
+    #[test]
+    fn overlay_highlight_node_backend_node_id_accepted() {
+        let resp = dispatch_no_bridge(
+            83,
+            "Overlay.highlightNode",
+            Some(json!({"backendNodeId": 7, "highlightSpec": {"borderColor": {"r": 255}} })),
+        );
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge connected"));
+    }
+
+    // 195e. Overlay.hideHighlight without a bridge → -32603 (real state
+    //     command on the browser layer, not a shape-only ack).
+    #[test]
+    fn overlay_hide_highlight_no_bridge() {
+        let resp = dispatch_no_bridge(84, "Overlay.hideHighlight", None);
+        let err = resp.error.unwrap_or_else(|| panic!("explicit error required"));
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge connected"));
+    }
+
+    // ─── REQ-CDP-006 C6: Fetch / legacy-Network interception matrix ────
+    // Command face of the request interception facility (design §7
+    // boundary matrix). Real commands route to the servo bridge — captured
+    // here against the exact BridgeCommand shape the browser-side consumer
+    // (bao_browser cdp_handler) matches. Capability-absent faces are
+    // explicit -32000 errors with the design §7 boundary declaration in the
+    // message, and every malformed param is a fail-fast -32602 that fires
+    // before the bridge check.
+    // @trace REQ-CDP-006 [criterion:6]
+    use crate::servo_bridge::{bridge_channel, BridgeResponse, FetchRequestStage};
+
+    /// Bridge-capture fixture: a helper thread answers `{}` while `drive`
+    /// dispatches on this thread; returns the BridgeCommand the handler
+    /// actually sent — the wire contract the browser-side consumer is
+    /// written against.
+    fn capture_bridge_command(drive: impl FnOnce(&BridgeSender)) -> BridgeCommand {
+        let (bridge, receiver) = bridge_channel(std::time::Duration::from_secs(2));
+        let captured: std::sync::Arc<std::sync::Mutex<Option<BridgeCommand>>> =
+            std::sync::Arc::default();
+        let sink = std::sync::Arc::clone(&captured);
+        let responder = std::thread::spawn(move || {
+            receiver.recv_and_process(std::time::Duration::from_secs(2), |cmd| {
+                *sink.lock().unwrap() = Some(cmd);
+                BridgeResponse {
+                    result: Ok(json!({})),
+                }
+            });
+        });
+        drive(&bridge);
+        let cmd = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("handler should have sent exactly one bridge command");
+        responder.join().unwrap();
+        cmd
+    }
+
+    /// One-off δ shape: dispatch and pin the error code + message fragment.
+    fn expect_dispatch_error(id: i64, method: &str, params: Option<Value>, code: i64, fragment: &str) {
+        let resp = dispatch_no_bridge(id, method, params);
+        let err = resp
+            .error
+            .unwrap_or_else(|| panic!("{method} (id {id}): explicit error required"));
+        assert_eq!(err.code, code, "{method} (id {id}): wrong error code");
+        assert!(
+            err.message.contains(fragment),
+            "{method} (id {id}): message lacks {fragment:?}: {err:?}"
+        );
+    }
+
+    #[test]
+    fn fetch_enable_sends_normalized_patterns_to_bridge() {
+        let cmd = capture_bridge_command(|bridge| {
+            let msg = cdp_msg(
+                1,
+                "Fetch.enable",
+                Some(json!({
+                    "patterns": [
+                        {"urlPattern": "https://example.com/*", "requestStage": "Response"},
+                        {"resourceType": "Document"}
+                    ]
+                })),
+            );
+            let params = msg.params.clone();
+            let resp = handle_command(msg, "t1", &params, Some(bridge));
+            assert!(
+                resp.error.is_none(),
+                "valid patterns should arm the slot: {:?}",
+                resp.error
+            );
+        });
+        match cmd {
+            BridgeCommand::FetchEnable {
+                target_id,
+                patterns,
+                legacy_network_events,
+            } => {
+                assert_eq!(target_id, "t1");
+                assert!(!legacy_network_events, "Fetch domain emits requestPaused");
+                assert_eq!(patterns.len(), 2);
+                assert_eq!(
+                    patterns[0].url_pattern.as_deref(),
+                    Some("https://example.com/*")
+                );
+                assert_eq!(patterns[0].resource_type, None);
+                assert_eq!(patterns[0].request_stage, FetchRequestStage::Response);
+                assert_eq!(patterns[1].url_pattern, None);
+                assert_eq!(patterns[1].resource_type.as_deref(), Some("Document"));
+                // CDP default: requestStage omitted → Request.
+                assert_eq!(patterns[1].request_stage, FetchRequestStage::Request);
+            }
+            other => panic!("expected FetchEnable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fetch_enable_without_patterns_normalizes_catch_all() {
+        // Chromium omitted-patterns semantics: intercept everything at the
+        // Request stage → normalized to one unconstrained Request pattern.
+        let cmd = capture_bridge_command(|bridge| {
+            let msg = cdp_msg(2, "Fetch.enable", None);
+            let params = msg.params.clone();
+            let resp = handle_command(msg, "t1", &params, Some(bridge));
+            assert!(resp.error.is_none(), "{:?}", resp.error);
+        });
+        match cmd {
+            BridgeCommand::FetchEnable { patterns, .. } => {
+                assert_eq!(patterns.len(), 1);
+                assert_eq!(patterns[0].url_pattern, None);
+                assert_eq!(patterns[0].resource_type, None);
+                assert_eq!(patterns[0].request_stage, FetchRequestStage::Request);
+            }
+            other => panic!("expected FetchEnable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fetch_enable_handle_auth_requests_is_explicit_error() {
+        // design §7: the auth facet is not wired — enabling it would
+        // silently never emit authRequired, which is a lie, not a noop.
+        expect_dispatch_error(
+            3,
+            "Fetch.enable",
+            Some(json!({"handleAuthRequests": true})),
+            -32602,
+            "handleAuthRequests=true is not supported",
+        );
+    }
+
+    #[test]
+    fn fetch_enable_malformed_patterns_are_32602() {
+        let cases: Vec<(&str, Value)> = vec![
+            ("array", json!({"patterns": "*"})),
+            ("object", json!({"patterns": ["*"]})),
+            ("string", json!({"patterns": [{"urlPattern": 5}]})),
+            ("non-empty", json!({"patterns": [{"resourceType": ""}]})),
+            ("Request", json!({"patterns": [{"requestStage": "Headers"}]})),
+        ];
+        for (i, (fragment, params)) in cases.into_iter().enumerate() {
+            expect_dispatch_error(
+                10 + i as i64,
+                "Fetch.enable",
+                Some(params),
+                -32602,
+                fragment,
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_disable_without_bridge_is_32603() {
+        // Real command: the slot + pending drains live browser-side.
+        expect_dispatch_error(20, "Fetch.disable", None, -32603, "no servo bridge connected");
+    }
+
+    #[test]
+    fn fetch_continue_request_modification_fields_are_32602() {
+        // design §7: the servo pause face can only pass through or answer
+        // with a synthesized response — modification params must not be
+        // silently ignored.
+        for (i, field) in ["url", "method", "postData", "headers"].into_iter().enumerate() {
+            let params = json!({"interceptionId": "i1", (field): "x"});
+            expect_dispatch_error(
+                30 + i as i64,
+                "Fetch.continueRequest",
+                Some(params),
+                -32602,
+                "request modification is not supported",
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_resolution_missing_interception_id_is_32602() {
+        for (i, method) in ["Fetch.continueRequest", "Fetch.failRequest", "Fetch.fulfillRequest"]
+            .iter()
+            .enumerate()
+        {
+            expect_dispatch_error(
+                40 + i as i64,
+                method,
+                Some(json!({"requestId": "not-the-resolution-key"})),
+                -32602,
+                "missing required 'interceptionId'",
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_fulfill_request_param_validation_is_32602() {
+        let cases: Vec<(&str, Value)> = vec![
+            ("missing required 'responseCode'", json!({"interceptionId": "i"})),
+            (
+                "'responseCode' must be an integer",
+                json!({"interceptionId": "i", "responseCode": "404"}),
+            ),
+            (
+                "'responseHeaders' must be an object",
+                json!({"interceptionId": "i", "responseCode": 200, "responseHeaders": []}),
+            ),
+            (
+                "'responseHeaders' values must be strings",
+                json!({"interceptionId": "i", "responseCode": 200, "responseHeaders": {"a": 1}}),
+            ),
+            (
+                "'body' must be a base64 string",
+                json!({"interceptionId": "i", "responseCode": 200, "body": 42}),
+            ),
+        ];
+        for (i, (fragment, params)) in cases.into_iter().enumerate() {
+            expect_dispatch_error(
+                50 + i as i64,
+                "Fetch.fulfillRequest",
+                Some(params),
+                -32602,
+                fragment,
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_fulfill_request_oversized_body_is_explicit_error() {
+        // design §7: past the 8 MiB cap the error is explicit — never a
+        // silent truncation. The base64 length bound is the protocol-layer
+        // pre-check (the browser layer re-checks decoded size).
+        let oversized = "A".repeat(8 * 1024 * 1024 * 2);
+        expect_dispatch_error(
+            60,
+            "Fetch.fulfillRequest",
+            Some(json!({"interceptionId": "i", "responseCode": 200, "body": oversized})),
+            -32602,
+            "exceeds the 8 MiB cap",
+        );
+    }
+
+    #[test]
+    fn fetch_resolution_commands_carry_bridge_action_shapes() {
+        // continue → the pass-through verdict.
+        let cmd = capture_bridge_command(|bridge| {
+            let msg =
+                cdp_msg(70, "Fetch.continueRequest", Some(json!({"interceptionId": "i-7"})));
+            let params = msg.params.clone();
+            handle_command(msg, "t1", &params, Some(bridge));
+        });
+        match cmd {
+            BridgeCommand::FetchResolve {
+                target_id,
+                interception_id,
+                action: FetchResolveAction::Continue,
+            } => {
+                assert_eq!(target_id, "t1");
+                assert_eq!(interception_id, "i-7");
+            }
+            other => panic!("expected FetchResolve(Continue), got {other:?}"),
+        }
+        // fail → advisory error reason rides along.
+        let cmd = capture_bridge_command(|bridge| {
+            let msg = cdp_msg(
+                71,
+                "Fetch.failRequest",
+                Some(json!({"interceptionId": "i-8", "errorReason": "Failed"})),
+            );
+            let params = msg.params.clone();
+            handle_command(msg, "t1", &params, Some(bridge));
+        });
+        match cmd {
+            BridgeCommand::FetchResolve {
+                action: FetchResolveAction::Fail { error_reason },
+                ..
+            } => assert_eq!(error_reason.as_deref(), Some("Failed")),
+            other => panic!("expected FetchResolve(Fail), got {other:?}"),
+        }
+        // fulfill → status / phrase / headers / base64 body verbatim (the
+        // browser layer owns base64 decoding and the decoded-size cap).
+        let cmd = capture_bridge_command(|bridge| {
+            let msg = cdp_msg(
+                72,
+                "Fetch.fulfillRequest",
+                Some(json!({
+                    "interceptionId": "i-9",
+                    "responseCode": 200,
+                    "responsePhrase": "OK",
+                    "responseHeaders": {"content-type": "text/html"},
+                    "body": "dGVzdA=="
+                })),
+            );
+            let params = msg.params.clone();
+            handle_command(msg, "t1", &params, Some(bridge));
+        });
+        match cmd {
+            BridgeCommand::FetchResolve {
+                target_id,
+                interception_id,
+                action: FetchResolveAction::Fulfill {
+                    response_code,
+                    status_message,
+                    response_headers,
+                    body,
+                },
+            } => {
+                assert_eq!(target_id, "t1");
+                assert_eq!(interception_id, "i-9");
+                assert_eq!(response_code, 200);
+                assert_eq!(status_message.as_deref(), Some("OK"));
+                assert_eq!(
+                    response_headers.unwrap()["content-type"],
+                    json!("text/html")
+                );
+                assert_eq!(body.as_deref(), Some("dGVzdA=="));
+            }
+            other => panic!("expected FetchResolve(Fulfill), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_network_set_request_interception_maps_to_fetch_bridge() {
+        // POP6-C6 criterion wording: the legacy Network face shares the
+        // Fetch facility; hits emit Network.requestIntercepted, so the
+        // bridge command carries the legacy-event flag (design §5).
+        let cmd = capture_bridge_command(|bridge| {
+            let msg = cdp_msg(
+                80,
+                "Network.setRequestInterception",
+                Some(json!({"patterns": [{"urlPattern": "*", "interceptionStage": "Request"}]})),
+            );
+            let params = msg.params.clone();
+            let resp = handle_command(msg, "t1", &params, Some(bridge));
+            assert!(resp.error.is_none(), "{:?}", resp.error);
+        });
+        match cmd {
+            BridgeCommand::FetchEnable {
+                patterns,
+                legacy_network_events,
+                ..
+            } => {
+                assert!(legacy_network_events, "legacy face emits requestIntercepted");
+                assert_eq!(patterns.len(), 1);
+                assert_eq!(patterns[0].url_pattern.as_deref(), Some("*"));
+                assert_eq!(patterns[0].request_stage, FetchRequestStage::Request);
+            }
+            other => panic!("expected FetchEnable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_network_set_request_interception_rejects_headers_received_stage() {
+        // The servo pause point is request-time only.
+        expect_dispatch_error(
+            81,
+            "Network.setRequestInterception",
+            Some(json!({"patterns": [{"urlPattern": "*", "interceptionStage": "HeadersReceived"}]})),
+            -32602,
+            "request-time only",
+        );
+    }
+
+    #[test]
+    fn legacy_network_continue_intercepted_request_maps_to_fetch_bridge() {
+        // Plain continue → Continue verdict through the same dispatch.
+        let cmd = capture_bridge_command(|bridge| {
+            let msg = cdp_msg(
+                82,
+                "Network.continueInterceptedRequest",
+                Some(json!({"interceptionId": "i-10"})),
+            );
+            let params = msg.params.clone();
+            handle_command(msg, "t1", &params, Some(bridge));
+        });
+        match cmd {
+            BridgeCommand::FetchResolve {
+                action: FetchResolveAction::Continue,
+                ..
+            } => {}
+            other => panic!("expected FetchResolve(Continue), got {other:?}"),
+        }
+        // errorReason → Fail verdict.
+        let cmd = capture_bridge_command(|bridge| {
+            let msg = cdp_msg(
+                83,
+                "Network.continueInterceptedRequest",
+                Some(json!({"interceptionId": "i-11", "errorReason": "Aborted"})),
+            );
+            let params = msg.params.clone();
+            handle_command(msg, "t1", &params, Some(bridge));
+        });
+        match cmd {
+            BridgeCommand::FetchResolve {
+                action: FetchResolveAction::Fail { error_reason },
+                ..
+            } => assert_eq!(error_reason.as_deref(), Some("Aborted")),
+            other => panic!("expected FetchResolve(Fail), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_network_continue_intercepted_request_boundaries() {
+        // rawResponse (raw HTTP wire-format reassembly) is phase-2.
+        expect_dispatch_error(
+            84,
+            "Network.continueInterceptedRequest",
+            Some(json!({"interceptionId": "i", "rawResponse": "SFRUUC8xLjEgMjAw"})),
+            -32000,
+            "raw HTTP wire-format response reassembly is phase-2",
+        );
+        // Request modification shares the Fetch.continueRequest boundary.
+        expect_dispatch_error(
+            85,
+            "Network.continueInterceptedRequest",
+            Some(json!({"interceptionId": "i", "url": "https://example.com/"})),
+            -32602,
+            "request modification is not supported",
+        );
+        // Missing resolution key.
+        expect_dispatch_error(
+            86,
+            "Network.continueInterceptedRequest",
+            None,
+            -32602,
+            "missing required 'interceptionId'",
+        );
+    }
+
+    #[test]
+    fn network_emulate_network_conditions_stays_accepted_noop() {
+        // Unrelated to interception — unchanged ok_empty (design §5).
+        let resp = dispatch_no_bridge(87, "Network.emulateNetworkConditions", None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    #[test]
+    fn fetch_fail_request_non_string_error_reason_is_32602() {
+        expect_dispatch_error(
+            88,
+            "Fetch.failRequest",
+            Some(json!({"interceptionId": "i", "errorReason": 7})),
+            -32602,
+            "'errorReason' must be a CDP ErrorReason string",
+        );
     }
 }

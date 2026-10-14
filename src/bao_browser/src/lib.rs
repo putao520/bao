@@ -13,6 +13,7 @@ pub mod cdp_memory;
 mod config;
 mod delegate;
 mod error;
+pub mod overlay;
 mod page;
 mod page_pool;
 mod phase_watch;

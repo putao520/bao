@@ -34,6 +34,67 @@ pub fn main_frame_id_for_target(target_id: &str) -> String {
     format!("main-{target_id}")
 }
 
+// ─── REQ-CDP-006 C6: request interception command face ──────────────────
+// The Fetch domain and the legacy `Network.setRequestInterception` /
+// `Network.continueInterceptedRequest` face share one interception facility
+// (design §5): the FetchEnable / FetchDisable / FetchResolve verbs below are
+// its only bridge channel. The per-target interception slot and the
+// pending-pause registry live browser-side (bao_browser), which consumes
+// these types directly — bao_browser already depends on bao_cdp for
+// BridgeCommand, so the normal dependency direction carries them.
+
+/// One validated interception pattern (CDP `Fetch.pattern`); the field shape
+/// mirrors the per-target slot in bao_browser's webview state (design §3.1).
+/// @trace REQ-CDP-006 [criterion:6] [entity:FetchPattern]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchPattern {
+    /// `urlPattern` glob (`*` wildcard, Chromium Fetch.urlPattern semantics);
+    /// `None` matches every URL.
+    pub url_pattern: Option<String>,
+    /// CDP `resourceType` filter; `None` matches every type. bao's wire set
+    /// is the closed 9-value set emitted by vendor/servo
+    /// `net/http_loader.rs::bao_destination_to_resource_type` (Document /
+    /// Script / Stylesheet / Image / Font / Media / Manifest / Fetch /
+    /// Other) — a filter outside that set simply never matches.
+    pub resource_type: Option<String>,
+    /// Stage at which a matching request is paused.
+    pub request_stage: FetchRequestStage,
+}
+
+/// @trace REQ-CDP-006 [criterion:6] [entity:FetchPattern]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchRequestStage {
+    Request,
+    Response,
+}
+
+/// Resolution verdict for one paused request (`Fetch.continueRequest` /
+/// `failRequest` / `fulfillRequest` — design §3.2). The browser side maps
+/// each verdict onto the held `WebResourceLoad`: Continue = drop the load
+/// (servo's AutomaticResponder answers DoNotIntercept and the request
+/// proceeds), Fail = intercept + cancel (net-side network error), Fulfill =
+/// intercept + body + finish (synthesized response).
+/// @trace REQ-CDP-006 [criterion:6] [entity:FetchResolve]
+#[derive(Debug, Clone)]
+pub enum FetchResolveAction {
+    Continue,
+    /// `error_reason` is advisory only — the servo pause face has no
+    /// error-code channel, every fail surfaces as a plain network error
+    /// (design §7).
+    Fail {
+        error_reason: Option<String>,
+    },
+    /// `response_headers` is the raw CDP `{name: value}` JSON object;
+    /// `body` is the base64 text exactly as the client sent it — the browser
+    /// layer owns base64 decoding (bun_base64) and the decoded-size cap.
+    Fulfill {
+        response_code: i64,
+        status_message: Option<String>,
+        response_headers: Option<Value>,
+        body: Option<String>,
+    },
+}
+
 /// Commands that the CDP server sends to the main thread for servo execution.
 /// Each command carries a `target_id` identifying which page/target to route to.
 #[derive(Debug, Clone)]
@@ -372,6 +433,54 @@ pub enum BridgeCommand {
     StopServiceWorker {
         target_id: String,
         registration_id: String,
+    },
+    // Overlay domain — REQ-CDP-007-C6: screenshot/screencast annotation
+    // highlight. The highlight spec travels as raw serde JSON so this crate
+    // stays decoupled from bao_browser's `HighlightSpec` (design §7 E1/E2
+    // weak serde coupling); the browser layer deserializes it against its
+    // own paint-face type.
+    OverlayHighlightNode {
+        target_id: String,
+        /// Canonical positional node id (the shared devtools_dom identity;
+        /// `backendNodeId` folds into it — the DOM.resolveNode documented
+        /// identity). `None` when the request addressed an objectId.
+        node_id: Option<i64>,
+        /// Runtime object-registry handle. `None` when addressed by nodeId.
+        object_id: Option<String>,
+        /// Raw `Overlay.HighlightSpec` JSON as the client sent it (`None` =
+        /// the default DevTools palette). Not validated here — geometry and
+        /// color semantics live on the browser paint face (the E3 consumer).
+        highlight_spec: Option<Value>,
+    },
+    /// Clear the single highlight slot (Overlay.hideHighlight).
+    OverlayHideHighlight {
+        target_id: String,
+    },
+    // REQ-CDP-006 C6: request interception (the Fetch domain and the legacy
+    // Network.setRequestInterception face share this facility; design §5).
+    // `patterns` semantics: an empty vec intercepts nothing (an explicit
+    // empty pattern list matches no request); `Fetch.enable` without a
+    // `patterns` param is normalized at the protocol layer to one catch-all
+    // Request-stage pattern (Chromium omitted-patterns semantics).
+    // `legacy_network_events`: a hit emits `Network.requestIntercepted`
+    // instead of `Fetch.requestPaused` (POP6-C6 criterion wording).
+    FetchEnable {
+        target_id: String,
+        patterns: Vec<FetchPattern>,
+        legacy_network_events: bool,
+    },
+    /// Clear the interception slot and drain every pending pause — each held
+    /// load drops, which servo's AutomaticResponder answers as
+    /// DoNotIntercept (design §3.1; the disable-is-the-exit invariant).
+    FetchDisable {
+        target_id: String,
+    },
+    /// Resolve one paused request by the interception id minted at pause
+    /// time and carried on Fetch.requestPaused / Network.requestIntercepted.
+    FetchResolve {
+        target_id: String,
+        interception_id: String,
+        action: FetchResolveAction,
     },
 }
 
