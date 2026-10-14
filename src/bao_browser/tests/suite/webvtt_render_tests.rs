@@ -19,6 +19,11 @@
 //     - cue order (start time asc → end time desc → insertion order)
 //     - cue.track association + AddCue re-homing across tracks
 //     - VTTCue.getCueAsHTML(): real WebVTT cue text DOM construction rules
+//     - cue `line` setting + snap-to-lines flag live reflection (parser→DOM
+//       round-trip via servo_webvtt "line" setting → VTTCue::create_from_vtt;
+//       the LAYOUT consumption half is the e99 snapshot-swap replay debt,
+//       BAO-REPLAY-LIST §4 — the failing B2/B3 pixel pins below are that
+//       debt's red evidence, deliberately left in place)
 //   GROUP B (gstreamer backend only — fail-closed loud skip otherwise):
 //     - currentTime-driven cue activation (seek → time_marches_on)
 //     - activeCues window semantics (enter/exit)
@@ -83,6 +88,10 @@ fn make_sine_wav(seconds: f64) -> Vec<u8> {
 ///   cue1 "Hello Bao"                       [0.5, 1.5)  default position
 ///   cue2 "Left cue"                        [0.7, 2.0)  align:left position:10% size:40%
 ///   cue3 "Line one\nLine two"              [3.0, 4.0)  default position
+///   cue4 "Line top cue"                    [5.0, 6.0)  line:0    (A7 live reflection)
+///   cue5 "Line bottom cue"                 [6.0, 7.0)  line:100  (A7 live reflection)
+///   cue6 "Line negative cue"               [7.0, 8.0)  line:-1   (A7 live reflection)
+///   cue7 "Line percent cue"                [8.0, 9.0)  line:50%  (A7 live reflection)
 const CAPTIONS_VTT: &str = "WEBVTT\n\
                             \n\
                             cue1\n\
@@ -96,7 +105,23 @@ const CAPTIONS_VTT: &str = "WEBVTT\n\
                             cue3\n\
                             00:00:03.000 --> 00:00:04.000\n\
                             Line one\n\
-                            Line two\n";
+                            Line two\n\
+                            \n\
+                            cue4\n\
+                            00:00:05.000 --> 00:00:06.000 line:0\n\
+                            Line top cue\n\
+                            \n\
+                            cue5\n\
+                            00:00:06.000 --> 00:00:07.000 line:100\n\
+                            Line bottom cue\n\
+                            \n\
+                            cue6\n\
+                            00:00:07.000 --> 00:00:08.000 line:-1\n\
+                            Line negative cue\n\
+                            \n\
+                            cue7\n\
+                            00:00:08.000 --> 00:00:09.000 line:50%\n\
+                            Line percent cue\n";
 
 /// Single-cue file used by the track-URL-change scenario.
 const CAPTIONS_ALT_VTT: &str = "WEBVTT\n\
@@ -446,6 +471,51 @@ fn webvtt_render_e2e_suite() {
         active0 == "0",
         "A6::active_cues_empty_before_window",
         &format!("A6::active_cues_empty_before_window (got {active0})"),
+    );
+
+    // A7: cue `line` setting + snap-to-lines flag on the LIVE parser→DOM
+    // chain (REQ-BRW-047 AC03 parse half). cue4-cue7 in the served file carry
+    // line:0 / line:100 / line:-1 / line:50%; servo_webvtt's "line" setting
+    // parser (cue settings step: leading-minus allowed, percentage ⇒
+    // snap-to-lines = false) feeds VTTCue::create_from_vtt, and the
+    // `(double or AutoKeyword) line` webidl reflects them back. Layout
+    // consumption of these values is the e99 snapshot-swap replay debt
+    // (BAO-REPLAY-LIST §4) — not probed here; B2/B3 below are that debt's
+    // red pins, deliberately untouched.
+    let line_states = poll_js(
+        &page,
+        "document.getElementById('t').track && document.getElementById('t').track.cues && document.getElementById('t').track.cues.length >= 7",
+        r#"(function(){
+            var c = document.getElementById('t').track.cues;
+            var s = [];
+            for (var i = 0; i < c.length; i++) s.push(String(c[i].line) + '/' + c[i].snapToLines);
+            return JSON.stringify(s);
+        })()"#,
+        Duration::from_secs(10),
+    );
+    // cue1-cue3 (no line setting): line reflects the "auto" keyword and the
+    // snap-to-lines flag keeps its spec default true — cue2 also proves the
+    // position setting does not leak into the line setting.
+    report.assert(
+        line_states.matches("\"auto/true\"").count() == 3,
+        "A7::cue_line_default_live_reflection",
+        &format!("A7::cue_line_default_live_reflection (line/snap = {line_states})"),
+    );
+    // Numeric line values round-trip verbatim (0 / 100 / negative -1, all
+    // snap-to-lines = true — non-percentage line keeps the flag true).
+    report.assert(
+        line_states.contains("\"0/true\"")
+            && line_states.contains("\"100/true\"")
+            && line_states.contains("\"-1/true\""),
+        "A7::cue_line_numeric_live_reflection",
+        &format!("A7::cue_line_numeric_live_reflection (line/snap = {line_states})"),
+    );
+    // Percentage line: value parses to its number (50) and flips
+    // snap-to-lines to false (cue settings step: last char '%').
+    report.assert(
+        line_states.contains("\"50/false\""),
+        "A7::cue_line_percent_snap_reflection",
+        &format!("A7::cue_line_percent_snap_reflection (line/snap = {line_states})"),
     );
 
     // --- GROUP B: render pipeline (gstreamer-gated, fail-closed loud skip)
