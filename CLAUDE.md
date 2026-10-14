@@ -207,6 +207,10 @@ cargo test --test-threads=1
 make bce-check
 ```
 
+### Windows 交叉编译准入律(e239 建议,2026-10-14 立)
+
+**凡新增 `#[cfg(windows)]` / `#[cfg(target_os=…)]` 条件编译面、或 windows-only 代码路径的改动,合并前必须过一次 Windows 交叉编译**(`cargo build --target x86_64-pc-windows-msvc -p bao_bin`,隔离项目 bao-winx,配方见 memory win-cross-env-rebuild-recipe——**容器内必先 `source scripts/win-cross-env.sh`**,缺之 boringssl_sys 炸 stdlib.h not found 系 env 未注入非工具链缺陷)。依据:交叉面不在 CI(手动 farm),纯纪律;node_os.rs netif seam 即 2026-09-26 后新增、从未交叉暴露、潜伏至 2026-10-14 才炸的样本(X.12)。
+
 StyleThread 栈 8MiB(上游 parity):bao 不走上游 mach,`.cargo/config.toml` [env] 持久化 `SERVO_STYLE_THREAD_STACK_SIZE_KB=8192`(上游 PR #43888 于 command_base.py:441 编译期注入 8MiB,"match the recursion depth of Chromium");缺省 512KB(vendor/stylo/parallel.rs:40)使 layout 2020 box-tree 深度成比例递归(dom_traversal.rs↔flow/construct.rs,每 DOM 层 8-13 帧)在 StyleThread worker 溢出——WPT scope-deep/inline-crash/outline-scrollIntoView 三条即此。option_env! 无 rebuild 追踪:改值后必须 `cargo clean -p bao-stylo`。
 
 ### cargo 宇宙拓扑(2026-09-21 归一后,用户裁决「全部立即归一」)
