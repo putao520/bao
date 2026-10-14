@@ -29,11 +29,13 @@
 //      wedged) and subsequent matching requests flow with zero pauses.
 //
 // Honest boundaries on the asserted face:
-// - Network.loadingFinished is NOT asserted: the live path has no producer
-//   for ServoEvent::NetworkLoadingFinish (the EventSubscriber API exists but
-//   bao_browser never calls it on the live path). Completion is proven by
+// - Network.loadingFinished is NOT asserted here: since the live-path
+//   terminal taps landed (bb5087139), ServoEvent::NetworkLoadingFinish has a
+//   producer, but asserting completion on THIS file's interception-minted
+//   requestIds is out of its scope — completion is proven by
 //   requestWillBeSent + responseReceived + the page-visible 200 + origin
-//   body instead.
+//   body instead (network_loading_finish_live_tests.rs owns the terminal
+//   event coverage).
 // - requestPaused.requestId is the interception face's own minted serial
 //   ("cdpreq-*"), NOT the net tap's servo RequestId — despite the event
 //   translator's docstring claiming a shared source (design §4 wording).
