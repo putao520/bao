@@ -52,8 +52,10 @@ mod cdp_run_pump_event_tests;
 mod cdp_screencast_input_loop_tests;
 mod cdp_universe_wiring_tests;
 mod cdp_ws_command_face_tests;
+mod target_domain_event_tests;
 mod click_human_e2e_tests;
 mod editcontext_api_tests;
+mod editcontext_parity_tests;
 mod editing_e2e_tests;
 mod compartment_isolation_tests;
 mod config_boundary_deep_tests;
@@ -102,6 +104,7 @@ mod realworld_browser_automation_tests;
 mod realworld_full_stack_tests;
 mod rendering_pipeline_tests;
 mod runtime_bridge_deep_tests;
+mod runtime_invariant_latency_tests;
 mod screenshot_permission_error_tests;
 mod screencast_tests;
 mod security_sandbox_tests;
@@ -143,6 +146,8 @@ mod face_parse_regression_live_tests;
 mod js_popup_load_tests;
 mod popup_global_mislabel_tests;
 mod webdriver_signal_exit_e2e_tests;
+mod layout_geometry_tests;
+mod eng004_macro_micro_order_tests;
 
 
 // Higher-tier soft-link providers are dev-deps nothing else `use`s in this
@@ -155,8 +160,3 @@ fn link_higher_tier_seams() {
     bao_bundler::force_link_test_seams();
 }
 // e204 reaping discipline note (timestamp 0640)
-mod target_domain_event_tests;
-mod editcontext_parity_tests;
-mod runtime_invariant_latency_tests;
-mod layout_geometry_tests;
-mod eng004_macro_micro_order_tests;
