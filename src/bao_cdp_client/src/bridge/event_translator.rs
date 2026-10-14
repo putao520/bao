@@ -795,7 +795,11 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
             vec![CdpEvent {
                 method: "Fetch.requestPaused".into(),
                 params: json!({
-                    // 关联键:与 Network.requestWillBeSent 同源(设计 §4)。
+                    // 关联键:mint 独立 namespace(`cdpreq-{n:x}`,pause 点
+                    // 新鲜铸造),与 Network.requestWillBeSent 的 net tap id
+                    // 不同源 —— vendor `WebResourceRequest` 不携带 net 侧
+                    // `Request.id`,P1 关联只能按 url+method(e232 登记
+                    // deviation;phase-2 vendor seam 才统一)。
                     "requestId": request_id,
                     // 决议键:Fetch.continueRequest/failRequest/fulfillRequest
                     // 以它回指(设计 §3.2/§5;拆分于 Chromium 的合并形态)。
