@@ -153,3 +153,168 @@ fn test_vm_deep() {
     assert!(pass >= 20, "Expected at least 20 passes, got {}", pass);
     bun_runtime::shutdown_thread_sm();
 }
+
+// @trace TEST-ENG-011 [req:REQ-ENG-011] [level:integration]
+// REQ-ENG-011 criterion 3: `vm.Script.runInContext()` switches to the TARGET
+// realm. One Script instance is compiled once (syntax-checked in the
+// constructor) and then run in two different contextified sandboxes: each
+// execution must see only its own realm's globals and write through to its
+// own sandbox — the two sandboxes must not pollute each other.
+
+#[test]
+fn test_vm_script_run_in_context_two_contexts_isolated() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    let results = eval_string(
+        &mut ctx,
+        r#"
+        var results = [];
+        function check(label, fn) {
+            try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
+            catch(e) { results.push(label + " ERR:" + (e.message || e).substring(0, 60)); }
+        }
+
+        var vm = require('vm');
+
+        // Script construction compiles eagerly: a syntax error throws HERE,
+        // not at run time.
+        check("script_ctor_compiles_eagerly", function() {
+            try { new vm.Script('var ;'); return false; }
+            catch (e) { return e instanceof SyntaxError || e.name === "SyntaxError"; }
+        });
+
+        // One Script, compiled once, run in two different realms.
+        var s = new vm.Script('__tag = __seed * 2; __seed + 1');
+        check("script_ctor_returns_object", function() {
+            return s !== null && typeof s === 'object' && typeof s.runInContext === 'function';
+        });
+
+        var sbA = { __seed: 10 };
+        var sbB = { __seed: 20 };
+        var ctxA = vm.createContext(sbA);
+        var ctxB = vm.createContext(sbB);
+
+        // The SAME compiled script run in two different realms must resolve
+        // __seed from each realm's own global (criterion 3: execution was
+        // switched to the target realm).
+        var rA = s.runInContext(ctxA);
+        var rB = s.runInContext(ctxB);
+
+        check("script_runInContext_return_per_realm", function() {
+            return rA === 11 && rB === 21;
+        });
+
+        // Write-through lands on the run's own sandbox, never the other one.
+        check("script_runInContext_write_through_per_sandbox", function() {
+            return sbA.__tag === 20 && sbB.__tag === 40;
+        });
+
+        // Sandbox globals do not pollute each other: the same global name
+        // holds a DIFFERENT value in each realm (the ctxA run's 20 never
+        // leaked into ctxB, which kept its own 40).
+        check("script_runInContext_no_cross_realm_pollution", function() {
+            var inA = vm.runInContext('__tag', ctxA);
+            var inB = vm.runInContext('__tag', ctxB);
+            return inA === 20 && inB === 40;
+        });
+
+        results.join("|");
+    "#,
+    );
+
+    let mut pass = 0;
+    let mut fail = 0;
+    for item in results.split('|') {
+        if item.contains(" PASS") {
+            pass += 1;
+        } else if item.contains(" FAIL") || item.contains(" ERR") {
+            fail += 1;
+            eprintln!("FAILED: {}", item);
+        }
+    }
+    assert_eq!(fail, 0, "Script.runInContext two-context test had {} failures", fail);
+    assert_eq!(pass, 5, "Expected 5 passes, got {}", pass);
+    bun_runtime::shutdown_thread_sm();
+}
+
+// @trace TEST-ENG-011 [req:REQ-ENG-011] [level:integration]
+// REQ-ENG-011 criterion 3, caller-realm isolation face: the Script body runs
+// in the TARGET realm — the caller realm's globals are invisible from inside,
+// the script's own globals never leak back into the caller, and a plain
+// (never-contextified) object is rejected.
+
+#[test]
+fn test_vm_script_run_in_context_caller_realm_isolation() {
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
+    let mut ctx = JsContext::for_test().expect("JsContext");
+    ctx.set_global_setup(bun_runtime::globals::install_all);
+
+    let results = eval_string(
+        &mut ctx,
+        r#"
+        var results = [];
+        function check(label, fn) {
+            try { var ok = fn(); results.push(label + (ok ? " PASS" : " FAIL")); }
+            catch(e) { results.push(label + " ERR:" + (e.message || e).substring(0, 60)); }
+        }
+
+        var vm = require('vm');
+
+        // Caller-realm marker declared before contextification: it lives on
+        // the caller global and must never be visible inside the vm realm.
+        var callerOnly = 31337;
+
+        var sb = { vmOnly: 7 };
+        var ctxified = vm.createContext(sb);
+
+        // `callerOnly` resolves inside the TARGET realm (=> "undefined");
+        // `vmOnly` resolves from the sandbox (=> 42). The completion value of
+        // the last expression is runInContext's return value.
+        var s = new vm.Script('var inner = vmOnly * 6; typeof callerOnly');
+        var r = s.runInContext(ctxified);
+
+        check("runInContext_returns_last_expression", function() {
+            return r === "undefined";
+        });
+
+        // The script's var-declared global write-through lands on the
+        // sandbox, proving the code ran with the sandbox realm's globals
+        // (vmOnly * 6 == 42 could only be computed there).
+        check("runInContext_target_realm_saw_sandbox", function() {
+            return sb.inner === 42;
+        });
+
+        // The script's own globals never leak into the caller realm, and the
+        // caller marker stayed untouched.
+        check("runInContext_caller_realm_isolated", function() {
+            return typeof inner === "undefined" && callerOnly === 31337;
+        });
+
+        // A plain object (never contextified) is rejected with a throw.
+        check("runInContext_rejects_plain_object", function() {
+            try { s.runInContext({}); return false; }
+            catch (e) { return true; }
+        });
+
+        results.join("|");
+    "#,
+    );
+
+    let mut pass = 0;
+    let mut fail = 0;
+    for item in results.split('|') {
+        if item.contains(" PASS") {
+            pass += 1;
+        } else if item.contains(" FAIL") || item.contains(" ERR") {
+            fail += 1;
+            eprintln!("FAILED: {}", item);
+        }
+    }
+    assert_eq!(fail, 0, "Script.runInContext isolation test had {} failures", fail);
+    assert_eq!(pass, 4, "Expected 4 passes, got {}", pass);
+    bun_runtime::shutdown_thread_sm();
+}
