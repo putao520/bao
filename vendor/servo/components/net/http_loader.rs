@@ -995,6 +995,27 @@ pub(crate) async fn http_fetch(
 
             // Subsubstep 4
             // TODO: set response's CSP list on actual_response
+
+            // BAO PATCH (REQ-CDP-006): SW-mediated completion seam — a
+            // response the service worker settled (invoke_handle_fetch
+            // above) bypasses both the network leg and the scheme routing,
+            // so neither terminal seam fires and the CDP request lifecycle
+            // hangs on `requestfinished`. Emitting here means the response
+            // was adopted: the subsubstep 3 filter above returns via the
+            // failure tap instead, and an unanswered mediator fell through
+            // to the network path's own seams. The mediated body is born
+            // complete (`CustomResponse.body` → `ResponseBody::Done`), so
+            // the byte total is the SW-produced payload length — the honest
+            // observable, not a wire count and not a placeholder.
+            let sw_body_len = match *res.actual_response().body.lock() {
+                ResponseBody::Done(ref body) => body.len() as u64,
+                _ => 0,
+            };
+            bao_emit_network_finished_tap(
+                request.id.0.to_string(),
+                request.target_webview_id.map(|id| id.to_string()),
+                sw_body_len,
+            );
         }
     }
 

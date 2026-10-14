@@ -27,6 +27,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+// SW-mediated 第 6 格(第 4 缺口合同)需要 SW script 路由——共享
+// common/http_fixture(same shape as serviceworker_mediation_tests)。
+#[path = "common/mod.rs"]
+mod common;
+
 use bao_browser::{BaoConfig, BrowserRuntime, PageConfig};
 use bao_cdp_client::browser::Browser;
 use serde_json::{Value, json};
@@ -621,5 +626,190 @@ fn cors_algorithm_failure_emits_loading_failed() {
         1,
         "the cross-origin response must have actually arrived (the failure is \
          the CORS algorithm step, not a network error)"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 第 4 缺口判别锁(e-loadfin2 登记的第 4 缺口):SW-mediated fetch 的
+// Finish 活体生产者——SW 介入的 fetch 既不经网络缝也不经 scheme 缝,终态
+// 事件此前永缺,requestfinished 永挂。
+// ══════════════════════════════════════════════════════════════════════
+
+/// SW 体与原生体刻意不同长——Finish 的 encodedDataLength 携谁的字节是
+/// 本格判别轴(SW 体=终态来自 SW 面;原生体长度=缝误接网络路径)。
+const SW_FINISH_BODY: &str = "SW_TERMINAL_FINISH_BODY";
+const NATIVE_SWFIN_BODY: &str = "NATIVE_SWFIN_MUST_NOT_BE_REPORTED_X";
+
+/// SW 脚本:拦 scope(/api/)内 /api/swfin,respondWith 定制响应。其余
+/// 不应答(mediator None → 网络路径自理,零双发面)。
+const SW_FINISH_JS: &str = r#"
+self.addEventListener('fetch', function (e) {
+  var u = String(e.request.url);
+  if (u.indexOf('/api/swfin') !== -1) {
+    e.respondWith(new Response('SW_TERMINAL_FINISH_BODY', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain', 'X-Sw-Finish': 'yes' }
+    }));
+  }
+});
+"#;
+
+/// 轮询 SW 注册到 active(触发前门;未激活即发探测会走网络路径假红)。
+/// scope 用默认 `/`(同 serviceworker_mediation_tests):非导航请求(XHR)
+/// 只在 client 被 SW 控制时才经 mediation——scope 收窄到 /api/ 而页面在 /
+/// 时页面不受控,拦截恒不 engage(首跑实测:ACTIVE 了仍穿透到网络)。
+/// 写与读必须分离——evaluate 的同步返回发生在 promise 落定前,每轮重置再
+/// 读会永远读到本轮 pending(same shape as __swReg 轮询)。getRegistration
+/// 轮询零网络请求,不污染事件面。
+fn wait_for_sw_active(page: &bao_browser::PageHandle, origin: &str) {
+    let register_js = "window.__swReg = 'pending'; try { \
+         navigator.serviceWorker.register('/sw.js').then( \
+           function () { window.__swReg = 'ok'; }, \
+           function (e) { window.__swReg = 'error:' + e; }); \
+       } catch (err) { window.__swReg = 'threw:' + err; } \
+       window.__swReg";
+    let initial = page
+        .evaluate_js_web(register_js)
+        .expect("sw register dispatch must not fail");
+    eprintln!("[loadfin-sw] register dispatched, immediate eval = {initial:?}");
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut reg_outcome = String::new();
+    loop {
+        reg_outcome = page.evaluate_js_web("window.__swReg").unwrap_or_default();
+        if !reg_outcome.contains("pending") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "sw register promise never settled within 45s (last: {reg_outcome})"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    eprintln!("[loadfin-sw] register outcome = {reg_outcome}");
+    assert!(
+        reg_outcome.contains("ok"),
+        "serviceWorker.register must resolve on the live path, got: {reg_outcome}"
+    );
+
+    // 激活轮询:arm 一次(getRegistration().then 写 __swAct),隔窗只读;
+    // NOTYET(注册已见、active 未就绪)则下一轮再 arm。
+    let arm_js = "window.__swAct = 'pending'; \
+         navigator.serviceWorker.getRegistration().then( \
+           function (r) { window.__swAct = (r && r.active) ? 'ACTIVE' : 'NOTYET'; }, \
+           function (e) { window.__swAct = 'error:' + e; }); \
+         'armed'";
+    let read_js = "window.__swAct";
+    let mut last = String::new();
+    loop {
+        let _ = page.evaluate_js_web(arm_js);
+        std::thread::sleep(Duration::from_millis(500));
+        last = page.evaluate_js_web(read_js).unwrap_or_default();
+        if last.contains("ACTIVE") {
+            eprintln!("[loadfin-sw] sw ACTIVE in / scope (origin {origin})");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "sw never reached ACTIVE within 45s (last poll: {last})"
+        );
+    }
+}
+
+/// SW-mediated fetch Finish:SW respondWith 的响应经 net 层定妆
+/// (CustomResponse.body → ResponseBody::Done)但既不经网络缝也不经 scheme
+/// 缝——终态事件由 SW 采纳点发射,携 SW 体字节真值。判别三轴:
+/// ① encodedDataLength == SW 体长度(≠ 原生体长度,缝未误接网络);
+/// ② fixture 上 /api/swfin 零原生命中(拦截确成立,字节不可能来自网络);
+/// ③ 第一格(同页原生文档导航)照常携原生体长度——非 SW 路径零回归。
+///
+/// @trace REQ-CDP-006 [level:e2e]
+#[test]
+fn sw_mediated_fetch_loading_finished_reports_sw_body_bytes() {
+    let _registry_guard = REGISTRY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let doc_body = minimal_page("sw-finish-probe");
+    let doc_len = doc_body.len() as u64;
+    let fixture = common::http_fixture::HttpFixture::spawn(
+        "loadfin-sw-fixture",
+        Arc::new(move |path: &str, script: Option<&str>| -> (&'static str, String) {
+            if path.starts_with("/sw.js") {
+                match script {
+                    Some(script) => ("application/javascript", script.to_string()),
+                    None => ("text/plain", "sw script not set".into()),
+                }
+            } else if path.starts_with("/api/swfin") {
+                ("text/plain", NATIVE_SWFIN_BODY.into())
+            } else {
+                ("text/html", String::from_utf8(doc_body.clone()).unwrap_or_default())
+            }
+        }),
+    );
+    fixture.set_script(SW_FINISH_JS.to_owned());
+    let origin = fixture.origin();
+
+    let runtime = BrowserRuntime::new(BaoConfig::default()).expect("BrowserRuntime::new");
+    let page = runtime
+        .create_page(&PageConfig {
+            url: Some(origin.clone()),
+            ..Default::default()
+        })
+        .expect("page");
+
+    // 注册并等 SW 激活(此时 load#1 的 Finish 无人订阅;激活后导航的探测
+    // 才是真 SW 面)。scope 限 /api/,后续文档导航在 scope 外零拦截。
+    wait_for_sw_active(&page, &origin);
+
+    let first: VerdictSlot = Arc::new(Mutex::new(None));
+    let second: VerdictSlot = Arc::new(Mutex::new(None));
+    // 导航 URL 带 query 绕启发式缓存;页面在 SW scope 外 → 第一格 Finish
+    // 携原生文档字节(非 SW 路径零回归面)。
+    let waiter = spawn_two_stage_waiter(
+        Arc::clone(&first),
+        Arc::clone(&second),
+        fixture.url("/swpage?nav=2"),
+        "requestfinished",
+        "requestfinished",
+    );
+
+    let doc_finish = pump_slot(&runtime, &first);
+    assert_eq!(
+        doc_finish["encodedDataLength"],
+        json!(doc_len),
+        "document load (outside the SW scope) must still report the native body \
+         byte total — the SW seam must not perturb the plain path, got: {doc_finish}"
+    );
+
+    let swfin_url = fixture.url("/api/swfin");
+    let evaluator = spawn_delayed_evaluate(format!(
+        "var __x = new XMLHttpRequest(); \
+         __x.open('GET', '{swfin_url}', false); \
+         __x.send(null); \
+         'status=' + __x.status + ' body=' + __x.responseText"
+    ));
+    let sw_finish = pump_slot(&runtime, &second);
+    let _ = evaluator.join();
+    let _ = waiter.join();
+
+    assert_eq!(
+        sw_finish["encodedDataLength"],
+        json!(SW_FINISH_BODY.len() as u64),
+        "the SW-mediated response's terminal event must carry the SW-produced \
+         body byte total ({}); the native length ({} would mean the seam read \
+         the network path instead of the settled SW body), got: {sw_finish}",
+        SW_FINISH_BODY.len(),
+        NATIVE_SWFIN_BODY.len()
+    );
+    assert_ne!(
+        SW_FINISH_BODY.len(),
+        NATIVE_SWFIN_BODY.len(),
+        "fixture invariant: SW and native bodies must differ in length for the \
+         byte-source discriminant to mean anything"
+    );
+    assert!(
+        !fixture.saw("/api/swfin"),
+        "the mediated request must never touch the fixture (SW interception is \
+         the only body source); a native hit means interception did not engage \
+         and this test proved nothing"
     );
 }
