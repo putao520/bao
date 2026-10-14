@@ -149,6 +149,8 @@ mod webdriver_signal_exit_e2e_tests;
 mod layout_geometry_tests;
 mod eng004_macro_micro_order_tests;
 mod startup_memory_threshold_tests;
+mod fetch_interception_live_tests;
+mod overlay_conformance_tests;
 
 
 // Higher-tier soft-link providers are dev-deps nothing else `use`s in this
