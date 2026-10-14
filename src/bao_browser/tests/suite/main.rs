@@ -156,3 +156,6 @@ fn link_higher_tier_seams() {
 }
 // e204 reaping discipline note (timestamp 0640)
 mod target_domain_event_tests;
+mod editcontext_parity_tests;
+mod runtime_invariant_latency_tests;
+mod layout_geometry_tests;
