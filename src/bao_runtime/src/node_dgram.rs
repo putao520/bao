@@ -276,6 +276,17 @@ unsafe extern "C" fn dgram_recv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
                             port_val.handle().into(),
                             JSPROP_ENUMERATE as u32,
                         );
+                        // rinfo.size = message size in bytes (Node docs, dgram
+                        // 'message' event): len is recv_from's received-byte
+                        // count, i.e. the datagram payload length.
+                        rooted!(&in(cx_ref) let size_val = Int32Value(len as i32));
+                        w2::JS_DefineProperty(
+                            &mut cx_ref,
+                            ret.handle().into(),
+                            c"size".as_ptr(),
+                            size_val.handle().into(),
+                            JSPROP_ENUMERATE as u32,
+                        );
                     }
                     *vp = ObjectValue(ret.get());
                     true
@@ -650,7 +661,7 @@ const DGRAM_JS: &str = r#"
         var msg = __dgram_recv(self._fd, 65536);
         if (msg && typeof msg === 'object' && msg.data) {
           var buf = Buffer.from(msg.data);
-          self.emit('message', buf, { address: msg.address, family: msg.family, port: msg.port });
+          self.emit('message', buf, { address: msg.address, family: msg.family, port: msg.port, size: msg.size });
         }
       }, 1);
       if (cb) cb(null);

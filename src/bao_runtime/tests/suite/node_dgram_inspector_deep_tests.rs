@@ -1,11 +1,30 @@
 // @trace TEST-ENG-007-DGRAM-INSPECTOR [req:REQ-ENG-007] [level:integration]
 // @trace REQ-ENG-40 [req:REQ-ENG-40] [level:integration] — Node.js dgram 模块 UDP 面(require('dgram')/createSocket)
+// @trace REQ-ENG-23 [req:REQ-ENG-23] [level:e2e] — dgram bind/send/'message' 127.0.0.1 真 UDP 往返
+//   (SPEC 锚 = REQ-ENG-23「Node.js net 模块 (TCP/IPC)」关联面;REQ-ENG-40 为文本交叉引用。
+//    coverage-audit-eng-20261014 G2-3 补缺:此前文件仅 require + relaxed typeof,
+//    bind/send/on('message') 零命中。)
+//
+// 驱动 = bounded post-eval hook(生产泵路径,同 net_connect_options_e2e_tests):
+// dgram Socket.bind 注册 1ms setInterval 轮询 __dgram_recv,'message' 事件经
+// timer drain 派发 — 等待闭包只泵引擎,禁纯 sleep 轮询。
+// API 契约按 Node 官方文档:send/bind callback 成功形态 err===null;'message'
+// 的 rinfo = { address, family, port, size }(size = 载荷长度)。
 
 use bao_engine::context::JsContext;
 #[path = "common/mod.rs"]
 mod common;
 
 use common::eval_string;
+
+fn eval_str(ctx: &mut JsContext, code: &str) -> String {
+    common::eval_str_named(ctx, code, "<node-dgram-udp>")
+}
+
+/// 泵驱动等待:每轮经 bounded drain hook 驱动 timer 派发,条件达成即止。
+fn wait_until(ctx: &mut JsContext, js_condition: &str) -> bool {
+    common::wait_until_with(ctx, js_condition, 50, 60, eval_str)
+}
 
 
 #[test]
@@ -262,3 +281,213 @@ fn test_node_dgram_inspector_deep() {
 
     bun_runtime::shutdown_thread_sm();
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// 真 UDP 往返 1:bind → send → 'message' 事件收包(127.0.0.1 环回,载荷逐字节)
+// ══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn dgram_udp_loopback_bind_send_message_roundtrip() {
+    let mut ctx = common::setup_ctx_bounded();
+
+    let wired = eval_str(
+        &mut ctx,
+        r#"
+        var dgram = require('dgram');
+        globalThis.__stage = 'wiring';
+        globalThis.__messages = [];
+        globalThis.__sendCb = null;
+
+        var rx = dgram.createSocket('udp4');
+        var tx = dgram.createSocket('udp4');
+        globalThis.__rx = rx;
+        globalThis.__tx = tx;
+
+        rx.on('message', function(msg, rinfo) {
+            var bytes = [];
+            for (var i = 0; i < msg.length; i++) bytes.push(msg[i]);
+            globalThis.__messages.push({
+                bytes: bytes,
+                msgLen: msg.length,
+                address: rinfo.address,
+                port: rinfo.port
+            });
+            globalThis.__stage = 'received';
+        });
+
+        rx.bind(0, '127.0.0.1', function() {
+            globalThis.__rxPort = rx.address().port;
+            tx.bind(0, '127.0.0.1', function() {
+                globalThis.__txPort = tx.address().port;
+                // 二进制载荷含 0x00 与 0xFF — 走 Buffer → 字节数组真路径。
+                tx.send(Buffer.from([0x62, 0x61, 0x6f, 0x00, 0xff]), 0, 5,
+                        globalThis.__rxPort, '127.0.0.1', function(err) {
+                    globalThis.__sendCb = err ? ('err:' + String(err.message)) : 'null';
+                    globalThis.__stage = 'sent';
+                });
+            });
+        });
+        'wired'
+        "#,
+    );
+    assert_eq!(wired, "wired", "dgram UDP wiring must eval cleanly");
+
+    let got = wait_until(&mut ctx, "globalThis.__stage === 'received' ? 'y' : 'n'");
+    assert!(
+        got,
+        "UDP roundtrip must settle (stage: {}, sendCb: {}, rxPort: {}, txPort: {})",
+        eval_str(&mut ctx, "globalThis.__stage"),
+        eval_str(&mut ctx, "String(globalThis.__sendCb)"),
+        eval_str(&mut ctx, "String(globalThis.__rxPort)"),
+        eval_str(&mut ctx, "String(globalThis.__txPort)"),
+    );
+
+    // send callback 成功形态:err === null(Node 官方文档契约)。
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__sendCb)"),
+        "null",
+        "send callback must fire with err === null"
+    );
+    // 一个数据报恰触发一次 'message'。
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__messages.length)"),
+        "1",
+        "exactly one 'message' event must fire for one datagram"
+    );
+    // 载荷逐字节往返(含 0x00 / 0xFF)。
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__messages[0].bytes.join(',')"),
+        "98,97,111,0,255",
+        "payload must roundtrip byte-exact through the UDP datagram"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__messages[0].msgLen)"),
+        "5",
+        "msg.length must equal the datagram payload length"
+    );
+    // 发送者信息:环回地址 + 发送 socket 真实本地端口。
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__messages[0].address"),
+        "127.0.0.1",
+        "rinfo.address must be the loopback sender address"
+    );
+    assert_eq!(
+        eval_str(
+            &mut ctx,
+            "String(globalThis.__messages[0].port) === String(globalThis.__txPort) ? 'y' : 'n'"
+        ),
+        "y",
+        "rinfo.port must equal the sender's bound local port"
+    );
+
+    // 收尾:清 1ms 轮询 interval 与 fd(hygiene;nextest 每测独立进程)。
+    eval_str(
+        &mut ctx,
+        "globalThis.__rx.close(); globalThis.__tx.close(); 'closed'",
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 真 UDP 往返 2:'message' 载荷 Buffer 身份 + 发送者信息面
+// (rinfo.address/family/port/size,size = Node 文档载荷长度字段;
+//  createSocket(type, listener) 直挂 listener 形 + bind(options) 形)
+// ══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn dgram_udp_message_payload_and_sender_rinfo() {
+    let mut ctx = common::setup_ctx_bounded();
+
+    let wired = eval_str(
+        &mut ctx,
+        r#"
+        var dgram = require('dgram');
+        globalThis.__stage = 'wiring';
+        globalThis.__got = null;
+
+        // listener 形构造器(Node:createSocket(type, listener) 直挂 'message')。
+        var rx = dgram.createSocket('udp4', function(msg, rinfo) {
+            globalThis.__got = {
+                isBuffer: Buffer.isBuffer(msg),
+                msgLen: msg.length,
+                family: rinfo.family,
+                size: rinfo.size,
+                hasSize: ('size' in rinfo),
+                address: rinfo.address,
+                port: rinfo.port
+            };
+            globalThis.__stage = 'received';
+        });
+        var tx = dgram.createSocket('udp4');
+        globalThis.__rx = rx;
+        globalThis.__tx = tx;
+
+        rx.bind({ port: 0, address: '127.0.0.1' }, function() {
+            globalThis.__rxPort = rx.address().port;
+            tx.bind(0, '127.0.0.1', function() {
+                globalThis.__txPort = tx.address().port;
+                // 'Bao-UDP!' — 8 字节,size 断言锚。
+                tx.send(Buffer.from([0x42, 0x61, 0x6f, 0x2d, 0x55, 0x44, 0x50, 0x21]),
+                        0, 8, globalThis.__rxPort, '127.0.0.1');
+            });
+        });
+        'wired'
+        "#,
+    );
+    assert_eq!(wired, "wired", "dgram UDP wiring (listener form) must eval cleanly");
+
+    let got = wait_until(&mut ctx, "globalThis.__stage === 'received' ? 'y' : 'n'");
+    assert!(
+        got,
+        "UDP roundtrip (listener form) must settle (stage: {}, got: {})",
+        eval_str(&mut ctx, "globalThis.__stage"),
+        eval_str(&mut ctx, "JSON.stringify(globalThis.__got)"),
+    );
+
+    // 载荷身份:Buffer + 长度一致(Node:'msg' 恒为 Buffer)。
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__got.isBuffer)"),
+        "true",
+        "message payload must be a Buffer"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__got.msgLen)"),
+        "8",
+        "msg.length must equal the 8-byte payload"
+    );
+    // 发送者信息面(Node rinfo = { address, family, port, size })。
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__got.address"),
+        "127.0.0.1",
+        "rinfo.address must be the loopback sender address"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "globalThis.__got.family"),
+        "IPv4",
+        "rinfo.family must be 'IPv4' (Node string form since v18.4)"
+    );
+    assert_eq!(
+        eval_str(
+            &mut ctx,
+            "String(globalThis.__got.port) === String(globalThis.__txPort) ? 'y' : 'n'"
+        ),
+        "y",
+        "rinfo.port must equal the sender's bound local port"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__got.hasSize)"),
+        "true",
+        "rinfo.size must be present (Node-documented field: the message size)"
+    );
+    assert_eq!(
+        eval_str(&mut ctx, "String(globalThis.__got.size)"),
+        "8",
+        "rinfo.size must equal the datagram payload length"
+    );
+
+    // 收尾:清轮询 interval 与 fd。
+    eval_str(
+        &mut ctx,
+        "globalThis.__rx.close(); globalThis.__tx.close(); 'closed'",
+    );
+}
+
